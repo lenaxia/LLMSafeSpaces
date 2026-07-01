@@ -7,13 +7,17 @@
 # Image tags are passed via make helm-deploy IMAGE_TAG=<tag> RELEASE_NS=default.
 #
 # Pin all components to the same commit so they reconcile against
-# matching CRD schema and protocol expectations. ts-1781285219 includes:
-#   - fix(repolint): worklog 0233→0234 rename — sequence collision fix (ci: #1074)
-  - ci: kick off run after worklog collision fix
-#     bug fixed, Grafana datasource default set, dashboard descriptions added (#118)
+# matching CRD schema and protocol expectations.
+#
+# sha-ac861c3 is the content-addressable tag for commit ac861c3d (same
+# manifest as ts-1782762331). The previous pin (ts-1781285219) was pruned
+# from GHCR by package retention. Prefer sha-<commit> over ts-<unix> for
+# pinned references: both labels attach to the same manifest version, but
+# sha- is self-documenting (identifies the commit) and is the convention
+# the chart README recommends for immutable pins.
 api:
   image:
-    tag: ts-1781285219
+    tag: sha-ac861c3
     pullPolicy: Always
   ingress:
     # API is exposed via the frontend ingress at /api; no separate
@@ -22,7 +26,7 @@ api:
 
 controller:
   image:
-    tag: ts-1781285219
+    tag: sha-ac861c3
     pullPolicy: Always
 
 # inferenceRelayURL is the Cloudflare Worker base URL for free-tier inference.
@@ -44,7 +48,7 @@ mcp:
 frontend:
   enabled: true
   image:
-    tag: ts-1781285219
+    tag: sha-ac861c3
     pullPolicy: Always
   ingress:
     enabled: true
@@ -59,7 +63,7 @@ frontend:
 runtimeEnvironments:
   base:
     image:
-      tag: ts-1781285219
+      tag: sha-ac861c3
 
 # Webhook image-registry allow-list — required so the controller's
 # RuntimeEnvironment validating webhook accepts ghcr.io images.

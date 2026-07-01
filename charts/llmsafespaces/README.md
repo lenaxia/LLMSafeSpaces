@@ -155,6 +155,60 @@ curl http://localhost:8080/livez   # 200 OK
 curl http://localhost:8080/readyz  # 200 if DB+Redis healthy, 503 otherwise
 ```
 
+> **Image tags:** The chart defaults each image tag to `.Chart.AppVersion`
+> (`0.1.0`), which resolves once a `v0.1.0` git release tag is cut. Until then,
+> supply a tag explicitly via `--set api.image.tag=<tag>` (and the same for
+> `controller`, `frontend`, `base.runtime`). See [Image tags](#image-tags) below.
+
+## Image tags
+
+CI (`ci.yml`) publishes four tag types on every main-branch build:
+
+| Tag | Format | Purpose |
+|-----|--------|---------|
+| `sha-<commit>` | `sha-ac861c3` | Immutable, content-addressable. **Preferred for pinned deployments.** |
+| `ts-<unix>` | `ts-1782762331` | Sortable by time. Useful for chronological queries. |
+| `dev` | `dev` | Moving pointer to the latest main build. **Avoid in production** — kubelet caching of moving tags is unreliable. |
+| semver | `0.1.0` | Emitted on `v*.*.*` git tags (`type=semver,pattern={{version}}`). The chart default targets this. |
+
+**For production / pinned deployments:**
+
+```sh
+helm install llmsafespaces ./charts/llmsafespaces \
+    --set api.image.tag=sha-ac861c3 \
+    --set controller.image.tag=sha-ac861c3 \
+    --set frontend.image.tag=sha-ac861c3 \
+    --set base.runtime.image.tag=sha-ac861c3 \
+    # ... other values
+```
+
+**For fast intermediate deploys** (no release needed):
+
+```sh
+helm upgrade llmsafespaces ./charts/llmsafespaces \
+    --set api.image.tag=dev \
+    --set controller.image.tag=dev \
+    # ... or pin to a specific ts-/sha- build
+```
+
+**Cutting a release** makes the chart default (`appVersion`) resolve without
+overrides:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0   # CI publishes 0.1.0 + latest to GHCR
+```
+
+After the release, `helm install` with no tag override resolves every image to
+`ghcr.io/lenaxia/llmsafespaces/{api,...}:0.1.0`.
+
+> **GHCR retention:** GitHub's native package-version retention prunes old
+> versions. `sha-` and `ts-` tags label the same manifest version and are pruned
+> together — pinning to `sha-` does not prevent recurrence on its own. Configure
+> retention to keep the latest semver-tagged version, or cut releases
+> frequently enough that the current `appVersion` is always within the retention
+> window. See issue #454.
+
 ## Values reference
 
 The chart exposes ~150 documented values. Highlights:
