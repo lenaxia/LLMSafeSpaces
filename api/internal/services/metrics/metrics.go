@@ -648,8 +648,10 @@ var (
 
 // RecordSecretAutoPush increments the counter for a single auto-push
 // attempt outcome. outcome must be one of "success", "inject_failed",
-// "reload_failed", "no_pod". Called from workspace.Service and from
-// agentpush.Service's metrics hook.
+// "reload_failed", "no_pod". Called from app.recordAutoPushOutcome
+// (the process-wide callback used by wsAgentPusherAdapter, the sole
+// emission point for this metric — see the adapter's doc for the
+// rationale).
 func RecordSecretAutoPush(outcome string) {
 	if outcome == "" {
 		outcome = "unknown"

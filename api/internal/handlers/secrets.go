@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -366,6 +367,8 @@ func (h *SecretsHandler) GetBindings(c *gin.Context) {
 // Both flow through the same shared agentpush.Service (constructed once
 // by the wiring layer, reused across every request) so on-wire behavior
 // matches SetBindings and the workspace-service auto-push exactly.
+// agentpush wraps InjectSecrets errors with "inject secrets: %w", so we
+// can unwrap to recover the typed error for handleSecretError.
 func (h *SecretsHandler) ReloadSecrets(c *gin.Context) {
 	userID, sessionID := extractAuth(c)
 	if userID == "" {
@@ -374,18 +377,18 @@ func (h *SecretsHandler) ReloadSecrets(c *gin.Context) {
 	}
 
 	workspaceID := c.Param("id")
-	// Perform the inject side separately so its typed errors map to the
-	// user-facing 400/403 status codes handleSecretError produces. The
-	// pusher's InjectSecrets step wraps these with "inject secrets:" so
-	// the classification is impossible after the fact.
-	if _, err := h.svc.InjectSecrets(c.Request.Context(), userID, sessionID, extractMatchedSigningKey(c), workspaceID); err != nil {
-		handleSecretError(c, err)
-		return
-	}
-
 	ctx := agentpush.WithAuth(c.Request.Context(), sessionID, extractMatchedSigningKey(c))
 	result, err := h.getPusher().Push(ctx, userID, workspaceID)
 	if err != nil {
+		// Inject-side failures need the typed-error mapping to 400/403/500.
+		// agentpush wraps them with "inject secrets:" so we can unwrap the
+		// original SecretService error and route it through the shared
+		// handler. This avoids a second, redundant InjectSecrets call in
+		// this endpoint.
+		if inner := errors.Unwrap(err); inner != nil && strings.HasPrefix(err.Error(), "inject secrets") {
+			handleSecretError(c, inner)
+			return
+		}
 		switch {
 		case errors.Is(err, agentpush.ErrNoPodIPResolver):
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "secret reload not configured"})

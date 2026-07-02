@@ -505,10 +505,19 @@ Adversarial-validated by neutering the `agentpush.WithAuth` call in the test —
 ### Stale comment + duplicate type-assert cleanup
 
 - Removed the "Wire below" stale comment at `app.go:557-558`.
-- Consolidated the two `svc.Workspace.(*workspace.Service)` type-asserts into a single site: `SetSecretPusher` + `SetPodIdentityTracker` are now wired in the same block right after `agentPusher` is constructed. The earlier block that also asserted was pared back to only the credential/secret-provisioner setup.
+- Reduced the pod-recreation wiring surface: `SetSecretPusher` + `SetPodIdentityTracker` now live in one shared type-assert block right after `agentPusher` is constructed. A second `svc.Workspace.(*workspace.Service)` type-assert still exists ~130 lines later for the unrelated credential/secret-provisioner + org-store wiring, which is a legitimate separation of concerns (that wiring block runs after other objects it depends on are constructed).
 
 ### Edge case: `GetLastSeenPodIdentity` with NULL start_time
 
 The bot flagged an untested edge case: a row with `last_seen_pod_name='pod-x'` but `last_seen_pod_start_time=NULL` (e.g. inherited from `MarkCredentialChanged` before #494). COALESCE substitutes epoch; the Go code checks `Unix()==0` to zero it. Without this normalization, the initial-observation branch (`priorName == "" && priorStart.IsZero()`) would silently be false and every workspace's first post-deploy status poll would trigger a spurious transition.
 
 **Test added:** `TestPodIdentity_GetTreatsEpochStartTimeAsZeroTime` locks in the normalization.
+
+### PR #494 review pass 2 (approval)
+
+The bot's second review approved the PR with three LOW-severity findings, all addressed in the same PR before merge:
+
+- **Stale comment on `SetSecretPusher`** — said metric emission was the pusher's responsibility (via WithMetricsHook); reality post-fix is that emission lives on the workspace-side adapter. Comment corrected.
+- **Stale comment on `RecordSecretAutoPush`** — claimed workspace.Service and agentpush.Service call it directly; reality is only the adapter's callback does. Comment corrected.
+- **Double `InjectSecrets` call in `ReloadSecrets`** — the endpoint called `h.svc.InjectSecrets` for typed-error mapping, then `h.getPusher().Push` which internally invoked `InjectSecrets` again. Fixed by unwrapping the pusher's `"inject secrets: %w"` error and routing the inner error through `handleSecretError` on the sole Push call.
+- **Worklog "consolidation" wording** overstated what was done — corrected to accurately describe the layering (two type-asserts remain because they wire different concerns at different points in the wiring order).

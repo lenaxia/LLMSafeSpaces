@@ -150,11 +150,12 @@ func (s *Service) SetPodIdentityTracker(t PodIdentityTracker) {
 // SetSecretPusher installs the auto-push service. If nil, transitions
 // are still recorded but no push fires (dev/test).
 //
-// Metric emission for auto-push outcomes is the pusher's responsibility
-// (agentpush.WithMetricsHook), not the workspace service's — otherwise
-// each successful push would increment the same counter twice, and the
-// two increment sites could get out of sync as the pusher grows more
-// outcomes over time (e.g. rate-limited, quota-exceeded).
+// Metric emission for auto-push outcomes lives on the workspace-side
+// adapter (wsAgentPusherAdapter in the app package), NOT on the pusher
+// itself or the workspace service — that way api_secret_auto_push_total
+// stays scoped to its documented meaning (pod-recreation auto-push),
+// and calls to the shared pusher from other paths (SetBindings,
+// ReloadSecrets) do not pollute the counter.
 func (s *Service) SetSecretPusher(p SecretPusher) {
 	s.secretPusher = p
 }
