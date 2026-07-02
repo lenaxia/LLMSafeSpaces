@@ -24,6 +24,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/logger"
 	"github.com/lenaxia/llmsafespaces/api/internal/server"
 	"github.com/lenaxia/llmsafespaces/api/internal/services"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/agentpush"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/auth"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/cache"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/database"
@@ -383,13 +384,45 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// Without this the SecretsHandler returns 503 for every reload
 		// request and the SetBindings auto-push silently no-ops; see
 		// Bug 1 + Bug 2 in worklog 0085.
-		secretsHandler.SetPodIPResolver(newSecretsPodIPResolver(
+		secretsPodResolver := newSecretsPodIPResolver(
 			&k8sWorkspaceGetterAdapter{client: k8sClient, namespace: cfg.Kubernetes.Namespace},
 			dbSvc,
 			log,
-		))
+		)
+		secretsHandler.SetPodIPResolver(secretsPodResolver)
 		secretsHandler.SetLogger(log)
 		secretsHandler.SetCredentialStateWriter(dbSvc)
+
+		// Build the single agentpush.Service and share it between the
+		// SecretsHandler (bindings/reload endpoints) and the workspace
+		// service (pod-recreation auto-push). Sharing one instance means
+		// there's one place to change reload semantics — the SOLID payoff
+		// of extracting agentpush from SecretsHandler in worklog 0589.
+		//
+		// The metrics hook lives on the workspace-side adapter, NOT on
+		// the shared pusher: api_secret_auto_push_total is specifically
+		// the pod-recreation auto-push counter (per its Help text), and
+		// wiring it here would conflate user-initiated SetBindings
+		// pushes with automatic pod-recreation pushes — operators
+		// couldn't tell "50 users changed bindings" from "50 pods were
+		// recreated." See wsAgentPusherAdapter.Push in secrets_adapters.go.
+		agentPusher := agentpush.New(
+			secretService,
+			agentpush.WithPodIPResolver(secretsPodResolver),
+			agentpush.WithModelCache(sharedModelCache),
+			agentpush.WithLogger(log),
+		)
+		secretsHandler.SetAgentPusher(agentPusher)
+		if wsSvc, ok := svc.Workspace.(*workspace.Service); ok {
+			wsSvc.SetSecretPusher(&wsAgentPusherAdapter{pusher: agentPusher})
+			// worklog 0589: also install the pod-identity tracker so
+			// GetWorkspaceStatus can detect pod recreations and fire the
+			// auto-push. Both dependencies for the pod-recreation flow
+			// are wired in one type-assert block here rather than split
+			// across the two "svc.Workspace type-assert" sites in this
+			// function.
+			wsSvc.SetPodIdentityTracker(dbSvc)
+		}
 		// Wire password getter so ListModels/SetModel can authenticate
 		// to opencode. Uses the same K8s-secret-backed getter as ProxyHandler.
 		// Wired after proxyHandler construction (see below).

@@ -38,18 +38,20 @@ type WorkspaceConfig = types.WorkspaceConfig
 
 // Service implements apiinterfaces.WorkspaceService.
 type Service struct {
-	logger            pkginterfaces.LoggerInterface
-	k8sClient         pkginterfaces.KubernetesClient
-	dbService         apiinterfaces.DatabaseService
-	cacheService      apiinterfaces.CacheService
-	metricsService    apiinterfaces.MetricsService
-	sessionIndex      apiinterfaces.SessionIndexService
-	credProvisioner   CredentialProvisioner
-	secretProvisioner SecretAutoProvisioner
-	instanceSettings  *settings.InstanceService
-	orgStore          OrgMembershipChecker
-	policyChecker     PolicyChecker
-	config            *Config
+	logger             pkginterfaces.LoggerInterface
+	k8sClient          pkginterfaces.KubernetesClient
+	dbService          apiinterfaces.DatabaseService
+	cacheService       apiinterfaces.CacheService
+	metricsService     apiinterfaces.MetricsService
+	sessionIndex       apiinterfaces.SessionIndexService
+	credProvisioner    CredentialProvisioner
+	secretProvisioner  SecretAutoProvisioner
+	instanceSettings   *settings.InstanceService
+	orgStore           OrgMembershipChecker
+	policyChecker      PolicyChecker
+	podIdentityTracker PodIdentityTracker
+	secretPusher       SecretPusher
+	config             *Config
 }
 
 type OrgMembershipChecker interface {
@@ -84,6 +86,78 @@ type CredentialProvisioner interface {
 // global_default=true. Called on workspace creation as a best-effort operation.
 type SecretAutoProvisioner interface {
 	SeedGlobalDefaultSecrets(ctx context.Context, workspaceID, userID string) error
+}
+
+// PodIdentityTracker persists the (podName, podStartTime) tuple last
+// observed by the API for a workspace and reports whether the current
+// tuple represents a transition. Satisfied by *database.Service via the
+// GetLastSeenPodIdentity / UpsertLastSeenPodIdentity /
+// MarkPodIdentityTransition / ClearPendingRefreshAfterAutoPush methods.
+// See worklog 0589 for the design.
+//
+// The interface is narrow (four methods) on purpose: the workspace
+// service does not need — and should not depend on — the ~40 methods
+// on the full DatabaseService interface. Narrow interfaces at consumers
+// is the SOLID DIP pattern used across this codebase for other
+// optional deps (e.g. CredentialStateWriter on SecretsHandler).
+type PodIdentityTracker interface {
+	// GetLastSeenPodIdentity returns the previously-observed (name, startTime)
+	// tuple, or ("", zero-time, nil error) if no observation has been recorded
+	// yet. Callers treat the zero tuple as "initial observation" and MUST NOT
+	// trigger an auto-push — instead they persist the current tuple via
+	// UpsertLastSeenPodIdentity so subsequent transitions can be detected.
+	GetLastSeenPodIdentity(ctx context.Context, workspaceID string) (string, time.Time, error)
+	// UpsertLastSeenPodIdentity persists the current identity WITHOUT touching
+	// pending_refresh. Used for the initial-observation write.
+	UpsertLastSeenPodIdentity(ctx context.Context, workspaceID, podName string, startTime time.Time) error
+	// MarkPodIdentityTransition persists the NEW identity AND flips
+	// pending_refresh=TRUE with last_credential_changed_at=NOW(). The atomic
+	// batched write is important: pending_refresh must be TRUE before the
+	// caller fires the fire-and-forget push goroutine so a concurrent
+	// GetWorkspace list-read surfaces agentNeedsRefresh (the fallback banner UX).
+	//
+	// Returns the DB-clock timestamp written to last_credential_changed_at
+	// so the caller can round-trip it back through ClearPendingRefreshAfterAutoPush
+	// to correctly interact with MarkAgentReloaded's optimistic-concurrency
+	// check (a bind arriving DURING the push window must keep pending_refresh=TRUE).
+	MarkPodIdentityTransition(ctx context.Context, workspaceID, podName string, startTime time.Time) (time.Time, error)
+	// ClearPendingRefreshAfterAutoPush flips pending_refresh=FALSE after a
+	// successful auto-push, UNLESS a new credential was staged during the
+	// push window (in which case the flag stays TRUE and the banner
+	// correctly re-appears for the fresh change). Wraps MarkAgentReloaded
+	// in a self-contained transaction so the fire-and-forget goroutine
+	// doesn't need to manage a *sql.Tx. Returns the disposed-at timestamp
+	// (unused by the workspace-service caller today, but kept in the
+	// signature to match *database.Service's method exactly so the
+	// concrete implementation satisfies the interface without an adapter).
+	ClearPendingRefreshAfterAutoPush(ctx context.Context, workspaceID string, priorChangedAt time.Time) (time.Time, error)
+}
+
+// SecretPusher decrypts the user's bound secret snapshot with their DEK
+// (extracted from ctx) and posts it to the running workspace pod's
+// agentd. Satisfied by *agentpush.Service. The workspace service depends
+// on this interface, not the concrete type, so tests can inject a fake.
+type SecretPusher interface {
+	Push(ctx context.Context, userID, workspaceID string) error
+}
+
+// SetPodIdentityTracker installs the pod-identity persistence layer. If
+// nil, GetWorkspaceStatus skips the detection logic entirely (dev/test).
+func (s *Service) SetPodIdentityTracker(t PodIdentityTracker) {
+	s.podIdentityTracker = t
+}
+
+// SetSecretPusher installs the auto-push service. If nil, transitions
+// are still recorded but no push fires (dev/test).
+//
+// Metric emission for auto-push outcomes lives on the workspace-side
+// adapter (wsAgentPusherAdapter in the app package), NOT on the pusher
+// itself or the workspace service — that way api_secret_auto_push_total
+// stays scoped to its documented meaning (pod-recreation auto-push),
+// and calls to the shared pusher from other paths (SetBindings,
+// ReloadSecrets) do not pollute the counter.
+func (s *Service) SetSecretPusher(p SecretPusher) {
+	s.secretPusher = p
 }
 
 // SetCredentialProvisioner installs the credential auto-apply seeder.
@@ -935,7 +1009,137 @@ func (s *Service) GetWorkspaceStatus(ctx context.Context, userID, workspaceID st
 		s.dbService.SyncWorkspaceVersionInfo(ctx, workspaceID, result.ImageTag, result.AgentHealth.AgentVersion)
 	}
 
+	// US-Epic 27b (worklog 0589): auto-push user-DEK secrets on pod
+	// recreation. See maybeAutoPushOnPodTransition for the state machine
+	// (unchanged / initial-observation / transition-fires-push).
+	s.maybeAutoPushOnPodTransition(ctx, userID, workspaceID, crd)
+
 	return result, nil
+}
+
+// maybeAutoPushOnPodTransition compares the CRD's current pod identity
+// (name, startTime) with the last observation persisted for this
+// workspace. On a genuine transition (both tuples non-zero and different)
+// it records the new identity with pending_refresh=TRUE and fires a
+// fire-and-forget goroutine that pushes user-DEK secrets to the newly-
+// recreated pod's agentd. The user's DEK is extracted from ctx by the
+// pusher (agentpush.AuthFromContext) — the router must attach it via
+// agentpush.WithAuth before calling GetWorkspaceStatus.
+//
+// This is the load-bearing fix for the "eventually disappear" symptom:
+// pod recreation wipes the /sandbox-runtime tmpfs and the boot-time
+// materialize replays only phase-1 (server-KEK) content. Every user-
+// owned secret needs a phase-2 push from an authenticated user request
+// context; this hook wires the API's ubiquitous status-poll to that
+// push. See worklog 0589 for design rationale, rejected alternatives,
+// and adversarial checks.
+func (s *Service) maybeAutoPushOnPodTransition(ctx context.Context, userID, workspaceID string, crd *v1.Workspace) {
+	if s.podIdentityTracker == nil {
+		return // wiring not configured (dev/test); nothing to do
+	}
+	// Only Active pods have a stable identity worth tracking. Non-Active
+	// phases either have no PodName (Pending/Creating pre-write, Suspended)
+	// or are mid-terminating; recording those overwrites the previous
+	// identity with empty values and would suppress the next Active
+	// transition. Skip cleanly.
+	if crd.Status.Phase != v1.WorkspacePhaseActive {
+		return
+	}
+	currentName := crd.Status.PodName
+	if currentName == "" || crd.Status.StartTime == nil {
+		return
+	}
+	currentStart := crd.Status.StartTime.Time
+
+	priorName, priorStart, err := s.podIdentityTracker.GetLastSeenPodIdentity(ctx, workspaceID)
+	if err != nil {
+		s.logger.Warn("pod identity: read failed; skipping auto-push detection this poll",
+			"workspaceID", workspaceID, "error", err.Error())
+		return
+	}
+
+	sameName := priorName == currentName
+	sameStart := priorStart.Equal(currentStart)
+	if sameName && sameStart {
+		return // steady state — this is the vast majority of polls
+	}
+
+	// Initial observation: no prior identity recorded. Persist the current
+	// one so subsequent polls can detect a transition. Do NOT fire the push:
+	// on deploy day this would stampede every active workspace.
+	if priorName == "" && priorStart.IsZero() {
+		if err := s.podIdentityTracker.UpsertLastSeenPodIdentity(ctx, workspaceID, currentName, currentStart); err != nil {
+			s.logger.Warn("pod identity: upsert initial failed",
+				"workspaceID", workspaceID, "error", err.Error())
+		}
+		return
+	}
+
+	// True transition: record with pending_refresh=TRUE, then fire the push.
+	priorChangedAt, err := s.podIdentityTracker.MarkPodIdentityTransition(ctx, workspaceID, currentName, currentStart)
+	if err != nil {
+		s.logger.Warn("pod identity: mark transition failed; auto-push not fired",
+			"workspaceID", workspaceID, "error", err.Error())
+		return
+	}
+
+	if s.secretPusher == nil {
+		// No pusher wired; the DB flag stays TRUE and AgentReloadBanner
+		// serves as the manual fallback. This is fine — a warning in
+		// wiring, not a data-plane bug.
+		return
+	}
+
+	// Fire-and-forget. context.WithoutCancel detaches from the request
+	// context so the push survives the caller's return (Gin cancels
+	// ctx on response commit).
+	go s.runAutoPush(context.WithoutCancel(ctx), userID, workspaceID, priorName, currentName, currentStart, priorChangedAt)
+}
+
+// runAutoPush executes one Push attempt with structured logging and
+// (on success) clears pending_refresh via ClearPendingRefreshAfterAutoPush.
+// The priorChangedAt timestamp captured at transition time is fed back
+// so the DB's optimistic-concurrency check correctly leaves the flag
+// TRUE if a NEW credential was staged during the push window.
+func (s *Service) runAutoPush(ctx context.Context, userID, workspaceID, priorPodName, newPodName string, newPodStart time.Time, priorChangedAt time.Time) {
+	start := time.Now()
+	err := s.secretPusher.Push(ctx, userID, workspaceID)
+	elapsed := time.Since(start)
+	if err != nil {
+		s.logger.Warn("auto-push after pod recreation: failed",
+			"workspaceID", workspaceID,
+			"oldPodName", priorPodName,
+			"newPodName", newPodName,
+			"newPodStartTime", newPodStart.Format(time.RFC3339),
+			"elapsedMs", elapsed.Milliseconds(),
+			"error", err.Error())
+		return
+	}
+
+	// Clear pending_refresh so the AgentReloadBanner disappears from
+	// the frontend within one poll cycle. MarkAgentReloaded (wrapped by
+	// ClearPendingRefreshAfterAutoPush) preserves the flag if a NEW
+	// credential arrived during the push window (`currentChangedAt >
+	// priorChangedAt`), so the banner correctly re-appears for the
+	// fresh change.
+	if _, err := s.podIdentityTracker.ClearPendingRefreshAfterAutoPush(ctx, workspaceID, priorChangedAt); err != nil {
+		// The push already delivered the secrets — the pod has what it
+		// needs. Failing to clear the flag is a UX regression (banner
+		// stays visible until the next transition or manual reload) but
+		// not a data-plane failure. Log and move on.
+		s.logger.Warn("auto-push after pod recreation: clear pending_refresh failed",
+			"workspaceID", workspaceID,
+			"oldPodName", priorPodName,
+			"newPodName", newPodName,
+			"error", err.Error())
+	}
+
+	s.logger.Info("auto-push after pod recreation: success",
+		"workspaceID", workspaceID,
+		"oldPodName", priorPodName,
+		"newPodName", newPodName,
+		"newPodStartTime", newPodStart.Format(time.RFC3339),
+		"elapsedMs", elapsed.Milliseconds())
 }
 
 // ResolveWorkspace fetches workspace metadata by ID. It is the pure-fetch half

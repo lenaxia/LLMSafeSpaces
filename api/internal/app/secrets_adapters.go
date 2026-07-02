@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -17,6 +18,8 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/config"
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	"github.com/lenaxia/llmsafespaces/api/internal/logger"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/agentpush"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/metrics"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/kubernetes"
@@ -743,4 +746,68 @@ func ensureFreeTierCredential(ctx context.Context, seeder credentialSeeder, prov
 		logger.Info("free-tier backfill complete", "workspacesBackfilled", backfilled)
 	}
 	return nil
+}
+
+// wsAgentPusherAdapter adapts *agentpush.Service to the narrow
+// workspace.SecretPusher interface. This is the dependency-inversion
+// seam between the workspace service (which declares the interface it
+// needs) and the concrete pusher (which lives in the agentpush package,
+// unaware of any consumer). Without this adapter the workspace package
+// would have to import agentpush directly, creating a wider dependency
+// than the SOLID DIP allows.
+//
+// The adapter is ALSO the metric-emission point for
+// api_secret_auto_push_total: the metric is specifically the pod-
+// recreation auto-push counter (per its Help text), NOT a general
+// "any push" counter. Wiring the hook onto the shared agentpush.Service
+// would conflate user-initiated SetBindings pushes with automatic
+// pod-recreation pushes — operators couldn't tell "50 users changed
+// bindings" from "50 pods were recreated." Emitting from here keeps
+// the metric scoped to its documented meaning.
+type wsAgentPusherAdapter struct {
+	pusher *agentpush.Service
+}
+
+// Push satisfies workspace.SecretPusher by delegating to agentpush and
+// classifying the outcome for the pod-recreation-specific metric.
+// The Result value is dropped (the workspace-side auto-push flow doesn't
+// inspect it — the reload count is recorded via structured logs).
+func (a *wsAgentPusherAdapter) Push(ctx context.Context, userID, workspaceID string) error {
+	_, err := a.pusher.Push(ctx, userID, workspaceID)
+	recordAutoPushOutcome(classifyPushOutcome(err))
+	return err
+}
+
+// classifyPushOutcome maps agentpush's returned error to one of the
+// four exhaustive metric labels: success, no_pod, inject_failed,
+// reload_failed. Kept in one place so the mapping stays consistent
+// between the metric and (future) log-level classification.
+func classifyPushOutcome(err error) string {
+	if err == nil {
+		return "success"
+	}
+	if errors.Is(err, agentpush.ErrNoRunningPod) {
+		return "no_pod"
+	}
+	// The "inject secrets" prefix is the sentinel documented on
+	// agentpush.Service.Push — every InjectSecrets failure is wrapped
+	// with this prefix. Anything else is a reload-side failure
+	// (network, non-2xx from agentd, malformed response).
+	if strings.HasPrefix(err.Error(), "inject secrets") {
+		return "inject_failed"
+	}
+	return "reload_failed"
+}
+
+// recordAutoPushOutcome is the process-wide metrics-emitter used ONLY
+// by the workspace-service auto-push path (via wsAgentPusherAdapter).
+// See the adapter's doc for why the metric is scoped to that path and
+// not emitted from every agentpush.Service.Push caller.
+//
+// If the metrics registration is disabled or misconfigured, the counter
+// is a no-op — recordAutoPushOutcome silently succeeds. Do not add
+// error-return here; callers won't handle it and the metric is best-
+// effort observability, not a correctness gate.
+func recordAutoPushOutcome(outcome string) {
+	metrics.RecordSecretAutoPush(outcome)
 }

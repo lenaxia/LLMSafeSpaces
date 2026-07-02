@@ -1649,47 +1649,10 @@ func TestListModels_CacheInvalidatedOnReverseTransition(t *testing.T) {
 		"models[] entries must also reflect the post-eviction non-relayed state")
 }
 
-// TestDoReload_EvictsModelCache verifies that doReload evicts the workspace's
-// model cache so the next ListModels call returns fresh data after a credential
-// bind activates new providers (Gap6 — worklog 0186).
-func TestDoReload_EvictsModelCache(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	const workspaceID = "ws-evict-test"
-
-	// Mock agentd on port 4097 — doReload hardcodes this port.
-	agentdListener, err := net.Listen("tcp", "127.0.0.1:4097")
-	if err != nil {
-		t.Skip("port 4097 not available for agentd mock")
-	}
-	agentdSrv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/reload-secrets" && r.Method == http.MethodPost {
-			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"reloaded":1,"restarted":false}`))
-			return
-		}
-		http.NotFound(w, r)
-	}))
-	agentdSrv.Listener = agentdListener
-	agentdSrv.Start()
-	defer agentdSrv.Close()
-
-	// Seed the model cache with stale data for this workspace.
-	// M2-a: SecretsHandler uses an injected cache, not the package global.
-	// Wire a fresh cache into the handler and seed it.
-	testCache := NewInMemoryModelCache()
-	testCache.Set(workspaceID, []byte(`[{"id":"stale-model","providerID":"old"}]`))
-	require.NotNil(t, testCache.Get(workspaceID), "cache must be seeded before test")
-
-	handler := NewSecretsHandler(nil)
-	handler.SetPodIPResolver(&staticPodIPResolver{addr: "127.0.0.1"})
-	handler.SetModelCache(testCache)
-
-	result, err := handler.doReload(t.Context(), "user-1", workspaceID, []byte(`[]`))
-	require.NoError(t, err)
-	require.NotNil(t, result)
-
-	// Cache must be evicted after a successful reload.
-	require.Nil(t, testCache.Get(workspaceID),
-		"model cache must be evicted after doReload so the next ListModels fetches fresh data")
-}
+// (TestDoReload_EvictsModelCache removed in PR #494: doReload was
+// deleted as part of the agentpush.Service extraction. The equivalent
+// invariant — "successful push evicts the workspace's model cache" —
+// is now covered by TestPush_SuccessEvictsModelCache in
+// api/internal/services/agentpush/agentpush_test.go, at the level of
+// the shared implementation both this handler and the workspace
+// service consume.)
