@@ -444,3 +444,71 @@ Existing workspaces have no row in `workspace_agent_state` with a `last_seen_pod
 - **Rate-limit auto-push for pod crashloops.** Two rapid consecutive transitions produce two auto-push attempts. Convergent (agentd `reloadMu` serializes) but noisy. Not fixing until we see it in production logs.
 - **`api_secret_auto_push_duration_ms` histogram.** Currently only counter. Add if the p99 latency becomes a support signal (e.g. "auto-push takes 10s on my cluster").
 - **Full `SecretsHandler` migration off setter-DI onto explicit `SetAgentPusher`.** Currently the handler falls back to lazy-construction from `SetPodIPResolver`/`SetModelCache`/`SetLogger` for test compatibility. A future PR can migrate the ~15 tests that use the older pattern, then delete the fallback.
+
+---
+
+## PR #494 review pass (2026-07-02, same session)
+
+The review bot caught a critical bug and three lower-severity issues. All addressed in the same PR before merge:
+
+### CRITICAL — `pending_refresh` never cleared on successful auto-push
+
+The initial implementation flipped `pending_refresh=TRUE` in `MarkPodIdentityTransition` and fired the push, but never called `MarkAgentReloaded` on success — so the `AgentReloadBanner` would appear permanently after every recreation, arguably worse than the pre-fix state (no banner at all).
+
+**Fix:** `MarkPodIdentityTransition` now returns the DB-clock `last_credential_changed_at` timestamp it wrote. `runAutoPush` captures it, and on success calls the new `ClearPendingRefreshAfterAutoPush(ctx, workspaceID, priorChangedAt)` DB method, which wraps `MarkAgentReloaded` in a self-contained transaction. The optimistic-concurrency check (`currentChangedAt.After(priorChangedAt)`) correctly leaves `pending_refresh=TRUE` if a new credential was staged during the push window (banner re-appears for the fresh change) or clears it if not (banner disappears within a poll cycle).
+
+**Tests added:**
+- `TestPodIdentity_TransitionSuccessClearsPendingRefresh` — the load-bearing regression test with priorChangedAt round-trip assertion.
+- `TestPodIdentity_TransitionSuccessWithClearFailureLogsWarning` — Clear failure doesn't panic; pod already got the secrets so it's UX-only.
+- `TestPodIdentity_ClearPendingRefresh_Success` + `_KeepsFlagOnMidPushBind` — DB-level tests verifying the SQL transitions.
+- Existing `TestPodIdentity_TransitionPushFailureLeavesPendingRefreshTrue` now also asserts `clearCalls == 0` on failure.
+
+Adversarial validation: neutering the Clear call fails `_TransitionSuccessClearsPendingRefresh` on both the count assertion and the lastCall==="clear" assertion.
+
+### MEDIUM — Metric double-counted user-initiated SetBindings pushes
+
+The shared `agentpush.Service` was constructed with `WithMetricsHook(recordAutoPushOutcome)`, so every SetBindings/ReloadSecrets user-initiated push ALSO incremented `api_secret_auto_push_total`. Meanwhile `doReload` used a separately-constructed pusher without the hook, so it didn't increment. Inconsistent AND misleading: the metric's Help text says "pod-identity transitions on workspace status polls."
+
+**Fix:** Removed `WithMetricsHook` from the shared pusher. The metric now lives on `wsAgentPusherAdapter.Push` (the workspace-service seam) — emitted only from the auto-push code path. Added a `classifyPushOutcome(err)` helper that maps agentpush errors to the four outcome labels: `success`, `no_pod`, `inject_failed`, `reload_failed`.
+
+**Tests added (`api/internal/app/auto_push_metrics_test.go`):**
+- `TestClassifyPushOutcome` (table-driven, 6 cases): all outcome mappings including wrapped errors.
+- `TestWsAgentPusherAdapter_EmitsMetricOnEveryPush`: adapter increments correct label per call.
+- `TestSharedPusher_DoesNotEmitAutoPushMetric`: proves calling `shared.Push` directly (the SetBindings/ReloadSecrets path) does NOT increment the auto-push counter.
+
+### LOW / tech debt — `doReload` constructed a new agentpush.Service per call
+
+`doReload` was retained as a compatibility shim (with a `literalInjector` for tests that pre-build payloads). Every call to `ReloadSecrets` constructed a fresh `agentpush.Service` with a fresh `http.Client` — defeating keep-alive for no benefit.
+
+**Fix:** Deleted `doReload`, `literalInjector`, and `buildPusherOpts`. `ReloadSecrets` now calls `h.getPusher().Push(ctx, ...)` (the cached shared pusher, same instance used by SetBindings). The old `TestDoReload_EvictsModelCache` was removed — the equivalent invariant is covered by `TestPush_SuccessEvictsModelCache` in the agentpush package tests.
+
+### Router auth-wiring test
+
+Router closure at `router.go:1031` extracts `sessionID` from gin key `"sessionID"` and `jwt_signing_key` from gin key `"jwt_signing_key"` then calls `agentpush.WithAuth(ctx, sessionID, matchedKey)`. The bot correctly flagged this had no test — a key-name mismatch would silently degrade to skip-with-audit.
+
+**Test added:** `TestGetStatusRoute_AttachesAgentpushAuthContext` verifies the exact key names round-trip; `TestGetStatusRoute_NoAuthValues_ContextStillCarriesZeros` locks in the empty-auth fallback. Adversarial-validated by swapping key names to `"session_id"`/`"signing_key"` — test fails on the empty signing-key assertion.
+
+### Integration + regression tests
+
+Added `workspace_pod_recreation_integration_test.go` (in the `workspace_test` package, so it exercises the real workspace.Service through its public API):
+
+- `TestIntegration_PodRecreationTriggersFullAutoPush`: fake DB tracker + REAL agentpush.Service + REAL InjectSecrets shim + mock agentd via httptest. Asserts:
+  1. Mock agentd received exactly one POST /v1/reload-secrets.
+  2. The payload contained the user-DEK entry (`OPENAI_KEY`) — the exact material that was missing before #494.
+  3. InjectSecrets saw the sessionID + signing key from the ctx (proving the router → service → pusher auth handoff works).
+  4. Transition was recorded and Clear was called (proving the full state-machine cycle).
+
+- `TestIntegration_PodRecreationFailureLeavesPendingRefresh`: same wiring but mock agentd returns 500. Asserts transition happened, Clear did NOT, banner-UX contract preserved.
+
+Adversarial-validated by neutering the `agentpush.WithAuth` call in the test — the `sawSigningKey` assertion fails.
+
+### Stale comment + duplicate type-assert cleanup
+
+- Removed the "Wire below" stale comment at `app.go:557-558`.
+- Consolidated the two `svc.Workspace.(*workspace.Service)` type-asserts into a single site: `SetSecretPusher` + `SetPodIdentityTracker` are now wired in the same block right after `agentPusher` is constructed. The earlier block that also asserted was pared back to only the credential/secret-provisioner setup.
+
+### Edge case: `GetLastSeenPodIdentity` with NULL start_time
+
+The bot flagged an untested edge case: a row with `last_seen_pod_name='pod-x'` but `last_seen_pod_start_time=NULL` (e.g. inherited from `MarkCredentialChanged` before #494). COALESCE substitutes epoch; the Go code checks `Unix()==0` to zero it. Without this normalization, the initial-observation branch (`priorName == "" && priorStart.IsZero()`) would silently be false and every workspace's first post-deploy status poll would trigger a spurious transition.
+
+**Test added:** `TestPodIdentity_GetTreatsEpochStartTimeAsZeroTime` locks in the normalization.

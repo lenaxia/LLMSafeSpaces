@@ -398,16 +398,30 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// service (pod-recreation auto-push). Sharing one instance means
 		// there's one place to change reload semantics — the SOLID payoff
 		// of extracting agentpush from SecretsHandler in worklog 0589.
+		//
+		// The metrics hook lives on the workspace-side adapter, NOT on
+		// the shared pusher: api_secret_auto_push_total is specifically
+		// the pod-recreation auto-push counter (per its Help text), and
+		// wiring it here would conflate user-initiated SetBindings
+		// pushes with automatic pod-recreation pushes — operators
+		// couldn't tell "50 users changed bindings" from "50 pods were
+		// recreated." See wsAgentPusherAdapter.Push in secrets_adapters.go.
 		agentPusher := agentpush.New(
 			secretService,
 			agentpush.WithPodIPResolver(secretsPodResolver),
 			agentpush.WithModelCache(sharedModelCache),
 			agentpush.WithLogger(log),
-			agentpush.WithMetricsHook(recordAutoPushOutcome),
 		)
 		secretsHandler.SetAgentPusher(agentPusher)
 		if wsSvc, ok := svc.Workspace.(*workspace.Service); ok {
 			wsSvc.SetSecretPusher(&wsAgentPusherAdapter{pusher: agentPusher})
+			// worklog 0589: also install the pod-identity tracker so
+			// GetWorkspaceStatus can detect pod recreations and fire the
+			// auto-push. Both dependencies for the pod-recreation flow
+			// are wired in one type-assert block here rather than split
+			// across the two "svc.Workspace type-assert" sites in this
+			// function.
+			wsSvc.SetPodIdentityTracker(dbSvc)
 		}
 		// Wire password getter so ListModels/SetModel can authenticate
 		// to opencode. Uses the same K8s-secret-backed getter as ProxyHandler.
@@ -547,15 +561,6 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			wsSvc.SetCredentialProvisioner(pgStore)
 			wsSvc.SetSecretAutoProvisioner(secretService)
 			wsSvc.SetOrgStore(pgOrgStore)
-			// worklog 0589: auto-push user-DEK secrets on pod recreation.
-			// The workspace service detects pod-identity transitions on
-			// every status GET; when one occurs it fires a fire-and-forget
-			// push via the shared agentpush.Service (same instance the
-			// SecretsHandler uses for SetBindings / ReloadSecrets, so
-			// there's exactly one implementation of the reload flow).
-			wsSvc.SetPodIdentityTracker(dbSvc)
-			// The pusher is constructed after secretsHandler.SetPodIPResolver
-			// has run so it has the resolver available. Wire below.
 		}
 		// Epic 35 US-35.3: pod bootstrap handler. Uses the API's K8s
 		// clientset for TokenReview + the SecretService for credential

@@ -6,7 +6,6 @@ package handlers
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -357,6 +356,16 @@ func (h *SecretsHandler) GetBindings(c *gin.Context) {
 
 // ReloadSecrets handles POST /api/v1/workspaces/:id/reload-secrets
 // Decrypts bound secrets and pushes them to the running pod's agentd.
+//
+// Two failure classes get different HTTP status codes:
+//
+//   - InjectSecrets failures (bad workspaceID, DEK unavailable, wrapped
+//     ciphertext corrupted) are mapped by handleSecretError to 400/403/500.
+//   - Push transport / agentd failures map to 503/409/502.
+//
+// Both flow through the same shared agentpush.Service (constructed once
+// by the wiring layer, reused across every request) so on-wire behavior
+// matches SetBindings and the workspace-service auto-push exactly.
 func (h *SecretsHandler) ReloadSecrets(c *gin.Context) {
 	userID, sessionID := extractAuth(c)
 	if userID == "" {
@@ -365,18 +374,22 @@ func (h *SecretsHandler) ReloadSecrets(c *gin.Context) {
 	}
 
 	workspaceID := c.Param("id")
-	secretsJSON, err := h.svc.InjectSecrets(c.Request.Context(), userID, sessionID, extractMatchedSigningKey(c), workspaceID)
-	if err != nil {
+	// Perform the inject side separately so its typed errors map to the
+	// user-facing 400/403 status codes handleSecretError produces. The
+	// pusher's InjectSecrets step wraps these with "inject secrets:" so
+	// the classification is impossible after the fact.
+	if _, err := h.svc.InjectSecrets(c.Request.Context(), userID, sessionID, extractMatchedSigningKey(c), workspaceID); err != nil {
 		handleSecretError(c, err)
 		return
 	}
 
-	result, err := h.doReload(c.Request.Context(), userID, workspaceID, secretsJSON)
+	ctx := agentpush.WithAuth(c.Request.Context(), sessionID, extractMatchedSigningKey(c))
+	result, err := h.getPusher().Push(ctx, userID, workspaceID)
 	if err != nil {
-		switch err {
-		case errPodIPResolverNotConfigured:
+		switch {
+		case errors.Is(err, agentpush.ErrNoPodIPResolver):
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "secret reload not configured"})
-		case errNoRunningPod:
+		case errors.Is(err, agentpush.ErrNoRunningPod):
 			c.JSON(http.StatusConflict, gin.H{"error": "workspace has no running pod"})
 		default:
 			c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
@@ -384,13 +397,8 @@ func (h *SecretsHandler) ReloadSecrets(c *gin.Context) {
 		return
 	}
 
-	c.JSON(http.StatusOK, result)
+	c.JSON(http.StatusOK, reloadResult{Reloaded: result.Reloaded, Restarted: result.Restarted})
 }
-
-var (
-	errPodIPResolverNotConfigured = fmt.Errorf("secret reload not configured")
-	errNoRunningPod               = fmt.Errorf("workspace has no running pod")
-)
 
 type reloadResult struct {
 	Reloaded  int  `json:"reloaded"`
@@ -480,56 +488,6 @@ func (h *SecretsHandler) getPusher() *agentpush.Service {
 // and workspace.Service (the pod-recreation auto-push consumer).
 func (h *SecretsHandler) SetAgentPusher(p *agentpush.Service) {
 	h.pusher = p
-}
-
-// doReload retains its previous signature so existing tests that
-// exercise it directly (e.g. models_test.go's TestDoReload_EvictsModelCache)
-// keep working. Internally it now delegates to agentpush.Service so the
-// on-wire behavior is identical to production. The secretsJSON arg is
-// pre-injected by the caller (either handler InjectSecrets or a test);
-// we build a shim injector that returns it verbatim.
-func (h *SecretsHandler) doReload(ctx context.Context, userID, workspaceID string, secretsJSON []byte) (*reloadResult, error) {
-	pusher := agentpush.New(
-		&literalInjector{payload: secretsJSON},
-		buildPusherOpts(h)...,
-	)
-	res, err := pusher.Push(ctx, userID, workspaceID)
-	if err != nil {
-		if errors.Is(err, agentpush.ErrNoPodIPResolver) {
-			return nil, errPodIPResolverNotConfigured
-		}
-		if errors.Is(err, agentpush.ErrNoRunningPod) {
-			return nil, errNoRunningPod
-		}
-		return nil, err
-	}
-	return &reloadResult{Reloaded: res.Reloaded, Restarted: res.Restarted}, nil
-}
-
-// literalInjector satisfies agentpush.SecretInjector by returning a
-// caller-provided payload verbatim. Used only by the legacy doReload
-// path so tests that pre-build a payload keep working.
-type literalInjector struct{ payload []byte }
-
-func (l *literalInjector) InjectSecrets(_ context.Context, _, _ string, _ []byte, _ string) ([]byte, error) {
-	return l.payload, nil
-}
-
-// buildPusherOpts collects agentpush options from the handler's own
-// setter-installed deps. Kept as a helper so getPusher and doReload
-// stay in sync.
-func buildPusherOpts(h *SecretsHandler) []agentpush.Option {
-	opts := []agentpush.Option{}
-	if h.podIPResolver != nil {
-		opts = append(opts, agentpush.WithPodIPResolver(h.podIPResolver))
-	}
-	if h.modelCache != nil {
-		opts = append(opts, agentpush.WithModelCache(h.modelCache))
-	}
-	if h.logger != nil {
-		opts = append(opts, agentpush.WithLogger(h.logger))
-	}
-	return opts
 }
 
 // GetAuditLog handles GET /api/v1/secrets/audit

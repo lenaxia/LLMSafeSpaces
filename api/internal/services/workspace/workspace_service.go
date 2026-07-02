@@ -92,9 +92,10 @@ type SecretAutoProvisioner interface {
 // observed by the API for a workspace and reports whether the current
 // tuple represents a transition. Satisfied by *database.Service via the
 // GetLastSeenPodIdentity / UpsertLastSeenPodIdentity /
-// MarkPodIdentityTransition methods. See worklog 0589 for the design.
+// MarkPodIdentityTransition / ClearPendingRefreshAfterAutoPush methods.
+// See worklog 0589 for the design.
 //
-// The interface is narrow (three methods) on purpose: the workspace
+// The interface is narrow (four methods) on purpose: the workspace
 // service does not need — and should not depend on — the ~40 methods
 // on the full DatabaseService interface. Narrow interfaces at consumers
 // is the SOLID DIP pattern used across this codebase for other
@@ -114,7 +115,22 @@ type PodIdentityTracker interface {
 	// batched write is important: pending_refresh must be TRUE before the
 	// caller fires the fire-and-forget push goroutine so a concurrent
 	// GetWorkspace list-read surfaces agentNeedsRefresh (the fallback banner UX).
-	MarkPodIdentityTransition(ctx context.Context, workspaceID, podName string, startTime time.Time) error
+	//
+	// Returns the DB-clock timestamp written to last_credential_changed_at
+	// so the caller can round-trip it back through ClearPendingRefreshAfterAutoPush
+	// to correctly interact with MarkAgentReloaded's optimistic-concurrency
+	// check (a bind arriving DURING the push window must keep pending_refresh=TRUE).
+	MarkPodIdentityTransition(ctx context.Context, workspaceID, podName string, startTime time.Time) (time.Time, error)
+	// ClearPendingRefreshAfterAutoPush flips pending_refresh=FALSE after a
+	// successful auto-push, UNLESS a new credential was staged during the
+	// push window (in which case the flag stays TRUE and the banner
+	// correctly re-appears for the fresh change). Wraps MarkAgentReloaded
+	// in a self-contained transaction so the fire-and-forget goroutine
+	// doesn't need to manage a *sql.Tx. Returns the disposed-at timestamp
+	// (unused by the workspace-service caller today, but kept in the
+	// signature to match *database.Service's method exactly so the
+	// concrete implementation satisfies the interface without an adapter).
+	ClearPendingRefreshAfterAutoPush(ctx context.Context, workspaceID string, priorChangedAt time.Time) (time.Time, error)
 }
 
 // SecretPusher decrypts the user's bound secret snapshot with their DEK
@@ -1059,7 +1075,8 @@ func (s *Service) maybeAutoPushOnPodTransition(ctx context.Context, userID, work
 	}
 
 	// True transition: record with pending_refresh=TRUE, then fire the push.
-	if err := s.podIdentityTracker.MarkPodIdentityTransition(ctx, workspaceID, currentName, currentStart); err != nil {
+	priorChangedAt, err := s.podIdentityTracker.MarkPodIdentityTransition(ctx, workspaceID, currentName, currentStart)
+	if err != nil {
 		s.logger.Warn("pod identity: mark transition failed; auto-push not fired",
 			"workspaceID", workspaceID, "error", err.Error())
 		return
@@ -1075,12 +1092,15 @@ func (s *Service) maybeAutoPushOnPodTransition(ctx context.Context, userID, work
 	// Fire-and-forget. context.WithoutCancel detaches from the request
 	// context so the push survives the caller's return (Gin cancels
 	// ctx on response commit).
-	go s.runAutoPush(context.WithoutCancel(ctx), userID, workspaceID, priorName, currentName, currentStart)
+	go s.runAutoPush(context.WithoutCancel(ctx), userID, workspaceID, priorName, currentName, currentStart, priorChangedAt)
 }
 
 // runAutoPush executes one Push attempt with structured logging and
-// metric emission. Called from a goroutine started by maybeAutoPushOnPodTransition.
-func (s *Service) runAutoPush(ctx context.Context, userID, workspaceID, priorPodName, newPodName string, newPodStart time.Time) {
+// (on success) clears pending_refresh via ClearPendingRefreshAfterAutoPush.
+// The priorChangedAt timestamp captured at transition time is fed back
+// so the DB's optimistic-concurrency check correctly leaves the flag
+// TRUE if a NEW credential was staged during the push window.
+func (s *Service) runAutoPush(ctx context.Context, userID, workspaceID, priorPodName, newPodName string, newPodStart time.Time, priorChangedAt time.Time) {
 	start := time.Now()
 	err := s.secretPusher.Push(ctx, userID, workspaceID)
 	elapsed := time.Since(start)
@@ -1094,6 +1114,25 @@ func (s *Service) runAutoPush(ctx context.Context, userID, workspaceID, priorPod
 			"error", err.Error())
 		return
 	}
+
+	// Clear pending_refresh so the AgentReloadBanner disappears from
+	// the frontend within one poll cycle. MarkAgentReloaded (wrapped by
+	// ClearPendingRefreshAfterAutoPush) preserves the flag if a NEW
+	// credential arrived during the push window (`currentChangedAt >
+	// priorChangedAt`), so the banner correctly re-appears for the
+	// fresh change.
+	if _, err := s.podIdentityTracker.ClearPendingRefreshAfterAutoPush(ctx, workspaceID, priorChangedAt); err != nil {
+		// The push already delivered the secrets — the pod has what it
+		// needs. Failing to clear the flag is a UX regression (banner
+		// stays visible until the next transition or manual reload) but
+		// not a data-plane failure. Log and move on.
+		s.logger.Warn("auto-push after pod recreation: clear pending_refresh failed",
+			"workspaceID", workspaceID,
+			"oldPodName", priorPodName,
+			"newPodName", newPodName,
+			"error", err.Error())
+	}
+
 	s.logger.Info("auto-push after pod recreation: success",
 		"workspaceID", workspaceID,
 		"oldPodName", priorPodName,

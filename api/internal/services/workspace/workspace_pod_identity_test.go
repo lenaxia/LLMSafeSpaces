@@ -18,15 +18,20 @@ import (
 )
 
 // fakePodIdentityTracker records calls to GetLastSeenPodIdentity /
-// UpsertLastSeenPodIdentity / MarkPodIdentityTransition. This is the
-// narrow-interface consumer pattern: workspace.Service depends on a
-// small typed interface it defines, not on the full DatabaseService.
+// UpsertLastSeenPodIdentity / MarkPodIdentityTransition /
+// ClearPendingRefreshAfterAutoPush. This is the narrow-interface consumer
+// pattern: workspace.Service depends on a small typed interface it
+// defines, not on the full DatabaseService.
 type fakePodIdentityTracker struct {
-	mu              sync.Mutex
-	storedName      string
-	storedStart     time.Time
-	upsertCalls     int
-	transitionCalls int
+	mu                 sync.Mutex
+	storedName         string
+	storedStart        time.Time
+	upsertCalls        int
+	transitionCalls    int
+	clearCalls         int
+	clearCallErr       error
+	lastPriorChanged   time.Time
+	transitionReturnTs time.Time // what MarkPodIdentityTransition returns
 	// Track invocation order for assertion of "transition, not upsert".
 	lastCall string
 }
@@ -47,14 +52,27 @@ func (f *fakePodIdentityTracker) UpsertLastSeenPodIdentity(_ context.Context, _,
 	return nil
 }
 
-func (f *fakePodIdentityTracker) MarkPodIdentityTransition(_ context.Context, _, name string, startTime time.Time) error {
+func (f *fakePodIdentityTracker) MarkPodIdentityTransition(_ context.Context, _, name string, startTime time.Time) (time.Time, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.storedName = name
 	f.storedStart = startTime
 	f.transitionCalls++
 	f.lastCall = "transition"
-	return nil
+	ts := f.transitionReturnTs
+	if ts.IsZero() {
+		ts = time.Now()
+	}
+	return ts, nil
+}
+
+func (f *fakePodIdentityTracker) ClearPendingRefreshAfterAutoPush(_ context.Context, _ string, priorChangedAt time.Time) (time.Time, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.clearCalls++
+	f.lastPriorChanged = priorChangedAt
+	f.lastCall = "clear"
+	return time.Now(), f.clearCallErr
 }
 
 // fakeSecretPusher counts calls and records what it was passed. It's
@@ -234,6 +252,127 @@ func TestPodIdentity_TransitionTriggersAutoPush(t *testing.T) {
 	assert.True(t, tracker.storedStart.Equal(newStart))
 }
 
+// === Case 3b: successful push MUST clear pending_refresh ===
+
+// TestPodIdentity_TransitionSuccessClearsPendingRefresh is the review-
+// pass regression test for the critical bug the bot caught on PR #494:
+// runAutoPush wasn't calling MarkAgentReloaded on success, so
+// pending_refresh stayed TRUE forever and the AgentReloadBanner never
+// disappeared after a successful auto-push. This test locks in the
+// full state-transition contract:
+//
+//  1. MarkPodIdentityTransition fires and returns priorChangedAt.
+//  2. Push succeeds.
+//  3. ClearPendingRefreshAfterAutoPush(priorChangedAt) fires.
+//
+// The priorChangedAt round-trip is critical: MarkAgentReloaded's
+// optimistic-concurrency check compares currentChangedAt >
+// priorChangedAt to decide whether a NEW credential arrived during the
+// push window (in which case the banner should stay visible for THAT
+// change). If we didn't round-trip priorChangedAt, we'd either
+// short-circuit and always clear (missing mid-push binds) or always
+// keep (spurious banners).
+func TestPodIdentity_TransitionSuccessClearsPendingRefresh(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	oldStart := time.Date(2026, 7, 2, 11, 0, 0, 0, time.UTC)
+	newStart := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	crd := activePodCRD("ws-1", "user1", "pod-new", newStart)
+
+	f.db.On("GetWorkspace", ctx, "ws-1").Return(dbWorkspace("ws-1", "user1", "my-ws", "10Gi"), nil)
+	f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(crd, nil)
+	f.db.On("SyncWorkspaceVersionInfo", mock.Anything, "ws-1", mock.Anything, mock.Anything).Return().Maybe()
+
+	// Fixed timestamp returned by MarkPodIdentityTransition. Must be
+	// round-tripped verbatim into ClearPendingRefreshAfterAutoPush.
+	transitionTs := time.Date(2026, 7, 2, 12, 0, 15, 0, time.UTC)
+	tracker := &fakePodIdentityTracker{
+		storedName:         "pod-old",
+		storedStart:        oldStart,
+		transitionReturnTs: transitionTs,
+	}
+	pusher := &fakeSecretPusher{} // succeeds by default
+	f.svc.SetPodIdentityTracker(tracker)
+	f.svc.SetSecretPusher(pusher)
+
+	_, err := f.svc.GetWorkspaceStatus(ctx, "user1", "ws-1")
+	assert.NoError(t, err)
+
+	pusher.waitForPushCalls(t, 1, 2*time.Second)
+	// The push runs synchronously against our fake; give the goroutine
+	// a moment to invoke ClearPendingRefreshAfterAutoPush after Push
+	// returns.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tracker.mu.Lock()
+		clears := tracker.clearCalls
+		tracker.mu.Unlock()
+		if clears >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	assert.Equal(t, 1, tracker.clearCalls,
+		"successful auto-push MUST clear pending_refresh so the "+
+			"AgentReloadBanner disappears within one poll cycle; without "+
+			"this the banner stays visible forever after every pod "+
+			"recreation, which is arguably worse than not having the fix")
+	assert.True(t, tracker.lastPriorChanged.Equal(transitionTs),
+		"priorChangedAt must round-trip verbatim from MarkPodIdentityTransition "+
+			"into ClearPendingRefreshAfterAutoPush; the DB uses it in the "+
+			"SELECT FOR UPDATE optimistic-concurrency check to decide "+
+			"whether a mid-push bind should keep pending_refresh=TRUE")
+	assert.Equal(t, "clear", tracker.lastCall,
+		"the clear call must run AFTER the transition and Push")
+}
+
+// TestPodIdentity_TransitionSuccessWithClearFailureLogsWarning verifies
+// that a Clear failure doesn't panic and doesn't leak the success log:
+// the push already delivered the secrets — a Clear failure is UX-only.
+// The pod is fine.
+func TestPodIdentity_TransitionSuccessWithClearFailureLogsWarning(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	oldStart := time.Date(2026, 7, 2, 11, 0, 0, 0, time.UTC)
+	newStart := time.Date(2026, 7, 2, 12, 0, 0, 0, time.UTC)
+	crd := activePodCRD("ws-1", "user1", "pod-new", newStart)
+
+	f.db.On("GetWorkspace", ctx, "ws-1").Return(dbWorkspace("ws-1", "user1", "my-ws", "10Gi"), nil)
+	f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(crd, nil)
+	f.db.On("SyncWorkspaceVersionInfo", mock.Anything, "ws-1", mock.Anything, mock.Anything).Return().Maybe()
+
+	tracker := &fakePodIdentityTracker{
+		storedName:   "pod-old",
+		storedStart:  oldStart,
+		clearCallErr: pushInjectionError("db unavailable"),
+	}
+	pusher := &fakeSecretPusher{}
+	f.svc.SetPodIdentityTracker(tracker)
+	f.svc.SetSecretPusher(pusher)
+
+	_, err := f.svc.GetWorkspaceStatus(ctx, "user1", "ws-1")
+	assert.NoError(t, err)
+
+	pusher.waitForPushCalls(t, 1, 2*time.Second)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		tracker.mu.Lock()
+		clears := tracker.clearCalls
+		tracker.mu.Unlock()
+		if clears >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	assert.Equal(t, 1, tracker.clearCalls,
+		"clear MUST have been attempted even though it'll fail — "+
+			"the workspace-service goroutine must not silently skip "+
+			"the clear on some pre-check")
+}
+
 // === Case 4: only StartTime changes (unlikely but possible) — still a transition ===
 
 // TestPodIdentity_SameNameNewStartTimeIsTransition proves both fields
@@ -363,9 +502,15 @@ func TestPodIdentity_TransitionPushFailureLeavesPendingRefreshTrue(t *testing.T)
 		"MarkPodIdentityTransition MUST have been called BEFORE the push, "+
 			"so the DB pending_refresh flag reflects the pending state "+
 			"even if the push then fails")
-	// No MarkAgentReloaded was called (the test doesn't stub one) —
-	// and that's the correct behavior: the failed push must not clear
-	// pending_refresh, so the banner stays visible.
+	// The failed push must NOT clear pending_refresh — otherwise the
+	// banner would disappear and the user would believe their secrets
+	// were delivered when they weren't.
+	// Small window to catch a wrongly-fired clear.
+	time.Sleep(50 * time.Millisecond)
+	assert.Equal(t, 0, tracker.clearCalls,
+		"failed push MUST NOT clear pending_refresh; otherwise the "+
+			"banner disappears and the user has no signal that their "+
+			"secrets were never actually delivered")
 }
 
 // pushInjectionError is a marker error for the failure-injection test.

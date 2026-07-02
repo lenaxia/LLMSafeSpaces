@@ -1292,15 +1292,22 @@ func (s *Service) UpsertLastSeenPodIdentity(ctx context.Context, workspaceID, po
 
 // MarkPodIdentityTransition atomically records a NEW pod identity AND
 // flips pending_refresh=TRUE with last_credential_changed_at=NOW(). The
-// combined write is important: pending_refresh must be true BEFORE the
-// caller fires the fire-and-forget auto-push goroutine so a concurrent
+// combined write is important: pending_refresh must be TRUE before the
+// caller fires the fire-and-forget push goroutine so a concurrent
 // GetWorkspace list-read (which surfaces agentNeedsRefresh) sees the
 // pending state and the AgentReloadBanner appears as the fallback UX
-// while the auto-push is in flight. On success the auto-push clears
-// pending_refresh via MarkAgentReloaded; on failure it stays TRUE and
-// the banner remains visible.
-func (s *Service) MarkPodIdentityTransition(ctx context.Context, workspaceID, podName string, startTime time.Time) error {
-	_, err := s.DB.ExecContext(ctx, `
+// while the auto-push is in flight. On success the caller clears
+// pending_refresh via ClearPendingRefreshAfterAutoPush (passing the
+// returned timestamp so MarkAgentReloaded's optimistic-concurrency
+// check correctly leaves pending_refresh=TRUE if a NEW credential was
+// staged during the push window); on failure it stays TRUE and the
+// banner remains visible.
+//
+// Returns the DB-clock timestamp written to last_credential_changed_at
+// so the caller can pass it back through as priorChangedAt.
+func (s *Service) MarkPodIdentityTransition(ctx context.Context, workspaceID, podName string, startTime time.Time) (time.Time, error) {
+	var changedAt time.Time
+	err := s.DB.QueryRowContext(ctx, `
 		INSERT INTO workspace_agent_state
 			(workspace_id, last_seen_pod_name, last_seen_pod_start_time,
 			 last_credential_changed_at, pending_refresh, updated_at)
@@ -1311,11 +1318,39 @@ func (s *Service) MarkPodIdentityTransition(ctx context.Context, workspaceID, po
 			last_credential_changed_at = NOW(),
 			pending_refresh = TRUE,
 			updated_at = NOW()
-	`, workspaceID, podName, startTime)
+		RETURNING last_credential_changed_at
+	`, workspaceID, podName, startTime).Scan(&changedAt)
 	if err != nil {
-		return fmt.Errorf("mark pod identity transition: %w", err)
+		return time.Time{}, fmt.Errorf("mark pod identity transition: %w", err)
 	}
-	return nil
+	return changedAt, nil
+}
+
+// ClearPendingRefreshAfterAutoPush wraps the existing MarkAgentReloaded
+// state machine in a self-contained transaction so callers that don't
+// otherwise need a *sql.Tx (like the workspace service's fire-and-forget
+// auto-push goroutine) don't have to open one themselves. Behavior
+// matches MarkAgentReloaded exactly: pending_refresh is cleared to FALSE
+// unless a NEW credential was staged during the push window (in which
+// case it stays TRUE so the banner correctly re-appears for that fresh
+// change).
+//
+// Returns the DB-clock timestamp written to last_agent_disposed_at. In
+// the current auto-push caller this value is only used for logging.
+func (s *Service) ClearPendingRefreshAfterAutoPush(ctx context.Context, workspaceID string, priorChangedAt time.Time) (time.Time, error) {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("begin tx for auto-push clear: %w", err)
+	}
+	disposedAt, err := s.MarkAgentReloaded(ctx, tx, workspaceID, priorChangedAt)
+	if err != nil {
+		_ = tx.Rollback()
+		return time.Time{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return time.Time{}, fmt.Errorf("commit auto-push clear: %w", err)
+	}
+	return disposedAt, nil
 }
 
 // ListPendingReloadWorkspaces returns workspaces with pending_refresh=TRUE for the given user.
