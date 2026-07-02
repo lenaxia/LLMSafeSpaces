@@ -1,9 +1,9 @@
-# Worklog: user-DEK secrets don't manifest on pod recreation — design pass
+# Worklog: user-DEK secrets don't manifest on pod recreation — design + implementation
 
 **Date:** 2026-07-02
-**Session:** Diagnose why user's env-secrets, SSH keys, and user-owned LLM providers disappear from workspaces on pod recreation, and design the fix.
+**Session:** Diagnose why user's env-secrets, SSH keys, and user-owned LLM providers disappear from workspaces on pod recreation, design the fix, and implement it.
 
-**Status:** Design complete, implementation not started. Handing off to next session.
+**Status:** Design complete, implementation complete on branch `fix/pod-recreation-auto-push-secrets`. Upstream issue #493 filed. PR ready to open once bot/CI validate.
 
 ---
 
@@ -372,3 +372,75 @@ Every pod recreation triggers an auto-push that materializes the same phase-1 en
 - Log line `"auto-push after pod recreation: success"` (or the corresponding failure line) present for every pod recreation.
 - Existing `AgentReloadBanner` UX unchanged for the failure fallback case.
 - Worklog updated with post-implementation findings (deferred optimizations that ended up mattering, any adversarial cases we missed, actual metric values in production).
+
+---
+
+## Implementation summary (2026-07-02 session)
+
+### Deviations from the design pass and why
+
+1. **Identity tuple: PodName + StartTime, not PodUID.** The CRD status has no `podUID` field; controller writes only `PodName` + `StartTime` in `phase_creating.go:120,166,171`. Adding `PodUID` would require a controller change + CRD regen + coordinating deploy order. The user chose PodName + StartTime — it's already present, and both fields change on every pod recreation. Two `text` columns in DB rather than a synthetic tuple string (SQL-natural, indexable).
+
+2. **`agentpush` extracted as a proper service, not left on SecretsHandler.** The design said "reuse `pushSecretsToAgent`"; the pragmatic reading of that was "call the existing helper." But the existing helper takes `*gin.Context`, and `workspace.Service.GetWorkspaceStatus` only has `context.Context`. Rather than plumb Gin down into the service layer or add a second implementation of the reload flow, extracted `pkg api/internal/services/agentpush` as the shared implementation:
+   - Depends on: `SecretInjector` interface (satisfied by `*secrets.SecretService`), `PodIPResolver`, `ModelCache`, `Logger`.
+   - Uses `context.WithValue`-carried sessionID + matchedSigningKey (helpers `agentpush.WithAuth` / `agentpush.AuthFromContext`).
+   - Emits outcome metric (`success|inject_failed|reload_failed|no_pod`) via optional hook.
+   - `SecretsHandler.pushSecretsToAgent` and `doReload` now delegate to it; behavior identical for all existing callers.
+   - `workspace.Service.SetSecretPusher` accepts a narrow `SecretPusher` interface (single method: `Push(ctx, userID, workspaceID) error`); `app.wsAgentPusherAdapter` bridges the concrete `*agentpush.Service` to that interface. Dependency-inversion at both consumer sites.
+
+3. **Auth via context (agentpush.WithAuth) rather than function args.** Non-handler callers (workspace.Service) only have `context.Context`. Rather than have two `Push` signatures, both handler and non-handler callers now populate ctx before calling. Router's `GET /status` closure sets sessionID + matchedSigningKey on ctx before calling `wsSvc.GetWorkspaceStatus`. The handler-driven callers (SetBindings, ReloadSecrets) also set ctx before their internal Push calls.
+
+4. **Metric hook is on agentpush, not on workspace.Service.** Every push goes through agentpush, and agentpush emits the outcome metric. The workspace service was originally going to have its own hook but that would double-count. Removed; the single emission point in agentpush is the invariant now.
+
+5. **Non-Active phase = skip detection entirely.** Suspended/Creating phases legitimately have empty PodName. If we recorded that as the "current" identity, the next Active-transition would look like an initial-observation and never push. Fixed by only entering the state machine when `crd.Status.Phase == Active` AND `PodName != ""` AND `StartTime != nil`. Test `TestPodIdentity_NonActivePhaseSkipsDetection` locks this in.
+
+### TDD progression
+
+- **Migration `000005_workspace_agent_state_pod_identity.{up,down}.sql`** — 2 columns, both nullable; up is idempotent (IF NOT EXISTS). Auto-mirrored to `charts/llmsafespaces/migrations/` via `make chart-sync-migrations` (validated by `TestLive_ChartMigrations_NoDriftFromCanonical`).
+- **`GetLastSeenPodIdentity` / `UpsertLastSeenPodIdentity` / `MarkPodIdentityTransition`** on `*database.Service` — 4 sqlmock unit tests including the empty-row-returns-zero-values contract. `ExpectationsWereMet` assertion catches the neutered-implementation adversarial validation.
+- **`agentpush.Service`** — 8 unit tests covering happy path, auth-from-context round-trip, all four outcome classifications, and success-only cache eviction. Adversarial-validated with neutered `AuthFromContext` and neutered model-cache eviction.
+- **`workspace.Service.maybeAutoPushOnPodTransition`** — 9 tests covering the three-case state machine (unchanged / initial-observation / transition), non-Active-phase skip, no-configured-deps safe-null, push-failure-preserves-pending-refresh, and two context-cancellation adversarials. The stronger of the two ctx-cancellation tests (`_LogAssertion`) failed when I neutered `context.WithoutCancel` in the goroutine spawn, proving the assertion is load-bearing.
+- **Handler migration** — `pushSecretsToAgent` and `doReload` now delegate to a lazily-constructed `agentpush.Service` from the handler's own deps; all 200+ existing SecretsHandler-adjacent tests still pass without modification (the setter-DI construction pattern is preserved via `SetPodIPResolver` + `SetModelCache` + `SetLogger`; new consumers use `SetAgentPusher(*agentpush.Service)` directly).
+
+### Adversarial validations performed
+
+Each of the following neutering experiments produced a failing test for the RIGHT reason before I restored the correct implementation:
+
+1. `MarkPodIdentityTransition` becoming a no-op → `TestPodIdentity_MarkTransitionSetsPendingRefresh` fails (sqlmock unmet expectation).
+2. `agentpush.AuthFromContext` returning zero values → `TestPush_PassesAuthFromContext` fails (injector never saw the sessionID/key).
+3. `agentpush` skipping model-cache eviction on success → `TestPush_SuccessEvictsModelCache` fails.
+4. `maybeAutoPushOnPodTransition` becoming an early-return no-op → 3 workspace-service positive-behavior tests fail.
+5. Wrong method call (`UpsertLastSeenPodIdentity` in place of `MarkPodIdentityTransition`) → `TestPodIdentity_TransitionTriggersAutoPush` fails on `transitionCalls == 1` assertion.
+6. Removing `context.WithoutCancel` → `TestPodIdentity_PushSurvivesRequestContextCancellation_LogAssertion` fails on the "no context-canceled warning" assertion.
+
+### Metric + logging
+
+- `api_secret_auto_push_total{outcome}` — package-level `promauto.NewCounterVec` in `api/internal/services/metrics/metrics.go`, exposed via `RecordSecretAutoPush(outcome)` and `SecretAutoPushCounter()` for test assertions. Same pattern as `upstream5xxTotal` from PR #489.
+- Structured log lines from `workspace.Service.runAutoPush`: `"auto-push after pod recreation: success"` (INFO) or `"auto-push after pod recreation: failed"` (WARN). Fields: `workspaceID, oldPodName, newPodName, newPodStartTime, elapsedMs`, plus `error` on failure. Every future incident of "secrets missing after pod recreation" is grep-able in one hop.
+
+### Deployment note
+
+Existing workspaces have no row in `workspace_agent_state` with a `last_seen_pod_name`. On the first status poll after deploy, the API records the current identity via `UpsertLastSeenPodIdentity` (initial-observation branch) — no push fires. Zero-cost, zero-risk migration path. The next pod recreation on any of those workspaces enters the transition-fires-push branch.
+
+### Files modified / added
+
+- `api/migrations/000005_workspace_agent_state_pod_identity.{up,down}.sql` (new)
+- `charts/llmsafespaces/migrations/000005_workspace_agent_state_pod_identity.{up,down}.sql` (new; mirror)
+- `api/internal/services/database/database.go` (3 new methods)
+- `api/internal/services/database/pod_identity_test.go` (new)
+- `api/internal/services/agentpush/agentpush.go` (new package)
+- `api/internal/services/agentpush/agentpush_test.go` (new)
+- `api/internal/services/workspace/workspace_service.go` (interfaces + setters + detection logic)
+- `api/internal/services/workspace/workspace_pod_identity_test.go` (new)
+- `api/internal/services/metrics/metrics.go` (new counter + helper)
+- `api/internal/handlers/secrets.go` (migrate `pushSecretsToAgent`/`doReload` to delegate to agentpush)
+- `api/internal/server/router.go` (attach agentpush.WithAuth ctx on GET /status)
+- `api/internal/app/app.go` (build shared agentpush.Service, wire into SecretsHandler and workspace.Service)
+- `api/internal/app/secrets_adapters.go` (wsAgentPusherAdapter + recordAutoPushOutcome)
+
+### Follow-ups deferred
+
+- **Gate auto-push on "workspace has at least one user-owned binding"** to skip the wasted materialize for single-user-no-user-DEK setups. Deferred pending production data — the check itself would fire on every status poll, and the net cost is not obvious a priori.
+- **Rate-limit auto-push for pod crashloops.** Two rapid consecutive transitions produce two auto-push attempts. Convergent (agentd `reloadMu` serializes) but noisy. Not fixing until we see it in production logs.
+- **`api_secret_auto_push_duration_ms` histogram.** Currently only counter. Add if the p99 latency becomes a support signal (e.g. "auto-push takes 10s on my cluster").
+- **Full `SecretsHandler` migration off setter-DI onto explicit `SetAgentPusher`.** Currently the handler falls back to lazy-construction from `SetPodIPResolver`/`SetModelCache`/`SetLogger` for test compatibility. A future PR can migrate the ~15 tests that use the older pattern, then delete the fallback.

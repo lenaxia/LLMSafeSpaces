@@ -17,6 +17,8 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/config"
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	"github.com/lenaxia/llmsafespaces/api/internal/logger"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/agentpush"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/metrics"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/kubernetes"
@@ -743,4 +745,36 @@ func ensureFreeTierCredential(ctx context.Context, seeder credentialSeeder, prov
 		logger.Info("free-tier backfill complete", "workspacesBackfilled", backfilled)
 	}
 	return nil
+}
+
+// wsAgentPusherAdapter adapts *agentpush.Service to the narrow
+// workspace.SecretPusher interface. This is the dependency-inversion
+// seam between the workspace service (which declares the interface it
+// needs) and the concrete pusher (which lives in the agentpush package,
+// unaware of any consumer). Without this adapter the workspace package
+// would have to import agentpush directly, creating a wider dependency
+// than the SOLID DIP allows.
+type wsAgentPusherAdapter struct {
+	pusher *agentpush.Service
+}
+
+// Push satisfies workspace.SecretPusher by delegating and dropping the
+// Result (the workspace-side auto-push flow doesn't inspect it — the
+// count is recorded via the metric hook + structured logs).
+func (a *wsAgentPusherAdapter) Push(ctx context.Context, userID, workspaceID string) error {
+	_, err := a.pusher.Push(ctx, userID, workspaceID)
+	return err
+}
+
+// recordAutoPushOutcome is the process-wide metrics-emitter used by both
+// the workspace service (pod-recreation path) and the agentpush service
+// (all push flows). Package-level func so it can be passed as a plain
+// callback without a Service handle.
+//
+// If the metrics registration is disabled or misconfigured, the counter
+// is a no-op — recordAutoPushOutcome silently succeeds. Do not add
+// error-return here; callers won't handle it and the metric is best-
+// effort observability, not a correctness gate.
+func recordAutoPushOutcome(outcome string) {
+	metrics.RecordSecretAutoPush(outcome)
 }

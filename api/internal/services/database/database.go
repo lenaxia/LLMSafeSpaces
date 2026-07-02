@@ -1232,6 +1232,92 @@ func (s *Service) MarkAgentReloaded(ctx context.Context, tx *sql.Tx, workspaceID
 	return disposedAt, nil
 }
 
+// GetLastSeenPodIdentity returns the pod-identity tuple last observed for
+// the workspace by the API's status-read path, used to detect pod recreations
+// so the auto-push of user-DEK secrets can fire.
+//
+// (name, startTime) form the tuple: both change on every pod recreation
+// (the controller writes both in phase_creating.go when a pod becomes Active).
+// An absent row or NULL columns surface as ("", zero-time, nil error) —
+// callers treat this as "no observation yet" and MUST NOT trigger an
+// auto-push on the first observation; they simply record the current
+// identity so subsequent transitions can be detected. This avoids a
+// spurious push on the initial status poll after deploy (existing
+// workspaces have no row until the first observation is written).
+func (s *Service) GetLastSeenPodIdentity(ctx context.Context, workspaceID string) (string, time.Time, error) {
+	var name string
+	var startTime time.Time
+	err := s.DB.QueryRowContext(ctx,
+		`SELECT COALESCE(last_seen_pod_name, ''),
+		        COALESCE(last_seen_pod_start_time, '1970-01-01'::timestamptz)
+		 FROM workspace_agent_state
+		 WHERE workspace_id = $1`,
+		workspaceID,
+	).Scan(&name, &startTime)
+	if err == sql.ErrNoRows {
+		return "", time.Time{}, nil
+	}
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("get last seen pod identity: %w", err)
+	}
+	// A row can exist with NULL identity columns (e.g., created by
+	// MarkCredentialChanged before this feature). The COALESCE above
+	// substitutes ''/epoch; treat epoch as the zero identity.
+	if startTime.Unix() == 0 {
+		return name, time.Time{}, nil
+	}
+	return name, startTime, nil
+}
+
+// UpsertLastSeenPodIdentity records the currently-observed pod identity
+// WITHOUT touching pending_refresh. Used on the initial observation
+// (no prior row) so the API remembers the current pod without triggering
+// an auto-push. Auto-push is triggered separately via
+// MarkPodIdentityTransition.
+func (s *Service) UpsertLastSeenPodIdentity(ctx context.Context, workspaceID, podName string, startTime time.Time) error {
+	_, err := s.DB.ExecContext(ctx, `
+		INSERT INTO workspace_agent_state
+			(workspace_id, last_seen_pod_name, last_seen_pod_start_time, updated_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (workspace_id) DO UPDATE SET
+			last_seen_pod_name = EXCLUDED.last_seen_pod_name,
+			last_seen_pod_start_time = EXCLUDED.last_seen_pod_start_time,
+			updated_at = NOW()
+	`, workspaceID, podName, startTime)
+	if err != nil {
+		return fmt.Errorf("upsert last seen pod identity: %w", err)
+	}
+	return nil
+}
+
+// MarkPodIdentityTransition atomically records a NEW pod identity AND
+// flips pending_refresh=TRUE with last_credential_changed_at=NOW(). The
+// combined write is important: pending_refresh must be true BEFORE the
+// caller fires the fire-and-forget auto-push goroutine so a concurrent
+// GetWorkspace list-read (which surfaces agentNeedsRefresh) sees the
+// pending state and the AgentReloadBanner appears as the fallback UX
+// while the auto-push is in flight. On success the auto-push clears
+// pending_refresh via MarkAgentReloaded; on failure it stays TRUE and
+// the banner remains visible.
+func (s *Service) MarkPodIdentityTransition(ctx context.Context, workspaceID, podName string, startTime time.Time) error {
+	_, err := s.DB.ExecContext(ctx, `
+		INSERT INTO workspace_agent_state
+			(workspace_id, last_seen_pod_name, last_seen_pod_start_time,
+			 last_credential_changed_at, pending_refresh, updated_at)
+		VALUES ($1, $2, $3, NOW(), TRUE, NOW())
+		ON CONFLICT (workspace_id) DO UPDATE SET
+			last_seen_pod_name = EXCLUDED.last_seen_pod_name,
+			last_seen_pod_start_time = EXCLUDED.last_seen_pod_start_time,
+			last_credential_changed_at = NOW(),
+			pending_refresh = TRUE,
+			updated_at = NOW()
+	`, workspaceID, podName, startTime)
+	if err != nil {
+		return fmt.Errorf("mark pod identity transition: %w", err)
+	}
+	return nil
+}
+
 // ListPendingReloadWorkspaces returns workspaces with pending_refresh=TRUE for the given user.
 func (s *Service) ListPendingReloadWorkspaces(ctx context.Context, userID string) ([]*types.WorkspaceMetadata, error) {
 	rows, err := s.DB.QueryContext(ctx, `

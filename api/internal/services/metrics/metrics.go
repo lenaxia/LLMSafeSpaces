@@ -620,3 +620,45 @@ func RecordUpstream5xx(workspaceID, path, status string) {
 func Upstream5xxCounter() *prometheus.CounterVec {
 	return upstream5xxTotal
 }
+
+// --- worklog 0589 / #493: Pod-recreation auto-push metrics ---
+
+var (
+	// secretAutoPushTotal counts fire-and-forget push attempts triggered
+	// by the workspace-status pod-identity detector. Outcome label
+	// values are exhaustively enumerated: "success", "inject_failed",
+	// "reload_failed", "no_pod". Operators alert on non-zero
+	// {outcome!="success"} sustained rate.
+	//
+	// This is distinct from llmsafespaces_agent_reload_total (which
+	// counts user-initiated dispose+restart via POST /agent/reload) —
+	// the two paths have different observability requirements and
+	// different SLOs. Combining them into one metric would prevent
+	// operators from telling "user hit reload button 50x in an hour"
+	// (support signal) from "50 workspaces auto-recovered after a node
+	// failure" (infrastructure signal).
+	secretAutoPushTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "api_secret_auto_push_total",
+			Help: "Total auto-push attempts triggered by pod-identity transitions on workspace status polls.",
+		},
+		[]string{"outcome"},
+	)
+)
+
+// RecordSecretAutoPush increments the counter for a single auto-push
+// attempt outcome. outcome must be one of "success", "inject_failed",
+// "reload_failed", "no_pod". Called from workspace.Service and from
+// agentpush.Service's metrics hook.
+func RecordSecretAutoPush(outcome string) {
+	if outcome == "" {
+		outcome = "unknown"
+	}
+	secretAutoPushTotal.WithLabelValues(outcome).Inc()
+}
+
+// SecretAutoPushCounter exposes the underlying CounterVec so tests can
+// reset it between cases and assert on labeled values.
+func SecretAutoPushCounter() *prometheus.CounterVec {
+	return secretAutoPushTotal
+}

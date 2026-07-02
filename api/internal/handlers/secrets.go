@@ -4,15 +4,14 @@
 package handlers
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/agentpush"
 	pkgerrors "github.com/lenaxia/llmsafespaces/pkg/errors"
 	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
@@ -22,6 +21,7 @@ import (
 // SecretsHandler handles HTTP requests for the secrets API.
 type SecretsHandler struct {
 	svc              *secrets.SecretService
+	pusher           *agentpush.Service
 	podIPResolver    PodIPResolver
 	logger           pkginterfaces.LoggerInterface
 	passwordVerifier PasswordVerifier
@@ -411,41 +411,30 @@ type reloadResult struct {
 // auth and API-key auth) flow through the same method because
 // InjectSecrets internally degrades user-DEK lookups to skip-with-audit
 // when the DEK is unavailable (real session expired, API-key pseudo-
-// session, or no session at all). The original first-pass branching
-// was dead code — production AuthMiddleware sets sessionID to
-// "apikey:" + hash(token) for API-key auth so the empty-string branch
-// was unreachable. The graceful-degrade approach makes the right thing
-// happen for every auth mode without the call site having to know
-// which one it is.
+// session, or no session at all).
 //
 // The live push sends the payload even when it is the empty array '[]' — the
-// agent uses this to CLEAR its in-memory secret materialisations (validator
-// finding N8 in worklog 0094 pass-2 audit). Without this an unbind leaves the
-// live pod with stale plaintext until restart.
+// agent uses this to CLEAR its in-memory secret materialisations. Without
+// this an unbind leaves the live pod with stale plaintext until restart.
 //
-// Best-effort: the bind itself has already committed to Postgres before this
-// function is called, the user gets 204, and any transient failure here is
-// recoverable on the next bind or pod start.
+// Delegates to agentpush.Service (extracted for the pod-recreation auto-push
+// path in worklog 0589) so both handler-driven pushes and the
+// workspace.Service.GetWorkspaceStatus-driven auto-push share one code path.
 func (h *SecretsHandler) pushSecretsToAgent(c *gin.Context, userID, workspaceID string) {
 	_, sessionID := extractAuth(c)
-	ctx := c.Request.Context()
+	ctx := agentpush.WithAuth(c.Request.Context(), sessionID, extractMatchedSigningKey(c))
 
-	secretsJSON, err := h.svc.InjectSecrets(ctx, userID, sessionID, extractMatchedSigningKey(c), workspaceID)
-	if err != nil {
-		h.warn("secret injection failed",
-			"workspaceID", workspaceID, "error", err.Error())
+	_, err := h.getPusher().Push(ctx, userID, workspaceID)
+	if err == nil {
 		return
 	}
-
-	if _, derr := h.doReload(ctx, userID, workspaceID, secretsJSON); derr != nil {
-		if derr == errNoRunningPod {
-			h.info("reload-secrets skipped: no running pod",
-				"workspaceID", workspaceID)
-			return
-		}
-		h.warn("reload-secrets push to agent failed",
-			"workspaceID", workspaceID, "error", derr.Error())
+	if errors.Is(err, agentpush.ErrNoRunningPod) {
+		h.info("reload-secrets skipped: no running pod",
+			"workspaceID", workspaceID)
+		return
 	}
+	h.warn("reload-secrets push to agent failed",
+		"workspaceID", workspaceID, "error", err.Error())
 }
 
 func (h *SecretsHandler) warn(msg string, fields ...interface{}) {
@@ -460,60 +449,87 @@ func (h *SecretsHandler) info(msg string, fields ...interface{}) {
 	}
 }
 
-// reloadHTTPClient is the bounded-timeout client used for the live
-// HTTP push to in-pod agentd. Without an explicit timeout, http.Post
-// inherits no deadline and a slow or hung agent could block the bind
-// handler indefinitely; the handler itself is invoked from a Gin
-// request goroutine that holds an open client connection. 5s covers a
-// healthy agent (sub-100ms in practice) with margin for transient
-// network jitter.
-var reloadHTTPClient = &http.Client{Timeout: 5 * time.Second}
-
-func (h *SecretsHandler) doReload(ctx context.Context, userID, workspaceID string, secretsJSON []byte) (*reloadResult, error) {
-	if h.podIPResolver == nil {
-		return nil, errPodIPResolverNotConfigured
+// getPusher returns the injected pusher, or lazily constructs one from
+// the handler's own deps if wiring only supplied the individual pieces
+// (podIPResolver, modelCache, logger, svc). This lets the handler work
+// with either the new "inject an agentpush.Service" wiring OR the
+// pre-existing "SetPodIPResolver + SetModelCache" wiring, so the
+// migration to the shared pusher can happen without breaking any of the
+// dozens of tests that use the older setter-style construction.
+func (h *SecretsHandler) getPusher() *agentpush.Service {
+	if h.pusher != nil {
+		return h.pusher
 	}
-	podIP, err := h.podIPResolver.GetWorkspacePodIP(ctx, userID, workspaceID)
-	if err != nil || podIP == "" {
-		return nil, errNoRunningPod
+	opts := []agentpush.Option{}
+	if h.podIPResolver != nil {
+		opts = append(opts, agentpush.WithPodIPResolver(h.podIPResolver))
 	}
-
-	agentdURL := fmt.Sprintf("http://%s:4097/v1/reload-secrets", podIP)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, agentdURL, bytes.NewReader(secretsJSON))
-	if err != nil {
-		return nil, fmt.Errorf("build reload request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := reloadHTTPClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to reach workspace agent: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		var agentErr struct {
-			Error string `json:"error"`
-		}
-		_ = json.NewDecoder(resp.Body).Decode(&agentErr)
-		msg := "agent reload failed"
-		if agentErr.Error != "" {
-			msg = agentErr.Error
-		}
-		return nil, fmt.Errorf("%s", msg)
-	}
-
-	var result reloadResult
-	_ = json.NewDecoder(resp.Body).Decode(&result)
-
-	// Evict this workspace's model cache so the next ListModels call reflects
-	// any new or removed providers that the credential bind just activated.
-	// Without this, the 5s TTL means users see a stale model list for up to
-	// 5 seconds after a successful bind (Gap6 — worklog 0186).
 	if h.modelCache != nil {
-		h.modelCache.Evict(workspaceID)
+		opts = append(opts, agentpush.WithModelCache(h.modelCache))
 	}
+	if h.logger != nil {
+		opts = append(opts, agentpush.WithLogger(h.logger))
+	}
+	h.pusher = agentpush.New(h.svc, opts...)
+	return h.pusher
+}
 
-	return &result, nil
+// SetAgentPusher installs a pre-built agentpush.Service. Preferred over
+// SetPodIPResolver + SetModelCache + SetLogger for new call sites, and
+// used by app.New to share a single pusher instance across the handler
+// and workspace.Service (the pod-recreation auto-push consumer).
+func (h *SecretsHandler) SetAgentPusher(p *agentpush.Service) {
+	h.pusher = p
+}
+
+// doReload retains its previous signature so existing tests that
+// exercise it directly (e.g. models_test.go's TestDoReload_EvictsModelCache)
+// keep working. Internally it now delegates to agentpush.Service so the
+// on-wire behavior is identical to production. The secretsJSON arg is
+// pre-injected by the caller (either handler InjectSecrets or a test);
+// we build a shim injector that returns it verbatim.
+func (h *SecretsHandler) doReload(ctx context.Context, userID, workspaceID string, secretsJSON []byte) (*reloadResult, error) {
+	pusher := agentpush.New(
+		&literalInjector{payload: secretsJSON},
+		buildPusherOpts(h)...,
+	)
+	res, err := pusher.Push(ctx, userID, workspaceID)
+	if err != nil {
+		if errors.Is(err, agentpush.ErrNoPodIPResolver) {
+			return nil, errPodIPResolverNotConfigured
+		}
+		if errors.Is(err, agentpush.ErrNoRunningPod) {
+			return nil, errNoRunningPod
+		}
+		return nil, err
+	}
+	return &reloadResult{Reloaded: res.Reloaded, Restarted: res.Restarted}, nil
+}
+
+// literalInjector satisfies agentpush.SecretInjector by returning a
+// caller-provided payload verbatim. Used only by the legacy doReload
+// path so tests that pre-build a payload keep working.
+type literalInjector struct{ payload []byte }
+
+func (l *literalInjector) InjectSecrets(_ context.Context, _, _ string, _ []byte, _ string) ([]byte, error) {
+	return l.payload, nil
+}
+
+// buildPusherOpts collects agentpush options from the handler's own
+// setter-installed deps. Kept as a helper so getPusher and doReload
+// stay in sync.
+func buildPusherOpts(h *SecretsHandler) []agentpush.Option {
+	opts := []agentpush.Option{}
+	if h.podIPResolver != nil {
+		opts = append(opts, agentpush.WithPodIPResolver(h.podIPResolver))
+	}
+	if h.modelCache != nil {
+		opts = append(opts, agentpush.WithModelCache(h.modelCache))
+	}
+	if h.logger != nil {
+		opts = append(opts, agentpush.WithLogger(h.logger))
+	}
+	return opts
 }
 
 // GetAuditLog handles GET /api/v1/secrets/audit

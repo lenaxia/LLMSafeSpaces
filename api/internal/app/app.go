@@ -24,6 +24,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/logger"
 	"github.com/lenaxia/llmsafespaces/api/internal/server"
 	"github.com/lenaxia/llmsafespaces/api/internal/services"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/agentpush"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/auth"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/cache"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/database"
@@ -383,13 +384,31 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// Without this the SecretsHandler returns 503 for every reload
 		// request and the SetBindings auto-push silently no-ops; see
 		// Bug 1 + Bug 2 in worklog 0085.
-		secretsHandler.SetPodIPResolver(newSecretsPodIPResolver(
+		secretsPodResolver := newSecretsPodIPResolver(
 			&k8sWorkspaceGetterAdapter{client: k8sClient, namespace: cfg.Kubernetes.Namespace},
 			dbSvc,
 			log,
-		))
+		)
+		secretsHandler.SetPodIPResolver(secretsPodResolver)
 		secretsHandler.SetLogger(log)
 		secretsHandler.SetCredentialStateWriter(dbSvc)
+
+		// Build the single agentpush.Service and share it between the
+		// SecretsHandler (bindings/reload endpoints) and the workspace
+		// service (pod-recreation auto-push). Sharing one instance means
+		// there's one place to change reload semantics — the SOLID payoff
+		// of extracting agentpush from SecretsHandler in worklog 0589.
+		agentPusher := agentpush.New(
+			secretService,
+			agentpush.WithPodIPResolver(secretsPodResolver),
+			agentpush.WithModelCache(sharedModelCache),
+			agentpush.WithLogger(log),
+			agentpush.WithMetricsHook(recordAutoPushOutcome),
+		)
+		secretsHandler.SetAgentPusher(agentPusher)
+		if wsSvc, ok := svc.Workspace.(*workspace.Service); ok {
+			wsSvc.SetSecretPusher(&wsAgentPusherAdapter{pusher: agentPusher})
+		}
 		// Wire password getter so ListModels/SetModel can authenticate
 		// to opencode. Uses the same K8s-secret-backed getter as ProxyHandler.
 		// Wired after proxyHandler construction (see below).
@@ -528,6 +547,15 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			wsSvc.SetCredentialProvisioner(pgStore)
 			wsSvc.SetSecretAutoProvisioner(secretService)
 			wsSvc.SetOrgStore(pgOrgStore)
+			// worklog 0589: auto-push user-DEK secrets on pod recreation.
+			// The workspace service detects pod-identity transitions on
+			// every status GET; when one occurs it fires a fire-and-forget
+			// push via the shared agentpush.Service (same instance the
+			// SecretsHandler uses for SetBindings / ReloadSecrets, so
+			// there's exactly one implementation of the reload flow).
+			wsSvc.SetPodIdentityTracker(dbSvc)
+			// The pusher is constructed after secretsHandler.SetPodIPResolver
+			// has run so it has the resolver available. Wire below.
 		}
 		// Epic 35 US-35.3: pod bootstrap handler. Uses the API's K8s
 		// clientset for TokenReview + the SecretService for credential
