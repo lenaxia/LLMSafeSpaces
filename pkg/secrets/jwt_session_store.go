@@ -194,8 +194,9 @@ func (s *PgJWTSessionStore) DeleteExpiredJWTSessions(ctx context.Context, before
 // and produce a misleading warn log.
 //
 // When limit <= 0, no LIMIT clause is added. Callers should always
-// pass a sensible bound (typical: 1, since GetDEKForUser picks the
-// most-recent row).
+// pass a sensible bound (KeyService.GetDEKForUser passes 5, per
+// jwtSessionUserLookupLimit — covers multi-row fallback while
+// preventing pathological unwrap-loops on users with many sessions).
 func (s *PgJWTSessionStore) ListActiveJWTSessionsForUser(ctx context.Context, userID string, limit int) ([]*JWTSession, error) {
 	query := `SELECT jti, user_id, wrapped_dek, kek_salt, created_at, expires_at
 	          FROM jwt_sessions
