@@ -507,6 +507,16 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			if apiKeyProv != nil {
 				authSvc.SetRootKeyProvider(apiKeyProv)
 			}
+
+			// worklog 0590: expose the API's active JWT signing keys
+			// (primary + previous) to KeyService so GetDEKForUser can
+			// unwrap a durable jwt_sessions row on behalf of a user in a
+			// background context (no request-time matchedSigningKey).
+			// This gives the background auto-push path (follow-up PR)
+			// the same DEK-access capability every user request already
+			// has, without needing to pass session state through the
+			// call stack.
+			keyService.SetSigningKeyEnumerator(authSvc)
 		}
 
 		pgOrgStore = database.NewPgOrgStore(dbSvc.DB)
