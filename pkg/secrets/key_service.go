@@ -594,7 +594,7 @@ func (s *KeyService) DEKAvailable(ctx context.Context, sessionID string) bool {
 //     avoids KDF + AEAD-decrypt).
 //  3. On cache miss for that jti, iterate signingKeys.EachSigningKey.
 //     For each candidate key, derive KEK = HKDF(key || jti, kekSalt,
-//     JWTSessionKEKInfo) and attempt UnwrapDEK. First success →
+//     JWTSessionKEKInfo) and attempt DecryptSecret. First success →
 //     write-back to Redis under this jti so subsequent GetDEK(jti,
 //     matchedKey) calls hit the fast path, and return the DEK.
 //  4. If NO signing key can unwrap the most-recent row: continue to
@@ -696,7 +696,7 @@ func (s *KeyService) tryUnwrapRowWithKnownKeys(ctx context.Context, row *JWTSess
 			}
 			return true
 		}
-		dek, uErr := UnwrapDEK(kek, row.WrappedDEK)
+		dek, uErr := DecryptSecret(kek, row.WrappedDEK)
 		zeroBytes(kek)
 		if uErr != nil {
 			// Wrong key — expected during rotation. Continue.
