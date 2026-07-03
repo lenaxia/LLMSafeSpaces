@@ -30,7 +30,7 @@ import { QuestionPrompt } from "../components/chat/QuestionPrompt";
 import { PermissionPrompt } from "../components/chat/PermissionPrompt";
 import { useClearPendingUnread, useAddPendingQuestion, useAddPendingPermission, useRemovePendingAction, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, useIsSessionBusy } from "../providers/SessionActivityProvider";
 
-type StreamPart = { type: "text" | "thinking" | "tool"; text: string; toolState?: string; toolCallID?: string; toolInput?: unknown; toolOutput?: string };
+type StreamPart = { type: "text" | "thinking" | "tool"; text: string; toolState?: string; toolCallID?: string; toolInput?: unknown; toolOutput?: string; messageID?: string };
 
 // messageIdentityKey returns a stable identity for a chat message, used to tell
 // when an optimistic local message (id `local-N`) has round-tripped into server
@@ -468,13 +468,22 @@ export function ChatPage() {
           if (prev.length === 0) return prev;
           const last: StreamPart | undefined = prev[prev.length - 1];
           if (!last || last.type !== expectedType) return prev;
-          return [...prev.slice(0, -1), { type: last.type, text: last.text + delta }];
+          return [...prev.slice(0, -1), { ...last, text: last.text + delta }];
         });
       }
       // "user-echo" and null: discard
     } else if (payload.type === "message.part.updated") {
       const part = props.part as Record<string, unknown> | undefined;
       if (!part) return;
+
+      // Extract the messageID this part belongs to. Opencode partitions an
+      // assistant turn into multiple messages (each ending in a tool call);
+      // the streaming view mirrors this partition — one bubble per messageID.
+      // Deltas that follow this snapshot append onto the same StreamPart
+      // (activePartTypeRef routes them to the last text/thinking entry),
+      // which already carries this messageID — so no per-partID lookup is
+      // needed.
+      const partMessageID = (part.messageID as string) || undefined;
 
       const partType = part.type as string | undefined;
       if (partType === "reasoning" || partType === "thinking") {
@@ -486,17 +495,17 @@ export function ChatPage() {
           setSseStreamParts((prev) => {
             if (idx >= 0 && idx < prev.length && prev[idx]!.type === "thinking") {
               const updated = [...prev];
-              updated[idx] = { type: "thinking", text };
+              updated[idx] = { ...prev[idx]!, type: "thinking", text, messageID: partMessageID ?? prev[idx]!.messageID };
               return updated;
             }
             // Fallback: append if no tracked block
-            return [...prev, { type: "thinking", text }];
+            return [...prev, { type: "thinking", text, messageID: partMessageID }];
           });
         } else {
           // Empty text = new thinking block starting; track its index
           setSseStreamParts((prev) => {
             currentThinkingIdxRef.current = prev.length;
-            return [...prev, { type: "thinking", text: "" }];
+            return [...prev, { type: "thinking", text: "", messageID: partMessageID }];
           });
         }
       } else if (partType === "text") {
@@ -511,10 +520,10 @@ export function ChatPage() {
           setSseStreamParts((prev) => {
             if (idx >= 0 && idx < prev.length && prev[idx]!.type === "text") {
               const updated = [...prev];
-              updated[idx] = { type: "text", text: stripped };
+              updated[idx] = { ...prev[idx]!, type: "text", text: stripped, messageID: partMessageID ?? prev[idx]!.messageID };
               return updated;
             }
-            return [...prev, { type: "text", text: stripped }];
+            return [...prev, { type: "text", text: stripped, messageID: partMessageID }];
           });
         } else {
           activePartTypeRef.current = "text";
@@ -523,16 +532,16 @@ export function ChatPage() {
             setSseStreamParts((prev) => {
               if (idx >= 0 && idx < prev.length && prev[idx]!.type === "text") {
                 const updated = [...prev];
-                updated[idx] = { type: "text", text };
+                updated[idx] = { ...prev[idx]!, type: "text", text, messageID: partMessageID ?? prev[idx]!.messageID };
                 return updated;
               }
-              return [...prev, { type: "text", text }];
+              return [...prev, { type: "text", text, messageID: partMessageID }];
             });
           } else {
             // Empty = new text block starting; track its index
             setSseStreamParts((prev) => {
               currentTextIdxRef.current = prev.length;
-              return [...prev, { type: "text", text: "" }];
+              return [...prev, { type: "text", text: "", messageID: partMessageID }];
             });
           }
         }
@@ -556,11 +565,20 @@ export function ChatPage() {
               const existingName = prev[existingIdx]!.text.split(":")[0] || "";
               const effectiveName = toolName || existingName;
               const effectiveText = title ? `${effectiveName}: ${title}` : effectiveName;
-              updated[existingIdx] = { type: "tool", text: effectiveText, toolState, toolCallID: callID, toolInput, toolOutput };
+              updated[existingIdx] = {
+                ...prev[existingIdx]!,
+                type: "tool",
+                text: effectiveText,
+                toolState,
+                toolCallID: callID,
+                toolInput,
+                toolOutput,
+                messageID: partMessageID ?? prev[existingIdx]!.messageID,
+              };
               return updated;
             }
           }
-          return [...prev, { type: "tool", text: displayText, toolState, toolCallID: callID, toolInput, toolOutput }];
+          return [...prev, { type: "tool", text: displayText, toolState, toolCallID: callID, toolInput, toolOutput, messageID: partMessageID }];
         });
         activePartTypeRef.current = null;
       }

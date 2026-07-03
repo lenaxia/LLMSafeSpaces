@@ -1552,4 +1552,154 @@ describe("ChatPage SSE event handler", () => {
       });
     });
   });
+
+  describe("messageID partitioning (part.messageID propagates to StreamPart)", () => {
+    it("attaches part.messageID to text parts from message.part.updated", async () => {
+      renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
+      await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
+      sendSSEEvent({
+        type: "opencode.event",
+        event_type: "message.part.updated",
+        data: {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "sess-1",
+            part: { type: "text", id: "prt_1", messageID: "msg_a", text: "hello" },
+          },
+        },
+      } as unknown as WorkspaceStreamEvent);
+      await waitFor(() => {
+        const parts = getStreamParts() as Array<{ type: string; text: string; messageID?: string }>;
+        expect(parts).toHaveLength(1);
+        expect(parts[0]!.text).toBe("hello");
+        expect(parts[0]!.messageID).toBe("msg_a");
+      });
+    });
+
+    it("attaches part.messageID to tool parts from message.part.updated", async () => {
+      renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
+      await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
+      sendSSEEvent({
+        type: "opencode.event",
+        event_type: "message.part.updated",
+        data: {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "sess-1",
+            part: {
+              type: "tool",
+              id: "prt_tool",
+              messageID: "msg_a",
+              tool: "bash",
+              callID: "call_1",
+              state: { status: "completed", title: "run tests" },
+            },
+          },
+        },
+      } as unknown as WorkspaceStreamEvent);
+      await waitFor(() => {
+        const parts = getStreamParts() as Array<{ type: string; text: string; messageID?: string }>;
+        expect(parts).toHaveLength(1);
+        expect(parts[0]!.type).toBe("tool");
+        expect(parts[0]!.messageID).toBe("msg_a");
+      });
+    });
+
+    it("partitions consecutive parts by messageID (text→tool→text→tool across two messages)", async () => {
+      renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
+      await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
+
+      // First assistant message: text + tool call
+      sendSSEEvent({
+        type: "opencode.event",
+        event_type: "message.part.updated",
+        data: {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "sess-1",
+            part: { type: "text", id: "prt_1", messageID: "msg_a", text: "first" },
+          },
+        },
+      } as unknown as WorkspaceStreamEvent);
+      sendSSEEvent({
+        type: "opencode.event",
+        event_type: "message.part.updated",
+        data: {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "sess-1",
+            part: {
+              type: "tool",
+              id: "prt_2",
+              messageID: "msg_a",
+              tool: "bash",
+              callID: "call_1",
+              state: { status: "completed" },
+            },
+          },
+        },
+      } as unknown as WorkspaceStreamEvent);
+      // Second assistant message: text + tool call
+      sendSSEEvent({
+        type: "opencode.event",
+        event_type: "message.part.updated",
+        data: {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "sess-1",
+            part: { type: "text", id: "prt_3", messageID: "msg_b", text: "second" },
+          },
+        },
+      } as unknown as WorkspaceStreamEvent);
+      sendSSEEvent({
+        type: "opencode.event",
+        event_type: "message.part.updated",
+        data: {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "sess-1",
+            part: {
+              type: "tool",
+              id: "prt_4",
+              messageID: "msg_b",
+              tool: "edit",
+              callID: "call_2",
+              state: { status: "completed" },
+            },
+          },
+        },
+      } as unknown as WorkspaceStreamEvent);
+
+      await waitFor(() => {
+        const parts = getStreamParts() as Array<{ type: string; text: string; messageID?: string }>;
+        expect(parts).toHaveLength(4);
+        expect(parts.map((p) => p.messageID)).toEqual(["msg_a", "msg_a", "msg_b", "msg_b"]);
+      });
+    });
+
+    it("preserves messageID across delta accumulation", async () => {
+      renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
+      await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
+      // Snapshot with empty text opens the text part; deltas accumulate onto it.
+      sendSSEEvent({
+        type: "opencode.event",
+        event_type: "message.part.updated",
+        data: {
+          type: "message.part.updated",
+          properties: {
+            sessionID: "sess-1",
+            part: { type: "text", id: "prt_1", messageID: "msg_a", text: "" },
+          },
+        },
+      } as unknown as WorkspaceStreamEvent);
+      sendSSEEvent(makePartDeltaEvent("sess-1", "text", "Hello"));
+      sendSSEEvent(makePartDeltaEvent("sess-1", "text", " world"));
+      await waitFor(() => {
+        const parts = getStreamParts() as Array<{ type: string; text: string; messageID?: string }>;
+        expect(parts).toHaveLength(1);
+        expect(parts[0]!.text).toBe("Hello world");
+        expect(parts[0]!.messageID).toBe("msg_a");
+      });
+    });
+  });
 });

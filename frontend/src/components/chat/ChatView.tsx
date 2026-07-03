@@ -16,6 +16,14 @@ interface StreamingPart {
   toolCallID?: string;
   toolInput?: unknown;
   toolOutput?: string;
+  /**
+   * The opencode messageID this part belongs to. Opencode partitions an
+   * assistant turn into multiple messages (each terminated by a tool call);
+   * to match how the transcript renders after history refresh, the streaming
+   * view must render one bubble per messageID. Parts without a messageID
+   * (older code paths, tests) collapse into a single default bubble.
+   */
+  messageID?: string;
 }
 
 interface Props {
@@ -44,17 +52,32 @@ interface Props {
   viewOnlyMessage?: string;
 }
 
+const DEFAULT_STREAM_BUBBLE_KEY = "__stream_default__";
+
+function partitionStreamPartsByMessage(streamParts: StreamingPart[]): Array<{ key: string; parts: MessagePart[] }> {
+  const order: string[] = [];
+  const groups = new Map<string, MessagePart[]>();
+  for (const p of streamParts) {
+    const key = p.messageID ?? DEFAULT_STREAM_BUBBLE_KEY;
+    if (!groups.has(key)) {
+      groups.set(key, []);
+      order.push(key);
+    }
+    groups.get(key)!.push({
+      type: p.type === "tool" ? ("tool_use" as const) : p.type,
+      text: p.text,
+      ...(p.toolState ? { toolState: p.toolState } : {}),
+      ...(p.toolInput != null ? { input: p.toolInput } : {}),
+      ...(p.toolOutput ? { toolOutput: p.toolOutput } : {}),
+    });
+  }
+  return order.map((key) => ({ key, parts: groups.get(key)! }));
+}
+
 export function ChatView({ messages, streaming, streamParts, disabled, onSend, onAbort, prompts, onLoadEarlier, hasOlderMessages, loadingOlder, queuedMessages = [], onQueueRetry, onQueueDismiss, models, lastSeenAt, viewOnly = false, viewOnlyMessage }: Props) {
   const isMobile = useIsMobile();
-  const hasStreamedContent = streamParts.length > 0;
-
-  const streamedMessageParts: MessagePart[] = streamParts.map((p) => ({
-    type: p.type === "tool" ? "tool_use" as const : p.type,
-    text: p.text,
-    ...(p.toolState ? { toolState: p.toolState } : {}),
-    ...(p.toolInput != null ? { input: p.toolInput } : {}),
-    ...(p.toolOutput ? { toolOutput: p.toolOutput } : {}),
-  }));
+  const streamedBubbles = partitionStreamPartsByMessage(streamParts);
+  const hasStreamedContent = streamedBubbles.length > 0;
 
   return (
     <div className="flex h-full flex-col">
@@ -65,10 +88,15 @@ export function ChatView({ messages, streaming, streamParts, disabled, onSend, o
           models={models}
           streamingBubble={
             streaming && hasStreamedContent ? (
-              <MessageBubble
-                message={{ id: "streaming", role: "assistant", parts: streamedMessageParts }}
-                isStreaming
-              />
+              <>
+                {streamedBubbles.map((b) => (
+                  <MessageBubble
+                    key={b.key}
+                    message={{ id: `streaming-${b.key}`, role: "assistant", parts: b.parts }}
+                    isStreaming
+                  />
+                ))}
+              </>
             ) : undefined
           }
           trailingPrompts={prompts}
