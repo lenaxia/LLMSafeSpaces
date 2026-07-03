@@ -1,81 +1,94 @@
-# SSE streaming partitions parts by opencode `messageID`
+# Worklog: SSE streaming partition by opencode messageID (frontend)
 
-## Problem
+**Date:** 2026-07-02
+**Session:** Streaming assistant responses rendered all parts inside a single `MessageBubble`. After the turn ended and history refreshed, opencode returned the same content as multiple assistant messages (each internal opencode message terminates at a tool call), so the same content re-rendered as several separate bubbles. Reported instance: `https://chat.safespaces.dev/chat/a127833a-d68c-4732-ba45-6dafd8081bfd/ses_0eb6352b5ffe9xiApZ5P7KeVLo` — during streaming the DOM held ~10 nested prose+tool blocks inside one bubble; after refresh the same content rendered as multiple bubbles with their own timestamp/model/copy footers.
 
-During an SSE-streamed assistant turn, all parts (text, tool calls, more text,
-more tool calls) were collapsed into a single `MessageBubble`. After the turn
-ended and history refreshed, opencode's transcript showed the same content
-partitioned into multiple assistant bubbles — one per opencode message —
-because opencode terminates each internal "message" at a tool call and starts
-a new one for the next text/tool pair.
+**Status:** Complete (post-review-iteration)
 
-Reported instance:
-`https://chat.safespaces.dev/chat/a127833a-…/ses_0eb6352b5ffe9xiApZ5P7KeVLo`.
-Streaming rendered ~10 separate `<div class="prose">` blocks interleaved with
-tool `<details>` inside one bubble; after refresh the same content rendered
-as several separate assistant bubbles, each with its own timestamp/model/copy
-footer.
+---
 
-## Root cause
+## Objective
 
-`ChatView` composed all `sseStreamParts` into a single `MessageBubble`
-(`id: "streaming"`). Parts were never grouped by their originating opencode
-message. The parser (`ChatPage.parseStreamEvent`) also did not read
-`part.messageID` from the payload, so downstream code had no signal to
-partition on even if it wanted to.
+Make the streaming render match the post-refresh render. Partition SSE-streamed parts into one `MessageBubble` per opencode `messageID` so the user does not see a mid-turn structural change when opencode's history takes over.
 
-## Fix
+---
 
-1. `parseStreamEvent` now reads `part.messageID` from every
-   `message.part.updated` payload and attaches it to the emitted `StreamPart`.
-   Deltas piggy-back on the last-appended part's `messageID` because
-   `activePartTypeRef` already routes them onto that same entry (no per-partID
-   lookup needed).
-2. `ChatView` groups `streamParts` by `messageID` in encounter order and
-   renders one `MessageBubble` per group. Parts without a `messageID`
-   (older paths, tests) collapse into a single default bubble — pure
-   backward compat.
+## Work Completed
 
-## Assumptions and validation
+### Validated assumptions
 
-| Assumption | Validation |
-|---|---|
-| Opencode's part payload includes a `messageID` field | Confirmed in fixture `api/internal/handlers/proxy_filter_test.go:26-29` and `pkg/agent/opencode/dialect_test.go:229`. Field name is camelCase (`messageID`). |
-| Opencode splits an assistant turn into multiple messages, each ending at a tool call | Confirmed by the user's reported DOM: the post-refresh render showed one bubble per (text, tool) pair, each with its own timestamp footer — i.e. distinct opencode messages. |
-| Deltas follow their parent snapshot and never target an older part | Confirmed by the current parser design (`activePartTypeRef` routes to last-appended part). Any pre-existing violation would already be broken independent of this change. |
+1. **Opencode's part payload carries `messageID` (camelCase).** Verified against real fixtures in `api/internal/handlers/proxy_filter_test.go:26-29` (`{"type":"text","text":"Hello!","id":"p2","sessionID":"ses_1","messageID":"msg_1"}`) and `pkg/agent/opencode/dialect_test.go:229`.
+2. **Opencode splits an assistant turn into multiple messages, each ending at a tool call.** Confirmed from the user's post-refresh DOM: one bubble per (text, tool) pair, each with its own timestamp footer — i.e. distinct opencode messages.
+3. **Deltas always follow their parent snapshot and target the last-appended part.** Existing parser design (`activePartTypeRef` routes deltas to last text/thinking entry). Unchanged by this PR; deltas therefore inherit the messageID already attached to that entry.
 
-## Test evidence
+### Root fix
 
-TDD, red → green demonstrated per test group:
+Two files:
 
-- `frontend/src/components/chat/ChatView.test.tsx` — 3 new tests
-  - partitions streaming parts into separate bubbles by messageID
-  - groups parts without messageID into a single bubble (backward compat)
-  - preserves messageID encounter order across bubbles
-- `frontend/src/pages/ChatPage.sse.test.tsx` — 4 new tests
-  - attaches part.messageID to text parts from message.part.updated
-  - attaches part.messageID to tool parts from message.part.updated
-  - partitions consecutive parts by messageID (text→tool→text→tool across
-    two messages)
-  - preserves messageID across delta accumulation
+- `frontend/src/pages/ChatPage.tsx` — `StreamPart.messageID` field added; `parseStreamEvent` reads `part.messageID` from every `message.part.updated` payload and attaches it to the emitted `StreamPart`. Snapshot updates fall back to the existing entry's messageID (`partMessageID ?? prev[idx]!.messageID`). The delta handler spreads the previous part (`{ ...last, text: last.text + delta }`) instead of replacing type+text — without the spread, deltas would strip messageID mid-stream and break partitioning.
+- `frontend/src/components/chat/ChatView.tsx` — `partitionStreamPartsByMessage` groups parts by `messageID` in encounter order (Map + parallel `order[]` array). One `MessageBubble` per group; parts without a `messageID` fall through to `DEFAULT_STREAM_BUBBLE_KEY` (single bubble, backward compat).
 
-Full suite: `1284 passed / 119 files` (frontend). Typecheck + eslint clean.
+### Tests (TDD'd, red → green demonstrated per group)
 
-## Adversarial self-review
+- `frontend/src/components/chat/ChatView.test.tsx` — 3 new tests:
+  - "partitions streaming parts into separate bubbles by messageID" — 2 messageIDs → 2 bubbles with content isolation asserted.
+  - "groups parts without messageID into a single bubble (backward compat)" — missing messageID → default group.
+  - "preserves messageID encounter order across bubbles" — interleaved A→B→A ordering.
+- `frontend/src/pages/ChatPage.sse.test.tsx` — 4 new integration tests (real `ChatPage` + real `parseStreamEvent`):
+  - text `message.part.updated` → messageID propagates to StreamPart.
+  - tool `message.part.updated` → messageID propagates to StreamPart.
+  - consecutive text→tool→text→tool across two messageIDs → four parts with the right id sequence.
+  - delta accumulation preserves messageID (guards the spread fix).
 
-- Removed dead code (`partIdToMessageIdRef`) after realising deltas do not
-  need a per-partID lookup: they already append to the last part which
-  carries the messageID.
-- Verified `part.messageID` is the correct camelCase field name against
-  in-repo fixtures.
-- Backward compat is preserved: parts without a messageID collapse into a
-  single bubble (test `groups parts without messageID into a single bubble`).
+Adversarial validation: stashed the implementation, verified 6 of 7 new tests failed against the pre-fix code (2 ChatView + 4 SSE red). Restored — green.
 
-## Files changed
+### Review-feedback iteration
 
-- `frontend/src/components/chat/ChatView.tsx` — `StreamingPart.messageID`,
-  `partitionStreamPartsByMessage`, one `MessageBubble` per group.
-- `frontend/src/pages/ChatPage.tsx` — `StreamPart.messageID`,
-  `parseStreamEvent` reads `part.messageID`.
-- `frontend/src/components/chat/ChatView.test.tsx` — +3 tests.
-- `frontend/src/pages/ChatPage.sse.test.tsx` — +4 tests.
+First review returned APPROVE with two cosmetic findings, both addressed:
+
+1. **Accidental indentation change at `ChatPage.tsx:61`** — `setLocalMessages([])` had drifted from 4-space to 6-space indent. Fixed to match the surrounding useEffect body.
+2. **Worklog did not follow repo template** (`# Worklog:` title, `**Date:**`/`**Session:**`/`**Status:**` metadata, standard section names). Rewritten to match `worklogs/0588_…` structure.
+
+---
+
+## Key Decisions
+
+- **Group by `messageID` in `ChatView`, not by remounting bubbles in `ChatPage`.** The partition is a rendering concern; keeping `sseStreamParts` a flat list keeps the parser simple. `partitionStreamPartsByMessage` is pure and localised to the component.
+- **Encounter order, not messageID sort.** Opencode may reuse a messageID mid-turn (rare but possible for step retries); preserving encounter order matches the user's expected visual flow.
+- **Backward-compat default group.** Parts without a `messageID` collapse into a single default bubble. Preserves existing behaviour for older tests and any legacy SSE emitter that omits the field.
+- **Delta spread `{ ...last, text: last.text + delta }`.** Essential — the old `{ type: last.type, text: ... }` would have stripped `messageID` on every delta and broken partitioning mid-stream. The review specifically flagged this as an essential (not incidental) part of the fix.
+- **Removed dead `partIdToMessageIdRef` map** during adversarial self-review. Deltas already route to the last-appended part via `activePartTypeRef`; that entry already carries the messageID. No per-partID lookup is needed.
+
+---
+
+## Blockers
+
+None.
+
+---
+
+## Tests Run
+
+- `npx vitest run src/components/chat/ChatView.test.tsx` — 26 tests, green (3 new).
+- `npx vitest run src/pages/ChatPage.sse.test.tsx` — 68 tests, green (4 new).
+- `npx vitest run` — full frontend suite: **1284/1284 pass** (was 1277 before this PR, net +7 for the new partition tests).
+- `npx tsc --noEmit` — clean.
+- `npx eslint src/components/chat/ChatView.tsx src/components/chat/ChatView.test.tsx src/pages/ChatPage.tsx src/pages/ChatPage.sse.test.tsx` — clean.
+- Adversarial red step: stashed the implementation, ran the new tests, observed 6/7 failures with the expected messages (`expected 1 to be 2`, `expected 'msg_a' received undefined`). Restored — green.
+
+---
+
+## Next Steps
+
+- No follow-up features. The streaming render now matches the post-refresh render for all cases where opencode emits `part.messageID`. Legacy SSE emitters (or forks) that omit the field render in a single bubble as before.
+- Deploy to home-kubernetes on merge; workspace pods pick up the new frontend on their next refresh.
+
+---
+
+## Files Modified
+
+- `frontend/src/pages/ChatPage.tsx` — `StreamPart.messageID`; `parseStreamEvent` reads `part.messageID`; delta handler spreads previous part.
+- `frontend/src/components/chat/ChatView.tsx` — `partitionStreamPartsByMessage`; one `MessageBubble` per group.
+- `frontend/src/components/chat/ChatView.test.tsx` — +3 tests (grouping + encounter order + backward compat).
+- `frontend/src/pages/ChatPage.sse.test.tsx` — +4 tests (messageID extraction from text/tool events, cross-message partition, delta preservation).
+- `worklogs/NNNN_2026-07-02_sse-streaming-partition-by-messageid.md` (this file). Reformatted in review round to match repo template.

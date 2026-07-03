@@ -58,7 +58,7 @@ export function ChatPage() {
   const queryClient = useQueryClient();
 
   useEffect(() => {
-      setLocalMessages([]);
+    setLocalMessages([]);
     setSessionErrors([]);
     setSseStreamParts([]);
     setRetryStatus(null);
