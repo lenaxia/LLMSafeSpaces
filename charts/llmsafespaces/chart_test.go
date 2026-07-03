@@ -1112,6 +1112,22 @@ func containerByName(deploy map[string]any, name string) map[string]any {
 	return nil
 }
 
+// initContainerByName returns the first initContainer spec matching the
+// given name from a Deployment doc.
+func initContainerByName(deploy map[string]any, name string) map[string]any {
+	spec, _ := deploy["spec"].(map[string]any)
+	tmpl, _ := spec["template"].(map[string]any)
+	podSpec, _ := tmpl["spec"].(map[string]any)
+	initContainers, _ := podSpec["initContainers"].([]any)
+	for _, c := range initContainers {
+		cm, _ := c.(map[string]any)
+		if n, _ := cm["name"].(string); n == name {
+			return cm
+		}
+	}
+	return nil
+}
+
 // podSecCtx returns the pod-level securityContext from a Deployment doc.
 func podSecCtx(deploy map[string]any) map[string]any {
 	spec, _ := deploy["spec"].(map[string]any)
@@ -1240,6 +1256,88 @@ func TestF4_FrontendReadOnlyRootFilesystem(t *testing.T) {
 	for _, required := range []string{"nginx-cache", "nginx-run", "tmp"} {
 		require.True(t, volumeNames[required],
 			"frontend Deployment must have an emptyDir volume %q for nginx writability (F4 fix)", required)
+	}
+}
+
+// TestF4b_FrontendCopyHtmlInitContainer_PSARestricted guards #468: the
+// copy-html initContainer must satisfy the PSA `restricted` profile.
+// Pre-fix it dropped no capabilities, so deploying into a namespace with
+// pod-security.kubernetes.io/enforce: restricted rejected the pod with
+// "unrestricted capabilities (container "copy-html" must set
+// securityContext.capabilities.drop=["ALL"])" and the frontend Deployment
+// never scheduled. seccompProfile is set explicitly here as
+// defense-in-depth (it is otherwise inherited from the pod-level
+// securityContext) and to match the main frontend container.
+func TestF4b_FrontendCopyHtmlInitContainer_PSARestricted(t *testing.T) {
+	docs := helmTemplate(t, "frontend:\n  enabled: true\n")
+
+	deploy := findDeploymentByNameSubstr(docs, "-frontend")
+	require.NotNil(t, deploy, "frontend Deployment must be rendered when frontend.enabled=true")
+
+	c := initContainerByName(deploy, "copy-html")
+	require.NotNil(t, c, "frontend pod must have a copy-html initContainer")
+
+	csc, _ := c["securityContext"].(map[string]any)
+	require.NotNil(t, csc, "copy-html initContainer must have a securityContext (#468)")
+
+	// capabilities.drop must contain ALL — this was the blocking PSA error.
+	caps, _ := csc["capabilities"].(map[string]any)
+	require.NotNil(t, caps, "copy-html initContainer must set capabilities (#468)")
+	drop, _ := caps["drop"].([]any)
+	var droppedAll bool
+	for _, d := range drop {
+		if d == "ALL" {
+			droppedAll = true
+		}
+	}
+	require.True(t, droppedAll,
+		"copy-html initContainer must drop ALL capabilities (#468: PSA restricted requires it)")
+
+	seccomp, _ := csc["seccompProfile"].(map[string]any)
+	require.Equal(t, "RuntimeDefault", seccomp["type"],
+		"copy-html initContainer.seccompProfile.type must be RuntimeDefault (#468)")
+
+	require.Equal(t, false, csc["allowPrivilegeEscalation"],
+		"copy-html initContainer.allowPrivilegeEscalation must be false")
+}
+
+// TestF4c_FrontendAllContainersDropAllCapabilities is a recurrence guard
+// for #468: every container AND initContainer in the frontend pod must
+// drop ALL capabilities so the Deployment stays deployable in a PSA
+// `restricted` namespace. Pre-fix only the main frontend container
+// dropped ALL; the copy-html initContainer did not.
+func TestF4c_FrontendAllContainersDropAllCapabilities(t *testing.T) {
+	docs := helmTemplate(t, "frontend:\n  enabled: true\n")
+
+	deploy := findDeploymentByNameSubstr(docs, "-frontend")
+	require.NotNil(t, deploy)
+
+	spec, _ := deploy["spec"].(map[string]any)
+	tmpl, _ := spec["template"].(map[string]any)
+	podSpec, _ := tmpl["spec"].(map[string]any)
+
+	containers, _ := podSpec["containers"].([]any)
+	initContainers, _ := podSpec["initContainers"].([]any)
+	all := append([]any{}, containers...)
+	all = append(all, initContainers...)
+	require.NotEmpty(t, all, "frontend pod must have at least one container")
+
+	for _, c := range all {
+		cm, _ := c.(map[string]any)
+		name, _ := cm["name"].(string)
+		csc, _ := cm["securityContext"].(map[string]any)
+		require.NotNil(t, csc, "frontend container %q must have a securityContext", name)
+		caps, _ := csc["capabilities"].(map[string]any)
+		require.NotNil(t, caps, "frontend container %q must set capabilities", name)
+		drop, _ := caps["drop"].([]any)
+		var droppedAll bool
+		for _, d := range drop {
+			if d == "ALL" {
+				droppedAll = true
+			}
+		}
+		require.True(t, droppedAll,
+			"frontend container %q must drop ALL capabilities (PSA restricted)", name)
 	}
 }
 
