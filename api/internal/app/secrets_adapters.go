@@ -749,16 +749,17 @@ func ensureFreeTierCredential(ctx context.Context, seeder credentialSeeder, prov
 }
 
 // wsAgentPusherAdapter adapts *agentpush.Service to the narrow
-// workspace.SecretPusher interface. This is the dependency-inversion
-// seam between the workspace service (which declares the interface it
-// needs) and the concrete pusher (which lives in the agentpush package,
-// unaware of any consumer). Without this adapter the workspace package
-// would have to import agentpush directly, creating a wider dependency
-// than the SOLID DIP allows.
+// secretautopush.SecretPusher interface (worklog 0591). This is the
+// dependency-inversion seam between the auto-push consumer (which
+// declares the interface it needs) and the concrete pusher (which
+// lives in the agentpush package, unaware of any consumer). Without
+// this adapter the secretautopush package would have to import
+// agentpush directly, creating a wider dependency than the SOLID DIP
+// allows.
 //
 // The adapter is ALSO the metric-emission point for
-// api_secret_auto_push_total: the metric is specifically the pod-
-// recreation auto-push counter (per its Help text), NOT a general
+// api_secret_auto_push_total: the metric is specifically the
+// pod-recreation auto-push counter (per its Help text), NOT a general
 // "any push" counter. Wiring the hook onto the shared agentpush.Service
 // would conflate user-initiated SetBindings pushes with automatic
 // pod-recreation pushes — operators couldn't tell "50 users changed
@@ -768,10 +769,10 @@ type wsAgentPusherAdapter struct {
 	pusher *agentpush.Service
 }
 
-// Push satisfies workspace.SecretPusher by delegating to agentpush and
-// classifying the outcome for the pod-recreation-specific metric.
-// The Result value is dropped (the workspace-side auto-push flow doesn't
-// inspect it — the reload count is recorded via structured logs).
+// Push satisfies secretautopush.SecretPusher by delegating to agentpush
+// and classifying the outcome for the pod-recreation-specific metric.
+// The Result value is dropped (the auto-push flow doesn't inspect it —
+// the reload count is recorded via structured logs from agentpush).
 func (a *wsAgentPusherAdapter) Push(ctx context.Context, userID, workspaceID string) error {
 	_, err := a.pusher.Push(ctx, userID, workspaceID)
 	recordAutoPushOutcome(classifyPushOutcome(err))
@@ -800,7 +801,7 @@ func classifyPushOutcome(err error) string {
 }
 
 // recordAutoPushOutcome is the process-wide metrics-emitter used ONLY
-// by the workspace-service auto-push path (via wsAgentPusherAdapter).
+// by the secretautopush auto-push path (via wsAgentPusherAdapter).
 // See the adapter's doc for why the metric is scoped to that path and
 // not emitted from every agentpush.Service.Push caller.
 //
