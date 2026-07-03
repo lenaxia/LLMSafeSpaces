@@ -58,4 +58,4 @@ Cutting the `v0.1.0` release (the durable chart-default fix) requires a maintain
 
 - `values-cluster.yaml` — 4 pins ts-1781285219 → sha-ac861c3; updated header comment.
 - `charts/llmsafespaces/README.md` — added "Image tags" section + quick-install callout.
-- `worklogs/NNNN_2026-06-30_chart-image-tag-release-workflow.md` — this worklog.
+- `worklogs/0591_2026-06-30_chart-image-tag-release-workflow.md` — this worklog.
