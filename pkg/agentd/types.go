@@ -49,10 +49,26 @@ const (
 )
 
 // HealthzResponse is the response for GET /v1/healthz.
+//
+// UserCredsPresent (worklog 0591) is TRUE when agentd's
+// last-reload-secrets.json cache exists AND parses AND contains at
+// least one entry — i.e., a prior successful reload push delivered
+// user-DEK content that is currently materialized on disk. FALSE on
+// fresh pod boot (no prior push), on empty batch (user unbound all
+// secrets), on cache-read failure, or on corrupt cache. The API's
+// workspace watcher reads this field via the controller's
+// scrape-and-mirror pattern to decide whether to fire a
+// background auto-push after pod recreation.
+//
+// This field is observability data, not a liveness gate. A hasUserCreds
+// failure does NOT block the healthz response — healthy stays true so
+// kubelet's liveness probe doesn't cascade to pod-kill from an unrelated
+// cache-read fault.
 type HealthzResponse struct {
-	Healthy       bool   `json:"healthy"`
-	Version       string `json:"version"`
-	UptimeSeconds int    `json:"uptime_seconds"`
+	Healthy          bool   `json:"healthy"`
+	Version          string `json:"version"`
+	UptimeSeconds    int    `json:"uptime_seconds"`
+	UserCredsPresent bool   `json:"userCredsPresent"`
 }
 
 // ReadyzResponse is the response for GET /v1/readyz.

@@ -20,11 +20,32 @@ import (
 type PhaseChangeCallback func(workspace *v1.Workspace)
 
 // VersionSyncCallback is called with (workspaceID, imageTag, agentVersion)
-// whenever a workspace becomes Active (phase transition or seed) and has a
-// non-empty imageTag. It is the authoritative trigger for persisting runtime
-// version info to the DB, replacing the lazy side-effect in GetWorkspaceStatus.
-// agentVersion may be empty when the controller has not yet written it.
+// when the CRD's imageTag changes so the API can persist the new tag to
+// its DB without a K8s Get. Optional — nil-safe on the watcher.
 type VersionSyncCallback func(workspaceID, imageTag, agentVersion string)
+
+// WorkspaceUpdateCallback is called on every Added/Modified event
+// (NOT Deleted) for a Workspace, regardless of what changed. Used by
+// the watcher-driven auto-push (worklog 0591): the callback filters
+// on the exact state it cares about (Phase==Active +
+// UserCredsPresent==false + bindings-exist) and no-ops otherwise.
+//
+// Distinct from PhaseChangeCallback because a pod-recreation may not
+// change phase (e.g. `kubectl delete pod` with immediate controller
+// respawn keeps status.Phase=Active) but does change UserCredsPresent
+// (controller clears it on unreachable, then reports the new agentd's
+// state on the next scrape). Filtering by phase alone misses those.
+//
+// Callback contract:
+//   - MUST be fast + non-blocking. Slow callbacks stall the watch
+//     goroutine, which delays the SSE stream and phase events for all
+//     workspaces on this API replica.
+//   - MUST tolerate repeat calls for the same workspace — the watcher
+//     emits many Modified events per workspace lifetime, and the
+//     callback's own state is the source of truth for "already
+//     handled this update."
+//   - MUST NOT panic. Panics propagate to the watch goroutine.
+type WorkspaceUpdateCallback func(workspace *v1.Workspace)
 
 type WorkspaceOwnerTracker interface {
 	RecordWorkspaceOwner(workspaceID, userID string)
@@ -47,7 +68,8 @@ type Watcher struct {
 	logger               pkginterfaces.LoggerInterface
 	namespace            string
 	onPhaseChange        PhaseChangeCallback
-	onVersionSync        VersionSyncCallback // nil-safe; set via SetVersionSyncCallback
+	onVersionSync        VersionSyncCallback     // nil-safe; set via SetVersionSyncCallback
+	onWorkspaceUpdate    WorkspaceUpdateCallback // nil-safe; set via SetWorkspaceUpdateCallback
 	userBroker           WorkspaceOwnerTracker
 	stopCh               chan struct{}
 	stopOnce             sync.Once
@@ -93,6 +115,15 @@ func (w *Watcher) SetUserBroker(broker WorkspaceOwnerTracker) {
 // a lock). Follows the same contract as SetUserBroker.
 func (w *Watcher) SetVersionSyncCallback(cb VersionSyncCallback) {
 	w.onVersionSync = cb
+}
+
+// SetWorkspaceUpdateCallback installs a callback invoked on every
+// Added/Modified event for any Workspace CRD. Optional; nil-safe.
+// Must be called before Start() (same data-race constraint as
+// SetVersionSyncCallback). See WorkspaceUpdateCallback docstring for
+// the callback contract.
+func (w *Watcher) SetWorkspaceUpdateCallback(cb WorkspaceUpdateCallback) {
+	w.onWorkspaceUpdate = cb
 }
 
 func (w *Watcher) Start() error {
@@ -219,6 +250,14 @@ func (w *Watcher) seedResourceVersion() error {
 	// though no phase transition event has been emitted for these workspaces.
 	for _, ws := range activeWorkspaces {
 		w.onPhaseChange(ws)
+		// worklog 0591: also fire the workspace-update callback so
+		// the API's watcher-driven auto-push can recover from an API
+		// restart while a pod was in the UserCredsPresent=false state.
+		// Without this, the auto-push would only fire on the next
+		// Modified event after restart.
+		if w.onWorkspaceUpdate != nil {
+			w.onWorkspaceUpdate(ws)
+		}
 	}
 
 	// Fire version sync callbacks after releasing locks to avoid holding
@@ -351,6 +390,17 @@ func (w *Watcher) handleEvent(event watch.Event) {
 		} else {
 			w.knownImageTagsMu.Unlock()
 		}
+	}
+
+	// worklog 0591: fire the workspace-update callback on every
+	// Added/Modified event. The callback's own filters decide when to
+	// act — see WorkspaceUpdateCallback docstring for the contract.
+	// Fires AFTER phase-change and version-sync so those side effects
+	// have been recorded first (the callback may read the CRD's
+	// UserCredsPresent, which the controller updated on this same
+	// watch event).
+	if w.onWorkspaceUpdate != nil {
+		w.onWorkspaceUpdate(workspace)
 	}
 }
 

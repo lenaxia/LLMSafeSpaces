@@ -193,7 +193,7 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 
 	adminToken := os.Getenv("AGENTD_ADMIN_TOKEN")
 
-	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt))
+	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt, agentd.ReloadSecretsCachePath))
 	adminMux.Handle("/v1/readyz", requireBearerToken(adminToken, buildReadyzHandler(deps)))
 
 	// /v1/statusz is the EXPENSIVE deep-introspection endpoint. It makes

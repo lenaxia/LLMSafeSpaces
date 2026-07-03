@@ -53,6 +53,9 @@ func (h *ProxyHandler) Start() error {
 		if h.versionSyncCb != nil {
 			watcher.SetVersionSyncCallback(h.versionSyncCb)
 		}
+		if h.workspaceUpdateCb != nil {
+			watcher.SetWorkspaceUpdateCallback(h.workspaceUpdateCb)
+		}
 		if err := watcher.Start(); err != nil {
 			_ = h.activityTracker.Stop()
 			startErr = fmt.Errorf("starting CRD watcher: %w", err)
@@ -103,6 +106,13 @@ func (h *ProxyHandler) SetAgentStateChecker(c AgentStateChecker) {
 
 func (h *ProxyHandler) SetVersionSyncCallback(cb workspace.VersionSyncCallback) {
 	h.versionSyncCb = cb
+}
+
+// SetWorkspaceUpdateCallback installs the per-CRD-event callback that
+// powers the watcher-driven auto-push of user-DEK secrets after pod
+// recreation (worklog 0591). Must be called before Start().
+func (h *ProxyHandler) SetWorkspaceUpdateCallback(cb workspace.WorkspaceUpdateCallback) {
+	h.workspaceUpdateCb = cb
 }
 
 // SetRequestBufferConfig rebuilds the per-workspace request buffer with the

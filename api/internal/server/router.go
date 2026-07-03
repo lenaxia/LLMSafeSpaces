@@ -20,7 +20,6 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	apilogger "github.com/lenaxia/llmsafespaces/api/internal/logger"
 	"github.com/lenaxia/llmsafespaces/api/internal/middleware"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/agentpush"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/auth"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
 	"github.com/lenaxia/llmsafespaces/api/internal/utilities"
@@ -1034,28 +1033,7 @@ func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, serv
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 			return
 		}
-		// worklog 0589: the workspace service's GetWorkspaceStatus
-		// detects pod-identity transitions and fires a fire-and-forget
-		// auto-push of the user's DEK-bound secrets to the recreated
-		// pod. The push needs the caller's sessionID + matchedSigningKey
-		// to rehydrate the DEK from jwt_sessions on Redis miss. Attach
-		// both via context here (analogous to the ContextWithSessionID
-		// pattern used elsewhere in this router). The workspace service
-		// hands them to the pusher via agentpush.AuthFromContext.
-		ctx := c.Request.Context()
-		var sessionID string
-		if sid, ok := c.Get("sessionID"); ok {
-			if s, sok := sid.(string); sok {
-				sessionID = s
-			}
-		}
-		var matchedKey []byte
-		if v, ok := c.Get("jwt_signing_key"); ok {
-			matchedKey, _ = v.([]byte)
-		}
-		ctx = agentpush.WithAuth(ctx, sessionID, matchedKey)
-
-		status, err := wsSvc.GetWorkspaceStatus(ctx, userID, c.Param("id"))
+		status, err := wsSvc.GetWorkspaceStatus(c.Request.Context(), userID, c.Param("id"))
 		if err != nil {
 			respondWithError(c, err)
 			return

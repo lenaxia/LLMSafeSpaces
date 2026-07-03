@@ -4,6 +4,7 @@
 package workspace
 
 import (
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -365,4 +366,103 @@ func gatherPhaseTransitionCount(t *testing.T, from, to string) float64 {
 		}
 	}
 	return 0
+}
+
+// TestWorkspaceWatcher_WorkspaceUpdateCallback_FiresOnModify verifies
+// the callback wiring for the watcher-driven auto-push (worklog 0591).
+// A Modified event MUST invoke onWorkspaceUpdate with the current
+// workspace object. Without this test, a future refactor that
+// accidentally skipped the callback (or reordered event handling in
+// a way that hid it) would silently break the auto-push feature.
+func TestWorkspaceWatcher_WorkspaceUpdateCallback_FiresOnModify(t *testing.T) {
+	k8s, _, fakeWatch := setupWatcherMocks(t)
+
+	var callbackCount int32
+	var lastSeen *v1.Workspace
+	var mu sync.Mutex
+
+	w, err := NewWatcher(k8s, &testLogger{}, "default", func(*v1.Workspace) {})
+	require.NoError(t, err)
+	w.SetWorkspaceUpdateCallback(func(ws *v1.Workspace) {
+		mu.Lock()
+		defer mu.Unlock()
+		atomic.AddInt32(&callbackCount, 1)
+		lastSeen = ws
+	})
+	require.NoError(t, w.Start())
+	defer w.Stop()
+
+	// Seed with an Add.
+	ws := &v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-update-cb", ResourceVersion: "1"},
+		Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive},
+	}
+	fakeWatch.Add(ws)
+	assert.Eventually(t, func() bool {
+		return atomic.LoadInt32(&callbackCount) >= 1
+	}, testTimeout, testPollInterval, "callback MUST fire on Added event")
+
+	// Modify with a status change (UserCredsPresent set).
+	ws2 := ws.DeepCopy()
+	ucp := false
+	ws2.Status.UserCredsPresent = &ucp
+	ws2.ResourceVersion = "2"
+	fakeWatch.Modify(ws2)
+
+	assert.Eventually(t, func() bool {
+		return atomic.LoadInt32(&callbackCount) >= 2
+	}, testTimeout, testPollInterval, "callback MUST fire on Modified event")
+
+	mu.Lock()
+	got := lastSeen
+	mu.Unlock()
+	require.NotNil(t, got)
+	require.NotNil(t, got.Status.UserCredsPresent,
+		"callback MUST receive the workspace with its full status "+
+			"including UserCredsPresent (auto-push consumer filters on it)")
+	assert.Equal(t, false, *got.Status.UserCredsPresent)
+}
+
+// TestWorkspaceWatcher_WorkspaceUpdateCallback_NotInvokedForDelete
+// pins the Deleted-event contract: onWorkspaceUpdate is for extant
+// workspaces only. Firing on Delete would surface a stale workspace
+// object to the consumer whose downstream lookups (bindings check,
+// DEK fetch) would race the actual cleanup.
+func TestWorkspaceWatcher_WorkspaceUpdateCallback_NotInvokedForDelete(t *testing.T) {
+	k8s, _, fakeWatch := setupWatcherMocks(t)
+
+	var callbackCount int32
+
+	w, err := NewWatcher(k8s, &testLogger{}, "default", func(*v1.Workspace) {})
+	require.NoError(t, err)
+	w.SetWorkspaceUpdateCallback(func(_ *v1.Workspace) {
+		atomic.AddInt32(&callbackCount, 1)
+	})
+	require.NoError(t, w.Start())
+	defer w.Stop()
+
+	// Seed with Add so the callback fires once.
+	ws := &v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-delete", ResourceVersion: "1"},
+		Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive},
+	}
+	fakeWatch.Add(ws)
+	assert.Eventually(t, func() bool {
+		return atomic.LoadInt32(&callbackCount) >= 1
+	}, testTimeout, testPollInterval)
+
+	before := atomic.LoadInt32(&callbackCount)
+
+	// Delete event MUST NOT invoke the callback.
+	ws2 := ws.DeepCopy()
+	ws2.ResourceVersion = "2"
+	fakeWatch.Delete(ws2)
+
+	// Give the watch goroutine time to process the Delete + verify
+	// callback count did not increase.
+	time.Sleep(100 * time.Millisecond)
+	assert.Equal(t, before, atomic.LoadInt32(&callbackCount),
+		"Delete event MUST NOT invoke onWorkspaceUpdate — "+
+			"consumers filter on Active phase and expect the workspace to "+
+			"exist for downstream lookups")
 }

@@ -117,7 +117,7 @@ func TestGetDEKForUser_NoActiveSessions(t *testing.T) {
 	f := newGetDEKForUserFixture(t)
 	f.svc.signingKeys = &staticSigningKeys{keys: [][]byte{[]byte("primary-key")}}
 
-	dek, err := f.svc.GetDEKForUser(context.Background(), f.userID)
+	dek, _, err := f.svc.GetDEKForUser(context.Background(), f.userID)
 	assert.Nil(t, dek)
 	assert.ErrorIs(t, err, ErrDEKUnavailable,
 		"absent session must surface as ErrDEKUnavailable — same sentinel "+
@@ -137,9 +137,14 @@ func TestGetDEKForUser_HappyPathPrimaryKey(t *testing.T) {
 
 	row := f.addSession(t, primary, f.baseTs.Add(-30*time.Minute), f.baseTs.Add(24*time.Hour))
 
-	dek, err := f.svc.GetDEKForUser(context.Background(), f.userID)
+	dek, jti, err := f.svc.GetDEKForUser(context.Background(), f.userID)
 	require.NoError(t, err)
 	assert.Equal(t, f.realDEK, dek, "returned DEK must equal the plaintext used at login")
+	assert.Equal(t, row.JTI.String(), jti,
+		"jti return MUST be the row whose KEK unwrapped — callers use "+
+			"it as sessionID in agentpush.WithAuth so subsequent "+
+			"GetDEK(jti, matchedKey) calls hit the Redis cache "+
+			"this method just populated")
 
 	cached, err := f.cache.GetDEK(context.Background(), row.JTI.String())
 	require.NoError(t, err)
@@ -161,7 +166,7 @@ func TestGetDEKForUser_PicksMostRecentSession(t *testing.T) {
 	old := f.addSession(t, previous, f.baseTs.Add(-3*time.Hour), f.baseTs.Add(1*time.Hour))
 	newRow := f.addSession(t, primary, f.baseTs.Add(-1*time.Hour), f.baseTs.Add(23*time.Hour))
 
-	dek, err := f.svc.GetDEKForUser(context.Background(), f.userID)
+	dek, _, err := f.svc.GetDEKForUser(context.Background(), f.userID)
 	require.NoError(t, err)
 	assert.Equal(t, f.realDEK, dek)
 
@@ -188,7 +193,7 @@ func TestGetDEKForUser_FallsBackToPreviousSigningKey(t *testing.T) {
 
 	f.addSession(t, previous, f.baseTs.Add(-30*time.Minute), f.baseTs.Add(23*time.Hour))
 
-	dek, err := f.svc.GetDEKForUser(context.Background(), f.userID)
+	dek, _, err := f.svc.GetDEKForUser(context.Background(), f.userID)
 	require.NoError(t, err)
 	assert.Equal(t, f.realDEK, dek,
 		"iteration must try primary then previous; second try must succeed")
@@ -212,7 +217,7 @@ func TestGetDEKForUser_UnwrappableSurfacesDEKUnavailable(t *testing.T) {
 		[]byte("previous-signing-key"),
 	}}
 
-	dek, err := f.svc.GetDEKForUser(context.Background(), f.userID)
+	dek, _, err := f.svc.GetDEKForUser(context.Background(), f.userID)
 	assert.Nil(t, dek)
 	assert.ErrorIs(t, err, ErrDEKUnavailable,
 		"exhausted keys with no unwrap MUST surface as ErrDEKUnavailable, "+
@@ -242,7 +247,7 @@ func TestGetDEKForUser_UsesCachedDEKIfPresent(t *testing.T) {
 	stored.WrappedDEK = []byte("not-a-real-wrap")
 	f.store.mu.Unlock()
 
-	dek, err := f.svc.GetDEKForUser(context.Background(), f.userID)
+	dek, _, err := f.svc.GetDEKForUser(context.Background(), f.userID)
 	require.NoError(t, err)
 	assert.Equal(t, f.realDEK, dek,
 		"cache hit must short-circuit before unwrap; corrupted stored "+
@@ -257,7 +262,7 @@ func TestGetDEKForUser_ListErrorPropagates(t *testing.T) {
 	f.svc.signingKeys = &staticSigningKeys{keys: [][]byte{[]byte("primary")}}
 	f.store.listErr = errors.New("connection refused")
 
-	dek, err := f.svc.GetDEKForUser(context.Background(), f.userID)
+	dek, _, err := f.svc.GetDEKForUser(context.Background(), f.userID)
 	assert.Nil(t, dek)
 	require.Error(t, err)
 	assert.NotErrorIs(t, err, ErrDEKUnavailable,
@@ -276,7 +281,7 @@ func TestGetDEKForUser_NoEnumeratorConfiguredIsDEKUnavailable(t *testing.T) {
 
 	f.addSession(t, []byte("some-key"), f.baseTs.Add(-30*time.Minute), f.baseTs.Add(23*time.Hour))
 
-	dek, err := f.svc.GetDEKForUser(context.Background(), f.userID)
+	dek, _, err := f.svc.GetDEKForUser(context.Background(), f.userID)
 	assert.Nil(t, dek)
 	assert.ErrorIs(t, err, ErrDEKUnavailable,
 		"missing enumerator (wiring bug) must not panic and must not "+
@@ -295,7 +300,7 @@ func TestGetDEKForUser_NoStoreConfiguredIsDEKUnavailable(t *testing.T) {
 		signingKeys: &staticSigningKeys{keys: [][]byte{[]byte("primary")}},
 	}
 
-	dek, err := svc.GetDEKForUser(context.Background(), "user-1")
+	dek, _, err := svc.GetDEKForUser(context.Background(), "user-1")
 	assert.Nil(t, dek)
 	assert.ErrorIs(t, err, ErrDEKUnavailable)
 }
@@ -358,7 +363,7 @@ func TestGetDEKForUser_CacheGetErrorIsLoggedAndFallsBack(t *testing.T) {
 	// Inject a Redis-outage-style error on GetDEK.
 	f.cache.getErr = errors.New("dial tcp 127.0.0.1:6379: connect: connection refused")
 
-	dek, err := f.svc.GetDEKForUser(context.Background(), f.userID)
+	dek, _, err := f.svc.GetDEKForUser(context.Background(), f.userID)
 	require.NoError(t, err, "cache Get error must degrade to PG fallback, not fail the call")
 	assert.Equal(t, f.realDEK, dek)
 
@@ -457,7 +462,7 @@ func TestGetDEKForUser_MultiRowFallback(t *testing.T) {
 	oldRow := f.addSession(t, []byte("known-key"),
 		f.baseTs.Add(-3*time.Hour), f.baseTs.Add(23*time.Hour))
 
-	dek, err := f.svc.GetDEKForUser(context.Background(), f.userID)
+	dek, _, err := f.svc.GetDEKForUser(context.Background(), f.userID)
 	require.NoError(t, err,
 		"outer row-loop MUST continue past the unwrappable most-recent "+
 			"row to the reachable older row; a premature return would "+
