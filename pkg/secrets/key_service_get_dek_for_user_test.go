@@ -432,3 +432,41 @@ func (c *captureLogger) hasWarn(prefix string) bool {
 	}
 	return false
 }
+
+// TestGetDEKForUser_MultiRowFallback covers the second-order fallback
+// path: the most-recent row exists but NONE of the currently-known
+// signing keys can unwrap it (row was wrapped under a since-rotated
+// key that fell out of the retention window), while an older row
+// exists that CAN be unwrapped under a still-known key. This is the
+// realistic "user hasn't logged in for a while, but their oldest
+// still-active session is intact" scenario.
+//
+// The outer for-rows-loop MUST continue to the older row when the
+// inner iterate-signing-keys loop exhausts without success — a bug
+// that returned ErrDEKUnavailable on the first-row failure would
+// prematurely give up while a valid unwrap was reachable.
+func TestGetDEKForUser_MultiRowFallback(t *testing.T) {
+	f := newGetDEKForUserFixture(t)
+	// Enumerator knows one key: "known-key". Not "forgotten-key."
+	f.svc.signingKeys = &staticSigningKeys{keys: [][]byte{[]byte("known-key")}}
+
+	// Newest row wrapped under a signing key we no longer know.
+	f.addSession(t, []byte("forgotten-key"),
+		f.baseTs.Add(-1*time.Hour), f.baseTs.Add(23*time.Hour))
+	// Older row wrapped under a key we DO know.
+	oldRow := f.addSession(t, []byte("known-key"),
+		f.baseTs.Add(-3*time.Hour), f.baseTs.Add(23*time.Hour))
+
+	dek, err := f.svc.GetDEKForUser(context.Background(), f.userID)
+	require.NoError(t, err,
+		"outer row-loop MUST continue past the unwrappable most-recent "+
+			"row to the reachable older row; a premature return would "+
+			"leak ErrDEKUnavailable when a valid DEK is available")
+	assert.Equal(t, f.realDEK, dek)
+
+	// Verify the older row got the cache write-back (not the newer
+	// unwrappable one — nothing was unwrapped there).
+	cached, err := f.cache.GetDEK(context.Background(), oldRow.JTI.String())
+	require.NoError(t, err)
+	assert.NotNil(t, cached, "successful older-row unwrap must populate its jti's cache entry")
+}
