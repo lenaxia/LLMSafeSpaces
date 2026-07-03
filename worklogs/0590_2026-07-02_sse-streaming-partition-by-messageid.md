@@ -91,4 +91,4 @@ None.
 - `frontend/src/components/chat/ChatView.tsx` — `partitionStreamPartsByMessage`; one `MessageBubble` per group.
 - `frontend/src/components/chat/ChatView.test.tsx` — +3 tests (grouping + encounter order + backward compat).
 - `frontend/src/pages/ChatPage.sse.test.tsx` — +4 tests (messageID extraction from text/tool events, cross-message partition, delta preservation).
-- `worklogs/NNNN_2026-07-02_sse-streaming-partition-by-messageid.md` (this file). Reformatted in review round to match repo template.
+- `worklogs/0590_2026-07-02_sse-streaming-partition-by-messageid.md` (this file). Reformatted in review round to match repo template.
