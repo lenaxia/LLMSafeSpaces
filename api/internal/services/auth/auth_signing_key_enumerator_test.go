@@ -117,15 +117,19 @@ func TestEachSigningKey_CopiesKeysDoesNotAliasInternalState(t *testing.T) {
 	if prev[0] != 0x0a {
 		t.Errorf("prev mutated by callback: got %#v", prev)
 	}
-	// Each received iteration must be its own copy — mutating one MUST
-	// NOT bleed into the next. `received[0][0] == 0xff` is guaranteed
-	// (we set it), but `received[1][0]` must NOT be affected. Assert
-	// received[1] still starts with the prev[0] value the callback saw
-	// (before it mutated it) — i.e. a fresh copy per iteration.
-	if received[1][0] != 0xff {
-		// received[1] was mutated by the callback (0xff). Its
-		// pre-mutation value must have been 0x0a (fresh copy of prev),
-		// not something residual from received[0]'s mutation.
-		t.Errorf("expected received[1] to have been mutated to 0xff by the callback (fresh copy semantics), got %#v", received[1])
+	// Fresh-copy-per-iteration contract: received[0] and received[1]
+	// MUST be independent memory. If the enumerator reused one backing
+	// buffer, mutating `key` in iteration 2 (0xff) would also mutate
+	// what iteration 1 handed us. We detect that by asserting
+	// received[0]'s remaining bytes still reflect primary's original
+	// values ([0x02, 0x03, 0x04]) rather than prev's second-through-
+	// last bytes ([0x0b, 0x0c, 0x0d]). A shared-buffer implementation
+	// that copies prev over primary on iteration 2 would fail this
+	// assertion.
+	if !bytes.Equal(received[0][1:], []byte{0x02, 0x03, 0x04}) {
+		t.Errorf("received[0] tail was overwritten by later iteration: got %#v (shared-buffer aliasing)", received[0])
+	}
+	if !bytes.Equal(received[1][1:], []byte{0x0b, 0x0c, 0x0d}) {
+		t.Errorf("received[1] tail unexpected: got %#v", received[1])
 	}
 }
