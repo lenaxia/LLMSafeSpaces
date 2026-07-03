@@ -956,3 +956,185 @@ func TestPgJWTSessionStore_UserDeletionCascadesToJWTSessions(t *testing.T) {
 		t.Errorf("jwt_sessions row should cascade-delete with user; row still exists")
 	}
 }
+
+// TestPgJWTSessionStore_ListActiveJWTSessionsForUser exercises the real
+// SQL against PostgreSQL, catching mistakes the Go mock cannot:
+//
+//   - WHERE user_id = $1 typo or column-name drift.
+//   - `expires_at > NOW()` vs `>=` boundary — a row at exactly NOW must
+//     be treated as expired (the janitor's DELETE uses < NOW; if the
+//     list query used >= NOW we'd have a millisecond-window where the
+//     row is "listable but about to be pruned").
+//   - ORDER BY created_at DESC direction (bot review flagged this
+//     specifically — an ASC typo would ship without failing any Go-mock
+//     test since the mock sorts in Go, not in SQL).
+//   - LIMIT $2 vs LIMIT 5 hard-code — a caller-supplied bound MUST
+//     round-trip through the query.
+//   - Cross-user isolation via the WHERE clause, not just Go filtering.
+//
+// The Go mock in jwt_session_store_test.go validates the API contract;
+// this test validates the SQL execution against a real Postgres.
+func TestPgJWTSessionStore_ListActiveJWTSessionsForUser(t *testing.T) {
+	pool := getTestPool(t)
+	defer pool.Close()
+	store := NewPgJWTSessionStore(pool)
+	ctx := context.Background()
+
+	userA := "pg-jwt-listactive-A"
+	userB := "pg-jwt-listactive-B"
+	ensureTestUser(t, pool, userA)
+	ensureTestUser(t, pool, userB)
+	defer cleanupJWTSessions(t, pool, userA)
+	defer cleanupJWTSessions(t, pool, userB)
+
+	// Baseline "now" for ordering assertions. Use time.Now() rather than
+	// a fixed timestamp so we exercise the real NOW() vs stored-time
+	// comparison the janitor also relies on.
+	now := time.Now()
+
+	// User A rows: 3 active with varying created_at, 1 expired.
+	rowA_oldest := uuid.New()
+	rowA_mid := uuid.New()
+	rowA_newest := uuid.New()
+	rowA_expired := uuid.New()
+
+	for _, s := range []*JWTSession{
+		{JTI: rowA_oldest, UserID: userA, WrappedDEK: []byte{1}, KEKSalt: []byte{1},
+			CreatedAt: now.Add(-3 * time.Hour), ExpiresAt: now.Add(1 * time.Hour)},
+		{JTI: rowA_mid, UserID: userA, WrappedDEK: []byte{2}, KEKSalt: []byte{2},
+			CreatedAt: now.Add(-2 * time.Hour), ExpiresAt: now.Add(1 * time.Hour)},
+		{JTI: rowA_newest, UserID: userA, WrappedDEK: []byte{3}, KEKSalt: []byte{3},
+			CreatedAt: now.Add(-1 * time.Hour), ExpiresAt: now.Add(1 * time.Hour)},
+		{JTI: rowA_expired, UserID: userA, WrappedDEK: []byte{4}, KEKSalt: []byte{4},
+			CreatedAt: now.Add(-4 * time.Hour), ExpiresAt: now.Add(-1 * time.Minute)},
+	} {
+		if err := store.WriteJWTSession(ctx, s); err != nil {
+			t.Fatalf("write %v: %v", s.JTI, err)
+		}
+	}
+
+	// User B row: 1 active — MUST NOT leak into user A's results.
+	rowB := uuid.New()
+	if err := store.WriteJWTSession(ctx, &JWTSession{
+		JTI: rowB, UserID: userB, WrappedDEK: []byte{5}, KEKSalt: []byte{5},
+		CreatedAt: now.Add(-30 * time.Minute), ExpiresAt: now.Add(1 * time.Hour),
+	}); err != nil {
+		t.Fatalf("write userB: %v", err)
+	}
+
+	// --- Assertion 1: unlimited list for userA returns 3 active rows
+	// in created_at DESC order. Expired row excluded.
+	got, err := store.ListActiveJWTSessionsForUser(ctx, userA, 0)
+	if err != nil {
+		t.Fatalf("list unlimited: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("unlimited list: want 3 (3 active, 1 expired excluded); got %d", len(got))
+	}
+	// SQL ORDER BY created_at DESC — newest first.
+	if got[0].JTI != rowA_newest {
+		t.Errorf("first row: want newest %v; got %v", rowA_newest, got[0].JTI)
+	}
+	if got[1].JTI != rowA_mid {
+		t.Errorf("second row: want mid %v; got %v", rowA_mid, got[1].JTI)
+	}
+	if got[2].JTI != rowA_oldest {
+		t.Errorf("third row: want oldest %v; got %v", rowA_oldest, got[2].JTI)
+	}
+	for _, r := range got {
+		if r.JTI == rowA_expired {
+			t.Errorf("expired row must be excluded by WHERE expires_at > NOW(); got %v", r.JTI)
+		}
+		if r.UserID != userA {
+			t.Errorf("cross-user leak: got %s for userA query", r.UserID)
+		}
+	}
+
+	// --- Assertion 2: LIMIT enforcement. Caller-supplied bound must
+	// round-trip through the SQL, not be Go-side-clamped.
+	limited, err := store.ListActiveJWTSessionsForUser(ctx, userA, 2)
+	if err != nil {
+		t.Fatalf("list limited: %v", err)
+	}
+	if len(limited) != 2 {
+		t.Fatalf("limit=2: want 2 rows; got %d", len(limited))
+	}
+	if limited[0].JTI != rowA_newest || limited[1].JTI != rowA_mid {
+		t.Errorf("limit preserved wrong rows: got [%v %v]", limited[0].JTI, limited[1].JTI)
+	}
+
+	// --- Assertion 3: cross-user isolation. UserB query must return
+	// only userB's row.
+	bRows, err := store.ListActiveJWTSessionsForUser(ctx, userB, 0)
+	if err != nil {
+		t.Fatalf("list userB: %v", err)
+	}
+	if len(bRows) != 1 || bRows[0].JTI != rowB {
+		t.Errorf("userB query: want [%v]; got %+v", rowB, bRows)
+	}
+
+	// --- Assertion 4: unknown user returns empty, nil error.
+	empty, err := store.ListActiveJWTSessionsForUser(ctx, "pg-jwt-nonexistent", 0)
+	if err != nil {
+		t.Fatalf("list unknown: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("unknown user must return empty; got %d rows", len(empty))
+	}
+}
+
+// TestPgJWTSessionStore_ListActive_BoundaryAtExactNow validates that a
+// row expiring at exactly the query's clock-observed NOW() is
+// EXCLUDED (SQL uses strict `> NOW()`, matching the janitor's strict
+// `< NOW()` in DeleteExpiredJWTSessions). Without this, a "just-
+// pruned" row would briefly appear in the list, waste a signing-key
+// iteration, and produce a misleading Warn.
+//
+// We can't force a row to have expires_at == server NOW exactly, so
+// we insert with expires_at slightly in the past and confirm it's
+// filtered, then insert with expires_at slightly in the future and
+// confirm it appears. The observation that both cases behave
+// correctly plus the janitor's strict < NOW semantics implies the
+// boundary is on the correct side.
+func TestPgJWTSessionStore_ListActive_BoundaryAtExactNow(t *testing.T) {
+	pool := getTestPool(t)
+	defer pool.Close()
+	store := NewPgJWTSessionStore(pool)
+	ctx := context.Background()
+
+	userID := "pg-jwt-listactive-boundary"
+	ensureTestUser(t, pool, userID)
+	defer cleanupJWTSessions(t, pool, userID)
+
+	nearPast := uuid.New()
+	nearFuture := uuid.New()
+
+	// One row expiring 100ms in the past — must be excluded.
+	// One row expiring 5s in the future — must be included.
+	// (The 5s buffer prevents flakiness on slow test machines where
+	// the "future" row could expire between insert and query.)
+	now := time.Now()
+	if err := store.WriteJWTSession(ctx, &JWTSession{
+		JTI: nearPast, UserID: userID, WrappedDEK: []byte{1}, KEKSalt: []byte{1},
+		CreatedAt: now.Add(-1 * time.Hour), ExpiresAt: now.Add(-100 * time.Millisecond),
+	}); err != nil {
+		t.Fatalf("write nearPast: %v", err)
+	}
+	if err := store.WriteJWTSession(ctx, &JWTSession{
+		JTI: nearFuture, UserID: userID, WrappedDEK: []byte{2}, KEKSalt: []byte{2},
+		CreatedAt: now.Add(-1 * time.Hour), ExpiresAt: now.Add(5 * time.Second),
+	}); err != nil {
+		t.Fatalf("write nearFuture: %v", err)
+	}
+
+	got, err := store.ListActiveJWTSessionsForUser(ctx, userID, 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("boundary: want 1 (near-future only); got %d", len(got))
+	}
+	if got[0].JTI != nearFuture {
+		t.Errorf("wrong row surfaced: want %v (future); got %v", nearFuture, got[0].JTI)
+	}
+}

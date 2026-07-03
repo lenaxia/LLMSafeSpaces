@@ -638,7 +638,18 @@ func (s *KeyService) GetDEKForUser(ctx context.Context, userID string) ([]byte, 
 
 		// Fast path: Redis has the DEK cached under this jti from a
 		// prior request-context lookup. Reuse it.
-		if cached, cErr := s.cache.GetDEK(ctx, jtiStr); cErr == nil && cached != nil {
+		//
+		// Redis errors (not misses) are logged and treated as miss —
+		// same resilience pattern as GetDEK. A Redis outage should
+		// degrade the API to PG+KDF fallback, not fail the DEK
+		// retrieval; the caller (background auto-push) will still
+		// deliver secrets.
+		if cached, cErr := s.cache.GetDEK(ctx, jtiStr); cErr != nil {
+			if s.logger != nil {
+				s.logger.Warn("GetDEKForUser: Redis DEK lookup failed; falling back to unwrap",
+					"jti", jtiStr, "error", cErr.Error())
+			}
+		} else if cached != nil {
 			return cached, nil
 		}
 
@@ -694,10 +705,20 @@ func (s *KeyService) tryUnwrapRowWithKnownKeys(ctx context.Context, row *JWTSess
 		// Success. Write-back to Redis so the next request-context
 		// GetDEK(jti, matchedKey) call hits the fast path. Best-
 		// effort: cache errors don't fail the return.
-		if cErr := s.cache.CacheDEK(ctx, row.JTI.String(), dek, time.Until(row.ExpiresAt)); cErr != nil {
-			if s.logger != nil {
-				s.logger.Warn("GetDEKForUser: cache write-back failed (DEK still returned)",
-					"jti", row.JTI.String(), "error", cErr.Error())
+		//
+		// Guard against negative TTLs: the row was queried as
+		// expires_at > NOW() at the top of GetDEKForUser, but some
+		// milliseconds may have elapsed between that filter and
+		// this write. If the remaining lifetime is <= 0, Redis
+		// SETEX errors — skip the write rather than log a spurious
+		// warning. Mirrors the pattern in rehydrateDEKFromJWTSession
+		// (key_service.go, cacheTTL > 0 guard).
+		if cacheTTL := time.Until(row.ExpiresAt); cacheTTL > 0 {
+			if cErr := s.cache.CacheDEK(ctx, row.JTI.String(), dek, cacheTTL); cErr != nil {
+				if s.logger != nil {
+					s.logger.Warn("GetDEKForUser: cache write-back failed (DEK still returned)",
+						"jti", row.JTI.String(), "error", cErr.Error())
+				}
 			}
 		}
 		out = dek

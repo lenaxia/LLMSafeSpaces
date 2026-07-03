@@ -161,18 +161,6 @@ func (m *mockJWTSessionStore) ListActiveJWTSessionsForUser(_ context.Context, us
 	return out, nil
 }
 
-// mockJWTSessionStoreWithList is retained as a type alias so existing
-// tests that reference it (in this file, added during the same TDD
-// pass that added ListActiveJWTSessionsForUser to the interface) keep
-// compiling. The functionality is now on the base mock; this alias
-// documents that a "with-list" variant used to exist during
-// development.
-type mockJWTSessionStoreWithList = mockJWTSessionStore
-
-func newMockJWTSessionStoreWithList() *mockJWTSessionStoreWithList {
-	return newMockJWTSessionStore()
-}
-
 // --- Tests ---
 
 func TestMockJWTSessionStore_WriteAndGet(t *testing.T) {
@@ -378,7 +366,7 @@ func TestMockJWTSessionStore_PropagatesInjectedErrors(t *testing.T) {
 // and the caller would try to unwrap under a KEK that the janitor has
 // already flagged for pruning — pointless CPU work.
 func TestListActive_ExcludesExpired(t *testing.T) {
-	store := newMockJWTSessionStoreWithList()
+	store := newMockJWTSessionStore()
 	base := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
 	store.now = base
 
@@ -430,7 +418,7 @@ func TestListActive_ExcludesExpired(t *testing.T) {
 // which is most likely to require a rotated (previous) signing key —
 // slower path, more iterations.
 func TestListActive_OrdersMostRecentFirst(t *testing.T) {
-	store := newMockJWTSessionStoreWithList()
+	store := newMockJWTSessionStore()
 	base := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
 	store.now = base
 
@@ -470,7 +458,7 @@ func TestListActive_OrdersMostRecentFirst(t *testing.T) {
 // TestListActive_RespectsLimit verifies that limit caps the result
 // after sorting so we consistently get "the most recent N."
 func TestListActive_RespectsLimit(t *testing.T) {
-	store := newMockJWTSessionStoreWithList()
+	store := newMockJWTSessionStore()
 	base := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
 	store.now = base
 
@@ -505,7 +493,7 @@ func TestListActive_RespectsLimit(t *testing.T) {
 // nil-error, not an error. Callers use empty to signal "no live
 // session; use SessionlessInject."
 func TestListActive_UnknownUserReturnsEmpty(t *testing.T) {
-	store := newMockJWTSessionStoreWithList()
+	store := newMockJWTSessionStore()
 	got, err := store.ListActiveJWTSessionsForUser(context.Background(), "no-such-user", 0)
 	if err != nil {
 		t.Fatalf("list: %v", err)
@@ -518,7 +506,7 @@ func TestListActive_UnknownUserReturnsEmpty(t *testing.T) {
 // TestListActive_ScopedToUser proves the WHERE user_id = ? predicate.
 // Rows for other users must NOT be visible.
 func TestListActive_ScopedToUser(t *testing.T) {
-	store := newMockJWTSessionStoreWithList()
+	store := newMockJWTSessionStore()
 	base := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
 	store.now = base
 
@@ -550,7 +538,7 @@ func TestListActive_ScopedToUser(t *testing.T) {
 // TestListActive_PropagatesInjectedError proves errors bubble up
 // without translation, per the JWTSessionStore doc contract.
 func TestListActive_PropagatesInjectedError(t *testing.T) {
-	store := newMockJWTSessionStoreWithList()
+	store := newMockJWTSessionStore()
 	store.listErr = errors.New("boom")
 	_, err := store.ListActiveJWTSessionsForUser(context.Background(), "user-1", 0)
 	if err == nil || err.Error() != "boom" {

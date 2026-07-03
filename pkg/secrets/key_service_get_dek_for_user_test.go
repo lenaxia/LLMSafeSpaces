@@ -12,7 +12,14 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	pkgLoggerInterfacePkg "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 )
+
+// pkgLoggerInterface aliases the shared LoggerInterface so the local
+// captureLogger's With() return signature matches without a wide
+// import at the call sites.
+type pkgLoggerInterface = pkgLoggerInterfacePkg.LoggerInterface
 
 // staticSigningKeys satisfies SigningKeyEnumerator with a fixed list.
 // Tests inject rotation scenarios by ordering keys — first entry is
@@ -296,11 +303,20 @@ func TestGetDEKForUser_NoStoreConfiguredIsDEKUnavailable(t *testing.T) {
 // fakeDEKCache is a minimal in-memory DEKCache for GetDEKForUser tests.
 // The existing package tests use a mock via a testify pattern; kept
 // local to avoid coupling to that mock's API surface.
+//
+// Supports injected errors on Get / Cache for adversarial tests that
+// exercise the observability + resilience contracts (Redis outage,
+// cache write-back failure).
 type fakeDEKCache struct {
-	data map[string][]byte
+	data     map[string][]byte
+	getErr   error
+	writeErr error
 }
 
 func (f *fakeDEKCache) CacheDEK(_ context.Context, sessionID string, dek []byte, _ time.Duration) error {
+	if f.writeErr != nil {
+		return f.writeErr
+	}
 	cp := make([]byte, len(dek))
 	copy(cp, dek)
 	f.data[sessionID] = cp
@@ -308,6 +324,9 @@ func (f *fakeDEKCache) CacheDEK(_ context.Context, sessionID string, dek []byte,
 }
 
 func (f *fakeDEKCache) GetDEK(_ context.Context, sessionID string) ([]byte, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
 	v, ok := f.data[sessionID]
 	if !ok {
 		return nil, nil
@@ -320,4 +339,96 @@ func (f *fakeDEKCache) GetDEK(_ context.Context, sessionID string) ([]byte, erro
 func (f *fakeDEKCache) EvictDEK(_ context.Context, sessionID string) error {
 	delete(f.data, sessionID)
 	return nil
+}
+
+// TestGetDEKForUser_CacheGetErrorIsLoggedAndFallsBack proves the
+// Redis-outage observability contract added in review pass 1:
+// GetDEKForUser's cache-hit-path Redis error MUST be logged (so an
+// operator debugging "3am background auto-push slow" can see the
+// underlying cache fault) AND MUST fall through to the unwrap path
+// (so the DEK is still delivered). Aligns with the sibling GetDEK
+// path's "Redis DEK lookup failed; attempting durable rehydrate" log.
+func TestGetDEKForUser_CacheGetErrorIsLoggedAndFallsBack(t *testing.T) {
+	f := newGetDEKForUserFixture(t)
+	f.svc.signingKeys = &staticSigningKeys{keys: [][]byte{[]byte("primary")}}
+	log := newCaptureLogger()
+	f.svc.logger = log
+
+	f.addSession(t, []byte("primary"), f.baseTs.Add(-30*time.Minute), f.baseTs.Add(23*time.Hour))
+	// Inject a Redis-outage-style error on GetDEK.
+	f.cache.getErr = errors.New("dial tcp 127.0.0.1:6379: connect: connection refused")
+
+	dek, err := f.svc.GetDEKForUser(context.Background(), f.userID)
+	require.NoError(t, err, "cache Get error must degrade to PG fallback, not fail the call")
+	assert.Equal(t, f.realDEK, dek)
+
+	// Log must contain a Warn about the cache lookup failing.
+	assert.True(t, log.hasWarn("GetDEKForUser: Redis DEK lookup failed"),
+		"cache Get error MUST log a Warn — otherwise a Redis outage produces "+
+			"a silent perf degradation with no operator signal. Aligns with "+
+			"GetDEK's `Redis DEK lookup failed; attempting durable rehydrate`.")
+}
+
+// TestGetDEKForUser_NearExpiryRowSkipsCacheWriteback covers the
+// TTL-guard added in review pass 1: a row that passed the
+// `expires_at > NOW()` filter at query time may have negative
+// remaining lifetime by the time we compute time.Until(row.ExpiresAt)
+// at cache-write time. Redis SETEX with a negative TTL errors, and
+// the previous code logged a Warn even though nothing was wrong. The
+// guard skips the write in that window.
+//
+// We construct the scenario by setting expires_at to a past time,
+// then bypassing the "must be active" store-side filter by writing
+// the row directly and skipping the store's normal ListActive path —
+// instead we call tryUnwrapRowWithKnownKeys directly to isolate the
+// TTL-guard branch.
+func TestGetDEKForUser_NearExpiryRowSkipsCacheWriteback(t *testing.T) {
+	f := newGetDEKForUserFixture(t)
+	f.svc.signingKeys = &staticSigningKeys{keys: [][]byte{[]byte("primary")}}
+
+	// Poison the cache-write path so IF it's called, the test would
+	// fail via the assertion below (writeErr → log Warn). Then insert
+	// a row whose ExpiresAt is already in the past.
+	f.cache.writeErr = errors.New("SETEX would fail on negative TTL")
+	log := newCaptureLogger()
+	f.svc.logger = log
+
+	pastRow := f.addSession(t, []byte("primary"), time.Now().Add(-2*time.Hour), time.Now().Add(-1*time.Second))
+
+	// Call the helper directly rather than GetDEKForUser (which would
+	// filter out the expired row before ever reaching write-back).
+	dek := f.svc.tryUnwrapRowWithKnownKeys(context.Background(), pastRow)
+	assert.Equal(t, f.realDEK, dek, "unwrap must still succeed regardless of TTL guard")
+
+	// The guard MUST prevent the cache-write from being attempted, so
+	// the writeErr injection MUST NOT surface as a Warn.
+	assert.False(t, log.hasWarn("GetDEKForUser: cache write-back failed"),
+		"near-expiry / past-expiry rows MUST skip cache write-back to avoid "+
+			"spurious `write failed` warnings during the race window between "+
+			"list-time filter and write-time TTL computation")
+}
+
+// captureLogger records Warn calls so tests can assert on log
+// content. Not a full LoggerInterface mock — implements only what
+// the code under test uses (currently Warn).
+type captureLogger struct {
+	warns []string
+}
+
+func newCaptureLogger() *captureLogger { return &captureLogger{} }
+
+func (c *captureLogger) Debug(_ string, _ ...interface{})          {}
+func (c *captureLogger) Info(_ string, _ ...interface{})           {}
+func (c *captureLogger) Warn(msg string, _ ...interface{})         { c.warns = append(c.warns, msg) }
+func (c *captureLogger) Error(_ string, _ error, _ ...interface{}) {}
+func (c *captureLogger) Fatal(_ string, _ error, _ ...interface{}) {}
+func (c *captureLogger) With(_ ...interface{}) pkgLoggerInterface  { return c }
+func (c *captureLogger) Sync() error                               { return nil }
+func (c *captureLogger) hasWarn(prefix string) bool {
+	for _, w := range c.warns {
+		if len(w) >= len(prefix) && w[:len(prefix)] == prefix {
+			return true
+		}
+	}
+	return false
 }
