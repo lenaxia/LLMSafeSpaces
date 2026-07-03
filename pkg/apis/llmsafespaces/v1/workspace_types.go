@@ -343,6 +343,26 @@ type WorkspaceStatus struct {
 	ContextUsed          int64 `json:"contextUsed"`
 	ContextTotal         int64 `json:"contextTotal"`
 
+	// UserCredsPresent (worklog 0591) reports whether agentd's
+	// last-reload-secrets.json cache indicates that user-DEK content
+	// has been materialized on the pod. Populated by the controller
+	// on every health scrape from agentd's /v1/healthz. A pointer for
+	// tri-state:
+	//
+	//   nil   : the controller has not scraped agentd yet, or the
+	//           pod isn't reachable. The API's watcher-driven auto-push
+	//           MUST treat nil as "unknown" and skip firing — a phase
+	//           transition alone is not enough signal.
+	//   true  : agentd reports at least one user-DEK entry materialized.
+	//           No push needed.
+	//   false : agentd reports no user-DEK content. The API's watcher
+	//           fires a background auto-push if the workspace has any
+	//           user_secret_bindings.
+	//
+	// Cleared to nil when the pod becomes unreachable so a stale "true"
+	// from a previous pod doesn't suppress the push after recreation.
+	UserCredsPresent *bool `json:"userCredsPresent,omitempty"`
+
 	// ---- Startup latency measurement anchors (S18.10) ----
 	//
 	// PendingAt is set by the controller on the first Pending-phase reconcile.

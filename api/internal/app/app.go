@@ -36,6 +36,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/policy"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/prompt"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/role"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/secretautopush"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionindex"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sso"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
@@ -413,16 +414,39 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			agentpush.WithLogger(log),
 		)
 		secretsHandler.SetAgentPusher(agentPusher)
-		if wsSvc, ok := svc.Workspace.(*workspace.Service); ok {
-			wsSvc.SetSecretPusher(&wsAgentPusherAdapter{pusher: agentPusher})
-			// worklog 0589: also install the pod-identity tracker so
-			// GetWorkspaceStatus can detect pod recreations and fire the
-			// auto-push. Both dependencies for the pod-recreation flow
-			// are wired in one type-assert block here rather than split
-			// across the two "svc.Workspace type-assert" sites in this
-			// function.
-			wsSvc.SetPodIdentityTracker(dbSvc)
-		}
+		// worklog 0591: the workspace service is no longer a consumer
+		// of the auto-push (that role moved to secretautopush below).
+		// SecretsHandler still needs the shared agentPusher for
+		// SetBindings/ReloadSecrets user-driven paths, so we wire it
+		// above.
+
+		// worklog 0591: watcher-driven auto-push. Uses the shared
+		// agentpush.Service + a KeyService.GetDEKForUser retrieval to
+		// deliver user-DEK content after a pod recreation (silent or
+		// user-initiated), without depending on a live user-request
+		// context. Wired into the workspace watcher's per-CRD-event
+		// callback via proxyHandler.SetWorkspaceUpdateCallback.
+		//
+		// Metric emission is handled by the wsAgentPusherAdapter's
+		// existing recordAutoPushOutcome call (see adapter.Push in
+		// secrets_adapters.go). We intentionally do NOT install a
+		// secondary metric hook on secretautopush itself — that would
+		// double-count api_secret_auto_push_total every time the
+		// watcher-driven push succeeded. The adapter's emission is
+		// authoritative.
+		//
+		// AuthContexter uses agentpush.WithAuth. After GetDEKForUser
+		// caches the DEK in Redis under the jti, agentpush.Push's
+		// downstream GetDEK(jti, nil) hits the cache and works without
+		// a signing key at hand.
+		autoPushSvc := secretautopush.New(
+			keyService,
+			&bindingsCheckerAdapter{store: pgStore},
+			&wsAgentPusherAdapter{pusher: agentPusher},
+			secretautopush.WithLogger(log),
+			secretautopush.WithAuthContexter(agentpushAuthCtxBuilder{}),
+		)
+		proxyHandler.SetWorkspaceUpdateCallback(autoPushSvc.OnWorkspaceUpdate)
 		// Wire password getter so ListModels/SetModel can authenticate
 		// to opencode. Uses the same K8s-secret-backed getter as ProxyHandler.
 		// Wired after proxyHandler construction (see below).

@@ -108,6 +108,11 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 
 	if err != nil {
 		ws.Status.ConsecutiveHealthFailures++
+		// Pod unreachable — clear UserCredsPresent so a stale "true"
+		// from a previous pod doesn't suppress the API's auto-push
+		// after recreation (worklog 0591). The field reflects the
+		// CURRENT pod's state; unreachable means we don't know it.
+		ws.Status.UserCredsPresent = nil
 		r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "Unknown",
 			v1.ReasonHealthCheckFailed, err.Error())
 		if ws.Status.ConsecutiveHealthFailures >= healthCheckFailureThreshold {
@@ -123,6 +128,9 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 	var healthResp agentd.HealthzResponse
 	if err := json.NewDecoder(resp.Body).Decode(&healthResp); err != nil {
 		ws.Status.ConsecutiveHealthFailures++
+		// Response undecodable: same reasoning as unreachable — we
+		// can't trust any prior value, clear to nil.
+		ws.Status.UserCredsPresent = nil
 		r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "Unknown",
 			v1.ReasonHealthCheckFailed, "failed to decode healthz response")
 		return
@@ -130,6 +138,8 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 
 	if !healthResp.Healthy {
 		ws.Status.ConsecutiveHealthFailures++
+		// Agent reports unhealthy: don't trust its cache-file signal.
+		ws.Status.UserCredsPresent = nil
 		r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "False",
 			v1.ReasonAgentUnhealthy, "agent process not responding")
 		if ws.Status.ConsecutiveHealthFailures >= healthCheckFailureThreshold {
@@ -140,8 +150,12 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 		return
 	}
 
-	// Liveness passed — reset failure counter.
+	// Liveness passed — reset failure counter and mirror the
+	// user-creds signal onto CRD status so the API's workspace
+	// watcher can consume it (worklog 0591).
 	ws.Status.ConsecutiveHealthFailures = 0
+	ucp := healthResp.UserCredsPresent
+	ws.Status.UserCredsPresent = &ucp
 	r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "True",
 		v1.ReasonAgentHealthy, fmt.Sprintf("agentd alive, uptime=%ds", healthResp.UptimeSeconds))
 }

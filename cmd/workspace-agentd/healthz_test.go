@@ -34,7 +34,7 @@ import (
 // reflects the supplied startedAt.
 func TestHealthzHandler_ReturnsHealthyWithoutOpencode(t *testing.T) {
 	startedAt := time.Now().Add(-42 * time.Second)
-	handler := healthzHandler(startedAt)
+	handler := healthzHandler(startedAt, "")
 
 	req := httptest.NewRequest("GET", "/v1/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -68,7 +68,7 @@ func TestHealthzHandler_NeverCallsOpencode(t *testing.T) {
 	defer func() { setAgentAddr(origAddr) }()
 	setAgentAddr(opencodeMock.URL)
 
-	handler := healthzHandler(time.Now())
+	handler := healthzHandler(time.Now(), "")
 
 	req := httptest.NewRequest("GET", "/v1/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -94,7 +94,7 @@ func TestHealthzHandler_LatencyUnderOpencodeStarvation(t *testing.T) {
 	defer func() { setAgentAddr(origAddr) }()
 	setAgentAddr(opencodeMock.URL)
 
-	handler := healthzHandler(time.Now())
+	handler := healthzHandler(time.Now(), "")
 
 	const probes = 50
 	maxLatency := time.Duration(0)
@@ -118,7 +118,7 @@ func TestHealthzHandler_LatencyUnderOpencodeStarvation(t *testing.T) {
 // kubelet + the controller's frequent probe + arbitrary diagnostic clients
 // produce in practice). Run with -race to catch data races.
 func TestHealthzHandler_ConcurrentRequestsAreRaceFree(t *testing.T) {
-	handler := healthzHandler(time.Now())
+	handler := healthzHandler(time.Now(), "")
 
 	const concurrent = 100
 	var wg sync.WaitGroup
@@ -142,7 +142,7 @@ func TestHealthzHandler_ConcurrentRequestsAreRaceFree(t *testing.T) {
 // fixtures may probe with POST or with a body. The handler should
 // respond identically.
 func TestHealthzHandler_IgnoresRequestBodyAndMethod(t *testing.T) {
-	handler := healthzHandler(time.Now())
+	handler := healthzHandler(time.Now(), "")
 
 	for _, method := range []string{"GET", "POST", "HEAD", "PUT", "DELETE"} {
 		t.Run(method, func(t *testing.T) {
@@ -159,7 +159,7 @@ func TestHealthzHandler_IgnoresRequestBodyAndMethod(t *testing.T) {
 // must show uptime advancing by at least 1 second.
 func TestHealthzHandler_UptimeAdvances(t *testing.T) {
 	startedAt := time.Now()
-	handler := healthzHandler(startedAt)
+	handler := healthzHandler(startedAt, "")
 
 	rec1 := httptest.NewRecorder()
 	handler.ServeHTTP(rec1, httptest.NewRequest("GET", "/v1/healthz", nil))
@@ -186,7 +186,7 @@ func TestHealthzHandler_DoesNotConstructOpenCodeClient(t *testing.T) {
 	// healthzHandler takes (startedAt time.Time). It MUST NOT take an
 	// *OpenCodeClient. If a future change adds the dependency, the
 	// signature changes and this test fails to compile — also acceptable.
-	handler := healthzHandler(time.Now())
+	handler := healthzHandler(time.Now(), "")
 	require.NotNil(t, handler)
 
 	req := httptest.NewRequest("GET", "/v1/healthz", nil)
@@ -200,7 +200,7 @@ func TestHealthzHandler_DoesNotConstructOpenCodeClient(t *testing.T) {
 // ./cmd/workspace-agentd/
 
 func BenchmarkHealthzHandler(b *testing.B) {
-	handler := healthzHandler(time.Now())
+	handler := healthzHandler(time.Now(), "")
 	req := httptest.NewRequest("GET", "/v1/healthz", nil)
 
 	b.ResetTimer()
@@ -214,7 +214,7 @@ func BenchmarkHealthzHandler(b *testing.B) {
 // not consult ctx (it has no opencode call to cancel, no goroutine to
 // cancel). A canceled context must still produce a 200 response.
 func TestHealthzHandler_ContextCancellationIgnored(t *testing.T) {
-	handler := healthzHandler(time.Now())
+	handler := healthzHandler(time.Now(), "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already canceled
@@ -232,7 +232,7 @@ func TestHealthzHandler_ContextCancellationIgnored(t *testing.T) {
 // Any new fields require coordinated updates in pkg/agentd/types.go and
 // downstream consumers (kubelet, controller's probe).
 func TestHealthzHandler_ResponseShapeIsExactlyAgentdHealthzResponse(t *testing.T) {
-	handler := healthzHandler(time.Now())
+	handler := healthzHandler(time.Now(), "")
 
 	req := httptest.NewRequest("GET", "/v1/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -241,8 +241,8 @@ func TestHealthzHandler_ResponseShapeIsExactlyAgentdHealthzResponse(t *testing.T
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &raw))
 
-	assert.ElementsMatch(t, []string{"healthy", "version", "uptime_seconds"},
-		keys(raw), "response must contain exactly the three documented fields")
+	assert.ElementsMatch(t, []string{"healthy", "version", "uptime_seconds", "userCredsPresent"},
+		keys(raw), "response must contain exactly the four documented fields")
 }
 
 func keys(m map[string]any) []string {
@@ -257,7 +257,7 @@ func keys(m map[string]any) []string {
 // high request rate without leaking goroutines. This is a regression
 // test for the implicit assumption that /v1/healthz is essentially free.
 func TestHealthzHandler_BurstThroughput(t *testing.T) {
-	handler := healthzHandler(time.Now())
+	handler := healthzHandler(time.Now(), "")
 
 	const requests = 10_000
 	deadline := time.Now().Add(2 * time.Second)

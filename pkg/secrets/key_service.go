@@ -595,6 +595,14 @@ func (s *KeyService) DEKAvailable(ctx context.Context, sessionID string) bool {
 // after pod recreation, etc.) that need to deliver user-DEK content
 // but do not run in an authenticated user-request context.
 //
+// Returns (dek, jti, error). The jti is the jwt_sessions row's
+// primary key — callers use it as a sessionID when building an
+// agentpush.WithAuth context so that InjectSecrets' subsequent
+// GetDEK(sessionID, matchedSigningKey) call hits the Redis cache
+// this method just populated. Without returning jti, the caller
+// would have no way to reference the DEK just cached, and would
+// re-execute the unwrap on every downstream call.
+//
 // Resolution order (worklog 0590):
 //
 //  1. jwtSessions.ListActiveJWTSessionsForUser(userID, LIMIT) →
@@ -627,21 +635,21 @@ func (s *KeyService) DEKAvailable(ctx context.Context, sessionID string) bool {
 // infrastructure errors (PG connection failure, cache client fault)
 // are returned verbatim so operators can distinguish debug-worthy
 // outages from expected "user logged out" cases.
-func (s *KeyService) GetDEKForUser(ctx context.Context, userID string) ([]byte, error) {
+func (s *KeyService) GetDEKForUser(ctx context.Context, userID string) (dek []byte, jti string, err error) {
 	// Wiring pre-conditions. Both are optional deps (setter-DI);
 	// missing either at call time is a wiring bug for the caller's
 	// use case but must not panic — degrade to the same sentinel
 	// the "no session" case uses.
 	if s.jwtSessions == nil || s.signingKeys == nil {
-		return nil, ErrDEKUnavailable
+		return nil, "", ErrDEKUnavailable
 	}
 
 	rows, err := s.jwtSessions.ListActiveJWTSessionsForUser(ctx, userID, jwtSessionUserLookupLimit)
 	if err != nil {
-		return nil, fmt.Errorf("list active jwt_sessions for user: %w", err)
+		return nil, "", fmt.Errorf("list active jwt_sessions for user: %w", err)
 	}
 	if len(rows) == 0 {
-		return nil, ErrDEKUnavailable
+		return nil, "", ErrDEKUnavailable
 	}
 
 	for _, row := range rows {
@@ -661,19 +669,19 @@ func (s *KeyService) GetDEKForUser(ctx context.Context, userID string) ([]byte, 
 					"jti", jtiStr, "error", cErr.Error())
 			}
 		} else if cached != nil {
-			return cached, nil
+			return cached, jtiStr, nil
 		}
 
 		// Slow path: iterate signing keys, try each.
 		if dek := s.tryUnwrapRowWithKnownKeys(ctx, row); dek != nil {
-			return dek, nil
+			return dek, jtiStr, nil
 		}
 	}
 
 	// All rows exhausted without a successful unwrap. Every failure
 	// mode (rotated-past-retention-window, corrupted wrap) surfaces as
 	// ErrDEKUnavailable so callers handle uniformly.
-	return nil, ErrDEKUnavailable
+	return nil, "", ErrDEKUnavailable
 }
 
 // tryUnwrapRowWithKnownKeys iterates the enumerator's signing keys and

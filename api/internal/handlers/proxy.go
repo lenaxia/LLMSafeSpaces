@@ -82,6 +82,12 @@ type ProxyHandler struct {
 	// Active. Set via SetVersionSyncCallback before Start().
 	versionSyncCb workspace.VersionSyncCallback
 
+	// workspaceUpdateCb is invoked on every Added/Modified event for
+	// any Workspace CRD (worklog 0591). Powers the watcher-driven
+	// auto-push of user-DEK secrets after pod recreation. Set via
+	// SetWorkspaceUpdateCallback before Start().
+	workspaceUpdateCb workspace.WorkspaceUpdateCallback
+
 	queueSvc interfaces.MessageQueueService
 
 	// requestBuffer parks POST /message requests during an opencode restart

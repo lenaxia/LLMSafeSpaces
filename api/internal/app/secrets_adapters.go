@@ -811,3 +811,37 @@ func classifyPushOutcome(err error) string {
 func recordAutoPushOutcome(outcome string) {
 	metrics.RecordSecretAutoPush(outcome)
 }
+
+// --- worklog 0591: watcher-driven auto-push adapters ---
+
+// bindingsCheckerAdapter satisfies secretautopush.BindingsChecker via
+// the existing SecretStore.GetBindings query. Reports true iff the
+// workspace has at least one row in user_secret_bindings. All rows in
+// that table involve at least one user-DEK-encrypted secret (env-secret,
+// ssh-key, secret-file, git-credential, or user-owned llm-provider),
+// so non-empty is exactly the trigger for the watcher-driven auto-push.
+type bindingsCheckerAdapter struct {
+	store secrets.SecretStore
+}
+
+func (b *bindingsCheckerAdapter) UserHasBoundSecrets(ctx context.Context, workspaceID string) (bool, error) {
+	list, err := b.store.GetBindings(ctx, workspaceID)
+	if err != nil {
+		return false, err
+	}
+	return len(list) > 0, nil
+}
+
+// agentpushAuthCtxBuilder satisfies secretautopush.AuthContexter via
+// agentpush.WithAuth. Kept in the app package so secretautopush
+// doesn't import agentpush (DIP — secretautopush depends on an
+// interface, not the concrete type).
+type agentpushAuthCtxBuilder struct{}
+
+func (agentpushAuthCtxBuilder) WithAuth(ctx context.Context, sessionID string, _ []byte) context.Context {
+	// The DEK arg on agentpush.WithAuth is `matchedSigningKey` — nil
+	// is fine because the DEK is already cached in Redis under the
+	// jti-as-sessionID by KeyService.GetDEKForUser. Downstream
+	// InjectSecrets → GetDEK(jti, nil) will hit the Redis cache.
+	return agentpush.WithAuth(ctx, sessionID, nil)
+}
