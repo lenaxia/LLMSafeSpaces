@@ -327,3 +327,50 @@ func ensureLockReleased(t *testing.T, timeout time.Duration, fn func() bool) err
 	}
 	return errors.New("lock did not release within timeout")
 }
+
+// TestOnWorkspaceUpdate_PushErrorEmitsMetricAndReleasesLock covers the
+// error handling in run(): if pusher.Push returns an error, the metric
+// hook fires with "push_error" AND the in-flight lock releases so a
+// subsequent watch event can retry. Without lock release, a single
+// failed push would permanently wedge the workspace.
+func TestOnWorkspaceUpdate_PushErrorEmitsMetricAndReleasesLock(t *testing.T) {
+	dek := &fakeDEKRetriever{
+		returnDEK: []byte("dek"),
+		returnJTI: "jti-abc",
+	}
+	bindings := &fakeBindingsChecker{returnExists: true}
+	pusher := &fakePusher{returnErr: errors.New("agentd unreachable")}
+
+	var outcomes []string
+	var outcomesMu sync.Mutex
+	svc := secretautopush.New(dek, bindings, pusher,
+		secretautopush.WithMetricsHook(func(outcome string) {
+			outcomesMu.Lock()
+			outcomes = append(outcomes, outcome)
+			outcomesMu.Unlock()
+		}),
+	)
+
+	ws := mustWs("ws-1", "user-1", v1.WorkspacePhaseActive, boolPtr(false))
+	svc.OnWorkspaceUpdate(ws)
+
+	waitForCalls(t, &pusher.calls, 1, 2*time.Second)
+	// Give the goroutine's defer a chance to run so the lock releases.
+	time.Sleep(50 * time.Millisecond)
+
+	outcomesMu.Lock()
+	got := append([]string(nil), outcomes...)
+	outcomesMu.Unlock()
+	assert.Contains(t, got, "push_error",
+		"pusher.Push error MUST emit metric outcome=push_error so operators "+
+			"can distinguish push failures from other skip reasons")
+
+	// Verify the lock released: a second OnWorkspaceUpdate with same WS
+	// MUST fire a second push (not be blocked by stale in-flight state).
+	before := pusher.calls.Load()
+	svc.OnWorkspaceUpdate(ws)
+	waitForCalls(t, &pusher.calls, before+1, 2*time.Second)
+	assert.Greater(t, pusher.calls.Load(), before,
+		"lock MUST release after failed push — otherwise a single failed "+
+			"push would permanently wedge auto-push for this workspace")
+}

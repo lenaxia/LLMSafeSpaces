@@ -31,6 +31,7 @@ package secretautopush
 import (
 	"context"
 	"sync"
+	"time"
 
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
@@ -65,8 +66,15 @@ type SecretPusher interface {
 // SecretPusher.Push can consume. Satisfied by a small wiring adapter
 // in app.New that calls agentpush.WithAuth internally so this package
 // doesn't import agentpush.
+//
+// The second parameter is an opaque auth blob (in production wiring:
+// nil, because the DEK is already cached in Redis under the jti by
+// DEKRetriever.GetDEKForUser — the pusher's downstream GetDEK(jti,
+// nil) hits the cache). Named `authBlob` intentionally: it is not
+// always a DEK, and the interface should not force implementations
+// to conflate the concept.
 type AuthContexter interface {
-	WithAuth(ctx context.Context, sessionID string, dek []byte) context.Context
+	WithAuth(ctx context.Context, sessionID string, authBlob []byte) context.Context
 }
 
 // Service is the auto-push consumer. Construct with New; wire
@@ -177,8 +185,25 @@ func (s *Service) OnWorkspaceUpdate(ws *v1.Workspace) {
 	s.inFlightMu.Unlock()
 
 	// Fire-and-forget. The goroutine owns the lock removal via defer.
-	go s.run(context.Background(), ws.Name, userID)
+	// Bounded by autoPushTimeout so a hung agentd (accepting TCP but
+	// never responding) or a hung DEK retrieval doesn't leak the
+	// goroutine indefinitely — the underlying HTTP clients have their
+	// own timeouts, but this is defense-in-depth.
+	ctx, cancel := context.WithTimeout(context.Background(), autoPushTimeout)
+	go func() {
+		defer cancel()
+		s.run(ctx, ws.Name, userID)
+	}()
 }
+
+// autoPushTimeout bounds one auto-push attempt (bindings query + DEK
+// fetch + push HTTP call + optional cache writes). Set generously
+// relative to the underlying HTTP clients (agentpush uses 5s per
+// call; DEKRetriever's PG query is sub-100ms; bindings check is a
+// single indexed lookup): 30s covers the worst case plus retries
+// with margin. Not user-tunable — this is a defense-in-depth guard,
+// not a business-logic knob.
+const autoPushTimeout = 30 * time.Second
 
 // run performs the actual bindings-check + DEK-fetch + push. Runs on
 // a fresh context.Background() so the watch loop's ctx (which may

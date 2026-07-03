@@ -177,3 +177,58 @@ func extractHostname(u string) string {
 	}
 	return s
 }
+
+// TestCheckAgentHealth_ClearsUserCredsPresentOnUndecodable proves the
+// clearing contract for the "healthz responded but response body is
+// unparseable" path. Same reasoning as unreachable: we can't trust
+// any prior value; clear to nil so the API's watcher doesn't observe
+// stale state.
+func TestCheckAgentHealth_ClearsUserCredsPresentOnUndecodable(t *testing.T) {
+	server, restore := healthzServerOnAdminPort(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte("this is not JSON"))
+	})
+	defer server.Close()
+	defer restore()
+
+	ws := activeReachableWorkspace(t, server)
+	stale := true
+	ws.Status.UserCredsPresent = &stale
+
+	r := reconcilerFor(t)
+	r.checkAgentHealth(context.Background(), ws)
+
+	assert.Nil(t, ws.Status.UserCredsPresent,
+		"undecodable healthz response MUST clear UserCredsPresent — "+
+			"same reasoning as unreachable: no trustworthy signal available")
+}
+
+// TestCheckAgentHealth_ClearsUserCredsPresentOnUnhealthy proves the
+// clearing contract for the "healthz decoded but Healthy=false" path.
+// An unhealthy agentd cannot reliably report its cache state; a stale
+// UCP=true from a previous scrape must not survive.
+func TestCheckAgentHealth_ClearsUserCredsPresentOnUnhealthy(t *testing.T) {
+	server, restore := healthzServerOnAdminPort(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(agentd.HealthzResponse{
+			Healthy:          false, // agent process not responding
+			Version:          "test",
+			UptimeSeconds:    10,
+			UserCredsPresent: true, // even if agentd reports true, we discard
+		})
+	})
+	defer server.Close()
+	defer restore()
+
+	ws := activeReachableWorkspace(t, server)
+	stale := true
+	ws.Status.UserCredsPresent = &stale
+
+	r := reconcilerFor(t)
+	r.checkAgentHealth(context.Background(), ws)
+
+	assert.Nil(t, ws.Status.UserCredsPresent,
+		"Healthy=false MUST clear UserCredsPresent — an unhealthy agent's "+
+			"cache-state signal cannot be trusted; discarding it prevents "+
+			"suppressing the API's push after the pod recovers")
+}
