@@ -92,6 +92,17 @@ type SigningKeyEnumerator interface {
 // setter (not New arg) because auth.Service is constructed later in
 // app.New; setter-DI is the existing pattern for these late-arrival
 // deps.
+//
+// Unlike SetJWTSessionStore / SetSecretStore, this setter intentionally
+// has NO double-set panic guard. Rebinding the enumerator cannot cause
+// silent data inconsistency the way rebinding a store can: the worst
+// case is that a subsequent GetDEKForUser call fails to unwrap a row
+// (because the new enumerator returned different keys than were used
+// to wrap that row), which surfaces as ErrDEKUnavailable — the same
+// sentinel the "no session" path uses. The caller falls back cleanly.
+// A double-set panic here would forbid legitimate hot-swap scenarios
+// (test harnesses, key-rotation live-reload) without a corresponding
+// safety benefit.
 func (s *KeyService) SetSigningKeyEnumerator(e SigningKeyEnumerator) {
 	s.signingKeys = e
 }

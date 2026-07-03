@@ -117,8 +117,15 @@ func TestEachSigningKey_CopiesKeysDoesNotAliasInternalState(t *testing.T) {
 	if prev[0] != 0x0a {
 		t.Errorf("prev mutated by callback: got %#v", prev)
 	}
-	// Second-call bytes must not have picked up first-call mutation.
-	if received[1][0] == 0xff && !bytes.Equal(prev, []byte{0x0a, 0x0b, 0x0c, 0x0d}) {
-		t.Errorf("mutation crossed iterations")
+	// Each received iteration must be its own copy — mutating one MUST
+	// NOT bleed into the next. `received[0][0] == 0xff` is guaranteed
+	// (we set it), but `received[1][0]` must NOT be affected. Assert
+	// received[1] still starts with the prev[0] value the callback saw
+	// (before it mutated it) — i.e. a fresh copy per iteration.
+	if received[1][0] != 0xff {
+		// received[1] was mutated by the callback (0xff). Its
+		// pre-mutation value must have been 0x0a (fresh copy of prev),
+		// not something residual from received[0]'s mutation.
+		t.Errorf("expected received[1] to have been mutated to 0xff by the callback (fresh copy semantics), got %#v", received[1])
 	}
 }

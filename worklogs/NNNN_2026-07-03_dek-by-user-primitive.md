@@ -39,8 +39,8 @@ The primitive. Resolution order:
 
 1. `ListActiveJWTSessionsForUser(userID, 5)` → candidate rows. Empty → `ErrDEKUnavailable`.
 2. For each row (most-recent first):
-   a. Check Redis under `dek:<jti>`. Cache hit → return.
-   b. Iterate signing keys. First successful `UnwrapDEK` → write back to Redis under this jti, return DEK.
+   a. Check Redis under `dek:<jti>`. Cache hit → return. Redis error → log Warn (aligning with the sibling `GetDEK` "Redis DEK lookup failed" pattern) and fall through to unwrap.
+   b. Iterate signing keys. First successful `DecryptSecret` → write back to Redis under this jti (if remaining TTL > 0; guard aligns with `rehydrateDEKFromJWTSession`), return DEK.
 3. All rows exhausted with no unwrap → `ErrDEKUnavailable`.
 
 Bounded by `jwtSessionUserLookupLimit = 5` — a user with more than 5 concurrent sessions where NONE of them wraps under a currently-known signing key is well outside our rotation window; further rows aren't going to unwrap either.
@@ -76,14 +76,14 @@ Tests written first for every method. Adversarial-validated by neutering each of
 - `pkg/secrets/jwt_session_store.go` — add interface method + Pg impl.
 - `pkg/secrets/jwt_session_store_test.go` — 5 new tests, mock method inlined.
 - `pkg/secrets/key_service.go` — `SigningKeyEnumerator` interface + `SetSigningKeyEnumerator` setter + `GetDEKForUser` + `tryUnwrapRowWithKnownKeys` helper + `jwtSessionUserLookupLimit` const.
-- `pkg/secrets/key_service_get_dek_for_user_test.go` — 9 tests + fixture + `fakeDEKCache` + `staticSigningKeys`.
+- `pkg/secrets/key_service_get_dek_for_user_test.go` — 12 tests + fixture + `fakeDEKCache` (with injectable errors) + `staticSigningKeys` + `captureLogger`.
 - `api/internal/services/auth/auth.go` — `EachSigningKey` implementing the enumerator.
 - `api/internal/services/auth/auth_signing_key_enumerator_test.go` — 4 tests.
 - `api/internal/app/app.go` — one-line wiring: `keyService.SetSigningKeyEnumerator(authSvc)`.
 
 ## Test summary
 
-18 new tests across 4 packages. Full sweep (`go test ./api/... ./pkg/...`) green except for an unrelated repolint check about an unassigned worklog number on origin/main (from a separate merge).
+22 new tests across 4 packages (12 GetDEKForUser + 6 ListActive mock + 4 EachSigningKey + 2 PG integration). Full sweep (`go test ./api/... ./pkg/...`) green except for an unrelated repolint check about an unassigned worklog number on origin/main (from a separate merge).
 
 ## Follow-up
 
