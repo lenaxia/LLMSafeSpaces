@@ -599,6 +599,28 @@ func (s *Service) signingKeyByIndex(idx int) []byte {
 	return out
 }
 
+// EachSigningKey satisfies secrets.SigningKeyEnumerator so KeyService's
+// GetDEKForUser (used by background/auto-push paths) can iterate the
+// same set of active + previous signing keys that parseTokenAcceptingRotatedKeys
+// uses at JWT validation time. Primary key first, then previous keys
+// in most-recent-rotation-first order.
+//
+// The callback receives a FRESH COPY of each key on every invocation;
+// implementations that store or retain the bytes past the callback
+// return must copy again. Zeroed slice is not returned — callers zero
+// their own copies.
+func (s *Service) EachSigningKey(fn func(key []byte) bool) {
+	for i := 0; ; i++ {
+		k := s.signingKeyByIndex(i)
+		if k == nil {
+			return
+		}
+		if !fn(k) {
+			return
+		}
+	}
+}
+
 // formatValidationCacheValue produces the cache value for a successful
 // token validation. Format: "userID|matchedKeyIdx". Both fields are
 // non-secret — the userID is already public to the request, the matched

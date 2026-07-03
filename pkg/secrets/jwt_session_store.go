@@ -67,6 +67,30 @@ type JWTSessionStore interface {
 	// deleted. Bounded by the idx_jwt_sessions_expires_at index for O(log N)
 	// scan even at 1M rows.
 	DeleteExpiredJWTSessions(ctx context.Context, before time.Time) (int64, error)
+	// ListActiveJWTSessionsForUser returns non-expired rows for userID,
+	// ordered created_at DESC (most-recent first) and bounded by limit
+	// (limit <= 0 means unlimited-per-caller-convention, though the
+	// caller MUST supply a sensible bound in production).
+	//
+	// Used by KeyService.GetDEKForUser to retrieve a durable DEK-wrapping
+	// row when the caller doesn't have a specific sessionID + matched
+	// signing key (background paths: workspace watcher, auto-push
+	// triggered by phase change or pod recreation). Every row for a
+	// given user wraps the SAME DEK (user_keys has one row per user);
+	// the caller only needs one row to unwrap.
+	//
+	// "Active" means expires_at is strictly AFTER the store's clock
+	// (SQL: expires_at > NOW()). A row at the exact expires_at is
+	// expired — matches DeleteExpiredJWTSessions's < semantics.
+	//
+	// Bounded by idx_jwt_sessions_user_id + a filter on expires_at
+	// (partial index on expires_at could speed the AND but is not
+	// required at current data scale).
+	//
+	// Returns nil (or []) with nil error when no matching rows exist —
+	// callers use empty to signal "no live session; fall back to
+	// SessionlessInject or ErrDEKUnavailable."
+	ListActiveJWTSessionsForUser(ctx context.Context, userID string, limit int) ([]*JWTSession, error)
 }
 
 // PgJWTSessionStore is the production JWTSessionStore backed by Postgres.
@@ -152,4 +176,53 @@ func (s *PgJWTSessionStore) DeleteExpiredJWTSessions(ctx context.Context, before
 		return 0, fmt.Errorf("delete expired jwt_sessions: %w", err)
 	}
 	return tag.RowsAffected(), nil
+}
+
+// ListActiveJWTSessionsForUser returns non-expired rows for userID.
+// See interface godoc for full contract. Uses idx_jwt_sessions_user_id
+// (schema 000001) plus a filter on expires_at > NOW(). At current data
+// scale (thousands of sessions per active user max) the trailing filter
+// on expires_at is a scan of the per-user rows only; no compound index
+// needed. If per-user row counts grow past ~10k a partial index
+// (WHERE expires_at > NOW()) can be added later without changing this
+// query.
+//
+// The NOW() comparison is inline in the SQL so the database's clock
+// is authoritative — same source of truth the janitor uses when it
+// prunes. Fetching a "just barely expired" row and having the caller
+// discover it a millisecond later would waste a signing-key iteration
+// and produce a misleading warn log.
+//
+// When limit <= 0, no LIMIT clause is added. Callers should always
+// pass a sensible bound (typical: 1, since GetDEKForUser picks the
+// most-recent row).
+func (s *PgJWTSessionStore) ListActiveJWTSessionsForUser(ctx context.Context, userID string, limit int) ([]*JWTSession, error) {
+	query := `SELECT jti, user_id, wrapped_dek, kek_salt, created_at, expires_at
+	          FROM jwt_sessions
+	          WHERE user_id = $1 AND expires_at > NOW()
+	          ORDER BY created_at DESC`
+	args := []interface{}{userID}
+	if limit > 0 {
+		query += " LIMIT $2"
+		args = append(args, limit)
+	}
+
+	rows, err := s.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query jwt_sessions for user: %w", err)
+	}
+	defer rows.Close()
+
+	out := make([]*JWTSession, 0)
+	for rows.Next() {
+		var r JWTSession
+		if err := rows.Scan(&r.JTI, &r.UserID, &r.WrappedDEK, &r.KEKSalt, &r.CreatedAt, &r.ExpiresAt); err != nil {
+			return nil, fmt.Errorf("scan jwt_sessions row: %w", err)
+		}
+		out = append(out, &r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate jwt_sessions: %w", err)
+	}
+	return out, nil
 }

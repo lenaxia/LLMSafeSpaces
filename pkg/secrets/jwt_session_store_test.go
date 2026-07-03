@@ -27,6 +27,11 @@ type mockJWTSessionStore struct {
 	deleteErr   error
 	deleteForUE error
 	expireErr   error
+	listErr     error
+
+	// now overrides time.Now for ListActiveJWTSessionsForUser boundary
+	// tests. Zero → uses time.Now.
+	now time.Time
 
 	// Call counters
 	GetCount         int
@@ -34,6 +39,7 @@ type mockJWTSessionStore struct {
 	DeleteCount      int
 	DeleteForUserCnt int
 	ExpireCount      int
+	ListCount        int
 }
 
 func newMockJWTSessionStore() *mockJWTSessionStore {
@@ -113,6 +119,58 @@ func (m *mockJWTSessionStore) DeleteExpiredJWTSessions(_ context.Context, before
 		}
 	}
 	return n, nil
+}
+
+// ListActiveJWTSessionsForUser satisfies JWTSessionStore. Semantics:
+// return all rows for userID whose expires_at is strictly AFTER
+// the store's clock (or time.Now() if the test hasn't overridden it).
+// Ordered created_at DESC. Bounded by limit; limit<=0 means unbounded.
+func (m *mockJWTSessionStore) ListActiveJWTSessionsForUser(_ context.Context, userID string, limit int) ([]*JWTSession, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ListCount++
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	nowT := m.now
+	if nowT.IsZero() {
+		nowT = time.Now()
+	}
+	out := make([]*JWTSession, 0)
+	for _, row := range m.rows {
+		if row.UserID != userID {
+			continue
+		}
+		if !row.ExpiresAt.After(nowT) {
+			continue
+		}
+		cp := *row
+		out = append(out, &cp)
+	}
+	// Sort by created_at DESC.
+	for i := 0; i < len(out); i++ {
+		for j := i + 1; j < len(out); j++ {
+			if out[j].CreatedAt.After(out[i].CreatedAt) {
+				out[i], out[j] = out[j], out[i]
+			}
+		}
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// mockJWTSessionStoreWithList is retained as a type alias so existing
+// tests that reference it (in this file, added during the same TDD
+// pass that added ListActiveJWTSessionsForUser to the interface) keep
+// compiling. The functionality is now on the base mock; this alias
+// documents that a "with-list" variant used to exist during
+// development.
+type mockJWTSessionStoreWithList = mockJWTSessionStore
+
+func newMockJWTSessionStoreWithList() *mockJWTSessionStoreWithList {
+	return newMockJWTSessionStore()
 }
 
 // --- Tests ---
@@ -301,5 +359,201 @@ func TestMockJWTSessionStore_PropagatesInjectedErrors(t *testing.T) {
 				t.Errorf("expected injected error to surface")
 			}
 		})
+	}
+}
+
+// --- ListActiveJWTSessionsForUser tests ---
+//
+// Contract:
+// - Returns non-expired rows for userID.
+// - Ordered created_at DESC (most-recent first).
+// - Bounded by limit (0 = unlimited-per-caller-convention).
+// - Empty (nil or []) for unknown userID.
+// - Returns injected error verbatim.
+
+// TestListActive_ExcludesExpired proves the boundary condition: a row
+// exactly at expires_at MUST be treated as expired (SQL semantics use
+// expires_at > NOW(), strict inequality). Without this, a session
+// that expired at the exact microsecond we query would be returned,
+// and the caller would try to unwrap under a KEK that the janitor has
+// already flagged for pruning — pointless CPU work.
+func TestListActive_ExcludesExpired(t *testing.T) {
+	store := newMockJWTSessionStoreWithList()
+	base := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+	store.now = base
+
+	active := &JWTSession{
+		JTI:        uuid.New(),
+		UserID:     "user-1",
+		WrappedDEK: []byte{1},
+		KEKSalt:    []byte{2},
+		CreatedAt:  base.Add(-1 * time.Hour),
+		ExpiresAt:  base.Add(1 * time.Hour),
+	}
+	expiredBoundary := &JWTSession{
+		JTI:        uuid.New(),
+		UserID:     "user-1",
+		WrappedDEK: []byte{3},
+		KEKSalt:    []byte{4},
+		CreatedAt:  base.Add(-2 * time.Hour),
+		ExpiresAt:  base, // exact-tick expiration
+	}
+	expiredPast := &JWTSession{
+		JTI:        uuid.New(),
+		UserID:     "user-1",
+		WrappedDEK: []byte{5},
+		KEKSalt:    []byte{6},
+		CreatedAt:  base.Add(-3 * time.Hour),
+		ExpiresAt:  base.Add(-1 * time.Minute),
+	}
+	for _, s := range []*JWTSession{active, expiredBoundary, expiredPast} {
+		if err := store.WriteJWTSession(context.Background(), s); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	got, err := store.ListActiveJWTSessionsForUser(context.Background(), "user-1", 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 active row (boundary is expired); got %d", len(got))
+	}
+	if got[0].JTI != active.JTI {
+		t.Errorf("wrong row returned")
+	}
+}
+
+// TestListActive_OrdersMostRecentFirst locks in the ORDER BY created_at
+// DESC semantics. KeyService.GetDEKForUser picks the first row; if the
+// order changes silently, we'd start unwrapping under the OLDEST session
+// which is most likely to require a rotated (previous) signing key —
+// slower path, more iterations.
+func TestListActive_OrdersMostRecentFirst(t *testing.T) {
+	store := newMockJWTSessionStoreWithList()
+	base := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+	store.now = base
+
+	oldest := &JWTSession{
+		JTI: uuid.New(), UserID: "user-1",
+		WrappedDEK: []byte{1}, KEKSalt: []byte{2},
+		CreatedAt: base.Add(-3 * time.Hour), ExpiresAt: base.Add(1 * time.Hour),
+	}
+	middle := &JWTSession{
+		JTI: uuid.New(), UserID: "user-1",
+		WrappedDEK: []byte{3}, KEKSalt: []byte{4},
+		CreatedAt: base.Add(-2 * time.Hour), ExpiresAt: base.Add(1 * time.Hour),
+	}
+	newest := &JWTSession{
+		JTI: uuid.New(), UserID: "user-1",
+		WrappedDEK: []byte{5}, KEKSalt: []byte{6},
+		CreatedAt: base.Add(-1 * time.Hour), ExpiresAt: base.Add(1 * time.Hour),
+	}
+	for _, s := range []*JWTSession{middle, oldest, newest} { // insert out of order
+		if err := store.WriteJWTSession(context.Background(), s); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	got, err := store.ListActiveJWTSessionsForUser(context.Background(), "user-1", 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("want 3, got %d", len(got))
+	}
+	if got[0].JTI != newest.JTI || got[1].JTI != middle.JTI || got[2].JTI != oldest.JTI {
+		t.Errorf("order wrong: [%v %v %v]", got[0].JTI, got[1].JTI, got[2].JTI)
+	}
+}
+
+// TestListActive_RespectsLimit verifies that limit caps the result
+// after sorting so we consistently get "the most recent N."
+func TestListActive_RespectsLimit(t *testing.T) {
+	store := newMockJWTSessionStoreWithList()
+	base := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+	store.now = base
+
+	// 5 rows, ages 1..5 hours old.
+	all := make([]*JWTSession, 5)
+	for i := 0; i < 5; i++ {
+		all[i] = &JWTSession{
+			JTI: uuid.New(), UserID: "user-1",
+			WrappedDEK: []byte{byte(i)}, KEKSalt: []byte{byte(i + 100)},
+			CreatedAt: base.Add(-time.Duration(i+1) * time.Hour),
+			ExpiresAt: base.Add(1 * time.Hour),
+		}
+		if err := store.WriteJWTSession(context.Background(), all[i]); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	got, err := store.ListActiveJWTSessionsForUser(context.Background(), "user-1", 2)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 (limited); got %d", len(got))
+	}
+	// The 2 most-recent are index 0 and 1 (1-hour and 2-hour old).
+	if !bytes.Equal(got[0].WrappedDEK, []byte{0}) || !bytes.Equal(got[1].WrappedDEK, []byte{1}) {
+		t.Errorf("limit did not preserve most-recent-first")
+	}
+}
+
+// TestListActive_UnknownUserReturnsEmpty ensures the "no rows" case is
+// nil-error, not an error. Callers use empty to signal "no live
+// session; use SessionlessInject."
+func TestListActive_UnknownUserReturnsEmpty(t *testing.T) {
+	store := newMockJWTSessionStoreWithList()
+	got, err := store.ListActiveJWTSessionsForUser(context.Background(), "no-such-user", 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty for unknown user; got %d rows", len(got))
+	}
+}
+
+// TestListActive_ScopedToUser proves the WHERE user_id = ? predicate.
+// Rows for other users must NOT be visible.
+func TestListActive_ScopedToUser(t *testing.T) {
+	store := newMockJWTSessionStoreWithList()
+	base := time.Date(2026, 7, 3, 12, 0, 0, 0, time.UTC)
+	store.now = base
+
+	mine := &JWTSession{
+		JTI: uuid.New(), UserID: "user-1",
+		WrappedDEK: []byte{1}, KEKSalt: []byte{2},
+		CreatedAt: base.Add(-1 * time.Hour), ExpiresAt: base.Add(1 * time.Hour),
+	}
+	other := &JWTSession{
+		JTI: uuid.New(), UserID: "user-2",
+		WrappedDEK: []byte{3}, KEKSalt: []byte{4},
+		CreatedAt: base.Add(-1 * time.Hour), ExpiresAt: base.Add(1 * time.Hour),
+	}
+	for _, s := range []*JWTSession{mine, other} {
+		if err := store.WriteJWTSession(context.Background(), s); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	got, err := store.ListActiveJWTSessionsForUser(context.Background(), "user-1", 0)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(got) != 1 || got[0].UserID != "user-1" {
+		t.Errorf("cross-user leak: got %+v", got)
+	}
+}
+
+// TestListActive_PropagatesInjectedError proves errors bubble up
+// without translation, per the JWTSessionStore doc contract.
+func TestListActive_PropagatesInjectedError(t *testing.T) {
+	store := newMockJWTSessionStoreWithList()
+	store.listErr = errors.New("boom")
+	_, err := store.ListActiveJWTSessionsForUser(context.Background(), "user-1", 0)
+	if err == nil || err.Error() != "boom" {
+		t.Errorf("expected injected error to surface, got %v", err)
 	}
 }
