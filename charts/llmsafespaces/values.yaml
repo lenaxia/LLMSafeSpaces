@@ -618,6 +618,28 @@ dbInit:
 networkPolicy:
   enabled: true
 
+  # Workspace egress NetworkPolicy toggle.
+  #
+  # When enabled (default): the chart creates a K8s NetworkPolicy that
+  # allows workspace pod egress to DNS + operator-specified CIDRs (see
+  # allowedEgressCIDRs below). This is the baseline threat-model A2
+  # control on Free-tier-CNI clusters.
+  #
+  # When disabled: the chart skips the egress NP entirely. Use ONLY
+  # when a CNI-native policy (Cilium CiliumNetworkPolicy, Calico
+  # GlobalNetworkPolicy, etc.) is enforcing a strict FQDN allowlist —
+  # otherwise workspace pods have no egress restriction at all.
+  #
+  # WHY THE TOGGLE EXISTS: Kubernetes NetworkPolicy unions allow rules
+  # across ALL policies attached to a pod. If both this chart's NP AND
+  # a Cilium CNP are in play, effective egress = union = whichever is
+  # more permissive. Since this NP allows 0.0.0.0/0 by default, it
+  # defeats FQDN-based allowlists in the CNP. Discovered during
+  # 2026-07-02 Cilium migration; documented in
+  # ops-prod/docs/runbooks/cilium-migration.md gotcha #10.
+  workspaceEgress:
+    enabled: true
+
   # API server pod selector — used by workspace ingress allow rule so the
   # API proxy can reach sandbox pods on agentd port 4097.
   apiPodLabelSelector:

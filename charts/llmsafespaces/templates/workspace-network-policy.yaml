@@ -82,6 +82,13 @@ spec:
           port: 4098
     {{- end }}
 ---
+{{- $workspaceEgressEnabled := true -}}
+{{- if hasKey .Values.networkPolicy "workspaceEgress" -}}
+  {{- if hasKey .Values.networkPolicy.workspaceEgress "enabled" -}}
+    {{- $workspaceEgressEnabled = .Values.networkPolicy.workspaceEgress.enabled -}}
+  {{- end -}}
+{{- end -}}
+{{- if and .Values.networkPolicy.enabled $workspaceEgressEnabled }}
 # Epic 17 G16: Workspace egress allow-list.
 #
 # Sandbox pods need:
@@ -93,6 +100,18 @@ spec:
 #   - cloud metadata endpoint (169.254.169.254)
 # A hostile agent in a sandbox can still reach the public internet via the
 # allowed CIDRs; that's accepted risk per threat-model §4.4.
+#
+# WHEN TO DISABLE (networkPolicy.workspaceEgress.enabled: false):
+#   Operators using a CNI-native policy engine (Cilium CNP, Calico
+#   GlobalNetworkPolicy, etc.) that can enforce a strict FQDN allowlist
+#   should disable this default egress NP — otherwise the two policies
+#   are unioned by the CNI and the effective allow-set widens to
+#   whatever this template permits (default: 0.0.0.0/0 minus RFC1918).
+#   With this disabled AND no CNP in place, workspace pods have
+#   default-deny egress (from the ingress policy above's implicit
+#   policyType coverage, plus the network layer's fail-closed default).
+#   Threat model A2 still requires SOMETHING enforcing egress — do not
+#   set this false without a replacement in place.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -164,4 +183,5 @@ spec:
             {{- end }}
         {{- end }}
     {{- end }}
+{{- end }}
 {{- end }}

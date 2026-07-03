@@ -3382,6 +3382,55 @@ func TestWorkspaceEgress_NoRelayRouterRuleWhenFleetDisabled(t *testing.T) {
 	}
 }
 
+// TestWorkspaceEgress_ToggleOff verifies that setting
+// networkPolicy.workspaceEgress.enabled=false suppresses the workspace-egress
+// NetworkPolicy entirely, while leaving the workspace-default-deny-ingress
+// NetworkPolicy in place.
+//
+// Motivation: operators using a CNI-native FQDN allowlist (e.g. Cilium
+// CiliumNetworkPolicy) need this NP suppressed — otherwise Kubernetes
+// unions its allow rules with the CNP's, widening effective egress to
+// whatever this chart's NP permits (default: 0.0.0.0/0 minus RFC1918).
+// See 2026-07-02 Cilium migration runbook gotcha #10 in ops-prod.
+func TestWorkspaceEgress_ToggleOff(t *testing.T) {
+	values := "networkPolicy:\n  workspaceEgress:\n    enabled: false\n"
+	docs := helmTemplate(t, values)
+	policies := findByKind(docs, "NetworkPolicy")
+
+	var egressFound, ingressFound bool
+	for _, p := range policies {
+		name := metaName(p)
+		if strings.Contains(name, "workspace-egress") {
+			egressFound = true
+		}
+		if strings.Contains(name, "workspace-default-deny-ingress") {
+			ingressFound = true
+		}
+	}
+	require.False(t, egressFound,
+		"workspace-egress NetworkPolicy must be absent when workspaceEgress.enabled=false")
+	require.True(t, ingressFound,
+		"workspace-default-deny-ingress NetworkPolicy must remain when workspaceEgress.enabled=false")
+}
+
+// TestWorkspaceEgress_ToggleOnByDefault verifies the toggle defaults to
+// on (backwards-compat). Operators upgrading the chart get the same
+// behavior they had before the toggle was introduced.
+func TestWorkspaceEgress_ToggleOnByDefault(t *testing.T) {
+	docs := helmTemplate(t, "")
+	policies := findByKind(docs, "NetworkPolicy")
+
+	var egressFound bool
+	for _, p := range policies {
+		if strings.Contains(metaName(p), "workspace-egress") {
+			egressFound = true
+			break
+		}
+	}
+	require.True(t, egressFound,
+		"workspace-egress NetworkPolicy must render by default (backwards compat)")
+}
+
 // ============================================================================
 // Epic 54, US-54.3: Org-scoped wildcard subdomain routing chart tests.
 //
