@@ -158,7 +158,7 @@ curl http://localhost:8080/readyz  # 200 if DB+Redis healthy, 503 otherwise
 > **Image tags:** The chart defaults each image tag to `.Chart.AppVersion`
 > (`0.1.0`), which resolves once a `v0.1.0` git release tag is cut. Until then,
 > supply a tag explicitly via `--set api.image.tag=<tag>` (and the same for
-> `controller`, `frontend`, `base.runtime`). See [Image tags](#image-tags) below.
+> `controller`, `frontend`, `runtimeEnvironments.base`). See [Image tags](#image-tags) below.
 
 ## Image tags
 
@@ -178,7 +178,7 @@ helm install llmsafespaces ./charts/llmsafespaces \
     --set api.image.tag=sha-ac861c3 \
     --set controller.image.tag=sha-ac861c3 \
     --set frontend.image.tag=sha-ac861c3 \
-    --set base.runtime.image.tag=sha-ac861c3 \
+    --set runtimeEnvironments.base.image.tag=sha-ac861c3 \
     # ... other values
 ```
 
