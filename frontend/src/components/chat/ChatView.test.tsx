@@ -150,6 +150,70 @@ describe("ChatView", () => {
     expect(screen.queryByText("Thinking")).not.toBeInTheDocument();
   });
 
+  it("partitions streaming parts into separate bubbles by messageID", () => {
+    // Opencode emits parts across multiple assistant messages within one
+    // turn (each turn ends at a tool call, then a new message begins).
+    // Streaming render must match the post-refresh render: one bubble per
+    // opencode messageID.
+    const { container } = render(
+      <ChatView
+        {...defaultProps}
+        streaming={true}
+        streamParts={[
+          { type: "text", text: "First message text.", messageID: "msg_a" },
+          { type: "tool", text: "bash: build", toolState: "completed", messageID: "msg_a" },
+          { type: "text", text: "Second message text.", messageID: "msg_b" },
+          { type: "tool", text: "bash: test", toolState: "completed", messageID: "msg_b" },
+        ]}
+      />,
+    );
+    // Two separate assistant bubbles rendered — one per messageID.
+    const bubbles = container.querySelectorAll(".bg-muted.text-foreground");
+    expect(bubbles.length).toBe(2);
+    // First bubble contains only msg_a content.
+    expect(bubbles[0]!.textContent).toContain("First message text.");
+    expect(bubbles[0]!.textContent).not.toContain("Second message text.");
+    // Second bubble contains only msg_b content.
+    expect(bubbles[1]!.textContent).toContain("Second message text.");
+    expect(bubbles[1]!.textContent).not.toContain("First message text.");
+  });
+
+  it("groups parts without messageID into a single bubble (backward compat)", () => {
+    const { container } = render(
+      <ChatView
+        {...defaultProps}
+        streaming={true}
+        streamParts={[
+          { type: "text", text: "one" },
+          { type: "text", text: "two" },
+        ]}
+      />,
+    );
+    const bubbles = container.querySelectorAll(".bg-muted.text-foreground");
+    expect(bubbles.length).toBe(1);
+  });
+
+  it("preserves messageID encounter order across bubbles", () => {
+    const { container } = render(
+      <ChatView
+        {...defaultProps}
+        streaming={true}
+        streamParts={[
+          { type: "text", text: "A-1", messageID: "msg_a" },
+          { type: "text", text: "B-1", messageID: "msg_b" },
+          { type: "text", text: "A-2", messageID: "msg_a" },
+        ]}
+      />,
+    );
+    const bubbles = container.querySelectorAll(".bg-muted.text-foreground");
+    expect(bubbles.length).toBe(2);
+    // msg_a was encountered first, so its bubble is rendered first;
+    // A-2 is grouped into msg_a's bubble.
+    expect(bubbles[0]!.textContent).toContain("A-1");
+    expect(bubbles[0]!.textContent).toContain("A-2");
+    expect(bubbles[1]!.textContent).toContain("B-1");
+  });
+
   it("passes models to MessageList for model name resolution", () => {
     const models: ModelInfo[] = [
       { id: "gpt-4o", providerID: "openai", name: "GPT-4o", tier: "pro", freeTier: false, selected: false, enabled: true },
