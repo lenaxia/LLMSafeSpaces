@@ -83,7 +83,7 @@ Tests written first for every method. Adversarial-validated by neutering each of
 
 ## Test summary
 
-22 new tests across 4 packages (12 GetDEKForUser + 6 ListActive mock + 4 EachSigningKey + 2 PG integration). Full sweep (`go test ./api/... ./pkg/...`) green except for an unrelated repolint check about an unassigned worklog number on origin/main (from a separate merge).
+24 new tests across 4 packages (12 GetDEKForUser + 6 ListActive mock + 4 EachSigningKey + 2 PG integration). Full sweep (`go test ./api/... ./pkg/...`) green except for an unrelated repolint check about an unassigned worklog number on origin/main (from a separate merge).
 
 ## Follow-up
 
