@@ -74,7 +74,7 @@ Tests written first for every method. Adversarial-validated by neutering each of
 ## Files
 
 - `pkg/secrets/jwt_session_store.go` — add interface method + Pg impl.
-- `pkg/secrets/jwt_session_store_test.go` — 5 new tests, mock method inlined.
+- `pkg/secrets/jwt_session_store_test.go` — 6 new tests, mock method inlined.
 - `pkg/secrets/key_service.go` — `SigningKeyEnumerator` interface + `SetSigningKeyEnumerator` setter + `GetDEKForUser` + `tryUnwrapRowWithKnownKeys` helper + `jwtSessionUserLookupLimit` const.
 - `pkg/secrets/key_service_get_dek_for_user_test.go` — 12 tests + fixture + `fakeDEKCache` (with injectable errors) + `staticSigningKeys` + `captureLogger`.
 - `api/internal/services/auth/auth.go` — `EachSigningKey` implementing the enumerator.
