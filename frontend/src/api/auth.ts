@@ -10,21 +10,7 @@ import type {
 export const authApi = {
   getConfig: () => api.get<AuthConfig>("/auth/config"),
   login: (req: LoginRequest) => api.post<AuthResponse>("/auth/login", req),
-  /**
-   * POST /auth/register.
-   *
-   * When the API's Turnstile middleware is enabled (chart:
-   * turnstile.enabled=true), callers MUST supply a valid token from
-   * the Cloudflare Turnstile widget in the second argument. When
-   * Turnstile is disabled server-side, the token is ignored — the
-   * frontend can always pass an empty string.
-   */
-  register: (req: RegisterRequest, turnstileToken = "") =>
-    api.post<AuthResponse>(
-      "/auth/register",
-      req,
-      turnstileToken ? { "cf-turnstile-response": turnstileToken } : undefined,
-    ),
+  register: (req: RegisterRequest) => api.post<AuthResponse>("/auth/register", req),
   logout: () => api.post<void>("/auth/logout"),
   me: () => api.get<User>("/auth/me"),
   /**

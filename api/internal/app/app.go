@@ -906,11 +906,6 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		LoginDiscoveryHandler:           loginDiscoveryHandler,
 		CookieName:                      cfg.Auth.CookieName,
 		CookieDomain:                    cfg.OrgSubdomainRouting.CookieDomain,
-		Turnstile: server.TurnstileRouterConfig{
-			Enabled:   cfg.Turnstile.Enabled,
-			SecretKey: cfg.Turnstile.SecretKey,
-			VerifyURL: cfg.Turnstile.VerifyURL,
-		},
 	})
 
 	httpServer := &http.Server{
