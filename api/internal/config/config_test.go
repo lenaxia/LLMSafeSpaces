@@ -278,3 +278,87 @@ func TestConfig_ProxyRequestBuffer_InvalidEnvIgnored(t *testing.T) {
 		t.Errorf("non-positive timeout env should be ignored; expected 0, got %d", cfg.Proxy.RequestBufferTimeoutSeconds)
 	}
 }
+
+// TestConfig_Turnstile_DisabledIsDefault: with no Turnstile env vars
+// set, Load() succeeds and Enabled=false — the SDK entry point is a
+// no-op unless the operator opts in.
+func TestConfig_Turnstile_DisabledIsDefault(t *testing.T) {
+	path := writeMinimalConfig(t, "")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Turnstile.Enabled {
+		t.Fatal("expected Turnstile.Enabled=false by default")
+	}
+}
+
+// TestConfig_Turnstile_EnabledWithSecretIsValid: standard prod
+// configuration — enabled + secret + default verify URL.
+func TestConfig_Turnstile_EnabledWithSecretIsValid(t *testing.T) {
+	t.Setenv("LLMSAFESPACES_TURNSTILE_ENABLED", "true")
+	t.Setenv("LLMSAFESPACES_TURNSTILE_SECRETKEY", "0xtest_secret")
+	path := writeMinimalConfig(t, "")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cfg.Turnstile.Enabled {
+		t.Error("expected Turnstile.Enabled=true from env")
+	}
+	if cfg.Turnstile.SecretKey != "0xtest_secret" {
+		t.Errorf("expected SecretKey='0xtest_secret', got %q", cfg.Turnstile.SecretKey)
+	}
+	if cfg.Turnstile.VerifyURL != "https://challenges.cloudflare.com/turnstile/v0/siteverify" {
+		t.Errorf("expected default VerifyURL, got %q", cfg.Turnstile.VerifyURL)
+	}
+}
+
+// TestConfig_Turnstile_EnabledWithoutSecretFailsClosed: the whole
+// point of the fail-closed guard is to refuse to start with an
+// unusable Turnstile config. Load() must return an error, not silently
+// leave Enabled=true with an empty secret.
+func TestConfig_Turnstile_EnabledWithoutSecretFailsClosed(t *testing.T) {
+	t.Setenv("LLMSAFESPACES_TURNSTILE_ENABLED", "true")
+	// Deliberately do NOT set LLMSAFESPACES_TURNSTILE_SECRETKEY.
+	path := writeMinimalConfig(t, "")
+	cfg, err := Load(path)
+	if err == nil {
+		t.Fatalf("expected Load to fail-closed with enabled+empty-secret; got cfg=%+v", cfg)
+	}
+	if !containsAny(err.Error(), "turnstile.enabled", "secretKey", "empty") {
+		t.Errorf("error message should mention turnstile+secret; got: %v", err)
+	}
+}
+
+// TestConfig_Turnstile_VerifyURLOverride: operators can point at a
+// non-default endpoint (e.g. a test server) via env.
+func TestConfig_Turnstile_VerifyURLOverride(t *testing.T) {
+	t.Setenv("LLMSAFESPACES_TURNSTILE_ENABLED", "true")
+	t.Setenv("LLMSAFESPACES_TURNSTILE_SECRETKEY", "0xtest_secret")
+	t.Setenv("LLMSAFESPACES_TURNSTILE_VERIFYURL", "http://127.0.0.1:9999/verify")
+	path := writeMinimalConfig(t, "")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Turnstile.VerifyURL != "http://127.0.0.1:9999/verify" {
+		t.Errorf("expected env-override VerifyURL, got %q", cfg.Turnstile.VerifyURL)
+	}
+}
+
+func containsAny(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if len(sub) == 0 {
+			continue
+		}
+		if len(s) >= len(sub) {
+			for i := 0; i+len(sub) <= len(s); i++ {
+				if s[i:i+len(sub)] == sub {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
