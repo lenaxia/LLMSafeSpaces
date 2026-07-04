@@ -1229,3 +1229,41 @@ monitoring:
     # are never scraped and do not appear in production dashboards.
     agentdPodMonitor:
       enabled: true
+
+# ============================================================================
+# Turnstile — Cloudflare CAPTCHA for /register (US-63.x).
+# ============================================================================
+# When enabled, the frontend renders a Turnstile widget on the register page
+# and the API middleware verifies the client-supplied token before invoking
+# the auth.Register handler. Blocks automated account creation without
+# imposing friction on legitimate users (Cloudflare's "managed" mode is
+# invisible for well-behaved browsers).
+#
+# Provisioning (once, out-of-band):
+#   1. Cloudflare dashboard → Turnstile → Add site (mode=managed).
+#   2. Copy the site key + secret key.
+#   3. Store the SECRET in AWS Secrets Manager as
+#      llmsafespaces/turnstile-secret (see llmsafespaces-cdk config).
+#   4. Set enabled=true + siteKey below (or via CDK context, which emits
+#      TURNSTILE_SITE_KEY in cluster-config → substituted by ops-prod).
+#   5. Set secretKey.existingSecret to the K8s Secret name that holds the
+#      Turnstile secret key (populated by ExternalSecret from step 3).
+turnstile:
+  enabled: false
+
+  # Cloudflare site key (public). Baked into the frontend HTML at build time
+  # so the user's browser can render the widget.
+  siteKey: ""
+
+  # Reference to the K8s Secret holding the SECRET key. The API service reads
+  # this at runtime for verifying user-supplied tokens.
+  secretKey:
+    # Name of the Secret. ExternalSecret in ops-prod names this by convention.
+    existingSecret: "llmsafespaces-credentials"
+    # Key within the Secret whose value is the Turnstile secret.
+    key: "turnstile-secret"
+
+  # Cloudflare verification endpoint. Documented as stable at
+  # https://developers.cloudflare.com/turnstile/get-started/server-side-validation/
+  # Override only if using a self-hosted / regional Cloudflare offering.
+  verifyURL: "https://challenges.cloudflare.com/turnstile/v0/siteverify"

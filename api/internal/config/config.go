@@ -150,6 +150,26 @@ type Config struct {
 		BaseDomain   string `mapstructure:"baseDomain"`
 		CookieDomain string `mapstructure:"cookieDomain"`
 	} `mapstructure:"orgSubdomainRouting"`
+
+	// Turnstile is Cloudflare's CAPTCHA. When Enabled, the /register
+	// middleware validates the client-supplied cf-turnstile-response
+	// token against SecretKey using VerifyURL. When Enabled but SecretKey
+	// is empty, /register 500s at startup — fail-closed, don't run in
+	// a state where the operator thinks Turnstile is on but it isn't.
+	//
+	// When Enabled is false, the middleware is a no-op and /register
+	// accepts requests without a token. All chart-side wiring flows
+	// through Enabled+SecretKey+SiteKey; there's no partial-config state.
+	//
+	// Wired via ops-prod cluster-config → chart values → env:
+	//   LLMSAFESPACES_TURNSTILE_ENABLED     ("true" | unset)
+	//   LLMSAFESPACES_TURNSTILE_SECRETKEY   (secretKeyRef; never in ConfigMap)
+	//   LLMSAFESPACES_TURNSTILE_VERIFYURL   (defaults to Cloudflare production)
+	Turnstile struct {
+		Enabled   bool   `mapstructure:"enabled"`
+		SecretKey string `mapstructure:"secretKey"`
+		VerifyURL string `mapstructure:"verifyURL"`
+	} `mapstructure:"turnstile"`
 }
 
 // Load loads configuration from file and environment variables
@@ -366,6 +386,31 @@ func Load(path string) (*Config, error) {
 		if hn, err := os.Hostname(); err == nil && hn != "" {
 			config.Kubernetes.PodName = hn
 		}
+	}
+
+	// Turnstile — env overrides for sensitive values. The chart wires
+	// LLMSAFESPACES_TURNSTILE_SECRETKEY via secretKeyRef so it never
+	// lands in a rendered ConfigMap.
+	if v := os.Getenv("LLMSAFESPACES_TURNSTILE_ENABLED"); v == "true" {
+		config.Turnstile.Enabled = true
+	}
+	if v := os.Getenv("LLMSAFESPACES_TURNSTILE_SECRETKEY"); v != "" {
+		config.Turnstile.SecretKey = v
+	}
+	if v := os.Getenv("LLMSAFESPACES_TURNSTILE_VERIFYURL"); v != "" {
+		config.Turnstile.VerifyURL = v
+	}
+	// Sensible default for the verify URL so operators don't have to
+	// set it in the common case. Cloudflare's Turnstile production
+	// endpoint has been stable since GA (2023-09).
+	if config.Turnstile.Enabled && config.Turnstile.VerifyURL == "" {
+		config.Turnstile.VerifyURL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+	}
+	// Fail-closed guard: refuse to start with Enabled=true and an empty
+	// secret. Ships an obvious log line at boot rather than a subtle
+	// "every /register succeeds without CAPTCHA" bypass.
+	if config.Turnstile.Enabled && config.Turnstile.SecretKey == "" {
+		return nil, fmt.Errorf("config: turnstile.enabled=true but turnstile.secretKey is empty; set LLMSAFESPACES_TURNSTILE_SECRETKEY or disable")
 	}
 
 	return &config, nil

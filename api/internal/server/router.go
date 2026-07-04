@@ -152,6 +152,17 @@ type RouterConfig struct {
 	// when subdomain routing is disabled). Enumeration-safe: uniform 200 +
 	// uniform body shape across all non-validation branches; DB errors masked.
 	LoginDiscoveryHandler *handlers.LoginDiscoveryHandler
+
+	// Turnstile, when Enabled is true, gates POST /auth/register with a
+	// Cloudflare Turnstile CAPTCHA middleware. The middleware fails
+	// closed: any of {missing token, verify request fails, verify
+	// response says not-success} → 401. When Enabled is false, the
+	// route runs without the middleware.
+	//
+	// SecretKey must be non-empty when Enabled is true (config.Load
+	// enforces this at startup, fail-closed). VerifyURL defaults to
+	// Cloudflare's production siteverify endpoint if empty.
+	Turnstile TurnstileRouterConfig
 }
 
 // cookieName returns the session cookie name, falling back to "lsp_session" when empty.
@@ -223,7 +234,7 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 
 	// Auth routes (public — no auth middleware)
 	authGroup := router.Group("/api/v1/auth")
-	registerAuthRoutes(authGroup, services, cfg.InstanceSettings, logger, cfg.cookieName(), cfg.CookieDomain, cfg.SSOHandler)
+	registerAuthRoutes(authGroup, services, cfg.InstanceSettings, logger, cfg.cookieName(), cfg.CookieDomain, cfg.SSOHandler, cfg.Turnstile)
 
 	// US-49.5: Password reset via email (public — the token IS the credential
 	// for confirm; request is always 202 with no enumeration).
@@ -633,7 +644,17 @@ func setSessionCookie(c *gin.Context, token string, maxAge int, cookieName, cook
 }
 
 // API key management routes.
-func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, instanceSettings *settings.InstanceService, logger *apilogger.Logger, cookieName, cookieDomain string, ssoHandler *handlers.SSOHandler) {
+// TurnstileRouterConfig is the routing-side view of Turnstile config.
+// Kept separate from middleware.TurnstileConfig so the router package
+// doesn't need to import middleware's HTTP client type. registerAuthRoutes
+// constructs the middleware.TurnstileConfig from this at wire-up time.
+type TurnstileRouterConfig struct {
+	Enabled   bool
+	SecretKey string
+	VerifyURL string
+}
+
+func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, instanceSettings *settings.InstanceService, logger *apilogger.Logger, cookieName, cookieDomain string, ssoHandler *handlers.SSOHandler, turnstile TurnstileRouterConfig) {
 	authSvc := services.GetAuth()
 
 	// Public: feature flag discovery
@@ -674,7 +695,11 @@ func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, insta
 		rg.GET("/sso/:orgSlug/callback", ssoHandler.Callback)
 	}
 
-	rg.POST("/register", func(c *gin.Context) {
+	// Build the /register handler chain. When Turnstile is enabled, the
+	// middleware runs first (fails-closed on any token issue) and only
+	// then invokes the register handler. When disabled, we register the
+	// same handler naked.
+	registerHandler := func(c *gin.Context) {
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxAuthBodyBytes)
 		var req types.RegisterRequest
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -692,7 +717,16 @@ func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, insta
 		}
 		setSessionCookie(c, resp.Token, maxAge, cookieName, cookieDomain)
 		c.JSON(http.StatusCreated, resp)
-	})
+	}
+	if turnstile.Enabled {
+		rg.POST("/register", middleware.Turnstile(middleware.TurnstileConfig{
+			SecretKey: turnstile.SecretKey,
+			VerifyURL: turnstile.VerifyURL,
+			Logger:    logger.ZapLogger(),
+		}), registerHandler)
+	} else {
+		rg.POST("/register", registerHandler)
+	}
 
 	rg.POST("/login", func(c *gin.Context) {
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxAuthBodyBytes)

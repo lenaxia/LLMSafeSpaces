@@ -1,10 +1,22 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { render } from "../../test/utils";
 import { RegisterForm } from "./RegisterForm";
 
 describe("RegisterForm", () => {
+  beforeEach(() => {
+    // Default: Turnstile disabled (empty site key). Individual tests
+    // that want Turnstile enabled override in their own beforeEach.
+    vi.doMock("../../env", () => ({
+      getEnv: () => ({ apiBaseUrl: "/api/v1", turnstileSiteKey: "" }),
+    }));
+  });
+
+  afterEach(() => {
+    vi.doUnmock("../../env");
+  });
+
   it("renders username, email, and password fields", () => {
     render(<RegisterForm onSubmit={vi.fn()} />);
     expect(screen.getByPlaceholderText("Username")).toBeInTheDocument();
@@ -17,7 +29,7 @@ describe("RegisterForm", () => {
     expect(screen.getByRole("button", { name: "Create account" })).toBeInTheDocument();
   });
 
-  it("calls onSubmit with all fields", async () => {
+  it("calls onSubmit with all fields plus empty turnstile token when Turnstile disabled", async () => {
     const user = userEvent.setup();
     const onSubmit = vi.fn().mockResolvedValue(undefined);
     render(<RegisterForm onSubmit={onSubmit} />);
@@ -27,7 +39,8 @@ describe("RegisterForm", () => {
     await user.type(screen.getByPlaceholderText("Password"), "password123");
     await user.click(screen.getByRole("button", { name: "Create account" }));
 
-    expect(onSubmit).toHaveBeenCalledWith("bob", "bob@test.com", "password123");
+    // 4th arg is the Turnstile token; empty when disabled.
+    expect(onSubmit).toHaveBeenCalledWith("bob", "bob@test.com", "password123", "");
   });
 
   it("shows loading state during submission", async () => {
