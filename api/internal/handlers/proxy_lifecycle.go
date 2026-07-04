@@ -139,6 +139,13 @@ func (h *ProxyHandler) SetMessageQueueService(svc interfaces.MessageQueueService
 	h.queueSvc = svc
 }
 
+// SetSweepInterval overrides the periodic queue-sweep interval (default 30s).
+// Primarily for tests that need the goroutine to fire quickly. Must be called
+// before Start().
+func (h *ProxyHandler) SetSweepInterval(d time.Duration) {
+	h.sweepInterval = d
+}
+
 func (h *ProxyHandler) GetMessageQueueService() interfaces.MessageQueueService {
 	return h.queueSvc
 }
