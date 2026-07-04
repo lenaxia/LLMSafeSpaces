@@ -67,4 +67,4 @@ None.
 - `api/internal/handlers/proxy_lifecycle.go` — added `SetSweepInterval`.
 - `api/internal/handlers/proxy_events.go` — added `staleBusyThreshold`; injectable sweep interval; stale-busy drain path in `reconcileSessionState`; success log in `drainQueuedMessage`.
 - `api/internal/handlers/proxy_queue_drain_miss_test.go` — added 2 new test functions (3 test cases total).
-- `worklogs/NNNN_2026-07-04_queue-drain-stale-busy.md` — this worklog.
+- `worklogs/0594_2026-07-04_queue-drain-stale-busy.md` — this worklog.
