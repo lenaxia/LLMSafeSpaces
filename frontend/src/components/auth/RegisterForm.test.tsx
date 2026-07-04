@@ -158,8 +158,12 @@ describe("RegisterForm", () => {
     mockSiteKey = "0x4AAAAAtestsitekey";
     const user = userEvent.setup();
     const { ApiClientError } = await import("../../api/client");
+    // ApiError only has `error` + optional `code` fields per its type.
+    // The full backend response includes `reason` + `detail` too, but
+    // the frontend's ApiClientError only cares about `error` for the
+    // turnstile_failed branch check.
     const onSubmit = vi.fn().mockRejectedValueOnce(
-      new ApiClientError(401, { error: "turnstile_failed", reason: "rejected" }),
+      new ApiClientError(401, { error: "turnstile_failed" }),
     );
     render(<RegisterForm onSubmit={onSubmit} />);
 

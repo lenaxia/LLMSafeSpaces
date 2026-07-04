@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render as rtlRender, waitFor } from "@testing-library/react";
-import { TurnstileWidget } from "./TurnstileWidget";
 
 // TurnstileWidget covers script loading + widget lifecycle. These tests
 // stub window.turnstile and mock document.head.appendChild so we can
@@ -100,7 +99,7 @@ describe("TurnstileWidget", () => {
     await waitFor(() => {
       expect(fake.widgets).toHaveLength(1);
     });
-    expect(fake.widgets[0].opts.sitekey).toBe("test-site-key-123");
+    expect(fake.widgets[0]!.opts.sitekey).toBe("test-site-key-123");
   });
 
   it("invokes onToken when Cloudflare fires the success callback", async () => {
@@ -113,7 +112,7 @@ describe("TurnstileWidget", () => {
     // Simulate Cloudflare firing the callback (this happens after
     // the user completes the challenge — invisible in "managed" mode).
     act(() => {
-      fake.widgets[0].opts.callback?.("challenge-token-abc");
+      fake.widgets[0]!.opts.callback?.("challenge-token-abc");
     });
     expect(onToken).toHaveBeenCalledWith("challenge-token-abc");
   });
@@ -128,7 +127,7 @@ describe("TurnstileWidget", () => {
 
     await waitFor(() => expect(fake.widgets).toHaveLength(1));
     act(() => {
-      fake.widgets[0].opts["expired-callback"]?.();
+      fake.widgets[0]!.opts["expired-callback"]?.();
     });
     expect(onExpire).toHaveBeenCalled();
   });
@@ -143,7 +142,7 @@ describe("TurnstileWidget", () => {
 
     await waitFor(() => expect(fake.widgets).toHaveLength(1));
     act(() => {
-      fake.widgets[0].opts["error-callback"]?.("script-fail");
+      fake.widgets[0]!.opts["error-callback"]?.("script-fail");
     });
     expect(onError).toHaveBeenCalledWith("script-fail");
   });
