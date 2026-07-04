@@ -101,58 +101,196 @@ func TestOpencodeZenV1_Reachable(t *testing.T) {
 		"opencode.ai/zen/v1/chat/completions returned 404 — endpoint path changed")
 }
 
-// TestOpencodeZenV1_ResponsesEndpoint verifies the /responses path works
-// (opencode uses OpenAI Responses API format, not Chat Completions).
-func TestOpencodeZenV1_ResponsesEndpoint(t *testing.T) {
-	body := `{"model":"deepseek-v4-flash-free","input":[{"role":"user","content":"say hi"}],"max_tokens":5}`
-	req, _ := http.NewRequest("POST", "https://opencode.ai/zen/v1/responses",
+// candidateFreeModels is the pinned set of opencode free models we
+// probe when validating that Bearer public still works. At least ONE
+// must return non-401 for the contract to hold — otherwise Epic 26's
+// relay premise (browser-side agents inference via opencode.ai's
+// public-key path) is broken.
+//
+// This list is derived from `GET https://opencode.ai/zen/v1/models`
+// with `Authorization: Bearer public` (which returns 50-model catalog)
+// filtered to the `-free` suffix subset AND live-probed for actual
+// anonymous invocation success. Note: models.dev's api.json lists 21
+// "free" models by pricing (cost.input=0), but only ~4 of those are
+// currently anon-accessible via `Bearer public`. Pricing != access.
+//
+// Individual models can lose their allowAnonymous flag at any time
+// (opencode's handler.ts:599-603 + model.ts:26 gate per-model). If
+// the WHOLE list stops working, that's a real regression to escalate.
+//
+// big-pickle intentionally NOT included here — the operator has
+// expressed that big-pickle "should always be free", but as of
+// 2026-07-04 it returns 401 to Bearer public. Tracked separately in
+// TestOpencodeZenV1_BigPickleShouldBeAnonAccessible (below), which
+// t.Log's the state rather than failing so CI doesn't red-line on a
+// permanent-known-broken business contract.
+//
+// Last live-verified 2026-07-04:
+//
+//	mimo-v2.5-free          → 200 ✓
+//	nemotron-3-ultra-free   → 200 ✓ (returns provider upstream error but 200 auth)
+//	north-mini-code-free    → 200 ✓
+//	deepseek-v4-flash-free  → 401 (lost anon access recently)
+//	big-pickle              → 401 (see above)
+var candidateFreeModels = []string{
+	"mimo-v2.5-free",
+	"north-mini-code-free",
+	"nemotron-3-ultra-free",
+	// Older models — keep for defense-in-depth even if currently 401ing.
+	// If mimo/north/nemotron all lose access simultaneously, one of these
+	// might still work.
+	"deepseek-v4-flash-free",
+	"minimax-m3-free",
+	"kimi-k2.5-free",
+	"mimo-v2-omni-free",
+	"qwen3.6-plus-free",
+	"trinity-large-preview-free",
+	"glm-5-free",
+}
+
+// probeModel POSTs a minimal request to /zen/v1/responses with the
+// pinned free model and returns the HTTP status. Timeouts/errors
+// return 0 so callers can distinguish transport failures from HTTP
+// verdicts.
+func probeModel(model string) int {
+	body := `{"model":"` + model + `","input":[{"role":"user","content":"1+1"}],"max_tokens":5}`
+	req, err := http.NewRequest("POST", "https://opencode.ai/zen/v1/responses",
 		strings.NewReader(body))
+	if err != nil {
+		return 0
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer public")
-
 	resp, err := httpClient.Do(req)
-	require.NoError(t, err)
-	defer resp.Body.Close()
+	if err != nil {
+		return 0
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return resp.StatusCode
+}
 
-	// Accept 200 (success) or model-specific errors (model disabled etc)
-	// Reject 404 (path changed) or 401 (auth format changed)
-	assert.NotEqual(t, 404, resp.StatusCode,
-		"opencode.ai/zen/v1/responses returned 404 — Responses API path changed")
-	assert.NotEqual(t, 401, resp.StatusCode,
-		"Bearer public no longer accepted — auth mechanism changed")
+// TestOpencodeZenV1_BigPickleShouldBeAnonAccessible records whether
+// `big-pickle` is currently accepting `Authorization: Bearer public`
+// requests. big-pickle is the operator-designated "always free" model
+// per business expectation — but as of 2026-07-04 opencode is gating
+// it behind auth (returns 401 "No provider available" to Bearer public).
+//
+// This test WARNS via t.Log rather than failing, because:
+//  1. It's a business-level contract, not a technical one — fixing
+//     it requires escalating with opencode, not editing code.
+//  2. The generic candidateFreeModels test above already guarantees
+//     that SOME free model works; the free-tier mechanism is intact.
+//  3. Red-lining CI on a persistent, known-external issue trains
+//     operators to ignore CI signals.
+//
+// Flip to require.NotEqual once big-pickle is restored, so we red-line
+// on any regression from a working state.
+func TestOpencodeZenV1_BigPickleShouldBeAnonAccessible(t *testing.T) {
+	code := probeModel("big-pickle")
+	if code == 0 {
+		t.Skip("transport error probing big-pickle; skipping (likely CI network flake)")
+	}
+	if code == 401 || code == 403 {
+		t.Logf("WARNING: big-pickle returned %d to Bearer public. Business-level contract violation — escalate with opencode. Test converted to warning 2026-07-04 to avoid persistent CI red state.", code)
+		return
+	}
+	if code == 404 {
+		t.Fatal("big-pickle returned 404 — model removed from catalog OR /zen/v1/responses path changed")
+	}
+	// Anything else is at least an attempted invocation.
+	t.Logf("big-pickle → %d (mechanism intact)", code)
+}
+
+// TestOpencodeZenV1_ResponsesEndpoint verifies the /responses path works
+// (opencode uses OpenAI Responses API format, not Chat Completions).
+//
+// Passes if ANY candidateFreeModels model returns non-{404, 401}. This
+// is what Epic 26 actually depends on: at least one free-tier model
+// accessible via `Authorization: Bearer public`. Individual model
+// retirements are not a regression as long as the mechanism is intact.
+func TestOpencodeZenV1_ResponsesEndpoint(t *testing.T) {
+	// 404 anywhere means the path itself changed — hard fail.
+	// 401 on every model means anonymous access is gone entirely — hard fail.
+	// At least one non-{404,401} response means Epic 26's premise holds.
+	var results []struct {
+		Model  string
+		Status int
+	}
+	sawNon404Non401 := false
+	saw404 := false
+
+	for _, m := range candidateFreeModels {
+		code := probeModel(m)
+		results = append(results, struct {
+			Model  string
+			Status int
+		}{m, code})
+		if code == 404 {
+			saw404 = true
+		}
+		if code != 0 && code != 404 && code != 401 {
+			sawNon404Non401 = true
+		}
+	}
+
+	// Log the full matrix on any failure so the next operator knows
+	// which models still work when they update the pinned list.
+	logResults := func() {
+		for _, r := range results {
+			t.Logf("  %s → %d", r.Model, r.Status)
+		}
+	}
+	if saw404 {
+		logResults()
+		t.Fatal("some model returned 404 — /zen/v1/responses path changed")
+	}
+	if !sawNon404Non401 {
+		logResults()
+		t.Fatal("all candidate free models returned 401 or transport error — anonymous access appears revoked. Refresh candidateFreeModels via live probe (curl -H 'Authorization: Bearer public' https://opencode.ai/zen/v1/responses ...) and update this list.")
+	}
 }
 
 // TestOpencodeZenV1_BearerPublicAccepted verifies "Bearer public" auth works.
+//
+// Same discovery pattern as TestOpencodeZenV1_ResponsesEndpoint: as long
+// as ONE model in candidateFreeModels returns 200 (or non-{401,403,404}),
+// the free-tier mechanism is alive. If we get a 200 from any model,
+// additionally verify the response has the expected shape.
 func TestOpencodeZenV1_BearerPublicAccepted(t *testing.T) {
-	body := `{"model":"deepseek-v4-flash-free","input":[{"role":"user","content":"1+1"}],"max_tokens":5}`
-	req, _ := http.NewRequest("POST", "https://opencode.ai/zen/v1/responses",
-		strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer public")
+	sawSuccess := false
+	sawUsableStatus := false
+	for _, m := range candidateFreeModels {
+		body := `{"model":"` + m + `","input":[{"role":"user","content":"1+1"}],"max_tokens":5}`
+		req, _ := http.NewRequest("POST", "https://opencode.ai/zen/v1/responses",
+			strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer public")
 
-	resp, err := httpClient.Do(req)
-	require.NoError(t, err)
-	defer resp.Body.Close()
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			t.Logf("  %s → transport error: %v", m, err)
+			continue
+		}
+		respBody, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		t.Logf("  %s → %d", m, resp.StatusCode)
 
-	respBody, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != 401 && resp.StatusCode != 403 && resp.StatusCode != 404 {
+			sawUsableStatus = true
+		}
+		if resp.StatusCode == 200 {
+			sawSuccess = true
+			var result map[string]interface{}
+			require.NoError(t, json.Unmarshal(respBody, &result))
+			assert.Contains(t, result, "id", "200 response from %s missing 'id' field — response shape changed", m)
+			break // one success is enough to prove the contract
+		}
+	}
 
-	// Must not be 401/403 — Bearer public is the free-tier mechanism.
-	// NOTE (2026-06-20): Zen gates free-model inference on a per-model
-	// `allowAnonymous` flag (opencode handler.ts:599-603 + model.ts:26), not on
-	// the key or source IP. This test pins a model known to be allowAnonymous
-	// (deepseek-v4-flash-free). A 401 here means EITHER Zen retired this
-	// model's allowAnonymous flag OR the key path changed — re-probe before
-	// treating as a key death (A23 was the false-positive version of this).
-	assert.NotEqual(t, 401, resp.StatusCode,
-		"Bearer public returned 401 — either this model lost allowAnonymous or opencode changed the public-key path")
-	assert.NotEqual(t, 403, resp.StatusCode,
-		"Bearer public returned 403 — opencode blocked public key")
-
-	// If 200, verify response has expected shape
-	if resp.StatusCode == 200 {
-		var result map[string]interface{}
-		require.NoError(t, json.Unmarshal(respBody, &result))
-		assert.Contains(t, result, "id", "response missing 'id' field")
+	require.True(t, sawUsableStatus,
+		"Bearer public returned 401/403/404 for EVERY candidate free model — public-key path revoked")
+	if !sawSuccess {
+		t.Log("NOTE: no candidate model returned 200 (all returned 4xx-non-auth or errors). Mechanism still works but no test-verifiable happy path — consider refreshing candidateFreeModels.")
 	}
 }
 
