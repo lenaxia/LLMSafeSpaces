@@ -1,13 +1,11 @@
 export interface EnvConfig {
   apiBaseUrl: string;
-  // Cloudflare Turnstile site key (public) — when non-empty, the
-  // register page renders the widget and the SPA attaches the returned
-  // token to POST /auth/register. When empty, the widget is not
-  // rendered and the API middleware is expected to be disabled server
-  // side too. Kept as a plain string (not optional) so callers can
-  // just check `.length > 0` — matches the chart's fallback of
-  // TURNSTILE_SITE_KEY="" when turnstile.enabled=false.
-  turnstileSiteKey: string;
+  // Cloudflare Turnstile site key (public). Optional in the interface
+  // so older test mocks (`{ apiBaseUrl: "..." }`) don't break; getEnv()
+  // and loadEnv() normalize to empty string when missing. When
+  // non-empty, the register page renders the widget and the SPA
+  // attaches the token to POST /auth/register.
+  turnstileSiteKey?: string;
 }
 
 let cached: EnvConfig | null = null;

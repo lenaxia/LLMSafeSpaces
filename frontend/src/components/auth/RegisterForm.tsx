@@ -26,7 +26,7 @@ export function RegisterForm({ onSubmit }: Props) {
   const [loading, setLoading] = useState(false);
   const [turnstileToken, setTurnstileToken] = useState("");
 
-  const { turnstileSiteKey } = getEnv();
+  const { turnstileSiteKey = "" } = getEnv();
   const turnstileEnabled = turnstileSiteKey.length > 0;
   // Submit is blocked when Turnstile is enabled but hasn't produced a
   // token yet. The widget's managed mode resolves invisibly for most

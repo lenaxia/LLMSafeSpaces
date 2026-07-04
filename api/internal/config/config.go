@@ -388,9 +388,25 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
-	// Turnstile — env overrides for sensitive values. The chart wires
-	// LLMSAFESPACES_TURNSTILE_SECRETKEY via secretKeyRef so it never
-	// lands in a rendered ConfigMap.
+	// Turnstile env overrides + fail-closed guard. Extracted to a
+	// helper to keep Load()'s cyclomatic complexity below the project
+	// linter threshold; see applyTurnstileEnv below.
+	if err := applyTurnstileEnv(&config); err != nil {
+		return nil, err
+	}
+
+	return &config, nil
+}
+
+// applyTurnstileEnv applies LLMSAFESPACES_TURNSTILE_* env overrides to
+// config.Turnstile and returns an error when Enabled=true and SecretKey
+// is empty (fail-closed guard).
+//
+// The env layer is separate from the YAML/viper unmarshal path because
+// the secret is loaded via a K8s Secret + valueFrom.secretKeyRef in the
+// chart, and viper's AutomaticEnv doesn't pick up nested keys reliably
+// when they contain dots.
+func applyTurnstileEnv(config *Config) error {
 	if v := os.Getenv("LLMSAFESPACES_TURNSTILE_ENABLED"); v == "true" {
 		config.Turnstile.Enabled = true
 	}
@@ -410,8 +426,7 @@ func Load(path string) (*Config, error) {
 	// secret. Ships an obvious log line at boot rather than a subtle
 	// "every /register succeeds without CAPTCHA" bypass.
 	if config.Turnstile.Enabled && config.Turnstile.SecretKey == "" {
-		return nil, fmt.Errorf("config: turnstile.enabled=true but turnstile.secretKey is empty; set LLMSAFESPACES_TURNSTILE_SECRETKEY or disable")
+		return fmt.Errorf("config: turnstile.enabled=true but turnstile.secretKey is empty; set LLMSAFESPACES_TURNSTILE_SECRETKEY or disable")
 	}
-
-	return &config, nil
+	return nil
 }

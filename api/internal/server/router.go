@@ -27,6 +27,21 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
+// TurnstileRouterConfig is the routing-side view of Cloudflare Turnstile
+// CAPTCHA configuration used by the /register handler. Kept separate from
+// middleware.TurnstileConfig so the router package doesn't need to import
+// middleware's HTTP client type. registerAuthRoutes constructs the
+// middleware.TurnstileConfig from this at wire-up time.
+//
+// When Enabled is true, SecretKey must be non-empty (config.Load enforces
+// this at startup, fail-closed). VerifyURL defaults to Cloudflare's
+// production siteverify endpoint if empty.
+type TurnstileRouterConfig struct {
+	Enabled   bool
+	SecretKey string
+	VerifyURL string
+}
+
 // RouterConfig defines configuration for the router
 type RouterConfig struct {
 	// Debug enables debug mode
@@ -644,16 +659,6 @@ func setSessionCookie(c *gin.Context, token string, maxAge int, cookieName, cook
 }
 
 // API key management routes.
-// TurnstileRouterConfig is the routing-side view of Turnstile config.
-// Kept separate from middleware.TurnstileConfig so the router package
-// doesn't need to import middleware's HTTP client type. registerAuthRoutes
-// constructs the middleware.TurnstileConfig from this at wire-up time.
-type TurnstileRouterConfig struct {
-	Enabled   bool
-	SecretKey string
-	VerifyURL string
-}
-
 func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, instanceSettings *settings.InstanceService, logger *apilogger.Logger, cookieName, cookieDomain string, ssoHandler *handlers.SSOHandler, turnstile TurnstileRouterConfig) {
 	authSvc := services.GetAuth()
 
