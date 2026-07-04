@@ -120,17 +120,27 @@ func Turnstile(cfg TurnstileConfig) gin.HandlerFunc {
 	}
 }
 
-// extractTurnstileToken pulls the token from the request, header first
-// then form/JSON field. Returns empty string if not found.
+// extractTurnstileToken pulls the token from the request. Two paths:
+//  1. Header `cf-turnstile-response` — the recommended API path,
+//     works for JSON-body callers (i.e. this project's frontend).
+//  2. Form field `cfTurnstileResponse` via c.PostForm — ONLY works
+//     for application/x-www-form-urlencoded bodies. Present as a
+//     convenience for form-encoded callers (which we don't currently
+//     have) and to match Cloudflare's browser widget default when
+//     rendered inside a native <form>.
+//
+// Returns empty string if not found. There is deliberately no
+// JSON-body peek here: consuming the body once would break downstream
+// c.ShouldBindJSON, and Gin's ShouldBindBodyWith caching pattern would
+// couple the middleware to every handler's binding style. Header path
+// is the intended production path for API callers.
 func extractTurnstileToken(c *gin.Context) string {
 	if t := c.GetHeader(turnstileHeader); t != "" {
 		return t
 	}
-	// JSON body: peek without consuming (using Gin's already-parsed body
-	// via BindJSON would exhaust the reader). Callers who need to bind
-	// the body after Turnstile can do so as long as they use
-	// ShouldBindBodyWith / ShouldBindJSON (Gin caches once). To keep the
-	// middleware simple and not-body-consuming, prefer the header path.
+	// Form fallback — only reachable when Content-Type is
+	// application/x-www-form-urlencoded (or multipart). JSON callers
+	// must use the header path above.
 	if t := c.PostForm(turnstileFormField); t != "" {
 		return t
 	}
@@ -195,10 +205,17 @@ func respondTurnstileFail(c *gin.Context, reason, detail string) {
 	})
 }
 
-// clientIP returns the request's client IP, preferring the
-// X-Forwarded-For header's leftmost entry (which Cloudflare and AWS
-// LBC both populate). Falls back to gin's ClientIP() (which respects
-// Gin's TrustedProxies config).
+// clientIP returns the request's client IP for forwarding to
+// Cloudflare's siteverify endpoint as the `remoteip` fraud-scoring
+// hint. It's NOT used for any access-control decision — the token
+// verification itself is the trust boundary — so this deliberately
+// trusts the leftmost X-Forwarded-For / CF-Connecting-IP without
+// consulting gin's TrustedProxies list. Spoofing here can at worst
+// degrade Cloudflare's own bot scoring, not grant access.
+//
+// If this function is ever repurposed for access control, switch to
+// c.ClientIP() (which respects gin.Engine.SetTrustedProxies) and
+// remove the X-Forwarded-For fast-path below.
 func clientIP(c *gin.Context) string {
 	if xff := c.GetHeader("X-Forwarded-For"); xff != "" {
 		// Leftmost = original client (before proxies).

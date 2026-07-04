@@ -5,6 +5,7 @@ package config
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -326,7 +327,7 @@ func TestConfig_Turnstile_EnabledWithoutSecretFailsClosed(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected Load to fail-closed with enabled+empty-secret; got cfg=%+v", cfg)
 	}
-	if !containsAny(err.Error(), "turnstile.enabled", "secretKey", "empty") {
+	if !strings.Contains(err.Error(), "turnstile.enabled") || !strings.Contains(err.Error(), "secretKey") {
 		t.Errorf("error message should mention turnstile+secret; got: %v", err)
 	}
 }
@@ -345,20 +346,4 @@ func TestConfig_Turnstile_VerifyURLOverride(t *testing.T) {
 	if cfg.Turnstile.VerifyURL != "http://127.0.0.1:9999/verify" {
 		t.Errorf("expected env-override VerifyURL, got %q", cfg.Turnstile.VerifyURL)
 	}
-}
-
-func containsAny(s string, subs ...string) bool {
-	for _, sub := range subs {
-		if len(sub) == 0 {
-			continue
-		}
-		if len(s) >= len(sub) {
-			for i := 0; i+len(sub) <= len(s); i++ {
-				if s[i:i+len(sub)] == sub {
-					return true
-				}
-			}
-		}
-	}
-	return false
 }

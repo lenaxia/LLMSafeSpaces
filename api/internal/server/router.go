@@ -28,14 +28,24 @@ import (
 )
 
 // TurnstileRouterConfig is the routing-side view of Cloudflare Turnstile
-// CAPTCHA configuration used by the /register handler. Kept separate from
-// middleware.TurnstileConfig so the router package doesn't need to import
-// middleware's HTTP client type. registerAuthRoutes constructs the
-// middleware.TurnstileConfig from this at wire-up time.
+// CAPTCHA configuration used by the /register handler. Only the three
+// fields the router needs at wire-up time; registerAuthRoutes constructs
+// the fuller middleware.TurnstileConfig from this by dropping in a
+// production HTTP client and logger.
 //
-// When Enabled is true, SecretKey must be non-empty (config.Load enforces
-// this at startup, fail-closed). VerifyURL defaults to Cloudflare's
-// production siteverify endpoint if empty.
+// This is kept separate from middleware.TurnstileConfig (rather than
+// re-using that type here) because middleware.TurnstileConfig contains
+// an *http.Client field that's only meaningful for tests. Exposing that
+// on RouterConfig — and therefore on every app.go call site that builds
+// a router — would invite confusion about whether operators are meant
+// to plug an httptrace-instrumented client, a custom timeout, etc. The
+// separation costs us one mapping step (app.go:911-914); the
+// alternative would cost us a "please just leave this nil unless
+// you're writing a test" caveat at every call site.
+//
+// When Enabled is true, SecretKey must be non-empty (config.Load
+// enforces this at startup, fail-closed). VerifyURL defaults to
+// Cloudflare's production siteverify endpoint if empty.
 type TurnstileRouterConfig struct {
 	Enabled   bool
 	SecretKey string
