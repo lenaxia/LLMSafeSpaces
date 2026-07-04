@@ -492,6 +492,8 @@ func (h *ProxyHandler) drainQueuedMessage(workspaceID, sessionID string) {
 		}
 
 		h.publishQueueEvent(workspaceID, sessionID, "sent", msg.ID, "")
+		h.logger.Info("drainQueuedMessage: sent queued message",
+			"workspaceID", workspaceID, "sessionID", sessionID, "messageID", msg.ID)
 	}
 }
 
@@ -660,9 +662,53 @@ func (h *ProxyHandler) reconcileSessionState(workspaceID, podIP, password string
 			h.onSessionIdle(workspaceID, sess.ID)
 		}
 	}
+
+	// Stale-busy blind spot (#388): if both the API's SSE subscription AND
+	// agentd's SSE subscription missed the same idle transition, statusz
+	// reports the session as "busy" (agentd's tracker holds a stale busy).
+	// The sweep would skip it forever. For sessions reported busy with a
+	// queue stranded longer than staleBusyThreshold, optimistically drain
+	// directly — NOT via onSessionIdle (which would publish a false "idle"
+	// to the UI). The 409-requeue path in drainQueuedMessage is the safety
+	// net: if the session is truly busy, opencode returns 409 and the
+	// message is requeued for the next sweep cycle.
+	if h.queueSvc != nil {
+		for _, sess := range statusz.Sessions {
+			if sess.Status == "idle" {
+				continue // already handled above
+			}
+			msgs, err := h.queueSvc.PeekAll(ctx, workspaceID, sess.ID)
+			if err != nil || len(msgs) == 0 {
+				continue
+			}
+			oldest := msgs[0].EnqueuedAt
+			for _, m := range msgs[1:] {
+				if m.EnqueuedAt.Before(oldest) {
+					oldest = m.EnqueuedAt
+				}
+			}
+			if time.Since(oldest) < staleBusyThreshold {
+				continue
+			}
+			h.logger.Info("reconcileSessionState: optimistically draining stale-busy session",
+				"workspaceID", workspaceID, "sessionID", sess.ID,
+				"queueLen", len(msgs), "oldestAge", time.Since(oldest).Round(time.Second))
+			go h.drainQueuedMessage(workspaceID, sess.ID)
+		}
+	}
 }
 
 const queueSweepInterval = 30 * time.Second
+
+// staleBusyThreshold is how long a queued message must wait before the sweep
+// treats a statusz "busy" report as suspect and optimistically drains anyway.
+// The normal idle-event drain fires within one sweep cycle (~30s). If a
+// message has been queued this long and statusz still says busy, either the
+// session has a very long turn (and the 409-requeue handles it cheaply) or
+// agentd's statusz is stale (the dual-drop blind spot from #388). The 409-
+// requeue path in drainQueuedMessage is the safety net: a truly-busy session
+// returns 409, the message is requeued, and the next sweep retries.
+const staleBusyThreshold = 5 * time.Minute
 
 // startQueueSweep runs a periodic sweep for stranded queued messages.
 // It is intended to run as a background goroutine.
@@ -673,7 +719,11 @@ const queueSweepInterval = 30 * time.Second
 // but whose session.status=idle event was lost, leaving them stuck in
 // activeSess. Only workspaces with non-empty queues incur an HTTP call.
 func (h *ProxyHandler) startQueueSweep(stopCh <-chan struct{}) {
-	ticker := time.NewTicker(queueSweepInterval)
+	interval := h.sweepInterval
+	if interval == 0 {
+		interval = queueSweepInterval
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {

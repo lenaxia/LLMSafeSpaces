@@ -1060,3 +1060,206 @@ func TestDrainQueuedMessage_409RequeuesAndReturns(t *testing.T) {
 	require.Len(t, msgs, 1)
 	assert.Equal(t, 0, msgs[0].RetryCount, "retry count should not increase for 409")
 }
+
+// TestStartQueueSweep_DrainsViaTickerWhenIdleEventDropped is the regression
+// test requested by issue #388: the "SSE subscription is logically alive
+// (heartbeats flow) but the specific session.status:idle event was dropped,
+// and the ticker goroutine eventually drains the stranded queue over time."
+//
+// Unlike TestPeriodicSweep_DrainsStrandedQueue (which calls sweepStrandedQueues
+// synchronously), this test drives the actual startQueueSweep goroutine with
+// a fast interval and asserts the drain fires within ~2 ticks — proving the
+// ticker lifecycle (start, tick, stop) works end-to-end.
+func TestStartQueueSweep_DrainsViaTickerWhenIdleEventDropped(t *testing.T) {
+	promptCalled := make(chan string, 1)
+
+	podServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/statusz":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			resp, _ := json.Marshal(map[string]interface{}{
+				"ready": true,
+				"sessions": []map[string]interface{}{
+					{"id": "ses-1", "status": "idle"},
+				},
+			})
+			_, _ = w.Write(resp)
+		case "/session/ses-1/prompt_async":
+			var body struct {
+				Parts []struct{ Text string } `json:"parts"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if len(body.Parts) > 0 {
+				select {
+				case promptCalled <- body.Parts[0].Text:
+				default:
+				}
+			}
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer podServer.Close()
+
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+	redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer redisClient.Close()
+	svc := msgqueue.NewWithClient(redisClient)
+
+	podAddr := podServer.Listener.Addr().String()
+	httpClient := &http.Client{
+		Transport: &routingTransport{
+			eventHost:  podAddr,
+			promptHost: podAddr,
+		},
+		Timeout: 5 * time.Second,
+	}
+
+	k8sMock := newMockK8sWithWorkspace(t, "ws-1", podAddr)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient, nil)
+	require.NoError(t, err)
+	handler.SetMessageQueueService(svc)
+	handler.userBroker = eventbroker.NewUserEventBroker()
+	setupPasswordSecret(t, handler, "ws-1", "test-pw")
+	// Fast sweep for testing: 50ms ticks.
+	handler.SetSweepInterval(50 * time.Millisecond)
+
+	// Enqueue a message — the session.status=idle SSE event is NEVER emitted
+	// (simulating the dropped-event scenario). The only path to drain is the
+	// ticker goroutine discovering the queue via PeekAllGlobal + statusz.
+	_, err = svc.Enqueue(context.Background(), "ws-1", "ses-1",
+		"stranded by dropped idle event")
+	require.NoError(t, err)
+
+	// Start the sweep goroutine.
+	stopCh := make(chan struct{})
+	defer close(stopCh)
+	go handler.startQueueSweep(stopCh)
+
+	// Assert the ticker drains within a generous window (~2 ticks + drain latency).
+	select {
+	case text := <-promptCalled:
+		assert.Contains(t, text, "stranded by dropped idle event")
+	case <-time.After(2 * time.Second):
+		t.Fatal("startQueueSweep ticker did not drain stranded queue — idle event was dropped and ticker failed to recover")
+	}
+
+	n, err := svc.Len(context.Background(), "ws-1", "ses-1")
+	require.NoError(t, err)
+	assert.Equal(t, int64(0), n, "queue should be empty after ticker-driven drain")
+}
+
+// TestReconcileSessionState_DrainsStaleBusySession is the regression test for
+// the #388 dual-drop blind spot: when BOTH the API and agentd miss the idle
+// transition, statusz reports the session as "busy" (stale). A freshly-enqueued
+// message should NOT be drained (the session might genuinely be busy), but a
+// message stranded longer than staleBusyThreshold SHOULD be optimistically
+// drained — the 409-requeue path protects against a truly-busy session.
+func TestReconcileSessionState_DrainsStaleBusySession(t *testing.T) {
+	tests := []struct {
+		name        string
+		staleAge    time.Duration
+		shouldDrain bool
+	}{
+		{"fresh queue (< threshold) NOT drained", 30 * time.Second, false},
+		{"stale queue (> threshold) drained", 6 * time.Minute, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			promptCalled := make(chan string, 1)
+
+			podServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/v1/statusz":
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					resp, _ := json.Marshal(map[string]interface{}{
+						"ready": true,
+						"sessions": []map[string]interface{}{
+							{"id": "ses-1", "status": "busy"},
+						},
+					})
+					_, _ = w.Write(resp)
+				case "/session/ses-1/prompt_async":
+					var body struct {
+						Parts []struct{ Text string } `json:"parts"`
+					}
+					_ = json.NewDecoder(r.Body).Decode(&body)
+					if len(body.Parts) > 0 {
+						select {
+						case promptCalled <- body.Parts[0].Text:
+						default:
+						}
+					}
+					w.WriteHeader(http.StatusNoContent)
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer podServer.Close()
+
+			mr, err := miniredis.Run()
+			require.NoError(t, err)
+			defer mr.Close()
+			redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+			defer redisClient.Close()
+			svc := msgqueue.NewWithClient(redisClient)
+
+			podAddr := podServer.Listener.Addr().String()
+			httpClient := &http.Client{
+				Transport: &routingTransport{
+					eventHost:  podAddr,
+					promptHost: podAddr,
+				},
+				Timeout: 5 * time.Second,
+			}
+
+			k8sMock := newMockK8sWithWorkspace(t, "ws-1", podAddr)
+			handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient, nil)
+			require.NoError(t, err)
+			handler.SetMessageQueueService(svc)
+			handler.userBroker = eventbroker.NewUserEventBroker()
+			setupPasswordSecret(t, handler, "ws-1", "test-pw")
+
+			// Enqueue a message, then backdate it to simulate staleness.
+			_, err = svc.Enqueue(context.Background(), "ws-1", "ses-1", "stale-busy test message")
+			require.NoError(t, err)
+
+			// Backdate the enqueued_at by rewriting the Redis key directly.
+			// PeekAllGlobal returns the messages; we can't set EnqueuedAt via
+			// the public API, so we re-marshal with an old timestamp.
+			key := "llmsafespaces:msgqueue:ws-1:ses-1"
+			raw, err := redisClient.LIndex(context.Background(), key, 0).Bytes()
+			require.NoError(t, err)
+			var msg msgqueue.QueuedMessage
+			require.NoError(t, json.Unmarshal(raw, &msg))
+			msg.EnqueuedAt = time.Now().Add(-tt.staleAge)
+			backdated, _ := json.Marshal(msg)
+			redisClient.LSet(context.Background(), key, 0, backdated)
+
+			// Run reconcileSessionState directly — this is what the sweep calls.
+			handler.reconcileSessionState("ws-1", podAddr, "test-pw")
+
+			if tt.shouldDrain {
+				select {
+				case <-promptCalled:
+					// drain fired — expected for stale queue
+				case <-time.After(1 * time.Second):
+					t.Fatal("stale-busy session should have been optimistically drained")
+				}
+			} else {
+				select {
+				case <-promptCalled:
+					t.Fatal("fresh queue against busy session should NOT be drained")
+				case <-time.After(500 * time.Millisecond):
+					// no drain — expected
+				}
+			}
+		})
+	}
+}

@@ -90,6 +90,10 @@ type ProxyHandler struct {
 
 	queueSvc interfaces.MessageQueueService
 
+	// sweepInterval overrides the default queueSweepInterval for testing.
+	// Zero means use the default (30s). Set via SetSweepInterval before Start().
+	sweepInterval time.Duration
+
 	// requestBuffer parks POST /message requests during an opencode restart
 	// (connection-refused window) so users do not see 503s. See US-44.10.
 	requestBuffer *requestBuffer
