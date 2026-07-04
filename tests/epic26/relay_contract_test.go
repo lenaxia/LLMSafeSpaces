@@ -116,7 +116,8 @@ func TestOpencodeZenV1_Reachable(t *testing.T) {
 //
 // Individual models can lose their allowAnonymous flag at any time
 // (opencode's handler.ts:599-603 + model.ts:26 gate per-model). If
-// the WHOLE list stops working, that's a real regression to escalate.
+// the WHOLE list stops working, that's a real regression worth
+// surfacing — the entire free-tier relay premise is dead.
 //
 // big-pickle intentionally NOT included here — the operator has
 // expressed that big-pickle "should always be free", but as of
@@ -172,15 +173,16 @@ func probeModel(model string) int {
 // TestOpencodeZenV1_BigPickleShouldBeAnonAccessible records whether
 // `big-pickle` is currently accepting `Authorization: Bearer public`
 // requests. big-pickle is the operator-designated "always free" model
-// per business expectation — but as of 2026-07-04 opencode is gating
-// it behind auth (returns 401 "No provider available" to Bearer public).
+// per business expectation — but as of 2026-07-04 the live API is
+// gating it behind auth (returns 401 "No provider available" to Bearer
+// public).
 //
 // This test WARNS via t.Log rather than failing, because:
-//  1. It's a business-level contract, not a technical one — fixing
-//     it requires escalating with opencode, not editing code.
+//  1. It's an external state we don't control from this repo — code
+//     changes here cannot restore access.
 //  2. The generic candidateFreeModels test above already guarantees
 //     that SOME free model works; the free-tier mechanism is intact.
-//  3. Red-lining CI on a persistent, known-external issue trains
+//  3. Red-lining CI on a persistent external condition trains
 //     operators to ignore CI signals.
 //
 // Flip to require.NotEqual once big-pickle is restored, so we red-line
@@ -191,7 +193,7 @@ func TestOpencodeZenV1_BigPickleShouldBeAnonAccessible(t *testing.T) {
 		t.Skip("transport error probing big-pickle; skipping (likely CI network flake)")
 	}
 	if code == 401 || code == 403 {
-		t.Logf("WARNING: big-pickle returned %d to Bearer public. Business-level contract violation — escalate with opencode. Test converted to warning 2026-07-04 to avoid persistent CI red state.", code)
+		t.Logf("NOTE: big-pickle returned %d to Bearer public. External-state condition; the mechanism-level test above (candidateFreeModels) still verifies the anon path works via other models. Converted to warning 2026-07-04 to avoid persistent CI red state.", code)
 		return
 	}
 	if code == 404 {
