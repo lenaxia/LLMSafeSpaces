@@ -12,7 +12,24 @@ export class ApiClientError extends Error {
   }
 }
 
-async function handleUnauthorized(status: number): Promise<void> {
+// noRedirectPaths lists request paths that MUST NOT trigger the global
+// 401→/login redirect. Two categories:
+//   * /auth/me — the app's own "am I logged in?" probe; a 401 here is
+//     the normal not-logged-in signal, not an auth failure.
+//   * /auth/register — 401 from Turnstile CAPTCHA. Users on /register
+//     who fail the CAPTCHA must stay on /register to re-challenge;
+//     redirecting them to /login mid-flow loses their form input and
+//     hides the failure from the RegisterForm's own error handler.
+const noRedirectPaths = new Set(["/auth/me", "/auth/register"]);
+
+async function handleUnauthorized(status: number, path: string, body: ApiError): Promise<void> {
+  // Fast-path: exclude paths that legitimately produce 401s during a
+  // logged-in-user flow (see noRedirectPaths).
+  if (noRedirectPaths.has(path)) return;
+  // Also exclude turnstile_failed 401s from any path. Turnstile
+  // middleware is a fail-closed gate, not an auth failure — losing
+  // the current page + form input would degrade UX with no gain.
+  if (body?.error === "turnstile_failed") return;
   if (status === 401 && !window.location.pathname.startsWith("/login")) {
     window.location.href = "/login";
   }
@@ -35,10 +52,7 @@ async function request<T>(
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
-    // Don't redirect on /auth/me 401 — that's the normal "not logged in" check
-    if (path !== "/auth/me") {
-      await handleUnauthorized(res.status);
-    }
+    await handleUnauthorized(res.status, path, body);
     throw new ApiClientError(res.status, body);
   }
 
@@ -69,9 +83,7 @@ export async function getRaw<T>(path: string): Promise<{ data: T; headers: Heade
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
-    if (path !== "/auth/me") {
-      await handleUnauthorized(res.status);
-    }
+    await handleUnauthorized(res.status, path, body);
     throw new ApiClientError(res.status, body);
   }
 
@@ -97,7 +109,7 @@ export async function streamRequest(
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ error: res.statusText }));
-    await handleUnauthorized(res.status);
+    await handleUnauthorized(res.status, path, err);
     throw new ApiClientError(res.status, err);
   }
   return res;
