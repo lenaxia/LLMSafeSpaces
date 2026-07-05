@@ -18,8 +18,10 @@ import type { Page, Route } from "@playwright/test";
 // the real Cloudflare script exposes.
 
 const API_PREFIX = "**/api/v1";
-const TURNSTILE_SCRIPT_URL =
-  "https://challenges.cloudflare.com/turnstile/v0/api.js";
+// Wildcard for Playwright page.route — matches http/https and any query
+// params Cloudflare might append. The bare-string form doesn't intercept
+// cross-origin URLs reliably.
+const TURNSTILE_SCRIPT_URL = "**/challenges.cloudflare.com/turnstile/v0/api.js*";
 const TEST_SITE_KEY = "0xTEST_SITE_KEY";
 const VALID_TOKEN = "test-token-valid";
 
