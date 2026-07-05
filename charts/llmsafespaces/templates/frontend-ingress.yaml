@@ -7,10 +7,34 @@ metadata:
   labels:
     {{- include "llmsafespaces.labels" . | nindent 4 }}
     app.kubernetes.io/component: frontend
-  {{- with .Values.frontend.ingress.annotations }}
   annotations:
-    {{- toYaml . | nindent 4 }}
-  {{- end }}
+    {{- /*
+      Base annotations from values.yaml, then optionally augment the
+      Content-Security-Policy with Cloudflare Turnstile domains when
+      turnstile.enabled=true. Rendered as configuration-snippet for
+      nginx-ingress; other ingress controllers (ALB) currently ignore
+      this key, which is why the CSP wasn't observed live under the
+      ALB deployment. The chart-side default MUST still be
+      Turnstile-compatible so operators who switch ingress classes
+      don't accidentally break the register widget.
+
+      Two annotations to override: configuration-snippet (nginx path)
+      and alb.ingress.kubernetes.io/actions.response-headers-... could
+      be a future addition for the ALB path. Currently only nginx.
+    */ -}}
+    {{- $baseAnnotations := .Values.frontend.ingress.annotations | default dict -}}
+    {{- if and .Values.turnstile.enabled (index $baseAnnotations "nginx.ingress.kubernetes.io/configuration-snippet") -}}
+      {{- /* Extend CSP: allow Cloudflare Turnstile CDN + frame */ -}}
+      {{- $snippet := index $baseAnnotations "nginx.ingress.kubernetes.io/configuration-snippet" -}}
+      {{- $snippet = regexReplaceAll `script-src ([^;"]+)` $snippet `script-src ${1} https://challenges.cloudflare.com` -}}
+      {{- $snippet = regexReplaceAll `frame-src ([^;"]+)` $snippet `frame-src ${1} https://challenges.cloudflare.com` -}}
+      {{- /* If the CSP has no frame-src, append one so the widget's iframe can load. */ -}}
+      {{- if not (regexMatch `frame-src` $snippet) -}}
+        {{- $snippet = regexReplaceAll `(default-src [^;"]+;)` $snippet `${1} frame-src 'self' https://challenges.cloudflare.com;` -}}
+      {{- end -}}
+      {{- $_ := set $baseAnnotations "nginx.ingress.kubernetes.io/configuration-snippet" $snippet -}}
+    {{- end }}
+    {{- toYaml $baseAnnotations | nindent 4 }}
 spec:
   {{- if .Values.frontend.ingress.className }}
   ingressClassName: {{ .Values.frontend.ingress.className }}
