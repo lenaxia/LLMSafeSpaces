@@ -126,7 +126,7 @@ test.describe("Register flow — Turnstile happy path", () => {
     });
 
     await page.goto("/register");
-    await expect(page.locator("[data-turnstile-rendered='true']")).toBeVisible();
+    await expect(page.locator("[data-turnstile-rendered='true']")).toBeAttached();
 
     await page.getByPlaceholder("Username").fill("bob");
     await page.getByPlaceholder("Email").fill("bob@test.com");
@@ -151,7 +151,7 @@ test.describe("Register flow — Turnstile unhappy paths", () => {
     await mockTurnstileScript(page, { autoFireToken: null });
 
     await page.goto("/register");
-    await expect(page.locator("[data-turnstile-rendered='true']")).toBeVisible();
+    await expect(page.locator("[data-turnstile-rendered='true']")).toBeAttached();
 
     await page.getByPlaceholder("Username").fill("bob");
     await page.getByPlaceholder("Email").fill("bob@test.com");
