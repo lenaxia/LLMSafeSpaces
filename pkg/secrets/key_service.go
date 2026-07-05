@@ -70,6 +70,31 @@ type KeyService struct {
 	// app.go once auth.Service is constructed (which is where the
 	// active + previous keys live).
 	signingKeys SigningKeyEnumerator
+	// now is the injectable clock used for TTL math (Redis cache
+	// write-back, expiry checks). Nil means use time.Now — production
+	// callers never set this. Tests substitute a deterministic clock
+	// so hardcoded time.Date fixtures don't roll off the wall clock
+	// between commit and CI run.
+	now func() time.Time
+}
+
+// nowOr returns the configured clock or time.Now when unset. Callers
+// that need "current time" for TTL/expiry math should route through
+// this so the clock is uniformly injectable for tests.
+func (s *KeyService) nowOr() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
+}
+
+// setClock installs a deterministic clock. Test-only helper (all
+// pkg/secrets tests use `package secrets`, so the unexported name
+// is accessible from tests). Rename to SetClock + export ONLY if a
+// future external test package needs it, and update the docstring
+// then to explain the external caller.
+func (s *KeyService) setClock(now func() time.Time) {
+	s.now = now
 }
 
 // SigningKeyEnumerator exposes the API's active JWT signing keys to
@@ -533,7 +558,7 @@ func (s *KeyService) rehydrateDEKFromJWTSession(ctx context.Context, sessionID s
 		// already pruned an expired row. Soft-unlock recovers.
 		return nil, ErrDEKUnavailable
 	}
-	if !row.ExpiresAt.After(time.Now()) {
+	if !row.ExpiresAt.After(s.nowOr()) {
 		// Race: row about to be pruned. Treat as gone.
 		if s.logger != nil {
 			s.logger.Warn("durable DEK rehydrate: row expired (janitor will prune)", "jti", jti.String())
@@ -573,7 +598,7 @@ func (s *KeyService) rehydrateDEKFromJWTSession(ctx context.Context, sessionID s
 	// Re-cache so subsequent calls in this JWT's lifetime are fast.
 	// Use the row's remaining lifetime so the cache TTL never exceeds
 	// the durable TTL.
-	cacheTTL := time.Until(row.ExpiresAt)
+	cacheTTL := row.ExpiresAt.Sub(s.nowOr())
 	if cacheTTL > 0 {
 		if cerr := s.cache.CacheDEK(ctx, sessionID, dek, cacheTTL); cerr != nil && s.logger != nil {
 			s.logger.Warn("durable DEK rehydrate: re-cache failed; will rehydrate again next call",
@@ -732,7 +757,13 @@ func (s *KeyService) tryUnwrapRowWithKnownKeys(ctx context.Context, row *JWTSess
 		// SETEX errors — skip the write rather than log a spurious
 		// warning. Mirrors the pattern in rehydrateDEKFromJWTSession
 		// (key_service.go, cacheTTL > 0 guard).
-		if cacheTTL := time.Until(row.ExpiresAt); cacheTTL > 0 {
+		//
+		// Clock is routed through s.nowOr() so tests can inject a
+		// deterministic time. Without this, tests that hardcode a
+		// baseTs via time.Date() roll off wall-clock's "now" once
+		// the calendar moves past the fixture date, breaking every
+		// subsequent CI run for reasons unrelated to code changes.
+		if cacheTTL := row.ExpiresAt.Sub(s.nowOr()); cacheTTL > 0 {
 			if cErr := s.cache.CacheDEK(ctx, row.JTI.String(), dek, cacheTTL); cErr != nil {
 				if s.logger != nil {
 					s.logger.Warn("GetDEKForUser: cache write-back failed (DEK still returned)",

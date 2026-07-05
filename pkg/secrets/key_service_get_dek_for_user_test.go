@@ -62,6 +62,14 @@ func newGetDEKForUserFixture(t *testing.T) *getDEKForUserFixture {
 		cache:       cache,
 		jwtSessions: store,
 	}
+	// Deterministic clock so the cache write-back's TTL math
+	// (row.ExpiresAt - now) doesn't roll off wall-clock's "now" once
+	// the calendar moves past base. Without this, every test using
+	// baseTs.Add(24*time.Hour) as an expiry starts failing 24h after
+	// the fixture's authored date, for reasons unrelated to any code
+	// change (originally learned the hard way on 2026-07-04, when
+	// this test file's base=2026-07-03 rolled off wall-clock).
+	svc.setClock(func() time.Time { return base })
 	return &getDEKForUserFixture{
 		svc:     svc,
 		store:   store,
@@ -398,7 +406,7 @@ func TestGetDEKForUser_NearExpiryRowSkipsCacheWriteback(t *testing.T) {
 	log := newCaptureLogger()
 	f.svc.logger = log
 
-	pastRow := f.addSession(t, []byte("primary"), time.Now().Add(-2*time.Hour), time.Now().Add(-1*time.Second))
+	pastRow := f.addSession(t, []byte("primary"), f.baseTs.Add(-2*time.Hour), f.baseTs.Add(-1*time.Second))
 
 	// Call the helper directly rather than GetDEKForUser (which would
 	// filter out the expired row before ever reaching write-back).
