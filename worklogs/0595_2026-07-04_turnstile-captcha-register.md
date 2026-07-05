@@ -178,3 +178,86 @@ Non-blocking review points also addressed:
 - `extractTurnstileToken` form-field fallback comment clarified —
   only works for form-encoded bodies, header path is the JSON caller
   contract.
+
+## Rounds 3-6 (2026-07-04): follow-up review responses
+
+Reviewer flagged additional blockers after the initial round-3
+response commit. Each fix + test below is a separate commit on
+feat/turnstile.
+
+### Round 4: CSP lockout
+
+Both CSP surfaces (chart-side nginx annotation + API-side
+SecurityConfig default) were still `script-src 'self'` — would have
+blocked the Turnstile widget entirely in production, making
+registration impossible. The "live-verification" in the round-2
+worklog only ran curl-level probes against the API, which never
+exercise the browser CSP path.
+
+Fix:
+- Chart: `frontend-ingress.yaml` uses `regexReplaceAll` to append
+  `https://challenges.cloudflare.com` to script-src + synthesize a
+  frame-src directive when `turnstile.enabled=true`.
+- API: `app/app.go` gains `addTurnstileToCSP()` helper, applied to
+  `securityCfg.ContentSecurityPolicy` when `cfg.Turnstile.Enabled`.
+- Tests: 2 chart tests (`TestTurnstile_CSPExtendedWhenEnabled`,
+  `TestTurnstile_CSPUnchangedWhenDisabled`) + 4 unit tests
+  (`TestAddTurnstileToCSP_*`).
+
+Also completed clock injection in `pkg/secrets`:
+- Two more sites in `key_service.go` (line 560, 600) still used
+  wall-clock `time.Now()` / `time.Until()`; both now route through
+  `s.nowOr()` for uniform deterministic-clock behavior.
+- `SetClock` docstring's claim about external test packages was
+  false (verified: all 32 pkg/secrets tests use `package secrets`
+  internally). Renamed to unexported `setClock` and corrected the
+  docstring.
+
+### Round 5: 401 redirect
+
+Reviewer identified that Turnstile middleware's 401 responses
+trigger the frontend's global `handleUnauthorized()` redirect to
+`/login`. Users failing the CAPTCHA on `/register` would be bounced
+away before seeing the error, losing form input. The RegisterForm's
+`turnstile_failed` handler was dead code in the real flow — the
+existing tests mocked `onSubmit` directly and bypassed the client.ts
+fetch wrapper.
+
+Fix:
+- `client.ts`: `handleUnauthorized()` now takes `(status, path, body)`
+  and excludes: (a) `/auth/register` via `noRedirectPaths`, (b) any
+  401 with `body.error==='turnstile_failed'` regardless of path.
+  Signature propagated through all three call sites (`request`,
+  `getRaw`, `streamRequest`).
+- Tests: 2 new client.test.ts tests exercising the real fetch flow
+  (spy on `window.location.href` setter, assert it's never called
+  for the excluded 401 shapes).
+
+### Round 6: E2E tests
+
+Reviewer's remaining hard gate — the CSP lockout and 401-redirect
+blockers both escaped 4-5 rounds of unit + integration review
+precisely because there was no browser-level test exercising the
+full flow. Added Playwright e2e coverage:
+
+- `frontend/tests/e2e/register-turnstile.spec.ts` (4 tests):
+  1. Happy: valid token → registration succeeds, `cf-turnstile-response`
+     header propagated to /auth/register.
+  2. Unhappy: no token → submit button stays disabled.
+  3. Unhappy: `turnstile_failed` 401 → user stays on `/register`
+     (regression guard for round-5 blocker).
+  4. Unhappy: `verify_unavailable` 401 → same, error visible.
+  5. Disabled path: empty siteKey → widget doesn't render, submit
+     enabled with just form fields.
+
+Cloudflare's script + siteverify API are stubbed via
+`page.route(TURNSTILE_SCRIPT_URL, ...)` — tests run offline, no
+cross-origin CDN dependency in CI.
+
+## Security policy documentation
+
+The chart + API now conditionally allow `https://challenges.cloudflare.com`
+in CSP script-src + frame-src when `turnstile.enabled=true`. This is
+a deliberate weakening of the default-`'self'` posture. Documented as
+an exception in `design/0027_2026-05-24_security-policy-v21.md`
+(section: "Third-party CDN exceptions").
