@@ -100,4 +100,82 @@ describe("api client", () => {
     });
     await expect(streamRequest("/chat", {})).rejects.toThrow(ApiClientError);
   });
+
+  // --- 401 redirect exclusion tests (PR #501 review round 5) ---
+  //
+  // Turnstile middleware returns 401 turnstile_failed on register failure.
+  // Before the fix, this would trigger handleUnauthorized() → redirect
+  // to /login, throwing away the user's form input and hiding the error
+  // from RegisterForm's own turnstile_failed handler. These tests pin
+  // the exclusion rules that prevent that regression.
+
+  it("does NOT redirect to /login on 401 from /auth/register (Turnstile failure)", async () => {
+    // Simulate the user being on /register.
+    const originalLocation = window.location;
+    // JSDOM allows reassign via defineProperty in some versions; use a
+    // spy on the setter instead to avoid environment brittleness.
+    const hrefSetter = vi.fn();
+    Object.defineProperty(window, "location", {
+      value: {
+        ...originalLocation,
+        pathname: "/register",
+        set href(v: string) {
+          hrefSetter(v);
+        },
+      },
+      writable: true,
+    });
+
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+      json: () =>
+        Promise.resolve({ error: "turnstile_failed", reason: "rejected" }),
+    });
+
+    await expect(api.post("/auth/register", {})).rejects.toThrow(ApiClientError);
+    expect(hrefSetter).not.toHaveBeenCalled();
+
+    Object.defineProperty(window, "location", {
+      value: originalLocation,
+      writable: true,
+    });
+  });
+
+  it("does NOT redirect to /login on 401 turnstile_failed from any path", async () => {
+    // Guards against a regression that adds a new endpoint using the
+    // Turnstile middleware but forgets to add the path to
+    // noRedirectPaths. The turnstile_failed body itself is the marker.
+    const originalLocation = window.location;
+    const hrefSetter = vi.fn();
+    Object.defineProperty(window, "location", {
+      value: {
+        ...originalLocation,
+        pathname: "/some-future-endpoint",
+        set href(v: string) {
+          hrefSetter(v);
+        },
+      },
+      writable: true,
+    });
+
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+      json: () =>
+        Promise.resolve({ error: "turnstile_failed", reason: "missing_token" }),
+    });
+
+    await expect(api.post("/some/future/endpoint", {})).rejects.toThrow(
+      ApiClientError,
+    );
+    expect(hrefSetter).not.toHaveBeenCalled();
+
+    Object.defineProperty(window, "location", {
+      value: originalLocation,
+      writable: true,
+    });
+  });
 });

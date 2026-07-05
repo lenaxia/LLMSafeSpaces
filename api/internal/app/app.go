@@ -85,6 +85,55 @@ type App struct {
 	cancel             context.CancelFunc
 }
 
+// addTurnstileToCSP extends a Content-Security-Policy directive string
+// with the Cloudflare Turnstile origin (challenges.cloudflare.com) in
+// script-src and frame-src. Idempotent: if the origin is already
+// present in a directive, the input is left unchanged.
+//
+// The Turnstile widget loads api.js from challenges.cloudflare.com and
+// renders its challenge in an iframe on the same origin. Without both
+// directives, the browser blocks the widget entirely; script-src fires
+// onerror on the script tag, frame-src blocks the iframe. Users see a
+// permanently-disabled submit button and no way to complete
+// registration.
+//
+// If script-src or frame-src is absent, this function adds a new
+// directive. When frame-src is absent it falls back to default-src, so
+// we explicitly add frame-src rather than relying on that fallback.
+//
+// PR #501 review round 4 (2026-07-04) — the chart-side CSP annotation
+// in frontend-ingress.yaml has an equivalent transformation for the
+// nginx-ingress path. This function covers the API-level SecurityConfig
+// used by the gin security middleware.
+func addTurnstileToCSP(csp string) string {
+	const origin = "https://challenges.cloudflare.com"
+	// Split on ";", trim each directive, and extend/insert as needed.
+	parts := strings.Split(csp, ";")
+	var haveScript, haveFrame bool
+	for i, p := range parts {
+		trimmed := strings.TrimSpace(p)
+		switch {
+		case strings.HasPrefix(trimmed, "script-src"):
+			haveScript = true
+			if !strings.Contains(trimmed, origin) {
+				parts[i] = " " + trimmed + " " + origin
+			}
+		case strings.HasPrefix(trimmed, "frame-src"):
+			haveFrame = true
+			if !strings.Contains(trimmed, origin) {
+				parts[i] = " " + trimmed + " " + origin
+			}
+		}
+	}
+	if !haveScript {
+		parts = append(parts, " script-src 'self' "+origin)
+	}
+	if !haveFrame {
+		parts = append(parts, " frame-src 'self' "+origin)
+	}
+	return strings.Join(parts, ";")
+}
+
 // newEmailMailer resolves the configured email provider into an
 // emailpkg.EmailProvider. Extracted from New to keep New under the funlen
 // limit (worklog 0410). SES validation fails fast at boot.
@@ -650,6 +699,17 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	}
 	securityCfg.AllowCredentials = cfg.Security.AllowCredentials
 
+	// When Turnstile is enabled, the CSP must allow Cloudflare's
+	// challenges.cloudflare.com origin in script-src (widget script)
+	// and frame-src (challenge iframe). Without this, the browser
+	// blocks the widget entirely and the register submit button
+	// stays permanently disabled — a hard registration lockout.
+	// PR #501 review round 4 flagged this at the API layer to match
+	// the chart-side fix in the frontend Ingress CSP annotation.
+	if cfg.Turnstile.Enabled {
+		securityCfg.ContentSecurityPolicy = addTurnstileToCSP(securityCfg.ContentSecurityPolicy)
+	}
+
 	rateLimitCfg := server.DefaultRouterConfig().RateLimitConfig
 	rateLimitCfg.Enabled = cfg.RateLimiting.Enabled
 	if cfg.RateLimiting.DefaultLimit > 0 {
@@ -906,6 +966,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		LoginDiscoveryHandler:           loginDiscoveryHandler,
 		CookieName:                      cfg.Auth.CookieName,
 		CookieDomain:                    cfg.OrgSubdomainRouting.CookieDomain,
+		Turnstile: server.TurnstileRouterConfig{
+			Enabled:   cfg.Turnstile.Enabled,
+			SecretKey: cfg.Turnstile.SecretKey,
+			VerifyURL: cfg.Turnstile.VerifyURL,
+		},
 	})
 
 	httpServer := &http.Server{

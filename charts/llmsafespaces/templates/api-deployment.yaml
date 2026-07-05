@@ -95,6 +95,22 @@ spec:
             - name: LLMSAFESPACES_SERVER_INFERENCERELAYURL
               value: {{ . | quote }}
             {{- end }}
+            {{- if .Values.turnstile.enabled }}
+            # Turnstile (US-63.x) — enables the /register CAPTCHA middleware
+            # in the API. The secret key is loaded via valueFrom.secretKeyRef
+            # so it never lands in a rendered ConfigMap / pod spec dump.
+            # When TURNSTILE_ENABLED is empty/unset the middleware is a no-op,
+            # matching turnstile.enabled=false chart-side.
+            - name: LLMSAFESPACES_TURNSTILE_ENABLED
+              value: "true"
+            - name: LLMSAFESPACES_TURNSTILE_SECRETKEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.turnstile.secretKey.existingSecret | quote }}
+                  key: {{ .Values.turnstile.secretKey.key | quote }}
+            - name: LLMSAFESPACES_TURNSTILE_VERIFYURL
+              value: {{ .Values.turnstile.verifyURL | quote }}
+            {{- end }}
           {{- with .Values.api.livenessProbe }}
           livenessProbe:
             {{- toYaml . | nindent 12 }}

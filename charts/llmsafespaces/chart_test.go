@@ -3432,6 +3432,87 @@ func TestWorkspaceEgress_ToggleOnByDefault(t *testing.T) {
 }
 
 // ============================================================================
+// PR #501 review round 3 findings: CSP + Turnstile integration tests.
+//
+// The nginx-ingress CSP annotation must include Cloudflare's Turnstile
+// domain (challenges.cloudflare.com) in both script-src and frame-src
+// when turnstile.enabled=true — otherwise the widget's script fails to
+// load and the register submit button stays permanently disabled.
+// ============================================================================
+
+// TestTurnstile_CSPExtendedWhenEnabled verifies the frontend Ingress
+// annotation's Content-Security-Policy is augmented to allow the
+// Turnstile CDN when turnstile.enabled=true.
+func TestTurnstile_CSPExtendedWhenEnabled(t *testing.T) {
+	values := "frontend:\n  enabled: true\n  ingress:\n    enabled: true\nturnstile:\n  enabled: true\n  siteKey: 0xSITE\n"
+	docs := helmTemplate(t, values)
+	ingresses := findByKind(docs, "Ingress")
+
+	var found bool
+	for _, ing := range ingresses {
+		name := metaName(ing)
+		if !strings.Contains(name, "frontend") {
+			continue
+		}
+		found = true
+		annos := metadataAnnotations(ing)
+		snippet := annos["nginx.ingress.kubernetes.io/configuration-snippet"]
+		require.Contains(t, snippet, "script-src 'self' https://challenges.cloudflare.com",
+			"CSP script-src must include Turnstile CDN when turnstile enabled — otherwise the widget script fails to load and submit button never unlocks")
+		require.Contains(t, snippet, "https://challenges.cloudflare.com",
+			"CSP frame-src must include Turnstile CDN when turnstile enabled — the widget renders in an iframe")
+	}
+	require.True(t, found, "frontend Ingress must render for this test")
+}
+
+// TestTurnstile_CSPUnchangedWhenDisabled verifies the default CSP is
+// untouched when turnstile.enabled=false (i.e. no accidental broadening
+// of script-src for deployments that don't use Turnstile).
+func TestTurnstile_CSPUnchangedWhenDisabled(t *testing.T) {
+	values := "frontend:\n  enabled: true\n  ingress:\n    enabled: true\n"
+	docs := helmTemplate(t, values)
+	ingresses := findByKind(docs, "Ingress")
+
+	var found bool
+	for _, ing := range ingresses {
+		name := metaName(ing)
+		if !strings.Contains(name, "frontend") {
+			continue
+		}
+		found = true
+		annos := metadataAnnotations(ing)
+		snippet := annos["nginx.ingress.kubernetes.io/configuration-snippet"]
+		require.Contains(t, snippet, "script-src 'self'",
+			"CSP script-src must be 'self' when Turnstile disabled — default posture")
+		require.NotContains(t, snippet, "challenges.cloudflare.com",
+			"CSP must NOT include Turnstile CDN when turnstile disabled — no accidental broadening")
+	}
+	require.True(t, found, "frontend Ingress must render for this test")
+}
+
+// metadataAnnotations extracts .metadata.annotations from a rendered
+// object, returning an empty map if absent. Type-narrowed helper for
+// the CSP tests above; avoids repeating the two-step map assertion
+// dance.
+func metadataAnnotations(obj map[string]any) map[string]string {
+	m, _ := obj["metadata"].(map[string]any)
+	if m == nil {
+		return map[string]string{}
+	}
+	a, _ := m["annotations"].(map[string]any)
+	if a == nil {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(a))
+	for k, v := range a {
+		if s, ok := v.(string); ok {
+			out[k] = s
+		}
+	}
+	return out
+}
+
+// ============================================================================
 // Epic 54, US-54.3: Org-scoped wildcard subdomain routing chart tests.
 //
 // These tests verify the chart's opt-in wildcard Ingress + Certificate

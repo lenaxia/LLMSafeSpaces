@@ -1808,3 +1808,51 @@ Proxy-layer redaction and injection detection follow the same pattern as `stripP
 | All array merge semantics are "replace" | Predictable behavior; no special-case logic per field | Per-field additive/replace rules (rejected: maintenance hazard, confusing for users) |
 | Removed `audit.events` array | `logLevel` tiers are sufficient; per-event config adds surface without value and risks users disabling critical events | Keep events array (rejected: over-engineered) |
 | Go regexp (RE2) eliminates ReDoS risk | Go's Thompson NFA guarantees linear-time matching | Add runtime timeouts (unnecessary for Go; kept complexity limits for performance) |
+
+## Appendix D: Third-party CDN CSP exceptions
+
+The frontend and API layer ship a default Content-Security-Policy of
+`default-src 'self'` (plus a handful of specific-directive tightenings —
+see `charts/llmsafespaces/values.yaml` ingress annotation and
+`api/internal/middleware/security.go` `DefaultSecurityConfig.ContentSecurityPolicy`).
+
+Certain optional features require cross-origin resource loading and thus
+CSP relaxation. This appendix records those exceptions so operators can
+audit the security posture at a glance and future features have a
+template for how to document their own CSP requirements.
+
+### D.1 Cloudflare Turnstile CAPTCHA (feature gate: `turnstile.enabled`)
+
+When enabled, the frontend loads the Turnstile widget script from
+`https://challenges.cloudflare.com/turnstile/v0/api.js` and renders the
+challenge in an iframe served from the same origin. Both operations are
+blocked by the default CSP.
+
+**Scope of relaxation** (only when `turnstile.enabled=true`):
+- `script-src` gains `https://challenges.cloudflare.com`
+- `frame-src` is synthesized (if absent) or extended (if present) to
+  include `https://challenges.cloudflare.com`
+
+Applied surfaces:
+- Chart: `templates/frontend-ingress.yaml` uses `regexReplaceAll` on the
+  `nginx.ingress.kubernetes.io/configuration-snippet` annotation.
+- API: `api/internal/app/app.go` `addTurnstileToCSP()` transforms
+  `securityCfg.ContentSecurityPolicy` at server startup.
+
+Both surfaces have dedicated tests
+(`charts/llmsafespaces/chart_test.go`, `api/internal/app/csp_turnstile_test.go`)
+that verify the transform's correctness AND that the default policy is
+unchanged when the feature is disabled — no accidental broadening for
+deployments that don't use Turnstile.
+
+**Risk assessment**: `challenges.cloudflare.com` is a Cloudflare-controlled
+CDN endpoint serving a documented public JavaScript API. Compromise of
+that endpoint would compromise Turnstile globally, not just this
+deployment; the incremental risk to this specific application is bounded
+by the same set of attackers who could compromise the Cloudflare edge
+that already serves 100% of the app's traffic. `unsafe-inline` and
+`unsafe-eval` are NOT relaxed — the Turnstile widget uses postMessage +
+iframe isolation, not inline evaluation.
+
+**When to remove**: if Turnstile is replaced with a self-hosted CAPTCHA
+(unlikely) or the feature is retired.
