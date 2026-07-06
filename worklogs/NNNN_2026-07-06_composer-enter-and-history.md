@@ -125,4 +125,5 @@ Updated existing tests (replaced `await user.keyboard("{Enter}")` with `await us
 - `frontend/src/pages/ChatPage.queue.test.tsx` — updated 9 tests to use button click
 - `pkg/settings/schema.go` — `sendOnEnter` default `true`→`false` with updated Description; `SchemaVersion` `5`→`6` with comment entry
 - `pkg/settings/schema_test.go` — added `TestSendOnEnterDefaultFalse` regression test
+- `sdks/canary/go/scenarios/s-user-settings/main.go` — `expectedSchemaVersion` `4`→`6` (catches the canary up to v5+v6; was stale since the ReadOnly/email v5 bump and the sendOnEnter v6 bump)
 - `worklogs/NNNN_2026-07-06_composer-enter-and-history.md` (this file)
