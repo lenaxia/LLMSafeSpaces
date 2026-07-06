@@ -25,6 +25,7 @@
 13. [Common Commands](#common-commands)
 14. [Testing Requirements](#testing-requirements)
 15. [Multi-Tenant OIDC SSO](#multi-tenant-oidc-sso)
+16. [Cloudflare Turnstile CAPTCHA](#cloudflare-turnstile-captcha)
 
 ---
 
@@ -1467,6 +1468,7 @@ git commit -m "Update generated DeepCopy code"
 | Rate limiter IP fallback | Falls back to `c.ClientIP()` when no API key in context | `rate_limit.go:54-58` |
 | Protected endpoints require auth | API key CRUD behind `AuthMiddleware()` | `TestAPIKeyEndpoints_RequireAuth` |
 | Wrong HTTP method rejection | Only POST on register/login, returns 404 | `TestRegister_RejectsGet`, `TestLogin_RejectsGet` |
+| Turnstile CAPTCHA on `/register` | Optional Cloudflare Turnstile widget gates registration behind bot verification. Feature-flagged via `chart.turnstile.enabled`; disabled by default, enabled on prod. See [Cloudflare Turnstile CAPTCHA](#cloudflare-turnstile-captcha). | `middleware/turnstile_test.go`, `router_auth_turnstile_test.go`, `register-turnstile.spec.ts` |
 
 ### E2E Testing
 
@@ -1636,6 +1638,175 @@ The state-cookie signing key is `deriveServerKey("oidc-state-cookie")` (`api/int
 | Frontend login integration | `frontend/src/pages/LoginPage.tsx`, `frontend/src/api/sso.ts` |
 | Design doc (D17 decisions) | `design/stories/epic-43-organization-management/README.md` (Q-S1..Q-S4) |
 | Hardening history | worklogs `0372` (F8–F13), `0380` (F8/F9/F10/F11), `0386` (callback URL e2e) |
+
+---
+
+## Cloudflare Turnstile CAPTCHA
+
+**Status:** Shipped — PR #501 (feature), worklog `0595`, deployed to prod 2026-07-04. Feature-flagged via chart values; **disabled by default**, currently **enabled on `safespaces.thekao.cloud`**.
+
+Gates `POST /api/v1/auth/register` behind Cloudflare's Turnstile CAPTCHA. When enabled, the frontend renders the Turnstile widget on the register page and the API middleware validates the client-supplied token against Cloudflare's siteverify endpoint before invoking `auth.Register`. Blocks automated account creation without imposing friction on legitimate users (Turnstile "managed" mode resolves invisibly for well-behaved browsers).
+
+### Feature gate
+
+Everything hangs off `chart.turnstile.enabled`. When `false` (chart default), the entire feature is a no-op:
+- API: middleware is not installed on `/register` (the `if turnstile.Enabled` branch in `registerAuthRoutes` skips it)
+- Frontend: `env.turnstileSiteKey` is empty, widget component returns `null`, submit button is not gated on any token
+- CSP: no relaxation applied (chart's `regexReplaceAll` + API's `addTurnstileToCSP()` both no-op)
+
+When `true`, the wire-up is deliberately fail-closed at every layer.
+
+### Wire-up (chart → deployment → runtime)
+
+| Concern | Location |
+|---------|----------|
+| Feature toggle | `charts/llmsafespaces/values.yaml:turnstile.enabled` (default `false`) |
+| Public site key (rendered into HTML) | `charts/llmsafespaces/values.yaml:turnstile.siteKey` → substituted by Flux from cluster-config `TURNSTILE_SITE_KEY` |
+| Secret key (server-side verification) | K8s Secret `llmsafespaces-credentials` key `turnstile-secret`, populated by ExternalSecret from AWS Secrets Manager |
+| Verify URL (default: Cloudflare production) | `charts/llmsafespaces/values.yaml:turnstile.verifyURL` |
+| Frontend deployment env | `TURNSTILE_SITE_KEY` (public value) — `charts/llmsafespaces/templates/frontend-deployment.yaml` |
+| API deployment env | `LLMSAFESPACES_TURNSTILE_{ENABLED,SECRETKEY,VERIFYURL}` — `charts/llmsafespaces/templates/api-deployment.yaml`; `SECRETKEY` via `secretKeyRef` so it never lands in a rendered ConfigMap |
+| CDK context values | `llmsafespaces:turnstileSecretArn`, `llmsafespaces:turnstileSiteKey` in `cdk.context.json` |
+| cluster-config keys emitted by CDK | `TURNSTILE_SECRET_ARN`, `TURNSTILE_SITE_KEY` (PlatformStack) |
+| ExternalSecret pulls the secret ARN → K8s Secret | `kubernetes/apps/llmsafespaces/llmsafespaces/externalsecret/externalsecret.yaml` (ops-prod repo) |
+
+### API middleware
+
+`api/internal/middleware/turnstile.go` — gin middleware installed conditionally on `/auth/register` when `turnstile.Enabled=true`. Fails closed on every failure mode with `HTTP 401 {"error":"turnstile_failed","reason":<code>,"detail":<human>}`:
+
+| Fail mode | `reason` |
+|-----------|----------|
+| Missing token (no header + no form field) | `missing_token` |
+| siteverify HTTP error / timeout | `verify_unavailable` |
+| siteverify returns non-200 | `verify_unavailable` |
+| siteverify returns `success:false` | `rejected` (Cloudflare's error-code list is passed through in `detail`) |
+
+Additionally, `verifyTurnstileToken` returns a `no_secret_configured` internal marker when `SecretKey==""`, but this state is normally unreachable: the config startup guard (`applyTurnstileEnv`, see "Config startup guard" below) refuses to start the API in that state. If somehow reached at request time, the middleware surfaces it via `respondTurnstileFail(c, "rejected", "no_secret_configured")` — i.e. `reason: "rejected"`, `detail: "no_secret_configured"`. The internal marker is a `detail` string, not a client-facing `reason` code.
+
+Token extraction order (first match wins):
+1. Header `cf-turnstile-response` (production path — the frontend uses JSON, so this is the only real path)
+2. Form field `cfTurnstileResponse` (form-encoded body only; the frontend never uses this, kept for callers that submit `application/x-www-form-urlencoded`)
+
+Client IP is forwarded to Cloudflare's siteverify as the `remoteip` fraud-scoring hint (leftmost of `X-Forwarded-For`, else `CF-Connecting-IP`, else gin's `c.ClientIP()`). This is **not** used for any access-control decision, so bypassing gin's `TrustedProxies` model is intentional — spoofing here at worst degrades Cloudflare's own scoring.
+
+### Config startup guard (fail-closed)
+
+`api/internal/config/config.go:applyTurnstileEnv()` refuses to start the API with `Turnstile.Enabled=true` and `Turnstile.SecretKey==""`. This surfaces a config bug at boot (obvious log + non-zero exit) rather than silently accepting every registration.
+
+### Content Security Policy relaxation
+
+The default frontend + API CSP is `script-src 'self'`. Turnstile loads its client script from `https://challenges.cloudflare.com/turnstile/v0/api.js` and renders the challenge in an iframe served from the same origin — both operations are blocked by the default CSP. When `turnstile.enabled=true`, the CSP is conditionally extended in two surfaces:
+
+- **Chart (nginx-ingress)**: `templates/frontend-ingress.yaml` uses `regexReplaceAll` on the `nginx.ingress.kubernetes.io/configuration-snippet` annotation to append `https://challenges.cloudflare.com` to `script-src` and synthesize a `frame-src` directive.
+- **API (SecurityConfig middleware)**: `api/internal/app/app.go:addTurnstileToCSP()` performs the equivalent transform on `securityCfg.ContentSecurityPolicy` at server startup. Idempotent + guards against duplicating the origin.
+
+Both surfaces have dedicated tests that verify (a) the transform is correct when enabled, (b) the default CSP is unchanged when disabled — no accidental broadening. The CSP exception itself is documented in `design/0027_2026-05-24_security-policy-v21.md` Appendix D.
+
+### 401 redirect exclusions (frontend)
+
+The frontend's global fetch wrapper (`frontend/src/api/client.ts:handleUnauthorized`) normally redirects to `/login` on any 401. Turnstile's 401 needs to be excluded so users stay on `/register` to re-challenge instead of being bounced away:
+
+- Path-based: `/auth/register` joins `/auth/me` in the `noRedirectPaths` set
+- Body-based: any 401 with `body.error==='turnstile_failed'` is exempt regardless of path (guards against a regression where a future endpoint adds Turnstile but forgets to update `noRedirectPaths`)
+
+### Frontend widget
+
+`frontend/src/components/auth/TurnstileWidget.tsx` — React wrapper around Cloudflare's Turnstile client script. Loads once (cached across mounts via a module-level singleton `loadPromise`), renders in flexible/auto-theme mode, cleans up on unmount via `window.turnstile.remove(widgetId)`. When `siteKey` is empty (feature disabled), the component returns `null` and never loads the script.
+
+`RegisterForm.tsx` renders the widget when `env.turnstileSiteKey` is non-empty and gates submit until the widget issues a token. On backend `turnstile_failed` error, the token is cleared so the user re-challenges before retrying.
+
+### Endpoints affected
+
+| Endpoint | Turnstile behavior |
+|----------|-------------------|
+| `POST /api/v1/auth/register` | Middleware installed when enabled; token required |
+| `POST /api/v1/auth/login` | Not gated — different threat model (credential-stuffing already covered by CF rate-limit + auth lockout) |
+| `POST /api/v1/auth/lookup`, `/sso/domains` | Not gated — enumeration-safe by design; CAPTCHA friction would degrade legitimate login-discovery UX |
+
+### Tests
+
+| Layer | File | Coverage |
+|-------|------|----------|
+| Middleware unit (9 tests) | `api/internal/middleware/turnstile_test.go` | valid, missing token, cloudflare rejects, unreachable, 5xx, form-field, header-precedence, XFF-remoteip, no-secret |
+| Config unit (4 tests) | `api/internal/config/config_test.go` | default-disabled, enabled+secret, fail-closed guard, verify-URL override |
+| CSP transform unit (4 tests) | `api/internal/app/csp_turnstile_test.go` | extend both directives, idempotency, synthesize when absent |
+| Router integration (5 tests) | `api/internal/server/router_auth_turnstile_test.go` | wires middleware onto `/register` when enabled; naked when disabled; `authSvc.Register` gated on token validity |
+| Chart CSP (2 tests) | `charts/llmsafespaces/chart_test.go` | ingress CSP extended when enabled; unchanged when disabled |
+| Frontend widget (7 tests) | `frontend/src/components/auth/TurnstileWidget.test.tsx` | render lifecycle, callbacks, cleanup, siteKey-empty short-circuit |
+| Frontend form enabled-path (4 tests) | `frontend/src/components/auth/RegisterForm.test.tsx` | widget renders, submit gated on token, token forwarded, turnstile_failed re-challenge |
+| Frontend client 401 exclusion (2 tests) | `frontend/src/api/client.test.ts` | `/auth/register` and `turnstile_failed` body both bypass the redirect |
+| E2E Playwright (5 tests) | `frontend/tests/e2e/register-turnstile.spec.ts` | happy path, disabled path, 3 unhappy paths (missing token, 401 rejected, verify unavailable) with stubbed Cloudflare siteverify |
+
+### Provisioning (once, per deployment)
+
+1. **Cloudflare dashboard** → Turnstile → Add site. Mode: `managed`. Domain: the app hostname. Copy site key + secret key.
+2. **AWS Secrets Manager**: `aws secretsmanager create-secret --name llmsafespaces/turnstile-secret --secret-string <SECRET_KEY> --tags Key=llmsafespaces:role,Value=app-secret`. The `llmsafespaces:role=app-secret` tag is required — the ExternalSecrets IRSA role gates access on it.
+3. **CDK**: set `llmsafespaces:turnstileSecretArn` and `llmsafespaces:turnstileSiteKey` in `cdk.context.json`, then `cdk deploy 'LlmSafeSpaces/Platform'`. Emits both keys into the cluster-config ConfigMap.
+4. **ops-prod**: `turnstile.enabled: true` in the llmsafespaces HR values, ExternalSecret pulls the secret. Flux reconciles, pods restart with env vars set, widget starts appearing on `/register`.
+
+### Enable / disable
+
+Enable: `turnstile.enabled: true` in ops-prod HR values → git push → Flux reconciles → ~90s.
+
+Disable: same, set `false`. Turnstile-related env vars disappear from pods, middleware not installed, widget renders nothing, CSP unchanged. Same ~90s cycle. No image redeploy needed.
+
+### Live verification
+
+```bash
+# 1. env.json includes the public site key
+curl -sk https://safespaces.thekao.cloud/env.json
+# Expected: {"apiBaseUrl":"/api/v1","turnstileSiteKey":"0x4AAAAAAD..."}
+
+# 2. Registration without token is blocked
+curl -sw '\n%{http_code}\n' -X POST https://safespaces.thekao.cloud/api/v1/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"x","email":"x@example.com","password":"password123"}'
+# Expected: 401 {"error":"turnstile_failed","reason":"missing_token", ...}
+
+# 3. Registration with invalid token is blocked (Cloudflare rejects)
+curl -sw '\n%{http_code}\n' -X POST https://safespaces.thekao.cloud/api/v1/auth/register \
+  -H 'Content-Type: application/json' \
+  -H 'cf-turnstile-response: FAKE_TOKEN' \
+  -d '{"username":"y","email":"y@example.com","password":"password123"}'
+# Expected: 401 {"error":"turnstile_failed","reason":"rejected","detail":"invalid-input-response"}
+```
+
+### Known limitations
+
+- **`loadPromise` singleton never resets on script-load error**. If Cloudflare's api.js `<script>` `onerror` fires once (transient network failure at first mount), every subsequent mount resolves instantly with `window.turnstile === undefined` and the widget silently doesn't render. Users hit `verify_unavailable` on submit. Non-blocking; the backend fails-closed. Would self-heal with a `loadPromise = null` in the `onerror` handler if this becomes a support issue.
+- **`extractTurnstileToken` form-field fallback** only works for `application/x-www-form-urlencoded` bodies. The frontend uses JSON, so this path is unreachable in practice; kept for form-encoded callers that don't exist yet.
+- **`clientIP` bypasses `TrustedProxies`** by design — the extracted IP is only used as Cloudflare's `remoteip` fraud-scoring hint, not for access control. If this function is ever repurposed for access control, switch to `c.ClientIP()`.
+
+### File reference
+
+| Concern | File |
+|---------|------|
+| Middleware | `api/internal/middleware/turnstile.go` |
+| Middleware tests | `api/internal/middleware/turnstile_test.go` |
+| Config struct + fail-closed guard | `api/internal/config/config.go` (`Turnstile` block, `applyTurnstileEnv()`) |
+| Router conditional install | `api/internal/server/router.go` (`registerAuthRoutes`, `TurnstileRouterConfig`) |
+| Router integration tests | `api/internal/server/router_auth_turnstile_test.go` |
+| CSP transform (API) | `api/internal/app/app.go` (`addTurnstileToCSP()`, applied to `securityCfg`) |
+| CSP transform tests | `api/internal/app/csp_turnstile_test.go` |
+| Chart values | `charts/llmsafespaces/values.yaml` (`turnstile` block) |
+| Chart api deployment env wiring | `charts/llmsafespaces/templates/api-deployment.yaml` |
+| Chart frontend deployment env wiring | `charts/llmsafespaces/templates/frontend-deployment.yaml` |
+| Chart ingress CSP transform | `charts/llmsafespaces/templates/frontend-ingress.yaml` |
+| Chart CSP tests | `charts/llmsafespaces/chart_test.go` (`TestTurnstile_CSP*`) |
+| Frontend widget component | `frontend/src/components/auth/TurnstileWidget.tsx` |
+| Frontend widget tests | `frontend/src/components/auth/TurnstileWidget.test.tsx` |
+| Frontend form integration | `frontend/src/components/auth/RegisterForm.tsx` |
+| Frontend form tests | `frontend/src/components/auth/RegisterForm.test.tsx` |
+| Frontend runtime env injection | `frontend/docker-entrypoint.sh`, `frontend/src/env.ts` |
+| Frontend 401 exclusion + tests | `frontend/src/api/client.ts`, `frontend/src/api/client.test.ts` |
+| Frontend E2E | `frontend/tests/e2e/register-turnstile.spec.ts` |
+| CDK context + emission | `~/llmsafespaces-cdk/lib/config.ts`, `lib/platform-stack.ts`, `bin/app.ts`, `cdk.context.json` |
+| CDK example context | `~/llmsafespaces-cdk/cdk.context.example.json` |
+| ops-prod ExternalSecret | `kubernetes/apps/llmsafespaces/llmsafespaces/externalsecret/externalsecret.yaml` |
+| ops-prod HR values | `kubernetes/apps/llmsafespaces/llmsafespaces/app/helm-release.yaml` (`turnstile` block) |
+| Security policy exception | `design/0027_2026-05-24_security-policy-v21.md` Appendix D |
+| Feature worklog | `worklogs/0595_2026-07-04_turnstile-captcha-register.md` |
+| PR | [#501](https://github.com/lenaxia/LLMSafeSpaces/pull/501) |
 
 ---
 
