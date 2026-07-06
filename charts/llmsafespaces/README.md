@@ -5,8 +5,8 @@ controller, CRDs, ValidatingWebhookConfiguration, and database migrations.
 
 ## Status
 
-- Chart version: 0.1.0
-- App version: 0.1.0
+- Chart version: 0.2.0
+- App version: 0.2.0
 - Kubernetes: >= 1.27
 - Helm: >= 3.13 (also tested with Helm 4)
 - Tested locally with `helm lint` and `helm template`
@@ -28,15 +28,17 @@ below.
 > once and **never re-packaged**, and every `helm upgrade` after the first will
 > silently render against a stale snapshot of the chart.
 
-**The trap.** `Chart.yaml` has `version: 0.1.0` pinned intentionally — this chart
-is consumed directly from Git, not published to a Helm/OCI registry, so the
-version is never bumped. FluxCD's `source-controller` packages a
-`GitRepository`-sourced chart and caches the packaged artifact keyed on the
-chart version. With the **default** `reconcileStrategy: ChartVersion`, the
-artifact is built once on first reconcile and re-used forever (because the
-version never changes). New templates, new `ConfigMap` keys (e.g. new SQL
-migrations bundled via `(.Files.Glob "migrations/*.sql")`), new RBAC — none of
-it reaches the cluster until something forces a re-package.
+**The trap.** The chart version is bumped per release, but intermediate
+commits between releases (sha-/, ts-/, dev-tagged image builds for fast
+iteration) do **not** bump `Chart.yaml`. FluxCD's `source-controller`
+packages a `GitRepository`-sourced chart and caches the packaged artifact
+keyed on the chart version. With the **default** `reconcileStrategy:
+ChartVersion`, the artifact is built once on first reconcile and re-used
+until the Chart.yaml version changes — so every intermediate commit (new
+templates, new `ConfigMap` keys like new SQL migrations bundled via
+`(.Files.Glob "migrations/*.sql")`, new RBAC) is invisible to the cluster
+until the next release tag. Even at release cadence, the cache makes
+upgrades unreliable.
 
 **Symptom.** `kubectl get configmap <release>-migrations -o jsonpath='{.data}'`
 shows only the original migration files after you've added new ones; new chart
@@ -62,7 +64,7 @@ spec:
         kind: GitRepository
         name: llmsafespaces
         namespace: flux-system
-      reconcileStrategy: Revision   # <-- required: Chart.yaml version is pinned at 0.1.0
+      reconcileStrategy: Revision   # <-- required: intermediate commits don't bump Chart.yaml
   interval: 5m
 ```
 

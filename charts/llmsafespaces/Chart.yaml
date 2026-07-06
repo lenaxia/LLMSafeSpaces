@@ -4,13 +4,13 @@ description: |
   Kubernetes-first platform for running AI agents securely in isolated workspaces.
   Each workspace runs `opencode serve` as a persistent HTTP server with a
   PVC-backed workspace. The API service acts as a reverse proxy to the agent.
-  NOTE: chart version is pinned at 0.1.0 (not published to a registry). When
-  deploying via FluxCD GitRepository, set `reconcileStrategy: Revision` or the
-  chart is packaged once and never refreshed — see charts/llmsafespaces/README.md
-  (#456).
+  GitOps note: the chart is consumed from a Git source, not published to a
+  Helm/OCI registry — when deploying via FluxCD GitRepository, set
+  `reconcileStrategy: Revision` or the chart is packaged once and never
+  refreshed between releases (see charts/llmsafespaces/README.md, #456).
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"
 kubeVersion: ">=1.27.0-0"
 home: https://github.com/lenaxia/llmsafespaces
 sources:

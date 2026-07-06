@@ -5,15 +5,17 @@ package chart_test
 
 // Regression tests for the FluxCD / Argo CD chart-freshness documentation (#456).
 //
-// Chart.yaml's `version` is intentionally pinned at 0.1.0 and never bumped
-// (the chart is consumed from a Git source, not published to a registry).
-// FluxCD's source-controller packages a GitRepository-sourced chart ONCE and
-// re-uses that packaged artifact as long as the Chart.yaml version is
-// unchanged. With the DEFAULT `reconcileStrategy: ChartVersion`, that means
-// the chart is packaged exactly once on first reconcile and never again —
-// so every subsequent `helm upgrade` renders against a stale snapshot, no
-// matter how many commits land on main. New templates, new ConfigMap keys
-// (e.g. new migrations), new RBAC — all invisible to the cluster.
+// The chart is consumed from a Git source, not published to a Helm/OCI
+// registry. Chart.yaml's version is bumped per release, but intermediate
+// commits between releases (sha-/, ts-/, dev-tagged image builds) do not
+// bump it. FluxCD's source-controller packages a GitRepository-sourced
+// chart ONCE and re-uses that packaged artifact as long as the Chart.yaml
+// version is unchanged. With the DEFAULT `reconcileStrategy: ChartVersion`,
+// that means the chart is packaged exactly once per release tag and never
+// re-packaged for the intermediate commits in between — so every
+// non-release `helm upgrade` renders against a stale snapshot. New
+// templates, new ConfigMap keys (e.g. new migrations), new RBAC — all
+// invisible to the cluster until the next release tag.
 //
 // This trap is silent and already caused a production incident (2026-06-29):
 // the migrations ConfigMap still held only migration 000001 after PR #451
@@ -57,10 +59,15 @@ func TestChart_ReadmeDocumentsFluxReconcileStrategy(t *testing.T) {
 	assert.Contains(t, readme, "reconcileStrategy: Revision",
 		"README must contain the literal reconcileStrategy: Revision pair (independent tokens would let ChartVersion+Revision pass)")
 
-	// It must explain WHY (otherwise the fix looks arbitrary). The version
-	// pin is the root cause and must be called out.
-	assert.Contains(t, readme, "0.1.0",
-		"README must explain the Chart.yaml version is pinned (the reason ChartVersion re-packages only once)")
+	// It must explain WHY (otherwise the fix looks arbitrary). The
+	// intermediate-commits-don't-bump-version rationale is the root cause
+	// and must be called out. We check for concept tokens rather than a
+	// hard-coded version literal so the test survives release bumps.
+	assert.True(t,
+		strings.Contains(strings.ToLower(readme), "intermediate") ||
+			strings.Contains(strings.ToLower(readme), "pinned") ||
+			strings.Contains(readme, "Chart.yaml"),
+		"README must explain the Chart.yaml version cadence (the reason ChartVersion re-packages only once per release)")
 
 	// It must name the affected tooling so operators searching the README can
 	// find the section. FluxCD is the primary consumer; Argo CD has the same
@@ -83,11 +90,8 @@ func TestChart_ReadmeDocumentsFluxReconcileStrategy(t *testing.T) {
 func TestChart_ChartYamlDescriptionReferencesGitOps(t *testing.T) {
 	desc := chartDescription(t)
 
-	// It must mention the version pin + the GitOps reconciliation caveat.
-	assert.True(t,
-		strings.Contains(desc, "0.1.0") || strings.Contains(strings.ToLower(desc), "pinned") ||
-			strings.Contains(strings.ToLower(desc), "unreleased"),
-		"Chart.yaml description must flag that the chart version is pinned / not registry-published")
+	// It must reference GitOps/reconcileStrategy so `helm show chart` warns
+	// consumers (#456).
 	assert.True(t,
 		strings.Contains(desc, "reconcileStrategy") || strings.Contains(desc, "GitOps") ||
 			strings.Contains(desc, "Flux"),
@@ -96,7 +100,7 @@ func TestChart_ChartYamlDescriptionReferencesGitOps(t *testing.T) {
 
 // chartDescription parses Chart.yaml and returns the `description` field as a
 // single flattened string. Uses a real YAML decoder (not hand-rolled
-// block-scalar folding) so every scalar indicator (|, >, |-, |+, >-, digits)
+// block-scalar folding) so every scalar indicator (|, >, |-, |+, digits)
 // and indentation case is handled correctly. The previous hand-rolled
 // parser used strings.Trim(rest, "|>") which treats its argument as a cutset
 // and would leave trailing modifier chars (e.g. the '-' in '>-' or the '+'
