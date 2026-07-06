@@ -308,11 +308,12 @@ func TestSessionAwareRestartDecision_NilTracker_NilLister_RestartsImmediately(t 
 // TestSessionAwareRestartDecision_FallbackDefaults_ZeroValues_UseDefaults verifies
 // the defensive fallbacks: maxDefer <= 0 and pollInterval <= 0 must fall back to
 // their defaults (defaultMaxDefer / restartIdleCheckInterval) rather than
-// disabling the mechanism or crashing. We cannot observe the 2h maxDefer
-// directly in a test, so we assert the observable contract: a busy session
-// DEFERS (does not immediately restart, which would happen if maxDefer were 0
-// or negative), and once it goes idle the restart fires via the default poll
-// interval (proving pollInterval=0 fell back to 5s, not infinity).
+// disabling the mechanism or crashing. We cannot observe the 15m maxDefer
+// (design 0045 Change 5 — reduced from 2h) directly in a test, so we assert
+// the observable contract: a busy session DEFERS (does not immediately
+// restart, which would happen if maxDefer were 0 or negative), and once it
+// goes idle the restart fires via the default poll interval (proving
+// pollInterval=0 fell back to 5s, not infinity).
 func TestSessionAwareRestartDecision_FallbackDefaults_ZeroValues_UseDefaults(t *testing.T) {
 	tracker := newSessionStatusTracker()
 	tracker.set("ses_1", "busy")

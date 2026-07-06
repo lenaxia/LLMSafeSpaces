@@ -924,14 +924,19 @@ func TestE2E_PasswordReset_PurgeThenBoot_NoResurrect(t *testing.T) {
 	}
 
 	// Before reset: org provider materializes at boot (server-KEK).
-	// User provider does NOT materialize at boot regardless of purge state
-	// (Epic 35 + this worklog: user-DEK content is delivered via the
-	// reload-secrets push, not bootstrap). The "no resurrection" property
-	// this test guards remains meaningful for the reload path — see
-	// TestE2E_PurgedUserCredsDoNotResurrectInReload below.
+	// User provider does NOT materialize at boot on this test's degrade
+	// path: no JWTSessionStore is wired into the KeyService, so
+	// GetDEKForUser returns ErrDEKUnavailable and
+	// InjectSecretsForPodBootstrap falls back to InjectSessionlessSecrets
+	// (user-DEK bindings audited-and-skipped). The design-0045 happy path
+	// is exercised separately by
+	// TestE2E_BootstrapMaterialize_UserDEKUnwrappable_MaterializesUserProvider.
+	// The "no resurrection" property this test guards remains meaningful
+	// for the reload path — see TestE2E_PurgedUserCredsDoNotResurrectInReload
+	// below.
 	before := runOneBoot("before")
 	assert.NotContains(t, before, "openai",
-		"before reset: user provider must NOT materialize at boot (this worklog)")
+		"before reset: user provider must NOT materialize on the offline-degrade path (no jwt_sessions wired)")
 	assert.Contains(t, before, "anthropic", "before reset: org provider must be present")
 
 	// RESET: purge the user-owned bindings (PurgeUserSecrets deletes

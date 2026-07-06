@@ -224,10 +224,13 @@ func TestContainerRestart_ReplaysUserDEKCreds(t *testing.T) {
 		"server-KEK env-secret from base must also be present")
 }
 
-// TestContainerRestart_NoCache_FallsBackToBaseOnly pins the first-boot /
-// pod-recreation invariant: when the cache is absent (fresh tmpfs), only the
-// base secrets.json materializes. This preserves the existing contract that
-// user-owned creds do NOT appear at first boot.
+// TestContainerRestart_NoCache_FallsBackToBaseOnly pins the boot-with-no-cache
+// path: when the cache is absent (fresh tmpfs) and the base secrets.json
+// contains no user-DEK content (owner offline / jwt_sessions unwrappable
+// at pod-bootstrap time), only server-KEK content materializes. After
+// design 0045 Change 1, user-DEK content CAN appear in the base
+// secrets.json when unwrap succeeds — but this test explicitly exercises
+// the degrade path where it doesn't.
 func TestContainerRestart_NoCache_FallsBackToBaseOnly(t *testing.T) {
 	bin := buildAgentdBinary(t)
 	dir := t.TempDir()
@@ -249,7 +252,7 @@ func TestContainerRestart_NoCache_FallsBackToBaseOnly(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(envContent), "export SERVER_CFG=")
 	assert.NotContains(t, string(envContent), "GH_TOKEN",
-		"no cache → no user-DEK creds at boot (first-boot invariant preserved)")
+		"no cache + no user-DEK in base secrets.json → no user-DEK creds")
 }
 
 // TestContainerRestart_CorruptCache_FallsBackToBase verifies graceful
