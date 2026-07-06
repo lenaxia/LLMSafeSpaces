@@ -13,8 +13,14 @@ package main
 //   1. A reload-secrets push persists the batch to the cache file.
 //   2. A subsequent `materialize` boot (container restart) replays the
 //      cache merged on top of the base secrets.json.
-//   3. Pod recreation (cache absent) falls back to base-only (preserves the
-//      "user-owned creds do not materialize at first boot" invariant).
+//   3. Pod recreation (cache absent) falls back to base-only.
+//
+// After design 0045 Change 1, the "user-owned creds do not materialize at
+// first boot" invariant is inverted: pod-bootstrap now attempts best-effort
+// user-DEK unwrap and delivers user-DEK secrets when the workspace owner's
+// jwt_sessions row is unwrappable. When unwrap fails (owner offline past the
+// jwt_session TTL), pod-bootstrap degrades to sessionless and the tests
+// below still hold (base-only materialization).
 
 import (
 	"bytes"

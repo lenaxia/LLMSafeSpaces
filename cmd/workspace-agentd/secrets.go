@@ -88,18 +88,16 @@ const defaultMaxDefer = 15 * time.Minute
 const sessionListerProbeTimeout = 3 * time.Second
 
 // sessionLister returns the current live session IDs from opencode, or nil
-// if opencode is unreachable. Used for two purposes in the session-aware
-// restart logic:
+// if opencode is unreachable. Used by the deferred-restart goroutine for
+// pruning stale busy entries from the tracker (C2a): when opencode dies
+// mid-busy and the supervisor respawns it, the tracker retains a stale
+// "busy" entry for a session that no longer exists. Calling prune() with
+// the live session list removes it.
 //
-//   - Pruning stale busy entries from the tracker (C2a): when opencode dies
-//     mid-busy and the supervisor respawns it, the tracker retains a stale
-//     "busy" entry for a session that no longer exists. Calling prune() with
-//     the live session list removes it.
-//   - Cold-start probing (C2b): when the tracker is empty (agentd restarted,
-//     SSE not yet reconnected), the lister tells us whether opencode is
-//     alive. An alive opencode with an empty tracker means sessions might be
-//     busy but invisible — we defer. An unreachable opencode means nothing
-//     is running — we restart immediately.
+// Design 0045 Change 4 removed the second (cold-start / C2b) use of the
+// lister — trackerHasBusyOrUnknown no longer probes opencode when the
+// tracker is empty; it returns false (not busy) directly. See
+// design/0045_2026-07-06_boot-time-user-dek-delivery.md.
 //
 // Returns a non-nil slice (possibly empty) when opencode is reachable, nil
 // when opencode is unreachable. "Empty non-nil" means "opencode is alive
@@ -147,11 +145,7 @@ func pruneFromLister(ctx context.Context, tracker *sessionStatusTracker, lister 
 // credentials for hours in the vastly more common cold-boot case, and
 // (c) even the old branch was best-effort — SSE can disconnect at any
 // time and the same window exists on any reconnect.
-//
-// The lister parameter remains in the signature — pruneFromLister uses
-// it in the deferred goroutine (secrets.go:243) to trim stale entries
-// as sessions terminate.
-func trackerHasBusyOrUnknown(_ context.Context, tracker *sessionStatusTracker, _ sessionLister) bool {
+func trackerHasBusyOrUnknown(tracker *sessionStatusTracker) bool {
 	if tracker != nil && tracker.hasAnyData() {
 		return tracker.hasAnyBusy()
 	}
@@ -214,12 +208,21 @@ func makeSessionAwareRestartDecision(
 	// Prune stale entries before deciding (C2a).
 	pruneFromLister(ctx, tracker, lister)
 
-	if !trackerHasBusyOrUnknown(ctx, tracker, lister) {
+	if !trackerHasBusyOrUnknown(tracker) {
 		proc.restart()
 		return true
 	}
 
-	// Sessions are busy or status is unknown (cold-start) — defer.
+	// Sessions are busy — defer. (Empty tracker is handled as "not busy"
+	// above, per design 0045 Change 4; we can only reach here when the
+	// tracker has SSE-observed busy state.)
+	//
+	// TOCTOU note: between the trackerHasBusyOrUnknown check above and the
+	// listBusy() call below, an SSE event can transition the last busy
+	// session to idle. In that case listBusy returns empty and we log the
+	// "unknown status" branch below. The deferred goroutine's next poll
+	// tick will observe idle and restart within pollInterval — no
+	// permanent stall.
 	var busy []string
 	if tracker != nil {
 		busy = tracker.listBusy()
@@ -229,8 +232,13 @@ func makeSessionAwareRestartDecision(
 			zap.Strings("busySessions", busy),
 			zap.Duration("maxDefer", maxDefer))
 	} else {
-		log.Warn("session-aware restart: deferring restart, session status unknown (tracker empty, opencode alive — SSE disconnected?)",
-			zap.Duration("maxDefer", maxDefer))
+		// TOCTOU race: hasAnyBusy → true was observed, but by the time we
+		// called listBusy the last busy session transitioned to idle. The
+		// deferred goroutine will observe this on its next poll tick and
+		// restart within pollInterval.
+		log.Info("session-aware restart: deferring restart, tracker raced to idle between check and log (will restart on next poll tick)",
+			zap.Duration("maxDefer", maxDefer),
+			zap.Duration("pollInterval", pollInterval))
 	}
 
 	runDeferred := func() {
@@ -256,7 +264,7 @@ func makeSessionAwareRestartDecision(
 				return
 			case <-ticker.C:
 				pruneFromLister(ctx, tracker, lister)
-				if !trackerHasBusyOrUnknown(ctx, tracker, lister) {
+				if !trackerHasBusyOrUnknown(tracker) {
 					log.Info("session-aware restart: all sessions now idle, applying deferred restart")
 					proc.restart()
 					return
@@ -643,9 +651,13 @@ type reloadSecretsDeps struct {
 	BgWg *sync.WaitGroup
 
 	// Lister probes opencode's /session endpoint for the live session list.
-	// Used to prune stale busy entries (C2a) and to decide cold-start
-	// behavior when the tracker is empty (C2b). May be nil (the restart
-	// logic falls back to immediate-restart-on-empty-tracker).
+	// Used by the deferred-restart goroutine to prune stale busy entries
+	// (C2a) — when opencode dies mid-busy and respawns, the tracker retains
+	// a stale busy entry for a session that no longer exists. May be nil
+	// (pruneFromLister is a no-op in that case).
+	//
+	// Design 0045 Change 4 removed the second (cold-start / C2b) use — the
+	// restart decision no longer probes /session when the tracker is empty.
 	Lister sessionLister
 
 	// AgentConfigWriter is the single writer of agent-config.json. The
