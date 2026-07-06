@@ -5,8 +5,8 @@ controller, CRDs, ValidatingWebhookConfiguration, and database migrations.
 
 ## Status
 
-- Chart version: 0.1.0
-- App version: 0.1.0
+- Chart version: 0.2.0
+- App version: 0.2.0
 - Kubernetes: >= 1.27
 - Helm: >= 3.13 (also tested with Helm 4)
 - Tested locally with `helm lint` and `helm template`
@@ -28,15 +28,17 @@ below.
 > once and **never re-packaged**, and every `helm upgrade` after the first will
 > silently render against a stale snapshot of the chart.
 
-**The trap.** `Chart.yaml` has `version: 0.1.0` pinned intentionally — this chart
-is consumed directly from Git, not published to a Helm/OCI registry, so the
-version is never bumped. FluxCD's `source-controller` packages a
-`GitRepository`-sourced chart and caches the packaged artifact keyed on the
-chart version. With the **default** `reconcileStrategy: ChartVersion`, the
-artifact is built once on first reconcile and re-used forever (because the
-version never changes). New templates, new `ConfigMap` keys (e.g. new SQL
-migrations bundled via `(.Files.Glob "migrations/*.sql")`), new RBAC — none of
-it reaches the cluster until something forces a re-package.
+**The trap.** The chart version is bumped per release, but intermediate
+commits between releases (sha-/, ts-/, dev-tagged image builds for fast
+iteration) do **not** bump `Chart.yaml`. FluxCD's `source-controller`
+packages a `GitRepository`-sourced chart and caches the packaged artifact
+keyed on the chart version. With the **default** `reconcileStrategy:
+ChartVersion`, the artifact is built once on first reconcile and re-used
+until the Chart.yaml version changes — so every intermediate commit (new
+templates, new `ConfigMap` keys like new SQL migrations bundled via
+`(.Files.Glob "migrations/*.sql")`, new RBAC) is invisible to the cluster
+until the next release tag. Even at release cadence, the cache makes
+upgrades unreliable.
 
 **Symptom.** `kubectl get configmap <release>-migrations -o jsonpath='{.data}'`
 shows only the original migration files after you've added new ones; new chart
@@ -62,7 +64,7 @@ spec:
         kind: GitRepository
         name: llmsafespaces
         namespace: flux-system
-      reconcileStrategy: Revision   # <-- required: Chart.yaml version is pinned at 0.1.0
+      reconcileStrategy: Revision   # <-- required: intermediate commits don't bump Chart.yaml
   interval: 5m
 ```
 
@@ -156,8 +158,9 @@ curl http://localhost:8080/readyz  # 200 if DB+Redis healthy, 503 otherwise
 ```
 
 > **Image tags:** The chart defaults each image tag to `.Chart.AppVersion`
-> (`0.1.0`), which resolves once a `v0.1.0` git release tag is cut. Until then,
-> supply a tag explicitly via `--set api.image.tag=<tag>` (and the same for
+> (`0.2.0`), which resolves to the published GHCR image for the latest release
+> tag (`v0.2.0`). For intermediate (non-release) builds, supply a tag
+> explicitly via `--set api.image.tag=<tag>` (and the same for
 > `controller`, `frontend`, `runtimeEnvironments.base`). See [Image tags](#image-tags) below.
 
 ## Image tags
@@ -169,7 +172,7 @@ CI (`ci.yml`) publishes four tag types on every main-branch build:
 | `sha-<commit>` | `sha-ac861c3` | Immutable, content-addressable. **Preferred for pinned deployments.** |
 | `ts-<unix>` | `ts-1782762331` | Sortable by time. Useful for chronological queries. |
 | `dev` | `dev` | Moving pointer to the latest main build. **Avoid in production** — kubelet caching of moving tags is unreliable. |
-| semver | `0.1.0` | Emitted on `v*.*.*` git tags (`type=semver,pattern={{version}}`). The chart default targets this. |
+| semver | `0.2.0` | Emitted on `v*.*.*` git tags (`type=semver,pattern={{version}}`). The chart default targets this. |
 
 **For production / pinned deployments:**
 
@@ -195,12 +198,12 @@ helm upgrade llmsafespaces ./charts/llmsafespaces \
 overrides:
 
 ```sh
-git tag v0.1.0
-git push origin v0.1.0   # CI publishes 0.1.0 + latest to GHCR
+git tag v0.2.0
+git push origin v0.2.0   # CI publishes 0.2.0 + latest to GHCR
 ```
 
 After the release, `helm install` with no tag override resolves every image to
-`ghcr.io/lenaxia/llmsafespaces/{api,...}:0.1.0`.
+`ghcr.io/lenaxia/llmsafespaces/{api,...}:0.2.0`.
 
 > **GHCR retention:** GitHub's native package-version retention prunes old
 > versions. `sha-` and `ts-` tags label the same manifest version and are pruned
@@ -290,7 +293,7 @@ make helm-lint                  # syntax check
 make helm-template               # render with defaults
 make helm-template-debug         # render with full debug output
 make helm-install-dry-run        # validate against live cluster
-make helm-package                # produce dist/llmsafespaces-0.1.0.tgz
+make helm-package                # produce dist/llmsafespaces-0.2.0.tgz
 ```
 
 ## Uninstalling
