@@ -43,6 +43,8 @@ Implement two related chat-composer features requested by the user:
 
 ### Schema change
 - `pkg/settings/schema.go:128`: `sendOnEnter` default flipped `true` → `false`. Description updated from "Enter sends message (off: Shift+Enter sends)" to "Enter sends message on desktop (off: Ctrl+Enter sends; mobile is always button-only)".
+- `pkg/settings/schema.go:24`: `SchemaVersion` bumped `5` → `6` per the file's documented contract ("incremented on any schema change"). The default flip is the same class of change as v3/v4 (modifying a property of an existing key); admin-UI and frontend schema caches must refresh to serve the new Description.
+- `pkg/settings/schema_test.go`: added `TestSendOnEnterDefaultFalse` pinning the default to `false` so a future change cannot silently revert the desktop newline-first UX.
 
 ### Adversarial self-review (Rule 11) on actual code
 Found and fixed two real issues:
@@ -91,7 +93,7 @@ None.
 - `cd frontend && npx vitest run` (full suite) — **1349/1349 pass** across 122 files.
 - `cd frontend && npx tsc --noEmit` — clean.
 - `cd frontend && npm run lint` — clean.
-- `GOPROXY=direct go test -timeout 60s ./pkg/settings/...` — pass (schema tests are generic; none hard-code `sendOnEnter`'s default).
+- `GOPROXY=direct go test -timeout 60s ./pkg/settings/...` — pass (schema tests are generic; none hard-code `sendOnEnter`'s default; new `TestSendOnEnterDefaultFalse` pins it).
 
 Updated existing tests (replaced `await user.keyboard("{Enter}")` with `await user.click(screen.getByRole("button", { name: "Send message" }))`) in:
 - `src/pages/ChatPage.test.tsx` (6 spots)
@@ -121,5 +123,6 @@ Updated existing tests (replaced `await user.keyboard("{Enter}")` with `await us
 - `frontend/src/pages/ChatPage.composer-history.test.tsx` (new) — 3 integration tests
 - `frontend/src/pages/ChatPage.test.tsx` — updated 6 tests to use button click
 - `frontend/src/pages/ChatPage.queue.test.tsx` — updated 9 tests to use button click
-- `pkg/settings/schema.go` — `sendOnEnter` default `true`→`false`, description updated
+- `pkg/settings/schema.go` — `sendOnEnter` default `true`→`false` with updated Description; `SchemaVersion` `5`→`6` with comment entry
+- `pkg/settings/schema_test.go` — added `TestSendOnEnterDefaultFalse` regression test
 - `worklogs/NNNN_2026-07-06_composer-enter-and-history.md` (this file)

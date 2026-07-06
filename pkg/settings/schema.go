@@ -21,7 +21,12 @@ package settings
 // and added four email.* instance settings (provider/sesRegion/fromAddress/
 // baseUrl). The schema response shape changed (new field + new keys); clients
 // caching the schema need to refresh.
-const SchemaVersion = 5
+// Bumped to 6 (2026-07-06): flipped user setting sendOnEnter Default from
+// true to false and updated its Description (desktop Enter is now newline by
+// default; Ctrl/Cmd+Enter sends; mobile is button-only). Same class of
+// change as v3/v4 (modifying a property of an existing key) — admin UI and
+// frontend schema caches must refresh to show the new description.
+const SchemaVersion = 6
 
 // SettingType defines the data type of a setting.
 type SettingType string
