@@ -499,7 +499,7 @@ describe("Composer", () => {
     // that a second Up on a multi-entry list advances correctly.
     const user = userEvent.setup();
     render(<Composer onSend={vi.fn()} userMessageHistory={["hello", "world"]} />);
-    const textarea = screen.getByPlaceholderText("Type a message...");
+    const textarea = screen.getByPlaceholderText("Type a message...") as HTMLTextAreaElement;
     // Draft a value EQUAL to history[0] ("hello" — the most recent).
     await user.type(textarea, "hello");
     expect(textarea).toHaveValue("hello");
