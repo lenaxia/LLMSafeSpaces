@@ -16,9 +16,11 @@ vi.mock("../../hooks/useUserSettings", () => ({
 }));
 
 // --- matchMedia mock helper (for useIsMobile) ---
-// jsdom returns matches:false for any query by default, which corresponds
-// to DESKTOP (useIsMobile = !matchMedia("(min-width: 768px)").matches).
-// Tests that need MOBILE behavior flip the match.
+// useIsMobile = !matchMedia("(min-width: 768px)").matches. jsdom returns
+// matches:false for any query by default, so useIsMobile = !false = true
+// (MOBILE) unless the test mocks matchMedia. beforeEach calls
+// setMobileMatchMedia(false) to force DESKTOP for these tests; individual
+// tests that need MOBILE behavior call setMobileMatchMedia(true).
 function setMobileMatchMedia(isMobile: boolean) {
   vi.spyOn(window, "matchMedia").mockImplementation((query) => {
     const isMinWidthQuery = query.includes("min-width");
