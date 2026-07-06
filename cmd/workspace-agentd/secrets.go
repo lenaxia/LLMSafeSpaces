@@ -71,11 +71,16 @@ const restartIdleCheckInterval = 5 * time.Second
 // to idle before force-restarting (worklog 371 H1). Without it, a stuck
 // session (infinite loop, hung MCP, deadlocked tool) defers the restart
 // forever and the credential change never applies — silent non-application.
-// 2h is long enough that legitimate agentic turns (which can run for tens
-// of minutes) are not interrupted, while bounded enough that stuck sessions
-// eventually get the credential applied. The force-restart at expiry logs
-// a warning so the operator can correlate the interruption.
-const defaultMaxDefer = 2 * time.Hour
+//
+// Design 0045 Change 5: reduced from 2h to 15m. Rationale: with Change 4's
+// tracker-empty semantic fix, the defer path is now reached only when the
+// tracker has SSE-observed busy state — i.e., a session is *genuinely*
+// running work. 15 minutes covers legitimate long-running agentic turns
+// (reasoning models, slow tool calls, multi-step workflows) with generous
+// headroom. Longer just wastes credential freshness for a stuck session;
+// the force-restart at expiry logs a warning so operators can correlate
+// the interruption.
+const defaultMaxDefer = 15 * time.Minute
 
 // sessionListerProbeTimeout bounds the cost of probing opencode's /session
 // endpoint from the restart decision path. If opencode is unreachable the
@@ -119,29 +124,39 @@ func pruneFromLister(ctx context.Context, tracker *sessionStatusTracker, lister 
 
 // trackerHasBusyOrUnknown reports whether the restart should be deferred.
 // Returns true (defer) when:
-//   - the tracker has data AND any session is busy, OR
-//   - the tracker is empty BUT opencode is reachable with at least one
-//     session (cold-start: sessions might be busy but invisible — C2b).
+//   - the tracker has data AND any session is busy.
 //
 // Returns false (proceed with restart) when:
 //   - the tracker has data AND no session is busy, OR
-//   - the tracker is empty AND opencode is unreachable (nothing to lose), OR
-//   - the tracker is empty AND opencode has zero sessions (nothing to lose).
-func trackerHasBusyOrUnknown(ctx context.Context, tracker *sessionStatusTracker, lister sessionLister) bool {
+//   - the tracker is empty. Design 0045 Change 4: an empty tracker means
+//     the SSE stream (our only truth source for session busyness) has not
+//     observed any busy session on this agentd's connection. /session
+//     returns a list of session RECORDS from opencode.db, not a busyness
+//     indicator: a session that was busy 8 hours ago but idle now still
+//     appears in /session. Previously this branch probed /session and
+//     deferred if any records existed, which caused cold-boot credential
+//     updates to defer for the full maxDefer window (up to 2h) — the
+//     RC2 bug from the 2026-07-06 incident.
+//
+// The remaining edge case is the brief window between agentd start and
+// SSE reconnect (bounded by session_tracker.go's backoff, typically ~2s):
+// a session that is genuinely busy in that window appears idle to the
+// tracker. If a credential push lands in that window, the restart fires
+// on a possibly-busy session. That trade is acceptable: (a) the window
+// is bounded and short, (b) the previous branch silently held stale
+// credentials for hours in the vastly more common cold-boot case, and
+// (c) even the old branch was best-effort — SSE can disconnect at any
+// time and the same window exists on any reconnect.
+//
+// The lister parameter remains in the signature — pruneFromLister uses
+// it in the deferred goroutine (secrets.go:243) to trim stale entries
+// as sessions terminate.
+func trackerHasBusyOrUnknown(_ context.Context, tracker *sessionStatusTracker, _ sessionLister) bool {
 	if tracker != nil && tracker.hasAnyData() {
 		return tracker.hasAnyBusy()
 	}
-	// Tracker is empty — probe opencode to decide (C2b).
-	if lister == nil {
-		return false
-	}
-	probeCtx, cancel := context.WithTimeout(ctx, sessionListerProbeTimeout)
-	defer cancel()
-	ids := lister(probeCtx)
-	// nil = unreachable → restart (nothing to lose).
-	// non-nil + len>0 = opencode alive with sessions → defer (might be busy).
-	// non-nil + len==0 = opencode alive, no sessions → restart (nothing to lose).
-	return len(ids) > 0
+	// Empty tracker → definitively not busy (see design 0045 Change 4).
+	return false
 }
 
 // makeSessionAwareRestartDecision decides whether to restart opencode now or
@@ -452,6 +467,38 @@ func runMaterializeCommand(args []string, stdout, stderr io.Writer) int {
 		// rather than silent partial-credential boot).
 		return 3
 	}
+
+	// Design 0045 Change 3: persist the applied batch to the reload cache.
+	//
+	// Rationale (validated via stress-testing round 2): agentd's hasUserCreds
+	// (healthz.go) reports UserCredsPresent based on the *cache file's*
+	// existence, not on whether secrets.json contains user-DEK content. If
+	// the init container's materialize does NOT write the cache, the FIRST
+	// healthz-after-boot reports UserCredsPresent=false, which triggers a
+	// spurious auto-push from the API's watcher — even when pod-bootstrap
+	// already delivered user-DEK secrets via Change 1. The auto-push
+	// applies the same batch and triggers an opencode restart ~30s into
+	// pod life.
+	//
+	// Writing the cache here closes that loop: hasUserCreds returns true
+	// on the first healthz call, the watcher observes UserCredsPresent=true,
+	// and secretautopush emits "skipped_ucp_true" (no redundant push).
+	//
+	// Non-fatal on write failure: the cache only affects the auto-push
+	// filtering signal. On write failure, agentd degrades to the pre-
+	// Change-3 behavior (one spurious auto-push post-boot). No user-facing
+	// impact beyond a wasted opencode restart.
+	//
+	// Empty-batch guard: skip cache write when there's nothing to persist.
+	// Empty-path guard: production always resolves the path via
+	// loadMaterializeConfig → agentd.ReloadSecretsCachePath; tests may
+	// construct materializeConfig without reloadCachePath.
+	if cfg.reloadCachePath != "" && len(secretsList) > 0 {
+		if pErr := writeReloadSecretsCache(cfg.reloadCachePath, secretsList); pErr != nil {
+			_, _ = fmt.Fprintf(stderr, "materialize: failed to persist reload cache (auto-push will still fire post-boot as fallback): %v\n", pErr)
+		}
+	}
+
 	// Skips are intentional; do not fail the boot.
 	return 0
 }

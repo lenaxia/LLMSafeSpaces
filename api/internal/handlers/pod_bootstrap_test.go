@@ -38,7 +38,7 @@ type fakeBootstrapInjector struct {
 	err     error
 }
 
-func (f *fakeBootstrapInjector) InjectSessionlessSecrets(_ context.Context, _, _ string) ([]byte, error) {
+func (f *fakeBootstrapInjector) InjectSecretsForPodBootstrap(_ context.Context, _, _ string) ([]byte, error) {
 	return f.secrets, f.err
 }
 

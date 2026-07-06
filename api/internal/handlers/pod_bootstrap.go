@@ -41,15 +41,19 @@ type TokenReviewer interface {
 
 // bootstrapInjector prepares decrypted secrets for pod injection.
 //
-// This is the SessionlessSecretInjector contract from pkg/secrets:
-// the init container has no user session, so user-DEK encrypted
-// content is not deliverable here and the implementation must skip
-// it (with audit) rather than propagate a "DEK not available" error.
+// This is the PodBootstrapSecretInjector contract from pkg/secrets: the
+// init container has no user session, but the bootstrap path attempts a
+// best-effort user-DEK unwrap via GetDEKForUser so user-owned env-secrets
+// and SSH keys are available at first opencode spawn (design 0045). On
+// DEK-unavailable, the implementation degrades to sessionless behavior
+// (user-DEK bindings audited-and-skipped, server-KEK-only payload
+// returned). Either way, the auto-push flow continues to deliver
+// user-DEK secrets on runtime credential changes.
 //
 // Production wiring passes *secrets.SecretService, which satisfies
-// secrets.SessionlessSecretInjector via InjectSessionlessSecrets.
+// secrets.PodBootstrapSecretInjector via InjectSecretsForPodBootstrap.
 type bootstrapInjector interface {
-	InjectSessionlessSecrets(ctx context.Context, userID, workspaceID string) ([]byte, error)
+	InjectSecretsForPodBootstrap(ctx context.Context, userID, workspaceID string) ([]byte, error)
 }
 
 // bootstrapWorkspaceLookup resolves workspace metadata for bootstrap.
@@ -200,7 +204,7 @@ func (h *PodBootstrapHandler) Bootstrap(c *gin.Context) {
 		return
 	}
 
-	secretsJSON, err := h.injector.InjectSessionlessSecrets(c.Request.Context(), ws.UserID, req.WorkspaceID)
+	secretsJSON, err := h.injector.InjectSecretsForPodBootstrap(c.Request.Context(), ws.UserID, req.WorkspaceID)
 	if err != nil {
 		// Surface the underlying error to operators. The user-facing body
 		// stays generic ("secret preparation failed") to avoid leaking

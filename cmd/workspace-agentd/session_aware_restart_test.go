@@ -18,9 +18,10 @@ import (
 // US-44.2: Session-aware restart mechanism.
 // US-44.3: Fix api-key restart bug.
 // Worklog 371 C2/H1: deferred-restart goroutine must be cancellable (H1a),
-// bounded by maxDefer (H1b), tracked (H1c), prune stale busy entries (C2a),
-// and not immediately restart on a cold-start empty tracker when opencode
-// is reachable (C2b).
+// bounded by maxDefer (H1b), tracked (H1c), prune stale busy entries (C2a).
+// Design 0045 (2026-07-06 incident): empty-tracker semantic corrected —
+// empty tracker means "no busy signal observed via SSE", not "unknown".
+// /session records != busy sessions.
 
 // ---------------------------------------------------------------------------
 // sessionStatusTracker.hasAnyBusy / listBusy (US-44.2 prerequisite)
@@ -219,29 +220,40 @@ func TestSessionAwareRestartDecision_C2a_PruneClearsStaleBusy(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// C2b: cold-start empty tracker does NOT immediately restart if opencode
-// is reachable with sessions (regression: would destroy in-flight work).
+// Cold-start empty-tracker semantics (design 0045 Change 4).
+//
+// Historical (pre-design-0045) contract: an empty tracker + opencode-reachable-
+// with-sessions was treated as "sessions might be busy but invisible" and
+// deferred. That decision was based on a wrong premise — /session returns
+// session RECORDS from opencode.db, not busyness indicators. In practice this
+// caused the 2026-07-06 incident where cold-boot credential updates deferred
+// for the full maxDefer window because pre-existing session records in
+// opencode.db were misread as active work.
+//
+// Current contract (design 0045 Change 4): the SSE tracker is the sole truth
+// source for busyness. An empty tracker means "no busy session observed" —
+// restart immediately regardless of whether opencode has session records.
+// The ~2s window between agentd start and SSE reconnect is the accepted
+// trade (see design/0045 § Change 4).
 // ---------------------------------------------------------------------------
 
-// TestSessionAwareRestartDecision_C2b_EmptyTracker_OpencodeAliveWithSessions_Defers
-// is the core C2b regression test: an empty tracker (agentd restarted, SSE
-// not yet reconnected) with opencode reachable and holding sessions must
-// DEFER, not immediately restart. Pre-fix, this would immediately restart
-// and destroy in-flight agentic work (Incident B regression).
-func TestSessionAwareRestartDecision_C2b_EmptyTracker_OpencodeAliveWithSessions_Defers(t *testing.T) {
-	tracker := newSessionStatusTracker() // empty — cold start
+// TestSessionAwareRestartDecision_EmptyTracker_OpencodeAliveWithSessions_RestartsImmediately
+// asserts the corrected design-0045 semantic: an empty tracker MUST NOT
+// defer just because opencode's /session returns records. Records != busy.
+func TestSessionAwareRestartDecision_EmptyTracker_OpencodeAliveWithSessions_RestartsImmediately(t *testing.T) {
+	tracker := newSessionStatusTracker() // empty — SSE hasn't observed busy
 
 	lister := func(ctx context.Context) []string {
-		return []string{"ses_inflight_1", "ses_inflight_2"} // opencode alive, sessions exist
+		return []string{"ses_record_1", "ses_record_2"} // opencode has session records — but no SSE busy signal
 	}
 
 	proc := &mockManagedProcess{}
 	decided := makeSessionAwareRestartDecision(context.Background(), proc, tracker, 50*time.Millisecond, 200*time.Millisecond, lister, nil)
 
-	assert.False(t, decided,
-		"empty tracker with opencode alive + sessions must DEFER (C2b) — immediate restart would destroy in-flight work")
-	assert.Equal(t, 0, proc.restartCount(),
-		"restart must NOT fire immediately on cold-start with live opencode")
+	assert.True(t, decided,
+		"empty tracker MUST restart immediately regardless of /session records — records are historical, not busy signal (design 0045 Change 4)")
+	assert.Equal(t, 1, proc.restartCount(),
+		"restart must fire immediately when tracker is empty (nothing observed as busy)")
 }
 
 // TestSessionAwareRestartDecision_C2b_EmptyTracker_OpencodeUnreachable_RestartsImmediately
