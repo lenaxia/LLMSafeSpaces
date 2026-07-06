@@ -1677,10 +1677,11 @@ When `true`, the wire-up is deliberately fail-closed at every layer.
 | Fail mode | `reason` |
 |-----------|----------|
 | Missing token (no header + no form field) | `missing_token` |
-| Config missing secret at startup | `no_secret_configured` (server refuses to start) |
 | siteverify HTTP error / timeout | `verify_unavailable` |
 | siteverify returns non-200 | `verify_unavailable` |
 | siteverify returns `success:false` | `rejected` (Cloudflare's error-code list is passed through in `detail`) |
+
+Additionally, `verifyTurnstileToken` returns a `no_secret_configured` internal marker when `SecretKey==""`, but this state is normally unreachable: the config startup guard (`applyTurnstileEnv`, see "Config startup guard" below) refuses to start the API in that state. If somehow reached at request time, the middleware surfaces it via `respondTurnstileFail(c, "rejected", "no_secret_configured")` — i.e. `reason: "rejected"`, `detail: "no_secret_configured"`. The internal marker is a `detail` string, not a client-facing `reason` code.
 
 Token extraction order (first match wins):
 1. Header `cf-turnstile-response` (production path — the frontend uses JSON, so this is the only real path)
