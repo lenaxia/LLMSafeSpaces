@@ -213,7 +213,7 @@ describe("ChatPage", () => {
     await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
     await user.click(document.querySelector("textarea")!);
     await user.type(document.querySelector("textarea")!, "New message");
-    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => {
       // The new local message should render after the history messages
@@ -241,7 +241,7 @@ describe("ChatPage", () => {
 
     await user.click(document.querySelector("textarea")!);
     await user.type(document.querySelector("textarea")!, "hello");
-    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => expect(screen.getByText("LLM error")).toBeInTheDocument());
   });
@@ -256,7 +256,7 @@ describe("ChatPage", () => {
 
     await user.click(document.querySelector("textarea")!);
     await user.type(document.querySelector("textarea")!, "hello");
-    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => expect(screen.getByText("boom")).toBeInTheDocument());
     await user.click(screen.getByRole("button", { name: "Dismiss" }));
@@ -284,7 +284,7 @@ describe("ChatPage", () => {
 
     await user.click(document.querySelector("textarea")!);
     await user.type(document.querySelector("textarea")!, "hello");
-    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => expect(messagesApi.sendAsync).toHaveBeenCalledWith(
       "ws-1",
@@ -312,7 +312,7 @@ describe("ChatPage", () => {
 
     await user.click(document.querySelector("textarea")!);
     await user.type(document.querySelector("textarea")!, "hello");
-    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => expect(messagesApi.sendAsync).toHaveBeenCalledWith(
       "ws-1",
@@ -333,7 +333,7 @@ describe("ChatPage", () => {
 
     await user.click(document.querySelector("textarea")!);
     await user.type(document.querySelector("textarea")!, "hello");
-    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => expect(messagesApi.sendAsync).toHaveBeenCalledWith(
       "ws-1",

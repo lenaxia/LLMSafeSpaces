@@ -126,6 +126,26 @@ func TestUserSettingIndex(t *testing.T) {
 	}
 }
 
+// TestSendOnEnterDefaultFalse pins the Composer's send-key behavior contract.
+// The frontend Composer reads this default via useUserSetting("sendOnEnter", false),
+// and the schema default is the source of truth served to the admin UI. A silent
+// flip back to true would reintroduce "Enter sends" as the default — breaking
+// the desktop newline-first UX shipped in the composer-enter-history PR (#504).
+// This test fails loudly if a future change reverts the default.
+func TestSendOnEnterDefaultFalse(t *testing.T) {
+	idx := UserSettingIndex()
+	def, ok := idx["sendOnEnter"]
+	if !ok {
+		t.Fatal("sendOnEnter missing from UserSettings")
+	}
+	if def.Type != TypeBool {
+		t.Fatalf("sendOnEnter type = %v, want TypeBool", def.Type)
+	}
+	if def.Default != false {
+		t.Errorf("sendOnEnter default = %v, want false (desktop Enter is newline by default; Ctrl/Cmd+Enter sends)", def.Default)
+	}
+}
+
 func TestValidate_Bool_Happy(t *testing.T) {
 	def := SettingDef{Key: "test", Type: TypeBool, Default: true}
 	if err := Validate(def, true); err != nil {

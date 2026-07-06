@@ -21,7 +21,12 @@ package settings
 // and added four email.* instance settings (provider/sesRegion/fromAddress/
 // baseUrl). The schema response shape changed (new field + new keys); clients
 // caching the schema need to refresh.
-const SchemaVersion = 5
+// Bumped to 6 (2026-07-06): flipped user setting sendOnEnter Default from
+// true to false and updated its Description (desktop Enter is now newline by
+// default; Ctrl/Cmd+Enter sends; mobile is button-only). Same class of
+// change as v3/v4 (modifying a property of an existing key) — admin UI and
+// frontend schema caches must refresh to show the new description.
+const SchemaVersion = 6
 
 // SettingType defines the data type of a setting.
 type SettingType string
@@ -125,7 +130,7 @@ func UserSettings() []SettingDef {
 
 		// Chat
 		{Key: "codeBlockWordWrap", Tier: 3, Type: TypeBool, Default: false, Category: "Chat", Label: "Code Word Wrap", Description: "Wrap long lines in code blocks"},
-		{Key: "sendOnEnter", Tier: 3, Type: TypeBool, Default: true, Category: "Chat", Label: "Send on Enter", Description: "Enter sends message (off: Shift+Enter sends)"},
+		{Key: "sendOnEnter", Tier: 3, Type: TypeBool, Default: false, Category: "Chat", Label: "Send on Enter", Description: "Enter sends message on desktop (off: Ctrl+Enter sends; mobile is always button-only)"},
 		{Key: "preferredModel", Tier: 3, Type: TypeString, Default: "", Category: "Chat", Label: "Preferred Model", Description: "Default model ID"},
 
 		// Notifications

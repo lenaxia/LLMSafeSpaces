@@ -69,7 +69,8 @@ describe("ChatView", () => {
     const user = userEvent.setup();
     const onSend = vi.fn();
     render(<ChatView {...defaultProps} onSend={onSend} />);
-    await user.type(screen.getByPlaceholderText("Type a message..."), "test{Enter}");
+    await user.type(screen.getByPlaceholderText("Type a message..."), "test");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
     expect(onSend).toHaveBeenCalledWith("test");
   });
 
