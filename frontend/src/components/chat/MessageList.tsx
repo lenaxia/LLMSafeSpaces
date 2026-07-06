@@ -73,11 +73,59 @@ export function MessageList({ messages, streaming, streamingBubble, trailingProm
 
   const hasTrailingPrompts = trailingPrompts != null;
 
+  // Scroll-anchoring state for "Load earlier messages". When older messages
+  // are prepended, the browser keeps the same pixel scrollTop but the content
+  // above that offset has grown — so the user's viewport silently shifts to
+  // different (newer) content than what they were reading, which feels
+  // broken. We capture the previous first-message id and scrollHeight, and
+  // on the next layout effect detect "prepend" (first id changed while
+  // stickToBottom is false) by adding the height delta to scrollTop, which
+  // keeps the user's visual anchor in the same screen position.
+  const prevFirstIdRef = useRef<string | undefined>(undefined);
+  const prevScrollHeightRef = useRef(0);
+
+  // Initialize the refs on mount so subsequent renders have a real
+  // "previous" baseline. Without this, the first content change after
+  // mount would see prevScrollHeight=0 and skip anchoring.
   useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    prevFirstIdRef.current = messages[0]?.id;
+    prevScrollHeightRef.current = el.scrollHeight;
+    // We do NOT scroll to bottom here — the existing layout effect below
+    // owns that. This effect runs once on mount only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const newFirstId = messages[0]?.id;
+    const newScrollHeight = el.scrollHeight;
+    const prevFirstId = prevFirstIdRef.current;
+    const prevScrollHeight = prevScrollHeightRef.current;
+
     if (stickToBottom.current) {
-      const el = scrollRef.current;
-      if (el) el.scrollTop = el.scrollHeight;
+      // Existing behavior: jump to bottom on new content.
+      el.scrollTop = newScrollHeight;
+    } else if (
+      prevFirstId !== undefined &&
+      newFirstId !== undefined &&
+      prevFirstId !== newFirstId
+    ) {
+      // Scroll anchoring: content was prepended (Load earlier completed).
+      // Restore the visual position by adding the height delta so the
+      // message the user was reading stays at the same screen position.
+      el.scrollTop = el.scrollTop + (newScrollHeight - prevScrollHeight);
     }
+
+    prevFirstIdRef.current = newFirstId;
+    prevScrollHeightRef.current = newScrollHeight;
+    // Deps are [messages.length, hasTrailingPrompts] rather than [messages]
+    // because TanStack Query's select returns a new array reference on every
+    // emit; depending on `messages` would run this effect on every render.
+    // Length + the firstId check inside captures every meaningful change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages.length, hasTrailingPrompts]);
 
   useEffect(() => {
