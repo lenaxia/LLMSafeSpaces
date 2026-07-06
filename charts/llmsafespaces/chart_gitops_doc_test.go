@@ -60,14 +60,13 @@ func TestChart_ReadmeDocumentsFluxReconcileStrategy(t *testing.T) {
 		"README must contain the literal reconcileStrategy: Revision pair (independent tokens would let ChartVersion+Revision pass)")
 
 	// It must explain WHY (otherwise the fix looks arbitrary). The
-	// intermediate-commits-don't-bump-version rationale is the root cause
-	// and must be called out. We check for concept tokens rather than a
-	// hard-coded version literal so the test survives release bumps.
-	assert.True(t,
-		strings.Contains(strings.ToLower(readme), "intermediate") ||
-			strings.Contains(strings.ToLower(readme), "pinned") ||
-			strings.Contains(readme, "Chart.yaml"),
-		"README must explain the Chart.yaml version cadence (the reason ChartVersion re-packages only once per release)")
+	// "stale snapshot" symptom is the user-facing harm the fix prevents,
+	// and the phrase is unique to the GitOps trap section — a future
+	// cleanup that deletes the rationale paragraph cannot satisfy this
+	// guard via unrelated mentions of "intermediate" or "pinned"
+	// elsewhere in the README.
+	assert.Contains(t, readme, "stale snapshot",
+		"README must explain the harm (stale snapshot) that reconcileStrategy: Revision prevents")
 
 	// It must name the affected tooling so operators searching the README can
 	// find the section. FluxCD is the primary consumer; Argo CD has the same
