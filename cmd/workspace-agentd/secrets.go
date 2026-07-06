@@ -161,10 +161,11 @@ func trackerHasBusyOrUnknown(tracker *sessionStatusTracker) bool {
 // Behavior:
 //
 //   - If proc is nil, returns true without doing anything (test/no-op path).
-//   - If the tracker shows all sessions idle (or opencode is unreachable with
-//     no tracker data), restarts immediately.
-//   - If sessions are busy (or the tracker is empty but opencode is alive
-//     with sessions — cold-start, C2b), defers the restart.
+//   - If the tracker shows all sessions idle OR the tracker is empty
+//     (design 0045 Change 4 — empty tracker = no busy signal observed via
+//     SSE, so restart immediately), restarts immediately.
+//   - If sessions are busy per the SSE tracker, defers the restart until
+//     they idle or maxDefer elapses.
 //
 // The deferred goroutine:
 //
