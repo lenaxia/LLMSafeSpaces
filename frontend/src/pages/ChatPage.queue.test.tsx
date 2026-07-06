@@ -139,7 +139,7 @@ describe("ChatPage message queue (backend-backed)", () => {
     await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
 
     await user.type(document.querySelector("textarea")!, "hello");
-    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => {
       expect(messagesApi.sendAsync).toHaveBeenCalledWith("ws-1", "ses_1", {
@@ -165,7 +165,7 @@ describe("ChatPage message queue (backend-backed)", () => {
     sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
 
     await user.type(document.querySelector("textarea")!, "queued msg");
-    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => {
       expect(messagesApi.queueMessage).toHaveBeenCalledWith("ws-1", "ses_1", "queued msg");
@@ -183,7 +183,7 @@ describe("ChatPage message queue (backend-backed)", () => {
     sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
 
     await user.type(document.querySelector("textarea")!, "queued msg");
-    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => expect(screen.getByText("1 message queued")).toBeInTheDocument());
 
@@ -202,7 +202,7 @@ describe("ChatPage message queue (backend-backed)", () => {
     sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
 
     await user.type(document.querySelector("textarea")!, "will fail");
-    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => expect(screen.getByText("1 message queued")).toBeInTheDocument());
 
@@ -222,9 +222,9 @@ describe("ChatPage message queue (backend-backed)", () => {
     sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
 
     await user.type(document.querySelector("textarea")!, "first");
-    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
     await user.type(document.querySelector("textarea")!, "second");
-    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => {
       expect(screen.getByText("2 messages queued")).toBeInTheDocument();
@@ -252,7 +252,7 @@ describe("ChatPage message queue (backend-backed)", () => {
     sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
 
     await user.type(document.querySelector("textarea")!, "msg");
-    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => expect(screen.getByText("1 message queued")).toBeInTheDocument());
 
@@ -274,7 +274,7 @@ describe("ChatPage message queue (backend-backed)", () => {
     sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
 
     await user.type(document.querySelector("textarea")!, "queued msg");
-    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => expect(screen.getByText("1 message queued")).toBeInTheDocument());
 
@@ -293,7 +293,7 @@ describe("ChatPage message queue (backend-backed)", () => {
     sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
 
     await user.type(document.querySelector("textarea")!, "will error");
-    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => expect(screen.getByText("1 message queued")).toBeInTheDocument());
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { workspacesApi } from "../api/workspaces";
@@ -12,6 +12,7 @@ import { useEventStream } from "../hooks/useEventStream";
 import { useSessionTitle } from "../hooks/useSessionTitle";
 import { useMessageQueue } from "../hooks/useMessageQueue";
 import { wsLog } from "../lib/wsLog";
+import { extractUserMessageTexts } from "../lib/composerHistory";
 import { ChatView } from "../components/chat/ChatView";
 import { SuspendedBanner } from "../components/chat/SuspendedBanner";
 import { AtCapBanner } from "../components/chat/AtCapBanner";
@@ -230,6 +231,17 @@ export function ChatPage() {
     hasNextPage,
     isFetchingNextPage,
   } = useMessageHistory(activeWorkspaceId, sessionId);
+
+  // Newest-first user-message texts for Composer history navigation.
+  // Built from the loaded `history` only — localMessages/sessionErrors
+  // are excluded so navigation reflects what's persisted, not optimistic
+  // bubbles. Depth is bounded by what's loaded; older pages load via
+  // the "Load earlier messages" button. Reversed because extractUserMessageTexts
+  // returns chronological (oldest-first) and Composer expects newest-first.
+  const userMessageHistory = useMemo(
+    () => (history ? extractUserMessageTexts(history).reverse() : []),
+    [history],
+  );
 
   const isSessionBusy = useIsSessionBusy(sessionId ?? "");
 
@@ -1048,6 +1060,7 @@ export function ChatPage() {
             onQueueDismiss={queue.dismiss}
             models={modelsData?.models}
             lastSeenAt={lastSeenAt}
+            userMessageHistory={userMessageHistory}
             viewOnly={isSubtask}
             prompts={
               (pendingQuestions.length > 0 || pendingPermissions.length > 0) ? (

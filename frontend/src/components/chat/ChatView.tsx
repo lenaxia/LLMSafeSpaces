@@ -43,6 +43,12 @@ interface Props {
   models?: ModelInfo[];
   lastSeenAt?: string;
   /**
+   * Newest-first list of the user's previous message texts in this
+   * session, passed through to Composer for Up/Arrow history navigation.
+   * See Composer.userMessageHistory.
+   */
+  userMessageHistory?: string[];
+  /**
    * When true, the chat is read-only: the composer and message queue are
    * hidden and a view-only banner is rendered in their place. Used for
    * subagent/subtask sessions, which are driven by their parent session and
@@ -74,7 +80,7 @@ function partitionStreamPartsByMessage(streamParts: StreamingPart[]): Array<{ ke
   return order.map((key) => ({ key, parts: groups.get(key)! }));
 }
 
-export function ChatView({ messages, streaming, streamParts, disabled, onSend, onAbort, prompts, onLoadEarlier, hasOlderMessages, loadingOlder, queuedMessages = [], onQueueRetry, onQueueDismiss, models, lastSeenAt, viewOnly = false, viewOnlyMessage }: Props) {
+export function ChatView({ messages, streaming, streamParts, disabled, onSend, onAbort, prompts, onLoadEarlier, hasOlderMessages, loadingOlder, queuedMessages = [], onQueueRetry, onQueueDismiss, models, lastSeenAt, userMessageHistory, viewOnly = false, viewOnlyMessage }: Props) {
   const isMobile = useIsMobile();
   const streamedBubbles = partitionStreamPartsByMessage(streamParts);
   const hasStreamedContent = streamedBubbles.length > 0;
@@ -121,7 +127,7 @@ export function ChatView({ messages, streaming, streamParts, disabled, onSend, o
             />
           )}
 
-          <Composer onSend={onSend} onAbort={onAbort} disabled={disabled} streaming={streaming} />
+          <Composer onSend={onSend} onAbort={onAbort} disabled={disabled} streaming={streaming} userMessageHistory={userMessageHistory} />
         </>
       )}
     </div>

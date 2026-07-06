@@ -125,7 +125,7 @@ func UserSettings() []SettingDef {
 
 		// Chat
 		{Key: "codeBlockWordWrap", Tier: 3, Type: TypeBool, Default: false, Category: "Chat", Label: "Code Word Wrap", Description: "Wrap long lines in code blocks"},
-		{Key: "sendOnEnter", Tier: 3, Type: TypeBool, Default: true, Category: "Chat", Label: "Send on Enter", Description: "Enter sends message (off: Shift+Enter sends)"},
+		{Key: "sendOnEnter", Tier: 3, Type: TypeBool, Default: false, Category: "Chat", Label: "Send on Enter", Description: "Enter sends message on desktop (off: Ctrl+Enter sends; mobile is always button-only)"},
 		{Key: "preferredModel", Tier: 3, Type: TypeString, Default: "", Category: "Chat", Label: "Preferred Model", Description: "Default model ID"},
 
 		// Notifications
