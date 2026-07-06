@@ -103,4 +103,4 @@ None.
 - `frontend/src/components/chat/MessageList.tsx` — added scroll-anchoring refs + layout-effect branch + mount-init effect; silenced exhaustive-deps lint with justification.
 - `frontend/src/components/chat/MessageList.test.tsx` — added 3 regression tests for scroll anchoring (prepend preserves position; append does NOT anchor; stickToBottom still jumps to bottom).
 - `frontend/tests/e2e/composer.spec.ts` (new) — 13 Playwright e2e tests covering composer send-key behavior (desktop + mobile), history navigation, and Load-earlier wiring/prepend.
-- `worklogs/NNNN_2026-07-06_composer-e2e-and-load-earlier-fix.md` (this file).
+- `worklogs/0597_2026-07-06_composer-e2e-and-load-earlier-fix.md` (this file).
