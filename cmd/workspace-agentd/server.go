@@ -211,11 +211,12 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	// Prometheus scraper can collect per-pod agentd gate timings.
 	adminMux.Handle("/metrics", promhttp.Handler())
 
-	// The session lister probes opencode's /session endpoint to (a) prune
+	// The session lister probes opencode's /session endpoint to prune
 	// stale busy entries from the tracker when opencode dies mid-busy and
-	// is respawned (C2a), and (b) decide cold-start behavior when the
-	// tracker is empty after an agentd restart (C2b). It closes over the
-	// production OpenCodeClient; tests inject a stub.
+	// is respawned (C2a). Used only by pruneFromLister; the (b) cold-start
+	// empty-tracker probing use was removed by design 0045 Change 4 (see
+	// design/0045_2026-07-06_boot-time-user-dek-delivery.md). Closes over
+	// the production OpenCodeClient; tests inject a stub.
 	liveSessions := func(ctx context.Context) []string {
 		sessions, err := deps.client.ListSessions(ctx)
 		if err != nil {
