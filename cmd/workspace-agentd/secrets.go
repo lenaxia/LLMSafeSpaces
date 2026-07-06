@@ -106,9 +106,8 @@ type sessionLister func(ctx context.Context) []string
 
 // pruneFromLister prunes the tracker using the live session list from
 // opencode. No-op if tracker is nil, lister is nil, the tracker is empty
-// (nothing to prune — and the caller trackerHasBusyOrUnknown will probe
-// opencode itself), or the probe fails (opencode unreachable — cannot
-// verify, leave tracker as-is).
+// (nothing to prune — an empty tracker has no entries to remove), or the
+// probe fails (opencode unreachable — cannot verify, leave tracker as-is).
 func pruneFromLister(ctx context.Context, tracker *sessionStatusTracker, lister sessionLister) {
 	if tracker == nil || lister == nil || !tracker.hasAnyData() {
 		return
