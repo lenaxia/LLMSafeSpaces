@@ -281,4 +281,124 @@ describe("MessageList", () => {
       expect(helloBubble?.querySelector("[data-testid='message-model']")).toBeNull();
     });
   });
+
+  // ── Scroll anchoring for "Load earlier messages" ───────────────────────
+  //
+  // Regression coverage for the fix that preserves the user's visual
+  // position when older messages are prepended. Without the fix, the
+  // browser keeps the same pixel scrollTop but the content above that
+  // offset has grown, so the viewport shifts to different (newer) content
+  // than what the user was reading — making "Load earlier" feel broken.
+
+  describe("scroll anchoring on prepend", () => {
+    function setScrollDims(el: HTMLElement, scrollHeight: number, scrollTop: number, clientHeight = 200) {
+      Object.defineProperty(el, "scrollHeight", { value: scrollHeight, configurable: true });
+      Object.defineProperty(el, "clientHeight", { value: clientHeight, configurable: true });
+      Object.defineProperty(el, "scrollTop", { value: scrollTop, writable: true, configurable: true });
+    }
+
+    it("preserves visual position when older messages are prepended (user not at bottom)", async () => {
+      const initialMsgs: Message[] = [
+        { id: "m3", role: "user", parts: [{ type: "text", text: "page1" }] },
+      ];
+      const { rerender } = render(<MessageList messages={initialMsgs} />);
+      const el = screen.getByRole("log");
+
+      // Set the baseline dims and scroll away from bottom.
+      setScrollDims(el, 1000, 200);
+      el.dispatchEvent(new Event("scroll"));
+      await waitFor(() => {
+        expect(screen.getByLabelText("Scroll to bottom")).toBeInTheDocument();
+      });
+
+      // Force a no-op layout-effect pass that captures the current
+      // scrollHeight (1000) as prevScrollHeightRef. We do this by
+      // appending a message (same first id → no anchor fires) so the
+      // mount-init effect's stale baseline gets refreshed.
+      setScrollDims(el, 1000, 200);
+      rerender(<MessageList messages={[
+        ...initialMsgs,
+        { id: "m4", role: "assistant", parts: [{ type: "text", text: "append" }] },
+      ]} />);
+      // stickToBottom still false (scrollTop=200 unchanged). Re-fire scroll
+      // so the rAF picks it up after the rerender.
+      setScrollDims(el, 1000, 200);
+      el.dispatchEvent(new Event("scroll"));
+      await waitFor(() => {
+        expect(screen.getByLabelText("Scroll to bottom")).toBeInTheDocument();
+      });
+
+      // Now: prepend older messages. Redefine scrollHeight to simulate the
+      // DOM growing (delta=500). stickToBottom is false, first id changed.
+      const prepended: Message[] = [
+        { id: "m1", role: "user", parts: [{ type: "text", text: "page2-old" }] },
+        { id: "m2", role: "assistant", parts: [{ type: "text", text: "page2-old-reply" }] },
+        ...initialMsgs,
+      ];
+      Object.defineProperty(el, "scrollHeight", { value: 1500, configurable: true });
+      rerender(<MessageList messages={prepended} />);
+
+      // Anchoring: scrollTop = 200 + (1500 - 1000) = 700.
+      expect(el.scrollTop).toBe(700);
+    });
+
+    it("does NOT anchor when content is appended (first id unchanged, stickToBottom=false)", async () => {
+      const initialMsgs: Message[] = [
+        { id: "m1", role: "user", parts: [{ type: "text", text: "first" }] },
+      ];
+      const { rerender } = render(<MessageList messages={initialMsgs} />);
+      const el = screen.getByRole("log");
+
+      setScrollDims(el, 1000, 200);
+      el.dispatchEvent(new Event("scroll"));
+      await waitFor(() => {
+        expect(screen.getByLabelText("Scroll to bottom")).toBeInTheDocument();
+      });
+
+      // Refresh prevScrollHeightRef via a same-first-id append.
+      setScrollDims(el, 1000, 200);
+      rerender(<MessageList messages={[
+        ...initialMsgs,
+        { id: "m1b", role: "assistant", parts: [{ type: "text", text: "x" }] },
+      ]} />);
+
+      // Append more content (first id unchanged). Browser-default keeps
+      // scrollTop; our fix must NOT anchor here.
+      setScrollDims(el, 1000, 200);
+      el.dispatchEvent(new Event("scroll"));
+      await waitFor(() => {
+        expect(screen.getByLabelText("Scroll to bottom")).toBeInTheDocument();
+      });
+
+      const appended: Message[] = [
+        ...initialMsgs,
+        { id: "m2", role: "assistant", parts: [{ type: "text", text: "new reply" }] },
+      ];
+      Object.defineProperty(el, "scrollHeight", { value: 1200, configurable: true });
+      rerender(<MessageList messages={appended} />);
+
+      // Anchoring should NOT have fired (first id unchanged).
+      expect(el.scrollTop).toBe(200);
+    });
+
+    it("still jumps to bottom when stickToBottom=true (anchoring skipped)", () => {
+      const initialMsgs: Message[] = [
+        { id: "m1", role: "user", parts: [{ type: "text", text: "first" }] },
+      ];
+      const { rerender } = render(<MessageList messages={initialMsgs} />);
+      const el = screen.getByRole("log");
+      // stickToBottom defaults to true; don't scroll away.
+
+      setScrollDims(el, 1000, 0);
+      const prepended: Message[] = [
+        { id: "m0", role: "user", parts: [{ type: "text", text: "older" }] },
+        ...initialMsgs,
+      ];
+      Object.defineProperty(el, "scrollHeight", { value: 1500, configurable: true });
+      rerender(<MessageList messages={prepended} />);
+
+      // stickToBottom branch: jump to bottom.
+      expect(el.scrollTop).toBe(1500);
+    });
+  });
 });
