@@ -9,8 +9,8 @@ description: |
   `reconcileStrategy: Revision` or the chart is packaged once and never
   refreshed between releases (see charts/llmsafespaces/README.md, #456).
 type: application
-version: 0.2.0
-appVersion: "0.2.0"
+version: 0.2.1
+appVersion: "0.2.1"
 kubeVersion: ">=1.27.0-0"
 home: https://github.com/lenaxia/llmsafespaces
 sources:
