@@ -75,4 +75,4 @@ Tests:
 
 Docs:
 - `design/0045_2026-07-06_boot-time-user-dek-delivery.md` (new)
-- `worklogs/NNNN_2026-07-06_boot-time-user-dek-delivery.md` (this file)
+- `worklogs/0599_2026-07-06_boot-time-user-dek-delivery.md` (this file)
