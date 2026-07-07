@@ -111,7 +111,7 @@ Cluster verification (post-shrink): all 6 workspaces `Active` or `Suspended`, `D
 - `charts/llmsafespaces/templates/configmap-api.yaml`
 - `charts/llmsafespaces/values.yaml`
 - `pkg/settings/helm_precedence_workspace_test.go` (new, added in review-iteration)
-- `worklogs/NNNN_2026-07-07_workspace-defaultstorageclass-helm-pathway.md` (new)
+- `worklogs/0601_2026-07-07_workspace-defaultstorageclass-helm-pathway.md` (new)
 
 **Cluster changes (out-of-band, `kubectl patch`; no repo diff):**
 - `longhorn-system` namespace: 6 `volumes.longhorn.io` objects patched from `spec.numberOfReplicas: 3` → `2`.
