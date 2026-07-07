@@ -13,8 +13,14 @@ package main
 //   1. A reload-secrets push persists the batch to the cache file.
 //   2. A subsequent `materialize` boot (container restart) replays the
 //      cache merged on top of the base secrets.json.
-//   3. Pod recreation (cache absent) falls back to base-only (preserves the
-//      "user-owned creds do not materialize at first boot" invariant).
+//   3. Pod recreation (cache absent) falls back to base-only.
+//
+// After design 0045 Change 1, the "user-owned creds do not materialize at
+// first boot" invariant is inverted: pod-bootstrap now attempts best-effort
+// user-DEK unwrap and delivers user-DEK secrets when the workspace owner's
+// jwt_sessions row is unwrappable. When unwrap fails (owner offline past the
+// jwt_session TTL), pod-bootstrap degrades to sessionless and the tests
+// below still hold (base-only materialization).
 
 import (
 	"bytes"
@@ -61,6 +67,87 @@ func runCacheMaterialize(t *testing.T, bin, secretsPath string, env []string) (i
 		t.Fatalf("subprocess failed: %v stderr=%q", err, stderr.String())
 	}
 	return exit, stderr.String()
+}
+
+// TestMaterialize_WritesCacheOnBoot is the regression test for design 0045
+// Change 3: the init-container's materialize subcommand must persist its
+// applied batch to the reload cache so agentd's hasUserCreds probe reports
+// UserCredsPresent=true from the first healthz call.
+//
+// Without this write, the pre-existing hasUserCreds implementation
+// (healthz.go) reads only the reload-cache path — the cache is empty on
+// a fresh pod, so UserCredsPresent=false, so the API's watcher fires a
+// spurious auto-push ~30s into pod life. Auto-push applies the same batch
+// pod-bootstrap already delivered (design 0045 Change 1) and triggers a
+// wasteful opencode restart.
+//
+// With this write, hasUserCreds returns true on the first healthz call,
+// secretautopush observes UserCredsPresent=true, emits skipped_ucp_true,
+// and no restart fires.
+func TestMaterialize_WritesCacheOnBoot(t *testing.T) {
+	bin := buildAgentdBinary(t)
+	dir := t.TempDir()
+
+	envPath := filepath.Join(dir, "env")
+	cachePath := filepath.Join(dir, "last-reload-secrets.json")
+
+	// Simulate pod-bootstrap having delivered user-DEK secrets (design 0045
+	// Change 1). Both server-KEK and user-DEK entries arrive together.
+	baseSecretsPath := filepath.Join(dir, "secrets.json")
+	require.NoError(t, os.WriteFile(baseSecretsPath, []byte(`[
+		{"type":"env-secret","name":"gh","metadata":{"var_name":"GH_TOKEN"},"plaintext":"tok-boot-value"},
+		{"type":"env-secret","name":"server-cfg","metadata":{"var_name":"SERVER_CFG"},"plaintext":"server-val"}
+	]`), 0o600))
+
+	env := cacheMaterializeEnv(filepath.Join(dir, "secrets"), filepath.Join(dir, ".ssh"),
+		filepath.Join(dir, "agent-config.json"), envPath, filepath.Join(dir, ".git-credentials"), cachePath)
+
+	// Pre-condition: no cache on a fresh pod.
+	_, err := os.Stat(cachePath)
+	require.True(t, os.IsNotExist(err))
+
+	exit, stderr := runCacheMaterialize(t, bin, baseSecretsPath, env)
+	require.Equal(t, 0, exit, "stderr=%q", stderr)
+
+	// Post-condition: cache exists. This is what hasUserCreds reads.
+	require.FileExists(t, cachePath,
+		"materialize must persist the reload cache so hasUserCreds reports "+
+			"UserCredsPresent=true on the first healthz — preventing the spurious "+
+			"auto-push that would otherwise trigger a wasteful opencode restart")
+
+	cacheContent, err := os.ReadFile(cachePath)
+	require.NoError(t, err)
+	assert.Contains(t, string(cacheContent), "GH_TOKEN",
+		"cache must include the user-DEK env-secret to reflect what was materialized")
+	assert.Contains(t, string(cacheContent), "tok-boot-value")
+	assert.Contains(t, string(cacheContent), "SERVER_CFG")
+}
+
+// TestMaterialize_EmptySecrets_DoesNotWriteCache verifies the empty-batch
+// short-circuit: a workspace with no bindings must not write an empty
+// cache file. hasUserCreds would return true on a zero-length batch (via
+// len(batch) > 0 == false), so the cache-absent state and the empty-cache
+// state are semantically equivalent — but writing an empty file costs a
+// tmpfs I/O and clutters the fs unnecessarily.
+func TestMaterialize_EmptySecrets_DoesNotWriteCache(t *testing.T) {
+	bin := buildAgentdBinary(t)
+	dir := t.TempDir()
+
+	envPath := filepath.Join(dir, "env")
+	cachePath := filepath.Join(dir, "last-reload-secrets.json")
+
+	baseSecretsPath := filepath.Join(dir, "secrets.json")
+	require.NoError(t, os.WriteFile(baseSecretsPath, []byte(`[]`), 0o600))
+
+	env := cacheMaterializeEnv(filepath.Join(dir, "secrets"), filepath.Join(dir, ".ssh"),
+		filepath.Join(dir, "agent-config.json"), envPath, filepath.Join(dir, ".git-credentials"), cachePath)
+
+	exit, stderr := runCacheMaterialize(t, bin, baseSecretsPath, env)
+	require.Equal(t, 0, exit, "stderr=%q", stderr)
+
+	_, err := os.Stat(cachePath)
+	assert.True(t, os.IsNotExist(err),
+		"empty secrets batch must not write an empty cache file")
 }
 
 // TestContainerRestart_ReplaysUserDEKCreds is THE regression test for #443.
@@ -137,10 +224,13 @@ func TestContainerRestart_ReplaysUserDEKCreds(t *testing.T) {
 		"server-KEK env-secret from base must also be present")
 }
 
-// TestContainerRestart_NoCache_FallsBackToBaseOnly pins the first-boot /
-// pod-recreation invariant: when the cache is absent (fresh tmpfs), only the
-// base secrets.json materializes. This preserves the existing contract that
-// user-owned creds do NOT appear at first boot.
+// TestContainerRestart_NoCache_FallsBackToBaseOnly pins the boot-with-no-cache
+// path: when the cache is absent (fresh tmpfs) and the base secrets.json
+// contains no user-DEK content (owner offline / jwt_sessions unwrappable
+// at pod-bootstrap time), only server-KEK content materializes. After
+// design 0045 Change 1, user-DEK content CAN appear in the base
+// secrets.json when unwrap succeeds — but this test explicitly exercises
+// the degrade path where it doesn't.
 func TestContainerRestart_NoCache_FallsBackToBaseOnly(t *testing.T) {
 	bin := buildAgentdBinary(t)
 	dir := t.TempDir()
@@ -162,7 +252,7 @@ func TestContainerRestart_NoCache_FallsBackToBaseOnly(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(envContent), "export SERVER_CFG=")
 	assert.NotContains(t, string(envContent), "GH_TOKEN",
-		"no cache → no user-DEK creds at boot (first-boot invariant preserved)")
+		"no cache + no user-DEK in base secrets.json → no user-DEK creds")
 }
 
 // TestContainerRestart_CorruptCache_FallsBackToBase verifies graceful
@@ -197,8 +287,14 @@ func TestContainerRestart_CorruptCache_FallsBackToBase(t *testing.T) {
 
 // TestContainerRestart_PodRecreation_WipesCache pins US-35.7: on full pod
 // recreation (not container restart) the tmpfs is wiped, so the cache is
-// absent and only base server-KEK creds materialize. This is the security
-// invariant — no plaintext user creds on the PVC at rest.
+// absent on the first materialize call. The security invariant (no
+// plaintext user creds on the PVC at rest) is preserved because both
+// /sandbox-cfg and /sandbox-runtime are memory-backed emptyDirs.
+//
+// After design 0045 Change 3, materialize *does* write the cache during
+// the first boot on the fresh pod. The test verifies the pre-boot state
+// (cache absent) and asserts server-KEK-only base creds materialize
+// without user-DEK bleed-through.
 func TestContainerRestart_PodRecreation_WipesCache(t *testing.T) {
 	bin := buildAgentdBinary(t)
 	dir := t.TempDir()
@@ -214,18 +310,20 @@ func TestContainerRestart_PodRecreation_WipesCache(t *testing.T) {
 	env := cacheMaterializeEnv(filepath.Join(dir, "secrets"), filepath.Join(dir, ".ssh"),
 		filepath.Join(dir, "agent-config.json"), envPath, filepath.Join(dir, ".git-credentials"), cachePath)
 
-	// First boot: no cache (fresh pod). Base only.
+	// Pre-boot: no cache (fresh pod).
+	_, err := os.Stat(cachePath)
+	require.True(t, os.IsNotExist(err), "fresh pod must have no cache before first materialize")
+
+	// First boot on the fresh pod (pod-bootstrap here degraded to server-KEK
+	// only — user's jwt_session absent). Base creds materialize.
 	exit, stderr := runCacheMaterialize(t, bin, baseSecretsPath, env)
 	require.Equal(t, 0, exit, "stderr=%q", stderr)
 
-	// Simulate pod recreation: cache path does not exist (tmpfs wiped).
-	_, err := os.Stat(cachePath)
-	assert.True(t, os.IsNotExist(err), "fresh pod must have no cache")
-
-	// User-DEK creds absent (they are delivered live after boot, not at boot).
+	// User-DEK creds absent (base secrets.json here has server-KEK only).
 	envContent, err := os.ReadFile(envPath)
 	require.NoError(t, err)
-	assert.NotContains(t, string(envContent), "GH_TOKEN")
+	assert.NotContains(t, string(envContent), "GH_TOKEN",
+		"pod-bootstrap-degrade path materializes no user-DEK content")
 }
 
 // TestContainerRestart_SSHKeySurvivesRestart verifies the replay path for a

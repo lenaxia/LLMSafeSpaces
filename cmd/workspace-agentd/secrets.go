@@ -71,11 +71,16 @@ const restartIdleCheckInterval = 5 * time.Second
 // to idle before force-restarting (worklog 371 H1). Without it, a stuck
 // session (infinite loop, hung MCP, deadlocked tool) defers the restart
 // forever and the credential change never applies — silent non-application.
-// 2h is long enough that legitimate agentic turns (which can run for tens
-// of minutes) are not interrupted, while bounded enough that stuck sessions
-// eventually get the credential applied. The force-restart at expiry logs
-// a warning so the operator can correlate the interruption.
-const defaultMaxDefer = 2 * time.Hour
+//
+// Design 0045 Change 5: reduced from 2h to 15m. Rationale: with Change 4's
+// tracker-empty semantic fix, the defer path is now reached only when the
+// tracker has SSE-observed busy state — i.e., a session is *genuinely*
+// running work. 15 minutes covers legitimate long-running agentic turns
+// (reasoning models, slow tool calls, multi-step workflows) with generous
+// headroom. Longer just wastes credential freshness for a stuck session;
+// the force-restart at expiry logs a warning so operators can correlate
+// the interruption.
+const defaultMaxDefer = 15 * time.Minute
 
 // sessionListerProbeTimeout bounds the cost of probing opencode's /session
 // endpoint from the restart decision path. If opencode is unreachable the
@@ -83,18 +88,16 @@ const defaultMaxDefer = 2 * time.Hour
 const sessionListerProbeTimeout = 3 * time.Second
 
 // sessionLister returns the current live session IDs from opencode, or nil
-// if opencode is unreachable. Used for two purposes in the session-aware
-// restart logic:
+// if opencode is unreachable. Used by the deferred-restart goroutine for
+// pruning stale busy entries from the tracker (C2a): when opencode dies
+// mid-busy and the supervisor respawns it, the tracker retains a stale
+// "busy" entry for a session that no longer exists. Calling prune() with
+// the live session list removes it.
 //
-//   - Pruning stale busy entries from the tracker (C2a): when opencode dies
-//     mid-busy and the supervisor respawns it, the tracker retains a stale
-//     "busy" entry for a session that no longer exists. Calling prune() with
-//     the live session list removes it.
-//   - Cold-start probing (C2b): when the tracker is empty (agentd restarted,
-//     SSE not yet reconnected), the lister tells us whether opencode is
-//     alive. An alive opencode with an empty tracker means sessions might be
-//     busy but invisible — we defer. An unreachable opencode means nothing
-//     is running — we restart immediately.
+// Design 0045 Change 4 removed the second (cold-start / C2b) use of the
+// lister — trackerHasBusyOrUnknown no longer probes opencode when the
+// tracker is empty; it returns false (not busy) directly. See
+// design/0045_2026-07-06_boot-time-user-dek-delivery.md.
 //
 // Returns a non-nil slice (possibly empty) when opencode is reachable, nil
 // when opencode is unreachable. "Empty non-nil" means "opencode is alive
@@ -103,9 +106,8 @@ type sessionLister func(ctx context.Context) []string
 
 // pruneFromLister prunes the tracker using the live session list from
 // opencode. No-op if tracker is nil, lister is nil, the tracker is empty
-// (nothing to prune — and the caller trackerHasBusyOrUnknown will probe
-// opencode itself), or the probe fails (opencode unreachable — cannot
-// verify, leave tracker as-is).
+// (nothing to prune — an empty tracker has no entries to remove), or the
+// probe fails (opencode unreachable — cannot verify, leave tracker as-is).
 func pruneFromLister(ctx context.Context, tracker *sessionStatusTracker, lister sessionLister) {
 	if tracker == nil || lister == nil || !tracker.hasAnyData() {
 		return
@@ -119,29 +121,35 @@ func pruneFromLister(ctx context.Context, tracker *sessionStatusTracker, lister 
 
 // trackerHasBusyOrUnknown reports whether the restart should be deferred.
 // Returns true (defer) when:
-//   - the tracker has data AND any session is busy, OR
-//   - the tracker is empty BUT opencode is reachable with at least one
-//     session (cold-start: sessions might be busy but invisible — C2b).
+//   - the tracker has data AND any session is busy.
 //
 // Returns false (proceed with restart) when:
 //   - the tracker has data AND no session is busy, OR
-//   - the tracker is empty AND opencode is unreachable (nothing to lose), OR
-//   - the tracker is empty AND opencode has zero sessions (nothing to lose).
-func trackerHasBusyOrUnknown(ctx context.Context, tracker *sessionStatusTracker, lister sessionLister) bool {
+//   - the tracker is empty. Design 0045 Change 4: an empty tracker means
+//     the SSE stream (our only truth source for session busyness) has not
+//     observed any busy session on this agentd's connection. /session
+//     returns a list of session RECORDS from opencode.db, not a busyness
+//     indicator: a session that was busy 8 hours ago but idle now still
+//     appears in /session. Previously this branch probed /session and
+//     deferred if any records existed, which caused cold-boot credential
+//     updates to defer for the full maxDefer window (up to 2h) — the
+//     RC2 bug from the 2026-07-06 incident.
+//
+// The remaining edge case is the brief window between agentd start and
+// SSE reconnect (bounded by session_tracker.go's backoff, typically ~2s):
+// a session that is genuinely busy in that window appears idle to the
+// tracker. If a credential push lands in that window, the restart fires
+// on a possibly-busy session. That trade is acceptable: (a) the window
+// is bounded and short, (b) the previous branch silently held stale
+// credentials for hours in the vastly more common cold-boot case, and
+// (c) even the old branch was best-effort — SSE can disconnect at any
+// time and the same window exists on any reconnect.
+func trackerHasBusyOrUnknown(tracker *sessionStatusTracker) bool {
 	if tracker != nil && tracker.hasAnyData() {
 		return tracker.hasAnyBusy()
 	}
-	// Tracker is empty — probe opencode to decide (C2b).
-	if lister == nil {
-		return false
-	}
-	probeCtx, cancel := context.WithTimeout(ctx, sessionListerProbeTimeout)
-	defer cancel()
-	ids := lister(probeCtx)
-	// nil = unreachable → restart (nothing to lose).
-	// non-nil + len>0 = opencode alive with sessions → defer (might be busy).
-	// non-nil + len==0 = opencode alive, no sessions → restart (nothing to lose).
-	return len(ids) > 0
+	// Empty tracker → definitively not busy (see design 0045 Change 4).
+	return false
 }
 
 // makeSessionAwareRestartDecision decides whether to restart opencode now or
@@ -152,10 +160,11 @@ func trackerHasBusyOrUnknown(ctx context.Context, tracker *sessionStatusTracker,
 // Behavior:
 //
 //   - If proc is nil, returns true without doing anything (test/no-op path).
-//   - If the tracker shows all sessions idle (or opencode is unreachable with
-//     no tracker data), restarts immediately.
-//   - If sessions are busy (or the tracker is empty but opencode is alive
-//     with sessions — cold-start, C2b), defers the restart.
+//   - If the tracker shows all sessions idle OR the tracker is empty
+//     (design 0045 Change 4 — empty tracker = no busy signal observed via
+//     SSE, so restart immediately), restarts immediately.
+//   - If sessions are busy per the SSE tracker, defers the restart until
+//     they idle or maxDefer elapses.
 //
 // The deferred goroutine:
 //
@@ -199,12 +208,21 @@ func makeSessionAwareRestartDecision(
 	// Prune stale entries before deciding (C2a).
 	pruneFromLister(ctx, tracker, lister)
 
-	if !trackerHasBusyOrUnknown(ctx, tracker, lister) {
+	if !trackerHasBusyOrUnknown(tracker) {
 		proc.restart()
 		return true
 	}
 
-	// Sessions are busy or status is unknown (cold-start) — defer.
+	// Sessions are busy — defer. (Empty tracker is handled as "not busy"
+	// above, per design 0045 Change 4; we can only reach here when the
+	// tracker has SSE-observed busy state.)
+	//
+	// TOCTOU note: between the trackerHasBusyOrUnknown check above and the
+	// listBusy() call below, an SSE event can transition the last busy
+	// session to idle. In that case listBusy returns empty and we log the
+	// "unknown status" branch below. The deferred goroutine's next poll
+	// tick will observe idle and restart within pollInterval — no
+	// permanent stall.
 	var busy []string
 	if tracker != nil {
 		busy = tracker.listBusy()
@@ -214,8 +232,13 @@ func makeSessionAwareRestartDecision(
 			zap.Strings("busySessions", busy),
 			zap.Duration("maxDefer", maxDefer))
 	} else {
-		log.Warn("session-aware restart: deferring restart, session status unknown (tracker empty, opencode alive — SSE disconnected?)",
-			zap.Duration("maxDefer", maxDefer))
+		// TOCTOU race: hasAnyBusy → true was observed, but by the time we
+		// called listBusy the last busy session transitioned to idle. The
+		// deferred goroutine will observe this on its next poll tick and
+		// restart within pollInterval.
+		log.Info("session-aware restart: deferring restart, tracker raced to idle between check and log (will restart on next poll tick)",
+			zap.Duration("maxDefer", maxDefer),
+			zap.Duration("pollInterval", pollInterval))
 	}
 
 	runDeferred := func() {
@@ -241,7 +264,7 @@ func makeSessionAwareRestartDecision(
 				return
 			case <-ticker.C:
 				pruneFromLister(ctx, tracker, lister)
-				if !trackerHasBusyOrUnknown(ctx, tracker, lister) {
+				if !trackerHasBusyOrUnknown(tracker) {
 					log.Info("session-aware restart: all sessions now idle, applying deferred restart")
 					proc.restart()
 					return
@@ -452,6 +475,38 @@ func runMaterializeCommand(args []string, stdout, stderr io.Writer) int {
 		// rather than silent partial-credential boot).
 		return 3
 	}
+
+	// Design 0045 Change 3: persist the applied batch to the reload cache.
+	//
+	// Rationale (validated via stress-testing round 2): agentd's hasUserCreds
+	// (healthz.go) reports UserCredsPresent based on the *cache file's*
+	// existence, not on whether secrets.json contains user-DEK content. If
+	// the init container's materialize does NOT write the cache, the FIRST
+	// healthz-after-boot reports UserCredsPresent=false, which triggers a
+	// spurious auto-push from the API's watcher — even when pod-bootstrap
+	// already delivered user-DEK secrets via Change 1. The auto-push
+	// applies the same batch and triggers an opencode restart ~30s into
+	// pod life.
+	//
+	// Writing the cache here closes that loop: hasUserCreds returns true
+	// on the first healthz call, the watcher observes UserCredsPresent=true,
+	// and secretautopush emits "skipped_ucp_true" (no redundant push).
+	//
+	// Non-fatal on write failure: the cache only affects the auto-push
+	// filtering signal. On write failure, agentd degrades to the pre-
+	// Change-3 behavior (one spurious auto-push post-boot). No user-facing
+	// impact beyond a wasted opencode restart.
+	//
+	// Empty-batch guard: skip cache write when there's nothing to persist.
+	// Empty-path guard: production always resolves the path via
+	// loadMaterializeConfig → agentd.ReloadSecretsCachePath; tests may
+	// construct materializeConfig without reloadCachePath.
+	if cfg.reloadCachePath != "" && len(secretsList) > 0 {
+		if pErr := writeReloadSecretsCache(cfg.reloadCachePath, secretsList); pErr != nil {
+			_, _ = fmt.Fprintf(stderr, "materialize: failed to persist reload cache (auto-push will still fire post-boot as fallback): %v\n", pErr)
+		}
+	}
+
 	// Skips are intentional; do not fail the boot.
 	return 0
 }
@@ -596,9 +651,13 @@ type reloadSecretsDeps struct {
 	BgWg *sync.WaitGroup
 
 	// Lister probes opencode's /session endpoint for the live session list.
-	// Used to prune stale busy entries (C2a) and to decide cold-start
-	// behavior when the tracker is empty (C2b). May be nil (the restart
-	// logic falls back to immediate-restart-on-empty-tracker).
+	// Used by the deferred-restart goroutine to prune stale busy entries
+	// (C2a) — when opencode dies mid-busy and respawns, the tracker retains
+	// a stale busy entry for a session that no longer exists. May be nil
+	// (pruneFromLister is a no-op in that case).
+	//
+	// Design 0045 Change 4 removed the second (cold-start / C2b) use — the
+	// restart decision no longer probes /session when the tracker is empty.
 	Lister sessionLister
 
 	// AgentConfigWriter is the single writer of agent-config.json. The

@@ -31,6 +31,10 @@ type SecretInjector interface {
 //
 //   - Pod bootstrap (Epic 35 US-35.3): the init container POSTs the API
 //     with a projected SA token; there is no JWT and no DEK in flight.
+//     NOTE: pod-bootstrap now prefers PodBootstrapSecretInjector when
+//     available (design/0045). SessionlessSecretInjector remains the
+//     fallback contract for callers that cannot request user-DEK on
+//     the caller's behalf.
 //
 //   - API-key authenticated handlers (e.g. SDK calls without a JWT): the
 //     handler cannot decrypt user-DEK content, so the SessionlessSecretInjector
@@ -49,10 +53,35 @@ type SessionlessSecretInjector interface {
 	InjectSessionlessSecrets(ctx context.Context, userID, workspaceID string) ([]byte, error)
 }
 
+// PodBootstrapSecretInjector is the pod-bootstrap-path variant that
+// attempts a best-effort user-DEK unwrap via KeyService.GetDEKForUser
+// (which walks jwt_sessions rows and the enumerator's retained signing
+// keys) and, on success, decrypts user-DEK bindings alongside
+// server-KEK bindings — as if a JWT-authenticated request had been made.
+//
+// On DEK-unavailable (no active jwt_sessions, or none unwrappable),
+// implementations MUST degrade to SessionlessSecretInjector semantics:
+// user-DEK bindings audited and skipped, server-KEK-only payload
+// returned. The pod boots with the reduced set and the auto-push flow
+// will still deliver user-DEK when the user next logs in.
+//
+// Trust model: callers (pod-bootstrap handler) authenticate the workspace
+// SA token via TokenReview and verify the request is on behalf of
+// workspace X. The workspace CRD lists X's owner as the principal whose
+// DEK is fetched. This is not privilege escalation — the pod would
+// receive these same secrets via reload-secrets anyway. See
+// design/0045_2026-07-06_boot-time-user-dek-delivery.md § Threat model.
+//
+// Implementations: *SecretService.
+type PodBootstrapSecretInjector interface {
+	InjectSecretsForPodBootstrap(ctx context.Context, userID, workspaceID string) ([]byte, error)
+}
+
 // Compile-time assertions that *SecretService satisfies both interfaces.
 var (
-	_ SecretInjector            = (*SecretService)(nil)
-	_ SessionlessSecretInjector = (*SecretService)(nil)
+	_ SecretInjector             = (*SecretService)(nil)
+	_ SessionlessSecretInjector  = (*SecretService)(nil)
+	_ PodBootstrapSecretInjector = (*SecretService)(nil)
 )
 
 // InjectedSecret is a single secret entry in the secrets.json file
@@ -147,6 +176,53 @@ func (s *SecretService) InjectSessionlessSecrets(ctx context.Context, userID, wo
 	}
 
 	return buildSecretsJSON(providerData, nonLLM)
+}
+
+// InjectSecretsForPodBootstrap implements PodBootstrapSecretInjector.
+// See interface godoc and design/0045_2026-07-06_boot-time-user-dek-delivery.md.
+//
+// Attempts a best-effort user-DEK unwrap via KeyService.GetDEKForUser. On
+// success, delegates to InjectSecrets so user-DEK bindings decrypt
+// through the normal (dek, jti) → decryptBinding path. GetDEKForUser
+// writes the unwrapped DEK back to Redis under the returned jti, so the
+// downstream GetDEK(jti) call in decryptBinding hits the cache — one
+// unwrap per request, not per binding.
+//
+// On DEK-unavailable (no active jwt_sessions row for this user, none
+// unwrappable with retained signing keys, or KeyService not wired at
+// all), falls back to InjectSessionlessSecrets. The pod boots with
+// server-KEK-only secrets; the auto-push flow (secretautopush) will
+// deliver user-DEK secrets when the user next logs in.
+//
+// Errors from GetDEKForUser other than ErrDEKUnavailable are treated as
+// "unavailable" and degrade the same way: a transient DB failure at pod
+// boot must not fail the boot; auto-push will retry once the API
+// recovers. The specific error is not logged here because
+// GetDEKForUser's callers (secretautopush.run, this method) both treat
+// it uniformly — the KeyService's own logs already record the failure.
+func (s *SecretService) InjectSecretsForPodBootstrap(ctx context.Context, userID, workspaceID string) ([]byte, error) {
+	// s.keys is set at construction (NewSecretService); tests may pass
+	// nil to isolate the secret store from key wiring. When nil, we
+	// cannot fetch a DEK — degrade to the sessionless path.
+	if s.keys == nil {
+		return s.InjectSessionlessSecrets(ctx, userID, workspaceID)
+	}
+
+	// Best-effort unwrap. Any failure (ErrDEKUnavailable, list-error,
+	// unwrap-error) collapses to "no session" via the sessionless
+	// fallback. This preserves the "init container never blocks pod
+	// boot" invariant from Epic 35.
+	_, jti, err := s.keys.GetDEKForUser(ctx, userID)
+	if err != nil || jti == "" {
+		return s.InjectSessionlessSecrets(ctx, userID, workspaceID)
+	}
+
+	// InjectSecrets threads sessionID=jti and matchedSigningKey=nil.
+	// The downstream GetDEK call (via decryptBinding) reads the DEK
+	// from Redis cache under jti — populated as a side effect of
+	// GetDEKForUser succeeding above. This is the same pattern
+	// secretautopush.run uses (service.go:238-250).
+	return s.InjectSecrets(ctx, userID, jti, nil, workspaceID)
 }
 
 // requireCredentialStore casts the configured store to CredentialStore
