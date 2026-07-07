@@ -249,6 +249,18 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		})
 	}
 
+	// When workspace.defaultStorageClass is set in the Helm values, pin the
+	// `workspace.defaultStorageClass` instance setting to that value so the
+	// operator's chart-declared choice can't be silently overridden via the
+	// admin UI. Empty (the chart default) leaves the setting admin-mutable
+	// and it falls through to the DB-backed value (schema default "" =
+	// cluster-default StorageClass).
+	if cfg.Workspace.DefaultStorageClass != "" {
+		instanceSettings.SetHelmOverrides(map[string]any{
+			"workspace.defaultStorageClass": cfg.Workspace.DefaultStorageClass,
+		})
+	}
+
 	// Inject instance settings into workspace service for enforcement.
 	if wsSvc, ok := svc.Workspace.(*workspace.Service); ok {
 		wsSvc.SetInstanceSettings(instanceSettings)

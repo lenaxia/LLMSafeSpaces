@@ -5,8 +5,8 @@ controller, CRDs, ValidatingWebhookConfiguration, and database migrations.
 
 ## Status
 
-- Chart version: 0.2.1
-- App version: 0.2.1
+- Chart version: 0.2.2
+- App version: 0.2.2
 - Kubernetes: >= 1.27
 - Helm: >= 3.13 (also tested with Helm 4)
 - Tested locally with `helm lint` and `helm template`
@@ -158,8 +158,8 @@ curl http://localhost:8080/readyz  # 200 if DB+Redis healthy, 503 otherwise
 ```
 
 > **Image tags:** The chart defaults each image tag to `.Chart.AppVersion`
-> (`0.2.1`), which resolves to the published GHCR image for the latest release
-> tag (`v0.2.1`). For intermediate (non-release) builds, supply a tag
+> (`0.2.2`), which resolves to the published GHCR image for the latest release
+> tag (`v0.2.2`). For intermediate (non-release) builds, supply a tag
 > explicitly via `--set api.image.tag=<tag>` (and the same for
 > `controller`, `frontend`, `runtimeEnvironments.base`). See [Image tags](#image-tags) below.
 
@@ -172,7 +172,7 @@ CI (`ci.yml`) publishes four tag types on every main-branch build:
 | `sha-<commit>` | `sha-ac861c3` | Immutable, content-addressable. **Preferred for pinned deployments.** |
 | `ts-<unix>` | `ts-1782762331` | Sortable by time. Useful for chronological queries. |
 | `dev` | `dev` | Moving pointer to the latest main build. **Avoid in production** — kubelet caching of moving tags is unreliable. |
-| semver | `0.2.1` | Emitted on `v*.*.*` git tags (`type=semver,pattern={{version}}`). The chart default targets this. |
+| semver | `0.2.2` | Emitted on `v*.*.*` git tags (`type=semver,pattern={{version}}`). The chart default targets this. |
 
 **For production / pinned deployments:**
 
@@ -198,12 +198,12 @@ helm upgrade llmsafespaces ./charts/llmsafespaces \
 overrides:
 
 ```sh
-git tag v0.2.1
-git push origin v0.2.1   # CI publishes 0.2.1 + latest to GHCR
+git tag v0.2.2
+git push origin v0.2.2   # CI publishes 0.2.2 + latest to GHCR
 ```
 
 After the release, `helm install` with no tag override resolves every image to
-`ghcr.io/lenaxia/llmsafespaces/{api,...}:0.2.1`.
+`ghcr.io/lenaxia/llmsafespaces/{api,...}:0.2.2`.
 
 > **GHCR retention:** GitHub's native package-version retention prunes old
 > versions. `sha-` and `ts-` tags label the same manifest version and are pruned
@@ -293,7 +293,7 @@ make helm-lint                  # syntax check
 make helm-template               # render with defaults
 make helm-template-debug         # render with full debug output
 make helm-install-dry-run        # validate against live cluster
-make helm-package                # produce dist/llmsafespaces-0.2.1.tgz
+make helm-package                # produce dist/llmsafespaces-0.2.2.tgz
 ```
 
 ## Uninstalling

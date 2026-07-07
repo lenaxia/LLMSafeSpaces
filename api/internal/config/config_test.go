@@ -347,3 +347,86 @@ func TestConfig_Turnstile_VerifyURLOverride(t *testing.T) {
 		t.Errorf("expected env-override VerifyURL, got %q", cfg.Turnstile.VerifyURL)
 	}
 }
+
+// TestConfig_Workspace_DefaultStorageClass_Empty asserts the field parses
+// to "" when the `workspace:` block is absent from config.yaml. This is
+// the "let admin configure via UI" path — app.go must not call
+// SetHelmOverrides in this case.
+func TestConfig_Workspace_DefaultStorageClass_Empty(t *testing.T) {
+	path := writeMinimalConfig(t, "")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Workspace.DefaultStorageClass != "" {
+		t.Errorf("expected empty DefaultStorageClass by default, got %q", cfg.Workspace.DefaultStorageClass)
+	}
+}
+
+// TestConfig_Workspace_DefaultStorageClass_FromYAML asserts the field is
+// parsed from a `workspace:` block in config.yaml — the Helm-managed path.
+// When set, app.go calls SetHelmOverrides to pin the instance setting.
+func TestConfig_Workspace_DefaultStorageClass_FromYAML(t *testing.T) {
+	content := `
+server:
+  host: "127.0.0.1"
+  port: 8080
+  shutdownTimeout: 30s
+kubernetes:
+  configPath: "/kc"
+  inCluster: false
+  namespace: "ns"
+  podName: "p"
+  leaderElection:
+    enabled: true
+    leaseDuration: 15s
+    renewDeadline: 10s
+    retryPeriod: 2s
+database:
+  host: "localhost"
+  port: 5432
+  user: "u"
+  password: "p"
+  database: "d"
+  sslMode: "disable"
+  maxOpenConns: 10
+  maxIdleConns: 5
+  connMaxLifetime: 5m
+redis:
+  host: "localhost"
+  port: 6379
+  password: ""
+  db: 0
+  poolSize: 10
+auth:
+  jwtSecret: "s"
+  tokenDuration: 24h
+  apiKeyPrefix: "lsp_"
+logging:
+  level: "debug"
+  development: true
+  encoding: "console"
+rateLimiting:
+  enabled: false
+  limits: {}
+workspace:
+  defaultStorageClass: longhorn-2r
+`
+	f, err := os.CreateTemp("", "config-ws-*.yaml")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	defer os.Remove(f.Name())
+	if _, err := f.WriteString(content); err != nil {
+		t.Fatalf("WriteString: %v", err)
+	}
+	f.Close()
+
+	cfg, err := Load(f.Name())
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Workspace.DefaultStorageClass != "longhorn-2r" {
+		t.Errorf("expected DefaultStorageClass=longhorn-2r, got %q", cfg.Workspace.DefaultStorageClass)
+	}
+}

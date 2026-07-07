@@ -2954,6 +2954,53 @@ func TestEmail_OperatorOverride_FlowsThrough(t *testing.T) {
 	require.Contains(t, cfg, `baseUrl: "https://chat.acme.io"`)
 }
 
+// TestWorkspace_DefaultRender_OmitsWorkspaceBlock asserts that when
+// workspace.defaultStorageClass is empty (the chart default), the rendered
+// config.yaml does NOT contain a top-level `workspace:` block. The API
+// then leaves the `workspace.defaultStorageClass` instance setting fully
+// admin-mutable. Guards against the block appearing with an empty value
+// (which would still trip SetHelmOverrides gate in app.go — the gate
+// checks non-empty).
+func TestWorkspace_DefaultRender_OmitsWorkspaceBlock(t *testing.T) {
+	docs := helmTemplate(t, "")
+	cm := findAPIConfigMap(t, docs)
+	require.NotNil(t, cm, "API config ConfigMap must render by default")
+	cfg := configYAML(t, cm)
+	// Match `workspace:` only at the start of a line (top-level block).
+	// The string `create_workspace:` appears in the rateLimiting.limits
+	// map, so a plain Contains check gives false positives.
+	require.NotRegexp(t, `(?m)^workspace:`, cfg,
+		"top-level workspace block must NOT render when defaultStorageClass empty (default); config.yaml was:\n%s", cfg)
+}
+
+// TestWorkspace_DefaultStorageClass_RendersBlock asserts that when the
+// operator sets workspace.defaultStorageClass in Helm values, the rendered
+// config.yaml contains a `workspace: defaultStorageClass: <value>` block
+// that app.go can then pin via SetHelmOverrides.
+func TestWorkspace_DefaultStorageClass_RendersBlock(t *testing.T) {
+	docs := helmTemplate(t, `workspace:
+  defaultStorageClass: longhorn-2r
+`)
+	cm := findAPIConfigMap(t, docs)
+	require.NotNil(t, cm)
+	cfg := configYAML(t, cm)
+	require.Contains(t, cfg, "workspace:\n  defaultStorageClass: \"longhorn-2r\"",
+		"workspace.defaultStorageClass must render into config.yaml; config.yaml was:\n%s", cfg)
+}
+
+// TestWorkspace_DefaultStorageClass_OperatorOverride verifies alternate
+// StorageClass names flow through unmodified. Guards against a regression
+// that hardcodes a specific SC name (e.g. only accepts longhorn-*).
+func TestWorkspace_DefaultStorageClass_OperatorOverride(t *testing.T) {
+	docs := helmTemplate(t, `workspace:
+  defaultStorageClass: my-custom-sc
+`)
+	cm := findAPIConfigMap(t, docs)
+	require.NotNil(t, cm)
+	cfg := configYAML(t, cm)
+	require.Contains(t, cfg, `defaultStorageClass: "my-custom-sc"`)
+}
+
 // TestRelayRouter_UpstreamAuth_MountsSecretWhenConfigured verifies that when
 // upstreamAuth.keySecret.name is set, the router container gets a
 // UPSTREAM_AUTH_KEY env from that Secret (the optional key-injection wiring

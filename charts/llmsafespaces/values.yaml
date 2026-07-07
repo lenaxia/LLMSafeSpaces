@@ -389,6 +389,22 @@ controller:
 workspace:
   cgroupV2Required: true
 
+  # defaultStorageClass: when non-empty, pins the
+  # `workspace.defaultStorageClass` instance setting to this value at API
+  # boot (SetHelmOverrides). The admin UX will show it disabled with a
+  # "Managed by Helm" badge; PUT /admin/settings/workspace.defaultStorageClass
+  # returns 409. When empty (default), the setting stays admin-mutable via
+  # the settings UI/API — falling through to the DB-backed value (schema
+  # default "" = use cluster-default StorageClass).
+  #
+  # Set this when the cluster provides a dedicated lower-durability
+  # StorageClass for ephemeral workspaces (e.g. Longhorn 2-replica) that
+  # you want every workspace to use without relying on admins to configure
+  # it post-install.
+  #
+  # Example: defaultStorageClass: longhorn-2r
+  defaultStorageClass: ""
+
 # ----------------------------------------------------------------------------
 # CRDs
 # ----------------------------------------------------------------------------
