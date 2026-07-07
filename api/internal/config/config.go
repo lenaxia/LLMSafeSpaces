@@ -170,6 +170,25 @@ type Config struct {
 		SecretKey string `mapstructure:"secretKey"`
 		VerifyURL string `mapstructure:"verifyURL"`
 	} `mapstructure:"turnstile"`
+
+	// Workspace holds Helm-managed workspace defaults. Currently only
+	// DefaultStorageClass is exposed here: when non-empty the API pins the
+	// `workspace.defaultStorageClass` instance setting via SetHelmOverrides
+	// so admins cannot override it via the settings UI (Tier 1). When
+	// empty, the setting stays admin-mutable (Tier 2) with its DB-backed
+	// value (which itself defaults to "" — meaning "use cluster default SC").
+	//
+	// This pathway exists so operators running LLMSafeSpaces on clusters
+	// with dedicated low-durability StorageClasses (e.g. Longhorn 2-replica
+	// pools) can declare that choice in the Helm chart rather than having
+	// to remember to set it in the admin UI after every install/re-install.
+	//
+	// Wired via: values.yaml `workspace.defaultStorageClass` → API
+	// ConfigMap `workspace.defaultStorageClass` → this field → app.go
+	// SetHelmOverrides → workspace service Create path.
+	Workspace struct {
+		DefaultStorageClass string `mapstructure:"defaultStorageClass"`
+	} `mapstructure:"workspace"`
 }
 
 // Load loads configuration from file and environment variables

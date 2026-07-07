@@ -650,6 +650,8 @@ Controller flags mirror these: `--enable-inference-relay`, `--relay-router-url`,
 
 Both are Tier 2 (admin-mutable) `instance_settings` entries stored in PostgreSQL and served by the settings service (`pkg/settings/instance_service.go`). The admin UX reads them via `GET /admin/settings` and writes via `PUT /admin/settings/{key}` (`api/internal/handlers/settings.go`).
 
+**Helm-managed override for `workspace.defaultStorageClass`:** operators can pin the value in `values.yaml` under `workspace.defaultStorageClass`. When non-empty at API boot, `app.go` calls `instanceSettings.SetHelmOverrides` which promotes it to Tier 1 (read-only in the admin UI, PUTs return 409). When empty (the chart default), the setting stays Tier 2 and admin-editable. This exists so operators running on clusters with dedicated low-durability StorageClasses (e.g. Longhorn 2-replica) can declare that choice in the chart instead of relying on post-install UI configuration.
+
 **Removed settings:**
 - `workspace.maxStorageSize` — removed. PVC size is set once at creation and never changed; the admission webhook (`webhooks.maxWorkspaceStorageGi: 1024 Gi` in `values.yaml`) is the correct infrastructure-level ceiling. A dynamic DB-backed cap that only applied to the API path added complexity without meaningful safety.
 - `workspace.defaultResources.ephemeralStorage` — removed alongside the entire ephemeral-storage concept (see "Ephemeral storage — not set on the pod" below).
