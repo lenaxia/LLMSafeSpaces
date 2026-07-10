@@ -4,6 +4,7 @@
 package secrets
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -86,10 +87,10 @@ func (p *AWSKMSProvider) Decrypt(ctx context.Context, ciphertext []byte) ([]byte
 // prefix returns ErrNotMyCiphertext; no prefix at all also returns
 // ErrNotMyCiphertext (this ciphertext was never ours).
 func unwrapKMSCiphertext(prefix string, ciphertext []byte) ([]byte, error) {
-	if !hasPrefix(ciphertext, prefix) {
+	if !bytes.HasPrefix(ciphertext, []byte(prefix)) {
 		// Check for any known provider prefix (local or otherwise).
 		for _, fp := range knownForeignPrefixes {
-			if hasPrefix(ciphertext, fp) {
+			if bytes.HasPrefix(ciphertext, []byte(fp)) {
 				return nil, ErrNotMyCiphertext
 			}
 		}
@@ -97,7 +98,7 @@ func unwrapKMSCiphertext(prefix string, ciphertext []byte) ([]byte, error) {
 		// provider has a legacy un-prefixed fallback that means "no prefix"
 		// might be a local-provider row. From the KMS provider's perspective
 		// it's still not ours.
-		if hasPrefix(ciphertext, staticCiphertextPrefix) {
+		if bytes.HasPrefix(ciphertext, []byte(staticCiphertextPrefix)) {
 			return nil, ErrNotMyCiphertext
 		}
 		// No recognized prefix and not ours → ErrNotMyCiphertext. This is
