@@ -5,7 +5,6 @@ package secrets
 
 import (
 	"context"
-	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -208,7 +207,3 @@ func TestNewCompositeProvider_NoFallbacks_OK(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, c)
 }
-
-// Ensure errors package is exercised even when no test directly imports it
-// (some build configurations prune unused imports).
-var _ = errors.Is
