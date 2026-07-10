@@ -4,10 +4,28 @@
 package secrets
 
 import (
+	"errors"
 	"net/http"
 
 	pkgerrors "github.com/lenaxia/llmsafespaces/pkg/errors"
 )
+
+// ErrNotMyCiphertext is returned by a RootKeyProvider's Decrypt when the
+// ciphertext's prefix does not match the provider's format. It is distinct
+// from ErrDecryptionFailed (crypto.go), which means "the prefix matched
+// but the key was wrong" — a genuine decrypt failure rather than a routing
+// signal.
+//
+// Used by CompositeProvider (composite_provider.go) to dispatch Decrypt
+// across multiple providers without false-positive error logs: a provider
+// returning ErrNotMyCiphertext tells the composite "try the next one,"
+// while ErrDecryptionFailed tells it "this row is mine but corrupt —
+// stop." Without this distinction, a multi-provider decrypt would log a
+// spurious failure for every provider that didn't match the prefix.
+//
+// Plain sentinel (not *StatusError) because this is an internal routing
+// signal — it never reaches the HTTP layer.
+var ErrNotMyCiphertext = errors.New("ciphertext prefix does not match this provider")
 
 // Sentinel errors returned by the secrets package. Each carries its HTTP
 // status code and user-facing message via StatusError, so the generic

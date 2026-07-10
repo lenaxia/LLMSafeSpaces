@@ -132,8 +132,10 @@ func TestEnsureFreeTierCredential_PlaintextHasKindAndSlug(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, captured, "ensureFreeTierCredential must have captured ciphertext")
 
-	// Decrypt and inspect the plaintext.
-	plain, err := secrets.DecryptSecret(kek, captured)
+	// Decrypt and inspect the plaintext. US-57.1: route through the
+	// provider (not raw DecryptSecret) because provider output now
+	// carries the lkms:v1: prefix for CompositeProvider dispatch.
+	plain, err := prov.Decrypt(context.Background(), captured)
 	require.NoError(t, err)
 
 	var pd secrets.LLMProviderData

@@ -55,11 +55,17 @@ func TestStaticKeyProvider_MultiKey_EncryptUsesHighestVersion(t *testing.T) {
 	ct, err := p.Encrypt(context.Background(), []byte("active-secret"))
 	require.NoError(t, err)
 
+	// US-57.1: p.Encrypt now wraps with the lkms:v1: prefix. The internal
+	// "which key was used" assertion needs the raw blob, so unwrap first.
+	// unwrapPrefix on a matching prefix returns the inner blob verbatim.
+	rawCT, err := unwrapPrefix(staticCiphertextPrefix, ct)
+	require.NoError(t, err)
+
 	// The ciphertext must decrypt with keyB (highest/active version), NOT keyA.
-	_, err = DecryptSecret(keyB, ct)
+	_, err = DecryptSecret(keyB, rawCT)
 	require.NoError(t, err, "Encrypt must use the highest-version key")
 
-	_, err = DecryptSecret(keyA, ct)
+	_, err = DecryptSecret(keyA, rawCT)
 	assert.ErrorIs(t, err, ErrDecryptionFailed, "Encrypt must NOT use the lower-version key")
 }
 

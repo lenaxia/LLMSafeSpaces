@@ -184,7 +184,10 @@ func TestOrgCredentials_Create_Success(t *testing.T) {
 	require.NotEmpty(t, store.lastCreateCT, "stored ciphertext must be non-empty")
 
 	// The stored ciphertext must decrypt back to the original provider data.
-	pd, err := secrets.DecryptSecret(kek, store.lastCreateCT)
+	// US-57.1: round-trip via provider.Decrypt (not raw DecryptSecret) because
+	// provider output now carries the lkms:v1: prefix for CompositeProvider
+	// dispatch — DecryptSecret does not understand the prefix.
+	pd, err := provider.Decrypt(context.Background(), store.lastCreateCT)
 	require.NoError(t, err)
 	var decoded secrets.LLMProviderData
 	require.NoError(t, json.Unmarshal(pd, &decoded))
@@ -290,7 +293,7 @@ func TestOrgCredentials_Update_APIKeyRotation_Success(t *testing.T) {
 
 	// Decrypt the stored ciphertext and confirm the API key rotated while
 	// other fields survived the round trip.
-	pd, err := secrets.DecryptSecret(kek, store.lastUpdateCT)
+	pd, err := provider.Decrypt(context.Background(), store.lastUpdateCT)
 	require.NoError(t, err)
 	var decoded secrets.LLMProviderData
 	require.NoError(t, json.Unmarshal(pd, &decoded))
@@ -766,7 +769,8 @@ func TestOrgCredentials_Update_BaseURLOnly_Persists(t *testing.T) {
 		KeyVersion: 1,
 	}
 
-	h := NewOrgCredentialsHandler(store, store, mustStaticProv(kek), &mockOrgAuthService{userID: "admin-1"})
+	provider := mustStaticProv(kek)
+	h := NewOrgCredentialsHandler(store, store, provider, &mockOrgAuthService{userID: "admin-1"})
 	router := setupOrgCredRouter(h)
 
 	body := `{"baseURL":"https://new.example.com/v1"}`
@@ -781,7 +785,7 @@ func TestOrgCredentials_Update_BaseURLOnly_Persists(t *testing.T) {
 	require.Equal(t, 2, store.lastUpdateKV, "key version must increment")
 
 	// Decrypt and verify the new baseURL persisted while apiKey survived.
-	pd, err := secrets.DecryptSecret(kek, store.lastUpdateCT)
+	pd, err := provider.Decrypt(context.Background(), store.lastUpdateCT)
 	require.NoError(t, err)
 	var decoded secrets.LLMProviderData
 	require.NoError(t, json.Unmarshal(pd, &decoded))
@@ -868,7 +872,8 @@ func TestOrgCredentials_Update_APIKeyAndBaseURL_Combined(t *testing.T) {
 		KeyVersion: 1,
 	}
 
-	h := NewOrgCredentialsHandler(store, store, mustStaticProv(kek), &mockOrgAuthService{userID: "admin-1"})
+	provider := mustStaticProv(kek)
+	h := NewOrgCredentialsHandler(store, store, provider, &mockOrgAuthService{userID: "admin-1"})
 	router := setupOrgCredRouter(h)
 
 	body := `{"apiKey":"new-key","baseURL":"https://new.example.com/v1"}`
@@ -881,7 +886,7 @@ func TestOrgCredentials_Update_APIKeyAndBaseURL_Combined(t *testing.T) {
 	require.NotNil(t, store.lastUpdateCT, "must re-encrypt once for both fields")
 	require.Equal(t, 2, store.lastUpdateKV, "single key-version increment for the combined update")
 
-	pd, err := secrets.DecryptSecret(kek, store.lastUpdateCT)
+	pd, err := provider.Decrypt(context.Background(), store.lastUpdateCT)
 	require.NoError(t, err)
 	var decoded secrets.LLMProviderData
 	require.NoError(t, json.Unmarshal(pd, &decoded))
@@ -1065,7 +1070,7 @@ func TestOrgCredentials_Update_SlugRename_PropagatesToCiphertext(t *testing.T) {
 	require.NotEqual(t, existingCT, store.lastUpdateCT,
 		"ciphertext must change when slug is renamed — the slug lives INSIDE the encrypted blob")
 
-	pd, err := secrets.DecryptSecret(kek, store.lastUpdateCT)
+	pd, err := provider.Decrypt(context.Background(), store.lastUpdateCT)
 	require.NoError(t, err)
 	var decoded secrets.LLMProviderData
 	require.NoError(t, json.Unmarshal(pd, &decoded))
@@ -1111,7 +1116,7 @@ func TestOrgCredentials_Update_KindChange_PropagatesToCiphertext(t *testing.T) {
 	require.Equal(t, "anthropic", store.creds["cred-1"].Kind, "row column kind must change")
 
 	require.NotEmpty(t, store.lastUpdateCT, "ciphertext must be rewritten on kind change")
-	pd, err := secrets.DecryptSecret(kek, store.lastUpdateCT)
+	pd, err := provider.Decrypt(context.Background(), store.lastUpdateCT)
 	require.NoError(t, err)
 	var decoded secrets.LLMProviderData
 	require.NoError(t, json.Unmarshal(pd, &decoded))

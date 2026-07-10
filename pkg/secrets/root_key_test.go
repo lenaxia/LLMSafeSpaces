@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/hex"
 	"os"
 	"path/filepath"
@@ -331,6 +332,142 @@ func TestSealedKeyProvider_RoundTrip_V1Format(t *testing.T) {
 	ct, err := p.Encrypt(context.Background(), plaintext)
 	require.NoError(t, err)
 	dec, err := p.Decrypt(context.Background(), ct)
+	require.NoError(t, err)
+	assert.Equal(t, plaintext, dec)
+}
+
+// --- US-57.1: prefix-aware Encrypt/Decrypt for CompositeProvider dispatch ---
+
+// TestStaticKeyProvider_Encrypt_WrapsWithLkmsPrefix verifies that new writes
+// from a StaticKeyProvider carry the lkms:v1: prefix, so a future CompositeProvider
+// can route Decrypt by prefix without trial-and-error on every row.
+func TestStaticKeyProvider_Encrypt_WrapsWithLkmsPrefix(t *testing.T) {
+	key := make([]byte, 32)
+	p, err := NewStaticKeyProvider(key)
+	require.NoError(t, err)
+
+	ct, err := p.Encrypt(context.Background(), []byte("prefixed-write-test"))
+	require.NoError(t, err)
+
+	previewLen := min(len(ct), 32)
+	assert.True(t, bytes.HasPrefix(ct, []byte(staticCiphertextPrefix)),
+		"new StaticKeyProvider ciphertexts must carry the %q prefix for composite dispatch; got prefix %q",
+		staticCiphertextPrefix, ct[:previewLen])
+}
+
+// TestStaticKeyProvider_PrefixedDecrypt_RoundTrip verifies that a ciphertext
+// produced by Encrypt (which now carries the lkms:v1: prefix) decrypts correctly.
+func TestStaticKeyProvider_PrefixedDecrypt_RoundTrip(t *testing.T) {
+	key := make([]byte, 32)
+	p, err := NewStaticKeyProvider(key)
+	require.NoError(t, err)
+
+	plaintext := []byte("prefixed-roundtrip")
+	ct, err := p.Encrypt(context.Background(), plaintext)
+	require.NoError(t, err)
+
+	dec, err := p.Decrypt(context.Background(), ct)
+	require.NoError(t, err)
+	assert.Equal(t, plaintext, dec)
+}
+
+// TestStaticKeyProvider_LegacyUnprefixedCiphertext_StillDecrypts is the
+// backward-compatibility guarantee: rows written before US-57.1 (raw
+// 12-byte-nonce + AES-GCM blobs with no prefix) MUST continue to decrypt
+// after the prefix-aware code ships, or every existing deployment breaks
+// on upgrade.
+//
+// The legacy ciphertext is constructed by calling EncryptSecret directly
+// (the pre-US-57.1 code path), bypassing the prefix wrapper.
+func TestStaticKeyProvider_LegacyUnprefixedCiphertext_StillDecrypts(t *testing.T) {
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i)
+	}
+	p, err := NewStaticKeyProvider(key)
+	require.NoError(t, err)
+
+	plaintext := []byte("legacy-row-from-pre-us57-deployment")
+	// Construct a raw (un-prefixed) ciphertext exactly as the pre-US-57.1
+	// code did: direct AES-GCM with random nonce.
+	legacyCT, err := EncryptSecret(key, plaintext)
+	require.NoError(t, err)
+	// Sanity: legacy ciphertext must NOT have the prefix.
+	require.False(t, bytes.HasPrefix(legacyCT, []byte(staticCiphertextPrefix)),
+		"test setup error: legacy ciphertext unexpectedly has prefix")
+
+	dec, err := p.Decrypt(context.Background(), legacyCT)
+	require.NoError(t, err)
+	assert.Equal(t, plaintext, dec,
+		"legacy un-prefixed ciphertexts must decrypt via the fallback path")
+}
+
+// TestStaticKeyProvider_PrefixMismatch_ReturnsErrNotMyCiphertext verifies
+// the routing signal: when Decrypt sees a prefixed ciphertext from a
+// DIFFERENT provider (e.g. aws-kms:v1:), it must return ErrNotMyCiphertext
+// so the composite can try the next provider. Returning ErrDecryptionFailed
+// here would cause the composite to stop and report failure.
+func TestStaticKeyProvider_PrefixMismatch_ReturnsErrNotMyCiphertext(t *testing.T) {
+	key := make([]byte, 32)
+	p, err := NewStaticKeyProvider(key)
+	require.NoError(t, err)
+
+	// A ciphertext with a foreign prefix — constructed to look like a KMS
+	// provider's output. The StaticKeyProvider has never seen this prefix
+	// and must not attempt trial-decrypt (which would always fail and
+	// pollute logs with spurious "wrong key" errors).
+	foreignCT := []byte("aws-kms:v1:" + base64.StdEncoding.EncodeToString([]byte("not-our-format")))
+	_, err = p.Decrypt(context.Background(), foreignCT)
+	require.ErrorIs(t, err, ErrNotMyCiphertext,
+		"foreign-prefixed ciphertexts must return ErrNotMyCiphertext for composite routing")
+}
+
+// TestSealedKeyProvider_Encrypt_WrapsWithLkmsPrefix mirrors the static
+// test for the sealed path: both local providers produce the same prefix
+// so the composite's fallback handling is uniform.
+func TestSealedKeyProvider_Encrypt_WrapsWithLkmsPrefix(t *testing.T) {
+	tmpDir := t.TempDir()
+	sealedPath := filepath.Join(tmpDir, "sealed")
+	passPath := filepath.Join(tmpDir, "pass")
+	require.NoError(t, os.WriteFile(passPath, []byte("passphrase-content-here"), 0600))
+
+	rootKey := make([]byte, 32)
+	require.NoError(t, SealRootKey(sealedPath, []byte("passphrase-content-here"), rootKey))
+
+	p, err := NewSealedKeyProvider(sealedPath, passPath)
+	require.NoError(t, err)
+
+	ct, err := p.Encrypt(context.Background(), []byte("sealed-prefixed"))
+	require.NoError(t, err)
+	assert.True(t, bytes.HasPrefix(ct, []byte(staticCiphertextPrefix)),
+		"SealedKeyProvider must produce the same %q prefix as StaticKeyProvider for uniform composite routing",
+		staticCiphertextPrefix)
+}
+
+// TestSealedKeyProvider_LegacyUnprefixedCiphertext_StillDecrypts mirrors
+// the static backward-compat test for the sealed path.
+func TestSealedKeyProvider_LegacyUnprefixedCiphertext_StillDecrypts(t *testing.T) {
+	tmpDir := t.TempDir()
+	sealedPath := filepath.Join(tmpDir, "sealed")
+	passPath := filepath.Join(tmpDir, "pass")
+	require.NoError(t, os.WriteFile(passPath, []byte("pass"), 0600))
+
+	// Construct a sealed provider and read its raw key so we can build a
+	// legacy un-prefixed ciphertext via direct EncryptSecret.
+	rootKey := make([]byte, 32)
+	for i := range rootKey {
+		rootKey[i] = byte(i)
+	}
+	require.NoError(t, SealRootKey(sealedPath, []byte("pass"), rootKey))
+	p, err := NewSealedKeyProvider(sealedPath, passPath)
+	require.NoError(t, err)
+
+	plaintext := []byte("sealed-legacy-row")
+	legacyCT, err := EncryptSecret(rootKey, plaintext)
+	require.NoError(t, err)
+	require.False(t, bytes.HasPrefix(legacyCT, []byte(staticCiphertextPrefix)))
+
+	dec, err := p.Decrypt(context.Background(), legacyCT)
 	require.NoError(t, err)
 	assert.Equal(t, plaintext, dec)
 }
