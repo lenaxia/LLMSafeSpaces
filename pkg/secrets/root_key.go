@@ -237,7 +237,7 @@ func wrapWithPrefix(prefix string, rawCT []byte) []byte {
 //     (foreign routing signal): return ErrNotMyCiphertext so the composite
 //     tries the next provider. We detect "foreign prefix" by checking for
 //     any of the registered provider prefixes (see knownForeignPrefixes).
-//   - If ciphertext has no recognised prefix: treat as a legacy un-prefixed
+//   - If ciphertext has no recognized prefix: treat as a legacy un-prefixed
 //     blob (pre-US-57.1 format) and return it verbatim. This is the
 //     backward-compatibility path — every row written before US-57.1 lands
 //     here, and the caller's AES-GCM decrypt handles it as before.
@@ -268,7 +268,7 @@ func unwrapPrefix(prefix string, ciphertext []byte) ([]byte, error) {
 			return nil, ErrNotMyCiphertext
 		}
 	}
-	// No recognised prefix — legacy un-prefixed blob. Return as-is.
+	// No recognized prefix — legacy un-prefixed blob. Return as-is.
 	return ciphertext, nil
 }
 
@@ -279,7 +279,7 @@ func unwrapPrefix(prefix string, ciphertext []byte) ([]byte, error) {
 //
 // Kept as a package-level slice rather than registered dynamically so the
 // full set is visible at the call site — dynamic registration would make
-// routing behaviour depend on init order, which is exactly the kind of
+// routing behavior depend on init order, which is exactly the kind of
 // magic the codebase rules out (README-LLM.md §3, "Explicit Over Implicit").
 var knownForeignPrefixes = []string{
 	"aws-kms:v1:",

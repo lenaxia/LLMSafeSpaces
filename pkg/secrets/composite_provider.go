@@ -68,7 +68,7 @@ func (c *CompositeProvider) Encrypt(ctx context.Context, plaintext []byte) ([]by
 // Decrypt iterates primary first, then fallbacks in registration order.
 // It returns the first non-ErrNotMyCiphertext result — whether success
 // or a genuine decrypt failure. If every provider returns
-// ErrNotMyCiphertext (no provider recognises the ciphertext's prefix),
+// ErrNotMyCiphertext (no provider recognizes the ciphertext's prefix),
 // the composite returns ErrNotMyCiphertext so the caller knows the row
 // is unroutable rather than corrupt.
 //
@@ -77,7 +77,7 @@ func (c *CompositeProvider) Encrypt(ctx context.Context, plaintext []byte) ([]by
 // must terminate dispatch, otherwise a single corrupt row would generate
 // N-1 spurious decrypt calls (one per remaining provider) on every read.
 // TestCompositeProvider_DecryptStopsOnPrefixMatch_NotErrNotMyCiphertext
-// pins this behaviour.
+// pins this behavior.
 func (c *CompositeProvider) Decrypt(ctx context.Context, ciphertext []byte) ([]byte, error) {
 	pt, err := c.primary.Decrypt(ctx, ciphertext)
 	if !errors.Is(err, ErrNotMyCiphertext) {
@@ -89,7 +89,7 @@ func (c *CompositeProvider) Decrypt(ctx context.Context, ciphertext []byte) ([]b
 			return pt, err
 		}
 	}
-	return nil, fmt.Errorf("%w: no provider recognised the ciphertext prefix", ErrNotMyCiphertext)
+	return nil, fmt.Errorf("%w: no provider recognized the ciphertext prefix", ErrNotMyCiphertext)
 }
 
 // Compile-time interface check.

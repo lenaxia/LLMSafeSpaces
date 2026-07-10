@@ -17,7 +17,7 @@ import (
 // Each call to Encrypt/Decrypt is recorded so tests can assert routing
 // order. Encrypt prepends the configured prefix; Decrypt strips it
 // (or returns ErrNotMyCiphertext on prefix mismatch) so the composite's
-// dispatch behaviour is exercised against realistic prefix handling.
+// dispatch behavior is exercised against realistic prefix handling.
 type fakeProvider struct {
 	prefix       string
 	encryptErr   error

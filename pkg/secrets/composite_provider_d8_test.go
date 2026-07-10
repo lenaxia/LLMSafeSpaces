@@ -128,7 +128,7 @@ func TestCompositeProvider_AuditedWrapperComposition_PrimarySuccess_StillOneAudi
 // regression test above (one row) would fail.
 //
 // Skipped from the normal test run via t.Skip pattern is NOT used — this
-// is a real test that asserts the wrong-order behaviour so the diff
+// is a real test that asserts the wrong-order behavior so the diff
 // between right and wrong is visible in the test file.
 func TestAuditedProvider_WrappingEachMember_ProducesDoubleAuditRows(t *testing.T) {
 	audit := &recordingAudit{}
