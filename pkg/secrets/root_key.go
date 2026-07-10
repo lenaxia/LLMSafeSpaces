@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"sort"
@@ -14,6 +15,21 @@ const (
 	sealedNonceSize  = 12
 	sealedKeyInfoStr = "llmsafespaces-sealed-root"
 	sealedMagicV1    = "LSKP-S"
+
+	// staticCiphertextPrefix is the self-identifying prefix wrapping every
+	// ciphertext produced by a local provider (Static or Sealed) under
+	// US-57.1. It lets CompositeProvider route Decrypt by prefix without
+	// trial-and-error across providers — see composite_provider.go.
+	//
+	// "lkms" stands for "llmsafespaces local kek material"; the v1 suffix
+	// leaves room for a future format bump (e.g. switching AES-GCM to
+	// XChaCha20-Poly1305) without colliding with this prefix.
+	//
+	// Ciphertexts written before US-57.1 have no prefix (raw 12-byte
+	// nonce + AES-GCM blob); the local providers' Decrypt still accepts
+	// those via the un-prefixed fallback path so existing deployments
+	// keep working through the upgrade.
+	staticCiphertextPrefix = "lkms:v1:"
 )
 
 type RootKeyProvider interface {
@@ -117,14 +133,26 @@ func (p *StaticKeyProvider) ActiveVersion() int {
 	return p.entries[0].version
 }
 
-func (p *StaticKeyProvider) Encrypt(_ context.Context, plaintext []byte) ([]byte, error) {
-	return EncryptSecret(p.entries[0].key, plaintext)
+func (p *StaticKeyProvider) Encrypt(ctx context.Context, plaintext []byte) ([]byte, error) {
+	rawCT, err := EncryptSecret(p.entries[0].key, plaintext)
+	if err != nil {
+		return nil, err
+	}
+	return wrapWithPrefix(staticCiphertextPrefix, rawCT), nil
 }
 
-func (p *StaticKeyProvider) Decrypt(_ context.Context, ciphertext []byte) ([]byte, error) {
+func (p *StaticKeyProvider) Decrypt(ctx context.Context, ciphertext []byte) ([]byte, error) {
+	rawCT, err := unwrapPrefix(staticCiphertextPrefix, ciphertext)
+	if err != nil {
+		return nil, err
+	}
+	// rawCT is the inner blob when the prefix matched; for legacy
+	// un-prefixed ciphertexts unwrapPrefix returns the original bytes
+	// unchanged (see its doc comment) so the multi-key decrypt below
+	// handles both shapes via a single code path.
 	var lastErr error
 	for _, e := range p.entries {
-		pt, err := DecryptSecret(e.key, ciphertext)
+		pt, err := DecryptSecret(e.key, rawCT)
 		if err == nil {
 			return pt, nil
 		}
@@ -169,12 +197,92 @@ func NewSealedKeyProvider(sealedKeyPath, passphrasePath string) (*SealedKeyProvi
 	return &SealedKeyProvider{key: key}, nil
 }
 
-func (p *SealedKeyProvider) Encrypt(_ context.Context, plaintext []byte) ([]byte, error) {
-	return EncryptSecret(p.key, plaintext)
+func (p *SealedKeyProvider) Encrypt(ctx context.Context, plaintext []byte) ([]byte, error) {
+	rawCT, err := EncryptSecret(p.key, plaintext)
+	if err != nil {
+		return nil, err
+	}
+	return wrapWithPrefix(staticCiphertextPrefix, rawCT), nil
 }
 
-func (p *SealedKeyProvider) Decrypt(_ context.Context, ciphertext []byte) ([]byte, error) {
-	return DecryptSecret(p.key, ciphertext)
+func (p *SealedKeyProvider) Decrypt(ctx context.Context, ciphertext []byte) ([]byte, error) {
+	rawCT, err := unwrapPrefix(staticCiphertextPrefix, ciphertext)
+	if err != nil {
+		return nil, err
+	}
+	return DecryptSecret(p.key, rawCT)
+}
+
+// wrapWithPrefix prepends prefix + base64(rawCT) to produce the
+// self-identifying ciphertext format used by CompositeProvider dispatch.
+// The base64 layer keeps the prefix byte-aligned for prefix-sniffing
+// (raw AES-GCM blobs can contain any byte including ':' which would
+// otherwise confuse prefix detection).
+func wrapWithPrefix(prefix string, rawCT []byte) []byte {
+	enc := base64.StdEncoding.EncodeToString(rawCT)
+	out := make([]byte, 0, len(prefix)+len(enc))
+	out = append(out, prefix...)
+	out = append(out, enc...)
+	return out
+}
+
+// unwrapPrefix inspects ciphertext and routes by prefix:
+//
+//   - If ciphertext begins with prefix: strip prefix + base64-decode the
+//     remainder, returning the inner raw blob for the caller to AES-GCM
+//     decrypt. A base64 decode failure on a prefix-matching ciphertext is
+//     returned as ErrDecryptionFailed (the prefix identified this as ours,
+//     so the row is corrupt rather than routed wrong).
+//   - If ciphertext begins with a DIFFERENT known-provider prefix
+//     (foreign routing signal): return ErrNotMyCiphertext so the composite
+//     tries the next provider. We detect "foreign prefix" by checking for
+//     any of the registered provider prefixes (see knownForeignPrefixes).
+//   - If ciphertext has no recognised prefix: treat as a legacy un-prefixed
+//     blob (pre-US-57.1 format) and return it verbatim. This is the
+//     backward-compatibility path — every row written before US-57.1 lands
+//     here, and the caller's AES-GCM decrypt handles it as before.
+//
+// The legacy-fallback branch is the reason unwrapPrefix takes the prefix
+// as an argument rather than being a method on the provider: a future
+// non-local provider (KMS) calls unwrapPrefix with its own prefix, and
+// its legacy fallback is "return ErrNotMyCiphertext" because cloud-KMS
+// ciphertexts always carry the cloud prefix — there is no pre-KMS legacy
+// format to fall back to for those providers. The local-provider legacy
+// fallback is the unique exception.
+func unwrapPrefix(prefix string, ciphertext []byte) ([]byte, error) {
+	if bytes.HasPrefix(ciphertext, []byte(prefix)) {
+		body := ciphertext[len(prefix):]
+		raw, err := base64.StdEncoding.DecodeString(string(body))
+		if err != nil {
+			return nil, fmt.Errorf("%w: base64 decode of %q-prefixed ciphertext: %v",
+				ErrDecryptionFailed, prefix, err)
+		}
+		return raw, nil
+	}
+	// Foreign prefix check — list is small (one entry today: the KMS
+	// prefix family). Adding a new provider means adding its prefix here
+	// so existing providers correctly return ErrNotMyCiphertext rather
+	// than falling through to the legacy-blob path.
+	for _, fp := range knownForeignPrefixes {
+		if bytes.HasPrefix(ciphertext, []byte(fp)) {
+			return nil, ErrNotMyCiphertext
+		}
+	}
+	// No recognised prefix — legacy un-prefixed blob. Return as-is.
+	return ciphertext, nil
+}
+
+// knownForeignPrefixes is the set of ciphertext prefixes from providers
+// other than the local static/sealed provider. Maintained alongside
+// provider implementations; today only the AWS KMS prefix lives here.
+// GCP KMS will add its prefix when US-57.3 lands.
+//
+// Kept as a package-level slice rather than registered dynamically so the
+// full set is visible at the call site — dynamic registration would make
+// routing behaviour depend on init order, which is exactly the kind of
+// magic the codebase rules out (README-LLM.md §3, "Explicit Over Implicit").
+var knownForeignPrefixes = []string{
+	"aws-kms:v1:",
 }
 
 func SealRootKey(path string, passphrase, rootKey []byte) error {
