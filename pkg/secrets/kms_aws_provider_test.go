@@ -6,7 +6,6 @@ package secrets
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -314,13 +313,6 @@ func TestAWSKMSProvider_AuthFromCredentialsFile(t *testing.T) {
 // disk. Uses os.WriteFile directly.
 func writeTestFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0600)
-}
-
-// randomBytes returns n random bytes for test fixtures.
-func randomBytes(n int) []byte {
-	b := make([]byte, n)
-	_, _ = rand.Read(b)
-	return b
 }
 
 // Ensure imports used only by helpers are exercised.
