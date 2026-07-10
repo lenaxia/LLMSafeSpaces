@@ -19,9 +19,9 @@ import (
 // (or returns ErrNotMyCiphertext on prefix mismatch) so the composite's
 // dispatch behaviour is exercised against realistic prefix handling.
 type fakeProvider struct {
-	prefix      string
-	encryptErr  error
-	decryptErr  error // returned AFTER recording the call; nil = success
+	prefix       string
+	encryptErr   error
+	decryptErr   error // returned AFTER recording the call; nil = success
 	encryptCalls int
 	decryptCalls int
 }
