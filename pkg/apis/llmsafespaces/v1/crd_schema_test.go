@@ -51,7 +51,7 @@ func TestCRDSchemaMatchesGoTypes(t *testing.T) {
 
 	specs := []spec{
 		{
-			crdFile:         "charts/llmsafespaces/crds/workspace.yaml",
+			crdFile:         "helm/crds/workspace.yaml",
 			specType:        reflect.TypeOf(WorkspaceSpec{}),
 			statusType:      reflect.TypeOf(WorkspaceStatus{}),
 			ignoredCRDProps: map[string]string{
@@ -65,7 +65,7 @@ func TestCRDSchemaMatchesGoTypes(t *testing.T) {
 			},
 		},
 		{
-			crdFile:    "charts/llmsafespaces/crds/runtimeenvironment.yaml",
+			crdFile:    "helm/crds/runtimeenvironment.yaml",
 			specType:   reflect.TypeOf(RuntimeEnvironmentSpec{}),
 			statusType: reflect.TypeOf(RuntimeEnvironmentStatus{}),
 		},

@@ -6,7 +6,7 @@
 # anywhere in the cluster.
 #
 # Bootstrap order (same as deps-postgres.yaml):
-#   1. helm upgrade llmsafespaces ./charts/llmsafespaces -n default --reuse-values
+#   1. helm upgrade llmsafespaces ./helm -n default --reuse-values
 #   2. kubectl apply -f local/deps-valkey.yaml
 #   3. kubectl -n default rollout restart deploy/valkey
 #

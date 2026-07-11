@@ -45,7 +45,7 @@ DRY_RUN="${DRY_RUN:-1}"
 # Three directories whose name is part of an import path / chart name / pkg id.
 DIR_RENAMES=(
   "pkg/apis/llmsafespace:pkg/apis/llmsafespaces"
-  "charts/llmsafespace:charts/llmsafespaces"
+  "charts/llmsafespace:helm"
   "sdks/vscode-llmsafespace:sdks/vscode-llmsafespaces"
 )
 

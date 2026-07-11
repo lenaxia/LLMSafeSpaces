@@ -62,7 +62,7 @@ func TestEnvtest_WorkspaceDefaultsAppliedByAPIServer(t *testing.T) {
 	// The dedicated envtest CI workflow has been red on every PR
 	// since this file was introduced (PR #274). Fixed.
 	testEnv := &envtest.Environment{
-		CRDDirectoryPaths:     []string{"../../../../charts/llmsafespaces/crds"},
+		CRDDirectoryPaths:     []string{"../../../../helm/crds"},
 		ErrorIfCRDPathMissing: true,
 	}
 	cfg, err := testEnv.Start()

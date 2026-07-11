@@ -6,7 +6,7 @@
 # via `lookup`, so this manifest never needs to know the password value.
 #
 # To bootstrap the live cluster after the chart fix:
-#   1. helm upgrade llmsafespaces ./charts/llmsafespaces -n default --reuse-values
+#   1. helm upgrade llmsafespaces ./helm -n default --reuse-values
 #      (this regenerates llmsafespaces-credentials with random values)
 #   2. kubectl -n default rollout restart deploy/postgres
 #      (forces postgres to pick up the new env-from)
@@ -17,7 +17,7 @@
 #      ALTER USER inside the running pod)
 #
 # For multi-tenant production, prefer CloudNativePG / Bitnami postgresql
-# chart / cloud-managed Postgres; see charts/llmsafespaces/README.md.
+# chart / cloud-managed Postgres; see helm/README.md.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

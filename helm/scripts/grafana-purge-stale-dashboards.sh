@@ -73,7 +73,7 @@ for tool in curl grep sed sort; do
 done
 
 # The CURRENT set of dashboard UIDs the chart ships. Keep in sync with
-# the top-level "uid" field in each charts/llmsafespaces/dashboards/*.json
+# the top-level "uid" field in each helm/dashboards/*.json
 # file. The chart_test TestMonitoring_DashboardUIDsAreStable enforces
 # the JSON side of this contract; this list is the operator-facing side.
 EXPECTED_UIDS="llmsafespaces-operational llmsafespaces-billing"

@@ -1405,7 +1405,7 @@ func (s *Service) ActivateWorkspace(ctx context.Context, userID, workspaceID str
 	//      a clone of the CRD) → apiserver applies the default after our
 	//      &false write → Spec.Suspend=&true.
 	//
-	// Both are operator-fixable by re-applying charts/llmsafespaces/crds/
+	// Both are operator-fixable by re-applying helm/crds/
 	// workspace.yaml. We surface a concrete operator-actionable error
 	// instead of a phantom success and name the field so the operator can
 	// correlate directly to CRD schema drift.
@@ -1413,7 +1413,7 @@ func (s *Service) ActivateWorkspace(ctx context.Context, userID, workspaceID str
 		err := fmt.Errorf(
 			"apiserver did not persist spec.suspend=false (got %s); "+
 				"deployed CRD likely lacks the suspend field or has a wrong default — "+
-				"re-apply charts/llmsafespaces/crds/workspace.yaml",
+				"re-apply helm/crds/workspace.yaml",
 			specSuspendValue(persisted),
 		)
 		s.logger.Error("spec.suspend not persisted after Update", err,

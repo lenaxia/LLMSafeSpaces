@@ -12,7 +12,7 @@
 # (adminMux.Handle("/metrics", promhttp.Handler()) in
 # cmd/workspace-agentd/main.go); the workspace NetworkPolicy is what
 # restricts who can reach port 4098. Prometheus must be permitted by
-# that NetworkPolicy — see charts/llmsafespaces/templates/workspace-network-policy.yaml.
+# that NetworkPolicy — see helm/templates/workspace-network-policy.yaml.
 #
 # Metrics exposed include (US-44.8):
 #   - workspace_restarts_total{workspace_id,reason}

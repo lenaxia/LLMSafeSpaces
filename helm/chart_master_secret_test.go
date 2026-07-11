@@ -10,7 +10,7 @@ package chart_test
 // assert structural invariants on the rendered api Deployment. They skip when
 // helm is not on $PATH (see helmTemplate). Run with:
 //
-//	go test ./charts/llmsafespaces/...
+//	go test ./helm/...
 
 import (
 	"strings"

@@ -7,7 +7,7 @@ description: |
   GitOps note: the chart is consumed from a Git source, not published to a
   Helm/OCI registry — when deploying via FluxCD GitRepository, set
   `reconcileStrategy: Revision` or the chart is packaged once and never
-  refreshed between releases (see charts/llmsafespaces/README.md, #456).
+  refreshed between releases (see helm/README.md, #456).
 type: application
 version: 0.3.0
 appVersion: "0.3.0"

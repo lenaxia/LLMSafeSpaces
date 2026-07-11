@@ -38,7 +38,7 @@ jobs:
 
       # repolint catches the failure modes that have caused production
       # incidents: duplicate migration version numbers, drift between
-      # api/migrations/ and charts/llmsafespaces/migrations/, and
+      # api/migrations/ and helm/migrations/, and
       # duplicate worklog numbers. See worklog 0098.
       - name: Repository layout lint
         run: make repolint
@@ -135,7 +135,7 @@ jobs:
           go-version: "1.25.12"
           cache: true
 
-      # helm is required by chart_test.go (charts/llmsafespaces/...). Without
+      # helm is required by chart_test.go (helm/...). Without
       # it the chart tests silently skip via t.Skip("helm not on PATH").
       # Install before the test run so TestF1–TestF8 and the G16/G26/G2/G5
       # regression suite actually execute on every PR.

@@ -13,7 +13,7 @@
 # environment variable is required" — that's the desired fail-loud
 # behaviour (no silent fallback to "changeme").
 #
-# Pod labels match `charts/llmsafespaces/templates/datastore-network-policy.yaml`'s
+# Pod labels match `helm/templates/datastore-network-policy.yaml`'s
 # selectors (`app: postgres`, `app: valkey`). Renaming/changing those
 # labels here without also updating the NetPol selectors will break
 # in-namespace ingress for both API and the migration Job.

@@ -15,7 +15,7 @@
 //
 //	repolint                       # run all checks against the repo root
 //	repolint -repo /path           # run checks against an alternate root
-//	repolint -fix-drift            # also: copy api/migrations/ → charts/llmsafespaces/migrations/
+//	repolint -fix-drift            # also: copy api/migrations/ → helm/migrations/
 //	repolint -fix-worklogs         # also: auto-renumber duplicate worklog files, then run all checks
 //	repolint -fix-worklogs-only    # ONLY auto-renumber; skip checks. For .githooks/post-rewrite
 //	                               # where the tree may be mid-rebase and checks would be noisy.
@@ -46,7 +46,7 @@ const (
 
 func main() {
 	repoFlag := flag.String("repo", "", "repository root to lint (default: auto-detect from CWD)")
-	fixDrift := flag.Bool("fix-drift", false, "copy api/migrations/*.sql into charts/llmsafespaces/migrations/ to resolve drift")
+	fixDrift := flag.Bool("fix-drift", false, "copy api/migrations/*.sql into helm/migrations/ to resolve drift")
 	fixWorklogs := flag.Bool("fix-worklogs", false, "auto-renumber duplicate worklog files to the next available number, then run all checks")
 	fixWorklogsOnly := flag.Bool("fix-worklogs-only", false, "auto-renumber duplicate worklog files and exit (no checks). Used by .githooks/post-rewrite.")
 	clusterDrift := flag.Bool("cluster-drift", false, "additionally compare each chart CRD against the deployed CRD on the current kubeconfig context. OFF by default — requires a reachable cluster, so unsuitable for pre-commit/CI without one.")
@@ -63,7 +63,7 @@ func main() {
 			fmt.Fprintf(os.Stderr, "fix-drift failed: %v\n", err)
 			os.Exit(exitInternal)
 		}
-		fmt.Println("ok: synced charts/llmsafespaces/migrations/ from api/migrations/")
+		fmt.Println("ok: synced helm/migrations/ from api/migrations/")
 	}
 
 	// -fix-worklogs-only is the hook mode: do the rename pass and exit
@@ -195,7 +195,7 @@ func runWorklogSentinels(root string) int {
 
 func runChartDrift(root string) int {
 	canon := filepath.Join(root, "api", "migrations")
-	mirror := filepath.Join(root, "charts", "llmsafespaces", "migrations")
+	mirror := filepath.Join(root, "helm", "migrations")
 	rep, err := repolint.DriftCheck(repolint.DriftConfig{
 		CanonicalDir: canon,
 		MirrorDir:    mirror,
@@ -293,7 +293,7 @@ func runClusterDrift(root string) int {
 	if failed > 0 {
 		fmt.Fprintln(os.Stderr,
 			"  Fix: re-apply the chart CRDs to the cluster.\n"+
-				"      kubectl apply -f charts/llmsafespaces/crds/\n"+
+				"      kubectl apply -f helm/crds/\n"+
 				"  Helm's crds/ directory is install-only; helm upgrade\n"+
 				"  does not reconcile CRDs. See worklog 0465 for context.")
 		return 1
@@ -302,13 +302,13 @@ func runClusterDrift(root string) int {
 	return 0
 }
 
-// syncChartMigrations performs `cp -a api/migrations/*.sql charts/llmsafespaces/migrations/`
+// syncChartMigrations performs `cp -a api/migrations/*.sql helm/migrations/`
 // in pure Go. Pre-existing .sql files in the mirror that are no longer
 // present in canonical are removed, so a rename in canonical surfaces
 // correctly in the mirror.
 func syncChartMigrations(root string) error {
 	canon := filepath.Join(root, "api", "migrations")
-	mirror := filepath.Join(root, "charts", "llmsafespaces", "migrations")
+	mirror := filepath.Join(root, "helm", "migrations")
 
 	// Remove obsolete .sql files from the mirror.
 	mirrorEntries, err := os.ReadDir(mirror)

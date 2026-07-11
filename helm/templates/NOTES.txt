@@ -62,7 +62,7 @@ NEXT STEPS
 
    Fix on every upgrade:
 
-       kubectl apply -f charts/llmsafespaces/crds/
+       kubectl apply -f helm/crds/
 
    To verify drift after upgrade:
 

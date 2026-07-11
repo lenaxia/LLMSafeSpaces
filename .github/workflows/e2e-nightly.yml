@@ -65,7 +65,7 @@ jobs:
           # Dockerfile yet so there is no image to pull. The MCP pod readiness
           # and connectivity steps below are skipped when mcp.enabled=false.
           # Re-enable once a Dockerfile is added (tracked in issue #28).
-          helm upgrade --install llmsafespaces charts/llmsafespaces \
+          helm upgrade --install llmsafespaces helm \
             -n $NS --create-namespace \
             --set api.image.repository=llmsafespaces/api \
             --set api.image.tag=$IMAGE_TAG \

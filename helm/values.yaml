@@ -454,14 +454,14 @@ terminal:
 # upgrade safety, since Helm 3 does not upgrade CRDs in crds/).
 crds:
   install: true
-  # If install is false, you MUST apply the CRDs from charts/llmsafespaces/crds/
+  # If install is false, you MUST apply the CRDs from helm/crds/
   # before installing this chart.
 
 # ----------------------------------------------------------------------------
 # External dependencies
 # ----------------------------------------------------------------------------
 # Postgres and Redis must be provided externally. The chart does not bundle
-# either dependency. See charts/llmsafespaces/README.md for examples of how
+# either dependency. See helm/README.md for examples of how
 # to install them separately (CloudNativePG, Spotahome Redis Operator, raw
 # manifests for kind, etc.).
 #
@@ -608,7 +608,7 @@ redis:
 # Database migrations
 # ----------------------------------------------------------------------------
 # Migrations are run as a Helm pre-install / pre-upgrade Job using the
-# migrate/migrate image. The SQL files under charts/llmsafespaces/migrations/
+# migrate/migrate image. The SQL files under helm/migrations/
 # are bundled into a ConfigMap (migrations-configmap.yaml) mounted at
 # /migrations; the Job points the migrate CLI at it via -path=/migrations.
 migrations:

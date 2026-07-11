@@ -28,7 +28,7 @@ package chart_test
 //
 // To run:
 //
-//	go test ./charts/llmsafespaces/...
+//	go test ./helm/...
 //
 // helm must be on $PATH. The test skips otherwise.
 
@@ -2590,7 +2590,7 @@ func TestMonitoring_DashboardJobVariablesPortable(t *testing.T) {
 //     genuine UID change is required, that's a deliberate decision that
 //     ALSO requires updating the manual-cleanup runbook in CHART-UPGRADE.md.
 //  2. The UID prefix is consistent (`llmsafespaces-`) so any future
-//     dashboard added to `charts/llmsafespaces/dashboards/` is forced to
+//     dashboard added to `helm/dashboards/` is forced to
 //     follow the same convention.
 //  3. The UIDs survive the Helm `replace` pipeline (no placeholder leaks
 //     into the UID field — placeholders are only meant to substitute job
@@ -2613,7 +2613,7 @@ func TestMonitoring_DashboardUIDsAreStable(t *testing.T) {
 	//   2. Update the dashboard JSON's top-level "uid" field.
 	//   3. Update CHART-UPGRADE.md with the migration steps.
 	//   4. Update the EXPECTED_UIDS list in
-	//      charts/llmsafespaces/scripts/grafana-purge-stale-dashboards.sh.
+	//      helm/scripts/grafana-purge-stale-dashboards.sh.
 	//   5. Notify operators that bookmarked URLs will break.
 	expectedUIDs := map[string]string{
 		"operational.json": "llmsafespaces-operational",
@@ -2623,7 +2623,7 @@ func TestMonitoring_DashboardUIDsAreStable(t *testing.T) {
 	// Contract 0: every JSON file in the rendered ConfigMap is exercised
 	// by this test, even ones we don't have a pinned expectation for.
 	// Iterating over `data` (rather than `expectedUIDs`) ensures that any
-	// future dashboard added to charts/llmsafespaces/dashboards/ without
+	// future dashboard added to helm/dashboards/ without
 	// being added to `expectedUIDs` will fail this test — catching the
 	// "added a third dashboard with a different prefix and forgot to
 	// update the test" regression vector flagged in PR #375 review.
@@ -2688,7 +2688,7 @@ func TestMonitoring_DashboardUIDsAreStable(t *testing.T) {
 		// update CHART-UPGRADE.md and the cleanup script).
 		want, pinned := expectedUIDs[filename]
 		require.True(t, pinned,
-			"%s: dashboard added to charts/llmsafespaces/dashboards/ without being added "+
+			"%s: dashboard added to helm/dashboards/ without being added "+
 				"to TestMonitoring_DashboardUIDsAreStable's `expectedUIDs` map. Add it (along "+
 				"with the matching entry in scripts/grafana-purge-stale-dashboards.sh's "+
 				"EXPECTED_UIDS list) so the UID stability contract covers all dashboards.",

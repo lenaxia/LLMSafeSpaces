@@ -59,7 +59,7 @@ metadata:
 spec:
   chart:
     spec:
-      chart: charts/llmsafespaces
+      chart: helm
       sourceRef:
         kind: GitRepository
         name: llmsafespaces
@@ -138,7 +138,7 @@ and optionally `externalSecret.redisPassword`.
 # 1. Install cert-manager (see above)
 
 # 2. Install LLMSafeSpaces
-helm install llmsafespaces ./charts/llmsafespaces \
+helm install llmsafespaces ./helm \
     -n llmsafespaces --create-namespace \
     --set postgresql.host=pg-postgresql \
     --set redis.host=redis-master \
@@ -177,7 +177,7 @@ CI (`ci.yml`) publishes four tag types on every main-branch build:
 **For production / pinned deployments:**
 
 ```sh
-helm install llmsafespaces ./charts/llmsafespaces \
+helm install llmsafespaces ./helm \
     --set api.image.tag=sha-ac861c3 \
     --set controller.image.tag=sha-ac861c3 \
     --set frontend.image.tag=sha-ac861c3 \
@@ -188,7 +188,7 @@ helm install llmsafespaces ./charts/llmsafespaces \
 **For fast intermediate deploys** (no release needed):
 
 ```sh
-helm upgrade llmsafespaces ./charts/llmsafespaces \
+helm upgrade llmsafespaces ./helm \
     --set api.image.tag=dev \
     --set controller.image.tag=dev \
     # ... or pin to a specific ts-/sha- build
@@ -256,8 +256,8 @@ Helm 3 installs CRDs from `crds/` on first install but **does not upgrade**
 them on `helm upgrade`. To pick up CRD changes:
 
 ```sh
-kubectl apply -f charts/llmsafespaces/crds/
-helm upgrade llmsafespaces ./charts/llmsafespaces -n llmsafespaces
+kubectl apply -f helm/crds/
+helm upgrade llmsafespaces ./helm -n llmsafespaces
 ```
 
 For production safety, set `crds.install=false` and manage CRDs out-of-band.
@@ -332,7 +332,7 @@ default) with independent sub-toggles.
 ### Enabling
 
 ```sh
-helm install llmsafespaces ./charts/llmsafespaces \
+helm install llmsafespaces ./helm \
     --set monitoring.enabled=true \
     -n llmsafespaces
 ```

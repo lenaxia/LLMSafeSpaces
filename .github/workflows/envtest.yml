@@ -20,7 +20,7 @@ on:
     branches: [main]
     paths:
       - 'pkg/apis/**'
-      - 'charts/llmsafespaces/crds/**'
+      - 'helm/crds/**'
       - 'controller/internal/webhooks/**'
       - '.github/workflows/envtest.yml'
   schedule:

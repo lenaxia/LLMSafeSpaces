@@ -1596,7 +1596,7 @@ The state cookie carries `{state, verifier, orgID, exp}` because the API is stat
 
 | Source | When to use |
 |--------|-------------|
-| Helm chart (`oidc:` block in `values.yaml`) | **Default for chart-managed deploys.** Rendered into the configmap by `charts/llmsafespaces/templates/configmap-api.yaml`. |
+| Helm chart (`oidc:` block in `values.yaml`) | **Default for chart-managed deploys.** Rendered into the configmap by `helm/templates/configmap-api.yaml`. |
 | Env vars (`LLMSAFESPACES_OIDC_*`) | Higher precedence (Viper `AutomaticEnv`); useful for non-Helm deploys or per-pod overrides. |
 
 | Helm key | Env var | Default | Purpose |
@@ -1662,12 +1662,12 @@ When `true`, the wire-up is deliberately fail-closed at every layer.
 
 | Concern | Location |
 |---------|----------|
-| Feature toggle | `charts/llmsafespaces/values.yaml:turnstile.enabled` (default `false`) |
-| Public site key (rendered into HTML) | `charts/llmsafespaces/values.yaml:turnstile.siteKey` → substituted by Flux from cluster-config `TURNSTILE_SITE_KEY` |
+| Feature toggle | `helm/values.yaml:turnstile.enabled` (default `false`) |
+| Public site key (rendered into HTML) | `helm/values.yaml:turnstile.siteKey` → substituted by Flux from cluster-config `TURNSTILE_SITE_KEY` |
 | Secret key (server-side verification) | K8s Secret `llmsafespaces-credentials` key `turnstile-secret`, populated by ExternalSecret from AWS Secrets Manager |
-| Verify URL (default: Cloudflare production) | `charts/llmsafespaces/values.yaml:turnstile.verifyURL` |
-| Frontend deployment env | `TURNSTILE_SITE_KEY` (public value) — `charts/llmsafespaces/templates/frontend-deployment.yaml` |
-| API deployment env | `LLMSAFESPACES_TURNSTILE_{ENABLED,SECRETKEY,VERIFYURL}` — `charts/llmsafespaces/templates/api-deployment.yaml`; `SECRETKEY` via `secretKeyRef` so it never lands in a rendered ConfigMap |
+| Verify URL (default: Cloudflare production) | `helm/values.yaml:turnstile.verifyURL` |
+| Frontend deployment env | `TURNSTILE_SITE_KEY` (public value) — `helm/templates/frontend-deployment.yaml` |
+| API deployment env | `LLMSAFESPACES_TURNSTILE_{ENABLED,SECRETKEY,VERIFYURL}` — `helm/templates/api-deployment.yaml`; `SECRETKEY` via `secretKeyRef` so it never lands in a rendered ConfigMap |
 | CDK context values | `llmsafespaces:turnstileSecretArn`, `llmsafespaces:turnstileSiteKey` in `cdk.context.json` |
 | cluster-config keys emitted by CDK | `TURNSTILE_SECRET_ARN`, `TURNSTILE_SITE_KEY` (PlatformStack) |
 | ExternalSecret pulls the secret ARN → K8s Secret | `kubernetes/apps/llmsafespaces/llmsafespaces/externalsecret/externalsecret.yaml` (ops-prod repo) |
@@ -1733,7 +1733,7 @@ The frontend's global fetch wrapper (`frontend/src/api/client.ts:handleUnauthori
 | Config unit (4 tests) | `api/internal/config/config_test.go` | default-disabled, enabled+secret, fail-closed guard, verify-URL override |
 | CSP transform unit (4 tests) | `api/internal/app/csp_turnstile_test.go` | extend both directives, idempotency, synthesize when absent |
 | Router integration (5 tests) | `api/internal/server/router_auth_turnstile_test.go` | wires middleware onto `/register` when enabled; naked when disabled; `authSvc.Register` gated on token validity |
-| Chart CSP (2 tests) | `charts/llmsafespaces/chart_test.go` | ingress CSP extended when enabled; unchanged when disabled |
+| Chart CSP (2 tests) | `helm/chart_test.go` | ingress CSP extended when enabled; unchanged when disabled |
 | Frontend widget (7 tests) | `frontend/src/components/auth/TurnstileWidget.test.tsx` | render lifecycle, callbacks, cleanup, siteKey-empty short-circuit |
 | Frontend form enabled-path (4 tests) | `frontend/src/components/auth/RegisterForm.test.tsx` | widget renders, submit gated on token, token forwarded, turnstile_failed re-challenge |
 | Frontend client 401 exclusion (2 tests) | `frontend/src/api/client.test.ts` | `/auth/register` and `turnstile_failed` body both bypass the redirect |
@@ -1790,11 +1790,11 @@ curl -sw '\n%{http_code}\n' -X POST https://safespaces.thekao.cloud/api/v1/auth/
 | Router integration tests | `api/internal/server/router_auth_turnstile_test.go` |
 | CSP transform (API) | `api/internal/app/app.go` (`addTurnstileToCSP()`, applied to `securityCfg`) |
 | CSP transform tests | `api/internal/app/csp_turnstile_test.go` |
-| Chart values | `charts/llmsafespaces/values.yaml` (`turnstile` block) |
-| Chart api deployment env wiring | `charts/llmsafespaces/templates/api-deployment.yaml` |
-| Chart frontend deployment env wiring | `charts/llmsafespaces/templates/frontend-deployment.yaml` |
-| Chart ingress CSP transform | `charts/llmsafespaces/templates/frontend-ingress.yaml` |
-| Chart CSP tests | `charts/llmsafespaces/chart_test.go` (`TestTurnstile_CSP*`) |
+| Chart values | `helm/values.yaml` (`turnstile` block) |
+| Chart api deployment env wiring | `helm/templates/api-deployment.yaml` |
+| Chart frontend deployment env wiring | `helm/templates/frontend-deployment.yaml` |
+| Chart ingress CSP transform | `helm/templates/frontend-ingress.yaml` |
+| Chart CSP tests | `helm/chart_test.go` (`TestTurnstile_CSP*`) |
 | Frontend widget component | `frontend/src/components/auth/TurnstileWidget.tsx` |
 | Frontend widget tests | `frontend/src/components/auth/TurnstileWidget.test.tsx` |
 | Frontend form integration | `frontend/src/components/auth/RegisterForm.tsx` |

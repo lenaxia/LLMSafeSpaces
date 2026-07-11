@@ -22,7 +22,7 @@ spec:
     spec:
       serviceAccountName: controller
       # Defense-in-depth security context applied to the pod and the
-      # manager container. The chart in charts/llmsafespaces/ is the
+      # manager container. The chart in helm/ is the
       # canonical install path; this manifest is kept for kubebuilder
       # tooling compatibility but should match the chart's posture.
       securityContext:

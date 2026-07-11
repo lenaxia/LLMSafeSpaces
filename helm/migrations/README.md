@@ -1,4 +1,4 @@
-# `charts/llmsafespaces/migrations/` — Helm-bundled copy of database migrations
+# `helm/migrations/` — Helm-bundled copy of database migrations
 
 This directory is a **mirror** of `api/migrations/` so the Helm chart
 can package every `.sql` file into a `ConfigMap` (see
@@ -10,7 +10,7 @@ PostgreSQL before the API/controller pods start.
 ## Why this directory exists
 
 Helm's `.Files.Glob` is sandboxed to the chart directory — it cannot
-read files outside `charts/llmsafespaces/`. So the migrations have to
+read files outside `helm/`. So the migrations have to
 live somewhere inside the chart.
 
 ## Rule: keep this dir byte-identical to `api/migrations/`
@@ -36,7 +36,7 @@ See worklog 0097 for the full incident analysis.
 After every change to `api/migrations/`:
 
 ```bash
-make chart-sync-migrations    # cp -a api/migrations/. charts/llmsafespaces/migrations/
+make chart-sync-migrations    # cp -a api/migrations/. helm/migrations/
 ```
 
 (That target is being added alongside this README.) Without that step,
