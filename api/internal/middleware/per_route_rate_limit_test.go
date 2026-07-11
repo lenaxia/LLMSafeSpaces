@@ -223,16 +223,23 @@ func TestPerRouteRateLimit_NilServiceIsNoOp(t *testing.T) {
 }
 
 // TestPerRouteRateLimit_LimitIsPerWindowNotPerSecond locks the
-// rate-conversion fix: `Limit` is per-`Window`, not per-second. With
-// {Limit: 60, Window: 1m, Burst: 1}, a burst-of-1 means only one
-// request passes immediately; the second rapid request is rejected
-// because the bucket refills at 60/60 = 1 token/sec, which is far less
-// than 1 token in the <10ms between two rapid test requests.
+// rate-conversion fix: `Limit` is per-`Window`, not per-second.
 //
-// Without the per-window conversion (the pre-existing per-second
-// semantic bug in the global limiter), `Limit: 60` would mean 60
-// tokens/sec and the second request would always pass — this test
-// would fail.
+// Test shape deliberately distinguishes the fixed code from the buggy
+// code:
+//   - Config: {Limit: 60, Window: 1m, Burst: 1}. This sets:
+//     - FIXED code rate = 60/60 = 1 token/sec.
+//     - BUGGY code rate = 60 tokens/sec (the pre-existing semantic bug
+//       in the global limiter that this PR avoids inheriting).
+//   - Burst 1: first request consumes the burst.
+//   - time.Sleep(50ms): enough for the buggy rate (60/sec) to refill
+//     60 × 0.05 = 3 tokens (passes the 2nd request), but the fixed
+//     rate (1/sec) refills only 1 × 0.05 = 0.05 tokens (rejects).
+//
+// Without the per-window conversion, the 2nd request would pass under
+// the buggy rate — this test fails against the old code. With the fix,
+// the 2nd request is rejected because the per-window rate has not
+// produced a full token.
 func TestPerRouteRateLimit_LimitIsPerWindowNotPerSecond(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	svc, cleanup := newMiniredisRateLimiter(t)
@@ -250,17 +257,25 @@ func TestPerRouteRateLimit_LimitIsPerWindowNotPerSecond(t *testing.T) {
 	router.Use(PerRouteRateLimitMiddleware(svc, perRouteTestLogger(), cfg))
 	router.POST("/api/v1/account/recover", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
 
-	// First request consumes the burst (1 token). Second request in the
-	// same instant must be rejected because the refill rate (1/sec) has
-	// not yet produced a new token.
+	// First request consumes the burst (1 token).
 	w1 := httptest.NewRecorder()
 	req1, _ := http.NewRequest("POST", "/api/v1/account/recover", nil)
 	router.ServeHTTP(w1, req1)
 	assert.Equal(t, http.StatusOK, w1.Code, "first request should consume the burst")
 
+	// Sleep 50ms. The sleep is what makes this a regression test:
+	//   - Fixed rate (1/sec): refills 0.05 tokens → 2nd request rejected.
+	//   - Buggy rate (60/sec): refills 3 tokens → 2nd request accepted.
+	// A test without this sleep would pass under both rates (sub-ms
+	// inter-request time refills <1 token either way), making it
+	// theater — that was the previous version of this test, correctly
+	// flagged by PR #538 review.
+	time.Sleep(50 * time.Millisecond)
+
 	w2 := httptest.NewRecorder()
 	req2, _ := http.NewRequest("POST", "/api/v1/account/recover", nil)
 	router.ServeHTTP(w2, req2)
 	assert.Equal(t, http.StatusTooManyRequests, w2.Code,
-		"second rapid request must be rejected (limit is per-window, not per-second)")
+		"after 50ms with rate=1/sec (per-window), 2nd request must be rejected; "+
+			"a pass here means the per-window conversion was reverted (back to per-second semantics)")
 }
