@@ -86,3 +86,4 @@ mcp
 charts/llmsafespaces/values.local.yaml
 node_modules/.vite/
 go.sum.backup
+site/

@@ -1,0 +1,96 @@
+name: Docs
+
+# Build the MkDocs site and publish to gh-pages alongside the Helm chart.
+# Deploy shape (Option A per docs/mkdocs-site discussion):
+#   gh-pages branch root:
+#     /                    ← MkDocs rendered site
+#     /index.yaml          ← Helm chart index (chart-releaser publishes this on tag)
+#     /llmsafespaces-*.tgz
+#
+# Both docs and chart live at the gh-pages root. Operators keep using
+# `helm repo add llmsafespaces https://lenaxia.github.io/LLMSafeSpaces/`
+# (no URL change from pre-docs state).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'mkdocs.yml'
+      - 'README.md'
+      - 'CHANGELOG.md'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # for pushing to gh-pages
+
+jobs:
+  build-deploy:
+    name: Build MkDocs + deploy to gh-pages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0   # full history for git-revision-date-localized
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install MkDocs Material + plugins
+        run: |
+          pip install \
+            mkdocs-material \
+            mkdocs-git-revision-date-localized-plugin
+
+      - name: Build site
+        run: mkdocs build --strict
+
+      - name: Clone gh-pages
+        run: |
+          cd "$RUNNER_TEMP"
+          git clone --branch gh-pages --depth 1 \
+            https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git \
+            gh-pages
+          # Preserve chart artifacts at root; we'll only overwrite docs files.
+
+      - name: Sync site to gh-pages
+        run: |
+          SRC="$GITHUB_WORKSPACE/site"
+          DST="$RUNNER_TEMP/gh-pages"
+
+          # Wipe existing rendered-doc files but preserve chart artifacts
+          # (index.yaml, *.tgz, checksums.txt) and the index.html we want to
+          # overwrite anyway.
+          cd "$DST"
+          # Find files MkDocs produced on a previous run by looking at the
+          # `mkdocs-generated` marker we'll write below. Anything not in
+          # the chart-artifact allowlist and not git-internal gets removed
+          # before we re-copy.
+          find . -type f \
+            ! -name 'index.yaml' \
+            ! -name '*.tgz' \
+            ! -name 'checksums.txt' \
+            ! -path './.git/*' \
+            -delete
+
+          # Copy new build output in
+          cp -a "$SRC/." "$DST/"
+
+          # Re-add chart index.html redirect protection: if MkDocs produced
+          # an index.html, it's the docs landing page. The chart's index.yaml
+          # is unaffected (different filename).
+
+      - name: Commit + push
+        run: |
+          cd "$RUNNER_TEMP/gh-pages"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes — skipping commit."
+          else
+            git commit -m "docs: rebuild site from ${{ github.sha }}"
+            git push origin gh-pages
+          fi
