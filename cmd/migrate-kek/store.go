@@ -59,7 +59,16 @@ type pgMigrationStore struct {
 }
 
 func (s *pgMigrationStore) ListMigrationRows(ctx context.Context, table, resumeFromID string, limit int) ([]secrets.MigrationRow, error) {
-	query := fmt.Sprintf(`SELECT id, owner_type, ciphertext, key_version FROM %s WHERE id > $1 ORDER BY id ASC`, table)
+	// Table-specific columns: provider_credentials has owner_type; the
+	// other two tables (api_keys, org_sso_configs) do not.
+	needsOwnerType := table == "provider_credentials"
+	var colList string
+	if needsOwnerType {
+		colList = "id, owner_type, ciphertext, key_version"
+	} else {
+		colList = "id, ciphertext, key_version"
+	}
+	query := fmt.Sprintf(`SELECT %s FROM %s WHERE id > $1 ORDER BY id ASC`, colList, table)
 	args := []any{""}
 	if resumeFromID != "" {
 		args[0] = resumeFromID
@@ -77,12 +86,18 @@ func (s *pgMigrationStore) ListMigrationRows(ctx context.Context, table, resumeF
 	var out []secrets.MigrationRow
 	for rows.Next() {
 		var r secrets.MigrationRow
-		var ownerType string
 		r.Table = table
-		if err := rows.Scan(&r.ID, &ownerType, &r.Ciphertext, &r.KeyVersion); err != nil {
-			return out, err
+		if needsOwnerType {
+			var ownerType string
+			if err := rows.Scan(&r.ID, &ownerType, &r.Ciphertext, &r.KeyVersion); err != nil {
+				return out, err
+			}
+			r.OwnerType = ownerType
+		} else {
+			if err := rows.Scan(&r.ID, &r.Ciphertext, &r.KeyVersion); err != nil {
+				return out, err
+			}
 		}
-		r.OwnerType = ownerType
 		out = append(out, r)
 	}
 	return out, rows.Err()

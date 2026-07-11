@@ -59,8 +59,8 @@ func (s *fakeMigrationStore) FlushDEKCache(_ context.Context) error {
 
 func TestMigrationCoordinator_DryRun_ReportsCounts(t *testing.T) {
 	store := newFakeMigrationStore([]MigrationRow{
-		{ID: "1", Table: "provider_credentials", OwnerType: "admin", Ciphertext: []byte{1}, KeyVersion: 1},
-		{ID: "2", Table: "provider_credentials", OwnerType: "admin", Ciphertext: []byte{2}, KeyVersion: 1},
+		{ID: "1", Table: "provider_credentials", OwnerType: "admin", Ciphertext: []byte("lkms:v1:row-1"), KeyVersion: 1},
+		{ID: "2", Table: "provider_credentials", OwnerType: "admin", Ciphertext: []byte("lkms:v1:row-2"), KeyVersion: 1},
 	})
 
 	source := &fakeProvider{prefix: "lkms:v1:"}
@@ -79,7 +79,7 @@ func TestMigrationCoordinator_DryRun_ReportsCounts(t *testing.T) {
 
 func TestMigrationCoordinator_MigrateTable_ReEncryptsRows(t *testing.T) {
 	store := newFakeMigrationStore([]MigrationRow{
-		{ID: "a", Table: "api_keys", Ciphertext: []byte{0xAA}, KeyVersion: 2},
+		{ID: "a", Table: "api_keys", Ciphertext: []byte("lkms:v1:row-a"), KeyVersion: 2},
 	})
 
 	source := &fakeProvider{prefix: "lkms:v1:"}
@@ -103,9 +103,9 @@ func TestMigrationCoordinator_MigrateTable_ReEncryptsRows(t *testing.T) {
 
 func TestMigrationCoordinator_ResumeFromCursor(t *testing.T) {
 	store := newFakeMigrationStore([]MigrationRow{
-		{ID: "r1", Table: "org_sso_configs", Ciphertext: []byte{1}, KeyVersion: 1},
-		{ID: "r2", Table: "org_sso_configs", Ciphertext: []byte{2}, KeyVersion: 1},
-		{ID: "r3", Table: "org_sso_configs", Ciphertext: []byte{3}, KeyVersion: 1},
+		{ID: "r1", Table: "org_sso_configs", Ciphertext: []byte("lkms:v1:row-1"), KeyVersion: 1},
+		{ID: "r2", Table: "org_sso_configs", Ciphertext: []byte("lkms:v1:row-2"), KeyVersion: 1},
+		{ID: "r3", Table: "org_sso_configs", Ciphertext: []byte("lkms:v1:row-3"), KeyVersion: 1},
 	})
 
 	source := &fakeProvider{prefix: "lkms:v1:"}
@@ -127,8 +127,8 @@ func TestMigrationCoordinator_ResumeFromCursor(t *testing.T) {
 
 	// Re-run with resume-from=r2: only r3 should be reprocessed.
 	store2 := newFakeMigrationStore([]MigrationRow{
-		{ID: "r2", Table: "org_sso_configs", Ciphertext: []byte{2}, KeyVersion: 1},
-		{ID: "r3", Table: "org_sso_configs", Ciphertext: []byte{3}, KeyVersion: 1},
+		{ID: "r2", Table: "org_sso_configs", Ciphertext: []byte("lkms:v1:row-2"), KeyVersion: 1},
+		{ID: "r3", Table: "org_sso_configs", Ciphertext: []byte("lkms:v1:row-3"), KeyVersion: 1},
 	})
 	source2 := &fakeProvider{prefix: "lkms:v1:"}
 	target2 := &fakeProvider{prefix: "aws-kms:v1:"}
@@ -143,7 +143,7 @@ func TestMigrationCoordinator_ResumeFromCursor(t *testing.T) {
 
 func TestMigrationCoordinator_DecryptFailure_CountsAsFailed(t *testing.T) {
 	store := newFakeMigrationStore([]MigrationRow{
-		{ID: "bad", Table: "provider_credentials", OwnerType: "admin", Ciphertext: []byte{0xFF}, KeyVersion: 1},
+		{ID: "bad", Table: "provider_credentials", OwnerType: "admin", Ciphertext: []byte("lkms:v1:bad-row"), KeyVersion: 1},
 	})
 
 	source := &fakeProvider{prefix: "lkms:v1:", decryptErr: ErrDecryptionFailed}
@@ -162,9 +162,9 @@ func TestMigrationCoordinator_DecryptFailure_CountsAsFailed(t *testing.T) {
 
 func TestMigrationCoordinator_MigrateAll_FlushesRedis(t *testing.T) {
 	store := newFakeMigrationStore([]MigrationRow{
-		{ID: "1", Table: "provider_credentials", OwnerType: "admin", Ciphertext: []byte{1}, KeyVersion: 1},
-		{ID: "a", Table: "api_keys", Ciphertext: []byte{2}, KeyVersion: 2},
-		{ID: "s1", Table: "org_sso_configs", Ciphertext: []byte{3}, KeyVersion: 1},
+		{ID: "1", Table: "provider_credentials", OwnerType: "admin", Ciphertext: []byte("lkms:v1:row-1"), KeyVersion: 1},
+		{ID: "a", Table: "api_keys", Ciphertext: []byte("lkms:v1:row-2"), KeyVersion: 2},
+		{ID: "s1", Table: "org_sso_configs", Ciphertext: []byte("lkms:v1:row-3"), KeyVersion: 1},
 	})
 
 	source := &fakeProvider{prefix: "lkms:v1:"}
@@ -237,7 +237,7 @@ func TestMigrationCoordinator_MultiVersionFallback_DecryptsLegacyV1(t *testing.T
 
 func TestMigrationCoordinator_MissingSourceProvider_CountsAsFailed(t *testing.T) {
 	store := newFakeMigrationStore([]MigrationRow{
-		{ID: "1", Table: "api_keys", Ciphertext: []byte{1}, KeyVersion: 1},
+		{ID: "1", Table: "api_keys", Ciphertext: []byte("lkms:v1:row-1"), KeyVersion: 1},
 	})
 	target := &fakeProvider{prefix: "aws-kms:v1:"}
 	c := NewMigrationCoordinator(store,
@@ -252,7 +252,7 @@ func TestMigrationCoordinator_MissingSourceProvider_CountsAsFailed(t *testing.T)
 
 func TestMigrationCoordinator_MissingTargetProvider_CountsAsFailed(t *testing.T) {
 	store := newFakeMigrationStore([]MigrationRow{
-		{ID: "1", Table: "api_keys", Ciphertext: []byte{1}, KeyVersion: 1},
+		{ID: "1", Table: "api_keys", Ciphertext: []byte("lkms:v1:row-1"), KeyVersion: 1},
 	})
 	source := &fakeProvider{prefix: "lkms:v1:"}
 	c := NewMigrationCoordinator(store,
@@ -267,7 +267,7 @@ func TestMigrationCoordinator_MissingTargetProvider_CountsAsFailed(t *testing.T)
 
 func TestMigrationCoordinator_EncryptFailure_CountsAsFailed(t *testing.T) {
 	store := newFakeMigrationStore([]MigrationRow{
-		{ID: "1", Table: "provider_credentials", OwnerType: "admin", Ciphertext: []byte{1}, KeyVersion: 1},
+		{ID: "1", Table: "provider_credentials", OwnerType: "admin", Ciphertext: []byte("lkms:v1:row-1"), KeyVersion: 1},
 	})
 	source := &fakeProvider{prefix: "lkms:v1:"}
 	target := &fakeProvider{prefix: "aws-kms:v1:", encryptErr: ErrDecryptionFailed}
@@ -297,7 +297,7 @@ func TestMigrationCoordinator_EmptyTable_ReturnsZeroRows(t *testing.T) {
 
 func TestMigrationCoordinator_OwnerTypeOrg_RoutesToOrgCredentials(t *testing.T) {
 	store := newFakeMigrationStore([]MigrationRow{
-		{ID: "1", Table: "provider_credentials", OwnerType: "org", Ciphertext: []byte{1}, KeyVersion: 1},
+		{ID: "1", Table: "provider_credentials", OwnerType: "org", Ciphertext: []byte("lkms:v1:org-row-data"), KeyVersion: 1},
 	})
 	// Only provide the org-credentials key — if the wrong purpose is selected,
 	// the provider lookup fails and the row counts as Failed.
@@ -316,7 +316,7 @@ func TestMigrationCoordinator_OwnerTypeOrg_RoutesToOrgCredentials(t *testing.T) 
 func TestMigrationCoordinator_UpdateRowFailure_CountsAsFailed(t *testing.T) {
 	store := &failingUpdateStore{
 		fakeMigrationStore: *newFakeMigrationStore([]MigrationRow{
-			{ID: "1", Table: "api_keys", Ciphertext: []byte{1}, KeyVersion: 1},
+			{ID: "1", Table: "api_keys", Ciphertext: []byte("lkms:v1:row-1"), KeyVersion: 1},
 		}),
 	}
 	source := &fakeProvider{prefix: "lkms:v1:"}
