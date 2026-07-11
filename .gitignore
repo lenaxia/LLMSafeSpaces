@@ -82,7 +82,8 @@ sdks/java/target/
 mcp
 
 # Cluster-specific helm overrides (redis host, disabled components, etc.)
-# Create charts/llmsafespaces/values.local.yaml to persist local deploy config.
-charts/llmsafespaces/values.local.yaml
+# Create helm/values.local.yaml to persist local deploy config.
+helm/values.local.yaml
 node_modules/.vite/
 go.sum.backup
+site/

@@ -1,0 +1,138 @@
+site_name: LLMSafeSpaces
+site_url: https://lenaxia.github.io/LLMSafeSpaces/
+site_description: >-
+  A Kubernetes-first platform for running AI agents in isolated, persistent
+  workspaces. Documentation for operators, contributors, and integrators.
+repo_url: https://github.com/lenaxia/LLMSafeSpaces
+repo_name: lenaxia/LLMSafeSpaces
+edit_uri: edit/main/docs/
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.tabs
+    - navigation.indexes
+    - navigation.top
+    - navigation.tracking
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  font:
+    text: Inter
+    code: JetBrains Mono
+  icon:
+    logo: material/shield-lock
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/lenaxia/LLMSafeSpaces
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem:
+      smart_enable: all
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.smartsymbols
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+plugins:
+  - search
+  - tags
+  - git-revision-date-localized:
+      enable_creation_date: true
+      type: timeago
+      enable_git_follow: false
+
+nav:
+  - Home: index.md
+  - Getting Started:
+      - Overview: getting-started/index.md
+      - Quickstart: getting-started/quickstart.md
+      - Concepts: getting-started/concepts.md
+  - Operator Guide:
+      - Installation: operator/installation.md
+      - Configuration: operator/configuration.md
+      - Storage: operator/storage.md
+      - Networking: operator/networking.md
+      - Security Hardening: operator/security.md
+      - Runtime Environments: operator/runtime-environments.md
+      - Multi-tenant Isolation: operator/multi-tenant.md
+      - OIDC SSO: operator/oidc-sso.md
+      - Inference Relay Fleet: operator/inference-relay.md
+      - Monitoring: operator/monitoring.md
+      - Upgrading: operator/upgrading.md
+      - Troubleshooting: operator/troubleshooting.md
+      - Runbook: operator/runbook.md
+  - Architecture:
+      - Overview: architecture/index.md
+      - Components: architecture/components.md
+      - Workspace Lifecycle: architecture/lifecycle.md
+      - Secret Management: architecture/secrets.md
+      - Threat Model: architecture/threat-model.md
+  - API Reference:
+      - REST: api/rest.md
+      - Authentication: api/authentication.md
+      - MCP Server: api/mcp.md
+      - SDKs: api/sdks.md
+  - Contributing:
+      - Overview: contributing/index.md
+      - Development Workflow: contributing/development.md
+      - Engineering Rules: contributing/rules.md
+      - Testing: contributing/testing.md
+      - Worklogs: contributing/worklogs.md
+  - Reference:
+      - Helm Values: reference/helm-values.md
+      - CRDs: reference/crds.md
+      - CLI Tools: reference/cli.md
+      - Changelog: reference/changelog.md
