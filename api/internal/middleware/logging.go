@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -25,11 +26,30 @@ type LoggingConfig struct {
 	// MaxBodyLogSize is the maximum size of request/response bodies to log
 	MaxBodyLogSize int
 
-	// SensitiveFields are JSON fields that should be redacted in request/response bodies
+	// SensitiveFields are JSON fields that should be redacted in request/response bodies.
+	// Field-name matching is exact (case-sensitive). See pkg/utilities/masking.go.
+	//
+	// G25: "value" is intentionally included. The secrets endpoint carries
+	// plaintext credentials in the "value" field; even though /api/v1/secrets/*
+	// is in SkipPathPrefixes (defense in depth — bodies never logged at all
+	// for that path), other endpoints may also pass through sensitive values
+	// in a "value" field (env-var updates, settings updates with a secret
+	// subtype, etc.). Masking "value" globally errs on the side of caution;
+	// legitimate non-secret uses (e.g. settings PUT {"value":"20Gi"}) become
+	// "********" in logs, which is acceptable for log readability.
 	SensitiveFields []string
 
-	// SkipPaths are paths that should not be logged
+	// SkipPaths are exact paths that should not be logged at all
+	// (typical use: liveness/readiness probes that flood logs).
 	SkipPaths []string
+
+	// SkipPathPrefixes are URL path prefixes that should not be logged
+	// (G25). Prefix matching (not exact) so a single entry like
+	// "/api/v1/secrets/" catches every secrets sub-path
+	// (/api/v1/secrets/:id, /api/v1/secrets/:id/reveal, etc.). Bodies
+	// on these paths can carry plaintext credentials in non-standard
+	// fields; the safest policy is to not log them at all.
+	SkipPathPrefixes []string
 }
 
 // DefaultLoggingConfig returns the default logging configuration
@@ -38,8 +58,47 @@ func DefaultLoggingConfig() LoggingConfig {
 		LogRequestBody:  true,
 		LogResponseBody: true,
 		MaxBodyLogSize:  1024, // 1KB
-		SensitiveFields: []string{"password", "token", "secret", "key", "apiKey", "credit_card"},
+		SensitiveFields: []string{"password", "token", "secret", "key", "apiKey", "credit_card", "value"},
 		SkipPaths:       []string{"/health", "/livez", "/readyz", "/metrics"},
+		// G25: /api/v1/secrets/* bodies carry plaintext credentials in
+		// the "value" field. Skip body+response logging entirely for
+		// these paths. Combined with the "value" entry in
+		// SensitiveFields, this is defense in depth — either layer
+		// alone prevents the leak.
+		//
+		// Two prefix forms per resource so both the collection path
+		// (/api/v1/secrets, no trailing slash — used by POST/GET) and
+		// nested paths (/api/v1/secrets/:id/reveal) are caught.
+		//
+		// Note: prefix matching is not boundary-aware —
+		// strings.HasPrefix("/api/v1/secretslist", "/api/v1/secrets")
+		// would also match. We accept this because no such path exists
+		// in this codebase AND the consequence of an accidental match
+		// is "this path is not logged" (a debuggability loss, not a
+		// correctness or security issue). If a future endpoint name
+		// collides with one of these prefixes, scope the prefix more
+		// tightly (e.g. switch to regex).
+		SkipPathPrefixes: []string{
+			"/api/v1/secrets",
+			"/api/v1/secrets/",
+			"/api/v1/account",
+			"/api/v1/account/",
+			// G25 defense-in-depth: auth responses carry JWTs and freshly-
+			// issued API keys. Login request bodies carry passwords (already
+			// masked by SensitiveFields "password" entry, but skipping the
+			// response body entirely is safer — the JWT in the response is
+			// a session credential, not just a random value).
+			"/api/v1/auth",
+			"/api/v1/auth/",
+			// G25 defense-in-depth: admin and org credential endpoints
+			// accept provider API keys (OpenAI sk-..., Anthropic sk-ant-...,
+			// etc.) in the "apiKey" JSON field. "apiKey" is in
+			// SensitiveFields so the value is masked, but skipping the
+			// body entirely is safer — a future field rename (e.g.
+			// "api_key" snake_case) would silently unmask.
+			"/api/v1/admin/provider-credentials",
+			"/api/v1/admin/provider-credentials/",
+		},
 	}
 }
 
@@ -51,10 +110,22 @@ func LoggingMiddleware(log interfaces.LoggerInterface, config ...LoggingConfig) 
 	}
 
 	return func(c *gin.Context) {
-		// Skip logging for certain paths
+		// Skip logging for certain paths (exact match — typical use:
+		// liveness/readiness probes).
 		path := c.Request.URL.Path
 		for _, skipPath := range cfg.SkipPaths {
 			if path == skipPath {
+				c.Next()
+				return
+			}
+		}
+		// G25: Skip logging entirely for path prefixes that carry
+		// plaintext credentials in their bodies (secrets CRUD, account
+		// key operations). The "value" field masking in
+		// SensitiveFields is defense in depth; this is the primary
+		// gate.
+		for _, prefix := range cfg.SkipPathPrefixes {
+			if strings.HasPrefix(path, prefix) {
 				c.Next()
 				return
 			}

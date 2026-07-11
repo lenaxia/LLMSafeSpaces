@@ -5,6 +5,7 @@ package tests
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -394,4 +395,206 @@ func TestLoggingMiddleware_SkipPaths(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code)
 
 	mockLogger.AssertExpectations(t)
+}
+
+// --- G25: secret value field redaction in logs ---
+
+// TestLoggingMiddleware_G25_SecretsPathBodyNotLogged is the G25 core
+// regression: requests to /api/v1/secrets/* carry the plaintext secret
+// in the "value" field of the JSON body. The middleware MUST skip
+// logging entirely for this path (no Info call) so the body never
+// reaches the log pipeline.
+//
+// Pre-fix: the body was logged verbatim with only SensitiveFields
+// masking applied (which didn't include "value"). A request to create
+// a secret logged the plaintext API key in the application log —
+// visible to anyone with log access (operators, SRE, log aggregator).
+//
+// Defense in depth: even if the prefix-skip is bypassed (e.g. a new
+// secrets endpoint added without updating SkipPathPrefixes), the
+// SensitiveFields list now includes "value" so the field is masked.
+// Both layers are tested.
+func TestLoggingMiddleware_G25_SecretsPathBodyNotLogged(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mockLogger := logmock.NewMockLogger()
+	// No Info calls expected at all — the path is in SkipPathPrefixes
+	// so the middleware short-circuits before logging.
+
+	// DefaultLoggingConfig is what production uses — we want to verify
+	// the default behavior, not a hand-tuned test config.
+	config := middleware.DefaultLoggingConfig()
+
+	router := gin.New()
+	router.Use(middleware.LoggingMiddleware(mockLogger, config))
+	router.POST("/api/v1/secrets", func(c *gin.Context) {
+		c.JSON(http.StatusCreated, gin.H{"id": "sec-1"})
+	})
+
+	w := httptest.NewRecorder()
+	// Body contains a real-looking API key in the "value" field — the
+	// exact shape that was leaking pre-fix.
+	reqBody := `{"name":"my-openai-key","type":"llm-provider","value":"sk-proj-abc123_REAL_LOOKING_KEY_for_testing"}`
+	req, _ := http.NewRequest("POST", "/api/v1/secrets", bytes.NewBufferString(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusCreated, w.Code, "handler should still run")
+	// Critical assertion: NO log call was made — the prefix-skip is
+	// the primary G25 control. If this fails, either the prefix list
+	// was edited or the prefix-matching logic regressed.
+	mockLogger.AssertNotCalled(t, "Info", mock.Anything, mock.Anything)
+}
+
+// TestLoggingMiddleware_G25_SkipPathPrefixes_MatchesNestedPaths
+// confirms that SkipPathPrefixes uses prefix matching (not exact),
+// so /api/v1/secrets/ as a prefix catches /api/v1/secrets/:id/reveal
+// and similar nested paths. Without prefix matching, an exhaustive
+// list of every secrets sub-path would be required.
+func TestLoggingMiddleware_G25_SkipPathPrefixes_MatchesNestedPaths(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mockLogger := logmock.NewMockLogger()
+	// No log calls expected at all for the prefix-skipped path.
+
+	config := middleware.LoggingConfig{
+		SkipPathPrefixes: []string{"/api/v1/secrets/"},
+	}
+
+	router := gin.New()
+	router.Use(middleware.LoggingMiddleware(mockLogger, config))
+	router.POST("/api/v1/secrets/sec-abc/reveal", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"decrypted": "would-be-secret"})
+	})
+
+	w := httptest.NewRecorder()
+	reqBody := `{"password":"user-password"}`
+	req, _ := http.NewRequest("POST", "/api/v1/secrets/sec-abc/reveal", bytes.NewBufferString(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	// If the middleware logged anything, the mock's strict expectations
+	// would fail. AssertExpectations verifies that no Info calls were
+	// made on the logger for this request.
+	mockLogger.AssertNotCalled(t, "Info", mock.Anything, mock.Anything)
+}
+
+// TestLoggingMiddleware_G25_SkipPathPrefixes_DoesNotMatchUnrelatedPaths
+// confirms that the prefix-skip is specific — requests to OTHER paths
+// still get logged normally. Without this assertion, a typo in the
+// prefix (e.g. "/api/") would silently disable logging everywhere.
+func TestLoggingMiddleware_G25_SkipPathPrefixes_DoesNotMatchUnrelatedPaths(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mockLogger := logmock.NewMockLogger()
+	mockLogger.On("Info", "Request received", mock.Anything).Once()
+	mockLogger.On("Info", "Request completed", mock.Anything).Once()
+
+	config := middleware.LoggingConfig{
+		SkipPathPrefixes: []string{"/api/v1/secrets/"},
+	}
+
+	router := gin.New()
+	router.Use(middleware.LoggingMiddleware(mockLogger, config))
+	router.GET("/api/v1/workspaces", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"workspaces": []string{}})
+	})
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/v1/workspaces", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	mockLogger.AssertExpectations(t)
+}
+
+// TestLoggingMiddleware_G25_ValueFieldInSensitiveFields confirms that
+// the default SensitiveFields list now includes "value" — defense in
+// depth for paths that are NOT in SkipPathPrefixes but happen to carry
+// sensitive values in a "value" field (e.g. a future endpoint added
+// without updating the skip list). The "value" field of any logged
+// JSON body is masked.
+func TestLoggingMiddleware_G25_ValueFieldInSensitiveFields(t *testing.T) {
+	config := middleware.DefaultLoggingConfig()
+
+	// "value" must be in the default SensitiveFields list.
+	found := false
+	for _, f := range config.SensitiveFields {
+		if f == "value" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("G25: DefaultLoggingConfig.SensitiveFields must include \"value\"; got %v", config.SensitiveFields)
+	}
+
+	// SkipPathPrefixes must include the secrets path.
+	found = false
+	for _, p := range config.SkipPathPrefixes {
+		if p == "/api/v1/secrets/" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("G25: DefaultLoggingConfig.SkipPathPrefixes must include \"/api/v1/secrets/\"; got %v", config.SkipPathPrefixes)
+	}
+}
+
+// TestLoggingMiddleware_G25_ValueFieldMaskedOnUnlistedPath confirms the
+// defense-in-depth layer: when a request carries a "value" field on a
+// path that is NOT in SkipPathPrefixes, the SensitiveFields masking
+// kicks in and replaces the value with the mask. This catches the case
+// where a future endpoint accepts sensitive values in a "value" field
+// without updating the skip list.
+func TestLoggingMiddleware_G25_ValueFieldMaskedOnUnlistedPath(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mockLogger := logmock.NewMockLogger()
+
+	var requestFields []interface{}
+	mockLogger.On("Info", "Request received", mock.Anything).Run(func(args mock.Arguments) {
+		requestFields = args.Get(1).([]interface{})
+	}).Once()
+	mockLogger.On("Info", "Request completed", mock.Anything).Once()
+
+	// Use DefaultLoggingConfig — production settings.
+	config := middleware.DefaultLoggingConfig()
+
+	router := gin.New()
+	router.Use(middleware.LoggingMiddleware(mockLogger, config))
+	// /api/v1/users/me/settings is NOT in SkipPathPrefixes — the body
+	// WILL be logged, but the "value" field must be masked.
+	router.PUT("/api/v1/users/me/settings/workspace.defaultStorageSize", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	w := httptest.NewRecorder()
+	// Body uses a real-looking secret in "value" to verify masking.
+	reqBody := `{"value":"sk-proj-SECRET_FOR_TESTING"}`
+	req, _ := http.NewRequest("PUT", "/api/v1/users/me/settings/workspace.defaultStorageSize", bytes.NewBufferString(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	// Stringify captured fields and assert the secret is NOT present.
+	var logOutput string
+	for i := 0; i+1 < len(requestFields); i += 2 {
+		k, _ := requestFields[i].(string)
+		logOutput += k + "="
+		switch v := requestFields[i+1].(type) {
+		case string:
+			logOutput += v + " "
+		default:
+			logOutput += fmt.Sprintf("%v ", v)
+		}
+	}
+	t.Logf("captured log fields: %s", logOutput)
+
+	assert.NotContains(t, logOutput, "sk-proj-SECRET_FOR_TESTING",
+		"G25 defense-in-depth: 'value' field must be masked even on paths not in SkipPathPrefixes")
+	// MaskString (pkg/utilities/masking.go:35) shows the first/last few
+	// chars with "..." in between for strings > 8 chars. The full secret
+	// is unrecoverable from the masked form. We assert the mask marker
+	// is present rather than a specific mask shape so the test doesn't
+	// break if MaskString's format changes.
+	assert.Contains(t, logOutput, "...",
+		"masked 'value' field should contain MaskString's '...' marker")
 }
