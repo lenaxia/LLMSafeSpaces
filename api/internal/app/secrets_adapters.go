@@ -25,6 +25,9 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/kubernetes"
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
+
+	awsConfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/kms"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -434,7 +437,50 @@ func (u *bcryptPasswordUpdater) UpdatePasswordHash(ctx context.Context, userID s
 // "org-credentials") produces a cryptographically independent key via HKDF. Used
 // at boot to wire handlers and services with provider-bound encrypt/decrypt.
 // Returns nil when deriveServerKey yields no key (master secret not configured).
-func newPurposeProvider(purpose string) secrets.RootKeyProvider {
+//
+// US-57.1 D7: when KMS is configured for this purpose, returns a
+// CompositeProvider with the KMS provider as primary and the local static
+// provider as fallback (for legacy rows during migration).
+func newPurposeProvider(cfg *config.Config, log *logger.Logger, purpose string) secrets.RootKeyProvider {
+	local := newLocalPurposeProvider(purpose)
+	if cfg == nil || cfg.Security.RootKeyProvider != "aws-kms" {
+		return local
+	}
+	kmsPurpose := kmsPurposeMap[purpose]
+	keyArn := cfg.Security.KMS.AWS.KeyArns[kmsPurpose]
+	if keyArn == "" {
+		log.Warn("KMS enabled but no key ARN configured for purpose; using local only",
+			"purpose", purpose, "kmsPurpose", kmsPurpose)
+		return local
+	}
+	kmsProv, err := newAWSKMSProvider(cfg, keyArn)
+	if err != nil {
+		log.Error("failed to initialize AWS KMS provider; falling back to local",
+			err, "purpose", purpose, "keyArn", keyArn)
+		return local
+	}
+	composite, err := secrets.NewCompositeProvider(kmsProv, local)
+	if err != nil {
+		log.Error("failed to construct composite provider; falling back to local",
+			err, "purpose", purpose)
+		return local
+	}
+	return composite
+}
+
+// kmsPurposeMap translates the internal purpose strings used by
+// deriveServerKey to the key-ARN map keys in KMSConfig.KeyArns (D4).
+var kmsPurposeMap = map[string]string{
+	"provider-credentials": "providerCredentials",
+	"org-credentials":      "orgCredentials",
+	"master-kek":           "masterKek",
+}
+
+// newLocalPurposeProvider is the pre-US-57.1 implementation of
+// newPurposeProvider — HKDF-derived static key per purpose. Retained
+// as the fallback path for non-KMS deployments and as the composite's
+// fallback provider during KMS migration.
+func newLocalPurposeProvider(purpose string) secrets.RootKeyProvider {
 	key := deriveServerKey(purpose)
 	if key == nil {
 		return nil
@@ -446,9 +492,30 @@ func newPurposeProvider(purpose string) secrets.RootKeyProvider {
 	return p
 }
 
+// newAWSKMSProvider constructs an AWSKMSProvider from the config's AWS
+// credentials file and region. Shared across all per-purpose KMS
+// providers — each gets its own instance with a different key ARN.
+func newAWSKMSProvider(cfg *config.Config, keyArn string) (*secrets.AWSKMSProvider, error) {
+	awsCfg, err := awsConfig.LoadDefaultConfig(context.Background(),
+		awsConfig.WithRegion(cfg.Security.KMS.AWS.Region),
+		awsConfig.WithSharedCredentialsFiles([]string{cfg.Security.KMS.AWS.CredentialsFile}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("loading AWS config: %w", err)
+	}
+	client := kms.NewFromConfig(awsCfg)
+	return secrets.NewAWSKMSProvider(client, keyArn), nil
+}
+
 func newRootKeyProvider(cfg *config.Config, log *logger.Logger) secrets.RootKeyProvider {
 	provider := cfg.Security.RootKeyProvider
 	switch provider {
+	case "aws-kms":
+		// US-57.1 D7: KMS-backed root key provider. The "master-kek"
+		// purpose maps to the KMS key ARN from the config; the local
+		// static provider (derived from master-kek) is the fallback for
+		// legacy rows.
+		return newPurposeProvider(cfg, log, "master-kek")
 	case "sealed":
 		if cfg.Security.SealedKeyPath == "" || cfg.Security.PassphrasePath == "" {
 			log.Error("sealed root key provider requires both sealedKeyPath and passphrasePath", nil)

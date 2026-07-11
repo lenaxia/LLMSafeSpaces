@@ -317,8 +317,8 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// consumer (the Redis DEK cache below). Each purpose yields an
 		// independent HKDF-derived key; the provider wraps it for the
 		// Encrypt/Decrypt interface.
-		providerCredsProv := newPurposeProvider("provider-credentials")
-		orgCredsProv := newPurposeProvider("org-credentials")
+		providerCredsProv := newPurposeProvider(cfg, log, "provider-credentials")
+		orgCredsProv := newPurposeProvider(cfg, log, "org-credentials")
 
 		mk := dekMasterKey()
 		if mk == nil {
@@ -553,8 +553,15 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// "master-kek" (version 2, active); the rotation CLI (US-50.5) re-wraps
 		// legacy rows. When rkp is a sealed provider (production) it wraps the
 		// raw root key — no purpose string applies, so rkp is used as-is.
+		//
+		// US-57.1 D7: when rkp is a CompositeProvider (KMS-backed), skip
+		// the multi-version upgrade entirely — cloud-side versioning makes
+		// the dek-cache→master-kek transition moot, and the composite's
+		// static fallback handles legacy rows via prefix-sniffing dispatch.
 		apiKeyProv := rkp
-		if apiKeyProv == nil {
+		if _, isComposite := apiKeyProv.(*secrets.CompositeProvider); isComposite {
+			// KMS-backed composite — no multi-version upgrade needed.
+		} else if apiKeyProv == nil {
 			masterKEK := deriveServerKey("master-kek")
 			dekCacheKey := deriveServerKey("dek-cache")
 			if masterKEK != nil && dekCacheKey != nil {

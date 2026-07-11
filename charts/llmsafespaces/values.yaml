@@ -521,6 +521,37 @@ masterSecret:
   fileMountPath: /var/run/secrets/llmsafespaces/master-secret
 
 # ----------------------------------------------------------------------------
+# Cloud KMS Provider (Epic 57 US-57.1)
+# ----------------------------------------------------------------------------
+# When enabled, the master KEK is backed by cloud KMS instead of the local
+# static/sealed file. The KEK never leaves the cloud service — an API-pod
+# RCE can call Decrypt while running but cannot exfiltrate the key for
+# offline use after eviction (exfiltration limitation + audit, not prevention).
+#
+# Three KMS keys are required (D4: per-purpose domain separation):
+#   providerCredentials — admin/org LLM API keys
+#   orgCredentials      — org-level credentials
+#   masterKek           — API keys + org SSO client secrets (shared provider)
+#
+# The master-secret file mount is RETAINED under KMS — it protects the
+# Redis DEK cache (volatile, regenerable). KMS protects only the durable
+# KEK-protected Postgres tables.
+#
+# D9: Sustained KMS unavailability causes all KEK-dependent decrypts to
+# fail simultaneously. Multi-region KMS keys recommended for HA.
+kms:
+  aws:
+    enabled: false
+    region: ""
+    # Name of an existing K8s Secret with a credentials-file key at
+    # key "credentials". The file must be in AWS shared-credentials INI format.
+    credentialsSecret: ""
+    keyArns:
+      providerCredentials: ""
+      orgCredentials: ""
+      masterKek: ""
+
+# ----------------------------------------------------------------------------
 # Datastore NetworkPolicies (G26)
 # ----------------------------------------------------------------------------
 # The chart ships NetworkPolicy resources blocking ingress to postgres and
