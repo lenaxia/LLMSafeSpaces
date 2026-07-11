@@ -59,7 +59,6 @@ jobs:
 
       - name: Resolve version and ref
         id: resolve
-        id: resolve
         env:
           # Pass through env, not interpolation, to avoid shell injection
           # from a malicious workflow_dispatch input (only triggerable by

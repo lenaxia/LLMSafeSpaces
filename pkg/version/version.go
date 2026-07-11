@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package version is the single source of truth for the build version string.
-// The Version constant is overridden at build time via -ldflags:
+// The Version variable is overridden at build time via -ldflags:
 //
 //	go build -ldflags "-X github.com/lenaxia/llmsafespaces/pkg/version.Version=v0.3.0"
 //
