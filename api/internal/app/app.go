@@ -544,6 +544,19 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		secretService.SetOrgProvider(orgCredsProv)
 		rotateKeyHandler = handlers.NewRotateKeyHandler(keyService)
 		rotateKeyHandler.SetPasswordUpdater(&bcryptPasswordUpdater{db: svc.Database})
+		rotateKeyHandler.SetLogger(log)
+		// G38: revoke every outstanding JWT after a successful password
+		// change so a stolen pre-change token stops working. The auth
+		// service is the canonical owner of RevokeAllUserSessions (it
+		// also writes the per-jti + per-hash Redis revocation markers
+		// and clears durable jwt_sessions rows — see auth.go:1163).
+		// The type assertion guards non-production wiring (tests,
+		// alternative auth backends) where svc.Auth is not the concrete
+		// *auth.Service; in that case ChangePassword succeeds without
+		// revocation, matching the pre-G38 behavior.
+		if authSvc, ok := svc.Auth.(*auth.Service); ok {
+			rotateKeyHandler.SetSessionRevoker(authSvc)
+		}
 		// Epic 56: soft-unlock handler — same KeyService backing
 		// UnlockDEKWithSigningKey for rewriting the durable jwt_sessions
 		// row when a Valkey miss + missing/stale durable row needs the

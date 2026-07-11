@@ -532,10 +532,21 @@ type PasswordHashUpdater interface {
 	UpdatePasswordHash(ctx context.Context, userID string, newPassword []byte) error
 }
 
+// SessionRevoker revokes every outstanding JWT for a user. Used by
+// ChangePassword (G38) to mirror the password-reset flow's OWASP-mandated
+// session invalidation. Best-effort: callers MUST treat an error as
+// non-fatal — the password has already been changed cryptographically
+// and rollback is not possible.
+type SessionRevoker interface {
+	RevokeAllUserSessions(ctx context.Context, userID string) error
+}
+
 // RotateKeyHandler handles account key management endpoints.
 type RotateKeyHandler struct {
 	keySvc    KeyRotator
 	pwUpdater PasswordHashUpdater
+	revoker   SessionRevoker
+	logger    pkginterfaces.LoggerInterface
 	auditFunc func(userID, action string)
 }
 
@@ -547,6 +558,22 @@ func NewRotateKeyHandler(keySvc KeyRotator) *RotateKeyHandler {
 // SetPasswordUpdater sets the optional password hash updater.
 func (h *RotateKeyHandler) SetPasswordUpdater(u PasswordHashUpdater) {
 	h.pwUpdater = u
+}
+
+// SetSessionRevoker wires the session revoker used by ChangePassword to
+// invalidate every outstanding JWT after a successful password change
+// (G38). Optional: when nil, ChangePassword succeeds without revoking —
+// matches the pre-G38 behavior. Production wiring supplies the auth
+// service's RevokeAllUserSessions.
+func (h *RotateKeyHandler) SetSessionRevoker(r SessionRevoker) {
+	h.revoker = r
+}
+
+// SetLogger wires an optional logger used to surface non-fatal failures
+// (e.g. revocation failing after a successful password change). When nil,
+// such failures are silent — production wiring supplies the app logger.
+func (h *RotateKeyHandler) SetLogger(l pkginterfaces.LoggerInterface) {
+	h.logger = l
 }
 
 // SetAuditFunc sets an optional audit callback for key operations.
@@ -625,6 +652,20 @@ func (h *RotateKeyHandler) ChangePassword(c *gin.Context) {
 		if err := h.pwUpdater.UpdatePasswordHash(c.Request.Context(), userID, []byte(req.NewPassword)); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "password change failed"})
 			return
+		}
+	}
+
+	// G38: invalidate every outstanding JWT — including the caller's own
+	// — so a token stolen before the change is no longer useful. Runs
+	// only after both the DEK re-wrap and the bcrypt update commit, so a
+	// stolen JWT cannot race the response. Best-effort: the password is
+	// already changed and rollback is impossible, so a revocation failure
+	// is logged and the change still reports success. Mirrors
+	// password_reset.go:309-315 (OWASP ASVS V2.5.2).
+	if h.revoker != nil {
+		if err := h.revoker.RevokeAllUserSessions(c.Request.Context(), userID); err != nil && h.logger != nil {
+			h.logger.Warn("ChangePassword: session revocation failed (non-fatal; password was changed)",
+				"error", err.Error(), "user_id", userID)
 		}
 	}
 

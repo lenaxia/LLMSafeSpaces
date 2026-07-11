@@ -102,6 +102,28 @@ func TestE2E_RealAuth_ChangePassword(t *testing.T) {
 	resp.Body.Close()
 	newToken := loginResp.Token
 
+	// G38 regression: the pre-change JWT (the `token` variable from
+	// setup) MUST stop working immediately after a successful password
+	// change. Before the fix, the cached DEK + still-valid signature let
+	// the stolen token keep reading secrets (and any authenticated
+	// endpoint) until natural expiry. This is the OWASP ASVS V2.5.2
+	// invariant: changing a password invalidates all existing sessions.
+	// Uses GET /secrets because /auth/me is not wired in the test router;
+	// any authenticated endpoint serves the same purpose.
+	resp = doGet(t, c, base+"/api/v1/secrets", token)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("G38 regression: pre-change JWT must be rejected after change-password; got status %d (expected 401)", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	// New JWT must still work — proves the rejection above is specific
+	// to the pre-change token, not a global auth outage.
+	resp = doGet(t, c, base+"/api/v1/secrets", newToken)
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("new JWT must work after change-password; got status %d (expected 200)", resp.StatusCode)
+	}
+	resp.Body.Close()
+
 	// Secrets should still work with new token
 	resp = doPost(t, c, base+"/api/v1/secrets",
 		`{"name":"after-pw-change","type":"api-key","value":"sk-test","metadata":{"kind":"x","slug":"x"}}`, newToken)
@@ -111,7 +133,7 @@ func TestE2E_RealAuth_ChangePassword(t *testing.T) {
 	resp.Body.Close()
 
 	_ = svc // suppress unused
-	t.Log("E2E ChangePassword: change → old fails → new works → secrets work — PASSED")
+	t.Log("E2E ChangePassword: change → old fails → new works → old JWT rejected → new JWT works → secrets work — PASSED")
 }
 
 // TestE2E_RealAuth_ChangePassword_WrongOld tests wrong old password
@@ -234,7 +256,11 @@ func setupRealAuthRouter(t *testing.T) (*gin.Engine, string, *testContext) {
 	cfg := testConfig()
 	log := testLogger()
 	db := &fullMockDB{users: make(map[string]*types.User)}
-	cache := &mockCache{}
+	// Stateful cache (not mockCache{}) so cache-dependent code paths —
+	// JWT revocation, session tracking — actually persist between
+	// requests within a single test. The stateless mockCache made it
+	// impossible to assert post-change-password JWT rejection.
+	cache := newStatefulMockCache()
 
 	authSvc, _ := New(cfg, log, db, cache)
 
@@ -248,6 +274,10 @@ func setupRealAuthRouter(t *testing.T) (*gin.Engine, string, *testContext) {
 	envHandler := handlers.NewWorkspaceEnvHandler(secretSvc)
 	rotateHandler := handlers.NewRotateKeyHandler(keySvc)
 	rotateHandler.SetPasswordUpdater(&bcryptUpdater{db: db})
+	// G38: wire the auth service's RevokeAllUserSessions so the e2e
+	// setup mirrors production wiring and the post-change-password old-
+	// JWT-rejection regression can be exercised end-to-end.
+	rotateHandler.SetSessionRevoker(authSvc)
 
 	tc := &testContext{}
 	authSvc.SetKeyService(&capturingKeyService{inner: keySvc, tc: tc})
