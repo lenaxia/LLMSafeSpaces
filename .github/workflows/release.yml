@@ -32,7 +32,8 @@ on:
 
 permissions:
   contents: write   # for creating the GitHub Release + gh-pages push
-  packages: read    # for reading image metadata from ghcr.io
+  packages: write   # for signing images + reading image metadata
+  id-token: write   # for cosign keyless OIDC signing
 
 env:
   REGISTRY: ghcr.io
@@ -113,6 +114,105 @@ jobs:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           wait-interval: 30
           running-workflow-name: "Wait for CI workflow"
+
+  # Sign all built images with cosign keyless (OIDC). Each signature is
+  # recorded in the public Rekor transparency log, so anyone can verify
+  # image provenance after the fact:
+  #
+  #   cosign verify ghcr.io/lenaxia/llmsafespaces/api:0.3.0 \
+  #     --certificate-identity-regexp "https://github.com/lenaxia/LLMSafeSpaces" \
+  #     --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+  sign-images:
+    name: Sign images (cosign keyless)
+    needs: [verify-changelog, wait-for-ci]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.verify-changelog.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+        with:
+          cosign-release: 'v2.4.1'
+
+      - name: Sign each image
+        # cosign sign with keyless OIDC: the OIDC token from GitHub Actions
+        # is used to get a short-lived certificate from Fulcio. The identity
+        # and issuer are automatically embedded in the certificate — we don't
+        # pass them as flags (those are for `cosign verify`, not `cosign sign`).
+        # The signature is recorded in Rekor automatically.
+        run: |
+          for img in api controller base frontend relay-router relay-proxy; do
+            case "$img" in
+              api) image_ref="${{ env.REGISTRY }}/${{ env.API_IMAGE }}:${VERSION}" ;;
+              controller) image_ref="${{ env.REGISTRY }}/${{ env.CONTROLLER_IMAGE }}:${VERSION}" ;;
+              base) image_ref="${{ env.REGISTRY }}/${{ env.RUNTIME_IMAGE }}:${VERSION}" ;;
+              frontend) image_ref="${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${VERSION}" ;;
+              relay-router) image_ref="${{ env.REGISTRY }}/${{ env.RELAY_ROUTER_IMAGE }}:${VERSION}" ;;
+              relay-proxy) image_ref="${{ env.REGISTRY }}/${{ env.RELAY_PROXY_IMAGE }}:${VERSION}" ;;
+            esac
+            echo "Signing ${image_ref}"
+            cosign sign --yes "${image_ref}"
+          done
+
+  # Scan each built image with Trivy. Fail on HIGH/CRITICAL CVEs.
+  # This complements the filesystem/config scan in security-scan.yml —
+  # that scan covers source files; this scan covers the actual OCI images
+  # (catches vulns in base images, installed packages, etc.).
+  scan-images:
+    name: Scan images (Trivy)
+    needs: [verify-changelog, wait-for-ci]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.verify-changelog.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install Trivy
+        run: |
+          curl -sLO https://github.com/aquasecurity/trivy/releases/download/v0.70.0/trivy_0.70.0_Linux-64bit.tar.gz
+          tar xzf trivy_0.70.0_Linux-64bit.tar.gz
+          sudo mv trivy /usr/local/bin/
+
+      - name: Scan each image
+        run: |
+          for img in api controller base frontend relay-router relay-proxy; do
+            case "$img" in
+              api) image_ref="${{ env.REGISTRY }}/${{ env.API_IMAGE }}:${VERSION}" ;;
+              controller) image_ref="${{ env.REGISTRY }}/${{ env.CONTROLLER_IMAGE }}:${VERSION}" ;;
+              base) image_ref="${{ env.REGISTRY }}/${{ env.RUNTIME_IMAGE }}:${VERSION}" ;;
+              frontend) image_ref="${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}:${VERSION}" ;;
+              relay-router) image_ref="${{ env.REGISTRY }}/${{ env.RELAY_ROUTER_IMAGE }}:${VERSION}" ;;
+              relay-proxy) image_ref="${{ env.REGISTRY }}/${{ env.RELAY_PROXY_IMAGE }}:${VERSION}" ;;
+            esac
+            echo "::group::Scanning ${image_ref}"
+            # trivy returns exit code 1 when HIGH/CRITICAL vulns are found.
+            # The if ! block surfaces which image failed.
+            if ! trivy image \
+              --severity HIGH,CRITICAL \
+              --exit-code 1 \
+              --ignorefile .trivyignore \
+              "${image_ref}"; then
+              echo "::error::Trivy found HIGH/CRITICAL vulnerabilities in ${image_ref}"
+              exit 1
+            fi
+            echo "::endgroup::"
+          done
 
   # Package the Helm chart and publish to the gh-pages branch's Helm repo.
   # chart-releaser-action independently discovers, packages, and publishes
@@ -228,7 +328,7 @@ jobs:
   # Create the GitHub Release with notes from CHANGELOG.md.
   create-release:
     name: Create GitHub Release
-    needs: [verify-changelog, wait-for-ci, publish-chart, generate-sbom, build-relay-binaries]
+    needs: [verify-changelog, wait-for-ci, sign-images, scan-images, publish-chart, generate-sbom, build-relay-binaries]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -277,6 +377,14 @@ jobs:
           | Frontend | \`ghcr.io/lenaxia/llmsafespaces/frontend:${VERSION}\` |
           | Relay router | \`ghcr.io/lenaxia/llmsafespaces/relay-router:${VERSION}\` |
           | Relay proxy | \`ghcr.io/lenaxia/llmsafespaces/relay-proxy:${VERSION}\` |
+
+          All images are signed with cosign keyless (OIDC). Verify:
+
+          \`\`\`bash
+          cosign verify ghcr.io/lenaxia/llmsafespaces/api:${VERSION} \\
+            --certificate-identity-regexp "https://github.com/lenaxia/LLMSafeSpaces" \\
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+          \`\`\`
 
           ## Install
 

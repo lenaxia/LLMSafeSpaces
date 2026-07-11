@@ -337,6 +337,47 @@ LLMSafeSpaces is **v0.3.x**. Not everything is perfect. The most operationally r
 ## Related
 
 - [Threat Model](../architecture/threat-model.md) — the full 50-item gap table with file:line evidence.
+---
+
+## Supply chain security
+
+### Image signing
+
+All release images (`ghcr.io/lenaxia/llmsafespaces/*`) are signed with [cosign](https://github.com/sigstore/cosign) keyless signing via GitHub Actions OIDC. Signatures are recorded in the public [Rekor](https://github.com/sigstore/rekor) transparency log.
+
+**Verify an image before deploying:**
+
+```bash
+cosign verify ghcr.io/lenaxia/llmsafespaces/api:0.3.0 \
+  --certificate-identity-regexp "https://github.com/lenaxia/LLMSafeSpaces" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+```
+
+If the command succeeds, the image was built by the project's release workflow. If it fails, the image may be tampered or from an untrusted source.
+
+### Image scanning
+
+The release pipeline scans every built image with [Trivy](https://github.com/aquasecurity/trivy) for HIGH/CRITICAL CVEs. The scan runs on the actual OCI images (not just source files), catching vulnerabilities in base images, system packages, and application dependencies. If any HIGH/CRITICAL CVE is found, the release fails.
+
+The filesystem scan in `security-scan.yml` runs on every PR and covers source files (`go.mod`, `package-lock.json`, etc.) — this is complementary, not redundant.
+
+### SBOM
+
+Each release includes a Software Bill of Materials (SBOM) in CycloneDX JSON format for every image. Download from the GitHub Release page and feed into [Dependency-Track](https://dependencytrack.org/), [grype](https://github.com/anchore/grype), or your preferred SBOM consumer.
+
+### Base image pinning
+
+Dockerfile `FROM` lines use tag references (e.g. `golang:1.25`, `debian:bookworm-slim`) rather than digest-pinning. [Renovate](https://docs.renovatebot.com/) is configured with `docker:pinDigests` to open PRs that pin each base image to its current digest. Accept those PRs to lock the supply chain further.
+
+### What's not yet covered
+
+- **No admission-time image verification policy.** The cluster does not enforce cosign verification at deploy time. Operators who want this should install [cosign policy controller](https://github.com/sigstore/policy-controller) or [Kyverno](https://kyverno.io/) with a verifyImages rule.
+- **Base runtime image ships a full toolchain.** The `base` runtime image (`debian:bookworm-slim`) includes bash, build-essential, git, curl, apt, database clients. This is a feature for a development sandbox but means a compromised agent has a lot of tooling. A future distroless runtime variant is tracked as a follow-up.
+
+---
+
+## See also
+
 - [Networking](networking.md) — the NetworkPolicies this page references.
 - [Multi-tenant Isolation](multi-tenant.md) — tenant identity and per-tenant quotas.
 - [Runbook](runbook.md) — KEK rotation, JWT secret rotation, compromised-pod response.
