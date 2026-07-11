@@ -462,11 +462,12 @@ func (h *ProxyHandler) doProxy(c *gin.Context, podIP, targetPath, password strin
 		return fmt.Errorf("creating proxy request: %w", err)
 	}
 
-	for k, vs := range c.Request.Header {
-		for _, v := range vs {
-			req.Header.Add(k, v)
-		}
-	}
+	// G34: forward only an explicit allowlist of client headers. The caller's
+	// Authorization, Cookie, Origin, Referer, X-Forwarded-* and arbitrary
+	// custom headers describe the caller's relationship with this API server,
+	// not with the tenant pod, and must not reach untrusted agent code.
+	// Authorization is set below via SetBasicAuth; X-Forwarded-For after that.
+	copyRequestHeaders(c.Request.Header, req.Header)
 	req.SetBasicAuth("opencode", password)
 	req.Header.Set("X-Forwarded-For", c.ClientIP())
 
