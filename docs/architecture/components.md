@@ -48,7 +48,7 @@ The public face. A Gin HTTP server (`api/`), stateless, horizontally scalable. T
 - **Ownership enforcement.** `WorkspaceAccessMiddleware` resolves the workspace, checks `WorkspaceOwner{UserID, OrgID}` against the caller's identity, and rejects with 403 on mismatch. This sits on the `idGroup` route group, which all proxy routes inherit — the G33 IDOR fix.
 - **Workspace CRUD + lifecycle API.** Create/list/get/rename/delete, plus `suspend`/`activate`/`restart`. These mutate the CRD `spec` (the API is the sole writer of `spec.suspend`); the controller does the actual pod work.
 - **Reverse proxy to pods.** Resolves pod IP from the cached CRD status, injects `Authorization: Basic <workspace-pw>`, and forwards. Strips client headers down to an explicit allowlist (`Content-Type`, `Accept`, `X-Request-ID`) and hop-by-hop headers in both directions — the G34 fix.
-- **encrypted secret store.** Encrypts user secrets with per-user DEKs (AES-256-GCM) before they ever touch PostgreSQL. The platform never stores or returns plaintext. See [secrets](secrets.md).
+- **Encrypted secret store.** Encrypts user secrets with per-user DEKs (AES-256-GCM) before they ever touch PostgreSQL. The platform never stores or returns plaintext. See [secrets](secrets.md).
 - **Provider credentials (admin + user) and auto-apply rules.** Admin credentials are encrypted under the master KEK; user credentials are encrypted with per-user DEKs.
 - **Settings** (admin instance + user preferences) — declarative schema, stored in PostgreSQL.
 - **Session management + SSE events + terminal proxy.** Session metadata is mirrored in PostgreSQL with backfill from the agent; the SSE stream is user-scoped.

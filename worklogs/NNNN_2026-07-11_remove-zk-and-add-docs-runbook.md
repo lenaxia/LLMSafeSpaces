@@ -146,8 +146,6 @@ grep -rn 'zero-knowledge\|zero knowledge' → 0 hits
 - `docs/architecture/lifecycle.md` — wording
 - `docs/architecture/threat-model.md` — wording
 - `docs/operator/security.md` — wording + new "Two encryption tiers" subsection
-- `docs/operator/oidc-sso.md` — wording
-- `docs/operator/runbook.md` — wording
 - `docs/api/rest.md` — wording
 - `docs/getting-started/concepts.md` — wording
 - `README.md` — wording

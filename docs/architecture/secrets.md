@@ -245,7 +245,7 @@ sequenceDiagram
 
 | Location | What | Persists across pod death? | Encrypted at rest? |
 |---|---|---|---|
-| **PostgreSQL** (`user_secrets`) | encrypted ciphertext (user secrets) | Yes (it's the DB) | Yes (AES-256-GCM under per-user DEK) |
+| **PostgreSQL** (`user_secrets`) | Encrypted ciphertext (user secrets) | Yes (it's the DB) | Yes (AES-256-GCM under per-user DEK) |
 | **PostgreSQL** (`provider_credentials`, `api_keys`, `org_sso_configs`) | KEK-protected ciphertext (platform secrets) | Yes | Yes (under master KEK via HKDF purposes) |
 | **K8s Secret** (`workspace-secrets-<ws>`, `workspace-pw-<ws>`) | Decrypted workspace runtime credentials + workspace password | Yes (until workspace deleted) | Only if etcd encryption at rest is configured (A1) |
 | **tmpfs** `/sandbox-runtime` | Live agent config, secrets-env, auth.json symlink, admin-prompt.md, reload-replay cache | **No** — wiped on pod death | N/A (RAM) |
@@ -282,7 +282,7 @@ This is how adding a new secret to a workspace takes effect without a full suspe
 
 | Threat | Protected? | Mechanism |
 |---|---|---|
-| DB backup leak | **Yes** (user secrets) / **Partial** (platform secrets without rotation) | encryption at rest; user secrets need the password |
+| DB backup leak | **Yes** (user secrets) / **Partial** (platform secrets without rotation) | Encryption at rest; user secrets need the password |
 | K8s Secret read from another pod | Yes | RBAC restricts Secret access to controller/API SA; projected volumes (no SA Secret RBAC) |
 | `/proc/1/environ` read of master KEK | Yes (G48 fixed) | File mount default; env path is deprecated opt-in |
 | Master KEK offline recovery from disk | Yes (sealed) / Partial (static) | Sealed-key provider wraps under Argon2id passphrase |
