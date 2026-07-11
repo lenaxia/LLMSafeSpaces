@@ -20,6 +20,30 @@ import (
 
 // +kubebuilder:webhook:path=/validate-llmsafespaces-dev-v1-workspace,mutating=false,failurePolicy=fail,groups=llmsafespaces.dev,resources=workspaces,verbs=create;update,versions=v1,name=vworkspace.kb.io,sideEffects=None,admissionReviewVersions=v1
 
+// allowRuntimeClassOverrideAnnotation is the admin-gating annotation for
+// spec.runtimeClass (Epic 51 S51.1 design: opt-out must be admin-gated,
+// not tenant-selectable). Operators apply this annotation via direct
+// kubectl/cluster-admin RBAC; tenant API users (who don't have cluster
+// RBAC) cannot.
+//
+// Closes the deferral noted on the CRD field comment at
+// pkg/apis/llmsafespaces/v1/workspace_types.go:158-161:
+// "webhook validation to prevent tenants from setting this field via
+// direct kubectl is deferred to S51.2."
+const allowRuntimeClassOverrideAnnotation = "llmsafespaces.dev/allow-runtime-class-override"
+
+// adminAllowsRuntimeClassOverride reports whether the workspace's
+// annotations grant admin blessing for a non-default spec.runtimeClass.
+// The annotation value must be the literal "true" (case-sensitive) — any
+// other value is treated as absent. This avoids the classic YAML-truthy
+// footgun where "yes"/"on"/"1" would all be misread as true.
+func adminAllowsRuntimeClassOverride(annotations map[string]string) bool {
+	if annotations == nil {
+		return false
+	}
+	return annotations[allowRuntimeClassOverrideAnnotation] == "true"
+}
+
 // WorkspaceValidator is a ValidatingAdmissionWebhook for Workspace resources.
 //
 // It closes the following pentest findings (Epic 17):
@@ -569,7 +593,43 @@ func (v *WorkspaceValidator) Handle(ctx context.Context, req admission.Request) 
 		}
 	}
 
-	// 6. F1.2.2 — Status must not be set by the user. On CREATE only the
+	// 7. S51.1 admin gate — spec.runtimeClass is admin-gated, not
+	//    tenant-selectable. Without this check, any user with workspace
+	//    create/update RBAC can escape gVisor via direct kubectl, defeating
+	//    the kernel-level isolation layer for their own pods. The CRD
+	//    comment at pkg/apis/llmsafespaces/v1/workspace_types.go:158-161
+	//    documents this as a deferred S51.2 follow-up; this PR closes
+	//    that gap.
+	//
+	//    Scheme: reject any non-nil spec.runtimeClass unless the object
+	//    carries the admin annotation
+	//    llmsafespaces.dev/allow-runtime-class-override=true. Operators
+	//    with cluster-admin RBAC apply the annotation; tenant RBAC scopes
+	//    cannot.
+	//
+	//    IMPORTANT: empty-string is included in the rejection. Per
+	//    pod_builder.go:247 ("Empty string = runc") and the existing
+	//    TestS51_1_PerWorkspaceOptOutEmpty, spec.runtimeClass="" is
+	//    functionally equivalent to spec.runtimeClass="runc" — both
+	//    clear RuntimeClassName, falling through to the kubelet default
+	//    runtime (typically runc). Exempting empty-string would let a
+	//    kubectl user escape gVisor by setting "" instead of "runc",
+	//    defeating the entire purpose of this check.
+	if ws.Spec.RuntimeClass != nil {
+		if !adminAllowsRuntimeClassOverride(ws.Annotations) {
+			rcValue := *ws.Spec.RuntimeClass
+			if rcValue == "" {
+				rcValue = "(empty string)"
+			}
+			return admission.Denied(fmt.Sprintf(
+				"spec.runtimeClass %q is admin-gated; apply annotation %q=\"true\" "+
+					"via cluster-admin RBAC to opt this workspace out of the default runtime class "+
+					"(empty string is treated as an explicit runc opt-out)",
+				rcValue, allowRuntimeClassOverrideAnnotation))
+		}
+	}
+
+	// 8. F1.2.2 — Status must not be set by the user. On CREATE only the
 	//    controller (via status subresource) is allowed to populate the
 	//    block.
 	if req.Operation == "CREATE" && !statusIsZero(ws.Status) {
@@ -577,7 +637,7 @@ func (v *WorkspaceValidator) Handle(ctx context.Context, req admission.Request) 
 			"spec.status fields must not be set on CREATE; the controller writes status via the status subresource")
 	}
 
-	// 7. F1.2.2 (defense in depth) — On UPDATE, refuse to mutate Status
+	// 9. F1.2.2 (defense in depth) — On UPDATE, refuse to mutate Status
 	//    via the spec endpoint. The kube-apiserver normally enforces
 	//    this via the subresource split (writes to /workspaces ignore
 	//    Status), but a CRD-upgrade race or a misconfigured aggregator
