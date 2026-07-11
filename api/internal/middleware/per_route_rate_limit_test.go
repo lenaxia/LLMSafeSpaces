@@ -228,9 +228,9 @@ func TestPerRouteRateLimit_NilServiceIsNoOp(t *testing.T) {
 // Test shape deliberately distinguishes the fixed code from the buggy
 // code:
 //   - Config: {Limit: 60, Window: 1m, Burst: 1}. This sets:
-//     - FIXED code rate = 60/60 = 1 token/sec.
-//     - BUGGY code rate = 60 tokens/sec (the pre-existing semantic bug
-//       in the global limiter that this PR avoids inheriting).
+//   - FIXED code rate = 60/60 = 1 token/sec.
+//   - BUGGY code rate = 60 tokens/sec (the pre-existing semantic bug
+//     in the global limiter that this PR avoids inheriting).
 //   - Burst 1: first request consumes the burst.
 //   - time.Sleep(50ms): enough for the buggy rate (60/sec) to refill
 //     60 × 0.05 = 3 tokens (passes the 2nd request), but the fixed
