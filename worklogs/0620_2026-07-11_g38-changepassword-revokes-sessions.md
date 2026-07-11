@@ -181,4 +181,4 @@ goimports -l <changed files>  # clean
 - `CHANGELOG.md` — entry under `[Unreleased] → Security`
 - `design/stories/epic-17-security-review/THREAT-MODEL.md` — G38 row flipped to 🟢 Fixed; STRIDE row + counts + revision history updated
 - `COORDINATE.md` — claimed the work, will release on merge
-- `worklogs/NNNN_2026-07-11_g38-changepassword-revokes-sessions.md` — this file
+- `worklogs/0620_2026-07-11_g38-changepassword-revokes-sessions.md` — this file
