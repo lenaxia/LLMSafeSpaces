@@ -202,8 +202,7 @@ jobs:
             esac
             echo "::group::Scanning ${image_ref}"
             # trivy returns exit code 1 when HIGH/CRITICAL vulns are found.
-            # We propagate that failure — the `|| { ... }` block surfaces
-            # which image failed.
+            # The if ! block surfaces which image failed.
             if ! trivy image \
               --severity HIGH,CRITICAL \
               --exit-code 1 \

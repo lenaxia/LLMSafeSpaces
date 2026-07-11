@@ -367,7 +367,7 @@ Each release includes a Software Bill of Materials (SBOM) in CycloneDX JSON form
 
 ### Base image pinning
 
-Dockerfile `FROM` lines use tag references (e.g. `golang:1.25`, `debian:bookworm-slim`) rather than digest-pinning. [Renovate](https://docs.renovatebot.com/) is configured with `:pinDigests` to open PRs that pin each base image to its current digest. Accept those PRs to lock the supply chain further.
+Dockerfile `FROM` lines use tag references (e.g. `golang:1.25`, `debian:bookworm-slim`) rather than digest-pinning. [Renovate](https://docs.renovatebot.com/) is configured with `docker:pinDigests` to open PRs that pin each base image to its current digest. Accept those PRs to lock the supply chain further.
 
 ### What's not yet covered
 
