@@ -324,32 +324,32 @@ func LiveClusterBindings() []ClusterDriftBinding {
 	return []ClusterDriftBinding{
 		{
 			CRDName: "workspaces.llmsafespaces.dev",
-			CRDFile: "charts/llmsafespaces/crds/workspace.yaml",
+			CRDFile: "helm/crds/workspace.yaml",
 			CRDPath: []string{"spec", "versions", "0", "schema", "openAPIV3Schema", "properties", "spec"},
 		},
 		{
 			CRDName: "workspaces.llmsafespaces.dev",
-			CRDFile: "charts/llmsafespaces/crds/workspace.yaml",
+			CRDFile: "helm/crds/workspace.yaml",
 			CRDPath: []string{"spec", "versions", "0", "schema", "openAPIV3Schema", "properties", "status"},
 		},
 		{
 			CRDName: "runtimeenvironments.llmsafespaces.dev",
-			CRDFile: "charts/llmsafespaces/crds/runtimeenvironment.yaml",
+			CRDFile: "helm/crds/runtimeenvironment.yaml",
 			CRDPath: []string{"spec", "versions", "0", "schema", "openAPIV3Schema", "properties", "spec"},
 		},
 		{
 			CRDName: "runtimeenvironments.llmsafespaces.dev",
-			CRDFile: "charts/llmsafespaces/crds/runtimeenvironment.yaml",
+			CRDFile: "helm/crds/runtimeenvironment.yaml",
 			CRDPath: []string{"spec", "versions", "0", "schema", "openAPIV3Schema", "properties", "status"},
 		},
 		{
 			CRDName: "inferencerelays.llmsafespaces.dev",
-			CRDFile: "charts/llmsafespaces/crds/inferencerelay.yaml",
+			CRDFile: "helm/crds/inferencerelay.yaml",
 			CRDPath: []string{"spec", "versions", "0", "schema", "openAPIV3Schema", "properties", "spec"},
 		},
 		{
 			CRDName: "inferencerelays.llmsafespaces.dev",
-			CRDFile: "charts/llmsafespaces/crds/inferencerelay.yaml",
+			CRDFile: "helm/crds/inferencerelay.yaml",
 			CRDPath: []string{"spec", "versions", "0", "schema", "openAPIV3Schema", "properties", "status"},
 		},
 	}

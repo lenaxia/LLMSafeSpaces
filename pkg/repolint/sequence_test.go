@@ -511,7 +511,7 @@ func TestDriftCheck_IgnoresNonMatchingFiles(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Live-repo integration tests — these run against the real api/migrations/,
-// charts/llmsafespaces/migrations/, and worklogs/ trees of THIS repository.
+// helm/migrations/, and worklogs/ trees of THIS repository.
 // They are the regression net for the 2026-05-30 incident.
 // ---------------------------------------------------------------------------
 
@@ -586,7 +586,7 @@ func TestLive_ChartMigrations_NoDriftFromCanonical(t *testing.T) {
 	root := repoRoot(t)
 	rep, err := DriftCheck(DriftConfig{
 		CanonicalDir: filepath.Join(root, "api", "migrations"),
-		MirrorDir:    filepath.Join(root, "charts", "llmsafespaces", "migrations"),
+		MirrorDir:    filepath.Join(root, "helm", "migrations"),
 		Glob:         "*.sql",
 	})
 	if err != nil {

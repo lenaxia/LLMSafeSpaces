@@ -58,9 +58,9 @@ The only legitimate reason to change a UID is if the original UID was already br
 
 If a UID change is genuinely required:
 
-1. **Update the dashboard JSON's top-level `"uid"` field** in `charts/llmsafespaces/dashboards/<dashboard>.json`.
-2. **Update the chart_test pin** in `charts/llmsafespaces/chart_test.go` (function `TestMonitoring_DashboardUIDsAreStable`, the `expectedUIDs` map). The test will FAIL until you do this — that's the guardrail working as designed.
-3. **Update the script's expected UID list** in `charts/llmsafespaces/scripts/grafana-purge-stale-dashboards.sh` (variable `EXPECTED_UIDS`).
+1. **Update the dashboard JSON's top-level `"uid"` field** in `helm/dashboards/<dashboard>.json`.
+2. **Update the chart_test pin** in `helm/chart_test.go` (function `TestMonitoring_DashboardUIDsAreStable`, the `expectedUIDs` map). The test will FAIL until you do this — that's the guardrail working as designed.
+3. **Update the script's expected UID list** in `helm/scripts/grafana-purge-stale-dashboards.sh` (variable `EXPECTED_UIDS`).
 4. **Notify operators** that bookmarked URLs will break after the next chart upgrade.
 5. **After the chart upgrade lands**, run the purge script (below) to remove the old UID rows from Grafana so the sidecar provisioner doesn't trip the optimistic-concurrency check.
 
@@ -85,7 +85,7 @@ Cleanup steps:
    ```sh
    GRAFANA_POD=$(kubectl get pod -n monitoring \
        -l app.kubernetes.io/name=grafana -o jsonpath='{.items[0].metadata.name}')
-   kubectl cp charts/llmsafespaces/scripts/grafana-purge-stale-dashboards.sh \
+   kubectl cp helm/scripts/grafana-purge-stale-dashboards.sh \
        monitoring/${GRAFANA_POD}:/tmp/purge.sh -c grafana
    ```
 

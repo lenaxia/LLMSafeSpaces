@@ -14,7 +14,7 @@ import (
 )
 
 // TestWorkspaceCRD_DefaultsMatchGoAnnotations is the regression test for
-// issue #281. The hand-maintained chart CRD (charts/llmsafespaces/crds/
+// issue #281. The hand-maintained chart CRD (helm/crds/
 // workspace.yaml) drifted from the Go kubebuilder annotations that are the
 // source of truth. Without the admission webhook (kubectl-only creators, or
 // if the webhook is down/misrouted), wrong defaults are applied at the API
@@ -29,7 +29,7 @@ import (
 // server materializes the parent object and sub-field defaults are reachable
 // (without it, kubebuilder sub-defaults are dead at the apiserver layer).
 func TestWorkspaceCRD_DefaultsMatchGoAnnotations(t *testing.T) {
-	crdPath := filepath.Join("..", "..", "charts", "llmsafespaces", "crds", "workspace.yaml")
+	crdPath := filepath.Join("..", "..", "helm", "crds", "workspace.yaml")
 	src, err := os.ReadFile(crdPath)
 	require.NoError(t, err, "read workspace CRD")
 

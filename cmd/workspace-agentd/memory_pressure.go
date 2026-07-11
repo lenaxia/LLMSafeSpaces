@@ -30,7 +30,7 @@ var memoryCheckInterval = 60 * time.Second
 // condition.
 //
 // Worklog 371 H4: cgroup v2 is a documented hard requirement (see
-// charts/llmsafespaces/values.yaml workspace.cgroupV2Required). On cgroup v1
+// helm/values.yaml workspace.cgroupV2Required). On cgroup v1
 // hosts readCurrent/readMax fail and the monitor silently produces no data.
 // To avoid the silent-degradation failure mode, the first cgroup read
 // failure is logged at Warn so operators can diagnose why
@@ -83,7 +83,7 @@ func (m *memoryPressureMonitor) check() bool {
 	used, err := m.readCurrent()
 	if err != nil {
 		m.warnOnce.Do(func() {
-			log.Warn("memory pressure monitor: cgroup v2 memory.current unreadable — pressure warnings, workspace_memory_bytes gauge, and OOM-limit detection will be unavailable. cgroup v2 is a documented hard requirement (see charts/llmsafespaces/values.yaml workspace.cgroupV2Required).",
+			log.Warn("memory pressure monitor: cgroup v2 memory.current unreadable — pressure warnings, workspace_memory_bytes gauge, and OOM-limit detection will be unavailable. cgroup v2 is a documented hard requirement (see helm/values.yaml workspace.cgroupV2Required).",
 				zap.Error(err))
 		})
 		return false

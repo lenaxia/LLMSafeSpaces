@@ -416,7 +416,7 @@ pkg/                     # Shared Go packages
   validation/            # Shared validation (secret names)
   types/                 # API DTOs
 
-charts/llmsafespaces/     # Helm chart (API, controller, frontend, CRDs, RBAC, webhooks)
+helm/     # Helm chart (API, controller, frontend, CRDs, RBAC, webhooks)
 sdks/                    # Client SDKs (Go, TypeScript, Python, Java, VS Code extension)
 workers/inference-relay/ # Cloudflare Worker relay for free-tier inference (the simpler alternative to the self-hosted InferenceRelay fleet)
 local/                   # bootstrap.sh, test.sh, teardown.sh for kind

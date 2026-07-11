@@ -76,8 +76,8 @@ SECURITY
 PROJECT ALIGNMENT
 - Does the PR follow conventional commit format (feat:, fix:, chore:, docs:)?
 - Does the PR body explain what the change does, why, and how it was tested?
-- If a CRD type changed, are pkg/apis/llmsafespaces/v1/*_types.go (authoritative kubebuilder types) and charts/llmsafespaces/crds/*.yaml updated consistently? Repolint's CRDDriftCheck (pkg/repolint/crd_drift.go) catches Go↔chart-yaml drift but does not catch chart-yaml↔deployed-cluster drift — see make helm-deploy and `repolint -cluster-drift`.
-- If a CRD type or Helm chart value changed, is charts/llmsafespaces/ updated?
+- If a CRD type changed, are pkg/apis/llmsafespaces/v1/*_types.go (authoritative kubebuilder types) and helm/crds/*.yaml updated consistently? Repolint's CRDDriftCheck (pkg/repolint/crd_drift.go) catches Go↔chart-yaml drift but does not catch chart-yaml↔deployed-cluster drift — see make helm-deploy and `repolint -cluster-drift`.
+- If a CRD type or Helm chart value changed, is helm/ updated?
 - For a substantive session (>30 min of work), is a worklog entry present in worklogs/?
 - Does the change break any existing public API or operator behaviour without a clear migration path?
 - Does the change respect the V2 architecture in design/EVOLUTION-V2.md?

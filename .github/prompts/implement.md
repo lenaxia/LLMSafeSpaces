@@ -12,5 +12,5 @@ Rules:
 5. Run `make test` and `make lint` before pushing. All must pass.
 6. Never handle or create secrets.
 7. Flag any change touching pkg/redact/, RBAC, CRD schema, or secrets handling as security-sensitive.
-8. If adding a new CRD type, update both pkg/apis/llmsafespaces/v1/*_types.go (authoritative kubebuilder types) and charts/llmsafespaces/crds/*.yaml. Run `make repolint` to verify Go↔chart drift is closed; re-deploy via `make helm-deploy` (Helm does not upgrade CRDs in `crds/`).
+8. If adding a new CRD type, update both pkg/apis/llmsafespaces/v1/*_types.go (authoritative kubebuilder types) and helm/crds/*.yaml. Run `make repolint` to verify Go↔chart drift is closed; re-deploy via `make helm-deploy` (Helm does not upgrade CRDs in `crds/`).
 9. Leave the codebase in zero-error state — fix any pre-existing errors you encounter (Rule 5).

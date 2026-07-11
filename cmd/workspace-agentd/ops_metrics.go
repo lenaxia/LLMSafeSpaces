@@ -14,7 +14,7 @@ import (
 // Registered via promauto (default Prometheus registry) so they appear
 // on the agentd admin port (:4098/metrics) alongside gate timings. The
 // chart ships a PodMonitor that scrapes this endpoint on every workspace
-// pod — see charts/llmsafespaces/templates/podmonitor-agentd.yaml.
+// pod — see helm/templates/podmonitor-agentd.yaml.
 type opsMetrics struct {
 	restartsTotal  *prometheus.CounterVec
 	memoryBytes    *prometheus.GaugeVec

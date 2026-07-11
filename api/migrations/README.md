@@ -38,12 +38,12 @@ These rules are enforced by:
 - `.githooks/pre-commit` (run `make install-hooks` once per clone)
 - The `Lint` job in `.github/workflows/ci.yml`
 
-## Drift with `charts/llmsafespaces/migrations/`
+## Drift with `helm/migrations/`
 
 The Helm chart bundles migrations into a `ConfigMap` consumed by the
 `pre-install,pre-upgrade` migrate `Job`. Helm cannot read files outside
 the chart directory, so a copy of every `.sql` file lives at
-`charts/llmsafespaces/migrations/`.
+`helm/migrations/`.
 
 **The two directories MUST be byte-identical.** The repo has been bitten
 twice by drift here — the canonical fix is to bundle migrations into the
@@ -52,7 +52,7 @@ copy entirely. Until then:
 
 1. After adding a migration to `api/migrations/`, run
    `make chart-sync-migrations` (forthcoming Make target) which
-   `cp -a api/migrations/. charts/llmsafespaces/migrations/`.
+   `cp -a api/migrations/. helm/migrations/`.
 2. `cmd/repolint` validates the two directories match byte-for-byte on
    every commit and CI run.
 
@@ -80,7 +80,7 @@ The proposed refactor:
   `args: ["--migrate-only"]`).
 - Add a `--migrate-only` flag to the API binary that runs the embedded
   migrations and exits.
-- Delete `charts/llmsafespaces/migrations/` and the configmap template.
+- Delete `helm/migrations/` and the configmap template.
 
 After the refactor: schema version is locked to image version. The
 "image expects column X but cluster doesn't have it" failure mode

@@ -190,7 +190,7 @@ fi
 # -----------------------------------------------------------------------------
 log "Phase 6/6 — helm install LLMSafeSpaces"
 helm --kube-context "kind-${CLUSTER_NAME}" upgrade --install "${RELEASE_NAME}" \
-    "${REPO_ROOT}/charts/llmsafespaces" \
+    "${REPO_ROOT}/helm" \
     -n "${NS}" --create-namespace \
     --set "api.image.repository=llmsafespaces/api" \
     --set "api.image.tag=${IMAGE_TAG}" \

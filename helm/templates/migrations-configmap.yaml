@@ -1,5 +1,5 @@
 {{- if .Values.migrations.enabled }}
-# Bundle every .sql file under charts/llmsafespaces/migrations/ into a ConfigMap
+# Bundle every .sql file under helm/migrations/ into a ConfigMap
 # consumed by the migrate Job. The canonical migration source is api/migrations/;
 # the chart copy is kept in sync by `make chart-sync-migrations` (enforced by
 # repolint in pre-commit and CI).
