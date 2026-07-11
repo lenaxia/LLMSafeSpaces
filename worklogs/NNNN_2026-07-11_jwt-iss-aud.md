@@ -1,0 +1,109 @@
+# Worklog: JWT iss/aud claims + validation
+
+**Date:** 2026-07-11
+**Session:** Close the JWT iss/aud gap. Sixth of the network hardening sweep targeted at v0.3.0.
+**Status:** Complete
+
+---
+
+## Objective
+
+JWTs minted by `Service.GenerateTokenWithDuration` carried only `sub/jti/exp/iat`. Validation didn't enforce `iss` or `aud`. Effect: any service sharing the same HMAC secret could mint accepted tokens, and tokens minted for one deployment would be accepted by another deployment sharing the secret.
+
+Goal: mint explicit `iss` and `aud` claims on every token; validate them on every parse; configurable via Helm/env with sensible defaults.
+
+---
+
+## Work Completed
+
+### TDD: failing tests first (`api/internal/services/auth/auth_jwt_claims_test.go`)
+
+- `TestGenerateToken_IncludesISSandAUD` — minted tokens carry both claims.
+- `TestValidateToken_RejectsMissingISS` — pre-fix tokens (no iss/aud) rejected.
+- `TestValidateToken_RejectsWrongISS` — wrong issuer rejected.
+- `TestValidateToken_RejectsWrongAUD` — wrong audience rejected.
+- `TestValidateToken_AcceptsCorrectISSandAUD` — happy path through ValidateToken.
+- `TestGenerateToken_DefaultsWhenConfigEmpty` — empty config → default "llmsafespaces".
+
+Verified red before implementing.
+
+### Implementation
+
+- `api/internal/config/config.go`:
+  - New `JWTIssuer` / `JWTAudience` fields on `Auth` struct.
+  - New exported constants `DefaultJWTIssuer` / `DefaultJWTAudience` (so tests and other packages can reference).
+  - Default fallback in `Load()`: empty → `"llmsafespaces"`.
+- `api/internal/services/auth/auth.go`:
+  - Default fallback in `New()` (covers tests that bypass `Load`).
+  - `GenerateTokenWithDuration` now mints `iss`/`aud` from config.
+  - `validateTokenAndMatchedKey` now enforces `iss`/`aud` after the signature check passes, before the jti revocation check. Handles both `string` and `[]any` aud shapes per JWT spec.
+- `charts/llmsafespaces/values.yaml`: new `auth.jwtIssuer` / `auth.jwtAudience` chart values (empty by default → API applies "llmsafespaces").
+- `charts/llmsafespaces/templates/configmap-api.yaml`: emits the new keys when non-empty.
+
+### Existing test fixes
+
+4 existing tests in `auth_matched_key_test.go` forged tokens via raw `jwt.MapClaims{sub, jti, exp}` (no iss/aud). Added a `claimsForSvc(svc, sub, jti)` helper that emits the correct claims shape, and switched the 4 call sites to use it. The helper is the right way to forge tokens going forward; future tests should use it too.
+
+---
+
+## Key Decisions
+
+1. **Backward-compat break, accepted.** Pre-fix tokens (no iss/aud) are rejected. Tokens are short-lived (24h default) so rotation is fast. This is the intended security improvement, and silently accepting old tokens would defeat the fix.
+2. **Defaults applied at both `Load()` and `New()`.** Production goes through `Load()`; tests construct `Service` directly via `New()`. Both paths set the same defaults so tests don't need to.
+3. **`aud` accepts both string and array shapes.** JWT spec (RFC 7519 §4.1.3) allows `aud` to be a string or an array of strings. golang-jwt/v5's `MapClaims` decodes JSON arrays as `[]any`. Handle both.
+4. **iss/aud check runs AFTER signature validation.** Signature validation is the primary check; iss/aud is a deployment-boundary check. Putting it after signature means an attacker can't even reach the iss/aud check without knowing the HMAC secret.
+5. **Existing tests updated via helper, not raw edit.** `claimsForSvc(svc, sub, jti)` centralizes the valid-claims shape so future tests don't repeat the iss/aud literal.
+
+---
+
+## Assumptions stated and validated (Rule 7)
+
+1. *Pre-fix tokens (no iss/aud) should be rejected.* Validated by `TestValidateToken_RejectsMissingISS`. Intentional break.
+2. *Signature check happens before iss/aud check.* Validated by reading `validateTokenAndMatchedKey` — `parseTokenAcceptingRotatedKeys` (which does signature) runs first; `token.Valid` is checked; only then does iss/aud run.
+3. *`aud` may be `string` or `[]any` per JWT spec.* Validated by golang-jwt/v5's MapClaims JSON decoding.
+4. *No other code path mints tokens.* Validated by `grep -rn "NewWithClaims\|GenerateToken" api/internal/services/auth/` — `GenerateTokenWithDuration` is the canonical mint path; nothing else.
+
+---
+
+## Blockers
+
+None.
+
+---
+
+## Tests Run
+
+```
+go test -timeout 60s -run "TestGenerateToken_IncludesISSandAUD|TestValidateToken_RejectsMissingISS|TestValidateToken_RejectsWrongISS|TestValidateToken_RejectsWrongAUD|TestValidateToken_AcceptsCorrectISSandAUD|TestGenerateToken_DefaultsWhenConfigEmpty" ./api/internal/services/auth/
+→ ok  0.034s
+
+go test -timeout 180s -short ./api/internal/services/auth/... ./api/internal/config/...
+→ ok  ./api/internal/services/auth   22.922s
+→ ok  ./api/internal/config          (cached)
+
+go test -timeout 180s ./charts/llmsafespaces/...
+→ ok  (cached)
+
+go build ./...   → clean
+gofmt / goimports  → clean
+```
+
+---
+
+## Next Steps
+
+1. Open this PR for review.
+2. After approval + merge: doc reconciliation (close G33/G34/G35 in THREAT-MODEL.md), v0.3.0 release.
+
+---
+
+## Files Modified
+
+- `api/internal/config/config.go` (new `JWTIssuer`/`JWTAudience` fields, new `DefaultJWTIssuer`/`DefaultJWTAudience` constants, default fallback in `Load`)
+- `api/internal/services/auth/auth.go` (mint iss/aud in `GenerateTokenWithDuration`; validate in `validateTokenAndMatchedKey`; default fallback in `New`)
+- `api/internal/services/auth/auth_jwt_claims_test.go` (new file — TDD test battery)
+- `api/internal/services/auth/auth_matched_key_test.go` (new `claimsForSvc` helper; 4 existing tests updated to use it)
+- `api/internal/services/auth/auth_test.go` (1 existing test updated to forge iss/aud)
+- `charts/llmsafespaces/values.yaml` (new `auth.jwtIssuer`/`auth.jwtAudience` chart values)
+- `charts/llmsafespaces/templates/configmap-api.yaml` (emit the new keys when non-empty)
+- `worklogs/NNNN_2026-07-11_jwt-iss-aud.md` (this entry)

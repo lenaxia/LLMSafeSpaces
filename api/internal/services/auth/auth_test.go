@@ -1632,6 +1632,8 @@ func TestF175_TokenSignedWithPreviousKeyValidates(t *testing.T) {
 	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub": "user-id-123",
 		"jti": "jti-abc",
+		"iss": svc.config.Auth.JWTIssuer,
+		"aud": svc.config.Auth.JWTAudience,
 		"exp": time.Now().Add(1 * time.Hour).Unix(),
 	})
 	signed, err := tok.SignedString(oldSecret)

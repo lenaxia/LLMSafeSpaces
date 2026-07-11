@@ -15,6 +15,18 @@ import (
 	k8sconfig "github.com/lenaxia/llmsafespaces/pkg/config"
 )
 
+// DefaultJWTIssuer / DefaultJWTAudience are the iss/aud claims minted on
+// every JWT and validated on every parse, when the operator hasn't set
+// them explicitly. Defaults keep out-of-the-box deploys working; operators
+// running multiple LLMSafeSpaces instances that should not accept each
+// other's tokens set their own values via Helm or env.
+const (
+	DefaultJWTIssuer   = "llmsafespaces"
+	DefaultJWTAudience = "llmsafespaces"
+	defaultJWTIssuer   = DefaultJWTIssuer
+	defaultJWTAudience = DefaultJWTAudience
+)
+
 // Config represents the application configuration
 type Config struct {
 	Server struct {
@@ -63,7 +75,17 @@ type Config struct {
 		// Closes F1.7.5 (Epic 17). Set via env
 		// LLMSAFESPACES_AUTH_JWTPREVIOUSSECRETS as a comma-separated
 		// list, OR via the YAML key `jwtPreviousSecrets: [...]`.
-		JWTPreviousSecrets  []string      `mapstructure:"jwtPreviousSecrets"`
+		JWTPreviousSecrets []string `mapstructure:"jwtPreviousSecrets"`
+		// JWTIssuer is the iss claim minted on every token and validated
+		// on every parse. Default "llmsafespaces". Set when deploying
+		// multiple LLMSafeSpaces instances that should not accept each
+		// other's tokens. Set via env LLMSAFESPACES_AUTH_JWTISSUER.
+		JWTIssuer string `mapstructure:"jwtIssuer"`
+		// JWTAudience is the aud claim minted on every token and validated
+		// on every parse. Default "llmsafespaces". Same deployment-shape
+		// rationale as JWTIssuer. Set via env
+		// LLMSAFESPACES_AUTH_JWTAUDIENCE.
+		JWTAudience         string        `mapstructure:"jwtAudience"`
 		TokenDuration       time.Duration `mapstructure:"tokenDuration"`
 		APIKeyPrefix        string        `mapstructure:"apiKeyPrefix"`
 		CookieName          string        `mapstructure:"cookieName"`
@@ -424,6 +446,17 @@ func Load(path string) (*Config, error) {
 		if hn, err := os.Hostname(); err == nil && hn != "" {
 			config.Kubernetes.PodName = hn
 		}
+	}
+
+	// JWT iss/aud: default to "llmsafespaces" when the operator hasn't
+	// set them. Set via env LLMSAFESPACES_AUTH_JWTISSUER /
+	// LLMSAFESPACES_AUTH_JWTAUDIENCE, OR via the YAML keys
+	// auth.jwtIssuer / auth.jwtAudience.
+	if config.Auth.JWTIssuer == "" {
+		config.Auth.JWTIssuer = defaultJWTIssuer
+	}
+	if config.Auth.JWTAudience == "" {
+		config.Auth.JWTAudience = defaultJWTAudience
 	}
 
 	// Turnstile env overrides + fail-closed guard. Extracted to a

@@ -27,6 +27,29 @@ import (
 // key produces unwrap failure exactly when auto-recovery should work —
 // the [HIGH] finding from PR #411 review pass 1.
 
+// claimsForSvc builds a MapClaims map carrying the configured iss/aud for
+// the given service. Use this in every test that forges a token meant to
+// pass validation — the auth service rejects tokens missing iss/aud.
+func claimsForSvc(svc *Service, sub, jti string) jwt.MapClaims {
+	c := jwt.MapClaims{
+		"sub": sub,
+		"exp": time.Now().Add(time.Hour).Unix(),
+		"iat": time.Now().Unix(),
+	}
+	if jti != "" {
+		c["jti"] = jti
+	}
+	if svc != nil && svc.config != nil {
+		if iss := svc.config.Auth.JWTIssuer; iss != "" {
+			c["iss"] = iss
+		}
+		if aud := svc.config.Auth.JWTAudience; aud != "" {
+			c["aud"] = aud
+		}
+	}
+	return c
+}
+
 func TestParseTokenAcceptingRotatedKeys_ReturnsMatchedActiveKey(t *testing.T) {
 	svc, _, _ := newTestService(t)
 	svc.jwtSecret = []byte("active-key")
@@ -115,11 +138,7 @@ func TestValidateToken_StillWorksAfterSignatureChange(t *testing.T) {
 	mockCache.On("Get", mock.Anything, mock.Anything).Return("", nil).Maybe()
 	mockCache.On("Set", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
 
-	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub": "u-regression",
-		"jti": "jti-regression",
-		"exp": time.Now().Add(time.Hour).Unix(),
-	})
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claimsForSvc(svc, "u-regression", "jti-regression"))
 	signed, err := tok.SignedString([]byte("active-key"))
 	require.NoError(t, err)
 
@@ -217,11 +236,7 @@ func TestValidateTokenWithClientIP_NewCacheFormatIsWritten(t *testing.T) {
 	})).Return("", nil).Maybe() // jti revocation check
 	mockCache.On("Set", mock.Anything, mock.Anything, "u-cache-write|0", mock.Anything).Return(nil)
 
-	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub": "u-cache-write",
-		"jti": "jti-cache-write",
-		"exp": time.Now().Add(time.Hour).Unix(),
-	})
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claimsForSvc(svc, "u-cache-write", "jti-cache-write"))
 	signed, err := tok.SignedString([]byte("active-key"))
 	require.NoError(t, err)
 
@@ -289,11 +304,7 @@ func TestAuthMiddleware_SetsMatchedSigningKey_OnFreshParse(t *testing.T) {
 	user := &types.User{ID: "u-mid", Active: true, Status: types.UserStatusActive, Role: "user"}
 	mockDB.On("GetUser", mock.Anything, "u-mid").Return(user, nil).Maybe()
 
-	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub": "u-mid",
-		"jti": "jti-mid",
-		"exp": time.Now().Add(time.Hour).Unix(),
-	})
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claimsForSvc(svc, "u-mid", "jti-mid"))
 	signed, err := tok.SignedString([]byte("active-key-32-bytes-padding-here"))
 	require.NoError(t, err)
 
@@ -329,11 +340,7 @@ func TestAuthMiddleware_SetsMatchedSigningKey_OnPreviousKey(t *testing.T) {
 	user := &types.User{ID: "u-rot", Active: true, Status: types.UserStatusActive, Role: "user"}
 	mockDB.On("GetUser", mock.Anything, "u-rot").Return(user, nil).Maybe()
 
-	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"sub": "u-rot",
-		"jti": "jti-rot",
-		"exp": time.Now().Add(time.Hour).Unix(),
-	})
+	tok := jwt.NewWithClaims(jwt.SigningMethodHS256, claimsForSvc(svc, "u-rot", "jti-rot"))
 	signed, err := tok.SignedString([]byte("prev-key-bytes-32-padded----"))
 	require.NoError(t, err)
 
