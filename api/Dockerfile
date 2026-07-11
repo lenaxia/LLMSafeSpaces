@@ -26,12 +26,11 @@ COPY cmd/ cmd/
 COPY controller/ controller/
 
 ARG VERSION=dev
-ARG BUILD_TIME=unknown
 
 ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
     go build \
-        -ldflags "-X main.version=${VERSION} -X main.buildTime=${BUILD_TIME}" \
+        -ldflags "-X github.com/lenaxia/llmsafespaces/pkg/version.Version=${VERSION}" \
         -o /out/api \
         ./api/cmd/api
 
