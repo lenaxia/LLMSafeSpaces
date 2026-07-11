@@ -17,6 +17,7 @@ Rules:
 
 | Agent | What | Files Claimed | Status | Started |
 |-------|------|---------------|--------|---------|
+| opencode (g28) | G28 — reclassify as Accepted (architecture changed in Epic 35) + invariant test | `design/stories/epic-17-security-review/THREAT-MODEL.md`, `pkg/secrets/secret_service_test.go` | In Progress | 2026-07-11 |
 | opencode (g36) | G36 — workspace secrets cleanup on deletion | `controller/internal/workspace/phase_terminating.go`, `controller/internal/workspace/phase_terminating_test.go` | In Progress | 2026-07-11 |
 | opencode (g25) | G25 — secret value field logged unredacted | `api/internal/middleware/logging.go`, `api/internal/middleware/tests/logging_test.go`, `api/internal/server/router.go` | In Progress | 2026-07-11 |
 
@@ -36,7 +37,8 @@ Agents waiting to work on files currently held by an active claim. When the bloc
 
 | Completed | Agent | What | Commit |
 |-----------|-------|------|--------|
-| 2026-07-11 | opencode (g36) | G36 — workspace secrets cleanup on deletion (PR [#540](https://github.com/lenaxia/LLMSafeSpaces/pull/540), pending review) | `54aeba57` |
+| 2026-07-11 | opencode (g28) | G28 — reclassify as Accepted + invariant test (PR [#541](https://github.com/lenaxia/LLMSafeSpaces/pull/541), pending review) | `7518ecf1` |
+| 2026-07-11 | opencode (g36) | G36 — workspace secrets cleanup on deletion (PR [#540](https://github.com/lenaxia/LLMSafeSpaces/pull/540), merged) | `f3043835` |
 | 2026-07-11 | opencode (g25) | G25 — secret value field logging (PR [#539](https://github.com/lenaxia/LLMSafeSpaces/pull/539), merged) | `4370c44b` |
 | 2026-07-11 | opencode (g35) | G35 — /account/recover per-route rate limit (PR [#538](https://github.com/lenaxia/LLMSafeSpaces/pull/538), merged) | `6fddeecd` |
 | 2026-07-11 | opencode (g37) | G37 — workspace env-var name blocklist (PR [#537](https://github.com/lenaxia/LLMSafeSpaces/pull/537), merged) | `be063b9c` |
