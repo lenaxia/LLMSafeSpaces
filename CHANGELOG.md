@@ -85,6 +85,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entry point) inherits the fix automatically because it calls
   `handleTerminating`.
 
+- **G28 — Workspace bind handler reclassified as Accepted (was High/Open).**
+  The threat-model row originally flagged "PUT /workspaces/:id/bindings
+  returns 204 but K8s Secret is never created." Epic 35 (secretless
+  injection) removed the durable K8s Secret path entirely; the
+  architecture now persists bindings to PostgreSQL and the init
+  container fetches them via `/internal/v1/pod-bootstrap` at boot. The
+  live HTTP push to running pods is best-effort; `ErrNoRunningPod` is
+  an accepted, documented transient state. The "no-op for first-time
+  delivery" is the intended behavior in the new architecture. Added
+  `TestSecretService_G28_BindingsSurviveNoPodState` to lock the
+  persistence invariant — bindings survive the no-pod window and are
+  visible to the bootstrap read path (`GetBindings`) when the pod
+  eventually boots.
+
 ## [0.3.0] - 2026-07-11
 
 Network hardening sweep + KMS-backed master KEK foundation + Go security bump.

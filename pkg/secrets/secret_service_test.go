@@ -1463,3 +1463,81 @@ func TestSecretService_UpdateSecret_GlobalDefault_SameValueNoAuditKey(t *testing
 		}
 	}
 }
+
+// TestSecretService_G28_BindingsSurviveNoPodState is the G28 architectural
+// invariant regression. The threat-model row originally flagged "PUT /workspaces/:id/bindings
+// returns 204 but K8s Secret is never created" as a High gap. Epic 35
+// (secretless injection) removed the durable K8s Secret path entirely;
+// the architecture now persists bindings to PostgreSQL (the durable
+// source of truth) and the init container fetches them via
+// /internal/v1/pod-bootstrap at boot. The live HTTP push
+// (agentpush.Service.Push) is best-effort; ErrNoRunningPod is an
+// accepted, logged, transient state.
+//
+// This test locks the persistence invariant: after SetBindings commits,
+// GetBindings returns the same set — proving that a binding created
+// while no pod is running will be visible to the bootstrap endpoint at
+// the next pod boot. If this test fails, the binding-persistence
+// guarantee that G28's reclassification relies on is broken.
+//
+// G28 is classified as Accepted (not Fixed): the architecture
+// intentionally defers first-time delivery to pod boot. This test
+// ensures the deferral is safe.
+func TestSecretService_G28_BindingsSurviveNoPodState(t *testing.T) {
+	svc, _, sessionID := setupSecretService(t)
+	ctx := context.Background()
+	const userID = "user-1"
+	const workspaceID = "ws-freshly-created"
+
+	// Create two secrets — one LLM provider, one env-secret — covering
+	// the two materialization paths the bootstrap endpoint must handle.
+	s1, err := svc.CreateSecret(ctx, userID, sessionID, nil, CreateSecretRequest{
+		Name:     "openai-key",
+		Type:     SecretTypeAPIKey,
+		Value:    "sk-test-g28",
+		Metadata: json.RawMessage(`{"kind":"openai","slug":"openai"}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateSecret s1: %v", err)
+	}
+	s2, err := svc.CreateSecret(ctx, userID, sessionID, nil, CreateSecretRequest{
+		Name:     "gh-token-env",
+		Type:     SecretTypeEnvSecret,
+		Value:    "ghp_test_token",
+		Metadata: json.RawMessage(`{"var_name":"GH_TOKEN"}`),
+	})
+	if err != nil {
+		t.Fatalf("CreateSecret s2: %v", err)
+	}
+
+	// Bind both secrets to a workspace that has never had a pod running
+	// (the G28 scenario: "freshly-created workspace" — no pod yet).
+	bindResult, err := svc.SetBindings(ctx, userID, workspaceID, []string{s1.ID, s2.ID})
+	if err != nil {
+		t.Fatalf("SetBindings: %v", err)
+	}
+	_ = bindResult // BindingsMutationResult describes the diff; success is err == nil
+
+	// Now simulate "the pod eventually boots" — the bootstrap endpoint
+	// calls GetBindings to resolve what to inject. The bindings MUST be
+	// visible, proving the persistence survived the no-pod window.
+	resp, err := svc.GetBindings(ctx, userID, workspaceID)
+	if err != nil {
+		t.Fatalf("GetBindings after no-pod window: %v", err)
+	}
+	if len(resp.Bindings) != 2 {
+		t.Fatalf("G28 INVARIANT BROKEN: expected 2 bindings to survive no-pod state, got %d",
+			len(resp.Bindings))
+	}
+
+	// Confirm both secret IDs are present (order-independent).
+	boundIDs := make(map[string]struct{}, len(resp.Bindings))
+	for _, b := range resp.Bindings {
+		boundIDs[b.SecretID] = struct{}{}
+	}
+	for _, expected := range []string{s1.ID, s2.ID} {
+		if _, ok := boundIDs[expected]; !ok {
+			t.Errorf("G28 INVARIANT BROKEN: binding for secret %q not visible to GetBindings after no-pod state", expected)
+		}
+	}
+}
