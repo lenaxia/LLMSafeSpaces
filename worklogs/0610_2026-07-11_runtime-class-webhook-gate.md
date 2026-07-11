@@ -94,7 +94,7 @@ gofmt / goimports  → clean
 - `controller/internal/webhooks/workspace_runtimeclass_test.go` (new file — TDD test battery)
 - `pkg/apis/llmsafespaces/v1/workspace_types.go` (CRD comment: replaced "deferred" with actual enforcement scheme)
 - `charts/llmsafespaces/values.yaml` (gvisor block: documented the annotation + RBAC tier)
-- `worklogs/NNNN_2026-07-11_runtime-class-webhook-gate.md` (this entry)
+- `worklogs/0610_2026-07-11_runtime-class-webhook-gate.md` (this entry)
 
 ---
 
