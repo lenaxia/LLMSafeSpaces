@@ -235,4 +235,64 @@ func TestMigrationCoordinator_MultiVersionFallback_DecryptsLegacyV1(t *testing.T
 	assert.Equal(t, 0, res.Failed)
 }
 
+func TestMigrationCoordinator_MissingSourceProvider_CountsAsFailed(t *testing.T) {
+	store := newFakeMigrationStore([]MigrationRow{
+		{ID: "1", Table: "api_keys", Ciphertext: []byte{1}, KeyVersion: 1},
+	})
+	target := &fakeProvider{prefix: "aws-kms:v1:"}
+	c := NewMigrationCoordinator(store,
+		nil,
+		map[string]RootKeyProvider{"master-kek": target},
+	)
+	res, err := c.MigrateTable(context.Background(), "api_keys", "", false)
+	require.NoError(t, err)
+	assert.Equal(t, 0, res.Processed)
+	assert.Equal(t, 1, res.Failed)
+}
+
+func TestMigrationCoordinator_MissingTargetProvider_CountsAsFailed(t *testing.T) {
+	store := newFakeMigrationStore([]MigrationRow{
+		{ID: "1", Table: "api_keys", Ciphertext: []byte{1}, KeyVersion: 1},
+	})
+	source := &fakeProvider{prefix: "lkms:v1:"}
+	c := NewMigrationCoordinator(store,
+		map[string]RootKeyProvider{"master-kek": source},
+		nil,
+	)
+	res, err := c.MigrateTable(context.Background(), "api_keys", "", false)
+	require.NoError(t, err)
+	assert.Equal(t, 0, res.Processed)
+	assert.Equal(t, 1, res.Failed)
+}
+
+func TestMigrationCoordinator_EncryptFailure_CountsAsFailed(t *testing.T) {
+	store := newFakeMigrationStore([]MigrationRow{
+		{ID: "1", Table: "provider_credentials", OwnerType: "admin", Ciphertext: []byte{1}, KeyVersion: 1},
+	})
+	source := &fakeProvider{prefix: "lkms:v1:"}
+	target := &fakeProvider{prefix: "aws-kms:v1:", encryptErr: ErrDecryptionFailed}
+	c := NewMigrationCoordinator(store,
+		map[string]RootKeyProvider{"provider-credentials": source},
+		map[string]RootKeyProvider{"provider-credentials": target},
+	)
+	res, err := c.MigrateTable(context.Background(), "provider_credentials", "", false)
+	require.NoError(t, err)
+	assert.Equal(t, 0, res.Processed)
+	assert.Equal(t, 1, res.Failed)
+}
+
+func TestMigrationCoordinator_EmptyTable_ReturnsZeroRows(t *testing.T) {
+	store := newFakeMigrationStore(nil)
+	source := &fakeProvider{prefix: "lkms:v1:"}
+	target := &fakeProvider{prefix: "aws-kms:v1:"}
+	c := NewMigrationCoordinator(store,
+		map[string]RootKeyProvider{"master-kek": source},
+		map[string]RootKeyProvider{"master-kek": target},
+	)
+	res, err := c.MigrateTable(context.Background(), "api_keys", "", false)
+	require.NoError(t, err)
+	assert.Equal(t, 0, res.Processed)
+	assert.Equal(t, 0, res.Failed)
+}
+
 // fakeProvider is reused from composite_provider_test.go.
