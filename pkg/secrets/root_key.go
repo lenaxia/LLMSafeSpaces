@@ -281,7 +281,7 @@ func unwrapPrefix(prefix string, ciphertext []byte) ([]byte, error) {
 //
 // Kept as a package-level slice rather than registered dynamically so the
 // full set is visible at the call site — dynamic registration would make
-// routing behaviour depend on init order, which is exactly the kind of
+// routing behavior depend on init order, which is exactly the kind of
 // magic the codebase rules out (README-LLM.md §3, "Explicit Over Implicit").
 var knownForeignPrefixes = []string{
 	"aws-kms:v1:",
