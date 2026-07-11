@@ -8,7 +8,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -315,5 +314,38 @@ func writeTestFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0600)
 }
 
-// Ensure imports used only by helpers are exercised.
-var _ = fmt.Sprintf
+// TestAWSKMSProvider_Decrypt_CorruptBase64_ReturnsErrDecryptionFailed
+// verifies the distinction between "wrong format" (ErrNotMyCiphertext)
+// and "my format but corrupt" (ErrDecryptionFailed). A ciphertext with
+// the aws-kms:v1: prefix but invalid base64 body must return
+// ErrDecryptionFailed — the prefix identified this as ours, so the row
+// is corrupt rather than routed wrong. The composite stops on this error
+// rather than trying the next provider.
+func TestAWSKMSProvider_Decrypt_CorruptBase64_ReturnsErrDecryptionFailed(t *testing.T) {
+	fake := newFakeKMSServer(t)
+	fake.registerKey("test-key")
+	srv := fake.start()
+	defer srv.Close()
+
+	p := newTestAWSKMSProvider(t, srv, "test-key")
+
+	// aws-kms:v1: prefix + invalid base64 body (!@#$ are not base64 chars).
+	corruptCT := []byte(awsKMSCiphertextPrefix + "!@#$%^&*()")
+	_, err := p.Decrypt(context.Background(), corruptCT)
+	require.ErrorIs(t, err, ErrDecryptionFailed,
+		"prefix matched but body corrupt must return ErrDecryptionFailed, not ErrNotMyCiphertext")
+}
+
+// TestAWSKMSProvider_Encrypt_KMSUnavailable_ReturnsError verifies that
+// an Encrypt failure (KMS unavailable) propagates as a real error, not
+// silently swallowed.
+func TestAWSKMSProvider_Encrypt_KMSUnavailable_ReturnsError(t *testing.T) {
+	fake := newFakeKMSServer(t)
+	fake.registerKey("test-key")
+	srv := fake.start()
+	srv.Close() // kill the server immediately
+
+	p := newTestAWSKMSProvider(t, srv, "test-key")
+	_, err := p.Encrypt(context.Background(), []byte("payload-to-dead-server"))
+	require.Error(t, err, "KMS unavailable on Encrypt must surface as an error")
+}
