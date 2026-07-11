@@ -22,7 +22,6 @@ type MigrationRow struct {
 // KEKMigrationResult summarizes a migration run.
 type KEKMigrationResult struct {
 	Processed int
-	Skipped   int
 	Failed    int
 	Errors    []KEKMigrationError
 }

@@ -241,7 +241,7 @@ func run(dbURL, masterKeyFile, kmsProvider, awsRegion, awsCredsFile, gcpCredsFil
 			r := results[tbl]
 			totalProcessed += r.Processed
 			totalFailed += r.Failed
-			fmt.Fprintf(os.Stderr, "  %s: processed=%d skipped=%d failed=%d\n", tbl, r.Processed, r.Skipped, r.Failed)
+			fmt.Fprintf(os.Stderr, "  %s: processed=%d failed=%d\n", tbl, r.Processed, r.Failed)
 			for _, e := range r.Errors {
 				fmt.Fprintf(os.Stderr, "    ERROR %s/%s: %v\n", tbl, e.RowID, e.Error)
 			}
@@ -257,7 +257,7 @@ func run(dbURL, masterKeyFile, kmsProvider, awsRegion, awsCredsFile, gcpCredsFil
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stderr, "%s: processed=%d skipped=%d failed=%d\n", table, result.Processed, result.Skipped, result.Failed)
+	fmt.Fprintf(os.Stderr, "%s: processed=%d failed=%d\n", table, result.Processed, result.Failed)
 	for _, e := range result.Errors {
 		fmt.Fprintf(os.Stderr, "  ERROR %s/%s: %v\n", table, e.RowID, e.Error)
 	}

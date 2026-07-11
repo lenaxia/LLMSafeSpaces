@@ -295,4 +295,49 @@ func TestMigrationCoordinator_EmptyTable_ReturnsZeroRows(t *testing.T) {
 	assert.Equal(t, 0, res.Failed)
 }
 
+func TestMigrationCoordinator_OwnerTypeOrg_RoutesToOrgCredentials(t *testing.T) {
+	store := newFakeMigrationStore([]MigrationRow{
+		{ID: "1", Table: "provider_credentials", OwnerType: "org", Ciphertext: []byte{1}, KeyVersion: 1},
+	})
+	// Only provide the org-credentials key — if the wrong purpose is selected,
+	// the provider lookup fails and the row counts as Failed.
+	source := &fakeProvider{prefix: "lkms:v1:"}
+	target := &fakeProvider{prefix: "aws-kms:v1:"}
+	c := NewMigrationCoordinator(store,
+		map[string]RootKeyProvider{"org-credentials": source},
+		map[string]RootKeyProvider{"org-credentials": target},
+	)
+	res, err := c.MigrateTable(context.Background(), "provider_credentials", "", false)
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Processed)
+	assert.Equal(t, 0, res.Failed)
+}
+
+func TestMigrationCoordinator_UpdateRowFailure_CountsAsFailed(t *testing.T) {
+	store := &failingUpdateStore{
+		fakeMigrationStore: *newFakeMigrationStore([]MigrationRow{
+			{ID: "1", Table: "api_keys", Ciphertext: []byte{1}, KeyVersion: 1},
+		}),
+	}
+	source := &fakeProvider{prefix: "lkms:v1:"}
+	target := &fakeProvider{prefix: "aws-kms:v1:"}
+	c := NewMigrationCoordinator(store,
+		map[string]RootKeyProvider{"master-kek": source},
+		map[string]RootKeyProvider{"master-kek": target},
+	)
+	res, err := c.MigrateTable(context.Background(), "api_keys", "", false)
+	require.NoError(t, err)
+	assert.Equal(t, 0, res.Processed)
+	assert.Equal(t, 1, res.Failed)
+}
+
+// failingUpdateStore wraps fakeMigrationStore and fails every update call.
+type failingUpdateStore struct {
+	fakeMigrationStore
+}
+
+func (s *failingUpdateStore) UpdateMigrationRow(ctx context.Context, table, rowID string, newCiphertext []byte, newKeyVersion int) error {
+	return context.DeadlineExceeded
+}
+
 // fakeProvider is reused from composite_provider_test.go.
