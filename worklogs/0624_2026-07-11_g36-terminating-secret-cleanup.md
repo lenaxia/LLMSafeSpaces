@@ -141,4 +141,4 @@ goimports -l <changed files>  # clean
 - `controller/internal/workspace/phase_terminating_test.go` — 2 new G36 tests
 - `CHANGELOG.md` — entry under `[Unreleased] → Security`
 - `design/stories/epic-17-security-review/THREAT-MODEL.md` — G36 row flipped 🟢; STRIDE + counts + revision 2.8
-- `worklogs/NNNN_2026-07-11_g36-terminating-secret-cleanup.md` — this file
+- `worklogs/0624_2026-07-11_g36-terminating-secret-cleanup.md` — this file
