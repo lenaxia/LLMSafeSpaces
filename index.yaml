@@ -1,0 +1,35 @@
+apiVersion: v1
+entries:
+  llmsafespaces:
+  - annotations:
+      category: AI
+    apiVersion: v2
+    appVersion: 0.3.0
+    created: "2026-07-11T04:31:52.540070569Z"
+    description: 'Kubernetes-first platform for running AI agents securely in isolated
+      workspaces. Each workspace runs `opencode serve` as a persistent HTTP server
+      with a PVC-backed workspace. The API service acts as a reverse proxy to the
+      agent. GitOps note: the chart is consumed from a Git source, not published to
+      a Helm/OCI registry — when deploying via FluxCD GitRepository, set `reconcileStrategy:
+      Revision` or the chart is packaged once and never refreshed between releases
+      (see charts/llmsafespaces/README.md, #456). '
+    digest: acdb395f21471f14ebc78fc128c7f4d5717b88de4327c917ac2657cc08ee5943
+    home: https://github.com/lenaxia/llmsafespaces
+    keywords:
+    - ai
+    - agent
+    - workspace
+    - opencode
+    - mcp
+    kubeVersion: '>=1.27.0-0'
+    maintainers:
+    - name: lenaxia
+      url: https://github.com/lenaxia
+    name: llmsafespaces
+    sources:
+    - https://github.com/lenaxia/llmsafespaces
+    type: application
+    urls:
+    - https://lenaxia.github.io/LLMSafeSpaces/llmsafespaces-0.3.0.tgz
+    version: 0.3.0
+generated: "2026-07-11T04:31:52.506695577Z"
