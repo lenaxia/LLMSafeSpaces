@@ -465,3 +465,126 @@ func TestDeleteWorkspaceEnv_NoAuth_Returns401(t *testing.T) {
 // Compile-time proof that *secrets.SecretService satisfies
 // WorkspaceEnvService. If the interface drifts, this fails at build time.
 var _ WorkspaceEnvService = (*secrets.SecretService)(nil)
+
+// --- G37: env-var name blocklist ---
+
+// TestSetWorkspaceEnv_RejectsBlockedNames verifies that the API rejects
+// dangerous env-var names BEFORE touching the secret store. The blocklist
+// (LD_PRELOAD, PATH, PYTHONPATH, etc.) prevents a workspace owner from
+// setting vars that would compromise every process spawned in the pod.
+//
+// Regression: before G37 the handler accepted these names verbatim.
+// Setting LD_PRELOAD would cause every subsequent exec in the pod to load
+// the attacker's .so; setting PATH would redirect opencode/git/ssh
+// lookups; setting BASH_ENV would source an attacker-controlled file on
+// every non-interactive bash invocation. The pod's single UID means
+// this is container-escape-equivalent in practice.
+func TestSetWorkspaceEnv_RejectsBlockedNames(t *testing.T) {
+	blocked := []string{
+		"LD_PRELOAD",
+		"LD_LIBRARY_PATH",
+		"PATH",
+		"PYTHONPATH",
+		"NODE_OPTIONS",
+		"BASH_ENV",
+		"IFS",
+		"HOME",
+		"RUBYOPT",
+		"PERL5OPT",
+		"JAVA_TOOL_OPTIONS",
+		"DYLD_INSERT_LIBRARIES",
+	}
+	for _, name := range blocked {
+		t.Run(name, func(t *testing.T) {
+			svc := newMockEnvService()
+			r := setupEnvRouter(svc)
+
+			body := `{"vars":{"` + name + `":"evil-value"}}`
+			w := doEnvRequest(r, "PUT", "/workspaces/ws-1/env", body)
+
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("blocked name %q: want 400, got %d (body=%s)", name, w.Code, w.Body.String())
+			}
+			if svc.createCallCount != 0 {
+				t.Errorf("blocked name %q: create was called %d times; want 0 (reject before store)", name, svc.createCallCount)
+			}
+			if svc.updateCallCount != 0 {
+				t.Errorf("blocked name %q: update was called %d times; want 0", name, svc.updateCallCount)
+			}
+		})
+	}
+}
+
+// TestSetWorkspaceEnv_RejectsBlockedNamesCaseInsensitive confirms the
+// blocklist is case-insensitive (ld.so accepts ld_preload on some
+// glibc versions; the gate must catch the lowercase form too).
+func TestSetWorkspaceEnv_RejectsBlockedNamesCaseInsensitive(t *testing.T) {
+	for _, name := range []string{"ld_preload", "Path", "pythonpath", "node_options"} {
+		t.Run(name, func(t *testing.T) {
+			svc := newMockEnvService()
+			r := setupEnvRouter(svc)
+			body := `{"vars":{"` + name + `":"evil-value"}}`
+			w := doEnvRequest(r, "PUT", "/workspaces/ws-1/env", body)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("case-insensitive blocklist miss for %q: want 400, got %d", name, w.Code)
+			}
+		})
+	}
+}
+
+// TestSetWorkspaceEnv_RejectsInvalidPOSIXNames covers the regex half
+// (non-blocklist rejections). A name that doesn't match
+// [A-Za-z_][A-Za-z0-9_]* is rejected with the same 400 shape.
+func TestSetWorkspaceEnv_RejectsInvalidPOSIXNames(t *testing.T) {
+	for _, name := range []string{"1STARTS_WITH_DIGIT", "HAS-SPACE", "HAS.DOT", "HAS SPACE"} {
+		t.Run(name, func(t *testing.T) {
+			svc := newMockEnvService()
+			r := setupEnvRouter(svc)
+			body := `{"vars":{"` + name + `":"value"}}`
+			w := doEnvRequest(r, "PUT", "/workspaces/ws-1/env", body)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("invalid POSIX name %q: want 400, got %d", name, w.Code)
+			}
+		})
+	}
+}
+
+// TestSetWorkspaceEnv_RejectsMixedBatch_NoPartialApply confirms the
+// fail-fast contract: if ANY name in the batch is invalid, the entire
+// request is rejected with no writes to the secret store. Without this
+// invariant a user who typos one name in a 10-var batch would silently
+// create 9 secrets and have to figure out which one was rejected.
+func TestSetWorkspaceEnv_RejectsMixedBatch_NoPartialApply(t *testing.T) {
+	svc := newMockEnvService()
+	r := setupEnvRouter(svc)
+
+	body := `{"vars":{"FOO":"ok","LD_PRELOAD":"evil","BAR":"also-ok"}}`
+	w := doEnvRequest(r, "PUT", "/workspaces/ws-1/env", body)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("mixed batch with one bad name: want 400, got %d (body=%s)", w.Code, w.Body.String())
+	}
+	if svc.createCallCount != 0 {
+		t.Errorf("partial apply: create was called %d times; want 0 (atomic reject)", svc.createCallCount)
+	}
+	if svc.addBindCallCount != 0 {
+		t.Errorf("partial apply: addBindings was called %d times; want 0", svc.addBindCallCount)
+	}
+}
+
+// TestSetWorkspaceEnv_AcceptsLocaleNames confirms locale env vars are
+// NOT on the blocklist. LANG, LC_ALL, TZ, etc. are commonly set for
+// legitimate localization and don't execute code. Regression guard.
+func TestSetWorkspaceEnv_AcceptsLocaleNames(t *testing.T) {
+	for _, name := range []string{"LANG", "LC_ALL", "LC_CTYPE", "TZ", "LANGUAGE"} {
+		t.Run(name, func(t *testing.T) {
+			svc := newMockEnvService()
+			r := setupEnvRouter(svc)
+			body := `{"vars":{"` + name + `":"en_US.UTF-8"}}`
+			w := doEnvRequest(r, "PUT", "/workspaces/ws-1/env", body)
+			if w.Code != http.StatusNoContent {
+				t.Errorf("locale name %q: want 204, got %d (body=%s)", name, w.Code, w.Body.String())
+			}
+		})
+	}
+}

@@ -24,6 +24,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Best-effort: a revocation failure is logged and the password change
   still reports success (the cryptographic change is irreversible).
 
+- **G37 — Workspace env-var name blocklist (High).** The handler at
+  `PUT /api/v1/workspaces/:id/env` accepted any POSIX-shaped env-var
+  name, including `LD_PRELOAD`, `PATH`, `PYTHONPATH`, `BASH_ENV`,
+  `DYLD_INSERT_LIBRARIES`, etc. Setting one of these via the env-secret
+  mechanism would let a workspace owner compromise every process
+  spawned in the pod (agentd, opencode, mise-installed interpreters) —
+  a container-escape-equivalent in practice because the pod's single
+  UID shares the same trust boundary. The new
+  `pkg/validation.ValidateEnvVarName` enforces three rules at the API
+  layer: POSIX shape (`[A-Za-z_][A-Za-z0-9_]*`), length ≤ 256, and not
+  on a curated blocklist of ~30 dangerous names sourced from ld.so(8),
+  bash(1), Python, Node, Ruby, Perl, Java, and glibc docs. The same
+  validator is now used by agentd's materialize-time check as defense-
+  in-depth. Locale vars (`LANG`, `LC_ALL`, `TZ`) are intentionally NOT
+  blocked — they don't execute code and users legitimately set them.
+
 ## [0.3.0] - 2026-07-11
 
 Network hardening sweep + KMS-backed master KEK foundation + Go security bump.
