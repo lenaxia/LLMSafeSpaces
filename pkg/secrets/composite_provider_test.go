@@ -43,20 +43,13 @@ func (f *fakeProvider) Decrypt(_ context.Context, ciphertext []byte) ([]byte, er
 		return nil, f.decryptErr
 	}
 	// Match the production routing logic: if the ciphertext starts with
-	// some other known prefix, the fake should return ErrNotMyCiphertext.
-	// For the simple test fake we just check our own prefix.
+	// our prefix, strip it and return the payload. Otherwise, return
+	// ErrNotMyCiphertext so the composite tries the next provider.
+	// Unlike the previous colon-heuristic implementation, this matches
+	// what real providers do — they never guess at legacy vs. foreign.
 	if !hasPrefix(ciphertext, f.prefix) {
-		// Check if it has any prefix-like shape (contains a colon early).
-		// If so, treat as foreign → ErrNotMyCiphertext. If not, treat as
-		// a legacy blob and fall through to "decryption" (strip prefix
-		// and return the rest, simulating successful AES-GCM decrypt).
-		if idx := indexOfByte(ciphertext, ':'); idx > 0 && idx < 16 {
-			return nil, ErrNotMyCiphertext
-		}
-		// Legacy blob — fake-success by returning as-is.
-		return ciphertext, nil
+		return nil, ErrNotMyCiphertext
 	}
-	// Prefix matches — strip and return inner.
 	return ciphertext[len(f.prefix):], nil
 }
 
@@ -70,15 +63,6 @@ func hasPrefix(b []byte, p string) bool {
 		}
 	}
 	return true
-}
-
-func indexOfByte(b []byte, c byte) int {
-	for i, x := range b {
-		if x == c {
-			return i
-		}
-	}
-	return -1
 }
 
 // --- CompositeProvider tests ---
@@ -95,17 +79,18 @@ func TestCompositeProvider_PrimaryOnly_PrefixedWrites(t *testing.T) {
 }
 
 func TestCompositeProvider_PrimaryOnly_LegacyFallbackDecrypt(t *testing.T) {
-	// A composite with only a primary whose prefix is "aws-kms:v1:".
-	// A legacy un-prefixed blob (no colon early) should still decrypt via
-	// the primary's legacy path (the fake returns the blob as-is).
+	// A composite with only a primary (no fallback). A legacy un-prefixed
+	// blob should be rejected with ErrNotMyCiphertext because no provider
+	// recognizes the format — matching production behavior (real KMS
+	// providers always return ErrNotMyCiphertext for non-matching bytes).
 	primary := &fakeProvider{prefix: "aws-kms:v1:"}
 	c, err := NewCompositeProvider(primary)
 	require.NoError(t, err)
 
-	legacyBlob := []byte{0xDE, 0xAD, 0xBE, 0xEF} // no prefix, no early colon
-	pt, err := c.Decrypt(context.Background(), legacyBlob)
-	require.NoError(t, err)
-	assert.Equal(t, legacyBlob, pt, "primary must handle its own legacy format")
+	legacyBlob := []byte{0xDE, 0xAD, 0xBE, 0xEF}
+	_, err = c.Decrypt(context.Background(), legacyBlob)
+	require.ErrorIs(t, err, ErrNotMyCiphertext,
+		"legacy blob with no matching provider must return ErrNotMyCiphertext")
 	assert.Equal(t, 1, primary.decryptCalls)
 }
 
