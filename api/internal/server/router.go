@@ -69,9 +69,6 @@ type RouterConfig struct {
 	// TracingConfig is the configuration for the tracing middleware
 	TracingConfig middleware.TracingConfig
 
-	// AllowedWebSocketOrigins is a list of allowed origins for WebSocket connections
-	AllowedWebSocketOrigins []string
-
 	// SettingsHandler is the optional settings handler for admin/user settings routes
 	SettingsHandler *handlers.SettingsHandler
 
@@ -206,12 +203,11 @@ func DefaultRouterConfig() RouterConfig {
 	// after network drops don't trigger 429s.
 	rlCfg.ExemptPaths = []string{"/events", "/session-events"}
 	return RouterConfig{
-		Debug:                   false,
-		LoggingConfig:           middleware.DefaultLoggingConfig(),
-		RateLimitConfig:         rlCfg,
-		SecurityConfig:          middleware.DefaultSecurityConfig(),
-		TracingConfig:           middleware.DefaultTracingConfig(),
-		AllowedWebSocketOrigins: []string{"*"},
+		Debug:           false,
+		LoggingConfig:   middleware.DefaultLoggingConfig(),
+		RateLimitConfig: rlCfg,
+		SecurityConfig:  middleware.DefaultSecurityConfig(),
+		TracingConfig:   middleware.DefaultTracingConfig(),
 	}
 }
 

@@ -406,6 +406,30 @@ workspace:
   defaultStorageClass: ""
 
 # ----------------------------------------------------------------------------
+# Terminal WebSocket proxy
+#
+# G35: the WebSocket terminal proxy (POST /workspaces/:id/terminal/ticket →
+# GET /workspaces/:id/terminal) enforces an Origin policy on upgrade. Default
+# is same-origin only: a browser request whose Origin does not match the
+# API's own Host is rejected at upgrade. Non-browser clients (no Origin
+# header) are accepted — they authenticate via the single-use ticket, not
+# cookies, so CSRF does not apply.
+#
+# allowedOrigins: list of additional origins to accept cross-origin browser
+# requests from. Use this when the frontend and API are served from
+# different hostnames (e.g. https://app.example.com → https://api.example.com).
+# A single entry of "*" disables Origin checking entirely (the historical
+# behaviour) — use only if you understand the cross-site WebSocket
+# hijacking risk.
+#
+# Example:
+#   terminal:
+#     allowedOrigins:
+#       - https://app.example.com
+terminal:
+  allowedOrigins: []
+
+# ----------------------------------------------------------------------------
 # CRDs
 # ----------------------------------------------------------------------------
 # CRDs are installed from the chart's crds/ directory by default.
