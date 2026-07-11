@@ -55,6 +55,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   endpoints (e.g. G41 `/secrets/:id/reveal`) can be added to the same
   routes map.
 
+- **G25 — Secret `value` field no longer logged (High).** The request
+  logging middleware (`api/internal/middleware/logging.go`) masked
+  sensitive JSON fields by name (`password`, `token`, `secret`, `key`,
+  `apiKey`, `credit_card`) but NOT `value` — the field name used by
+  the secrets API to carry the plaintext credential on
+  `POST /api/v1/secrets` and `PUT /api/v1/secrets/:id`. A request to
+  create a secret logged the plaintext API key in the application log,
+  visible to anyone with log access. Two-layer fix: (1) added `value`
+  to the default `SensitiveFields` list (defense in depth — catches
+  any logged JSON with a `value` field, even on paths not in the skip
+  list); (2) added `SkipPathPrefixes` to `LoggingConfig` and configured
+  the default with the credential-bearing paths (`/api/v1/secrets`,
+  `/api/v1/account`, `/api/v1/auth`, `/api/v1/admin/provider-credentials`)
+  so bodies on those paths are never logged at all. Either layer alone
+  prevents the leak.
+
 ## [0.3.0] - 2026-07-11
 
 Network hardening sweep + KMS-backed master KEK foundation + Go security bump.
