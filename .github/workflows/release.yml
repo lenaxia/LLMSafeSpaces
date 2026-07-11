@@ -197,10 +197,48 @@ jobs:
           path: sbom-out/*.json
           retention-days: 90
 
+  # Build relay-proxy binaries for the multi-cloud inference relay fleet
+  # (Epic 42). These are distributed to relay VMs via cloud-init with
+  # SHA-256 verification. Attach to the GitHub Release so operators can
+  # download them and wire them into controller.inferenceRelay.artifact.
+  build-relay-binaries:
+    name: Build relay-proxy binaries
+    needs: [verify-changelog, wait-for-ci]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binaries
+        run: |
+          mkdir -p deploy
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o deploy/relay-proxy-arm64 ./cmd/relay-proxy/
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o deploy/relay-proxy-amd64 ./cmd/relay-proxy/
+
+      - name: Generate checksums
+        run: |
+          cd deploy
+          sha256sum relay-proxy-arm64 relay-proxy-amd64 > checksums.txt
+
+      - name: Upload binaries as artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: relay-binaries-${{ needs.verify-changelog.outputs.version }}
+          path: |
+            deploy/relay-proxy-arm64
+            deploy/relay-proxy-amd64
+            deploy/checksums.txt
+          retention-days: 7
+
   # Create the GitHub Release with notes from CHANGELOG.md.
   create-release:
     name: Create GitHub Release
-    needs: [verify-changelog, wait-for-ci, publish-chart, generate-sbom]
+    needs: [verify-changelog, wait-for-ci, publish-chart, generate-sbom, build-relay-binaries]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -210,8 +248,6 @@ jobs:
         env:
           VERSION: ${{ needs.verify-changelog.outputs.version }}
         run: |
-          # Extract the body of the section between "## [${VERSION}] - <date>"
-          # and the next "## " heading.
           awk -v v="${VERSION}" '
             $0 ~ "^## \\[" v "\\] -" { in_section=1; next }
             in_section && /^## / { exit }
@@ -223,22 +259,23 @@ jobs:
             exit 1
           fi
 
-          echo "## Release notes preview:"
-          cat release-notes.md
-
       - name: Download SBOM artifacts
         uses: actions/download-artifact@v8
         with:
           name: sbom-${{ needs.verify-changelog.outputs.version }}
           path: sbom-out
 
+      - name: Download relay binaries
+        uses: actions/download-artifact@v8
+        with:
+          name: relay-binaries-${{ needs.verify-changelog.outputs.version }}
+          path: relay-out
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.verify-changelog.outputs.version }}
         run: |
-          # Image tags follow CI's semver format (no "v" prefix — see
-          # generate-sbom above). Display them as users will actually pull.
           cat > release-body.md <<EOF
           ## Images
 
@@ -259,6 +296,13 @@ jobs:
           helm install llmsafespaces llmsafespaces/llmsafespaces --version ${VERSION}
           \`\`\`
 
+          ## Relay proxy binaries
+
+          For the self-hosted multi-cloud inference relay fleet (Epic 42).
+          Set \`controller.inferenceRelay.artifact.urls\` in Helm values to
+          the download URL below, and \`sha256Arm64\`/\`sha256Amd64\` from
+          \`checksums.txt\`.
+
           SBOM (CycloneDX JSON) for each image is attached below.
 
           ---
@@ -271,11 +315,11 @@ jobs:
             --notes-file release-body.md \
             --verify-tag
 
-      - name: Attach SBOM artifacts to release
+      - name: Attach SBOM + relay binaries to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.verify-changelog.outputs.version }}
         run: |
-          for f in sbom-out/*.json; do
+          for f in sbom-out/*.json relay-out/*; do
             gh release upload "v${VERSION}" "$f"
           done

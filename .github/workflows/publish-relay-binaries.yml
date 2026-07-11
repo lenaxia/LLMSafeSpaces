@@ -1,9 +1,12 @@
 name: Publish Relay Proxy Binaries
 
+# Manual-only trigger. Tag-triggered relay binary publishing is handled
+# by release.yml's build-relay-binaries job, which attaches the binaries
+# to the consolidated GitHub Release alongside images, chart, and SBOM.
+# This workflow remains for ad-hoc dev builds (workflow_dispatch with a
+# custom tag) that don't warrant a full release.
+
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
       tag:

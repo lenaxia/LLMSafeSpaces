@@ -270,17 +270,41 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
 	}
 
-	// Override with environment variables for sensitive data
-	if envDBPassword := os.Getenv("LLMSAFESPACES_DATABASE_PASSWORD"); envDBPassword != "" {
-		config.Database.Password = envDBPassword
+	// Apply manual env-var overrides for fields that viper's AutomaticEnv
+	// misses (nested keys, comma-separated lists, typed values). Extracted
+	// to keep Load()'s cyclomatic complexity under the linter threshold.
+	applyEnvOverrides(&config)
+
+	// JWT iss/aud defaults + Turnstile env overrides + CORS validation:
+	// all extracted to helpers for the same reason.
+	applyAuthDefaults(&config)
+	if err := applyTurnstileEnv(&config); err != nil {
+		return nil, err
+	}
+	if err := validateSecurity(&config); err != nil {
+		return nil, err
 	}
 
-	if envRedisPassword := os.Getenv("LLMSAFESPACES_REDIS_PASSWORD"); envRedisPassword != "" {
-		config.Redis.Password = envRedisPassword
-	}
+	return &config, nil
+}
 
-	if envJWTSecret := os.Getenv("LLMSAFESPACES_AUTH_JWTSECRET"); envJWTSecret != "" {
-		config.Auth.JWTSecret = envJWTSecret
+// applyEnvOverrides applies manual os.Getenv overrides for config fields
+// that viper's AutomaticEnv doesn't reliably reach (nested struct keys,
+// comma-separated lists, typed values like durations and ints). Each block
+// follows the same pattern: read env, parse if needed, assign if non-empty.
+//
+// This function is extracted from Load() to keep the latter's cyclomatic
+// complexity under the project linter threshold (65). Every if-statement
+// here would otherwise contribute to Load's complexity score.
+func applyEnvOverrides(config *Config) {
+	if v := os.Getenv("LLMSAFESPACES_DATABASE_PASSWORD"); v != "" {
+		config.Database.Password = v
+	}
+	if v := os.Getenv("LLMSAFESPACES_REDIS_PASSWORD"); v != "" {
+		config.Redis.Password = v
+	}
+	if v := os.Getenv("LLMSAFESPACES_AUTH_JWTSECRET"); v != "" {
+		config.Auth.JWTSecret = v
 	}
 
 	// F1.7.5: comma-separated list of previous JWT secrets for
@@ -311,7 +335,6 @@ func Load(path string) (*Config, error) {
 			config.Auth.LockoutDuration = d
 		}
 	}
-
 	if v := os.Getenv("LLMSAFESPACES_AUTH_REMEMBEREDURATION"); v != "" {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			config.Auth.RememberMeDuration = d
@@ -445,19 +468,6 @@ func Load(path string) (*Config, error) {
 			config.Kubernetes.PodName = hn
 		}
 	}
-
-	// JWT iss/aud defaults + Turnstile env overrides + CORS validation:
-	// all extracted to helpers to keep Load()'s cyclomatic complexity
-	// below the project linter threshold.
-	applyAuthDefaults(&config)
-	if err := applyTurnstileEnv(&config); err != nil {
-		return nil, err
-	}
-	if err := validateSecurity(&config); err != nil {
-		return nil, err
-	}
-
-	return &config, nil
 }
 
 // applyAuthDefaults populates Auth.JWTIssuer / Auth.JWTAudience with the
