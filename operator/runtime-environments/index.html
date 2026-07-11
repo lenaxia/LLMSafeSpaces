@@ -2679,7 +2679,7 @@
 <p>This resolves to <code>ghcr.io/lenaxia/llmsafespaces/base:&lt;appVersion&gt;</code>. The <code>base</code> runtime is what the smoke-test workspace uses (<code>"runtime": "base"</code>).</p>
 <hr />
 <h2 id="the-base-runtime-image">The base runtime image<a class="headerlink" href="#the-base-runtime-image" title="Permanent link">&para;</a></h2>
-<p>The base image (<a href="https://github.com/lenaxia/LLMSafeSpaces/blob/main/runtimes/base/Dockerfile"><code>runtimes/base/Dockerfile</code></a>) is built on <strong>Debian bookworm-slim</strong> (digest-pinned) and contains everything an agent needs to be useful out of the box, without any language toolchain installed yet (those come via <code>mise</code> at runtime).</p>
+<p>The base image (<a href="https://github.com/lenaxia/LLMSafeSpaces/blob/main/runtimes/base/Dockerfile"><code>runtimes/base/Dockerfile</code></a>) is built on <strong>Debian bookworm-slim</strong> (tag-pinned; Renovate configured to open digest-pinning PRs) and contains everything an agent needs to be useful out of the box, without any language toolchain installed yet (those come via <code>mise</code> at runtime).</p>
 <h3 id="system-packages">System packages<a class="headerlink" href="#system-packages" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
@@ -2956,7 +2956,7 @@
 </tr>
 </tbody>
 </table>
-<p>For custom runtime images, mirror the base image's verification practices. If you install additional binaries, pin versions and verify checksums where the upstream publishes them. Consider cosign image signing at admission time (not yet implemented).</p>
+<p>For custom runtime images, mirror the base image's verification practices. If you install additional binaries, pin versions and verify checksums where the upstream publishes them. Release images are cosign-signed (see <a href="../security/#supply-chain-security">Security Hardening</a>); admission-time verification is the remaining gap.</p>
 <hr />
 <h2 id="air-gapped-and-private-registry-deployments">Air-gapped and private registry deployments<a class="headerlink" href="#air-gapped-and-private-registry-deployments" title="Permanent link">&para;</a></h2>
 <p>For air-gapped clusters or private registries, you need to mirror the images and point the chart at them.</p>
@@ -3039,7 +3039,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 06:44:10 UTC"><span class="timeago" datetime="2026-07-11T06:44:10+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 06:44:10 UTC">2026-07-11</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 15:09:17 UTC"><span class="timeago" datetime="2026-07-11T15:09:17+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 15:09:17 UTC">2026-07-11</span>
   </span>
 
     

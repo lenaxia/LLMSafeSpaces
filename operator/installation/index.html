@@ -955,6 +955,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#verify-image-signatures-recommended" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verify image signatures (recommended)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#health-endpoints" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2407,6 +2418,17 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
+  <a href="#verify-image-signatures-recommended" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verify image signatures (recommended)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#health-endpoints" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2731,45 +2753,55 @@
 <p>The API refuses to start if <code>allowedOrigins=["*"]</code> is combined with <code>allowCredentials=true</code> — this violates the CORS spec (Fetch §3.2.1) and the fail-closed guard in <code>config.validateSecurity</code> enforces it.</p>
 <hr />
 <h2 id="verify-the-install">Verify the install<a class="headerlink" href="#verify-the-install" title="Permanent link">&para;</a></h2>
+<h3 id="verify-image-signatures-recommended">Verify image signatures (recommended)<a class="headerlink" href="#verify-image-signatures-recommended" title="Permanent link">&para;</a></h3>
+<p>Before trusting the running pods, verify the images haven't been tampered with:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a><span class="c1"># Install cosign if you don&#39;t have it: https://github.com/sigstore/cosign</span>
+</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a><span class="k">for</span><span class="w"> </span>img<span class="w"> </span><span class="k">in</span><span class="w"> </span>api<span class="w"> </span>controller<span class="w"> </span>base<span class="w"> </span>frontend<span class="w"> </span>relay-router<span class="w"> </span>relay-proxy<span class="p">;</span><span class="w"> </span><span class="k">do</span>
+</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a><span class="w">  </span>cosign<span class="w"> </span>verify<span class="w"> </span><span class="s2">&quot;ghcr.io/lenaxia/llmsafespaces/</span><span class="si">${</span><span class="nv">img</span><span class="si">}</span><span class="s2">:0.3.0&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a><span class="w">    </span>--certificate-identity-regexp<span class="w"> </span><span class="s2">&quot;https://github.com/lenaxia/LLMSafeSpaces&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-13-5"><a id="__codelineno-13-5" name="__codelineno-13-5" href="#__codelineno-13-5"></a><span class="w">    </span>--certificate-oidc-issuer<span class="w"> </span><span class="s2">&quot;https://token.actions.githubusercontent.com&quot;</span>
+</span><span id="__span-13-6"><a id="__codelineno-13-6" name="__codelineno-13-6" href="#__codelineno-13-6"></a><span class="k">done</span>
+</span></code></pre></div>
+<p>If verification passes, the images were built by the project's release workflow. See <a href="../security/#supply-chain-security">Security Hardening</a> for the full supply chain story.</p>
 <h3 id="health-endpoints">Health endpoints<a class="headerlink" href="#health-endpoints" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-13-1"><a id="__codelineno-13-1" name="__codelineno-13-1" href="#__codelineno-13-1"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>port-forward<span class="w"> </span>svc/llmsafespaces-api<span class="w"> </span><span class="m">8080</span>:8080<span class="w"> </span><span class="p">&amp;</span>
-</span><span id="__span-13-2"><a id="__codelineno-13-2" name="__codelineno-13-2" href="#__codelineno-13-2"></a>curl<span class="w"> </span>http://localhost:8080/livez<span class="w">    </span><span class="c1"># 200 — process is responsive</span>
-</span><span id="__span-13-3"><a id="__codelineno-13-3" name="__codelineno-13-3" href="#__codelineno-13-3"></a>curl<span class="w"> </span>http://localhost:8080/readyz<span class="w">   </span><span class="c1"># 200 only if Postgres AND Redis are reachable</span>
-</span><span id="__span-13-4"><a id="__codelineno-13-4" name="__codelineno-13-4" href="#__codelineno-13-4"></a>curl<span class="w"> </span>http://localhost:8080/health<span class="w">   </span><span class="c1"># legacy alias for /livez</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>port-forward<span class="w"> </span>svc/llmsafespaces-api<span class="w"> </span><span class="m">8080</span>:8080<span class="w"> </span><span class="p">&amp;</span>
+</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>curl<span class="w"> </span>http://localhost:8080/livez<span class="w">    </span><span class="c1"># 200 — process is responsive</span>
+</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a>curl<span class="w"> </span>http://localhost:8080/readyz<span class="w">   </span><span class="c1"># 200 only if Postgres AND Redis are reachable</span>
+</span><span id="__span-14-4"><a id="__codelineno-14-4" name="__codelineno-14-4" href="#__codelineno-14-4"></a>curl<span class="w"> </span>http://localhost:8080/health<span class="w">   </span><span class="c1"># legacy alias for /livez</span>
 </span></code></pre></div>
 <p>The <code>readyz</code> contract: it pings Postgres and Redis with a 2s timeout each and returns <code>503</code> if either is down. This is the signal kubelet uses for readiness — a pod that fails readiness is removed from the Service endpoints but not restarted.</p>
 <h3 id="controller-health">Controller health<a class="headerlink" href="#controller-health" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-14-1"><a id="__codelineno-14-1" name="__codelineno-14-1" href="#__codelineno-14-1"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>port-forward<span class="w"> </span>svc/llmsafespaces-controller<span class="w"> </span><span class="m">8081</span>:8081<span class="w"> </span><span class="p">&amp;</span>
-</span><span id="__span-14-2"><a id="__codelineno-14-2" name="__codelineno-14-2" href="#__codelineno-14-2"></a>curl<span class="w"> </span>http://localhost:8081/healthz
-</span><span id="__span-14-3"><a id="__codelineno-14-3" name="__codelineno-14-3" href="#__codelineno-14-3"></a>curl<span class="w"> </span>http://localhost:8081/readyz
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>port-forward<span class="w"> </span>svc/llmsafespaces-controller<span class="w"> </span><span class="m">8081</span>:8081<span class="w"> </span><span class="p">&amp;</span>
+</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>curl<span class="w"> </span>http://localhost:8081/healthz
+</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a>curl<span class="w"> </span>http://localhost:8081/readyz
 </span></code></pre></div>
 <h3 id="smoke-test-create-a-workspace">Smoke test: create a workspace<a class="headerlink" href="#smoke-test-create-a-workspace" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-15-1"><a id="__codelineno-15-1" name="__codelineno-15-1" href="#__codelineno-15-1"></a><span class="nv">API</span><span class="o">=</span>http://localhost:8080
-</span><span id="__span-15-2"><a id="__codelineno-15-2" name="__codelineno-15-2" href="#__codelineno-15-2"></a>
-</span><span id="__span-15-3"><a id="__codelineno-15-3" name="__codelineno-15-3" href="#__codelineno-15-3"></a><span class="nv">TOKEN</span><span class="o">=</span><span class="k">$(</span>curl<span class="w"> </span>-sX<span class="w"> </span>POST<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$API</span><span class="s2">/api/v1/auth/register&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-15-4"><a id="__codelineno-15-4" name="__codelineno-15-4" href="#__codelineno-15-4"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-15-5"><a id="__codelineno-15-5" name="__codelineno-15-5" href="#__codelineno-15-5"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;email&quot;:&quot;alice@example.com&quot;,&quot;password&quot;:&quot;hunter2hunter2&quot;,&quot;username&quot;:&quot;alice&quot;}&#39;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-15-6"><a id="__codelineno-15-6" name="__codelineno-15-6" href="#__codelineno-15-6"></a><span class="w">  </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-r<span class="w"> </span><span class="s1">&#39;.token&#39;</span><span class="k">)</span>
-</span><span id="__span-15-7"><a id="__codelineno-15-7" name="__codelineno-15-7" href="#__codelineno-15-7"></a>
-</span><span id="__span-15-8"><a id="__codelineno-15-8" name="__codelineno-15-8" href="#__codelineno-15-8"></a><span class="nv">WS</span><span class="o">=</span><span class="k">$(</span>curl<span class="w"> </span>-sX<span class="w"> </span>POST<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-15-9"><a id="__codelineno-15-9" name="__codelineno-15-9" href="#__codelineno-15-9"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-15-10"><a id="__codelineno-15-10" name="__codelineno-15-10" href="#__codelineno-15-10"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-15-11"><a id="__codelineno-15-11" name="__codelineno-15-11" href="#__codelineno-15-11"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;name&quot;:&quot;smoke&quot;,&quot;runtime&quot;:&quot;base&quot;,&quot;storageSize&quot;:&quot;1Gi&quot;}&#39;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-15-12"><a id="__codelineno-15-12" name="__codelineno-15-12" href="#__codelineno-15-12"></a><span class="w">  </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-r<span class="w"> </span><span class="s1">&#39;.id&#39;</span><span class="k">)</span>
-</span><span id="__span-15-13"><a id="__codelineno-15-13" name="__codelineno-15-13" href="#__codelineno-15-13"></a>
-</span><span id="__span-15-14"><a id="__codelineno-15-14" name="__codelineno-15-14" href="#__codelineno-15-14"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces/</span><span class="nv">$WS</span><span class="s2">/activate&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-15-15"><a id="__codelineno-15-15" name="__codelineno-15-15" href="#__codelineno-15-15"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">&quot;</span>
-</span><span id="__span-15-16"><a id="__codelineno-15-16" name="__codelineno-15-16" href="#__codelineno-15-16"></a>
-</span><span id="__span-15-17"><a id="__codelineno-15-17" name="__codelineno-15-17" href="#__codelineno-15-17"></a><span class="c1"># Wait for Active</span>
-</span><span id="__span-15-18"><a id="__codelineno-15-18" name="__codelineno-15-18" href="#__codelineno-15-18"></a><span class="k">while</span><span class="w"> </span><span class="o">[</span><span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>curl<span class="w"> </span>-s<span class="w"> </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-15-19"><a id="__codelineno-15-19" name="__codelineno-15-19" href="#__codelineno-15-19"></a><span class="w">    </span><span class="s2">&quot;</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces/</span><span class="nv">$WS</span><span class="s2">/status&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-r<span class="w"> </span>.phase<span class="k">)</span><span class="s2">&quot;</span><span class="w"> </span>!<span class="o">=</span><span class="w"> </span><span class="s2">&quot;Active&quot;</span><span class="w"> </span><span class="o">]</span><span class="p">;</span><span class="w"> </span><span class="k">do</span>
-</span><span id="__span-15-20"><a id="__codelineno-15-20" name="__codelineno-15-20" href="#__codelineno-15-20"></a><span class="w">  </span>sleep<span class="w"> </span><span class="m">2</span>
-</span><span id="__span-15-21"><a id="__codelineno-15-21" name="__codelineno-15-21" href="#__codelineno-15-21"></a><span class="k">done</span>
-</span><span id="__span-15-22"><a id="__codelineno-15-22" name="__codelineno-15-22" href="#__codelineno-15-22"></a><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;workspace </span><span class="nv">$WS</span><span class="s2"> is Active&quot;</span>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a><span class="nv">API</span><span class="o">=</span>http://localhost:8080
+</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>
+</span><span id="__span-16-3"><a id="__codelineno-16-3" name="__codelineno-16-3" href="#__codelineno-16-3"></a><span class="nv">TOKEN</span><span class="o">=</span><span class="k">$(</span>curl<span class="w"> </span>-sX<span class="w"> </span>POST<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$API</span><span class="s2">/api/v1/auth/register&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-16-4"><a id="__codelineno-16-4" name="__codelineno-16-4" href="#__codelineno-16-4"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-16-5"><a id="__codelineno-16-5" name="__codelineno-16-5" href="#__codelineno-16-5"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;email&quot;:&quot;alice@example.com&quot;,&quot;password&quot;:&quot;hunter2hunter2&quot;,&quot;username&quot;:&quot;alice&quot;}&#39;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-16-6"><a id="__codelineno-16-6" name="__codelineno-16-6" href="#__codelineno-16-6"></a><span class="w">  </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-r<span class="w"> </span><span class="s1">&#39;.token&#39;</span><span class="k">)</span>
+</span><span id="__span-16-7"><a id="__codelineno-16-7" name="__codelineno-16-7" href="#__codelineno-16-7"></a>
+</span><span id="__span-16-8"><a id="__codelineno-16-8" name="__codelineno-16-8" href="#__codelineno-16-8"></a><span class="nv">WS</span><span class="o">=</span><span class="k">$(</span>curl<span class="w"> </span>-sX<span class="w"> </span>POST<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-16-9"><a id="__codelineno-16-9" name="__codelineno-16-9" href="#__codelineno-16-9"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-16-10"><a id="__codelineno-16-10" name="__codelineno-16-10" href="#__codelineno-16-10"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-16-11"><a id="__codelineno-16-11" name="__codelineno-16-11" href="#__codelineno-16-11"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{&quot;name&quot;:&quot;smoke&quot;,&quot;runtime&quot;:&quot;base&quot;,&quot;storageSize&quot;:&quot;1Gi&quot;}&#39;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-16-12"><a id="__codelineno-16-12" name="__codelineno-16-12" href="#__codelineno-16-12"></a><span class="w">  </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-r<span class="w"> </span><span class="s1">&#39;.id&#39;</span><span class="k">)</span>
+</span><span id="__span-16-13"><a id="__codelineno-16-13" name="__codelineno-16-13" href="#__codelineno-16-13"></a>
+</span><span id="__span-16-14"><a id="__codelineno-16-14" name="__codelineno-16-14" href="#__codelineno-16-14"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces/</span><span class="nv">$WS</span><span class="s2">/activate&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-16-15"><a id="__codelineno-16-15" name="__codelineno-16-15" href="#__codelineno-16-15"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">&quot;</span>
+</span><span id="__span-16-16"><a id="__codelineno-16-16" name="__codelineno-16-16" href="#__codelineno-16-16"></a>
+</span><span id="__span-16-17"><a id="__codelineno-16-17" name="__codelineno-16-17" href="#__codelineno-16-17"></a><span class="c1"># Wait for Active</span>
+</span><span id="__span-16-18"><a id="__codelineno-16-18" name="__codelineno-16-18" href="#__codelineno-16-18"></a><span class="k">while</span><span class="w"> </span><span class="o">[</span><span class="w"> </span><span class="s2">&quot;</span><span class="k">$(</span>curl<span class="w"> </span>-s<span class="w"> </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-16-19"><a id="__codelineno-16-19" name="__codelineno-16-19" href="#__codelineno-16-19"></a><span class="w">    </span><span class="s2">&quot;</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces/</span><span class="nv">$WS</span><span class="s2">/status&quot;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-r<span class="w"> </span>.phase<span class="k">)</span><span class="s2">&quot;</span><span class="w"> </span>!<span class="o">=</span><span class="w"> </span><span class="s2">&quot;Active&quot;</span><span class="w"> </span><span class="o">]</span><span class="p">;</span><span class="w"> </span><span class="k">do</span>
+</span><span id="__span-16-20"><a id="__codelineno-16-20" name="__codelineno-16-20" href="#__codelineno-16-20"></a><span class="w">  </span>sleep<span class="w"> </span><span class="m">2</span>
+</span><span id="__span-16-21"><a id="__codelineno-16-21" name="__codelineno-16-21" href="#__codelineno-16-21"></a><span class="k">done</span>
+</span><span id="__span-16-22"><a id="__codelineno-16-22" name="__codelineno-16-22" href="#__codelineno-16-22"></a><span class="nb">echo</span><span class="w"> </span><span class="s2">&quot;workspace </span><span class="nv">$WS</span><span class="s2"> is Active&quot;</span>
 </span></code></pre></div>
 <h3 id="verify-the-workspace-pod">Verify the workspace pod<a class="headerlink" href="#verify-the-workspace-pod" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-16-1"><a id="__codelineno-16-1" name="__codelineno-16-1" href="#__codelineno-16-1"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>get<span class="w"> </span>pods<span class="w"> </span>-l<span class="w"> </span>llmsafespaces.dev/workspace
-</span><span id="__span-16-2"><a id="__codelineno-16-2" name="__codelineno-16-2" href="#__codelineno-16-2"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>get<span class="w"> </span>workspace<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$WS</span><span class="s2">&quot;</span><span class="w"> </span>-o<span class="w"> </span>yaml<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-A5<span class="w"> </span>conditions
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-17-1"><a id="__codelineno-17-1" name="__codelineno-17-1" href="#__codelineno-17-1"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>get<span class="w"> </span>pods<span class="w"> </span>-l<span class="w"> </span>llmsafespaces.dev/workspace
+</span><span id="__span-17-2"><a id="__codelineno-17-2" name="__codelineno-17-2" href="#__codelineno-17-2"></a>kubectl<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>get<span class="w"> </span>workspace<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$WS</span><span class="s2">&quot;</span><span class="w"> </span>-o<span class="w"> </span>yaml<span class="w"> </span><span class="p">|</span><span class="w"> </span>grep<span class="w"> </span>-A5<span class="w"> </span>conditions
 </span></code></pre></div>
 <hr />
 <h2 id="production-checklist">Production checklist<a class="headerlink" href="#production-checklist" title="Permanent link">&para;</a></h2>
@@ -2823,7 +2855,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 06:44:10 UTC"><span class="timeago" datetime="2026-07-11T06:44:10+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 06:44:10 UTC">2026-07-11</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 15:09:17 UTC"><span class="timeago" datetime="2026-07-11T15:09:17+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 15:09:17 UTC">2026-07-11</span>
   </span>
 
     
