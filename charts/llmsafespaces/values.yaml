@@ -112,6 +112,17 @@ api:
           window: 1h
 
     security:
+      # allowedOrigins: list of origins permitted to make cross-origin
+      # requests to this API. Default is the production hostname; replace
+      # with your own.
+      #
+      # allowCredentials: when true, the API sets
+      # Access-Control-Allow-Credentials: true on CORS responses, allowing
+      # authenticated cross-origin requests. The CORS spec (Fetch §3.2.1)
+      # forbids AllowedOrigins=["*"] together with allowCredentials=true,
+      # and the API refuses to start in that state (fail-closed guard in
+      # config.validateSecurity). If you need credentials, list each
+      # origin explicitly.
       allowedOrigins:
         - "https://safespace.thekao.cloud"
       allowCredentials: false
