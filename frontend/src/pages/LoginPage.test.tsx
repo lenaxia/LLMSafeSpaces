@@ -9,12 +9,13 @@ import { LoginPage } from "./LoginPage";
 const mockGetConfig = vi.fn();
 const mockDomains = vi.fn();
 const mockLookup = vi.fn();
+const mockLoginApi = vi.fn();
 
 vi.mock("../api/auth", () => ({
   authApi: {
     me: vi.fn().mockRejectedValue(new Error("401")),
     getConfig: () => mockGetConfig(),
-    login: vi.fn(),
+    login: (...args: unknown[]) => mockLoginApi(...args),
     lookup: (email: string) => mockLookup(email),
   },
 }));
@@ -276,7 +277,6 @@ describe("LoginPage", () => {
       renderLoginPage();
       await waitFor(() => expect(screen.getByText("Create an account")).toBeInTheDocument());
       const link = screen.getByText("Create an account").closest("a");
-      expect(link).toBeTruthy();
       expect(link!.getAttribute("href")).toContain("return_to=%2Fchat");
     });
 
@@ -311,10 +311,28 @@ describe("LoginPage", () => {
         expect(screen.getByText(/couldn't find an account/i)).toBeInTheDocument();
       });
 
-      // The inline "create an account" link should preserve return_to.
       const createLink = screen.getByText("create an account");
       expect(createLink).toBeInTheDocument();
       expect(createLink.closest("a")!.getAttribute("href")).toContain("return_to=%2Finvitations%2Fabc123");
+    });
+
+    it("completes login without crash when return_to is set", async () => {
+      window.history.replaceState({}, "", "/login?return_to=%2Fchat");
+      mockLoginApi.mockResolvedValue({ user: { id: "u-1", role: "user" as const } });
+      renderLoginPage();
+      await waitFor(() => expect(screen.getByPlaceholderText("Email")).toBeInTheDocument());
+
+      fireEvent.change(screen.getByPlaceholderText("Email"), { target: { value: "a@b.com" } });
+      fireEvent.change(screen.getByPlaceholderText("Password"), { target: { value: "password123" } });
+      fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
+
+      await waitFor(() => {
+        expect(mockLoginApi).toHaveBeenCalledWith({
+          email: "a@b.com",
+          password: "password123",
+          rememberMe: false,
+        });
+      });
     });
   });
 });
