@@ -1,7 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { screen, waitFor, fireEvent } from "@testing-library/react";
+import { screen, waitFor, fireEvent, act } from "@testing-library/react";
 import { render } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+import * as ReactRouter from "react-router-dom";
 import { AuthProvider } from "../providers/AuthProvider";
 import { LoginPage } from "./LoginPage";
 
@@ -10,6 +11,15 @@ const mockGetConfig = vi.fn();
 const mockDomains = vi.fn();
 const mockLookup = vi.fn();
 const mockLoginApi = vi.fn();
+const mockNavigate = vi.fn();
+
+vi.mock("react-router-dom", async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof ReactRouter;
+  return {
+    ...actual,
+    useNavigate: () => mockNavigate,
+  };
+});
 
 vi.mock("../api/auth", () => ({
   authApi: {
@@ -316,15 +326,20 @@ describe("LoginPage", () => {
       expect(createLink.closest("a")!.getAttribute("href")).toContain("return_to=%2Finvitations%2Fabc123");
     });
 
-    it("completes login without crash when return_to is set", async () => {
+    it("navigates to return_to after successful login", async () => {
       window.history.replaceState({}, "", "/login?return_to=%2Fchat");
       mockLoginApi.mockResolvedValue({ user: { id: "u-1", role: "user" as const } });
+      mockNavigate.mockClear();
+
       renderLoginPage();
       await waitFor(() => expect(screen.getByPlaceholderText("Email")).toBeInTheDocument());
 
       fireEvent.change(screen.getByPlaceholderText("Email"), { target: { value: "a@b.com" } });
       fireEvent.change(screen.getByPlaceholderText("Password"), { target: { value: "password123" } });
-      fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
+      });
 
       await waitFor(() => {
         expect(mockLoginApi).toHaveBeenCalledWith({
@@ -333,6 +348,8 @@ describe("LoginPage", () => {
           rememberMe: false,
         });
       });
+
+      expect(mockNavigate).toHaveBeenCalledWith("/chat");
     });
   });
 });

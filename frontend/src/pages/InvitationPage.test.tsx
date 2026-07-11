@@ -11,6 +11,12 @@ const mockGetInvitationByToken = vi.fn();
 const mockAcceptInvitation = vi.fn();
 const mockDeclineInvitation = vi.fn();
 
+let mockUser: { id: string; role: string; email: string } | null = {
+  id: "u-1",
+  role: "member",
+  email: "invitee@example.com",
+};
+
 vi.mock("../api/orgs", () => ({
   orgsApi: {
     getInvitationByToken: (token: string) => mockGetInvitationByToken(token),
@@ -21,7 +27,7 @@ vi.mock("../api/orgs", () => ({
 
 vi.mock("../providers/AuthProvider", () => ({
   useAuth: () => ({
-    user: { id: "u-1", role: "member", email: "invitee@example.com" },
+    user: mockUser,
     loading: false,
     login: vi.fn(),
     register: vi.fn(),
@@ -82,6 +88,7 @@ describe("InvitationPage", () => {
     mockGetInvitationByToken.mockResolvedValue(INVITATION_DETAIL);
     mockAcceptInvitation.mockResolvedValue({ membership: MEMBERSHIP });
     mockDeclineInvitation.mockResolvedValue({ status: "declined" });
+    mockUser = { id: "u-1", role: "member", email: "invitee@example.com" };
   });
 
   afterEach(() => {
@@ -285,5 +292,31 @@ describe("InvitationPage", () => {
       const acceptBtn = screen.getByText("Accept");
       expect(acceptBtn).toBeDisabled();
     });
+  });
+
+  it("shows Sign in / Create account links when unauthenticated", async () => {
+    mockUser = null;
+
+    renderInvitationPage();
+    await waitFor(() => {
+      expect(screen.getByText("Organisation Invitation")).toBeInTheDocument();
+    });
+
+    // Should see the auth prompt instead of Accept/Decline.
+    expect(
+      screen.getByText(/Sign in or create an account/),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Sign in")).toBeInTheDocument();
+    expect(screen.getByText("Create account")).toBeInTheDocument();
+
+    // Accept/Decline buttons should NOT be present.
+    expect(screen.queryByText("Accept")).not.toBeInTheDocument();
+    expect(screen.queryByText("Decline")).not.toBeInTheDocument();
+
+    // Links should preserve the invitation path.
+    const signInLink = screen.getByText("Sign in").closest("a");
+    expect(signInLink!.getAttribute("href")).toContain(
+      "return_to=%2Finvitations%2Fabc123",
+    );
   });
 });
