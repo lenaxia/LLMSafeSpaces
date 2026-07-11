@@ -225,7 +225,7 @@ type Config struct {
 	//     does not match the API's own Host are rejected at upgrade.
 	//     Non-browser clients (no Origin) are accepted; they authenticate
 	//     via the single-use ticket, not cookies.
-	//   - Contains "*": all origins accepted (the historical behaviour).
+	//   - Contains "*": all origins accepted (the historical behavior).
 	//     Operators who really want this must opt in explicitly.
 	//   - Otherwise: same-origin requests plus anything in the list.
 	//
@@ -259,6 +259,8 @@ type AWSKMSConfig struct {
 }
 
 // Load loads configuration from file and environment variables
+//
+//nolint:gocyclo // grandfathered; tracked for incremental reduction per .golangci.yml
 func Load(path string) (*Config, error) {
 	var config Config
 

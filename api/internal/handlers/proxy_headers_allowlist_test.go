@@ -16,7 +16,7 @@ import (
 
 // G34: the proxy must forward only an explicit allowlist of client headers
 // into the tenant pod, and must strip hop-by-hop headers in both directions.
-// The previous behaviour copied every client header verbatim, which forwarded
+// The previous behavior copied every client header verbatim, which forwarded
 // Authorization, Cookie, Origin, Referer, and every X-Forwarded-* header into
 // the sandbox before overwriting Authorization with the opencode basic-auth
 // password — leaking the caller's session material to untrusted agent code.

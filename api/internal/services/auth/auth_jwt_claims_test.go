@@ -171,7 +171,7 @@ func TestValidateToken_AcceptsCorrectISSandAUD(t *testing.T) {
 
 func TestGenerateToken_DefaultsWhenConfigEmpty(t *testing.T) {
 	// When the operator doesn't set iss/aud, the defaults "llmsafespaces"
-	// are used. This is the chart's out-of-the-box behaviour.
+	// are used. This is the chart's out-of-the-box behavior.
 	svc := newJWTServiceWithClaims(t, "", "")
 	token, err := svc.GenerateToken("user-1")
 	require.NoError(t, err)
