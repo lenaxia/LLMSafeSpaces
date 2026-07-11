@@ -1707,6 +1707,8 @@
       
         
       
+        
+      
     
     
     
@@ -1860,6 +1862,34 @@
     
   
     Worklogs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/docs-maintenance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Docs Maintenance
   
 
     
@@ -2378,8 +2408,8 @@
 <li><strong>Ownership enforcement.</strong> <code>WorkspaceAccessMiddleware</code> resolves the workspace, checks <code>WorkspaceOwner{UserID, OrgID}</code> against the caller's identity, and rejects with 403 on mismatch. This sits on the <code>idGroup</code> route group, which all proxy routes inherit — the G33 IDOR fix.</li>
 <li><strong>Workspace CRUD + lifecycle API.</strong> Create/list/get/rename/delete, plus <code>suspend</code>/<code>activate</code>/<code>restart</code>. These mutate the CRD <code>spec</code> (the API is the sole writer of <code>spec.suspend</code>); the controller does the actual pod work.</li>
 <li><strong>Reverse proxy to pods.</strong> Resolves pod IP from the cached CRD status, injects <code>Authorization: Basic &lt;workspace-pw&gt;</code>, and forwards. Strips client headers down to an explicit allowlist (<code>Content-Type</code>, <code>Accept</code>, <code>X-Request-ID</code>) and hop-by-hop headers in both directions — the G34 fix.</li>
-<li><strong>Zero-knowledge secret store.</strong> Encrypts user secrets with per-user DEKs (AES-256-GCM) before they ever touch PostgreSQL. The platform never stores or returns plaintext. See <a href="../secrets/">secrets</a>.</li>
-<li><strong>Provider credentials (admin + user) and auto-apply rules.</strong> Admin credentials are encrypted under the master KEK; user credentials are zero-knowledge.</li>
+<li><strong>Encrypted secret store.</strong> Encrypts user secrets with per-user DEKs (AES-256-GCM) before they ever touch PostgreSQL. The platform never stores or returns plaintext. See <a href="../secrets/">secrets</a>.</li>
+<li><strong>Provider credentials (admin + user) and auto-apply rules.</strong> Admin credentials are encrypted under the master KEK; user credentials are encrypted with per-user DEKs.</li>
 <li><strong>Settings</strong> (admin instance + user preferences) — declarative schema, stored in PostgreSQL.</li>
 <li><strong>Session management + SSE events + terminal proxy.</strong> Session metadata is mirrored in PostgreSQL with backfill from the agent; the SSE stream is user-scoped.</li>
 <li><strong>Patch-part filtering.</strong> Strips <code>type=="patch"</code> from message/history responses unless <code>?verbose=true</code>.</li>
@@ -2463,7 +2493,7 @@
 <ul>
 <li><strong>Users</strong> — accounts, password hashes (bcrypt cost 12), roles (first-user-becomes-admin via atomic SQL CTE).</li>
 <li><strong>API keys</strong> — <code>lsp_…</code> keys, bcrypt-hashed, with <code>key_version</code> columns for KEK rotation.</li>
-<li><strong>Encrypted secrets</strong> — the zero-knowledge store. Each row is AES-256-GCM ciphertext under a per-user DEK; the DEK itself is wrapped by a KEK derived from the user's password. A DB compromise yields only useless ciphertext.</li>
+<li><strong>Encrypted secrets</strong> — the encrypted secret store. Each row is AES-256-GCM ciphertext under a per-user DEK; the DEK itself is wrapped by a KEK derived from the user's password. A DB compromise yields only useless ciphertext.</li>
 <li><strong>Wrapped DEKs</strong> (<code>user_keys</code> table) — useless without the password (HKDF/Argon2id-derived KEK).</li>
 <li><strong>Org SSO configs</strong> — client secrets encrypted under the master KEK.</li>
 <li><strong>Settings</strong> — instance + user, declarative schema.</li>
@@ -2545,7 +2575,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 06:44:10 UTC"><span class="timeago" datetime="2026-07-11T06:44:10+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 06:44:10 UTC">2026-07-11</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 07:21:03 UTC"><span class="timeago" datetime="2026-07-11T07:21:03+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 07:21:03 UTC">2026-07-11</span>
   </span>
 
     

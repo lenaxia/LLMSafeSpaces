@@ -988,16 +988,27 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#per-user-deks-and-the-zero-knowledge-secret-store" class="md-nav__link">
+  <a href="#per-user-deks-and-the-encrypted-secret-store" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Per-user DEKs and the zero-knowledge secret store
+        Per-user DEKs and the encrypted secret store
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Per-user DEKs and the zero-knowledge secret store">
+    <nav class="md-nav" aria-label="Per-user DEKs and the encrypted secret store">
       <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#two-encryption-tiers-read-this-if-you-operate-multi-tenant" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Two encryption tiers — read this if you operate multi-tenant
+      
+    </span>
+  </a>
+  
+</li>
         
           <li class="md-nav__item">
   <a href="#workspace-credentials" class="md-nav__link">
@@ -1790,6 +1801,8 @@
       
         
       
+        
+      
     
     
     
@@ -1943,6 +1956,34 @@
     
   
     Worklogs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/docs-maintenance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Docs Maintenance
   
 
     
@@ -2315,16 +2356,27 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#per-user-deks-and-the-zero-knowledge-secret-store" class="md-nav__link">
+  <a href="#per-user-deks-and-the-encrypted-secret-store" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Per-user DEKs and the zero-knowledge secret store
+        Per-user DEKs and the encrypted secret store
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="Per-user DEKs and the zero-knowledge secret store">
+    <nav class="md-nav" aria-label="Per-user DEKs and the encrypted secret store">
       <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#two-encryption-tiers-read-this-if-you-operate-multi-tenant" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Two encryption tiers — read this if you operate multi-tenant
+      
+    </span>
+  </a>
+  
+</li>
         
           <li class="md-nav__item">
   <a href="#workspace-credentials" class="md-nav__link">
@@ -2510,7 +2562,7 @@
 <li><a href="#pod-security-context">Pod security context</a></li>
 <li><a href="#gvisor-kernel-isolation">gVisor kernel isolation</a></li>
 <li><a href="#the-master-kek">The master KEK</a></li>
-<li><a href="#per-user-deks-and-the-zero-knowledge-secret-store">Per-user DEKs and the zero-knowledge secret store</a></li>
+<li><a href="#per-user-deks-and-the-encrypted-secret-store">Per-user DEKs and the encrypted secret store</a></li>
 <li><a href="#jwt-hardening">JWT hardening</a></li>
 <li><a href="#cors-and-the-terminal-origin-check">CORS and the terminal Origin check</a></li>
 <li><a href="#the-runtimeclass-webhook">The RuntimeClass webhook</a></li>
@@ -2756,7 +2808,7 @@
 <h3 id="domain-separation-us-507">Domain separation (US-50.7)<a class="headerlink" href="#domain-separation-us-507" title="Permanent link">&para;</a></h3>
 <p>The <code>api_keys</code> provider derives from purpose <code>"master-kek"</code> rather than reusing the Redis DEK-cache key (<code>"dek-cache"</code>). This narrows blast radius: a Redis compromise cannot help unwrap Postgres <code>api_keys</code> DEKs.</p>
 <hr />
-<h2 id="per-user-deks-and-the-zero-knowledge-secret-store">Per-user DEKs and the zero-knowledge secret store<a class="headerlink" href="#per-user-deks-and-the-zero-knowledge-secret-store" title="Permanent link">&para;</a></h2>
+<h2 id="per-user-deks-and-the-encrypted-secret-store">Per-user DEKs and the encrypted secret store<a class="headerlink" href="#per-user-deks-and-the-encrypted-secret-store" title="Permanent link">&para;</a></h2>
 <p>User secrets (LLM keys, SSH keys, env secrets) are encrypted with a <strong>per-user DEK</strong> (AES-256-GCM), derived from the user's password via HKDF-SHA256. The platform never stores plaintext.</p>
 <pre class="mermaid"><code>graph LR
     PW["User password"] --&gt;|HKDF-SHA256| DEK["Per-user DEK"]
@@ -2764,10 +2816,37 @@
     KEK["Master KEK"] --&gt;|wraps| WDEK["Wrapped DEK&lt;br/&gt;(PostgreSQL user_keys)"]</code></pre>
 <p>Consequences:</p>
 <ul>
-<li>The platform cannot decrypt user secrets without the user's password (zero-knowledge).</li>
+<li>The platform cannot decrypt user secrets without the user's password — these secrets are effectively user-controlled and unavailable to a platform compromise that does not also have the password.</li>
 <li>A password change re-wraps the DEK but does <strong>not</strong> invalidate sessions by default (gap G38 — sessions survive password change; this is open).</li>
 <li>Auto-provisioned SSO users have a random unusable bcrypt hash, so they have no password to derive a DEK from. Personal credential operations stay unavailable until they set a password; org workspaces still work via server-side injection.</li>
 </ul>
+<h3 id="two-encryption-tiers-read-this-if-you-operate-multi-tenant">Two encryption tiers — read this if you operate multi-tenant<a class="headerlink" href="#two-encryption-tiers-read-this-if-you-operate-multi-tenant" title="Permanent link">&para;</a></h3>
+<p>The platform has two distinct encryption tiers. Do not conflate them when reasoning about threat models:</p>
+<table>
+<thead>
+<tr>
+<th>Tier</th>
+<th>What's in it</th>
+<th>Key derived from</th>
+<th>Platform can decrypt without user input?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>User-password tier</strong></td>
+<td>User-supplied secrets (LLM keys, SSH keys, env vars in the <code>/secrets</code> API)</td>
+<td>User's password via Argon2id → KEK → DEK</td>
+<td><strong>No.</strong> Without the password the ciphertext is unrecoverable.</td>
+</tr>
+<tr>
+<td><strong>Server-KEK tier</strong></td>
+<td>API keys at rest, admin/org LLM provider credentials, org SSO <code>client_secret</code>s</td>
+<td>Master KEK (file mount or cloud KMS)</td>
+<td><strong>Yes.</strong> The platform needs to read these to function (e.g. completing an OIDC token exchange), so they are always decryptable by the platform.</td>
+</tr>
+</tbody>
+</table>
+<p>The SSO tier being "less secure" than the password tier is an intentional tradeoff: SSO requires the platform to present the client secret to the IdP on the user's behalf, so the platform must be able to decrypt it. If your threat model assumes a trusted platform (you operate the cluster) this is fine. If you cannot trust the platform with plaintext SSO credentials, do not use the org-SSO feature — use the password-tier secret store for everything.</p>
 <h3 id="workspace-credentials">Workspace credentials<a class="headerlink" href="#workspace-credentials" title="Permanent link">&para;</a></h3>
 <p>Workspace credentials (the opencode basic-auth password, bound secrets) are stored exclusively as <strong>Kubernetes Secrets</strong> — never in PostgreSQL, Redis, or logs. They are materialized into the workspace pod via init containers onto tmpfs (<code>/sandbox-cfg</code>, <code>/sandbox-runtime</code>), which is wiped on pod death.</p>
 <hr />
@@ -2915,7 +2994,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 06:44:10 UTC"><span class="timeago" datetime="2026-07-11T06:44:10+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 06:44:10 UTC">2026-07-11</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 07:21:03 UTC"><span class="timeago" datetime="2026-07-11T07:21:03+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 07:21:03 UTC">2026-07-11</span>
   </span>
 
     
