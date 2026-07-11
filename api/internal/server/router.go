@@ -25,6 +25,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/utilities"
 	"github.com/lenaxia/llmsafespaces/pkg/settings"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
+	"github.com/lenaxia/llmsafespaces/pkg/version"
 )
 
 // TurnstileRouterConfig is the routing-side view of Cloudflare Turnstile
@@ -585,9 +586,13 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 	})
 
 	// Liveness probe — always returns 200 if the process is responding.
-	// Use this for Kubernetes livenessProbe.
+	// Use this for Kubernetes livenessProbe. Includes the build version so
+	// operators can verify which version is running via a simple curl.
 	livenessHandler := func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "ok",
+			"version": version.Version,
+		})
 	}
 	router.GET("/livez", livenessHandler)
 

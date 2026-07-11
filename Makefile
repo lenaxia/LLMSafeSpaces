@@ -18,7 +18,8 @@ BINARY_UNIX=$(BINARY_NAME)_unix
         check tools-install \
         gitleaks govulncheck trivy-fs trivy-config security-scan \
         migration-roundtrip migration-fk-cascade migration-idempotent migration-data-cleanup migration-safety migration-safety-docker \
-        test-full cover-floor mutation
+        test-full cover-floor mutation \
+        release-tag release-verify-changelog
 
 all: test build
 
@@ -514,3 +515,48 @@ mutation:
 	@target=$${TARGET:-pkg/secrets}; \
 	echo "Running gremlins on ./$${target} ..."; \
 	gremlins unleash ./$${target} --workers 2
+
+# release-verify-changelog: confirm CHANGELOG.md has a section for VERSION.
+# Used by release-tag and by CI on tag push.
+release-verify-changelog:
+	@test -n "$(VERSION)" || { echo "VERSION is required (make release-verify-changelog VERSION=0.3.0)"; exit 1; }
+	@grep -E "^## \[$(VERSION)\] - [0-9]{4}-[0-9]{2}-[0-9]{2}" CHANGELOG.md >/dev/null \
+		|| { echo "FAIL: CHANGELOG.md is missing a section for v$(VERSION)."; \
+		     echo "Add a heading like '## [$(VERSION)] - $$(date -u +%Y-%m-%d)' with the release notes."; \
+		     exit 1; }
+	@echo "OK: CHANGELOG section for v$(VERSION) found."
+
+# release-tag: cut an annotated release tag and push it. The Release
+# workflow on GitHub Actions builds/publishes everything from there.
+#
+# Usage:
+#   make release-tag VERSION=0.3.0
+#
+# Checks:
+#   - VERSION matches semver (X.Y.Z)
+#   - main is up to date with origin
+#   - CHANGELOG.md has a section for the version
+#   - tag doesn't already exist
+release-tag:
+	@test -n "$(VERSION)" || { echo "VERSION is required (make release-tag VERSION=0.3.0)"; exit 1; }
+	@echo "$(VERSION)" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$$' >/dev/null \
+		|| { echo "FAIL: VERSION must be semver X.Y.Z (no leading 'v')."; exit 1; }
+	@git rev-parse -q --verify "refs/tags/v$(VERSION)" >/dev/null \
+		&& { echo "FAIL: tag v$(VERSION) already exists."; exit 1; } || true
+	@$(MAKE) -s release-verify-changelog VERSION=$(VERSION)
+	@echo "Fetching origin..."
+	@git fetch origin main >/dev/null
+	@behind=$$(git rev-list --count HEAD..origin/main); \
+	if [ "$$behind" -ne 0 ]; then \
+		echo "FAIL: HEAD is $$behind commits behind origin/main. Rebase first."; \
+		exit 1; \
+	fi
+	@echo "Cutting tag v$(VERSION)..."
+	@git tag -a "v$(VERSION)" -m "Release v$(VERSION)"
+	@echo "Pushing tag v$(VERSION) to origin..."
+	@git push origin "v$(VERSION)"
+	@echo ""
+	@echo "Tag v$(VERSION) pushed. The Release workflow is now running:"
+	@echo "  https://github.com/lenaxia/LLMSafeSpaces/actions/workflows/release.yml"
+	@echo "Watch for the GitHub Release to appear at:"
+	@echo "  https://github.com/lenaxia/LLMSafeSpaces/releases/tag/v$(VERSION)"

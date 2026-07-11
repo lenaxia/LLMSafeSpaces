@@ -1,0 +1,13 @@
+# .github/cr.yaml — chart-releaser configuration
+# Used by the Release workflow's publish-chart job.
+#
+# Pages index is published to the `gh-pages` branch at the repository root,
+# so operators add the repo as:
+#   helm repo add llmsafespaces https://lenaxia.github.io/LLMSafeSpaces/
+
+owner: lenaxia
+git-repo: LLMSafeSpaces
+pages-branch: gh-pages
+charts-dir: charts
+index-path: index.yaml
+package-path: .
