@@ -546,7 +546,7 @@ func newAWSKMSProvider(cfg *config.Config, keyArn string) (*secrets.AWSKMSProvid
 // service-account JSON file. Each per-purpose KMS provider gets its own
 // instance with a different key resource name.
 func newGPCKMSProvider(cfg *config.Config, keyName string) (*secrets.GPCKMSProvider, error) {
-	credsOpt := option.WithCredentialsFile(cfg.Security.KMS.GCP.CredentialsFile)
+	credsOpt := option.WithAuthCredentialsFile(option.ServiceAccount, cfg.Security.KMS.GCP.CredentialsFile)
 	client, err := gcpKMS.NewKeyManagementClient(context.Background(), credsOpt)
 	if err != nil {
 		return nil, fmt.Errorf("creating GCP KMS client: %w", err)
