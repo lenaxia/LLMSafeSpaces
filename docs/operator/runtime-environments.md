@@ -49,7 +49,7 @@ This resolves to `ghcr.io/lenaxia/llmsafespaces/base:<appVersion>`. The `base` r
 
 ## The base runtime image
 
-The base image ([`runtimes/base/Dockerfile`](https://github.com/lenaxia/LLMSafeSpaces/blob/main/runtimes/base/Dockerfile)) is built on **Debian bookworm-slim** (digest-pinned) and contains everything an agent needs to be useful out of the box, without any language toolchain installed yet (those come via `mise` at runtime).
+The base image ([`runtimes/base/Dockerfile`](https://github.com/lenaxia/LLMSafeSpaces/blob/main/runtimes/base/Dockerfile)) is built on **Debian bookworm-slim** (tag-pinned; Renovate configured to open digest-pinning PRs) and contains everything an agent needs to be useful out of the box, without any language toolchain installed yet (those come via `mise` at runtime).
 
 ### System packages
 
@@ -257,7 +257,7 @@ If you build a runtime image **from scratch** (not extending base), you must pro
 | mise | Sigstore GitHub attestations | None (G19 fixed) |
 | redact, agentd | Built from source in multi-stage build | None |
 
-For custom runtime images, mirror the base image's verification practices. If you install additional binaries, pin versions and verify checksums where the upstream publishes them. Consider cosign image signing at admission time (not yet implemented).
+For custom runtime images, mirror the base image's verification practices. If you install additional binaries, pin versions and verify checksums where the upstream publishes them. Release images are cosign-signed (see [Security Hardening](security.md#supply-chain-security)); admission-time verification is the remaining gap.
 
 ---
 

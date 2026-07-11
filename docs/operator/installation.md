@@ -259,6 +259,21 @@ The API refuses to start if `allowedOrigins=["*"]` is combined with `allowCreden
 
 ## Verify the install
 
+### Verify image signatures (recommended)
+
+Before trusting the running pods, verify the images haven't been tampered with:
+
+```bash
+# Install cosign if you don't have it: https://github.com/sigstore/cosign
+for img in api controller base frontend relay-router relay-proxy; do
+  cosign verify "ghcr.io/lenaxia/llmsafespaces/${img}:0.3.0" \
+    --certificate-identity-regexp "https://github.com/lenaxia/LLMSafeSpaces" \
+    --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+done
+```
+
+If verification passes, the images were built by the project's release workflow. See [Security Hardening](security.md#supply-chain-security) for the full supply chain story.
+
 ### Health endpoints
 
 ```bash

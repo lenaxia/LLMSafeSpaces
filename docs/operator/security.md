@@ -46,7 +46,7 @@ These are documented limitations, not bugs. See the [Threat Model](../architectu
 | Gap | Severity | Status | Operator action |
 |---|---|---|---|
 | **G4** — No mTLS between API and workspace pods | Medium | Open | Deploy a service mesh (Linkerd/Istio) if pod-network MITM is in your threat model. |
-| **G9** — opencode/gh binary not checksum-verified at build | Medium | Open | Pin versions; track upstream CVEs. Implement cosign at admission time. |
+| **G9** — opencode/gh binary not checksum-verified at build | Medium | Open | Pin versions; track upstream CVEs. Release images are now cosign-signed (see [Supply chain security](#supply-chain-security) below); admission-time verification is the remaining gap. |
 | **G13** — Account lockout keyed on email only (DoS) | Medium | Open | Attacker who knows a victim email can lock them out. |
 | **G25** — Secret `value` field logged unredacted in request bodies | High | Open | Avoid debug body logging on `/api/v1/secrets/*` in production. |
 | **G30** — External DNS resolvers reachable (DNS exfil) | Medium | Open | See [Networking](networking.md#dns-exfiltration). |
@@ -328,7 +328,7 @@ LLMSafeSpaces is **v0.3.x**. Not everything is perfect. The most operationally r
 4. **No in-process JWT rotation (A8).** Rotating the JWT secret invalidates all sessions and requires a restart.
 5. **IPv6 egress unrestricted (G43).** Assume IPv4-only workspace networking.
 6. **DNS exfiltration not blocked (G30).** See [Networking](networking.md#dns-exfiltration).
-7. **opencode binary not checksum-verified (G9).** Pin versions; the upstream does not publish checksums.
+7. **opencode binary not checksum-verified (G9).** Pin versions; the upstream does not publish checksums. Release images are cosign-signed so the image as a whole has provenance, but the opencode binary inside is not individually verified.
 
 **Do not deploy this as a public multi-tenant SaaS** without reviewing the [Threat Model](../architecture/threat-model.md) and the remaining open gaps. It is suitable for homelab and small-team deployments with the threat model understood.
 

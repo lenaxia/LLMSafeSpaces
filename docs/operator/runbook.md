@@ -202,10 +202,27 @@ kubectl get events -n llmsafespaces --since=2h | grep -i "secret\|workspace"
 - [ ] Audit logs reviewed for data exfiltration (note: decrypt audit is G50, not yet wired — check API access logs instead).
 - [ ] Workspace passwords (per-workspace K8s Secrets) reviewed for tampering.
 - [ ] NetworkPolicy reviewed for any rules the attacker may have added/relaxed.
-- [ ] Image digests verified (ensure no image tampering).
+- [ ] Images verified with cosign (see [Verifying image signatures](#verifying-image-signatures) below).
 
 !!! warning "Decrypt audit is not wired (G50)"
     The `AuditedProvider` exists but is not wired into production decrypt paths. Exfiltration via legitimate API decrypt calls is currently **undetectable** from the platform's audit log. Rely on API access logs, Redis monitoring, and Postgres query logs for forensic analysis.
+
+---
+
+## Verifying image signatures
+
+All release images are signed with cosign keyless (OIDC). After a security incident or before deploying to a production cluster, verify the images haven't been tampered with:
+
+```bash
+for img in api controller base frontend relay-router relay-proxy; do
+  echo "Verifying ${img}..."
+  cosign verify "ghcr.io/lenaxia/llmsafespaces/${img}:0.3.0" \
+    --certificate-identity-regexp "https://github.com/lenaxia/LLMSafeSpaces" \
+    --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
+done
+```
+
+If any verification fails, the image was not built by the project's release workflow — do not deploy it. Pull a known-good version from the [GitHub Releases page](https://github.com/lenaxia/LLMSafeSpaces/releases) instead.
 
 ---
 

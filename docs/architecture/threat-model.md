@@ -92,7 +92,7 @@ These are the gaps to prioritize if you're hardening a deployment:
 | **G25** | Secret value field logged unredacted | High | `logging.go:48` — `SensitiveFields` doesn't include `"value"`. Add it, route JSON through `pkg/redact.Redact()`, or disable body logging for `/api/v1/secrets/*`. |
 | **G50** | Decrypt operations are not audited | Medium | `NewAuditedProvider` exists but has zero production call sites. Wiring awaits US-50.2 (unify crypto layers — `AdminKeyDeriver` removal). Currently `secret_audit_log` records only CRUD, not decrypts. |
 | **G4** | No mTLS between API and sandbox pods | Medium | Plain HTTP `http://{pod_ip}:4096`. Implement mTLS via per-workspace cert or service mesh. |
-| **G9** | opencode/gh binaries downloaded without checksum verification | Medium | Dockerfile uses `curl --fail` over TLS only; no checksum or Sigstore. opencode upstream doesn't publish checksums; gh does (`.sha256`) — should verify. |
+| **G9** | opencode/gh binaries downloaded without checksum verification | Medium | Dockerfile uses `curl --fail` over TLS only; no checksum or Sigstore. opencode upstream doesn't publish checksums; gh does (`.sha256`) — should verify. Release images are cosign-signed so image-level provenance is verifiable; individual binary verification is the remaining gap. |
 | **G13** | Account lockout keyed on email only | Medium | `lockoutKey := lockout:%s` keyed on email — attacker who knows victim email can lock them out from any IP. Add IP component or progressive delays + CAPTCHA. |
 | **G30** | Egress NetPol allows external DNS resolvers (e.g. 8.8.8.8:53) | Medium | DNS-to-kube-dns and `0.0.0.0/0 except RFC1918` rules are OR-ed; enables DNS exfil/tunneling. Use Cilium FQDN policies or Calico GlobalNetworkPolicy. |
 
@@ -149,7 +149,7 @@ These are documented with rationale and compensating controls:
 | A3 | Node OS patched, container runtime current | Unvalidated — operator responsibility. |
 | A4 | TLS termination at ingress | Validated (`tls: true` default for frontend ingress). |
 | A5/A6 | Redis/PostgreSQL not exposed outside the cluster | Validated (no Service created; datastore NetworkPolicy restricts ingress). |
-| A7 | Container images from a trusted registry | Partial — base image uses tag-only (not digest-pinned); opencode/gh downloaded over TLS without checksum (G9). |
+| A7 | Container images from a trusted registry | Partial — release images cosign-signed (keyless OIDC + Rekor); Dockerfile FROMs tag-pinned (Renovate `docker:pinDigests` opens digest-pinning PRs); opencode/gh downloaded over TLS without checksum (G9). Trivy image scanning on every release. |
 | A8 | JWT signing keys rotated periodically | Refuted (no rotation primitives — restart-with-new-secret only). KEK rotation: supported end-to-end (`rotate-kek` CLI shipped). |
 
 ## Out of scope

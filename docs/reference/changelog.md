@@ -1,8 +1,9 @@
 # Changelog
 
-All notable changes to LLMSafeSpaces are documented here. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+All notable changes to LLMSafeSpaces are documented in this file.
 
-The canonical source is [`CHANGELOG.md`](https://github.com/lenaxia/LLMSafeSpaces/blob/main/CHANGELOG.md) in the repository root.
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
@@ -84,6 +85,25 @@ Network hardening sweep + KMS-backed master KEK foundation + Go security bump.
 - **Go 1.25.12.** Bumped from 1.25.11 to fix `GO-2026-5856`
   (Encrypted Client Hello privacy leak in `crypto/tls`).
   ([#512](https://github.com/lenaxia/LLMSafeSpaces/pull/512))
+
+- **Supply chain hardening.** Release images are now cosign-signed
+  (keyless OIDC, Rekor transparency log). Trivy image scanning runs
+  on every built OCI image. Renovate `docker:pinDigests` opens PRs to
+  pin Dockerfile FROM lines to immutable digests.
+  ([#534](https://github.com/lenaxia/LLMSafeSpaces/pull/534))
+
+- **Documentation site.** New MkDocs Material site at
+  https://lenaxia.github.io/LLMSafeSpaces/ — 32 pages across 7
+  sections (Getting Started, Operator Guide, Architecture, API
+  Reference, Contributing, Reference). Docs-maintenance runbook
+  documents content inventory, drift triggers, and procedures.
+  ([#527](https://github.com/lenaxia/LLMSafeSpaces/pull/527),
+  [#529](https://github.com/lenaxia/LLMSafeSpaces/pull/529),
+  [#530](https://github.com/lenaxia/LLMSafeSpaces/pull/530))
+
+- **Chart path cleanup.** `charts/llmsafespaces/` → top-level `/helm`.
+  Zero impact on consumers (chart registry URL unchanged).
+  ([#526](https://github.com/lenaxia/LLMSafeSpaces/pull/526))
 
 - **New chart values:** `terminal.allowedOrigins`, `auth.jwtIssuer`,
   `auth.jwtAudience`. See the security entries above for usage.
