@@ -95,34 +95,24 @@ jobs:
   # Gate: wait for the CI workflow to finish successfully on this tag.
   # Images are built by CI; this release workflow only packages the chart,
   # generates SBOM, and creates the Release.
+  #
+  # We don't wait for specific check names (e.g. "Merge API Manifest")
+  # because lewagon/wait-on-check-action fails when the named check doesn't
+  # exist yet — and CI's merge jobs only START after their build dependencies
+  # finish (10+ min into the run). Instead we wait for ALL checks on the ref
+  # to complete, filtering to ignore the Release workflow's own jobs.
   wait-for-ci:
     name: Wait for CI workflow
     needs: verify-changelog
     runs-on: ubuntu-latest
     steps:
-      - name: Wait for CI Lint
+      - name: Wait for all CI checks to complete
         uses: lewagon/wait-on-check-action@v1.4.0
         with:
           ref: ${{ needs.verify-changelog.outputs.ref }}
-          check-name: "Lint"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           wait-interval: 30
-
-      - name: Wait for CI full test suite
-        uses: lewagon/wait-on-check-action@v1.4.0
-        with:
-          ref: ${{ needs.verify-changelog.outputs.ref }}
-          check-name: "Test (full suite, race detector)"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          wait-interval: 30
-
-      - name: Wait for image builds
-        uses: lewagon/wait-on-check-action@v1.4.0
-        with:
-          ref: ${{ needs.verify-changelog.outputs.ref }}
-          check-name: "Merge API Manifest"
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          wait-interval: 30
+          running-workflow-name: "Wait for CI workflow"
 
   # Package the Helm chart and publish to the gh-pages branch's Helm repo.
   # chart-releaser-action independently discovers, packages, and publishes
