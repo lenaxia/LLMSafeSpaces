@@ -272,14 +272,16 @@ func unwrapPrefix(prefix string, ciphertext []byte) ([]byte, error) {
 	return ciphertext, nil
 }
 
-// knownForeignPrefixes is the set of ciphertext prefixes from providers
-// other than the local static/sealed provider. Maintained alongside
-// provider implementations; today only the AWS KMS prefix lives here.
-// GCP KMS will add its prefix when US-57.3 lands.
+// knownForeignPrefixes is the set of ciphertext prefixes from cloud KMS
+// providers. Maintained alongside provider implementations; today both
+// the AWS and GCP KMS prefixes live here. Adding a new cloud KMS provider
+// means adding its prefix here so existing local providers correctly
+// return ErrNotMyCiphertext rather than falling through to the legacy-
+// blob path.
 //
 // Kept as a package-level slice rather than registered dynamically so the
 // full set is visible at the call site — dynamic registration would make
-// routing behavior depend on init order, which is exactly the kind of
+// routing behaviour depend on init order, which is exactly the kind of
 // magic the codebase rules out (README-LLM.md §3, "Explicit Over Implicit").
 var knownForeignPrefixes = []string{
 	"aws-kms:v1:",
