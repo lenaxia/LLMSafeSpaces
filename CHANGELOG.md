@@ -71,6 +71,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so bodies on those paths are never logged at all. Either layer alone
   prevents the leak.
 
+- **G36 — Workspace secrets cleaned on deletion (High).** The
+  workspace controller's `handleTerminating`
+  (`controller/internal/workspace/phase_terminating.go`) deleted the
+  pod, PVC, and `workspace-pw-*` Secret but NOT `workspace-creds-*`,
+  which persisted indefinitely after workspace deletion. The existing
+  `cleanupFailedWorkspaceSecrets` primitive (already used for the
+  Failed-phase path in `recovery.go`) knows how to delete both
+  `workspace-creds-*` and `workspace-pw-*`; this PR wires it into the
+  graceful-termination path too. Best-effort (failures logged, not
+  propagated — the workspace is already being torn down and the
+  finalizer must still release). `handleDeletion` (the CRD-deletion
+  entry point) inherits the fix automatically because it calls
+  `handleTerminating`.
+
 ## [0.3.0] - 2026-07-11
 
 Network hardening sweep + KMS-backed master KEK foundation + Go security bump.

@@ -45,6 +45,17 @@ func (r *WorkspaceReconciler) handleTerminating(ctx context.Context, workspace *
 		return ctrl.Result{}, err
 	}
 
+	// G36: delete the rest of the per-workspace ephemeral Secrets
+	// (workspace-creds-* and any future additions to the cleanup list).
+	// The explicit password-secret delete above handles workspace-pw-*;
+	// cleanupFailedWorkspaceSecrets (secrets.go:33) re-attempts that
+	// delete (idempotent) and additionally removes workspace-creds-*,
+	// which previously persisted indefinitely after workspace deletion.
+	// Best-effort: failures are logged, not propagated — the workspace
+	// is already being torn down and the finalizer must still release.
+	// Mirrors the Failed-phase cleanup pattern (recovery.go:31,60,112).
+	r.cleanupFailedWorkspaceSecrets(ctx, workspace)
+
 	workspace.Status.Phase = v1.WorkspacePhaseTerminated
 
 	// Record deletion metric.

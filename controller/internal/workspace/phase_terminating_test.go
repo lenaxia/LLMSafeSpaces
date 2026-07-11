@@ -5,6 +5,7 @@ package workspace
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -128,4 +129,71 @@ func TestHandleDeletion_NoFinalizer_IsNoOp(t *testing.T) {
 		types.NamespacedName{Name: "ws-noop", Namespace: "default"}, updated))
 	assert.Equal(t, v1.WorkspacePhaseTerminated, updated.Status.Phase,
 		"phase must be unchanged when no finalizer is present")
+}
+
+// TestHandleTerminating_G36_DeletesCredentialsSecret is the G36
+// regression: handleTerminating must delete the workspace-creds-* Secret
+// in addition to the workspace-pw-* Secret it already deletes. The
+// cleanupFailedWorkspaceSecrets primitive (secrets.go:33) already knows
+// how to delete both; this test pins the wiring so a future refactor
+// that removes the call would fail.
+//
+// Pre-fix: workspace-creds-* persisted indefinitely after workspace
+// deletion. The Secret carries per-workspace credential material
+// (provider config snapshot, agent-config.json inputs); leaving it
+// behind is a credential leak + quota cost. (Bug 12 in worklog 0085
+// flagged the same shape of leak for the Failed phase; this PR extends
+// the fix to graceful termination.)
+func TestHandleTerminating_G36_DeletesCredentialsSecret(t *testing.T) {
+	ws := wsForTerminate("ws-creds")
+	pwSecret := makePasswordSecret("ws-creds", "default")
+	credsSecret := makeOwnedSecret(
+		fmt.Sprintf("workspace-creds-%s", "ws-creds"), "default")
+	r := reconcilerFor(t, ws, pwSecret, credsSecret)
+
+	_, err := r.Reconcile(context.Background(), reqFor("ws-creds", "default"))
+	require.NoError(t, err)
+
+	// Password Secret must be deleted (existing behavior, locked by
+	// TestHandleTerminating_DeletesPVCAndPasswordSecret).
+	gotPw := &corev1.Secret{}
+	err = r.Get(context.Background(),
+		types.NamespacedName{Name: passwordSecretName("ws-creds"), Namespace: "default"}, gotPw)
+	assert.True(t, apierrors.IsNotFound(err),
+		"password Secret must be deleted on terminate, got err=%v", err)
+
+	// G36: credentials Secret must ALSO be deleted.
+	gotCreds := &corev1.Secret{}
+	err = r.Get(context.Background(),
+		types.NamespacedName{
+			Name:      fmt.Sprintf("workspace-creds-%s", "ws-creds"),
+			Namespace: "default",
+		}, gotCreds)
+	assert.True(t, apierrors.IsNotFound(err),
+		"G36 REGRESSION: workspace-creds-* Secret must be deleted on terminate, got err=%v", err)
+}
+
+// TestHandleTerminating_G36_DoesNotDeleteOtherWorkspaceSecrets
+// confirms the cleanup is scoped — only THIS workspace's secrets are
+// deleted, not another workspace's. Without this, a regression in the
+// secret-name construction (e.g. dropping the workspace.Name suffix)
+// could mass-delete unrelated secrets.
+func TestHandleTerminating_G36_DoesNotDeleteOtherWorkspaceSecrets(t *testing.T) {
+	ws := wsForTerminate("ws-mine")
+	pwSecret := makePasswordSecret("ws-mine", "default")
+	// Another workspace's creds secret — must survive.
+	otherCreds := makeOwnedSecret(
+		fmt.Sprintf("workspace-creds-%s", "ws-other"), "default")
+	r := reconcilerFor(t, ws, pwSecret, otherCreds)
+
+	_, err := r.Reconcile(context.Background(), reqFor("ws-mine", "default"))
+	require.NoError(t, err)
+
+	got := &corev1.Secret{}
+	require.NoError(t, r.Get(context.Background(),
+		types.NamespacedName{
+			Name:      otherCreds.Name,
+			Namespace: "default",
+		}, got),
+		"cleanup must not delete another workspace's secrets")
 }
