@@ -718,10 +718,17 @@ networkPolicy:
   # Block egress to RFC1918 + cloud metadata; sandbox pods should never
   # reach in-cluster services or the cloud metadata endpoint.
   blockedEgressCIDRs:
-    - 10.0.0.0/8
-    - 172.16.0.0/12
-    - 192.168.0.0/16
-    - 169.254.0.0/16
+    # This list mirrors `privateOrInternalCIDRs` in
+    # controller/internal/workspace/network_policy.go. Keep both in sync;
+    # the chart-test TestG16_DefaultRender_BlockedEgressIncludesAllControllerSideCIDRs
+    # pins parity for the security-relevant subset.
+    - 10.0.0.0/8        # RFC1918 — in-cluster service ranges, internal admin endpoints
+    - 172.16.0.0/12     # RFC1918
+    - 192.168.0.0/16    # RFC1918
+    - 169.254.0.0/16    # link-local + cloud metadata (169.254.169.254)
+    - 100.64.0.0/10     # CGNAT — used by managed Kubernetes pod CIDRs (AKS, some EKS, k3s default)
+    - 127.0.0.0/8       # loopback
+    - 224.0.0.0/4       # multicast
 
 # ----------------------------------------------------------------------------
 # Kyverno admission policies (Section 9.6 of EVOLUTION-V2.md)
