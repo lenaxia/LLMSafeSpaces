@@ -5,6 +5,7 @@ package tests
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -537,4 +538,63 @@ func TestLoggingMiddleware_G25_ValueFieldInSensitiveFields(t *testing.T) {
 	if !found {
 		t.Errorf("G25: DefaultLoggingConfig.SkipPathPrefixes must include \"/api/v1/secrets/\"; got %v", config.SkipPathPrefixes)
 	}
+}
+
+// TestLoggingMiddleware_G25_ValueFieldMaskedOnUnlistedPath confirms the
+// defense-in-depth layer: when a request carries a "value" field on a
+// path that is NOT in SkipPathPrefixes, the SensitiveFields masking
+// kicks in and replaces the value with the mask. This catches the case
+// where a future endpoint accepts sensitive values in a "value" field
+// without updating the skip list.
+func TestLoggingMiddleware_G25_ValueFieldMaskedOnUnlistedPath(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	mockLogger := logmock.NewMockLogger()
+
+	var requestFields []interface{}
+	mockLogger.On("Info", "Request received", mock.Anything).Run(func(args mock.Arguments) {
+		requestFields = args.Get(1).([]interface{})
+	}).Once()
+	mockLogger.On("Info", "Request completed", mock.Anything).Once()
+
+	// Use DefaultLoggingConfig — production settings.
+	config := middleware.DefaultLoggingConfig()
+
+	router := gin.New()
+	router.Use(middleware.LoggingMiddleware(mockLogger, config))
+	// /api/v1/users/me/settings is NOT in SkipPathPrefixes — the body
+	// WILL be logged, but the "value" field must be masked.
+	router.PUT("/api/v1/users/me/settings/workspace.defaultStorageSize", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})
+
+	w := httptest.NewRecorder()
+	// Body uses a real-looking secret in "value" to verify masking.
+	reqBody := `{"value":"sk-proj-SECRET_FOR_TESTING"}`
+	req, _ := http.NewRequest("PUT", "/api/v1/users/me/settings/workspace.defaultStorageSize", bytes.NewBufferString(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	router.ServeHTTP(w, req)
+
+	// Stringify captured fields and assert the secret is NOT present.
+	var logOutput string
+	for i := 0; i+1 < len(requestFields); i += 2 {
+		k, _ := requestFields[i].(string)
+		logOutput += k + "="
+		switch v := requestFields[i+1].(type) {
+		case string:
+			logOutput += v + " "
+		default:
+			logOutput += fmt.Sprintf("%v ", v)
+		}
+	}
+	t.Logf("captured log fields: %s", logOutput)
+
+	assert.NotContains(t, logOutput, "sk-proj-SECRET_FOR_TESTING",
+		"G25 defense-in-depth: 'value' field must be masked even on paths not in SkipPathPrefixes")
+	// MaskString (pkg/utilities/masking.go:35) shows the first/last few
+	// chars with "..." in between for strings > 8 chars. The full secret
+	// is unrecoverable from the masked form. We assert the mask marker
+	// is present rather than a specific mask shape so the test doesn't
+	// break if MaskString's format changes.
+	assert.Contains(t, logOutput, "...",
+		"masked 'value' field should contain MaskString's '...' marker")
 }

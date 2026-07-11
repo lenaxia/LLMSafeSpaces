@@ -67,10 +67,17 @@ func DefaultLoggingConfig() LoggingConfig {
 		// alone prevents the leak.
 		//
 		// Two prefix forms per resource so both the collection path
-		// (/api/v1/secrets, no trailing slash) and nested paths
-		// (/api/v1/secrets/:id/reveal) are caught. Avoids accidentally
-		// matching unrelated paths like /api/v1/secretslist by requiring
-		// either end-of-string or a slash after the resource name.
+		// (/api/v1/secrets, no trailing slash — used by POST/GET) and
+		// nested paths (/api/v1/secrets/:id/reveal) are caught.
+		//
+		// Note: prefix matching is not boundary-aware —
+		// strings.HasPrefix("/api/v1/secretslist", "/api/v1/secrets")
+		// would also match. We accept this because no such path exists
+		// in this codebase AND the consequence of an accidental match
+		// is "this path is not logged" (a debuggability loss, not a
+		// correctness or security issue). If a future endpoint name
+		// collides with one of these prefixes, scope the prefix more
+		// tightly (e.g. switch to regex).
 		SkipPathPrefixes: []string{
 			"/api/v1/secrets",
 			"/api/v1/secrets/",
