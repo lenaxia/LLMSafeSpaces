@@ -142,4 +142,4 @@ goimports -l <changed .go files>  → clean
 - `api/internal/config/config.go` (new `Terminal` config block)
 - `charts/llmsafespaces/values.yaml` (new `terminal.allowedOrigins` value)
 - `charts/llmsafespaces/templates/configmap-api.yaml` (new `terminal:` block)
-- `worklogs/NNNN_2026-07-11_g35-terminal-origin-check.md` (this entry)
+- `worklogs/0606_2026-07-11_g35-terminal-origin-check.md` (this entry)
