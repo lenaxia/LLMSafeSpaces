@@ -11,6 +11,7 @@ LLMSafeSpaces gives every user a Kubernetes pod running [`opencode serve`](https
 - **Encrypted secret store.** User secrets (LLM keys, SSH keys, env vars) encrypted with per-user DEKs (AES-256-GCM), keys derived via Argon2id. Platform secrets (SSO client credentials, admin API keys) are encrypted at rest under the master KEK. The platform never stores plaintext credentials.
 - **Provider-agnostic.** Bring your own LLM gateway (LiteLLM, OpenAI, Anthropic, Bedrock) — workspaces bind to whatever credentials you supply.
 - **Kubernetes-native.** Custom Resource Definitions for `Workspace`, `RuntimeEnvironment`, `InferenceRelay`. Deploy via Helm; reconcile via controller-runtime.
+- **Supply chain hardened.** Release images are cosign-signed (keyless OIDC + Rekor transparency log), Trivy-scanned for CVEs, and SBOM is published with every release. Verify before deploying: `cosign verify ghcr.io/lenaxia/llmsafespaces/api:<version>`.
 - **MCP-compatible.** The platform is an MCP server — any MCP-compatible client can drive workspaces programmatically.
 
 ## Quick links
