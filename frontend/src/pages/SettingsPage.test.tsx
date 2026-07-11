@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { render } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Navigate, Route, Routes } from "react-router-dom";
 import { ThemeProvider } from "../providers/ThemeProvider";
 import { ToastProvider } from "../providers/ToastProvider";
 import { SettingsPage } from "./SettingsPage";
@@ -39,7 +39,7 @@ function renderSettingsRoute(initialPath = "/settings/preferences") {
         <MemoryRouter initialEntries={[initialPath]}>
           <Routes>
             <Route path="/settings" element={<SettingsPage />}>
-              <Route index element={<UserSettingsTab />} />
+              <Route index element={<Navigate to="preferences" replace />} />
               <Route path="preferences" element={<UserSettingsTab />} />
               <Route path="provider-keys" element={<UserProviderCredentialsTab />} />
               <Route path="secrets" element={<SecretsTab />} />
@@ -72,9 +72,15 @@ describe("SettingsPage", () => {
     expect(screen.queryByText("Admin")).not.toBeInTheDocument();
   });
 
-  it("redirects /settings to /settings/preferences", () => {
+  it("redirects /settings to /settings/preferences", async () => {
     renderSettingsRoute("/settings");
-    // Preferences tab should be active and its content rendered.
+    // After <Navigate to="preferences" replace />, the Preferences tab
+    // should be active. Verify via bg-accent class on the NavLink.
+    await waitFor(() => {
+      const prefsLink = screen.getByText("Preferences");
+      expect(prefsLink).toBeInTheDocument();
+      expect(prefsLink.className).toContain("bg-accent");
+    });
     expect(screen.getByText("Settings")).toBeInTheDocument();
   });
 
