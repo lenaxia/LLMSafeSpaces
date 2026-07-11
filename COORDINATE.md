@@ -17,7 +17,6 @@ Rules:
 
 | Agent | What | Files Claimed | Status | Started |
 |-------|------|---------------|--------|---------|
-| opencode (g38) | G38 — ChangePassword must revoke all sessions | `api/internal/handlers/secrets.go`, `api/internal/handlers/secrets_test.go` (new), `api/internal/app/app.go`, `api/internal/services/auth/auth_e2e_all_test.go` | In Progress | 2026-07-11 |
 
 
 ---
@@ -35,6 +34,7 @@ Agents waiting to work on files currently held by an active claim. When the bloc
 
 | Completed | Agent | What | Commit |
 |-----------|-------|------|--------|
+| 2026-07-11 | opencode (g38) | G38 — ChangePassword revokes all sessions (PR [#536](https://github.com/lenaxia/LLMSafeSpaces/pull/536), pending review) | `5968d8dc` |
 
 > Entries older than ~2 weeks are pruned — see `worklogs/` for the historical record.
 
