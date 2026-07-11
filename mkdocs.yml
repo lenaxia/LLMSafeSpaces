@@ -43,14 +43,11 @@ theme:
     code: JetBrains Mono
   icon:
     logo: material/shield-lock
-  favicon: assets/favicon.png
 
 extra:
   social:
     - icon: fontawesome/brands/github
       link: https://github.com/lenaxia/LLMSafeSpaces
-  version:
-    provider: mike
 
 markdown_extensions:
   - abbr

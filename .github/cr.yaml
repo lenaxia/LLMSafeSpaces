@@ -8,6 +8,6 @@
 owner: lenaxia
 git-repo: LLMSafeSpaces
 pages-branch: gh-pages
-charts-dir: charts
+charts-dir: helm
 index-path: index.yaml
 package-path: .
