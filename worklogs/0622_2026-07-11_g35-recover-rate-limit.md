@@ -179,4 +179,4 @@ goimports -l <changed files>  # clean
 - `api/internal/server/router_g35_recover_rate_limit_test.go` — **new** — wiring regression
 - `CHANGELOG.md` — entry under `[Unreleased] → Security`
 - `design/stories/epic-17-security-review/THREAT-MODEL.md` — G35 row flipped 🟢; STRIDE + counts + revision 2.6
-- `worklogs/NNNN_2026-07-11_g35-recover-rate-limit.md` — this file
+- `worklogs/0622_2026-07-11_g35-recover-rate-limit.md` — this file
