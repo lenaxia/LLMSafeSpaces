@@ -36,6 +36,9 @@ The Gin API service. Stateless, horizontally scalable.
 | `api.service.type` | string | `ClusterIP` | Service type. |
 | `api.service.port` | int | `8080` | Service port. |
 
+
+<!-- hv-gen:start -->
+
 ### `api.resources`
 
 | Key | Default | Description |
@@ -481,3 +484,6 @@ Grafana dashboards, Prometheus alerts, ServiceMonitors. Requires Grafana sidecar
 | `turnstile.secretKey.existingSecret` | string | `"llmsafespaces-credentials"` | K8s Secret holding the secret key. |
 | `turnstile.secretKey.key` | string | `"turnstile-secret"` | Key within the Secret. |
 | `turnstile.verifyURL` | string | `"https://challenges.cloudflare.com/turnstile/v0/siteverify"` | Cloudflare verification endpoint. |
+
+<!-- hv-gen:end -->
+

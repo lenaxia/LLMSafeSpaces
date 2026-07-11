@@ -23,16 +23,17 @@ on:
     paths:
       - 'pkg/apis/llmsafespaces/v1/*_types.go'
       - 'cmd/crd-doc-gen/**'
+      - 'helm/values.yaml'
+      - 'cmd/helm-values-gen/**'
   workflow_dispatch:
 
 permissions:
   contents: write   # for pushing to gh-pages
 
 jobs:
-  # Check that the CRD docs haven't drifted from the Go types.
-  # Runs on every push that touches the Go types, and on PRs.
-  crd-doc-drift:
-    name: CRD docs drift check
+  # Check that generated docs haven't drifted from source.
+  doc-drift:
+    name: Docs drift check
     runs-on: ubuntu-latest
     if: github.event_name != 'push' || github.ref == 'refs/heads/main'
     steps:
@@ -51,6 +52,18 @@ jobs:
             echo "CRD docs are out of sync with Go types."
             echo "To fix: update the Go doc comments in pkg/apis/llmsafespaces/v1/*_types.go,"
             echo "then run 'go run ./cmd/crd-doc-gen -w'."
+            exit 1
+          fi
+
+      - name: Verify Helm values docs match values.yaml
+        run: |
+          go run ./cmd/helm-values-gen -w
+          if ! git diff --exit-code docs/reference/helm-values.md; then
+            echo ""
+            echo "Helm values docs are out of sync with helm/values.yaml."
+            echo "To fix: update the comments in helm/values.yaml, re-run"
+            echo "'go run ./cmd/helm-values-gen -w', and verify the output."
+            echo "Or manually update docs/reference/helm-values.md to match."
             exit 1
           fi
 
