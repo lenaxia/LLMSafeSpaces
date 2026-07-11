@@ -87,3 +87,4 @@ helm/values.local.yaml
 node_modules/.vite/
 go.sum.backup
 site/
+crd-doc-gen
