@@ -116,4 +116,4 @@ Doc-only change. No tests apply. Verified the markdown renders correctly
 
 - `design/stories/epic-17-security-review/THREAT-MODEL.md` (G33/G34/G39 rows, STRIDE Proxy row, §10 summary, §11 revision history)
 - `design/stories/epic-17-security-review/security-report-g33-g47.md` (v0.3.0 banner, per-finding status lines)
-- `worklogs/NNNN_2026-07-11_threat-model-reconcile.md` (this entry)
+- `worklogs/0611_2026-07-11_threat-model-reconcile.md` (this entry)
