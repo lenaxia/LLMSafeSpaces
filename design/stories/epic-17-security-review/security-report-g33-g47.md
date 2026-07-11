@@ -1,5 +1,21 @@
 # Security Report: Re-Validation Findings (G33-G47)
 
+> **v0.3.0 update (2026-07-11):** G33, G34, and G39 are now **resolved**.
+> The per-finding sections below are preserved verbatim for historical
+> context; for the current status of each row, see `THREAT-MODEL.md` §9
+> (gap table) which is now authoritative. Resolved findings:
+>
+> - **G33 (proxy IDOR):** the existing `WorkspaceAccessMiddleware` is
+>   confirmed wired on the `idGroup` since the v2 design pass; the
+>   "Open" status here was doc drift.
+> - **G34 (proxy header forwarding):** closed by PR
+>   [#513](https://github.com/lenaxia/LLMSafeSpaces/pull/513) — explicit
+>   `copyRequestHeaders` allowlist (`Content-Type`, `Accept`,
+>   `X-Request-ID`) + hop-by-hop strip in both directions.
+> - **G39 (terminal WebSocket Origin):** closed by PR
+>   [#515](https://github.com/lenaxia/LLMSafeSpaces/pull/515) —
+>   `newCheckOriginChecker` same-origin-default + operator allowlist.
+
 **Date:** 2026-06-12
 **Validator:** Adversarial re-validation against code state
 **Scope:** Gaps not covered by G1-G32
@@ -13,7 +29,10 @@
 
 **CWE:** CWE-639 (Authorization Bypass Through User-Controlled Key)
 **Component:** API Proxy
-**Status:** Open
+**Status:** ✅ Resolved (v0.3.0) — see banner above. The `WorkspaceAccessMiddleware`
+is confirmed wired on the `idGroup` (`router.go:291-292`); all proxy routes
+inherit via `registerProxyRoutes(idGroup, ...)`. The "Open" status here was
+doc drift from before the v2 design pass landed the middleware.
 
 #### Description
 
@@ -66,7 +85,9 @@ Add regression test: authenticate as User B, attempt to proxy to User A's worksp
 
 **CWE:** CWE-200 (Information Exposure)
 **Component:** API Proxy
-**Status:** Open
+**Status:** ✅ Resolved (v0.3.0, PR #513) — see banner above. `proxy.go:465-471`
+now calls `copyRequestHeaders` with an explicit allowlist (`Content-Type`,
+`Accept`, `X-Request-ID`); hop-by-hop headers stripped in both directions.
 
 #### Description
 
@@ -212,7 +233,11 @@ After successful password change, enumerate and revoke all active sessions for t
 
 **CWE:** CWE-346 (Origin Validation Error)
 **Component:** API Terminal
-**Status:** Open
+**Status:** ✅ Resolved (v0.3.0, PR #515) — see banner above. `terminal.go`
+now uses `newCheckOriginChecker`: same-origin by default, plus operator
+allowlist via `terminal.allowedOrigins` Helm value. Dead
+`WebSocketSecurityMiddleware` and `RouterConfig.AllowedWebSocketOrigins`
+removed; the gorilla Upgrader is the single enforcement point.
 
 `api/internal/handlers/terminal.go:126` — `CheckOrigin: func(r *http.Request) bool { return true }`. The ticket system (single-use, 30s TTL) mitigates direct CSRF, but the WebSocket security middleware (`api/internal/middleware/security.go:206-271`) is not applied to the terminal route. A malicious site could use the user's HttpOnly cookie to fetch a ticket via authenticated POST, then open a cross-origin WebSocket.
 
