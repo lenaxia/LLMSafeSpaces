@@ -905,8 +905,9 @@ webhooks:
 # Workspace pods will then run under gVisor by default. Individual workspaces
 # can opt out via spec.runtimeClass: "runc" (admin-gated, for gVisor-
 # incompatible workloads like ptrace debuggers). Admin-gating is enforced by
-# the workspace validating webhook: spec.runtimeClass is rejected unless the
-# workspace object carries the annotation
+# the workspace validating webhook: spec.runtimeClass is rejected (to ANY
+# value, including the empty-string "" opt-out) unless the workspace object
+# carries the annotation
 #   llmsafespaces.dev/allow-runtime-class-override: "true"
 # Operators apply that annotation via direct kubectl/cluster-admin RBAC;
 # tenant API users (without cluster RBAC) cannot.

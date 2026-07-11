@@ -595,22 +595,37 @@ func (v *WorkspaceValidator) Handle(ctx context.Context, req admission.Request) 
 
 	// 7. S51.1 admin gate — spec.runtimeClass is admin-gated, not
 	//    tenant-selectable. Without this check, any user with workspace
-	//    create/update RBAC can set spec.runtimeClass="runc" to escape
-	//    gVisor via direct kubectl, defeating the kernel-level isolation
-	//    layer for their own pods. The CRD comment at
-	//    pkg/apis/llmsafespaces/v1/workspace_types.go:158-161 documents
-	//    this as a deferred S51.2 follow-up; this PR closes that gap.
+	//    create/update RBAC can escape gVisor via direct kubectl, defeating
+	//    the kernel-level isolation layer for their own pods. The CRD
+	//    comment at pkg/apis/llmsafespaces/v1/workspace_types.go:158-161
+	//    documents this as a deferred S51.2 follow-up; this PR closes
+	//    that gap.
 	//
-	//    Scheme: reject spec.runtimeClass unless the object carries the
-	//    admin annotation llmsafespaces.dev/allow-runtime-class-override=true.
-	//    Operators with cluster-admin RBAC apply the annotation; tenant
-	//    RBAC scopes cannot.
-	if ws.Spec.RuntimeClass != nil && strings.TrimSpace(*ws.Spec.RuntimeClass) != "" {
+	//    Scheme: reject any non-nil spec.runtimeClass unless the object
+	//    carries the admin annotation
+	//    llmsafespaces.dev/allow-runtime-class-override=true. Operators
+	//    with cluster-admin RBAC apply the annotation; tenant RBAC scopes
+	//    cannot.
+	//
+	//    IMPORTANT: empty-string is included in the rejection. Per
+	//    pod_builder.go:247 ("Empty string = runc") and the existing
+	//    TestS51_1_PerWorkspaceOptOutEmpty, spec.runtimeClass="" is
+	//    functionally equivalent to spec.runtimeClass="runc" — both
+	//    clear RuntimeClassName, falling through to the kubelet default
+	//    runtime (typically runc). Exempting empty-string would let a
+	//    kubectl user escape gVisor by setting "" instead of "runc",
+	//    defeating the entire purpose of this check.
+	if ws.Spec.RuntimeClass != nil {
 		if !adminAllowsRuntimeClassOverride(ws.Annotations) {
+			rcValue := *ws.Spec.RuntimeClass
+			if rcValue == "" {
+				rcValue = "(empty string)"
+			}
 			return admission.Denied(fmt.Sprintf(
 				"spec.runtimeClass %q is admin-gated; apply annotation %q=\"true\" "+
-					"via cluster-admin RBAC to opt this workspace out of the default runtime class",
-				*ws.Spec.RuntimeClass, allowRuntimeClassOverrideAnnotation))
+					"via cluster-admin RBAC to opt this workspace out of the default runtime class "+
+					"(empty string is treated as an explicit runc opt-out)",
+				rcValue, allowRuntimeClassOverrideAnnotation))
 		}
 	}
 

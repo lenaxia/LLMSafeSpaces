@@ -155,9 +155,17 @@ type WorkspaceSpec struct {
 	// the controller's DefaultRuntimeClass (typically "gvisor" in production,
 	// empty/runc in dev).
 	//
+	// NOTE: spec.runtimeClass: "" (empty string) is NOT the same as
+	// omitting the field. Per pod_builder.go, an empty-string *value*
+	// explicitly clears RuntimeClassName — falling through to the kubelet
+	// default (runc). An unset (nil) field uses the controller's
+	// DefaultRuntimeClass. This asymmetry means an empty-string opt-out
+	// ALSO requires the admin annotation below, not just a non-empty value.
+	//
 	// Enforcement: admin-gated by the workspace validating webhook
 	// (WorkspaceValidator in controller/internal/webhooks/). Setting
-	// spec.runtimeClass requires the object to carry the annotation
+	// spec.runtimeClass (to any value, including "") requires the object
+	// to carry the annotation
 	//   llmsafespaces.dev/allow-runtime-class-override: "true"
 	// applied via cluster-admin RBAC. The API's CreateWorkspaceRequest does
 	// not expose the field; direct kubectl users without the annotation are

@@ -29,6 +29,49 @@ import (
 
 func ptrString(s string) *string { return &s }
 
+func TestWorkspaceWebhook_RuntimeClassEmptyStringRejectedWithoutAnnotation(t *testing.T) {
+	// Regression test for the reviewer-found bug on PR #518:
+	// pod_builder.go:247 confirms that spec.runtimeClass: "" is functionally
+	// equivalent to spec.runtimeClass: "runc" — it clears RuntimeClassName,
+	// which the kubelet interprets as "use the default runtime" (runc).
+	// So an empty-string opt-out must ALSO require the admin annotation,
+	// otherwise a kubectl user can escape gVisor by setting "" instead of
+	// "runc" — defeating the entire purpose of this webhook.
+	v := &WorkspaceValidator{
+		Decoder:                admission.NewDecoder(newScheme(t)),
+		AllowedImageRegistries: []string{"ghcr.io/lenaxia/"},
+		MaxStorageGi:           1024,
+	}
+	ws := minimalValidWorkspace()
+	emptyRC := ""
+	ws.Spec.RuntimeClass = &emptyRC
+
+	resp := v.Handle(context.Background(), newWorkspaceCreateRequest(t, ws))
+	assert.False(t, resp.Allowed,
+		"spec.runtimeClass='' (empty-string opt-out) without admin annotation must be rejected "+
+			"(reason=%q) — pod_builder.go treats '' as runc, so this is a gVisor escape",
+		resp.Result.Reason)
+}
+
+func TestWorkspaceWebhook_RuntimeClassEmptyStringAllowedWithAnnotation(t *testing.T) {
+	v := &WorkspaceValidator{
+		Decoder:                admission.NewDecoder(newScheme(t)),
+		AllowedImageRegistries: []string{"ghcr.io/lenaxia/"},
+		MaxStorageGi:           1024,
+	}
+	ws := minimalValidWorkspace()
+	emptyRC := ""
+	ws.Spec.RuntimeClass = &emptyRC
+	ws.Annotations = map[string]string{
+		allowRuntimeClassOverrideAnnotation: "true",
+	}
+
+	resp := v.Handle(context.Background(), newWorkspaceCreateRequest(t, ws))
+	assert.True(t, resp.Allowed,
+		"spec.runtimeClass='' WITH admin annotation must be allowed (reason=%q)",
+		resp.Result.Reason)
+}
+
 func TestWorkspaceWebhook_RuntimeClassRejectsByDefault(t *testing.T) {
 	v := &WorkspaceValidator{
 		Decoder:                admission.NewDecoder(newScheme(t)),

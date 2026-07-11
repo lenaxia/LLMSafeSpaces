@@ -95,3 +95,59 @@ gofmt / goimports  → clean
 - `pkg/apis/llmsafespaces/v1/workspace_types.go` (CRD comment: replaced "deferred" with actual enforcement scheme)
 - `charts/llmsafespaces/values.yaml` (gvisor block: documented the annotation + RBAC tier)
 - `worklogs/NNNN_2026-07-11_runtime-class-webhook-gate.md` (this entry)
+
+---
+
+## Update — reviewer-found bug fix (CHANGES_REQUESTED on initial PR)
+
+The AI reviewer on PR #518 found a critical bypass in the initial
+implementation. My check was:
+
+    if ws.Spec.RuntimeClass != nil && strings.TrimSpace(*ws.Spec.RuntimeClass) != "" {
+
+The `strings.TrimSpace(...) != ""` guard exempted empty string from the
+annotation check. But per `pod_builder.go:247` ("Empty string = runc")
+and the existing `TestS51_1_PerWorkspaceOptOutEmpty`, an empty-string
+value explicitly clears RuntimeClassName — falling through to the
+kubelet default (runc). So a kubectl user could escape gVisor by
+setting `spec.runtimeClass: ""` instead of `"runc"`, defeating the
+entire purpose of the webhook.
+
+### Fix
+
+Removed the `TrimSpace != ""` guard. The check now fires for any
+non-nil `Spec.RuntimeClass`, regardless of value. Error message calls
+out the empty-string case explicitly so a kubectl user hitting the
+guard understands why their empty value was rejected.
+
+### New regression tests
+
+- `TestWorkspaceWebhook_RuntimeClassEmptyStringRejectedWithoutAnnotation`
+- `TestWorkspaceWebhook_RuntimeClassEmptyStringAllowedWithAnnotation`
+
+### Documentation updates
+
+- CRD comment (`workspace_types.go:151-173`): added a NOTE explaining
+  the empty-string vs nil asymmetry and that both require the annotation.
+- Chart `gvisor:` block: same clarification.
+
+### Adversarial self-review (this round)
+
+- *Is there any other value a kubectl user could set to escape gVisor?*
+  No. The only ways to influence RuntimeClassName from spec are:
+    (a) Set spec.runtimeClass to a non-empty value → caught.
+    (b) Set spec.runtimeClass to empty string → now caught.
+    (c) Omit spec.runtimeClass (nil) → falls through to
+        DefaultRuntimeClass, which is operator-set. Secure default.
+- *Could a kubectl user set a value that points to a different
+  RuntimeClass like "kata-containers"?* Yes — but kata is also a
+  sandbox runtime, and the operator controls what RuntimeClasses
+  exist in the cluster. Out of scope for this gate.
+
+### Tests Run
+
+    go test -timeout 60s -run "TestWorkspaceWebhook_RuntimeClass" ./controller/internal/webhooks/
+    → ok  0.038s
+    go test -timeout 120s -short ./controller/internal/webhooks/...
+    → ok  0.167s
+
