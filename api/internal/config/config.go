@@ -237,11 +237,12 @@ type Config struct {
 }
 
 // KMSConfig holds cloud KMS provider configuration for the master KEK
-// (Epic 57 US-57.1). When Security.RootKeyProvider is "aws-kms", KMS.AWS
-// must be fully configured. When "gcp-kms" (future US-57.3), KMS.GCP.
+// (Epic 57 US-57.1/57.3). When Security.RootKeyProvider is "aws-kms",
+// KMS.AWS must be fully configured. When "gcp-kms", KMS.GCP.
 // Otherwise this struct is ignored.
 type KMSConfig struct {
 	AWS AWSKMSConfig `mapstructure:"aws"`
+	GCP GCPKMSConfig `mapstructure:"gcp"`
 }
 
 // AWSKMSConfig holds AWS KMS-specific provider configuration.
@@ -254,6 +255,15 @@ type AWSKMSConfig struct {
 	Region          string            `mapstructure:"region"`
 	CredentialsFile string            `mapstructure:"credentialsFile"`
 	KeyArns         map[string]string `mapstructure:"keyArns"`
+}
+
+// GCPKMSConfig holds GCP KMS-specific provider configuration (US-57.3).
+// Parallel to AWSKMSConfig. CredentialsFile is the path to a service-account
+// JSON file mounted from a K8s Secret. KeyNames maps purpose strings to
+// GCP KMS key resource names.
+type GCPKMSConfig struct {
+	CredentialsFile string            `mapstructure:"credentialsFile"`
+	KeyNames        map[string]string `mapstructure:"keyNames"`
 }
 
 // Load loads configuration from file and environment variables
@@ -582,4 +592,8 @@ func bindKMSEnvVars(v *viper.Viper) {
 	_ = v.BindEnv("security.kms.aws.keyArns.providerCredentials", "LLMSAFESPACES_SECURITY_KMS_AWS_KEYARNS_PROVIDERCREDENTIALS")
 	_ = v.BindEnv("security.kms.aws.keyArns.orgCredentials", "LLMSAFESPACES_SECURITY_KMS_AWS_KEYARNS_ORGCREDENTIALS")
 	_ = v.BindEnv("security.kms.aws.keyArns.masterKek", "LLMSAFESPACES_SECURITY_KMS_AWS_KEYARNS_MASTERKEK")
+	_ = v.BindEnv("security.kms.gcp.credentialsFile", "LLMSAFESPACES_SECURITY_KMS_GCP_CREDENTIALSFILE")
+	_ = v.BindEnv("security.kms.gcp.keyNames.providerCredentials", "LLMSAFESPACES_SECURITY_KMS_GCP_KEYNAMES_PROVIDERCREDENTIALS")
+	_ = v.BindEnv("security.kms.gcp.keyNames.orgCredentials", "LLMSAFESPACES_SECURITY_KMS_GCP_KEYNAMES_ORGCREDENTIALS")
+	_ = v.BindEnv("security.kms.gcp.keyNames.masterKek", "LLMSAFESPACES_SECURITY_KMS_GCP_KEYNAMES_MASTERKEK")
 }

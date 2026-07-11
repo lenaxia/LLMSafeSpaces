@@ -283,6 +283,7 @@ func unwrapPrefix(prefix string, ciphertext []byte) ([]byte, error) {
 // magic the codebase rules out (README-LLM.md §3, "Explicit Over Implicit").
 var knownForeignPrefixes = []string{
 	"aws-kms:v1:",
+	"gcp-kms:v1:",
 }
 
 func SealRootKey(path string, passphrase, rootKey []byte) error {
