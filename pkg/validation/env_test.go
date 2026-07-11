@@ -4,6 +4,7 @@
 package validation
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -193,25 +194,10 @@ func TestValidateEnvVarName_ErrorMessagesDoNotLeak(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for LD_PRELOAD")
 	}
-	// Must mention the var name and "blocked"/"dangerous" so the user
-	// knows it was an intentional rejection, not a regex miss.
+	// Must mention the var name so the user knows it was an intentional
+	// rejection of THAT name, not a regex miss on something else.
 	msg := err.Error()
-	for _, sub := range []string{"LD_PRELOAD"} {
-		if !contains(msg, sub) {
-			t.Errorf("error message %q should mention %q", msg, sub)
-		}
+	if !strings.Contains(msg, "LD_PRELOAD") {
+		t.Errorf("error message %q should mention %q", msg, "LD_PRELOAD")
 	}
-}
-
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || indexOf(s, sub) >= 0)
-}
-
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
 }

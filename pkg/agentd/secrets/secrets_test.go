@@ -291,6 +291,12 @@ func TestG2_EnvSecretShellInjection_Corpus(t *testing.T) {
 
 // TestG2_EnvSecret_InvalidVarName_Skipped ensures malformed var names are
 // rejected with Skipped outcome rather than blindly written.
+//
+// Includes G37 dangerous-name blocklist entries (LD_PRELOAD, PATH,
+// PYTHONPATH, etc.) so the defense-in-depth delegation from
+// validateVarName to validation.ValidateEnvVarName is exercised at the
+// materialize layer — without this the agentd side only proves the
+// delegation wiring, not the actual blocklist enforcement.
 func TestG2_EnvSecret_InvalidVarName_Skipped(t *testing.T) {
 	cases := []string{
 		"",
@@ -301,6 +307,16 @@ func TestG2_EnvSecret_InvalidVarName_Skipped(t *testing.T) {
 		"FOO\nBAR",               // newline
 		"$(whoami)",              // shell substitution
 		strings.Repeat("X", 257), // overlong
+		// G37 dangerous-name blocklist — agentd must reject at
+		// materialize time even if the API layer was bypassed.
+		"LD_PRELOAD",
+		"LD_LIBRARY_PATH",
+		"PATH",
+		"PYTHONPATH",
+		"NODE_OPTIONS",
+		"BASH_ENV",
+		"DYLD_INSERT_LIBRARIES",
+		"ld_preload", // case-insensitive
 	}
 	for _, name := range cases {
 		t.Run(fmt.Sprintf("name=%q", name), func(t *testing.T) {
