@@ -1,0 +1,3250 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="A Kubernetes-first platform for running AI agents in isolated, persistent workspaces. Documentation for operators, contributors, and integrators.">
+      
+      
+      
+        <link rel="canonical" href="https://lenaxia.github.io/LLMSafeSpaces/operator/oidc-sso/">
+      
+      
+        <link rel="prev" href="../multi-tenant/">
+      
+      
+        <link rel="next" href="../inference-relay/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>OIDC SSO - LLMSafeSpaces</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../css/timeago.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#per-org-oidc-sso" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="LLMSafeSpaces" class="md-header__button md-logo" aria-label="LLMSafeSpaces" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5zm0 6c1.4 0 2.8 1.1 2.8 2.5V11c.6 0 1.2.6 1.2 1.3v3.5c0 .6-.6 1.2-1.3 1.2H9.2c-.6 0-1.2-.6-1.2-1.3v-3.5c0-.6.6-1.2 1.2-1.2V9.5C9.2 8.1 10.6 7 12 7m0 1.2c-.8 0-1.5.5-1.5 1.3V11h3V9.5c0-.8-.7-1.3-1.5-1.3"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            LLMSafeSpaces
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              OIDC SSO
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/lenaxia/LLMSafeSpaces" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    lenaxia/LLMSafeSpaces
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../getting-started/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../installation/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Operator Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../architecture/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Architecture
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../api/rest/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  API Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../contributing/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Contributing
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../reference/helm-values/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="LLMSafeSpaces" class="md-nav__button md-logo" aria-label="LLMSafeSpaces" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5zm0 6c1.4 0 2.8 1.1 2.8 2.5V11c.6 0 1.2.6 1.2 1.3v3.5c0 .6-.6 1.2-1.3 1.2H9.2c-.6 0-1.2-.6-1.2-1.3v-3.5c0-.6.6-1.2 1.2-1.2V9.5C9.2 8.1 10.6 7 12 7m0 1.2c-.8 0-1.5.5-1.5 1.3V11h3V9.5c0-.8-.7-1.3-1.5-1.3"/></svg>
+
+    </a>
+    LLMSafeSpaces
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/lenaxia/LLMSafeSpaces" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    lenaxia/LLMSafeSpaces
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../getting-started/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operator Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operator Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../networking/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Networking
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security Hardening
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../runtime-environments/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runtime Environments
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../multi-tenant/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-tenant Isolation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    OIDC SSO
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    OIDC SSO
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#on-this-page" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        On this page
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The model
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The model">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#data-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Data model
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#prerequisites-and-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prerequisites and configuration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Prerequisites and configuration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#instance-plumbing-helm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Instance plumbing (Helm)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#per-org-idp-config" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-org IdP config
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-redirect-base-url-requirement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The redirect-base-url requirement
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-pkce-login-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The PKCE login flow
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The PKCE login flow">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#why-the-state-cookie-carries-the-verifier" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why the state cookie carries the verifier
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#org-admin-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Org admin configuration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Org admin configuration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#upsert-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Upsert example
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#partial-updates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Partial updates
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#frontend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Frontend
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#auto-provisioning-and-role-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Auto-provisioning and role mapping
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Auto-provisioning and role mapping">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#auto-provisioning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Auto-provisioning
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#role-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Role mapping
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dns-domain-verification" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DNS domain verification
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="DNS domain verification">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#verification-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verification flow
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#grandfathering" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Grandfathering
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#security-controls" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Security controls
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#idp-specific-setup-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        IdP-specific setup notes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="IdP-specific setup notes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#google-workspace" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Google Workspace
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#azure-ad-microsoft-entra-id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Azure AD (Microsoft Entra ID)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#okta" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Okta
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#generic-oidc-keycloak-auth0-etc" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Generic OIDC (Keycloak, Auth0, etc.)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting-sso" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting SSO
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Troubleshooting SSO">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#checking-what-the-idp-emits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Checking what the IdP emits
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#known-gaps-and-non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Known gaps and non-goals
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Known gaps and non-goals">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gaps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gaps
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Non-goals
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#related" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Related
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../inference-relay/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Inference Relay Fleet
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../upgrading/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Upgrading
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../runbook/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../architecture/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/components/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Components
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/lifecycle/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workspace Lifecycle
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/secrets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Secret Management
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/threat-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Threat Model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/rest/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    REST
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/authentication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authentication
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/mcp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MCP Server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/sdks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SDKs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../contributing/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contributing
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development Workflow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/rules/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engineering Rules
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/testing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/worklogs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Worklogs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/helm-values/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Helm Values
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/crds/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CRDs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#on-this-page" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        On this page
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The model
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The model">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#data-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Data model
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#prerequisites-and-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Prerequisites and configuration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Prerequisites and configuration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#instance-plumbing-helm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Instance plumbing (Helm)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#per-org-idp-config" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-org IdP config
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-redirect-base-url-requirement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The redirect-base-url requirement
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-pkce-login-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The PKCE login flow
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The PKCE login flow">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#why-the-state-cookie-carries-the-verifier" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why the state cookie carries the verifier
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#org-admin-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Org admin configuration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Org admin configuration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#upsert-example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Upsert example
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#partial-updates" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Partial updates
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#frontend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Frontend
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#auto-provisioning-and-role-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Auto-provisioning and role mapping
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Auto-provisioning and role mapping">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#auto-provisioning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Auto-provisioning
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#role-mapping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Role mapping
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dns-domain-verification" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        DNS domain verification
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="DNS domain verification">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#verification-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Verification flow
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#grandfathering" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Grandfathering
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#security-controls" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Security controls
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#idp-specific-setup-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        IdP-specific setup notes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="IdP-specific setup notes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#google-workspace" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Google Workspace
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#azure-ad-microsoft-entra-id" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Azure AD (Microsoft Entra ID)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#okta" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Okta
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#generic-oidc-keycloak-auth0-etc" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Generic OIDC (Keycloak, Auth0, etc.)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting-sso" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting SSO
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Troubleshooting SSO">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#checking-what-the-idp-emits" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Checking what the IdP emits
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#known-gaps-and-non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Known gaps and non-goals
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Known gaps and non-goals">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#gaps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Gaps
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Non-goals
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#related" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Related
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="per-org-oidc-sso">Per-org OIDC SSO<a class="headerlink" href="#per-org-oidc-sso" title="Permanent link">&para;</a></h1>
+<p>This page covers LLMSafeSpaces' per-organization OIDC single sign-on: the model (one identity provider per org, not instance-wide), the Authorization Code + PKCE login flow, the org-admin configuration API, auto-provisioning and role mapping, DNS domain verification, and the <code>redirect-base-url</code> requirement. Per-org SSO shipped in Epic 43 (US-43.10, decision D17).</p>
+<h2 id="on-this-page">On this page<a class="headerlink" href="#on-this-page" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="#the-model">The model</a></li>
+<li><a href="#prerequisites-and-configuration">Prerequisites and configuration</a></li>
+<li><a href="#the-redirect-base-url-requirement">The redirect-base-url requirement</a></li>
+<li><a href="#the-pkce-login-flow">The PKCE login flow</a></li>
+<li><a href="#org-admin-configuration">Org admin configuration</a></li>
+<li><a href="#auto-provisioning-and-role-mapping">Auto-provisioning and role mapping</a></li>
+<li><a href="#dns-domain-verification">DNS domain verification</a></li>
+<li><a href="#security-controls">Security controls</a></li>
+<li><a href="#idp-specific-setup-notes">IdP-specific setup notes</a></li>
+<li><a href="#troubleshooting-sso">Troubleshooting SSO</a></li>
+<li><a href="#known-gaps-and-non-goals">Known gaps and non-goals</a></li>
+</ul>
+<hr />
+<h2 id="the-model">The model<a class="headerlink" href="#the-model" title="Permanent link">&para;</a></h2>
+<p>SSO in LLMSafeSpaces is <strong>per-org, not instance-wide</strong>. There is no global identity provider. Each organization configures its own OIDC IdP via the API; the platform owns the client secret at rest. This means:</p>
+<ul>
+<li>Org A can use Google Workspace; org B can use Okta; org C can use Azure AD — all on the same LLMSafeSpaces instance.</li>
+<li><code>/auth/config</code> advertises <code>oidcEnabled = (CountSSOConfigs &gt; 0)</code> so the frontend hides SSO UI when no org has configured it.</li>
+<li>Every SSO login is org-scoped: <code>/auth/sso/:orgSlug/...</code>.</li>
+</ul>
+<h3 id="data-model">Data model<a class="headerlink" href="#data-model" title="Permanent link">&para;</a></h3>
+<p>One row per org in <code>org_sso_configs</code>, keyed by <code>org_id</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Column</th>
+<th>Type</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>org_id</code></td>
+<td><code>UUID</code> PK</td>
+<td>FK → <code>organizations(id)</code> <code>ON DELETE CASCADE</code></td>
+</tr>
+<tr>
+<td><code>oidc_discovery_url</code></td>
+<td><code>TEXT</code></td>
+<td>IdP <code>.well-known/openid-configuration</code> URL</td>
+</tr>
+<tr>
+<td><code>oidc_client_id</code></td>
+<td><code>TEXT</code></td>
+<td>Public client identifier</td>
+</tr>
+<tr>
+<td><code>oidc_client_secret</code></td>
+<td><code>BYTEA</code></td>
+<td><strong>Encrypted at rest with the server KEK</strong> (D17-S4) — derived from the master KEK, always decryptable, no org-DEK dependency</td>
+</tr>
+<tr>
+<td><code>claimed_domains</code></td>
+<td><code>TEXT[]</code></td>
+<td>Email domains that route to this org on the login page; GIN-indexed for domain→org lookup</td>
+</tr>
+<tr>
+<td><code>auto_provision</code></td>
+<td><code>BOOLEAN</code></td>
+<td>Create a new user on first SSO login if none exists for the email</td>
+</tr>
+<tr>
+<td><code>group_role_mapping</code></td>
+<td><code>JSONB</code></td>
+<td><code>{groupId: "admin"|"member"}</code>; applied on every login</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="prerequisites-and-configuration">Prerequisites and configuration<a class="headerlink" href="#prerequisites-and-configuration" title="Permanent link">&para;</a></h2>
+<p>Per-org SSO requires <strong>instance-level plumbing</strong> (where the IdP redirects back to) configured via Helm or env vars, plus <strong>per-org IdP config</strong> entered by each org admin.</p>
+<h3 id="instance-plumbing-helm">Instance plumbing (Helm)<a class="headerlink" href="#instance-plumbing-helm" title="Permanent link">&para;</a></h3>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">oidc</span><span class="p">:</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">redirectBaseUrl</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;https://app.example.com&quot;</span><span class="w">   </span><span class="c1"># REQUIRED for SSO</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span><span class="nt">frontendRedirectUrl</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;https://app.example.com&quot;</span><span class="w"> </span><span class="c1"># where the browser lands after SSO</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="nt">stateCookieName</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&quot;</span><span class="w">                            </span><span class="c1"># defaults to &quot;lsp_sso_state&quot;</span>
+</span></code></pre></div>
+<table>
+<thead>
+<tr>
+<th>Helm key</th>
+<th>Env var</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>oidc.redirectBaseUrl</code></td>
+<td><code>LLMSAFESPACES_OIDC_REDIRECTBASEURL</code></td>
+<td><code>""</code></td>
+<td>Absolute base for SSO callback URLs. <strong>Required for SSO.</strong></td>
+</tr>
+<tr>
+<td><code>oidc.frontendRedirectUrl</code></td>
+<td><code>LLMSAFESPACES_OIDC_FRONTENDREDIRECTURL</code></td>
+<td><code>""</code></td>
+<td>Browser landing URL after SSO callback. Empty → <code>/</code>.</td>
+</tr>
+<tr>
+<td><code>oidc.stateCookieName</code></td>
+<td><code>LLMSAFESPACES_OIDC_STATECOOKIENAME</code></td>
+<td><code>""</code> (→ <code>lsp_sso_state</code>)</td>
+<td>PKCE/state cookie name. Override only on collision.</td>
+</tr>
+</tbody>
+</table>
+<p>The state-cookie signing key is <code>deriveServerKey("oidc-state-cookie")</code>, derived from the same master secret as the KEK.</p>
+<h3 id="per-org-idp-config">Per-org IdP config<a class="headerlink" href="#per-org-idp-config" title="Permanent link">&para;</a></h3>
+<p>Entered by the org admin through the API (or the frontend's Org Admin → SSO tab). <strong>Not</strong> in <code>config.yaml</code>, <code>values.yaml</code>, or the settings system. See <a href="#org-admin-configuration">Org admin configuration</a>.</p>
+<hr />
+<h2 id="the-redirect-base-url-requirement">The redirect-base-url requirement<a class="headerlink" href="#the-redirect-base-url-requirement" title="Permanent link">&para;</a></h2>
+<p><code>oidc.redirectBaseUrl</code> is <strong>required</strong> for SSO. The Start and Callback endpoints return a config error if it is unset, rather than trusting <code>X-Forwarded-*</code> headers.</p>
+<p><strong>Why:</strong> Previously, an empty <code>redirectBaseUrl</code> caused the start endpoint to derive the callback URL from <code>X-Forwarded-Proto</code> + <code>Host</code> headers. This is a header-trust gap (F11): a spoofed <code>X-Forwarded-Host</code> could redirect the IdP callback to an attacker-controlled host. The IdP's registered-redirect-URI check was the only mitigation. The platform now fails loud instead.</p>
+<p>The full callback URL is:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>{redirectBaseUrl}/api/v1/auth/sso/:orgSlug/callback
+</span></code></pre></div>
+<p>Register this exact URL in your IdP's allowed redirect URIs.</p>
+<hr />
+<h2 id="the-pkce-login-flow">The PKCE login flow<a class="headerlink" href="#the-pkce-login-flow" title="Permanent link">&para;</a></h2>
+<p>SSO uses Authorization Code flow with PKCE (S256), implemented via <code>coreos/go-oidc/v3</code>. The API is stateless — there is no server-side PKCE session store. The PKCE verifier and state are carried in a signed cookie.</p>
+<pre class="mermaid"><code>sequenceDiagram
+    participant B as Browser
+    participant A as API (stateless)
+    participant I as IdP
+
+    B-&gt;&gt;A: 1. GET /auth/sso/&lt;slug&gt;/start
+    A-&gt;&gt;A: load org_sso_configs[org]
+    A-&gt;&gt;A: oidc.NewProvider(discoveryURL)
+    A-&gt;&gt;A: generate verifier + state
+    A-&gt;&gt;A: sign cookie {state, verifier, orgID, exp} HMAC-SHA256
+    A--&gt;&gt;B: 2. Set-Cookie: lsp_sso_state=&lt;signed&gt;; SameSite=Lax
+    A--&gt;&gt;B: 3. 302 Location: &lt;IdP authorize&gt;?code_challenge=S256&amp;state=...
+    B-&gt;&gt;I: 4. User authenticates
+    I--&gt;&gt;B: 5. 302 /auth/sso/&lt;slug&gt;/callback?code=...&amp;state=...
+    B-&gt;&gt;A: 6. GET /auth/sso/&lt;slug&gt;/callback
+    A-&gt;&gt;A: verify state cookie (HMAC, exp, orgID bound to slug)
+    A-&gt;&gt;I: 7. token exchange (code + verifier)
+    I--&gt;&gt;A: id_token
+    A-&gt;&gt;A: verify id_token (provider.Verifier, clientID aud)
+    A-&gt;&gt;A: enforce email_verified == true (F8)
+    A-&gt;&gt;A: resolveUser (lookup or auto-provision)
+    A-&gt;&gt;A: resolveRole (highest-priv match in group_role_mapping)
+    A-&gt;&gt;A: ensureMembership (create/update role)
+    A-&gt;&gt;A: GenerateToken(userID) → JWT
+    A--&gt;&gt;B: 8. Set-Cookie: lsp_session=&lt;jwt&gt;; HttpOnly; Secure
+    A--&gt;&gt;B: 9. 302 &lt;frontend&gt;/?sso=success</code></pre>
+<h3 id="why-the-state-cookie-carries-the-verifier">Why the state cookie carries the verifier<a class="headerlink" href="#why-the-state-cookie-carries-the-verifier" title="Permanent link">&para;</a></h3>
+<p>The API is stateless — there is no server-side PKCE session store. The cookie carries <code>{state, verifier, orgID, exp}</code>:</p>
+<ul>
+<li><strong>HMAC-SHA256 signed</strong> — tampering is detected.</li>
+<li><strong>10-minute TTL</strong> (<code>DefaultStateTTL</code>).</li>
+<li><strong>Callback bound to start org</strong> — <code>org.ID == payload.OrgID</code> check. An attacker cannot start SSO for org A and replay the callback against org B.</li>
+<li><strong>SameSite=Lax</strong> — survives the top-level IdP→callback redirect, blocked on cross-site POST.</li>
+</ul>
+<hr />
+<h2 id="org-admin-configuration">Org admin configuration<a class="headerlink" href="#org-admin-configuration" title="Permanent link">&para;</a></h2>
+<p>Org admins configure SSO via the API. The routes sit behind <code>OrgAdminGuard</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Method</th>
+<th>Path</th>
+<th>Auth</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>GET</code></td>
+<td><code>/api/v1/orgs/:id/sso</code></td>
+<td>Org admin</td>
+<td>Read this org's SSO config (secret omitted)</td>
+</tr>
+<tr>
+<td><code>PUT</code></td>
+<td><code>/api/v1/orgs/:id/sso</code></td>
+<td>Org admin</td>
+<td>Upsert SSO config; encrypts client secret, audits <code>sso.update</code></td>
+</tr>
+<tr>
+<td><code>DELETE</code></td>
+<td><code>/api/v1/orgs/:id/sso</code></td>
+<td>Org admin</td>
+<td>Remove SSO config; audits <code>sso.delete</code></td>
+</tr>
+<tr>
+<td><code>POST</code></td>
+<td><code>/api/v1/orgs/:id/sso/domains/:domain/verify</code></td>
+<td>Org admin</td>
+<td>On-demand DNS verification of a claimed domain</td>
+</tr>
+<tr>
+<td><code>POST</code></td>
+<td><code>/api/v1/orgs/:id/sso/verification-token/rotate</code></td>
+<td>Org admin</td>
+<td>Generate or rotate the DNS verification token</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/api/v1/auth/sso/domains</code></td>
+<td>Public</td>
+<td>List all orgs' <strong>verified</strong> domains (for login-page routing)</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/api/v1/auth/sso/:orgSlug/start</code></td>
+<td>Public</td>
+<td>Begin PKCE flow</td>
+</tr>
+<tr>
+<td><code>GET</code></td>
+<td><code>/api/v1/auth/sso/:orgSlug/callback</code></td>
+<td>Public</td>
+<td>Complete flow</td>
+</tr>
+</tbody>
+</table>
+<h3 id="upsert-example">Upsert example<a class="headerlink" href="#upsert-example" title="Permanent link">&para;</a></h3>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>curl<span class="w"> </span>-X<span class="w"> </span>PUT<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$API</span><span class="s2">/api/v1/orgs/</span><span class="nv">$ORG_ID</span><span class="s2">/sso&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$ORG_ADMIN_TOKEN</span><span class="s2">&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Content-Type: application/json&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">&#39;{</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="s1">    &quot;oidcDiscoveryUrl&quot;: &quot;https://accounts.google.com&quot;,</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="s1">    &quot;oidcClientId&quot;: &quot;your-client-id.apps.googleusercontent.com&quot;,</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="s1">    &quot;oidcClientSecret&quot;: &quot;your-client-secret&quot;,</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="s1">    &quot;claimedDomains&quot;: [&quot;example.com&quot;, &quot;@corp.example.com&quot;],</span>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="s1">    &quot;autoProvision&quot;: true,</span>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="s1">    &quot;groupRoleMapping&quot;: {</span>
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a><span class="s1">      &quot;admins@example.com&quot;: &quot;admin&quot;,</span>
+</span><span id="__span-2-12"><a id="__codelineno-2-12" name="__codelineno-2-12" href="#__codelineno-2-12"></a><span class="s1">      &quot;developers@example.com&quot;: &quot;member&quot;</span>
+</span><span id="__span-2-13"><a id="__codelineno-2-13" name="__codelineno-2-13" href="#__codelineno-2-13"></a><span class="s1">    }</span>
+</span><span id="__span-2-14"><a id="__codelineno-2-14" name="__codelineno-2-14" href="#__codelineno-2-14"></a><span class="s1">  }&#39;</span>
+</span></code></pre></div>
+<h3 id="partial-updates">Partial updates<a class="headerlink" href="#partial-updates" title="Permanent link">&para;</a></h3>
+<p>The <code>PUT</code> body supports partial updates:</p>
+<ul>
+<li><strong><code>ClientSecret</code> present</strong> → <code>EncryptClientSecret</code> with the server KEK.</li>
+<li><strong><code>ClientSecret</code> empty</strong> → reuse the existing encrypted blob (leave unchanged).</li>
+<li><strong><code>ClientSecret</code> empty and no existing</strong> → <code>400 client secret is required</code>.</li>
+</ul>
+<p>Domains are normalized (lowercased, leading <code>@</code> stripped, deduplicated).</p>
+<h3 id="frontend">Frontend<a class="headerlink" href="#frontend" title="Permanent link">&para;</a></h3>
+<p>The frontend ships an org-admin SSO config form at <code>OrgAdminLayout.tsx</code> → <code>sso</code> tab (<code>OrgSSOTab.tsx</code>). The login page (<code>LoginPage.tsx</code>) fetches <code>/auth/sso/domains</code> and matches the typed email domain against claimed domains, surfacing a "Sign in with {orgName}" button.</p>
+<hr />
+<h2 id="auto-provisioning-and-role-mapping">Auto-provisioning and role mapping<a class="headerlink" href="#auto-provisioning-and-role-mapping" title="Permanent link">&para;</a></h2>
+<h3 id="auto-provisioning">Auto-provisioning<a class="headerlink" href="#auto-provisioning" title="Permanent link">&para;</a></h3>
+<p>When <code>auto_provision=true</code> and no user exists for the SSO-authenticated email:</p>
+<ul>
+<li>A user is created with a <strong>random unusable bcrypt hash</strong> (<code>$2a$12$&lt;random&gt;</code>) so password login is permanently blocked.</li>
+<li>The user has no password to derive a DEK from. <strong>Personal credential operations stay unavailable</strong> until they set a password; org workspaces still work via server-side injection.</li>
+</ul>
+<p>When <code>auto_provision=false</code> and no user exists → <code>403 provisioning_disabled</code>.</p>
+<h3 id="role-mapping">Role mapping<a class="headerlink" href="#role-mapping" title="Permanent link">&para;</a></h3>
+<p><code>group_role_mapping</code> maps IdP groups to org roles (<code>admin</code> | <code>member</code>). On every login:</p>
+<ol>
+<li>Walk IdP groups (OIDC <code>groups</code> ∪ Azure AD <code>memberOf</code>).</li>
+<li>The <strong>highest-privilege match wins</strong>; <code>admin</code> outranks <code>member</code>.</li>
+<li>Unmapped/empty → <code>member</code> (safe default).</li>
+<li><code>ensureMembership</code> creates or updates the membership row so IdP-driven role changes propagate on every re-login.</li>
+<li>A demotion <code>admin→member</code> is <strong>skipped when the user is the sole admin</strong> (last-admin protection; logged at WARN).</li>
+</ol>
+<hr />
+<h2 id="dns-domain-verification">DNS domain verification<a class="headerlink" href="#dns-domain-verification" title="Permanent link">&para;</a></h2>
+<p>Claimed domains must be verified before they appear in the login-page discovery endpoint (<code>ListSSODomains</code> filters on <code>verified_domains</code>). This prevents org A from claiming <code>example.com</code> and intercepting logins meant for org B.</p>
+<h3 id="verification-flow">Verification flow<a class="headerlink" href="#verification-flow" title="Permanent link">&para;</a></h3>
+<ol>
+<li>Org admin generates a verification token:</li>
+</ol>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$API</span><span class="s2">/api/v1/orgs/</span><span class="nv">$ORG_ID</span><span class="s2">/sso/verification-token/rotate&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$ORG_ADMIN_TOKEN</span><span class="s2">&quot;</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="c1"># → { &quot;token&quot;: &quot;abc123...&quot; }</span>
+</span></code></pre></div>
+<ol>
+<li>Org admin adds a DNS TXT record:</li>
+</ol>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>_llmsafespaces-verify.&lt;domain&gt;.  TXT  &quot;&lt;token&gt;&quot;
+</span></code></pre></div>
+<ol>
+<li>Org admin triggers verification:</li>
+</ol>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span><span class="s2">&quot;</span><span class="nv">$API</span><span class="s2">/api/v1/orgs/</span><span class="nv">$ORG_ID</span><span class="s2">/sso/domains/example.com/verify&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">&quot;Authorization: Bearer </span><span class="nv">$ORG_ADMIN_TOKEN</span><span class="s2">&quot;</span>
+</span></code></pre></div>
+<ol>
+<li>The platform queries DNS for the TXT record. On match, the domain is marked verified.</li>
+</ol>
+<h3 id="grandfathering">Grandfathering<a class="headerlink" href="#grandfathering" title="Permanent link">&para;</a></h3>
+<p>Existing claimed domains at migration time were grandfathered as verified (operator decision). New domains added after the migration must go through verification.</p>
+<hr />
+<h2 id="security-controls">Security controls<a class="headerlink" href="#security-controls" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Implementation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Client secret encryption at rest</td>
+<td>Server KEK (<code>RootKeyProvider.Encrypt</code>), <code>BYTEA</code> column (D17-S4)</td>
+</tr>
+<tr>
+<td>PKCE S256</td>
+<td><code>code_challenge</code> derived from random verifier; verifier in signed cookie</td>
+</tr>
+<tr>
+<td>State cookie integrity</td>
+<td>HMAC-SHA256 over <code>{state, verifier, orgID, exp}</code>; constant-time compare</td>
+</tr>
+<tr>
+<td>State cookie expiry</td>
+<td>10-minute TTL</td>
+</tr>
+<tr>
+<td>Callback bound to start org</td>
+<td><code>org.ID == payload.OrgID</code> check</td>
+</tr>
+<tr>
+<td><code>email_verified</code> enforcement (F8)</td>
+<td>Absent/false → <code>ErrEmailUnverified</code> (403)</td>
+</tr>
+<tr>
+<td>Email-claim trust</td>
+<td><code>email</code> only used for account binding when IdP-verified</td>
+</tr>
+<tr>
+<td>Suspended-user block</td>
+<td><code>user.Status == suspended</code> → <code>ErrUserSuspended</code></td>
+</tr>
+<tr>
+<td>Last-admin protection</td>
+<td>IdP demotion refused if user is sole org admin</td>
+</tr>
+<tr>
+<td>Secret never in responses</td>
+<td><code>OrgSSOConfigResponse.HasSecret</code> replaces the blob</td>
+</tr>
+<tr>
+<td>SameSite=Lax state cookie</td>
+<td>Survives top-level redirect, blocked on cross-site POST</td>
+</tr>
+<tr>
+<td>IdP-registered redirect URI</td>
+<td>Defense-in-depth; IdP only redirects to registered URIs</td>
+</tr>
+<tr>
+<td>Auto-provision off → 403</td>
+<td><code>ErrAutoProvisionOff</code> mapped to <code>provisioning_disabled</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="idp-specific-setup-notes">IdP-specific setup notes<a class="headerlink" href="#idp-specific-setup-notes" title="Permanent link">&para;</a></h2>
+<h3 id="google-workspace">Google Workspace<a class="headerlink" href="#google-workspace" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Discovery URL:</strong> <code>https://accounts.google.com</code></li>
+<li><strong>Client ID:</strong> <code>&lt;project&gt;.apps.googleusercontent.com</code></li>
+<li><strong>Redirect URI:</strong> <code>https://app.example.com/api/v1/auth/sso/&lt;orgSlug&gt;/callback</code></li>
+<li><strong>Groups:</strong> Google does not emit OIDC <code>groups</code> by default; use a Groups claim mapping in the Google admin console, or omit <code>groupRoleMapping</code> (all SSO users become <code>member</code>).</li>
+</ul>
+<h3 id="azure-ad-microsoft-entra-id">Azure AD (Microsoft Entra ID)<a class="headerlink" href="#azure-ad-microsoft-entra-id" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Discovery URL:</strong> <code>https://login.microsoftonline.com/&lt;tenant-id&gt;/v2.0</code></li>
+<li><strong>Groups:</strong> Azure AD exposes groups via <code>memberOf</code>. The role resolver walks <code>memberOf</code> ∪ OIDC <code>groups</code>. Map Azure AD group object IDs to roles:</li>
+</ul>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="p">{</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span><span class="nt">&quot;group_role_mapping&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">    </span><span class="nt">&quot;&lt;admin-group-object-id&gt;&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;admin&quot;</span><span class="p">,</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">    </span><span class="nt">&quot;&lt;member-group-object-id&gt;&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;member&quot;</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">  </span><span class="p">}</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="p">}</span>
+</span></code></pre></div>
+<ul>
+<li><strong>Email claim:</strong> Ensure the <code>email</code> claim is emitted (app registration → Token configuration → add <code>email</code> optional claim).</li>
+</ul>
+<h3 id="okta">Okta<a class="headerlink" href="#okta" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Discovery URL:</strong> <code>https://&lt;your-org&gt;.okta.com</code></li>
+<li><strong>Groups:</strong> Okta emits <code>groups</code> by default if the Groups scope is requested. Map Okta group names to roles.</li>
+</ul>
+<h3 id="generic-oidc-keycloak-auth0-etc">Generic OIDC (Keycloak, Auth0, etc.)<a class="headerlink" href="#generic-oidc-keycloak-auth0-etc" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Discovery URL:</strong> the IdP's <code>.well-known/openid-configuration</code> endpoint.</li>
+<li>Ensure the IdP emits <code>email</code>, <code>email_verified</code>, and <code>groups</code> (or equivalent) claims.</li>
+<li>The platform enforces <code>email_verified == true</code> (F8) — if your IdP doesn't set it, logins fail with <code>email_unverified</code>.</li>
+</ul>
+<hr />
+<h2 id="troubleshooting-sso">Troubleshooting SSO<a class="headerlink" href="#troubleshooting-sso" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Symptom</th>
+<th>Likely cause</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>state_invalid</code> on callback</td>
+<td>State cookie expired (&gt;10 min) or HMAC mismatch</td>
+<td>Re-start the flow; check clock skew between browser and API.</td>
+</tr>
+<tr>
+<td><code>email_unverified</code> (403)</td>
+<td>IdP did not set <code>email_verified: true</code></td>
+<td>Configure the IdP to emit the claim; or ensure the user's email is verified in the IdP.</td>
+</tr>
+<tr>
+<td><code>provisioning_disabled</code> (403)</td>
+<td><code>auto_provision=false</code> and user doesn't exist</td>
+<td>Set <code>auto_provision=true</code>, or create the user first.</td>
+</tr>
+<tr>
+<td><code>suspended</code></td>
+<td>User's platform account is suspended</td>
+<td>Unsuspend the user via the admin API.</td>
+</tr>
+<tr>
+<td>Redirect loop</td>
+<td><code>redirectBaseUrl</code> misconfigured or IdP redirect URI not registered</td>
+<td>Set <code>oidc.redirectBaseUrl</code> to the exact public origin; register the callback URL in the IdP.</td>
+</tr>
+<tr>
+<td>"Sign in with {org}" button missing</td>
+<td>Domain not verified</td>
+<td>Complete <a href="#dns-domain-verification">DNS domain verification</a>.</td>
+</tr>
+<tr>
+<td>Login works but role is wrong</td>
+<td><code>group_role_mapping</code> doesn't match IdP group IDs</td>
+<td>Verify the group IDs/names the IdP emits; update the mapping.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="checking-what-the-idp-emits">Checking what the IdP emits<a class="headerlink" href="#checking-what-the-idp-emits" title="Permanent link">&para;</a></h3>
+<p>To debug claims, temporarily point a test org at a debugging IdP (e.g. <code>https://oidcdebugger.com</code>) or inspect the id_token in the API logs at debug level. The platform does not log the id_token by default (it contains PII).</p>
+<hr />
+<h2 id="known-gaps-and-non-goals">Known gaps and non-goals<a class="headerlink" href="#known-gaps-and-non-goals" title="Permanent link">&para;</a></h2>
+<h3 id="gaps">Gaps<a class="headerlink" href="#gaps" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong><code>redirectBaseUrl</code> header-trust gap (F11)</strong> — fixed. The platform now requires <code>redirectBaseUrl</code> and fails loud. Header derivation is removed.</li>
+<li><strong>State cookie replay within TTL</strong> — the 10-minute window is the design trade-off for statelessness. Mitigated by orgID binding.</li>
+</ul>
+<h3 id="non-goals">Non-goals<a class="headerlink" href="#non-goals" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>No instance-level / platform-global OIDC</strong> — every SSO login is org-scoped. A single-IdP-for-the-whole-deployment mode does not exist; <code>cfg.OIDC</code> carries only plumbing.</li>
+<li><strong>No SAML or SCIM</strong> — explicitly deferred per Epic 43 decision D3.</li>
+<li><strong>No generic org-level settings tier</strong> — org config lives in dedicated normalized tables, not a key-value <code>org_settings</code> table.</li>
+</ul>
+<hr />
+<h2 id="related">Related<a class="headerlink" href="#related" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="../security/">Security Hardening</a> — the master KEK that encrypts org SSO client secrets.</li>
+<li><a href="../configuration/">Configuration</a> — the <code>oidc.*</code> Helm values and env vars.</li>
+<li><a href="../multi-tenant/">Multi-tenant Isolation</a> — org-scoped access and tenant identity.</li>
+</ul>
+
+
+
+
+
+
+
+  
+    
+  
+  
+    
+  
+
+
+  <aside class="md-source-file">
+    
+      
+  <span class="md-source-file__fact">
+    <span class="md-icon" title="Last update">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
+    </span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 06:44:10 UTC"><span class="timeago" datetime="2026-07-11T06:44:10+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 06:44:10 UTC">2026-07-11</span>
+  </span>
+
+    
+    
+      
+  <span class="md-source-file__fact">
+    <span class="md-icon" title="Created">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14.47 15.08 11 13V7h1.5v5.25l3.08 1.83c-.41.28-.79.62-1.11 1m-1.39 4.84c-.36.05-.71.08-1.08.08-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8c0 .37-.03.72-.08 1.08.69.1 1.33.32 1.92.64.1-.56.16-1.13.16-1.72 0-5.5-4.5-10-10-10S2 6.5 2 12s4.47 10 10 10c.59 0 1.16-.06 1.72-.16-.32-.59-.54-1.23-.64-1.92M18 15v3h-3v2h3v3h2v-3h3v-2h-3v-3z"/></svg>
+    </span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 06:44:10 UTC"><span class="timeago" datetime="2026-07-11T06:44:10+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 06:44:10 UTC">2026-07-11</span>
+  </span>
+
+    
+    
+    
+  </aside>
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/lenaxia/LLMSafeSpaces" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.tabs", "navigation.indexes", "navigation.top", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "content.code.copy", "content.code.annotate", "content.tabs.link"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="../../js/timeago.min.js"></script>
+      
+        <script src="../../js/timeago_mkdocs_material.js"></script>
+      
+    
+  </body>
+</html>

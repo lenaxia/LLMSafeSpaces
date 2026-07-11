@@ -10,29 +10,31 @@
       
       
       
-        <link rel="canonical" href="https://lenaxia.github.io/LLMSafeSpaces/">
+        <link rel="canonical" href="https://lenaxia.github.io/LLMSafeSpaces/architecture/">
       
       
+        <link rel="prev" href="../operator/runbook/">
       
-        <link rel="next" href="getting-started/">
+      
+        <link rel="next" href="components/">
       
       
         
       
       
-      <link rel="icon" href="assets/images/favicon.png">
+      <link rel="icon" href="../assets/images/favicon.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
     
     
       
-        <title>LLMSafeSpaces</title>
+        <title>Overview - LLMSafeSpaces</title>
       
     
     
-      <link rel="stylesheet" href="assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
       
         
-        <link rel="stylesheet" href="assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
       
       
 
@@ -51,9 +53,9 @@
       
     
     
-      <link rel="stylesheet" href="css/timeago.css">
+      <link rel="stylesheet" href="../css/timeago.css">
     
-    <script>__md_scope=new URL(".",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -78,7 +80,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#llmsafespaces" class="md-skip">
+        <a href="#architecture-overview" class="md-skip">
           Skip to content
         </a>
       
@@ -92,7 +94,7 @@
 
 <header class="md-header" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="." title="LLMSafeSpaces" class="md-header__button md-logo" aria-label="LLMSafeSpaces" data-md-component="logo">
+    <a href=".." title="LLMSafeSpaces" class="md-header__button md-logo" aria-label="LLMSafeSpaces" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5zm0 6c1.4 0 2.8 1.1 2.8 2.5V11c.6 0 1.2.6 1.2 1.3v3.5c0 .6-.6 1.2-1.3 1.2H9.2c-.6 0-1.2-.6-1.2-1.3v-3.5c0-.6.6-1.2 1.2-1.2V9.5C9.2 8.1 10.6 7 12 7m0 1.2c-.8 0-1.5.5-1.5 1.3V11h3V9.5c0-.8-.7-1.3-1.5-1.3"/></svg>
@@ -112,7 +114,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Home
+              Overview
             
           </span>
         </div>
@@ -223,11 +225,9 @@
   
   
   
-    
   
-  
-    <li class="md-tabs__item md-tabs__item--active">
-      <a href="." class="md-tabs__link">
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
         
   
   
@@ -248,7 +248,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="getting-started/" class="md-tabs__link">
+        <a href="../getting-started/" class="md-tabs__link">
           
   
   
@@ -270,7 +270,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="operator/installation/" class="md-tabs__link">
+        <a href="../operator/installation/" class="md-tabs__link">
           
   
   
@@ -288,11 +288,13 @@
   
   
   
+    
+  
   
     
     
-      <li class="md-tabs__item">
-        <a href="architecture/" class="md-tabs__link">
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="./" class="md-tabs__link">
           
   
   
@@ -314,7 +316,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="api/rest/" class="md-tabs__link">
+        <a href="../api/rest/" class="md-tabs__link">
           
   
   
@@ -336,7 +338,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="contributing/" class="md-tabs__link">
+        <a href="../contributing/" class="md-tabs__link">
           
   
   
@@ -358,7 +360,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="reference/helm-values/" class="md-tabs__link">
+        <a href="../reference/helm-values/" class="md-tabs__link">
           
   
   
@@ -394,7 +396,7 @@
 
 <nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="." title="LLMSafeSpaces" class="md-nav__button md-logo" aria-label="LLMSafeSpaces" data-md-component="logo">
+    <a href=".." title="LLMSafeSpaces" class="md-nav__button md-logo" aria-label="LLMSafeSpaces" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5zm0 6c1.4 0 2.8 1.1 2.8 2.5V11c.6 0 1.2.6 1.2 1.3v3.5c0 .6-.6 1.2-1.3 1.2H9.2c-.6 0-1.2-.6-1.2-1.3v-3.5c0-.6.6-1.2 1.2-1.2V9.5C9.2 8.1 10.6 7 12 7m0 1.2c-.8 0-1.5.5-1.5 1.3V11h3V9.5c0-.8-.7-1.3-1.5-1.3"/></svg>
@@ -421,37 +423,10 @@
       
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Home
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="." class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
         
   
   
@@ -467,81 +442,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#why-use-it" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Why use it
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#quick-links" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Quick links
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#architecture-at-a-glance" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Architecture at a glance
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#status" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Status
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#license" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        License
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -580,7 +480,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="getting-started/" class="md-nav__link ">
+            <a href="../getting-started/" class="md-nav__link ">
               
   
   
@@ -624,7 +524,7 @@
   
   
     <li class="md-nav__item">
-      <a href="getting-started/quickstart/" class="md-nav__link">
+      <a href="../getting-started/quickstart/" class="md-nav__link">
         
   
   
@@ -652,7 +552,7 @@
   
   
     <li class="md-nav__item">
-      <a href="getting-started/concepts/" class="md-nav__link">
+      <a href="../getting-started/concepts/" class="md-nav__link">
         
   
   
@@ -767,7 +667,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/installation/" class="md-nav__link">
+      <a href="../operator/installation/" class="md-nav__link">
         
   
   
@@ -795,7 +695,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/configuration/" class="md-nav__link">
+      <a href="../operator/configuration/" class="md-nav__link">
         
   
   
@@ -823,7 +723,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/storage/" class="md-nav__link">
+      <a href="../operator/storage/" class="md-nav__link">
         
   
   
@@ -851,7 +751,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/networking/" class="md-nav__link">
+      <a href="../operator/networking/" class="md-nav__link">
         
   
   
@@ -879,7 +779,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/security/" class="md-nav__link">
+      <a href="../operator/security/" class="md-nav__link">
         
   
   
@@ -907,7 +807,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/runtime-environments/" class="md-nav__link">
+      <a href="../operator/runtime-environments/" class="md-nav__link">
         
   
   
@@ -935,7 +835,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/multi-tenant/" class="md-nav__link">
+      <a href="../operator/multi-tenant/" class="md-nav__link">
         
   
   
@@ -963,7 +863,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/oidc-sso/" class="md-nav__link">
+      <a href="../operator/oidc-sso/" class="md-nav__link">
         
   
   
@@ -991,7 +891,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/inference-relay/" class="md-nav__link">
+      <a href="../operator/inference-relay/" class="md-nav__link">
         
   
   
@@ -1019,7 +919,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/monitoring/" class="md-nav__link">
+      <a href="../operator/monitoring/" class="md-nav__link">
         
   
   
@@ -1047,7 +947,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/upgrading/" class="md-nav__link">
+      <a href="../operator/upgrading/" class="md-nav__link">
         
   
   
@@ -1075,7 +975,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/troubleshooting/" class="md-nav__link">
+      <a href="../operator/troubleshooting/" class="md-nav__link">
         
   
   
@@ -1103,7 +1003,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/runbook/" class="md-nav__link">
+      <a href="../operator/runbook/" class="md-nav__link">
         
   
   
@@ -1135,6 +1035,8 @@
       
   
   
+    
+  
   
   
     
@@ -1156,20 +1058,23 @@
     
     
       
+        
+        
+      
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="architecture/" class="md-nav__link ">
+            <a href="./" class="md-nav__link md-nav__link--active">
               
   
   
@@ -1187,13 +1092,13 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="0">
+              <label class="md-nav__link md-nav__link--active" for="__nav_4" id="__nav_4_label" tabindex="">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_4">
             <span class="md-nav__icon md-icon"></span>
             
@@ -1213,7 +1118,7 @@
   
   
     <li class="md-nav__item">
-      <a href="architecture/components/" class="md-nav__link">
+      <a href="components/" class="md-nav__link">
         
   
   
@@ -1241,7 +1146,7 @@
   
   
     <li class="md-nav__item">
-      <a href="architecture/lifecycle/" class="md-nav__link">
+      <a href="lifecycle/" class="md-nav__link">
         
   
   
@@ -1269,7 +1174,7 @@
   
   
     <li class="md-nav__item">
-      <a href="architecture/secrets/" class="md-nav__link">
+      <a href="secrets/" class="md-nav__link">
         
   
   
@@ -1297,7 +1202,7 @@
   
   
     <li class="md-nav__item">
-      <a href="architecture/threat-model/" class="md-nav__link">
+      <a href="threat-model/" class="md-nav__link">
         
   
   
@@ -1394,7 +1299,7 @@
   
   
     <li class="md-nav__item">
-      <a href="api/rest/" class="md-nav__link">
+      <a href="../api/rest/" class="md-nav__link">
         
   
   
@@ -1422,7 +1327,7 @@
   
   
     <li class="md-nav__item">
-      <a href="api/authentication/" class="md-nav__link">
+      <a href="../api/authentication/" class="md-nav__link">
         
   
   
@@ -1450,7 +1355,7 @@
   
   
     <li class="md-nav__item">
-      <a href="api/mcp/" class="md-nav__link">
+      <a href="../api/mcp/" class="md-nav__link">
         
   
   
@@ -1478,7 +1383,7 @@
   
   
     <li class="md-nav__item">
-      <a href="api/sdks/" class="md-nav__link">
+      <a href="../api/sdks/" class="md-nav__link">
         
   
   
@@ -1544,7 +1449,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="contributing/" class="md-nav__link ">
+            <a href="../contributing/" class="md-nav__link ">
               
   
   
@@ -1588,7 +1493,7 @@
   
   
     <li class="md-nav__item">
-      <a href="contributing/development/" class="md-nav__link">
+      <a href="../contributing/development/" class="md-nav__link">
         
   
   
@@ -1616,7 +1521,7 @@
   
   
     <li class="md-nav__item">
-      <a href="contributing/rules/" class="md-nav__link">
+      <a href="../contributing/rules/" class="md-nav__link">
         
   
   
@@ -1644,7 +1549,7 @@
   
   
     <li class="md-nav__item">
-      <a href="contributing/testing/" class="md-nav__link">
+      <a href="../contributing/testing/" class="md-nav__link">
         
   
   
@@ -1672,7 +1577,7 @@
   
   
     <li class="md-nav__item">
-      <a href="contributing/worklogs/" class="md-nav__link">
+      <a href="../contributing/worklogs/" class="md-nav__link">
         
   
   
@@ -1769,7 +1674,7 @@
   
   
     <li class="md-nav__item">
-      <a href="reference/helm-values/" class="md-nav__link">
+      <a href="../reference/helm-values/" class="md-nav__link">
         
   
   
@@ -1797,7 +1702,7 @@
   
   
     <li class="md-nav__item">
-      <a href="reference/crds/" class="md-nav__link">
+      <a href="../reference/crds/" class="md-nav__link">
         
   
   
@@ -1825,7 +1730,7 @@
   
   
     <li class="md-nav__item">
-      <a href="reference/cli/" class="md-nav__link">
+      <a href="../reference/cli/" class="md-nav__link">
         
   
   
@@ -1853,7 +1758,7 @@
   
   
     <li class="md-nav__item">
-      <a href="reference/changelog/" class="md-nav__link">
+      <a href="../reference/changelog/" class="md-nav__link">
         
   
   
@@ -1908,10 +1813,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#why-use-it" class="md-nav__link">
+  <a href="#system-at-a-glance" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Why use it
+        System at a glance
       
     </span>
   </a>
@@ -1919,10 +1824,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#quick-links" class="md-nav__link">
+  <a href="#the-three-crds" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Quick links
+        The three CRDs
       
     </span>
   </a>
@@ -1930,10 +1835,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#architecture-at-a-glance" class="md-nav__link">
+  <a href="#how-a-request-flows" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Architecture at a glance
+        How a request flows
       
     </span>
   </a>
@@ -1941,10 +1846,60 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#status" class="md-nav__link">
+  <a href="#design-principles" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Status
+        Design principles
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Design principles">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#why-a-stateless-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why a stateless API?
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#why-crd-backed-state" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why CRD-backed state?
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#why-a-shared-namespace-for-multi-tenant" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Why a shared namespace for multi-tenant?
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#whats-warm-whats-cold" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What's warm, what's cold
       
     </span>
   </a>
@@ -1952,10 +1907,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#license" class="md-nav__link">
+  <a href="#what-the-platform-is-and-isnt" class="md-nav__link">
     <span class="md-ellipsis">
       
-        License
+        What the platform is — and isn't
       
     </span>
   </a>
@@ -1982,46 +1937,238 @@
   
 
 
-<h1 id="llmsafespaces">LLMSafeSpaces<a class="headerlink" href="#llmsafespaces" title="Permanent link">&para;</a></h1>
-<p>A Kubernetes-first platform for running AI agents in isolated, persistent workspaces.</p>
-<p>LLMSafeSpaces gives every user a Kubernetes pod running <a href="https://opencode.ai/docs/server/"><code>opencode serve</code></a> — a headless HTTP server driving an LLM agent — backed by a PVC-mounted filesystem at <code>/workspace</code>. The platform handles authentication, workspace lifecycle (activate/suspend/resume), secret injection, multi-tenant isolation, and reverse-proxies client requests to the agent.</p>
-<h2 id="why-use-it">Why use it<a class="headerlink" href="#why-use-it" title="Permanent link">&para;</a></h2>
+<h1 id="architecture-overview">Architecture Overview<a class="headerlink" href="#architecture-overview" title="Permanent link">&para;</a></h1>
+<p>LLMSafeSpaces is a Kubernetes-first platform that runs AI agents in isolated, persistent workspaces. This page covers the big picture: what talks to what, why the system is shaped the way it is, and how a single request flows end to end.</p>
+<p>If you only read one page, read this one. For depth, follow the links into <a href="components/">components</a>, <a href="lifecycle/">lifecycle</a>, <a href="secrets/">secrets</a>, and the <a href="threat-model/">threat model</a>.</p>
+<h2 id="system-at-a-glance">System at a glance<a class="headerlink" href="#system-at-a-glance" title="Permanent link">&para;</a></h2>
+<pre class="mermaid"><code>flowchart TD
+    Client["Clients&lt;br/&gt;(Browser · REST · SDK · MCP)"] -- "HTTPS / JWT / API key" --&gt; API
+    subgraph Cluster["Kubernetes cluster"]
+        API["LLMSafeSpaces API&lt;br/&gt;(Gin · stateless · N replicas)"]
+        CTRL["Controller&lt;br/&gt;(controller-runtime · leader-elected)"]
+        API &lt;--&gt; PG[("PostgreSQL&lt;br/&gt;users · API keys ·&lt;br/&gt;encrypted secrets · settings")]
+        API &lt;--&gt; RD[("Redis / Valkey&lt;br/&gt;rate limit · cache ·&lt;br/&gt;DEK cache · lockout")]
+        API -- "CRD + Secret ops" --&gt; CTRL
+        CTRL -- "reconciles" --&gt; POD["Workspace Pods&lt;br/&gt;(opencode serve :4096&lt;br/&gt;+ agentd sidecar)"]
+        API -- "reverse proxy&lt;br/&gt;HTTP basic auth" --&gt; POD
+    end
+    POD -- "HTTPS egress&lt;br/&gt;(allowlisted)" --&gt; LLM["LLM providers"]</code></pre>
+<p>Five processes do all the work:</p>
+<table>
+<thead>
+<tr>
+<th>Process</th>
+<th>Role</th>
+<th>Stateless?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>API</strong> (Gin)</td>
+<td>Auth, ownership checks, reverse proxy to pods, secrets/settings/credentials, session tracking, SSE events</td>
+<td>Yes</td>
+</tr>
+<tr>
+<td><strong>Controller</strong> (controller-runtime)</td>
+<td>Reconciles <code>Workspace</code> / <code>RuntimeEnvironment</code> / <code>InferenceRelay</code> CRDs into pods, PVCs, Secrets, NetworkPolicies; health monitoring</td>
+<td>Leader-elected</td>
+</tr>
+<tr>
+<td><strong>Workspace pod</strong></td>
+<td><code>opencode serve</code> HTTP server on <code>:4096</code> + <code>workspace-agentd</code> sidecar; PVC at <code>/workspace</code></td>
+<td>One per active workspace</td>
+</tr>
+<tr>
+<td><strong>PostgreSQL</strong></td>
+<td>User metadata, API keys, <strong>encrypted</strong> secrets (zero-knowledge), instance/user settings</td>
+<td>External</td>
+</tr>
+<tr>
+<td><strong>Redis / Valkey</strong></td>
+<td>Rate limiting, model cache, DEK cache, account lockout counters, SSE tracking</td>
+<td>External</td>
+</tr>
+</tbody>
+</table>
+<p>The <a href="components/">components</a> page covers what each one owns in detail.</p>
+<h2 id="the-three-crds">The three CRDs<a class="headerlink" href="#the-three-crds" title="Permanent link">&para;</a></h2>
+<p>Everything long-lived is a Kubernetes custom resource in the <code>llmsafespaces.dev/v1</code> group:</p>
+<table>
+<thead>
+<tr>
+<th>Kind</th>
+<th>Scope</th>
+<th>Short</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Workspace</code></td>
+<td>Namespaced</td>
+<td><code>ws</code></td>
+<td>PVC-backed persistent environment + pod running <code>opencode serve</code>. The unit of suspend/resume.</td>
+</tr>
+<tr>
+<td><code>RuntimeEnvironment</code></td>
+<td>Cluster</td>
+<td><code>rte</code></td>
+<td>Mapping from a runtime name (e.g. <code>python:3.11</code>) to a container image.</td>
+</tr>
+<tr>
+<td><code>InferenceRelay</code></td>
+<td>Cluster</td>
+<td><code>irelay</code></td>
+<td>Opt-in fleet of relay VMs (AWS/OCI/GCP) proxying free-tier inference. Requires <code>rbac.scope=cluster</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>V1 CRDs (<code>Sandbox</code>, <code>SandboxProfile</code>, <code>WarmPool</code>, <code>WarmPod</code>) have been removed — <code>Workspace</code> absorbs all sandbox and profile functionality, and warm pools were dropped entirely (the PVC <em>is</em> the warm state). See the <a href="../reference/crds/">CRD reference</a> for the authoritative schema.</p>
+<h2 id="how-a-request-flows">How a request flows<a class="headerlink" href="#how-a-request-flows" title="Permanent link">&para;</a></h2>
+<p>A typical interactive chat message touches every component. Here is the exact path for <code>POST /api/v1/workspaces/:id/sessions/:sid/message</code>:</p>
+<pre class="mermaid"><code>sequenceDiagram
+    participant U as Browser / SDK
+    participant API as API (Gin)
+    participant K8s as K8s API (CRD cache)
+    participant Pod as Workspace Pod
+    participant PG as PostgreSQL
+    participant LLM as LLM provider
+
+    U-&gt;&gt;API: POST /sessions/:sid/message&lt;br/&gt;Authorization: Bearer &lt;jwt&gt;
+    API-&gt;&gt;API: AuthN (JWT verify + revocation check)&lt;br/&gt;AuthZ (ownership via WorkspaceAccessMiddleware)
+    API-&gt;&gt;K8s: Read Workspace CRD status (pod IP, phase)
+    API-&gt;&gt;Pod: POST /session/:sid/message&lt;br/&gt;Authorization: Basic &lt;workspace-pw&gt;
+    Pod-&gt;&gt;LLM: Provider call (injected creds from tmpfs)
+    LLM--&gt;&gt;Pod: Streaming response
+    Pod--&gt;&gt;API: HTTP streaming body
+    API--&gt;&gt;U: Proxied stream (patch-parts stripped unless ?verbose=true)
+    Note over API: Activity recorded → annotation&lt;br/&gt;llmsafespaces.dev/last-activity-at&lt;br/&gt;(batched, ≤60s flush)</code></pre>
+<p>Key details the diagram hides:</p>
+<ol>
+<li><strong>The API never touches the LLM provider.</strong> Credentials live in a tmpfs inside the pod (<code>/sandbox-runtime</code>); the pod's <code>opencode</code> process calls the provider directly. The API only reverse-proxies the pod's own HTTP API.</li>
+<li><strong>Pod IP comes from the CRD status cache</strong>, not a direct pod lookup. If the IP is stale (pod restarted), the proxy refreshes from the cache and retries once.</li>
+<li><strong>The proxy strips client headers.</strong> Only <code>Content-Type</code>, <code>Accept</code>, <code>X-Request-ID</code> are forwarded to the pod — <code>Cookie</code>, <code>Origin</code>, <code>Referer</code>, <code>X-Forwarded-*</code> and custom headers are dropped, and hop-by-hop headers (RFC 7230 §6.1) are stripped in both directions. This was the G34 fix.</li>
+<li><strong><code>?verbose=true</code></strong> keeps the <code>type=="patch"</code> parts opencode emits on every assistant turn (~2 KB of internal snapshot paths the UI doesn't render).</li>
+</ol>
+<h2 id="design-principles">Design principles<a class="headerlink" href="#design-principles" title="Permanent link">&para;</a></h2>
+<h3 id="why-a-stateless-api">Why a stateless API?<a class="headerlink" href="#why-a-stateless-api" title="Permanent link">&para;</a></h3>
+<p>The API holds <strong>no session state</strong>. All conversation history, context windows, and in-flight tool calls live inside the pod's <code>opencode</code> process. This means:</p>
 <ul>
-<li><strong>Persistent agent workspaces.</strong> Each workspace is a PVC-backed filesystem that survives pod restarts. Agent session history, project files, and credentials persist across suspend/resume cycles.</li>
-<li><strong>Multi-tenant isolation.</strong> Per-workspace pods with hardened security contexts, optional gVisor kernel isolation, per-tenant resource quotas, and NetworkPolicies that block egress to RFC1918 / CGNAT / cloud-metadata ranges.</li>
-<li><strong>Zero-knowledge secret store.</strong> User secrets encrypted with per-user DEKs (AES-256-GCM), keys derived via Argon2id. The platform never stores plaintext credentials.</li>
-<li><strong>Provider-agnostic.</strong> Bring your own LLM gateway (LiteLLM, OpenAI, Anthropic, Bedrock) — workspaces bind to whatever credentials you supply.</li>
-<li><strong>Kubernetes-native.</strong> Custom Resource Definitions for <code>Workspace</code>, <code>RuntimeEnvironment</code>, <code>InferenceRelay</code>. Deploy via Helm; reconcile via controller-runtime.</li>
-<li><strong>MCP-compatible.</strong> The platform is an MCP server — any MCP-compatible client can drive workspaces programmatically.</li>
+<li>Any API replica can proxy any workspace — <strong>no sticky sessions</strong>.</li>
+<li>An API restart drops only in-flight HTTP connections; clients reconnect with backoff and lose nothing (opencode keeps its state on the PVC).</li>
+<li>Horizontal scaling is a <code>replicaCount:</code> bump — <code>N</code> pods behind a load balancer.</li>
 </ul>
-<h2 id="quick-links">Quick links<a class="headerlink" href="#quick-links" title="Permanent link">&para;</a></h2>
+<p>The only in-memory state the API keeps is per-replica caches (password cache keyed by workspace ID, model cache with a 5s TTL, active-session tracking for the per-workspace limit) and the activity-tracker timestamp. None of it is authoritative.</p>
+<h3 id="why-crd-backed-state">Why CRD-backed state?<a class="headerlink" href="#why-crd-backed-state" title="Permanent link">&para;</a></h3>
+<p>Kubernetes is the source of truth for <strong>infrastructure</strong> state; PostgreSQL is the source of truth for <strong>user-facing metadata</strong>. The split is strict and never overlaps:</p>
+<table>
+<thead>
+<tr>
+<th>Data</th>
+<th>Source of truth</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Workspace phase, PVC name, pod IP, conditions</td>
+<td><code>Workspace</code> CRD <code>status</code></td>
+<td>The controller reconciles this; the API reads it.</td>
+</tr>
+<tr>
+<td><code>lastActivityAt</code></td>
+<td><code>Workspace</code> CRD <strong>annotation</strong> (not status)</td>
+<td>The API is the sole writer; the annotation lane avoids optimistic-concurrency conflicts with the controller's <code>Status().Update</code>.</td>
+</tr>
+<tr>
+<td>Workspace display name, user ID mirror, timestamps</td>
+<td>PostgreSQL</td>
+<td>Query performance for list/get. The CRD <code>spec.owner</code> is authoritative for ownership.</td>
+</tr>
+<tr>
+<td>Credentials</td>
+<td>Kubernetes Secrets</td>
+<td><strong>Never</strong> PostgreSQL, Redis, or logs.</td>
+</tr>
+<tr>
+<td>User auth (passwords, API keys, DEKs), encrypted secrets, settings</td>
+<td>PostgreSQL</td>
+<td>The API's domain.</td>
+</tr>
+</tbody>
+</table>
+<p>The single-writer-per-field rule (US-23.3) is what makes this safe. Each <code>status</code> field has exactly one owner; cross-writer optimistic-concurrency races were the root cause of multiple historical incidents.</p>
+<h3 id="why-a-shared-namespace-for-multi-tenant">Why a shared namespace for multi-tenant?<a class="headerlink" href="#why-a-shared-namespace-for-multi-tenant" title="Permanent link">&para;</a></h3>
+<p>LLMSafeSpaces does <strong>not</strong> create a namespace per tenant. All workspaces in one deployment run in one namespace (configurable via <code>controller.watchNamespaces</code>). This is a deliberate choice:</p>
 <ul>
-<li><strong><a href="getting-started/quickstart/">Quickstart</a></strong> — install on a local <code>kind</code> cluster in 10 minutes</li>
-<li><strong><a href="operator/installation/">Installation</a></strong> — production Helm deployment</li>
-<li><strong><a href="operator/security/">Security Hardening</a></strong> — threat model and configuration</li>
-<li><strong><a href="reference/helm-values/">Helm Values Reference</a></strong> — every chart value documented</li>
-<li><strong><a href="api/rest/">REST API</a></strong> — ~90 endpoints, JWT + API-key auth</li>
+<li><strong>Namespaces don't stop container escape.</strong> A tenant who breaks out of a pod reaches the node, not just their namespace. Namespace isolation is a false sense of security for kernel-level threats.</li>
+<li><strong>Namespaces don't scale to 1,000+ tenants.</strong> Per-namespace RBAC, NetworkPolicy, and quota objects multiply linearly; controller caches and kube-apiserver load suffer.</li>
 </ul>
-<h2 id="architecture-at-a-glance">Architecture at a glance<a class="headerlink" href="#architecture-at-a-glance" title="Permanent link">&para;</a></h2>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>Clients (REST / SSE / MCP)
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    │
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    ▼
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>LLMSafeSpaces API (Gin, stateless)  ──► PostgreSQL + Redis
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    │ K8s API
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    ▼
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>Controller (controller-runtime)
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    │
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    ▼
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>Workspace Pods (opencode serve :4096)
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    ├─ init: credential-setup
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    ├─ main: opencode serve
-</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    └─ sidecar: workspace-agentd
-</span></code></pre></div>
-<p>Three CRDs in the <code>llmsafespaces.dev/v1</code> API group: <code>Workspace</code> (namespaced), <code>RuntimeEnvironment</code> (cluster), <code>InferenceRelay</code> (cluster, opt-in).</p>
-<h2 id="status">Status<a class="headerlink" href="#status" title="Permanent link">&para;</a></h2>
-<p><strong>v0.3.0</strong> — Active development. Suitable for homelab and small-team deployments with the threat model understood. Not recommended for public multi-tenant SaaS without reviewing the <a href="architecture/threat-model/">threat model</a> and the remaining open security gaps.</p>
-<h2 id="license">License<a class="headerlink" href="#license" title="Permanent link">&para;</a></h2>
-<p>GNU Affero General Public License v3.0 or later (<a href="https://github.com/lenaxia/LLMSafeSpaces/blob/main/LICENSE">AGPL-3.0-or-later</a>). A commercial license is available for organizations that cannot comply with the AGPL — contact <code>safespace@47north.lat</code>.</p>
+<p>Instead, tenant isolation is layered controls in the shared namespace:</p>
+<table>
+<thead>
+<tr>
+<th>Control</th>
+<th>Status</th>
+<th>Mechanism</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Network isolation</td>
+<td>Shipped</td>
+<td>Chart-level default-deny ingress + RFC1918/CGNAT/cloud-metadata-filtered egress NetworkPolicies</td>
+</tr>
+<tr>
+<td>Secret scoping</td>
+<td>Shipped</td>
+<td><code>rbac.scope=namespace</code> default; namespace-scoped Secrets Role</td>
+</tr>
+<tr>
+<td>Tenant identity</td>
+<td>Shipped</td>
+<td><code>WorkspaceOwner{UserID, OrgID}</code> on the CRD; <code>llmsafespaces.dev/tenant</code> pod label</td>
+</tr>
+<tr>
+<td>Container-runtime isolation</td>
+<td>Opt-in (Epic 51)</td>
+<td>gVisor (<code>runsc</code>) RuntimeClass — the primary defense against kernel-exploitation container escape</td>
+</tr>
+<tr>
+<td>Per-tenant resource quotas</td>
+<td>Opt-in (Epic 51)</td>
+<td><code>PodTenantQuotaValidator</code> admission webhook keyed on the tenant label</td>
+</tr>
+</tbody>
+</table>
+<p>See the <a href="threat-model/">threat model</a> and <a href="components/">components</a> for the full picture, and the operator guide on multi-tenant isolation for configuration.</p>
+<h2 id="whats-warm-whats-cold">What's warm, what's cold<a class="headerlink" href="#whats-warm-whats-cold" title="Permanent link">&para;</a></h2>
+<p>The platform distinguishes durable state (survives pod deletion) from ephemeral state (wiped on pod death):</p>
+<pre class="mermaid"><code>flowchart LR
+    subgraph Durable["Durable — survives suspend/pod death"]
+        PVC["PVC&lt;br/&gt;/workspace · /home/sandbox · /tmp&lt;br/&gt;(session history, project files, caches)"]
+        K8sS["K8s Secrets&lt;br/&gt;credentials + workspace password"]
+        PG[("PostgreSQL&lt;br/&gt;user metadata, encrypted secrets")]
+    end
+    subgraph Ephemeral["Ephemeral — wiped on pod death"]
+        TMPFS["tmpfs /sandbox-runtime&lt;br/&gt;agent-config.json · secrets-env ·&lt;br/&gt;auth.json symlinks · admin-prompt.md"]
+        CFG["emptyDir /sandbox-cfg&lt;br/&gt;secrets.json · workspace-config.json"]
+    end
+    PVC -- "reattached on resume" --&gt; RESUME["new pod&lt;br/&gt;same PVC"]
+    TMPFS -. "dangling symlinks only&lt;br/&gt;(no plaintext bytes)" .-&gt; PVC</code></pre>
+<p>This is why <strong>suspend/resume is cheap</strong>: the PVC is already bound, so resuming is just "create a new pod mounting the existing PVC" (~22s measured; the PVC reattach + opencode boot dominate). The PVC <em>is</em> the warm state — there are no warm pools.</p>
+<p>The credential story is the subtle part: credentials live in tmpfs (RAM-backed), so when a pod dies the PVC retains only <strong>dangling symlinks</strong> with no plaintext bytes. The next pod's init container re-materializes everything from the K8s Secret + the reload-replay cache. The <a href="secrets/">secrets</a> page covers this in depth.</p>
+<h2 id="what-the-platform-is-and-isnt">What the platform is — and isn't<a class="headerlink" href="#what-the-platform-is-and-isnt" title="Permanent link">&para;</a></h2>
+<p><strong>It is:</strong> an orchestration, isolation, and multi-tenant control layer around an AI agent. Every workspace runs <code>opencode serve</code> as a persistent HTTP server; the platform handles lifecycle, credentials, access control, and proxies your requests to it.</p>
+<p><strong>It isn't:</strong></p>
+<ul>
+<li>A general container platform (use Kubernetes directly).</li>
+<li>A CI/CD runner (use GitHub Actions, Jenkins).</li>
+<li>A bare code-execution service (every workspace has an agent; there is no "just run this command" mode).</li>
+<li>A real-time multiplayer collaboration tool (one user per workspace; RWO PVC enforces one pod at a time).</li>
+<li>A sub-second cold-start service (3-5s pod creation is fine; long-lived agents absorb the cost).</li>
+</ul>
+<p>The authoritative design document is <a href="https://github.com/lenaxia/LLMSafeSpaces/blob/main/design/0021_2026-05-21_evolution-v2.md"><code>design/0021_2026-05-21_evolution-v2.md</code></a> (v2.4). Where older V1 design docs conflict with it, evolution-v2 wins.</p>
 
 
 
@@ -2127,14 +2274,14 @@
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": ".", "features": ["navigation.sections", "navigation.tabs", "navigation.indexes", "navigation.top", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "content.code.copy", "content.code.annotate", "content.tabs.link"], "search": "assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.tabs", "navigation.indexes", "navigation.top", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "content.code.copy", "content.code.annotate", "content.tabs.link"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
       
-        <script src="js/timeago.min.js"></script>
+        <script src="../js/timeago.min.js"></script>
       
-        <script src="js/timeago_mkdocs_material.js"></script>
+        <script src="../js/timeago_mkdocs_material.js"></script>
       
     
   </body>

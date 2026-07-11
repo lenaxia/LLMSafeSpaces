@@ -1,0 +1,2776 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="A Kubernetes-first platform for running AI agents in isolated, persistent workspaces. Documentation for operators, contributors, and integrators.">
+      
+      
+      
+        <link rel="canonical" href="https://lenaxia.github.io/LLMSafeSpaces/architecture/threat-model/">
+      
+      
+        <link rel="prev" href="../secrets/">
+      
+      
+        <link rel="next" href="../../api/rest/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Threat Model - LLMSafeSpaces</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../css/timeago.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#threat-model" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="LLMSafeSpaces" class="md-header__button md-logo" aria-label="LLMSafeSpaces" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5zm0 6c1.4 0 2.8 1.1 2.8 2.5V11c.6 0 1.2.6 1.2 1.3v3.5c0 .6-.6 1.2-1.3 1.2H9.2c-.6 0-1.2-.6-1.2-1.3v-3.5c0-.6.6-1.2 1.2-1.2V9.5C9.2 8.1 10.6 7 12 7m0 1.2c-.8 0-1.5.5-1.5 1.3V11h3V9.5c0-.8-.7-1.3-1.5-1.3"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            LLMSafeSpaces
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Threat Model
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/lenaxia/LLMSafeSpaces" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    lenaxia/LLMSafeSpaces
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../getting-started/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../operator/installation/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Operator Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Architecture
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../api/rest/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  API Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../contributing/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Contributing
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../reference/helm-values/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="LLMSafeSpaces" class="md-nav__button md-logo" aria-label="LLMSafeSpaces" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5zm0 6c1.4 0 2.8 1.1 2.8 2.5V11c.6 0 1.2.6 1.2 1.3v3.5c0 .6-.6 1.2-1.3 1.2H9.2c-.6 0-1.2-.6-1.2-1.3v-3.5c0-.6.6-1.2 1.2-1.2V9.5C9.2 8.1 10.6 7 12 7m0 1.2c-.8 0-1.5.5-1.5 1.3V11h3V9.5c0-.8-.7-1.3-1.5-1.3"/></svg>
+
+    </a>
+    LLMSafeSpaces
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/lenaxia/LLMSafeSpaces" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    lenaxia/LLMSafeSpaces
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../getting-started/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operator Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operator Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/networking/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Networking
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security Hardening
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/runtime-environments/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runtime Environments
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/multi-tenant/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-tenant Isolation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/oidc-sso/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    OIDC SSO
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/inference-relay/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Inference Relay Fleet
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/upgrading/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Upgrading
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/runbook/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../components/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Components
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../lifecycle/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workspace Lifecycle
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../secrets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Secret Management
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Threat Model
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Threat Model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#trust-boundaries" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Trust boundaries
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#assets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Assets
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#threat-actors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Threat actors
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stride-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        STRIDE analysis
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-gap-register-g1g50" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The gap register (G1–G50)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The gap register (G1–G50)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#critical-recent-closures" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Critical recent closures
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#still-open-highest-severity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Still open — highest severity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#full-open-gap-list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Full open gap list
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#accepted-risks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Accepted risks
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-platform-protects-against" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the platform protects against
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-it-does-not-protect-against" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What it does NOT protect against
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#assumptions-operators-must-validate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Assumptions operators must validate
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#out-of-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Out of scope
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/rest/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    REST
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/authentication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authentication
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/mcp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MCP Server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/sdks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SDKs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../contributing/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contributing
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development Workflow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/rules/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engineering Rules
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/testing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/worklogs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Worklogs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/helm-values/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Helm Values
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/crds/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CRDs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../reference/changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#trust-boundaries" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Trust boundaries
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#assets" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Assets
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#threat-actors" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Threat actors
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#stride-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        STRIDE analysis
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#the-gap-register-g1g50" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The gap register (G1–G50)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="The gap register (G1–G50)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#critical-recent-closures" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Critical recent closures
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#still-open-highest-severity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Still open — highest severity
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#full-open-gap-list" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Full open gap list
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#accepted-risks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Accepted risks
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-the-platform-protects-against" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What the platform protects against
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-it-does-not-protect-against" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What it does NOT protect against
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#assumptions-operators-must-validate" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Assumptions operators must validate
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#out-of-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Out of scope
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="threat-model">Threat Model<a class="headerlink" href="#threat-model" title="Permanent link">&para;</a></h1>
+<p>This page summarizes the STRIDE analysis and the gap register (G1–G50) for LLMSafeSpaces. The authoritative source is <a href="https://github.com/lenaxia/LLMSafeSpaces/blob/main/design/stories/epic-17-security-review/THREAT-MODEL.md"><code>design/stories/epic-17-security-review/THREAT-MODEL.md</code></a>; this page is a rendered summary for operators and integrators.</p>
+<p><strong>Be honest about what's open.</strong> The platform is suitable for homelab and small-team deployments with the threat model understood. It is <strong>not</strong> recommended for public multi-tenant SaaS without reviewing the remaining open security gaps below.</p>
+<h2 id="trust-boundaries">Trust boundaries<a class="headerlink" href="#trust-boundaries" title="Permanent link">&para;</a></h2>
+<pre class="mermaid"><code>flowchart TD
+    EXT["EXTERNAL (untrusted)&lt;br/&gt;end users · LLM providers · package registries"]
+    EXT -- "TLS / JWT / API key" --&gt; B1
+    B1["BOUNDARY 1: Ingress → API&lt;br/&gt;AuthN · rate limit · input validation&lt;br/&gt;CORS · security headers"]
+    B1 -- "internal HTTP / K8s API" --&gt; B2
+    B2["BOUNDARY 2: API → cluster&lt;br/&gt;RBAC (namespace-scoped default)&lt;br/&gt;CRD ops · Secret mgmt&lt;br/&gt;proxy to pods (plain HTTP — G4)"]
+    B2 -- "pod network / K8s API" --&gt; B3
+    B3["BOUNDARY 3: Controller → pods&lt;br/&gt;hardened security context&lt;br/&gt;init-container credential injection&lt;br/&gt;default-deny NetworkPolicy"]
+    B3 -- "filesystem / network" --&gt; B4
+    B4["BOUNDARY 4: Pod → external world&lt;br/&gt;agent executes LLM-directed actions&lt;br/&gt;egress to allowlisted domains&lt;br/&gt;tmpfs credentials · no SA token"]</code></pre>
+<h2 id="assets">Assets<a class="headerlink" href="#assets" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Asset</th>
+<th>Sensitivity</th>
+<th>Location</th>
+<th>Impact if compromised</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>User LLM API keys</td>
+<td>Critical</td>
+<td>K8s Secret → tmpfs in pod</td>
+<td>Financial loss, unauthorized API usage</td>
+</tr>
+<tr>
+<td>User SSH keys / Git tokens</td>
+<td>Critical</td>
+<td>K8s Secret → tmpfs</td>
+<td>Source code theft, supply chain attack</td>
+</tr>
+<tr>
+<td>User DEK</td>
+<td>Critical</td>
+<td>Redis session cache (memory)</td>
+<td>All user secrets decryptable</td>
+</tr>
+<tr>
+<td>User password hash (bcrypt cost 12)</td>
+<td>High</td>
+<td>PostgreSQL</td>
+<td>Offline brute-force → credential access</td>
+</tr>
+<tr>
+<td>JWT signing key</td>
+<td>Critical</td>
+<td>API config / Secret</td>
+<td>Full impersonation of any user</td>
+</tr>
+<tr>
+<td>Master KEK (root of trust)</td>
+<td>Critical</td>
+<td>File mount (US-50.1 default, mode 0440); legacy env var is deprecated opt-in</td>
+<td>All at-rest platform credentials decryptable</td>
+</tr>
+<tr>
+<td>Workspace PVC data</td>
+<td>Medium</td>
+<td>Kubernetes PV</td>
+<td>User code/data exposure</td>
+</tr>
+<tr>
+<td>etcd data (K8s Secrets at rest)</td>
+<td>Critical</td>
+<td>etcd</td>
+<td>All credentials if unencrypted</td>
+</tr>
+</tbody>
+</table>
+<h2 id="threat-actors">Threat actors<a class="headerlink" href="#threat-actors" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Actor</th>
+<th>Capability</th>
+<th>Motivation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Malicious user</td>
+<td>Authenticated, owns workspaces</td>
+<td>Escape sandbox, access other tenants, steal credentials</td>
+</tr>
+<tr>
+<td>Compromised agent</td>
+<td>Code execution inside pod</td>
+<td>Exfiltrate data, pivot to cluster, mine crypto</td>
+</tr>
+<tr>
+<td>Malicious LLM output</td>
+<td>Prompt injection via tool responses</td>
+<td>Manipulate agent to exfiltrate/escalate</td>
+</tr>
+<tr>
+<td>Network attacker</td>
+<td>MITM on pod-to-pod traffic (G4: plain HTTP)</td>
+<td>Credential interception</td>
+</tr>
+<tr>
+<td>Compromised API server</td>
+<td>Full API memory + DB access</td>
+<td>Access active session DEKs, impersonate users</td>
+</tr>
+<tr>
+<td>Compromised controller</td>
+<td>K8s SA with Secret/Pod CRUD (namespace-scoped)</td>
+<td>Read credentials, create pods</td>
+</tr>
+<tr>
+<td>Cluster admin (insider)</td>
+<td>kubectl access</td>
+<td>Read Secrets, exec into pods</td>
+</tr>
+<tr>
+<td>Supply chain attacker</td>
+<td>Compromised opencode binary / Go dependency</td>
+<td>Backdoor in all pods</td>
+</tr>
+</tbody>
+</table>
+<h2 id="stride-analysis">STRIDE analysis<a class="headerlink" href="#stride-analysis" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Component</th>
+<th>Spoofing</th>
+<th>Tampering</th>
+<th>Repudiation</th>
+<th>Info Disclosure</th>
+<th>DoS</th>
+<th>Elevation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>API Auth</strong></td>
+<td>JWT forgery (mitigated: HMAC-only); API key theft</td>
+<td>Token replay (mitigated: dual-key revocation)</td>
+<td>No audit of failed auth</td>
+<td>Secret values logged unredacted (<strong>G25</strong>)</td>
+<td>Account lockout abuse (<strong>G13</strong>); no rate limit on recovery (<strong>G35</strong>)</td>
+<td>Sessions survive password change (<strong>G38</strong>)</td>
+</tr>
+<tr>
+<td><strong>Proxy</strong></td>
+<td>Workspace ID spoofing — <strong>fixed</strong> (G33)</td>
+<td>Response tampering (plain HTTP — G4); header injection — <strong>fixed</strong> (G34)</td>
+<td>No per-request audit</td>
+<td>Headers to sandbox — <strong>fixed</strong> (G34 allowlist)</td>
+<td>Connection exhaustion (mitigated: limits)</td>
+<td>Cross-tenant access — <strong>fixed</strong> (G33)</td>
+</tr>
+<tr>
+<td><strong>Controller</strong></td>
+<td>SA token theft (mitigated: bound tokens)</td>
+<td>CRD manipulation (mitigated: webhooks)</td>
+<td>Actions not individually audited</td>
+<td>Namespace-scoped default; secrets persist after deletion (<strong>G36</strong>)</td>
+<td>CRD spam (mitigated: quotas)</td>
+<td>Namespace-scoped SA</td>
+</tr>
+<tr>
+<td><strong>Sandbox Pod</strong></td>
+<td>N/A</td>
+<td>PVC data corruption</td>
+<td>No file-level audit</td>
+<td>Credential in env (<strong>G3</strong> accepted); env var injection (<strong>G37</strong>); agentd user port unauthenticated (<strong>G40</strong>)</td>
+<td>Resource exhaustion (mitigated)</td>
+<td>Container escape (mitigated: seccomp, caps; G1 accepted)</td>
+</tr>
+<tr>
+<td><strong>Database</strong></td>
+<td>SQL injection (mitigated: pgx parameterized)</td>
+<td>Data corruption (mitigated: tx)</td>
+<td>No query audit</td>
+<td>Wrapped DEK exposure (mitigated: AES-256-GCM); <code>key_version</code> for rotation; authorized-decrypt exfil undetectable (<strong>G50</strong>)</td>
+<td>Connection exhaustion</td>
+<td>N/A</td>
+</tr>
+<tr>
+<td><strong>Redis</strong></td>
+<td>Auth bypass (mitigated: auto-gen password + NP)</td>
+<td>Cache poisoning</td>
+<td>No op audit</td>
+<td>DEK in memory (<strong>G10</strong> accepted)</td>
+<td>Memory exhaustion; SSE tracking leak (<strong>G42</strong>)</td>
+<td>N/A</td>
+</tr>
+<tr>
+<td><strong>Frontend</strong></td>
+<td>Session theft via XSS (mitigated: rehype-sanitize — needs fuzzing)</td>
+<td>DOM tampering (mitigated: React auto-escape)</td>
+<td>No client audit</td>
+<td>JWT in HttpOnly Secure cookie</td>
+<td>UI freeze via huge messages</td>
+<td>N/A</td>
+</tr>
+<tr>
+<td><strong>Workspace Network</strong></td>
+<td>Cross-tenant traffic (mitigated: NP)</td>
+<td>N/A</td>
+<td>NP events not audited</td>
+<td>DNS exfil via external resolvers (<strong>G30</strong>); IPv6 unrestricted (<strong>G43</strong>)</td>
+<td>N/A</td>
+<td>N/A</td>
+</tr>
+</tbody>
+</table>
+<h2 id="the-gap-register-g1g50">The gap register (G1–G50)<a class="headerlink" href="#the-gap-register-g1g50" title="Permanent link">&para;</a></h2>
+<p><strong>Status:</strong> 21 Fixed · 22 Open · 7 Accepted (50 total).</p>
+<h3 id="critical-recent-closures">Critical recent closures<a class="headerlink" href="#critical-recent-closures" title="Permanent link">&para;</a></h3>
+<p>Four high-impact gaps closed in the v0.3.0 network hardening sweep:</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Gap</th>
+<th>Severity</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>G33</strong></td>
+<td>Proxy routes had no workspace ownership check (IDOR) — any authenticated user could proxy to any workspace ID</td>
+<td>Critical</td>
+<td><code>WorkspaceAccessMiddleware</code> wired on the <code>idGroup</code> route group, which all proxy routes inherit. Resolves workspace, checks <code>WorkspaceOwner{UserID, OrgID}</code>, rejects 403 on mismatch. Regression: <code>router_workspace_access_test.go</code>.</td>
+</tr>
+<tr>
+<td><strong>G34</strong></td>
+<td>Proxy forwarded all client headers (Cookie, Origin, Referer, X-Forwarded-*, custom) to the sandbox pod</td>
+<td>Critical</td>
+<td><code>copyRequestHeaders</code> explicit allowlist (<code>Content-Type</code>, <code>Accept</code>, <code>X-Request-ID</code>); hop-by-hop headers stripped both directions; <code>Accept-Encoding</code> deliberately not forwarded. Regression: <code>TestProxy_G34_*</code>. (PR #513)</td>
+</tr>
+<tr>
+<td><strong>G39</strong></td>
+<td>Terminal WebSocket accepted any Origin (<code>CheckOrigin: return true</code>) — cross-site WebSocket hijacking</td>
+<td>Medium</td>
+<td><code>newCheckOriginChecker</code>: same-origin default + operator allowlist via <code>terminal.allowedOrigins</code>. Dead <code>WebSocketSecurityMiddleware</code> removed; gorilla <code>Upgrader</code> is the single enforcement point. (PR #515)</td>
+</tr>
+<tr>
+<td><strong>G49</strong></td>
+<td>No operational KEK rotation — rotating the master KEK orphaned every Postgres ciphertext</td>
+<td>High</td>
+<td>Foundation shipped (multi-key <code>StaticKeyProvider</code>, <code>key_version</code> columns, rotation-aware write path) + the <code>rotate-kek</code> CLI at <code>cmd/rotate-kek/main.go</code>.</td>
+</tr>
+</tbody>
+</table>
+<p>Plus the earlier master-KEK hardening:</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Gap</th>
+<th>Severity</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>G48</strong></td>
+<td>Master KEK delivered as env var (exposed via <code>/proc/1/environ</code>)</td>
+<td>High</td>
+<td>US-50.1: default delivery is a read-only file mount at <code>/var/run/secrets/llmsafespaces/master-secret</code> (mode 0440). Env path is deprecated opt-in.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="still-open-highest-severity">Still open — highest severity<a class="headerlink" href="#still-open-highest-severity" title="Permanent link">&para;</a></h3>
+<p>These are the gaps to prioritize if you're hardening a deployment:</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Gap</th>
+<th>Severity</th>
+<th>Detail</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>G35</strong></td>
+<td><code>RecoverAccount</code> endpoint has no rate limiting</td>
+<td>High</td>
+<td><code>router.go:264</code> — outside the auth rate limiter; requires only userID + recovery key. Move behind auth rate limiter.</td>
+</tr>
+<tr>
+<td><strong>G36</strong></td>
+<td>Workspace secrets not cleaned on deletion</td>
+<td>High</td>
+<td><code>phase_terminating.go</code> only deletes <code>workspace-pw-*</code>; <code>workspace-secrets-*</code> and <code>workspace-creds-*</code> persist indefinitely. Call <code>deleteEphemeralSecretsSecret</code> from <code>handleTerminating</code>.</td>
+</tr>
+<tr>
+<td><strong>G37</strong></td>
+<td>No validation on workspace env var names</td>
+<td>High</td>
+<td><code>secrets.go:573</code> accepts <code>LD_PRELOAD</code>, <code>PATH</code>, <code>PYTHONPATH</code>, etc. as env var names. Add blocklist.</td>
+</tr>
+<tr>
+<td><strong>G38</strong></td>
+<td><code>ChangePassword</code> does not invalidate existing sessions</td>
+<td>High</td>
+<td><code>secrets.go:782-817</code> updates bcrypt and re-wraps DEK but never calls <code>RevokeToken</code>; existing JWTs remain valid. Revoke all active sessions on password change.</td>
+</tr>
+<tr>
+<td><strong>G25</strong></td>
+<td>Secret value field logged unredacted</td>
+<td>High</td>
+<td><code>logging.go:48</code> — <code>SensitiveFields</code> doesn't include <code>"value"</code>. Add it, route JSON through <code>pkg/redact.Redact()</code>, or disable body logging for <code>/api/v1/secrets/*</code>.</td>
+</tr>
+<tr>
+<td><strong>G50</strong></td>
+<td>Decrypt operations are not audited</td>
+<td>Medium</td>
+<td><code>NewAuditedProvider</code> exists but has zero production call sites. Wiring awaits US-50.2 (unify crypto layers — <code>AdminKeyDeriver</code> removal). Currently <code>secret_audit_log</code> records only CRUD, not decrypts.</td>
+</tr>
+<tr>
+<td><strong>G4</strong></td>
+<td>No mTLS between API and sandbox pods</td>
+<td>Medium</td>
+<td>Plain HTTP <code>http://{pod_ip}:4096</code>. Implement mTLS via per-workspace cert or service mesh.</td>
+</tr>
+<tr>
+<td><strong>G9</strong></td>
+<td>opencode/gh binaries downloaded without checksum verification</td>
+<td>Medium</td>
+<td>Dockerfile uses <code>curl --fail</code> over TLS only; no checksum or Sigstore. opencode upstream doesn't publish checksums; gh does (<code>.sha256</code>) — should verify.</td>
+</tr>
+<tr>
+<td><strong>G13</strong></td>
+<td>Account lockout keyed on email only</td>
+<td>Medium</td>
+<td><code>lockoutKey := lockout:%s</code> keyed on email — attacker who knows victim email can lock them out from any IP. Add IP component or progressive delays + CAPTCHA.</td>
+</tr>
+<tr>
+<td><strong>G30</strong></td>
+<td>Egress NetPol allows external DNS resolvers (e.g. 8.8.8.8:53)</td>
+<td>Medium</td>
+<td>DNS-to-kube-dns and <code>0.0.0.0/0 except RFC1918</code> rules are OR-ed; enables DNS exfil/tunneling. Use Cilium FQDN policies or Calico GlobalNetworkPolicy.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="full-open-gap-list">Full open gap list<a class="headerlink" href="#full-open-gap-list" title="Permanent link">&para;</a></h3>
+<p>G4, G6, G9, G13, G21, G25, G28, G29, G30, G35, G36, G37, G38, G40, G41, G42, G43, G44, G45, G46, G47, G50.</p>
+<h3 id="accepted-risks">Accepted risks<a class="headerlink" href="#accepted-risks" title="Permanent link">&para;</a></h3>
+<p>These are documented with rationale and compensating controls:</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Gap</th>
+<th>Rationale</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>G1</strong></td>
+<td>No <code>noexec</code> on emptyDir mounts</td>
+<td>K8s doesn't support <code>noexec</code> on emptyDir natively. Mitigated by RuntimeDefault seccomp + Drop ALL caps + NoNewPrivs + tmpfs.</td>
+</tr>
+<tr>
+<td><strong>G3</strong></td>
+<td>env-secret readable via <code>/proc/self/environ</code></td>
+<td>Accepted; prefer <code>secret-file</code> type; documented for operators.</td>
+</tr>
+<tr>
+<td><strong>G7</strong></td>
+<td>SSE streams bypass injection-detection blocking</td>
+<td>SSE is unidirectional; block action applies to non-streaming JSON responses only.</td>
+</tr>
+<tr>
+<td><strong>G10</strong></td>
+<td>Redis session cache not encrypted at rest</td>
+<td>Operator responsibility: disable RDB/AOF persistence or enable disk encryption.</td>
+</tr>
+<tr>
+<td><strong>G14</strong></td>
+<td>No egress request body inspection</td>
+<td>Accepted residual risk; minimize <code>allowedDomains</code>; document.</td>
+</tr>
+<tr>
+<td><strong>G23</strong></td>
+<td><code>/workspace</code> PVC mount lacks <code>nosuid</code></td>
+<td>Operator responsibility via StorageClass mountOptions. Mitigated by runAsNonRoot + NoNewPrivs + cap-drop ALL.</td>
+</tr>
+<tr>
+<td><strong>G32</strong></td>
+<td>No per-user workspace quota</td>
+<td>Intentional for single-tenant. Multi-tenant SaaS should add <code>MAX_WORKSPACES_PER_USER</code>.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="what-the-platform-protects-against">What the platform protects against<a class="headerlink" href="#what-the-platform-protects-against" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Cross-tenant workspace access via the API</strong> — ownership check on every call (G33 fixed); UUIDv4 IDs are unguessable.</li>
+<li><strong>Credential theft from the database</strong> — zero-knowledge encryption; user secrets need the password, platform secrets need the master KEK.</li>
+<li><strong>Credential theft from PVC at rest</strong> — tmpfs + symlinks; PVC retains only dangling symlinks, no plaintext bytes.</li>
+<li><strong>Master KEK exposure via <code>/proc/1/environ</code></strong> — file mount default (G48 fixed).</li>
+<li><strong>Container escape to the node</strong> — Drop ALL caps, NoNewPrivs, RuntimeDefault seccomp, read-only root; optional gVisor for kernel-level isolation.</li>
+<li><strong>Cross-tenant network access</strong> — default-deny ingress NetworkPolicy; RFC1918/CGNAT/cloud-metadata-filtered egress.</li>
+<li><strong>SA token abuse from within a pod</strong> — <code>AutomountServiceAccountToken: false</code>.</li>
+<li><strong>Header injection to the sandbox pod</strong> — explicit proxy allowlist (G34 fixed).</li>
+<li><strong>Cross-site WebSocket hijacking</strong> — same-origin terminal upgrade check (G39 fixed).</li>
+<li><strong>Forged JWTs</strong> — HMAC-only signing enforced (alg-confusion check); <code>iss</code>/<code>aud</code> claims minted and validated.</li>
+<li><strong>JWT replay after revocation</strong> — dual-key revocation (<code>token:&lt;jti&gt;</code> + <code>token:&lt;hash&gt;</code>).</li>
+<li><strong>Default DB/Redis passwords</strong> — auto-generated 32-char random on install (G26 fixed).</li>
+</ul>
+<h2 id="what-it-does-not-protect-against">What it does NOT protect against<a class="headerlink" href="#what-it-does-not-protect-against" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>API-pod RCE → mass credential decrypt</strong> (with local KEK providers) — an attacker running code in the pod calls <code>Decrypt</code> exactly as the application does. KMS (Epic 57) limits this to exfiltration-limitation + audit, not prevention.</li>
+<li><strong>DNS exfiltration/tunneling</strong> (G30) — external DNS resolvers are reachable on port 53.</li>
+<li><strong>IPv6 egress</strong> (G43) — the workspace NetworkPolicy CIDR allowlist is IPv4-only.</li>
+<li><strong>Egress request-body inspection</strong> (G14) — no code path inspects outbound HTTP bodies; a compromised agent can exfiltrate via allowed egress domains.</li>
+<li><strong>Audit of decrypt operations</strong> (G50) — <code>secret_audit_log</code> records CRUD only; authorized decrypts are not individually attributable.</li>
+<li><strong>Compromised opencode binary</strong> (G9) — no checksum/Sigstore verification on download.</li>
+<li><strong>A cluster admin / insider</strong> — out of scope. A cluster admin can read Secrets and exec into pods by design.</li>
+<li><strong>etcd-at-rest compromise without encryption configured</strong> (A1) — operator MUST configure etcd encryption; no chart guard enforces it.</li>
+</ul>
+<h2 id="assumptions-operators-must-validate">Assumptions operators must validate<a class="headerlink" href="#assumptions-operators-must-validate" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Assumption</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>A1</td>
+<td>etcd encryption at rest enabled</td>
+<td><strong>Unvalidated</strong> — no chart guard. Document requirement.</td>
+</tr>
+<tr>
+<td>A2</td>
+<td>NetworkPolicy CNI installed and functioning</td>
+<td>Validated (chart ships NPs; <code>networkPolicy.enabled: true</code> default). No preflight that the CNI actually enforces.</td>
+</tr>
+<tr>
+<td>A3</td>
+<td>Node OS patched, container runtime current</td>
+<td>Unvalidated — operator responsibility.</td>
+</tr>
+<tr>
+<td>A4</td>
+<td>TLS termination at ingress</td>
+<td>Validated (<code>tls: true</code> default for frontend ingress).</td>
+</tr>
+<tr>
+<td>A5/A6</td>
+<td>Redis/PostgreSQL not exposed outside the cluster</td>
+<td>Validated (no Service created; datastore NetworkPolicy restricts ingress).</td>
+</tr>
+<tr>
+<td>A7</td>
+<td>Container images from a trusted registry</td>
+<td>Partial — base image uses tag-only (not digest-pinned); opencode/gh downloaded over TLS without checksum (G9).</td>
+</tr>
+<tr>
+<td>A8</td>
+<td>JWT signing keys rotated periodically</td>
+<td>Refuted (no rotation primitives — restart-with-new-secret only). KEK rotation: supported end-to-end (<code>rotate-kek</code> CLI shipped).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="out-of-scope">Out of scope<a class="headerlink" href="#out-of-scope" title="Permanent link">&para;</a></h2>
+<ul>
+<li>LLM provider security (operator selects providers)</li>
+<li>opencode binary internals (upstream — pin version, track CVEs)</li>
+<li>Physical / social engineering</li>
+<li>etcd encryption at rest (K8s operator — A1)</li>
+<li>Node OS hardening (cluster admin — A3)</li>
+<li>gVisor runtime availability (cluster admin — optional defense-in-depth)</li>
+</ul>
+
+
+
+
+
+
+
+  
+    
+  
+  
+    
+  
+
+
+  <aside class="md-source-file">
+    
+      
+  <span class="md-source-file__fact">
+    <span class="md-icon" title="Last update">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
+    </span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 06:44:10 UTC"><span class="timeago" datetime="2026-07-11T06:44:10+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 06:44:10 UTC">2026-07-11</span>
+  </span>
+
+    
+    
+      
+  <span class="md-source-file__fact">
+    <span class="md-icon" title="Created">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14.47 15.08 11 13V7h1.5v5.25l3.08 1.83c-.41.28-.79.62-1.11 1m-1.39 4.84c-.36.05-.71.08-1.08.08-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8c0 .37-.03.72-.08 1.08.69.1 1.33.32 1.92.64.1-.56.16-1.13.16-1.72 0-5.5-4.5-10-10-10S2 6.5 2 12s4.47 10 10 10c.59 0 1.16-.06 1.72-.16-.32-.59-.54-1.23-.64-1.92M18 15v3h-3v2h3v3h2v-3h3v-2h-3v-3z"/></svg>
+    </span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 06:44:10 UTC"><span class="timeago" datetime="2026-07-11T06:44:10+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 06:44:10 UTC">2026-07-11</span>
+  </span>
+
+    
+    
+    
+  </aside>
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/lenaxia/LLMSafeSpaces" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.tabs", "navigation.indexes", "navigation.top", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "content.code.copy", "content.code.annotate", "content.tabs.link"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="../../js/timeago.min.js"></script>
+      
+        <script src="../../js/timeago_mkdocs_material.js"></script>
+      
+    
+  </body>
+</html>

@@ -1,0 +1,4710 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="A Kubernetes-first platform for running AI agents in isolated, persistent workspaces. Documentation for operators, contributors, and integrators.">
+      
+      
+      
+        <link rel="canonical" href="https://lenaxia.github.io/LLMSafeSpaces/reference/helm-values/">
+      
+      
+        <link rel="prev" href="../../contributing/worklogs/">
+      
+      
+        <link rel="next" href="../crds/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Helm Values - LLMSafeSpaces</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../css/timeago.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#helm-values-reference" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="LLMSafeSpaces" class="md-header__button md-logo" aria-label="LLMSafeSpaces" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5zm0 6c1.4 0 2.8 1.1 2.8 2.5V11c.6 0 1.2.6 1.2 1.3v3.5c0 .6-.6 1.2-1.3 1.2H9.2c-.6 0-1.2-.6-1.2-1.3v-3.5c0-.6.6-1.2 1.2-1.2V9.5C9.2 8.1 10.6 7 12 7m0 1.2c-.8 0-1.5.5-1.5 1.3V11h3V9.5c0-.8-.7-1.3-1.5-1.3"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            LLMSafeSpaces
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Helm Values
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/lenaxia/LLMSafeSpaces" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    lenaxia/LLMSafeSpaces
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../getting-started/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../operator/installation/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Operator Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../architecture/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Architecture
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../api/rest/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  API Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../contributing/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Contributing
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="./" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="LLMSafeSpaces" class="md-nav__button md-logo" aria-label="LLMSafeSpaces" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5zm0 6c1.4 0 2.8 1.1 2.8 2.5V11c.6 0 1.2.6 1.2 1.3v3.5c0 .6-.6 1.2-1.3 1.2H9.2c-.6 0-1.2-.6-1.2-1.3v-3.5c0-.6.6-1.2 1.2-1.2V9.5C9.2 8.1 10.6 7 12 7m0 1.2c-.8 0-1.5.5-1.5 1.3V11h3V9.5c0-.8-.7-1.3-1.5-1.3"/></svg>
+
+    </a>
+    LLMSafeSpaces
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/lenaxia/LLMSafeSpaces" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    lenaxia/LLMSafeSpaces
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../getting-started/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operator Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operator Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/networking/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Networking
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security Hardening
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/runtime-environments/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runtime Environments
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/multi-tenant/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-tenant Isolation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/oidc-sso/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    OIDC SSO
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/inference-relay/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Inference Relay Fleet
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/upgrading/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Upgrading
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/runbook/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../architecture/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/components/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Components
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/lifecycle/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workspace Lifecycle
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/secrets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Secret Management
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/threat-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Threat Model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/rest/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    REST
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/authentication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authentication
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/mcp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MCP Server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/sdks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SDKs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../contributing/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contributing
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development Workflow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/rules/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engineering Rules
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/testing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/worklogs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Worklogs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Helm Values
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Helm Values
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#top-level" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Top-level
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#namespace" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        namespace
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        api
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="api">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#apiresources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        api.resources
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#apipodsecuritycontext-apicontainersecuritycontext" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        api.podSecurityContext / api.containerSecurityContext
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#apiconfig" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        api.config
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="api.config">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#apiconfigauth" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        api.config.auth
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#apiconfigratelimiting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        api.config.rateLimiting
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#apiconfigsecurity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        api.config.security
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#apilivenessprobe-apireadinessprobe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        api.livenessProbe / api.readinessProbe
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#apiingress" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        api.ingress
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#controller" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        controller
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="controller">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#controllerinferencerelay-opt-in-epic-42" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        controller.inferenceRelay (opt-in, Epic 42)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#controllerfreemodelsrefresher" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        controller.freeModelsRefresher
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#controllerresources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        controller.resources
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#workspace" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        workspace
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#terminal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        terminal
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#crds" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        crds
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#externalsecret" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        externalSecret
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mastersecret-kek-delivery-us-501" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        masterSecret (KEK delivery — US-50.1)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#kms-cloud-kms-epic-57-us-571" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kms (Cloud KMS — Epic 57 US-57.1)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#datastore-networkpolicies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        datastore (NetworkPolicies)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#postgresql" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        postgresql
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#redis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        redis
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#migrations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        migrations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dbinit-optional-roledatabase-bootstrap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        dbInit (optional role/database bootstrap)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#networkpolicy-epic-17-g16" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        networkPolicy (Epic 17 G16)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#kyverno" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kyverno
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#serviceaccount" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        serviceAccount
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rbac" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rbac
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#webhooks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        webhooks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gvisor-epic-51" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gvisor (Epic 51)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#runtimeenvironments" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        runtimeEnvironments
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#frontend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        frontend
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mcp" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        mcp
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#inference-relay-globals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inference relay globals
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#email-epic-49" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        email (Epic 49)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#oidc-per-org-sso-plumbing-epic-43" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        oidc (per-org SSO plumbing — Epic 43)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#orgsubdomainrouting-epic-54-us-543" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        orgSubdomainRouting (Epic 54, US-54.3)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cloudflare" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        cloudflare
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#monitoring" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        monitoring
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#turnstile-cloudflare-captcha-us-63x" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        turnstile (Cloudflare CAPTCHA — US-63.x)
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../crds/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CRDs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#top-level" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Top-level
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#namespace" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        namespace
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        api
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="api">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#apiresources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        api.resources
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#apipodsecuritycontext-apicontainersecuritycontext" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        api.podSecurityContext / api.containerSecurityContext
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#apiconfig" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        api.config
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="api.config">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#apiconfigauth" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        api.config.auth
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#apiconfigratelimiting" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        api.config.rateLimiting
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#apiconfigsecurity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        api.config.security
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#apilivenessprobe-apireadinessprobe" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        api.livenessProbe / api.readinessProbe
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#apiingress" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        api.ingress
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#controller" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        controller
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="controller">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#controllerinferencerelay-opt-in-epic-42" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        controller.inferenceRelay (opt-in, Epic 42)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#controllerfreemodelsrefresher" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        controller.freeModelsRefresher
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#controllerresources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        controller.resources
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#workspace" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        workspace
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#terminal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        terminal
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#crds" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        crds
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#externalsecret" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        externalSecret
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mastersecret-kek-delivery-us-501" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        masterSecret (KEK delivery — US-50.1)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#kms-cloud-kms-epic-57-us-571" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kms (Cloud KMS — Epic 57 US-57.1)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#datastore-networkpolicies" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        datastore (NetworkPolicies)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#postgresql" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        postgresql
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#redis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        redis
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#migrations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        migrations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#dbinit-optional-roledatabase-bootstrap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        dbInit (optional role/database bootstrap)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#networkpolicy-epic-17-g16" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        networkPolicy (Epic 17 G16)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#kyverno" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        kyverno
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#serviceaccount" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        serviceAccount
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rbac" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rbac
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#webhooks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        webhooks
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#gvisor-epic-51" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        gvisor (Epic 51)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#runtimeenvironments" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        runtimeEnvironments
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#frontend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        frontend
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mcp" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        mcp
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#inference-relay-globals" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Inference relay globals
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#email-epic-49" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        email (Epic 49)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#oidc-per-org-sso-plumbing-epic-43" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        oidc (per-org SSO plumbing — Epic 43)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#orgsubdomainrouting-epic-54-us-543" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        orgSubdomainRouting (Epic 54, US-54.3)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cloudflare" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        cloudflare
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#monitoring" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        monitoring
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#turnstile-cloudflare-captcha-us-63x" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        turnstile (Cloudflare CAPTCHA — US-63.x)
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="helm-values-reference">Helm Values Reference<a class="headerlink" href="#helm-values-reference" title="Permanent link">&para;</a></h1>
+<p>This is a reference for the most commonly-configured values in <code>helm/values.yaml</code>. Grouped by section. For each value: type, default, what it does, and when to change it. For values not documented here (some <code>*.image.*</code> sub-fields, <code>*.resources</code>, <code>migrations.*</code>, <code>dbInit.*</code>, <code>monitoring.*</code> sub-fields), consult <code>helm/values.yaml</code> directly — comments there are extensive.</p>
+<p>For installation steps, see the <a href="../../operator/installation/">operator installation guide</a>. For the security-relevant values, cross-reference the <a href="../../architecture/threat-model/">threat model</a>.</p>
+<h2 id="top-level">Top-level<a class="headerlink" href="#top-level" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>nameOverride</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Override the chart name (standard Helm).</td>
+</tr>
+<tr>
+<td><code>fullnameOverride</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Override the full resource name prefix.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="namespace"><code>namespace</code><a class="headerlink" href="#namespace" title="Permanent link">&para;</a></h2>
+<p>Controls the namespace the platform's own components run in. Workspaces are created in the same namespace by default.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>namespace.create</code></td>
+<td>bool</td>
+<td><code>false</code></td>
+<td>If <code>true</code>, the chart creates the release namespace. Set <code>false</code> if installing with <code>--namespace --create-namespace</code>.</td>
+</tr>
+<tr>
+<td><code>namespace.podSecurityEnforce</code></td>
+<td>string</td>
+<td><code>"restricted"</code></td>
+<td>Pod Security Admission label applied at enforce/audit/warn levels. Empty string opts out (G11). All chart pods comply with <code>restricted</code>.</td>
+</tr>
+<tr>
+<td><code>namespace.podSecurityVersion</code></td>
+<td>string</td>
+<td><code>"latest"</code></td>
+<td>PSA policy version.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="api"><code>api</code><a class="headerlink" href="#api" title="Permanent link">&para;</a></h2>
+<p>The Gin API service. Stateless, horizontally scalable.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api.enabled</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>Deploy the API service.</td>
+</tr>
+<tr>
+<td><code>api.replicaCount</code></td>
+<td>int</td>
+<td><code>2</code></td>
+<td>Number of API replicas. Stateless — no sticky sessions required. Bump to scale.</td>
+</tr>
+<tr>
+<td><code>api.image.repository</code></td>
+<td>string</td>
+<td><code>ghcr.io/lenaxia/llmsafespaces/api</code></td>
+<td>API image repository.</td>
+</tr>
+<tr>
+<td><code>api.image.tag</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Image tag. Falls back to <code>Chart.AppVersion</code>. <strong>Pin to immutable <code>sha-&lt;7char&gt;</code> or <code>ts-&lt;unix&gt;</code> tags in production</strong> — moving tags (<code>dev</code>, <code>latest</code>) interact poorly with kubelet image caching.</td>
+</tr>
+<tr>
+<td><code>api.image.pullPolicy</code></td>
+<td>string</td>
+<td><code>IfNotPresent</code></td>
+<td>Standard Kubernetes pull policy.</td>
+</tr>
+<tr>
+<td><code>api.imagePullSecrets</code></td>
+<td>list</td>
+<td><code>[]</code></td>
+<td>Private registry credentials.</td>
+</tr>
+<tr>
+<td><code>api.service.type</code></td>
+<td>string</td>
+<td><code>ClusterIP</code></td>
+<td>Service type.</td>
+</tr>
+<tr>
+<td><code>api.service.port</code></td>
+<td>int</td>
+<td><code>8080</code></td>
+<td>Service port.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="apiresources"><code>api.resources</code><a class="headerlink" href="#apiresources" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api.resources.requests.cpu</code></td>
+<td><code>100m</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>api.resources.requests.memory</code></td>
+<td><code>128Mi</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>api.resources.limits.cpu</code></td>
+<td><code>1000m</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>api.resources.limits.memory</code></td>
+<td><code>1Gi</code></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h3 id="apipodsecuritycontext-apicontainersecuritycontext"><code>api.podSecurityContext</code> / <code>api.containerSecurityContext</code><a class="headerlink" href="#apipodsecuritycontext-apicontainersecuritycontext" title="Permanent link">&para;</a></h3>
+<p>Both default to restricted-profile compliance: <code>runAsNonRoot: true</code>, <code>runAsUser/Group: 65532</code>, <code>readOnlyRootFilesystem: true</code>, <code>capabilities.drop: [ALL]</code>, <code>seccompProfile: RuntimeDefault</code>. Override only if you have a specific reason.</p>
+<h3 id="apiconfig"><code>api.config</code><a class="headerlink" href="#apiconfig" title="Permanent link">&para;</a></h3>
+<p>Rendered into a ConfigMap. Sensitive fields (passwords, JWT secret) come from the <code>externalSecret</code> block or an existing secret. See <code>api/config/config.yaml</code> for the full schema.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api.config.server.host</code></td>
+<td>string</td>
+<td><code>"0.0.0.0"</code></td>
+<td>Bind address.</td>
+</tr>
+<tr>
+<td><code>api.config.server.port</code></td>
+<td>int</td>
+<td><code>8080</code></td>
+<td>Listen port.</td>
+</tr>
+<tr>
+<td><code>api.config.server.shutdownTimeout</code></td>
+<td>duration</td>
+<td><code>30s</code></td>
+<td>Graceful shutdown deadline.</td>
+</tr>
+<tr>
+<td><code>api.config.kubernetes.configPath</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Kubeconfig path (dev only; in-cluster uses the SA token).</td>
+</tr>
+<tr>
+<td><code>api.config.kubernetes.inCluster</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>Use the in-cluster config.</td>
+</tr>
+<tr>
+<td><code>api.config.kubernetes.namespace</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Namespace for workspaces. Defaults to the release namespace.</td>
+</tr>
+<tr>
+<td><code>api.config.kubernetes.leaderElection.enabled</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>API leader election.</td>
+</tr>
+<tr>
+<td><code>api.config.kubernetes.leaderElection.leaseDuration</code></td>
+<td>duration</td>
+<td><code>15s</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>api.config.kubernetes.leaderElection.renewDeadline</code></td>
+<td>duration</td>
+<td><code>10s</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>api.config.kubernetes.leaderElection.retryPeriod</code></td>
+<td>duration</td>
+<td><code>2s</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>api.config.logging.level</code></td>
+<td>string</td>
+<td><code>"info"</code></td>
+<td>Log level (<code>debug</code>, <code>info</code>, <code>warn</code>, <code>error</code>).</td>
+</tr>
+<tr>
+<td><code>api.config.logging.development</code></td>
+<td>bool</td>
+<td><code>false</code></td>
+<td>Zap dev mode (console encoder, stacktraces).</td>
+</tr>
+<tr>
+<td><code>api.config.logging.encoding</code></td>
+<td>string</td>
+<td><code>"json"</code></td>
+<td><code>json</code> or <code>console</code>.</td>
+</tr>
+</tbody>
+</table>
+<h4 id="apiconfigauth"><code>api.config.auth</code><a class="headerlink" href="#apiconfigauth" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api.config.auth.tokenDuration</code></td>
+<td>duration</td>
+<td><code>24h</code></td>
+<td>JWT lifetime.</td>
+</tr>
+<tr>
+<td><code>api.config.auth.apiKeyPrefix</code></td>
+<td>string</td>
+<td><code>"lsp_"</code></td>
+<td>API key prefix.</td>
+</tr>
+<tr>
+<td><code>api.config.auth.jwtIssuer</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td><code>iss</code> claim. Default <code>"llmsafespaces"</code> applied at boot if empty. <strong>Set when deploying multiple instances</strong> that should not accept each other's tokens.</td>
+</tr>
+<tr>
+<td><code>api.config.auth.jwtAudience</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td><code>aud</code> claim. Same default behavior as <code>jwtIssuer</code>.</td>
+</tr>
+</tbody>
+</table>
+<div class="admonition note">
+<p class="admonition-title">JWT iss/aud (v0.3.0)</p>
+<p>JWTs now carry explicit <code>iss</code> and <code>aud</code> claims, minted from these values and validated on every parse. Pre-fix tokens carried only <code>sub/jti/exp/iat</code>, so any service sharing the same HMAC secret could mint accepted tokens. Pre-fix tokens are rejected after upgrade; rotation is fast (24h default lifetime).</p>
+</div>
+<h4 id="apiconfigratelimiting"><code>api.config.rateLimiting</code><a class="headerlink" href="#apiconfigratelimiting" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api.config.rateLimiting.enabled</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>Enable Redis-backed rate limiting.</td>
+</tr>
+<tr>
+<td><code>api.config.rateLimiting.limits.default</code></td>
+<td>object</td>
+<td><code>{requests: 1000, window: 1h}</code></td>
+<td>Global default.</td>
+</tr>
+<tr>
+<td><code>api.config.rateLimiting.limits.create_workspace</code></td>
+<td>object</td>
+<td><code>{requests: 100, window: 1h}</code></td>
+<td>Per-user workspace creation.</td>
+</tr>
+<tr>
+<td><code>api.config.rateLimiting.limits.execute_code</code></td>
+<td>object</td>
+<td><code>{requests: 500, window: 1h}</code></td>
+<td>Code execution endpoint.</td>
+</tr>
+</tbody>
+</table>
+<h4 id="apiconfigsecurity"><code>api.config.security</code><a class="headerlink" href="#apiconfigsecurity" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api.config.security.allowedOrigins</code></td>
+<td>list</td>
+<td><code>["https://safespace.thekao.cloud"]</code></td>
+<td>CORS allow-list. <strong>Replace with your own origin in production.</strong></td>
+</tr>
+<tr>
+<td><code>api.config.security.allowCredentials</code></td>
+<td>bool</td>
+<td><code>false</code></td>
+<td>Set <code>Access-Control-Allow-Credentials: true</code>. <strong>Cannot be <code>true</code> with <code>allowedOrigins=["*"]</code></strong> — the API refuses to start in that state (CORS spec violation, fail-closed guard).</td>
+</tr>
+</tbody>
+</table>
+<h3 id="apilivenessprobe-apireadinessprobe"><code>api.livenessProbe</code> / <code>api.readinessProbe</code><a class="headerlink" href="#apilivenessprobe-apireadinessprobe" title="Permanent link">&para;</a></h3>
+<p><code>/livez</code> always returns 200 if the process is responsive. <code>/readyz</code> pings Postgres and Redis; returns 503 if either is down. <code>/health</code> is a legacy alias for <code>/livez</code>. Defaults: liveness initial 10s/period 10s; readiness initial 5s/period 5s.</p>
+<h3 id="apiingress"><code>api.ingress</code><a class="headerlink" href="#apiingress" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api.ingress.enabled</code></td>
+<td>bool</td>
+<td><code>false</code></td>
+<td>Create an Ingress for the API. Most deployments front the API via the frontend ingress instead.</td>
+</tr>
+<tr>
+<td><code>api.ingress.className</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>IngressClass.</td>
+</tr>
+<tr>
+<td><code>api.ingress.annotations</code></td>
+<td>object</td>
+<td><code>{}</code></td>
+<td>Ingress annotations.</td>
+</tr>
+<tr>
+<td><code>api.ingress.hosts</code></td>
+<td>list</td>
+<td>see values</td>
+<td>Host/path rules.</td>
+</tr>
+<tr>
+<td><code>api.ingress.tls</code></td>
+<td>list</td>
+<td><code>[]</code></td>
+<td>TLS configuration.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="controller"><code>controller</code><a class="headerlink" href="#controller" title="Permanent link">&para;</a></h2>
+<p>The controller-runtime operator. Single leader-elected replica by default.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>controller.enabled</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>Deploy the controller.</td>
+</tr>
+<tr>
+<td><code>controller.replicaCount</code></td>
+<td>int</td>
+<td><code>1</code></td>
+<td>Replicas. Leader election means only one is active; extras are standby.</td>
+</tr>
+<tr>
+<td><code>controller.image.repository</code></td>
+<td>string</td>
+<td><code>ghcr.io/lenaxia/llmsafespaces/controller</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>controller.image.tag</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Same pinning recommendation as <code>api.image.tag</code>.</td>
+</tr>
+<tr>
+<td><code>controller.watchNamespaces</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Comma-separated namespaces to watch. <code>""</code> or <code>"*"</code> = cluster-wide. Combine with namespace-scoped RBAC for defense-in-depth.</td>
+</tr>
+<tr>
+<td><code>controller.leaderElection.enabled</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>controller.apiServiceURL</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>In-cluster API URL the controller polls (30s, cached) for org-level suspension (D20). Empty derives from release name + namespace.</td>
+</tr>
+<tr>
+<td><code>controller.metricsAddr</code></td>
+<td>string</td>
+<td><code>"127.0.0.1:8080"</code></td>
+<td>Metrics bind address. Loopback by default (F1.4.3) — run a <code>kube-rbac-proxy</code> sidecar for Prometheus. Override to <code>0.0.0.0:8080</code> only if you accept the unauthenticated-metrics trade-off.</td>
+</tr>
+<tr>
+<td><code>controller.probeAddr</code></td>
+<td>string</td>
+<td><code>":8081"</code></td>
+<td>Health probe port.</td>
+</tr>
+<tr>
+<td><code>controller.webhookPort</code></td>
+<td>int</td>
+<td><code>9443</code></td>
+<td>Webhook server port.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="controllerinferencerelay-opt-in-epic-42"><code>controller.inferenceRelay</code> (opt-in, Epic 42)<a class="headerlink" href="#controllerinferencerelay-opt-in-epic-42" title="Permanent link">&para;</a></h3>
+<p>The self-hosted multi-cloud relay fleet. Disabled by default. <strong>Requires <code>rbac.scope=cluster</code></strong> (InferenceRelay is cluster-scoped).</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>controller.inferenceRelay.enabled</code></td>
+<td>bool</td>
+<td><code>false</code></td>
+<td>Feature gate.</td>
+</tr>
+<tr>
+<td><code>controller.inferenceRelay.routerURL</code></td>
+<td>string</td>
+<td><code>"http://relay-router:8080"</code></td>
+<td>Router <code>/metrics</code> scrape URL (controller → router, in-cluster).</td>
+</tr>
+<tr>
+<td><code>controller.inferenceRelay.workspaceRouterURL</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>URL workspace pods use to reach the router. Empty → derived cross-namespace FQDN.</td>
+</tr>
+<tr>
+<td><code>controller.inferenceRelay.artifact.urls</code></td>
+<td>list</td>
+<td><code>[github.com/.../v0.1.0-relay]</code></td>
+<td>Mirror URLs for the relay-proxy binary (cloud-init downloads + verifies). At least one required.</td>
+</tr>
+<tr>
+<td><code>controller.inferenceRelay.artifact.sha256Arm64</code></td>
+<td>string</td>
+<td><code>671c46...</code></td>
+<td>Hex SHA-256 of the arm64 binary. <strong>Required</strong> when enabled.</td>
+</tr>
+<tr>
+<td><code>controller.inferenceRelay.artifact.sha256Amd64</code></td>
+<td>string</td>
+<td><code>ac12e2...</code></td>
+<td>Hex SHA-256 of the amd64 binary. <strong>Required</strong> when enabled.</td>
+</tr>
+<tr>
+<td><code>controller.inferenceRelay.upstreamURL</code></td>
+<td>string</td>
+<td><code>"https://opencode.ai/zen/v1"</code></td>
+<td>Upstream the fleet proxies to. Default uses the anonymous <code>public</code> key for free Zen models.</td>
+</tr>
+<tr>
+<td><code>controller.inferenceRelay.upstreamAuth.keySecret.name</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Optional K8s Secret with a real upstream key (paid gateway). Empty = forward <code>Bearer public</code> unchanged.</td>
+</tr>
+<tr>
+<td><code>controller.inferenceRelay.upstreamAuth.keySecret.key</code></td>
+<td>string</td>
+<td><code>"key"</code></td>
+<td>Key within the Secret.</td>
+</tr>
+<tr>
+<td><code>controller.inferenceRelay.upstreamAuth.header</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Header name to set. Empty = <code>Authorization</code>. Use <code>x-api-key</code> for Anthropic-native upstreams.</td>
+</tr>
+</tbody>
+</table>
+<p>The <code>router</code> sub-block configures the in-cluster relay-router Deployment (image, service, resources, scheduling).</p>
+<h3 id="controllerfreemodelsrefresher"><code>controller.freeModelsRefresher</code><a class="headerlink" href="#controllerfreemodelsrefresher" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>controller.freeModelsRefresher.enabled</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>Periodically fetch the opencode free-tier model catalog from models.dev and publish as a ConfigMap. Eliminates the in-pod relay-injector restart cycle (~6-8s saved per cold start and resume). Disable to fall back to the legacy in-pod injector.</td>
+</tr>
+<tr>
+<td><code>controller.freeModelsRefresher.refreshInterval</code></td>
+<td>duration</td>
+<td><code>6h</code></td>
+<td>Refetch cadence. Catalog changes ~weekly.</td>
+</tr>
+<tr>
+<td><code>controller.freeModelsRefresher.apiURL</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Override catalog URL. Empty defaults to <code>https://models.dev/api.json</code>. Useful for air-gapped clusters.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="controllerresources"><code>controller.resources</code><a class="headerlink" href="#controllerresources" title="Permanent link">&para;</a></h3>
+<p>Defaults: requests <code>100m</code> / <code>256Mi</code>, limits <code>500m</code> / <code>512Mi</code>.</p>
+<h2 id="workspace"><code>workspace</code><a class="headerlink" href="#workspace" title="Permanent link">&para;</a></h2>
+<p>Platform requirements for workspace pods.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>workspace.cgroupV2Required</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>cgroup v2 is a <strong>hard requirement</strong> for memory-pressure warnings, <code>workspace_memory_bytes</code>, and OOM attribution. On cgroup v1 these features silently produce nothing (agentd logs a single Warn per boot).</td>
+</tr>
+<tr>
+<td><code>workspace.defaultStorageClass</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>When non-empty, pins the <code>workspace.defaultStorageClass</code> instance setting at API boot (read-only in admin UI; PUTs return 409). When empty, the setting stays admin-mutable.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="terminal"><code>terminal</code><a class="headerlink" href="#terminal" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>terminal.allowedOrigins</code></td>
+<td>list</td>
+<td><code>[]</code></td>
+<td>Additional origins accepted by the WebSocket terminal proxy. Default is same-origin only (G39 fix). Non-browser clients (no Origin) authenticate via the single-use ticket. <code>"*"</code> disables Origin checking entirely — use only if you understand the cross-site WebSocket hijacking risk.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="crds"><code>crds</code><a class="headerlink" href="#crds" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crds.install</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>Install CRDs from the chart's <code>crds/</code> directory. <strong>Set <code>false</code> and manage CRDs out-of-band in production</strong> — Helm 3 does not upgrade CRDs in <code>crds/</code>.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="externalsecret"><code>externalSecret</code><a class="headerlink" href="#externalsecret" title="Permanent link">&para;</a></h2>
+<p>The chart creates a Secret with DB/Redis/JWT/master credentials. All auto-generated as 32-char random strings on first install (G26 fix) when left empty.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>externalSecret.create</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>Create the Secret. <code>false</code> = use <code>existingSecret</code>.</td>
+</tr>
+<tr>
+<td><code>externalSecret.existingSecret</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Existing Secret name (keys: <code>postgres-password</code>, <code>redis-password</code>, <code>jwt-secret</code>, <code>master-secret</code>).</td>
+</tr>
+<tr>
+<td><code>externalSecret.postgresPassword</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Postgres password. Empty = auto-generate. <strong>Pinning a value rotates it on upgrade;</strong> the Secret is <code>helm.sh/resource-policy: keep</code> so the random value is stable across upgrades.</td>
+</tr>
+<tr>
+<td><code>externalSecret.redisPassword</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Redis password. Empty = auto-generate.</td>
+</tr>
+<tr>
+<td><code>externalSecret.jwtSecret</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>JWT HMAC signing key. Empty = auto-generate.</td>
+</tr>
+<tr>
+<td><code>externalSecret.masterSecret</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Root KEK. Auto-generated as 64-char random. <strong>Rotating invalidates all admin-encrypted credentials.</strong></td>
+</tr>
+</tbody>
+</table>
+<div class="admonition warning">
+<p class="admonition-title">Rotation out of vulnerable state</p>
+<p>If a previous chart version left <code>postgres-password="changeme"</code> or <code>redis-password=""</code>, the next <code>helm upgrade</code> re-randomizes both. You <strong>must</strong> then run the <code>ALTER USER</code> procedure in <code>NOTES.txt</code> to sync the Postgres role.</p>
+</div>
+<h2 id="mastersecret-kek-delivery-us-501"><code>masterSecret</code> (KEK delivery — US-50.1)<a class="headerlink" href="#mastersecret-kek-delivery-us-501" title="Permanent link">&para;</a></h2>
+<p>How the master KEK reaches the API container. Distinct from <code>externalSecret.masterSecret</code> (which is the <em>value</em>).</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>masterSecret.deliveryMethod</code></td>
+<td>string</td>
+<td><code>"file"</code></td>
+<td><code>file</code> (default) projects the KEK as a read-only file mount at <code>fileMountPath</code> (mode 0440). <code>env</code> is the legacy opt-in (delivers as <code>LLMSAFESPACES_MASTER_SECRET</code> env var) — retained for non-Helm deploys, logs a deprecation warning.</td>
+</tr>
+<tr>
+<td><code>masterSecret.fileMountPath</code></td>
+<td>string</td>
+<td><code>/var/run/secrets/llmsafespaces/master-secret</code></td>
+<td>File mount path. <strong>Must NOT be inside <code>/etc/llmsafespaces</code></strong> (the config volume mountPath) — nested subPath mounts fail on some kernel/runtime combinations.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="kms-cloud-kms-epic-57-us-571"><code>kms</code> (Cloud KMS — Epic 57 US-57.1)<a class="headerlink" href="#kms-cloud-kms-epic-57-us-571" title="Permanent link">&para;</a></h2>
+<p>Opt-in. When enabled, the master KEK is backed by cloud KMS instead of the local static/sealed file. The key never leaves the cloud service.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>kms.aws.enabled</code></td>
+<td>bool</td>
+<td><code>false</code></td>
+<td>Enable AWS KMS provider.</td>
+</tr>
+<tr>
+<td><code>kms.aws.region</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>AWS region.</td>
+</tr>
+<tr>
+<td><code>kms.aws.credentialsSecret</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Existing K8s Secret with a credentials-file key at <code>credentials</code> (AWS shared-credentials INI format). File-mounted, not IRSA — narrower trust surface per US-50.1's pattern.</td>
+</tr>
+<tr>
+<td><code>kms.aws.keyArns.providerCredentials</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>KMS key ARN for admin/org LLM API keys.</td>
+</tr>
+<tr>
+<td><code>kms.aws.keyArns.orgCredentials</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>KMS key ARN for org-level credentials.</td>
+</tr>
+<tr>
+<td><code>kms.aws.keyArns.masterKek</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>KMS key ARN for API keys + org SSO client secrets.</td>
+</tr>
+</tbody>
+</table>
+<p>Three keys required (D4 per-purpose domain separation). The master-secret file mount is <strong>retained under KMS</strong> to protect the Redis DEK cache.</p>
+<h2 id="datastore-networkpolicies"><code>datastore</code> (NetworkPolicies)<a class="headerlink" href="#datastore-networkpolicies" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>datastore.networkPolicy.enabled</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>Block ingress to Postgres/Valkey except from the API and migration Job. Workspace pods cannot reach datastores. Gated by the master <code>networkPolicy.enabled</code>.</td>
+</tr>
+<tr>
+<td><code>datastore.networkPolicy.postgresPodSelectorLabels</code></td>
+<td>object</td>
+<td><code>{app: postgres}</code></td>
+<td>Pod selector for the postgres pods. Override for Bitnami (<code>{app.kubernetes.io/name: postgresql}</code>).</td>
+</tr>
+<tr>
+<td><code>datastore.networkPolicy.valkeyPodSelectorLabels</code></td>
+<td>object</td>
+<td><code>{app: valkey}</code></td>
+<td>Pod selector for the valkey pods.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="postgresql"><code>postgresql</code><a class="headerlink" href="#postgresql" title="Permanent link">&para;</a></h2>
+<p>Connection details consumed by the API config. The chart does <strong>not</strong> bundle Postgres.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>postgresql.host</code></td>
+<td>string</td>
+<td><code>postgres</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>postgresql.port</code></td>
+<td>int</td>
+<td><code>5432</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>postgresql.user</code></td>
+<td>string</td>
+<td><code>llmsafespaces</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>postgresql.database</code></td>
+<td>string</td>
+<td><code>llmsafespaces</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>postgresql.sslMode</code></td>
+<td>string</td>
+<td><code>disable</code></td>
+<td><code>disable</code>/<code>require</code>/<code>verify-ca</code>/<code>verify-full</code>. <strong>Use <code>verify-full</code> in production.</strong></td>
+</tr>
+<tr>
+<td><code>postgresql.maxOpenConns</code></td>
+<td>int</td>
+<td><code>25</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>postgresql.maxIdleConns</code></td>
+<td>int</td>
+<td><code>10</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>postgresql.connMaxLifetime</code></td>
+<td>duration</td>
+<td><code>5m</code></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h2 id="redis"><code>redis</code><a class="headerlink" href="#redis" title="Permanent link">&para;</a></h2>
+<p>The chart does <strong>not</strong> bundle Redis.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>redis.host</code></td>
+<td>string</td>
+<td><code>redis-master</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>redis.port</code></td>
+<td>int</td>
+<td><code>6379</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>redis.db</code></td>
+<td>int</td>
+<td><code>0</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>redis.poolSize</code></td>
+<td>int</td>
+<td><code>20</code></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<div class="admonition warning">
+<p class="admonition-title">H3 production requirement</p>
+<p>The API caches per-workspace <code>opencode</code> passwords in Redis in <strong>plaintext</strong>. Production Redis <strong>must</strong> provide TLS in-transit, at-rest encryption, and a NetworkPolicy restricting ingress to API pods.</p>
+</div>
+<h2 id="migrations"><code>migrations</code><a class="headerlink" href="#migrations" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>migrations.enabled</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>Run migrations as a Helm pre-install/pre-upgrade Job (<code>migrate/migrate</code> image).</td>
+</tr>
+<tr>
+<td><code>migrations.image.repository</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Empty falls back to <code>migrate/migrate:v4.17.1</code>.</td>
+</tr>
+<tr>
+<td><code>migrations.image.tag</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>migrations.backoffLimit</code></td>
+<td>int</td>
+<td><code>3</code></td>
+<td>Job backoff limit.</td>
+</tr>
+<tr>
+<td><code>migrations.ttlSecondsAfterFinished</code></td>
+<td>int</td>
+<td><code>600</code></td>
+<td>TTL for completed Job.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="dbinit-optional-roledatabase-bootstrap"><code>dbInit</code> (optional role/database bootstrap)<a class="headerlink" href="#dbinit-optional-roledatabase-bootstrap" title="Permanent link">&para;</a></h2>
+<p>Disabled by default. Enable on green-field Postgres where the role+DB don't exist yet.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>dbInit.enabled</code></td>
+<td>bool</td>
+<td><code>false</code></td>
+<td>Render a pre-install Job that runs idempotent <code>CREATE ROLE</code>/<code>CREATE DATABASE</code> as a superuser.</td>
+</tr>
+<tr>
+<td><code>dbInit.image.repository</code> / <code>tag</code></td>
+<td>string</td>
+<td><code>postgres</code> / <code>16-alpine</code></td>
+<td>Image with the <code>psql</code> client.</td>
+</tr>
+<tr>
+<td><code>dbInit.superuserSecret.name</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td><strong>Required</strong> when enabled. Secret holding Postgres superuser credentials.</td>
+</tr>
+<tr>
+<td><code>dbInit.superuserSecret.userKey</code></td>
+<td>string</td>
+<td><code>username</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>dbInit.superuserSecret.passwordKey</code></td>
+<td>string</td>
+<td><code>password</code></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h2 id="networkpolicy-epic-17-g16"><code>networkPolicy</code> (Epic 17 G16)<a class="headerlink" href="#networkpolicy-epic-17-g16" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>networkPolicy.enabled</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>Master toggle. Ships <code>workspace-default-deny-ingress</code> and <code>workspace-egress</code>. <strong>Threat model A2 requires SOME default-deny</strong> — if you disable this, document the equivalent control.</td>
+</tr>
+<tr>
+<td><code>networkPolicy.workspaceEgress.enabled</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>Workspace egress NetworkPolicy. Disable <strong>only</strong> when a CNI-native policy (Cilium CNP, Calico GNP) enforces a strict FQDN allowlist — otherwise pods have no egress restriction. The K8s NP allows <code>0.0.0.0/0</code> which would union-defeat a Cilium CNP.</td>
+</tr>
+<tr>
+<td><code>networkPolicy.apiPodLabelSelector</code></td>
+<td>object</td>
+<td><code>{app.kubernetes.io/name: llmsafespaces, app.kubernetes.io/component: api}</code></td>
+<td>Selector for the API pods allowed to reach workspaces on agentd port 4097.</td>
+</tr>
+<tr>
+<td><code>networkPolicy.controllerPodLabelSelector</code></td>
+<td>object</td>
+<td><code>{app.kubernetes.io/name: llmsafespaces, app.kubernetes.io/component: controller}</code></td>
+<td>Selector for controller pods (health polling on admin port 4098).</td>
+</tr>
+<tr>
+<td><code>networkPolicy.prometheusPodLabelSelector</code></td>
+<td>object</td>
+<td><code>{app.kubernetes.io/name: prometheus}</code></td>
+<td>Selector for Prometheus (scraping :4098/metrics). Only effective when <code>monitoring.serviceMonitors.agentdPodMonitor.enabled</code> is true.</td>
+</tr>
+<tr>
+<td><code>networkPolicy.prometheusNamespace</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Namespace where Prometheus runs. Defaults to release namespace; typically override to e.g. <code>monitoring</code>.</td>
+</tr>
+<tr>
+<td><code>networkPolicy.apiIngressRestricted</code></td>
+<td>bool</td>
+<td><code>false</code></td>
+<td>Opt-in default-deny ingress for the API pod. Admits only controller, kube-system (kubelet probes), and <code>apiIngressSourcePodSelector</code>. Default <code>false</code> because the user-traffic source is deployment-specific.</td>
+</tr>
+<tr>
+<td><code>networkPolicy.apiIngressSourcePodSelector</code></td>
+<td>object</td>
+<td><code>{app.kubernetes.io/name: llmsafespaces, app.kubernetes.io/component: frontend}</code></td>
+<td>Pod selector allowed to send user traffic to the API when <code>apiIngressRestricted=true</code>. Override to your ingress controller.</td>
+</tr>
+<tr>
+<td><code>networkPolicy.dnsNamespace</code></td>
+<td>string</td>
+<td><code>kube-system</code></td>
+<td>Namespace for the DNS service.</td>
+</tr>
+<tr>
+<td><code>networkPolicy.dnsPodLabelSelector</code></td>
+<td>object</td>
+<td><code>{k8s-app: kube-dns}</code></td>
+<td>DNS pod selector.</td>
+</tr>
+<tr>
+<td><code>networkPolicy.allowedEgressCIDRs</code></td>
+<td>list</td>
+<td><code>[0.0.0.0/0]</code></td>
+<td>CIDR allowlist for sandbox egress. Default allows all public internet.</td>
+</tr>
+<tr>
+<td><code>networkPolicy.blockedEgressCIDRs</code></td>
+<td>list</td>
+<td>see below</td>
+<td>Block egress to RFC1918 + CGNAT + cloud-metadata. <strong>Keep in sync with <code>controller/internal/workspace/network_policy.go</code></strong> — the chart-test <code>TestG16_DefaultRender_BlockedEgressIncludesAllControllerSideCIDRs</code> pins parity.</td>
+</tr>
+</tbody>
+</table>
+<p>Default <code>blockedEgressCIDRs</code>:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">blockedEgressCIDRs</span><span class="p">:</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">10.0.0.0/8</span><span class="w">        </span><span class="c1"># RFC1918</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">172.16.0.0/12</span><span class="w">     </span><span class="c1"># RFC1918</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">192.168.0.0/16</span><span class="w">    </span><span class="c1"># RFC1918</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">169.254.0.0/16</span><span class="w">    </span><span class="c1"># link-local + cloud metadata (169.254.169.254)</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">100.64.0.0/10</span><span class="w">     </span><span class="c1"># CGNAT — managed K8s pod CIDRs (AKS, some EKS, k3s)</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">127.0.0.0/8</span><span class="w">       </span><span class="c1"># loopback</span>
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">224.0.0.0/4</span><span class="w">       </span><span class="c1"># multicast</span>
+</span></code></pre></div>
+<h2 id="kyverno"><code>kyverno</code><a class="headerlink" href="#kyverno" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>kyverno.enabled</code></td>
+<td>bool</td>
+<td><code>false</code></td>
+<td>Deploy Kyverno admission policies (deferred to V2.1 in evolution-v2). Requires Kyverno installed in the cluster.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="serviceaccount"><code>serviceAccount</code><a class="headerlink" href="#serviceaccount" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>serviceAccount.api.create</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>Create the API SA.</td>
+</tr>
+<tr>
+<td><code>serviceAccount.api.annotations</code></td>
+<td>object</td>
+<td><code>{}</code></td>
+<td>E.g. <code>eks.amazonaws.com/role-arn</code> for SES IRSA.</td>
+</tr>
+<tr>
+<td><code>serviceAccount.api.name</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Override SA name.</td>
+</tr>
+<tr>
+<td><code>serviceAccount.controller.create</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>serviceAccount.controller.annotations</code></td>
+<td>object</td>
+<td><code>{}</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>serviceAccount.controller.name</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h2 id="rbac"><code>rbac</code><a class="headerlink" href="#rbac" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>rbac.create</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>Create (Cluster)Role + (Cluster)RoleBinding.</td>
+</tr>
+<tr>
+<td><code>rbac.scope</code></td>
+<td>string</td>
+<td><code>"namespace"</code></td>
+<td><strong><code>namespace</code></strong> (default, G5): Role + RoleBinding scoped to the release namespace. <strong><code>cluster</code></strong>: adds ClusterRole + ClusterRoleBinding for cluster-wide CRD watch. Pods/Secrets/PVCs/NetworkPolicies remain namespace-scoped regardless. <strong>Required <code>cluster</code></strong> for <code>controller.inferenceRelay.enabled</code>. Even in cluster mode, no mutating verbs on secrets/pods (chart_test.go:1411).</td>
+</tr>
+</tbody>
+</table>
+<h2 id="webhooks"><code>webhooks</code><a class="headerlink" href="#webhooks" title="Permanent link">&para;</a></h2>
+<p>Validating webhooks for Workspace and RuntimeEnvironment. <strong>Requires cert-manager.</strong></p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>webhooks.enabled</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>Deploy webhook configuration. Set <code>false</code> if you lack cert-manager; validation still happens server-side in the API.</td>
+</tr>
+<tr>
+<td><code>webhooks.issuerKind</code></td>
+<td>string</td>
+<td><code>"Issuer"</code></td>
+<td><code>Issuer</code> (namespace-scoped) or <code>ClusterIssuer</code>.</td>
+</tr>
+<tr>
+<td><code>webhooks.existingIssuer</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Use an existing Issuer. Empty = create self-signed.</td>
+</tr>
+<tr>
+<td><code>webhooks.failurePolicy</code></td>
+<td>string</td>
+<td><code>"Fail"</code></td>
+<td><code>Fail</code> (recommended) or <code>Ignore</code>.</td>
+</tr>
+<tr>
+<td><code>webhooks.timeoutSeconds</code></td>
+<td>int</td>
+<td><code>10</code></td>
+<td>Max 30s.</td>
+</tr>
+<tr>
+<td><code>webhooks.allowedImageRegistries</code></td>
+<td>list</td>
+<td><code>["ghcr.io/lenaxia/"]</code></td>
+<td>Registry prefixes a Workspace runtime image reference must match. Empty = only RuntimeEnvironment-name references allowed.</td>
+</tr>
+<tr>
+<td><code>webhooks.allowedStorageClassNames</code></td>
+<td>list</td>
+<td><code>[]</code></td>
+<td>If non-empty, <code>spec.storage.storageClassName</code> must be one of these. Empty = any.</td>
+</tr>
+<tr>
+<td><code>webhooks.maxWorkspaceStorageGi</code></td>
+<td>int</td>
+<td><code>1024</code></td>
+<td>Max workspace storage in GiB. 0 disables.</td>
+</tr>
+<tr>
+<td><code>webhooks.maxWorkspaceCPUMillicores</code></td>
+<td>int</td>
+<td><code>16000</code></td>
+<td>Max CPU per workspace. 0 disables.</td>
+</tr>
+<tr>
+<td><code>webhooks.maxWorkspaceMemoryMi</code></td>
+<td>int</td>
+<td><code>65536</code></td>
+<td>Max memory per workspace. 0 disables.</td>
+</tr>
+<tr>
+<td><code>webhooks.tenantQuota.maxWorkspacesPerTenant</code></td>
+<td>int</td>
+<td><code>0</code></td>
+<td>Max concurrent workspace pods per tenant (Epic 51 S51.2). 0 = disabled. Recommended: 10-20.</td>
+</tr>
+<tr>
+<td><code>webhooks.tenantQuota.maxCPUMillisPerTenant</code></td>
+<td>int</td>
+<td><code>0</code></td>
+<td>Max aggregate CPU per tenant. Recommended: 8000.</td>
+</tr>
+<tr>
+<td><code>webhooks.tenantQuota.maxMemoryMiPerTenant</code></td>
+<td>int</td>
+<td><code>0</code></td>
+<td>Max aggregate memory per tenant. Recommended: 16384.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="gvisor-epic-51"><code>gvisor</code> (Epic 51)<a class="headerlink" href="#gvisor-epic-51" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>gvisor.enabled</code></td>
+<td>bool</td>
+<td><code>false</code></td>
+<td>Create a <code>gvisor</code> RuntimeClass (handler: <code>runsc</code>) and set <code>--default-runtime-class=gvisor</code> on the controller. <strong>Prerequisites:</strong> runsc installed on all workspace nodes, container runtime configured with the runsc handler.</td>
+</tr>
+<tr>
+<td><code>gvisor.defaultRuntimeClass</code></td>
+<td>string</td>
+<td><code>"gvisor"</code></td>
+<td>RuntimeClass name. Change if you have a custom one.</td>
+</tr>
+</tbody>
+</table>
+<p>Individual workspaces opt out via <code>spec.runtimeClass: "runc"</code> — admin-gated by the validating webhook (requires annotation <code>llmsafespaces.dev/allow-runtime-class-override: "true"</code>).</p>
+<h2 id="runtimeenvironments"><code>runtimeEnvironments</code><a class="headerlink" href="#runtimeenvironments" title="Permanent link">&para;</a></h2>
+<p>Seeded <code>RuntimeEnvironment</code> CRDs.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>runtimeEnvironments.base.image.repository</code></td>
+<td>string</td>
+<td><code>ghcr.io/lenaxia/llmsafespaces/base</code></td>
+<td>Base runtime image.</td>
+</tr>
+<tr>
+<td><code>runtimeEnvironments.base.image.tag</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Falls back to <code>Chart.AppVersion</code>.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="frontend"><code>frontend</code><a class="headerlink" href="#frontend" title="Permanent link">&para;</a></h2>
+<p>Optional web UI. React 19 + TypeScript + Vite.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>frontend.enabled</code></td>
+<td>bool</td>
+<td><code>false</code></td>
+<td>Deploy the frontend.</td>
+</tr>
+<tr>
+<td><code>frontend.replicaCount</code></td>
+<td>int</td>
+<td><code>1</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>frontend.image.repository</code> / <code>tag</code> / <code>pullPolicy</code></td>
+<td></td>
+<td><code>ghcr.io/lenaxia/llmsafespaces/frontend</code> / <code>""</code> / <code>IfNotPresent</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>frontend.apiBaseUrl</code></td>
+<td>string</td>
+<td><code>"/api/v1"</code></td>
+<td>API base URL injected at container start.</td>
+</tr>
+<tr>
+<td><code>frontend.ingress.enabled</code></td>
+<td>bool</td>
+<td><code>false</code></td>
+<td>Create a frontend Ingress.</td>
+</tr>
+<tr>
+<td><code>frontend.ingress.className</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>frontend.ingress.host</code></td>
+<td>string</td>
+<td><code>safespace.example.com</code></td>
+<td>Primary hostname.</td>
+</tr>
+<tr>
+<td><code>frontend.ingress.tls</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td><strong>Default flipped <code>false → true</code> (RT-6.14).</strong> Pre-fix exposed the frontend over plain HTTP, leaking JWT cookies.</td>
+</tr>
+<tr>
+<td><code>frontend.ingress.tlsSecret</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Existing TLS Secret name.</td>
+</tr>
+<tr>
+<td><code>frontend.ingress.annotations</code></td>
+<td>object</td>
+<td>see values</td>
+<td>Security headers for ingress-nginx: CSP (<code>frame-ancestors 'none'</code>), <code>X-Frame-Options: DENY</code>, HSTS, <code>X-Content-Type-Options</code>, <code>Referrer-Policy</code>. Override for Traefik/HAProxy.</td>
+</tr>
+<tr>
+<td><code>frontend.ingress.additionalHosts</code></td>
+<td>list</td>
+<td><code>[]</code></td>
+<td>Additional hostnames. Each: <code>{host, [tlsSecret]}</code>.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="mcp"><code>mcp</code><a class="headerlink" href="#mcp" title="Permanent link">&para;</a></h2>
+<p>The MCP server (stdio/SSE). Delegates auth to the API.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>mcp.enabled</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>Deploy the MCP server.</td>
+</tr>
+<tr>
+<td><code>mcp.replicaCount</code></td>
+<td>int</td>
+<td><code>1</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>mcp.transport</code></td>
+<td>string</td>
+<td><code>"sse"</code></td>
+<td><code>sse</code> (HTTP SSE) or <code>stdio</code> (sidecar/subprocess).</td>
+</tr>
+<tr>
+<td><code>mcp.service.type</code> / <code>port</code></td>
+<td></td>
+<td><code>ClusterIP</code> / <code>3001</code></td>
+<td></td>
+</tr>
+<tr>
+<td><code>mcp.apiBaseUrl</code></td>
+<td>string</td>
+<td><code>"http://{{ .Release.Name }}-api:8080"</code></td>
+<td>In-cluster API URL.</td>
+</tr>
+<tr>
+<td><code>mcp.timeout</code></td>
+<td>duration</td>
+<td><code>300s</code></td>
+<td><code>session_message</code> timeout.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="inference-relay-globals">Inference relay globals<a class="headerlink" href="#inference-relay-globals" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>inferenceRelayURL</code></td>
+<td>string</td>
+<td><code>"https://relay.safespaces.dev"</code></td>
+<td>Cloudflare Worker relay URL (Epic 26). Workspace pods use this as the opencode provider baseURL instead of <code>opencode.ai/zen/v1</code> directly.</td>
+</tr>
+<tr>
+<td><code>inferenceRelaySecret</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Relay auth secret. Empty = chart auto-generates a 64-hex-char secret and preserves it across upgrades. Pushed to the CF Worker automatically if <code>cloudflare</code> credentials are set.</td>
+</tr>
+<tr>
+<td><code>internalToken</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Shared secret for controller↔API internal org-status calls (D20). Empty = auto-generate. The internal org-status endpoint <strong>fails closed (403)</strong> when unset.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="email-epic-49"><code>email</code> (Epic 49)<a class="headerlink" href="#email-epic-49" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>email.enabled</code></td>
+<td>bool</td>
+<td><code>false</code></td>
+<td>Enable transactional email (org invitations, password reset, verification). Disabled = NoopProvider logs to stderr.</td>
+</tr>
+<tr>
+<td><code>email.provider</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td><code>""</code> (noop) or <code>"ses"</code>. <code>"smtp"</code> is future.</td>
+</tr>
+<tr>
+<td><code>email.sesRegion</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>AWS region.</td>
+</tr>
+<tr>
+<td><code>email.fromAddress</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Verified SES sender.</td>
+</tr>
+<tr>
+<td><code>email.baseUrl</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Public origin for email body links. Must match the frontend ingress host.</td>
+</tr>
+</tbody>
+</table>
+<p>For SES, configure IRSA via <code>serviceAccount.api.annotations</code> (<code>eks.amazonaws.com/role-arn</code>). No static AWS credentials stored.</p>
+<h2 id="oidc-per-org-sso-plumbing-epic-43"><code>oidc</code> (per-org SSO plumbing — Epic 43)<a class="headerlink" href="#oidc-per-org-sso-plumbing-epic-43" title="Permanent link">&para;</a></h2>
+<p>Instance-level wiring for the per-org OIDC flow. Does <strong>not</strong> configure an IdP — each org does that via <code>/api/v1/orgs/:id/sso</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>oidc.redirectBaseUrl</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Absolute origin the IdP redirects back to. Full callback: <code>{redirectBaseUrl}/api/v1/auth/sso/:orgSlug/callback</code>. <strong>Set in production.</strong> Empty derives from <code>X-Forwarded-*</code> headers (F11 gap documented).</td>
+</tr>
+<tr>
+<td><code>oidc.frontendRedirectUrl</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Where the browser lands after SSO callback. Empty = <code>/</code>.</td>
+</tr>
+<tr>
+<td><code>oidc.stateCookieName</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Signed PKCE/state cookie name. Empty = <code>"lsp_sso_state"</code>.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="orgsubdomainrouting-epic-54-us-543"><code>orgSubdomainRouting</code> (Epic 54, US-54.3)<a class="headerlink" href="#orgsubdomainrouting-epic-54-us-543" title="Permanent link">&para;</a></h2>
+<p>Org-scoped login via wildcard subdomain routing. Disabled by default.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>orgSubdomainRouting.enabled</code></td>
+<td>bool</td>
+<td><code>false</code></td>
+<td>Enable wildcard subdomain routing.</td>
+</tr>
+<tr>
+<td><code>orgSubdomainRouting.baseDomain</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Parent domain. E.g. <code>app.example.com</code> → org <code>acme</code> → <code>acme.app.example.com</code>. <strong>Required</strong> when enabled.</td>
+</tr>
+<tr>
+<td><code>orgSubdomainRouting.cookieDomain</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Cookie Domain attribute. Must start with <code>.</code>. <strong>Required</strong> when enabled.</td>
+</tr>
+<tr>
+<td><code>orgSubdomainRouting.wildcardCert.tlsSecret</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Existing wildcard TLS Secret.</td>
+</tr>
+<tr>
+<td><code>orgSubdomainRouting.wildcardCert.issuerRef.name</code> / <code>kind</code></td>
+<td>string</td>
+<td><code>""</code> / <code>ClusterIssuer</code></td>
+<td>cert-manager Issuer for the wildcard cert.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Prerequisites:</strong> wildcard DNS, cert-manager, an ingress controller supporting wildcard host rules.</p>
+<h2 id="cloudflare"><code>cloudflare</code><a class="headerlink" href="#cloudflare" title="Permanent link">&para;</a></h2>
+<p>Automated relay secret sync to the CF Worker.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cloudflare.apiToken</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>CF API token with Workers:Edit. <strong>Never commit.</strong></td>
+</tr>
+<tr>
+<td><code>cloudflare.accountId</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>CF account ID.</td>
+</tr>
+<tr>
+<td><code>cloudflare.workerName</code></td>
+<td>string</td>
+<td><code>"llmsafespaces-inference-relay"</code></td>
+<td>CF Worker script name.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="monitoring"><code>monitoring</code><a class="headerlink" href="#monitoring" title="Permanent link">&para;</a></h2>
+<p>Grafana dashboards, Prometheus alerts, ServiceMonitors. Requires Grafana sidecar + Prometheus Operator.</p>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>monitoring.enabled</code></td>
+<td>bool</td>
+<td><code>false</code></td>
+<td>Master toggle.</td>
+</tr>
+<tr>
+<td><code>monitoring.dashboards.enabled</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>Deploy dashboard ConfigMaps (<code>grafana_dashboard: "1"</code> label).</td>
+</tr>
+<tr>
+<td><code>monitoring.dashboards.namespace</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Override namespace.</td>
+</tr>
+<tr>
+<td><code>monitoring.datasources.enabled</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>Deploy Postgres datasource for the billing dashboard. Requires <code>${PG_PASSWORD}</code> env in the Grafana pod.</td>
+</tr>
+<tr>
+<td><code>monitoring.datasources.postgres.uid</code></td>
+<td>string</td>
+<td><code>"llmsafespaces-postgres"</code></td>
+<td>Datasource UID referenced by dashboard panels.</td>
+</tr>
+<tr>
+<td><code>monitoring.prometheusRules.enabled</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>Deploy PrometheusRule resources.</td>
+</tr>
+<tr>
+<td><code>monitoring.serviceMonitors.enabled</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>Deploy ServiceMonitors for API + controller.</td>
+</tr>
+<tr>
+<td><code>monitoring.serviceMonitors.api.bearerTokenSecret</code></td>
+<td>object</td>
+<td><code>{}</code></td>
+<td>Optional bearer token Secret for the API <code>/metrics</code> endpoint (required when <code>LLMSAFESPACES_METRICS_TOKEN</code> is set).</td>
+</tr>
+<tr>
+<td><code>monitoring.serviceMonitors.agentdPodMonitor.enabled</code></td>
+<td>bool</td>
+<td><code>true</code></td>
+<td>PodMonitor for workspace pods' agentd admin port (<code>:4098/metrics</code>). Also extends the workspace NetworkPolicy to permit Prometheus ingress on 4098.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="turnstile-cloudflare-captcha-us-63x"><code>turnstile</code> (Cloudflare CAPTCHA — US-63.x)<a class="headerlink" href="#turnstile-cloudflare-captcha-us-63x" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Type</th>
+<th>Default</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>turnstile.enabled</code></td>
+<td>bool</td>
+<td><code>false</code></td>
+<td>Enable Turnstile on <code>/register</code>.</td>
+</tr>
+<tr>
+<td><code>turnstile.siteKey</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Public site key (baked into frontend HTML).</td>
+</tr>
+<tr>
+<td><code>turnstile.secretKey.existingSecret</code></td>
+<td>string</td>
+<td><code>"llmsafespaces-credentials"</code></td>
+<td>K8s Secret holding the secret key.</td>
+</tr>
+<tr>
+<td><code>turnstile.secretKey.key</code></td>
+<td>string</td>
+<td><code>"turnstile-secret"</code></td>
+<td>Key within the Secret.</td>
+</tr>
+<tr>
+<td><code>turnstile.verifyURL</code></td>
+<td>string</td>
+<td><code>"https://challenges.cloudflare.com/turnstile/v0/siteverify"</code></td>
+<td>Cloudflare verification endpoint.</td>
+</tr>
+</tbody>
+</table>
+
+
+
+
+
+
+
+  
+    
+  
+  
+    
+  
+
+
+  <aside class="md-source-file">
+    
+      
+  <span class="md-source-file__fact">
+    <span class="md-icon" title="Last update">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
+    </span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 06:44:10 UTC"><span class="timeago" datetime="2026-07-11T06:44:10+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 06:44:10 UTC">2026-07-11</span>
+  </span>
+
+    
+    
+      
+  <span class="md-source-file__fact">
+    <span class="md-icon" title="Created">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14.47 15.08 11 13V7h1.5v5.25l3.08 1.83c-.41.28-.79.62-1.11 1m-1.39 4.84c-.36.05-.71.08-1.08.08-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8c0 .37-.03.72-.08 1.08.69.1 1.33.32 1.92.64.1-.56.16-1.13.16-1.72 0-5.5-4.5-10-10-10S2 6.5 2 12s4.47 10 10 10c.59 0 1.16-.06 1.72-.16-.32-.59-.54-1.23-.64-1.92M18 15v3h-3v2h3v3h2v-3h3v-2h-3v-3z"/></svg>
+    </span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 06:44:10 UTC"><span class="timeago" datetime="2026-07-11T06:44:10+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 06:44:10 UTC">2026-07-11</span>
+  </span>
+
+    
+    
+    
+  </aside>
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/lenaxia/LLMSafeSpaces" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.tabs", "navigation.indexes", "navigation.top", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "content.code.copy", "content.code.annotate", "content.tabs.link"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="../../js/timeago.min.js"></script>
+      
+        <script src="../../js/timeago_mkdocs_material.js"></script>
+      
+    
+  </body>
+</html>

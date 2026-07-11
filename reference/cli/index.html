@@ -1,0 +1,2882 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="A Kubernetes-first platform for running AI agents in isolated, persistent workspaces. Documentation for operators, contributors, and integrators.">
+      
+      
+      
+        <link rel="canonical" href="https://lenaxia.github.io/LLMSafeSpaces/reference/cli/">
+      
+      
+        <link rel="prev" href="../crds/">
+      
+      
+        <link rel="next" href="../changelog/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>CLI Tools - LLMSafeSpaces</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../css/timeago.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#cli-tools-reference" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="LLMSafeSpaces" class="md-header__button md-logo" aria-label="LLMSafeSpaces" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5zm0 6c1.4 0 2.8 1.1 2.8 2.5V11c.6 0 1.2.6 1.2 1.3v3.5c0 .6-.6 1.2-1.3 1.2H9.2c-.6 0-1.2-.6-1.2-1.3v-3.5c0-.6.6-1.2 1.2-1.2V9.5C9.2 8.1 10.6 7 12 7m0 1.2c-.8 0-1.5.5-1.5 1.3V11h3V9.5c0-.8-.7-1.3-1.5-1.3"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            LLMSafeSpaces
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              CLI Tools
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/lenaxia/LLMSafeSpaces" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    lenaxia/LLMSafeSpaces
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../getting-started/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../operator/installation/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Operator Guide
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../architecture/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Architecture
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../api/rest/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  API Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../contributing/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Contributing
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../helm-values/" class="md-tabs__link">
+          
+  
+  
+    
+  
+  Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="LLMSafeSpaces" class="md-nav__button md-logo" aria-label="LLMSafeSpaces" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5zm0 6c1.4 0 2.8 1.1 2.8 2.5V11c.6 0 1.2.6 1.2 1.3v3.5c0 .6-.6 1.2-1.3 1.2H9.2c-.6 0-1.2-.6-1.2-1.3v-3.5c0-.6.6-1.2 1.2-1.2V9.5C9.2 8.1 10.6 7 12 7m0 1.2c-.8 0-1.5.5-1.5 1.3V11h3V9.5c0-.8-.7-1.3-1.5-1.3"/></svg>
+
+    </a>
+    LLMSafeSpaces
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/lenaxia/LLMSafeSpaces" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    lenaxia/LLMSafeSpaces
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../getting-started/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quickstart
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Concepts
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Operator Guide
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Operator Guide
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/networking/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Networking
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security Hardening
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/runtime-environments/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runtime Environments
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/multi-tenant/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-tenant Isolation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/oidc-sso/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    OIDC SSO
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/inference-relay/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Inference Relay Fleet
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/monitoring/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Monitoring
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/upgrading/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Upgrading
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/troubleshooting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/runbook/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../architecture/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/components/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Components
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/lifecycle/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workspace Lifecycle
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/secrets/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Secret Management
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../architecture/threat-model/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Threat Model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/rest/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    REST
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/authentication/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Authentication
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/mcp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MCP Server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/sdks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SDKs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../contributing/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Contributing
+  
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Contributing
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/development/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Development Workflow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/rules/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Engineering Rules
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/testing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../contributing/worklogs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Worklogs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../helm-values/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Helm Values
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../crds/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CRDs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Tools
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI Tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        api
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#controller" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        controller
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#workspace-agentd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        workspace-agentd
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mcp" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        mcp
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#redact" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        redact
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#repolint" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        repolint
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#seal-key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        seal-key
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rotate-kek" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rotate-kek
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#relay-router" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        relay-router
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#relay-proxy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        relay-proxy
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-commands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build commands
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../changelog/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Changelog
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        api
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#controller" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        controller
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#workspace-agentd" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        workspace-agentd
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#mcp" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        mcp
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#redact" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        redact
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#repolint" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        repolint
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#seal-key" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        seal-key
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rotate-kek" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        rotate-kek
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#relay-router" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        relay-router
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#relay-proxy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        relay-proxy
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#build-commands" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Build commands
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="cli-tools-reference">CLI Tools Reference<a class="headerlink" href="#cli-tools-reference" title="Permanent link">&para;</a></h1>
+<p>The binaries under <a href="https://github.com/lenaxia/LLMSafeSpaces/blob/main/cmd/"><code>cmd/</code></a> in the repo. Some are platform services deployed by the Helm chart; others are operator utilities you run manually. This page covers each: what it does, its flags, and when you'd run it by hand.</p>
+<table>
+<thead>
+<tr>
+<th>Binary</th>
+<th>Role</th>
+<th>Run by</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><a href="#api"><code>api</code></a></td>
+<td>API server (Gin)</td>
+<td>Helm chart (Deployment)</td>
+</tr>
+<tr>
+<td><a href="#controller"><code>controller</code></a></td>
+<td>Kubernetes operator</td>
+<td>Helm chart (Deployment)</td>
+</tr>
+<tr>
+<td><a href="#workspace-agentd"><code>workspace-agentd</code></a></td>
+<td>Pod sidecar</td>
+<td>Controller (pod spec)</td>
+</tr>
+<tr>
+<td><a href="#mcp"><code>mcp</code></a></td>
+<td>MCP server</td>
+<td>Helm chart (Deployment)</td>
+</tr>
+<tr>
+<td><a href="#redact"><code>redact</code></a></td>
+<td>Secret redaction pipeline</td>
+<td>Runtime image (PATH wrapper / direct)</td>
+</tr>
+<tr>
+<td><a href="#repolint"><code>repolint</code></a></td>
+<td>Repository layout linter</td>
+<td><code>.githooks/pre-commit</code>, CI</td>
+</tr>
+<tr>
+<td><a href="#seal-key"><code>seal-key</code></a></td>
+<td>Key sealing utility</td>
+<td>Operator (manual, production setup)</td>
+</tr>
+<tr>
+<td><a href="#rotate-kek"><code>rotate-kek</code></a></td>
+<td>KEK rotation</td>
+<td>Operator (manual, rotation events)</td>
+</tr>
+<tr>
+<td><a href="#relay-router"><code>relay-router</code></a></td>
+<td>In-cluster traffic distributor</td>
+<td>Helm chart (opt-in, Epic 42)</td>
+</tr>
+<tr>
+<td><a href="#relay-proxy"><code>relay-proxy</code></a></td>
+<td>Per-VM reverse proxy</td>
+<td>Controller (cloud-init, Epic 42)</td>
+</tr>
+</tbody>
+</table>
+<p>Build all of them with <code>go build ./cmd/...</code> or the per-binary Dockerfiles. The relay-proxy is cross-compiled via <code>make relay-bin</code> (produces <code>deploy/relay-proxy-{arm64,amd64}</code>).</p>
+<hr />
+<h2 id="api">api<a class="headerlink" href="#api" title="Permanent link">&para;</a></h2>
+<p>The LLMSafeSpaces API server. A Gin HTTP service: auth, ownership checks, reverse proxy to workspace pods, secrets/settings/credentials management, session tracking, SSE events, MCP server. Stateless and horizontally scalable. See <a href="../../architecture/components/">components</a>.</p>
+<p><strong>Run by:</strong> Helm chart (<code>api</code> Deployment, 2 replicas default).</p>
+<p><strong>Manual run (dev):</strong></p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>go<span class="w"> </span>run<span class="w"> </span>./api/cmd/api
+</span></code></pre></div>
+<p><strong>Key flags / env vars</strong> (full set in <code>api/config/config.yaml</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Flag / Env</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>LLMSAFESPACES_MASTER_SECRET_FILE</code></td>
+<td><code>/var/run/secrets/llmsafespaces/master-secret</code></td>
+<td>Master KEK file mount (US-50.1 default). Colon-separated for the rotation window; active = last ≥32-byte file.</td>
+</tr>
+<tr>
+<td><code>LLMSAFESPACES_MASTER_SECRET</code></td>
+<td><em>unset</em></td>
+<td>Legacy master KEK env var. Deprecated opt-in (<code>masterSecret.deliveryMethod=env</code>); logs a startup warning.</td>
+</tr>
+<tr>
+<td><code>LLMSAFESPACES_SECURITY_ROOTKEYPROVIDER</code></td>
+<td><code>""</code> (static)</td>
+<td>Root key provider: <code>""</code>/<code>"static"</code>, <code>"sealed"</code>, <code>"aws-kms"</code>.</td>
+</tr>
+<tr>
+<td><code>LLMSAFESPACES_SECURITY_SKIPMASTERKEYWARNING</code></td>
+<td><code>false</code></td>
+<td>Suppress the static-provider startup warning. Dev/CI only.</td>
+</tr>
+<tr>
+<td><code>LLMSAFESPACES_INTERNAL_TOKEN</code></td>
+<td><em>unset</em></td>
+<td>Shared secret for controller↔API org-status calls (D20). Endpoint fails closed (403) when unset.</td>
+</tr>
+<tr>
+<td><code>LLMSAFESPACES_METRICS_TOKEN</code></td>
+<td><em>unset</em></td>
+<td>When set, <code>/metrics</code> requires <code>Authorization: Bearer &lt;token&gt;</code>.</td>
+</tr>
+<tr>
+<td><code>LLMSAFESPACES_EMAIL_*</code></td>
+<td><em>unset</em></td>
+<td>Email provider overrides (higher precedence than <code>api.config</code>).</td>
+</tr>
+<tr>
+<td><code>LLMSAFESPACES_OIDC_*</code></td>
+<td><em>unset</em></td>
+<td>OIDC plumbing overrides.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Health endpoints:</strong> <code>/livez</code> (process alive), <code>/readyz</code> (pings Postgres + Redis), <code>/health</code> (legacy alias for <code>/livez</code>).</p>
+<p><strong>When you'd run it manually:</strong> local development against a <code>kind</code> cluster. In production, the Helm chart handles everything.</p>
+<hr />
+<h2 id="controller">controller<a class="headerlink" href="#controller" title="Permanent link">&para;</a></h2>
+<p>The Kubernetes operator (controller-runtime). Reconciles <code>Workspace</code>/<code>RuntimeEnvironment</code>/<code>InferenceRelay</code> CRDs; registers validating webhooks; leader-elected.</p>
+<p><strong>Run by:</strong> Helm chart (<code>controller</code> Deployment, 1 replica + leader election).</p>
+<p><strong>Manual run (dev):</strong></p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>go<span class="w"> </span>run<span class="w"> </span>./controller
+</span></code></pre></div>
+<p><strong>Key flags</strong> (wired from Helm values):</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Helm value</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--watch-namespaces</code></td>
+<td><code>controller.watchNamespaces</code></td>
+<td>Comma-separated namespaces to watch. <code>""</code>/<code>"*"</code> = cluster-wide.</td>
+</tr>
+<tr>
+<td><code>--metrics-addr</code></td>
+<td><code>controller.metricsAddr</code></td>
+<td>Metrics bind (loopback default — run <code>kube-rbac-proxy</code> for Prometheus).</td>
+</tr>
+<tr>
+<td><code>--health-probe-bind-address</code></td>
+<td><code>controller.probeAddr</code></td>
+<td>Health probe port.</td>
+</tr>
+<tr>
+<td><code>--enable-inference-relay</code></td>
+<td><code>controller.inferenceRelay.enabled</code></td>
+<td>Enable the InferenceRelay reconciler. Requires <code>rbac.scope=cluster</code>.</td>
+</tr>
+<tr>
+<td><code>--relay-router-url</code></td>
+<td><code>controller.inferenceRelay.routerURL</code></td>
+<td>Router <code>/metrics</code> scrape URL.</td>
+</tr>
+<tr>
+<td><code>--relay-artifact-url</code></td>
+<td><code>controller.inferenceRelay.artifact.urls[0]</code></td>
+<td>Relay-proxy binary mirror URL.</td>
+</tr>
+<tr>
+<td><code>--relay-artifact-sha256-arm64</code> / <code>-amd64</code></td>
+<td><code>...artifact.sha256*</code></td>
+<td>SHA-256 for cloud-init verification.</td>
+</tr>
+<tr>
+<td><code>--default-runtime-class</code></td>
+<td><code>gvisor.defaultRuntimeClass</code> (when <code>gvisor.enabled</code>)</td>
+<td>Default RuntimeClass for workspace pods (typically <code>gvisor</code>).</td>
+</tr>
+<tr>
+<td><code>--api-service-url</code></td>
+<td><code>controller.apiServiceURL</code></td>
+<td>In-cluster API URL for org-status polling (D20) and pod bootstrap (Epic 35).</td>
+</tr>
+<tr>
+<td><code>--inference-relay-secret</code></td>
+<td><code>inferenceRelaySecret</code></td>
+<td>CF Worker path-segment auth secret.</td>
+</tr>
+</tbody>
+</table>
+<div class="admonition note">
+<p class="admonition-title">Webhook port not configurable</p>
+<p>The webhook server port is hardcoded to <code>9443</code> (<code>controller/main.go:174</code> — <code>webhook.NewServer(webhook.Options{Port: 9443})</code>). There is no <code>--webhook-port</code> flag. If you need to change it, edit <code>controller/main.go</code> and rebuild.</p>
+</div>
+<p><strong>Health endpoints:</strong> <code>/healthz</code>, <code>/readyz</code> on the probe port (<code>:8081</code>).</p>
+<p><strong>When you'd run it manually:</strong> local development. Production = Helm chart.</p>
+<hr />
+<h2 id="workspace-agentd">workspace-agentd<a class="headerlink" href="#workspace-agentd" title="Permanent link">&para;</a></h2>
+<p>The sidecar binary that supervises <code>opencode</code> inside every workspace pod. Owns the single <code>AgentConfigWriter</code> that builds <code>/sandbox-runtime/agent-config.json</code> atomically; runs the one-shot relay injector; serves health/status/metrics and the live credential reload endpoint.</p>
+<p><strong>Run by:</strong> the controller injects it into every workspace pod spec.</p>
+<p><strong>Subcommands:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Subcommand</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>materialize</code></td>
+<td>Reads <code>/sandbox-cfg/secrets.json</code> (server-KEK creds) + replays <code>/sandbox-runtime/last-reload-secrets.json</code> (cached user-DEK creds), then applies via <code>pkg/agentd/secrets</code>. Runs before agentd in the init container. Replaces the legacy bash secret-loop (Epic 17 G2/G20).</td>
+</tr>
+<tr>
+<td><code>bootstrap</code></td>
+<td>Epic 35 US-35.2: fetches decrypted secrets from the API using a projected SA token. Runs before <code>materialize</code> in the init container. Never blocks pod boot — degrades to empty on failure.</td>
+</tr>
+<tr>
+<td><code>--supervise</code></td>
+<td>The default long-running mode: supervise <code>opencode</code>, serve HTTP, run the relay injector.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Ports:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Port</th>
+<th>Purpose</th>
+<th>Auth</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>:4096</code></td>
+<td>opencode HTTP API (the main container, not agentd)</td>
+<td>HTTP Basic Auth (workspace password)</td>
+</tr>
+<tr>
+<td><code>:4097</code></td>
+<td>User port — <code>/v1/reload-secrets</code> (live credential reload)</td>
+<td><strong>None (G40 open)</strong> — should be behind <code>requireBearerToken</code></td>
+</tr>
+<tr>
+<td><code>:4098</code></td>
+<td>Admin port — <code>/v1/healthz</code>, <code>/v1/statusz</code>, <code>/v1/readyz</code>, <code>/v1/metrics</code></td>
+<td>Token-gated</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Key endpoints:</strong></p>
+<ul>
+<li><code>/v1/healthz</code> — agentd liveness + opencode reachability. Returns build version.</li>
+<li><code>/v1/readyz</code> — readiness including <code>RelayInjected</code> signal (used by the API to annotate the model catalog).</li>
+<li><code>/v1/statusz</code> — sessions, disk/memory/CPU/context metrics (scraped by the controller for CRD status enrichment).</li>
+<li><code>/v1/metrics</code> — Prometheus metrics (<code>workspace_restarts_total</code>, <code>workspace_memory_bytes</code>, <code>workspace_active_sessions</code>, <code>workspace_context_tokens</code>, <code>workspace_oom_kills_total</code>).</li>
+<li><code>/v1/reload-secrets</code> — live credential reload without pod restart (user port, G40).</li>
+</ul>
+<p><strong>When you'd run it manually:</strong> never in production. For development debugging of the materialize/bootstrap subcommands against a test pod.</p>
+<hr />
+<h2 id="mcp">mcp<a class="headerlink" href="#mcp" title="Permanent link">&para;</a></h2>
+<p>The MCP server (Model Context Protocol). Exposes tools (<code>sandbox_create</code>, <code>session_create</code>, <code>session_message</code>, <code>session_history</code>, <code>sandbox_terminate</code>) and delegates authentication to the API. Supports stdio and SSE transports.</p>
+<p><strong>Run by:</strong> Helm chart (<code>mcp</code> Deployment) when <code>mcp.enabled: true</code>.</p>
+<p><strong>Transport:</strong> <code>sse</code> (HTTP SSE server) or <code>stdio</code> (sidecar/subprocess launched by an MCP client like Claude, VS Code).</p>
+<p><strong>Auth:</strong> the MCP server performs no authentication — it forwards the configured API key as <code>Authorization: Bearer</code> to the API.</p>
+<p><strong>MCP uses <code>prompt_async</code>:</strong> <code>session_message</code> calls <code>POST /session/{id}/prompt_async</code> (returns 204 immediately; results arrive via the <code>GET /event</code> SSE channel). The MCP server subscribes, collects the complete response, and returns it as a single tool result. This is the correct endpoint for programmatic/async callers (Persona 2).</p>
+<p><strong>Flags</strong> (from <code>cmd/mcp/main.go:32-36</code>):</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--base-url</code></td>
+<td><code>LLMSAFESPACES_URL</code> env or <code>http://localhost:8080</code></td>
+<td>LLMSafeSpaces API base URL.</td>
+</tr>
+<tr>
+<td><code>--api-key</code></td>
+<td><code>LLMSAFESPACES_API_KEY</code> env</td>
+<td>API key for authentication.</td>
+</tr>
+<tr>
+<td><code>--sse</code></td>
+<td><code>false</code></td>
+<td>Use SSE transport instead of stdio.</td>
+</tr>
+<tr>
+<td><code>--addr</code></td>
+<td><code>MCP_ADDR</code> env or <code>:3001</code></td>
+<td>SSE listen address.</td>
+</tr>
+<tr>
+<td><code>--timeout</code></td>
+<td><code>300s</code></td>
+<td>Default timeout for <code>session_message</code>.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>When you'd run it manually:</strong> as a stdio subprocess launched by an MCP client, or for local testing of tool definitions.</p>
+<hr />
+<h2 id="redact">redact<a class="headerlink" href="#redact" title="Permanent link">&para;</a></h2>
+<p>A stdin → stdout secret redaction pipeline. Reads from stdin, applies the 16 built-in regex rules (plus any from a config file), writes redacted output to stdout. Built from <code>pkg/redact</code> and installed at <code>/usr/local/bin/redact</code> in every runtime image.</p>
+<p><strong>Run by:</strong> the runtime image's PATH-shadowing wrappers (high-security mode) and directly when needed. Designed to be piped: <code>some-command | redact</code>.</p>
+<p><strong>Flags:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-config</code></td>
+<td><code>/sandbox-cfg/redact-patterns.json</code></td>
+<td>Path to extra patterns JSON file.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Built-in rules (16):</strong> URL credentials, bearer tokens, GitHub tokens, JSON passwords, <code>password=</code>/<code>token=</code>/<code>secret=</code>/<code>api_key=</code>/<code>x-api-key=</code> assignments, PEM private keys, age keys, OpenAI/Anthropic keys (<code>sk-…</code>), AWS IAM keys (<code>AKIA…</code>), JWTs, authorization headers, long base64.</p>
+<p><strong>Fail mode:</strong> the wrappers fail-closed (exit 1) if <code>redact</code> is missing or crashes — they never emit unredacted output. The binary itself exits 1 on regex compilation failure or a read error.</p>
+<p><strong>Example:</strong></p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nb">echo</span><span class="w"> </span><span class="s1">&#39;Authorization: Bearer sk-abc123...&#39;</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>redact
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="c1"># → Authorization: Bearer [REDACTED]</span>
+</span></code></pre></div>
+<p><strong>When you'd run it manually:</strong> testing custom patterns, debugging why a specific secret did/didn't get redacted, or piping manual tool output through it during incident response.</p>
+<hr />
+<h2 id="repolint">repolint<a class="headerlink" href="#repolint" title="Permanent link">&para;</a></h2>
+<p>The repository-layout linter. Validates worklog numbering, CRD drift (chart YAML vs deployed), and migration drift (<code>api/migrations/</code> vs <code>helm/migrations/</code>). Run by <code>.githooks/pre-commit</code> and the CI Lint job.</p>
+<p><strong>Exit codes:</strong> <code>0</code> = pass, <code>1</code> = check failures, <code>2</code> = internal error.</p>
+<p><strong>Flags:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-repo</code></td>
+<td>Repository root (default: auto-detect from CWD).</td>
+</tr>
+<tr>
+<td><code>-fix-drift</code></td>
+<td>Copy <code>api/migrations/*.sql</code> into <code>helm/migrations/</code> to resolve drift.</td>
+</tr>
+<tr>
+<td><code>-fix-worklogs</code></td>
+<td>Auto-renumber duplicate worklog files, then run all checks.</td>
+</tr>
+<tr>
+<td><code>-fix-worklogs-only</code></td>
+<td>Only auto-renumber; skip checks. For <code>.githooks/post-rewrite</code> where the tree may be mid-rebase.</td>
+</tr>
+<tr>
+<td><code>-cluster-drift</code></td>
+<td>Compare deployed CRDs on the current kubeconfig context against the chart YAMLs. <strong>Off by default</strong> — requires a reachable cluster, so unsuitable for pre-commit/CI without one. Run after <code>make helm-deploy</code>.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>When you'd run it manually:</strong> before committing (the pre-commit hook does this), after a <code>helm deploy</code> to verify CRDs landed (<code>-cluster-drift</code>), or to auto-fix migration/worklog drift (<code>-fix-drift</code>, <code>-fix-worklogs</code>).</p>
+<hr />
+<h2 id="seal-key">seal-key<a class="headerlink" href="#seal-key" title="Permanent link">&para;</a></h2>
+<p>Generates a sealed root-key file for the sealed-key provider (production self-hosted). The root key is wrapped by an Argon2id KEK derived from an operator passphrase; the on-disk sealed file is useless without the passphrase.</p>
+<p><strong>Run by:</strong> the operator, manually, during production setup.</p>
+<p><strong>Flags:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Required</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-out</code></td>
+<td>yes</td>
+<td>Output path for the sealed key file.</td>
+</tr>
+<tr>
+<td><code>-passphrase</code></td>
+<td>yes (or <code>-passphrase-file</code>)</td>
+<td>Passphrase to seal the key.</td>
+</tr>
+<tr>
+<td><code>-passphrase-file</code></td>
+<td>alt to above</td>
+<td>Read passphrase from this file.</td>
+</tr>
+<tr>
+<td><code>-key</code></td>
+<td>no</td>
+<td>Hex-encoded 32-byte root key. Random if omitted.</td>
+</tr>
+<tr>
+<td><code>-print-key</code></td>
+<td>no</td>
+<td><strong>Dangerous:</strong> print the root key to stdout. Never emitted by default — a freshly generated key lives only inside the sealed output file.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Sealed file format:</strong></p>
+<ul>
+<li><strong>V1 (current, US-50.11):</strong> <code>magic "LSKP-S"</code> ‖ <code>salt(32)</code> ‖ <code>nonce(12)</code> ‖ <code>ciphertext</code>. KEK = <code>Argon2id(passphrase, HKDF(salt, info="llmsafespaces-sealed-root"))</code>.</li>
+<li><strong>V0 (legacy):</strong> <code>salt(32)</code> ‖ <code>nonce(12)</code> ‖ <code>ciphertext</code>, plain Argon2id. Still readable for in-place upgrades.</li>
+</ul>
+<p><strong>Example:</strong></p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># Generate a sealed key (root key never printed)</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>seal-key<span class="w"> </span>-out<span class="w"> </span>master.sealed<span class="w"> </span>-passphrase-file<span class="w"> </span>passphrase.txt
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="c1"># Re-seal an existing key under a new passphrase (manual rotation)</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>seal-key<span class="w"> </span>-out<span class="w"> </span>master.new.sealed<span class="w"> </span>-passphrase-file<span class="w"> </span>new-passphrase.txt<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">         </span>-key<span class="w"> </span><span class="k">$(</span>cat<span class="w"> </span>master.key.hex<span class="k">)</span>
+</span></code></pre></div>
+<p><strong>When you'd run it manually:</strong> initial production setup (switching from static to sealed provider), and during manual KEK rotation (generate new sealed file, then run <code>rotate-kek</code>).</p>
+<hr />
+<h2 id="rotate-kek">rotate-kek<a class="headerlink" href="#rotate-kek" title="Permanent link">&para;</a></h2>
+<p>The operational KEK rotation tool (US-50.5). Re-wraps every KEK-protected row in Postgres under a new master key, then flushes the Redis DEK cache. Built on the foundation of multi-key <code>StaticKeyProvider</code> decrypt (US-50.4), <code>key_version</code> columns (US-50.3), and the rotation-aware write path (US-50.6).</p>
+<p><strong>Run by:</strong> the operator, manually, during a KEK rotation event (suspected compromise, scheduled rotation).</p>
+<p><strong>Flags:</strong></p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Required</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-old-master-file</code></td>
+<td>yes</td>
+<td></td>
+<td>Path to the OLD master KEK file.</td>
+</tr>
+<tr>
+<td><code>-new-master-file</code></td>
+<td>yes</td>
+<td></td>
+<td>Path to the NEW master KEK file.</td>
+</tr>
+<tr>
+<td><code>-database-url</code></td>
+<td>yes</td>
+<td></td>
+<td>PostgreSQL connection string.</td>
+</tr>
+<tr>
+<td><code>-redis-url</code></td>
+<td>no</td>
+<td></td>
+<td>Redis connection string. If empty, the DEK cache flush is skipped (the rotation still succeeds; the cache will age out naturally within ~5 minutes).</td>
+</tr>
+<tr>
+<td><code>-table</code></td>
+<td>no</td>
+<td><code>all</code></td>
+<td><code>all</code>, <code>provider_credentials</code>, <code>api_keys</code>, or <code>org_sso_configs</code>.</td>
+</tr>
+<tr>
+<td><code>-resume-from</code></td>
+<td>no</td>
+<td></td>
+<td>Resume from this row ID (per table; for interrupted runs).</td>
+</tr>
+<tr>
+<td><code>-target-version</code></td>
+<td>no</td>
+<td><code>2</code></td>
+<td>Target key version.</td>
+</tr>
+<tr>
+<td><code>-dry-run</code></td>
+<td>no</td>
+<td><code>false</code></td>
+<td>Report counts without writing.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>What it does:</strong></p>
+<ol>
+<li>Loads old + new master keys, derives old + new providers for every purpose string (<code>provider-credentials</code>, <code>org-credentials</code>, <code>master-kek</code>, <code>dek-cache</code>).</li>
+<li>Connects to Postgres + Redis.</li>
+<li>For each row in the target table(s): decrypt with the old provider for that row's purpose, re-encrypt with the new provider, bump <code>key_version</code>.</li>
+<li>Flushes the Redis DEK cache.</li>
+</ol>
+<p><strong>Example:</strong></p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="c1"># Dry run first</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>rotate-kek<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span>-old-master-file<span class="w"> </span>/etc/llmsafespaces/old-master<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span>-new-master-file<span class="w"> </span>/etc/llmsafespaces/new-master<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">  </span>-database-url<span class="w"> </span><span class="s2">&quot;postgres://...&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">  </span>-redis-url<span class="w"> </span><span class="s2">&quot;redis://...&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">  </span>-dry-run
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="c1"># Real run</span>
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a>rotate-kek<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">  </span>-old-master-file<span class="w"> </span>/etc/llmsafespaces/old-master<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="w">  </span>-new-master-file<span class="w"> </span>/etc/llmsafespaces/new-master<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="w">  </span>-database-url<span class="w"> </span><span class="s2">&quot;postgres://...&quot;</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a><span class="w">  </span>-redis-url<span class="w"> </span><span class="s2">&quot;redis://...&quot;</span>
+</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a>
+</span><span id="__span-4-16"><a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a><span class="c1"># Resume an interrupted run</span>
+</span><span id="__span-4-17"><a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a>rotate-kek<span class="w"> </span>...<span class="w"> </span>-resume-from<span class="w"> </span>row-1234<span class="w"> </span>-table<span class="w"> </span>api_keys
+</span></code></pre></div>
+<p><strong>When you'd run it manually:</strong> scheduled rotation, suspected KEK compromise, or after generating a new sealed-key file. See <a href="../../architecture/secrets/">secrets</a> for the full rotation flow.</p>
+<hr />
+<h2 id="relay-router">relay-router<a class="headerlink" href="#relay-router" title="Permanent link">&para;</a></h2>
+<p>The in-cluster HTTP router that distributes workspace inference traffic across healthy relay VMs (Epic 42). Reads the <code>relay-router-peers</code> ConfigMap written by the controller. Weighted: AWS (1000) &gt; OCI (100) &gt; GCP (1); falls back to direct upstream (rate-limited) when all VMs are down.</p>
+<p><strong>Run by:</strong> Helm chart (<code>relay-router</code> Deployment, 1 replica) when <code>controller.inferenceRelay.enabled: true</code>.</p>
+<p><strong>Environment variables</strong> (flag &gt; env &gt; default):</p>
+<table>
+<thead>
+<tr>
+<th>Env</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>LISTEN_ADDR</code></td>
+<td><code>:8080</code></td>
+<td>Listen address.</td>
+</tr>
+<tr>
+<td><code>UPSTREAM_URL</code></td>
+<td><code>https://opencode.ai/zen/v1</code></td>
+<td>Upstream the fleet proxies to.</td>
+</tr>
+<tr>
+<td><code>UPSTREAM_AUTH_KEY</code></td>
+<td><em>unset</em></td>
+<td>Real upstream key (paid gateway). Forwarded unchanged if unset.</td>
+</tr>
+<tr>
+<td><code>UPSTREAM_AUTH_HEADER</code></td>
+<td><em>unset</em> (→ <code>Authorization</code>)</td>
+<td>Header name for the upstream key.</td>
+</tr>
+<tr>
+<td><code>PEER_CONFIG_PATH</code></td>
+<td><code>/etc/relay-router/peers.json</code></td>
+<td>Peers ConfigMap mount.</td>
+</tr>
+<tr>
+<td><code>PEER_POLL_INTERVAL</code></td>
+<td><code>5s</code></td>
+<td>How often to re-read peers.</td>
+</tr>
+<tr>
+<td><code>HEALTH_INTERVAL</code> / <code>HEALTH_TIMEOUT</code> / <code>HEALTH_THRESHOLD</code></td>
+<td><code>15s</code> / <code>5s</code> / <code>3</code></td>
+<td>Per-VM health checking.</td>
+</tr>
+<tr>
+<td><code>MAX_429_RATE</code> / <code>DETECTION_WINDOW</code> / <code>DETECTOR_INTERVAL</code></td>
+<td><code>0.5</code> / <code>5m</code> / <code>30s</code></td>
+<td>429-storm detection.</td>
+</tr>
+<tr>
+<td><code>FALLBACK_RATE</code> / <code>FALLBACK_MAX_CONCURRENT</code></td>
+<td><code>0.5</code> / <code>1</code></td>
+<td>Fallback mode rate limiting.</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Auth model:</strong> per-VM shared-secret tokens (<code>X-Relay-Token</code>, <code>crypto/subtle.ConstantTimeCompare</code>). WireGuard was removed in worklog 0447 — per-VM tokens preserve the tight blast radius. <code>/healthz</code> and <code>/metrics</code> are token-exempt.</p>
+<p><strong>When you'd run it manually:</strong> never in production (the Helm chart deploys it). For local relay-router development.</p>
+<hr />
+<h2 id="relay-proxy">relay-proxy<a class="headerlink" href="#relay-proxy" title="Permanent link">&para;</a></h2>
+<p>The reverse proxy binary run <em>on each relay VM</em>. Distributed to VMs via cloud-init with SHA-256 verification. Token-gated (<code>X-Relay-Token</code> header).</p>
+<p><strong>Run by:</strong> the controller provisions relay VMs via cloud-init, which downloads + SHA-256-verifies + starts this binary. Not containerized — it's a cross-compiled binary (<code>make relay-bin</code> → <code>deploy/relay-proxy-{arm64,amd64}</code>).</p>
+<p><strong>Flags</strong> (flag &gt; env &gt; default):</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Env</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>-upstream</code></td>
+<td><code>UPSTREAM_URL</code></td>
+<td><code>https://opencode.ai/zen/v1</code></td>
+<td>LLM provider endpoint. <strong>Load-bearing</strong> — the controller renders <code>--upstream=&lt;spec.upstreamURL&gt;</code> into each VM's systemd ExecStart.</td>
+</tr>
+<tr>
+<td><code>-listen</code></td>
+<td><code>LISTEN_ADDR</code></td>
+<td><code>0.0.0.0:8080</code></td>
+<td>Listen address.</td>
+</tr>
+<tr>
+<td><code>-token</code></td>
+<td><code>RELAY_TOKEN</code></td>
+<td><em>unset</em></td>
+<td>Shared-secret token the relay-router presents. <strong>Empty disables auth</strong> (local dev only) — production relays must set this; without it the proxy is an open forwarder.</td>
+</tr>
+<tr>
+<td><code>-keepalive-interval</code></td>
+<td><code>KEEPALIVE_INTERVAL</code></td>
+<td><code>30s</code></td>
+<td>Interval between upstream keepalive probes.</td>
+</tr>
+</tbody>
+</table>
+<p><strong><code>/healthz</code> and <code>/metrics</code> are token-exempt</strong> — the router probes health without the per-VM token.</p>
+<p><strong>When you'd run it manually:</strong> never in production (cloud-init handles it). For local relay-VM testing or debugging cloud-init templates.</p>
+<hr />
+<h2 id="build-commands">Build commands<a class="headerlink" href="#build-commands" title="Permanent link">&para;</a></h2>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="c1"># All Go binaries</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>go<span class="w"> </span>build<span class="w"> </span>./cmd/...
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="c1"># Container images (api, controller, base, frontend, relay-router)</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>docker<span class="w"> </span>build<span class="w"> </span>-f<span class="w"> </span>api/Dockerfile<span class="w"> </span>-t<span class="w"> </span>llmsafespaces/api:dev<span class="w"> </span>.
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>docker<span class="w"> </span>build<span class="w"> </span>-f<span class="w"> </span>controller/Dockerfile<span class="w"> </span>-t<span class="w"> </span>llmsafespaces/controller:dev<span class="w"> </span>.
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>docker<span class="w"> </span>build<span class="w"> </span>-f<span class="w"> </span>runtimes/base/Dockerfile<span class="w"> </span>-t<span class="w"> </span>llmsafespaces/runtime-base:dev<span class="w"> </span>runtimes/base
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>docker<span class="w"> </span>build<span class="w"> </span>-f<span class="w"> </span>frontend/Dockerfile<span class="w"> </span>-t<span class="w"> </span>llmsafespaces/frontend:dev<span class="w"> </span>frontend
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>docker<span class="w"> </span>build<span class="w"> </span>-f<span class="w"> </span>cmd/relay-router/Dockerfile<span class="w"> </span>-t<span class="w"> </span>llmsafespaces/relay-router:dev<span class="w"> </span>cmd/relay-router
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="c1"># relay-proxy cross-compilation (NOT containerized — for cloud-init distribution)</span>
+</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>make<span class="w"> </span>relay-bin<span class="w">   </span><span class="c1"># → deploy/relay-proxy-{arm64,amd64}</span>
+</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>sha256sum<span class="w"> </span>deploy/relay-proxy-arm64<span class="w"> </span>deploy/relay-proxy-amd64
+</span></code></pre></div>
+<p>CI builds and pushes to <code>ghcr.io/lenaxia/llmsafespaces/{api,controller,base,frontend}:dev</code> on every push to <code>main</code>.</p>
+
+
+
+
+
+
+
+  
+    
+  
+  
+    
+  
+
+
+  <aside class="md-source-file">
+    
+      
+  <span class="md-source-file__fact">
+    <span class="md-icon" title="Last update">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
+    </span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 06:44:10 UTC"><span class="timeago" datetime="2026-07-11T06:44:10+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 06:44:10 UTC">2026-07-11</span>
+  </span>
+
+    
+    
+      
+  <span class="md-source-file__fact">
+    <span class="md-icon" title="Created">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14.47 15.08 11 13V7h1.5v5.25l3.08 1.83c-.41.28-.79.62-1.11 1m-1.39 4.84c-.36.05-.71.08-1.08.08-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8c0 .37-.03.72-.08 1.08.69.1 1.33.32 1.92.64.1-.56.16-1.13.16-1.72 0-5.5-4.5-10-10-10S2 6.5 2 12s4.47 10 10 10c.59 0 1.16-.06 1.72-.16-.32-.59-.54-1.23-.64-1.92M18 15v3h-3v2h3v3h2v-3h3v-2h-3v-3z"/></svg>
+    </span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 06:44:10 UTC"><span class="timeago" datetime="2026-07-11T06:44:10+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 06:44:10 UTC">2026-07-11</span>
+  </span>
+
+    
+    
+    
+  </aside>
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/lenaxia/LLMSafeSpaces" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.tabs", "navigation.indexes", "navigation.top", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "content.code.copy", "content.code.annotate", "content.tabs.link"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="../../js/timeago.min.js"></script>
+      
+        <script src="../../js/timeago_mkdocs_material.js"></script>
+      
+    
+  </body>
+</html>

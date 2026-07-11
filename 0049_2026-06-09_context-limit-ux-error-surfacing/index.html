@@ -10,29 +10,27 @@
       
       
       
-        <link rel="canonical" href="https://lenaxia.github.io/LLMSafeSpaces/">
+        <link rel="canonical" href="https://lenaxia.github.io/LLMSafeSpaces/0049_2026-06-09_context-limit-ux-error-surfacing/">
       
       
-      
-        <link rel="next" href="getting-started/">
       
       
         
       
       
-      <link rel="icon" href="assets/images/favicon.png">
+      <link rel="icon" href="../assets/images/favicon.png">
       <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
     
     
       
-        <title>LLMSafeSpaces</title>
+        <title>0049 — Context Limit UX & Error Surfacing - LLMSafeSpaces</title>
       
     
     
-      <link rel="stylesheet" href="assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
       
         
-        <link rel="stylesheet" href="assets/stylesheets/palette.ab4e12ef.min.css">
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
       
       
 
@@ -51,9 +49,9 @@
       
     
     
-      <link rel="stylesheet" href="css/timeago.css">
+      <link rel="stylesheet" href="../css/timeago.css">
     
-    <script>__md_scope=new URL(".",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
 
@@ -78,7 +76,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#llmsafespaces" class="md-skip">
+        <a href="#0049-context-limit-ux-error-surfacing" class="md-skip">
           Skip to content
         </a>
       
@@ -92,7 +90,7 @@
 
 <header class="md-header" data-md-component="header">
   <nav class="md-header__inner md-grid" aria-label="Header">
-    <a href="." title="LLMSafeSpaces" class="md-header__button md-logo" aria-label="LLMSafeSpaces" data-md-component="logo">
+    <a href=".." title="LLMSafeSpaces" class="md-header__button md-logo" aria-label="LLMSafeSpaces" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5zm0 6c1.4 0 2.8 1.1 2.8 2.5V11c.6 0 1.2.6 1.2 1.3v3.5c0 .6-.6 1.2-1.3 1.2H9.2c-.6 0-1.2-.6-1.2-1.3v-3.5c0-.6.6-1.2 1.2-1.2V9.5C9.2 8.1 10.6 7 12 7m0 1.2c-.8 0-1.5.5-1.5 1.3V11h3V9.5c0-.8-.7-1.3-1.5-1.3"/></svg>
@@ -112,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Home
+              0049 — Context Limit UX &amp; Error Surfacing
             
           </span>
         </div>
@@ -223,11 +221,9 @@
   
   
   
-    
   
-  
-    <li class="md-tabs__item md-tabs__item--active">
-      <a href="." class="md-tabs__link">
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
         
   
   
@@ -248,7 +244,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="getting-started/" class="md-tabs__link">
+        <a href="../getting-started/" class="md-tabs__link">
           
   
   
@@ -270,7 +266,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="operator/installation/" class="md-tabs__link">
+        <a href="../operator/installation/" class="md-tabs__link">
           
   
   
@@ -292,7 +288,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="architecture/" class="md-tabs__link">
+        <a href="../architecture/" class="md-tabs__link">
           
   
   
@@ -314,7 +310,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="api/rest/" class="md-tabs__link">
+        <a href="../api/rest/" class="md-tabs__link">
           
   
   
@@ -336,7 +332,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="contributing/" class="md-tabs__link">
+        <a href="../contributing/" class="md-tabs__link">
           
   
   
@@ -358,7 +354,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="reference/helm-values/" class="md-tabs__link">
+        <a href="../reference/helm-values/" class="md-tabs__link">
           
   
   
@@ -394,7 +390,7 @@
 
 <nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
   <label class="md-nav__title" for="__drawer">
-    <a href="." title="LLMSafeSpaces" class="md-nav__button md-logo" aria-label="LLMSafeSpaces" data-md-component="logo">
+    <a href=".." title="LLMSafeSpaces" class="md-nav__button md-logo" aria-label="LLMSafeSpaces" data-md-component="logo">
       
   
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5zm0 6c1.4 0 2.8 1.1 2.8 2.5V11c.6 0 1.2.6 1.2 1.3v3.5c0 .6-.6 1.2-1.3 1.2H9.2c-.6 0-1.2-.6-1.2-1.3v-3.5c0-.6.6-1.2 1.2-1.2V9.5C9.2 8.1 10.6 7 12 7m0 1.2c-.8 0-1.5.5-1.5 1.3V11h3V9.5c0-.8-.7-1.3-1.5-1.3"/></svg>
@@ -421,37 +417,10 @@
       
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Home
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="." class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
         
   
   
@@ -467,81 +436,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#why-use-it" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Why use it
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#quick-links" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Quick links
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#architecture-at-a-glance" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Architecture at a glance
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#status" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Status
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#license" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        License
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -580,7 +474,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="getting-started/" class="md-nav__link ">
+            <a href="../getting-started/" class="md-nav__link ">
               
   
   
@@ -624,7 +518,7 @@
   
   
     <li class="md-nav__item">
-      <a href="getting-started/quickstart/" class="md-nav__link">
+      <a href="../getting-started/quickstart/" class="md-nav__link">
         
   
   
@@ -652,7 +546,7 @@
   
   
     <li class="md-nav__item">
-      <a href="getting-started/concepts/" class="md-nav__link">
+      <a href="../getting-started/concepts/" class="md-nav__link">
         
   
   
@@ -767,7 +661,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/installation/" class="md-nav__link">
+      <a href="../operator/installation/" class="md-nav__link">
         
   
   
@@ -795,7 +689,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/configuration/" class="md-nav__link">
+      <a href="../operator/configuration/" class="md-nav__link">
         
   
   
@@ -823,7 +717,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/storage/" class="md-nav__link">
+      <a href="../operator/storage/" class="md-nav__link">
         
   
   
@@ -851,7 +745,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/networking/" class="md-nav__link">
+      <a href="../operator/networking/" class="md-nav__link">
         
   
   
@@ -879,7 +773,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/security/" class="md-nav__link">
+      <a href="../operator/security/" class="md-nav__link">
         
   
   
@@ -907,7 +801,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/runtime-environments/" class="md-nav__link">
+      <a href="../operator/runtime-environments/" class="md-nav__link">
         
   
   
@@ -935,7 +829,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/multi-tenant/" class="md-nav__link">
+      <a href="../operator/multi-tenant/" class="md-nav__link">
         
   
   
@@ -963,7 +857,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/oidc-sso/" class="md-nav__link">
+      <a href="../operator/oidc-sso/" class="md-nav__link">
         
   
   
@@ -991,7 +885,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/inference-relay/" class="md-nav__link">
+      <a href="../operator/inference-relay/" class="md-nav__link">
         
   
   
@@ -1019,7 +913,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/monitoring/" class="md-nav__link">
+      <a href="../operator/monitoring/" class="md-nav__link">
         
   
   
@@ -1047,7 +941,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/upgrading/" class="md-nav__link">
+      <a href="../operator/upgrading/" class="md-nav__link">
         
   
   
@@ -1075,7 +969,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/troubleshooting/" class="md-nav__link">
+      <a href="../operator/troubleshooting/" class="md-nav__link">
         
   
   
@@ -1103,7 +997,7 @@
   
   
     <li class="md-nav__item">
-      <a href="operator/runbook/" class="md-nav__link">
+      <a href="../operator/runbook/" class="md-nav__link">
         
   
   
@@ -1169,7 +1063,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="architecture/" class="md-nav__link ">
+            <a href="../architecture/" class="md-nav__link ">
               
   
   
@@ -1213,7 +1107,7 @@
   
   
     <li class="md-nav__item">
-      <a href="architecture/components/" class="md-nav__link">
+      <a href="../architecture/components/" class="md-nav__link">
         
   
   
@@ -1241,7 +1135,7 @@
   
   
     <li class="md-nav__item">
-      <a href="architecture/lifecycle/" class="md-nav__link">
+      <a href="../architecture/lifecycle/" class="md-nav__link">
         
   
   
@@ -1269,7 +1163,7 @@
   
   
     <li class="md-nav__item">
-      <a href="architecture/secrets/" class="md-nav__link">
+      <a href="../architecture/secrets/" class="md-nav__link">
         
   
   
@@ -1297,7 +1191,7 @@
   
   
     <li class="md-nav__item">
-      <a href="architecture/threat-model/" class="md-nav__link">
+      <a href="../architecture/threat-model/" class="md-nav__link">
         
   
   
@@ -1394,7 +1288,7 @@
   
   
     <li class="md-nav__item">
-      <a href="api/rest/" class="md-nav__link">
+      <a href="../api/rest/" class="md-nav__link">
         
   
   
@@ -1422,7 +1316,7 @@
   
   
     <li class="md-nav__item">
-      <a href="api/authentication/" class="md-nav__link">
+      <a href="../api/authentication/" class="md-nav__link">
         
   
   
@@ -1450,7 +1344,7 @@
   
   
     <li class="md-nav__item">
-      <a href="api/mcp/" class="md-nav__link">
+      <a href="../api/mcp/" class="md-nav__link">
         
   
   
@@ -1478,7 +1372,7 @@
   
   
     <li class="md-nav__item">
-      <a href="api/sdks/" class="md-nav__link">
+      <a href="../api/sdks/" class="md-nav__link">
         
   
   
@@ -1544,7 +1438,7 @@
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="contributing/" class="md-nav__link ">
+            <a href="../contributing/" class="md-nav__link ">
               
   
   
@@ -1588,7 +1482,7 @@
   
   
     <li class="md-nav__item">
-      <a href="contributing/development/" class="md-nav__link">
+      <a href="../contributing/development/" class="md-nav__link">
         
   
   
@@ -1616,7 +1510,7 @@
   
   
     <li class="md-nav__item">
-      <a href="contributing/rules/" class="md-nav__link">
+      <a href="../contributing/rules/" class="md-nav__link">
         
   
   
@@ -1644,7 +1538,7 @@
   
   
     <li class="md-nav__item">
-      <a href="contributing/testing/" class="md-nav__link">
+      <a href="../contributing/testing/" class="md-nav__link">
         
   
   
@@ -1672,7 +1566,7 @@
   
   
     <li class="md-nav__item">
-      <a href="contributing/worklogs/" class="md-nav__link">
+      <a href="../contributing/worklogs/" class="md-nav__link">
         
   
   
@@ -1769,7 +1663,7 @@
   
   
     <li class="md-nav__item">
-      <a href="reference/helm-values/" class="md-nav__link">
+      <a href="../reference/helm-values/" class="md-nav__link">
         
   
   
@@ -1797,7 +1691,7 @@
   
   
     <li class="md-nav__item">
-      <a href="reference/crds/" class="md-nav__link">
+      <a href="../reference/crds/" class="md-nav__link">
         
   
   
@@ -1825,7 +1719,7 @@
   
   
     <li class="md-nav__item">
-      <a href="reference/cli/" class="md-nav__link">
+      <a href="../reference/cli/" class="md-nav__link">
         
   
   
@@ -1853,7 +1747,7 @@
   
   
     <li class="md-nav__item">
-      <a href="reference/changelog/" class="md-nav__link">
+      <a href="../reference/changelog/" class="md-nav__link">
         
   
   
@@ -1908,57 +1802,235 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#why-use-it" class="md-nav__link">
+  <a href="#root-cause-investigation" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Why use it
+        Root Cause Investigation
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Root Cause Investigation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#what-actually-happened" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What actually happened
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#quick-links" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#why-auto-compaction-did-not-fire" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Quick links
+        Why auto-compaction did not fire
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#architecture-at-a-glance" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#why-the-ui-showed-640k" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Architecture at a glance
+        Why the UI showed 640K
       
     </span>
   </a>
   
 </li>
+        
+      </ul>
+    </nav>
+  
+</li>
       
         <li class="md-nav__item">
-  <a href="#status" class="md-nav__link">
+  <a href="#fixes-made" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Status
+        Fixes Made
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Fixes Made">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-litellm-model-config-talos-ops-prod" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. LiteLLM model config (talos-ops-prod)
       
     </span>
   </a>
   
 </li>
-      
-        <li class="md-nav__item">
-  <a href="#license" class="md-nav__link">
+        
+          <li class="md-nav__item">
+  <a href="#2-agentd-remove-fabricated-fallback-cmdworkspace-agentdmaingo" class="md-nav__link">
     <span class="md-ellipsis">
       
-        License
+        2. agentd — remove fabricated fallback (cmd/workspace-agentd/main.go)
       
     </span>
   </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-frontend-context-bar-unknown-with-tooltip-diskusagebartsx" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Frontend — context bar "Unknown" with tooltip (DiskUsageBar.tsx)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-frontend-stream-interrupted-banner-usechatstreamts-chatpagetsx" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Frontend — stream interrupted banner (useChatStream.ts, ChatPage.tsx)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-frontend-retry-banner-sessionretrybannertsx-chatpagetsx" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Frontend — retry banner (SessionRetryBanner.tsx, ChatPage.tsx)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#6-frontend-error-name-mapping-chatpagetsx" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. Frontend — error name mapping (ChatPage.tsx)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validation-findings-known-gaps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation Findings (known gaps)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Validation Findings (known gaps)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#path-a-overflow-is-still-silent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Path A overflow is still silent
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#model_enrichergo-still-doesnt-read-max_input_tokens" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        model_enricher.go still doesn't read max_input_tokens
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#sessionretrybanner-has-no-tests-resolved-in-commit-10a3f60d" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SessionRetryBanner has no tests ✓ resolved in commit 10a3f60d
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#error-name-mapping-is-untested-inline-code-resolved-in-commit-10a3f60d" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Error name mapping is untested inline code ✓ resolved in commit 10a3f60d
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#files-changed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Files Changed
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Files Changed">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#llmsafespaces" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LLMSafeSpaces
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#talos-ops-prod" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        talos-ops-prod
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
   
 </li>
       
@@ -1982,46 +2054,121 @@
   
 
 
-<h1 id="llmsafespaces">LLMSafeSpaces<a class="headerlink" href="#llmsafespaces" title="Permanent link">&para;</a></h1>
-<p>A Kubernetes-first platform for running AI agents in isolated, persistent workspaces.</p>
-<p>LLMSafeSpaces gives every user a Kubernetes pod running <a href="https://opencode.ai/docs/server/"><code>opencode serve</code></a> — a headless HTTP server driving an LLM agent — backed by a PVC-mounted filesystem at <code>/workspace</code>. The platform handles authentication, workspace lifecycle (activate/suspend/resume), secret injection, multi-tenant isolation, and reverse-proxies client requests to the agent.</p>
-<h2 id="why-use-it">Why use it<a class="headerlink" href="#why-use-it" title="Permanent link">&para;</a></h2>
+<h1 id="0049-context-limit-ux-error-surfacing">0049 — Context Limit UX &amp; Error Surfacing<a class="headerlink" href="#0049-context-limit-ux-error-surfacing" title="Permanent link">&para;</a></h1>
+<p><strong>Date:</strong> 2026-06-09<br />
+<strong>Triggered by:</strong> Session <code>ses_1571ba63affeGzSAx75T4tE9oc</code> (workspace <code>a3a1c914</code>, "Greeting") halting silently after the agent called <code>grep</code> with missing <code>pattern</code> field.</p>
+<hr />
+<h2 id="root-cause-investigation">Root Cause Investigation<a class="headerlink" href="#root-cause-investigation" title="Permanent link">&para;</a></h2>
+<h3 id="what-actually-happened">What actually happened<a class="headerlink" href="#what-actually-happened" title="Permanent link">&para;</a></h3>
+<p>The chat halted because <code>glm-5.1</code> (via <code>thekao cloud</code> / LiteLLM / Z.AI) returned <code>finish_reason=length</code> after only 30 output tokens. The model was mid-generation of a malformed <code>grep</code> tool call (missing required <code>pattern</code> field). After the tool error result was sent back, the next step returned <code>reason=unknown</code> with 0 output tokens — the model silently refused to continue.</p>
+<p>The session had <code>~196,806</code> input tokens against a model limit of 200,000. Each subsequent message (including a "continue" sent after the halt) triggered the same empty response because the context was effectively full.</p>
+<h3 id="why-auto-compaction-did-not-fire">Why auto-compaction did not fire<a class="headerlink" href="#why-auto-compaction-did-not-fire" title="Permanent link">&para;</a></h3>
+<p>opencode's <code>isOverflow()</code> (<code>overflow.ts:29</code>) returns <code>false</code> when <code>model.limit.context === 0</code>. The context limit for <code>glm-5.1</code> was 0 in opencode because:</p>
+<ol>
+<li>LiteLLM's model config had no <code>max_input_tokens</code> field — only <code>max_tokens</code> (output limit).</li>
+<li><code>model_enricher.go</code> in agentd only populates <code>LLMModelConfig{ID: m.ID}</code> with no context window.</li>
+<li><code>ModelContextLimit()</code> returned 0.</li>
+<li>Fallback in <code>statusz</code> handler: <code>128000 * max(len(sessions), 1)</code> = <code>5 × 128K = 640K</code> — a fabricated number shown in the UI as if it were real.</li>
+</ol>
+<h3 id="why-the-ui-showed-640k">Why the UI showed 640K<a class="headerlink" href="#why-the-ui-showed-640k" title="Permanent link">&para;</a></h3>
+<p>The <code>640,000</code> shown in the context bar had nothing to do with the model. It was <code>5 sessions × 128,000</code> — a pure heuristic fallback with no basis in the provider's actual limit.</p>
+<hr />
+<h2 id="fixes-made">Fixes Made<a class="headerlink" href="#fixes-made" title="Permanent link">&para;</a></h2>
+<h3 id="1-litellm-model-config-talos-ops-prod">1. LiteLLM model config (<code>talos-ops-prod</code>)<a class="headerlink" href="#1-litellm-model-config-talos-ops-prod" title="Permanent link">&para;</a></h3>
+<p>Added <code>max_input_tokens</code> to all models so LiteLLM surfaces context windows via <code>/v1/models</code>. Also corrected <code>max_tokens</code> (output limits), removed deprecated <code>deepseek-chat</code>/<code>deepseek-reasoner</code> aliases, removed legacy <code>o3-mini-reasoning</code> and <code>gpt-5.4</code>, added <code>supports_function_calling</code>, <code>supports_response_schema</code>, <code>supports_vision</code> to all models.</p>
+<p>Key values (sourced from official provider docs):
+- <code>glm-5.1</code>, <code>glm-4.7</code>, <code>glm-4.6</code>: <code>max_input_tokens=200000</code>, <code>max_tokens=131072</code>
+- <code>deepseek-v4-flash</code>, <code>deepseek-v4-pro</code>: <code>max_input_tokens=1000000</code>, <code>max_tokens=384000</code>
+- <code>gpt-5.5</code>: <code>max_input_tokens=1000000</code>, <code>max_tokens=128000</code>
+- <code>gpt-5.4-mini</code>: <code>max_input_tokens=400000</code> (not 1M — aggregator sites were wrong)
+- <code>bedrock-claude-sonnet-4.6</code>: <code>max_input_tokens=1000000</code>, <code>max_tokens=64000</code></p>
+<p><strong>Committed to <code>talos-ops-prod</code> main as <code>6a17ce53</code>.</strong></p>
+<h3 id="2-agentd-remove-fabricated-fallback-cmdworkspace-agentdmaingo">2. agentd — remove fabricated fallback (<code>cmd/workspace-agentd/main.go</code>)<a class="headerlink" href="#2-agentd-remove-fabricated-fallback-cmdworkspace-agentdmaingo" title="Permanent link">&para;</a></h3>
+<p>Removed the <code>128K × sessions</code> fallback. <code>TotalTokens=0</code> is now passed through when <code>ModelContextLimit()</code> returns 0. This is the honest signal — "we don't know the limit."</p>
+<h3 id="3-frontend-context-bar-unknown-with-tooltip-diskusagebartsx">3. Frontend — context bar "Unknown" with tooltip (<code>DiskUsageBar.tsx</code>)<a class="headerlink" href="#3-frontend-context-bar-unknown-with-tooltip-diskusagebartsx" title="Permanent link">&para;</a></h3>
+<p>When <code>contextTotal=0</code> (or missing), the context bar now shows:
+- Used token count
+- "Unknown" badge (yellow, underlined, cursor-help)
+- On hover or click: tooltip explaining that the provider did not report a context window size and that auto-compaction is disabled, with a hint to set <code>max_input_tokens</code> in LiteLLM.</p>
+<p>No progress bar is shown when the limit is unknown (a progress bar at 0% or at a fabricated total is misleading).</p>
+<h3 id="4-frontend-stream-interrupted-banner-usechatstreamts-chatpagetsx">4. Frontend — stream interrupted banner (<code>useChatStream.ts</code>, <code>ChatPage.tsx</code>)<a class="headerlink" href="#4-frontend-stream-interrupted-banner-usechatstreamts-chatpagetsx" title="Permanent link">&para;</a></h3>
+<p>Added <code>streamTimedOut</code> flag to <code>useChatStream</code>. When the 60s <code>IDLE_WAIT_TIMEOUT_MS</code> timeout fires without an <code>session.status=idle</code> SSE event <strong>and</strong> the server is not still actively busy (slow response guard), a red banner appears:</p>
+<blockquote>
+<p>Response interrupted — the connection timed out  [Dismiss]</p>
+</blockquote>
+<p><strong>Validation finding:</strong> <code>serverBusyRef</code> (a live ref, not a stale closure value) is checked at timeout-fire time to suppress false positives for slow-but-healthy responses. The canary SDK uses a 90s timeout for the same wait, confirming 60s is not a safe upper bound for normal operation.</p>
+<p>The banner is also auto-dismissed when <code>session.status=idle</code> arrives late (covering the race where the idle event was buffered).</p>
+<h3 id="5-frontend-retry-banner-sessionretrybannertsx-chatpagetsx">5. Frontend — retry banner (<code>SessionRetryBanner.tsx</code>, <code>ChatPage.tsx</code>)<a class="headerlink" href="#5-frontend-retry-banner-sessionretrybannertsx-chatpagetsx" title="Permanent link">&para;</a></h3>
+<p>New <code>SessionRetryBanner</code> component (yellow, matching <code>HealthBanner</code> style) shown when opencode is retrying after a provider error.</p>
+<p><strong>Validation findings that changed the implementation:</strong></p>
 <ul>
-<li><strong>Persistent agent workspaces.</strong> Each workspace is a PVC-backed filesystem that survives pod restarts. Agent session history, project files, and credentials persist across suspend/resume cycles.</li>
-<li><strong>Multi-tenant isolation.</strong> Per-workspace pods with hardened security contexts, optional gVisor kernel isolation, per-tenant resource quotas, and NetworkPolicies that block egress to RFC1918 / CGNAT / cloud-metadata ranges.</li>
-<li><strong>Zero-knowledge secret store.</strong> User secrets encrypted with per-user DEKs (AES-256-GCM), keys derived via Argon2id. The platform never stores plaintext credentials.</li>
-<li><strong>Provider-agnostic.</strong> Bring your own LLM gateway (LiteLLM, OpenAI, Anthropic, Bedrock) — workspaces bind to whatever credentials you supply.</li>
-<li><strong>Kubernetes-native.</strong> Custom Resource Definitions for <code>Workspace</code>, <code>RuntimeEnvironment</code>, <code>InferenceRelay</code>. Deploy via Helm; reconcile via controller-runtime.</li>
-<li><strong>MCP-compatible.</strong> The platform is an MCP server — any MCP-compatible client can drive workspaces programmatically.</li>
+<li>
+<p>The proxy's synthesized <code>session.status</code> string event for <code>retry</code> carries only <code>"busy"</code> — the rich retry payload (<code>attempt</code>, <code>message</code>, <code>next</code>, <code>action</code>) only travels inside an <code>opencode.event</code> wrapper with <code>event_type="session.status"</code>. The retry handler was moved to the <code>opencode.event</code> path accordingly. The original <code>typeof event.status === "object"</code> branch in the <code>session.status</code> handler was dead code and was removed.</p>
+</li>
+<li>
+<p><code>status.next</code> is an <strong>absolute epoch timestamp in milliseconds</strong> (<code>Date.now() + delay</code>), not a relative duration. <code>SessionRetryBanner</code> now initialises remaining time as <code>Math.max(0, status.next - Date.now())</code>.</p>
+</li>
 </ul>
-<h2 id="quick-links">Quick links<a class="headerlink" href="#quick-links" title="Permanent link">&para;</a></h2>
+<p>The banner shows:
+- Spinning refresh icon
+- <code>status.message</code> text
+- Attempt number (if &gt;1)
+- Live countdown to next attempt
+- Optional action link (<code>status.action.label</code> + <code>status.action.link</code>)</p>
+<p>Disappears when <code>session.status=idle</code> or <code>session.status=busy</code> fires.</p>
+<h3 id="6-frontend-error-name-mapping-chatpagetsx">6. Frontend — error name mapping (<code>ChatPage.tsx</code>)<a class="headerlink" href="#6-frontend-error-name-mapping-chatpagetsx" title="Permanent link">&para;</a></h3>
+<p>The <code>session.error</code> SSE handler previously collapsed all error names to a raw string. Now maps known names to actionable text:</p>
+<table>
+<thead>
+<tr>
+<th><code>error.name</code></th>
+<th>Before</th>
+<th>After</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>MessageOutputLengthError</code></td>
+<td><code>⚠️ MessageOutputLengthError</code></td>
+<td><code>⚠️ Response was too long for this model's output limit</code></td>
+</tr>
+<tr>
+<td><code>ContextOverflowError</code></td>
+<td><code>⚠️ Agent error</code></td>
+<td><code>⚠️ Context limit reached — type /compact to summarize the conversation and continue</code></td>
+</tr>
+<tr>
+<td><code>ProviderAuthError</code></td>
+<td><code>⚠️ &lt;raw provider text&gt;</code></td>
+<td><code>⚠️ Authentication failed for &lt;providerID&gt; — check your credentials</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="validation-findings-known-gaps">Validation Findings (known gaps)<a class="headerlink" href="#validation-findings-known-gaps" title="Permanent link">&para;</a></h2>
+<h3 id="path-a-overflow-is-still-silent">Path A overflow is still silent<a class="headerlink" href="#path-a-overflow-is-still-silent" title="Permanent link">&para;</a></h3>
+<p>When <code>isOverflow()</code> fires at <code>step-finish</code> (soft overflow, token count ≥ usable limit), opencode sets <code>needsCompaction=true</code> and returns <code>"compact"</code> to the caller — <strong>no <code>session.error</code> event is emitted</strong>. The user gets no warning before compaction starts; the session just silently transitions. <code>ContextOverflowError</code> only fires on Path B (hard overflow — provider rejects the request), and in that path <code>status.set("idle")</code> is also never called, leaving the session stuck in <code>"busy"</code> after the error.</p>
+<p>The glm-5.1 halt (Path A variant with <code>reason=length</code> + silent empty follow-up) is <strong>still not surfaced</strong> by any of these changes. The LiteLLM <code>max_input_tokens</code> fix prevents the condition from arising on future sessions, but if it happens again (e.g. a different model with an unreported limit), the user will still see a stalled chat with no explanation.</p>
+<h3 id="model_enrichergo-still-doesnt-read-max_input_tokens"><code>model_enricher.go</code> still doesn't read <code>max_input_tokens</code><a class="headerlink" href="#model_enrichergo-still-doesnt-read-max_input_tokens" title="Permanent link">&para;</a></h3>
+<p><code>agentd</code>'s <code>fetchModels</code> populates <code>LLMModelConfig{ID: m.ID}</code> only. Even with <code>max_input_tokens</code> now in LiteLLM, agentd never reads it from the <code>/models</code> response. <code>ModelContextLimit()</code> will still return 0 for LiteLLM-proxied models until <code>model_enricher.go</code> is updated to parse and store the context window.</p>
+<h3 id="sessionretrybanner-has-no-tests-resolved-in-commit-10a3f60d"><del><code>SessionRetryBanner</code> has no tests</del> ✓ resolved in commit <code>10a3f60d</code><a class="headerlink" href="#sessionretrybanner-has-no-tests-resolved-in-commit-10a3f60d" title="Permanent link">&para;</a></h3>
+<h3 id="error-name-mapping-is-untested-inline-code-resolved-in-commit-10a3f60d"><del>Error name mapping is untested inline code</del> ✓ resolved in commit <code>10a3f60d</code><a class="headerlink" href="#error-name-mapping-is-untested-inline-code-resolved-in-commit-10a3f60d" title="Permanent link">&para;</a></h3>
+<hr />
+<h2 id="files-changed">Files Changed<a class="headerlink" href="#files-changed" title="Permanent link">&para;</a></h2>
+<h3 id="llmsafespaces">LLMSafeSpaces<a class="headerlink" href="#llmsafespaces" title="Permanent link">&para;</a></h3>
 <ul>
-<li><strong><a href="getting-started/quickstart/">Quickstart</a></strong> — install on a local <code>kind</code> cluster in 10 minutes</li>
-<li><strong><a href="operator/installation/">Installation</a></strong> — production Helm deployment</li>
-<li><strong><a href="operator/security/">Security Hardening</a></strong> — threat model and configuration</li>
-<li><strong><a href="reference/helm-values/">Helm Values Reference</a></strong> — every chart value documented</li>
-<li><strong><a href="api/rest/">REST API</a></strong> — ~90 endpoints, JWT + API-key auth</li>
+<li><code>cmd/workspace-agentd/main.go</code> — remove 128K×sessions fallback</li>
+<li><code>frontend/src/components/workspace/DiskUsageBar.tsx</code> — Unknown context tooltip</li>
+<li><code>frontend/src/components/chat/SessionRetryBanner.tsx</code> — new component</li>
+<li><code>frontend/src/hooks/useChatStream.ts</code> — streamTimedOut + serverBusyRef</li>
+<li><code>frontend/src/pages/ChatPage.tsx</code> — retry banner, interrupted banner, error name mapping</li>
+<li><code>frontend/src/api/types.ts</code> — SessionStatusEvent comment clarifying retry shape</li>
+<li><code>docs/0049_2026-06-09_context-limit-ux-error-surfacing.md</code> — this file</li>
 </ul>
-<h2 id="architecture-at-a-glance">Architecture at a glance<a class="headerlink" href="#architecture-at-a-glance" title="Permanent link">&para;</a></h2>
-<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>Clients (REST / SSE / MCP)
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    │
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    ▼
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>LLMSafeSpaces API (Gin, stateless)  ──► PostgreSQL + Redis
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    │ K8s API
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    ▼
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>Controller (controller-runtime)
-</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    │
-</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    ▼
-</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>Workspace Pods (opencode serve :4096)
-</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    ├─ init: credential-setup
-</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    ├─ main: opencode serve
-</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    └─ sidecar: workspace-agentd
-</span></code></pre></div>
-<p>Three CRDs in the <code>llmsafespaces.dev/v1</code> API group: <code>Workspace</code> (namespaced), <code>RuntimeEnvironment</code> (cluster), <code>InferenceRelay</code> (cluster, opt-in).</p>
-<h2 id="status">Status<a class="headerlink" href="#status" title="Permanent link">&para;</a></h2>
-<p><strong>v0.3.0</strong> — Active development. Suitable for homelab and small-team deployments with the threat model understood. Not recommended for public multi-tenant SaaS without reviewing the <a href="architecture/threat-model/">threat model</a> and the remaining open security gaps.</p>
-<h2 id="license">License<a class="headerlink" href="#license" title="Permanent link">&para;</a></h2>
-<p>GNU Affero General Public License v3.0 or later (<a href="https://github.com/lenaxia/LLMSafeSpaces/blob/main/LICENSE">AGPL-3.0-or-later</a>). A commercial license is available for organizations that cannot comply with the AGPL — contact <code>safespace@47north.lat</code>.</p>
+<h3 id="talos-ops-prod">talos-ops-prod<a class="headerlink" href="#talos-ops-prod" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>kubernetes/apps/home/localai/litellm/helm-release.yaml</code> — model list overhaul</li>
+</ul>
 
 
 
@@ -2044,7 +2191,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 06:44:10 UTC"><span class="timeago" datetime="2026-07-11T06:44:10+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 06:44:10 UTC">2026-07-11</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="June 19, 2026 06:03:20 UTC"><span class="timeago" datetime="2026-06-19T06:03:20+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="June 19, 2026 06:03:20 UTC">2026-06-19</span>
   </span>
 
     
@@ -2054,7 +2201,7 @@
     <span class="md-icon" title="Created">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14.47 15.08 11 13V7h1.5v5.25l3.08 1.83c-.41.28-.79.62-1.11 1m-1.39 4.84c-.36.05-.71.08-1.08.08-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8c0 .37-.03.72-.08 1.08.69.1 1.33.32 1.92.64.1-.56.16-1.13.16-1.72 0-5.5-4.5-10-10-10S2 6.5 2 12s4.47 10 10 10c.59 0 1.16-.06 1.72-.16-.32-.59-.54-1.23-.64-1.92M18 15v3h-3v2h3v3h2v-3h3v-2h-3v-3z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 06:44:10 UTC"><span class="timeago" datetime="2026-07-11T06:44:10+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 06:44:10 UTC">2026-07-11</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="June 9, 2026 21:41:56 UTC"><span class="timeago" datetime="2026-06-09T21:41:56+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="June 9, 2026 21:41:56 UTC">2026-06-09</span>
   </span>
 
     
@@ -2127,14 +2274,14 @@
     
       
       
-      <script id="__config" type="application/json">{"annotate": null, "base": ".", "features": ["navigation.sections", "navigation.tabs", "navigation.indexes", "navigation.top", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "content.code.copy", "content.code.annotate", "content.tabs.link"], "search": "assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.sections", "navigation.tabs", "navigation.indexes", "navigation.top", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "content.code.copy", "content.code.annotate", "content.tabs.link"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
       
-        <script src="js/timeago.min.js"></script>
+        <script src="../js/timeago.min.js"></script>
       
-        <script src="js/timeago_mkdocs_material.js"></script>
+        <script src="../js/timeago_mkdocs_material.js"></script>
       
     
   </body>
