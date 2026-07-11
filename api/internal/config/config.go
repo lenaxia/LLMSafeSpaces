@@ -433,7 +433,39 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 
+	// Security validation: refuse the unsafe CORS combo
+	// AllowedOrigins=["*"] + AllowCredentials=true at boot, not at runtime.
+	// See validateSecurity for rationale.
+	if err := validateSecurity(&config); err != nil {
+		return nil, err
+	}
+
 	return &config, nil
+}
+
+// validateSecurity enforces startup-time invariants on SecurityConfig.
+//
+// Today: AllowedOrigins=["*"] + AllowCredentials=true is forbidden. The CORS
+// spec (Fetch §3.2.1) forbids this combination because it would let any
+// website read authenticated responses from this API in a victim's browser.
+// Browsers reject the combo client-side, but relying on browser enforcement
+// is not a security posture — a misconfigured deploy would silently produce
+// broken CORS responses with no server-side signal. Fail-closed at boot
+// instead: refuse to start, log the cause, operator fixes the chart values.
+//
+// Mirrors the Turnstile fail-closed guard pattern (applyTurnstileEnv).
+var errCORSWildcardWithCredentials = fmt.Errorf("config: security.allowedOrigins=\"*\" is incompatible with security.allowCredentials=true; use an explicit origin list when allowCredentials is true")
+
+func validateSecurity(config *Config) error {
+	if !config.Security.AllowCredentials {
+		return nil
+	}
+	for _, o := range config.Security.AllowedOrigins {
+		if o == "*" {
+			return errCORSWildcardWithCredentials
+		}
+	}
+	return nil
 }
 
 // applyTurnstileEnv applies LLMSAFESPACES_TURNSTILE_* env overrides to
