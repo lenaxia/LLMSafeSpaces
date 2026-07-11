@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
+	"github.com/lenaxia/llmsafespaces/pkg/validation"
 )
 
 // WorkspaceEnvService is the caller-shaped subset of SecretService methods
@@ -93,6 +94,24 @@ func (h *WorkspaceEnvHandler) SetWorkspaceEnv(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "vars map required"})
 		return
+	}
+
+	// G37: validate every env-var name up front, before creating or
+	// updating any secret. Failing fast here avoids partial application
+	// (some vars written, one rejected) and avoids persisting a bad name
+	// that would then fail at every pod boot until manually deleted.
+	// Blocklist (LD_PRELOAD, PATH, PYTHONPATH, etc.) is enforced at both
+	// this layer and at materialize-time in pkg/agentd/secrets — defense
+	// in depth; the API check is the user-facing gate.
+	for varName := range req.Vars {
+		if err := validation.ValidateEnvVarName(varName); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":  "invalid env var name",
+				"name":   varName,
+				"reason": err.Error(),
+			})
+			return
+		}
 	}
 
 	ctx := c.Request.Context()

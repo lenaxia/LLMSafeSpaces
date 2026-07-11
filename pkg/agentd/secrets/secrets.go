@@ -196,12 +196,6 @@ func DefaultPaths(home string) Paths {
 
 // Validators ----------------------------------------------------------------
 
-// varNameRE matches POSIX-portable env var names. Bash also accepts these.
-// We deliberately do NOT accept names starting with digits; doing so would
-// allow values like `1=foo` which work in some shells but not in `source`
-// scripts and confuse downstream tools.
-var varNameRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-
 // hostnameRE matches a permissive but safe hostname. RFC 1123 plus a length
 // cap. We do NOT accept IP literals here — operators who need IP-based hosts
 // can configure them via DNS.
@@ -220,13 +214,13 @@ var allowedProtocols = map[string]struct{}{
 }
 
 func validateVarName(s string) error {
-	if !varNameRE.MatchString(s) {
-		return fmt.Errorf("var_name %q does not match POSIX env-var rules", s)
-	}
-	if len(s) > 256 {
-		return fmt.Errorf("var_name length %d exceeds 256", len(s))
-	}
-	return nil
+	// G37: delegate to the shared validator so the API layer and the
+	// in-pod materializer enforce identical rules — POSIX regex, length
+	// cap, AND the dangerous-names blocklist (LD_PRELOAD, PATH,
+	// PYTHONPATH, etc.). The API handler rejects these up front; this is
+	// defense-in-depth for any path that bypasses the API (direct DB
+	// write, future bug).
+	return validation.ValidateEnvVarName(s)
 }
 
 func validateName(s string) error {
