@@ -29,6 +29,8 @@ A `Workspace` is the unit of lifecycle management. It owns a PVC and (when activ
 
 ### Spec
 
+<!-- crd-gen:start:WorkspaceSpec -->
+
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `owner` | [WorkspaceOwner](#workspaceowner) | *required* | The user (and optionally org) who owns this workspace. |
@@ -50,6 +52,8 @@ A `Workspace` is the unit of lifecycle management. It owns a PVC and (when activ
 | `runtimeClass` | *string | *nil* | Override the container runtime (Epic 51 S51.1). Set to `"runc"` for gVisor opt-out. **Admin-gated**: requires annotation `llmsafespaces.dev/allow-runtime-class-override: "true"` (cluster-admin RBAC). `nil` = use controller default; `""` (empty string) = explicitly clear to kubelet default (runc). |
 | `autoApprovePermissions` | bool | `false` | Auto-approve agent permission requests (replies "always" to all `permission.asked` events). |
 | `suspend` | *bool | *nil* | Tri-state lifecycle request flag (US-23.3). `nil` = no request; `true` = API requests suspend; `false` = API requests resume. The controller clears to `nil` after acting. **API is the sole writer.** |
+
+<!-- crd-gen:end:WorkspaceSpec -->
 
 #### WorkspaceOwner
 
@@ -119,6 +123,8 @@ A `Workspace` is the unit of lifecycle management. It owns a PVC and (when activ
 
 ### Status
 
+<!-- crd-gen:start:WorkspaceStatus -->
+
 Controller-owned except where noted. Each field has exactly one writer (US-23.3 single-writer principle).
 
 | Field | Type | Owner | Description |
@@ -159,6 +165,8 @@ Controller-owned except where noted. Each field has exactly one writer (US-23.3 
 | `userCredsPresent` | *bool | controller | Tri-state: whether agentd's reload-replay cache indicates user-DEK content is materialized. `nil` = unknown, `true` = present, `false` = absent (API may auto-push). |
 | `pendingAt` | *metav1.Time | controller | Startup-latency anchor (prefers the `requested-at` annotation). |
 | `resumedAt` | *metav1.Time | controller | Resume-latency anchor. |
+
+<!-- crd-gen:end:WorkspaceStatus -->
 
 #### WorkspacePhase
 
@@ -249,6 +257,8 @@ A `RuntimeEnvironment` maps a runtime name (referenced by `Workspace.spec.runtim
 
 ### Spec
 
+<!-- crd-gen:start:RuntimeEnvironmentSpec -->
+
 | Field | Type | Description |
 |---|---|---|
 | `image` | string | *required* Container image. |
@@ -261,6 +271,8 @@ A `RuntimeEnvironment` maps a runtime name (referenced by `Workspace.spec.runtim
 | `resourceRequirements` | [RuntimeResourceRequirements](#runtimeresourcerequirements) | Recommended resource requirements. |
 | `requiresCredentials` | bool | When true, workspace creation rejects requests where the workspace has no credential Secret. |
 
+<!-- crd-gen:end:RuntimeEnvironmentSpec -->
+
 #### RuntimeResourceRequirements
 
 | Field | Type | Description |
@@ -272,10 +284,14 @@ A `RuntimeEnvironment` maps a runtime name (referenced by `Workspace.spec.runtim
 
 ### Status
 
+<!-- crd-gen:start:RuntimeEnvironmentStatus -->
+
 | Field | Type | Description |
 |---|---|---|
 | `available` | bool | Whether this runtime is available for use. |
 | `lastValidated` | *metav1.Time | Last validation time. |
+
+<!-- crd-gen:end:RuntimeEnvironmentStatus -->
 
 ### Example
 
@@ -312,6 +328,8 @@ See the [inference relay fleet README](https://github.com/lenaxia/LLMSafeSpaces/
 
 ### Spec
 
+<!-- crd-gen:start:InferenceRelaySpec -->
+
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `upstreamURL` | string | `https://opencode.ai/zen/v1` | LLM provider endpoint the relays proxy to. Default uses the anonymous `public` key for free Zen models. |
@@ -319,6 +337,8 @@ See the [inference relay fleet README](https://github.com/lenaxia/LLMSafeSpaces/
 | `healthCheck` | [HealthCheckConfig](#healthcheckconfig) | see defaults | Active health-checking of relay VMs. |
 | `rotation` | [RotationConfig](#rotationconfig) | see defaults | Destroy-and-recreate on 429 detection. |
 | `fallback` | [FallbackConfig](#fallbackconfig) | see defaults | Direct-to-upstream routing when all relays are down. |
+
+<!-- crd-gen:end:InferenceRelaySpec -->
 
 #### RelayProviderSpec
 
@@ -357,12 +377,16 @@ See the [inference relay fleet README](https://github.com/lenaxia/LLMSafeSpaces/
 
 ### Status
 
+<!-- crd-gen:start:InferenceRelayStatus -->
+
 | Field | Type | Description |
 |---|---|---|
 | `instances` | [][RelayInstanceStatus](#relayinstancestatus) | Observed state of all managed relay VMs. |
 | `healthyReplicas` | int | Count of instances currently passing health checks. |
 | `conditions` | []metav1.Condition | Overall fleet health. Types: `Ready`, `Degraded`, `ProvisioningFailed`, `Rotating`, `FallbackActive`. |
 | `lastRotation` | *metav1.Time | Time of the most recent destroy-and-recreate. |
+
+<!-- crd-gen:end:InferenceRelayStatus -->
 
 #### RelayInstanceStatus
 

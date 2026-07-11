@@ -19,12 +19,41 @@ on:
       - 'mkdocs.yml'
       - 'README.md'
       - 'CHANGELOG.md'
+  pull_request:
+    paths:
+      - 'pkg/apis/llmsafespaces/v1/*_types.go'
+      - 'cmd/crd-doc-gen/**'
   workflow_dispatch:
 
 permissions:
   contents: write   # for pushing to gh-pages
 
 jobs:
+  # Check that the CRD docs haven't drifted from the Go types.
+  # Runs on every push that touches the Go types, and on PRs.
+  crd-doc-drift:
+    name: CRD docs drift check
+    runs-on: ubuntu-latest
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify CRD docs match Go types
+        run: |
+          go run ./cmd/crd-doc-gen -w
+          if ! git diff --exit-code docs/reference/crds.md; then
+            echo ""
+            echo "CRD docs are out of sync with Go types."
+            echo "To fix: update the Go doc comments in pkg/apis/llmsafespaces/v1/*_types.go,"
+            echo "then run 'go run ./cmd/crd-doc-gen -w'."
+            exit 1
+          fi
+
   build-deploy:
     name: Build MkDocs + deploy to gh-pages
     runs-on: ubuntu-latest
