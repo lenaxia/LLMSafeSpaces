@@ -198,7 +198,7 @@ The SSE stream is exempt from the token-bucket rate limiter (long-lived connecti
 
 ## Secrets
 
-The zero-knowledge encrypted secret store. Secrets are encrypted with a per-user DEK (AES-256-GCM) derived from the password. Values are never returned by list/get — only by the explicit `reveal` endpoint, which is audit-logged.
+The encrypted at rest secret store. Secrets are encrypted with a per-user DEK (AES-256-GCM) derived from the password. Values are never returned by list/get — only by the explicit `reveal` endpoint, which is audit-logged.
 
 | Method | Path | Description |
 |--------|------|-------------|

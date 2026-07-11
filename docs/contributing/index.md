@@ -57,6 +57,7 @@ A good change:
 | Understand the engineering bar | [Engineering Rules](rules.md) |
 | Learn the test patterns | [Testing](testing.md) |
 | Write your first worklog | [Worklogs](worklogs.md) |
+| Keep the docs site from drifting | [Docs Maintenance](docs-maintenance.md) |
 | Understand the architecture | [Architecture Overview](../architecture/index.md) |
 | See the API surface | [REST API](../api/rest.md) |
 

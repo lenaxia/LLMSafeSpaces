@@ -48,8 +48,8 @@ The public face. A Gin HTTP server (`api/`), stateless, horizontally scalable. T
 - **Ownership enforcement.** `WorkspaceAccessMiddleware` resolves the workspace, checks `WorkspaceOwner{UserID, OrgID}` against the caller's identity, and rejects with 403 on mismatch. This sits on the `idGroup` route group, which all proxy routes inherit — the G33 IDOR fix.
 - **Workspace CRUD + lifecycle API.** Create/list/get/rename/delete, plus `suspend`/`activate`/`restart`. These mutate the CRD `spec` (the API is the sole writer of `spec.suspend`); the controller does the actual pod work.
 - **Reverse proxy to pods.** Resolves pod IP from the cached CRD status, injects `Authorization: Basic <workspace-pw>`, and forwards. Strips client headers down to an explicit allowlist (`Content-Type`, `Accept`, `X-Request-ID`) and hop-by-hop headers in both directions — the G34 fix.
-- **Zero-knowledge secret store.** Encrypts user secrets with per-user DEKs (AES-256-GCM) before they ever touch PostgreSQL. The platform never stores or returns plaintext. See [secrets](secrets.md).
-- **Provider credentials (admin + user) and auto-apply rules.** Admin credentials are encrypted under the master KEK; user credentials are zero-knowledge.
+- **encrypted secret store.** Encrypts user secrets with per-user DEKs (AES-256-GCM) before they ever touch PostgreSQL. The platform never stores or returns plaintext. See [secrets](secrets.md).
+- **Provider credentials (admin + user) and auto-apply rules.** Admin credentials are encrypted under the master KEK; user credentials are encrypted with per-user DEKs.
 - **Settings** (admin instance + user preferences) — declarative schema, stored in PostgreSQL.
 - **Session management + SSE events + terminal proxy.** Session metadata is mirrored in PostgreSQL with backfill from the agent; the SSE stream is user-scoped.
 - **Patch-part filtering.** Strips `type=="patch"` from message/history responses unless `?verbose=true`.
@@ -153,7 +153,7 @@ External; the chart does not bundle it (CloudNativePG, Bitnami postgresql, or ra
 
 - **Users** — accounts, password hashes (bcrypt cost 12), roles (first-user-becomes-admin via atomic SQL CTE).
 - **API keys** — `lsp_…` keys, bcrypt-hashed, with `key_version` columns for KEK rotation.
-- **Encrypted secrets** — the zero-knowledge store. Each row is AES-256-GCM ciphertext under a per-user DEK; the DEK itself is wrapped by a KEK derived from the user's password. A DB compromise yields only useless ciphertext.
+- **Encrypted secrets** — the encrypted secret store. Each row is AES-256-GCM ciphertext under a per-user DEK; the DEK itself is wrapped by a KEK derived from the user's password. A DB compromise yields only useless ciphertext.
 - **Wrapped DEKs** (`user_keys` table) — useless without the password (HKDF/Argon2id-derived KEK).
 - **Org SSO configs** — client secrets encrypted under the master KEK.
 - **Settings** — instance + user, declarative schema.

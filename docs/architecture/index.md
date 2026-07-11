@@ -28,7 +28,7 @@ Five processes do all the work:
 | **API** (Gin) | Auth, ownership checks, reverse proxy to pods, secrets/settings/credentials, session tracking, SSE events | Yes |
 | **Controller** (controller-runtime) | Reconciles `Workspace` / `RuntimeEnvironment` / `InferenceRelay` CRDs into pods, PVCs, Secrets, NetworkPolicies; health monitoring | Leader-elected |
 | **Workspace pod** | `opencode serve` HTTP server on `:4096` + `workspace-agentd` sidecar; PVC at `/workspace` | One per active workspace |
-| **PostgreSQL** | User metadata, API keys, **encrypted** secrets (zero-knowledge), instance/user settings | External |
+| **PostgreSQL** | User metadata, API keys, **encrypted** secrets, instance/user settings | External |
 | **Redis / Valkey** | Rate limiting, model cache, DEK cache, account lockout counters, SSE tracking | External |
 
 The [components](components.md) page covers what each one owns in detail.

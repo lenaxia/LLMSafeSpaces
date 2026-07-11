@@ -117,7 +117,7 @@ The API overlays the live active-session set (from the pod) onto the persisted s
 
 ## Secret
 
-A user-owned encrypted value stored in the zero-knowledge secret store.
+A user-owned encrypted value stored in the encrypted secret store.
 
 - Encrypted with the user's DEK (AES-256-GCM), derived from the password via HKDF-SHA256.
 - The platform never stores plaintext. Values are returned **only** by the explicit `POST /secrets/:id/reveal` endpoint, which is audit-logged.
@@ -191,7 +191,7 @@ The platform deliberately splits state between two stores. Understanding which i
 | Creation/update timestamps | Both | K8s CRD authoritative; PostgreSQL mirrors |
 | Credentials | Controller | Kubernetes Secrets (never PostgreSQL, Redis, or logs) |
 | User auth data (passwords, API keys, DEKs) | API | PostgreSQL |
-| Encrypted secrets | API | PostgreSQL (zero-knowledge encrypted) |
+| Encrypted secrets | API | PostgreSQL (encrypted at rest) |
 | Settings | API | PostgreSQL |
 
 The rule of thumb: **lifecycle and cluster state live in Kubernetes; user data and metadata live in PostgreSQL; credentials live only in Kubernetes Secrets.**

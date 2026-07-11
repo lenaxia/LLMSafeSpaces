@@ -1,17 +1,17 @@
 # Secret Management
 
-This is the deep dive on how LLMSafeSpaces stores, derives, delivers, and rotates secrets. There are two distinct systems — read this page with that distinction in mind:
+This is the deep dive on how LLMSafeSpaces stores, derives, delivers, and rotates secrets. There are two distinct encryption tiers — read this page with that distinction in mind:
 
-1. **The zero-knowledge user secret store** — user-supplied secrets (LLM keys, SSH keys, env vars) encrypted with per-user DEKs the platform cannot derive without the user's password. Lives in PostgreSQL as ciphertext.
-2. **The master KEK (root of trust)** — the server-side key that wraps platform-owned secrets (admin/org LLM API keys, org SSO client secrets, API-key DEKs, the Redis DEK cache). Delivered to the API pod via a file mount; optionally backed by cloud KMS.
+1. **User-password tier** — user-supplied secrets (LLM keys, SSH keys, env vars) encrypted with per-user DEKs the platform cannot derive without the user's password. Lives in PostgreSQL as ciphertext.
+2. **Server-KEK tier (master KEK)** — the server-side key that wraps platform-owned secrets (admin/org LLM API keys, org SSO client secrets, API-key DEKs, the Redis DEK cache). The platform needs to read these to function, so they are always decryptable by the platform. Delivered to the API pod via a file mount; optionally backed by cloud KMS.
 
 Workspace runtime credentials (the things `opencode` actually reads at runtime) are a third path: they live in K8s Secrets and are materialized into tmpfs — never in PostgreSQL, Redis, or logs.
 
-## The two-layer model
+## The two-tier model
 
 ```mermaid
 flowchart TD
-    subgraph User["User secret store (zero-knowledge)"]
+    subgraph User["User-password tier (cannot decrypt without user's password)"]
         UP["User password"] --> ARG["Argon2id<br/>time=3 · memory=64MB · threads=4"]
         SALT["per-user salt (32B)"] --> ARG
         ARG --> UKEK["user KEK"]
@@ -20,7 +20,7 @@ flowchart TD
         PLAIN["secret plaintext"] --> GCM
         GCM --> CT["ciphertext → user_secrets table"]
     end
-    subgraph Server["Server root of trust (master KEK)"]
+    subgraph Server["Server-KEK tier (platform can always decrypt)"]
         MKEK["master KEK<br/>(file mount / KMS)"] --> HKDF1["HKDF-SHA256<br/>info=master-kek"]
         HKDF1 --> AKEK["api_keys DEK"]
         MKEK --> HKDF2["HKDF-SHA256<br/>info=provider-credentials"]
@@ -32,9 +32,9 @@ flowchart TD
     end
 ```
 
-The two layers never share key material. A compromise of the user-secret path (e.g. a stolen password) cannot decrypt server-owned rows, and vice versa.
+The two tiers never share key material. A compromise of the user-password tier (e.g. a stolen password) cannot decrypt server-tier rows, and vice versa. See [Two encryption tiers](../operator/security.md#two-encryption-tiers-read-this-if-you-operate-multi-tenant) in the operator guide for the tradeoff discussion.
 
-## Zero-knowledge user secret store
+## User-password tier (the encrypted secret store)
 
 The platform never stores user-secret plaintext. Not in PostgreSQL, not in Redis, not in logs, not in API responses (`POST /secrets/:id/reveal` decrypts on demand; `GET /secrets` returns metadata only).
 
@@ -231,7 +231,7 @@ sequenceDiagram
 
     U->>API: PUT /workspaces/:id/bindings {secretIds}
     API->>K8s: Create/update workspace-secrets-<ws> Secret<br/>(decrypted value, owner-ref to Workspace)
-    Note over API: This is the bridge from<br/>zero-knowledge store → K8s Secret
+    Note over API: This is the bridge from<br/>encrypted secret store → K8s Secret
 
     Ctrl->>Ctrl: reconcile Workspace (Creating phase)
     Ctrl->>K8s: Build pod spec with projected volume from Secret
@@ -245,7 +245,7 @@ sequenceDiagram
 
 | Location | What | Persists across pod death? | Encrypted at rest? |
 |---|---|---|---|
-| **PostgreSQL** (`user_secrets`) | Zero-knowledge ciphertext (user secrets) | Yes (it's the DB) | Yes (AES-256-GCM under per-user DEK) |
+| **PostgreSQL** (`user_secrets`) | encrypted ciphertext (user secrets) | Yes (it's the DB) | Yes (AES-256-GCM under per-user DEK) |
 | **PostgreSQL** (`provider_credentials`, `api_keys`, `org_sso_configs`) | KEK-protected ciphertext (platform secrets) | Yes | Yes (under master KEK via HKDF purposes) |
 | **K8s Secret** (`workspace-secrets-<ws>`, `workspace-pw-<ws>`) | Decrypted workspace runtime credentials + workspace password | Yes (until workspace deleted) | Only if etcd encryption at rest is configured (A1) |
 | **tmpfs** `/sandbox-runtime` | Live agent config, secrets-env, auth.json symlink, admin-prompt.md, reload-replay cache | **No** — wiped on pod death | N/A (RAM) |
@@ -282,7 +282,7 @@ This is how adding a new secret to a workspace takes effect without a full suspe
 
 | Threat | Protected? | Mechanism |
 |---|---|---|
-| DB backup leak | **Yes** (user secrets) / **Partial** (platform secrets without rotation) | Zero-knowledge encryption; user secrets need the password |
+| DB backup leak | **Yes** (user secrets) / **Partial** (platform secrets without rotation) | encryption at rest; user secrets need the password |
 | K8s Secret read from another pod | Yes | RBAC restricts Secret access to controller/API SA; projected volumes (no SA Secret RBAC) |
 | `/proc/1/environ` read of master KEK | Yes (G48 fixed) | File mount default; env path is deprecated opt-in |
 | Master KEK offline recovery from disk | Yes (sealed) / Partial (static) | Sealed-key provider wraps under Argon2id passphrase |

@@ -416,7 +416,7 @@ Suspend deletes the pod but retains the PVC. Activating a suspended workspace re
 | Creation/update timestamps | Both | K8s CRD authoritative; PostgreSQL mirrors |
 | Credentials | Controller | K8s Secrets (never PostgreSQL) |
 | User auth data (passwords, API keys, DEKs) | API | PostgreSQL |
-| Encrypted secrets | API | PostgreSQL (zero-knowledge encrypted) |
+| Encrypted secrets | API | PostgreSQL (encrypted at rest) |
 | Settings | API | PostgreSQL |
 
 ### Service initialization order
@@ -1822,7 +1822,7 @@ The complete REST API is documented in `README.md` under "REST API". The API has
 - **Session proxy** (7 routes): message, prompt, history, get, abort, delete, SSE events — reverse-proxied to the workspace pod's `opencode serve` on port 4096
 - **Questions & Permissions** (5 routes): list/reply/reject agent questions and permission requests
 - **Events** (2 routes): user-scoped SSE stream, bulk agent reload
-- **Secrets** (8 routes): CRUD + audit + reveal + bindings — zero-knowledge encrypted store
+- **Secrets** (8 routes): CRUD + audit + reveal + bindings — encrypted at rest store
 - **Workspace bindings** (3 routes): set/get bindings, reload-secrets
 - **Workspace env** (3 routes): set/get/delete environment variables
 - **Models** (2 routes): list available models, set default model
