@@ -131,6 +131,7 @@ nav:
       - Engineering Rules: contributing/rules.md
       - Testing: contributing/testing.md
       - Worklogs: contributing/worklogs.md
+      - Docs Maintenance: contributing/docs-maintenance.md
   - Reference:
       - Helm Values: reference/helm-values.md
       - CRDs: reference/crds.md

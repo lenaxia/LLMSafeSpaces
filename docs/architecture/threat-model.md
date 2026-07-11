@@ -117,7 +117,7 @@ These are documented with rationale and compensating controls:
 ## What the platform protects against
 
 - **Cross-tenant workspace access via the API** — ownership check on every call (G33 fixed); UUIDv4 IDs are unguessable.
-- **Credential theft from the database** — zero-knowledge encryption; user secrets need the password, platform secrets need the master KEK.
+- **Credential theft from the database** — encryption at rest; user secrets need the password, platform secrets need the master KEK.
 - **Credential theft from PVC at rest** — tmpfs + symlinks; PVC retains only dangling symlinks, no plaintext bytes.
 - **Master KEK exposure via `/proc/1/environ`** — file mount default (G48 fixed).
 - **Container escape to the node** — Drop ALL caps, NoNewPrivs, RuntimeDefault seccomp, read-only root; optional gVisor for kernel-level isolation.

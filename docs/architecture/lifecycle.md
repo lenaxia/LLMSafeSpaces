@@ -104,7 +104,7 @@ This is the "warm" path: the PVC is already bound, so resume is just "create a n
 6. Removes the finalizer → Kubernetes GC reaps the object.
 
 !!! warning "G36 is open"
-    The termination path currently only deletes `workspace-pw-*`. `workspace-secrets-*` and `workspace-creds-*` persist indefinitely — `deleteEphemeralSecretsSecret` exists but is not called from `handleTerminating`. Credentials bound via the zero-knowledge secret store are owner-referenced to the Workspace CRD and GC'd correctly; the gap is specifically the controller-generated credential Secrets.
+    The termination path currently only deletes `workspace-pw-*`. `workspace-secrets-*` and `workspace-creds-*` persist indefinitely — `deleteEphemeralSecretsSecret` exists but is not called from `handleTerminating`. Credentials bound via the encrypted secret store are owner-referenced to the Workspace CRD and GC'd correctly; the gap is specifically the controller-generated credential Secrets.
 
 ## PVC retention semantics
 

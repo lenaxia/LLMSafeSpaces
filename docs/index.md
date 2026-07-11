@@ -8,7 +8,7 @@ LLMSafeSpaces gives every user a Kubernetes pod running [`opencode serve`](https
 
 - **Persistent agent workspaces.** Each workspace is a PVC-backed filesystem that survives pod restarts. Agent session history, project files, and credentials persist across suspend/resume cycles.
 - **Multi-tenant isolation.** Per-workspace pods with hardened security contexts, optional gVisor kernel isolation, per-tenant resource quotas, and NetworkPolicies that block egress to RFC1918 / CGNAT / cloud-metadata ranges.
-- **Zero-knowledge secret store.** User secrets encrypted with per-user DEKs (AES-256-GCM), keys derived via Argon2id. The platform never stores plaintext credentials.
+- **Encrypted secret store.** User secrets (LLM keys, SSH keys, env vars) encrypted with per-user DEKs (AES-256-GCM), keys derived via Argon2id. Platform secrets (SSO client credentials, admin API keys) are encrypted at rest under the master KEK. The platform never stores plaintext credentials.
 - **Provider-agnostic.** Bring your own LLM gateway (LiteLLM, OpenAI, Anthropic, Bedrock) — workspaces bind to whatever credentials you supply.
 - **Kubernetes-native.** Custom Resource Definitions for `Workspace`, `RuntimeEnvironment`, `InferenceRelay`. Deploy via Helm; reconcile via controller-runtime.
 - **MCP-compatible.** The platform is an MCP server — any MCP-compatible client can drive workspaces programmatically.

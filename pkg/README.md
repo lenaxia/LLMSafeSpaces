@@ -17,7 +17,7 @@ Shared Go packages used by both the API service and the controller. All packages
 | `logger` | Zap-based structured logger implementing LoggerInterface |
 | `mcp` | MCP (Model Context Protocol) server and client |
 | `redact` | 16-rule regex pipeline for scrubbing secrets from agent stdout |
-| `secrets` | Zero-knowledge secret store — key wrapping, encryption, audit, workspace bindings |
+| `secrets` | Encrypted secret store — key wrapping, encryption, audit, workspace bindings |
 | `settings` | Declarative settings schema + instance/user settings services with typed accessors |
 | `types` | API DTOs (request/response types, domain errors, context keys) |
 | `utilities` | Hashing, string masking, Kubernetes label helpers |
@@ -57,7 +57,7 @@ Nine Workspace phases: `Pending → Creating → Active → Suspending → Suspe
 
 ## Secrets (`secrets`)
 
-Zero-knowledge encrypted secret store. Per-user DEK derived from password via HKDF-SHA256.
+Encrypted at rest secret store. Per-user DEK derived from password via HKDF-SHA256.
 
 Components: `SecretService` (CRUD + bindings + audit), `KeyService` (DEK wrapping/caching/rotation), `crypto.go` (AES-256-GCM), `SecretProvider` interface (Postgres impl), `RedisCache` (session DEK cache).
 
