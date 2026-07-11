@@ -27,7 +27,7 @@ helm version --short
 
 ```bash
 git clone https://github.com/lenaxia/LLMSafeSpaces.git
-cd LLMSafespaces
+cd LLMSafeSpaces
 
 # Creates a kind cluster, builds all images, deploys the chart
 ./local/bootstrap.sh
