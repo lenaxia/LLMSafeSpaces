@@ -33,7 +33,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25.11"
+          go-version: "1.25.12"
           cache: true
 
       # repolint catches the failure modes that have caused production
@@ -132,7 +132,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25.11"
+          go-version: "1.25.12"
           cache: true
 
       # helm is required by chart_test.go (charts/llmsafespaces/...). Without
@@ -283,7 +283,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25.11"
+          go-version: "1.25.12"
           cache: true
 
       # helm is required by chart_test.go — without it the tests skip silently.
@@ -344,7 +344,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25.11"
+          go-version: "1.25.12"
           cache: true
 
       - uses: actions/setup-node@v6
@@ -440,7 +440,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25.11"
+          go-version: "1.25.12"
           cache: true
 
       - uses: actions/setup-node@v6
