@@ -161,4 +161,4 @@ goimports -l <changed files>  # clean
 - `api/internal/middleware/tests/logging_test.go` — 4 new G25 tests
 - `CHANGELOG.md` — entry under `[Unreleased] → Security`
 - `design/stories/epic-17-security-review/THREAT-MODEL.md` — G25 row flipped 🟢; STRIDE + counts + revision 2.7
-- `worklogs/NNNN_2026-07-11_g25-secret-value-logging.md` — this file
+- `worklogs/0623_2026-07-11_g25-secret-value-logging.md` — this file
