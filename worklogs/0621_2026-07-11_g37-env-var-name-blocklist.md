@@ -186,4 +186,4 @@ goimports -l <changed files>  # clean
 - `pkg/agentd/secrets/secrets.go` — `validateVarName` delegates to shared validator; dead `varNameRE` removed
 - `CHANGELOG.md` — entry under `[Unreleased] → Security`
 - `design/stories/epic-17-security-review/THREAT-MODEL.md` — G37 row flipped 🟢; STRIDE + counts + revision 2.5
-- `worklogs/NNNN_2026-07-11_g37-env-var-name-blocklist.md` — this file
+- `worklogs/0621_2026-07-11_g37-env-var-name-blocklist.md` — this file
