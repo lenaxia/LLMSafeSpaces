@@ -6,15 +6,14 @@ name: Release
 #   1. CI workflow already builds and pushes images (api, controller,
 #      frontend, relay-router, relay-proxy, base) to ghcr.io with semver
 #      tags. This workflow waits for CI to complete.
-#   2. Packages the Helm chart as a .tgz and publishes to the gh-pages
-#      branch's Helm repo ( alongside previously-released charts).
+#   2. Packages the Helm chart and publishes to the gh-pages branch's
+#      Helm repo via chart-releaser.
 #   3. Generates SBOM (CycloneDX) from each built image via syft.
 #   4. Creates a GitHub Release with notes pulled from CHANGELOG.md.
 #
 # Tagging a release:
 #
-#   git tag -a v0.3.0 -m "v0.3.0"
-#   git push origin v0.3.0
+#   make release-tag VERSION=0.3.0
 #
 # The release notes are the section of CHANGELOG.md matching the tag. If the
 # section is missing, the workflow fails — CHANGELOG.md is the source of
@@ -27,13 +26,13 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to release (must already exist)"
+        description: "Existing tag to re-release (e.g. v0.3.0)"
         required: true
         type: string
 
 permissions:
   contents: write   # for creating the GitHub Release + gh-pages push
-  packages: write   # for reading image metadata from ghcr.io
+  packages: read    # for reading image metadata from ghcr.io
 
 env:
   REGISTRY: ghcr.io
@@ -46,33 +45,47 @@ env:
 
 jobs:
   # Gate: refuse to release a tag whose CHANGELOG section is missing.
+  # Also resolves the canonical VERSION + REF for downstream jobs.
   verify-changelog:
     name: Verify CHANGELOG section exists
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.tag.outputs.version }}
+      version: ${{ steps.resolve.outputs.version }}
+      ref: ${{ steps.resolve.outputs.ref }}
     steps:
       - uses: actions/checkout@v6
         with:
-          fetch-depth: 0  # full history for tag lookup
+          fetch-depth: 1
 
-      - name: Resolve version from tag
-        id: tag
+      - name: Resolve version and ref
+        id: resolve
+        id: resolve
+        env:
+          # Pass through env, not interpolation, to avoid shell injection
+          # from a malicious workflow_dispatch input (only triggerable by
+          # repo write users, but defense-in-depth).
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          if [ -n "${{ inputs.tag }}" ]; then
-            ref="refs/tags/${{ inputs.tag }}"
+          # workflow_dispatch: INPUT_TAG is "v0.3.0" or "0.3.0" — normalize.
+          # tag push: github.ref is "refs/tags/v0.3.0".
+          if [ -n "$INPUT_TAG" ]; then
+            tag="$INPUT_TAG"
+            # Strip optional leading "v"
+            version="${tag#v}"
+            # Resolve to the canonical tag ref.
+            ref="refs/tags/v${version}"
           else
             ref="${{ github.ref }}"
+            version="${ref#refs/tags/v}"
           fi
-          version="${ref#refs/tags/v}"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "Resolved version: ${version}"
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+          echo "Resolved version=${version}, ref=${ref}"
 
       - name: Check CHANGELOG section exists
         env:
-          VERSION: ${{ steps.tag.outputs.version }}
+          VERSION: ${{ steps.resolve.outputs.version }}
         run: |
-          # Look for the heading "## [${VERSION}] - <date>" in CHANGELOG.md.
           if ! grep -E "^## \[${VERSION}\] - [0-9]{4}-[0-9]{2}-[0-9]{2}" CHANGELOG.md >/dev/null; then
             echo "::error::CHANGELOG.md is missing a section for v${VERSION}."
             echo "::error::Add a heading like '## [${VERSION}] - $(date -u +%Y-%m-%d)' with the release notes."
@@ -88,20 +101,18 @@ jobs:
     needs: verify-changelog
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-
-      - name: Wait for CI workflow conclusion
+      - name: Wait for CI Lint
         uses: lewagon/wait-on-check-action@v1.4.0
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.verify-changelog.outputs.ref }}
           check-name: "Lint"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           wait-interval: 30
 
-      - name: Wait for full test suite
+      - name: Wait for CI full test suite
         uses: lewagon/wait-on-check-action@v1.4.0
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.verify-changelog.outputs.ref }}
           check-name: "Test (full suite, race detector)"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           wait-interval: 30
@@ -109,17 +120,18 @@ jobs:
       - name: Wait for image builds
         uses: lewagon/wait-on-check-action@v1.4.0
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.verify-changelog.outputs.ref }}
           check-name: "Merge API Manifest"
           repo-token: ${{ secrets.GITHUB_TOKEN }}
           wait-interval: 30
 
-  # Package the Helm chart as a .tgz and publish to the gh-pages branch's
-  # Helm repo. This is what lets operators `helm repo add llmsafespaces
-  # https://lenaxia.github.io/LLMSafeSpaces/` and `helm install`.
+  # Package the Helm chart and publish to the gh-pages branch's Helm repo.
+  # chart-releaser-action independently discovers, packages, and publishes
+  # charts from charts/ using Chart.yaml's version field — no manual
+  # `helm package` step needed (and one was previously dead code).
   publish-chart:
     name: Publish Helm chart
-    needs: wait-for-ci
+    needs: [verify-changelog, wait-for-ci]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -128,16 +140,6 @@ jobs:
         uses: azure/setup-helm@v4
         with:
           version: v3.18.4
-
-      - name: Package chart
-        env:
-          VERSION: ${{ needs.verify-changelog.outputs.version }}
-        run: |
-          mkdir -p chart-out
-          helm package charts/llmsafespaces \
-            --version "${VERSION}" \
-            --app-version "${VERSION}" \
-            --destination chart-out
 
       - name: Publish to gh-pages Helm repo
         uses: helm/chart-releaser-action@v1.7.1
@@ -171,6 +173,8 @@ jobs:
 
       - name: Generate SBOM for each image
         env:
+          # CI's docker/metadata-action uses type=semver,pattern={{version}}
+          # which produces "0.3.0" (no "v" prefix). Match that format.
           VERSION: ${{ needs.verify-changelog.outputs.version }}
         run: |
           mkdir -p sbom-out
@@ -208,10 +212,7 @@ jobs:
           VERSION: ${{ needs.verify-changelog.outputs.version }}
         run: |
           # Extract the body of the section between "## [${VERSION}] - <date>"
-          # and the next "## " heading. The awk script:
-          #   - skips lines until it finds the target section
-          #   - prints lines until it hits the next "## "
-          #   - exits
+          # and the next "## " heading.
           awk -v v="${VERSION}" '
             $0 ~ "^## \\[" v "\\] -" { in_section=1; next }
             in_section && /^## / { exit }
@@ -237,19 +238,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ needs.verify-changelog.outputs.version }}
         run: |
-          # Build a body that prepends an image-reference table to the
-          # CHANGELOG notes, so consumers can see what was published.
+          # Image tags follow CI's semver format (no "v" prefix — see
+          # generate-sbom above). Display them as users will actually pull.
           cat > release-body.md <<EOF
           ## Images
 
           | Component | Image |
           |---|---|
-          | API | \`ghcr.io/lenaxia/llmsafespaces/api:v${VERSION}\` |
-          | Controller | \`ghcr.io/lenaxia/llmsafespaces/controller:v${VERSION}\` |
-          | Runtime base | \`ghcr.io/lenaxia/llmsafespaces/base:v${VERSION}\` |
-          | Frontend | \`ghcr.io/lenaxia/llmsafespaces/frontend:v${VERSION}\` |
-          | Relay router | \`ghcr.io/lenaxia/llmsafespaces/relay-router:v${VERSION}\` |
-          | Relay proxy | \`ghcr.io/lenaxia/llmsafespaces/relay-proxy:v${VERSION}\` |
+          | API | \`ghcr.io/lenaxia/llmsafespaces/api:${VERSION}\` |
+          | Controller | \`ghcr.io/lenaxia/llmsafespaces/controller:${VERSION}\` |
+          | Runtime base | \`ghcr.io/lenaxia/llmsafespaces/base:${VERSION}\` |
+          | Frontend | \`ghcr.io/lenaxia/llmsafespaces/frontend:${VERSION}\` |
+          | Relay router | \`ghcr.io/lenaxia/llmsafespaces/relay-router:${VERSION}\` |
+          | Relay proxy | \`ghcr.io/lenaxia/llmsafespaces/relay-proxy:${VERSION}\` |
 
           ## Install
 

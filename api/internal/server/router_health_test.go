@@ -4,6 +4,7 @@
 package server
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -12,10 +13,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	apilogger "github.com/lenaxia/llmsafespaces/api/internal/logger"
 	imocks "github.com/lenaxia/llmsafespaces/api/internal/mocks"
+	"github.com/lenaxia/llmsafespaces/pkg/version"
 )
 
 // healthMockServices wires Database and Cache mocks (which the workspace
@@ -81,6 +84,52 @@ func TestLivez_ReturnsOK(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Contains(t, rec.Body.String(), "ok")
+}
+
+// /livez includes the build version in the JSON response so operators can
+// verify which version is running via `curl /livez` without needing
+// kubectl exec. The version comes from pkg/version.Version, which is
+// overridden at build time via -ldflags by the release pipeline.
+func TestLivez_IncludesVersionField(t *testing.T) {
+	router, _ := newHealthFixture(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/livez", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var body struct {
+		Status  string `json:"status"`
+		Version string `json:"version"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body),
+		"response must be valid JSON: %s", rec.Body.String())
+	assert.Equal(t, "ok", body.Status)
+	assert.Equal(t, version.Version, body.Version,
+		"version field must match pkg/version.Version (got %q, want %q)",
+		body.Version, version.Version)
+}
+
+// /health is a legacy alias for /livez and must include the same version
+// field — operators with existing probes pointed at /health should see the
+// same response shape.
+func TestHealth_LegacyAlias_IncludesVersionField(t *testing.T) {
+	router, _ := newHealthFixture(t)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+
+	var body struct {
+		Status  string `json:"status"`
+		Version string `json:"version"`
+	}
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, version.Version, body.Version,
+		"/health (legacy alias) must include the same version field as /livez")
 }
 
 // /readyz returns 200 when both Postgres and Redis pings succeed.

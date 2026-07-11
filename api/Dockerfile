@@ -26,7 +26,6 @@ COPY cmd/ cmd/
 COPY controller/ controller/
 
 ARG VERSION=dev
-ARG BUILD_TIME=unknown
 
 ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
