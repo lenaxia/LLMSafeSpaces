@@ -115,7 +115,7 @@ type TerminalHandler struct {
 //     rejected. Non-browser clients (no Origin header) are accepted — they
 //     authenticate via the single-use ticket, not cookies, so CSRF does
 //     not apply.
-//   - Contains "*": all origins accepted (the historical behaviour).
+//   - Contains "*": all origins accepted (the historical behavior).
 //     Operators who really want this must opt in explicitly.
 //   - Otherwise: same-origin requests plus anything in the allowlist.
 //

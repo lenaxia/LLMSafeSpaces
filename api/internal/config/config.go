@@ -23,8 +23,6 @@ import (
 const (
 	DefaultJWTIssuer   = "llmsafespaces"
 	DefaultJWTAudience = "llmsafespaces"
-	defaultJWTIssuer   = DefaultJWTIssuer
-	defaultJWTAudience = DefaultJWTAudience
 )
 
 // Config represents the application configuration
@@ -219,7 +217,7 @@ type Config struct {
 	//     does not match the API's own Host are rejected at upgrade.
 	//     Non-browser clients (no Origin) are accepted; they authenticate
 	//     via the single-use ticket, not cookies.
-	//   - Contains "*": all origins accepted (the historical behaviour).
+	//   - Contains "*": all origins accepted (the historical behavior).
 	//     Operators who really want this must opt in explicitly.
 	//   - Otherwise: same-origin requests plus anything in the list.
 	//
@@ -448,32 +446,31 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
-	// JWT iss/aud: default to "llmsafespaces" when the operator hasn't
-	// set them. Set via env LLMSAFESPACES_AUTH_JWTISSUER /
-	// LLMSAFESPACES_AUTH_JWTAUDIENCE, OR via the YAML keys
-	// auth.jwtIssuer / auth.jwtAudience.
-	if config.Auth.JWTIssuer == "" {
-		config.Auth.JWTIssuer = defaultJWTIssuer
-	}
-	if config.Auth.JWTAudience == "" {
-		config.Auth.JWTAudience = defaultJWTAudience
-	}
-
-	// Turnstile env overrides + fail-closed guard. Extracted to a
-	// helper to keep Load()'s cyclomatic complexity below the project
-	// linter threshold; see applyTurnstileEnv below.
+	// JWT iss/aud defaults + Turnstile env overrides + CORS validation:
+	// all extracted to helpers to keep Load()'s cyclomatic complexity
+	// below the project linter threshold.
+	applyAuthDefaults(&config)
 	if err := applyTurnstileEnv(&config); err != nil {
 		return nil, err
 	}
-
-	// Security validation: refuse the unsafe CORS combo
-	// AllowedOrigins=["*"] + AllowCredentials=true at boot, not at runtime.
-	// See validateSecurity for rationale.
 	if err := validateSecurity(&config); err != nil {
 		return nil, err
 	}
 
 	return &config, nil
+}
+
+// applyAuthDefaults populates Auth.JWTIssuer / Auth.JWTAudience with the
+// "llmsafespaces" defaults when the operator hasn't set them. Production
+// deploys go through Load(); tests construct Service directly via New(),
+// which also calls this.
+func applyAuthDefaults(config *Config) {
+	if config.Auth.JWTIssuer == "" {
+		config.Auth.JWTIssuer = DefaultJWTIssuer
+	}
+	if config.Auth.JWTAudience == "" {
+		config.Auth.JWTAudience = DefaultJWTAudience
+	}
 }
 
 // validateSecurity enforces startup-time invariants on SecurityConfig.

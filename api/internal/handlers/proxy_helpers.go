@@ -10,7 +10,7 @@ import (
 )
 
 // blockedResponseHeaders is the historical denylist used by
-// copyResponseHeaders. Retained for defence-in-depth alongside the
+// copyResponseHeaders. Retained for defense-in-depth alongside the
 // hop-by-hop strip — if a future maintainer narrows the hop-by-hop list,
 // these headers remain suppressed regardless.
 var blockedResponseHeaders = map[string]bool{
