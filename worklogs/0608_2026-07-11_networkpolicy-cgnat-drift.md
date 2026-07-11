@@ -117,4 +117,4 @@ goimports -l charts/llmsafespaces/networkpolicy_cgnat_test.go  → clean
 
 - `charts/llmsafespaces/values.yaml` (added 3 missing CIDRs + cross-reference comment)
 - `charts/llmsafespaces/networkpolicy_cgnat_test.go` (new file — TDD parity test)
-- `worklogs/NNNN_2026-07-11_networkpolicy-cgnat-drift.md` (this entry)
+- `worklogs/0608_2026-07-11_networkpolicy-cgnat-drift.md` (this entry)

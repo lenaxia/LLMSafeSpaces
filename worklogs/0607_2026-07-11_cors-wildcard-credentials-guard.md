@@ -89,4 +89,4 @@ goimports -l <changed .go files>  → clean
 - `api/internal/config/config.go` (new `validateSecurity`, new sentinel error, wired into `Load`)
 - `api/internal/config/security_validate_test.go` (new file — TDD test battery)
 - `charts/llmsafespaces/values.yaml` (expanded `security:` comment block to document the guard)
-- `worklogs/NNNN_2026-07-11_cors-wildcard-credentials-guard.md` (this entry)
+- `worklogs/0607_2026-07-11_cors-wildcard-credentials-guard.md` (this entry)
