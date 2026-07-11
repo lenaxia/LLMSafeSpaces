@@ -35,4 +35,23 @@ describe("RegisterPage", () => {
     renderRegisterPage();
     await waitFor(() => expect(screen.getByText(/already have an account/i)).toBeInTheDocument());
   });
+
+  describe("return_to handling", () => {
+    it("\"Already have an account?\" link preserves return_to", async () => {
+      window.history.replaceState({}, "", "/register?return_to=%2Fchat");
+      renderRegisterPage();
+      await waitFor(() => expect(screen.getByText(/already have an account/i)).toBeInTheDocument());
+      const link = screen.getByText(/already have an account/i).closest("a");
+      expect(link).toBeTruthy();
+      expect(link!.getAttribute("href")).toContain("return_to=%2Fchat");
+    });
+
+    it("sanitises malicious return_to — sign in link does not carry evil URL", async () => {
+      window.history.replaceState({}, "", "/register?return_to=%2F%2Fevil.com");
+      renderRegisterPage();
+      await waitFor(() => expect(screen.getByText(/already have an account/i)).toBeInTheDocument());
+      const link = screen.getByText(/already have an account/i).closest("a");
+      expect(link!.getAttribute("href")).not.toContain("evil");
+    });
+  });
 });

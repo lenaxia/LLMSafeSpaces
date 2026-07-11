@@ -98,7 +98,7 @@ export function LoginPage() {
       description={motd || "Sign in to your account"}
       footer={
         registrationEnabled ? (
-          <Link to="/register" className="text-primary underline-offset-4 hover:underline">
+          <Link to={returnTo ? `/register?return_to=${encodeURIComponent(returnTo)}` : "/register"} className="text-primary underline-offset-4 hover:underline">
             Create an account
           </Link>
         ) : undefined
@@ -121,7 +121,7 @@ export function LoginPage() {
         <p className="mb-3 text-sm text-red-500">
           We couldn't find an account for that email. Try a different email, or{" "}
           {registrationEnabled ? (
-            <Link to="/register" className="underline underline-offset-4">
+            <Link to={returnTo ? `/register?return_to=${encodeURIComponent(returnTo)}` : "/register"} className="underline underline-offset-4">
               create an account
             </Link>
           ) : (

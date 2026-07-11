@@ -269,4 +269,52 @@ describe("LoginPage", () => {
       expect(screen.getByText(/not configured on this instance/i)).toBeInTheDocument();
     });
   });
+
+  describe("return_to handling", () => {
+    it("\"Create an account\" link preserves return_to param", async () => {
+      window.history.replaceState({}, "", "/login?return_to=%2Fchat");
+      renderLoginPage();
+      await waitFor(() => expect(screen.getByText("Create an account")).toBeInTheDocument());
+      const link = screen.getByText("Create an account").closest("a");
+      expect(link).toBeTruthy();
+      expect(link!.getAttribute("href")).toContain("return_to=%2Fchat");
+    });
+
+    it("sanitises malicious return_to — link does not carry evil URL", async () => {
+      window.history.replaceState({}, "", "/login?return_to=%2F%2Fevil.com");
+      renderLoginPage();
+      await waitFor(() => expect(screen.getByText("Create an account")).toBeInTheDocument());
+      const link = screen.getByText("Create an account").closest("a");
+      expect(link!.getAttribute("href")).not.toContain("evil");
+    });
+
+    it("\"create an account\" link after lookup not-found preserves return_to", async () => {
+      window.history.replaceState({}, "", "/login?return_to=%2Finvitations%2Fabc123");
+      mockGetConfig.mockResolvedValue({
+        registrationEnabled: true,
+        oidcEnabled: true,
+        instanceName: "TestSpace",
+      });
+      mockDomains.mockResolvedValue({
+        domains: [{ domain: "acme.com", orgSlug: "acme", orgName: "Acme" }],
+      });
+      mockLookup.mockResolvedValue({ redirectUrl: "/?lookup=not_found" });
+
+      renderLoginPage();
+      await waitFor(() => expect(screen.getByPlaceholderText("Email")).toBeInTheDocument());
+
+      fireEvent.change(screen.getByPlaceholderText("Email"), { target: { value: "nobody@gmail.com" } });
+      const continueBtn = await screen.findByText("Continue with email");
+      fireEvent.click(continueBtn);
+
+      await waitFor(() => {
+        expect(screen.getByText(/couldn't find an account/i)).toBeInTheDocument();
+      });
+
+      // The inline "create an account" link should preserve return_to.
+      const createLink = screen.getByText("create an account");
+      expect(createLink).toBeInTheDocument();
+      expect(createLink.closest("a")!.getAttribute("href")).toContain("return_to=%2Finvitations%2Fabc123");
+    });
+  });
 });

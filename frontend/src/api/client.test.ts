@@ -178,4 +178,37 @@ describe("api client", () => {
       writable: true,
     });
   });
+
+  it("appends return_to query param on 401 redirect from a protected path", async () => {
+    const originalLocation = window.location;
+    const hrefSetter = vi.fn();
+    Object.defineProperty(window, "location", {
+      value: {
+        ...originalLocation,
+        pathname: "/workspaces",
+        search: "?tab=list",
+        set href(v: string) {
+          hrefSetter(v);
+        },
+      },
+      writable: true,
+    });
+
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: "Unauthorized",
+      json: () => Promise.resolve({ error: "unauthorised" }),
+    });
+
+    await expect(api.get("/workspaces")).rejects.toThrow(ApiClientError);
+    expect(hrefSetter).toHaveBeenCalledWith(
+      "/login?return_to=%2Fworkspaces%3Ftab%3Dlist",
+    );
+
+    Object.defineProperty(window, "location", {
+      value: originalLocation,
+      writable: true,
+    });
+  });
 });
