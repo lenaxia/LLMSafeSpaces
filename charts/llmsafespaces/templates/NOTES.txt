@@ -307,3 +307,23 @@ along with sesRegion/fromAddress/baseUrl.
 
 {{- end }}
 {{- end }}
+
+{{- if .Values.kms.aws.enabled }}
+== AWS KMS Master KEK (Epic 57 US-57.1) ==
+
+The API is configured to use AWS KMS as the master KEK provider. The KEK
+never leaves AWS — an API-pod compromise cannot permanently exfiltrate the
+key for offline DB decryption after the RCE is evicted.
+
+Three KMS keys are in use (per-purpose domain separation):
+  - providerCredentials: {{ .Values.kms.aws.keyArns.providerCredentials | default "(not set)" | quote }}
+  - orgCredentials:      {{ .Values.kms.aws.keyArns.orgCredentials | default "(not set)" | quote }}
+  - masterKek:           {{ .Values.kms.aws.keyArns.masterKek | default "(not set)" | quote }}
+
+AVAILABILITY NOTE (D9): Sustained AWS KMS unavailability (regional outage,
+network partition) causes all KEK-dependent decrypts to fail simultaneously.
+The master-secret file mount is RETAINED — it protects the Redis DEK cache
+(volatile, regenerable). KMS protects the durable Postgres tables only.
+Multi-region KMS keys are recommended for HA deployments.
+
+{{- end }}

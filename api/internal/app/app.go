@@ -317,8 +317,24 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// consumer (the Redis DEK cache below). Each purpose yields an
 		// independent HKDF-derived key; the provider wraps it for the
 		// Encrypt/Decrypt interface.
-		providerCredsProv := newPurposeProvider("provider-credentials")
-		orgCredsProv := newPurposeProvider("org-credentials")
+		providerCredsProv := newPurposeProvider(cfg, log, "provider-credentials")
+		orgCredsProv := newPurposeProvider(cfg, log, "org-credentials")
+
+		// US-57.1 D7: fail-closed guard. When RootKeyProvider is explicitly
+		// "aws-kms" and any per-purpose provider construction failed (nil),
+		// refuse to boot BEFORE AuditedProvider wrapping (which always
+		// returns non-nil, making post-wrap nil checks dead code caught by
+		// nilness/staticcheck).
+		if cfg.Security.RootKeyProvider == "aws-kms" {
+			if providerCredsProv == nil {
+				cancel()
+				return nil, errors.New("KMS root key provider enabled but providerCredentials provider failed to initialize — refusing to boot")
+			}
+			if orgCredsProv == nil {
+				cancel()
+				return nil, errors.New("KMS root key provider enabled but orgCredentials provider failed to initialize — refusing to boot")
+			}
+		}
 
 		mk := dekMasterKey()
 		if mk == nil {
@@ -546,6 +562,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		})
 
 		rkp := newRootKeyProvider(cfg, log)
+		// US-57.1 D7: fail-closed guard for the apiKeyProv path.
+		if cfg.Security.RootKeyProvider == "aws-kms" && rkp == nil {
+			cancel()
+			return nil, errors.New("KMS root key provider enabled but masterKek provider failed to initialize — refusing to boot")
+		}
 		// US-50.7: apiKeyProv uses the "master-kek" purpose string (not
 		// "dek-cache") so a Redis compromise cannot help unwrap Postgres
 		// API-key ciphertexts. The multi-key provider (US-50.4) also holds the
@@ -553,8 +574,13 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// "master-kek" (version 2, active); the rotation CLI (US-50.5) re-wraps
 		// legacy rows. When rkp is a sealed provider (production) it wraps the
 		// raw root key — no purpose string applies, so rkp is used as-is.
+		//
+		// US-57.1 D7: when rkp is a CompositeProvider (KMS-backed), skip
+		// the multi-version upgrade entirely.
 		apiKeyProv := rkp
-		if apiKeyProv == nil {
+		if _, isComposite := apiKeyProv.(*secrets.CompositeProvider); isComposite {
+			// KMS-backed composite — no multi-version upgrade needed.
+		} else if apiKeyProv == nil {
 			masterKEK := deriveServerKey("master-kek")
 			dekCacheKey := deriveServerKey("dek-cache")
 			if masterKEK != nil && dekCacheKey != nil {

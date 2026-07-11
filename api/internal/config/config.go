@@ -102,6 +102,12 @@ type Config struct {
 		SealedKeyPath        string   `mapstructure:"sealedKeyPath"`
 		PassphrasePath       string   `mapstructure:"passphrasePath"`
 		SkipMasterKeyWarning bool     `mapstructure:"skipMasterKeyWarning"`
+		// KMS holds cloud KMS provider configuration (Epic 57 US-57.1).
+		// When RootKeyProvider is "aws-kms", KMS.AWS.KeyArns must contain
+		// ARNs for each purpose (providerCredentials, orgCredentials,
+		// masterKek). See design/stories/epic-57-rce-resistance-hardening/
+		// README.md D4 for the three-key model.
+		KMS KMSConfig `mapstructure:"kms"`
 	} `mapstructure:"security"`
 
 	Logging struct {
@@ -230,7 +236,29 @@ type Config struct {
 	} `mapstructure:"terminal"`
 }
 
+// KMSConfig holds cloud KMS provider configuration for the master KEK
+// (Epic 57 US-57.1). When Security.RootKeyProvider is "aws-kms", KMS.AWS
+// must be fully configured. When "gcp-kms" (future US-57.3), KMS.GCP.
+// Otherwise this struct is ignored.
+type KMSConfig struct {
+	AWS AWSKMSConfig `mapstructure:"aws"`
+}
+
+// AWSKMSConfig holds AWS KMS-specific provider configuration.
+// CredentialsFile is the path to an AWS shared-credentials file mounted
+// from a K8s Secret (D2: file-mount, not IRSA — narrower trust surface).
+// Region is the AWS region of the configured keys. KeyArns maps purpose
+// strings to KMS key ARNs; exactly three purposes are expected (D4):
+// "providerCredentials", "orgCredentials", "masterKek".
+type AWSKMSConfig struct {
+	Region          string            `mapstructure:"region"`
+	CredentialsFile string            `mapstructure:"credentialsFile"`
+	KeyArns         map[string]string `mapstructure:"keyArns"`
+}
+
 // Load loads configuration from file and environment variables
+//
+//nolint:gocyclo // grandfathered; tracked for incremental reduction per .golangci.yml
 func Load(path string) (*Config, error) {
 	var config Config
 
@@ -264,6 +292,9 @@ func Load(path string) (*Config, error) {
 	_ = v.BindEnv("kubernetes.inCluster", "LLMSAFESPACES_KUBERNETES_INCLUSTER")
 	_ = v.BindEnv("kubernetes.configPath", "LLMSAFESPACES_KUBERNETES_CONFIGPATH")
 	_ = v.BindEnv("server.inferenceRelayURL", "LLMSAFESPACES_SERVER_INFERENCERELAYURL")
+
+	// Epic 57 US-57.1: KMS nested-key bindings.
+	bindKMSEnvVars(v)
 
 	// Unmarshal config
 	if err := v.Unmarshal(&config); err != nil {
@@ -539,4 +570,16 @@ func applyTurnstileEnv(config *Config) error {
 		return fmt.Errorf("config: turnstile.enabled=true but turnstile.secretKey is empty; set LLMSAFESPACES_TURNSTILE_SECRETKEY or disable")
 	}
 	return nil
+}
+
+// bindKMSEnvVars registers explicit Viper env-var bindings for the KMS
+// nested config keys (Epic 57 US-57.1). Viper's AutomaticEnv only
+// replaces dots→underscores in env names, not the reverse, so map keys
+// like keyArns.providerCredentials need explicit binding.
+func bindKMSEnvVars(v *viper.Viper) {
+	_ = v.BindEnv("security.kms.aws.region", "LLMSAFESPACES_SECURITY_KMS_AWS_REGION")
+	_ = v.BindEnv("security.kms.aws.credentialsFile", "LLMSAFESPACES_SECURITY_KMS_AWS_CREDENTIALSFILE")
+	_ = v.BindEnv("security.kms.aws.keyArns.providerCredentials", "LLMSAFESPACES_SECURITY_KMS_AWS_KEYARNS_PROVIDERCREDENTIALS")
+	_ = v.BindEnv("security.kms.aws.keyArns.orgCredentials", "LLMSAFESPACES_SECURITY_KMS_AWS_KEYARNS_ORGCREDENTIALS")
+	_ = v.BindEnv("security.kms.aws.keyArns.masterKek", "LLMSAFESPACES_SECURITY_KMS_AWS_KEYARNS_MASTERKEK")
 }
