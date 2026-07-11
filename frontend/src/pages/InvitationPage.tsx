@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { ReactNode } from "react";
 import { Link, useParams } from "react-router-dom";
 import { useAuth } from "../providers/AuthProvider";
 import { orgsApi, type InvitationDetail } from "../api/orgs";
@@ -13,12 +14,11 @@ type PageState =
       tag: "detail";
       invitation: InvitationDetail;
       token: string;
-      // Non-fatal action error shown inline — user can retry accept/decline.
       actionError: string;
     }
-  | { tag: "accepting" }
+  | { tag: "accepting"; invitation: InvitationDetail; token: string }
   | { tag: "accepted"; orgName: string }
-  | { tag: "declining" }
+  | { tag: "declining"; invitation: InvitationDetail; token: string }
   | { tag: "declined" }
   | { tag: "alreadyHandled"; reason: string };
 
@@ -34,9 +34,115 @@ function expiresText(expiresAt: string): string {
   });
 }
 
+function InvitationShell({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center gap-4 px-4">
+      <div className="w-full max-w-md rounded border border-border bg-card p-6">
+        <h1 className="mb-4 text-xl font-semibold">{title}</h1>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function InvitationFields({ invitation }: { invitation: InvitationDetail }) {
+  return (
+    <div className="space-y-3 text-sm">
+      <div>
+        <span className="text-muted-foreground">Organisation:</span>{" "}
+        <span className="font-medium">{invitation.orgName}</span>
+      </div>
+      <div>
+        <span className="text-muted-foreground">Invited by:</span>{" "}
+        <span>{invitation.inviterName}</span>
+      </div>
+      <div>
+        <span className="text-muted-foreground">Role:</span>{" "}
+        <span>{roleLabel(invitation.role)}</span>
+      </div>
+      <div>
+        <span className="text-muted-foreground">Expires:</span>{" "}
+        <span>{expiresText(invitation.expiresAt)}</span>
+      </div>
+    </div>
+  );
+}
+
+function AuthActions({
+  token,
+  state,
+  actionError,
+  onAccept,
+  onDecline,
+}: {
+  token: string;
+  state: PageState;
+  actionError: string;
+  onAccept: () => void;
+  onDecline: () => void;
+}) {
+  const { user } = useAuth();
+
+  if (!user) {
+    return (
+      <div className="mt-6 text-center">
+        <p className="mb-3 text-sm text-muted-foreground">
+          Sign in or create an account to accept this invitation.
+        </p>
+        <div className="flex gap-3">
+          <Link
+            to={`/login?return_to=${encodeURIComponent(`/invitations/${token}`)}`}
+            className="flex-1"
+          >
+            <Button variant="default" className="w-full">
+              Sign in
+            </Button>
+          </Link>
+          <Link
+            to={`/register?return_to=${encodeURIComponent(`/invitations/${token}`)}`}
+            className="flex-1"
+          >
+            <Button variant="outline" className="w-full">
+              Create account
+            </Button>
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  const isActing = state.tag === "accepting" || state.tag === "declining";
+
+  return (
+    <>
+      {actionError && (
+        <p className="mt-3 text-sm text-red-500">{actionError}</p>
+      )}
+      <div className="mt-4 flex gap-3">
+        <Button
+          variant="default"
+          className="flex-1"
+          onClick={onAccept}
+          disabled={isActing}
+        >
+          Accept
+        </Button>
+        <Button
+          variant="outline"
+          className="flex-1"
+          onClick={onDecline}
+          disabled={isActing}
+        >
+          Decline
+        </Button>
+      </div>
+    </>
+  );
+}
+
 export function InvitationPage() {
   const { token } = useParams<{ token: string }>();
-  const { user, loading: authLoading } = useAuth();
+  const { loading: authLoading } = useAuth();
   const [state, setState] = useState<PageState>({ tag: "loading" });
 
   useEffect(() => {
@@ -71,7 +177,7 @@ export function InvitationPage() {
     if (state.tag !== "detail") return;
     const inv = state.invitation;
     const tok = state.token;
-    setState({ tag: "accepting" });
+    setState({ tag: "accepting", invitation: inv, token: tok });
     try {
       await orgsApi.acceptInvitation(tok);
       setState({ tag: "accepted", orgName: inv.orgName });
@@ -79,18 +185,21 @@ export function InvitationPage() {
       if (err instanceof ApiClientError) {
         switch (err.status) {
           case 403:
-            // Wrong email — user signed in with a different account than the
-            // one the invitation was sent to. Show inline so they can log out
-            // and re-authenticate with the correct account.
             setState({
               tag: "detail",
               invitation: inv,
               token: tok,
-              actionError: "This invitation was sent to a different email address. Sign in with the invited email to accept.",
+              actionError:
+                "This invitation was sent to a different email address. Sign in with the invited email to accept.",
             });
             return;
           case 409:
-            setState({ tag: "alreadyHandled", reason: err.body?.error ?? "You have already accepted or declined this invitation." });
+            setState({
+              tag: "alreadyHandled",
+              reason:
+                err.body?.error ??
+                "You have already accepted or declined this invitation.",
+            });
             return;
           case 410:
             setState({ tag: "error", message: "This invitation has expired." });
@@ -118,19 +227,20 @@ export function InvitationPage() {
     if (state.tag !== "detail") return;
     const inv = state.invitation;
     const tok = state.token;
-    setState({ tag: "declining" });
+    setState({ tag: "declining", invitation: inv, token: tok });
     try {
       await orgsApi.declineInvitation(tok);
       setState({ tag: "declined" });
     } catch (err) {
-      const msg = err instanceof ApiClientError
-        ? (err.body?.error ?? "Failed to decline invitation.")
-        : "Something went wrong. Please try again.";
+      const msg =
+        err instanceof ApiClientError
+          ? (err.body?.error ?? "Failed to decline invitation.")
+          : "Something went wrong. Please try again.";
       setState({ tag: "detail", invitation: inv, token: tok, actionError: msg });
     }
   };
 
-  // --- Auth-loading / initial-loading ---
+  // --- Loading ---
   if (state.tag === "loading" || authLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center">
@@ -139,141 +249,81 @@ export function InvitationPage() {
     );
   }
 
-  // --- Shared card shell ---
-  const Shell = ({ title, children }: { title: string; children: React.ReactNode }) => (
-    <div className="flex min-h-screen flex-col items-center justify-center gap-4 px-4">
-      <div className="w-full max-w-md rounded border border-border bg-card p-6">
-        <h1 className="mb-4 text-xl font-semibold">{title}</h1>
-        {children}
-      </div>
-    </div>
-  );
-
   // --- Fatal error ---
   if (state.tag === "error") {
     return (
-      <Shell title="Invitation">
+      <InvitationShell title="Invitation">
         <p className="text-muted-foreground">{state.message}</p>
         <Link to="/chat" className="mt-4 inline-block">
           <Button variant="outline">Go to chat</Button>
         </Link>
-      </Shell>
+      </InvitationShell>
     );
   }
 
   // --- Already accepted / declined ---
   if (state.tag === "alreadyHandled") {
     return (
-      <Shell title="Invitation">
+      <InvitationShell title="Invitation">
         <p className="text-muted-foreground">{state.reason}</p>
         <Link to="/chat" className="mt-4 inline-block">
           <Button variant="outline">Go to chat</Button>
         </Link>
-      </Shell>
+      </InvitationShell>
     );
   }
 
   // --- Accepted ---
   if (state.tag === "accepted") {
     return (
-      <Shell title="Invitation accepted!">
+      <InvitationShell title="Invitation accepted!">
         <p className="text-muted-foreground">
-          You are now a member of <span className="font-medium">{state.orgName}</span>.
+          You are now a member of{" "}
+          <span className="font-medium">{state.orgName}</span>.
         </p>
         <Link to="/chat" className="mt-4 inline-block">
           <Button>Go to chat</Button>
         </Link>
-      </Shell>
+      </InvitationShell>
     );
   }
 
   // --- Declined ---
   if (state.tag === "declined") {
     return (
-      <Shell title="Invitation declined">
-        <p className="text-muted-foreground">You have declined this invitation.</p>
+      <InvitationShell title="Invitation declined">
+        <p className="text-muted-foreground">
+          You have declined this invitation.
+        </p>
         <Link to="/chat" className="mt-4 inline-block">
           <Button variant="outline">Go to chat</Button>
         </Link>
-      </Shell>
+      </InvitationShell>
     );
   }
 
-  // --- Detail (main state) ---
-  const s = state as Extract<PageState, { tag: "detail" }>;
-  const { invitation, token: invToken, actionError } = s;
-  const isActing = state.tag !== "detail" && (state.tag === "accepting" || state.tag === "declining");
+  // All remaining states (detail, accepting, declining) carry invitation + token.
+  // Destructure before passing to sub-components.
+  const inv =
+    state.tag === "detail"
+      ? state.invitation
+      : (state as { invitation: InvitationDetail }).invitation;
+  const tok =
+    state.tag === "detail"
+      ? state.token
+      : (state as { token: string }).token;
+  const actionErr = state.tag === "detail" ? state.actionError : "";
 
   return (
-    <Shell title="Organisation Invitation">
-      <div className="space-y-3 text-sm">
-        <div>
-          <span className="text-muted-foreground">Organisation:</span>{" "}
-          <span className="font-medium">{invitation.orgName}</span>
-        </div>
-        <div>
-          <span className="text-muted-foreground">Invited by:</span>{" "}
-          <span>{invitation.inviterName}</span>
-        </div>
-        <div>
-          <span className="text-muted-foreground">Role:</span>{" "}
-          <span>{roleLabel(invitation.role)}</span>
-        </div>
-        <div>
-          <span className="text-muted-foreground">Expires:</span>{" "}
-          <span>{expiresText(invitation.expiresAt)}</span>
-        </div>
-      </div>
-
-      {user ? (
-        <>
-          {actionError && (
-            <p className="mt-3 text-sm text-red-500">{actionError}</p>
-          )}
-          <div className="mt-4 flex gap-3">
-            <Button
-              variant="default"
-              className="flex-1"
-              onClick={handleAccept}
-              disabled={isActing}
-            >
-              Accept
-            </Button>
-            <Button
-              variant="outline"
-              className="flex-1"
-              onClick={handleDecline}
-              disabled={isActing}
-            >
-              Decline
-            </Button>
-          </div>
-        </>
-      ) : (
-        <div className="mt-6 text-center">
-          <p className="mb-3 text-sm text-muted-foreground">
-            Sign in or create an account to accept this invitation.
-          </p>
-          <div className="flex gap-3">
-            <Link
-              to={`/login?return_to=${encodeURIComponent(`/invitations/${invToken}`)}`}
-              className="flex-1"
-            >
-              <Button variant="default" className="w-full">
-                Sign in
-              </Button>
-            </Link>
-            <Link
-              to={`/register?return_to=${encodeURIComponent(`/invitations/${invToken}`)}`}
-              className="flex-1"
-            >
-              <Button variant="outline" className="w-full">
-                Create account
-              </Button>
-            </Link>
-          </div>
-        </div>
-      )}
-    </Shell>
+    <InvitationShell title="Organisation Invitation">
+      <InvitationFields invitation={inv} />
+      <AuthActions
+        token={tok}
+        state={state}
+        actionError={actionErr}
+        onAccept={handleAccept}
+        onDecline={handleDecline}
+      />
+    </InvitationShell>
   );
 }
