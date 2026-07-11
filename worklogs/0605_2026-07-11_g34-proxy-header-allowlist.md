@@ -161,4 +161,4 @@ gofmt -l <changed files>             → clean
 - `api/internal/handlers/proxy_helpers.go` (added `hopByHopHeaders`, `forwardedRequestHeaders`, `copyRequestHeaders`; extended `copyResponseHeaders`)
 - `api/internal/handlers/proxy.go` (replaced header loop with `copyRequestHeaders` call)
 - `api/internal/handlers/proxy_headers_allowlist_test.go` (new file — TDD test battery)
-- `worklogs/NNNN_2026-07-11_g34-proxy-header-allowlist.md` (this entry)
+- `worklogs/0605_2026-07-11_g34-proxy-header-allowlist.md` (this entry)
