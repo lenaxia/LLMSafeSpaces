@@ -441,29 +441,37 @@ func (u *bcryptPasswordUpdater) UpdatePasswordHash(ctx context.Context, userID s
 // US-57.1 D7: when KMS is configured for this purpose, returns a
 // CompositeProvider with the KMS provider as primary and the local static
 // provider as fallback (for legacy rows during migration).
+//
+// Fail-closed: when RootKeyProvider is explicitly "aws-kms" but KMS
+// construction fails (bad credentials, missing ARN, network error), this
+// function returns nil — NOT a silent fallback to local. The caller
+// (app.New) must refuse to boot when a security-critical provider is
+// nil, preventing the operator from unknowingly running without KMS
+// protection they explicitly configured.
 func newPurposeProvider(cfg *config.Config, log *logger.Logger, purpose string) secrets.RootKeyProvider {
-	local := newLocalPurposeProvider(purpose)
 	if cfg == nil || cfg.Security.RootKeyProvider != "aws-kms" {
-		return local
+		return newLocalPurposeProvider(purpose)
 	}
+	// KMS is explicitly configured — fail-closed on any error.
 	kmsPurpose := kmsPurposeMap[purpose]
 	keyArn := cfg.Security.KMS.AWS.KeyArns[kmsPurpose]
 	if keyArn == "" {
-		log.Warn("KMS enabled but no key ARN configured for purpose; using local only",
-			"purpose", purpose, "kmsPurpose", kmsPurpose)
-		return local
+		log.Error("KMS enabled but no key ARN configured for purpose — refusing to boot",
+			nil, "purpose", purpose, "kmsPurpose", kmsPurpose)
+		return nil
 	}
 	kmsProv, err := newAWSKMSProvider(cfg, keyArn)
 	if err != nil {
-		log.Error("failed to initialize AWS KMS provider; falling back to local",
+		log.Error("failed to initialize AWS KMS provider — refusing to boot",
 			err, "purpose", purpose, "keyArn", keyArn)
-		return local
+		return nil
 	}
+	local := newLocalPurposeProvider(purpose)
 	composite, err := secrets.NewCompositeProvider(kmsProv, local)
 	if err != nil {
-		log.Error("failed to construct composite provider; falling back to local",
+		log.Error("failed to construct composite provider — refusing to boot",
 			err, "purpose", purpose)
-		return local
+		return nil
 	}
 	return composite
 }
