@@ -96,7 +96,7 @@ The threat-model row recommended "Move behind auth rate limiter (20/min)". The `
 
 | # | Real? | Disposition |
 |---|---|---|
-| 1 | **Real and pre-existing** — affects the GLOBAL limiter, not introduced by this PR. The token-bucket strategy at `rate_limit.go:154` does `rate := float64(limit)`, treating `limit` as tokens-per-second. Documenting in `RouteRateLimit` struct comment so future readers know. | **Documented in code comment + worklog; flagged as pre-existing follow-up** |
+| 1 | **Real — fixed in this PR after review feedback.** Reviewer correctly pointed out that since this is brand-new code with no operator values to re-tune, the rate-conversion fix (`rate := float64(routeCfg.Limit) / routeCfg.Window.Seconds()`) belongs here, not in a separate PR. The global limiter still has the bug (pre-existing, separate PR) but the new per-route middleware does NOT inherit it. Locked by `TestPerRouteRateLimit_LimitIsPerWindowNotPerSecond`. | **Fixed** |
 | 2 | Real — fixed by wiring |
 | 3 | Real, accepted — standard NetPol/RateLimit limitation |
 | 4 | False alarm — Enabled defaults to false → no-op |
@@ -105,16 +105,16 @@ The threat-model row recommended "Move behind auth rate limiter (20/min)". The `
 
 ### Phase 3 — remediation
 
-- Finding 1 (rate semantic bug): documented in `RouteRateLimit` struct comment and worklog. Pre-existing — affects the global limiter too. Fixing it would require re-tuning every operator's configured values; out of scope for G35.
+- Finding 1 (rate semantic bug): **FIXED in this PR** (after review feedback). The new per-route middleware converts `Limit` per `Window` to a per-second refill rate, so `{Limit: 20, Window: 1m}` actually enforces 20 per minute. The pre-existing global limiter still has the bug — separate PR. New regression test `TestPerRouteRateLimit_LimitIsPerWindowNotPerSecond` locks the corrected semantics.
 - Zero outstanding findings in the new code.
 
 ---
 
-## Pre-existing finding (out of scope)
+## Pre-existing finding (still out of scope, separate PR needed)
 
-**Rate limit unit semantic mismatch.** The token-bucket strategy at `api/internal/middleware/rate_limit.go:154` (`applyTokenBucketRateLimit`) computes `rate := float64(limit)` and uses it as tokens-per-second in the bucket refill at `ratelimit.go:127` (`b.tokens += elapsed * rate`). The `DefaultLimit: 100` in `DefaultRateLimitConfig` is documented as "100/min" but actually enforces 100/sec — 60× more permissive than intended. The `DefaultWindow: time.Minute` is only used for the X-RateLimit-Reset header, not the actual throttling.
+**Rate limit unit semantic mismatch in the GLOBAL limiter.** The token-bucket strategy at `api/internal/middleware/rate_limit.go:154` (`applyTokenBucketRateLimit`) computes `rate := float64(limit)` and uses it as tokens-per-second in the bucket refill at `ratelimit.go:127` (`b.tokens += elapsed * rate`). The `DefaultLimit: 100` in `DefaultRateLimitConfig` is documented as "100/min" but actually enforces 100/sec — 60× more permissive than intended. The `DefaultWindow: time.Minute` is only used for the X-RateLimit-Reset header, not the actual throttling.
 
-This affects both the global limiter (pre-existing) and the new per-route limiter (inherited convention). Fixing it requires:
+This affects only the global limiter now (the per-route middleware added in this PR correctly converts per-window to per-second). Fixing the global limiter requires:
 - Change `rate := float64(limit)` to `rate := float64(limit) / window.Seconds()`
 - Re-tune operator-configured values (existing deployments rely on the per-second interpretation)
 - Update DefaultRateLimitConfig docs

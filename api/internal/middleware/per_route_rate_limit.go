@@ -19,14 +19,12 @@ import (
 // PerRouteRateLimitMiddleware to a specific path (matched by gin's
 // FullPath, e.g. "/api/v1/account/recover").
 //
-// Semantic note (pre-existing, inherited from the global
-// applyTokenBucketRateLimit at rate_limit.go:154): the token-bucket
-// strategy treats `Limit` as tokens-per-second, NOT per-window. The
-// `Window` field is used only for the X-RateLimit-Reset response
-// header. This is a long-standing convention in this codebase; a
-// future PR may correct it (e.g. `rate := float64(limit) /
-// window.Seconds()`) but doing so requires re-tuning every operator's
-// configured values and is out of scope for G35.
+// Semantics (intentionally correct, unlike the global limiter's
+// pre-existing per-second confusion): `Limit` is the maximum number of
+// requests per `Window` per identity (API-key or IP). The middleware
+// converts to a per-second refill rate internally
+// (`Limit / Window.Seconds()`) so a config of {Limit: 20, Window: 1m}
+// actually enforces 20 per minute, not 20 per second.
 type RouteRateLimit struct {
 	Limit  int
 	Burst  int
@@ -107,7 +105,17 @@ func PerRouteRateLimitMiddleware(rl interfaces.RateLimiterService, log pkginterf
 		// the global middleware exposes more, but the per-route layer is
 		// for short, sharp per-endpoint caps where token bucket is the
 		// right shape (steady-state allowance + bounded burst).
-		rate := float64(routeCfg.Limit)
+		//
+		// Rate conversion: `Limit` is per-`Window` (e.g. 20 per minute).
+		// The token-bucket refill is per-second, so divide. A zero window
+		// is treated as 1 second (defensive — the caller is responsible
+		// for setting Window, but division by zero is worse than a
+		// per-second fallback).
+		windowSeconds := routeCfg.Window.Seconds()
+		if windowSeconds <= 0 {
+			windowSeconds = 1
+		}
+		rate := float64(routeCfg.Limit) / windowSeconds
 		if !rl.Allow(bucketKey, rate, routeCfg.Burst) {
 			if log != nil {
 				log.Warn("Per-route rate limit exceeded",

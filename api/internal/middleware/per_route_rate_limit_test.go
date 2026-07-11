@@ -221,3 +221,46 @@ func TestPerRouteRateLimit_NilServiceIsNoOp(t *testing.T) {
 		assert.Equal(t, http.StatusOK, w.Code, "nil service should be no-op (request %d)", i)
 	}
 }
+
+// TestPerRouteRateLimit_LimitIsPerWindowNotPerSecond locks the
+// rate-conversion fix: `Limit` is per-`Window`, not per-second. With
+// {Limit: 60, Window: 1m, Burst: 1}, a burst-of-1 means only one
+// request passes immediately; the second rapid request is rejected
+// because the bucket refills at 60/60 = 1 token/sec, which is far less
+// than 1 token in the <10ms between two rapid test requests.
+//
+// Without the per-window conversion (the pre-existing per-second
+// semantic bug in the global limiter), `Limit: 60` would mean 60
+// tokens/sec and the second request would always pass — this test
+// would fail.
+func TestPerRouteRateLimit_LimitIsPerWindowNotPerSecond(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc, cleanup := newMiniredisRateLimiter(t)
+	defer cleanup()
+
+	cfg := PerRouteRateLimitConfig{
+		Enabled: true,
+		Routes: map[string]RouteRateLimit{
+			"/api/v1/account/recover": {Limit: 60, Burst: 1, Window: time.Minute},
+		},
+	}
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) { c.Set("apiKey", "per-window-test"); c.Next() })
+	router.Use(PerRouteRateLimitMiddleware(svc, perRouteTestLogger(), cfg))
+	router.POST("/api/v1/account/recover", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
+
+	// First request consumes the burst (1 token). Second request in the
+	// same instant must be rejected because the refill rate (1/sec) has
+	// not yet produced a new token.
+	w1 := httptest.NewRecorder()
+	req1, _ := http.NewRequest("POST", "/api/v1/account/recover", nil)
+	router.ServeHTTP(w1, req1)
+	assert.Equal(t, http.StatusOK, w1.Code, "first request should consume the burst")
+
+	w2 := httptest.NewRecorder()
+	req2, _ := http.NewRequest("POST", "/api/v1/account/recover", nil)
+	router.ServeHTTP(w2, req2)
+	assert.Equal(t, http.StatusTooManyRequests, w2.Code,
+		"second rapid request must be rejected (limit is per-window, not per-second)")
+}
