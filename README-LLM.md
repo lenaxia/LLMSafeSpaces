@@ -1493,7 +1493,7 @@ One row per org in `org_sso_configs` (`api/migrations/000038_org_sso_configs.up.
 | `org_id` | `UUID` PK | FK → `organizations(id)` `ON DELETE CASCADE` |
 | `oidc_discovery_url` | `TEXT` | IdP `.well-known/openid-configuration` URL |
 | `oidc_client_id` | `TEXT` | Public client identifier |
-| `oidc_client_secret` | `BYTEA` | **Encrypted at rest with the server KEK** (D17-S4) — derived from `LLMSAFESPACES_MASTER_SECRET`, always decryptable, no org-DEK dependency |
+| `oidc_client_secret` | `BYTEA` | **Encrypted at rest** with the server KEK (D17-S4) |
 | `claimed_domains` | `TEXT[]` | Email domains that route to this org on the login page; GIN-indexed for domain→org lookup |
 | `auto_provision` | `BOOLEAN` | Create a new user on first SSO login if none exists for the email |
 | `group_role_mapping` | `JSONB` | `{groupId: "admin"|"member"}`; applied on every login |

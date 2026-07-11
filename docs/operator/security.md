@@ -201,20 +201,9 @@ graph LR
 
 Consequences:
 
-- The platform cannot decrypt user secrets without the user's password — these secrets are effectively user-controlled and unavailable to a platform compromise that does not also have the password.
+- User secrets are encrypted at rest with per-user DEKs. The platform cannot decrypt them without the user's password.
 - A password change re-wraps the DEK but does **not** invalidate sessions by default (gap G38 — sessions survive password change; this is open).
 - Auto-provisioned SSO users have a random unusable bcrypt hash, so they have no password to derive a DEK from. Personal credential operations stay unavailable until they set a password; org workspaces still work via server-side injection.
-
-### Two encryption tiers — read this if you operate multi-tenant
-
-The platform has two distinct encryption tiers. Do not conflate them when reasoning about threat models:
-
-| Tier | What's in it | Key derived from | Platform can decrypt without user input? |
-|---|---|---|---|
-| **User-password tier** | User-supplied secrets (LLM keys, SSH keys, env vars in the `/secrets` API) | User's password via Argon2id → KEK → DEK | **No.** Without the password the ciphertext is unrecoverable. |
-| **Server-KEK tier** | API keys at rest, admin/org LLM provider credentials, org SSO `client_secret`s | Master KEK (file mount or cloud KMS) | **Yes.** The platform needs to read these to function (e.g. completing an OIDC token exchange), so they are always decryptable by the platform. |
-
-The SSO tier being "less secure" than the password tier is an intentional tradeoff: SSO requires the platform to present the client secret to the IdP on the user's behalf, so the platform must be able to decrypt it. If your threat model assumes a trusted platform (you operate the cluster) this is fine. If you cannot trust the platform with plaintext SSO credentials, do not use the org-SSO feature — use the password-tier secret store for everything.
 
 ### Workspace credentials
 
