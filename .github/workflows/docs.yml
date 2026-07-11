@@ -40,9 +40,7 @@ jobs:
 
       - name: Install MkDocs Material + plugins
         run: |
-          pip install \
-            mkdocs-material \
-            mkdocs-git-revision-date-localized-plugin
+          pip install -r docs/requirements.txt
 
       - name: Build site
         run: mkdocs build --strict
@@ -60,27 +58,29 @@ jobs:
           SRC="$GITHUB_WORKSPACE/site"
           DST="$RUNNER_TEMP/gh-pages"
 
-          # Wipe existing rendered-doc files but preserve chart artifacts
-          # (index.yaml, *.tgz, checksums.txt) and the index.html we want to
-          # overwrite anyway.
+          # Preserve chart artifacts and Pages config. Anything else is
+          # docs-site output from a previous run and can be regenerated,
+          # so it's safe to delete before re-copying.
+          #
+          # Allowlist (NOT deleted):
+          #   .git/                  — branch internals
+          #   index.yaml             — Helm chart index
+          #   *.tgz                  — Helm chart packages
+          #   checksums.txt          — relay binary checksums
+          #   CNAME                  — Pages custom domain (if ever set)
+          #   .nojekyll              — Pages raw-file opt-out (if ever set)
           cd "$DST"
-          # Find files MkDocs produced on a previous run by looking at the
-          # `mkdocs-generated` marker we'll write below. Anything not in
-          # the chart-artifact allowlist and not git-internal gets removed
-          # before we re-copy.
           find . -type f \
+            ! -path './.git/*' \
             ! -name 'index.yaml' \
             ! -name '*.tgz' \
             ! -name 'checksums.txt' \
-            ! -path './.git/*' \
+            ! -name 'CNAME' \
+            ! -name '.nojekyll' \
             -delete
 
-          # Copy new build output in
+          # Copy new build output in.
           cp -a "$SRC/." "$DST/"
-
-          # Re-add chart index.html redirect protection: if MkDocs produced
-          # an index.html, it's the docs landing page. The chart's index.yaml
-          # is unaffected (different filename).
 
       - name: Commit + push
         run: |

@@ -20,7 +20,7 @@ Network hardening sweep + KMS-backed master KEK foundation + Go security bump.
   deliberately not forwarded — Go's http.Transport handles gzip transparently.
   ([#513](https://github.com/lenaxia/LLMSafeSpaces/pull/513))
 
-- **G35 — terminal WebSocket Origin check (High).** The terminal WebSocket
+- **G39 — terminal WebSocket Origin check (High).** The terminal WebSocket
   upgrader accepted any Origin (`CheckOrigin: return true`), enabling
   cross-site WebSocket hijacking from a malicious page in a browser holding
   the user's session ticket. Now defaults to same-origin only, with an
