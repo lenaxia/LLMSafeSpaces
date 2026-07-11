@@ -40,6 +40,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in-depth. Locale vars (`LANG`, `LC_ALL`, `TZ`) are intentionally NOT
   blocked — they don't execute code and users legitimately set them.
 
+- **G35 — `/account/recover` per-route rate limit (High).** The
+  recovery endpoint at `POST /api/v1/account/recover` was mounted on
+  the root router behind only the global 100/min/IP rate limiter. While
+  the recovery key is 128-bit random (brute-force is mathematically
+  infeasible), the endpoint does Argon2id work to re-derive the DEK
+  under the new password, making it a CPU-exhaustion DoS target. The
+  new `PerRouteRateLimitMiddleware` (separate from the global
+  `RateLimitMiddleware`) applies a stricter per-route limit (default
+  20 tokens/burst 5, from the previously-dead-code `authRatePerMinute`
+  /`authRateBurst` constants) using per-route bucket isolation
+  (`<path>:<identity>` key) so a user hitting `/recover` cannot deplete
+  the budget for other routes. The middleware is generic — future
+  endpoints (e.g. G41 `/secrets/:id/reveal`) can be added to the same
+  routes map.
+
 ## [0.3.0] - 2026-07-11
 
 Network hardening sweep + KMS-backed master KEK foundation + Go security bump.

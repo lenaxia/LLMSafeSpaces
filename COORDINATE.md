@@ -17,7 +17,6 @@ Rules:
 
 | Agent | What | Files Claimed | Status | Started |
 |-------|------|---------------|--------|---------|
-| opencode (g37) | G37 — workspace env-var name blocklist | `pkg/validation/name.go`, `pkg/validation/name_test.go`, `pkg/validation/env.go` (new), `pkg/validation/env_test.go` (new), `api/internal/handlers/workspace_env.go`, `api/internal/handlers/workspace_env_test.go`, `pkg/agentd/secrets/secrets.go` | In Progress | 2026-07-11 |
 
 
 ---
@@ -35,8 +34,9 @@ Agents waiting to work on files currently held by an active claim. When the bloc
 
 | Completed | Agent | What | Commit |
 |-----------|-------|------|--------|
-| 2026-07-11 | opencode (g37) | G37 — workspace env-var name blocklist (PR [#537](https://github.com/lenaxia/LLMSafeSpaces/pull/537), pending review) | `be063b9c` |
-| 2026-07-11 | opencode (g38) | G38 — ChangePassword revokes all sessions (PR [#536](https://github.com/lenaxia/LLMSafeSpaces/pull/536), pending review) | `5968d8dc` |
+| 2026-07-11 | opencode (g35) | G35 — /account/recover per-route rate limit (PR [#538](https://github.com/lenaxia/LLMSafeSpaces/pull/538), pending review) | (pending) |
+| 2026-07-11 | opencode (g37) | G37 — workspace env-var name blocklist (PR [#537](https://github.com/lenaxia/LLMSafeSpaces/pull/537), merged) | `be063b9c` |
+| 2026-07-11 | opencode (g38) | G38 — ChangePassword revokes all sessions (PR [#536](https://github.com/lenaxia/LLMSafeSpaces/pull/536), merged) | `5968d8dc` |
 
 > Entries older than ~2 weeks are pruned — see `worklogs/` for the historical record.
 

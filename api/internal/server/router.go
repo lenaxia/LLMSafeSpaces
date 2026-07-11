@@ -64,6 +64,14 @@ type RouterConfig struct {
 	// RateLimitConfig is the configuration for the rate limiting middleware
 	RateLimitConfig middleware.RateLimitConfig
 
+	// PerRouteRateLimitConfig is the configuration for stricter per-route
+	// rate limits applied on top of the global RateLimitConfig. Closes
+	// G35 (/account/recover) and G41 (/secrets/:id/reveal) — endpoints
+	// that take credentials as direct input and therefore warrant a
+	// tighter cap than the global 100/min/IP. Defaults to enabled with
+	// sensible limits; operators can disable by setting Enabled=false.
+	PerRouteRateLimitConfig middleware.PerRouteRateLimitConfig
+
 	// SecurityConfig is the configuration for the security middleware
 	SecurityConfig middleware.SecurityConfig
 
@@ -207,8 +215,28 @@ func DefaultRouterConfig() RouterConfig {
 		Debug:           false,
 		LoggingConfig:   middleware.DefaultLoggingConfig(),
 		RateLimitConfig: rlCfg,
-		SecurityConfig:  middleware.DefaultSecurityConfig(),
-		TracingConfig:   middleware.DefaultTracingConfig(),
+		// G35: /account/recover takes userID + recoveryKey as direct
+		// input. The recovery key is 128-bit random so brute-force is
+		// mathematically infeasible, but the endpoint still does
+		// Argon2id work (re-derives the DEK under the new password),
+		// making it a CPU-exhaustion DoS target. The authRatePerMinute
+		// constant (20) was defined for exactly this purpose but was
+		// never wired (dead code before this PR). authRateBurst (5)
+		// allows legitimate users a few rapid attempts if they fat-
+		// finger the recovery key, while still capping automated
+		// guessing from a single IP well below the global 100/min.
+		PerRouteRateLimitConfig: middleware.PerRouteRateLimitConfig{
+			Enabled: true,
+			Routes: map[string]middleware.RouteRateLimit{
+				"/api/v1/account/recover": {
+					Limit:  authRatePerMinute,
+					Burst:  authRateBurst,
+					Window: time.Minute,
+				},
+			},
+		},
+		SecurityConfig: middleware.DefaultSecurityConfig(),
+		TracingConfig:  middleware.DefaultTracingConfig(),
 	}
 }
 
@@ -238,6 +266,13 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 	router.Use(middleware.LoggingMiddleware(logger, cfg.LoggingConfig))
 	router.Use(middleware.MetricsMiddleware(services.GetMetrics()))
 	router.Use(middleware.RateLimitMiddleware(services.GetRateLimiter(), logger, cfg.RateLimitConfig, cfg.InstanceSettings))
+	// G35: stricter per-route limits applied AFTER the global limiter so
+	// the global budget is consumed first (defense-in-depth — both
+	// middleware must allow the request). The per-route buckets are
+	// keyed separately (see PerRouteRateLimitMiddleware doc), so a user
+	// hitting /recover cannot deplete the budget for /secrets/:id/reveal
+	// or vice versa.
+	router.Use(middleware.PerRouteRateLimitMiddleware(services.GetRateLimiter(), logger, cfg.PerRouteRateLimitConfig))
 	router.Use(middleware.ErrorHandlerMiddleware(logger))
 
 	if services.GetMetering() != nil {
