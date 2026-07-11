@@ -543,10 +543,15 @@ kms:
   aws:
     enabled: false
     region: ""
-    # Name of an existing K8s Secret with a credentials-file key at
-    # key "credentials". The file must be in AWS shared-credentials INI format.
     credentialsSecret: ""
     keyArns:
+      providerCredentials: ""
+      orgCredentials: ""
+      masterKek: ""
+  gcp:
+    enabled: false
+    credentialsSecret: ""
+    keyNames:
       providerCredentials: ""
       orgCredentials: ""
       masterKek: ""

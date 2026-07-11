@@ -26,8 +26,10 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 
+	gcpKMS "cloud.google.com/go/kms/apiv1"
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/kms"
+	"google.golang.org/api/option"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -449,24 +451,49 @@ func (u *bcryptPasswordUpdater) UpdatePasswordHash(ctx context.Context, userID s
 // nil, preventing the operator from unknowingly running without KMS
 // protection they explicitly configured.
 func newPurposeProvider(cfg *config.Config, log *logger.Logger, purpose string) secrets.RootKeyProvider {
-	if cfg == nil || cfg.Security.RootKeyProvider != "aws-kms" {
+	if cfg == nil || (cfg.Security.RootKeyProvider != "aws-kms" && cfg.Security.RootKeyProvider != "gcp-kms") {
 		return newLocalPurposeProvider(purpose)
 	}
 	// KMS is explicitly configured — fail-closed on any error.
 	kmsPurpose := kmsPurposeMap[purpose]
-	keyArn := cfg.Security.KMS.AWS.KeyArns[kmsPurpose]
-	if keyArn == "" {
-		log.Error("KMS enabled but no key ARN configured for purpose — refusing to boot",
-			nil, "purpose", purpose, "kmsPurpose", kmsPurpose)
-		return nil
-	}
-	kmsProv, err := newAWSKMSProvider(cfg, keyArn)
-	if err != nil {
-		log.Error("failed to initialize AWS KMS provider — refusing to boot",
-			err, "purpose", purpose, "keyArn", keyArn)
-		return nil
-	}
 	local := newLocalPurposeProvider(purpose)
+
+	var kmsProv secrets.RootKeyProvider
+	switch cfg.Security.RootKeyProvider {
+	case "aws-kms":
+		keyArn := cfg.Security.KMS.AWS.KeyArns[kmsPurpose]
+		if keyArn == "" {
+			log.Error("AWS KMS enabled but no key ARN configured for purpose — refusing to boot",
+				nil, "purpose", purpose, "kmsPurpose", kmsPurpose)
+			return nil
+		}
+		var err error
+		kmsProv, err = newAWSKMSProvider(cfg, keyArn)
+		if err != nil {
+			log.Error("failed to initialize AWS KMS provider — refusing to boot",
+				err, "purpose", purpose, "keyArn", keyArn)
+			return nil
+		}
+	case "gcp-kms":
+		keyName := cfg.Security.KMS.GCP.KeyNames[kmsPurpose]
+		if keyName == "" {
+			log.Error("GCP KMS enabled but no key name configured for purpose — refusing to boot",
+				nil, "purpose", purpose, "kmsPurpose", kmsPurpose)
+			return nil
+		}
+		var err error
+		kmsProv, err = newGPCKMSProvider(cfg, keyName)
+		if err != nil {
+			log.Error("failed to initialize GCP KMS provider — refusing to boot",
+				err, "purpose", purpose, "keyName", keyName)
+			return nil
+		}
+	default:
+		log.Error("unknown KMS provider type — refusing to boot",
+			nil, "provider", cfg.Security.RootKeyProvider)
+		return nil
+	}
+
 	composite, err := secrets.NewCompositeProvider(kmsProv, local)
 	if err != nil {
 		log.Error("failed to construct composite provider — refusing to boot",
@@ -515,14 +542,25 @@ func newAWSKMSProvider(cfg *config.Config, keyArn string) (*secrets.AWSKMSProvid
 	return secrets.NewAWSKMSProvider(client, keyArn), nil
 }
 
+// newGPCKMSProvider constructs a GPCKMSProvider from the config's GCP
+// service-account JSON file. Each per-purpose KMS provider gets its own
+// instance with a different key resource name.
+func newGPCKMSProvider(cfg *config.Config, keyName string) (*secrets.GPCKMSProvider, error) {
+	credsOpt := option.WithAuthCredentialsFile(option.ServiceAccount, cfg.Security.KMS.GCP.CredentialsFile)
+	client, err := gcpKMS.NewKeyManagementClient(context.Background(), credsOpt)
+	if err != nil {
+		return nil, fmt.Errorf("creating GCP KMS client: %w", err)
+	}
+	return secrets.NewGPCKMSProvider(client, keyName), nil
+}
+
 func newRootKeyProvider(cfg *config.Config, log *logger.Logger) secrets.RootKeyProvider {
 	provider := cfg.Security.RootKeyProvider
 	switch provider {
-	case "aws-kms":
-		// US-57.1 D7: KMS-backed root key provider. The "master-kek"
-		// purpose maps to the KMS key ARN from the config; the local
-		// static provider (derived from master-kek) is the fallback for
-		// legacy rows.
+	case "aws-kms", "gcp-kms":
+		// US-57.1/57.3 D7: KMS-backed root key provider. The "master-kek"
+		// purpose maps to the KMS key from the config; the local static
+		// provider is the fallback for legacy rows.
 		return newPurposeProvider(cfg, log, "master-kek")
 	case "sealed":
 		if cfg.Security.SealedKeyPath == "" || cfg.Security.PassphrasePath == "" {

@@ -325,7 +325,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// refuse to boot BEFORE AuditedProvider wrapping (which always
 		// returns non-nil, making post-wrap nil checks dead code caught by
 		// nilness/staticcheck).
-		if cfg.Security.RootKeyProvider == "aws-kms" {
+		if cfg.Security.RootKeyProvider == "aws-kms" || cfg.Security.RootKeyProvider == "gcp-kms" {
 			if providerCredsProv == nil {
 				cancel()
 				return nil, errors.New("KMS root key provider enabled but providerCredentials provider failed to initialize — refusing to boot")

@@ -91,6 +91,19 @@ spec:
             - name: LLMSAFESPACES_SECURITY_KMS_AWS_KEYARNS_MASTERKEK
               value: {{ required "kms.aws.keyArns.masterKek is required" .Values.kms.aws.keyArns.masterKek | quote }}
             {{- end }}
+            {{/* Epic 57 US-57.3: GCP KMS provider configuration. */}}
+            {{- if .Values.kms.gcp.enabled }}
+            - name: LLMSAFESPACES_SECURITY_ROOTKEYPROVIDER
+              value: "gcp-kms"
+            - name: LLMSAFESPACES_SECURITY_KMS_GCP_CREDENTIALSFILE
+              value: /var/run/secrets/llmsafespaces/gcp-credentials/credentials.json
+            - name: LLMSAFESPACES_SECURITY_KMS_GCP_KEYNAMES_PROVIDERCREDENTIALS
+              value: {{ required "kms.gcp.keyNames.providerCredentials is required" .Values.kms.gcp.keyNames.providerCredentials | quote }}
+            - name: LLMSAFESPACES_SECURITY_KMS_GCP_KEYNAMES_ORGCREDENTIALS
+              value: {{ required "kms.gcp.keyNames.orgCredentials is required" .Values.kms.gcp.keyNames.orgCredentials | quote }}
+            - name: LLMSAFESPACES_SECURITY_KMS_GCP_KEYNAMES_MASTERKEK
+              value: {{ required "kms.gcp.keyNames.masterKek is required" .Values.kms.gcp.keyNames.masterKek | quote }}
+            {{- end }}
             {{/* F5 (worklog 0372): shared secret the controller presents as
                    X-Internal-Token to authenticate internal org-status polls.
                    The endpoint FAILS CLOSED without it, so it is always wired
@@ -155,6 +168,11 @@ spec:
               mountPath: /var/run/secrets/llmsafespaces/aws-credentials
               readOnly: true
             {{- end }}
+            {{- if .Values.kms.gcp.enabled }}
+            - name: gcp-credentials
+              mountPath: /var/run/secrets/llmsafespaces/gcp-credentials
+              readOnly: true
+            {{- end }}
       volumes:
         - name: config
           configMap:
@@ -172,6 +190,12 @@ spec:
         - name: aws-credentials
           secret:
             secretName: {{ required "kms.aws.credentialsSecret is required when kms.aws.enabled" .Values.kms.aws.credentialsSecret }}
+            defaultMode: 0440
+        {{- end }}
+        {{- if .Values.kms.gcp.enabled }}
+        - name: gcp-credentials
+          secret:
+            secretName: {{ required "kms.gcp.credentialsSecret is required when kms.gcp.enabled" .Values.kms.gcp.credentialsSecret }}
             defaultMode: 0440
         {{- end }}
         - name: tmp

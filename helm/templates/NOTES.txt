@@ -327,3 +327,21 @@ The master-secret file mount is RETAINED — it protects the Redis DEK cache
 Multi-region KMS keys are recommended for HA deployments.
 
 {{- end }}
+
+{{- if .Values.kms.gcp.enabled }}
+== GCP KMS Master KEK (Epic 57 US-57.3) ==
+
+The API is configured to use Google Cloud KMS as the master KEK provider. The
+KEK never leaves Google's HSM — an API-pod compromise cannot permanently
+exfiltrate the key for offline DB decryption after the RCE is evicted.
+
+Three KMS keys are in use (per-purpose domain separation):
+  - providerCredentials: {{ .Values.kms.gcp.keyNames.providerCredentials | default "(not set)" | quote }}
+  - orgCredentials:      {{ .Values.kms.gcp.keyNames.orgCredentials | default "(not set)" | quote }}
+  - masterKek:           {{ .Values.kms.gcp.keyNames.masterKek | default "(not set)" | quote }}
+
+AVAILABILITY NOTE (D9): Sustained GCP KMS unavailability causes all
+KEK-dependent decrypts to fail simultaneously. Multi-region KMS keys
+are recommended for HA deployments.
+
+{{- end }}
