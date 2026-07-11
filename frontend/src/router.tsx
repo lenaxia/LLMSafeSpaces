@@ -3,11 +3,17 @@ import { Navigate, Outlet, createBrowserRouter } from "react-router-dom";
 import { useAuth } from "./providers/AuthProvider";
 import { LoginPage } from "./pages/LoginPage";
 import { RegisterPage } from "./pages/RegisterPage";
+import { InvitationPage } from "./pages/InvitationPage";
 import { ChatPage } from "./pages/ChatPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
 import { AppShell } from "./components/layout/AppShell";
 import { Spinner } from "./components/ui/Spinner";
+import { UserSettingsTab } from "./components/settings/UserSettingsTab";
+import { UserProviderCredentialsTab } from "./components/settings/UserProviderCredentialsTab";
+import { SecretsTab } from "./components/settings/SecretsTab";
+import { ApiKeysTab } from "./components/settings/ApiKeysTab";
+import { MyOrganisationTab } from "./components/settings/MyOrganisationTab";
 import { OrgAdminLayout } from "./components/org-admin/OrgAdminLayout";
 import { OrgOverviewTab } from "./components/org-admin/OrgOverviewTab";
 import { OrgMembersTab } from "./components/org-admin/OrgMembersTab";
@@ -86,7 +92,18 @@ export const router = createBrowserRouter([
           { path: "/chat", element: <ChatPage /> },
           { path: "/chat/:workspaceId", element: <ChatPage /> },
           { path: "/chat/:workspaceId/:sessionId", element: <ChatPage /> },
-          { path: "/settings", element: <SettingsPage /> },
+          {
+            path: "/settings",
+            element: <SettingsPage />,
+            children: [
+              { index: true, element: <Navigate to="preferences" replace /> },
+              { path: "preferences", element: <UserSettingsTab /> },
+              { path: "provider-keys", element: <UserProviderCredentialsTab /> },
+              { path: "secrets", element: <SecretsTab /> },
+              { path: "api-keys", element: <ApiKeysTab /> },
+              { path: "my-organisation", element: <MyOrganisationTab /> },
+            ],
+          },
         ],
       },
       {
@@ -125,5 +142,6 @@ export const router = createBrowserRouter([
     ],
   },
   { path: "/", element: <Navigate to="/chat" replace /> },
+  { path: "/invitations/:token", element: <InvitationPage /> },
   { path: "*", element: <NotFoundPage /> },
 ]);

@@ -1,14 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { render } from "@testing-library/react";
+import { MemoryRouter, Navigate, Route, Routes } from "react-router-dom";
 import { ThemeProvider } from "../providers/ThemeProvider";
 import { ToastProvider } from "../providers/ToastProvider";
 import { SettingsPage } from "./SettingsPage";
+import { UserSettingsTab } from "../components/settings/UserSettingsTab";
+import { UserProviderCredentialsTab } from "../components/settings/UserProviderCredentialsTab";
+import { SecretsTab } from "../components/settings/SecretsTab";
+import { ApiKeysTab } from "../components/settings/ApiKeysTab";
+import { MyOrganisationTab } from "../components/settings/MyOrganisationTab";
 
-// SettingsPage no longer renders platform-admin tabs (they moved to the
-// /admin portal). The auth + provider mocks remain so any child component
-// that reads auth or provider state has a valid context.
 vi.mock("../providers/AuthProvider", () => ({
   useAuth: () => ({ user: { id: "1", role: "admin" }, loading: false }),
 }));
@@ -29,11 +32,22 @@ vi.mock("../api/providerCredentials", () => ({
   userProviderCredentialsApi: { list: () => Promise.resolve([]) },
 }));
 
-function renderSettings() {
+function renderSettingsRoute(initialPath = "/settings/preferences") {
   return render(
     <ThemeProvider>
       <ToastProvider>
-        <SettingsPage />
+        <MemoryRouter initialEntries={[initialPath]}>
+          <Routes>
+            <Route path="/settings" element={<SettingsPage />}>
+              <Route index element={<Navigate to="preferences" replace />} />
+              <Route path="preferences" element={<UserSettingsTab />} />
+              <Route path="provider-keys" element={<UserProviderCredentialsTab />} />
+              <Route path="secrets" element={<SecretsTab />} />
+              <Route path="api-keys" element={<ApiKeysTab />} />
+              <Route path="my-organisation" element={<MyOrganisationTab />} />
+            </Route>
+          </Routes>
+        </MemoryRouter>
       </ToastProvider>
     </ThemeProvider>,
   );
@@ -41,12 +55,12 @@ function renderSettings() {
 
 describe("SettingsPage", () => {
   it("renders settings heading", () => {
-    renderSettings();
+    renderSettingsRoute();
     expect(screen.getByText("Settings")).toBeInTheDocument();
   });
 
   it("renders personal tabs and not platform-admin tabs", () => {
-    renderSettings();
+    renderSettingsRoute();
     expect(screen.getByText("Preferences")).toBeInTheDocument();
     expect(screen.getByText("Provider Keys")).toBeInTheDocument();
     expect(screen.getByText("Secrets")).toBeInTheDocument();
@@ -58,20 +72,27 @@ describe("SettingsPage", () => {
     expect(screen.queryByText("Admin")).not.toBeInTheDocument();
   });
 
-  it("shows Preferences tab by default", () => {
-    renderSettings();
-    expect(screen.getByText("Preferences")).toBeInTheDocument();
+  it("redirects /settings to /settings/preferences", async () => {
+    renderSettingsRoute("/settings");
+    // After <Navigate to="preferences" replace />, the Preferences tab
+    // should be active. Verify via bg-accent class on the NavLink.
+    await waitFor(() => {
+      const prefsLink = screen.getByText("Preferences");
+      expect(prefsLink).toBeInTheDocument();
+      expect(prefsLink.className).toContain("bg-accent");
+    });
+    expect(screen.getByText("Settings")).toBeInTheDocument();
   });
 
-  it("switches to API Keys tab", async () => {
+  it("navigates to API Keys tab on click", async () => {
     const user = userEvent.setup();
-    renderSettings();
+    renderSettingsRoute();
     await user.click(screen.getByText("API Keys"));
     expect(screen.getByText(/no api keys yet/i)).toBeInTheDocument();
   });
 
   it("content area has min-w-0 to allow proper shrinking on narrow screens", () => {
-    const { container } = renderSettings();
+    const { container } = renderSettingsRoute();
     const contentArea = container.querySelector(".flex-1.min-w-0.overflow-y-auto");
     expect(contentArea).not.toBeNull();
   });

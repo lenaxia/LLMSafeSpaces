@@ -31,7 +31,9 @@ async function handleUnauthorized(status: number, path: string, body: ApiError):
   // the current page + form input would degrade UX with no gain.
   if (body?.error === "turnstile_failed") return;
   if (status === 401 && !window.location.pathname.startsWith("/login")) {
-    window.location.href = "/login";
+    const current = window.location.pathname + window.location.search;
+    const params = new URLSearchParams({ return_to: current });
+    window.location.href = `/login?${params.toString()}`;
   }
 }
 

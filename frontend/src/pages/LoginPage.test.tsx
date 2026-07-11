@@ -1,7 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { screen, waitFor, fireEvent } from "@testing-library/react";
+import { screen, waitFor, fireEvent, act } from "@testing-library/react";
 import { render } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+import * as ReactRouter from "react-router-dom";
 import { AuthProvider } from "../providers/AuthProvider";
 import { LoginPage } from "./LoginPage";
 
@@ -9,12 +10,22 @@ import { LoginPage } from "./LoginPage";
 const mockGetConfig = vi.fn();
 const mockDomains = vi.fn();
 const mockLookup = vi.fn();
+const mockLoginApi = vi.fn();
+const mockNavigate = vi.fn();
+
+vi.mock("react-router-dom", async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof ReactRouter;
+  return {
+    ...actual,
+    useNavigate: () => mockNavigate,
+  };
+});
 
 vi.mock("../api/auth", () => ({
   authApi: {
     me: vi.fn().mockRejectedValue(new Error("401")),
     getConfig: () => mockGetConfig(),
-    login: vi.fn(),
+    login: (...args: unknown[]) => mockLoginApi(...args),
     lookup: (email: string) => mockLookup(email),
   },
 }));
@@ -267,6 +278,78 @@ describe("LoginPage", () => {
     renderLoginPage();
     await waitFor(() => {
       expect(screen.getByText(/not configured on this instance/i)).toBeInTheDocument();
+    });
+  });
+
+  describe("return_to handling", () => {
+    it("\"Create an account\" link preserves return_to param", async () => {
+      window.history.replaceState({}, "", "/login?return_to=%2Fchat");
+      renderLoginPage();
+      await waitFor(() => expect(screen.getByText("Create an account")).toBeInTheDocument());
+      const link = screen.getByText("Create an account").closest("a");
+      expect(link!.getAttribute("href")).toContain("return_to=%2Fchat");
+    });
+
+    it("sanitises malicious return_to — link does not carry evil URL", async () => {
+      window.history.replaceState({}, "", "/login?return_to=%2F%2Fevil.com");
+      renderLoginPage();
+      await waitFor(() => expect(screen.getByText("Create an account")).toBeInTheDocument());
+      const link = screen.getByText("Create an account").closest("a");
+      expect(link!.getAttribute("href")).not.toContain("evil");
+    });
+
+    it("\"create an account\" link after lookup not-found preserves return_to", async () => {
+      window.history.replaceState({}, "", "/login?return_to=%2Finvitations%2Fabc123");
+      mockGetConfig.mockResolvedValue({
+        registrationEnabled: true,
+        oidcEnabled: true,
+        instanceName: "TestSpace",
+      });
+      mockDomains.mockResolvedValue({
+        domains: [{ domain: "acme.com", orgSlug: "acme", orgName: "Acme" }],
+      });
+      mockLookup.mockResolvedValue({ redirectUrl: "/?lookup=not_found" });
+
+      renderLoginPage();
+      await waitFor(() => expect(screen.getByPlaceholderText("Email")).toBeInTheDocument());
+
+      fireEvent.change(screen.getByPlaceholderText("Email"), { target: { value: "nobody@gmail.com" } });
+      const continueBtn = await screen.findByText("Continue with email");
+      fireEvent.click(continueBtn);
+
+      await waitFor(() => {
+        expect(screen.getByText(/couldn't find an account/i)).toBeInTheDocument();
+      });
+
+      const createLink = screen.getByText("create an account");
+      expect(createLink).toBeInTheDocument();
+      expect(createLink.closest("a")!.getAttribute("href")).toContain("return_to=%2Finvitations%2Fabc123");
+    });
+
+    it("navigates to return_to after successful login", async () => {
+      window.history.replaceState({}, "", "/login?return_to=%2Fchat");
+      mockLoginApi.mockResolvedValue({ user: { id: "u-1", role: "user" as const } });
+      mockNavigate.mockClear();
+
+      renderLoginPage();
+      await waitFor(() => expect(screen.getByPlaceholderText("Email")).toBeInTheDocument());
+
+      fireEvent.change(screen.getByPlaceholderText("Email"), { target: { value: "a@b.com" } });
+      fireEvent.change(screen.getByPlaceholderText("Password"), { target: { value: "password123" } });
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
+      });
+
+      await waitFor(() => {
+        expect(mockLoginApi).toHaveBeenCalledWith({
+          email: "a@b.com",
+          password: "password123",
+          rememberMe: false,
+        });
+      });
+
+      expect(mockNavigate).toHaveBeenCalledWith("/chat");
     });
   });
 });

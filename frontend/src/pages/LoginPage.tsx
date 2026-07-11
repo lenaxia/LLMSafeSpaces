@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../providers/AuthProvider";
 import { authApi } from "../api/auth";
 import { ssoApi, ssoRedirectURL, type SSODomain } from "../api/sso";
+import { sanitiseReturnTo } from "../lib/returnTo";
 import { AuthCard } from "../components/auth/AuthCard";
 import { LoginForm } from "../components/auth/LoginForm";
 import { Button } from "../components/ui/Button";
@@ -10,11 +11,13 @@ import { ApiClientError } from "../api/client";
 
 export function LoginPage() {
   const { login } = useAuth();
+  const navigate = useNavigate();
   const [registrationEnabled, setRegistrationEnabled] = useState(false);
   const [instanceName, setInstanceName] = useState("Safe Space");
   const [motd, setMotd] = useState("");
   const [email, setEmail] = useState("");
   const [domains, setDomains] = useState<SSODomain[]>([]);
+  const [returnTo, setReturnTo] = useState("");
   const [ssoStatus, setSsoStatus] = useState<string | null>(null);
   const [lookupStatus, setLookupStatus] = useState<string | null>(null);
   const [lookingUp, setLookingUp] = useState(false);
@@ -44,6 +47,12 @@ export function LoginPage() {
     if (lookup) {
       setLookupStatus(lookup);
       params.delete("lookup");
+    }
+    // Post-login redirect target (preserved from 401 handler or invite link).
+    const rt = params.get("return_to");
+    if (rt) {
+      setReturnTo(sanitiseReturnTo(rt));
+      params.delete("return_to");
     }
     const clean = params.toString();
     window.history.replaceState({}, "", clean ? `?${clean}` : window.location.pathname);
@@ -89,7 +98,7 @@ export function LoginPage() {
       description={motd || "Sign in to your account"}
       footer={
         registrationEnabled ? (
-          <Link to="/register" className="text-primary underline-offset-4 hover:underline">
+          <Link to={returnTo ? `/register?return_to=${encodeURIComponent(returnTo)}` : "/register"} className="text-primary underline-offset-4 hover:underline">
             Create an account
           </Link>
         ) : undefined
@@ -112,7 +121,7 @@ export function LoginPage() {
         <p className="mb-3 text-sm text-red-500">
           We couldn't find an account for that email. Try a different email, or{" "}
           {registrationEnabled ? (
-            <Link to="/register" className="underline underline-offset-4">
+            <Link to={returnTo ? `/register?return_to=${encodeURIComponent(returnTo)}` : "/register"} className="underline underline-offset-4">
               create an account
             </Link>
           ) : (
@@ -131,7 +140,13 @@ export function LoginPage() {
           Something went wrong. Please try again.
         </p>
       )}
-      <LoginForm onSubmit={(u, p, r) => login(u, p, r)} onEmailChange={setEmail} />
+      <LoginForm
+        onSubmit={async (u, p, r) => {
+          await login(u, p, r);
+          if (returnTo) navigate(returnTo);
+        }}
+        onEmailChange={setEmail}
+      />
       {matchedDomain && (
         <div className="mt-4 border-t border-border pt-4">
           <p className="mb-2 text-center text-xs text-muted-foreground">or</p>

@@ -1,10 +1,5 @@
-import { useState } from "react";
+import { NavLink, Outlet } from "react-router-dom";
 import { cn } from "../lib/utils";
-import { UserSettingsTab } from "../components/settings/UserSettingsTab";
-import { SecretsTab } from "../components/settings/SecretsTab";
-import { ApiKeysTab } from "../components/settings/ApiKeysTab";
-import { UserProviderCredentialsTab } from "../components/settings/UserProviderCredentialsTab";
-import { MyOrganisationTab } from "../components/settings/MyOrganisationTab";
 
 const allTabs = [
   { id: "preferences", label: "Preferences" },
@@ -14,11 +9,7 @@ const allTabs = [
   { id: "my-organisation", label: "My Organisation" },
 ] as const;
 
-type TabId = (typeof allTabs)[number]["id"];
-
 export function SettingsPage() {
-  const [activeTab, setActiveTab] = useState<TabId>("preferences");
-
   return (
     <div className="flex h-full flex-col md:flex-row">
       {/* Mobile: horizontal tab bar. Desktop: vertical sidebar */}
@@ -27,25 +18,24 @@ export function SettingsPage() {
         <ul className="flex gap-1 overflow-x-auto touch-manipulation md:flex-col">
           {allTabs.map((tab) => (
             <li key={tab.id}>
-              <button
-                onClick={() => setActiveTab(tab.id)}
-                className={cn(
-                  "whitespace-nowrap rounded-md px-3 py-1.5 text-left text-sm transition-colors w-full",
-                  activeTab === tab.id ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
-                )}
+              <NavLink
+                to={`/settings/${tab.id}`}
+                replace
+                className={({ isActive }) =>
+                  cn(
+                    "whitespace-nowrap rounded-md px-3 py-1.5 text-left text-sm transition-colors w-full block",
+                    isActive ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
+                  )
+                }
               >
                 {tab.label}
-              </button>
+              </NavLink>
             </li>
           ))}
         </ul>
       </nav>
       <div className="flex-1 min-w-0 overflow-y-auto p-4 md:p-6">
-        {activeTab === "preferences" && <UserSettingsTab />}
-        {activeTab === "provider-keys" && <UserProviderCredentialsTab />}
-        {activeTab === "secrets" && <SecretsTab />}
-        {activeTab === "api-keys" && <ApiKeysTab />}
-        {activeTab === "my-organisation" && <MyOrganisationTab />}
+        <Outlet />
       </div>
     </div>
   );
