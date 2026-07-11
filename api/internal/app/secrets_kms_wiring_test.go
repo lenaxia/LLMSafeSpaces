@@ -202,6 +202,32 @@ func TestNewRootKeyProvider_BootPath_AllFourPathsVerifyKMS(t *testing.T) {
 	assert.True(t, isComposite, "P3 must be CompositeProvider")
 }
 
+// TestNewPurposeProvider_GCPKMS_MissingKeyName_ReturnsNil verifies
+// the GCP KMS fail-closed contract: missing key name → nil.
+func TestNewPurposeProvider_GCPKMS_MissingKeyName_ReturnsNil(t *testing.T) {
+	log, _ := logger.NewObserved()
+	cfg := &config.Config{}
+	cfg.Security.RootKeyProvider = "gcp-kms"
+	cfg.Security.KMS.GCP.CredentialsFile = "/nonexistent"
+	cfg.Security.KMS.GCP.KeyNames = map[string]string{
+		"orgCredentials": "projects/p/locations/us/keyRings/r/cryptoKeys/org",
+		"masterKek":      "projects/p/locations/us/keyRings/r/cryptoKeys/mkek",
+	}
+	t.Setenv(masterSecretValueEnv, kmsTestSecret())
+
+	p := newPurposeProvider(cfg, log, "provider-credentials")
+	assert.Nil(t, p, "GCP KMS with missing key name must return nil (fail-closed)")
+}
+
+// Note: a happy-path GCP KMS wiring test (verifying CompositeProvider
+// construction with valid credentials) is not feasible without real
+// GCP service-account JSON — the SDK parses and validates the JSON
+// at NewKeyManagementClient time, unlike AWS which lazy-loads.
+// The GPCKMSProvider unit tests (kms_gcp_provider_test.go) cover the
+// provider logic using a mock client interface; the wiring fail-closed
+// test above covers the boot guard. Together they provide adequate
+// coverage without requiring live GCP credentials.
+
 // mockRootProvider is a minimal RootKeyProvider for the boot-path test.
 // It doesn't do real crypto — just satisfies the interface so the
 // CompositeProvider can be constructed.

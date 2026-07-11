@@ -5,7 +5,6 @@ package secrets
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"hash/crc32"
 
@@ -59,6 +58,14 @@ func (p *GPCKMSProvider) Encrypt(ctx context.Context, plaintext []byte) ([]byte,
 	if err != nil {
 		return nil, fmt.Errorf("gcp kms encrypt: %w", err)
 	}
+	// Verify GCP received the correct CRC32C — catches in-transit corruption.
+	if !out.GetVerifiedPlaintextCrc32C() {
+		return nil, fmt.Errorf("gcp kms encrypt: server did not verify plaintext CRC32C — request corrupted in transit")
+	}
+	// Verify response ciphertext CRC32C — catches response-side corruption.
+	if out.CiphertextCrc32C != nil && int64(crc32cChecksum(out.Ciphertext)) != out.CiphertextCrc32C.Value {
+		return nil, fmt.Errorf("gcp kms encrypt: response CRC32C mismatch — response corrupted in transit")
+	}
 	return wrapWithPrefix(gcpKMSCiphertextPrefix, out.Ciphertext), nil
 }
 
@@ -75,6 +82,10 @@ func (p *GPCKMSProvider) Decrypt(ctx context.Context, ciphertext []byte) ([]byte
 	if err != nil {
 		return nil, fmt.Errorf("gcp kms decrypt: %w", err)
 	}
+	// Verify response plaintext CRC32C — catches response-side corruption.
+	if out.PlaintextCrc32C != nil && int64(crc32cChecksum(out.Plaintext)) != out.PlaintextCrc32C.Value {
+		return nil, fmt.Errorf("gcp kms decrypt: response CRC32C mismatch — response corrupted in transit")
+	}
 	return out.Plaintext, nil
 }
 
@@ -88,6 +99,3 @@ func crc32cChecksum(data []byte) uint32 {
 
 // Compile-time interface check.
 var _ RootKeyProvider = (*GPCKMSProvider)(nil)
-
-// Re-export base64 for unwrapKMSCiphertext callers in this file.
-var _ = base64.StdEncoding

@@ -45,8 +45,11 @@ func (f *fakeGCPKMSClient) Encrypt(_ context.Context, req *kmspb.EncryptRequest,
 	for i, b := range req.Plaintext {
 		ct[i] = b ^ f.keyBytes[i%len(f.keyBytes)]
 	}
+	crc := crc32cChecksum(ct)
 	return &kmspb.EncryptResponse{
-		Ciphertext: ct,
+		Ciphertext:              ct,
+		CiphertextCrc32C:        wrapperspb.Int64(int64(crc)),
+		VerifiedPlaintextCrc32C: true,
 	}, nil
 }
 
@@ -58,8 +61,10 @@ func (f *fakeGCPKMSClient) Decrypt(_ context.Context, req *kmspb.DecryptRequest,
 	for i, b := range req.Ciphertext {
 		pt[i] = b ^ f.keyBytes[i%len(f.keyBytes)]
 	}
+	crc := crc32cChecksum(pt)
 	return &kmspb.DecryptResponse{
-		Plaintext: pt,
+		Plaintext:       pt,
+		PlaintextCrc32C: wrapperspb.Int64(int64(crc)),
 	}, nil
 }
 
@@ -136,6 +141,3 @@ func TestGPCKMSProvider_Decrypt_CorruptBase64_ReturnsErrDecryptionFailed(t *test
 	require.ErrorIs(t, err, ErrDecryptionFailed,
 		"prefix matched but body corrupt must return ErrDecryptionFailed")
 }
-
-// Ensure wrapperspb is exercised (used in Encrypt/Decrypt CRC32C fields).
-var _ = wrapperspb.Int64
