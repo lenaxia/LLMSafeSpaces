@@ -31,14 +31,15 @@ Goal: reconcile the docs against the actual code state and remove the stale
 ### `design/stories/epic-17-security-review/THREAT-MODEL.md`
 
 - §9 gap table: G33 → 🟢 Fixed (with citation to the wired middleware and
-  PR #513's regression test). G34 → 🟢 Fixed (with PR link and the
-  copyRequestHeaders implementation pointer). G39 → 🟢 Fixed (with PR link,
-  the new `newCheckOriginChecker` location, and the Helm value).
+  the `TestWorkspaceAccessMiddleware_*` regression battery). G34 → 🟢 Fixed
+  (with PR link and the copyRequestHeaders implementation pointer). G39 →
+  🟢 Fixed (with PR link, the new `newCheckOriginChecker` location, and the
+  Helm value). G49 → 🟢 Fixed (rotate-kek CLI ships).
 - STRIDE Proxy row: marked G33/G34 items as 🟢 Fixed inline.
-- §10 Implementation Status Summary: 20 Fixed / 23 Open / 7 Accepted.
+- §10 Implementation Status Summary: 21 Fixed / 22 Open / 7 Accepted.
   Removed the "Critical open gaps: G33, G34" callout; replaced with a note
   explaining the closure and naming the new highest-severity open gaps
-  (G35 RecoveryAccount rate limit, G49 KEK rotation).
+  (G35 RecoveryAccount rate limit, G50 decrypt audit not wired).
 - §11 Revision History: added v2.3 entry documenting the reconciliation.
 
 ### `design/stories/epic-17-security-review/security-report-g33-g47.md`
@@ -76,11 +77,18 @@ Goal: reconcile the docs against the actual code state and remove the stale
 2. *No other doc references the old G33/G34 status as authoritative.*
    Validated by `grep -rn "G33\|G34" design/` — only
    `epic-17-security-review/` references them.
-3. *The other gaps (G35-G47, G49, G50) are still actually open.* Validated
+3. *The other gaps (G35-G47, G50) are still actually open.* Validated
    by spot-checking G35 (RecoverAccount still has no rate limit at
-   `router.go:264`) and G49 (rotate-kek CLI still doesn't exist in
-   `cmd/`). Not exhaustively re-verified every row — that's a separate
-   audit.
+   `router.go:264`). G49, previously thought open, is **actually
+   Fixed** — the AI reviewer on PR #521 caught that my original
+   "rotate-kek CLI still doesn't exist in `cmd/`" claim was wrong;
+   `cmd/rotate-kek/main.go` exists (153 lines, full implementation).
+   The G49 row's stale "CLI pending" text was itself doc drift.
+   Updated G49 → 🟢 Fixed in this round.
+4. *Cited line numbers verified.* Re-validated after merge of latest
+   main: `idGroup.Use(WorkspaceAccessMiddleware)` at `router.go:287-288`,
+   `registerProxyRoutes(idGroup, ...)` at `router.go:327`,
+   `copyRequestHeaders` call at `proxy.go:470`.
 
 ---
 
