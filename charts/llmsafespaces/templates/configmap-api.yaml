@@ -37,6 +37,12 @@ data:
     auth:
       tokenDuration: {{ .Values.api.config.auth.tokenDuration }}
       apiKeyPrefix: {{ .Values.api.config.auth.apiKeyPrefix | quote }}
+      {{- with .Values.api.config.auth.jwtIssuer }}
+      jwtIssuer: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.api.config.auth.jwtAudience }}
+      jwtAudience: {{ . | quote }}
+      {{- end }}
     logging:
       level: {{ .Values.api.config.logging.level | quote }}
       development: {{ .Values.api.config.logging.development }}

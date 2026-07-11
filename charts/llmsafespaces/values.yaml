@@ -98,6 +98,12 @@ api:
     auth:
       tokenDuration: 24h
       apiKeyPrefix: "lsp_"
+      # jwtIssuer / jwtAudience: iss/aud claims minted on every JWT and
+      # validated on every parse. Default "llmsafespaces" is applied at API
+      # boot if empty. Set when deploying multiple LLMSafeSpaces instances
+      # that should not accept each other's tokens.
+      jwtIssuer: ""
+      jwtAudience: ""
     rateLimiting:
       enabled: true
       limits:

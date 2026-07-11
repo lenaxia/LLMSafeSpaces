@@ -231,6 +231,17 @@ func New(cfg *config.Config, log *logger.Logger, dbService interfaces.DatabaseSe
 		return nil, errors.New("JWT secret is required")
 	}
 
+	// Default iss/aud. Production deploys go through Load(), which applies
+	// these defaults at config-load time. Tests construct Service directly
+	// and would otherwise see empty values. Either way the values must be
+	// set before the Service is constructed.
+	if cfg.Auth.JWTIssuer == "" {
+		cfg.Auth.JWTIssuer = config.DefaultJWTIssuer
+	}
+	if cfg.Auth.JWTAudience == "" {
+		cfg.Auth.JWTAudience = config.DefaultJWTAudience
+	}
+
 	// Warn when rememberMeDuration is set but shorter than tokenDuration —
 	// this means remember-me sessions would expire sooner than standard sessions,
 	// almost certainly a misconfiguration. We allow it (could be intentional
@@ -440,12 +451,19 @@ func (s *Service) GenerateToken(userID string) (string, error) {
 // Not exposed on the AuthService interface — callers outside the auth package use
 // GenerateToken, which always uses the configured tokenDuration.
 func (s *Service) GenerateTokenWithDuration(userID string, duration time.Duration) (string, error) {
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+	claims := jwt.MapClaims{
 		"sub": userID,
 		"jti": uuid.New().String(),
 		"exp": time.Now().Add(duration).Unix(),
 		"iat": time.Now().Unix(),
-	})
+	}
+	if iss := s.config.Auth.JWTIssuer; iss != "" {
+		claims["iss"] = iss
+	}
+	if aud := s.config.Auth.JWTAudience; aud != "" {
+		claims["aud"] = aud
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 
 	tokenString, err := token.SignedString(s.jwtSecret)
 	if err != nil {
@@ -532,6 +550,40 @@ func (s *Service) validateTokenAndMatchedKey(ctx context.Context, tokenString, c
 	userID, ok := claims["sub"].(string)
 	if !ok {
 		return "", -1, errors.New("invalid user ID in token")
+	}
+
+	// iss/aud enforcement: tokens must carry the configured issuer and
+	// audience. Pre-fix tokens (no iss/aud) are rejected — backward-
+	// compatibility break, but tokens are short-lived (24h default) so
+	// rotation is fast. Defense against any other service sharing the
+	// same HMAC secret minting accepted tokens.
+	if want := s.config.Auth.JWTIssuer; want != "" {
+		iss, _ := claims["iss"].(string)
+		if iss != want {
+			return "", -1, fmt.Errorf("token issuer %q does not match expected %q", iss, want)
+		}
+	}
+	if want := s.config.Auth.JWTAudience; want != "" {
+		// aud may be a string or []string; accept either shape.
+		switch aud := claims["aud"].(type) {
+		case string:
+			if aud != want {
+				return "", -1, fmt.Errorf("token audience %q does not match expected %q", aud, want)
+			}
+		case []any:
+			matched := false
+			for _, a := range aud {
+				if s, ok := a.(string); ok && s == want {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				return "", -1, fmt.Errorf("token audience %v does not include expected %q", aud, want)
+			}
+		default:
+			return "", -1, fmt.Errorf("token missing or invalid audience claim; expected %q", want)
+		}
 	}
 
 	// G18 (Epic 17): Defense-in-depth revocation check by jti AFTER parsing.
