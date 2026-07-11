@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **G38 — ChangePassword now revokes all sessions (High).** The handler
+  at `POST /api/v1/account/change-password` previously re-wrapped the
+  DEK with the new password and updated the bcrypt hash but left every
+  outstanding JWT — including the caller's — valid until natural expiry.
+  A token stolen before the change kept reading secrets (the cached DEK
+  in Redis was already evicted by `KeyService.ChangePassword`, but the
+  JWT signature remained valid and a re-login re-cached the DEK under
+  the new password, which the stolen token could then use). The handler
+  now calls `auth.Service.RevokeAllUserSessions` after both the DEK
+  re-wrap and the bcrypt update commit, writing the per-jti and per-hash
+  revocation markers and clearing durable `jwt_sessions` rows — the same
+  primitive `password-reset/confirm` already used (OWASP ASVS V2.5.2).
+  Best-effort: a revocation failure is logged and the password change
+  still reports success (the cryptographic change is irreversible).
+
 ## [0.3.0] - 2026-07-11
 
 Network hardening sweep + KMS-backed master KEK foundation + Go security bump.
