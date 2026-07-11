@@ -17,6 +17,7 @@ Rules:
 
 | Agent | What | Files Claimed | Status | Started |
 |-------|------|---------------|--------|---------|
+| opencode (g37) | G37 — workspace env-var name blocklist | `pkg/validation/name.go`, `pkg/validation/name_test.go`, `pkg/validation/env.go` (new), `pkg/validation/env_test.go` (new), `api/internal/handlers/workspace_env.go`, `api/internal/handlers/workspace_env_test.go`, `pkg/agentd/secrets/secrets.go` | In Progress | 2026-07-11 |
 
 
 ---
