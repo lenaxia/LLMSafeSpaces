@@ -155,10 +155,13 @@ type WorkspaceSpec struct {
 	// the controller's DefaultRuntimeClass (typically "gvisor" in production,
 	// empty/runc in dev).
 	//
-	// Enforcement: webhook validation to prevent tenants from setting this
-	// field via direct kubectl is deferred to S51.2. Today the API's
-	// CreateWorkspaceRequest does not expose the field (mitigating the API
-	// path), but direct kubectl users can set it.
+	// Enforcement: admin-gated by the workspace validating webhook
+	// (WorkspaceValidator in controller/internal/webhooks/). Setting
+	// spec.runtimeClass requires the object to carry the annotation
+	//   llmsafespaces.dev/allow-runtime-class-override: "true"
+	// applied via cluster-admin RBAC. The API's CreateWorkspaceRequest does
+	// not expose the field; direct kubectl users without the annotation are
+	// rejected at admission.
 	RuntimeClass *string `json:"runtimeClass,omitempty"`
 
 	// AutoApprovePermissions controls whether permission requests from the agent
