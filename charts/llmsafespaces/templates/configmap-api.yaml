@@ -81,3 +81,10 @@ data:
     workspace:
       defaultStorageClass: {{ . | quote }}
     {{- end }}
+    {{- with .Values.terminal.allowedOrigins }}
+    terminal:
+      allowedOrigins:
+        {{- range . }}
+        - {{ . | quote }}
+        {{- end }}
+    {{- end }}

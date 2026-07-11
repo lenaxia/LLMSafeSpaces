@@ -189,6 +189,25 @@ type Config struct {
 	Workspace struct {
 		DefaultStorageClass string `mapstructure:"defaultStorageClass"`
 	} `mapstructure:"workspace"`
+
+	// Terminal holds the WebSocket terminal proxy's security config.
+	//
+	// AllowedOrigins governs the gorilla/websocket Upgrader's CheckOrigin:
+	//   - Empty (default): same-origin only. Browser requests whose Origin
+	//     does not match the API's own Host are rejected at upgrade.
+	//     Non-browser clients (no Origin) are accepted; they authenticate
+	//     via the single-use ticket, not cookies.
+	//   - Contains "*": all origins accepted (the historical behaviour).
+	//     Operators who really want this must opt in explicitly.
+	//   - Otherwise: same-origin requests plus anything in the list.
+	//
+	// Wired via: values.yaml `terminal.allowedOrigins` → API ConfigMap
+	// `terminal.allowedOrigins` → this field → app.go → NewTerminalHandler.
+	// Default empty so an out-of-the-box install is fail-closed against
+	// cross-site WebSocket hijacking (G35).
+	Terminal struct {
+		AllowedOrigins []string `mapstructure:"allowedOrigins"`
+	} `mapstructure:"terminal"`
 }
 
 // Load loads configuration from file and environment variables

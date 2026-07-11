@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
-	"github.com/lenaxia/llmsafespaces/api/internal/errors"
 	"github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/unrolled/secure"
 )
@@ -201,74 +200,6 @@ func SecurityMiddleware(log interfaces.LoggerInterface, config ...SecurityConfig
 		c.Header("X-Content-Type-Options", "nosniff")
 		c.Header("X-Permitted-Cross-Domain-Policies", "none")
 		c.Header("X-Download-Options", "noopen")
-
-		c.Next()
-	}
-}
-
-// WebSocketSecurityMiddleware returns a middleware that adds WebSocket security
-func WebSocketSecurityMiddleware(log interfaces.LoggerInterface, allowedOrigins ...string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		// Check origin header for WebSocket connections
-		if strings.Contains(c.GetHeader("Connection"), "Upgrade") &&
-			strings.Contains(c.GetHeader("Upgrade"), "websocket") {
-
-			origin := c.GetHeader("Origin")
-			if origin == "" {
-				log.Warn("WebSocket connection attempt without Origin header",
-					"request_id", c.GetString("request_id"),
-					"path", c.Request.URL.Path,
-					"remote_addr", c.ClientIP(),
-				)
-
-				apiErr := errors.NewForbiddenError("Origin header is required for WebSocket connections", nil)
-				c.AbortWithStatusJSON(apiErr.StatusCode(), gin.H{
-					"error": gin.H{
-						"code":    apiErr.Code,
-						"message": apiErr.Message,
-					},
-				})
-				return
-			}
-
-			// Check if origin is allowed
-			allowed := false
-			for _, allowedOrigin := range allowedOrigins {
-				if allowedOrigin == "*" || allowedOrigin == origin {
-					allowed = true
-					break
-				}
-			}
-
-			if !allowed {
-				log.Warn("WebSocket connection attempt from unauthorized origin",
-					"origin", origin,
-					"request_id", c.GetString("request_id"),
-					"path", c.Request.URL.Path,
-					"remote_addr", c.ClientIP(),
-				)
-
-				apiErr := errors.NewForbiddenError("Origin not allowed", nil)
-				c.AbortWithStatusJSON(apiErr.StatusCode(), gin.H{
-					"error": gin.H{
-						"code":    apiErr.Code,
-						"message": apiErr.Message,
-					},
-				})
-				return
-			}
-
-			// Add WebSocket specific security headers
-			c.Header("Sec-WebSocket-Version", "13")
-
-			// Check for WebSocket protocol
-			protocol := c.GetHeader("Sec-WebSocket-Protocol")
-			if protocol != "" {
-				// Validate protocol (implement your validation logic here)
-				// For now, we'll just echo it back
-				c.Header("Sec-WebSocket-Protocol", protocol)
-			}
-		}
 
 		c.Next()
 	}

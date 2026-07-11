@@ -82,39 +82,6 @@ func TestSecurityMiddleware_CORS(t *testing.T) {
 	mockLogger.AssertExpectations(t)
 }
 
-func TestWebSocketSecurityMiddleware(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	mockLogger := logmock.NewMockLogger()
-	mockLogger.On("Warn", mock.Anything, mock.Anything, mock.Anything).Maybe()
-
-	router := gin.New()
-	router.Use(middleware.WebSocketSecurityMiddleware(mockLogger, "https://example.com"))
-	router.GET("/ws", func(c *gin.Context) {
-		c.String(http.StatusOK, "connected")
-	})
-
-	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("GET", "/ws", nil)
-	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", "websocket")
-	req.Header.Set("Origin", "https://example.com")
-	router.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "13", w.Header().Get("Sec-WebSocket-Version"))
-
-	w = httptest.NewRecorder()
-	req, _ = http.NewRequest("GET", "/ws", nil)
-	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", "websocket")
-	req.Header.Set("Origin", "https://evil.com")
-	router.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusForbidden, w.Code)
-
-	mockLogger.AssertExpectations(t)
-}
-
 func TestCSPReportingMiddleware(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	mockLogger := logmock.NewMockLogger()

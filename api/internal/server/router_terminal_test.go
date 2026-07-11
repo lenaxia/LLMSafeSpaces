@@ -142,7 +142,7 @@ func newTerminalTestRouter(t *testing.T) (*gin.Engine, *terminalMockCache) {
 		},
 	}
 
-	terminalHandler := handlers.NewTerminalHandler(cache, wsGetter, "llmsafespaces", log)
+	terminalHandler := handlers.NewTerminalHandler(cache, wsGetter, "llmsafespaces", log, nil)
 
 	router := NewRouter(svc, log, nil, RouterConfig{
 		TerminalHandler: terminalHandler,

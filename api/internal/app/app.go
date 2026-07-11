@@ -737,13 +737,18 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		rateLimitCfg.Strategy = cfg.RateLimiting.Strategy
 	}
 
-	wsOrigins := server.DefaultRouterConfig().AllowedWebSocketOrigins
-	if len(cfg.Security.AllowedOrigins) > 0 && cfg.Security.AllowedOrigins[0] != "*" {
-		wsOrigins = cfg.Security.AllowedOrigins
-	}
-
 	// Create terminal handler (Epic 14 — WebSocket terminal proxy).
-	terminalHandler := handlers.NewTerminalHandler(svc.Cache, &k8sWorkspaceGetterAdapter{client: k8sClient, namespace: cfg.Kubernetes.Namespace}, cfg.Kubernetes.Namespace, log)
+	//
+	// G35: same-origin-only by default, with an operator-controlled
+	// allowlist for cross-origin deployments. Configured via Helm value
+	// `terminal.allowedOrigins`; empty → fail-closed to same-origin.
+	terminalHandler := handlers.NewTerminalHandler(
+		svc.Cache,
+		&k8sWorkspaceGetterAdapter{client: k8sClient, namespace: cfg.Kubernetes.Namespace},
+		cfg.Kubernetes.Namespace,
+		log,
+		cfg.Terminal.AllowedOrigins,
+	)
 
 	// Epic 27a: Agent reload handler.
 	var agentReloadHandler *handlers.AgentReloadHandler
@@ -944,7 +949,6 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		RateLimitConfig:                 rateLimitCfg,
 		SecurityConfig:                  securityCfg,
 		TracingConfig:                   server.DefaultRouterConfig().TracingConfig,
-		AllowedWebSocketOrigins:         wsOrigins,
 		SettingsHandler:                 settingsHandler,
 		InstanceSettings:                instanceSettings,
 		AdminProviderCredentialsHandler: adminProvCredHandler,

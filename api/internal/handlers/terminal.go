@@ -10,6 +10,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -105,11 +107,27 @@ type TerminalHandler struct {
 }
 
 // NewTerminalHandler creates a new terminal handler.
+//
+// allowedOrigins governs the WebSocket upgrade Origin check:
+//
+//   - Empty slice (default): same-origin only. A browser request's Origin
+//     header must match the request Host. Cross-origin browser requests are
+//     rejected. Non-browser clients (no Origin header) are accepted — they
+//     authenticate via the single-use ticket, not cookies, so CSRF does
+//     not apply.
+//   - Contains "*": all origins accepted (the historical behaviour).
+//     Operators who really want this must opt in explicitly.
+//   - Otherwise: same-origin requests plus anything in the allowlist.
+//
+// The same-origin default is what protects against cross-site WebSocket
+// hijacking from a malicious page in a browser holding the user's session
+// ticket. See G35 in design/stories/epic-17-security-review/.
 func NewTerminalHandler(
 	cache TerminalCache,
 	wsGetter WorkspaceGetter,
 	namespace string,
 	logger pkginterfaces.LoggerInterface,
+	allowedOrigins []string,
 ) *TerminalHandler {
 	return &TerminalHandler{
 		cache:                cache,
@@ -120,9 +138,77 @@ func NewTerminalHandler(
 		maxPerWorkspaceConns: defaultMaxPerWS,
 		maxGlobalConns:       defaultMaxGlobal,
 		upgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool { return true },
+			CheckOrigin:      newCheckOriginChecker(allowedOrigins),
+			HandshakeTimeout: 10 * time.Second,
 		},
 	}
+}
+
+// newCheckOriginChecker returns a gorilla/websocket CheckOrigin function
+// implementing the same-origin-default + operator-allowlist policy documented
+// on NewTerminalHandler.
+func newCheckOriginChecker(allowedOrigins []string) func(*http.Request) bool {
+	wildcard := false
+	normalized := make(map[string]struct{}, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		if o == "*" {
+			wildcard = true
+			continue
+		}
+		normalized[normalizeOrigin(o)] = struct{}{}
+	}
+	return func(r *http.Request) bool {
+		if wildcard {
+			return true
+		}
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			// Non-browser client (curl, MCP). Authenticated by ticket, not
+			// cookies; CSRF does not apply.
+			return true
+		}
+		u, err := url.Parse(origin)
+		if err != nil {
+			return false
+		}
+		if asciiEqualFold(u.Host, r.Host) {
+			return true
+		}
+		if _, ok := normalized[normalizeOrigin(origin)]; ok {
+			return true
+		}
+		return false
+	}
+}
+
+// normalizeOrigin lowercases and trims trailing slash so the allowlist
+// comparison is scheme+host+port only.
+func normalizeOrigin(o string) string {
+	s := strings.ToLower(strings.TrimSpace(o))
+	s = strings.TrimSuffix(s, "/")
+	return s
+}
+
+// asciiEqualFold reports whether s and t are equal under ASCII case-folding.
+// (Equivalent to gorilla/websocket's equalASCIIFold, inlined to avoid a
+// direct dependency on the library's internal helper.)
+func asciiEqualFold(s, t string) bool {
+	if len(s) != len(t) {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if toLowerASCII(s[i]) != toLowerASCII(t[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func toLowerASCII(b byte) byte {
+	if b >= 'A' && b <= 'Z' {
+		return b + ('a' - 'A')
+	}
+	return b
 }
 
 // SetExecConfig sets the K8s config for pod exec (call after construction).
