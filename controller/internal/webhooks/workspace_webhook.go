@@ -347,6 +347,8 @@ func validateEgressDomain(d string) error {
 // Handle validates the Workspace resource. Errors are returned as
 // admission.Denied with a human-readable message rather than as 5xx
 // admission errors so kubectl shows the operator the precise reason.
+//
+//nolint:gocyclo // grandfathered; tracked for incremental reduction per .golangci.yml
 func (v *WorkspaceValidator) Handle(ctx context.Context, req admission.Request) admission.Response {
 	if v.Decoder == nil {
 		return admission.Errored(http.StatusInternalServerError,
