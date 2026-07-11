@@ -188,4 +188,51 @@ func TestMigrationCoordinator_MigrateAll_FlushesRedis(t *testing.T) {
 	assert.Equal(t, 1, store.flushCalls, "MigrateAll must flush Redis DEK cache")
 }
 
+// TestMigrationCoordinator_MultiVersionFallback_DecryptsLegacyV1 roves
+// that the master-kek purpose's multi-version static fallback can
+// decrypt legacy api_keys rows encrypted under the v1 dek-cache-derived
+// key. Without the multi-version fallback, these rows would silently
+// fail and count as migration errors.
+func TestMigrationCoordinator_MultiVersionFallback_DecryptsLegacyV1(t *testing.T) {
+	// Build a real multi-version StaticKeyProvider simulating the
+	// production boot code: v1 = dek-cache-derived, v2 = master-kek-derived.
+	dekCacheKey := make([]byte, 32)
+	masterKekKey := make([]byte, 32)
+	for i := range dekCacheKey {
+		dekCacheKey[i] = byte(i + 1)
+		masterKekKey[i] = byte(i + 50)
+	}
+	multiKey, err := NewStaticKeyProviderMultiVersion(2, map[int][]byte{
+		1: dekCacheKey,
+		2: masterKekKey,
+	})
+	require.NoError(t, err)
+
+	// Encrypt a test row with the v1 key (simulating a legacy api_keys row).
+	legacyCT, err := EncryptSecret(dekCacheKey, []byte("legacy-v1-api-key-row"))
+	require.NoError(t, err)
+
+	store := newFakeMigrationStore([]MigrationRow{
+		{ID: "legacy-v1", Table: "api_keys", Ciphertext: legacyCT, KeyVersion: 1},
+	})
+
+	// Source composite: fake KMS primary (never matches the legacy blob) +
+	// multi-version static fallback (v1 + v2 keys).
+	kmsPrimary := &fakeProvider{prefix: "aws-kms:v1:"}
+	source, err := NewCompositeProvider(kmsPrimary, multiKey)
+	require.NoError(t, err)
+
+	target := &fakeProvider{prefix: "aws-kms:v1:"}
+	c := NewMigrationCoordinator(store,
+		map[string]RootKeyProvider{"master-kek": source},
+		map[string]RootKeyProvider{"master-kek": target},
+	)
+
+	res, err := c.MigrateTable(context.Background(), "api_keys", "", false)
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Processed,
+		"legacy v1 dek-cache-encrypted row must be decrypted by the multi-version fallback")
+	assert.Equal(t, 0, res.Failed)
+}
+
 // fakeProvider is reused from composite_provider_test.go.

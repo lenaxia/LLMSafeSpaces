@@ -170,13 +170,34 @@ func run(dbURL, masterKeyFile, kmsProvider, awsRegion, awsCredsFile, gcpCredsFil
 		targets[p.key] = kmsProv
 
 		// Build the local fallback from the old master key.
-		purposeKey := deriveKey(oldMaster, p.key)
-		if purposeKey == nil {
-			return fmt.Errorf("deriving local key for purpose %q from old master key", p.key)
-		}
-		local, err := secrets.NewStaticKeyProvider(purposeKey)
-		if err != nil {
-			return fmt.Errorf("constructing local fallback for %s: %w", p.key, err)
+		// For the "master-kek" purpose (api_keys + org_sso_configs),
+		// the fallback must be multi-version: legacy api_keys rows may
+		// be encrypted under "dek-cache"-derived (v1) keys, while
+		// current rows use "master-kek"-derived (v2) keys. A
+		// single-key fallback would silently fail to decrypt v1 rows.
+		var local secrets.RootKeyProvider
+		if p.key == "master-kek" {
+			dekCacheKey := deriveKey(oldMaster, "dek-cache")
+			masterKekKey := deriveKey(oldMaster, "master-kek")
+			if dekCacheKey == nil || masterKekKey == nil {
+				return fmt.Errorf("deriving keys for purpose %q from old master key", p.key)
+			}
+			local, err = secrets.NewStaticKeyProviderMultiVersion(2, map[int][]byte{
+				1: dekCacheKey,
+				2: masterKekKey,
+			})
+			if err != nil {
+				return fmt.Errorf("constructing multi-version local fallback for %s: %w", p.key, err)
+			}
+		} else {
+			purposeKey := deriveKey(oldMaster, p.key)
+			if purposeKey == nil {
+				return fmt.Errorf("deriving local key for purpose %q from old master key", p.key)
+			}
+			local, err = secrets.NewStaticKeyProvider(purposeKey)
+			if err != nil {
+				return fmt.Errorf("constructing local fallback for %s: %w", p.key, err)
+			}
 		}
 
 		composite, err := secrets.NewCompositeProvider(kmsProv, local)
