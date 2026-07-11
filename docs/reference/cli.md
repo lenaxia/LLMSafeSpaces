@@ -68,8 +68,7 @@ go run ./controller
 |---|---|---|
 | `--watch-namespaces` | `controller.watchNamespaces` | Comma-separated namespaces to watch. `""`/`"*"` = cluster-wide. |
 | `--metrics-addr` | `controller.metricsAddr` | Metrics bind (loopback default — run `kube-rbac-proxy` for Prometheus). |
-| `--probe-addr` | `controller.probeAddr` | Health probe port. |
-| `--webhook-port` | `controller.webhookPort` | Webhook server port. |
+| `--health-probe-bind-address` | `controller.probeAddr` | Health probe port. |
 | `--enable-inference-relay` | `controller.inferenceRelay.enabled` | Enable the InferenceRelay reconciler. Requires `rbac.scope=cluster`. |
 | `--relay-router-url` | `controller.inferenceRelay.routerURL` | Router `/metrics` scrape URL. |
 | `--relay-artifact-url` | `controller.inferenceRelay.artifact.urls[0]` | Relay-proxy binary mirror URL. |
@@ -77,6 +76,9 @@ go run ./controller
 | `--default-runtime-class` | `gvisor.defaultRuntimeClass` (when `gvisor.enabled`) | Default RuntimeClass for workspace pods (typically `gvisor`). |
 | `--api-service-url` | `controller.apiServiceURL` | In-cluster API URL for org-status polling (D20) and pod bootstrap (Epic 35). |
 | `--inference-relay-secret` | `inferenceRelaySecret` | CF Worker path-segment auth secret. |
+
+!!! note "Webhook port not configurable"
+    The webhook server port is hardcoded to `9443` (`controller/main.go:174` — `webhook.NewServer(webhook.Options{Port: 9443})`). There is no `--webhook-port` flag. If you need to change it, edit `controller/main.go` and rebuild.
 
 **Health endpoints:** `/healthz`, `/readyz` on the probe port (`:8081`).
 
@@ -129,6 +131,16 @@ The MCP server (Model Context Protocol). Exposes tools (`sandbox_create`, `sessi
 **Auth:** the MCP server performs no authentication — it forwards the configured API key as `Authorization: Bearer` to the API.
 
 **MCP uses `prompt_async`:** `session_message` calls `POST /session/{id}/prompt_async` (returns 204 immediately; results arrive via the `GET /event` SSE channel). The MCP server subscribes, collects the complete response, and returns it as a single tool result. This is the correct endpoint for programmatic/async callers (Persona 2).
+
+**Flags** (from `cmd/mcp/main.go:32-36`):
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `--base-url` | `LLMSAFESPACES_URL` env or `http://localhost:8080` | LLMSafeSpaces API base URL. |
+| `--api-key` | `LLMSAFESPACES_API_KEY` env | API key for authentication. |
+| `--sse` | `false` | Use SSE transport instead of stdio. |
+| `--addr` | `MCP_ADDR` env or `:3001` | SSE listen address. |
+| `--timeout` | `300s` | Default timeout for `session_message`. |
 
 **When you'd run it manually:** as a stdio subprocess launched by an MCP client, or for local testing of tool definitions.
 
@@ -230,7 +242,7 @@ The operational KEK rotation tool (US-50.5). Re-wraps every KEK-protected row in
 | `-old-master-file` | yes | | Path to the OLD master KEK file. |
 | `-new-master-file` | yes | | Path to the NEW master KEK file. |
 | `-database-url` | yes | | PostgreSQL connection string. |
-| `-redis-url` | yes | | Redis connection string (for DEK cache flush). |
+| `-redis-url` | no | | Redis connection string. If empty, the DEK cache flush is skipped (the rotation still succeeds; the cache will age out naturally within ~5 minutes). |
 | `-table` | no | `all` | `all`, `provider_credentials`, `api_keys`, or `org_sso_configs`. |
 | `-resume-from` | no | | Resume from this row ID (per table; for interrupted runs). |
 | `-target-version` | no | `2` | Target key version. |

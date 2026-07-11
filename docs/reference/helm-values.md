@@ -1,6 +1,6 @@
 # Helm Values Reference
 
-This is the complete reference for every value in `helm/values.yaml`. Grouped by section. For each value: type, default, what it does, and when to change it.
+This is a reference for the most commonly-configured values in `helm/values.yaml`. Grouped by section. For each value: type, default, what it does, and when to change it. For values not documented here (some `*.image.*` sub-fields, `*.resources`, `migrations.*`, `dbInit.*`, `monitoring.*` sub-fields), consult `helm/values.yaml` directly — comments there are extensive.
 
 For installation steps, see the [operator installation guide](../operator/installation.md). For the security-relevant values, cross-reference the [threat model](../architecture/threat-model.md).
 
@@ -285,12 +285,12 @@ Disabled by default. Enable on green-field Postgres where the role+DB don't exis
 |---|---|---|---|
 | `networkPolicy.enabled` | bool | `true` | Master toggle. Ships `workspace-default-deny-ingress` and `workspace-egress`. **Threat model A2 requires SOME default-deny** — if you disable this, document the equivalent control. |
 | `networkPolicy.workspaceEgress.enabled` | bool | `true` | Workspace egress NetworkPolicy. Disable **only** when a CNI-native policy (Cilium CNP, Calico GNP) enforces a strict FQDN allowlist — otherwise pods have no egress restriction. The K8s NP allows `0.0.0.0/0` which would union-defeat a Cilium CNP. |
-| `networkPolicy.apiPodLabelSelector` | object | `{app.kubernetes.io/name: llmsafespaces, component: api}` | Selector for the API pods allowed to reach workspaces on agentd port 4097. |
-| `networkPolicy.controllerPodLabelSelector` | object | `{...component: controller}` | Selector for controller pods (health polling on admin port 4098). |
+| `networkPolicy.apiPodLabelSelector` | object | `{app.kubernetes.io/name: llmsafespaces, app.kubernetes.io/component: api}` | Selector for the API pods allowed to reach workspaces on agentd port 4097. |
+| `networkPolicy.controllerPodLabelSelector` | object | `{app.kubernetes.io/name: llmsafespaces, app.kubernetes.io/component: controller}` | Selector for controller pods (health polling on admin port 4098). |
 | `networkPolicy.prometheusPodLabelSelector` | object | `{app.kubernetes.io/name: prometheus}` | Selector for Prometheus (scraping :4098/metrics). Only effective when `monitoring.serviceMonitors.agentdPodMonitor.enabled` is true. |
 | `networkPolicy.prometheusNamespace` | string | `""` | Namespace where Prometheus runs. Defaults to release namespace; typically override to e.g. `monitoring`. |
 | `networkPolicy.apiIngressRestricted` | bool | `false` | Opt-in default-deny ingress for the API pod. Admits only controller, kube-system (kubelet probes), and `apiIngressSourcePodSelector`. Default `false` because the user-traffic source is deployment-specific. |
-| `networkPolicy.apiIngressSourcePodSelector` | object | `{...component: frontend}` | Pod selector allowed to send user traffic to the API when `apiIngressRestricted=true`. Override to your ingress controller. |
+| `networkPolicy.apiIngressSourcePodSelector` | object | `{app.kubernetes.io/name: llmsafespaces, app.kubernetes.io/component: frontend}` | Pod selector allowed to send user traffic to the API when `apiIngressRestricted=true`. Override to your ingress controller. |
 | `networkPolicy.dnsNamespace` | string | `kube-system` | Namespace for the DNS service. |
 | `networkPolicy.dnsPodLabelSelector` | object | `{k8s-app: kube-dns}` | DNS pod selector. |
 | `networkPolicy.allowedEgressCIDRs` | list | `[0.0.0.0/0]` | CIDR allowlist for sandbox egress. Default allows all public internet. |
