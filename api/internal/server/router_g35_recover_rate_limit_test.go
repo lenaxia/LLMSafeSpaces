@@ -5,6 +5,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -148,6 +149,8 @@ func (s *g35MockServices) GetMetering() interfaces.MeteringService       { retur
 // exist so the route is registered.
 type g35NoopKeyRotator struct{}
 
+var errG35Unreached = errors.New("g35 test: handler should not be reached — rate limiter rejects first")
+
 func (g35NoopKeyRotator) RotateKeyWithPassword(_ context.Context, _ string, _ []byte, _ string, _ time.Duration) (secrets.RotationResult, error) {
 	return secrets.RotationResult{}, errG35Unreached
 }
@@ -157,11 +160,3 @@ func (g35NoopKeyRotator) ChangePassword(_ context.Context, _ string, _ string, _
 func (g35NoopKeyRotator) ResetWithRecoveryKey(_ context.Context, _ string, _ string, _ []byte) (string, error) {
 	return "", errG35Unreached
 }
-
-var errG35Unreached = g35Errorf("handler should not be reached — rate limiter rejects first")
-
-func g35Errorf(msg string) error { return &g35Error{msg: msg} }
-
-type g35Error struct{ msg string }
-
-func (e *g35Error) Error() string { return e.msg }
