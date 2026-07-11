@@ -17,6 +17,7 @@ Rules:
 
 | Agent | What | Files Claimed | Status | Started |
 |-------|------|---------------|--------|---------|
+| opencode (g38) | G38 — ChangePassword must revoke all sessions | `api/internal/handlers/secrets.go`, `api/internal/handlers/secrets_test.go` (new), `api/internal/app/app.go`, `api/internal/services/auth/auth_e2e_all_test.go` | In Progress | 2026-07-11 |
 
 
 ---
