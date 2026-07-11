@@ -558,6 +558,18 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// the multi-version upgrade entirely — cloud-side versioning makes
 		// the dek-cache→master-kek transition moot, and the composite's
 		// static fallback handles legacy rows via prefix-sniffing dispatch.
+		// US-57.1 D7: fail-closed guard. When RootKeyProvider is explicitly
+		// "aws-kms" and any per-purpose provider construction failed (nil),
+		// refuse to boot. This prevents silent downgrade to local static keys
+		// when the operator explicitly chose KMS for the root of trust.
+		if cfg.Security.RootKeyProvider == "aws-kms" {
+			if providerCredsProv == nil || orgCredsProv == nil || rkp == nil {
+				cancel()
+				return nil, fmt.Errorf("KMS root key provider enabled but one or more per-purpose providers failed to initialize (providerCredsProv=%v, orgCredsProv=%v, apiKeyProv=%v) — refusing to boot with incomplete KMS configuration",
+					providerCredsProv != nil, orgCredsProv != nil, rkp != nil)
+			}
+		}
+
 		apiKeyProv := rkp
 		if _, isComposite := apiKeyProv.(*secrets.CompositeProvider); isComposite {
 			// KMS-backed composite — no multi-version upgrade needed.

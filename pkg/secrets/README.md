@@ -14,20 +14,21 @@ provider (Vault / OpenBao Transit) is planned.
 | Provider | `rootKeyProvider` value | Where the key material lives | Use when |
 |----------|-------------------------|------------------------------|----------|
 | `StaticKeyProvider` | `""` (Helm default) or `"static"` | In a Kubernetes Secret, delivered as a **read-only file mount** (Epic 50 US-50.1 default) or legacy env var, held in API-process memory for the pod's lifetime | **Development only.** Single key, no rotation. The file mount removes `/proc/1/environ` exposure; the legacy env path remains as a deprecated opt-in (`masterSecret.deliveryMethod=env`). Emits a startup warning. |
-| `SealedKeyProvider` | `"sealed"` | In a sealed file on disk; the root key is wrapped by an Argon2id KEK derived from an operator-supplied passphrase | **Production (today).** The root key is not present in env vars; an attacker who reads the sealed file but not the passphrase cannot recover it. |
+| `SealedKeyProvider` | `"sealed"` | In a sealed file on disk; the root key is wrapped by an Argon2id KEK derived from an operator-supplied passphrase | **Production (self-hosted).** The root key is not present in env vars; an attacker who reads the sealed file but not the passphrase cannot recover it. |
+| `AWSKMSProvider` | `"aws-kms"` (Epic 57 US-57.1) | In AWS KMS — the key material **never leaves AWS**. Every Encrypt/Decrypt is a network round-trip to the KMS API. | **Production (AWS).** Converts API-pod RCE from permanent KEK exfiltration to ephemeral compromise bounded by the RCE window. File-mounted static AWS credentials (not IRSA — narrower trust surface per US-50.1's pattern). |
+| `CompositeProvider` | *(internal, wraps any of the above)* | Dispatches Decrypt by ciphertext prefix (`lkms:v1:`, `aws-kms:v1:`). Primary for Encrypt; primary + fallbacks for Decrypt. | Enables zero-downtime migration between providers. The composite's static fallback decrypts legacy rows during migration. |
 
 Selection is read in `api/internal/app/secrets_adapters.go` (`newRootKeyProvider`)
 from `cfg.Security.RootKeyProvider` (env: `LLMSAFESPACES_SECURITY_ROOTKEYPROVIDER`).
 
-### External providers (planned, not shipped)
+### Cloud KMS availability (D9)
 
-A future `TransitProvider` wrapping HashiCorp Vault / OpenBao Transit is the
-intended production-grade option. Transit keeps the key inside an HSM/KMS, so
-even full API-pod exfiltration cannot recover it offline, and it provides
-server-side audit logging and one-command rotation. The `RootKeyProvider`
-interface is shaped so this is one new implementation, not a redesign. See
-`design/stories/epic-50-master-kek-hardening/README.md` ("Deferred — External
-Providers") for the deferral rationale.
+Under KMS, every `Decrypt` call is a network round-trip. Sustained KMS
+unavailability (regional outage, network partition) causes all KEK-dependent
+decrypts to fail simultaneously. This is an inherent trade-off of cloud KMS.
+**Multi-region KMS key replicas are recommended for HA deployments.** The
+`CompositeProvider`'s static fallback does NOT mitigate KMS-primary
+unavailability — it only runs on ciphertext prefix mismatch (legacy rows).
 
 ## Threat model
 
