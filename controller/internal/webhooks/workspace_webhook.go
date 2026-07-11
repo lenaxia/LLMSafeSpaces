@@ -44,6 +44,46 @@ func adminAllowsRuntimeClassOverride(annotations map[string]string) bool {
 	return annotations[allowRuntimeClassOverrideAnnotation] == "true"
 }
 
+// validateRuntimeClassGate enforces the S51.1 admin-gate policy on
+// spec.runtimeClass. Returns an error suitable for admission.Denied when
+// the workspace attempts to set spec.runtimeClass without the admin
+// annotation; nil otherwise.
+//
+// Without this check, any user with workspace create/update RBAC can
+// escape gVisor via direct kubectl, defeating the kernel-level isolation
+// layer for their own pods.
+//
+// Scheme: reject any non-nil spec.runtimeClass unless the object carries
+// the admin annotation llmsafespaces.dev/allow-runtime-class-override=true.
+// Operators with cluster-admin RBAC apply the annotation; tenant RBAC
+// scopes cannot.
+//
+// IMPORTANT: empty-string is included in the rejection. Per
+// pod_builder.go:247 ("Empty string = runc") and the existing
+// TestS51_1_PerWorkspaceOptOutEmpty, spec.runtimeClass="" is functionally
+// equivalent to spec.runtimeClass="runc" — both clear RuntimeClassName,
+// falling through to the kubelet default runtime (typically runc).
+// Exempting empty-string would let a kubectl user escape gVisor by
+// setting "" instead of "runc", defeating the entire purpose of this
+// check.
+func validateRuntimeClassGate(ws *v1.Workspace) error {
+	if ws.Spec.RuntimeClass == nil {
+		return nil
+	}
+	if adminAllowsRuntimeClassOverride(ws.Annotations) {
+		return nil
+	}
+	rcValue := *ws.Spec.RuntimeClass
+	if rcValue == "" {
+		rcValue = "(empty string)"
+	}
+	return fmt.Errorf(
+		"spec.runtimeClass %q is admin-gated; apply annotation %q=\"true\" "+
+			"via cluster-admin RBAC to opt this workspace out of the default runtime class "+
+			"(empty string is treated as an explicit runc opt-out)",
+		rcValue, allowRuntimeClassOverrideAnnotation)
+}
+
 // WorkspaceValidator is a ValidatingAdmissionWebhook for Workspace resources.
 //
 // It closes the following pentest findings (Epic 17):
@@ -593,40 +633,12 @@ func (v *WorkspaceValidator) Handle(ctx context.Context, req admission.Request) 
 		}
 	}
 
-	// 7. S51.1 admin gate — spec.runtimeClass is admin-gated, not
-	//    tenant-selectable. Without this check, any user with workspace
-	//    create/update RBAC can escape gVisor via direct kubectl, defeating
-	//    the kernel-level isolation layer for their own pods. The CRD
-	//    comment at pkg/apis/llmsafespaces/v1/workspace_types.go:158-161
-	//    documents this as a deferred S51.2 follow-up; this PR closes
-	//    that gap.
-	//
-	//    Scheme: reject any non-nil spec.runtimeClass unless the object
-	//    carries the admin annotation
-	//    llmsafespaces.dev/allow-runtime-class-override=true. Operators
-	//    with cluster-admin RBAC apply the annotation; tenant RBAC scopes
-	//    cannot.
-	//
-	//    IMPORTANT: empty-string is included in the rejection. Per
-	//    pod_builder.go:247 ("Empty string = runc") and the existing
-	//    TestS51_1_PerWorkspaceOptOutEmpty, spec.runtimeClass="" is
-	//    functionally equivalent to spec.runtimeClass="runc" — both
-	//    clear RuntimeClassName, falling through to the kubelet default
-	//    runtime (typically runc). Exempting empty-string would let a
-	//    kubectl user escape gVisor by setting "" instead of "runc",
-	//    defeating the entire purpose of this check.
-	if ws.Spec.RuntimeClass != nil {
-		if !adminAllowsRuntimeClassOverride(ws.Annotations) {
-			rcValue := *ws.Spec.RuntimeClass
-			if rcValue == "" {
-				rcValue = "(empty string)"
-			}
-			return admission.Denied(fmt.Sprintf(
-				"spec.runtimeClass %q is admin-gated; apply annotation %q=\"true\" "+
-					"via cluster-admin RBAC to opt this workspace out of the default runtime class "+
-					"(empty string is treated as an explicit runc opt-out)",
-				rcValue, allowRuntimeClassOverrideAnnotation))
-		}
+	// 7. S51.1 admin gate — see validateRuntimeClassGate for the full
+	//    rationale (admin-gated spec.runtimeClass, including empty-string
+	//    opt-out). Extracted to a helper to keep Handle()'s cyclomatic
+	//    complexity below the project linter threshold.
+	if err := validateRuntimeClassGate(ws); err != nil {
+		return admission.Denied(err.Error())
 	}
 
 	// 8. F1.2.2 — Status must not be set by the user. On CREATE only the

@@ -90,7 +90,7 @@ func TestCheckTerminalOrigin_AllowlistAccepts(t *testing.T) {
 }
 
 func TestCheckTerminalOrigin_WildcardAcceptsAll(t *testing.T) {
-	// Operators who really want the old behaviour can set ["*"].
+	// Operators who really want the old behavior can set ["*"].
 	f := newCheckOriginChecker([]string{"*"})
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.Host = "api.example.com"
@@ -169,7 +169,7 @@ func TestTerminal_G35_CrossOriginUpgradeRejected(t *testing.T) {
 
 func TestTerminal_G35_SameOriginUpgradePassesOriginCheck(t *testing.T) {
 	// We can't drive a full WebSocket upgrade through httptest.NewRecorder
-	// because gorilla needs to HTTP-hijack the connection. The behavioural
+	// because gorilla needs to HTTP-hijack the connection. The behavioral
 	// contract we care about is that the upgrader's CheckOrigin function
 	// accepts same-origin — the rest of the upgrade path is exercised by
 	// the proxy/handler integration tests. Construct the handler and call
