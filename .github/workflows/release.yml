@@ -144,6 +144,11 @@ jobs:
           cosign-release: 'v2.4.1'
 
       - name: Sign each image
+        # cosign sign with keyless OIDC: the OIDC token from GitHub Actions
+        # is used to get a short-lived certificate from Fulcio. The identity
+        # and issuer are automatically embedded in the certificate — we don't
+        # pass them as flags (those are for `cosign verify`, not `cosign sign`).
+        # The signature is recorded in Rekor automatically.
         run: |
           for img in api controller base frontend relay-router relay-proxy; do
             case "$img" in
@@ -155,10 +160,7 @@ jobs:
               relay-proxy) image_ref="${{ env.REGISTRY }}/${{ env.RELAY_PROXY_IMAGE }}:${VERSION}" ;;
             esac
             echo "Signing ${image_ref}"
-            cosign sign --yes \
-              --certificate-identity "https://github.com/lenaxia/LLMSafeSpaces/.github/workflows/release.yml@refs/tags/v${VERSION}" \
-              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-              "${image_ref}"
+            cosign sign --yes "${image_ref}"
           done
 
   # Scan each built image with Trivy. Fail on HIGH/CRITICAL CVEs.
@@ -183,8 +185,8 @@ jobs:
 
       - name: Install Trivy
         run: |
-          curl -sLO https://github.com/aquasecurity/trivy/releases/download/v0.55.0/trivy_0.55.0_Linux-64bit.tar.gz
-          tar xzf trivy_0.55.0_Linux-64bit.tar.gz
+          curl -sLO https://github.com/aquasecurity/trivy/releases/download/v0.70.0/trivy_0.70.0_Linux-64bit.tar.gz
+          tar xzf trivy_0.70.0_Linux-64bit.tar.gz
           sudo mv trivy /usr/local/bin/
 
       - name: Scan each image
@@ -199,14 +201,17 @@ jobs:
               relay-proxy) image_ref="${{ env.REGISTRY }}/${{ env.RELAY_PROXY_IMAGE }}:${VERSION}" ;;
             esac
             echo "::group::Scanning ${image_ref}"
-            trivy image \
+            # trivy returns exit code 1 when HIGH/CRITICAL vulns are found.
+            # We propagate that failure — the `|| { ... }` block surfaces
+            # which image failed.
+            if ! trivy image \
               --severity HIGH,CRITICAL \
               --exit-code 1 \
               --ignorefile .trivyignore \
-              "${image_ref}" || {
-                echo "::error::Trivy found HIGH/CRITICAL vulnerabilities in ${image_ref}"
-                exit 1
-              }
+              "${image_ref}"; then
+              echo "::error::Trivy found HIGH/CRITICAL vulnerabilities in ${image_ref}"
+              exit 1
+            fi
             echo "::endgroup::"
           done
 

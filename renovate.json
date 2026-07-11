@@ -5,7 +5,7 @@
     ":semanticCommits",
     ":rebaseStalePrs",
     "schedule:nonOfficeHours",
-    ":pinDigests"
+    "docker:pinDigests"
   ],
   "labels": ["dependencies", "renovate"],
   "prHourlyLimit": 4,
