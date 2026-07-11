@@ -141,4 +141,4 @@ goimports -l <changed files>  # clean
 - `pkg/secrets/secret_service_test.go` — new test `TestSecretService_G28_BindingsSurviveNoPodState`
 - `CHANGELOG.md` — entry under `[Unreleased] → Security`
 - `design/stories/epic-17-security-review/THREAT-MODEL.md` — G28 row reclassified 🔴 → 🟡; moved Open → Accepted list; counts updated; revision 2.9
-- `worklogs/NNNN_2026-07-11_g28-bindings-bootstrap-invariant.md` — this file
+- `worklogs/0625_2026-07-11_g28-bindings-bootstrap-invariant.md` — this file
