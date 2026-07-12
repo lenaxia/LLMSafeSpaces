@@ -291,7 +291,6 @@ llmsafespaces/
 ├── pkg/           # Shared packages imported by api/ and controller/ (see CRD type ownership below)
 ├── mocks/         # Shared test mocks
 ├── sdks/          # Client SDKs (Go, TypeScript, Python, Java, VS Code extension) from OpenAPI spec
-├── workers/       # Cloudflare Workers (inference-relay — the simpler relay alternative to the self-hosted fleet)
 ├── frontend/      # React 19 + TypeScript + Vite SPA
 ├── charts/        # Helm chart (API, controller, frontend, CRDs, RBAC, webhooks, optional relay-router)
 ├── design/        # Design documents — 0021_evolution-v2.md is authoritative
@@ -595,7 +594,11 @@ History supports keeping it: the guard was specifically *narrowed* (not added) i
 
 ### Overview
 
-The **inference relay fleet** (Epic 42) is the self-hosted alternative to the Cloudflare Worker relay (`workers/inference-relay/`, Epic 26). Both serve the same purpose — proxying free-tier opencode Zen model inference so workspace pods never hold the upstream secret — and are selected by the configured relay URL. The fleet exists because the CF Worker is rate-limited and single-provider; the fleet runs relay VMs across multiple clouds for IP diversity and rotation on 429.
+The **inference relay fleet** (Epic 42) is the self-hosted relay option for free-tier opencode Zen model inference. It exists for operators who need IP rotation on free-tier access: the fleet runs relay VMs across multiple clouds (AWS primary, OCI secondary, GCP optional) for IP diversity and rotation on 429.
+
+The default mode is **direct-to-Zen**: workspace pods call `https://opencode.ai/zen/v1` directly using opencode's built-in `public` anonymous key. No relay configuration is required for this mode.
+
+The Cloudflare Worker relay (Epic 26) was removed in Epic 60 (2026-07-12): Zen now blocks all Cloudflare Worker egress IPs, making the Worker unreachable. See `design/stories/epic-60-remove-cf-worker-relay/README.md`.
 
 > **Not to be confused with the [Relay Config Subsystem](#relay-config-subsystem).** That section describes how `agent-config.json` is built *inside* the workspace pod. This section describes the *external* fleet of VMs the pod's relay injector may point at.
 
@@ -615,7 +618,7 @@ The router↔relay path was originally a WireGuard mesh. **Removed in worklog 04
 
 - Per-VM (not fleet-wide) tokens preserve WG's tight blast radius — a compromised VM's token cannot be used against sibling relays. Stored in the `relay-vm-tokens` Secret keyed by provider slot; rotation = destroy + reprovision.
 - `/healthz` and `/metrics` on relay-proxy are token-exempt (the router probes health without the per-VM token).
-- Plaintext HTTP (not TLS) is an accepted trade-off: the exposure is identical to the shipped CF Worker relay (free-tier Zen access only). See the supersession banner in `design/stories/epic-42-multi-cloud-inference-relay/README.md`.
+- Plaintext HTTP (not TLS) is an accepted trade-off: the exposure is free-tier Zen access only (no paid credentials, no user data). See the design doc `design/stories/epic-42-multi-cloud-inference-relay/README.md`.
 
 ### Feature gate and configuration
 

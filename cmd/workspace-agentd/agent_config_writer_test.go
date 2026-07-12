@@ -145,7 +145,7 @@ func TestAgentConfigWriter_Rebuild_RelayOnly(t *testing.T) {
 	models := []relayModel{
 		{ID: "glm-5-free", Name: "GLM-5 Free", ContextLimit: 204800, OutputLimit: 131072},
 	}
-	w.setRelay("https://relay.safespaces.dev/secret", models)
+	w.setRelay("https://relay.example.test/path", models)
 
 	require.NoError(t, w.rebuild())
 
@@ -171,7 +171,7 @@ func TestAgentConfigWriter_Rebuild_AllSources(t *testing.T) {
 
 	w.setProviders([]byte(`{"provider": {"openai": {"options": {"apiKey": "sk-test"}}}}`))
 	w.setModel("openai/gpt-4o")
-	w.setRelay("https://relay.safespaces.dev/secret", []relayModel{
+	w.setRelay("https://relay.example.test/path", []relayModel{
 		{ID: "glm-5-free", Name: "GLM-5 Free", ContextLimit: 200000, OutputLimit: 100000},
 	})
 
@@ -248,7 +248,7 @@ func TestAgentConfigWriter_Rebuild_PreservesRelayOnProviderUpdate(t *testing.T) 
 	w := newAgentConfigWriter(path)
 
 	// Step 1: relay injector sets relay
-	w.setRelay("https://relay.safespaces.dev/secret", []relayModel{
+	w.setRelay("https://relay.example.test/path", []relayModel{
 		{ID: "glm-5-free", Name: "GLM-5 Free", ContextLimit: 200000},
 	})
 	require.NoError(t, w.rebuild())
@@ -379,7 +379,7 @@ func TestAgentConfigWriter_BootThenRelayInjection(t *testing.T) {
 	assert.Equal(t, "openai/gpt-4o", w.model)
 
 	// Step 3: relay injector fires
-	w.setRelay("https://relay.safespaces.dev/secret", []relayModel{
+	w.setRelay("https://relay.example.test/path", []relayModel{
 		{ID: "glm-5-free", Name: "GLM-5 Free", ContextLimit: 200000, OutputLimit: 100000},
 	})
 	require.NoError(t, w.rebuild())

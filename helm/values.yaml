@@ -1081,21 +1081,6 @@ mcp:
       drop:
         - ALL
 
-# Epic 26: Inference relay for free-tier models.
-# When set, workspace pods use this URL as the opencode provider baseURL
-# instead of opencode.ai/zen/v1 directly. Deploy the Cloudflare Worker
-# from workers/inference-relay/ and set the URL here.
-# Stable CNAME that rotates to fresh Worker deployments.
-inferenceRelayURL: "https://relay.safespaces.dev"
-
-# Epic 26: Relay auth secret.
-# Leave empty ("") to have the chart auto-generate a cryptographically
-# random 64-hex-char secret on first install and preserve it across upgrades.
-# The generated value is stored in the llmsafespaces-credentials K8s Secret
-# and pushed to the CF Worker automatically if cloudflare credentials are set.
-# Only set this manually if you need to force a specific value.
-inferenceRelaySecret: ""
-
 # US-43.19 / D20: shared secret authenticating the controller→API internal
 # org-status calls (the endpoint the workspace reconciler polls to drive
 # org-level suspension). Leave empty ("") to have the chart auto-generate a
@@ -1222,20 +1207,6 @@ orgSubdomainRouting:
     issuerRef:
       name: ""
       kind: "ClusterIssuer"   # "ClusterIssuer" or "Issuer"
-
-# Cloudflare credentials for automated relay secret management.
-# When set, a post-install/post-upgrade Job pushes inferenceRelaySecret to
-# the CF Worker automatically, keeping the cluster and CF Worker in sync.
-# Provide these via --set or a sealed-secrets/external-secrets override —
-# never commit the apiToken to source control.
-cloudflare:
-  # API token with Workers:Edit permission (Account scope).
-  # Obtain from https://dash.cloudflare.com/profile/api-tokens
-  apiToken: ""
-  # Cloudflare account ID (visible in Workers dashboard URL).
-  accountId: ""
-  # Name of the CF Worker script to push the secret to.
-  workerName: "llmsafespaces-inference-relay"
 
 # ----------------------------------------------------------------------------
 # Monitoring (Grafana dashboards, Prometheus alerts, ServiceMonitors)

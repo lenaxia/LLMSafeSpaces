@@ -81,44 +81,18 @@ spec:
             {{- end }}
             {{- if .Values.controller.inferenceRelay.enabled }}
             {{- /* Fleet enabled: workspace pods route through the in-cluster
-                   relay-router (Design Principle 6, Epic 42), NOT the external
-                   CF Worker. Post-WG-removal (worklog 0442) the router reaches
-                   relay VMs over HTTP with per-VM token auth, so
-                   --inference-relay-secret is intentionally omitted here
-                   (pod_builder embeds the secret as a path segment only when
-                   InferenceRelaySecret != "", which the controller leaves empty
-                   in this mode).
-                   The URL MUST be the cross-namespace FQDN: workspace pods may
-                   run in any namespace (controller watches cluster-wide by
-                   default), while the relay-router Service lives in the release
-                   namespace — a short name would fail to resolve cross-ns.
-                   workspaceRouterURL overrides for the separate-ns-router case. */}}
+                   relay-router (Design Principle 6, Epic 42). Post-WG-removal
+                   (worklog 0442) the router reaches relay VMs over HTTP with
+                   per-VM token auth, so --inference-relay-secret is omitted
+                   here (the controller never sets InferenceRelaySecret in
+                   fleet mode; per-VM tokens are managed by the router).
+                   The URL MUST be the cross-namespace FQDN: workspace pods
+                   may run in any namespace (controller watches cluster-wide
+                   by default), while the relay-router Service lives in the
+                   release namespace — a short name would fail to resolve
+                   cross-ns. workspaceRouterURL overrides for the
+                   separate-ns-router case. */}}
             - --inference-relay-url={{ .Values.controller.inferenceRelay.workspaceRouterURL | default (printf "http://relay-router.%s.svc.cluster.local:8080" .Release.Namespace) }}
-            {{- else }}
-            {{- with .Values.inferenceRelayURL }}
-            - --inference-relay-url={{ . }}
-            {{- end }}
-            {{- /* G47: inferenceRelaySecret is injected via env var from
-                   the K8s Secret (see env block below) rather than as a
-                   plaintext CLI arg, so it is not visible in
-                   `kubectl get pod -o yaml` args. The previous plaintext
-                   fallback (`--inference-relay-secret={{ .Values.inferenceRelaySecret }}`)
-                   was removed because it exposed the secret in the pod
-                   spec. Operators MUST supply the secret via one of:
-                   (a) .Values.externalSecret.create=true (chart creates
-                       the K8s Secret from .Values.inferenceRelaySecret);
-                   (b) .Values.externalSecret.existingSecret=name (chart
-                       uses an operator-created Secret); or
-                   (c) fluxcd/ExternalSecret pointing at AWS Secrets
-                       Manager / GCP Secret Manager / Vault. */ -}}
-            {{- if and .Values.inferenceRelayURL (or .Values.externalSecret.create .Values.externalSecret.existingSecret) }}
-            - --inference-relay-secret=$(INFERENCE_RELAY_SECRET)
-            {{- else if .Values.inferenceRelaySecret }}
-            {{- /* G47 fix: refuse to render the plaintext path. Fail
-                   at helm-render time with an actionable error rather
-                   than silently exposing the secret. */ -}}
-            {{- fail "G47: .Values.inferenceRelaySecret is set but neither .Values.externalSecret.create nor .Values.externalSecret.existingSecret is configured. The plaintext CLI-arg fallback was removed (visible in `kubectl get pod -o yaml`). Set externalSecret.create=true (chart creates the Secret) or externalSecret.existingSecret=name (use an operator-created Secret)." }}
-            {{- end }}
             {{- end }}
             {{- if .Values.controller.inferenceRelay.enabled }}
             - --enable-inference-relay=true
@@ -190,8 +164,7 @@ spec:
           {{/* F1+F5 (worklog 0372): LLMSAFESPACES_INTERNAL_TOKEN authenticates
                  the controller→API internal org-status call. The API endpoint
                  FAILS CLOSED without it, so this env var is always wired
-                 (never optional). INFERENCE_RELAY_SECRET remains conditional on
-                 the relay being configured. */}}
+                 (never optional). */}}
           env:
             - name: LLMSAFESPACES_INTERNAL_TOKEN
               valueFrom:
@@ -208,14 +181,6 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
-            {{- if and .Values.inferenceRelayURL (or .Values.externalSecret.create .Values.externalSecret.existingSecret) }}
-            - name: INFERENCE_RELAY_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: {{ include "llmsafespaces.secretName" . }}
-                  key: inference-relay-secret
-                  optional: true
-            {{- end }}
           volumeMounts:
             - name: tmp
               mountPath: /tmp

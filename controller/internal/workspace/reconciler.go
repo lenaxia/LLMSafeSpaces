@@ -28,18 +28,12 @@ type WorkspaceReconciler struct {
 	// defaultHostResolver (net.DefaultResolver) when nil.
 	HostResolver HostResolver
 
-	// InferenceRelayURL is the Cloudflare Worker URL for free-tier inference
-	// (Epic 26). When set, workspace pods route opencode provider requests
-	// through this URL for IP distribution. When empty, opencode uses its
-	// default gateway (opencode.ai/zen/v1) directly.
+	// InferenceRelayURL is the self-hosted relay URL for free-tier inference
+	// (Epic 42 InferenceRelay fleet). When set, workspace pods route opencode
+	// free-tier provider requests through this URL for IP distribution. When
+	// empty (the chart default), opencode uses its default gateway
+	// (opencode.ai/zen/v1) directly with the built-in `public` key.
 	InferenceRelayURL string
-
-	// InferenceRelaySecret is the path-segment secret that authenticates
-	// requests to the CF Worker. When set, it is appended to InferenceRelayURL
-	// as the first path segment: https://relay.example.com/<secret>.
-	// The Worker strips and validates this segment before forwarding upstream.
-	// Set via --inference-relay-secret controller flag, sourced from a k8s Secret.
-	InferenceRelaySecret string
 
 	// OrgStatusClient, when non-nil AND the workspace belongs to an org
 	// (Spec.Owner.OrgID != ""), is consulted on every Active reconcile to drive

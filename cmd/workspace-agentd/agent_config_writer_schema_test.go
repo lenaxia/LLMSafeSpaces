@@ -158,16 +158,16 @@ func TestAgentConfigWriter_Rebuild_MatchesOpencodeSchema(t *testing.T) {
 		{"empty", sources{}},
 		{"providers-only", sources{providers: baseProviders}},
 		{"providers+model", sources{providers: baseProviders, model: "openai/gpt-4o"}},
-		{"relay-only", sources{relayURL: "https://relay.safespaces.dev/x", relayModels: oneRelayModel}},
+		{"relay-only", sources{relayURL: "https://relay.example.test/x", relayModels: oneRelayModel}},
 		{"providers+model+relay", sources{
 			providers: baseProviders, model: "openai/gpt-4o",
-			relayURL: "https://relay.safespaces.dev/x", relayModels: oneRelayModel,
+			relayURL: "https://relay.example.test/x", relayModels: oneRelayModel,
 		}},
 		{"admin-prompt-only", sources{adminPrompt: adminBody}},
 		{"providers+admin-prompt", sources{providers: baseProviders, adminPrompt: adminBody}},
 		{"all-four-sources", sources{
 			providers: baseProviders, model: "openai/gpt-4o",
-			relayURL: "https://relay.safespaces.dev/x", relayModels: oneRelayModel,
+			relayURL: "https://relay.example.test/x", relayModels: oneRelayModel,
 			adminPrompt: adminBody,
 		}},
 	}

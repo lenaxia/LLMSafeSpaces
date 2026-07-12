@@ -356,7 +356,7 @@ The operator setup wizard and status dashboard for the self-hosted multi-cloud r
 | `POST` | `/admin/relay/pause` | Pause fleet reconciliation |
 | `POST` | `/admin/relay/resume` | Resume fleet reconciliation |
 
-See [Inference Relay Fleet](../operator/inference-relay.md) for the architecture and when to choose the self-hosted fleet over the default Cloudflare Worker relay.
+See [Inference Relay Fleet](../operator/inference-relay.md) for the architecture and when to choose the self-hosted fleet over the default direct-to-Zen mode.
 
 ---
 

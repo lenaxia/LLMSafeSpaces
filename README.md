@@ -79,12 +79,14 @@ Suspending a workspace deletes the pod but retains the PVC. Activating a suspend
 
 ### Inference Relay
 
-Free-tier LLM inference (opencode Zen models) is reached through a relay so workspace pods never hold the upstream secret. Two interchangeable deployments, selected by the configured relay URL:
+Free-tier LLM inference (opencode Zen models) is reached via one of two modes:
 
-- **Cloudflare Worker relay** (`workers/inference-relay/`) — a single stateless Worker; the simplest path and the default (`inferenceRelayURL`).
-- **Self-hosted multi-cloud fleet** (Epic 42, `InferenceRelay` CRD) — the controller provisions and health-checks relay VMs across AWS (paid primary), OCI (free secondary), and optionally GCP. Workspace pods route through the in-cluster **relay-router** (`cmd/relay-router/`), which distributes traffic across healthy relay VMs over HTTP with per-VM token auth and falls back to direct upstream access when all VMs are down. Each VM runs **relay-proxy** (`cmd/relay-proxy/`), distributed to VMs via cloud-init with SHA-256 verification. Feature-gated behind `controller.inferenceRelay.enabled`; requires `rbac.scope=cluster` because `InferenceRelay` is cluster-scoped.
+- **Direct-to-Zen (default).** Workspace pods call `https://opencode.ai/zen/v1` directly using opencode's built-in `public` anonymous key. No relay configuration required — this is what ships with the chart out of the box.
+- **Self-hosted multi-cloud fleet** (Epic 42, `InferenceRelay` CRD) — for operators who want IP rotation on free-tier access. The controller provisions and health-checks relay VMs across AWS (paid primary), OCI (free secondary), and optionally GCP. Workspace pods route through the in-cluster **relay-router** (`cmd/relay-router/`), which distributes traffic across healthy relay VMs over HTTP with per-VM token auth and falls back to direct upstream access when all VMs are down. Each VM runs **relay-proxy** (`cmd/relay-proxy/`), distributed to VMs via cloud-init with SHA-256 verification. Feature-gated behind `controller.inferenceRelay.enabled`; requires `rbac.scope=cluster` because `InferenceRelay` is cluster-scoped.
 
-See `design/stories/epic-42-multi-cloud-inference-relay/README.md`.
+The Cloudflare Worker relay (Epic 26) was removed in Epic 60 (2026-07): Zen now blocks all Cloudflare Worker egress IPs, making the Worker unreachable. See `design/stories/epic-60-remove-cf-worker-relay/README.md`.
+
+See `design/stories/epic-42-multi-cloud-inference-relay/README.md` for the fleet design.
 
 ---
 
@@ -418,7 +420,6 @@ pkg/                     # Shared Go packages
 
 helm/     # Helm chart (API, controller, frontend, CRDs, RBAC, webhooks)
 sdks/                    # Client SDKs (Go, TypeScript, Python, Java, VS Code extension)
-workers/inference-relay/ # Cloudflare Worker relay for free-tier inference (the simpler alternative to the self-hosted InferenceRelay fleet)
 local/                   # bootstrap.sh, test.sh, teardown.sh for kind
 design/                  # Architecture and design docs (0021_evolution-v2.md is authoritative)
 ```

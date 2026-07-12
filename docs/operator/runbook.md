@@ -10,7 +10,6 @@ This page is a collection of step-by-step procedures for routine and emergency o
 - [Recovering from a corrupted PVC](#recovering-from-a-corrupted-pvc)
 - [Scaling the API horizontally](#scaling-the-api-horizontally)
 - [Database maintenance windows](#database-maintenance-windows)
-- [Rotating the inference relay secret](#rotating-the-inference-relay-secret)
 - [Rotating a relay VM (self-hosted fleet)](#rotating-a-relay-vm-self-hosted-fleet)
 
 ---
@@ -384,51 +383,11 @@ If you use CloudNativePG, failover is automatic. The API will see transient conn
 
 ---
 
-## Rotating the inference relay secret
-
-The inference relay secret authenticates workspace→relay requests. Rotate if compromised or periodically.
-
-### Prerequisites
-
-- Access to the Cloudflare dashboard (for the Worker relay) or the relay VM tokens Secret (for the self-hosted fleet).
-
-### Procedure (CF Worker)
-
-```bash
-# 1. Generate a new secret
-NEW_SECRET=$(openssl rand -hex 32)
-
-# 2. Update the credentials Secret
-kubectl -n llmsafespaces patch secret llmsafespaces-credentials \
-    --type merge -p "{\"data\":{\"inference-relay-secret\":\"$(echo -n "$NEW_SECRET" | base64)\"}}"
-
-# 3. Restart the controller (if it injects the secret into workspace config)
-kubectl -n llmsafespaces rollout restart deployment/llmsafespaces-controller
-
-# 4. Push the new secret to the CF Worker (automated if cloudflare creds are set)
-# The post-upgrade Job handles this on helm upgrade. For manual push:
-helm upgrade llmsafespaces ./helm -n llmsafespaces -f llmsafespaces.yaml
-
-# 5. Restart workspace pods so they pick up the new secret
-# (or use the agent reload endpoint)
-```
-
-### Procedure (self-hosted fleet)
-
-Each relay VM has a per-VM token. Rotation = destroy + reprovision the VM:
-
-```bash
-curl -X POST "$API/api/v1/admin/relay/rotate/$VM_ID" \
-    -H "Authorization: Bearer $ADMIN_TOKEN"
-```
-
-The controller destroys the VM and provisions a fresh one with a new token.
-
----
-
 ## Rotating a relay VM (self-hosted fleet)
 
-Rotate a specific relay VM when it returns sustained 429s or becomes unhealthy.
+The self-hosted InferenceRelay fleet (Epic 42) uses per-VM tokens. Each VM's token authenticates router→VM traffic; rotation = destroy + reprovision the VM, which generates a fresh token. (The Cloudflare Worker relay that previously required a separate cluster-side secret was removed in Epic 60 — Zen blocks CF Worker IPs.)
+
+Rotate when a VM returns sustained 429s, becomes unhealthy, or its token is suspected compromised.
 
 ### Procedure
 

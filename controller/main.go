@@ -78,12 +78,9 @@ func main() {
 		"Maximum spec.resources.memory in MiB (65536 = 64GiB). Set 0 to disable. (G4 / F1.2.3).")
 	var inferenceRelayURL string
 	flag.StringVar(&inferenceRelayURL, "inference-relay-url", "",
-		"Cloudflare Worker URL for free-tier inference relay (Epic 26). "+
-			"When set, workspace pods route opencode requests through this URL for IP distribution.")
-	var inferenceRelaySecret string
-	flag.StringVar(&inferenceRelaySecret, "inference-relay-secret", "",
-		"Path-segment secret for the inference relay Worker (Epic 26). "+
-			"Appended to --inference-relay-url as the first path segment; the Worker validates and strips it.")
+		"Self-hosted relay URL (InferenceRelay fleet, Epic 42). "+
+			"When set, workspace pods route opencode free-tier requests through this URL for IP distribution. "+
+			"Empty (the default) means workspace pods call https://opencode.ai/zen/v1 directly.")
 	var enableRelayController bool
 	flag.BoolVar(&enableRelayController, "enable-inference-relay", false,
 		"Enable the InferenceRelay controller (Epic 42). When true, the controller reconciles InferenceRelay CRs and manages relay VMs.")
@@ -251,7 +248,7 @@ func main() {
 	}
 
 	// Set up controllers
-	if err := controller.SetupControllers(mgr, inferenceRelayURL, inferenceRelaySecret, apiServiceURL, apiInternalToken, defaultRuntimeClass); err != nil {
+	if err := controller.SetupControllers(mgr, inferenceRelayURL, apiServiceURL, apiInternalToken, defaultRuntimeClass); err != nil {
 		setupLog.Error(err, "unable to set up controllers")
 		os.Exit(1)
 	}

@@ -200,16 +200,13 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 	// the main container; writes only to the PVC root.
 	initContainers = append(initContainers, buildWorkspaceDirsInit(runtimeImage))
 
-	// Epic 26: inject relay baseURL so agentd can configure the opencode provider
-	// to route free-tier inference through the Cloudflare Worker for IP distribution.
-	// When InferenceRelaySecret is set it is embedded as the first path segment;
-	// the Worker strips and validates it before forwarding to upstream.
-	relayBaseURL := ""
-	if r.InferenceRelayURL != "" {
-		relayBaseURL = r.InferenceRelayURL
-		if r.InferenceRelaySecret != "" {
-			relayBaseURL = r.InferenceRelayURL + "/" + r.InferenceRelaySecret
-		}
+	// Epic 42 / 26: inject relay baseURL so agentd can configure the opencode
+	// provider to route free-tier inference through the self-hosted relay fleet
+	// for IP distribution. Empty InferenceRelayURL (the chart default) leaves
+	// the env var unset; agentd then no-ops the relay injector and opencode
+	// calls https://opencode.ai/zen/v1 directly using its built-in `public` key.
+	relayBaseURL := r.InferenceRelayURL
+	if relayBaseURL != "" {
 		mainContainer.Env = append(mainContainer.Env,
 			corev1.EnvVar{Name: "INFERENCE_RELAY_BASEURL", Value: relayBaseURL},
 		)

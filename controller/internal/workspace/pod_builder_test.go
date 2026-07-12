@@ -337,14 +337,14 @@ func findEnv(c *corev1.Container, name string) *corev1.EnvVar {
 	return nil
 }
 
-// reconcilerWithRelay returns a reconciler configured with a fake
-// relay URL (and optionally a secret). The relay being non-empty is
-// what triggers the Phase B free-models volume + env propagation.
-func reconcilerWithRelay(t *testing.T, secret string) *WorkspaceReconciler {
+// reconcilerWithRelay returns a reconciler configured with a fake relay URL.
+// The relay being non-empty is what triggers the Phase B free-models volume
+// + env propagation. The chart's default is direct-to-Zen (empty relay URL);
+// tests that exercise the relay path use this helper.
+func reconcilerWithRelay(t *testing.T) *WorkspaceReconciler {
 	t.Helper()
 	r := reconcilerFor(t)
 	r.InferenceRelayURL = "https://relay.test.example/"
-	r.InferenceRelaySecret = secret
 	return r
 }
 
@@ -385,7 +385,7 @@ func TestPodBuilder_FreeModelsVolume_AbsentWhenNoRelay(t *testing.T) {
 // 2026-06-23 cold-start optimization, item #1a (Phase B).
 func TestPodBuilder_FreeModelsVolume_PresentWhenRelayConfigured(t *testing.T) {
 	ws := newWorkspaceForPodBuilder(t)
-	r := reconcilerWithRelay(t, "secret123")
+	r := reconcilerWithRelay(t)
 
 	pod, err := r.buildPod(context.Background(), ws)
 	require.NoError(t, err)
@@ -421,7 +421,7 @@ func TestPodBuilder_FreeModelsVolume_PresentWhenRelayConfigured(t *testing.T) {
 // 2026-06-23 cold-start optimization, item #1a (Phase B).
 func TestPodBuilder_RelayBaseURLEnv_OnInitContainer(t *testing.T) {
 	ws := newWorkspaceForPodBuilder(t)
-	r := reconcilerWithRelay(t, "secret123")
+	r := reconcilerWithRelay(t)
 
 	pod, err := r.buildPod(context.Background(), ws)
 	require.NoError(t, err)
@@ -433,8 +433,8 @@ func TestPodBuilder_RelayBaseURLEnv_OnInitContainer(t *testing.T) {
 	require.NotNil(t, env,
 		"INFERENCE_RELAY_BASEURL must be set on the credential-setup init container "+
 			"so the materialize subcommand can pre-render the relay block")
-	assert.Equal(t, "https://relay.test.example//secret123", env.Value,
-		"relay URL must include the path-segment secret")
+	assert.Equal(t, "https://relay.test.example/", env.Value,
+		"relay URL is the controller's InferenceRelayURL verbatim (no path-segment rewriting)")
 }
 
 // TestPodBuilder_RelayBaseURLEnv_MainContainer guards the existing
@@ -443,7 +443,7 @@ func TestPodBuilder_RelayBaseURLEnv_OnInitContainer(t *testing.T) {
 // init-container env doesn't accidentally remove it.
 func TestPodBuilder_RelayBaseURLEnv_MainContainer(t *testing.T) {
 	ws := newWorkspaceForPodBuilder(t)
-	r := reconcilerWithRelay(t, "")
+	r := reconcilerWithRelay(t)
 
 	pod, err := r.buildPod(context.Background(), ws)
 	require.NoError(t, err)
@@ -453,9 +453,9 @@ func TestPodBuilder_RelayBaseURLEnv_MainContainer(t *testing.T) {
 	require.Equal(t, "workspace", main.Name)
 
 	env := findEnv(main, "INFERENCE_RELAY_BASEURL")
-	require.NotNil(t, env, "main container must carry INFERENCE_RELAY_BASEURL (legacy + future state)")
+	require.NotNil(t, env, "main container must carry INFERENCE_RELAY_BASEURL when InferenceRelayURL is set")
 	assert.Equal(t, "https://relay.test.example/", env.Value,
-		"empty secret means just the URL, no trailing path segment")
+		"INFERENCE_RELAY_BASEURL equals InferenceRelayURL verbatim")
 }
 
 // TestPodBuilder_FreeModelsScriptCopy verifies the credential-setup
@@ -468,7 +468,7 @@ func TestPodBuilder_RelayBaseURLEnv_MainContainer(t *testing.T) {
 // happens IFF the file exists.
 func TestPodBuilder_FreeModelsScriptCopy(t *testing.T) {
 	ws := newWorkspaceForPodBuilder(t)
-	r := reconcilerWithRelay(t, "")
+	r := reconcilerWithRelay(t)
 
 	pod, err := r.buildPod(context.Background(), ws)
 	require.NoError(t, err)

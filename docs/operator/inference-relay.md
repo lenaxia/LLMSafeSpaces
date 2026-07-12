@@ -1,101 +1,64 @@
 # Inference Relay
 
-This page covers how LLMSafeSpaces reaches free-tier LLM inference (opencode Zen models) so workspace pods never hold the upstream secret. There are two interchangeable deployments, selected by the configured relay URL: the Cloudflare Worker relay (simple, the default) and the self-hosted multi-cloud fleet (the `InferenceRelay` CRD, `relay-router`, and `relay-proxy` VMs). This page explains both, when to use which, the driver configuration, 429 rotation, and the relay-token auth model.
+This page covers how LLMSafeSpaces reaches free-tier LLM inference (opencode Zen models). The default mode is **direct-to-Zen**: workspace pods call `https://opencode.ai/zen/v1` using opencode's built-in anonymous `public` key — no relay, no configuration. Operators who hit free-tier per-IP rate limits at scale can opt into the **self-hosted multi-cloud fleet** (Epic 42): the `InferenceRelay` CRD, `relay-router`, and `relay-proxy` VMs that rotate IPs across AWS, OCI, and GCP.
+
+The Cloudflare Worker relay (Epic 26) was **removed in [Epic 60](../../design/stories/epic-60-remove-cf-worker-relay/README.md)** (2026-07-12) because Zen blocks Cloudflare Worker IPs. It is no longer a deployable option.
 
 ## On this page
 
 - [Why a relay exists](#why-a-relay-exists)
-- [Two deployments, one URL](#two-deployments-one-url)
-- [Option 1: Cloudflare Worker relay](#option-1-cloudflare-worker-relay)
-- [Option 2: self-hosted multi-cloud fleet](#option-2-self-hosted-multi-cloud-fleet)
+- [Two modes](#two-modes)
+- [Self-hosted multi-cloud fleet (Epic 42)](#self-hosted-multi-cloud-fleet-epic-42)
 - [When to use which](#when-to-use-which)
 - [The relay-token auth model](#the-relay-token-auth-model)
 - [429 rotation and failover](#429-rotation-and-failover)
 - [Cold-start optimization (free-models refresher)](#cold-start-optimization-free-models-refresher)
+- [A full InferenceRelay CR example](#a-full-inferencerelay-cr-example)
+- [Monitoring the fleet](#monitoring-the-fleet)
+- [Cost management](#cost-management)
+- [Related](#related)
 
 ---
 
 ## Why a relay exists
 
-Workspace pods run arbitrary agent code. If they held the upstream Zen inference secret directly, a compromised agent (or a malicious user) could exfiltrate it. The relay inserts a proxy between the workspace and the upstream so the secret never reaches the pod.
+Workspace pods run arbitrary agent code. In the default **direct-to-Zen** mode, pods authenticate to Zen with opencode's built-in anonymous `public` key — that is not a secret, so there is nothing to exfiltrate and no relay is required. This is what the chart ships with.
 
-The relay forwards requests to the upstream Zen endpoint (`https://opencode.ai/zen/v1` by default) and injects (or forwards) the authorization. Workspace pods see only the relay URL and a per-workspace bearer token.
+A relay becomes useful when free-tier per-IP rate limits start biting at scale. The **self-hosted multi-cloud fleet** inserts a proxy layer between the workspace and the upstream so that requests egress from a rotating pool of cloud VM IPs instead of a single cluster egress address. When a VM's IP gets throttled (429 storm), the controller destroys and reprovisions it with a fresh IP.
+
+The fleet forwards requests to the upstream Zen endpoint (`https://opencode.ai/zen/v1` by default) and injects (or forwards) the authorization. Workspace pods see only the in-cluster relay-router URL and a per-workspace bearer token.
 
 ---
 
-## Two deployments, one URL
+## Two modes
 
-Both deployments serve the same purpose and are **selected by the configured relay URL**:
+The two modes are not interchangeable at runtime — they are a **deployment choice**, set once at install time:
 
 ```mermaid
 graph TB
-    WS["Workspace pod<br/>(opencode serve)"] -->|"agent-config.json<br/>provider baseURL"| RELAYURL{relay URL}
-    RELAYURL -->|"https://relay.safespaces.dev<br/>(default)"| CF["Cloudflare Worker<br/>(workers/inference-relay/)"]
-    RELAYURL -->|"http://relay-router.ns.svc:8080"| ROUTER["relay-router<br/>(in-cluster)"]
+    WS["Workspace pod<br/>(opencode serve)"] -->|"Direct-to-Zen (default)<br/>provider baseURL:<br/>https://opencode.ai/zen/v1<br/>Bearer public"| UPSTREAM["opencode.ai/zen/v1"]
+    WS2["Workspace pod<br/>(fleet mode)"] -->|"provider baseURL:<br/>http://relay-router:8080"| ROUTER["relay-router<br/>(in-cluster)"]
     ROUTER -->|"per-VM token"| VMAWS["relay-proxy VM<br/>(AWS)"]
     ROUTER -->|"per-VM token"| VMOCI["relay-proxy VM<br/>(OCI)"]
     ROUTER -->|"per-VM token"| VMGCP["relay-proxy VM<br/>(GCP, optional)"]
-    CF -->|"Bearer public / injected key"| UPSTREAM["opencode.ai/zen/v1"]
-    VMAWS --> UPSTREAM
+    VMAWS -->|"Bearer public / injected key"| UPSTREAM
     VMOCI --> UPSTREAM
     VMGCP --> UPSTREAM
 ```
 
-- Set `inferenceRelayURL` to the CF Worker URL (the default) → workspaces use the Worker.
-- Enable the self-hosted fleet → workspaces use the in-cluster relay-router, which distributes across VMs.
+- **Direct-to-Zen (default).** Leave the chart as shipped. Workspace pods call `https://opencode.ai/zen/v1` directly using opencode's built-in `public` key. Nothing to configure.
+- **Self-hosted multi-cloud fleet (Epic 42).** Opt in with `controller.inferenceRelay.enabled: true`. Workspace pods route through the in-cluster **relay-router**, which distributes traffic across relay VMs and rotates IPs on 429 storms.
 
-> **Not to be confused with the relay config subsystem.** The [relay config subsystem](https://github.com/lenaxia/LLMSafeSpaces/blob/main/README-LLM.md) describes how `agent-config.json` is built *inside* the workspace pod. This page describes the *external* fleet of VMs (or Worker) the pod's relay injector points at.
+!!! note "Cloudflare Worker relay removed"
+    The Cloudflare Worker relay (Epic 26) was removed in [Epic 60](../../design/stories/epic-60-remove-cf-worker-relay/README.md) on 2026-07-12. Zen now blocks Cloudflare Worker egress IPs, making the Worker path unusable. There is no replacement Worker; use direct-to-Zen or the self-hosted fleet.
 
----
-
-## Option 1: Cloudflare Worker relay
-
-The simplest path and the default. A single stateless Cloudflare Worker (`workers/inference-relay/`) proxies free-tier Zen inference.
-
-### Configuration
-
-```yaml
-inferenceRelayURL: "https://relay.safespaces.dev"
-inferenceRelaySecret: ""   # auto-generated 64-hex-char secret, preserved across upgrades
-```
-
-The secret authenticates workspace→Worker requests. Leave empty to let the chart auto-generate and preserve it.
-
-### Automated secret sync to the Worker
-
-When Cloudflare credentials are set, a post-install/post-upgrade Job pushes `inferenceRelaySecret` to the Worker automatically:
-
-```yaml
-cloudflare:
-  apiToken: ""        # CF API token with Workers:Edit (Account scope)
-  accountId: ""       # CF account ID
-  workerName: "llmsafespaces-inference-relay"
-```
-
-Provide these via `--set` or an external-secrets override — never commit the API token to source control.
-
-### Deploying the Worker
-
-Build and deploy the Worker from [`workers/inference-relay/`](https://github.com/lenaxia/LLMSafeSpaces/tree/main/workers/inference-relay):
-
-```bash
-cd workers/inference-relay
-wrangler deploy
-```
-
-Point `inferenceRelayURL` at the Worker's stable CNAME.
-
-### Limitations
-
-- **Rate-limited** by Cloudflare and by upstream Zen per-IP throttling.
-- **Single-provider** — all traffic egresses from Cloudflare's edge; no IP diversity for rotation.
-- Sufficient for homelab and small-team deployments. For higher scale or 429 resilience, use the self-hosted fleet.
+> **Not to be confused with the relay config subsystem.** The [relay config subsystem](https://github.com/lenaxia/LLMSafeSpaces/blob/main/README-LLM.md) describes how `agent-config.json` is built *inside* the workspace pod. This page describes the *external* fleet of VMs the pod's relay injector points at (when the fleet is enabled).
 
 ---
 
-## Option 2: self-hosted multi-cloud fleet
+## Self-hosted multi-cloud fleet (Epic 42)
 
-The self-hosted fleet (Epic 42) provisions and health-checks relay VMs across AWS (paid primary), OCI (free secondary), and optionally GCP. Workspace pods route through the in-cluster **relay-router**, which distributes traffic across healthy VMs and falls back to direct upstream when all VMs are down.
+The self-hosted fleet provisions and health-checks relay VMs across AWS (paid primary), OCI (free secondary), and optionally GCP. Workspace pods route through the in-cluster **relay-router**, which distributes traffic across healthy VMs and falls back to direct upstream when all VMs are down.
 
 ### Components
 
@@ -188,27 +151,29 @@ Publish these to a mirror (GitHub Release asset is the default), then set `artif
 
 ## When to use which
 
-| Criterion | CF Worker | Self-hosted fleet |
+| Criterion | Direct-to-Zen (default) | Self-hosted fleet |
 |---|---|---|
-| Setup complexity | Low (deploy a Worker) | High (VMs across clouds, router, drivers) |
-| IP diversity | None (Cloudflare edge) | High (AWS + OCI + GCP IPs) |
-| 429 rotation | None (single edge) | Automatic (VM destroy + reprovision) |
-| Cost | Free (CF free tier) | AWS paid + OCI free tier + optional GCP |
+| IP rotation | No (single client egress IP) | Yes (AWS + OCI + GCP IPs) |
+| Cloud spend | None | AWS paid + OCI free tier + optional GCP |
+| Ops complexity | None (chart default) | High (VMs across clouds, router, drivers, CRD) |
+| Failover | N/A (direct upstream) | Automatic (weighted router + direct-upstream fallback) |
+| Setup | None | Multi-cloud accounts + `rbac.scope=cluster` |
 | Scale | Low–medium | Medium–high |
-| Dependency | Cloudflare account | AWS + OCI (+ GCP) accounts |
-| Best for | Homelab, small team | Multi-tenant SaaS, 429 resilience |
+| Best for | Homelab, small team | Multi-tenant SaaS, 429 resilience at scale |
 
-**Default:** the CF Worker (`inferenceRelayURL: "https://relay.safespaces.dev"`). Switch to the self-hosted fleet when you hit CF rate limits or need IP diversity for upstream rotation.
+**Default: direct-to-Zen.** It is zero-config and zero-cost. Switch to the self-hosted fleet when free-tier per-IP rate limits start throttling your workspaces at scale and IP rotation matters.
 
 ---
 
 ## The relay-token auth model
 
+> This section applies only to the **self-hosted fleet**. Direct-to-Zen workspaces authenticate to Zen with the built-in `public` key and do not transit the router↔relay path.
+
 The router↔relay path was originally a WireGuard mesh. **Removed in worklog 0447** and replaced with plaintext HTTP + **per-VM shared-secret tokens** (`X-Relay-Token` header, `crypto/subtle.ConstantTimeCompare`):
 
 - **Per-VM (not fleet-wide) tokens** — preserve WG's tight blast radius. A compromised VM's token cannot be used against sibling relays. Stored in the `relay-vm-tokens` Secret keyed by provider slot; rotation = destroy + reprovision.
 - **`/healthz` and `/metrics` on relay-proxy are token-exempt** — the router probes health without the per-VM token.
-- **Plaintext HTTP (not TLS)** — accepted trade-off: the exposure is identical to the shipped CF Worker relay (free-tier Zen access only). See the supersession banner in the Epic 42 README.
+- **Plaintext HTTP (not TLS)** — accepted trade-off: the path only carries free-tier Zen access, so the worst case is rate-limit exposure, not secret theft. See the supersession banner in the Epic 42 README.
 
 ### Router-side upstream key injection (optional)
 
@@ -358,12 +323,12 @@ The self-hosted fleet's cost is dominated by AWS (the paid primary). OCI free ti
 - Monitor `relay_active_vms` — sustained high VM counts indicate either load or stuck provisioning.
 - The router weights AWS at 1000, OCI at 100 — so AWS receives all traffic when healthy. Scale AWS instance count (via the provider config) to match your inference load; OCI is a fallback, not a load-balancer.
 
-The CF Worker relay is free (Cloudflare free tier) but rate-limited — suitable for low-volume deployments where cost matters more than resilience.
+Direct-to-Zen is zero-cost (no cloud spend) and is the right default where free-tier per-IP limits are not a concern.
 
 ---
 
 ## Related
 
 - [Security Hardening](security.md) — the relay-token auth model and supply-chain integrity.
-- [Configuration](configuration.md) — `inferenceRelayURL`, `cloudflare.*`.
-- [Helm Values Reference](../reference/helm-values.md) — `controller.inferenceRelay.*`, `inferenceRelayURL`, `inferenceRelaySecret`.
+- [Configuration](configuration.md) — direct-to-Zen defaults and fleet opt-in.
+- [Helm Values Reference](../reference/helm-values.md) — `controller.inferenceRelay.*`.

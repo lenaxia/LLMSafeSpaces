@@ -1,11 +1,13 @@
 # Epic 26: Client-Proxied Inference for Free Models
 
-**Status:** Complete (CF Worker architecture — see pivot note below)
+**Status:** ⛔ Superseded by Epic 60 (2026-07-12)
 **Priority:** Medium
 **Depends On:** Epic 10 (Multi-Tenant Trust & Secret Management)
 **Motivation:** Enable free-tier LLM models at scale without platform IP throttling/banning
 
-> **Architecture Pivot (2026-06-05, worklog 0155):** The original WebSocket relay design was replaced by a 37-line Cloudflare Worker. US-26.1–26.6 (WebSocket relay infrastructure) were built and then deleted in PR #35. US-26.7 is superseded — its Tasks A-E targeted the deleted relay code and no longer apply. The current implementation: controller injects `OPENCODE_AUTH_CONTENT` with `metadata.baseURL: "https://relay.safespaces.dev"` at pod creation; the CF Worker proxies requests from Cloudflare's edge POPs. Epic goal achieved.
+> **Superseded by [Epic 60](../epic-60-remove-cf-worker-relay/README.md) (2026-07-12).** Zen (opencode.ai/zen/v1) now blocks all Cloudflare Worker egress IPs. The CF Worker relay at `relay.safespaces.dev` is unreachable from any workspace pod, and the chart default `inferenceRelayURL: https://relay.safespaces.dev` actively breaks fresh installs (#474: every free-tier request returns 403, opencode interprets that as a credential failure, the agent restart-loops). Epic 60 removed the Worker, the `relay-secret-sync` Helm Job, the `inferenceRelayURL`/`inferenceRelaySecret`/`cloudflare.*` chart values, the `--inference-relay-secret` controller flag, and the `INFERENCE_RELAY_SECRET` env var. The surviving relay path is the self-hosted InferenceRelay fleet (Epic 42); the new default is direct-to-Zen.
+
+> **Historical — Architecture Pivot (2026-06-05, worklog 0155):** The original WebSocket relay design was replaced by a 37-line Cloudflare Worker. US-26.1–26.6 (WebSocket relay infrastructure) were built and then deleted in PR #35. US-26.7 is superseded — its Tasks A-E targeted the deleted relay code and no longer apply. The implementation shipped at the time: controller injected `OPENCODE_AUTH_CONTENT` with `metadata.baseURL: "https://relay.safespaces.dev"` at pod creation; the CF Worker proxied requests from Cloudflare's edge POPs. Epic goal achieved at the time; the architecture became unreachable 5 weeks later when Zen started blocking CF Worker IPs.
 
 ---
 
