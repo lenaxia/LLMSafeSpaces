@@ -255,6 +255,8 @@ The chart does **not** bundle Redis.
 | `redis.port` | int | `6379` | |
 | `redis.db` | int | `0` | |
 | `redis.poolSize` | int | `20` | |
+| `redis.tls` | bool | `false` | TLS-in-transit to Redis (#465). Required for AWS ElastiCache (TransitEncryptionEnabled), GCP Memorystore with TLS, or self-hosted Redis/Valkey with TLS. The API client uses a `tls.Config` with `ServerName` set from `redis.host`. |
+| `redis.insecureSkipVerify` | bool | `false` | When `redis.tls=true`, skip certificate verification. **DEV ONLY** — for self-signed certs on a local cluster. Never enable in production; use a CA-signed cert instead. |
 
 !!! warning "H3 production requirement"
     The API caches per-workspace `opencode` passwords in Redis in **plaintext**. Production Redis **must** provide TLS in-transit, at-rest encryption, and a NetworkPolicy restricting ingress to API pods.

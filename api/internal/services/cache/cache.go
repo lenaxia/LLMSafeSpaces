@@ -5,6 +5,7 @@ package cache
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -28,13 +29,26 @@ var _ interfaces.CacheService = (*Service)(nil) // Compile-time interface check
 
 // New creates a new cache service
 func New(cfg *config.Config, log *logger.Logger) (*Service, error) {
-	// Create Redis client
-	client := redis.NewClient(&redis.Options{
+	// Create Redis client. When cfg.Redis.TLS is set (#465), the client
+	// uses TLS-in-transit — required for AWS ElastiCache
+	// (TransitEncryptionEnabled), GCP Memorystore with TLS, and any
+	// self-hosted Redis with TLS. InsecureSkipVerify is exposed for the
+	// self-signed-cert dev case; production should leave it false and
+	// use a CA-signed cert.
+	opts := &redis.Options{
 		Addr:     fmt.Sprintf("%s:%d", cfg.Redis.Host, cfg.Redis.Port),
 		Password: cfg.Redis.Password,
 		DB:       cfg.Redis.DB,
 		PoolSize: cfg.Redis.PoolSize,
-	})
+	}
+	if cfg.Redis.TLS {
+		opts.TLSConfig = &tls.Config{
+			ServerName:         cfg.Redis.Host,
+			InsecureSkipVerify: cfg.Redis.InsecureSkipVerify,
+			MinVersion:         tls.VersionTLS12, // Go crypto/tls default since 1.18; explicit for clarity
+		}
+	}
+	client := redis.NewClient(opts)
 
 	// Attach the metrics hook so every command emits the
 	// llmsafespaces_redis_command_duration_seconds histogram and the

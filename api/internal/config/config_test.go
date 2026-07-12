@@ -430,3 +430,26 @@ workspace:
 		t.Errorf("expected DefaultStorageClass=longhorn-2r, got %q", cfg.Workspace.DefaultStorageClass)
 	}
 }
+
+// TestIsTruthy covers the env-var boolean parser used for
+// LLMSAFESPACES_REDIS_TLS and LLMSAFESPACES_REDIS_INSECURE_SKIP_VERIFY.
+// Accepts "1", "true", "yes", "on" (case-insensitive). Everything else is false.
+func TestIsTruthy(t *testing.T) {
+	cases := []struct {
+		in   string
+		want bool
+	}{
+		{"1", true}, {"true", true}, {"TRUE", true}, {"True", true},
+		{"yes", true}, {"on", true}, {"YES", true},
+		{"0", false}, {"false", false}, {"FALSE", false},
+		{"", false}, {"no", false}, {"off", false},
+		{"maybe", false}, {"2", false}, {"y", false}, {"t", false},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			if got := isTruthy(c.in); got != c.want {
+				t.Errorf("isTruthy(%q) = %v, want %v", c.in, got, c.want)
+			}
+		})
+	}
+}

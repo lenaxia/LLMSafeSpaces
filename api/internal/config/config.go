@@ -59,6 +59,14 @@ type Config struct {
 		Password string `mapstructure:"password"`
 		DB       int    `mapstructure:"db"`
 		PoolSize int    `mapstructure:"poolSize"`
+		// TLS enables TLS-in-transit to the Redis server (#465). Set to
+		// true for AWS ElastiCache with TransitEncryptionEnabled, GCP
+		// Memorystore with TLS, or any self-hosted Redis/Valkey with
+		// TLS. When true, the client uses a tls.Config with ServerName
+		// set from Host. InsecureSkipVerify is also exposed for the
+		// self-signed-cert dev case (DO NOT use in production).
+		TLS                bool `mapstructure:"tls"`
+		InsecureSkipVerify bool `mapstructure:"insecureSkipVerify"`
 	} `mapstructure:"redis"`
 
 	Auth struct {
@@ -346,6 +354,14 @@ func applyEnvOverrides(config *Config) {
 	if v := os.Getenv("LLMSAFESPACES_REDIS_PASSWORD"); v != "" {
 		config.Redis.Password = v
 	}
+	// #465: TLS toggle for managed Redis (ElastiCache, Memorystore, etc.).
+	// Accepts "1", "true", "yes" (case-insensitive). Anything else is false.
+	if v := os.Getenv("LLMSAFESPACES_REDIS_TLS"); v != "" {
+		config.Redis.TLS = isTruthy(v)
+	}
+	if v := os.Getenv("LLMSAFESPACES_REDIS_INSECURE_SKIP_VERIFY"); v != "" {
+		config.Redis.InsecureSkipVerify = isTruthy(v)
+	}
 	if v := os.Getenv("LLMSAFESPACES_AUTH_JWTSECRET"); v != "" {
 		config.Auth.JWTSecret = v
 	}
@@ -598,4 +614,18 @@ func bindKMSEnvVars(v *viper.Viper) {
 	_ = v.BindEnv("security.kms.gcp.keyNames.providerCredentials", "LLMSAFESPACES_SECURITY_KMS_GCP_KEYNAMES_PROVIDERCREDENTIALS")
 	_ = v.BindEnv("security.kms.gcp.keyNames.orgCredentials", "LLMSAFESPACES_SECURITY_KMS_GCP_KEYNAMES_ORGCREDENTIALS")
 	_ = v.BindEnv("security.kms.gcp.keyNames.masterKek", "LLMSAFESPACES_SECURITY_KMS_GCP_KEYNAMES_MASTERKEK")
+}
+
+// isTruthy parses common boolean string representations for env-var
+// toggles: "1", "true", "yes", "on" (case-insensitive). Empty string and
+// anything else is false. Mirrors the value-interpretation rules used by
+// strconv.ParseBool but accepts a wider set (Viper's AutomaticEnv does
+// not auto-coerce env strings to bool).
+func isTruthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
