@@ -4220,9 +4220,11 @@ controller:
 	}
 	require.NotNil(t, cmRule, "ClusterRole must include configmaps when freeModelsRefresher.enabled=true and rbac.scope=cluster (#469)")
 
-	// ... with the narrow verb set (no delete). Mirrors the namespace
-	// Role's if/else pattern — the free-models refresher only publishes
-	// (Get + Create-or-Update); deletion is never required.
+	// ... with read-only verbs (get/list/watch only). The ClusterRole
+	// grants the informer cache permission to list ConfigMaps cluster-
+	// wide. Writes (create/update/patch) go through the namespace-scoped
+	// Role which restricts them to the release namespace. Mirrors the
+	// read-only ClusterRole pattern for pods/secrets/PVCs.
 	verbs, _ := cmRule["verbs"].([]any)
 	var verbStrs []string
 	for _, v := range verbs {
@@ -4230,14 +4232,9 @@ controller:
 			verbStrs = append(verbStrs, s)
 		}
 	}
-	assert.NotContains(t, verbStrs, "delete",
-		"ClusterRole configmaps rule must NOT grant delete for the free-models refresher (least privilege)")
-	assert.Contains(t, verbStrs, "get")
-	assert.Contains(t, verbStrs, "list")
-	assert.Contains(t, verbStrs, "watch")
-	assert.Contains(t, verbStrs, "create")
-	assert.Contains(t, verbStrs, "update")
-	assert.Contains(t, verbStrs, "patch")
+	assert.ElementsMatch(t, []string{"get", "list", "watch"}, verbStrs,
+		"ClusterRole configmaps rule must be read-only (get/list/watch) for the free-models refresher — "+
+			"writes are namespace-scoped via the Role; cluster-scope CRUD would allow modifying any ConfigMap in any namespace")
 }
 
 // TestClusterRole_ConfigMapsAbsentWhenBothDisabled verifies the negative
