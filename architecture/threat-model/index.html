@@ -1318,10 +1318,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#critical-recent-closures" class="md-nav__link">
+  <a href="#critical-and-high-severity-closures-recent" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Critical recent closures
+        Critical and High-severity closures (recent)
       
     </span>
   </a>
@@ -1329,10 +1329,32 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#still-open-highest-severity" class="md-nav__link">
+  <a href="#medium-severity-closures-recent" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Still open — highest severity
+        Medium-severity closures (recent)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#low-severity-closures-recent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Low-severity closures (recent)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#still-open" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Still open
       
     </span>
   </a>
@@ -2095,10 +2117,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#critical-recent-closures" class="md-nav__link">
+  <a href="#critical-and-high-severity-closures-recent" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Critical recent closures
+        Critical and High-severity closures (recent)
       
     </span>
   </a>
@@ -2106,10 +2128,32 @@
 </li>
         
           <li class="md-nav__item">
-  <a href="#still-open-highest-severity" class="md-nav__link">
+  <a href="#medium-severity-closures-recent" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Still open — highest severity
+        Medium-severity closures (recent)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#low-severity-closures-recent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Low-severity closures (recent)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#still-open" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Still open
       
     </span>
   </a>
@@ -2216,7 +2260,7 @@
     EXT -- "TLS / JWT / API key" --&gt; B1
     B1["BOUNDARY 1: Ingress → API&lt;br/&gt;AuthN · rate limit · input validation&lt;br/&gt;CORS · security headers"]
     B1 -- "internal HTTP / K8s API" --&gt; B2
-    B2["BOUNDARY 2: API → cluster&lt;br/&gt;RBAC (namespace-scoped default)&lt;br/&gt;CRD ops · Secret mgmt&lt;br/&gt;proxy to pods (plain HTTP — G4)"]
+    B2["BOUNDARY 2: API → cluster&lt;br/&gt;RBAC (namespace-scoped default)&lt;br/&gt;CRD ops · Secret mgmt&lt;br/&gt;proxy to pods (plain HTTP — G4 accepted)"]
     B2 -- "pod network / K8s API" --&gt; B3
     B3["BOUNDARY 3: Controller → pods&lt;br/&gt;hardened security context&lt;br/&gt;init-container credential injection&lt;br/&gt;default-deny NetworkPolicy"]
     B3 -- "filesystem / network" --&gt; B4
@@ -2309,7 +2353,7 @@
 </tr>
 <tr>
 <td>Network attacker</td>
-<td>MITM on pod-to-pod traffic (G4: plain HTTP)</td>
+<td>MITM on pod-to-pod traffic (G4: plain HTTP, accepted)</td>
 <td>Credential interception</td>
 </tr>
 <tr>
@@ -2353,14 +2397,14 @@
 <td>JWT forgery (mitigated: HMAC-only); API key theft</td>
 <td>Token replay (mitigated: dual-key revocation)</td>
 <td>No audit of failed auth</td>
-<td>Secret values logged unredacted (<strong>G25</strong>)</td>
-<td>Account lockout abuse (<strong>G13</strong>); no rate limit on recovery (<strong>G35</strong>)</td>
-<td>Sessions survive password change (<strong>G38</strong>)</td>
+<td>Secret values logged — <strong>fixed</strong> (G25, two-layer mask + skip)</td>
+<td>Account lockout abuse (<strong>G13</strong>); recovery rate limit — <strong>fixed</strong> (G35)</td>
+<td>Sessions survive password change — <strong>fixed</strong> (G38 revokes all sessions)</td>
 </tr>
 <tr>
 <td><strong>Proxy</strong></td>
 <td>Workspace ID spoofing — <strong>fixed</strong> (G33)</td>
-<td>Response tampering (plain HTTP — G4); header injection — <strong>fixed</strong> (G34)</td>
+<td>Response tampering (plain HTTP — G4 accepted); header injection — <strong>fixed</strong> (G34)</td>
 <td>No per-request audit</td>
 <td>Headers to sandbox — <strong>fixed</strong> (G34 allowlist)</td>
 <td>Connection exhaustion (mitigated: limits)</td>
@@ -2371,7 +2415,7 @@
 <td>SA token theft (mitigated: bound tokens)</td>
 <td>CRD manipulation (mitigated: webhooks)</td>
 <td>Actions not individually audited</td>
-<td>Namespace-scoped default; secrets persist after deletion (<strong>G36</strong>)</td>
+<td>Secrets persist after deletion — <strong>fixed</strong> (G36 cleanup)</td>
 <td>CRD spam (mitigated: quotas)</td>
 <td>Namespace-scoped SA</td>
 </tr>
@@ -2380,7 +2424,7 @@
 <td>N/A</td>
 <td>PVC data corruption</td>
 <td>No file-level audit</td>
-<td>Credential in env (<strong>G3</strong> accepted); env var injection (<strong>G37</strong>); agentd user port unauthenticated (<strong>G40</strong>)</td>
+<td>Credential in env (<strong>G3</strong> accepted); env var injection — <strong>fixed</strong> (G37 blocklist); agentd user port unauthenticated (<strong>G40</strong> accepted)</td>
 <td>Resource exhaustion (mitigated)</td>
 <td>Container escape (mitigated: seccomp, caps; G1 accepted)</td>
 </tr>
@@ -2389,7 +2433,7 @@
 <td>SQL injection (mitigated: pgx parameterized)</td>
 <td>Data corruption (mitigated: tx)</td>
 <td>No query audit</td>
-<td>Wrapped DEK exposure (mitigated: AES-256-GCM); <code>key_version</code> for rotation; authorized-decrypt exfil undetectable (<strong>G50</strong>)</td>
+<td>Wrapped DEK exposure (mitigated: AES-256-GCM); <code>key_version</code> for rotation; authorized-decrypt exfil — <strong>fixed</strong> (G50 AuditedProvider wired)</td>
 <td>Connection exhaustion</td>
 <td>N/A</td>
 </tr>
@@ -2416,16 +2460,16 @@
 <td>Cross-tenant traffic (mitigated: NP)</td>
 <td>N/A</td>
 <td>NP events not audited</td>
-<td>DNS exfil via external resolvers (<strong>G30</strong>); IPv6 unrestricted (<strong>G43</strong>)</td>
+<td>DNS exfil via external resolvers (<strong>G30</strong> accepted); IPv6 unrestricted (<strong>G43</strong>)</td>
 <td>N/A</td>
 <td>N/A</td>
 </tr>
 </tbody>
 </table>
 <h2 id="the-gap-register-g1g50">The gap register (G1–G50)<a class="headerlink" href="#the-gap-register-g1g50" title="Permanent link">&para;</a></h2>
-<p><strong>Status:</strong> 21 Fixed · 22 Open · 7 Accepted (50 total).</p>
-<h3 id="critical-recent-closures">Critical recent closures<a class="headerlink" href="#critical-recent-closures" title="Permanent link">&para;</a></h3>
-<p>Four high-impact gaps closed in the v0.3.0 network hardening sweep:</p>
+<p><strong>Status:</strong> 29 Fixed · 10 Open · 11 Accepted (50 total). See the authoritative <a href="https://github.com/lenaxia/LLMSafeSpaces/blob/main/design/stories/epic-17-security-review/THREAT-MODEL.md"><code>THREAT-MODEL.md</code></a> for the full per-gap evidence and regression-test references; the summaries below hit the high points.</p>
+<h3 id="critical-and-high-severity-closures-recent">Critical and High-severity closures (recent)<a class="headerlink" href="#critical-and-high-severity-closures-recent" title="Permanent link">&para;</a></h3>
+<p>The 2026-07-11 security sweep closed every High-severity gap that had a code-side fix:</p>
 <table>
 <thead>
 <tr>
@@ -2438,21 +2482,57 @@
 <tbody>
 <tr>
 <td><strong>G33</strong></td>
-<td>Proxy routes had no workspace ownership check (IDOR) — any authenticated user could proxy to any workspace ID</td>
+<td>Proxy routes had no workspace ownership check (IDOR)</td>
 <td>Critical</td>
-<td><code>WorkspaceAccessMiddleware</code> wired on the <code>idGroup</code> route group, which all proxy routes inherit. Resolves workspace, checks <code>WorkspaceOwner{UserID, OrgID}</code>, rejects 403 on mismatch. Regression: <code>router_workspace_access_test.go</code>.</td>
+<td><code>WorkspaceAccessMiddleware</code> wired on the <code>idGroup</code>; resolves workspace, checks <code>WorkspaceOwner</code>, rejects 403 on mismatch.</td>
 </tr>
 <tr>
 <td><strong>G34</strong></td>
 <td>Proxy forwarded all client headers (Cookie, Origin, Referer, X-Forwarded-*, custom) to the sandbox pod</td>
 <td>Critical</td>
-<td><code>copyRequestHeaders</code> explicit allowlist (<code>Content-Type</code>, <code>Accept</code>, <code>X-Request-ID</code>); hop-by-hop headers stripped both directions; <code>Accept-Encoding</code> deliberately not forwarded. Regression: <code>TestProxy_G34_*</code>. (PR #513)</td>
+<td><code>copyRequestHeaders</code> explicit allowlist (<code>Content-Type</code>, <code>Accept</code>, <code>X-Request-ID</code>); hop-by-hop stripped both directions. (PR #513)</td>
 </tr>
 <tr>
-<td><strong>G39</strong></td>
-<td>Terminal WebSocket accepted any Origin (<code>CheckOrigin: return true</code>) — cross-site WebSocket hijacking</td>
-<td>Medium</td>
-<td><code>newCheckOriginChecker</code>: same-origin default + operator allowlist via <code>terminal.allowedOrigins</code>. Dead <code>WebSocketSecurityMiddleware</code> removed; gorilla <code>Upgrader</code> is the single enforcement point. (PR #515)</td>
+<td><strong>G38</strong></td>
+<td><code>ChangePassword</code> did not invalidate existing sessions</td>
+<td>High</td>
+<td>Handler now calls <code>auth.Service.RevokeAllUserSessions</code> after DEK re-wrap + bcrypt commit. Best-effort; mirrors password-reset. (PR #536)</td>
+</tr>
+<tr>
+<td><strong>G37</strong></td>
+<td>Workspace env-var names not validated — <code>LD_PRELOAD</code>, <code>PATH</code>, <code>PYTHONPATH</code>, etc. accepted</td>
+<td>High</td>
+<td>New <code>pkg/validation.ValidateEnvVarName</code>: POSIX shape + length + curated blocklist of ~30 dangerous names (ld.so, bash, Python, Node, Ruby, Perl, Java, glibc docs). API and agentd both enforce. (PR #537)</td>
+</tr>
+<tr>
+<td><strong>G35</strong></td>
+<td><code>/account/recover</code> had no per-endpoint rate limit (CPU-exhaustion DoS target)</td>
+<td>High</td>
+<td>New <code>PerRouteRateLimitMiddleware</code> with per-route bucket isolation. Per-window rate conversion (<code>Limit / Window.Seconds()</code>). (PR #538)</td>
+</tr>
+<tr>
+<td><strong>G25</strong></td>
+<td>Secret <code>value</code> field logged unredacted in API request bodies</td>
+<td>High</td>
+<td>Two-layer fix: added <code>"value"</code> to <code>SensitiveFields</code>; added <code>SkipPathPrefixes</code> to <code>LoggingConfig</code> for credential-bearing paths. (PR #539)</td>
+</tr>
+<tr>
+<td><strong>G36</strong></td>
+<td>Workspace secrets not cleaned on deletion (<code>workspace-creds-*</code> persisted indefinitely)</td>
+<td>High</td>
+<td><code>handleTerminating</code> now calls <code>cleanupFailedWorkspaceSecrets</code>. (PR #540)</td>
+</tr>
+<tr>
+<td><strong>G28</strong></td>
+<td>Workspace bind handler "no-op for first-time delivery"</td>
+<td>High</td>
+<td><strong>Reclassified Accepted</strong> — Epic 35 (secretless injection) intentionally defers first-time delivery to pod boot. Bindings are durable in PostgreSQL; bootstrap reads them at boot. (PR #541)</td>
+</tr>
+<tr>
+<td><strong>G48</strong></td>
+<td>Master KEK delivered as env var (exposed via <code>/proc/1/environ</code>)</td>
+<td>High</td>
+<td>US-50.1: default delivery is a read-only file mount at <code>/var/run/secrets/llmsafespaces/master-secret</code> (mode 0440). Env path is deprecated opt-in.</td>
 </tr>
 <tr>
 <td><strong>G49</strong></td>
@@ -2462,26 +2542,51 @@
 </tr>
 </tbody>
 </table>
-<p>Plus the earlier master-KEK hardening:</p>
+<h3 id="medium-severity-closures-recent">Medium-severity closures (recent)<a class="headerlink" href="#medium-severity-closures-recent" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
 <tr>
 <th>#</th>
 <th>Gap</th>
-<th>Severity</th>
 <th>Fix</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><strong>G48</strong></td>
-<td>Master KEK delivered as env var (exposed via <code>/proc/1/environ</code>)</td>
-<td>High</td>
-<td>US-50.1: default delivery is a read-only file mount at <code>/var/run/secrets/llmsafespaces/master-secret</code> (mode 0440). Env path is deprecated opt-in.</td>
+<td><strong>G39</strong></td>
+<td>Terminal WebSocket accepted any Origin</td>
+<td><code>newCheckOriginChecker</code>: same-origin default + operator allowlist. (PR #515)</td>
+</tr>
+<tr>
+<td><strong>G29</strong></td>
+<td>Path-traversal <code>mount_path</code> accepted by API</td>
+<td><code>validateMountPath</code> at <code>secret_service.go:582</code> rejects; called from CreateSecret. (Already fixed — threat model corrected)</td>
+</tr>
+<tr>
+<td><strong>G50</strong></td>
+<td>Decrypt operations not audited</td>
+<td><code>AuditedProvider</code> wired at <code>app.go:408,409,624</code>. (Already fixed — threat model corrected)</td>
 </tr>
 </tbody>
 </table>
-<h3 id="still-open-highest-severity">Still open — highest severity<a class="headerlink" href="#still-open-highest-severity" title="Permanent link">&para;</a></h3>
+<h3 id="low-severity-closures-recent">Low-severity closures (recent)<a class="headerlink" href="#low-severity-closures-recent" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Gap</th>
+<th>Fix</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>G45</strong></td>
+<td>Legacy <code>source /sandbox-cfg/env</code> in entrypoint</td>
+<td>US-35.7 moved source path. (Already fixed — threat model corrected)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="still-open">Still open<a class="headerlink" href="#still-open" title="Permanent link">&para;</a></h3>
 <p>These are the gaps to prioritize if you're hardening a deployment:</p>
 <table>
 <thead>
@@ -2494,52 +2599,22 @@
 </thead>
 <tbody>
 <tr>
-<td><strong>G35</strong></td>
-<td><code>RecoverAccount</code> endpoint has no rate limiting</td>
-<td>High</td>
-<td><code>router.go:264</code> — outside the auth rate limiter; requires only userID + recovery key. Move behind auth rate limiter.</td>
-</tr>
-<tr>
-<td><strong>G36</strong></td>
-<td>Workspace secrets not cleaned on deletion</td>
-<td>High</td>
-<td><code>phase_terminating.go</code> only deletes <code>workspace-pw-*</code>; <code>workspace-secrets-*</code> and <code>workspace-creds-*</code> persist indefinitely. Call <code>deleteEphemeralSecretsSecret</code> from <code>handleTerminating</code>.</td>
-</tr>
-<tr>
-<td><strong>G37</strong></td>
-<td>No validation on workspace env var names</td>
-<td>High</td>
-<td><code>secrets.go:573</code> accepts <code>LD_PRELOAD</code>, <code>PATH</code>, <code>PYTHONPATH</code>, etc. as env var names. Add blocklist.</td>
-</tr>
-<tr>
-<td><strong>G38</strong></td>
-<td><code>ChangePassword</code> does not invalidate existing sessions</td>
-<td>High</td>
-<td><code>secrets.go:782-817</code> updates bcrypt and re-wraps DEK but never calls <code>RevokeToken</code>; existing JWTs remain valid. Revoke all active sessions on password change.</td>
-</tr>
-<tr>
-<td><strong>G25</strong></td>
-<td>Secret value field logged unredacted</td>
-<td>High</td>
-<td><code>logging.go:48</code> — <code>SensitiveFields</code> doesn't include <code>"value"</code>. Add it, route JSON through <code>pkg/redact.Redact()</code>, or disable body logging for <code>/api/v1/secrets/*</code>.</td>
-</tr>
-<tr>
-<td><strong>G50</strong></td>
-<td>Decrypt operations are not audited</td>
+<td><strong>G6 / G41</strong> (duplicate)</td>
+<td><code>/secrets/:id/reveal</code> no per-endpoint rate limit</td>
 <td>Medium</td>
-<td><code>NewAuditedProvider</code> exists but has zero production call sites. Wiring awaits US-50.2 (unify crypto layers — <code>AdminKeyDeriver</code> removal). Currently <code>secret_audit_log</code> records only CRUD, not decrypts.</td>
+<td>Endpoint accepts user password to re-authenticate before decrypting. Global 100/min/IP only; per-endpoint limit (e.g. 5/min) would close brute-force window.</td>
 </tr>
 <tr>
-<td><strong>G4</strong></td>
-<td>No mTLS between API and sandbox pods</td>
+<td><strong>G21</strong></td>
+<td><code>/sandbox-cfg/password</code> mode 0644</td>
 <td>Medium</td>
-<td>Plain HTTP <code>http://{pod_ip}:4096</code>. Implement mTLS via per-workspace cert or service mesh.</td>
+<td>Init-container <code>cp</code> preserves source Secret <code>defaultMode: 420</code> (0644); should use <code>install -m 0600</code>.</td>
 </tr>
 <tr>
-<td><strong>G9</strong></td>
-<td>opencode/gh binaries downloaded without checksum verification</td>
+<td><strong>G42</strong></td>
+<td>SSE connection tracking unbounded memory growth</td>
 <td>Medium</td>
-<td>Dockerfile uses <code>curl --fail</code> over TLS only; no checksum or Sigstore. opencode upstream doesn't publish checksums; gh does (<code>.sha256</code>) — should verify. Release images are cosign-signed so image-level provenance is verifiable; individual binary verification is the remaining gap.</td>
+<td><code>sseConnCounts</code> map keyed on IP never pruned; grows monotonically.</td>
 </tr>
 <tr>
 <td><strong>G13</strong></td>
@@ -2548,15 +2623,39 @@
 <td><code>lockoutKey := lockout:%s</code> keyed on email — attacker who knows victim email can lock them out from any IP. Add IP component or progressive delays + CAPTCHA.</td>
 </tr>
 <tr>
-<td><strong>G30</strong></td>
-<td>Egress NetPol allows external DNS resolvers (e.g. 8.8.8.8:53)</td>
+<td><strong>G9</strong></td>
+<td>opencode/gh binaries downloaded without checksum verification</td>
 <td>Medium</td>
-<td>DNS-to-kube-dns and <code>0.0.0.0/0 except RFC1918</code> rules are OR-ed; enables DNS exfil/tunneling. Use Cilium FQDN policies or Calico GlobalNetworkPolicy.</td>
+<td>Dockerfile uses <code>curl --fail</code> over TLS only; no checksum or Sigstore. opencode upstream doesn't publish checksums; gh does (<code>.sha256</code>) — should verify. Release images are cosign-signed so image-level provenance is verifiable; individual binary verification is the remaining gap.</td>
+</tr>
+<tr>
+<td><strong>G43</strong></td>
+<td>IPv6 egress not covered by workspace NetworkPolicy</td>
+<td>Medium</td>
+<td>CIDR allowlist is IPv4-only; IPv6 <code>::/0</code> unrestricted. Add IPv6 rules or document IPv4-only assumption.</td>
+</tr>
+<tr>
+<td><strong>G44</strong></td>
+<td>Workspace pod-level SecurityContext missing RunAsNonRoot</td>
+<td>Low</td>
+<td>Container-level has it but pod-level doesn't; a future sidecar without its own SecurityContext could run as root.</td>
+</tr>
+<tr>
+<td><strong>G46</strong></td>
+<td>Password file read failure is silent</td>
+<td>Low</td>
+<td><code>readAgentPassword</code> returns empty string on file-read error; workspace starts silently non-functional. Should Error + exit non-zero.</td>
+</tr>
+<tr>
+<td><strong>G47</strong></td>
+<td>Inference relay secret exposed as CLI arg</td>
+<td>Low</td>
+<td>Helm chart fallback <code>--inference-relay-secret={{ .Values.inferenceRelaySecret }}</code> renders the secret into the pod spec.</td>
 </tr>
 </tbody>
 </table>
 <h3 id="full-open-gap-list">Full open gap list<a class="headerlink" href="#full-open-gap-list" title="Permanent link">&para;</a></h3>
-<p>G4, G6, G9, G13, G21, G25, G28, G29, G30, G35, G36, G37, G38, G40, G41, G42, G43, G44, G45, G46, G47, G50.</p>
+<p>G6, G9, G13, G21, G41, G42, G43, G44, G46, G47. (Ten gaps — all Medium or Low. No High or Critical open.)</p>
 <h3 id="accepted-risks">Accepted risks<a class="headerlink" href="#accepted-risks" title="Permanent link">&para;</a></h3>
 <p>These are documented with rationale and compensating controls:</p>
 <table>
@@ -2579,6 +2678,11 @@
 <td>Accepted; prefer <code>secret-file</code> type; documented for operators.</td>
 </tr>
 <tr>
+<td><strong>G4</strong></td>
+<td>No mTLS between API and sandbox pods</td>
+<td>Requires service mesh (Linkerd/Istio) or per-workspace cert infrastructure. Compensating controls: NetworkPolicy default-deny, RFC1918/CGNAT egress filter, explicit header allowlist (G34), per-request basic-auth. Operator runbook: deploy Linkerd/Istio in <code>inject</code> mode.</td>
+</tr>
+<tr>
 <td><strong>G7</strong></td>
 <td>SSE streams bypass injection-detection blocking</td>
 <td>SSE is unidirectional; block action applies to non-streaming JSON responses only.</td>
@@ -2599,9 +2703,24 @@
 <td>Operator responsibility via StorageClass mountOptions. Mitigated by runAsNonRoot + NoNewPrivs + cap-drop ALL.</td>
 </tr>
 <tr>
+<td><strong>G28</strong></td>
+<td>Workspace bind handler defers first-time delivery to pod boot</td>
+<td>Architecture (Epic 35 secretless injection): bindings persist to PostgreSQL; bootstrap reads them at pod boot. Live HTTP push is best-effort.</td>
+</tr>
+<tr>
+<td><strong>G30</strong></td>
+<td>Egress NetPol allows external DNS resolvers</td>
+<td>Standard <code>NetworkPolicy</code> cannot restrict DNS by domain. Requires Cilium FQDN policies or Calico <code>GlobalNetworkPolicy</code>.</td>
+</tr>
+<tr>
 <td><strong>G32</strong></td>
 <td>No per-user workspace quota</td>
 <td>Intentional for single-tenant. Multi-tenant SaaS should add <code>MAX_WORKSPACES_PER_USER</code>.</td>
+</tr>
+<tr>
+<td><strong>G40</strong></td>
+<td>Agentd user port (4097) has no application-layer auth</td>
+<td>NetworkPolicy is the documented trust boundary — only API server pods can reach workspace pods on port 4097. Application-layer auth would be defense-in-depth that existing controls make redundant for documented deployment topologies.</td>
 </tr>
 </tbody>
 </table>
@@ -2611,22 +2730,26 @@
 <li><strong>Credential theft from the database</strong> — encryption at rest; user secrets need the password, platform secrets need the master KEK.</li>
 <li><strong>Credential theft from PVC at rest</strong> — tmpfs + symlinks; PVC retains only dangling symlinks, no plaintext bytes.</li>
 <li><strong>Master KEK exposure via <code>/proc/1/environ</code></strong> — file mount default (G48 fixed).</li>
-<li><strong>Container escape to the node</strong> — Drop ALL caps, NoNewPrivs, RuntimeDefault seccomp, read-only root; optional gVisor for kernel-level isolation.</li>
+<li><strong>Container escape to the node</strong> — Drop ALL caps, NoNewPrivs, RuntimeDefault seccomp, read-only root; optional gVisor for kernel-level isolation. (Pod-level <code>RunAsNonRoot</code> is G44 — still open; container-level is set today.)</li>
 <li><strong>Cross-tenant network access</strong> — default-deny ingress NetworkPolicy; RFC1918/CGNAT/cloud-metadata-filtered egress.</li>
 <li><strong>SA token abuse from within a pod</strong> — <code>AutomountServiceAccountToken: false</code>.</li>
 <li><strong>Header injection to the sandbox pod</strong> — explicit proxy allowlist (G34 fixed).</li>
 <li><strong>Cross-site WebSocket hijacking</strong> — same-origin terminal upgrade check (G39 fixed).</li>
 <li><strong>Forged JWTs</strong> — HMAC-only signing enforced (alg-confusion check); <code>iss</code>/<code>aud</code> claims minted and validated.</li>
-<li><strong>JWT replay after revocation</strong> — dual-key revocation (<code>token:&lt;jti&gt;</code> + <code>token:&lt;hash&gt;</code>).</li>
+<li><strong>JWT replay after revocation</strong> — dual-key revocation (<code>token:&lt;jti&gt;</code> + <code>token:&lt;hash&gt;</code>); password change revokes all sessions (G38 fixed).</li>
 <li><strong>Default DB/Redis passwords</strong> — auto-generated 32-char random on install (G26 fixed).</li>
+<li><strong>Plaintext credential in API logs</strong> — SensitiveFields mask + SkipPathPrefixes (G25 fixed).</li>
+<li><strong>Dangerous workspace env-var names</strong> — POSIX + curated blocklist enforced at API and materialize layers (G37 fixed).</li>
+<li><strong>Recovery-endpoint CPU-exhaustion</strong> — per-route rate limit at 20/min + burst 5 (G35 fixed).</li>
+<li><strong>Workspace secrets outliving deletion</strong> — handleTerminating cleans up all ephemeral secrets (G36 fixed).</li>
 </ul>
 <h2 id="what-it-does-not-protect-against">What it does NOT protect against<a class="headerlink" href="#what-it-does-not-protect-against" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>API-pod RCE → mass credential decrypt</strong> (with local KEK providers) — an attacker running code in the pod calls <code>Decrypt</code> exactly as the application does. KMS (Epic 57) limits this to exfiltration-limitation + audit, not prevention.</li>
-<li><strong>DNS exfiltration/tunneling</strong> (G30) — external DNS resolvers are reachable on port 53.</li>
+<li><strong>MITM on pod-to-pod traffic</strong> (G4 accepted) — proxy uses plain HTTP to workspace pods. Deploy a service mesh to close.</li>
+<li><strong>DNS exfiltration/tunneling</strong> (G30 accepted) — external DNS resolvers are reachable on port 53. Use Cilium FQDN or Calico GlobalNetworkPolicy.</li>
 <li><strong>IPv6 egress</strong> (G43) — the workspace NetworkPolicy CIDR allowlist is IPv4-only.</li>
-<li><strong>Egress request-body inspection</strong> (G14) — no code path inspects outbound HTTP bodies; a compromised agent can exfiltrate via allowed egress domains.</li>
-<li><strong>Audit of decrypt operations</strong> (G50) — <code>secret_audit_log</code> records CRUD only; authorized decrypts are not individually attributable.</li>
+<li><strong>Egress request-body inspection</strong> (G14 accepted) — no code path inspects outbound HTTP bodies; a compromised agent can exfiltrate via allowed egress domains.</li>
 <li><strong>Compromised opencode binary</strong> (G9) — no checksum/Sigstore verification on download.</li>
 <li><strong>A cluster admin / insider</strong> — out of scope. A cluster admin can read Secrets and exec into pods by design.</li>
 <li><strong>etcd-at-rest compromise without encryption configured</strong> (A1) — operator MUST configure etcd encryption; no chart guard enforces it.</li>
@@ -2709,7 +2832,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 15:09:17 UTC"><span class="timeago" datetime="2026-07-11T15:09:17+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 15:09:17 UTC">2026-07-11</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 12, 2026 01:35:31 UTC"><span class="timeago" datetime="2026-07-12T01:35:31+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 12, 2026 01:35:31 UTC">2026-07-12</span>
   </span>
 
     
