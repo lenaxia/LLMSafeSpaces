@@ -39,30 +39,28 @@ async function mockLoginSuccess(page: Page) {
 }
 
 test.describe("return_to redirect", () => {
-  test("401 redirect preserves current path as return_to", async ({
-    page,
-  }) => {
-    // Mock auth/me as 200 — user is logged in, but...
+  test("401 redirect preserves current path as return_to", async ({ page }) => {
+    // Simulate session expiry: /auth/me succeeds initially, but once
+    // a protected endpoint returns 401, the session is gone.
+    let sessionExpired = false;
     await page.route(`${API}/auth/me`, async (route: Route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          id: "e2e-user",
-          username: "e2e",
-          email: "e2e@test.com",
-          role: "member",
-          active: true,
-        }),
-      });
+      if (sessionExpired) {
+        await route.fulfill({ status: 401 });
+      } else {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            id: "e2e-user",
+            username: "e2e",
+            email: "e2e@test.com",
+            role: "member",
+            active: true,
+          }),
+        });
+      }
     });
 
-    // ...hit a protected endpoint that returns 401 (session expired).
-    await page.route(`${API}/workspaces`, async (route: Route) => {
-      await route.fulfill({ status: 401 });
-    });
-
-    // Set up a mock on /auth/config for potential redirect.
     await page.route(`${API}/auth/config`, async (route: Route) => {
       await route.fulfill({
         status: 200,
@@ -75,14 +73,28 @@ test.describe("return_to redirect", () => {
       });
     });
 
+    // When /workspaces returns 401, the session is considered expired.
+    await page.route(`${API}/workspaces`, async (route: Route) => {
+      sessionExpired = true;
+      await route.fulfill({ status: 401 });
+    });
+
+    // Also stub other endpoints the chat page might hit.
+    await page.route(`${API}/events`, async (route: Route) => {
+      await route.fulfill({ status: 200 });
+    });
+
     // Navigate to /chat — which will trigger a workspace list fetch.
     // When the 401 comes back, the client should redirect to /login?return_to=<path>.
     await page.goto("/chat");
 
     // The 401 handler sets window.location.href — wait for the navigation.
     await expect(page).toHaveURL(/\/login\?return_to=/, { timeout: 10000 });
+
+    // Verify the return_to value is /chat (URL-encoded).
     const url = page.url();
-    expect(url).toContain("return_to=");
+    const returnTo = new URL(url).searchParams.get("return_to");
+    expect(returnTo).toContain("/chat");
   });
 
   test("login with return_to navigates back to target", async ({ page }) => {

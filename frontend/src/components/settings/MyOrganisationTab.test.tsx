@@ -55,6 +55,15 @@ describe("MyOrganisationTab", () => {
     );
   });
 
+  it("shows invitation hint when the user has no org", async () => {
+    mockList.mockResolvedValue([]);
+    renderTab();
+    await waitFor(() =>
+      expect(screen.getByText(/check your email/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/invitation link/i)).toBeInTheDocument();
+  });
+
   it("shows Manage link for admins", async () => {
     mockList.mockResolvedValue([ORG]);
     renderTab();
