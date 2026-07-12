@@ -2010,3 +2010,123 @@ func gatherAuthFailureCount(t *testing.T, reason string) float64 {
 	}
 	return 0
 }
+
+// TestLogin_G13_AttackerFromDifferentIPCannotLockVictim is the G13
+// regression: with IP keying, an attacker who knows the victim's email
+// but connects from a DIFFERENT IP cannot trigger the victim's lockout.
+// Pre-G13, the lockout key was email-only — a single bad attempt from
+// any IP incremented the victim's counter.
+func TestLogin_G13_AttackerFromDifferentIPCannotLockVictim(t *testing.T) {
+	cfg := testConfig()
+	cfg.Auth.LockoutEnabled = true
+	cfg.Auth.LockoutAttempts = 3
+	cfg.Auth.LockoutDuration = 15 * time.Minute
+
+	log := testLogger()
+	db := &fullMockDB{users: make(map[string]*types.User)}
+	cache := newStatefulMockCache()
+	svc, _ := New(cfg, log, db, cache)
+
+	// Seed a user
+	pw := []byte("correct-password")
+	hash, _ := bcrypt.GenerateFromPassword(pw, 4)
+	db.users["victim@test.com"] = &types.User{
+		ID: "u-1", Email: "victim@test.com", PasswordHash: string(hash), Status: "active", Active: true, EmailVerified: true,
+	}
+
+	// Attacker from IP 6.6.6.6 makes 3 failed attempts (== LockoutAttempts).
+	// These should NOT lock the account for the victim on IP 1.2.3.4.
+	attackerIP := "6.6.6.6"
+	for i := 0; i < 3; i++ {
+		ctx := WithClientIP(context.Background(), attackerIP)
+		_, _ = svc.Login(ctx, types.LoginRequest{
+			Email: "victim@test.com", Password: "wrong",
+		})
+	}
+
+	// Victim from IP 1.2.3.4 must still be able to log in — the
+	// attacker's attempts used a different lockout key.
+	victimIP := "1.2.3.4"
+	ctx := WithClientIP(context.Background(), victimIP)
+	resp, err := svc.Login(ctx, types.LoginRequest{
+		Email: "victim@test.com", Password: "correct-password",
+	})
+
+	require.NoError(t, err, "G13 REGRESSION: victim's account was locked by attacker's attempts from a different IP")
+	require.NotNil(t, resp)
+	require.Equal(t, "victim@test.com", resp.User.Email)
+}
+
+// TestLogin_G13_SameIPLockoutStillWorks confirms the G13 fix doesn't
+// break the original lockout behavior: a legitimate user (or attacker
+// on the same IP) hitting the attempt limit IS still locked out.
+func TestLogin_G13_SameIPLockoutStillWorks(t *testing.T) {
+	cfg := testConfig()
+	cfg.Auth.LockoutEnabled = true
+	cfg.Auth.LockoutAttempts = 3
+	cfg.Auth.LockoutDuration = 15 * time.Minute
+
+	log := testLogger()
+	db := &fullMockDB{users: make(map[string]*types.User)}
+	cache := newStatefulMockCache()
+	svc, _ := New(cfg, log, db, cache)
+
+	pw := []byte("correct-password")
+	hash, _ := bcrypt.GenerateFromPassword(pw, 4)
+	db.users["user@test.com"] = &types.User{
+		ID: "u-1", Email: "user@test.com", PasswordHash: string(hash), Status: "active", Active: true, EmailVerified: true,
+	}
+
+	ip := "1.2.3.4"
+	for i := 0; i < 3; i++ {
+		ctx := WithClientIP(context.Background(), ip)
+		_, _ = svc.Login(ctx, types.LoginRequest{
+			Email: "user@test.com", Password: "wrong",
+		})
+	}
+
+	// 4th attempt from the SAME IP with the correct password must
+	// still be locked out.
+	ctx := WithClientIP(context.Background(), ip)
+	_, err := svc.Login(ctx, types.LoginRequest{
+		Email: "user@test.com", Password: "correct-password",
+	})
+
+	require.Error(t, err, "G13: same-IP lockout must still work after LockoutAttempts failed attempts")
+	require.Contains(t, err.Error(), "locked")
+}
+
+// TestLogin_G13_NoIPContextFallsBackToEmailOnly confirms backward
+// compatibility: callers that don't set WithClientIP get email-only
+// keying (the pre-G13 behavior). This is intentional — internal
+// callers and tests that haven't been updated should not break.
+func TestLogin_G13_NoIPContextFallsBackToEmailOnly(t *testing.T) {
+	cfg := testConfig()
+	cfg.Auth.LockoutEnabled = true
+	cfg.Auth.LockoutAttempts = 2
+	cfg.Auth.LockoutDuration = 15 * time.Minute
+
+	log := testLogger()
+	db := &fullMockDB{users: make(map[string]*types.User)}
+	cache := newStatefulMockCache()
+	svc, _ := New(cfg, log, db, cache)
+
+	pw := []byte("pw")
+	hash, _ := bcrypt.GenerateFromPassword(pw, 4)
+	db.users["x@test.com"] = &types.User{
+		ID: "u-1", Email: "x@test.com", PasswordHash: string(hash), Status: "active", Active: true, EmailVerified: true,
+	}
+
+	// Two failed attempts WITHOUT WithClientIP — email-only key.
+	for i := 0; i < 2; i++ {
+		_, _ = svc.Login(context.Background(), types.LoginRequest{
+			Email: "x@test.com", Password: "wrong",
+		})
+	}
+
+	// Third attempt must be locked.
+	_, err := svc.Login(context.Background(), types.LoginRequest{
+		Email: "x@test.com", Password: "pw",
+	})
+	require.Error(t, err, "email-only keying must still lock (backward compat)")
+}

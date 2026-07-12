@@ -335,7 +335,7 @@ All gaps below have been verified against the codebase. Each entry cites exact f
 | G10 | Redis session cache not encrypted at rest | Low | 🟡 Accepted | Redis persistence is operator-configured | Document operator requirement: disable RDB/AOF persistence or enable disk encryption. |
 | G11 | ~~No Pod Security Admission enforcement~~ | — | 🟢 **Fixed** | `namespace.yaml:20-25` sets `pod-security.kubernetes.io/enforce=restricted`; `values.yaml:19` defaults `podSecurityEnforce: "restricted"` | PSA labels enforce restricted profile on workspace namespace. |
 | G12 | ~~Proxy ResponseHeaderTimeout 300s~~ | — | 🟢 **Fixed** | `proxy.go:128` — `ResponseHeaderTimeout: 60 * time.Second`; streaming endpoints bypass this client entirely | Reduced from 300s to 60s for non-streaming requests. |
-| G13 | Account lockout keyed on email only (DoS vector) | Medium | 🔴 Open | `auth.go:686` — `lockoutKey := fmt.Sprintf("lockout:%s", email)` — attacker who knows victim email can lock them out from any IP | Add IP component to lockout key, or use progressive delays + CAPTCHA. |
+| G13 | ~~Account lockout keyed on email only (DoS vector)~~ | Medium | 🟢 **Fixed** | Pre-fix: `auth.go:1000` — `lockoutKey := fmt.Sprintf("lockout:%s", email)` — attacker who knows victim email can lock them out from any IP. | New `WithClientIP(ctx, ip)` context-propagation helper; router sets it before calling `Login`. Lockout key now includes the client IP: `lockout:<email>:<ip>`. An attacker from a different IP cannot trigger the victim's lockout. Callers without `WithClientIP` fall back to email-only keying (backward compat). Regression: `TestLogin_G13_AttackerFromDifferentIPCannotLockVictim`, `TestLogin_G13_SameIPLockoutStillWorks`, `TestLogin_G13_NoIPContextFallsBackToEmailOnly`. |
 | G14 | No egress request body inspection | High | 🟡 Accepted | No code path inspects outbound HTTP request bodies from sandbox pods | Accepted residual risk; minimize allowedDomains; document. |
 | G15 | ~~Sandbox emptyDir is disk-backed, not tmpfs~~ | — | 🟢 **Fixed** | `pod_builder.go:136-143` — `sandbox-cfg` and `tmp` volumes use `StorageMediumMemory` with explicit size limits (4Mi, 64Mi) | All credential-bearing emptyDir volumes are tmpfs-backed with size limits. |
 | **G16** | **No NetworkPolicy templates ship with the chart** | Critical | 🟢 **Fixed** | Pre-fix: no NetworkPolicy in chart | Chart ships `workspace-network-policy.yaml` with default-deny ingress and egress allow-list. `networkPolicy.enabled` defaults to `true`. Regression: 5 helm-render tests. |
@@ -452,9 +452,9 @@ Per `README-LLM.md` Rule 7, every assumption must be validated. Where validation
 
 | Category | Total | Fixed | Open | Accepted |
 |----------|-------|-------|------|----------|
-| Security gaps (G1–G50) | 50 | 36 | 3 | 11 |
+| Security gaps (G1–G50) | 50 | 37 | 2 | 11 |
 
-**Open gaps (require remediation):** G9, G13, G43
+**Open gaps (require remediation):** G9, G43
 
 **Accepted risks (documented rationale):** G1, G3, G4, G7, G10, G14, G23, G28, G30, G32, G40
 
@@ -483,6 +483,7 @@ Per `README-LLM.md` Rule 7, every assumption must be validated. Where validation
 
 | Version | Change |
 |---------|--------|
+| 2.11 | Closed G13 (account lockout keyed on email only). New `WithClientIP(ctx, ip)` context-propagation helper; router sets it before calling Login. Lockout key now includes the client IP (`lockout:<email>:<ip>`). An attacker from a different IP cannot trigger the victim's lockout. Callers without WithClientIP fall back to email-only keying (backward compat). Counts: 36/3/11 → **37/2/11**. |
 | 2.10 | Closed 7 code-fixable gaps (G6/G41 duplicates, G21, G42, G44, G46, G47). G6+G41: added `/api/v1/secrets/:id/reveal` to `PerRouteRateLimitConfig.Routes` (5/min + burst 5) using the middleware shipped in G35's PR #538. G21: replaced `cp` with `install -m 0600` in pod_builder.go credScript so the password file is mode 0600 regardless of source Secret defaultMode. G42: opportunistic prune of stale entries in `sseConnAllowed` on every call. G44: added `RunAsNonRoot: &true` to `buildPodSecurityContext` so future sidecars inherit non-root default. G46: `readAgentPassword` now logs Error + os.Exit(1) on file-read failure (was Warn + empty string → silently non-functional workspace). G47: removed plaintext fallback for `--inference-relay-secret` in controller-deployment.yaml; operators who set `inferenceRelaySecret` without `externalSecret` now get a helm-template-time error. Counts: 26/16/8 → **33/9/8**. |
 | 2.9 | Reclassified G28 from Open to Accepted. Original row claimed "K8s Secret is never created" but Epic 35 (secretless injection) removed the durable K8s Secret path entirely. Architecture now: bindings persist to PostgreSQL (advisory-locked transaction), live HTTP push is best-effort (ErrNoRunningPod is documented transient state), init container fetches credentials at boot via /internal/v1/pod-bootstrap. The "no-op for first-time delivery" is the intended behavior in the new architecture. Added `TestSecretService_G28_BindingsSurviveNoPodState` to lock the persistence invariant. Counts: 26 Fixed / 16 Open / 8 Accepted. |
 | 2.8 | Closed G36 (workspace secrets cleaned on deletion). `handleTerminating` now calls `r.cleanupFailedWorkspaceSecrets(ctx, workspace)` after the explicit password-secret delete. The primitive was already used in `recovery.go` for the Failed-phase path; this PR extends it to graceful termination. `handleDeletion` inherits the fix automatically. Threat-model row's reference to `deleteEphemeralSecretsSecret` corrected — the actual function name is `cleanupFailedWorkspaceSecrets`. Counts: 26 Fixed / 17 Open / 7 Accepted. |
