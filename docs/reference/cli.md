@@ -105,7 +105,7 @@ The sidecar binary that supervises `opencode` inside every workspace pod. Owns t
 | Port | Purpose | Auth |
 |---|---|---|
 | `:4096` | opencode HTTP API (the main container, not agentd) | HTTP Basic Auth (workspace password) |
-| `:4097` | User port — `/v1/reload-secrets` (live credential reload) | **None (G40 open)** — should be behind `requireBearerToken` |
+| `:4097` | User port — `/v1/reload-secrets` (live credential reload) | **None (G40 accepted)** — NetworkPolicy is the trust boundary (only API server pods can reach port 4097) |
 | `:4098` | Admin port — `/v1/healthz`, `/v1/statusz`, `/v1/readyz`, `/v1/metrics` | Token-gated |
 
 **Key endpoints:**
