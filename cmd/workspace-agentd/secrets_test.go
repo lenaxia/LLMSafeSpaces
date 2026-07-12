@@ -69,6 +69,7 @@ func runMaterializeSubcommand(t *testing.T, bin, secretsPath, secretsBase, sshDi
 		"LLMSAFESPACES_AGENT_CONFIG_PATH="+agentCfg,
 		"LLMSAFESPACES_SECRETS_ENV_PATH="+envPath,
 		"LLMSAFESPACES_GIT_CREDS_PATH="+gitCreds,
+		"LLMSAFESPACES_RELOAD_CACHE_PATH="+filepath.Join(filepath.Dir(secretsBase), "nonexistent-reload-cache.json"),
 		"HOME="+filepath.Dir(sshDir),
 	)
 	var stdout, stderr bytes.Buffer
