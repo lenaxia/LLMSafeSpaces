@@ -67,8 +67,8 @@ The base image ([`runtimes/base/Dockerfile`](https://github.com/lenaxia/LLMSafeS
 
 | Binary | Version | Verification |
 |---|---|---|
-| **opencode** | 1.15.12 (pinned) | Downloaded over TLS; **not checksum-verified** (upstream does not publish checksums — gap G9). Pinned to a specific validated release. |
-| **gh** (GitHub CLI) | 2.74.1 (pinned) | Downloaded over TLS; upstream publishes `.sha256` (should be verified — G9). |
+| **opencode** | 1.15.12 (pinned) | Downloaded over TLS; **not checksum-verified** (upstream does not publish checksums — gap G9, accepted). Pinned to a specific validated release. |
+| **gh** (GitHub CLI) | 2.74.1 (pinned) | Downloaded over TLS; **checksum-verified** via `checksums.txt` (G9 partial fix). |
 | **AWS CLI v2** | 2.34.57 (pinned) | Full PGP verification (AWS CLI Team key). |
 | **mise** | 2026.5.15 (pinned) | `MISE_GITHUB_ATTESTATIONS=1` — verifies Sigstore-backed GitHub attestations on every tool install. |
 | **redact** | built from source (this repo) | Go-built in a multi-stage `FROM golang:1.25-bookworm` builder. |
@@ -251,8 +251,8 @@ If you build a runtime image **from scratch** (not extending base), you must pro
 
 | Binary in base | Verification | Gap |
 |---|---|---|
-| opencode | TLS download, version-pinned | G9 — no checksum/Sigstore (upstream doesn't publish) |
-| gh | TLS download, version-pinned | G9 — upstream publishes `.sha256`, not yet verified |
+| opencode | TLS download, version-pinned | G9 (accepted) — no checksum/Sigstore (upstream doesn't publish) |
+| gh | TLS download, checksum-verified | G9 (partial fix) — checksums.txt verified at build |
 | AWS CLI | Full PGP verification | None |
 | mise | Sigstore GitHub attestations | None (G19 fixed) |
 | redact, agentd | Built from source in multi-stage build | None |

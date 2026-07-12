@@ -204,8 +204,8 @@ kubectl get events -n llmsafespaces --since=2h | grep -i "secret\|workspace"
 - [ ] NetworkPolicy reviewed for any rules the attacker may have added/relaxed.
 - [ ] Images verified with cosign (see [Verifying image signatures](#verifying-image-signatures) below).
 
-!!! warning "Decrypt audit is not wired (G50)"
-    The `AuditedProvider` exists but is not wired into production decrypt paths. Exfiltration via legitimate API decrypt calls is currently **undetectable** from the platform's audit log. Rely on API access logs, Redis monitoring, and Postgres query logs for forensic analysis.
+!!! info "Decrypt audit is wired (G50 fixed)"
+    The `AuditedProvider` is wired into production decrypt paths (`app.go:408,409,624`). Every Decrypt call on provider-credentials, org-credentials, and api-keys logs to `secret_audit_log`. Exfiltration via legitimate API decrypt calls is now **detectable** in the audit log.
 
 ---
 

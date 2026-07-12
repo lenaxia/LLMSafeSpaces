@@ -289,6 +289,6 @@ This is how adding a new secret to a workspace takes effect without a full suspe
 | API-pod RCE → mass decrypt | **Partial** (KMS) / **No** (local providers) | KMS limits exfil to the RCE window + adds audit; local providers cannot prevent in-process `Decrypt` calls |
 | Plaintext credentials on PVC at rest | Yes | tmpfs + symlinks; PVC retains only dangling symlinks |
 | Env-secret readable via `/proc/self/environ` | **Accepted risk** (G3) | Same-UID processes can read env; prefer `secret-file` type |
-| Decrypt operations going unaudited | **No** (G50 open) | `AuditedProvider` exists but is not wired into production decrypt paths (awaits US-50.2 unification) |
+| Decrypt operations going unaudited | **Yes** (G50 fixed) | `AuditedProvider` is wired at `app.go:408,409,624` for provider-credentials, org-credentials, and api-keys. Every Decrypt logs to `secret_audit_log`. |
 
 See the [threat model](threat-model.md) for the full gap table.

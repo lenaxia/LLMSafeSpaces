@@ -220,7 +220,7 @@ DNS is allowed to kube-dns on port 53 (UDP/TCP). This is required for the worksp
 
 ### Current state
 
-- The chart's egress NP allows port 53 to kube-dns **and** `0.0.0.0/0` (minus RFC1918) — so external DNS resolvers (e.g. `8.8.8.8:53`) are also reachable (gap G30, open). The two rules are OR-ed.
+- The chart's egress NP allows port 53 to kube-dns **and** `0.0.0.0/0` (minus RFC1918) — so external DNS resolvers (e.g. `8.8.8.8:53`) are also reachable (gap G30, accepted — standard NetworkPolicy cannot restrict DNS by domain). The two rules are OR-ed.
 - There is no DNS query body inspection. This is accepted residual risk (G14): no code path inspects outbound HTTP request bodies either.
 
 ### Operator mitigations

@@ -175,7 +175,7 @@ External; the chart does not bundle it. Auto-generated 32-char password on first
 - **Model cache** (5s TTL) — the per-replica catalog cache; `SetModel` evicts on the handling replica only, so other replicas serve stale for up to 5s.
 - **DEK cache** — per-user data encryption keys, decrypted and held in memory for the session TTL so the API doesn't re-run Argon2id on every request. Protected by Redis auth + the datastore NetworkPolicy.
 - **Account lockout** counters (keyed on email + client IP — G13 fixed: an attacker from a different IP cannot trigger the victim's lockout).
-- **SSE connection tracking** (G42 is open — the `sseConnCounts` map is never pruned).
+- **SSE connection tracking** (G42 fixed — the `sseConnCounts` map prunes stale entries on every call).
 - **JWT revocation** set — `token:<hash>` and `token:<jti>` for dual-key revocation.
 
 !!! warning "Production requirement (H3)"

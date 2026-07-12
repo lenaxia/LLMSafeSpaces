@@ -275,10 +275,10 @@ oidc:
 
 ### What this configuration does NOT enforce
 
-- IPv6 egress is unrestricted (G43) — run IPv4-only nodes.
-- DNS exfiltration is not blocked (G30) — add CoreDNS rate limiting.
-- No mTLS on the pod network (G4) — add a service mesh if needed.
-- Decrypt operations are not audited (G50).
+- IPv6 egress is denied by NetworkPolicy default-deny (G43 resolved).
+- DNS exfiltration is not blocked (G30, accepted — use Cilium FQDN or Calico GlobalNetworkPolicy).
+- No mTLS on the pod network (G4, accepted — add a service mesh if needed).
+- Decrypt operations are audited (G50 fixed — AuditedProvider wired).
 
 ---
 
