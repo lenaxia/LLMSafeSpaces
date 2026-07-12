@@ -9,11 +9,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
+	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -1098,4 +1101,103 @@ func TestRelayAdmin_E2E_FullLifecycle(t *testing.T) {
 	gcpSecret, err := clientset.CoreV1().Secrets(testNamespace).Get(context.Background(), "gcp-credentials", metav1.GetOptions{})
 	require.NoError(t, err)
 	assert.Contains(t, string(gcpSecret.Data["service-account-json"]), "service_account")
+}
+
+// ─── #475: scrapeRouterMetrics error logging ────────────────────────────────
+
+// relayWarnCapture is a minimal LoggerInterface capture that records the
+// Warn-level messages emitted during a scrapeRouterMetrics call. Production
+// wiring passes the real zap logger; tests inject this capture to assert
+// the previously-silent error paths now surface a Warn line. Mirrors the
+// pattern in invitations_test.go (invLogCapture).
+type relayWarnCapture struct {
+	warnMessages  []string
+	errorMessages []string
+}
+
+func (c *relayWarnCapture) Debug(_ string, _ ...interface{}) {}
+func (c *relayWarnCapture) Info(_ string, _ ...interface{})  {}
+func (c *relayWarnCapture) Warn(msg string, _ ...interface{}) {
+	c.warnMessages = append(c.warnMessages, msg)
+}
+func (c *relayWarnCapture) Error(msg string, _ error, _ ...interface{}) {
+	c.errorMessages = append(c.errorMessages, msg)
+}
+func (c *relayWarnCapture) Fatal(_ string, _ error, _ ...interface{})           {}
+func (c *relayWarnCapture) With(_ ...interface{}) pkginterfaces.LoggerInterface { return c }
+func (c *relayWarnCapture) Sync() error                                         { return nil }
+
+// TestScrapeRouterMetrics_HTTPFailure_LogsWarn verifies that the previously-
+// silent http.Client.Do failure path now emits a Warn log line (#475).
+// Pre-fix: three error paths in scrapeRouterMetrics returned a zero-valued
+// routerMetricsData with no log line; the admin dashboard rendered zeros
+// while looking healthy, hiding config/network errors from operators.
+func TestScrapeRouterMetrics_HTTPFailure_LogsWarn(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	r, h, relayMock := setupRelayRouter(t, clientset)
+	// Seed a relay CR so the /status handler doesn't early-return at the
+	// "no relays deployed" guard before reaching scrapeRouterMetrics.
+	overrideList(relayMock, &v1.InferenceRelayList{Items: []v1.InferenceRelay{*makeRelayCR("relay-fleet", nil, 0)}}, nil)
+	h.routerSvcURL = "http://127.0.0.1:1" // :1 = no listener
+	h.SetHTTPClient(&http.Client{Timeout: 100 * time.Millisecond})
+
+	capture := &relayWarnCapture{}
+	h.SetLogger(capture)
+
+	// Drive a /admin/relay/status request — the handler calls scrapeRouterMetrics
+	// internally; the HTTP call to port :1 fails with connection refused.
+	req := httptest.NewRequest("GET", "/api/v1/admin/relay/status", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	// The HTTP failure must surface at least one Warn with a recognizable
+	// message so operators grepping logs can find it. Pre-fix this slice
+	// was empty.
+	require.NotEmpty(t, capture.warnMessages,
+		"scrapeRouterMetrics HTTP failure must emit a Warn log line (#475)")
+	assert.True(t, strings.Contains(capture.warnMessages[0], "relay router") || strings.Contains(capture.warnMessages[0], "metrics"),
+		"Warn message should reference the relay router or metrics scrape; got: %q", capture.warnMessages[0])
+}
+
+// TestScrapeRouterMetrics_NonOKResponse_LogsWarn verifies that a non-2xx
+// response from the router's /metrics endpoint is logged, not silently
+// swallowed. Pre-fix the function ignored resp.StatusCode entirely.
+func TestScrapeRouterMetrics_NonOKResponse_LogsWarn(t *testing.T) {
+	// Stand up a fake router that returns 503.
+	fakeRouter := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer fakeRouter.Close()
+
+	clientset := fake.NewSimpleClientset()
+	r, h, relayMock := setupRelayRouter(t, clientset)
+	overrideList(relayMock, &v1.InferenceRelayList{Items: []v1.InferenceRelay{*makeRelayCR("relay-fleet", nil, 0)}}, nil)
+	h.routerSvcURL = fakeRouter.URL
+	capture := &relayWarnCapture{}
+	h.SetLogger(capture)
+
+	req := httptest.NewRequest("GET", "/api/v1/admin/relay/status", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	require.NotEmpty(t, capture.warnMessages,
+		"non-2xx response from router /metrics must emit a Warn log line (#475)")
+}
+
+// TestScrapeRouterMetrics_NilLogger_DoesNotPanic is the defense-in-depth
+// guard: production wiring always injects a logger, but a nil logger MUST
+// NOT crash the handler. Mirrors the pattern in TestInvitations_VerifyUser_NilLogger_DoesNotPanic.
+func TestScrapeRouterMetrics_NilLogger_DoesNotPanic(t *testing.T) {
+	clientset := fake.NewSimpleClientset()
+	r, h, relayMock := setupRelayRouter(t, clientset)
+	overrideList(relayMock, &v1.InferenceRelayList{Items: []v1.InferenceRelay{*makeRelayCR("relay-fleet", nil, 0)}}, nil)
+	h.routerSvcURL = "http://127.0.0.1:1"
+	h.SetHTTPClient(&http.Client{Timeout: 100 * time.Millisecond})
+	// Deliberately no SetLogger call — h.logger is nil.
+
+	assert.NotPanics(t, func() {
+		req := httptest.NewRequest("GET", "/api/v1/admin/relay/status", nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+	}, "scrapeRouterMetrics must tolerate a nil logger (#475 nil-guard)")
 }

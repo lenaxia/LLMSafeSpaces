@@ -30,6 +30,7 @@ type RelayAdminHandler struct {
 	routerNamespace string
 	routerSvcURL    string
 	httpClient      *http.Client
+	logger          interfaces.LoggerInterface
 }
 
 // NewRelayAdminHandler creates a new relay admin handler.
@@ -52,6 +53,15 @@ func (h *RelayAdminHandler) SetHTTPClient(client *http.Client) {
 		h.httpClient = client
 	}
 }
+
+// SetLogger injects a logger. When set, scrapeRouterMetrics emits Warn-level
+// lines on its three error paths (request build, HTTP transport, response
+// read) and on non-2xx responses (#475). Without this, dashboard
+// misconfigurations surface only as silently-zero counters — operators see
+// a "working" admin relay status with no signal pointing at the root cause.
+// Production wiring always injects a logger; nil is tolerated (defense in
+// depth — a nil logger MUST NOT crash the handler).
+func (h *RelayAdminHandler) SetLogger(l interfaces.LoggerInterface) { h.logger = l }
 
 // ─── US-43.2: Setup checklist ───────────────────────────────────────────────
 
@@ -632,15 +642,45 @@ func (h *RelayAdminHandler) scrapeRouterMetrics(ctx context.Context) routerMetri
 	url := strings.TrimRight(h.routerSvcURL, "/") + "/metrics"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
+		// Unreachable in practice (the only failure mode is an invalid
+		// method or URL); logged for completeness so the silent-zero
+		// failure mode of #475 is closed on every path.
+		if h.logger != nil {
+			h.logger.Warn("relay router /metrics request build failed",
+				"url", url, "error", err.Error())
+		}
 		return data
 	}
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
+		// The most common failure mode in production: NetworkPolicy
+		// missing the API ingress rule (#466), DNS resolving slowly,
+		// router restarting, or the configured routerSvcURL pointing at
+		// the wrong place. Pre-fix this returned silently; operators saw
+		// zero counters with no diagnostic.
+		if h.logger != nil {
+			h.logger.Warn("relay router /metrics scrape failed",
+				"url", url, "error", err.Error())
+		}
 		return data
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// Non-2xx: the router is up but the scrape path is unhealthy
+		// (5xx from router crash, 404 from a wrong path, etc.). Pre-fix
+		// resp.StatusCode was never inspected at all.
+		if h.logger != nil {
+			h.logger.Warn("relay router /metrics returned non-2xx",
+				"url", url, "status_code", resp.StatusCode)
+		}
+		return data
+	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
+		if h.logger != nil {
+			h.logger.Warn("relay router /metrics response read failed",
+				"url", url, "error", err.Error())
+		}
 		return data
 	}
 	parseRouterMetrics(string(body), &data)
