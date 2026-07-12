@@ -207,16 +207,10 @@ The default is `false` because the user-traffic source is deployment-specific (i
 
 ## IPv6 caveats
 
-!!! warning "IPv6 egress is not restricted (gap G43)"
-    The workspace egress NetworkPolicy's CIDR allowlist uses `0.0.0.0/0` (IPv4) only. IPv6 `::/0` is **unrestricted**. On dual-stack clusters, a workspace pod with an IPv6 address can egress to any IPv6 destination, including RFC1918-equivalent ranges (`fc00::/7` ULA, `fe80::/10` link-local).
+!!! info "IPv6 egress is denied by default (G43 resolved)"
+    The workspace egress NetworkPolicy has `policyTypes: [Egress]`, which default-denies ALL egress not explicitly allowed. The `allowedEgressCIDRs: [0.0.0.0/0]` matches IPv4 only (Kubernetes `ipBlock` CIDRs are address-family-specific). IPv6 traffic is denied by omission — no egress rule matches `::/0`.
 
-Mitigations:
-
-- Run IPv4-only nodes for workspace scheduling (nodeSelector / taints).
-- Add IPv6 rules via a CNI-native policy (Cilium, Calico) and disable the chart's workspaceEgress NP.
-- Disable IPv6 on the workspace pod network if your CNI supports it.
-
-This is a known open gap; the platform assumes IPv4-only workspace networking by default.
+    **If you need IPv6 egress** (e.g. your LLM provider is IPv6-only), add `::/0` (with appropriate exceptions for ULA/link-local) to `networkPolicy.allowedEgressCIDRs` in your Helm values. Without that, workspace pods are effectively IPv4-only for external connectivity.
 
 ---
 

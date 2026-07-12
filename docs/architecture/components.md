@@ -141,7 +141,7 @@ Hardened security context on **all** containers: `readOnlyRootFilesystem: true`,
 `workspace-agentd` (`cmd/workspace-agentd`) supervises `opencode`:
 
 - **Admin port `:4098`** — `/v1/healthz`, `/v1/statusz`, `/v1/readyz`, `/v1/metrics`. The controller polls these for health and metric enrichment; Prometheus scrapes `/metrics`. Token-gated.
-- **User port `:4097`** — `/v1/reload-secrets` (live credential reload without pod restart). *Note: G40 is open — this port has no application-layer auth today; it should be behind `requireBearerToken`.*
+- **User port `:4097`** — `/v1/reload-secrets` (live credential reload without pod restart). *Note: G40 is accepted — this port has no application-layer auth; the NetworkPolicy is the trust boundary (only API server pods can reach port 4097).*
 - Owns the single `AgentConfigWriter` that builds `/sandbox-runtime/agent-config.json` atomically (temp-file + `os.Rename`), merging providers + model + relay sources. The one-shot relay injector runs ~T+7s after boot to discover free-tier models.
 - Owns the reload-replay cache (`/sandbox-runtime/last-reload-secrets.json`) so user-DEK credentials survive a main-container restart (OOM, panic, kubelet restart) — without it, the boot-time `reset()` would wipe them.
 
@@ -174,7 +174,7 @@ External; the chart does not bundle it. Auto-generated 32-char password on first
 - **Rate limiting** counters (global + per-endpoint).
 - **Model cache** (5s TTL) — the per-replica catalog cache; `SetModel` evicts on the handling replica only, so other replicas serve stale for up to 5s.
 - **DEK cache** — per-user data encryption keys, decrypted and held in memory for the session TTL so the API doesn't re-run Argon2id on every request. Protected by Redis auth + the datastore NetworkPolicy.
-- **Account lockout** counters (keyed on email today — G13 is open: an attacker who knows the victim email can lock them out from any IP).
+- **Account lockout** counters (keyed on email + client IP — G13 fixed: an attacker from a different IP cannot trigger the victim's lockout).
 - **SSE connection tracking** (G42 is open — the `sseConnCounts` map is never pruned).
 - **JWT revocation** set — `token:<hash>` and `token:<jti>` for dual-key revocation.
 

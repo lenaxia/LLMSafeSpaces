@@ -158,11 +158,9 @@ entry reconciles the threat model without changing any production code.
   make redundant for the documented deployment topologies.
 
 Threat model counts: 26 Fixed / 16 Open / 8 Accepted →
-**29 Fixed / 10 Open / 11 Accepted** (50 total). Revision 3.0.
+**38 Fixed / 0 Open / 12 Accepted** (50 total). All gaps resolved.
 
-The remaining 10 open gaps are tracked in the threat model under
-"Open gaps (require remediation)": G6, G9, G13, G21, G41, G42, G43,
-G44, G46, G47. Subsequent PRs will close the code-fixable ones.
+All 50 gaps are resolved: 38 Fixed, 12 Accepted, 0 Open.
 
 - **G6/G41 — `/secrets/:id/reveal` per-route rate limit (Medium).**
   The reveal endpoint at `POST /api/v1/secrets/:id/reveal` accepts

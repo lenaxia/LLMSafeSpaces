@@ -49,18 +49,18 @@ flowchart TD
 
 | Component | Spoofing | Tampering | Repudiation | Info Disclosure | DoS | Elevation |
 |---|---|---|---|---|---|---|
-| **API Auth** | JWT forgery (mitigated: HMAC-only); API key theft | Token replay (mitigated: dual-key revocation) | No audit of failed auth | Secret values logged — **fixed** (G25, two-layer mask + skip) | Account lockout abuse (**G13**); recovery rate limit — **fixed** (G35) | Sessions survive password change — **fixed** (G38 revokes all sessions) |
+| **API Auth** | JWT forgery (mitigated: HMAC-only); API key theft | Token replay (mitigated: dual-key revocation) | No audit of failed auth | Secret values logged — **fixed** (G25, two-layer mask + skip) | Account lockout abuse — **fixed** (G13 email+IP keying); recovery rate limit — **fixed** (G35) | Sessions survive password change — **fixed** (G38 revokes all sessions) |
 | **Proxy** | Workspace ID spoofing — **fixed** (G33) | Response tampering (plain HTTP — G4 accepted); header injection — **fixed** (G34) | No per-request audit | Headers to sandbox — **fixed** (G34 allowlist) | Connection exhaustion (mitigated: limits) | Cross-tenant access — **fixed** (G33) |
 | **Controller** | SA token theft (mitigated: bound tokens) | CRD manipulation (mitigated: webhooks) | Actions not individually audited | Secrets persist after deletion — **fixed** (G36 cleanup) | CRD spam (mitigated: quotas) | Namespace-scoped SA |
 | **Sandbox Pod** | N/A | PVC data corruption | No file-level audit | Credential in env (**G3** accepted); env var injection — **fixed** (G37 blocklist); agentd user port unauthenticated (**G40** accepted) | Resource exhaustion (mitigated) | Container escape (mitigated: seccomp, caps; G1 accepted) |
 | **Database** | SQL injection (mitigated: pgx parameterized) | Data corruption (mitigated: tx) | No query audit | Wrapped DEK exposure (mitigated: AES-256-GCM); `key_version` for rotation; authorized-decrypt exfil — **fixed** (G50 AuditedProvider wired) | Connection exhaustion | N/A |
 | **Redis** | Auth bypass (mitigated: auto-gen password + NP) | Cache poisoning | No op audit | DEK in memory (**G10** accepted) | Memory exhaustion; SSE tracking leak — **fixed** (G42 prunes) | N/A |
 | **Frontend** | Session theft via XSS (mitigated: rehype-sanitize — needs fuzzing) | DOM tampering (mitigated: React auto-escape) | No client audit | JWT in HttpOnly Secure cookie | UI freeze via huge messages | N/A |
-| **Workspace Network** | Cross-tenant traffic (mitigated: NP) | N/A | NP events not audited | DNS exfil via external resolvers (**G30** accepted); IPv6 unrestricted (**G43**) | N/A | N/A |
+| **Workspace Network** | Cross-tenant traffic (mitigated: NP) | N/A | NP events not audited | DNS exfil via external resolvers (**G30** accepted); IPv6 denied by default-deny (**G43** fixed) | N/A | N/A |
 
 ## The gap register (G1–G50)
 
-**Status:** 36 Fixed · 3 Open · 11 Accepted (50 total). See the authoritative [`THREAT-MODEL.md`](https://github.com/lenaxia/LLMSafeSpaces/blob/main/design/stories/epic-17-security-review/THREAT-MODEL.md) for the full per-gap evidence and regression-test references; the summaries below hit the high points.
+**Status:** 38 Fixed · 0 Open · 12 Accepted (50 total). See the authoritative [`THREAT-MODEL.md`](https://github.com/lenaxia/LLMSafeSpaces/blob/main/design/stories/epic-17-security-review/THREAT-MODEL.md) for the full per-gap evidence and regression-test references; the summaries below hit the high points.
 
 ### Critical and High-severity closures (recent)
 
@@ -86,6 +86,7 @@ The 2026-07-11 security sweep closed every High-severity gap that had a code-sid
 | **G6 / G41** (duplicate) | `/secrets/:id/reveal` no per-endpoint rate limit | Added to `PerRouteRateLimitConfig.Routes` (5/min + burst 5). (PR #543) |
 | **G21** | `/sandbox-cfg/password` mode 0644 | `cp` → `install -m 0600` in init-container credScript. (PR #543) |
 | **G42** | SSE connection tracking unbounded memory growth | Opportunistic prune in `sseConnAllowed` on every call. (PR #543) |
+| **G13** | Account lockout keyed on email only (DoS vector) | Lockout key now includes client IP via `WithClientIP` context helper. An attacker from a different IP cannot trigger the victim's lockout. |
 | **G39** | Terminal WebSocket accepted any Origin | `newCheckOriginChecker`: same-origin default + operator allowlist. (PR #515) |
 | **G29** | Path-traversal `mount_path` accepted by API | `validateMountPath` at `secret_service.go:582` rejects; called from CreateSecret. (Already fixed — threat model corrected) |
 | **G50** | Decrypt operations not audited | `AuditedProvider` wired at `app.go:408,409,624`. (Already fixed — threat model corrected) |
@@ -101,17 +102,16 @@ The 2026-07-11 security sweep closed every High-severity gap that had a code-sid
 
 ### Still open
 
-These are the gaps to prioritize if you're hardening a deployment:
+**No open gaps remain.** All 50 gaps have a disposition:
 
-| # | Gap | Severity | Detail |
-|---|---|---|---|
-| **G13** | Account lockout keyed on email only | Medium | `lockoutKey := lockout:%s` keyed on email — attacker who knows victim email can lock them out from any IP. Add IP component or progressive delays + CAPTCHA. |
-| **G9** | opencode/gh binaries downloaded without checksum verification | Medium | Dockerfile uses `curl --fail` over TLS only; no checksum or Sigstore. opencode upstream doesn't publish checksums; gh does (`.sha256`) — should verify. Release images are cosign-signed so image-level provenance is verifiable; individual binary verification is the remaining gap. |
-| **G43** | IPv6 egress not covered by workspace NetworkPolicy | Medium | CIDR allowlist is IPv4-only; IPv6 `::/0` unrestricted. Add IPv6 rules or document IPv4-only assumption. |
+- 38 Fixed (code + regression test)
+- 12 Accepted (documented rationale + compensating controls)
+
+The most recent closures: G13 (lockout IP+email keying), G43 (IPv6 already denied by default-deny), G9 (gh CLI checksum added; opencode upstream doesn't publish checksums — Accepted).
 
 ### Full open gap list
 
-G9, G13, G43. (Three gaps — all Medium. No High, Critical, or Low open.)
+_(No open gaps.)_ All 50 resolved: 38 Fixed · 0 Open · 12 Accepted.
 
 ### Accepted risks
 
@@ -130,6 +130,7 @@ These are documented with rationale and compensating controls:
 | **G30** | Egress NetPol allows external DNS resolvers | Standard `NetworkPolicy` cannot restrict DNS by domain. Requires Cilium FQDN policies or Calico `GlobalNetworkPolicy`. |
 | **G32** | No per-user workspace quota | Intentional for single-tenant. Multi-tenant SaaS should add `MAX_WORKSPACES_PER_USER`. |
 | **G40** | Agentd user port (4097) has no application-layer auth | NetworkPolicy is the documented trust boundary — only API server pods can reach workspace pods on port 4097. Application-layer auth would be defense-in-depth that existing controls make redundant for documented deployment topologies. |
+| **G9** | opencode binary not checksum-verified | opencode upstream doesn't publish checksums or Sigstore signatures. gh CLI is now checksum-verified via `checksums.txt`. Compensating controls: cosign-signed release images, Trivy scanning, Renovate digest-pinning. |
 
 ## What the platform protects against
 
@@ -149,15 +150,18 @@ These are documented with rationale and compensating controls:
 - **Dangerous workspace env-var names** — POSIX + curated blocklist enforced at API and materialize layers (G37 fixed).
 - **Recovery-endpoint CPU-exhaustion** — per-route rate limit at 20/min + burst 5 (G35 fixed).
 - **Workspace secrets outliving deletion** — handleTerminating cleans up all ephemeral secrets (G36 fixed).
+- **Account-lockout DoS amplification** — lockout keys on email + client IP so an attacker from a different IP cannot lock the victim (G13 fixed).
+- **Pod-level privilege escalation** — pod-level `RunAsNonRoot` set structurally, not just per-container (G44 fixed).
+- **Password file world-readable in pod** — `install -m 0600` replaces `cp` (G21 fixed).
+- **Silent workspace boot failure** — password-read errors are now fatal (Error + os.Exit) instead of silently degraded (G46 fixed).
 
 ## What it does NOT protect against
 
 - **API-pod RCE → mass credential decrypt** (with local KEK providers) — an attacker running code in the pod calls `Decrypt` exactly as the application does. KMS (Epic 57) limits this to exfiltration-limitation + audit, not prevention.
 - **MITM on pod-to-pod traffic** (G4 accepted) — proxy uses plain HTTP to workspace pods. Deploy a service mesh to close.
 - **DNS exfiltration/tunneling** (G30 accepted) — external DNS resolvers are reachable on port 53. Use Cilium FQDN or Calico GlobalNetworkPolicy.
-- **IPv6 egress** (G43) — the workspace NetworkPolicy CIDR allowlist is IPv4-only.
 - **Egress request-body inspection** (G14 accepted) — no code path inspects outbound HTTP bodies; a compromised agent can exfiltrate via allowed egress domains.
-- **Compromised opencode binary** (G9) — no checksum/Sigstore verification on download.
+- **Compromised opencode binary** (G9 accepted) — opencode upstream doesn't publish checksums; gh CLI is verified. Release images are cosign-signed.
 - **A cluster admin / insider** — out of scope. A cluster admin can read Secrets and exec into pods by design.
 - **etcd-at-rest compromise without encryption configured** (A1) — operator MUST configure etcd encryption; no chart guard enforces it.
 
