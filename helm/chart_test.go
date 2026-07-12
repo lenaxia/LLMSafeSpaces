@@ -4087,3 +4087,59 @@ func findImageByDeployment(t *testing.T, docs []map[string]any, nameSubstr strin
 	t.Fatalf("no Deployment with name containing %q found", nameSubstr)
 	return ""
 }
+
+// TestImageHelper_RelayRouterDigest verifies the relayRouter.image helper
+// honors the digest field (#476 review follow-up — relayRouter was modified
+// but untested in the first push). Renders the chart with the relay fleet
+// enabled (so the relay-router Deployment renders) and asserts the image
+// uses repo@digest when digest is set.
+func TestImageHelper_RelayRouterDigest(t *testing.T) {
+	vals := `
+controller:
+  inferenceRelay:
+    enabled: true
+    artifact:
+      urls:
+        - "https://example.test/relay-proxy"
+      sha256Arm64: "aaa"
+      sha256Amd64: "bbb"
+    router:
+      image:
+        repository: registry.example.com/relay-router
+        tag: v1.0.0
+        digest: sha256:abc
+`
+	docs := helmTemplate(t, vals)
+
+	routerImg := findImageByDeployment(t, docs, "relay-router")
+	assert.Equal(t, "registry.example.com/relay-router@sha256:abc", routerImg,
+		"relayRouter image must be repo@digest when digest set (tag ignored)")
+}
+
+// TestImageHelper_RuntimeEnvBaseDigest verifies the inline digest
+// conditional in runtimeenvironment-base.yaml (#476 review follow-up —
+// the inline conditional was added but untested). Renders the chart and
+// asserts the RuntimeEnvironment CR's spec.image uses repo@digest.
+func TestImageHelper_RuntimeEnvBaseDigest(t *testing.T) {
+	vals := `
+runtimeEnvironments:
+  base:
+    image:
+      repository: registry.example.com/base
+      tag: v1.0.0
+      digest: sha256:def
+`
+	docs := helmTemplate(t, vals)
+
+	for _, d := range docs {
+		if d["kind"] != "RuntimeEnvironment" {
+			continue
+		}
+		spec, _ := d["spec"].(map[string]any)
+		img, _ := spec["image"].(string)
+		assert.Equal(t, "registry.example.com/base@sha256:def", img,
+			"RuntimeEnvironment base image must be repo@digest when digest set")
+		return
+	}
+	t.Fatal("no RuntimeEnvironment CR rendered")
+}

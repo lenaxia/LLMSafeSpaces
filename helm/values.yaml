@@ -309,6 +309,8 @@ controller:
       image:
         repository: ghcr.io/lenaxia/llmsafespaces/relay-router
         tag: ""
+        # Immutable digest pin (optional, #476). See api.image.digest.
+        digest: ""
         pullPolicy: IfNotPresent
       service:
         type: ClusterIP
