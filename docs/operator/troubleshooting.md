@@ -309,7 +309,7 @@ Server-Sent Events streams (`/api/v1/events`, `/api/v1/workspaces/:id/session-ev
 | Ingress idle timeout | Ingress controller config (nginx: `proxy_read_timeout`) |
 | Load balancer idle timeout | Cloud LB config |
 | API pod rolling update | `kubectl rollout status deploy/llmsafespaces-api` |
-| SSE connection tracking leak (G42) | Long-running — check `sseConnCounts` if instrumented |
+| ~~SSE connection tracking leak (G42)~~ | G42 fixed — `sseConnCounts` prunes stale entries on every call |
 
 ### Fix ingress timeouts
 

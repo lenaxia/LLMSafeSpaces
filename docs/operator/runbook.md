@@ -156,7 +156,7 @@ kubectl -n llmsafespaces exec deploy/llmsafespaces-api -- \
 ### Post-rotation
 
 - Verify Redis DEK cache was flushed (the CLI handles this).
-- If the rotation was due to compromise, also rotate the JWT secret and review audit logs for suspicious decrypt activity (note: decrypt audit is gap G50 — not yet wired).
+- If the rotation was due to compromise, also rotate the JWT secret and review `secret_audit_log` for suspicious decrypt activity (G50 fixed — AuditedProvider is wired).
 
 ---
 
@@ -199,7 +199,7 @@ kubectl get events -n llmsafespaces --since=2h | grep -i "secret\|workspace"
 - [ ] Master KEK rotated (all credentials re-wrapped).
 - [ ] Redis password rotated and Redis restarted (DEK cache flushed).
 - [ ] Postgres password rotated (belt-and-suspenders).
-- [ ] Audit logs reviewed for data exfiltration (note: decrypt audit is G50, not yet wired — check API access logs instead).
+- [ ] `secret_audit_log` reviewed for data exfiltration (G50 fixed — AuditedProvider wired).
 - [ ] Workspace passwords (per-workspace K8s Secrets) reviewed for tampering.
 - [ ] NetworkPolicy reviewed for any rules the attacker may have added/relaxed.
 - [ ] Images verified with cosign (see [Verifying image signatures](#verifying-image-signatures) below).

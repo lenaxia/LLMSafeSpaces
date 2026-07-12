@@ -174,7 +174,7 @@ These are documented with rationale and compensating controls:
 | A3 | Node OS patched, container runtime current | Unvalidated — operator responsibility. |
 | A4 | TLS termination at ingress | Validated (`tls: true` default for frontend ingress). |
 | A5/A6 | Redis/PostgreSQL not exposed outside the cluster | Validated (no Service created; datastore NetworkPolicy restricts ingress). |
-| A7 | Container images from a trusted registry | Partial — release images cosign-signed (keyless OIDC + Rekor); Dockerfile FROMs tag-pinned (Renovate `docker:pinDigests` opens digest-pinning PRs); opencode/gh downloaded over TLS without checksum (G9). Trivy image scanning on every release. |
+| A7 | Container images from a trusted registry | Partial — release images cosign-signed (keyless OIDC + Rekor); Dockerfile FROMs tag-pinned (Renovate `docker:pinDigests` opens digest-pinning PRs); opencode downloaded over TLS without checksum (G9 accepted — upstream doesn't publish checksums); gh CLI checksum-verified via `checksums.txt` (G9 partial fix). Trivy image scanning on every release. |
 | A8 | JWT signing keys rotated periodically | Refuted (no rotation primitives — restart-with-new-secret only). KEK rotation: supported end-to-end (`rotate-kek` CLI shipped). |
 
 ## Out of scope
