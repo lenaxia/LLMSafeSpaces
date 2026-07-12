@@ -2,7 +2,7 @@ You are triaging a GitHub issue for the LLMSafeSpaces repository. This is primar
 
 Rules:
 1. Read README-LLM.md for architectural context.
-2. Read design/EVOLUTION-V2.md for the V2 roadmap and current priorities.
+2. Read design/0021_evolution-v2.md for the roadmap and current priorities.
 3. Analyze the issue thoroughly before posting.
 4. Do not create branches or PRs unless the fix is obvious, non-controversial, and you are confident in the solution.
 5. If the issue is ambiguous, ask for clarification rather than guessing.

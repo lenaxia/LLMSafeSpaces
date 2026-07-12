@@ -43,7 +43,7 @@ Everything long-lived is a Kubernetes custom resource in the `llmsafespaces.dev/
 | `RuntimeEnvironment` | Cluster | `rte` | Mapping from a runtime name (e.g. `python:3.11`) to a container image. |
 | `InferenceRelay` | Cluster | `irelay` | Opt-in fleet of relay VMs (AWS/OCI/GCP) proxying free-tier inference. Requires `rbac.scope=cluster`. |
 
-V1 CRDs (`Sandbox`, `SandboxProfile`, `WarmPool`, `WarmPod`) have been removed — `Workspace` absorbs all sandbox and profile functionality, and warm pools were dropped entirely (the PVC *is* the warm state). See the [CRD reference](../reference/crds.md) for the authoritative schema.
+Legacy CRDs (`Sandbox`, `SandboxProfile`, `WarmPool`, `WarmPod`) have been removed — `Workspace` absorbs all sandbox and profile functionality, and warm pools were dropped entirely (the PVC *is* the warm state). See the [CRD reference](../reference/crds.md) for the authoritative schema.
 
 ## How a request flows
 
@@ -156,4 +156,4 @@ The credential story is the subtle part: credentials live in tmpfs (RAM-backed),
 - A real-time multiplayer collaboration tool (one user per workspace; RWO PVC enforces one pod at a time).
 - A sub-second cold-start service (3-5s pod creation is fine; long-lived agents absorb the cost).
 
-The authoritative design document is [`design/0021_2026-05-21_evolution-v2.md`](https://github.com/lenaxia/LLMSafeSpaces/blob/main/design/0021_2026-05-21_evolution-v2.md) (v2.4). Where older V1 design docs conflict with it, evolution-v2 wins.
+The authoritative design document is [`design/0021_2026-05-21_evolution-v2.md`](https://github.com/lenaxia/LLMSafeSpaces/blob/main/design/0021_2026-05-21_evolution-v2.md). Historical design docs are archived under `design/archive/v1/`.

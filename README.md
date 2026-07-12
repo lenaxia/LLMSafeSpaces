@@ -420,7 +420,7 @@ helm/     # Helm chart (API, controller, frontend, CRDs, RBAC, webhooks)
 sdks/                    # Client SDKs (Go, TypeScript, Python, Java, VS Code extension)
 workers/inference-relay/ # Cloudflare Worker relay for free-tier inference (the simpler alternative to the self-hosted InferenceRelay fleet)
 local/                   # bootstrap.sh, test.sh, teardown.sh for kind
-design/                  # Architecture and design docs (EVOLUTION-V2.md is authoritative)
+design/                  # Architecture and design docs (0021_evolution-v2.md is authoritative)
 ```
 
 ---

@@ -313,7 +313,7 @@ blockedEgressCIDRs:
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `kyverno.enabled` | bool | `false` | Deploy Kyverno admission policies (deferred to V2.1 in evolution-v2). Requires Kyverno installed in the cluster. |
+| `kyverno.enabled` | bool | `false` | Deploy Kyverno admission policies (deferred). Requires Kyverno installed in the cluster. |
 
 ## `serviceAccount`
 

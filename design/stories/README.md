@@ -1,6 +1,6 @@
 # Implementation Stories
 
-Organized by epic, following the V2 design roadmap (design/EVOLUTION-V2.md v2.4).
+Organized by epic, following the design roadmap (design/0021_evolution-v2.md).
 
 **Last audited:** 2026-06-22 (code-verified; worklogs used as navigation hints, not source of truth)
 
