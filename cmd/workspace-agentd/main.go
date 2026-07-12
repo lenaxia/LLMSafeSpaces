@@ -132,7 +132,7 @@ func newLogger() *zap.Logger {
 }
 
 func readAgentPassword() string {
-	pw, err := os.ReadFile(agentd.PasswordPath)
+	pw, err := readAgentPasswordFromPath(agentd.PasswordPath)
 	if err != nil {
 		// G46: a missing or unreadable password file leaves the
 		// workspace silently non-functional — opencode starts without
@@ -147,7 +147,19 @@ func readAgentPassword() string {
 			zap.String("path", agentd.PasswordPath), zap.Error(err))
 		os.Exit(1)
 	}
-	return strings.TrimSpace(string(pw))
+	return pw
+}
+
+// readAgentPasswordFromPath reads and trims the password from the given
+// path. Extracted from readAgentPassword for testability — the caller
+// handles the fatal exit so the test can verify the error return
+// without subprocess execution.
+func readAgentPasswordFromPath(path string) (string, error) {
+	pw, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(pw)), nil
 }
 
 // startManagedProcess builds and starts the opencode supervisor when
