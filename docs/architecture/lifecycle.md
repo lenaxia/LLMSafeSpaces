@@ -115,7 +115,7 @@ The PVC is the durable state. Its lifecycle is intentionally simple:
 | Suspend | Deleted | **Retained** | Retained |
 | Activate/Resume | Recreated | Reattached | Re-read by init container |
 | Restart | Deleted + recreated | Retained (same pod) | Reloaded |
-| Delete (Terminating) | Deleted | **Deleted** | Deleted (password); see G36 caveat |
+| Delete (Terminating) | Deleted | **Deleted** | Deleted (password + workspace-creds; G36 fixed) |
 
 The PVC is `ReadWriteOnce` by default — one pod at a time. `ReadWriteMany` is supported for storage classes that allow it (NFS, CephFS), but the user is responsible for coordination. There is no `maxSessions` field; the reconciler enforces the constraint via the access mode.
 
