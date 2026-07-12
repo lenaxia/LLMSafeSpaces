@@ -34,6 +34,8 @@ data:
       port: {{ .Values.redis.port }}
       db: {{ .Values.redis.db }}
       poolSize: {{ .Values.redis.poolSize }}
+      tls: {{ .Values.redis.tls }}
+      insecureSkipVerify: {{ .Values.redis.insecureSkipVerify }}
     auth:
       tokenDuration: {{ .Values.api.config.auth.tokenDuration }}
       apiKeyPrefix: {{ .Values.api.config.auth.apiKeyPrefix | quote }}

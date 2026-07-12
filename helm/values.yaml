@@ -618,6 +618,15 @@ redis:
   port: 6379
   db: 0
   poolSize: 20
+  # #465: TLS-in-transit to Redis. Set to true for AWS ElastiCache with
+  # TransitEncryptionEnabled, GCP Memorystore with TLS, or any self-hosted
+  # Redis/Valkey with TLS. The API client uses a tls.Config with ServerName
+  # set from .host.
+  tls: false
+  # When tls=true, optionally skip certificate verification. DEV ONLY —
+  # for self-signed certs on a local cluster. Never enable in production;
+  # use a CA-signed cert instead.
+  insecureSkipVerify: false
 
 # ----------------------------------------------------------------------------
 # Database migrations

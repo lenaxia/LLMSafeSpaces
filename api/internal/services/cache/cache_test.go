@@ -5,7 +5,14 @@ package cache
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"errors"
+	"fmt"
+	"math/big"
 	"strconv"
 	"testing"
 	"time"
@@ -334,4 +341,91 @@ func TestStartStop(t *testing.T) {
 	// Test Stop - this is already called in cleanup, but we test it explicitly
 	err = service.Stop()
 	assert.NoError(t, err, "Expected no error from Stop")
+}
+
+// ─── #465: Redis TLS support ────────────────────────────────────────────────
+
+// TestNewCache_TLS_ConnectsAndPings stands up a TLS-enabled miniredis,
+// points the cache service at it with cfg.Redis.TLS=true, and asserts the
+// ping succeeds. Pre-fix (no TLS field): the client connected in plaintext
+// and the TLS-enabled server rejected the connection with a silent timeout.
+func TestNewCache_TLS_ConnectsAndPings(t *testing.T) {
+	// Generate a self-signed cert for the test server at runtime.
+	// Avoids embedding PEM bytes that might not parse; the cert is
+	// single-use (lives only as long as the test).
+	cert, err := selfSignedCert()
+	require.NoError(t, err, "failed to generate test cert")
+	mrTLS := &tls.Config{Certificates: []tls.Certificate{cert}}
+	mr, err := miniredis.RunTLS(mrTLS)
+	require.NoError(t, err, "Failed to create TLS-enabled mock Redis")
+	defer mr.Close()
+
+	cfg := createTestConfig(mr.Addr())
+	cfg.Redis.TLS = true
+	cfg.Redis.InsecureSkipVerify = true // self-signed cert; dev-only
+
+	log, err := logger.New(true, "debug", "console")
+	require.NoError(t, err)
+
+	svc, err := New(cfg, log)
+	require.NoError(t, err, "TLS-enabled cache service must construct and ping successfully")
+	defer svc.Stop()
+
+	// Functional smoke test: a SET + GET round-trip.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	require.NoError(t, svc.Set(ctx, "tls-test", "ok", time.Minute))
+	got, err := svc.Get(ctx, "tls-test")
+	require.NoError(t, err)
+	assert.Equal(t, "ok", got)
+}
+
+// TestNewCache_TLS_DisabledFallsBackToPlaintext is the regression guard
+// for the default path: cfg.Redis.TLS=false (the chart default) must
+// produce a plaintext client. Pre-existing behavior — pinned so the TLS
+// addition is provably non-regressive.
+func TestNewCache_TLS_DisabledFallsBackToPlaintext(t *testing.T) {
+	// Plain miniredis (no TLS).
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+
+	cfg := createTestConfig(mr.Addr())
+	// cfg.Redis.TLS is false by default (zero value of bool).
+	log, err := logger.New(true, "debug", "console")
+	require.NoError(t, err)
+
+	svc, err := New(cfg, log)
+	require.NoError(t, err, "plaintext cache service must still construct when TLS field exists but is false")
+	defer svc.Stop()
+}
+
+// (TestIsTruthy moved to config package — isTruthy is unexported there,
+// so the cache package cannot test it directly. The config package's
+// own tests cover the boolean parser for LLMSAFESPACES_REDIS_TLS.)
+
+// selfSignedCert generates a fresh self-signed RSA cert + key pair for
+// the TLS test server. Generated at runtime to avoid embedding PEM bytes
+// that might not parse after copy-paste (the previous inline PEM had
+// truncation issues). RSA-2048 is fast enough for test-only generation.
+func selfSignedCert() (tls.Certificate, error) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("generate RSA key: %w", err)
+	}
+	tmpl := x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "localhost"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		DNSNames:              []string{"localhost"},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	if err != nil {
+		return tls.Certificate{}, fmt.Errorf("create cert: %w", err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, nil
 }
