@@ -387,7 +387,7 @@ All gaps below have been verified against the codebase. Each entry cites exact f
 | **Database** | SQL injection (mitigated: pgx parameterized) | Data corruption (mitigated: transactions) | No query audit log | Wrapped DEK exposure (mitigated: AES-256-GCM); credential rows now carry `key_version` for rotation (US-50.3); ~~authorized-decrypt exfiltration undetectable — audit wrapper built but not wired (G50)~~ 🟢 Fixed (AuditedProvider wired at app.go:408,409,624) | Connection exhaustion | N/A |
 | **Redis** | Auth bypass (mitigated: auto-generated password, datastore NetworkPolicy) | Cache poisoning | No operation audit | DEK in memory (G10 accepted) | Memory exhaustion; SSE tracking leak (G42) | N/A |
 | **Frontend** | Session theft via XSS (mitigated: rehype-sanitize — needs fuzzing) | DOM tampering (mitigated: React auto-escape) | No client audit | JWT in HttpOnly Secure cookie | UI freeze via huge messages | N/A |
-| **Workspace Network** | Cross-tenant traffic (mitigated: NetworkPolicy) | N/A | NetworkPolicy events not audited | DNS exfil via external resolvers (G30 accepted); IPv6 unrestricted (G43) | N/A | N/A |
+| **Workspace Network** | Cross-tenant traffic (mitigated: NetworkPolicy) | N/A | NetworkPolicy events not audited | DNS exfil via external resolvers (G30 accepted); ~~IPv6 unrestricted (G43)~~ 🟢 Fixed (IPv6 denied by NetworkPolicy default-deny) | N/A | N/A |
 
 ---
 
