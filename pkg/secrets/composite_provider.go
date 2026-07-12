@@ -47,14 +47,33 @@ type CompositeProvider struct {
 // zero or more optional fallbacks. Fallbacks are tried in the order
 // supplied. Returns an error if primary is nil — a composite with no
 // primary has no Encrypt target and would panic on the first write.
+//
+// Returns an error if any fallback in the variadic tail is nil. A nil
+// fallback would panic on Decrypt the first time dispatch reached that
+// slot (typically the first foreign-prefix ciphertext under traffic),
+// turning a "remove the static mount after migration" operator action
+// into an API-pod crash loop. Failing closed at construction surfaces
+// the misconfiguration at boot.
+//
+// Callers that want a primary with no fallbacks should pass no variadic
+// args at all: NewCompositeProvider(primary). The composite's Decrypt
+// then routes only by the primary's prefix; foreign ciphertexts surface
+// as ErrNotMyCiphertext — the same behavior the composite already
+// exhibits when every fallback has been exhausted.
 func NewCompositeProvider(primary RootKeyProvider, fallbacks ...RootKeyProvider) (*CompositeProvider, error) {
 	if primary == nil {
 		return nil, errors.New("CompositeProvider requires a non-nil primary provider")
 	}
 	// Defensive-copy the fallback slice so a caller appending to the
-	// variadic input after construction cannot mutate our state.
+	// variadic input after construction cannot mutate our state. Reject
+	// nil entries so dispatch can never dereference a nil provider.
 	cp := make([]RootKeyProvider, len(fallbacks))
-	copy(cp, fallbacks)
+	for i, f := range fallbacks {
+		if f == nil {
+			return nil, fmt.Errorf("CompositeProvider fallback #%d is nil; pass no fallback args to construct a primary-only composite", i)
+		}
+		cp[i] = f
+	}
 	return &CompositeProvider{primary: primary, fallbacks: cp}, nil
 }
 

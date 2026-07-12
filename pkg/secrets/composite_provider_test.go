@@ -192,3 +192,28 @@ func TestNewCompositeProvider_NoFallbacks_OK(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, c)
 }
+
+// TestNewCompositeProvider_NilFallback_ReturnsError verifies the
+// constructor guards against a nil fallback. Without this guard, the
+// post-migration KMS-only deployment (Epic 57 US-57.2 workflow step 7:
+// "Remove Static fallback") constructs a composite with a nil fallback
+// because newLocalPurposeProvider returns nil when the master secret is
+// unmounted — and the first Decrypt of a foreign-prefix ciphertext
+// panics the API pod on a nil-pointer dereference. Failing closed at
+// construction surfaces the misconfiguration at boot, not under traffic.
+func TestNewCompositeProvider_NilFallback_ReturnsError(t *testing.T) {
+	primary := &fakeProvider{prefix: "aws-kms:v1:"}
+	_, err := NewCompositeProvider(primary, nil)
+	require.Error(t, err, "constructor must refuse nil fallbacks in the variadic tail")
+}
+
+// TestNewCompositeProvider_NilFallbackAmongValid_ReturnsError verifies
+// the guard covers the "some fallbacks valid, one nil" case too. A
+// partially-nil tail (e.g. [valid, nil, valid]) would otherwise leave a
+// landmine that only fires when dispatch reaches that slot.
+func TestNewCompositeProvider_NilFallbackAmongValid_ReturnsError(t *testing.T) {
+	primary := &fakeProvider{prefix: "aws-kms:v1:"}
+	valid := &fakeProvider{prefix: "lkms:v1:"}
+	_, err := NewCompositeProvider(primary, valid, nil, valid)
+	require.Error(t, err, "constructor must refuse any nil in the fallback tail")
+}

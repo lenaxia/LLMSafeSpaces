@@ -70,10 +70,19 @@ sdks/canary/go/cmd/seed-accounts/seed-accounts
 # Caught after a stray `git add -A` swept 76MB into PR #276 (worklog 0389).
 controller/bin/
 
-# Root-level CLI binaries built from cmd/ (redact, tools). Regenerable via
-# `go build`; committed by accident — never track.
+# Root-level CLI binaries built from cmd/ (redact, tools, migrate-kek, etc).
+# Regenerable via `go build ./cmd/<name>/`; committed by accident — never track.
+# One entry per binary so the intent is explicit and the list mirrors cmd/.
+/mcp
+/migrate-kek
 /redact
+/relay-proxy
+/relay-router
+/repolint
+/rotate-kek
+/seal-key
 /tools
+/workspace-agentd
 cmd/workspace-agentd/workspace-agentd
 sdks/java/target/
 

@@ -494,13 +494,39 @@ func newPurposeProvider(cfg *config.Config, log *logger.Logger, purpose string) 
 		return nil
 	}
 
-	composite, err := secrets.NewCompositeProvider(kmsProv, local)
+	composite, err := buildKMSProvider(kmsProv, local)
 	if err != nil {
 		log.Error("failed to construct composite provider — refusing to boot",
 			err, "purpose", purpose)
 		return nil
 	}
 	return composite
+}
+
+// buildKMSProvider constructs the final RootKeyProvider for a KMS-primary
+// deployment. When `local` (the legacy fallback for pre-KMS rows) is
+// non-nil, the result is a CompositeProvider that routes Decrypt by
+// ciphertext prefix — primary handles new KMS writes, fallback handles
+// legacy un-prefixed and lkms:v1:-prefixed rows during/after migration.
+//
+// When `local` is nil (the operator has unmounted the master-secret file
+// after running migrate-kek to completion — Epic 57 US-57.2 workflow
+// step 7), the result is the bare KMS provider. Wrapping it in a
+// primary-only CompositeProvider would be a no-op (Encrypt already
+// delegates to primary; Decrypt routes only by the primary's prefix).
+// Returning the bare provider also avoids the legacy-fallback path
+// entirely, which matters because NewCompositeProvider now refuses a
+// nil fallback — that guard turns the post-migration cleanup step into
+// a boot-time error rather than a runtime panic on the first legacy
+// row. The Audit* methods on MigrationCoordinator are the safe-to-
+// remove-fallback gate; this branch is what makes removal work once
+// that gate passes.
+func buildKMSProvider(kmsProv, local secrets.RootKeyProvider) (secrets.RootKeyProvider, error) {
+	if local == nil {
+		// Primary-only — no legacy rows to decrypt.
+		return kmsProv, nil
+	}
+	return secrets.NewCompositeProvider(kmsProv, local)
 }
 
 // kmsPurposeMap translates the internal purpose strings used by

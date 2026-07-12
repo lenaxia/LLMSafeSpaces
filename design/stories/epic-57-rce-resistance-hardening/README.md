@@ -237,7 +237,8 @@ This story depends on US-57.1 — the CompositeProvider's dual-decrypt capabilit
 4. **Verify:** spot-check decrypts via the live API succeed. Audit log shows the migration's decrypt calls.
 5. **Flip primary:** Helm update sets primary=KMS, fallback=Static. API restarts. New writes go to KMS. Old rows still decrypt via fallback during the cleanup window.
 6. **Run `migrate-kek` again** (or rely on step 3 being complete) to migrate any rows written between step 3 and step 5.
-7. **Remove Static fallback:** once all rows have KMS prefixes and the operator is confident, drop the Static provider from the composite. The master KEK file can be destroyed.
+7. **Audit (the safe-to-remove-fallback gate):** run `migrate-kek --audit --kms aws` to classify every KEK-protected row by ciphertext prefix. The audit reports per-table counts of `target` (rows on the configured KMS) vs `legacy` (un-prefixed) / `local` (`lkms:v1:`-prefixed) / `other` (different KMS). The static fallback can be removed only when every table reports zero outstanding rows. `--dry-run` is NOT this check — it re-processes every row regardless of prefix, so an already-migrated row and a still-legacy row both count as Processed. See `helm/KEK-MIGRATION.md` step 5.
+8. **Remove Static fallback:** once step 7's audit passes for all three tables, unmount the master-secret file from the API deployment. `buildKMSProvider` returns the bare KMS provider when no local fallback is configured (the composite is skipped because a primary-only composite is a no-op wrapper, and `NewCompositeProvider` refuses a nil fallback to fail closed at boot rather than panic under traffic). The master KEK file can then be destroyed.
 
 **Failure recovery:**
 
