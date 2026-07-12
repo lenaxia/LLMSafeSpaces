@@ -165,7 +165,7 @@ helm template test ./helm --set controller.inferenceRelay.enabled=true ... → f
 
 **Added (2 files):**
 - `design/stories/epic-60-remove-cf-worker-relay/README.md`
-- `worklogs/NNNN_2026-07-12_epic-60-remove-cf-worker-relay.md` (this file)
+- `worklogs/0630_2026-07-12_epic-60-remove-cf-worker-relay.md` (this file)
 
 ---
 
