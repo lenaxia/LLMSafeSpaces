@@ -309,7 +309,7 @@ This enforces the `restricted` profile (G11). All chart-shipped pods comply. Wor
 
 ### Kyverno (deferred)
 
-Kyverno admission policy templates are deferred to V2.1 per EVOLUTION-V2.md §9.6. The chart has a `kyverno.enabled` toggle (default `false`) that currently only prints a warning in `NOTES.txt`. When shipped, Kyverno policies will validate pod specs as defense-in-depth even if the controller has a bug.
+Kyverno admission policy templates are deferred. The chart has a `kyverno.enabled` toggle (default `false`) that currently only prints a warning in `NOTES.txt`. When shipped, Kyverno policies will validate pod specs as defense-in-depth even if the controller has a bug.
 
 ---
 

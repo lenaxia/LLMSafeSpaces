@@ -8,7 +8,7 @@ The platform manages three custom resources in the `llmsafespaces.dev/v1` API gr
 | [`RuntimeEnvironment`](#runtimeenvironment) | Cluster | `rte` | yes | Mapping from runtime name → container image |
 | [`InferenceRelay`](#inferencerelay) | Cluster | `irelay` | yes | Opt-in fleet of relay VMs (AWS/OCI/GCP) proxying free-tier inference |
 
-V1 CRDs (`Sandbox`, `SandboxProfile`, `WarmPool`, `WarmPod`) have been removed. `Workspace` absorbs all sandbox and profile functionality.
+Legacy CRDs (`Sandbox`, `SandboxProfile`, `WarmPool`, `WarmPod`) have been removed. `Workspace` absorbs all sandbox and profile functionality.
 
 ## CRD type ownership
 
@@ -34,9 +34,9 @@ A `Workspace` is the unit of lifecycle management. It owns a PVC and (when activ
 | `owner` | [WorkspaceOwner](#workspaceowner) | *required* | The user (and optionally org) who owns this workspace. |
 | `runtime` | string | *required* | Runtime environment name (e.g. `python:3.11`) or an explicit image reference matching the webhook's `allowedImageRegistries`. |
 | `architecture` | enum `amd64` \| `arm64` | `amd64` | CPU architecture. Sets a `nodeSelector`. Changing triggers pod recreation. |
-| `securityLevel` | enum `standard` \| `high` | `standard` | Deprecated in favor of the composable `securityPolicy` (design 0027). V2.1. |
+| `securityLevel` | enum `standard` \| `high` | `standard` | Deprecated in favor of the composable `securityPolicy` (design 0027). |
 | `storage` | [WorkspaceStorageConfig](#workspacestorageconfig) | *required* | PVC configuration. |
-| `networkAccess` | [WorkspaceNetworkAccess](#workspacenetworkaccess) | *nil* | Network access rules. `securityPolicy.network` (V2.1) supersedes. |
+| `networkAccess` | [WorkspaceNetworkAccess](#workspacenetworkaccess) | *nil* | Network access rules. `securityPolicy.network` supersedes. |
 | `autoSuspend` | [WorkspaceAutoSuspend](#workspaceautosuspend) | *nil* | Auto-suspend after idle. |
 | `ttlSecondsAfterSuspended` | int64 | `0` | Seconds before a Suspended workspace is auto-deleted. `0` = never. |
 | `packages` | [][WorkspacePackageSet](#workspacepackageset) | *nil* | Runtime-specific packages installed by init container on every pod start. Idempotent. |

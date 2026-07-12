@@ -52,12 +52,12 @@
 
 **Authoritative design document:**
 
-- [`design/0021_2026-05-21_evolution-v2.md`](design/0021_2026-05-21_evolution-v2.md) — V2 architecture (v2.4). Supersedes all V1 design docs for the areas it covers.
+- [`design/0021_2026-05-21_evolution-v2.md`](design/0021_2026-05-21_evolution-v2.md) — System architecture. This is the single source of truth for architecture decisions.
 
-**V1 design docs (reference only — superseded by evolution-v2.md where they conflict; archived under `design/archive/v1/`):**
+**Historical design docs (reference only — archived under `design/archive/v1/`):**
 
 - `design/archive/v1/0001_2025-03-05_architecture.md` — System overview, deployment topology, security model
-- `design/archive/v1/0003_2025-03-05_controller.md` — Controller specification (V1 CRDs, reconciliation loops)
+- `design/archive/v1/0003_2025-03-05_controller.md` — Controller specification (CRD types, reconciliation loops)
 - `design/archive/v1/0005_2025-03-05_security.md` — Defense-in-depth security model
 - `design/archive/v1/0020_2025-03-05_network.md` — Network policy design and egress filtering
 - `design/archive/v1/0007_2025-03-05_runtimeenv.md` — Runtime environments
@@ -182,8 +182,8 @@ Key documents by area:
 
 | Area | Document |
 |------|----------|
-| **V2 Architecture** | `design/0021_2026-05-21_evolution-v2.md` (authoritative) |
-| V2 Implementation stories | `design/stories/` |
+| **Architecture** | `design/0021_2026-05-21_evolution-v2.md` (authoritative) |
+| Implementation stories | `design/stories/` |
 | Security model | `design/0027_2026-05-24_security-policy-v21.md`, `design/0021 §9` |
 | Inference relay fleet | `design/stories/epic-42-multi-cloud-inference-relay/README.md` |
 | Master KEK hardening | `design/stories/epic-50-master-kek-hardening/README.md` |
@@ -294,7 +294,7 @@ llmsafespaces/
 ├── workers/       # Cloudflare Workers (inference-relay — the simpler relay alternative to the self-hosted fleet)
 ├── frontend/      # React 19 + TypeScript + Vite SPA
 ├── charts/        # Helm chart (API, controller, frontend, CRDs, RBAC, webhooks, optional relay-router)
-├── design/        # Design documents — 0021_evolution-v2.md is authoritative for V2
+├── design/        # Design documents — 0021_evolution-v2.md is authoritative
 ├── hack/          # Build and code generation scripts
 ├── local/         # kind bootstrap/test/teardown scripts
 ├── tests/         # End-to-end integration tests
@@ -376,7 +376,7 @@ The controller manages 3 CRDs in the `llmsafespaces.dev/v1` API group:
 | `runtimeenvironment.yaml` | `RuntimeEnvironment` | Cluster | `rte` | Defines a runtime image (Python, Node.js, Go) |
 | `inferencerelay.yaml` | `InferenceRelay` | Cluster | `irelay` | Managed fleet of relay VMs (AWS/OCI/GCP) proxying free-tier inference — feature-gated (`controller.inferenceRelay.enabled`), requires `rbac.scope=cluster` |
 
-V1 CRDs (Sandbox, SandboxProfile, WarmPool, WarmPod) have been removed. The Workspace CRD absorbs all sandbox and profile functionality. `InferenceRelay` is the only CRD beyond the core Workspace/RuntimeEnvironment pair and is opt-in.
+Legacy CRDs (Sandbox, SandboxProfile, WarmPool, WarmPod) have been removed. The Workspace CRD absorbs all sandbox and profile functionality. `InferenceRelay` is the only CRD beyond the core Workspace/RuntimeEnvironment pair and is opt-in.
 
 ### CRD type ownership
 
@@ -389,7 +389,7 @@ CRD types exist in two locations with strictly separate roles:
 
 These are intentionally different types. The API types are transfer objects; the CRD types are Kubernetes schemas. They must not be merged.
 
-### Workspace lifecycle (V2)
+### Workspace lifecycle
 
 ```
 Pending → Creating → Active → Suspending → Suspended → Resuming → Active

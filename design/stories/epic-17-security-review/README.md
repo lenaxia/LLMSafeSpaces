@@ -378,7 +378,7 @@ For each Phase (1-7):
 ## Related Documents
 
 - [Threat Model](./THREAT-MODEL.md)
-- [V2 Architecture](../../0021_2026-05-21_evolution-v2.md)
+- [Architecture](../../0021_2026-05-21_evolution-v2.md)
 - [Security Policy V2.1 Draft](../../0027_2026-05-24_security-policy-v21.md) (unimplemented draft)
 - [V1 Security Model](../../0005_2025-03-05_security.md)
 - [Multi-Tenant Trust (Epic 10)](../epic-10-multi-tenant-trust/README.md)

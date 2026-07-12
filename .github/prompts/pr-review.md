@@ -80,7 +80,7 @@ PROJECT ALIGNMENT
 - If a CRD type or Helm chart value changed, is helm/ updated?
 - For a substantive session (>30 min of work), is a worklog entry present in worklogs/?
 - Does the change break any existing public API or operator behaviour without a clear migration path?
-- Does the change respect the V2 architecture in design/EVOLUTION-V2.md?
+- Does the change respect the architecture in design/0021_evolution-v2.md?
 
 STYLE
 - Does the Go code follow idiomatic patterns used in the rest of the codebase?

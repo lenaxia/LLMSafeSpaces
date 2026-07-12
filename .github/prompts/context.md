@@ -6,7 +6,7 @@ Key directories:
 - runtimes/          — Container images (Python, Node.js, Go); hardened environments with opencode serve and credential injection
 - pkg/               — Shared packages (types, kubernetes client, redact, logger, secrets, utilities)
 - cmd/               — Top-level binaries (api, mcp, redact, repolint, seal-key, workspace-agentd, relay-router, relay-proxy)
-- design/            — Architecture and design documents (EVOLUTION-V2.md is authoritative for V2)
+- design/            — Architecture and design documents (EVOLUTION-V2.md is authoritative)
 - design/SECURITY.md — Defense-in-depth security model
 - .github/workflows/ — CI/CD pipelines
 

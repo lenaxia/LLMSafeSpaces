@@ -3,7 +3,7 @@
 **Status:** Draft
 **Author:** mikekao
 **Date:** 2026-05-24
-**Supersedes:** `securityLevel: "standard" | "high"` binary model from EVOLUTION-V2.md §9
+**Supersedes:** `securityLevel: "standard" | "high"` binary model from the architecture doc §9
 
 ---
 
@@ -30,7 +30,7 @@
 
 ## 1. Motivation
 
-The V2 design defines security as a binary choice: `standard` (no hardening) or `high` (all hardening). This creates a false dichotomy:
+The architecture design defines security as a binary choice: `standard` (no hardening) or `high` (all hardening). This creates a false dichotomy:
 
 **Problem 1: All-or-nothing is too coarse.**
 
@@ -80,14 +80,14 @@ Teams cannot incrementally enable features, validate they don't break workflows,
 
 | # | Assumption | Validation | Status |
 |---|-----------|-----------|--------|
-| A1 | The `redact` binary exists in the base image at `/usr/local/bin/redact` | `cmd/redact/main.go` and `pkg/redact/redact.go` exist in repo. EVOLUTION-V2.md §9.3 confirms inclusion in base image. | ✅ Validated |
-| A2 | Sandbox pods use a shared `emptyDir` volume at `/sandbox-cfg/` written by init containers | EVOLUTION-V2.md §9.1 credential lifecycle confirms `credential-setup` init container writes to `/sandbox-cfg/` via shared emptyDir. | ✅ Validated |
+| A1 | The `redact` binary exists in the base image at `/usr/local/bin/redact` | `cmd/redact/main.go` and `pkg/redact/redact.go` exist in repo. The architecture doc §9.3 confirms inclusion in base image. | ✅ Validated |
+| A2 | Sandbox pods use a shared `emptyDir` volume at `/sandbox-cfg/` written by init containers | The architecture doc §9.1 credential lifecycle confirms `credential-setup` init container writes to `/sandbox-cfg/` via shared emptyDir. | ✅ Validated |
 | A3 | Kubernetes NetworkPolicy does not support FQDN natively | Well-known K8s limitation. Only Cilium's `CiliumNetworkPolicy` supports FQDN-based egress. Standard NetworkPolicy requires IP CIDRs. | ✅ Validated |
 | A4 | Sandbox CRD has `securityLevel` with enum `["standard", "high", "custom"]` | Read `pkg/crds/sandbox_crd.yaml` — field exists with those values. | ✅ Validated |
 | A5 | Workspace CRD has `securityLevel` with enum `["standard", "high"]` | Read `pkg/crds/workspace_crd.yaml` — field exists with those values. | ✅ Validated |
 | A6 | SSE streaming endpoints cannot be blocked mid-stream | HTTP SSE is a unidirectional stream; once headers are sent, the response body streams continuously. Blocking requires buffering the entire response, which defeats streaming. | ✅ Validated |
 | A7 | The standard base image does NOT include `jq` | Not verified by reading Dockerfile (file not accessible). Design mitigated: entrypoint uses `grep` instead of `jq`. Hardened image explicitly installs `jq`. | ⚠️ Mitigated |
-| A8 | `opencode serve` uses port 4096 for HTTP and does not write binary data to stdout | EVOLUTION-V2.md §7.2 confirms `opencode serve --port 4096`. Go HTTP servers write to the network socket, not stdout. Stdout contains only log output. | ✅ Validated |
+| A8 | `opencode serve` uses port 4096 for HTTP and does not write binary data to stdout | The architecture doc §7.2 confirms `opencode serve --port 4096`. Go HTTP servers write to the network socket, not stdout. Stdout contains only log output. | ✅ Validated |
 | A9 | Go's `regexp` package is safe from catastrophic backtracking (uses RE2 semantics) | Go's `regexp` uses Thompson NFA — guaranteed linear time. However, custom patterns are also used by the `redact` binary (also Go). ReDoS is not a runtime risk in Go, but complex patterns still have high constant factors. Pattern complexity limits remain valuable for performance. | ✅ Validated (Go-specific) |
 
 ---

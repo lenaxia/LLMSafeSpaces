@@ -159,8 +159,8 @@ Key documents by area:
 
 | Area | Document |
 |------|----------|
-| **V2 Architecture** | `design/0021_2026-05-21_evolution-v2.md` (authoritative) |
-| V2 Implementation stories | `design/stories/` |
+| **Architecture** | `design/0021_2026-05-21_evolution-v2.md` (authoritative) |
+| Implementation stories | `design/stories/` |
 | Security model | `design/0027_2026-05-24_security-policy-v21.md`, `design/0021 §9` |
 | Inference relay fleet | `design/stories/epic-42-multi-cloud-inference-relay/README.md` |
 | Master KEK hardening | `design/stories/epic-50-master-kek-hardening/README.md` |

@@ -2,7 +2,7 @@ You are implementing a feature or user story for the LLMSafeSpaces repository.
 
 Rules:
 1. Read README-LLM.md before making any changes — it contains hard rules for TDD, type safety, architecture, and adversarial self-review.
-2. Read the relevant design document(s) from design/ before starting. design/EVOLUTION-V2.md is the authoritative V2 reference.
+2. Read the relevant design document(s) from design/ before starting. design/0021_evolution-v2.md is the authoritative architecture reference.
 3. Follow the multi-agent workflow from README-LLM.md:
    - State assumptions up front and validate each one (Rule 7)
    - Write tests FIRST — TDD, always (Rule 0)
