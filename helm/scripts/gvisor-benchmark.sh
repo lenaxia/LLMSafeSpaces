@@ -245,8 +245,15 @@ time_file_io() {
     fi
     local start
     start=$(ns_now)
-    if ! kubectl exec -n "$NAMESPACE" "$pod" -c main -- sh -lc "$snippet" >/dev/null 2>&1; then
-        fail "file I/O snippet failed on pod $pod"
+    # The workspace pod has exactly one running container named "workspace"
+    # (controller/internal/workspace/pod_builder.go:63). Omit -c so kubectl
+    # uses the pod's first container by convention — robust to any future
+    # container rename and avoids the previous bug (-c main, where "main"
+    # was the variable name in pod_builder.go but never the actual
+    # container name; review finding N5). Don't suppress stderr: on failure
+    # the operator needs to see the kubectl error (review finding N6).
+    if ! kubectl exec -n "$NAMESPACE" "$pod" -- sh -lc "$snippet" >/dev/null; then
+        fail "file I/O snippet failed on pod $pod (see kubectl error above)"
         return 1
     fi
     awk -v a="$start" -v b="$(ns_now)" 'BEGIN{printf "%.3f", b-a}'
