@@ -234,8 +234,13 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "secrets", "persistentvolumeclaims", "events", "serviceaccounts"]
     verbs: ["get", "list", "watch"]
-{{- if .Values.controller.inferenceRelay.enabled }}
+{{- if or .Values.controller.inferenceRelay.enabled .Values.controller.freeModelsRefresher.enabled }}
   # ConfigMaps for relay-router-peers sync (InferenceRelay reconciler)
+  # and/or the free-models refresher (periodic catalog publish). When
+  # rbac.scope=cluster, the manager's cache creates a cluster-wide
+  # ConfigMap informer on first Get; without this ClusterRole grant,
+  # the reflector fails with "configmaps is forbidden ... at the
+  # cluster scope" (#469).
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]

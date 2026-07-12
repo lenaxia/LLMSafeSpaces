@@ -4181,3 +4181,80 @@ func TestRedisTLS_EnabledRendersTrueFields(t *testing.T) {
 	require.Contains(t, cfg, "insecureSkipVerify: true",
 		"redis.insecureSkipVerify=true must render into configmap; config.yaml was:\n%s", cfg)
 }
+
+// ---------------------------------------------------------------------------
+// #469: ConfigMap ClusterRole grant for free-models refresher
+// ---------------------------------------------------------------------------
+
+// TestClusterRole_ConfigMapsGrantedWhenFreeModelsEnabled verifies that the
+// cluster-scoped ClusterRole includes configmaps when the free-models
+// refresher is enabled (the default), even when the inference relay fleet
+// is disabled. Pre-fix, configmaps were only granted when
+// inferenceRelay.enabled=true; the manager's cache informer failed at
+// cluster-wide ConfigMap listing with "configmaps is forbidden" (#469).
+func TestClusterRole_ConfigMapsGrantedWhenFreeModelsEnabled(t *testing.T) {
+	docs := helmTemplate(t, `rbac:
+  scope: cluster
+controller:
+  freeModelsRefresher:
+    enabled: true
+`)
+	clusterCR := findClusterRoleByNameSubstr(t, docs, "-controller-cluster")
+	require.NotNil(t, clusterCR, "cluster ClusterRole must be rendered when rbac.scope=cluster")
+
+	rules, _ := clusterCR["rules"].([]any)
+	for _, r := range rules {
+		rule, _ := r.(map[string]any)
+		resources, _ := rule["resources"].([]any)
+		for _, res := range resources {
+			if res == "configmaps" {
+				return // found — test passes
+			}
+		}
+	}
+	t.Fatal("ClusterRole must include configmaps when freeModelsRefresher.enabled=true and rbac.scope=cluster (#469)")
+}
+
+// TestClusterRole_ConfigMapsAbsentWhenBothDisabled verifies the negative
+// case: when both inferenceRelay and freeModelsRefresher are disabled, the
+// ClusterRole should NOT grant configmaps. Prevents accidental over-granting.
+func TestClusterRole_ConfigMapsAbsentWhenBothDisabled(t *testing.T) {
+	docs := helmTemplate(t, `rbac:
+  scope: cluster
+controller:
+  inferenceRelay:
+    enabled: false
+  freeModelsRefresher:
+    enabled: false
+`)
+	clusterCR := findClusterRoleByNameSubstr(t, docs, "-controller-cluster")
+	require.NotNil(t, clusterCR)
+
+	rules, _ := clusterCR["rules"].([]any)
+	for _, r := range rules {
+		rule, _ := r.(map[string]any)
+		resources, _ := rule["resources"].([]any)
+		for _, res := range resources {
+			if res == "configmaps" {
+				t.Fatal("ClusterRole must NOT include configmaps when both inferenceRelay and freeModelsRefresher are disabled")
+			}
+		}
+	}
+}
+
+// findClusterRoleByNameSubstr scans rendered docs for a ClusterRole whose
+// metadata.name contains the given substring. Returns nil if not found.
+func findClusterRoleByNameSubstr(t *testing.T, docs []map[string]any, nameSubstr string) map[string]any {
+	t.Helper()
+	for _, d := range docs {
+		if d["kind"] != "ClusterRole" {
+			continue
+		}
+		meta, _ := d["metadata"].(map[string]any)
+		name, _ := meta["name"].(string)
+		if strings.Contains(name, nameSubstr) {
+			return d
+		}
+	}
+	return nil
+}
