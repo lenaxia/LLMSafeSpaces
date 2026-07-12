@@ -2483,7 +2483,7 @@
 <p><code>workspace-agentd</code> (<code>cmd/workspace-agentd</code>) supervises <code>opencode</code>:</p>
 <ul>
 <li><strong>Admin port <code>:4098</code></strong> — <code>/v1/healthz</code>, <code>/v1/statusz</code>, <code>/v1/readyz</code>, <code>/v1/metrics</code>. The controller polls these for health and metric enrichment; Prometheus scrapes <code>/metrics</code>. Token-gated.</li>
-<li><strong>User port <code>:4097</code></strong> — <code>/v1/reload-secrets</code> (live credential reload without pod restart). <em>Note: G40 is open — this port has no application-layer auth today; it should be behind <code>requireBearerToken</code>.</em></li>
+<li><strong>User port <code>:4097</code></strong> — <code>/v1/reload-secrets</code> (live credential reload without pod restart). <em>Note: G40 is accepted — this port has no application-layer auth; the NetworkPolicy is the trust boundary (only API server pods can reach port 4097).</em></li>
 <li>Owns the single <code>AgentConfigWriter</code> that builds <code>/sandbox-runtime/agent-config.json</code> atomically (temp-file + <code>os.Rename</code>), merging providers + model + relay sources. The one-shot relay injector runs ~T+7s after boot to discover free-tier models.</li>
 <li>Owns the reload-replay cache (<code>/sandbox-runtime/last-reload-secrets.json</code>) so user-DEK credentials survive a main-container restart (OOM, panic, kubelet restart) — without it, the boot-time <code>reset()</code> would wipe them.</li>
 </ul>
@@ -2512,8 +2512,8 @@
 <li><strong>Rate limiting</strong> counters (global + per-endpoint).</li>
 <li><strong>Model cache</strong> (5s TTL) — the per-replica catalog cache; <code>SetModel</code> evicts on the handling replica only, so other replicas serve stale for up to 5s.</li>
 <li><strong>DEK cache</strong> — per-user data encryption keys, decrypted and held in memory for the session TTL so the API doesn't re-run Argon2id on every request. Protected by Redis auth + the datastore NetworkPolicy.</li>
-<li><strong>Account lockout</strong> counters (keyed on email today — G13 is open: an attacker who knows the victim email can lock them out from any IP).</li>
-<li><strong>SSE connection tracking</strong> (G42 is open — the <code>sseConnCounts</code> map is never pruned).</li>
+<li><strong>Account lockout</strong> counters (keyed on email + client IP — G13 fixed: an attacker from a different IP cannot trigger the victim's lockout).</li>
+<li><strong>SSE connection tracking</strong> (G42 fixed — the <code>sseConnCounts</code> map prunes stale entries on every call).</li>
 <li><strong>JWT revocation</strong> set — <code>token:&lt;hash&gt;</code> and <code>token:&lt;jti&gt;</code> for dual-key revocation.</li>
 </ul>
 <div class="admonition warning">
@@ -2575,7 +2575,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 07:21:03 UTC"><span class="timeago" datetime="2026-07-11T07:21:03+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 07:21:03 UTC">2026-07-11</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 12, 2026 06:28:58 UTC"><span class="timeago" datetime="2026-07-12T06:28:58+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 12, 2026 06:28:58 UTC">2026-07-12</span>
   </span>
 
     

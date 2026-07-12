@@ -3134,7 +3134,7 @@
 <h3 id="post-rotation_1">Post-rotation<a class="headerlink" href="#post-rotation_1" title="Permanent link">&para;</a></h3>
 <ul>
 <li>Verify Redis DEK cache was flushed (the CLI handles this).</li>
-<li>If the rotation was due to compromise, also rotate the JWT secret and review audit logs for suspicious decrypt activity (note: decrypt audit is gap G50 — not yet wired).</li>
+<li>If the rotation was due to compromise, also rotate the JWT secret and review <code>secret_audit_log</code> for suspicious decrypt activity (G50 fixed — AuditedProvider is wired).</li>
 </ul>
 <hr />
 <h2 id="responding-to-a-compromised-api-pod">Responding to a compromised API pod<a class="headerlink" href="#responding-to-a-compromised-api-pod" title="Permanent link">&para;</a></h2>
@@ -3168,14 +3168,14 @@
 <li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Master KEK rotated (all credentials re-wrapped).</li>
 <li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Redis password rotated and Redis restarted (DEK cache flushed).</li>
 <li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Postgres password rotated (belt-and-suspenders).</li>
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Audit logs reviewed for data exfiltration (note: decrypt audit is G50, not yet wired — check API access logs instead).</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <code>secret_audit_log</code> reviewed for data exfiltration (G50 fixed — AuditedProvider wired).</li>
 <li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Workspace passwords (per-workspace K8s Secrets) reviewed for tampering.</li>
 <li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> NetworkPolicy reviewed for any rules the attacker may have added/relaxed.</li>
 <li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> Images verified with cosign (see <a href="#verifying-image-signatures">Verifying image signatures</a> below).</li>
 </ul>
-<div class="admonition warning">
-<p class="admonition-title">Decrypt audit is not wired (G50)</p>
-<p>The <code>AuditedProvider</code> exists but is not wired into production decrypt paths. Exfiltration via legitimate API decrypt calls is currently <strong>undetectable</strong> from the platform's audit log. Rely on API access logs, Redis monitoring, and Postgres query logs for forensic analysis.</p>
+<div class="admonition info">
+<p class="admonition-title">Decrypt audit is wired (G50 fixed)</p>
+<p>The <code>AuditedProvider</code> is wired into production decrypt paths (<code>app.go:408,409,624</code>). Every Decrypt call on provider-credentials, org-credentials, and api-keys logs to <code>secret_audit_log</code>. Exfiltration via legitimate API decrypt calls is now <strong>detectable</strong> in the audit log.</p>
 </div>
 <hr />
 <h2 id="verifying-image-signatures">Verifying image signatures<a class="headerlink" href="#verifying-image-signatures" title="Permanent link">&para;</a></h2>
@@ -3289,7 +3289,7 @@
 </tr>
 <tr>
 <td><strong>SSE connections</strong></td>
-<td>Connections are distributed across replicas by the Service. The <code>sseConnCounts</code> map is per-replica (gap G42 — no cross-replica pruning).</td>
+<td>Connections are distributed across replicas by the Service. The <code>sseConnCounts</code> map is per-replica; stale entries are pruned on every call (G42 fixed).</td>
 </tr>
 <tr>
 <td><strong>In-memory caches</strong></td>
@@ -3426,7 +3426,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 15:09:17 UTC"><span class="timeago" datetime="2026-07-11T15:09:17+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 15:09:17 UTC">2026-07-11</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 12, 2026 06:28:58 UTC"><span class="timeago" datetime="2026-07-12T06:28:58+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 12, 2026 06:28:58 UTC">2026-07-12</span>
   </span>
 
     

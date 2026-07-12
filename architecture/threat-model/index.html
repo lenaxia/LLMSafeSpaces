@@ -2398,7 +2398,7 @@
 <td>Token replay (mitigated: dual-key revocation)</td>
 <td>No audit of failed auth</td>
 <td>Secret values logged — <strong>fixed</strong> (G25, two-layer mask + skip)</td>
-<td>Account lockout abuse (<strong>G13</strong>); recovery rate limit — <strong>fixed</strong> (G35)</td>
+<td>Account lockout abuse — <strong>fixed</strong> (G13 email+IP keying); recovery rate limit — <strong>fixed</strong> (G35)</td>
 <td>Sessions survive password change — <strong>fixed</strong> (G38 revokes all sessions)</td>
 </tr>
 <tr>
@@ -2460,14 +2460,14 @@
 <td>Cross-tenant traffic (mitigated: NP)</td>
 <td>N/A</td>
 <td>NP events not audited</td>
-<td>DNS exfil via external resolvers (<strong>G30</strong> accepted); IPv6 unrestricted (<strong>G43</strong>)</td>
+<td>DNS exfil via external resolvers (<strong>G30</strong> accepted); IPv6 denied by default-deny (<strong>G43</strong> fixed)</td>
 <td>N/A</td>
 <td>N/A</td>
 </tr>
 </tbody>
 </table>
 <h2 id="the-gap-register-g1g50">The gap register (G1–G50)<a class="headerlink" href="#the-gap-register-g1g50" title="Permanent link">&para;</a></h2>
-<p><strong>Status:</strong> 36 Fixed · 3 Open · 11 Accepted (50 total). See the authoritative <a href="https://github.com/lenaxia/LLMSafeSpaces/blob/main/design/stories/epic-17-security-review/THREAT-MODEL.md"><code>THREAT-MODEL.md</code></a> for the full per-gap evidence and regression-test references; the summaries below hit the high points.</p>
+<p><strong>Status:</strong> 38 Fixed · 0 Open · 12 Accepted (50 total). See the authoritative <a href="https://github.com/lenaxia/LLMSafeSpaces/blob/main/design/stories/epic-17-security-review/THREAT-MODEL.md"><code>THREAT-MODEL.md</code></a> for the full per-gap evidence and regression-test references; the summaries below hit the high points.</p>
 <h3 id="critical-and-high-severity-closures-recent">Critical and High-severity closures (recent)<a class="headerlink" href="#critical-and-high-severity-closures-recent" title="Permanent link">&para;</a></h3>
 <p>The 2026-07-11 security sweep closed every High-severity gap that had a code-side fix:</p>
 <table>
@@ -2568,6 +2568,11 @@
 <td>Opportunistic prune in <code>sseConnAllowed</code> on every call. (PR #543)</td>
 </tr>
 <tr>
+<td><strong>G13</strong></td>
+<td>Account lockout keyed on email only (DoS vector)</td>
+<td>Lockout key now includes client IP via <code>WithClientIP</code> context helper. An attacker from a different IP cannot trigger the victim's lockout.</td>
+</tr>
+<tr>
 <td><strong>G39</strong></td>
 <td>Terminal WebSocket accepted any Origin</td>
 <td><code>newCheckOriginChecker</code>: same-origin default + operator allowlist. (PR #515)</td>
@@ -2617,39 +2622,14 @@
 </tbody>
 </table>
 <h3 id="still-open">Still open<a class="headerlink" href="#still-open" title="Permanent link">&para;</a></h3>
-<p>These are the gaps to prioritize if you're hardening a deployment:</p>
-<table>
-<thead>
-<tr>
-<th>#</th>
-<th>Gap</th>
-<th>Severity</th>
-<th>Detail</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><strong>G13</strong></td>
-<td>Account lockout keyed on email only</td>
-<td>Medium</td>
-<td><code>lockoutKey := lockout:%s</code> keyed on email — attacker who knows victim email can lock them out from any IP. Add IP component or progressive delays + CAPTCHA.</td>
-</tr>
-<tr>
-<td><strong>G9</strong></td>
-<td>opencode/gh binaries downloaded without checksum verification</td>
-<td>Medium</td>
-<td>Dockerfile uses <code>curl --fail</code> over TLS only; no checksum or Sigstore. opencode upstream doesn't publish checksums; gh does (<code>.sha256</code>) — should verify. Release images are cosign-signed so image-level provenance is verifiable; individual binary verification is the remaining gap.</td>
-</tr>
-<tr>
-<td><strong>G43</strong></td>
-<td>IPv6 egress not covered by workspace NetworkPolicy</td>
-<td>Medium</td>
-<td>CIDR allowlist is IPv4-only; IPv6 <code>::/0</code> unrestricted. Add IPv6 rules or document IPv4-only assumption.</td>
-</tr>
-</tbody>
-</table>
+<p><strong>No open gaps remain.</strong> All 50 gaps have a disposition:</p>
+<ul>
+<li>38 Fixed (code + regression test)</li>
+<li>12 Accepted (documented rationale + compensating controls)</li>
+</ul>
+<p>The most recent closures: G13 (lockout IP+email keying), G43 (IPv6 already denied by default-deny), G9 (gh CLI checksum added; opencode upstream doesn't publish checksums — Accepted).</p>
 <h3 id="full-open-gap-list">Full open gap list<a class="headerlink" href="#full-open-gap-list" title="Permanent link">&para;</a></h3>
-<p>G9, G13, G43. (Three gaps — all Medium. No High, Critical, or Low open.)</p>
+<p><em>(No open gaps.)</em> All 50 resolved: 38 Fixed · 0 Open · 12 Accepted.</p>
 <h3 id="accepted-risks">Accepted risks<a class="headerlink" href="#accepted-risks" title="Permanent link">&para;</a></h3>
 <p>These are documented with rationale and compensating controls:</p>
 <table>
@@ -2716,6 +2696,11 @@
 <td>Agentd user port (4097) has no application-layer auth</td>
 <td>NetworkPolicy is the documented trust boundary — only API server pods can reach workspace pods on port 4097. Application-layer auth would be defense-in-depth that existing controls make redundant for documented deployment topologies.</td>
 </tr>
+<tr>
+<td><strong>G9</strong></td>
+<td>opencode binary not checksum-verified</td>
+<td>opencode upstream doesn't publish checksums or Sigstore signatures. gh CLI is now checksum-verified via <code>checksums.txt</code>. Compensating controls: cosign-signed release images, Trivy scanning, Renovate digest-pinning.</td>
+</tr>
 </tbody>
 </table>
 <h2 id="what-the-platform-protects-against">What the platform protects against<a class="headerlink" href="#what-the-platform-protects-against" title="Permanent link">&para;</a></h2>
@@ -2736,15 +2721,18 @@
 <li><strong>Dangerous workspace env-var names</strong> — POSIX + curated blocklist enforced at API and materialize layers (G37 fixed).</li>
 <li><strong>Recovery-endpoint CPU-exhaustion</strong> — per-route rate limit at 20/min + burst 5 (G35 fixed).</li>
 <li><strong>Workspace secrets outliving deletion</strong> — handleTerminating cleans up all ephemeral secrets (G36 fixed).</li>
+<li><strong>Account-lockout DoS amplification</strong> — lockout keys on email + client IP so an attacker from a different IP cannot lock the victim (G13 fixed).</li>
+<li><strong>Pod-level privilege escalation</strong> — pod-level <code>RunAsNonRoot</code> set structurally, not just per-container (G44 fixed).</li>
+<li><strong>Password file world-readable in pod</strong> — <code>install -m 0600</code> replaces <code>cp</code> (G21 fixed).</li>
+<li><strong>Silent workspace boot failure</strong> — password-read errors are now fatal (Error + os.Exit) instead of silently degraded (G46 fixed).</li>
 </ul>
 <h2 id="what-it-does-not-protect-against">What it does NOT protect against<a class="headerlink" href="#what-it-does-not-protect-against" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>API-pod RCE → mass credential decrypt</strong> (with local KEK providers) — an attacker running code in the pod calls <code>Decrypt</code> exactly as the application does. KMS (Epic 57) limits this to exfiltration-limitation + audit, not prevention.</li>
 <li><strong>MITM on pod-to-pod traffic</strong> (G4 accepted) — proxy uses plain HTTP to workspace pods. Deploy a service mesh to close.</li>
 <li><strong>DNS exfiltration/tunneling</strong> (G30 accepted) — external DNS resolvers are reachable on port 53. Use Cilium FQDN or Calico GlobalNetworkPolicy.</li>
-<li><strong>IPv6 egress</strong> (G43) — the workspace NetworkPolicy CIDR allowlist is IPv4-only.</li>
 <li><strong>Egress request-body inspection</strong> (G14 accepted) — no code path inspects outbound HTTP bodies; a compromised agent can exfiltrate via allowed egress domains.</li>
-<li><strong>Compromised opencode binary</strong> (G9) — no checksum/Sigstore verification on download.</li>
+<li><strong>Compromised opencode binary</strong> (G9 accepted) — opencode upstream doesn't publish checksums; gh CLI is verified. Release images are cosign-signed.</li>
 <li><strong>A cluster admin / insider</strong> — out of scope. A cluster admin can read Secrets and exec into pods by design.</li>
 <li><strong>etcd-at-rest compromise without encryption configured</strong> (A1) — operator MUST configure etcd encryption; no chart guard enforces it.</li>
 </ul>
@@ -2786,7 +2774,7 @@
 <tr>
 <td>A7</td>
 <td>Container images from a trusted registry</td>
-<td>Partial — release images cosign-signed (keyless OIDC + Rekor); Dockerfile FROMs tag-pinned (Renovate <code>docker:pinDigests</code> opens digest-pinning PRs); opencode/gh downloaded over TLS without checksum (G9). Trivy image scanning on every release.</td>
+<td>Partial — release images cosign-signed (keyless OIDC + Rekor); Dockerfile FROMs tag-pinned (Renovate <code>docker:pinDigests</code> opens digest-pinning PRs); opencode downloaded over TLS without checksum (G9 accepted — upstream doesn't publish checksums); gh CLI checksum-verified via <code>checksums.txt</code> (G9 partial fix). Trivy image scanning on every release.</td>
 </tr>
 <tr>
 <td>A8</td>
@@ -2826,7 +2814,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 12, 2026 02:20:13 UTC"><span class="timeago" datetime="2026-07-12T02:20:13+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 12, 2026 02:20:13 UTC">2026-07-12</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 12, 2026 06:28:58 UTC"><span class="timeago" datetime="2026-07-12T06:28:58+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 12, 2026 06:28:58 UTC">2026-07-12</span>
   </span>
 
     
