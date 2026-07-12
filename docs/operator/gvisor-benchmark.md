@@ -27,8 +27,12 @@ Phases 1 and 2 intentionally include non-pod latency. A microbenchmark that stri
 ```bash
 export API_URL=https://safespaces.example.com
 export API_TOKEN=<a token that can create+delete workspaces>
+export WORKSPACE_USERID=<your user ID>   # required; the API user benchmark workspaces belong to
 export ITERATIONS=5           # per runtime per phase; bump for tighter CI
-export WORKSPACE_IMAGE=ghcr.io/lenaxia/llmsafespaces/python:latest
+# Optional overrides (defaults shown):
+# export WORKSPACE_RUNTIME=base              # RuntimeEnvironment name
+# export WORKSPACE_ORGID=                    # empty = personal workspaces; set for org-scoped benchmarks
+# export LLM_MODEL=opencode/free             # model for the cold_prompt phase
 
 helm/scripts/gvisor-benchmark.sh > gvisor-bench.tsv
 ```

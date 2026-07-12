@@ -80,22 +80,24 @@ ns_now() { date +%s.%N; }
 create_workspace() {
     local runtime_class="$1"   # "gvisor" or "runc"
     local name="gvisor-bench-${runtime_class}-$(date +%s)-${RANDOM}"
-    local org_field=""
-    if [[ -n "$WORKSPACE_ORGID" ]]; then
-        org_field=",\"orgID\":\"$WORKSPACE_ORGID\""
-    fi
 
     # spec.runtimeClass is omitted (nil) for the gVisor leg so the controller's
     # default applies (gvisor when gvisor.enabled=true). It is explicitly "runc"
     # for the runc leg, with the admin annotation that the validating webhook
     # requires (controller/internal/webhooks/workspace_webhook.go).
     local runtime_class_line=""
-    local annotation_key="llmsafespaces.dev/bench"
-    local annotation_value="gvisor-benchmark"
+    local annotations_block=$'    llmsafespaces.dev/bench: "gvisor-benchmark"'
     if [[ "$runtime_class" == "runc" ]]; then
         runtime_class_line=$'\n  runtimeClass: "runc"'
-        annotation_key="$ALLOW_OVERRIDE_ANNOTATION"
-        annotation_value="true"
+        annotations_block=$'    llmsafespaces.dev/allow-runtime-class-override: "true"\n    llmsafespaces.dev/bench: "gvisor-benchmark"'
+    fi
+
+    # The bench marker is also a label so kubectl -l selectors work for
+    # cleanup (annotations are not selectable). The runtime override lives
+    # only in annotations (where the webhook reads it).
+    local orgid_line=""
+    if [[ -n "$WORKSPACE_ORGID" ]]; then
+        orgid_line=$'\n    orgID: "'"$WORKSPACE_ORGID"'"'
     fi
 
     # heredoc with variable expansion. The runtimeClass line is conditionally
@@ -108,17 +110,19 @@ kind: Workspace
 metadata:
   name: $name
   namespace: $NAMESPACE
+  labels:
+    llmsafespaces.dev/bench: gvisor-benchmark
   annotations:
-    $annotation_key: "$annotation_value"
+$annotations_block
 spec:
   owner:
-    userID: "$WORKSPACE_USERID"$org_field
+    userID: "$WORKSPACE_USERID"$orgid_line
   runtime: "$WORKSPACE_RUNTIME"
   storage:
     size: 5Gi$runtime_class_line
 EOF
 )
-    printf '%s\n' "$manifest" | kubectl apply -f - >&2 2>/dev/null || {
+    printf '%s\n' "$manifest" | kubectl apply -f - 2>&1 | sed 's/^/    /' >&2 || {
         fail "kubectl apply failed for workspace $name"
         return 1
     }
@@ -200,6 +204,12 @@ time_cold_prompt() {
     # event to measure time-to-first-token. The timestamp is captured
     # OUTSIDE awk (after awk exits) using `date +%s.%N` — `systime()` inside
     # awk is integer-second resolution and loses sub-second precision.
+    #
+    # The END block uses a `found` flag to make awk exit non-zero when the
+    # stream completes without a match (opencode error event, model
+    # unavailable, auth failure, etc.). Without this guard, awk's default
+    # exit-0 on EOF would let `&& ns_now` run anyway, producing a silently
+    # wrong time-to-stream-end measurement instead of a clean failure.
     local event_at
     event_at=$(curl -sS -N --no-buffer -X POST "$API_URL/api/v1/workspaces/$ws/sessions/$session_id/message" \
         -H "Authorization: Bearer $API_TOKEN" \
@@ -210,11 +220,12 @@ time_cold_prompt() {
             /^data:/ {
                 line = $0
                 sub(/^data:[ ]?/, "", line)
-                if (line ~ /"type":"message\.part\.updated"/) { exit 0 }
+                if (line ~ /"type":"message\.part\.updated"/) { found = 1; exit 0 }
             }
+            END { if (!found) exit 1 }
         ' && ns_now)
     if [[ -z "$event_at" ]]; then
-        fail "no assistant part received (SSE stream ended or timed out)"
+        fail "no assistant part received (SSE stream ended or timed out without a message.part.updated event)"
         return 1
     fi
     awk -v a="$start" -v b="$event_at" 'BEGIN{printf "%.3f", b-a}'
