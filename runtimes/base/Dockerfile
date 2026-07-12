@@ -161,15 +161,27 @@ RUN set -eux; \
     case "${TARGETARCH}" in \
         amd64) GH_ARCH=amd64 ;; \
         arm64) GH_ARCH=arm64 ;; \
-        *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+        *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1; \
     esac; \
     curl --fail --show-error --location \
         "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${GH_ARCH}.tar.gz" \
         -o /tmp/gh.tar.gz; \
+# G9: Verify the gh CLI checksum. GitHub publishes .sha256 alongside
+# every release asset. The checksum file format is "<hash>  <filename>"
+# (two-space-separated). We download it, extract the hash, and compare.
+    curl --fail --show-error --location \
+        "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${GH_ARCH}.tar.gz.sha256" \
+        -o /tmp/gh.tar.gz.sha256; \
+    EXPECTED_HASH="$(cut -d' ' -f1 /tmp/gh.tar.gz.sha256)"; \
+    ACTUAL_HASH="$(sha256sum /tmp/gh.tar.gz | cut -d' ' -f1)"; \
+    if [ "${EXPECTED_HASH}" != "${ACTUAL_HASH}" ]; then \
+        echo "FATAL: gh CLI checksum mismatch (expected ${EXPECTED_HASH}, got ${ACTUAL_HASH})" >&2; \
+        exit 1; \
+    fi; \
     tar -xzf /tmp/gh.tar.gz -C /tmp/; \
     cp "/tmp/gh_${GH_VERSION}_linux_${GH_ARCH}/bin/gh" /usr/local/bin/gh; \
     chmod +x /usr/local/bin/gh; \
-    rm -rf "/tmp/gh_${GH_VERSION}_linux_${GH_ARCH}" /tmp/gh.tar.gz
+    rm -rf "/tmp/gh_${GH_VERSION}_linux_${GH_ARCH}" /tmp/gh.tar.gz /tmp/gh.tar.gz.sha256
 
 # Install mise (polyglot runtime manager) so sandbox users can install
 # language runtimes (Python, Node.js, Go, etc.) without root access.
