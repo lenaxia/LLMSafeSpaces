@@ -103,8 +103,10 @@ test.describe("Settings deep-linking", () => {
 
     await expect(page).toHaveURL(/\/settings\/secrets/, { timeout: 5000 });
 
-    // The Secrets tab should render.
-    await expect(page.getByText("Secrets")).toBeVisible();
+    // The Secrets sidebar link should be the active one (bg-accent).
+    const secretsLink = page.getByRole("link", { name: "Secrets" });
+    await expect(secretsLink).toBeVisible({ timeout: 5000 });
+    await expect(secretsLink).toHaveClass(/bg-accent/);
   });
 
   test("can deep-link to /settings/api-keys", async ({ page }) => {
@@ -112,8 +114,10 @@ test.describe("Settings deep-linking", () => {
 
     await expect(page).toHaveURL(/\/settings\/api-keys/, { timeout: 5000 });
 
-    // The API Keys tab should render.
-    await expect(page.getByText("API Keys")).toBeVisible();
+    // The API Keys sidebar link should be active.
+    const apiKeysLink = page.getByRole("link", { name: "API Keys" });
+    await expect(apiKeysLink).toBeVisible({ timeout: 5000 });
+    await expect(apiKeysLink).toHaveClass(/bg-accent/);
   });
 
   test("can deep-link to /settings/my-organisation", async ({ page }) => {
@@ -123,7 +127,9 @@ test.describe("Settings deep-linking", () => {
       timeout: 5000,
     });
 
-    await expect(page.getByText("My Organisation")).toBeVisible();
+    const orgLink = page.getByRole("link", { name: "My Organisation" });
+    await expect(orgLink).toBeVisible({ timeout: 5000 });
+    await expect(orgLink).toHaveClass(/bg-accent/);
   });
 
   test("can navigate between tabs via sidebar links", async ({ page }) => {
@@ -132,12 +138,12 @@ test.describe("Settings deep-linking", () => {
     await expect(page.getByText("Settings")).toBeVisible({ timeout: 5000 });
 
     // Click "Secrets" in the sidebar.
-    await page.getByText("Secrets").first().click();
+    await page.getByRole("link", { name: "Secrets" }).click();
 
     await expect(page).toHaveURL(/\/settings\/secrets/, { timeout: 5000 });
 
     // Click "API Keys" in the sidebar.
-    await page.getByText("API Keys").first().click();
+    await page.getByRole("link", { name: "API Keys" }).click();
 
     await expect(page).toHaveURL(/\/settings\/api-keys/, { timeout: 5000 });
   });
