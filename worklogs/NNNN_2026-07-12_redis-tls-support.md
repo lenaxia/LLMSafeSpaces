@@ -92,7 +92,9 @@ go test -timeout 30s -race -count=1 ./api/internal/services/cache/...
   ok — no regression in existing cache tests
 
 go test -timeout 80s -race -count=1 ./helm/...
-  ok — chart tests green (configmap renders TLS fields correctly)
+  ok — chart tests green (TestRedisTLS_DefaultRender_OmitsTLSFields +
+  TestRedisTLS_EnabledRendersTrueFields assert the configmap renders
+  the TLS fields correctly)
 ```
 
 ---
@@ -113,3 +115,19 @@ go test -timeout 80s -race -count=1 ./helm/...
 
 1. Open this PR.
 2. Closes #465.
+
+---
+
+## Review follow-up (2026-07-12)
+
+AI reviewer flagged missing test coverage. Added:
+
+- TestRedisTLS_DefaultRender_OmitsTLSFields (chart): configmap renders tls: false + insecureSkipVerify: false by default. Follows the TestEmail_DefaultRender pattern.
+- TestRedisTLS_EnabledRendersTrueFields (chart): configmap renders tls: true + insecureSkipVerify: true when set in values. Follows the TestEmail_EnabledSES pattern. Integration test for the Helm -> Go config wiring.
+- TestNewCache_TLS_MismatchPlaintextServerFails (cache): TLS-enabled client against plaintext miniredis must fail. Proves the cfg.Redis.TLS guard selects TLS — without this test, removing the guard would pass every other test silently.
+- TestNewCache_TLS_CertVerificationFailsOnMismatch (cache): InsecureSkipVerify=false rejects a cert whose CN does not match cfg.Redis.Host. Proves ServerName verification is active.
+- selfSignedCertWithCN(cn) helper: parameterized cert generator. If cn is an IP literal, adds it to IPAddresses (Go validates IP SANs separately from DNS SANs).
+
+Intentionally not implemented: TestNewCache_TLS_CertVerificationSucceeds. The production path (InsecureSkipVerify=false with a system-trusted CA) cannot be replicated with a self-signed test cert without either injecting a custom RootCAs pool (scope creep) or mutating the system trust store (not hermetic). The cert-mismatch test proves InsecureSkipVerify=false is active; the cert-verification-succeeds path is exercised in production against the operator's trusted CA. Documented in a comment block where the test would live.
+
+Corrected worklog's false claim ("chart tests green (configmap renders TLS fields correctly)" was stated before the chart tests existed). Now the tests exist and the claim is accurate.

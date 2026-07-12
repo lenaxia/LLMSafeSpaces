@@ -4143,3 +4143,41 @@ runtimeEnvironments:
 	}
 	t.Fatal("no RuntimeEnvironment CR rendered")
 }
+
+// ---------------------------------------------------------------------------
+// #465: Redis TLS configmap rendering
+// ---------------------------------------------------------------------------
+
+// TestRedisTLS_DefaultRender_OmitsTLSFields verifies the default render
+// (redis.tls unset) produces a configmap with tls: false and
+// insecureSkipVerify: false. Regression guard for the configmap wiring.
+func TestRedisTLS_DefaultRender_OmitsTLSFields(t *testing.T) {
+	docs := helmTemplate(t, "")
+	cm := findAPIConfigMap(t, docs)
+	require.NotNil(t, cm, "API config ConfigMap must be rendered by default")
+	cfg := configYAML(t, cm)
+	require.Contains(t, cfg, "tls: false",
+		"redis.tls must default to false in the rendered configmap; config.yaml was:\n%s", cfg)
+	require.Contains(t, cfg, "insecureSkipVerify: false",
+		"redis.insecureSkipVerify must default to false; config.yaml was:\n%s", cfg)
+}
+
+// TestRedisTLS_EnabledRendersTrueFields verifies that setting redis.tls=true
+// and insecureSkipVerify=true in Helm values propagates to the rendered API
+// configmap. This is the integration test for the Helm → Go config wiring;
+// without it, a future template regression (e.g., someone removes lines 37-38
+// from configmap-api.yaml) would silently break TLS support with no test
+// catching it.
+func TestRedisTLS_EnabledRendersTrueFields(t *testing.T) {
+	docs := helmTemplate(t, `redis:
+  tls: true
+  insecureSkipVerify: true
+`)
+	cm := findAPIConfigMap(t, docs)
+	require.NotNil(t, cm)
+	cfg := configYAML(t, cm)
+	require.Contains(t, cfg, "tls: true",
+		"redis.tls=true must render into configmap; config.yaml was:\n%s", cfg)
+	require.Contains(t, cfg, "insecureSkipVerify: true",
+		"redis.insecureSkipVerify=true must render into configmap; config.yaml was:\n%s", cfg)
+}
