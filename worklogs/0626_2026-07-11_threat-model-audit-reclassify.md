@@ -166,4 +166,4 @@ After PRs 2–4 the threat model will be at roughly 35 Fixed / 5 Open / 10 Accep
 
 - `design/stories/epic-17-security-review/THREAT-MODEL.md` — 6 rows updated; STRIDE rows; counts; callout; revision 3.0
 - `CHANGELOG.md` — new `### Threat model reconciliation` section under `[Unreleased]`
-- `worklogs/NNNN_2026-07-11_threat-model-audit-reclassify.md` — this file
+- `worklogs/0626_2026-07-11_threat-model-audit-reclassify.md` — this file
