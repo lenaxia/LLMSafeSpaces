@@ -116,6 +116,9 @@ gvisor:
 
 This creates a `RuntimeClass` named `gvisor` (handler: `runsc`) and sets `--default-runtime-class=gvisor` on the controller. Workspace pods then run under gVisor by default.
 
+!!! tip "Measure before flipping the default"
+    The chart default is `gvisor.enabled: false` pending Epic 51 S51.1 acceptance criterion 8: measure gVisor's overhead on a representative LLM-coding workload before flipping the cluster-wide default. See [gVisor Overhead Benchmark](gvisor-benchmark.md) for a runnable harness and the accept/reject decision criteria.
+
 ### Admin-gated opt-out
 
 Some workloads are gVisor-incompatible (e.g. `ptrace` debuggers). Individual workspaces can opt out via `spec.runtimeClass: "runc"`, but this is **admin-gated**: the workspace validating webhook rejects `spec.runtimeClass` (to any value, including the empty-string opt-out) unless the workspace object carries:
