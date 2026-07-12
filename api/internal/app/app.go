@@ -978,6 +978,10 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			routerNamespace,
 			relayRouterSvcURL,
 		)
+		// #475: inject the logger so scrapeRouterMetrics' three error paths
+		// (request build, HTTP transport, response read) and non-2xx responses
+		// surface as Warn lines instead of silently-zero dashboard counters.
+		relayAdminHandler.SetLogger(log)
 	} else {
 		log.Warn("failed to construct LlmsafespacesV1 client, relay admin routes will not be available", "error", err.Error())
 	}
