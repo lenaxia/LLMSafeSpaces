@@ -2443,7 +2443,7 @@
 <td>Cache poisoning</td>
 <td>No op audit</td>
 <td>DEK in memory (<strong>G10</strong> accepted)</td>
-<td>Memory exhaustion; SSE tracking leak (<strong>G42</strong>)</td>
+<td>Memory exhaustion; SSE tracking leak — <strong>fixed</strong> (G42 prunes)</td>
 <td>N/A</td>
 </tr>
 <tr>
@@ -2467,7 +2467,7 @@
 </tbody>
 </table>
 <h2 id="the-gap-register-g1g50">The gap register (G1–G50)<a class="headerlink" href="#the-gap-register-g1g50" title="Permanent link">&para;</a></h2>
-<p><strong>Status:</strong> 29 Fixed · 10 Open · 11 Accepted (50 total). See the authoritative <a href="https://github.com/lenaxia/LLMSafeSpaces/blob/main/design/stories/epic-17-security-review/THREAT-MODEL.md"><code>THREAT-MODEL.md</code></a> for the full per-gap evidence and regression-test references; the summaries below hit the high points.</p>
+<p><strong>Status:</strong> 36 Fixed · 3 Open · 11 Accepted (50 total). See the authoritative <a href="https://github.com/lenaxia/LLMSafeSpaces/blob/main/design/stories/epic-17-security-review/THREAT-MODEL.md"><code>THREAT-MODEL.md</code></a> for the full per-gap evidence and regression-test references; the summaries below hit the high points.</p>
 <h3 id="critical-and-high-severity-closures-recent">Critical and High-severity closures (recent)<a class="headerlink" href="#critical-and-high-severity-closures-recent" title="Permanent link">&para;</a></h3>
 <p>The 2026-07-11 security sweep closed every High-severity gap that had a code-side fix:</p>
 <table>
@@ -2553,6 +2553,21 @@
 </thead>
 <tbody>
 <tr>
+<td><strong>G6 / G41</strong> (duplicate)</td>
+<td><code>/secrets/:id/reveal</code> no per-endpoint rate limit</td>
+<td>Added to <code>PerRouteRateLimitConfig.Routes</code> (5/min + burst 5). (PR #543)</td>
+</tr>
+<tr>
+<td><strong>G21</strong></td>
+<td><code>/sandbox-cfg/password</code> mode 0644</td>
+<td><code>cp</code> → <code>install -m 0600</code> in init-container credScript. (PR #543)</td>
+</tr>
+<tr>
+<td><strong>G42</strong></td>
+<td>SSE connection tracking unbounded memory growth</td>
+<td>Opportunistic prune in <code>sseConnAllowed</code> on every call. (PR #543)</td>
+</tr>
+<tr>
 <td><strong>G39</strong></td>
 <td>Terminal WebSocket accepted any Origin</td>
 <td><code>newCheckOriginChecker</code>: same-origin default + operator allowlist. (PR #515)</td>
@@ -2580,6 +2595,21 @@
 </thead>
 <tbody>
 <tr>
+<td><strong>G44</strong></td>
+<td>Pod-level SecurityContext missing RunAsNonRoot</td>
+<td>Added <code>RunAsNonRoot: &amp;true</code> to <code>buildPodSecurityContext</code>. (PR #543)</td>
+</tr>
+<tr>
+<td><strong>G46</strong></td>
+<td>Silent password file read failure</td>
+<td><code>readAgentPassword</code> now Error + <code>os.Exit(1)</code>. (PR #543)</td>
+</tr>
+<tr>
+<td><strong>G47</strong></td>
+<td>Inference relay secret exposed as CLI arg</td>
+<td>Removed plaintext fallback; <code>{{ fail }}</code> at helm-template-time. (PR #543)</td>
+</tr>
+<tr>
 <td><strong>G45</strong></td>
 <td>Legacy <code>source /sandbox-cfg/env</code> in entrypoint</td>
 <td>US-35.7 moved source path. (Already fixed — threat model corrected)</td>
@@ -2599,24 +2629,6 @@
 </thead>
 <tbody>
 <tr>
-<td><strong>G6 / G41</strong> (duplicate)</td>
-<td><code>/secrets/:id/reveal</code> no per-endpoint rate limit</td>
-<td>Medium</td>
-<td>Endpoint accepts user password to re-authenticate before decrypting. Global 100/min/IP only; per-endpoint limit (e.g. 5/min) would close brute-force window.</td>
-</tr>
-<tr>
-<td><strong>G21</strong></td>
-<td><code>/sandbox-cfg/password</code> mode 0644</td>
-<td>Medium</td>
-<td>Init-container <code>cp</code> preserves source Secret <code>defaultMode: 420</code> (0644); should use <code>install -m 0600</code>.</td>
-</tr>
-<tr>
-<td><strong>G42</strong></td>
-<td>SSE connection tracking unbounded memory growth</td>
-<td>Medium</td>
-<td><code>sseConnCounts</code> map keyed on IP never pruned; grows monotonically.</td>
-</tr>
-<tr>
 <td><strong>G13</strong></td>
 <td>Account lockout keyed on email only</td>
 <td>Medium</td>
@@ -2634,28 +2646,10 @@
 <td>Medium</td>
 <td>CIDR allowlist is IPv4-only; IPv6 <code>::/0</code> unrestricted. Add IPv6 rules or document IPv4-only assumption.</td>
 </tr>
-<tr>
-<td><strong>G44</strong></td>
-<td>Workspace pod-level SecurityContext missing RunAsNonRoot</td>
-<td>Low</td>
-<td>Container-level has it but pod-level doesn't; a future sidecar without its own SecurityContext could run as root.</td>
-</tr>
-<tr>
-<td><strong>G46</strong></td>
-<td>Password file read failure is silent</td>
-<td>Low</td>
-<td><code>readAgentPassword</code> returns empty string on file-read error; workspace starts silently non-functional. Should Error + exit non-zero.</td>
-</tr>
-<tr>
-<td><strong>G47</strong></td>
-<td>Inference relay secret exposed as CLI arg</td>
-<td>Low</td>
-<td>Helm chart fallback <code>--inference-relay-secret={{ .Values.inferenceRelaySecret }}</code> renders the secret into the pod spec.</td>
-</tr>
 </tbody>
 </table>
 <h3 id="full-open-gap-list">Full open gap list<a class="headerlink" href="#full-open-gap-list" title="Permanent link">&para;</a></h3>
-<p>G6, G9, G13, G21, G41, G42, G43, G44, G46, G47. (Ten gaps — all Medium or Low. No High or Critical open.)</p>
+<p>G9, G13, G43. (Three gaps — all Medium. No High, Critical, or Low open.)</p>
 <h3 id="accepted-risks">Accepted risks<a class="headerlink" href="#accepted-risks" title="Permanent link">&para;</a></h3>
 <p>These are documented with rationale and compensating controls:</p>
 <table>
@@ -2730,7 +2724,7 @@
 <li><strong>Credential theft from the database</strong> — encryption at rest; user secrets need the password, platform secrets need the master KEK.</li>
 <li><strong>Credential theft from PVC at rest</strong> — tmpfs + symlinks; PVC retains only dangling symlinks, no plaintext bytes.</li>
 <li><strong>Master KEK exposure via <code>/proc/1/environ</code></strong> — file mount default (G48 fixed).</li>
-<li><strong>Container escape to the node</strong> — Drop ALL caps, NoNewPrivs, RuntimeDefault seccomp, read-only root; optional gVisor for kernel-level isolation. (Pod-level <code>RunAsNonRoot</code> is G44 — still open; container-level is set today.)</li>
+<li><strong>Container escape to the node</strong> — Drop ALL caps, NoNewPrivs, RuntimeDefault seccomp, read-only root; pod-level RunAsNonRoot (G44 fixed); optional gVisor for kernel-level isolation.</li>
 <li><strong>Cross-tenant network access</strong> — default-deny ingress NetworkPolicy; RFC1918/CGNAT/cloud-metadata-filtered egress.</li>
 <li><strong>SA token abuse from within a pod</strong> — <code>AutomountServiceAccountToken: false</code>.</li>
 <li><strong>Header injection to the sandbox pod</strong> — explicit proxy allowlist (G34 fixed).</li>
@@ -2832,7 +2826,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 12, 2026 01:35:31 UTC"><span class="timeago" datetime="2026-07-12T01:35:31+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 12, 2026 01:35:31 UTC">2026-07-12</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 12, 2026 02:20:13 UTC"><span class="timeago" datetime="2026-07-12T02:20:13+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 12, 2026 02:20:13 UTC">2026-07-12</span>
   </span>
 
     
