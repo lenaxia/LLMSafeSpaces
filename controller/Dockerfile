@@ -3,10 +3,14 @@
 # Build context MUST be the repository root (single Go module at root).
 #
 #   docker build -f controller/Dockerfile -t llmsafespaces/controller:dev .
+#
+# Multi-arch: this Dockerfile is cross-compile-correct under buildx. The
+# builder stage runs on the BUILDPLATFORM (host arch) and Go cross-compiles
+# to TARGETARCH via GOARCH. Do not pin ARG TARGETARCH to a default — buildx
+# injects the value per-platform; a hardcoded default can mask a missing
+# buildx override and produce a binary for the wrong arch (issue #462).
 
-ARG TARGETARCH=amd64
-
-FROM golang:1.25 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25 AS builder
 
 WORKDIR /workspace
 
@@ -27,6 +31,8 @@ COPY cmd/ cmd/
 
 ARG VERSION=dev
 
+# TARGETARCH is injected by buildx per-platform (linux/amd64, linux/arm64).
+# No hardcoded default — see issue #462.
 ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
     go build \

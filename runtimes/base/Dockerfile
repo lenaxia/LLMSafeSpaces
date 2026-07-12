@@ -1,6 +1,6 @@
 ARG TARGETARCH
 
-FROM golang:1.25-bookworm AS redact-builder
+FROM --platform=$BUILDPLATFORM golang:1.25-bookworm AS redact-builder
 
 ARG TARGETARCH
 
@@ -16,7 +16,7 @@ COPY pkg/ ./pkg/
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
     go build -trimpath -o /out/redact ./cmd/redact
 
-FROM golang:1.25-bookworm AS agentd-builder
+FROM --platform=$BUILDPLATFORM golang:1.25-bookworm AS agentd-builder
 
 ARG TARGETARCH
 
