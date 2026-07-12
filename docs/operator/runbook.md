@@ -328,7 +328,7 @@ kubectl -n llmsafespaces get pods -l app.kubernetes.io/component=api
 | **Database connections** | Each replica opens up to `postgresql.maxOpenConns` (default 25) connections. 4 replicas = up to 100 connections. Ensure Postgres `max_connections` accommodates this. |
 | **Redis connections** | Each replica uses a pool (`redis.poolSize`, default 20). Ensure Redis `maxclients` accommodates. |
 | **Leader election** | The API uses leader election (`api.config.kubernetes.leaderElection.enabled`) for distributed coordination. Multiple replicas are safe. |
-| **SSE connections** | Connections are distributed across replicas by the Service. The `sseConnCounts` map is per-replica (gap G42 — no cross-replica pruning). |
+| **SSE connections** | Connections are distributed across replicas by the Service. The `sseConnCounts` map is per-replica; stale entries are pruned on every call (G42 fixed). |
 | **In-memory caches** | The model cache is per-replica (up to 5s staleness across replicas). Not a correctness issue; cosmetic for `relayInjected`. |
 
 ### Scaling the controller
