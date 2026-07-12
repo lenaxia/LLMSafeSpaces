@@ -99,6 +99,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   visible to the bootstrap read path (`GetBindings`) when the pod
   eventually boots.
 
+### Threat model reconciliation
+
+A fresh audit of the 50 gaps in
+`design/stories/epic-17-security-review/THREAT-MODEL.md` against the
+current code found 6 rows whose status no longer matched reality. This
+entry reconciles the threat model without changing any production code.
+
+- **G29 — Path-traversal `mount_path` accepted by API → 🟢 Fixed (was Medium/Open).**
+  The threat-model row claimed `POST /api/v1/secrets` accepts
+  `mount_path = "../../etc/passwd"`. `validateMountPath` was added at
+  `pkg/secrets/secret_service.go:582` (Bug 13 in worklog 0085); it is
+  called from line 563 BEFORE secret creation. Stale row corrected.
+- **G45 — Legacy `source /sandbox-cfg/env` in entrypoint → 🟢 Fixed (was Low/Open).**
+  US-35.7 moved the env-secret source path to `/sandbox-runtime/secrets-env`.
+  The legacy `/sandbox-cfg/env` source no longer exists in
+  `entrypoint-opencode.sh`. Stale row corrected.
+- **G50 — Decrypt operations not audited → 🟢 Fixed (was Medium/Open).**
+  The threat-model row claimed `NewAuditedProvider` had zero call sites.
+  US-50.12 wired it at three production sites in `api/internal/app/app.go`:
+  `app.go:408` (providerCredsProv), `app.go:409` (orgCredsProv),
+  `app.go:624` (apiKeyProv). Every Decrypt on those providers now logs
+  to `secret_audit_log`. Stale row corrected.
+- **G4 — No mTLS between API and sandbox pods → 🟡 Accepted (was Medium/Open).**
+  Real gap, but the fix requires either a service mesh (Linkerd/Istio)
+  or per-workspace certificate provisioning — both substantial
+  infrastructure additions outside the scope of threat-model-gap fixes.
+  Compensating controls: NetworkPolicy default-deny, RFC1918/CGNAT
+  egress filter, explicit header allowlist (G34 fix), per-request
+  basic-auth rotation. Operator runbook: deploy Linkerd or Istio in
+  `inject` mode on the LLMSafeSpaces namespace to close this gap
+  without code changes.
+- **G30 — Egress NetPol allows external DNS resolvers → 🟡 Accepted (was Medium/Open).**
+  Real gap; standard Kubernetes `NetworkPolicy` cannot restrict DNS by
+  destination domain. Closing requires Cilium FQDN policies, Calico
+  `GlobalNetworkPolicy`, or a custom filtering resolver — operator
+  infrastructure decisions. Compensating controls: workspace pods use
+  cluster DNS by default; egress allowlist blocks RFC1918/CGNAT; DNS
+  exfil bandwidth is naturally limited.
+- **G40 — Agentd user port (4097) has no application-layer auth → 🟡 Accepted (was Medium/Open).**
+  Real defense-in-depth gap; the trust boundary is the NetworkPolicy
+  (`workspace-network-policy.yaml`) — only API server pods can reach
+  workspace pods on port 4097. Adding `requireBearerToken` at the
+  application layer is defense-in-depth that the existing controls
+  make redundant for the documented deployment topologies.
+
+Threat model counts: 26 Fixed / 16 Open / 8 Accepted →
+**29 Fixed / 10 Open / 11 Accepted** (50 total). Revision 3.0.
+
+The remaining 10 open gaps are tracked in the threat model under
+"Open gaps (require remediation)": G6, G9, G13, G21, G41, G42, G43,
+G44, G46, G47. Subsequent PRs will close the code-fixable ones.
+
 ## [0.3.0] - 2026-07-11
 
 Network hardening sweep + KMS-backed master KEK foundation + Go security bump.

@@ -45,14 +45,12 @@ These are documented limitations, not bugs. See the [Threat Model](../architectu
 
 | Gap | Severity | Status | Operator action |
 |---|---|---|---|
-| **G4** — No mTLS between API and workspace pods | Medium | Open | Deploy a service mesh (Linkerd/Istio) if pod-network MITM is in your threat model. |
+| **G4** — No mTLS between API and workspace pods | Medium | Accepted | Deploy a service mesh (Linkerd/Istio) if pod-network MITM is in your threat model. |
 | **G9** — opencode/gh binary not checksum-verified at build | Medium | Open | Pin versions; track upstream CVEs. Release images are now cosign-signed (see [Supply chain security](#supply-chain-security) below); admission-time verification is the remaining gap. |
 | **G13** — Account lockout keyed on email only (DoS) | Medium | Open | Attacker who knows a victim email can lock them out. |
-| **G25** — Secret `value` field logged unredacted in request bodies | High | Open | Avoid debug body logging on `/api/v1/secrets/*` in production. |
-| **G30** — External DNS resolvers reachable (DNS exfil) | Medium | Open | See [Networking](networking.md#dns-exfiltration). |
-| **G35** — `RecoverAccount` endpoint has no rate limiting | High | Open | Network-level rate limit the endpoint if exposed. |
+| **G30** — External DNS resolvers reachable (DNS exfil) | Medium | Accepted | See [Networking](networking.md#dns-exfiltration). Standard `NetworkPolicy` cannot restrict DNS by domain; use Cilium FQDN or Calico GlobalNetworkPolicy. |
+| **G40** — Agentd user port (4097) has no application-layer auth | Medium | Accepted | NetworkPolicy is the trust boundary — only API server pods can reach workspace pods on port 4097. |
 | **G43** — IPv6 egress unrestricted | Medium | Open | See [Networking](networking.md#ipv6-caveats). |
-| **G50** — Decrypt operations not audited | Medium | Open | The `AuditedProvider` exists but is not wired into production paths. |
 
 ---
 
@@ -202,7 +200,7 @@ graph LR
 Consequences:
 
 - User secrets are encrypted at rest with per-user DEKs. The platform cannot decrypt them without the user's password.
-- A password change re-wraps the DEK but does **not** invalidate sessions by default (gap G38 — sessions survive password change; this is open).
+- A password change re-wraps the DEK and **revokes all outstanding sessions** (G38 fixed — every JWT, including the caller's, is invalidated via `RevokeAllUserSessions`).
 - Auto-provisioned SSO users have a random unusable bcrypt hash, so they have no password to derive a DEK from. Personal credential operations stay unavailable until they set a password; org workspaces still work via server-side injection.
 
 ### Workspace credentials
@@ -322,12 +320,12 @@ Kyverno admission policy templates are deferred to V2.1 per EVOLUTION-V2.md §9.
 
 LLMSafeSpaces is **v0.3.x**. Not everything is perfect. The most operationally relevant limitations:
 
-1. **No mTLS on the pod network (G4).** API↔workspace traffic is plain HTTP. Use a service mesh if this is in your threat model.
+1. **No mTLS on the pod network (G4 accepted).** API↔workspace traffic is plain HTTP. Use a service mesh if this is in your threat model.
 2. **KEK lives in API process memory.** A process-level attacker calls `Decrypt` exactly as the application does. KMS limits exfiltration + adds audit; it does not prevent in-process abuse.
-3. **Decrypt operations are not audited (G50).** The `AuditedProvider` exists but is not wired into production decrypt paths. Exfiltration via legitimate API decrypt calls is currently undetectable.
+3. **Account lockout DoS (G13).** Lockout is keyed on email — an attacker who knows a victim's email can lock them out by submitting bad passwords from any IP.
 4. **No in-process JWT rotation (A8).** Rotating the JWT secret invalidates all sessions and requires a restart.
 5. **IPv6 egress unrestricted (G43).** Assume IPv4-only workspace networking.
-6. **DNS exfiltration not blocked (G30).** See [Networking](networking.md#dns-exfiltration).
+6. **DNS exfiltration not blocked (G30 accepted).** See [Networking](networking.md#dns-exfiltration).
 7. **opencode binary not checksum-verified (G9).** Pin versions; the upstream does not publish checksums. Release images are cosign-signed so the image as a whole has provenance, but the opencode binary inside is not individually verified.
 
 **Do not deploy this as a public multi-tenant SaaS** without reviewing the [Threat Model](../architecture/threat-model.md) and the remaining open gaps. It is suitable for homelab and small-team deployments with the threat model understood.

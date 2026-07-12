@@ -12,7 +12,7 @@ flowchart TD
     EXT -- "TLS / JWT / API key" --> B1
     B1["BOUNDARY 1: Ingress → API<br/>AuthN · rate limit · input validation<br/>CORS · security headers"]
     B1 -- "internal HTTP / K8s API" --> B2
-    B2["BOUNDARY 2: API → cluster<br/>RBAC (namespace-scoped default)<br/>CRD ops · Secret mgmt<br/>proxy to pods (plain HTTP — G4)"]
+    B2["BOUNDARY 2: API → cluster<br/>RBAC (namespace-scoped default)<br/>CRD ops · Secret mgmt<br/>proxy to pods (plain HTTP — G4 accepted)"]
     B2 -- "pod network / K8s API" --> B3
     B3["BOUNDARY 3: Controller → pods<br/>hardened security context<br/>init-container credential injection<br/>default-deny NetworkPolicy"]
     B3 -- "filesystem / network" --> B4
@@ -39,7 +39,7 @@ flowchart TD
 | Malicious user | Authenticated, owns workspaces | Escape sandbox, access other tenants, steal credentials |
 | Compromised agent | Code execution inside pod | Exfiltrate data, pivot to cluster, mine crypto |
 | Malicious LLM output | Prompt injection via tool responses | Manipulate agent to exfiltrate/escalate |
-| Network attacker | MITM on pod-to-pod traffic (G4: plain HTTP) | Credential interception |
+| Network attacker | MITM on pod-to-pod traffic (G4: plain HTTP, accepted) | Credential interception |
 | Compromised API server | Full API memory + DB access | Access active session DEKs, impersonate users |
 | Compromised controller | K8s SA with Secret/Pod CRUD (namespace-scoped) | Read credentials, create pods |
 | Cluster admin (insider) | kubectl access | Read Secrets, exec into pods |
@@ -49,56 +49,69 @@ flowchart TD
 
 | Component | Spoofing | Tampering | Repudiation | Info Disclosure | DoS | Elevation |
 |---|---|---|---|---|---|---|
-| **API Auth** | JWT forgery (mitigated: HMAC-only); API key theft | Token replay (mitigated: dual-key revocation) | No audit of failed auth | Secret values logged unredacted (**G25**) | Account lockout abuse (**G13**); no rate limit on recovery (**G35**) | Sessions survive password change (**G38**) |
-| **Proxy** | Workspace ID spoofing — **fixed** (G33) | Response tampering (plain HTTP — G4); header injection — **fixed** (G34) | No per-request audit | Headers to sandbox — **fixed** (G34 allowlist) | Connection exhaustion (mitigated: limits) | Cross-tenant access — **fixed** (G33) |
-| **Controller** | SA token theft (mitigated: bound tokens) | CRD manipulation (mitigated: webhooks) | Actions not individually audited | Namespace-scoped default; secrets persist after deletion (**G36**) | CRD spam (mitigated: quotas) | Namespace-scoped SA |
-| **Sandbox Pod** | N/A | PVC data corruption | No file-level audit | Credential in env (**G3** accepted); env var injection (**G37**); agentd user port unauthenticated (**G40**) | Resource exhaustion (mitigated) | Container escape (mitigated: seccomp, caps; G1 accepted) |
-| **Database** | SQL injection (mitigated: pgx parameterized) | Data corruption (mitigated: tx) | No query audit | Wrapped DEK exposure (mitigated: AES-256-GCM); `key_version` for rotation; authorized-decrypt exfil undetectable (**G50**) | Connection exhaustion | N/A |
+| **API Auth** | JWT forgery (mitigated: HMAC-only); API key theft | Token replay (mitigated: dual-key revocation) | No audit of failed auth | Secret values logged — **fixed** (G25, two-layer mask + skip) | Account lockout abuse (**G13**); recovery rate limit — **fixed** (G35) | Sessions survive password change — **fixed** (G38 revokes all sessions) |
+| **Proxy** | Workspace ID spoofing — **fixed** (G33) | Response tampering (plain HTTP — G4 accepted); header injection — **fixed** (G34) | No per-request audit | Headers to sandbox — **fixed** (G34 allowlist) | Connection exhaustion (mitigated: limits) | Cross-tenant access — **fixed** (G33) |
+| **Controller** | SA token theft (mitigated: bound tokens) | CRD manipulation (mitigated: webhooks) | Actions not individually audited | Secrets persist after deletion — **fixed** (G36 cleanup) | CRD spam (mitigated: quotas) | Namespace-scoped SA |
+| **Sandbox Pod** | N/A | PVC data corruption | No file-level audit | Credential in env (**G3** accepted); env var injection — **fixed** (G37 blocklist); agentd user port unauthenticated (**G40** accepted) | Resource exhaustion (mitigated) | Container escape (mitigated: seccomp, caps; G1 accepted) |
+| **Database** | SQL injection (mitigated: pgx parameterized) | Data corruption (mitigated: tx) | No query audit | Wrapped DEK exposure (mitigated: AES-256-GCM); `key_version` for rotation; authorized-decrypt exfil — **fixed** (G50 AuditedProvider wired) | Connection exhaustion | N/A |
 | **Redis** | Auth bypass (mitigated: auto-gen password + NP) | Cache poisoning | No op audit | DEK in memory (**G10** accepted) | Memory exhaustion; SSE tracking leak (**G42**) | N/A |
 | **Frontend** | Session theft via XSS (mitigated: rehype-sanitize — needs fuzzing) | DOM tampering (mitigated: React auto-escape) | No client audit | JWT in HttpOnly Secure cookie | UI freeze via huge messages | N/A |
-| **Workspace Network** | Cross-tenant traffic (mitigated: NP) | N/A | NP events not audited | DNS exfil via external resolvers (**G30**); IPv6 unrestricted (**G43**) | N/A | N/A |
+| **Workspace Network** | Cross-tenant traffic (mitigated: NP) | N/A | NP events not audited | DNS exfil via external resolvers (**G30** accepted); IPv6 unrestricted (**G43**) | N/A | N/A |
 
 ## The gap register (G1–G50)
 
-**Status:** 21 Fixed · 22 Open · 7 Accepted (50 total).
+**Status:** 29 Fixed · 10 Open · 11 Accepted (50 total). See the authoritative [`THREAT-MODEL.md`](https://github.com/lenaxia/LLMSafeSpaces/blob/main/design/stories/epic-17-security-review/THREAT-MODEL.md) for the full per-gap evidence and regression-test references; the summaries below hit the high points.
 
-### Critical recent closures
+### Critical and High-severity closures (recent)
 
-Four high-impact gaps closed in the v0.3.0 network hardening sweep:
+The 2026-07-11 security sweep closed every High-severity gap that had a code-side fix:
 
 | # | Gap | Severity | Fix |
 |---|---|---|---|
-| **G33** | Proxy routes had no workspace ownership check (IDOR) — any authenticated user could proxy to any workspace ID | Critical | `WorkspaceAccessMiddleware` wired on the `idGroup` route group, which all proxy routes inherit. Resolves workspace, checks `WorkspaceOwner{UserID, OrgID}`, rejects 403 on mismatch. Regression: `router_workspace_access_test.go`. |
-| **G34** | Proxy forwarded all client headers (Cookie, Origin, Referer, X-Forwarded-*, custom) to the sandbox pod | Critical | `copyRequestHeaders` explicit allowlist (`Content-Type`, `Accept`, `X-Request-ID`); hop-by-hop headers stripped both directions; `Accept-Encoding` deliberately not forwarded. Regression: `TestProxy_G34_*`. (PR #513) |
-| **G39** | Terminal WebSocket accepted any Origin (`CheckOrigin: return true`) — cross-site WebSocket hijacking | Medium | `newCheckOriginChecker`: same-origin default + operator allowlist via `terminal.allowedOrigins`. Dead `WebSocketSecurityMiddleware` removed; gorilla `Upgrader` is the single enforcement point. (PR #515) |
+| **G33** | Proxy routes had no workspace ownership check (IDOR) | Critical | `WorkspaceAccessMiddleware` wired on the `idGroup`; resolves workspace, checks `WorkspaceOwner`, rejects 403 on mismatch. |
+| **G34** | Proxy forwarded all client headers (Cookie, Origin, Referer, X-Forwarded-*, custom) to the sandbox pod | Critical | `copyRequestHeaders` explicit allowlist (`Content-Type`, `Accept`, `X-Request-ID`); hop-by-hop stripped both directions. (PR #513) |
+| **G38** | `ChangePassword` did not invalidate existing sessions | High | Handler now calls `auth.Service.RevokeAllUserSessions` after DEK re-wrap + bcrypt commit. Best-effort; mirrors password-reset. (PR #536) |
+| **G37** | Workspace env-var names not validated — `LD_PRELOAD`, `PATH`, `PYTHONPATH`, etc. accepted | High | New `pkg/validation.ValidateEnvVarName`: POSIX shape + length + curated blocklist of ~30 dangerous names (ld.so, bash, Python, Node, Ruby, Perl, Java, glibc docs). API and agentd both enforce. (PR #537) |
+| **G35** | `/account/recover` had no per-endpoint rate limit (CPU-exhaustion DoS target) | High | New `PerRouteRateLimitMiddleware` with per-route bucket isolation. Per-window rate conversion (`Limit / Window.Seconds()`). (PR #538) |
+| **G25** | Secret `value` field logged unredacted in API request bodies | High | Two-layer fix: added `"value"` to `SensitiveFields`; added `SkipPathPrefixes` to `LoggingConfig` for credential-bearing paths. (PR #539) |
+| **G36** | Workspace secrets not cleaned on deletion (`workspace-creds-*` persisted indefinitely) | High | `handleTerminating` now calls `cleanupFailedWorkspaceSecrets`. (PR #540) |
+| **G28** | Workspace bind handler "no-op for first-time delivery" | High | **Reclassified Accepted** — Epic 35 (secretless injection) intentionally defers first-time delivery to pod boot. Bindings are durable in PostgreSQL; bootstrap reads them at boot. (PR #541) |
+| **G48** | Master KEK delivered as env var (exposed via `/proc/1/environ`) | High | US-50.1: default delivery is a read-only file mount at `/var/run/secrets/llmsafespaces/master-secret` (mode 0440). Env path is deprecated opt-in. |
 | **G49** | No operational KEK rotation — rotating the master KEK orphaned every Postgres ciphertext | High | Foundation shipped (multi-key `StaticKeyProvider`, `key_version` columns, rotation-aware write path) + the `rotate-kek` CLI at `cmd/rotate-kek/main.go`. |
 
-Plus the earlier master-KEK hardening:
+### Medium-severity closures (recent)
 
-| # | Gap | Severity | Fix |
-|---|---|---|---|
-| **G48** | Master KEK delivered as env var (exposed via `/proc/1/environ`) | High | US-50.1: default delivery is a read-only file mount at `/var/run/secrets/llmsafespaces/master-secret` (mode 0440). Env path is deprecated opt-in. |
+| # | Gap | Fix |
+|---|---|---|
+| **G39** | Terminal WebSocket accepted any Origin | `newCheckOriginChecker`: same-origin default + operator allowlist. (PR #515) |
+| **G29** | Path-traversal `mount_path` accepted by API | `validateMountPath` at `secret_service.go:582` rejects; called from CreateSecret. (Already fixed — threat model corrected) |
+| **G50** | Decrypt operations not audited | `AuditedProvider` wired at `app.go:408,409,624`. (Already fixed — threat model corrected) |
 
-### Still open — highest severity
+### Low-severity closures (recent)
+
+| # | Gap | Fix |
+|---|---|---|
+| **G45** | Legacy `source /sandbox-cfg/env` in entrypoint | US-35.7 moved source path. (Already fixed — threat model corrected) |
+
+### Still open
 
 These are the gaps to prioritize if you're hardening a deployment:
 
 | # | Gap | Severity | Detail |
 |---|---|---|---|
-| **G35** | `RecoverAccount` endpoint has no rate limiting | High | `router.go:264` — outside the auth rate limiter; requires only userID + recovery key. Move behind auth rate limiter. |
-| **G36** | Workspace secrets not cleaned on deletion | High | `phase_terminating.go` only deletes `workspace-pw-*`; `workspace-secrets-*` and `workspace-creds-*` persist indefinitely. Call `deleteEphemeralSecretsSecret` from `handleTerminating`. |
-| **G37** | No validation on workspace env var names | High | `secrets.go:573` accepts `LD_PRELOAD`, `PATH`, `PYTHONPATH`, etc. as env var names. Add blocklist. |
-| **G38** | `ChangePassword` does not invalidate existing sessions | High | `secrets.go:782-817` updates bcrypt and re-wraps DEK but never calls `RevokeToken`; existing JWTs remain valid. Revoke all active sessions on password change. |
-| **G25** | Secret value field logged unredacted | High | `logging.go:48` — `SensitiveFields` doesn't include `"value"`. Add it, route JSON through `pkg/redact.Redact()`, or disable body logging for `/api/v1/secrets/*`. |
-| **G50** | Decrypt operations are not audited | Medium | `NewAuditedProvider` exists but has zero production call sites. Wiring awaits US-50.2 (unify crypto layers — `AdminKeyDeriver` removal). Currently `secret_audit_log` records only CRUD, not decrypts. |
-| **G4** | No mTLS between API and sandbox pods | Medium | Plain HTTP `http://{pod_ip}:4096`. Implement mTLS via per-workspace cert or service mesh. |
-| **G9** | opencode/gh binaries downloaded without checksum verification | Medium | Dockerfile uses `curl --fail` over TLS only; no checksum or Sigstore. opencode upstream doesn't publish checksums; gh does (`.sha256`) — should verify. Release images are cosign-signed so image-level provenance is verifiable; individual binary verification is the remaining gap. |
+| **G6 / G41** (duplicate) | `/secrets/:id/reveal` no per-endpoint rate limit | Medium | Endpoint accepts user password to re-authenticate before decrypting. Global 100/min/IP only; per-endpoint limit (e.g. 5/min) would close brute-force window. |
+| **G21** | `/sandbox-cfg/password` mode 0644 | Medium | Init-container `cp` preserves source Secret `defaultMode: 420` (0644); should use `install -m 0600`. |
+| **G42** | SSE connection tracking unbounded memory growth | Medium | `sseConnCounts` map keyed on IP never pruned; grows monotonically. |
 | **G13** | Account lockout keyed on email only | Medium | `lockoutKey := lockout:%s` keyed on email — attacker who knows victim email can lock them out from any IP. Add IP component or progressive delays + CAPTCHA. |
-| **G30** | Egress NetPol allows external DNS resolvers (e.g. 8.8.8.8:53) | Medium | DNS-to-kube-dns and `0.0.0.0/0 except RFC1918` rules are OR-ed; enables DNS exfil/tunneling. Use Cilium FQDN policies or Calico GlobalNetworkPolicy. |
+| **G9** | opencode/gh binaries downloaded without checksum verification | Medium | Dockerfile uses `curl --fail` over TLS only; no checksum or Sigstore. opencode upstream doesn't publish checksums; gh does (`.sha256`) — should verify. Release images are cosign-signed so image-level provenance is verifiable; individual binary verification is the remaining gap. |
+| **G43** | IPv6 egress not covered by workspace NetworkPolicy | Medium | CIDR allowlist is IPv4-only; IPv6 `::/0` unrestricted. Add IPv6 rules or document IPv4-only assumption. |
+| **G44** | Workspace pod-level SecurityContext missing RunAsNonRoot | Low | Container-level has it but pod-level doesn't; a future sidecar without its own SecurityContext could run as root. |
+| **G46** | Password file read failure is silent | Low | `readAgentPassword` returns empty string on file-read error; workspace starts silently non-functional. Should Error + exit non-zero. |
+| **G47** | Inference relay secret exposed as CLI arg | Low | Helm chart fallback `--inference-relay-secret={{ .Values.inferenceRelaySecret }}` renders the secret into the pod spec. |
 
 ### Full open gap list
 
-G4, G6, G9, G13, G21, G25, G28, G29, G30, G35, G36, G37, G38, G40, G41, G42, G43, G44, G45, G46, G47, G50.
+G6, G9, G13, G21, G41, G42, G43, G44, G46, G47. (Ten gaps — all Medium or Low. No High or Critical open.)
 
 ### Accepted risks
 
@@ -108,11 +121,15 @@ These are documented with rationale and compensating controls:
 |---|---|---|
 | **G1** | No `noexec` on emptyDir mounts | K8s doesn't support `noexec` on emptyDir natively. Mitigated by RuntimeDefault seccomp + Drop ALL caps + NoNewPrivs + tmpfs. |
 | **G3** | env-secret readable via `/proc/self/environ` | Accepted; prefer `secret-file` type; documented for operators. |
+| **G4** | No mTLS between API and sandbox pods | Requires service mesh (Linkerd/Istio) or per-workspace cert infrastructure. Compensating controls: NetworkPolicy default-deny, RFC1918/CGNAT egress filter, explicit header allowlist (G34), per-request basic-auth. Operator runbook: deploy Linkerd/Istio in `inject` mode. |
 | **G7** | SSE streams bypass injection-detection blocking | SSE is unidirectional; block action applies to non-streaming JSON responses only. |
 | **G10** | Redis session cache not encrypted at rest | Operator responsibility: disable RDB/AOF persistence or enable disk encryption. |
 | **G14** | No egress request body inspection | Accepted residual risk; minimize `allowedDomains`; document. |
 | **G23** | `/workspace` PVC mount lacks `nosuid` | Operator responsibility via StorageClass mountOptions. Mitigated by runAsNonRoot + NoNewPrivs + cap-drop ALL. |
+| **G28** | Workspace bind handler defers first-time delivery to pod boot | Architecture (Epic 35 secretless injection): bindings persist to PostgreSQL; bootstrap reads them at pod boot. Live HTTP push is best-effort. |
+| **G30** | Egress NetPol allows external DNS resolvers | Standard `NetworkPolicy` cannot restrict DNS by domain. Requires Cilium FQDN policies or Calico `GlobalNetworkPolicy`. |
 | **G32** | No per-user workspace quota | Intentional for single-tenant. Multi-tenant SaaS should add `MAX_WORKSPACES_PER_USER`. |
+| **G40** | Agentd user port (4097) has no application-layer auth | NetworkPolicy is the documented trust boundary — only API server pods can reach workspace pods on port 4097. Application-layer auth would be defense-in-depth that existing controls make redundant for documented deployment topologies. |
 
 ## What the platform protects against
 
@@ -120,22 +137,26 @@ These are documented with rationale and compensating controls:
 - **Credential theft from the database** — encryption at rest; user secrets need the password, platform secrets need the master KEK.
 - **Credential theft from PVC at rest** — tmpfs + symlinks; PVC retains only dangling symlinks, no plaintext bytes.
 - **Master KEK exposure via `/proc/1/environ`** — file mount default (G48 fixed).
-- **Container escape to the node** — Drop ALL caps, NoNewPrivs, RuntimeDefault seccomp, read-only root; optional gVisor for kernel-level isolation.
+- **Container escape to the node** — Drop ALL caps, NoNewPrivs, RuntimeDefault seccomp, read-only root; optional gVisor for kernel-level isolation. (Pod-level `RunAsNonRoot` is G44 — still open; container-level is set today.)
 - **Cross-tenant network access** — default-deny ingress NetworkPolicy; RFC1918/CGNAT/cloud-metadata-filtered egress.
 - **SA token abuse from within a pod** — `AutomountServiceAccountToken: false`.
 - **Header injection to the sandbox pod** — explicit proxy allowlist (G34 fixed).
 - **Cross-site WebSocket hijacking** — same-origin terminal upgrade check (G39 fixed).
 - **Forged JWTs** — HMAC-only signing enforced (alg-confusion check); `iss`/`aud` claims minted and validated.
-- **JWT replay after revocation** — dual-key revocation (`token:<jti>` + `token:<hash>`).
+- **JWT replay after revocation** — dual-key revocation (`token:<jti>` + `token:<hash>`); password change revokes all sessions (G38 fixed).
 - **Default DB/Redis passwords** — auto-generated 32-char random on install (G26 fixed).
+- **Plaintext credential in API logs** — SensitiveFields mask + SkipPathPrefixes (G25 fixed).
+- **Dangerous workspace env-var names** — POSIX + curated blocklist enforced at API and materialize layers (G37 fixed).
+- **Recovery-endpoint CPU-exhaustion** — per-route rate limit at 20/min + burst 5 (G35 fixed).
+- **Workspace secrets outliving deletion** — handleTerminating cleans up all ephemeral secrets (G36 fixed).
 
 ## What it does NOT protect against
 
 - **API-pod RCE → mass credential decrypt** (with local KEK providers) — an attacker running code in the pod calls `Decrypt` exactly as the application does. KMS (Epic 57) limits this to exfiltration-limitation + audit, not prevention.
-- **DNS exfiltration/tunneling** (G30) — external DNS resolvers are reachable on port 53.
+- **MITM on pod-to-pod traffic** (G4 accepted) — proxy uses plain HTTP to workspace pods. Deploy a service mesh to close.
+- **DNS exfiltration/tunneling** (G30 accepted) — external DNS resolvers are reachable on port 53. Use Cilium FQDN or Calico GlobalNetworkPolicy.
 - **IPv6 egress** (G43) — the workspace NetworkPolicy CIDR allowlist is IPv4-only.
-- **Egress request-body inspection** (G14) — no code path inspects outbound HTTP bodies; a compromised agent can exfiltrate via allowed egress domains.
-- **Audit of decrypt operations** (G50) — `secret_audit_log` records CRUD only; authorized decrypts are not individually attributable.
+- **Egress request-body inspection** (G14 accepted) — no code path inspects outbound HTTP bodies; a compromised agent can exfiltrate via allowed egress domains.
 - **Compromised opencode binary** (G9) — no checksum/Sigstore verification on download.
 - **A cluster admin / insider** — out of scope. A cluster admin can read Secrets and exec into pods by design.
 - **etcd-at-rest compromise without encryption configured** (A1) — operator MUST configure etcd encryption; no chart guard enforces it.
