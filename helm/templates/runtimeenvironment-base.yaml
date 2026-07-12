@@ -3,6 +3,10 @@ kind: RuntimeEnvironment
 metadata:
   name: base
 spec:
+  {{- if .Values.runtimeEnvironments.base.image.digest }}
+  image: "{{ .Values.runtimeEnvironments.base.image.repository }}@{{ .Values.runtimeEnvironments.base.image.digest }}"
+  {{- else }}
   image: "{{ .Values.runtimeEnvironments.base.image.repository }}:{{ .Values.runtimeEnvironments.base.image.tag | default .Chart.AppVersion }}"
+  {{- end }}
   language: "multi"
   version: "1.0"

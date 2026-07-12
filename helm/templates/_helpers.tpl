@@ -102,10 +102,17 @@ the release namespace if not explicitly set.
 
 {{/*
 Resolve image references — defaults the tag to .Chart.AppVersion if omitted.
+When .Values.<svc>.image.digest is set, the image is pinned to
+repo@digest (immutable content-addressable ref, ignoring tag). Operators
+use this to avoid GHCR tag GC issues (#454, #476).
 */}}
 {{- define "llmsafespaces.api.image" -}}
+{{- if .Values.api.image.digest -}}
+{{- printf "%s@%s" .Values.api.image.repository .Values.api.image.digest -}}
+{{- else -}}
 {{- $tag := default .Chart.AppVersion .Values.api.image.tag -}}
 {{- printf "%s:%s" .Values.api.image.repository $tag -}}
+{{- end -}}
 {{- end }}
 
 {{/*
@@ -122,8 +129,12 @@ component: workspace
 {{- end }}
 
 {{- define "llmsafespaces.controller.image" -}}
+{{- if .Values.controller.image.digest -}}
+{{- printf "%s@%s" .Values.controller.image.repository .Values.controller.image.digest -}}
+{{- else -}}
 {{- $tag := default .Chart.AppVersion .Values.controller.image.tag -}}
 {{- printf "%s:%s" .Values.controller.image.repository $tag -}}
+{{- end -}}
 {{- end }}
 
 {{- define "llmsafespaces.relayRouter.labels" -}}
@@ -137,6 +148,24 @@ app.kubernetes.io/component: relay-router
 {{- end }}
 
 {{- define "llmsafespaces.relayRouter.image" -}}
+{{- if .Values.controller.inferenceRelay.router.image.digest -}}
+{{- printf "%s@%s" .Values.controller.inferenceRelay.router.image.repository .Values.controller.inferenceRelay.router.image.digest -}}
+{{- else -}}
 {{- $tag := default .Chart.AppVersion .Values.controller.inferenceRelay.router.image.tag -}}
 {{- printf "%s:%s" .Values.controller.inferenceRelay.router.image.repository $tag -}}
+{{- end -}}
+{{- end }}
+
+{{/*
+Resolve the frontend image. Same digest-pinning semantics as the other
+image helpers (#476): when .Values.frontend.image.digest is set, produces
+repo@digest (ignoring tag); otherwise repo:tag with AppVersion fallback.
+*/}}
+{{- define "llmsafespaces.frontend.image" -}}
+{{- if .Values.frontend.image.digest -}}
+{{- printf "%s@%s" .Values.frontend.image.repository .Values.frontend.image.digest -}}
+{{- else -}}
+{{- $tag := default .Chart.AppVersion .Values.frontend.image.tag -}}
+{{- printf "%s:%s" .Values.frontend.image.repository $tag -}}
+{{- end -}}
 {{- end }}

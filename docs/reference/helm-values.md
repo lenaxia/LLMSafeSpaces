@@ -31,6 +31,7 @@ The Gin API service. Stateless, horizontally scalable.
 | `api.replicaCount` | int | `2` | Number of API replicas. Stateless — no sticky sessions required. Bump to scale. |
 | `api.image.repository` | string | `ghcr.io/lenaxia/llmsafespaces/api` | API image repository. |
 | `api.image.tag` | string | `""` | Image tag. Falls back to `Chart.AppVersion`. **Pin to immutable `sha-<7char>` or `ts-<unix>` tags in production** — moving tags (`dev`, `latest`) interact poorly with kubelet image caching. |
+| `api.image.digest` | string | `""` | Immutable digest pin (#476). When set, takes precedence over `tag` — image reference becomes `repository@digest`. Avoids GHCR tag-GC issues (#454); makes the ref content-addressable. Format: `sha256:<64 hex>`. |
 | `api.image.pullPolicy` | string | `IfNotPresent` | Standard Kubernetes pull policy. |
 | `api.imagePullSecrets` | list | `[]` | Private registry credentials. |
 | `api.service.type` | string | `ClusterIP` | Service type. |
@@ -121,6 +122,7 @@ The controller-runtime operator. Single leader-elected replica by default.
 | `controller.replicaCount` | int | `1` | Replicas. Leader election means only one is active; extras are standby. |
 | `controller.image.repository` | string | `ghcr.io/lenaxia/llmsafespaces/controller` | |
 | `controller.image.tag` | string | `""` | Same pinning recommendation as `api.image.tag`. |
+| `controller.image.digest` | string | `""` | Same semantics as `api.image.digest` (#476). |
 | `controller.watchNamespaces` | string | `""` | Comma-separated namespaces to watch. `""` or `"*"` = cluster-wide. Combine with namespace-scoped RBAC for defense-in-depth. |
 | `controller.leaderElection.enabled` | bool | `true` | |
 | `controller.apiServiceURL` | string | `""` | In-cluster API URL the controller polls (30s, cached) for org-level suspension (D20). Empty derives from release name + namespace. |
