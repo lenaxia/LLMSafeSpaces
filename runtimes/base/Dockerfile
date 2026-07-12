@@ -161,15 +161,32 @@ RUN set -eux; \
     case "${TARGETARCH}" in \
         amd64) GH_ARCH=amd64 ;; \
         arm64) GH_ARCH=arm64 ;; \
-        *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1 ;; \
+        *) echo "unsupported TARGETARCH=${TARGETARCH}" >&2; exit 1; \
     esac; \
+    GH_TARBALL="gh_${GH_VERSION}_linux_${GH_ARCH}.tar.gz"; \
     curl --fail --show-error --location \
-        "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${GH_ARCH}.tar.gz" \
+        "https://github.com/cli/cli/releases/download/v${GH_VERSION}/${GH_TARBALL}" \
         -o /tmp/gh.tar.gz; \
+# G9: Verify the gh CLI checksum. GitHub publishes a consolidated
+# checksums.txt per release (not per-asset .sha256). We download it,
+# extract the hash for our specific tarball, and compare.
+    curl --fail --show-error --location \
+        "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_checksums.txt" \
+        -o /tmp/gh_checksums.txt; \
+    EXPECTED_HASH="$(grep "  ${GH_TARBALL}$" /tmp/gh_checksums.txt | cut -d' ' -f1)"; \
+    if [ -z "${EXPECTED_HASH}" ]; then \
+        echo "FATAL: gh CLI checksum not found for ${GH_TARBALL} in checksums.txt" >&2; \
+        exit 1; \
+    fi; \
+    ACTUAL_HASH="$(sha256sum /tmp/gh.tar.gz | cut -d' ' -f1)"; \
+    if [ "${EXPECTED_HASH}" != "${ACTUAL_HASH}" ]; then \
+        echo "FATAL: gh CLI checksum mismatch (expected ${EXPECTED_HASH}, got ${ACTUAL_HASH})" >&2; \
+        exit 1; \
+    fi; \
     tar -xzf /tmp/gh.tar.gz -C /tmp/; \
     cp "/tmp/gh_${GH_VERSION}_linux_${GH_ARCH}/bin/gh" /usr/local/bin/gh; \
     chmod +x /usr/local/bin/gh; \
-    rm -rf "/tmp/gh_${GH_VERSION}_linux_${GH_ARCH}" /tmp/gh.tar.gz
+    rm -rf "/tmp/gh_${GH_VERSION}_linux_${GH_ARCH}" /tmp/gh.tar.gz /tmp/gh_checksums.txt
 
 # Install mise (polyglot runtime manager) so sandbox users can install
 # language runtimes (Python, Node.js, Go, etc.) without root access.
