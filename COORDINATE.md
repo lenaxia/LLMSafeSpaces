@@ -38,12 +38,7 @@ Agents waiting to work on files currently held by an active claim. When the bloc
 
 | Completed | Agent | What | Commit |
 |-----------|-------|------|--------|
-| 2026-07-11 | opencode (g28) | G28 — reclassify as Accepted + invariant test (PR [#541](https://github.com/lenaxia/LLMSafeSpaces/pull/541), pending review) | `7518ecf1` |
-| 2026-07-11 | opencode (g36) | G36 — workspace secrets cleanup on deletion (PR [#540](https://github.com/lenaxia/LLMSafeSpaces/pull/540), merged) | `f3043835` |
-| 2026-07-11 | opencode (g25) | G25 — secret value field logging (PR [#539](https://github.com/lenaxia/LLMSafeSpaces/pull/539), merged) | `4370c44b` |
-| 2026-07-11 | opencode (g35) | G35 — /account/recover per-route rate limit (PR [#538](https://github.com/lenaxia/LLMSafeSpaces/pull/538), merged) | `6fddeecd` |
-| 2026-07-11 | opencode (g37) | G37 — workspace env-var name blocklist (PR [#537](https://github.com/lenaxia/LLMSafeSpaces/pull/537), merged) | `be063b9c` |
-| 2026-07-11 | opencode (g38) | G38 — ChangePassword revokes all sessions (PR [#536](https://github.com/lenaxia/LLMSafeSpaces/pull/536), merged) | `5968d8dc` |
+| 2026-07-11 | opencode (g-audit) | Threat model audit — reclassify 6 stale/operator-side gaps (PR [#542](https://github.com/lenaxia/LLMSafeSpaces/pull/542), pending review) | `f80b3bd4` |
 
 > Entries older than ~2 weeks are pruned — see `worklogs/` for the historical record.
 
