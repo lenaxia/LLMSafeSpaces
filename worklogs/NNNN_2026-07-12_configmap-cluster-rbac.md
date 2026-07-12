@@ -8,7 +8,7 @@
 
 ## Objective
 
-Add the `configmaps` grant to the ClusterRole when `freeModelsRefresher.enabled=true`, not just when `inferenceRelay.enabled=true`.
+Add the `configmaps` grant to the ClusterRole when `freeModelsRefresher.enabled=true`, scoped to read-only verbs. Writes go through the namespace-scoped Role.
 
 ---
 
@@ -16,43 +16,39 @@ Add the `configmaps` grant to the ClusterRole when `freeModelsRefresher.enabled=
 
 ### `helm/templates/rbac.yaml`
 
-Changed the ClusterRole's configmaps condition from:
-```
-{{- if .Values.controller.inferenceRelay.enabled }}
-```
-to:
-```
-{{- if or .Values.controller.inferenceRelay.enabled .Values.controller.freeModelsRefresher.enabled }}
-```
+Changed the ClusterRole's configmaps block to mirror the namespace-scoped Role's `if/else if` pattern:
 
-One-line change. The verb set (CRUD) is the same in both cases because the free-models refresher also needs create/update/patch to sync its ConfigMap.
+- `inferenceRelay.enabled=true`: full CRUD including delete (the reconciler destroys + reprovisions relay VMs).
+- `freeModelsRefresher.enabled=true` (else if): **read-only** — `get/list/watch` only. The manager's DelegatingClient reads from the cache (needs list/watch at cluster scope for the informer) and writes to the live API (needs create/update at namespace scope, already granted by the Role). Granting cluster-scope CRUD would allow the controller SA to modify ANY ConfigMap in ANY namespace, re-introducing the CoreDNS-hijack surface Epic 17 removed.
 
 ### `helm/chart_test.go`
 
 Two new tests:
-- `TestClusterRole_ConfigMapsGrantedWhenFreeModelsEnabled` — positive: configmaps present in ClusterRole when freeModelsRefresher.enabled=true + rbac.scope=cluster, even when inferenceRelay.enabled=false.
-- `TestClusterRole_ConfigMapsAbsentWhenBothDisabled` — negative: configmaps absent when both are disabled. Prevents accidental over-granting.
+- `TestClusterRole_ConfigMapsGrantedWhenFreeModelsEnabled` — asserts configmaps are present in the ClusterRole with exactly `{get, list, watch}` (read-only). Uses `assert.ElementsMatch` for the exact verb set.
+- `TestClusterRole_ConfigMapsAbsentWhenBothDisabled` — negative: configmaps absent when both refresher and relay are disabled.
 
 ---
 
 ## Key Decisions
 
-1. **Expand the OR condition, not add a separate block.** The inferenceRelay and freeModelsRefresher both need the same verbs on configmaps. A single `if or` block is simpler than two separate blocks with identical content.
+1. **Read-only at cluster scope.** The ClusterRole's purpose is to allow the informer cache to list/watch ConfigMaps cluster-wide. The cache only READS. Writes go through the DelegatingClient's writer, which uses the live API — and for namespace-scoped resources, the writer checks the Role (namespace-scoped). Granting `create/update/patch` at cluster scope is unnecessary and would allow modifying any ConfigMap in any namespace.
 
-2. **CRUD verbs, not just read-only.** The free-models refresher calls `SyncConfigMap` which does Get + Create-or-Update. The leader-election Role already grants CRUD for the narrower case; the ClusterRole needs CRUD too because the manager's cached client creates an informer (needs list/watch) and the SyncConfigMap path writes (needs create/update/patch).
+2. **Mirror the namespace Role's `if/else if`, not a single `if or`.** The inferenceRelay path needs full CRUD (including delete for VM reprovisioning); the free-models refresher path needs read-only only. A single `if or` would grant the broader verb set in both cases — wrong for least privilege.
+
+3. **Existing `TestF131` satisfied without modification.** TestF131 already checks all controller Roles AND ClusterRoles for the absence of `delete` on configmaps when `freeModelsRefresher` is the only enabled feature. The read-only verb set (`get/list/watch`) naturally satisfies this.
 
 ---
 
 ## Tests Run
 
 ```
-go test -timeout 50s -race -count=1 -run "TestClusterRole_ConfigMaps" -v ./helm/...
-  2/2 PASS
+go test -timeout 50s -race -count=1 -run "TestClusterRole_ConfigMaps|TestF131" -v ./helm/...
+  4/4 PASS (2 new + TestF131's 2 subtests)
 ```
 
 ---
 
 ## Files Modified
 
-- `helm/templates/rbac.yaml` — expanded configmaps ClusterRole condition to include freeModelsRefresher.enabled.
+- `helm/templates/rbac.yaml` — expanded configmaps ClusterRole condition with if/else if pattern; read-only verbs for free-models refresher.
 - `helm/chart_test.go` — 2 new tests + findClusterRoleByNameSubstr helper.
