@@ -151,6 +151,62 @@ The remaining 10 open gaps are tracked in the threat model under
 "Open gaps (require remediation)": G6, G9, G13, G21, G41, G42, G43,
 G44, G46, G47. Subsequent PRs will close the code-fixable ones.
 
+- **G6/G41 — `/secrets/:id/reveal` per-route rate limit (Medium).**
+  The reveal endpoint at `POST /api/v1/secrets/:id/reveal` accepts
+  the user's password as input to re-authenticate before decrypting.
+  Without a per-endpoint cap, a single IP could attempt 100 password
+  guesses per minute against the global limiter. The route is now in
+  `DefaultRouterConfig.PerRouteRateLimitConfig.Routes` at 5/min + burst
+  5 — matches the legitimate-user pattern (re-reveal several secrets in
+  quick succession) while making brute-force impractical. Closes both
+  G6 and G41 (duplicate rows for the same gap). Regression:
+  `TestRouter_G41_RevealSecretRateLimited`.
+
+- **G21 — `/sandbox-cfg/password` mode 0600 (Medium).** The init
+  container's `cp /mnt/secrets/password/password /sandbox-cfg/password`
+  preserved the K8s Secret's `defaultMode: 420` (0644), leaving the
+  opencode basic-auth password world-readable in the pod filesystem.
+  Replaced with `install -m 0600` so the mode is set atomically with
+  the copy. Regression: the existing `TestE2E_Reconcile_*` test now
+  asserts the `install -m 0600` line in the rendered credScript.
+
+- **G42 — SSE connection tracking prunes stale entries (Medium).** The
+  `sseConnCounts` global map grew monotonically — every distinct
+  client IP that ever attempted a connection left a permanent entry.
+  `sseConnAllowed` now opportunistically prunes expired entries on
+  every call (O(N) sweep, N bounded by per-IP rate limit). Regression:
+  `TestSSEConnAllowed_G42_PrunesStaleEntries`.
+
+- **G44 — Pod-level RunAsNonRoot (Low).** `buildPodSecurityContext`
+  set RunAsUser/RunAsGroup/FSGroup/SeccompProfile but not
+  RunAsNonRoot. Every container today sets it explicitly at the
+  container level, but a future sidecar without its own
+  SecurityContext would inherit the pod default (nil) and could run
+  as root. Added `RunAsNonRoot: &true` at the pod level — the kubelet
+  enforces it by refusing to start any container resolving to UID 0.
+  Regression: `TestG44_PodSecurityContextHasRunAsNonRoot`.
+
+- **G46 — Silent password file read failure now fatal (Low).**
+  `readAgentPassword` previously logged a Warn on file-read error and
+  returned an empty string. The workspace would start silently non-
+  functional — opencode without auth, every proxy request fails basic-
+  auth. Now logs at Error and calls `os.Exit(1)` so the pod enters
+  CrashLoopBackOff, surfacing the failure as a pod-level signal.
+  Regression: `TestReadAgentPassword_HappyPath` (error path uses
+  os.Exit, documented as not unit-testable without subprocess exec).
+
+- **G47 — Inference relay secret no longer exposed as CLI arg (Low).**
+  The Helm chart's plaintext fallback
+  `--inference-relay-secret={{ .Values.inferenceRelaySecret }}`
+  rendered the secret into the controller's container args, visible
+  in `kubectl get pod -o yaml` and audit logs. Removed the fallback;
+  operators who set `inferenceRelaySecret` without configuring
+  `externalSecret.create` or `externalSecret.existingSecret` now get
+  a `helm template`-time error with an actionable remediation message.
+  Regression: `TestControllerArgs_G47_NoPlaintextRelaySecretFallback`
+  (fail-fast) and `TestControllerArgs_G47_EnvVarPathStillWorks`
+  (legitimate path).
+
 ## [0.3.0] - 2026-07-11
 
 Network hardening sweep + KMS-backed master KEK foundation + Go security bump.

@@ -726,3 +726,57 @@ func TestStreamUserEvents_DeliversSessionStatusEvent(t *testing.T) {
 	}
 	assert.True(t, found, "user-scoped SSE must deliver session.status event with correct fields")
 }
+
+// TestSSEConnAllowed_G42_PrunesStaleEntries is the G42 regression: the
+// sseConnCounts map must be pruned of expired entries on each call.
+// Without pruning, every distinct client IP that ever attempted a
+// connection leaves a permanent entry — unbounded memory growth over
+// the process lifetime for deployments with rotating client IPs (NAT
+// pools, mobile networks).
+//
+// Pre-fix: sseConnCounts map grew monotonically. A deployment running
+// for weeks with thousands of distinct client IPs would accumulate
+// tens of thousands of stale entries, each ~40 bytes (string key +
+// sseConnAttempt struct) — small per entry, unbounded in aggregate.
+//
+// Post-fix: every sseConnAllowed call sweeps expired entries. The
+// sweep is O(N) where N is the current entry count; acceptable
+// because N is bounded by the per-IP rate limit (long-lived entries
+// are pruned the moment they expire).
+func TestSSEConnAllowed_G42_PrunesStaleEntries(t *testing.T) {
+	// Reset state.
+	sseConnMu.Lock()
+	for k := range sseConnCounts {
+		delete(sseConnCounts, k)
+	}
+	sseConnMu.Unlock()
+
+	// Seed 10 entries with resetAt in the past (expired).
+	sseConnMu.Lock()
+	for i := 0; i < 10; i++ {
+		ip := fmt.Sprintf("10.0.0.%d", i)
+		sseConnCounts[ip] = &sseConnAttempt{
+			count:   1,
+			resetAt: time.Now().Add(-time.Minute), // expired
+		}
+	}
+	require.Equal(t, 10, len(sseConnCounts), "seed: 10 expired entries")
+	sseConnMu.Unlock()
+
+	// Call sseConnAllowed with a fresh IP — triggers the prune.
+	assert.True(t, sseConnAllowed("10.0.0.99"), "fresh IP should be allowed")
+
+	// All 10 expired entries must be pruned. Only the fresh IP (10.0.0.99)
+	// should remain.
+	sseConnMu.Lock()
+	pruned := len(sseConnCounts)
+	sseConnMu.Unlock()
+
+	assert.Equal(t, 1, pruned,
+		"G42 REGRESSION: stale entries were not pruned; map still has %d entries (want 1)", pruned)
+
+	// Cleanup.
+	sseConnMu.Lock()
+	delete(sseConnCounts, "10.0.0.99")
+	sseConnMu.Unlock()
+}

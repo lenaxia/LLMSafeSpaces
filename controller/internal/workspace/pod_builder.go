@@ -423,6 +423,7 @@ func multiplyQuantity(q resource.Quantity, factor int64) resource.Quantity {
 func buildPodSecurityContext(workspace *v1.Workspace) *corev1.PodSecurityContext {
 	runAsUser := int64(1000)
 	runAsGroup := int64(1000)
+	runAsNonRoot := true
 	if psc := workspace.Spec.PodSecurityContext; psc != nil {
 		if psc.RunAsUser != 0 {
 			runAsUser = psc.RunAsUser
@@ -435,6 +436,16 @@ func buildPodSecurityContext(workspace *v1.Workspace) *corev1.PodSecurityContext
 		RunAsUser:  &runAsUser,
 		RunAsGroup: &runAsGroup,
 		FSGroup:    &runAsGroup,
+		// G44: pod-level RunAsNonRoot is defense-in-depth. Every
+		// container today sets RunAsNonRoot: &trueVal explicitly (line
+		// 151 for main, lines 595/621/671 for init containers), but a
+		// future sidecar added without its own SecurityContext would
+		// inherit the pod default. Setting it at the pod level ensures
+		// that default is non-root, matching the container-level
+		// guarantee. The kubelet enforces RunAsNonRoot by refusing to
+		// start any container that resolves to UID 0, so this is a
+		// hard fail at admission rather than a runtime surprise.
+		RunAsNonRoot: &runAsNonRoot,
 		// G24 (Epic 17 worklog 0088 RT-3.7): RuntimeDefault seccomp
 		// profile blocks dangerous syscalls (unshare/clone/keyctl/
 		// ptrace/etc.) at the kernel level. Defense-in-depth — cap-
@@ -492,7 +503,13 @@ fi
 
 workspace-agentd bootstrap --workspace-id "$WORKSPACE_ID" --api-url "$LLMSAFESPACE_API_URL"
 workspace-agentd materialize
-cp /mnt/secrets/password/password /sandbox-cfg/password
+# G21: install (not cp) so the password file is created with mode 0600
+# regardless of the source Secret's defaultMode. cp preserves the
+# source mode (0644 by default for K8s Secret projections), leaving
+# the password world-readable in the pod filesystem. install -m 0600
+# sets the mode atomically with the copy, so the file is never briefly
+# world-readable even on slow filesystems.
+install -m 0600 /mnt/secrets/password/password /sandbox-cfg/password
 `
 	pwVolume := corev1.Volume{
 		Name: "pw-secret",

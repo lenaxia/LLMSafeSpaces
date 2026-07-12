@@ -553,8 +553,10 @@ func TestInitContainerScript_NoElseBranch(t *testing.T) {
 		"init script must call workspace-agentd bootstrap (Epic 35 secretless injection)")
 	assert.Contains(t, script, "workspace-agentd materialize",
 		"init script must call workspace-agentd materialize")
-	assert.Contains(t, script, "cp /mnt/secrets/password/password /sandbox-cfg/password",
-		"password should always be copied")
+	// G21: install -m 0600 (not cp) so the password file is mode 0600
+	// regardless of the source Secret's defaultMode.
+	assert.Contains(t, script, "install -m 0600 /mnt/secrets/password/password /sandbox-cfg/password",
+		"password should be installed with mode 0600 (G21: cp preserved source mode 0644)")
 
 	// Verify the credential-setup init container mounts bootstrap-token.
 	var bootstrapMount *corev1.VolumeMount

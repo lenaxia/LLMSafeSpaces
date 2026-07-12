@@ -51,7 +51,6 @@ These are documented limitations, not bugs. See the [Threat Model](../architectu
 | **G30** — External DNS resolvers reachable (DNS exfil) | Medium | Accepted | See [Networking](networking.md#dns-exfiltration). Standard `NetworkPolicy` cannot restrict DNS by domain; use Cilium FQDN or Calico GlobalNetworkPolicy. |
 | **G40** — Agentd user port (4097) has no application-layer auth | Medium | Accepted | NetworkPolicy is the trust boundary — only API server pods can reach workspace pods on port 4097. |
 | **G43** — IPv6 egress unrestricted | Medium | Open | See [Networking](networking.md#ipv6-caveats). |
-
 ---
 
 ## Pod security context

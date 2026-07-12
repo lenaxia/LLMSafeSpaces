@@ -773,3 +773,27 @@ func TestG24_PodHasRuntimeDefaultSeccompProfile(t *testing.T) {
 	require.Equal(t, corev1.SeccompProfileTypeRuntimeDefault, pod.Spec.SecurityContext.SeccompProfile.Type,
 		"SeccompProfile.Type must be RuntimeDefault")
 }
+
+// =============================================================================
+// G44 — Pod-level RunAsNonRoot
+// =============================================================================
+
+// TestG44_PodSecurityContextHasRunAsNonRoot is the G44 regression: the
+// pod-level SecurityContext must set RunAsNonRoot=true. Pre-fix only
+// container-level SecurityContext set it; a future sidecar added
+// without its own SecurityContext would inherit the pod default (nil)
+// and could run as root. The kubelet enforces RunAsNonRoot by refusing
+// to start any container that resolves to UID 0, so pod-level setting
+// makes the guarantee structural rather than per-container.
+func TestG44_PodSecurityContextHasRunAsNonRoot(t *testing.T) {
+	ws := newWorkspaceForSecurity(t)
+	r := reconcilerFor(t)
+	pod, err := r.buildPod(context.Background(), ws)
+	require.NoError(t, err)
+	require.NotNil(t, pod.Spec.SecurityContext,
+		"PodSecurityContext must be set (G24/G44)")
+	require.NotNil(t, pod.Spec.SecurityContext.RunAsNonRoot,
+		"G44: PodSecurityContext.RunAsNonRoot must be set (was nil pre-fix)")
+	require.True(t, *pod.Spec.SecurityContext.RunAsNonRoot,
+		"G44: PodSecurityContext.RunAsNonRoot must be true")
+}
