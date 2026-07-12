@@ -137,7 +137,7 @@ These are documented with rationale and compensating controls:
 - **Credential theft from the database** — encryption at rest; user secrets need the password, platform secrets need the master KEK.
 - **Credential theft from PVC at rest** — tmpfs + symlinks; PVC retains only dangling symlinks, no plaintext bytes.
 - **Master KEK exposure via `/proc/1/environ`** — file mount default (G48 fixed).
-- **Container escape to the node** — Drop ALL caps, NoNewPrivs, RuntimeDefault seccomp, read-only root; pod-level RunAsNonRoot (G44 fixed); optional gVisor for kernel-level isolation.
+- **Container escape to the node** — Drop ALL caps, NoNewPrivs, RuntimeDefault seccomp, read-only root; optional gVisor for kernel-level isolation. (Pod-level `RunAsNonRoot` is G44 — still open; container-level is set today.)
 - **Cross-tenant network access** — default-deny ingress NetworkPolicy; RFC1918/CGNAT/cloud-metadata-filtered egress.
 - **SA token abuse from within a pod** — `AutomountServiceAccountToken: false`.
 - **Header injection to the sandbox pod** — explicit proxy allowlist (G34 fixed).
