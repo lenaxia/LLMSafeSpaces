@@ -75,7 +75,6 @@ go run ./controller
 | `--relay-artifact-sha256-arm64` / `-amd64` | `...artifact.sha256*` | SHA-256 for cloud-init verification. |
 | `--default-runtime-class` | `gvisor.defaultRuntimeClass` (when `gvisor.enabled`) | Default RuntimeClass for workspace pods (typically `gvisor`). |
 | `--api-service-url` | `controller.apiServiceURL` | In-cluster API URL for org-status polling (D20) and pod bootstrap (Epic 35). |
-| `--inference-relay-secret` | `inferenceRelaySecret` | CF Worker path-segment auth secret. |
 
 !!! note "Webhook port not configurable"
     The webhook server port is hardcoded to `9443` (`controller/main.go:174` — `webhook.NewServer(webhook.Options{Port: 9443})`). There is no `--webhook-port` flag. If you need to change it, edit `controller/main.go` and rebuild.

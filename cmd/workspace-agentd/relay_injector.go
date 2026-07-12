@@ -3,7 +3,8 @@
 
 package main
 
-// relay_injector.go implements the two-phase relay config injection for Epic 26.
+// relay_injector.go implements the two-phase relay config injection for the
+// self-hosted InferenceRelay fleet (Epic 42).
 //
 // After opencode boots with its default config (Phase 1), this module:
 //   1. Checks whether the user has a personal opencode API key — if yes, skips
@@ -13,9 +14,9 @@ package main
 //   3. MERGES a new provider block into the existing agent-config.json:
 //        - disabled_providers: ["opencode"] — removes the built-in provider
 //        - provider.opencode-relay — custom OpenAI-compatible provider pointing
-//          at the CF Worker relay with the free model list. Any other providers
-//          already in the file (e.g. openai written by the init container via
-//          the platform credential) are preserved unchanged.
+//          at the relay fleet router with the free model list. Any other
+//          providers already in the file (e.g. openai written by the init
+//          container via the platform credential) are preserved unchanged.
 //   4. Writes the opencode-relay auth entry to auth.json (preserving existing
 //      paid provider entries from llm-provider secrets).
 //   5. Kills the opencode process — the agentd supervisor restarts it and
@@ -46,9 +47,9 @@ import (
 	"go.uber.org/zap"
 )
 
-// relayURLHost returns only the scheme+host of a relay URL so it can be safely
-// logged without exposing the path-segment secret
-// (e.g. "https://relay.safespaces.dev/<secret>" → "https://relay.safespaces.dev").
+// relayURLHost returns only the scheme+host of a relay URL so it can be
+// safely logged without exposing any path-segment token
+// (e.g. "https://relay.example.test/path" → "https://relay.example.test").
 func relayURLHost(rawURL string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil {
@@ -223,8 +224,9 @@ func updateAuthJSONForRelay(authJSONPath string) error {
 
 // relayInjectorConfig holds the parameters for startRelayInjector.
 type relayInjectorConfig struct {
-	// RelayURL is the full CF Worker URL including secret path segment,
-	// e.g. https://relay.safespaces.dev/<secret>. Empty → no-op.
+	// RelayURL is the self-hosted relay fleet URL the controller injected
+	// via INFERENCE_RELAY_BASEURL (typically the in-cluster relay-router
+	// FQDN). Empty → no-op (direct-to-Zen mode).
 	RelayURL string
 	// OpenCodeBaseURL is the http://localhost:PORT base for opencode API calls.
 	OpenCodeBaseURL string

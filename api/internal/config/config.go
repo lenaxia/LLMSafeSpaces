@@ -31,8 +31,10 @@ type Config struct {
 		Host            string        `mapstructure:"host"`
 		Port            int           `mapstructure:"port"`
 		ShutdownTimeout time.Duration `mapstructure:"shutdownTimeout"`
-		// InferenceRelayURL is the CF Worker URL for free-tier inference relay (Epic 26).
-		// When set, ListModels remaps free-tier opencode models to providerID=opencode-relay.
+		// InferenceRelayURL is the self-hosted relay fleet URL (Epic 42)
+		// the controller uses for free-tier inference IP distribution. When
+		// set, ListModels remaps free-tier opencode models to providerID=opencode-relay.
+		// Empty (the chart default) means direct-to-Zen mode and no remap.
 		InferenceRelayURL string `mapstructure:"inferenceRelayURL"`
 	} `mapstructure:"server"`
 

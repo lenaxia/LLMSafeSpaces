@@ -183,7 +183,6 @@ The chart auto-generates three critical credentials on first install when you le
 | JWT signing secret | 32-char random alphanumeric | `externalSecret.jwtSecret` |
 | **Master KEK** | **64-char random** (root of trust for at-rest credential encryption) | `externalSecret.masterSecret` |
 | Internal token | random (controller↔API org-status auth) | `internalToken` |
-| Inference relay secret | 64-hex-char random (CF Worker auth) | `inferenceRelaySecret` |
 
 ### The master KEK
 

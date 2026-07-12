@@ -29,10 +29,6 @@ controller:
     tag: sha-ac861c3
     pullPolicy: Always
 
-# inferenceRelayURL is the Cloudflare Worker base URL for free-tier inference.
-# inferenceRelaySecret is passed at deploy time via --set (not stored here).
-inferenceRelayURL: https://relay.safespaces.dev
-
 # The cluster runs Valkey, not Bitnami Redis. The chart default
 # (`redis-master`) does not resolve in this namespace.
 redis:

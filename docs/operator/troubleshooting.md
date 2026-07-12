@@ -334,7 +334,7 @@ The relay injector goroutine runs once per pod lifetime (~T+7s) and rewrites `ag
 | Cause | How to check |
 |---|---|
 | models.dev unreachable | Controller logs: free-models refresher errors |
-| Relay URL misconfigured | `kubectl get configmap <release>-api-config` → `inferenceRelayURL` |
+| Fleet URL misconfigured | `kubectl get deploy <release>-controller -o yaml` → `--inference-relay-url` arg (only set when `controller.inferenceRelay.enabled=true`) |
 | Workspace egress blocks relay | `kubectl get networkpolicy` → egress rules |
 | Stale window (up to 20s) | Wait — `relayInjected` can lag 5s (model cache) + 15s (providerCache) |
 

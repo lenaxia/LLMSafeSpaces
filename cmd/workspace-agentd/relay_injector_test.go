@@ -162,7 +162,7 @@ func TestStartRelayInjector_SkipsWhenPersonalKey(t *testing.T) {
 	killed := false
 	writer := newAgentConfigWriter(filepath.Join(dir, "agent-config.json"))
 	startRelayInjector(context.Background(), relayInjectorConfig{
-		RelayURL:          "https://relay.safespaces.dev/secret",
+		RelayURL:          "https://relay.example.test/path",
 		AuthJSONPath:      authPath,
 		AgentConfigWriter: writer,
 		HealthCheck:       func() bool { return true },
@@ -199,7 +199,7 @@ func TestStartRelayInjector_WritesConfigAndKills(t *testing.T) {
 	writer := newAgentConfigWriter(cfgPath)
 	killed := make(chan struct{}, 1)
 	startRelayInjector(context.Background(), relayInjectorConfig{
-		RelayURL:          "https://relay.safespaces.dev/mysecret",
+		RelayURL:          "https://relay.example.test/path",
 		OpenCodeBaseURL:   srv.URL,
 		OpenCodePassword:  "testpw",
 		AgentConfigPath:   cfgPath,
@@ -321,7 +321,7 @@ func TestStartRelayInjector_DoesNotSetRelayWhenSkipped(t *testing.T) {
 	writer := newAgentConfigWriter(filepath.Join(dir, "agent-config.json"))
 	killed := false
 	startRelayInjector(context.Background(), relayInjectorConfig{
-		RelayURL:          "https://relay.safespaces.dev/secret",
+		RelayURL:          "https://relay.example.test/path",
 		AuthJSONPath:      authPath,
 		AgentConfigWriter: writer,
 		HealthCheck:       func() bool { return true },
@@ -341,9 +341,9 @@ func TestRelayURLHost(t *testing.T) {
 		rawURL string
 		want   string
 	}{
-		{"https://relay.safespaces.dev/supersecrettoken", "https://relay.safespaces.dev"},
-		{"https://relay.safespaces.dev/a/b/c", "https://relay.safespaces.dev"},
-		{"https://relay.safespaces.dev", "https://relay.safespaces.dev"},
+		{"https://relay.example.test/path", "https://relay.example.test"},
+		{"https://relay.example.test/path", "https://relay.example.test"},
+		{"https://relay.example.test", "https://relay.example.test"},
 		{"http://localhost:8080/secret", "http://localhost:8080"},
 		{"not-a-url", "://"},
 		{"", "://"},

@@ -35,7 +35,6 @@ package chart_test
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -3209,20 +3208,24 @@ func TestControllerArgs_WorkspaceRouterURLOverride(t *testing.T) {
 	t.Fatal("--inference-relay-url must render when fleet is enabled")
 }
 
-// TestControllerArgs_PreservesCFWorkerURLWhenFleetDisabled verifies the
-// default (fleet off) still wires the external CF Worker URL + secret — i.e.
-// the new wiring does not regress the pre-existing Epic 26 path.
-func TestControllerArgs_PreservesCFWorkerURLWhenFleetDisabled(t *testing.T) {
-	vals := "inferenceRelayURL: https://relay.example.dev\n"
-	docs := helmTemplate(t, vals)
+// TestControllerArgs_NoRelayURLByDefault verifies the post-Epic-60 default:
+// with no chart overrides, the controller renders no --inference-relay-url
+// flag at all. The chart's inferenceRelayURL value was removed (the CF Worker
+// relay is gone — Zen blocks CF Worker IPs). Empty = direct-to-Zen mode,
+// where workspace pods call https://opencode.ai/zen/v1 directly with the
+// built-in `public` key. The fleet path (controller.inferenceRelay.enabled)
+// is exercised by TestControllerArgs_RoutesWorkspacesThroughRouterWhenFleetEnabled.
+func TestControllerArgs_NoRelayURLByDefault(t *testing.T) {
+	docs := helmTemplate(t, "")
 	args := findControllerArgs(t, docs)
-	var sawURL bool
 	for _, a := range args {
-		if a == "--inference-relay-url=https://relay.example.dev" {
-			sawURL = true
+		if strings.HasPrefix(a, "--inference-relay-url") {
+			t.Fatalf("--inference-relay-url must NOT render by default (post-Epic-60 direct-to-Zen mode); got %q", a)
+		}
+		if strings.HasPrefix(a, "--inference-relay-secret") {
+			t.Fatalf("--inference-relay-secret must NOT render (flag removed Epic 60); got %q", a)
 		}
 	}
-	require.True(t, sawURL, "with fleet disabled, the external inferenceRelayURL must still render as --inference-relay-url (CF Worker path preserved)")
 }
 
 // TestControllerArgs_RelayArtifactFlags_RenderWhenEnabled verifies the
@@ -3802,78 +3805,19 @@ orgSubdomainRouting:
 }
 
 // ---------------------------------------------------------------------------
-// G47: inferenceRelaySecret must NOT render as a plaintext CLI arg
+// G47 (Inference-relay secret never as plaintext CLI arg) — closed in Epic 60.
 // ---------------------------------------------------------------------------
-
-// TestControllerArgs_G47_NoPlaintextRelaySecretFallback verifies that
-// setting .Values.inferenceRelaySecret WITHOUT configuring the
-// externalSecret mechanism now FAILS at helm-render time, rather than
-// silently rendering the secret as a plaintext CLI arg visible in
-// `kubectl get pod -o yaml`.
-//
-// Pre-fix: the chart rendered `--inference-relay-secret=<value>`
-// directly into the controller Deployment's container args. Anyone
-// with read access to the pod spec (kubectl get pods, monitoring
-// scrapers, audit log aggregators) could see the secret.
-//
-// Post-fix: the chart refuses to render. The error message tells the
-// operator exactly how to fix it (set externalSecret.create=true or
-// externalSecret.existingSecret=name).
-func TestControllerArgs_G47_NoPlaintextRelaySecretFallback(t *testing.T) {
-	if _, err := exec.LookPath("helm"); err != nil {
-		t.Skip("helm not on PATH; skipping chart render test")
-	}
-	// Force the env-var path OFF (externalSecret.create: false) so the
-	// only remaining place the secret could render is the plaintext
-	// fallback that G47 removes.
-	values := `
-inferenceRelayURL: https://relay.example.com/v1
-inferenceRelaySecret: plaintext-secret-must-be-rejected
-externalSecret:
-  create: false
-  existingSecret: ""
-`
-	valuesPath := filepath.Join(t.TempDir(), "values.yaml")
-	require.NoError(t, os.WriteFile(valuesPath, []byte(values), 0o600))
-
-	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-
-	require.Error(t, err, "G47: helm template must FAIL when inferenceRelaySecret is set but externalSecret.create=false and existingSecret is empty (was silently rendered as plaintext CLI arg pre-fix)")
-	assert.Contains(t, stderr.String(), "G47",
-		"error message must reference G47 so operators can find the rationale")
-	assert.Contains(t, stderr.String(), "externalSecret",
-		"error message must explain the externalSecret remediation path")
-}
-
-// TestControllerArgs_G47_EnvVarPathStillWorks verifies the fix didn't
-// break the legitimate path: when externalSecret IS configured, the
-// secret is injected via env var ($(INFERENCE_RELAY_SECRET)) and the
-// args contain --inference-relay-secret=$(INFERENCE_RELAY_SECRET)
-// (env-var interpolation, NOT plaintext).
-func TestControllerArgs_G47_EnvVarPathStillWorks(t *testing.T) {
-	values := `
-inferenceRelayURL: https://relay.example.com/v1
-inferenceRelaySecret: secret-via-env-var-path
-externalSecret:
-  create: true
-`
-	docs := helmTemplate(t, values)
-	args := findControllerArgs(t, docs)
-	require.NotEmpty(t, args)
-
-	var relaySecretArg string
-	for _, a := range args {
-		if strings.HasPrefix(a, "--inference-relay-secret=") {
-			relaySecretArg = a
-		}
-	}
-	require.NotEmpty(t, relaySecretArg,
-		"--inference-relay-secret= must render when inferenceRelayURL + externalSecret.create are set")
-	assert.Equal(t, "--inference-relay-secret=$(INFERENCE_RELAY_SECRET)", relaySecretArg,
-		"G47: must use env-var interpolation, NOT plaintext value")
-	assert.NotContains(t, relaySecretArg, "secret-via-env-var-path",
-		"G47: plaintext secret value must NOT appear in pod args")
-}
+// The CF Worker relay that G47 protected is gone (Zen blocks CF Worker IPs,
+// see Epic 60). With it went the entire surface G47 covered:
+//   - the .Values.inferenceRelaySecret chart value
+//   - the .Values.externalSecret.{create,existingSecret} gate
+//   - the --inference-relay-secret controller flag
+//   - the INFERENCE_RELAY_SECRET env var block on the controller Deployment
+//   - the relay-secret-sync Helm Hook Job
+// The self-hosted InferenceRelay fleet (Epic 42) that replaces the Worker
+// uses per-VM tokens managed by the router, never a path-segment secret, so
+// G47 has no remaining applicability. The two original tests
+// (TestControllerArgs_G47_NoPlaintextRelaySecretFallback and
+// TestControllerArgs_G47_EnvVarPathStillWorks) were deleted with the Worker.
+// The new TestControllerArgs_NoRelayURLByDefault pins the post-removal
+// default state.

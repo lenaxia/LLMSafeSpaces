@@ -584,7 +584,7 @@ func TestReloadSecretsHandler_PreservesRelayViaWriter(t *testing.T) {
 
 	// Create writer and pre-set relay config as if the injector already ran.
 	writer := newAgentConfigWriter(agentCfg)
-	writer.setRelay("https://relay.safespaces.dev/testsecret", []relayModel{
+	writer.setRelay("https://relay.example.test/path", []relayModel{
 		{ID: "big-pickle", Name: "Big Pickle", ContextLimit: 131072, OutputLimit: 16384},
 	})
 

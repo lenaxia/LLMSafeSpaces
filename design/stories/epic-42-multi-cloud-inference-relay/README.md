@@ -1012,15 +1012,15 @@ spec:
 
 ---
 
-## Migration from Epic 26 (Cloudflare Worker)
+## Migration from Epic 26 (Cloudflare Worker) — now mandatory
 
-1. **Deploy relay VMs** (manually at first, then via controller) — verify they work
-2. **Deploy relay-router** in-cluster — verify WG tunnels and health checks
-3. **Update workspace controller** `inferenceRelayURL` to `http://relay-router:8080`
-4. **Delete CF Worker** — `npx wrangler delete`
-5. **Keep CF Worker code** in repo for historical reference
+Epic 60 (2026-07-12) removed the Cloudflare Worker relay entirely because Zen now blocks CF Worker egress IPs. What was previously an optional migration is now the only path for operators who need relayed free-tier access. The chart default flipped from `inferenceRelayURL: https://relay.safespaces.dev` to direct-to-Zen mode (empty URL). To enable the fleet:
 
-No workspace pod restarts needed beyond the normal pod lifecycle — the relay injector reads `INFERENCE_RELAY_BASEURL` at pod startup and the next pod rotation picks up the new URL.
+1. **Set `controller.inferenceRelay.enabled: true`** in Helm values — renders the relay-router Deployment, the InferenceRelay CR, the cluster-scoped RBAC, and the `--inference-relay-url=<router FQDN>` controller flag.
+2. **Store provider credentials** via `/api/v1/admin/relay/aws-creds` (and OCI/GCP as needed) — controller provisions VMs via cloud-init.
+3. **Reconcile the InferenceRelay CR** via `POST /api/v1/admin/relay/deploy`.
+
+Workspace pods read `INFERENCE_RELAY_BASEURL` at startup; the next pod lifecycle event picks up the new URL automatically.
 
 ---
 

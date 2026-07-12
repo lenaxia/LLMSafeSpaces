@@ -173,12 +173,12 @@ func startManagedProcess(supervise bool) *managedProcess {
 	return proc
 }
 
-// maybeStartRelayInjector launches the Epic 26 Phase-2 relay injection
+// maybeStartRelayInjector launches the Epic 42 Phase-2 relay injection
 // when INFERENCE_RELAY_BASEURL is set and the opencode supervisor is
 // running. After opencode is healthy, fetch the live free model list
-// and rewrite the config to use the CF Worker relay. Runs at most once
-// per pod lifetime. Skipped if the user has a personal opencode API
-// key (paying Zen subscriber).
+// and rewrite the config to use the self-hosted relay fleet. Runs at
+// most once per pod lifetime. Skipped if the user has a personal
+// opencode API key (paying Zen subscriber).
 func maybeStartRelayInjector(rootCtx context.Context, deps serverDeps) {
 	relayURL := os.Getenv("INFERENCE_RELAY_BASEURL")
 	if relayURL == "" || deps.proc == nil {

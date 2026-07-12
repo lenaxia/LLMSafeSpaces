@@ -402,12 +402,6 @@ The MCP server (stdio/SSE). Delegates auth to the API.
 | `mcp.apiBaseUrl` | string | `"http://{{ .Release.Name }}-api:8080"` | In-cluster API URL. |
 | `mcp.timeout` | duration | `300s` | `session_message` timeout. |
 
-## Inference relay globals
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `inferenceRelayURL` | string | `"https://relay.safespaces.dev"` | Cloudflare Worker relay URL (Epic 26). Workspace pods use this as the opencode provider baseURL instead of `opencode.ai/zen/v1` directly. |
-| `inferenceRelaySecret` | string | `""` | Relay auth secret. Empty = chart auto-generates a 64-hex-char secret and preserves it across upgrades. Pushed to the CF Worker automatically if `cloudflare` credentials are set. |
 | `internalToken` | string | `""` | Shared secret for controller↔API internal org-status calls (D20). Empty = auto-generate. The internal org-status endpoint **fails closed (403)** when unset. |
 
 ## `email` (Epic 49)
@@ -445,16 +439,6 @@ Org-scoped login via wildcard subdomain routing. Disabled by default.
 | `orgSubdomainRouting.wildcardCert.issuerRef.name` / `kind` | string | `""` / `ClusterIssuer` | cert-manager Issuer for the wildcard cert. |
 
 **Prerequisites:** wildcard DNS, cert-manager, an ingress controller supporting wildcard host rules.
-
-## `cloudflare`
-
-Automated relay secret sync to the CF Worker.
-
-| Key | Type | Default | Description |
-|---|---|---|---|
-| `cloudflare.apiToken` | string | `""` | CF API token with Workers:Edit. **Never commit.** |
-| `cloudflare.accountId` | string | `""` | CF account ID. |
-| `cloudflare.workerName` | string | `"llmsafespaces-inference-relay"` | CF Worker script name. |
 
 ## `monitoring`
 
