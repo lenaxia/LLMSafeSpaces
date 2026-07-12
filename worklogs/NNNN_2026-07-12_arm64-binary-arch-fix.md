@@ -136,3 +136,15 @@ No Go code changed; no Go tests to run. No helm chart changed; no chart tests to
 2. After merge, verify the fix by extracting the binary from the next arm64 image push and running `file` — should report `ELF 64-bit LSB executable, ARM aarch64`.
 3. Follow-up PR: add a `verify-binary-arch` CI job that catches this regression automatically. Sketch: for each Go image and each platform, after the merge-manifest job, pull the per-platform manifest, extract the largest layer (the binary), run `file`, assert arch matches. Runs post-merge so it doesn't block PRs but pages on regression.
 4. Pre-existing: `--build-arg COMMIT_SHA` is passed by CI but not consumed by controller/Dockerfile's ldflags. Separate follow-up to wire `version.Commit` into `pkg/version/version.go` and the Dockerfile ldflags.
+
+---
+
+## Review follow-up (2026-07-12)
+
+AI reviewer flagged two gaps:
+
+- **Missed `runtimes/go/Dockerfile`** — has the identical `ARG TARGETARCH=amd64` anti-pattern. The original PR claimed "all 5 Go Dockerfiles" but `runtimes/go/` was missed because it's a runtime extension layer (not a top-level binary image). The Go tarball download URL is arch-specific (`go${GO_VERSION}.linux-${TARGETARCH}.tar.gz`), so the bug here produces an amd64 Go toolchain inside an arm64 image — any `go install` the agent runs produces amd64 binaries. Fixed: removed `=amd64` default, added comment block referencing #462.
+
+- **No regression test** — the original PR shipped the fix without a static check that would catch re-introduction. Added `TestDockerfiles_NoTargetArchDefault` in `pkg/repolint/dockerfile_arch_test.go`. The test walks every `Dockerfile*` in the repo and fails if any has `ARG TARGET<auto-arg>=<value>` (hardcoded default on a buildx auto-arg). Verified RED on the anti-pattern (manually reintroduced it, test failed with the expected message), then GREEN. Runs as part of `go test ./pkg/repolint/...` (CI + pre-commit).
+
+Both findings were accurate. The test closes the rule-0 (TDD) gap on the original PR.
