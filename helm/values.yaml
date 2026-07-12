@@ -33,6 +33,12 @@ api:
     # `latest` in production — kubelet image-pull caching does not always
     # honor `imagePullPolicy: Always` for moving tags (Talos/containerd).
     tag: ""
+    # Immutable digest pin (optional, #476). When set, takes precedence
+    # over tag — the image reference becomes repository@digest. Operators
+    # pin to digests to avoid GHCR tag-GC issues (#454) and to make image
+    # refs content-addressable (no surprise rollouts).
+    # Format: sha256:<64 hex chars>.
+    digest: ""
     pullPolicy: IfNotPresent
   imagePullSecrets: []
 
@@ -172,6 +178,8 @@ controller:
     # Tag to deploy. Falls back to .Chart.AppVersion if empty. See api.image.tag
     # for rationale on pinning to immutable `sha-` or `ts-` tags.
     tag: ""
+    # Immutable digest pin (optional, #476). See api.image.digest.
+    digest: ""
     pullPolicy: IfNotPresent
   imagePullSecrets: []
 
@@ -301,6 +309,8 @@ controller:
       image:
         repository: ghcr.io/lenaxia/llmsafespaces/relay-router
         tag: ""
+        # Immutable digest pin (optional, #476). See api.image.digest.
+        digest: ""
         pullPolicy: IfNotPresent
       service:
         type: ClusterIP
@@ -983,6 +993,8 @@ runtimeEnvironments:
     image:
       repository: ghcr.io/lenaxia/llmsafespaces/base
       tag: ""
+      # Immutable digest pin (optional, #476). See api.image.digest.
+      digest: ""
 
 # --- Frontend (optional web UI) ---
 frontend:
@@ -991,6 +1003,8 @@ frontend:
   image:
     repository: ghcr.io/lenaxia/llmsafespaces/frontend
     tag: ""
+    # Immutable digest pin (optional, #476). See api.image.digest.
+    digest: ""
     pullPolicy: IfNotPresent
   # API base URL injected at container start via docker-entrypoint.sh
   apiBaseUrl: "/api/v1"

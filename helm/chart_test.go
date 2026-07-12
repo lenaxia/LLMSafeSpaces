@@ -3947,3 +3947,199 @@ orgSubdomainRouting:
 // TestControllerArgs_G47_EnvVarPathStillWorks) were deleted with the Worker.
 // The new TestControllerArgs_NoRelayURLByDefault pins the post-removal
 // default state.
+
+// ---------------------------------------------------------------------------
+// Image digest pinning (#476)
+// ---------------------------------------------------------------------------
+
+// TestImageHelper_TagDefault verifies the image helpers produce repo:tag
+// when no digest is set. Pins the pre-existing behavior so the digest
+// support added in #476 is provably non-regressive.
+func TestImageHelper_TagDefault(t *testing.T) {
+	vals := `
+api:
+  image:
+    repository: registry.example.com/api
+    tag: v1.2.3
+controller:
+  image:
+    repository: registry.example.com/controller
+    tag: v1.2.3
+frontend:
+  enabled: true
+  image:
+    repository: registry.example.com/frontend
+    tag: v1.2.3
+`
+	docs := helmTemplate(t, vals)
+
+	// API and controller use the helpers; frontend uses inline template.
+	apiImg := findImageByDeployment(t, docs, "-api")
+	ctrlImg := findImageByDeployment(t, docs, "-controller")
+	feImg := findImageByDeployment(t, docs, "-frontend")
+
+	assert.Equal(t, "registry.example.com/api:v1.2.3", apiImg,
+		"api image must be repo:tag when digest unset")
+	assert.Equal(t, "registry.example.com/controller:v1.2.3", ctrlImg,
+		"controller image must be repo:tag when digest unset")
+	assert.Equal(t, "registry.example.com/frontend:v1.2.3", feImg,
+		"frontend image must be repo:tag when digest unset")
+}
+
+// TestImageHelper_DigestOverridesTag is the #476 regression test: when
+// .Values.<svc>.image.digest is set, the helper produces repo@digest,
+// ignoring tag. Operators use this to pin to immutable content-addressable
+// refs (avoids the GHCR tag-GC issue #454 ran into).
+func TestImageHelper_DigestOverridesTag(t *testing.T) {
+	vals := `
+api:
+  image:
+    repository: registry.example.com/api
+    tag: v1.2.3
+    digest: sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789
+controller:
+  image:
+    repository: registry.example.com/controller
+    tag: v1.2.3
+    digest: sha256:1111111111111111111111111111111111111111111111111111111111111111
+frontend:
+  enabled: true
+  image:
+    repository: registry.example.com/frontend
+    tag: v1.2.3
+    digest: sha256:2222222222222222222222222222222222222222222222222222222222222222
+`
+	docs := helmTemplate(t, vals)
+
+	apiImg := findImageByDeployment(t, docs, "-api")
+	ctrlImg := findImageByDeployment(t, docs, "-controller")
+	feImg := findImageByDeployment(t, docs, "-frontend")
+
+	const apiDigest = "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	const ctrlDigest = "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	const feDigest = "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+
+	assert.Equal(t, "registry.example.com/api@"+apiDigest, apiImg,
+		"api image must be repo@digest when digest set (tag ignored)")
+	assert.Equal(t, "registry.example.com/controller@"+ctrlDigest, ctrlImg,
+		"controller image must be repo@digest when digest set (tag ignored)")
+	assert.Equal(t, "registry.example.com/frontend@"+feDigest, feImg,
+		"frontend image must be repo@digest when digest set (tag ignored)")
+}
+
+// TestImageHelper_DigestNoTag verifies digest works without setting tag
+// at all — the operator only sets digest, nothing else.
+func TestImageHelper_DigestNoTag(t *testing.T) {
+	vals := `
+api:
+  image:
+    repository: registry.example.com/api
+    digest: sha256:abcdef
+controller:
+  image:
+    repository: registry.example.com/controller
+    digest: sha256:111111
+frontend:
+  enabled: true
+  image:
+    repository: registry.example.com/frontend
+    digest: sha256:222222
+`
+	docs := helmTemplate(t, vals)
+
+	apiImg := findImageByDeployment(t, docs, "-api")
+	ctrlImg := findImageByDeployment(t, docs, "-controller")
+	feImg := findImageByDeployment(t, docs, "-frontend")
+
+	assert.Equal(t, "registry.example.com/api@sha256:abcdef", apiImg,
+		"api image must be repo@digest with no tag set")
+	assert.Equal(t, "registry.example.com/controller@sha256:111111", ctrlImg,
+		"controller image must be repo@digest with no tag set")
+	assert.Equal(t, "registry.example.com/frontend@sha256:222222", feImg,
+		"frontend image must be repo@digest with no tag set")
+}
+
+// findImageByDeployment renders the chart and returns the first container
+// image from the Deployment whose name contains the given substring.
+// Fails the test if no such Deployment exists.
+func findImageByDeployment(t *testing.T, docs []map[string]any, nameSubstr string) string {
+	t.Helper()
+	for _, d := range docs {
+		if d["kind"] != "Deployment" {
+			continue
+		}
+		meta, _ := d["metadata"].(map[string]any)
+		name, _ := meta["name"].(string)
+		if !strings.Contains(name, nameSubstr) {
+			continue
+		}
+		spec, _ := d["spec"].(map[string]any)
+		tmpl, _ := spec["template"].(map[string]any)
+		podSpec, _ := tmpl["spec"].(map[string]any)
+		containers, _ := podSpec["containers"].([]any)
+		for _, c := range containers {
+			cm, _ := c.(map[string]any)
+			if img, ok := cm["image"].(string); ok {
+				return img
+			}
+		}
+	}
+	t.Fatalf("no Deployment with name containing %q found", nameSubstr)
+	return ""
+}
+
+// TestImageHelper_RelayRouterDigest verifies the relayRouter.image helper
+// honors the digest field (#476 review follow-up — relayRouter was modified
+// but untested in the first push). Renders the chart with the relay fleet
+// enabled (so the relay-router Deployment renders) and asserts the image
+// uses repo@digest when digest is set.
+func TestImageHelper_RelayRouterDigest(t *testing.T) {
+	vals := `
+controller:
+  inferenceRelay:
+    enabled: true
+    artifact:
+      urls:
+        - "https://example.test/relay-proxy"
+      sha256Arm64: "aaa"
+      sha256Amd64: "bbb"
+    router:
+      image:
+        repository: registry.example.com/relay-router
+        tag: v1.0.0
+        digest: sha256:abc
+`
+	docs := helmTemplate(t, vals)
+
+	routerImg := findImageByDeployment(t, docs, "relay-router")
+	assert.Equal(t, "registry.example.com/relay-router@sha256:abc", routerImg,
+		"relayRouter image must be repo@digest when digest set (tag ignored)")
+}
+
+// TestImageHelper_RuntimeEnvBaseDigest verifies the inline digest
+// conditional in runtimeenvironment-base.yaml (#476 review follow-up —
+// the inline conditional was added but untested). Renders the chart and
+// asserts the RuntimeEnvironment CR's spec.image uses repo@digest.
+func TestImageHelper_RuntimeEnvBaseDigest(t *testing.T) {
+	vals := `
+runtimeEnvironments:
+  base:
+    image:
+      repository: registry.example.com/base
+      tag: v1.0.0
+      digest: sha256:def
+`
+	docs := helmTemplate(t, vals)
+
+	for _, d := range docs {
+		if d["kind"] != "RuntimeEnvironment" {
+			continue
+		}
+		spec, _ := d["spec"].(map[string]any)
+		img, _ := spec["image"].(string)
+		assert.Equal(t, "registry.example.com/base@sha256:def", img,
+			"RuntimeEnvironment base image must be repo@digest when digest set")
+		return
+	}
+	t.Fatal("no RuntimeEnvironment CR rendered")
+}
