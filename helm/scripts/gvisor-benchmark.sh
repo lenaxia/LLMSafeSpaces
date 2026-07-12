@@ -11,29 +11,33 @@
 #   - A cluster with at least one node that has runsc installed and configured
 #     as a container runtime handler (per docs/operator/security.md §gVisor).
 #   - The chart deployed with gvisor.enabled=true so the RuntimeClass exists.
-#   - `kubectl` configured with cluster-admin.
+#   - `kubectl` configured with cluster-admin (needed to apply the admin-gated
+#     runtimeClass override annotation on runc-leg workspaces — the API does
+#     not expose spec.runtimeClass, by design).
 #   - The LLMSafeSpaces API reachable at $API_URL with a valid $API_TOKEN
 #     that can create workspaces and send messages.
 #   - `jq` and `curl` on the machine running this script.
 #
 # What this script measures (three phases of a real LLM-coding session):
-#   1. POD BOOT     — workspace Pending → Active. Dominated by PVC attach +
+#   1. POD_BOOT     — workspace Pending → Active. Dominated by PVC attach +
 #                     opencode boot; the part most likely to surface gVisor's
 #                     syscall-interception cost on init paths.
-#   2. COLD PROMPT  — first user message → first assistant token. Proxy +
-#                     opencode + first LLM round-trip. The LLM API latency
-#                     dominates but the proxy/pod side gets measured too.
-#   3. FILE I/O     — opencode writes a 5 MB scratch file to /workspace,
-#                     reads it back, checksums. Pure pod-local syscall cost —
-#                     the phase where gVisor's overhead is highest per
+#   2. COLD_PROMPT  — first user message → first assistant content event via
+#                     SSE. Proxy + opencode + first LLM round-trip. LLM API
+#                     latency dominates but the proxy/pod side gets measured too.
+#   3. FILE_IO      — write 5 MiB random to /workspace, read back, sha256.
+#                     Pure pod-local syscall cost — gVisor's worst case per
 #                     gvisor.dev docs (5–30% on syscall-heavy workloads).
 #
-# Phases 1 and 2 intentionally include non-pod latency (LLM API, PVC attach)
-# because the AC asks for the cost on a REPRESENTATIVE workload, not a
-# microbenchmark. If gVisor's overhead is invisible at the workload level
-# (because LLM latency dominates), that is the answer the AC wants.
-# Phase 3 isolates the worst-case so the operator can see what gVisor
-# would cost on a purely syscall-bound workload.
+# Workspace creation:
+#   Both legs create the Workspace CR directly via `kubectl apply` rather than
+#   the REST API. Reason: the runc leg requires `spec.runtimeClass: "runc"` +
+#   the admin annotation `llmsafespaces.dev/allow-runtime-class-override=true`,
+#   and the API's CreateWorkspaceRequest does not expose either field (the
+#   opt-out is admin-gated by design — see controller/internal/webhooks/
+#   workspace_webhook.go). Using kubectl for both legs keeps the creation
+#   path identical modulo the runtimeClass field, which is the variable under
+#   test. The API is used only for session/message operations.
 #
 # Output: TSV to stdout, one row per (runtime × phase × iteration). Summary
 # stats (median, p90, overhead %) computed by docs/operator/gvisor-benchmark.md's
@@ -45,8 +49,11 @@ API_URL="${API_URL:?API_URL must be set, e.g. https://safespaces.example.com}"
 API_TOKEN="${API_TOKEN:?API_TOKEN must be set}"
 NAMESPACE="${NAMESPACE:-llmsafespaces}"
 ITERATIONS="${ITERATIONS:-5}"           # per runtime per phase
-WORKSPACE_IMAGE="${WORKSPACE_IMAGE:-ghcr.io/lenaxia/llmsafespaces/python:latest}"
-RUNTIME_CLASS_OPT_OUT_ANNOTATION="llmsafespaces.dev/allow-runtime-class-override=true"
+WORKSPACE_RUNTIME="${WORKSPACE_RUNTIME:-base}"  # RuntimeEnvironment name
+WORKSPACE_USERID="${WORKSPACE_USERID:?WORKSPACE_USERID must be set (the API user the benchmark runs as)}"
+WORKSPACE_ORGID="${WORKSPACE_ORGID:-}"  # optional; leave empty for personal workspaces
+LLM_MODEL="${LLM_MODEL:-opencode/free}" # model for the cold-prompt phase
+ALLOW_OVERRIDE_ANNOTATION="llmsafespaces.dev/allow-runtime-class-override"
 
 # --- pretty logging ---
 if [[ -t 1 ]]; then
@@ -55,8 +62,8 @@ else
     BOLD=''; RED=''; GREEN=''; YELLOW=''; CYAN=''; RESET=''
 fi
 log()  { printf '%s==>%s %s\n' "${CYAN}${BOLD}" "${RESET}" "$*" >&2; }
-ok()   { printf '%s ✓%s %s\n' "${GREEN}" "${RESET}" "$*" >&2; }
-fail() { printf '%s ✗%s %s\n' "${RED}" "${RESET}" "$*" >&2; }
+ok()   { printf '%s ok %s %s\n' "${GREEN}" "${RESET}" "$*" >&2; }
+fail() { printf '%s FAIL %s %s\n' "${RED}" "${RESET}" "$*" >&2; }
 
 # --- preflight ---
 for dep in kubectl jq curl; do
@@ -66,7 +73,64 @@ done
 # --- helpers ---
 ns_now() { date +%s.%N; }
 
-# Wait for a workspace to reach Active, echo wall-clock seconds from create.
+# Apply a Workspace CR for the given runtimeClass. Echoes the workspace name
+# (a generated unique name). The benchmark uses kubectl apply rather than
+# the API because spec.runtimeClass + the admin override annotation are not
+# exposed via CreateWorkspaceRequest — they are admin-gated by design.
+create_workspace() {
+    local runtime_class="$1"   # "gvisor" or "runc"
+    local name="gvisor-bench-${runtime_class}-$(date +%s)-${RANDOM}"
+    local org_field=""
+    if [[ -n "$WORKSPACE_ORGID" ]]; then
+        org_field=",\"orgID\":\"$WORKSPACE_ORGID\""
+    fi
+
+    # spec.runtimeClass is omitted (nil) for the gVisor leg so the controller's
+    # default applies (gvisor when gvisor.enabled=true). It is explicitly "runc"
+    # for the runc leg, with the admin annotation that the validating webhook
+    # requires (controller/internal/webhooks/workspace_webhook.go).
+    local runtime_class_line=""
+    local annotation_key="llmsafespaces.dev/bench"
+    local annotation_value="gvisor-benchmark"
+    if [[ "$runtime_class" == "runc" ]]; then
+        runtime_class_line=$'\n  runtimeClass: "runc"'
+        annotation_key="$ALLOW_OVERRIDE_ANNOTATION"
+        annotation_value="true"
+    fi
+
+    # heredoc with variable expansion. The runtimeClass line is conditionally
+    # inserted; omitting it entirely (vs setting empty string) matters because
+    # the webhook treats empty-string as an explicit clear, not as unset.
+    local manifest
+    manifest=$(cat <<EOF
+apiVersion: llmsafespaces.dev/v1
+kind: Workspace
+metadata:
+  name: $name
+  namespace: $NAMESPACE
+  annotations:
+    $annotation_key: "$annotation_value"
+spec:
+  owner:
+    userID: "$WORKSPACE_USERID"$org_field
+  runtime: "$WORKSPACE_RUNTIME"
+  storage:
+    size: 5Gi$runtime_class_line
+EOF
+)
+    printf '%s\n' "$manifest" | kubectl apply -f - >&2 2>/dev/null || {
+        fail "kubectl apply failed for workspace $name"
+        return 1
+    }
+    echo "$name"
+}
+
+delete_workspace() {
+    local ws="$1"
+    kubectl delete workspace "$ws" -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true
+}
+
+# Wait for a workspace to reach Active. Echoes wall-clock seconds from create.
 wait_active() {
     local ws="$1" start="$2"
     local deadline=$(( $(date +%s) + 300 )) # 5 min cap
@@ -74,7 +138,7 @@ wait_active() {
         local phase
         phase=$(kubectl get workspace "$ws" -n "$NAMESPACE" -o jsonpath='{.status.phase}' 2>/dev/null || true)
         if [[ "$phase" == "Active" ]]; then
-            echo "$(awk -v a="$start" -v b="$(ns_now)" 'BEGIN{printf "%.3f", b-a}')"
+            awk -v a="$start" -v b="$(ns_now)" 'BEGIN{printf "%.3f", b-a}'
             return 0
         fi
         if [[ "$(date +%s)" -ge "$deadline" ]]; then
@@ -86,92 +150,95 @@ wait_active() {
     done
 }
 
-# Send a cold prompt and time first-token. Echoes wall-clock seconds.
+# Assert that the pod actually landed on the expected runtimeClass.
+# Catches the regression where the API silently dropped the opt-out (the
+# original v1 of this script had this bug — both legs ran under gVisor).
+assert_runtime_class() {
+    local ws="$1" expected="$2"
+    local pod
+    pod=$(kubectl get pods -n "$NAMESPACE" -l "llmsafespaces.dev/workspace=$ws" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    if [[ -z "$pod" ]]; then
+        fail "no pod found for workspace $ws; cannot verify runtimeClass"
+        return 1
+    fi
+    local actual
+    actual=$(kubectl get pod "$pod" -n "$NAMESPACE" -o jsonpath='{.spec.runtimeClassName}' 2>/dev/null || true)
+    # Empty runtimeClassName means kubelet default (typically runc on nodes
+    # without runsc; gVisor if the cluster defaults to it via RuntimeClass).
+    # For the gVisor leg, expected may be empty OR "gvisor" — both are valid
+    # depending on how the cluster's RuntimeClass is wired. For the runc leg,
+    # expected is "runc" and must match exactly.
+    if [[ "$expected" == "runc" && "$actual" != "runc" ]]; then
+        fail "runtimeClass assertion failed: expected '$expected' for $ws, got '$actual'"
+        return 1
+    fi
+    ok "workspace $ws pod runtimeClassName='$actual' (expected=$expected)"
+}
+
+# Send a cold prompt and time first assistant content event. Echoes wall-clock seconds.
 time_cold_prompt() {
     local ws="$1"
-    local start ns url http code first_byte
+    local start
     start=$(ns_now)
 
-    # Create a session, then send a "hello" prompt and wait for the first
-    # SSE event with assistant content. We do NOT consume the full stream —
-    # the AC measures time-to-first-token, not full-response latency.
+    # Ensure an active session exists. The route is POST /sessions/new (not
+    # POST /sessions — that route does not exist). The response field is
+    # sessionId (not id — EnsureSessionResponse in pkg/types/session.go).
     local session_id
-    session_id=$(curl -sS -X POST "$API_URL/api/v1/workspaces/$ws/sessions" \
+    session_id=$(curl -sS -X POST "$API_URL/api/v1/workspaces/$ws/sessions/new" \
         -H "Authorization: Bearer $API_TOKEN" \
         -H 'Content-Type: application/json' \
-        -d '{"title":"gvisor-bench"}' | jq -r .id)
-    [[ -n "$session_id" && "$session_id" != "null" ]] || { fail "session create failed"; return 1; }
+        -d '{}' | jq -r '.sessionId // empty')
+    if [[ -z "$session_id" ]]; then
+        fail "session create failed (POST /sessions/new returned no sessionId)"
+        return 1
+    fi
 
-    # Time to first assistant token via SSE. curl's --no-buffer + a small
-    # awk that exits on the first 'part' event gives us the cold latency.
-    local first_event_at
-    first_event_at=$(
-        curl -sS -N --no-buffer -X POST "$API_URL/api/v1/workspaces/$ws/sessions/$session_id/message" \
-            -H "Authorization: Bearer $API_TOKEN" \
-            -H 'Content-Type: application/json' \
-            -d '{"content":"Say OK and stop.","model":"opencode/free"}' \
-            | awk '
-                /^event:/ { ev=$2 }
-                /^data:/ && ev=="part" { print systime(); exit }
-            '
-    )
-    [[ -n "$first_event_at" ]] || { fail "no assistant part received"; return 1; }
-    awk -v a="$start" -v b="$first_event_at" 'BEGIN{printf "%.3f", b-a}'
+    # Time to first assistant content event via SSE. The SSE stream is
+    # `data: <json>\n\n` (no `event:` lines — the type lives inside the JSON
+    # payload as "type":"message.part.updated"). We exit on the first such
+    # event to measure time-to-first-token. The timestamp is captured
+    # OUTSIDE awk (after awk exits) using `date +%s.%N` — `systime()` inside
+    # awk is integer-second resolution and loses sub-second precision.
+    local event_at
+    event_at=$(curl -sS -N --no-buffer -X POST "$API_URL/api/v1/workspaces/$ws/sessions/$session_id/message" \
+        -H "Authorization: Bearer $API_TOKEN" \
+        -H 'Content-Type: application/json' \
+        --max-time 60 \
+        -d "{\"model\":{\"providerID\":\"opencode\",\"modelID\":\"$LLM_MODEL\"},\"parts\":[{\"type\":\"text\",\"text\":\"Reply with exactly: OK\"}]}" \
+        | awk '
+            /^data:/ {
+                line = $0
+                sub(/^data:[ ]?/, "", line)
+                if (line ~ /"type":"message\.part\.updated"/) { exit 0 }
+            }
+        ' && ns_now)
+    if [[ -z "$event_at" ]]; then
+        fail "no assistant part received (SSE stream ended or timed out)"
+        return 1
+    fi
+    awk -v a="$start" -v b="$event_at" 'BEGIN{printf "%.3f", b-a}'
 }
 
 # Run a pod-local file I/O round-trip and time it. Echoes wall-clock seconds.
+# Uses kubectl exec on the pod directly (by pod name, looked up via the
+# workspace label) — the Workspace CRD has no exec subresource.
 time_file_io() {
-    local ws="$1" pod_ip
-    # Use the workspace exec API to run a shell snippet that writes 5 MiB
-    # of random data, reads it back, and pipes through sha256sum. The
-    # snippet's wall clock is what we want.
+    local ws="$1"
     local snippet='dd if=/dev/urandom of=/workspace/.bench bs=1M count=5 status=none && sha256sum /workspace/.bench >/dev/null && rm /workspace/.bench'
+    local pod
+    pod=$(kubectl get pods -n "$NAMESPACE" -l "llmsafespaces.dev/workspace=$ws" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    if [[ -z "$pod" ]]; then
+        fail "no pod found for workspace $ws (file_io)"
+        return 1
+    fi
     local start
     start=$(ns_now)
-    kubectl exec -n "$NAMESPACE" "workspace/$ws" -c main -- bash -lc "$snippet" >/dev/null 2>&1 || {
-        # The exec path may not be wired uniformly; fall back to a direct
-        # pod-name exec by listing pods with the workspace label.
-        local pod
-        pod=$(kubectl get pods -n "$NAMESPACE" -l "llmsafespaces.dev/workspace=$ws" -o jsonpath='{.items[0].metadata.name}')
-        kubectl exec -n "$NAMESPACE" "$pod" -c main -- bash -lc "$snippet" >/dev/null 2>&1 || {
-            fail "file I/O snippet failed on workspace $ws"
-            return 1
-        }
-    }
-    awk -v a="$start" -v b="$(ns_now)" 'BEGIN{printf "%.3f", b-a}'
-}
-
-# Create a workspace under the given runtime. Echoes workspace name.
-create_workspace() {
-    local runtime="$1"
-    local name="gvisor-bench-$runtime-$(date +%s)-$RANDOM"
-    local runtime_class_patch=""
-    if [[ "$runtime" == "runc" ]]; then
-        # Admin-gated opt-out per docs/operator/security.md.
-        runtime_class_patch=",\"metadata\":{\"annotations\":{\"$RUNTIME_CLASS_OPT_OUT_ANNOTATION\":\"true\"}},\"spec\":{\"runtimeClass\":\"runc\"}"
+    if ! kubectl exec -n "$NAMESPACE" "$pod" -c main -- sh -lc "$snippet" >/dev/null 2>&1; then
+        fail "file I/O snippet failed on pod $pod"
+        return 1
     fi
-    local body
-    body=$(cat <<EOF
-{
-  "name": "$name",
-  "image": "$WORKSPACE_IMAGE"
-$runtime_class_patch
-}
-EOF
-)
-    local ws
-    ws=$(curl -sS -X POST "$API_URL/api/v1/workspaces" \
-        -H "Authorization: Bearer $API_TOKEN" \
-        -H 'Content-Type: application/json' \
-        -d "$body" | jq -r .id)
-    [[ -n "$ws" && "$ws" != "null" ]] || { fail "workspace create failed for runtime=$runtime"; return 1; }
-    echo "$ws"
-}
-
-delete_workspace() {
-    local ws="$1"
-    curl -sS -X DELETE "$API_URL/api/v1/workspaces/$ws" \
-        -H "Authorization: Bearer $API_TOKEN" >/dev/null 2>&1 || true
+    awk -v a="$start" -v b="$(ns_now)" 'BEGIN{printf "%.3f", b-a}'
 }
 
 # --- header ---
@@ -179,21 +246,46 @@ printf 'runtime\tphase\titeration\tseconds\n'
 
 # --- main loop: for each runtime, for each iteration, measure all 3 phases ---
 for runtime in runc gvisor; do
-    log "runtime=$runtime, $ITERATIONS iterations × 3 phases"
+    log "runtime=$runtime, $ITERATIONS iterations x 3 phases"
     for ((i=1; i<=ITERATIONS; i++)); do
         local_ws=""
+
+        # trap ensures cleanup even on Ctrl-C or error between phases. The
+        # `local_ws` variable is re-evaluated at trap-fire time, so it cleans
+        # up the right workspace regardless of which phase failed.
         trap '[[ -n "$local_ws" ]] && delete_workspace "$local_ws"' EXIT
 
         local_ws=$(create_workspace "$runtime") || continue
         local create_start
         create_start=$(ns_now)
-        boot_sec=$(wait_active "$local_ws" "$create_start") || continue
+
+        # Phase 1: pod boot. On failure, delete and continue (don't leak).
+        if ! boot_sec=$(wait_active "$local_ws" "$create_start"); then
+            delete_workspace "$local_ws"
+            continue
+        fi
         printf '%s\t%s\t%d\t%s\n' "$runtime" "pod_boot" "$i" "$boot_sec"
 
-        cold_sec=$(time_cold_prompt "$local_ws") || { delete_workspace "$local_ws"; continue; }
+        # Verify the pod actually landed on the expected runtime before
+        # measuring phases 2-3 — a silent opt-out drop would otherwise make
+        # both legs run under the same runtime and the comparison meaningless.
+        if ! assert_runtime_class "$local_ws" "$runtime"; then
+            delete_workspace "$local_ws"
+            continue
+        fi
+
+        # Phase 2: cold prompt.
+        if ! cold_sec=$(time_cold_prompt "$local_ws"); then
+            delete_workspace "$local_ws"
+            continue
+        fi
         printf '%s\t%s\t%d\t%s\n' "$runtime" "cold_prompt" "$i" "$cold_sec"
 
-        io_sec=$(time_file_io "$local_ws") || { delete_workspace "$local_ws"; continue; }
+        # Phase 3: file I/O.
+        if ! io_sec=$(time_file_io "$local_ws"); then
+            delete_workspace "$local_ws"
+            continue
+        fi
         printf '%s\t%s\t%d\t%s\n' "$runtime" "file_io" "$i" "$io_sec"
 
         delete_workspace "$local_ws"
@@ -202,4 +294,5 @@ for runtime in runc gvisor; do
     done
 done
 
+trap - EXIT
 log "done — pipe output through the stats recipes in docs/operator/gvisor-benchmark.md"

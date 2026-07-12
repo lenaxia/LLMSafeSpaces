@@ -55,8 +55,9 @@ node resources.
 
 **Cleanup:** the script deletes every workspace it creates, including on
 Ctrl-C (via a trap). If the script crashes hard, leftover workspaces will
-have names starting `gvisor-bench-` — `kubectl delete workspace -l name=gvisor-bench-`
-or equivalent will clean them up.
+have names starting `gvisor-bench-` — `kubectl delete workspace -n llmsafespaces -l llmsafespaces.dev/bench=gvisor-benchmark`
+or `kubectl delete workspace -n llmsafespaces $(kubectl get workspaces -n llmsafespaces -o name | grep gvisor-bench)`
+will clean them up.
 
 ### Prerequisites
 
@@ -65,8 +66,17 @@ or equivalent will clean them up.
 2. The chart deployed with `gvisor.enabled: true` so the `gvisor`
    RuntimeClass exists. **Do not** also flip the default in the chart yet —
    the benchmark needs to opt out per-workspace, not flip the cluster-wide
-   default. The script does the opt-out via the admin annotation.
+   default. The script applies the admin-gated annotation directly to the
+   Workspace CR for the runc leg.
 3. `kubectl`, `jq`, `curl` on the machine running the script.
+4. **kubectl configured with cluster-admin RBAC** — required to apply the
+   admin-gated `llmsafespaces.dev/allow-runtime-class-override=true`
+   annotation on the runc-leg workspaces. The REST API does not expose
+   `spec.runtimeClass` (the opt-out is admin-gated by design — see
+   `controller/internal/webhooks/workspace_webhook.go`).
+5. **An API token** for the cold-prompt phase (sessions + messages go
+   through the REST API, which requires auth). Set `API_TOKEN` and
+   `WORKSPACE_USERID` env vars to the benchmark user.
 
 ## Interpreting the results
 

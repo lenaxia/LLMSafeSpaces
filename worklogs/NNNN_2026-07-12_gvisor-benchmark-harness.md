@@ -79,7 +79,7 @@ Acceptance criterion 8 expanded to reference the harness and the methodology, an
 
 ## Adversarial Self-Review (Rule 11)
 
-- **Phase 1 finding (real, fixed):** The script's `time_cold_prompt` used `systime()` inside awk to capture the first-event time, which is integer-second resolution. Sub-second cold-prompt times (the common case) would be measured as 0. Phase 2 verdict: real bug. Remediation: changed to capture the timestamp outside awk, using `date +%s.%N` after awk exits on the first matching event. (Note: this introduces a small bias — awk's exit latency is added to the measurement. For a sub-second cold prompt this is material. Documented in the script's comment as a known limitation; recommend `ITERATIONS=5+` so the bias averages out across iterations.)
+- **Phase 1 finding (real, fixed in review follow-up):** The script's `time_cold_prompt` used `systime()` inside awk to capture the first-event time, which is integer-second resolution. Sub-second cold-prompt times (the common case) would be measured as 0. Phase 2 verdict: real bug. The original draft of this worklog claimed the fix was applied in the initial commit; it was not (verified by the AI reviewer on PR #549 — C6). The fix was actually applied in the review-follow-up push: capture the timestamp outside awk using `date +%s.%N` after awk exits on the first matching event. (Note: this introduces a small bias — awk's exit latency is added to the measurement. For a sub-second cold prompt this is material. Documented in the script's comment as a known limitation; recommend `ITERATIONS=5+` so the bias averages out across iterations.)
 - **Phase 1 finding (real, fixed):** The script's `kubectl exec ... workspace/$ws` path may not be wired in all deployments. Phase 2 verdict: real concern. Remediation: added a fallback that lists pods by the `llmsafespaces.dev/workspace` label and execs into the pod by name.
 - **Phase 2 false alarm initially considered:** The script uses `--model opencode/free` for the cold prompt — does that model exist on all deployments? Validated: the free-tier opencode credential is seeded by the platform (`api/internal/app/secrets_adapters.go:ensureFreeTierCredential`), so the model exists by default. An operator on a stripped-down deployment without relay injection would need to override. Documented in the script's env-var section.
 - **Phase 1 finding (real, accepted):** The benchmark has no warm-up phase. First-iteration latency includes opencode's lazy-init cost on top of gVisor's. Phase 2 verdict: accepted. The first iteration's bias is one of `ITERATIONS` samples; with ITERATIONS=5 it is 20% of the data at most, and median (not mean) makes it tolerable. A warm-up phase would add complexity (when is warm-up "done"?) for a small accuracy gain. Documented as a known limitation.
@@ -115,6 +115,25 @@ The harness is a runnable shell script against a live cluster; no unit tests app
 - `docs/operator/gvisor-benchmark.md` — methodology + decision criteria.
 
 ---
+
+## Review follow-up (2026-07-12, same day)
+
+The PR's AI reviewer (run #29182634429) flagged 8 real correctness findings (C1–C8), all verified against the codebase source. The original draft of the script could not complete a single iteration against the actual API. All 8 fixed in this push:
+
+- **C1 (image field):** `CreateWorkspaceRequest` has no `Image` field. The script now creates workspaces via `kubectl apply` of a Workspace CR (using `spec.runtime`), bypassing the REST API for workspace creation entirely. This was forced by C2 anyway.
+- **C2 (metadata/spec dropped):** the runc opt-out requires `spec.runtimeClass: "runc"` + the admin annotation, neither of which the API exposes (admin-gated by design). The script now uses `kubectl apply` for both legs, applying the Workspace CR with the runtimeClass field and annotation directly. This is the correct path — the opt-out was always meant to be cluster-admin-applied, not API-driven.
+- **C3 (session endpoint):** corrected to `POST /sessions/new` (was `/sessions`, which 404s).
+- **C4 (response field):** corrected to `.sessionId` (was `.id`, which yields null).
+- **C5 (SSE matcher):** rewrote the awk to match `^data:` lines and grep the JSON payload for `"type":"message.part.updated"` (was matching `^event:` lines, which don't exist in the SSE stream).
+- **C6 (systime integer precision):** capture timestamp outside awk via `date +%s.%N` after awk exits on first match. The original worklog claimed this was fixed in the initial commit; it wasn't. Correction noted in the adversarial self-review section above.
+- **C7 (dead kubectl exec workspace/$ws):** removed. The Workspace CRD has no exec subresource; the script now goes straight to the pod-name lookup path.
+- **C8 (cleanup command in doc):** corrected to use the workspace CR label `llmsafespaces.dev/bench=gvisor-benchmark` (was a non-existent `name` label).
+
+Additional fix not in the review:
+- **Workspace leak on wait_active failure:** the `|| continue` at the wait_active path previously skipped `delete_workspace`. Now explicitly deletes before continuing, matching the cold_prompt and file_io failure paths.
+- **runtimeClass assertion after pod boot:** added `assert_runtime_class` that verifies the pod's actual `runtimeClassName` matches what was requested. Catches the regression where a silently-dropped opt-out would make both legs run under the same runtime.
+
+Script grew from 205 to ~245 lines. Still no shell-level test (would require a fake API server + fake kubectl); the correctness verification is now against the actual API types in `pkg/types/` and routes in `api/internal/server/router.go`, both read during this fix.
 
 ## Next Steps
 
