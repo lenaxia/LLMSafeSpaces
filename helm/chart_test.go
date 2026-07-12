@@ -4181,3 +4181,102 @@ func TestRedisTLS_EnabledRendersTrueFields(t *testing.T) {
 	require.Contains(t, cfg, "insecureSkipVerify: true",
 		"redis.insecureSkipVerify=true must render into configmap; config.yaml was:\n%s", cfg)
 }
+
+// ---------------------------------------------------------------------------
+// #469: ConfigMap ClusterRole grant for free-models refresher
+// ---------------------------------------------------------------------------
+
+// TestClusterRole_ConfigMapsGrantedWhenFreeModelsEnabled verifies that the
+// cluster-scoped ClusterRole includes configmaps when the free-models
+// refresher is enabled (the default), even when the inference relay fleet
+// is disabled. Pre-fix, configmaps were only granted when
+// inferenceRelay.enabled=true; the manager's cache informer failed at
+// cluster-wide ConfigMap listing with "configmaps is forbidden" (#469).
+func TestClusterRole_ConfigMapsGrantedWhenFreeModelsEnabled(t *testing.T) {
+	docs := helmTemplate(t, `rbac:
+  scope: cluster
+controller:
+  freeModelsRefresher:
+    enabled: true
+`)
+	clusterCR := findClusterRoleByNameSubstr(t, docs, "-controller-cluster")
+	require.NotNil(t, clusterCR, "cluster ClusterRole must be rendered when rbac.scope=cluster")
+
+	// The ClusterRole must include configmaps (the fix for #469) ...
+	rules, _ := clusterCR["rules"].([]any)
+	var cmRule map[string]any
+	for _, r := range rules {
+		rule, _ := r.(map[string]any)
+		resources, _ := rule["resources"].([]any)
+		for _, res := range resources {
+			if res == "configmaps" {
+				cmRule = rule
+				break
+			}
+		}
+		if cmRule != nil {
+			break
+		}
+	}
+	require.NotNil(t, cmRule, "ClusterRole must include configmaps when freeModelsRefresher.enabled=true and rbac.scope=cluster (#469)")
+
+	// ... with read-only verbs (get/list/watch only). The ClusterRole
+	// grants the informer cache permission to list ConfigMaps cluster-
+	// wide. Writes (create/update/patch) go through the namespace-scoped
+	// Role which restricts them to the release namespace. Mirrors the
+	// read-only ClusterRole pattern for pods/secrets/PVCs.
+	verbs, _ := cmRule["verbs"].([]any)
+	var verbStrs []string
+	for _, v := range verbs {
+		if s, ok := v.(string); ok {
+			verbStrs = append(verbStrs, s)
+		}
+	}
+	assert.ElementsMatch(t, []string{"get", "list", "watch"}, verbStrs,
+		"ClusterRole configmaps rule must be read-only (get/list/watch) for the free-models refresher — "+
+			"writes are namespace-scoped via the Role; cluster-scope CRUD would allow modifying any ConfigMap in any namespace")
+}
+
+// TestClusterRole_ConfigMapsAbsentWhenBothDisabled verifies the negative
+// case: when both inferenceRelay and freeModelsRefresher are disabled, the
+// ClusterRole should NOT grant configmaps. Prevents accidental over-granting.
+func TestClusterRole_ConfigMapsAbsentWhenBothDisabled(t *testing.T) {
+	docs := helmTemplate(t, `rbac:
+  scope: cluster
+controller:
+  inferenceRelay:
+    enabled: false
+  freeModelsRefresher:
+    enabled: false
+`)
+	clusterCR := findClusterRoleByNameSubstr(t, docs, "-controller-cluster")
+	require.NotNil(t, clusterCR)
+
+	rules, _ := clusterCR["rules"].([]any)
+	for _, r := range rules {
+		rule, _ := r.(map[string]any)
+		resources, _ := rule["resources"].([]any)
+		for _, res := range resources {
+			if res == "configmaps" {
+				t.Fatal("ClusterRole must NOT include configmaps when both inferenceRelay and freeModelsRefresher are disabled")
+			}
+		}
+	}
+}
+
+// findClusterRoleByNameSubstr scans rendered docs for a ClusterRole whose
+// metadata.name contains the given substring. Returns nil if not found.
+func findClusterRoleByNameSubstr(t *testing.T, docs []map[string]any, nameSubstr string) map[string]any {
+	t.Helper()
+	for _, d := range docs {
+		if d["kind"] != "ClusterRole" {
+			continue
+		}
+		meta, _ := d["metadata"].(map[string]any)
+		name, _ := meta["name"].(string)
+		if strings.Contains(name, nameSubstr) {
+			return d
+		}
+	}
+	return nil
+}

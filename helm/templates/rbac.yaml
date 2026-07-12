@@ -235,10 +235,24 @@ rules:
     resources: ["pods", "secrets", "persistentvolumeclaims", "events", "serviceaccounts"]
     verbs: ["get", "list", "watch"]
 {{- if .Values.controller.inferenceRelay.enabled }}
-  # ConfigMaps for relay-router-peers sync (InferenceRelay reconciler)
+  # ConfigMaps for relay-router-peers sync (InferenceRelay reconciler).
+  # Full CRUD including delete (the reconciler destroys + reprovisions
+  # relay VMs, which involves deleting the peer-config ConfigMap).
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+{{- else if .Values.controller.freeModelsRefresher.enabled }}
+  # ConfigMaps for the free-models refresher informer cache (#469).
+  # Read-only at cluster scope — the manager's cache creates a cluster-
+  # wide ConfigMap informer on first Get; without this grant the
+  # reflector fails with "configmaps is forbidden ... at the cluster
+  # scope". Writes (create/update/patch) go through the namespace-scoped
+  # Role (rbac.yaml:133-141) which restricts them to the release
+  # namespace. Mirrors the read-only ClusterRole pattern used for
+  # pods/secrets/PVCs (line 234-236).
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
 {{- end }}
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies"]
