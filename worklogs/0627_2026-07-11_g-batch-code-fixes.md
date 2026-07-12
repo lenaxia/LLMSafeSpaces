@@ -186,4 +186,4 @@ After PRs 3–4 the threat model will be at roughly 35-37 Fixed / 3-5 Open / 10 
 - `helm/chart_test.go` — added `TestControllerArgs_G47_NoPlaintextRelaySecretFallback` and `TestControllerArgs_G47_EnvVarPathStillWorks`
 - `CHANGELOG.md` — entries for all 7 fixes under `[Unreleased] → Security`
 - `design/stories/epic-17-security-review/THREAT-MODEL.md` — 7 rows flipped 🟢; counts; revision 2.10
-- `worklogs/NNNN_2026-07-11_g-batch-code-fixes.md` — this file
+- `worklogs/0627_2026-07-11_g-batch-code-fixes.md` — this file
