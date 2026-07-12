@@ -45,7 +45,7 @@ func New(cfg *config.Config, log *logger.Logger) (*Service, error) {
 		opts.TLSConfig = &tls.Config{
 			ServerName:         cfg.Redis.Host,
 			InsecureSkipVerify: cfg.Redis.InsecureSkipVerify,
-			MinVersion:         tls.VersionTLS12, // go-redis default is TLS 1.2+; explicit for clarity
+			MinVersion:         tls.VersionTLS12, // Go crypto/tls default since 1.18; explicit for clarity
 		}
 	}
 	client := redis.NewClient(opts)

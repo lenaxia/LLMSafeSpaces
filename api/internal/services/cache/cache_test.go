@@ -467,20 +467,25 @@ func TestNewCache_TLS_MismatchPlaintextServerFails(t *testing.T) {
 // is rejected. This is the cert-mismatch scenario operators hit when they
 // point at the wrong endpoint or the cert is misconfigured.
 func TestNewCache_TLS_CertVerificationFailsOnMismatch(t *testing.T) {
+	// The cert is issued for CN "correct.example", but the client connects
+	// to 127.0.0.1 (miniredis's actual address) with ServerName="127.0.0.1".
+	// The mismatch between ServerName (127.0.0.1) and cert CN (correct.example)
+	// causes the TLS handshake to fail — this is the cert-rejection path
+	// operators hit when their cert doesn't match the endpoint hostname.
 	cert, err := selfSignedCertWithCN("correct.example")
 	require.NoError(t, err)
 	mr, err := miniredis.RunTLS(&tls.Config{Certificates: []tls.Certificate{cert}})
 	require.NoError(t, err)
 	defer mr.Close()
 
-	_, port, err := splitHostPort(mr.Addr())
+	host, port, err := splitHostPort(mr.Addr())
 	require.NoError(t, err)
 
 	cfg := &config.Config{}
-	cfg.Redis.Host = "wrong.example" // does NOT match cert CN "correct.example"
+	cfg.Redis.Host = host // "127.0.0.1" — actual dial address; becomes ServerName
 	cfg.Redis.Port = port
 	cfg.Redis.TLS = true
-	cfg.Redis.InsecureSkipVerify = false // production path — must verify
+	cfg.Redis.InsecureSkipVerify = false // must verify — cert CN "correct.example" ≠ ServerName "127.0.0.1"
 
 	log, err := logger.New(true, "debug", "console")
 	require.NoError(t, err)
