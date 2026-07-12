@@ -114,6 +114,7 @@ nav:
       - Upgrading: operator/upgrading.md
       - Troubleshooting: operator/troubleshooting.md
       - Runbook: operator/runbook.md
+      - gVisor Overhead Benchmark: operator/gvisor-benchmark.md
   - Architecture:
       - Overview: architecture/index.md
       - Components: architecture/components.md

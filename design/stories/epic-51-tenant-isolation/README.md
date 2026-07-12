@@ -138,7 +138,7 @@ It is the standard answer for multi-tenant arbitrary-code platforms. Its limits:
 5. Admission webhook rejects a workspace pod when tenant CPU/memory/workspace-count quota is exceeded
 6. Quota values come from org plan (org members) or instance defaults (personal users)
 7. Pod-hardening tests pass under gVisor RuntimeClass (extend existing `security_test.go` tests to assert hardening survives when `RuntimeClassName: gvisor` is set)
-8. Performance: gVisor overhead on a representative workload (LLM-coding session) measured and documented — accept/reject gVisor based on <30% overhead target
+8. Performance: gVisor overhead on a representative workload (LLM-coding session) measured and documented — accept/reject gVisor based on <30% overhead target. The runnable harness and methodology are at `helm/scripts/gvisor-benchmark.sh` and `docs/operator/gvisor-benchmark.md`. The default in the chart (`gvisor.enabled: false`) stays off until at least one operator reports a passing measurement; flipping the default unmeasured violates this criterion.
 9. Integration test: tenant A's quota does not affect tenant B; opt-out workspace runs under `runc` as expected
 
 ---
