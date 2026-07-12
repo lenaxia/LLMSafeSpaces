@@ -5,6 +5,7 @@ package secrets
 
 import (
 	"context"
+	"encoding/base64"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -341,3 +342,140 @@ func (s *failingUpdateStore) UpdateMigrationRow(ctx context.Context, table, rowI
 }
 
 // fakeProvider is reused from composite_provider_test.go.
+
+// --- CiphertextClassification + Audit tests ---
+//
+// Post-migration verification (the "notify-kek" cleanup step): operators need
+// to confirm every KEK-protected row has been migrated to the target KMS
+// format BEFORE removing the static fallback from the composite. migrate-kek
+// --dry-run does not answer this question — it re-processes every row
+// regardless of prefix, so a row already migrated and one still legacy both
+// count as "Processed." A real audit classifies rows by ciphertext prefix and
+// reports the count of not-yet-migrated rows. That count == 0 is the gate.
+
+func TestClassifyCiphertext_AllKnownPrefixes(t *testing.T) {
+	cases := []struct {
+		name string
+		ct   string
+		want CiphertextClass
+	}{
+		{"aws-kms prefix", "aws-kms:v1:abc", ClassAWSKMS},
+		{"gcp-kms prefix", "gcp-kms:v1:abc", ClassGCPKMS},
+		{"lkms prefix (local new writes)", "lkms:v1:abc", ClassLocal},
+		{"legacy un-prefixed (raw blob)", string([]byte{0xDE, 0xAD, 0xBE, 0xEF}), ClassLegacy},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ClassifyCiphertext([]byte(tc.ct))
+			assert.Equal(t, tc.want, got, "ClassifyCiphertext must route by prefix")
+		})
+	}
+}
+
+func TestClassifyCiphertext_LegacyRowsAreNotMisclassifiedAsTarget(t *testing.T) {
+	// Regression guard: a legacy un-prefixed blob (the pre-US-57.1 production
+	// format) must NOT be reported as ClassAWSKMS or ClassGCPKMS, even when
+	// its bytes happen to be ASCII-printable. This is what makes the audit a
+	// safe gate for removing the static fallback.
+	legacy := []byte("raw-aes-gcm-blob-no-prefix")
+	class := ClassifyCiphertext(legacy)
+	assert.Equal(t, ClassLegacy, class)
+}
+
+func TestAuditMigrationTable_NoLegacy_AllMigratedToAWS(t *testing.T) {
+	// A fully-migrated deployment — every row has the aws-kms:v1: prefix.
+	// AuditTable must report zero not-yet-migrated rows so the operator can
+	// safely remove the static fallback.
+	store := newFakeMigrationStore([]MigrationRow{
+		{ID: "1", Table: "api_keys", Ciphertext: []byte("aws-kms:v1:" + base64Str("row-1")), KeyVersion: 1},
+		{ID: "2", Table: "api_keys", Ciphertext: []byte("aws-kms:v1:" + base64Str("row-2")), KeyVersion: 1},
+	})
+	c := NewMigrationCoordinator(store, nil, nil)
+	res, err := c.AuditTable(context.Background(), "api_keys", "aws-kms")
+	require.NoError(t, err)
+	assert.Equal(t, 2, res.Total, "both rows counted")
+	assert.Equal(t, 2, res.Target, "both rows already on target KMS")
+	assert.Equal(t, 0, res.Legacy+res.Local+res.OtherKMS, "no non-target rows remain")
+	assert.True(t, res.IsComplete(), "fully-migrated table must report IsComplete")
+}
+
+func TestAuditMigrationTable_MixedState_ReportsNotYetMigrated(t *testing.T) {
+	// The realistic post-migration-checkout scenario: most rows migrated,
+	// a few legacy rows still outstanding (e.g. written between migration
+	// pass 1 and pass 2). AuditTable must surface them as the cleanup gate.
+	store := newFakeMigrationStore([]MigrationRow{
+		{ID: "1", Table: "api_keys", Ciphertext: []byte("aws-kms:v1:" + base64Str("migrated-1")), KeyVersion: 1},
+		{ID: "2", Table: "api_keys", Ciphertext: []byte("lkms:v1:" + base64Str("local-new")), KeyVersion: 1},
+		{ID: "3", Table: "api_keys", Ciphertext: []byte("aws-kms:v1:" + base64Str("migrated-2")), KeyVersion: 1},
+		{ID: "4", Table: "api_keys", Ciphertext: []byte("raw-legacy-blob-no-prefix"), KeyVersion: 1},
+	})
+	c := NewMigrationCoordinator(store, nil, nil)
+	res, err := c.AuditTable(context.Background(), "api_keys", "aws-kms")
+	require.NoError(t, err)
+	assert.Equal(t, 4, res.Total)
+	assert.Equal(t, 2, res.Target, "two aws-kms rows")
+	assert.Equal(t, 1, res.Local, "one lkms:v1: row")
+	assert.Equal(t, 1, res.Legacy, "one un-prefixed legacy row")
+	assert.Equal(t, 0, res.OtherKMS, "no gcp-kms rows in an aws-kms target deployment")
+	assert.False(t, res.IsComplete(), "table with outstanding legacy/local rows must NOT report IsComplete")
+}
+
+func TestAuditMigrationTable_OtherKMSCountedSeparately(t *testing.T) {
+	// An aws-kms target deployment that still has stray gcp-kms rows
+	// (e.g. after a partial cloud switch) must classify them as OtherKMS,
+	// not silently fold them into Target. They block fallback removal
+	// for the same reason legacy rows do: the static fallback can't
+	// decrypt a gcp-kms ciphertext.
+	store := newFakeMigrationStore([]MigrationRow{
+		{ID: "1", Table: "api_keys", Ciphertext: []byte("aws-kms:v1:" + base64Str("a")), KeyVersion: 1},
+		{ID: "2", Table: "api_keys", Ciphertext: []byte("gcp-kms:v1:" + base64Str("b")), KeyVersion: 1},
+	})
+	c := NewMigrationCoordinator(store, nil, nil)
+	res, err := c.AuditTable(context.Background(), "api_keys", "aws-kms")
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Target)
+	assert.Equal(t, 1, res.OtherKMS, "gcp row in an aws-kms target deployment counts as OtherKMS")
+	assert.False(t, res.IsComplete())
+}
+
+func TestAuditMigrationTable_EmptyTable(t *testing.T) {
+	store := newFakeMigrationStore(nil)
+	c := NewMigrationCoordinator(store, nil, nil)
+	res, err := c.AuditTable(context.Background(), "api_keys", "aws-kms")
+	require.NoError(t, err)
+	assert.Equal(t, 0, res.Total)
+	assert.True(t, res.IsComplete(), "empty table is trivially complete")
+}
+
+func TestAuditMigrationTable_InvalidTarget_ReturnsError(t *testing.T) {
+	// Guard against operator typos in the target flag — silently treating
+	// "awd-kms" as a valid target would report every row as non-target and
+	// give a misleading "0 migrated" picture.
+	store := newFakeMigrationStore(nil)
+	c := NewMigrationCoordinator(store, nil, nil)
+	_, err := c.AuditTable(context.Background(), "api_keys", "awd-kms")
+	require.Error(t, err)
+}
+
+func TestAuditMigrationAll_AllThreeTablesAggregated(t *testing.T) {
+	store := newFakeMigrationStore([]MigrationRow{
+		{ID: "1", Table: "provider_credentials", Ciphertext: []byte("aws-kms:v1:" + base64Str("a")), KeyVersion: 1},
+		{ID: "2", Table: "api_keys", Ciphertext: []byte("aws-kms:v1:" + base64Str("b")), KeyVersion: 1},
+		{ID: "3", Table: "org_sso_configs", Ciphertext: []byte("lkms:v1:" + base64Str("legacy-sso")), KeyVersion: 1},
+	})
+	c := NewMigrationCoordinator(store, nil, nil)
+	results, err := c.AuditAll(context.Background(), "aws-kms")
+	require.NoError(t, err)
+	require.Contains(t, results, "provider_credentials")
+	require.Contains(t, results, "api_keys")
+	require.Contains(t, results, "org_sso_configs")
+	assert.True(t, results["provider_credentials"].IsComplete())
+	assert.True(t, results["api_keys"].IsComplete())
+	assert.False(t, results["org_sso_configs"].IsComplete(), "org_sso_configs has an outstanding lkms row")
+}
+
+// base64Str returns the base64 encoding of s — matches what real provider
+// Encrypt functions produce after the prefix.
+func base64Str(s string) string {
+	return base64.StdEncoding.EncodeToString([]byte(s))
+}

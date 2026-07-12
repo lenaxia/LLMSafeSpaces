@@ -43,7 +43,7 @@ addressed by the domain-separation story (US-50.7) and flushed during rotation.
 |---|---|---|---|
 | H1 | HIGH | Master KEK delivered as env var (`secretKeyRef → env`) instead of a file mount | US-50.1 |
 | H2 | HIGH | No rotation support; rotating the KEK is effectively destructive (Postgres ciphertexts orphaned) | US-50.3, US-50.4, US-50.5, US-50.6 |
-| H3 | HIGH | No KMS / Vault / HSM provider exists | **Deferred** (see below) |
+| H3 | HIGH | No KMS / Vault / HSM provider exists | **Done (Epic 57)** — see below |
 | M1 | MEDIUM | `static` deprecation warning fires only on explicit `"static"`, not on the Helm-empty default | US-50.8 |
 | M2 | MEDIUM | `RootKeyProvider` collapses domain separation — reuses the `dek-cache` key for the API-key DEK store | US-50.7 |
 | M3 | MEDIUM | Sealed provider only changes disk storage, not in-memory exposure; its existence implies more than it delivers | US-50.9 |
@@ -52,9 +52,16 @@ addressed by the domain-separation story (US-50.7) and flushed during rotation.
 | — | NEW | No audit logging of decrypt operations — exfiltration via legitimate API is undetectable | US-50.12 |
 | — | NEW | Two parallel crypto layers (`RootKeyProvider` + `AdminKeyDeriver`) — hardening one does not harden the other | US-50.2 |
 
-### Deferred — External Providers (H3)
+### H3 — External Providers (resolved by Epic 57)
 
-H3 ("no KMS / Vault / HSM") is deferred by explicit decision. Rationale:
+H3 ("no KMS / Vault / HSM") was deferred at Epic 50 planning time. It is now
+**resolved by Epic 57** (`design/stories/epic-57-rce-resistance-hardening/README.md`),
+which shipped `AWSKMSProvider` (US-57.1), the `migrate-kek` cross-provider CLI
+(US-57.2), and `GPCKMSProvider` (US-57.3). The original deferral rationale is
+preserved below for history; Epic 57 superseded the "single TransitProvider"
+recommendation with cloud-native KMS.
+
+Historical rationale (Epic 50 planning, 2026-05):
 
 1. **The dominant threat is RCE in the API pod.** KMS does not prevent this —
    an attacker with process access calls `provider.Decrypt()` exactly as
@@ -75,9 +82,17 @@ H3 ("no KMS / Vault / HSM") is deferred by explicit decision. Rationale:
    AGPL codebase, gives free audit logging and one-command rotation). Do NOT
    hand-roll envelope encryption — wrap the provider's native format.
 
-US-50.12 (decrypt audit logging) partially compensates for the deferral: without
-KMS-provided audit logs, application-level audit logging of every decrypt call
-is the detection layer for authorized-decrypt abuse.
+Epic 57's superseding decision (2026-07-09, see its §"Scope decision: cloud KMS,
+not self-hosted Vault/OpenBao"): cloud-deployed users get more value from native
+AWS/GCP KMS (managed, ~$1/key/month, cloud-side audit built in) than from
+self-hosted Vault, and self-hosters are already served by `SealedKeyProvider`.
+OpenBao/Vault Transit remains a possible future community contribution following
+the same `RootKeyProvider` shape — the `CompositeProvider` prefix dispatch makes
+it trivially pluggable.
+
+US-50.12 (decrypt audit logging) shipped alongside this deferral and remains
+valuable under KMS: application-level audit and cloud-side audit are
+dual-sourced, so compromise detection does not depend on a single log.
 
 ---
 

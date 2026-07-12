@@ -23,8 +23,9 @@
 //	  --gcp-key-name-org projects/.../cryptoKeys/... \
 //	  --gcp-key-name-master projects/.../cryptoKeys/...
 //
-// Supports --table, --resume-from, --dry-run, --redis-url.
-// See docs/runbooks/migrate-kek.md for the operational workflow.
+// Supports --table, --resume-from, --dry-run, --redis-url, and --audit (the
+// post-migration verification gate — see step 5 of helm/KEK-MIGRATION.md).
+// See helm/KEK-MIGRATION.md for the operational workflow.
 package main
 
 import (
@@ -60,9 +61,10 @@ func main() {
 		resumeFrom         string
 		redisURL           string
 		dryRun             bool
+		audit              bool
 	)
 	flag.StringVar(&dbURL, "db-url", "", "PostgreSQL connection string (required)")
-	flag.StringVar(&masterKeyFile, "master-key-file", "", "path to the old master KEK file (required)")
+	flag.StringVar(&masterKeyFile, "master-key-file", "", "path to the old master KEK file (required for migration; not needed for --audit)")
 	flag.StringVar(&kmsProvider, "kms", "", "target KMS provider: aws or gcp")
 	flag.StringVar(&awsRegion, "aws-region", "", "AWS region (required for --kms aws)")
 	flag.StringVar(&awsCredentialsFile, "aws-credentials-file", "", "path to AWS credentials file")
@@ -77,7 +79,16 @@ func main() {
 	flag.StringVar(&resumeFrom, "resume-from", "", "resume from this row ID (per table; for interrupted runs)")
 	flag.StringVar(&redisURL, "redis-url", "", "Redis connection string (required for DEK cache flush)")
 	flag.BoolVar(&dryRun, "dry-run", false, "report counts without writing")
+	flag.BoolVar(&audit, "audit", false, "post-migration verification: classify every KEK-protected row by ciphertext prefix and report how many are still on the legacy/local format. Use this as the safe-to-remove-static-fallback gate before US-57.2 workflow step 7.")
 	flag.Parse()
+
+	if audit {
+		if err := runAudit(dbURL, kmsProvider); err != nil {
+			fmt.Fprintf(os.Stderr, "migrate-kek --audit: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if err := validate(masterKeyFile, dbURL, kmsProvider, awsRegion, awsCredentialsFile, gcpCredentialsFile, table); err != nil {
 		fmt.Fprintf(os.Stderr, "migrate-kek: %v\n", err)
@@ -92,6 +103,60 @@ func main() {
 		fmt.Fprintf(os.Stderr, "migrate-kek: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// runAudit walks all three KEK-protected tables and prints the prefix
+// distribution per table, plus an overall pass/fail verdict. This is the
+// post-migration cleanup gate: it answers "is it safe to remove the
+// static fallback from the composite?" by checking that every row carries
+// the target KMS prefix. migrate-kek --dry-run is NOT this check — it
+// re-processes every row regardless of prefix, so an already-migrated
+// row and a still-legacy row both count as Processed.
+//
+// Exits 0 when all tables are fully migrated, 1 when any table has
+// outstanding legacy/local/other-KMS rows. Requires only --db-url and
+// --kms; the master key file and KMS credentials are not needed because
+// audit does not decrypt — it inspects ciphertext prefixes only.
+func runAudit(dbURL, kmsProvider string) error {
+	target := kmsProvider
+	if target != "aws-kms" && target != "gcp-kms" {
+		return fmt.Errorf("--audit requires --kms aws or --kms gcp (got %q)", target)
+	}
+	if dbURL == "" {
+		return fmt.Errorf("--db-url is required for --audit")
+	}
+	pgStore, err := newPgMigrationStore(dbURL)
+	if err != nil {
+		return fmt.Errorf("connect to Postgres: %w", err)
+	}
+	defer pgStore.Close()
+
+	coord := secrets.NewMigrationCoordinator(pgStore, nil, nil)
+	results, err := coord.AuditAll(context.Background(), target)
+	if err != nil {
+		return err
+	}
+
+	allComplete := true
+	order := []string{"provider_credentials", "api_keys", "org_sso_configs"}
+	fmt.Fprintf(os.Stderr, "%-22s %6s %8s %8s %8s %8s  %s\n", "TABLE", "TOTAL", "TARGET", "LEGACY", "LOCAL", "OTHER", "STATUS")
+	for _, tbl := range order {
+		a := results[tbl]
+		status := "OK"
+		if !a.IsComplete() {
+			status = fmt.Sprintf("OUTSTANDING %d", a.Outstanding())
+			allComplete = false
+		}
+		fmt.Fprintf(os.Stderr, "%-22s %6d %8d %8d %8d %8d  %s\n",
+			tbl, a.Total, a.Target, a.Legacy, a.Local, a.OtherKMS, status)
+	}
+	fmt.Fprintln(os.Stderr)
+	if allComplete {
+		fmt.Fprintf(os.Stderr, "PASS: every KEK-protected row is on %s. Safe to remove the static fallback (US-57.2 step 7).\n", target)
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "FAIL: at least one table has rows not yet on %s. Re-run migrate-kek and audit again before removing the static fallback.\n", target)
+	return fmt.Errorf("audit incomplete")
 }
 
 func validate(masterKeyFile, dbURL, kmsProvider, awsRegion, awsCredsFile, gcpCredsFile, table string) error {

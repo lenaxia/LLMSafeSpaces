@@ -239,3 +239,54 @@ func (m *mockRootProvider) Encrypt(_ context.Context, plaintext []byte) ([]byte,
 func (m *mockRootProvider) Decrypt(_ context.Context, ciphertext []byte) ([]byte, error) {
 	return ciphertext, nil
 }
+
+// TestNewPurposeProvider_KMSConfigured_NoMasterSecret_ReturnsBareKMS
+// verifies the post-migration KMS-only deployment (Epic 57 US-57.2
+// workflow step 7: "Remove Static fallback"). When the operator has
+// unmounted the master-secret file after running migrate-kek to
+// completion and verified via Audit*, the local fallback is nil. The
+// wiring must NOT construct a composite with a nil fallback (that
+// would either panic at boot via the constructor guard, or panic at
+// first Decrypt under traffic if the guard were absent). It must also
+// NOT return nil — the KMS provider alone is sufficient and is the
+// intended final state. The result is the bare KMS provider, which
+// implements RootKeyProvider directly.
+//
+// This test pins the contract that "audit-clean → safe to unmount"
+// actually works. Without this branch the post-migration runbook
+// would tell operators to do something the code can't survive.
+func TestNewPurposeProvider_KMSConfigured_NoMasterSecret_ReturnsBareKMS(t *testing.T) {
+	log, _ := logger.NewObserved()
+	cfg := kmsTestConfig(writeTestCredsFile(t))
+	// No master secret mounted anywhere — local fallback will be nil.
+	os.Unsetenv(masterSecretFileEnv)
+	os.Unsetenv(masterSecretValueEnv)
+	os.Unsetenv(masterSecretLegacyEnv)
+
+	p := newPurposeProvider(cfg, log, "provider-credentials")
+	require.NotNil(t, p, "post-migration KMS-only deployment must produce a non-nil provider")
+
+	_, isComposite := p.(*secrets.CompositeProvider)
+	assert.False(t, isComposite,
+		"when the local fallback is nil the wiring must return the bare KMS provider, not a composite")
+}
+
+// TestBuildKMSProvider_NilFallback_ReturnsBareProvider is the unit
+// test for the helper function. It verifies the two branches directly
+// without depending on env-var state: nil-local → bare KMS, non-nil
+// local → composite.
+func TestBuildKMSProvider_NilFallback_ReturnsBareProvider(t *testing.T) {
+	kms := &mockRootProvider{}
+
+	// Nil local → bare KMS provider.
+	got, err := buildKMSProvider(kms, nil)
+	require.NoError(t, err)
+	assert.Same(t, kms, got, "nil fallback must return the bare KMS provider")
+
+	// Non-nil local → composite wrapping both.
+	local := &mockRootProvider{}
+	got, err = buildKMSProvider(kms, local)
+	require.NoError(t, err)
+	_, isComposite := got.(*secrets.CompositeProvider)
+	assert.True(t, isComposite, "non-nil fallback must produce a composite")
+}
