@@ -1113,6 +1113,50 @@ func containerByName(deploy map[string]any, name string) map[string]any {
 	return nil
 }
 
+// initContainerByName returns the first initContainer spec matching the
+// given name from a Deployment doc. Walks spec.template.spec.initContainers
+// — the array containerByName does not look at. Required for asserting
+// PSA-restricted compliance on initContainers (e.g. copy-html).
+func initContainerByName(deploy map[string]any, name string) map[string]any {
+	spec, _ := deploy["spec"].(map[string]any)
+	tmpl, _ := spec["template"].(map[string]any)
+	podSpec, _ := tmpl["spec"].(map[string]any)
+	initContainers, _ := podSpec["initContainers"].([]any)
+	for _, c := range initContainers {
+		cm, _ := c.(map[string]any)
+		if n, _ := cm["name"].(string); n == name {
+			return cm
+		}
+	}
+	return nil
+}
+
+// allContainersAndInitContainers returns every container and initContainer
+// spec from a Deployment doc, in order (containers first, then
+// initContainers). Used by recurrence guards that must assert a property
+// holds for every container in the pod, not just the main one.
+func allContainersAndInitContainers(deploy map[string]any) []map[string]any {
+	spec, _ := deploy["spec"].(map[string]any)
+	tmpl, _ := spec["template"].(map[string]any)
+	podSpec, _ := tmpl["spec"].(map[string]any)
+	var out []map[string]any
+	if containers, _ := podSpec["containers"].([]any); containers != nil {
+		for _, c := range containers {
+			if cm, ok := c.(map[string]any); ok {
+				out = append(out, cm)
+			}
+		}
+	}
+	if initContainers, _ := podSpec["initContainers"].([]any); initContainers != nil {
+		for _, c := range initContainers {
+			if cm, ok := c.(map[string]any); ok {
+				out = append(out, cm)
+			}
+		}
+	}
+	return out
+}
+
 // podSecCtx returns the pod-level securityContext from a Deployment doc.
 func podSecCtx(deploy map[string]any) map[string]any {
 	spec, _ := deploy["spec"].(map[string]any)
@@ -1241,6 +1285,88 @@ func TestF4_FrontendReadOnlyRootFilesystem(t *testing.T) {
 	for _, required := range []string{"nginx-cache", "nginx-run", "tmp"} {
 		require.True(t, volumeNames[required],
 			"frontend Deployment must have an emptyDir volume %q for nginx writability (F4 fix)", required)
+	}
+}
+
+// TestF4b_FrontendCopyHtmlInitContainer_PSARestricted guards #468: the
+// copy-html initContainer must satisfy the PSA restricted profile.
+// Pre-fix it dropped no capabilities and set no container-level
+// seccompProfile, so deploying into a namespace enforcing
+// pod-security.kubernetes.io/enforce: restricted rejected the pod:
+//
+//	unrestricted capabilities (container "copy-html" must set
+//	securityContext.capabilities.drop=["ALL"])
+//
+// and the frontend Deployment sat at 0/1 Ready forever. The main
+// frontend container was already compliant; only copy-html was broken.
+func TestF4b_FrontendCopyHtmlInitContainer_PSARestricted(t *testing.T) {
+	docs := helmTemplate(t, "frontend:\n  enabled: true\n")
+
+	deploy := findDeploymentByNameSubstr(docs, "-frontend")
+	require.NotNil(t, deploy, "frontend Deployment must be rendered when frontend.enabled=true")
+
+	c := initContainerByName(deploy, "copy-html")
+	require.NotNil(t, c, "frontend pod must have a copy-html initContainer")
+
+	csc, _ := c["securityContext"].(map[string]any)
+	require.NotNil(t, csc, "copy-html initContainer must have a securityContext (#468)")
+
+	// capabilities.drop must contain ALL — this was the blocking PSA error.
+	caps, _ := csc["capabilities"].(map[string]any)
+	require.NotNil(t, caps, "copy-html initContainer must set capabilities (#468)")
+	drop, _ := caps["drop"].([]any)
+	require.NotEmpty(t, drop, "copy-html initContainer.capabilities.drop must not be empty (#468)")
+	var droppedAll bool
+	for _, d := range drop {
+		if d == "ALL" {
+			droppedAll = true
+		}
+	}
+	require.True(t, droppedAll,
+		"copy-html initContainer.capabilities.drop must contain ALL (#468: PSA restricted requires it)")
+
+	// seccompProfile set explicitly as defense-in-depth (it would otherwise
+	// be inherited from the pod-level securityContext). Asserting it here
+	// keeps copy-html aligned with the main frontend container.
+	seccomp, _ := csc["seccompProfile"].(map[string]any)
+	require.NotNil(t, seccomp, "copy-html initContainer must set a seccompProfile (#468)")
+	require.Equal(t, "RuntimeDefault", seccomp["type"],
+		"copy-html initContainer.seccompProfile.type must be RuntimeDefault (#468)")
+
+	require.Equal(t, false, csc["allowPrivilegeEscalation"],
+		"copy-html initContainer.allowPrivilegeEscalation must be false (#468)")
+}
+
+// TestF4c_FrontendAllContainersDropAllCapabilities is a recurrence guard
+// for #468: every container AND initContainer in the frontend pod must
+// drop ALL capabilities so the Deployment stays deployable in a PSA
+// restricted namespace. Pre-fix only the main frontend container
+// dropped ALL; the copy-html initContainer did not. This test fails if
+// any future container/initContainer is added without the drop.
+func TestF4c_FrontendAllContainersDropAllCapabilities(t *testing.T) {
+	docs := helmTemplate(t, "frontend:\n  enabled: true\n")
+
+	deploy := findDeploymentByNameSubstr(docs, "-frontend")
+	require.NotNil(t, deploy, "frontend Deployment must be rendered when frontend.enabled=true")
+
+	containers := allContainersAndInitContainers(deploy)
+	require.NotEmpty(t, containers, "frontend pod must have at least one container")
+
+	for _, c := range containers {
+		name, _ := c["name"].(string)
+		csc, _ := c["securityContext"].(map[string]any)
+		require.NotNil(t, csc, "container %q must have a securityContext (#468 recurrence guard)", name)
+		caps, _ := csc["capabilities"].(map[string]any)
+		require.NotNil(t, caps, "container %q must set capabilities (#468 recurrence guard)", name)
+		drop, _ := caps["drop"].([]any)
+		var droppedAll bool
+		for _, d := range drop {
+			if d == "ALL" {
+				droppedAll = true
+			}
+		}
+		require.True(t, droppedAll,
+			"container %q capabilities.drop must contain ALL (#468 recurrence guard: PSA restricted requires it for every container and initContainer)", name)
 	}
 }
 
