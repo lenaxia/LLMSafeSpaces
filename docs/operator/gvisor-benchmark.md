@@ -27,7 +27,6 @@ Phases 1 and 2 intentionally include non-pod latency. A microbenchmark that stri
 ```bash
 export API_URL=https://safespaces.example.com
 export API_TOKEN=<a token that can create+delete workspaces>
-export WORKSPACE_USERID=<your user ID>   # required; the API user benchmark workspaces belong to
 export ITERATIONS=5           # per runtime per phase; bump for tighter CI
 # Optional overrides (defaults shown):
 # export WORKSPACE_RUNTIME=base              # RuntimeEnvironment name
@@ -79,8 +78,9 @@ will clean them up.
    `spec.runtimeClass` (the opt-out is admin-gated by design — see
    `controller/internal/webhooks/workspace_webhook.go`).
 5. **An API token** for the cold-prompt phase (sessions + messages go
-   through the REST API, which requires auth). Set `API_TOKEN` and
-   `WORKSPACE_USERID` env vars to the benchmark user.
+   through the REST API, which requires auth). Set `API_TOKEN` to the
+   benchmark user's `lsp_…` API key; the token's user owns the created
+   workspaces.
 
 ## Interpreting the results
 

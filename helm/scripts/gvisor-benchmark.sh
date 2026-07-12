@@ -50,10 +50,8 @@ API_TOKEN="${API_TOKEN:?API_TOKEN must be set}"
 NAMESPACE="${NAMESPACE:-llmsafespaces}"
 ITERATIONS="${ITERATIONS:-5}"           # per runtime per phase
 WORKSPACE_RUNTIME="${WORKSPACE_RUNTIME:-base}"  # RuntimeEnvironment name
-WORKSPACE_USERID="${WORKSPACE_USERID:?WORKSPACE_USERID must be set (the API user the benchmark runs as)}"
 WORKSPACE_ORGID="${WORKSPACE_ORGID:-}"  # optional; leave empty for personal workspaces
 LLM_MODEL="${LLM_MODEL:-opencode/free}" # model for the cold-prompt phase
-ALLOW_OVERRIDE_ANNOTATION="llmsafespaces.dev/allow-runtime-class-override"
 
 # --- pretty logging ---
 if [[ -t 1 ]]; then
@@ -73,65 +71,85 @@ done
 # --- helpers ---
 ns_now() { date +%s.%N; }
 
-# Apply a Workspace CR for the given runtimeClass. Echoes the workspace name
-# (a generated unique name). The benchmark uses kubectl apply rather than
-# the API because spec.runtimeClass + the admin override annotation are not
-# exposed via CreateWorkspaceRequest — they are admin-gated by design.
+# Create a workspace via the REST API (so PostgreSQL metadata is populated,
+# not just the K8s CR — WorkspaceAccessMiddleware 404s on API operations
+# against workspaces with no DB row). Then, for the runc leg only, patch
+# the Workspace CR with kubectl to set spec.runtimeClass + the admin
+# override annotation. The API does not expose spec.runtimeClass (admin-
+# gated by design — controller/internal/webhooks/workspace_webhook.go),
+# so the runc opt-out has to go through kubectl patch after creation.
+#
+# Echoes the workspace ID (the API-generated UUID, which is also the CR name).
 create_workspace() {
     local runtime_class="$1"   # "gvisor" or "runc"
     local name="gvisor-bench-${runtime_class}-$(date +%s)-${RANDOM}"
 
-    # spec.runtimeClass is omitted (nil) for the gVisor leg so the controller's
-    # default applies (gvisor when gvisor.enabled=true). It is explicitly "runc"
-    # for the runc leg, with the admin annotation that the validating webhook
-    # requires (controller/internal/webhooks/workspace_webhook.go).
-    local runtime_class_line=""
-    local annotations_block=$'    llmsafespaces.dev/bench: "gvisor-benchmark"'
-    if [[ "$runtime_class" == "runc" ]]; then
-        runtime_class_line=$'\n  runtimeClass: "runc"'
-        annotations_block=$'    llmsafespaces.dev/allow-runtime-class-override: "true"\n    llmsafespaces.dev/bench: "gvisor-benchmark"'
-    fi
-
-    # The bench marker is also a label so kubectl -l selectors work for
-    # cleanup (annotations are not selectable). The runtime override lives
-    # only in annotations (where the webhook reads it).
-    local orgid_line=""
-    if [[ -n "$WORKSPACE_ORGID" ]]; then
-        orgid_line=$'\n    orgID: "'"$WORKSPACE_ORGID"'"'
-    fi
-
-    # heredoc with variable expansion. The runtimeClass line is conditionally
-    # inserted; omitting it entirely (vs setting empty string) matters because
-    # the webhook treats empty-string as an explicit clear, not as unset.
-    local manifest
-    manifest=$(cat <<EOF
-apiVersion: llmsafespaces.dev/v1
-kind: Workspace
-metadata:
-  name: $name
-  namespace: $NAMESPACE
-  labels:
-    llmsafespaces.dev/bench: gvisor-benchmark
-  annotations:
-$annotations_block
-spec:
-  owner:
-    userID: "$WORKSPACE_USERID"$orgid_line
-  runtime: "$WORKSPACE_RUNTIME"
-  storage:
-    size: 5Gi$runtime_class_line
+    # Step 1: create via the REST API. This populates both the K8s CR
+    # AND the PostgreSQL metadata row that WorkspaceAccessMiddleware
+    # gates every /workspaces/:id/* request on. CreateWorkspaceRequest
+    # (pkg/types/workspace.go:29-36) accepts: name, runtime, storageSize,
+    # storageClass, labels, orgId. It does NOT accept spec.runtimeClass.
+    local body
+    body=$(cat <<EOF
+{
+  "name": "$name",
+  "runtime": "$WORKSPACE_RUNTIME",
+  "storageSize": "5Gi"$( [[ -n "$WORKSPACE_ORGID" ]] && echo ", \"orgId\": \"$WORKSPACE_ORGID\"" )
+}
 EOF
 )
-    printf '%s\n' "$manifest" | kubectl apply -f - 2>&1 | sed 's/^/    /' >&2 || {
-        fail "kubectl apply failed for workspace $name"
+    local ws
+    ws=$(curl -sS -X POST "$API_URL/api/v1/workspaces" \
+        -H "Authorization: Bearer $API_TOKEN" \
+        -H 'Content-Type: application/json' \
+        -d "$body" | jq -r '.id // empty')
+    if [[ -z "$ws" ]]; then
+        fail "workspace create via REST API failed for runtime=$runtime_class (no .id in response)"
         return 1
-    }
-    echo "$name"
+    fi
+
+    # Step 2: tag the workspace with a label so cleanup selectors work.
+    # The API's CreateWorkspaceRequest accepts labels, but we set the
+    # bench marker via kubectl patch so it lands directly on the CR
+    # metadata without needing to thread a labels field through the
+    # request body.
+    kubectl label workspace "$ws" -n "$NAMESPACE" \
+        llmsafespaces.dev/bench=gvisor-benchmark \
+        --overwrite >/dev/null 2>&1 || true
+
+    # Step 3: for the runc leg only, patch the CR to set spec.runtimeClass
+    # and the admin override annotation. The validating webhook requires
+    # both (controller/internal/webhooks/workspace_webhook.go). The patch
+    # requires cluster-admin RBAC (already a prerequisite declared in the
+    # doc). For the gVisor leg, no patch — the controller's default
+    # RuntimeClass applies (gvisor when gvisor.enabled=true).
+    if [[ "$runtime_class" == "runc" ]]; then
+        local patch
+        patch=$(cat <<'EOF'
+{
+  "metadata": {"annotations": {"llmsafespaces.dev/allow-runtime-class-override": "true"}},
+  "spec": {"runtimeClass": "runc"}
+}
+EOF
+)
+        if ! kubectl patch workspace "$ws" -n "$NAMESPACE" --type merge -p "$patch" >/dev/null 2>&1; then
+            fail "kubectl patch failed for workspace $ws (runtimeClass override requires cluster-admin RBAC)"
+            delete_workspace "$ws"
+            return 1
+        fi
+    fi
+
+    echo "$ws"
 }
 
 delete_workspace() {
     local ws="$1"
-    kubectl delete workspace "$ws" -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true
+    # DELETE via the REST API removes both the CR and the PostgreSQL
+    # row. Falls back to kubectl delete if the API call fails (e.g.,
+    # the workspace never got a DB row), so we don't leak CRs.
+    curl -sS -X DELETE "$API_URL/api/v1/workspaces/$ws" \
+        -H "Authorization: Bearer $API_TOKEN" >/dev/null 2>&1 || \
+        kubectl delete workspace "$ws" -n "$NAMESPACE" --ignore-not-found >/dev/null 2>&1 || true
 }
 
 # Wait for a workspace to reach Active. Echoes wall-clock seconds from create.
