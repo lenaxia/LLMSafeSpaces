@@ -4202,17 +4202,42 @@ controller:
 	clusterCR := findClusterRoleByNameSubstr(t, docs, "-controller-cluster")
 	require.NotNil(t, clusterCR, "cluster ClusterRole must be rendered when rbac.scope=cluster")
 
+	// The ClusterRole must include configmaps (the fix for #469) ...
 	rules, _ := clusterCR["rules"].([]any)
+	var cmRule map[string]any
 	for _, r := range rules {
 		rule, _ := r.(map[string]any)
 		resources, _ := rule["resources"].([]any)
 		for _, res := range resources {
 			if res == "configmaps" {
-				return // found — test passes
+				cmRule = rule
+				break
 			}
 		}
+		if cmRule != nil {
+			break
+		}
 	}
-	t.Fatal("ClusterRole must include configmaps when freeModelsRefresher.enabled=true and rbac.scope=cluster (#469)")
+	require.NotNil(t, cmRule, "ClusterRole must include configmaps when freeModelsRefresher.enabled=true and rbac.scope=cluster (#469)")
+
+	// ... with the narrow verb set (no delete). Mirrors the namespace
+	// Role's if/else pattern — the free-models refresher only publishes
+	// (Get + Create-or-Update); deletion is never required.
+	verbs, _ := cmRule["verbs"].([]any)
+	var verbStrs []string
+	for _, v := range verbs {
+		if s, ok := v.(string); ok {
+			verbStrs = append(verbStrs, s)
+		}
+	}
+	assert.NotContains(t, verbStrs, "delete",
+		"ClusterRole configmaps rule must NOT grant delete for the free-models refresher (least privilege)")
+	assert.Contains(t, verbStrs, "get")
+	assert.Contains(t, verbStrs, "list")
+	assert.Contains(t, verbStrs, "watch")
+	assert.Contains(t, verbStrs, "create")
+	assert.Contains(t, verbStrs, "update")
+	assert.Contains(t, verbStrs, "patch")
 }
 
 // TestClusterRole_ConfigMapsAbsentWhenBothDisabled verifies the negative
