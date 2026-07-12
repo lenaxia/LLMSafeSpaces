@@ -803,7 +803,11 @@ func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, insta
 			c.JSON(http.StatusBadRequest, gin.H{"error": sanitizeBindError(err)})
 			return
 		}
-		resp, err := authSvc.Login(c.Request.Context(), req)
+		// G13: propagate client IP through context so the lockout
+		// logic can key on email+IP, preventing an attacker who knows
+		// the victim's email from locking them out from a different IP.
+		loginCtx := auth.WithClientIP(c.Request.Context(), c.ClientIP())
+		resp, err := authSvc.Login(loginCtx, req)
 		if err != nil {
 			if errors.Is(err, auth.ErrEmailNotVerified) {
 				c.JSON(http.StatusForbidden, gin.H{"error": err.Error(), "emailVerified": false})

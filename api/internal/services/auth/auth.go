@@ -997,8 +997,9 @@ func (s *Service) Login(ctx context.Context, req types.LoginRequest) (*types.Aut
 
 	lockoutEnabled, lockoutAttempts, _ := s.lockoutConfig(ctx)
 	if lockoutEnabled {
-		lockoutKey := fmt.Sprintf("lockout:%s", email)
-		if countStr, err := s.cacheService.Get(ctx, lockoutKey); err == nil && countStr != "" {
+		clientIP := clientIPFromContext(ctx)
+		lk := lockoutKey(email, clientIP)
+		if countStr, err := s.cacheService.Get(ctx, lk); err == nil && countStr != "" {
 			var count int
 			if _, err := fmt.Sscanf(countStr, "%d", &count); err == nil && count >= lockoutAttempts {
 				// A locked-out attempt is still an attempt from
@@ -1200,8 +1201,9 @@ func (s *Service) recordFailedAttempt(ctx context.Context, email string) {
 	if !enabled {
 		return
 	}
-	lockoutKey := fmt.Sprintf("lockout:%s", email)
-	countStr, _ := s.cacheService.Get(ctx, lockoutKey)
+	clientIP := clientIPFromContext(ctx)
+	lk := lockoutKey(email, clientIP)
+	countStr, _ := s.cacheService.Get(ctx, lk)
 	count := 0
 	if countStr != "" {
 		_, _ = fmt.Sscanf(countStr, "%d", &count)
@@ -1210,7 +1212,7 @@ func (s *Service) recordFailedAttempt(ctx context.Context, email string) {
 	if duration == 0 {
 		duration = 15 * time.Minute
 	}
-	if err := s.cacheService.Set(ctx, lockoutKey, fmt.Sprintf("%d", count), duration); err != nil {
+	if err := s.cacheService.Set(ctx, lk, fmt.Sprintf("%d", count), duration); err != nil {
 		s.logger.Error("Failed to record lockout attempt", err, "email", email)
 	}
 }
@@ -1220,10 +1222,46 @@ func (s *Service) clearFailedAttempts(ctx context.Context, email string) {
 	if !enabled {
 		return
 	}
-	lockoutKey := fmt.Sprintf("lockout:%s", email)
-	if err := s.cacheService.Delete(ctx, lockoutKey); err != nil {
+	clientIP := clientIPFromContext(ctx)
+	lk := lockoutKey(email, clientIP)
+	if err := s.cacheService.Delete(ctx, lk); err != nil {
 		s.logger.Error("Failed to clear lockout", err, "email", email)
 	}
+}
+
+// lockoutKeyCtxKey is the context key carrying the client IP for G13
+// lockout key construction. Set by the router before calling Login;
+// read by recordFailedAttempt, the lockout check, and clearFailedAttempts.
+type lockoutKeyCtxKey struct{}
+
+// WithClientIP returns ctx with the client IP attached, so the lockout
+// logic can key on email+IP (G13). Callers that don't set this fall
+// back to email-only keying (the pre-G13 behavior).
+func WithClientIP(ctx context.Context, ip string) context.Context {
+	return context.WithValue(ctx, lockoutKeyCtxKey{}, ip)
+}
+
+// clientIPFromContext returns the client IP set by WithClientIP, or ""
+// when not set (pre-G13 behavior: email-only lockout key).
+func clientIPFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(lockoutKeyCtxKey{}).(string)
+	return v
+}
+
+// lockoutKey constructs the Redis key for the account-lockout counter.
+// G13: key includes the client IP so an attacker who knows the victim's
+// email cannot lock them out from a different IP. Pre-G13 the key was
+// email-only, making the lockout an amplification DoS vector.
+//
+// When clientIP is empty (context not set — e.g. tests, internal
+// callers), falls back to email-only keying (the pre-G13 behavior).
+// This preserves backward compatibility for callers that haven't been
+// updated to use WithClientIP.
+func lockoutKey(email, clientIP string) string {
+	if clientIP == "" {
+		return fmt.Sprintf("lockout:%s", email)
+	}
+	return fmt.Sprintf("lockout:%s:%s", email, clientIP)
 }
 
 // CreateAPIKey creates a new API key for the user. When req.DecryptAccess is

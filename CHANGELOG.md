@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **G13 — Account lockout now keys on email + IP (Medium).** The
+  lockout counter was keyed on email only
+  (`lockout:<email>`). An attacker who knew a victim's email could
+  submit bad passwords from any IP and lock the victim's account — a
+  DoS amplification vector. The lockout key now includes the client IP
+  (`lockout:<email>:<ip>`), so an attacker from a different IP cannot
+  trigger the victim's lockout. A new `WithClientIP(ctx, ip)` context
+  helper propagates the IP from the gin router through `Login`. Callers
+  that don't set it fall back to email-only keying (backward compat).
+  Regression: `TestLogin_G13_AttackerFromDifferentIPCannotLockVictim`,
+  `TestLogin_G13_SameIPLockoutStillWorks`,
+  `TestLogin_G13_NoIPContextFallsBackToEmailOnly`.
+
 - **G38 — ChangePassword now revokes all sessions (High).** The handler
   at `POST /api/v1/account/change-password` previously re-wrapped the
   DEK with the new password and updated the bcrypt hash but left every
