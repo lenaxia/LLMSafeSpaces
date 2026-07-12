@@ -259,9 +259,12 @@ func TestNewPurposeProvider_KMSConfigured_NoMasterSecret_ReturnsBareKMS(t *testi
 	log, _ := logger.NewObserved()
 	cfg := kmsTestConfig(writeTestCredsFile(t))
 	// No master secret mounted anywhere — local fallback will be nil.
-	os.Unsetenv(masterSecretFileEnv)
-	os.Unsetenv(masterSecretValueEnv)
-	os.Unsetenv(masterSecretLegacyEnv)
+	// t.Setenv (not os.Unsetenv) so the env state is restored after the
+	// test, matching the pattern in app_master_key_test.go and not
+	// leaking global state to subsequent tests in the package.
+	t.Setenv(masterSecretFileEnv, "")
+	t.Setenv(masterSecretValueEnv, "")
+	t.Setenv(masterSecretLegacyEnv, "")
 
 	p := newPurposeProvider(cfg, log, "provider-credentials")
 	require.NotNil(t, p, "post-migration KMS-only deployment must produce a non-nil provider")

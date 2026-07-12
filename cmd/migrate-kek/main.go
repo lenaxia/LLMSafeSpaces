@@ -105,6 +105,23 @@ func main() {
 	}
 }
 
+// resolveAuditTarget maps the operator-facing --kms value ("aws" or "gcp")
+// to the ciphertext-prefix form ("aws-kms" or "gcp-kms") that the audit
+// coordinator wants. Extracted from runAudit for unit testing — the kms
+// flag validation was the site of a real bug (PR #548 review C1: the audit
+// CLI rejected valid --kms values because target == kmsProvider == "aws"
+// never matched "aws-kms"). Pure function; no I/O.
+func resolveAuditTarget(kmsProvider string) (string, error) {
+	switch kmsProvider {
+	case "aws":
+		return "aws-kms", nil
+	case "gcp":
+		return "gcp-kms", nil
+	default:
+		return "", fmt.Errorf("--audit requires --kms aws or --kms gcp (got %q)", kmsProvider)
+	}
+}
+
 // runAudit walks all three KEK-protected tables and prints the prefix
 // distribution per table, plus an overall pass/fail verdict. This is the
 // post-migration cleanup gate: it answers "is it safe to remove the
@@ -118,9 +135,9 @@ func main() {
 // --kms; the master key file and KMS credentials are not needed because
 // audit does not decrypt — it inspects ciphertext prefixes only.
 func runAudit(dbURL, kmsProvider string) error {
-	target := kmsProvider
-	if target != "aws-kms" && target != "gcp-kms" {
-		return fmt.Errorf("--audit requires --kms aws or --kms gcp (got %q)", target)
+	target, err := resolveAuditTarget(kmsProvider)
+	if err != nil {
+		return err
 	}
 	if dbURL == "" {
 		return fmt.Errorf("--db-url is required for --audit")

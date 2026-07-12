@@ -298,8 +298,12 @@ type CiphertextAudit struct {
 // the composite's static fallback can decrypt only legacy + lkms rows;
 // any non-zero Legacy/Local/OtherKMS count means the fallback is still
 // load-bearing.
+//
+// Equivalent to `a.Target == a.Total` — when Total is 0, Target is also
+// 0 (an empty table is trivially complete). The simpler form reads
+// unambiguously without relying on && / || precedence.
 func (a CiphertextAudit) IsComplete() bool {
-	return a.Total > 0 && a.Target == a.Total || a.Total == 0
+	return a.Target == a.Total
 }
 
 // Outstanding returns the count of rows the static fallback still owns
