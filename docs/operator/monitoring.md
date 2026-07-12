@@ -306,8 +306,8 @@ Metrics tell you *what* is happening; logs tell you *why*. Ship logs to an aggre
 | Workspace pods (agentd) | Health probes, credential reload, OOM warnings. |
 | Workspace pods (main, opencode) | Agent behavior — high volume; consider sampling. |
 
-!!! warning "Secret logging (gap G25)"
-    The secret `value` field is logged unredacted in API request bodies when body logging is enabled (G25). Do not enable debug body logging on `/api/v1/secrets/*` in production, and ensure your log aggregator redacts or restricts access to these logs.
+!!! info "Secret logging (G25 fixed)"
+    The secret `value` field is masked in all logged JSON bodies (added to `SensitiveFields`), and body logging is entirely skipped on credential-bearing paths (`/api/v1/secrets/*`, `/api/v1/account/*`, `/api/v1/auth/*`) via `SkipPathPrefixes`. Two-layer defense — either alone prevents the leak.
 
 ### Useful log queries
 
