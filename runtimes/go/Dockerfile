@@ -1,10 +1,15 @@
-ARG TARGETARCH=amd64
+# Multi-arch: see api/Dockerfile for the cross-compile pattern. The Go
+# tarball URL is arch-specific (golang.org/dl/goX.linux-${TARGETARCH}.tar.gz)
+# so TARGETARCH must be the runtime arch, not the builder arch. Removing
+# the =amd64 default lets buildx inject the correct per-platform value
+# rather than silently downloading amd64 even on arm64 hosts (#462).
 
 FROM ghcr.io/lenaxia/llmsafespaces/base:latest
 
 USER root
 
-# Install Go
+# Install Go. TARGETARCH is injected by buildx per-platform
+# (linux/amd64, linux/arm64). No hardcoded default — see #462.
 ARG TARGETARCH
 ENV GO_VERSION=1.20.5
 RUN curl -sSL https://golang.org/dl/go${GO_VERSION}.linux-${TARGETARCH}.tar.gz | tar -C /usr/local -xz

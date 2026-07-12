@@ -3,10 +3,12 @@
 # Build context MUST be the repository root (single Go module at root).
 #
 #   docker build -f cmd/relay-router/Dockerfile -t llmsafespaces/relay-router:dev .
+#
+# Multi-arch: see api/Dockerfile for the cross-compile pattern. Do not pin
+# ARG TARGETARCH to a default — buildx injects the value per-platform; a
+# hardcoded default can produce a binary for the wrong arch (issue #462).
 
-ARG TARGETARCH=amd64
-
-FROM golang:1.25 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25 AS builder
 
 WORKDIR /workspace
 
@@ -19,6 +21,7 @@ RUN go mod download
 COPY cmd/ cmd/
 COPY pkg/ pkg/
 
+# TARGETARCH is injected by buildx per-platform. No hardcoded default — see #462.
 ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
     go build \
