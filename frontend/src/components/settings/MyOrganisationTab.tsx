@@ -37,9 +37,17 @@ export function MyOrganisationTab() {
 
   if (!org) {
     return (
-      <p className="text-xs text-muted-foreground">
-        You are not a member of any organisation.
-      </p>
+      <div className="space-y-4">
+        <h3 className="text-sm font-semibold">My Organisation</h3>
+        <p className="text-xs text-muted-foreground">
+          You are not a member of any organisation.
+        </p>
+        <p className="text-xs text-muted-foreground">
+          If you have been invited to join an organisation, check your
+          email for the invitation link, or ask your organisation
+          administrator to resend it.
+        </p>
+      </div>
     );
   }
 
