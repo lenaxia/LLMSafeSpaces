@@ -98,14 +98,26 @@ spec:
             {{- with .Values.inferenceRelayURL }}
             - --inference-relay-url={{ . }}
             {{- end }}
-            {{- /* inferenceRelaySecret is injected via env var from the K8s Secret
-                   (see env block below) rather than as a plaintext CLI arg, so it
-                   is not visible in `kubectl get pod -o yaml` args. */ -}}
+            {{- /* G47: inferenceRelaySecret is injected via env var from
+                   the K8s Secret (see env block below) rather than as a
+                   plaintext CLI arg, so it is not visible in
+                   `kubectl get pod -o yaml` args. The previous plaintext
+                   fallback (`--inference-relay-secret={{ .Values.inferenceRelaySecret }}`)
+                   was removed because it exposed the secret in the pod
+                   spec. Operators MUST supply the secret via one of:
+                   (a) .Values.externalSecret.create=true (chart creates
+                       the K8s Secret from .Values.inferenceRelaySecret);
+                   (b) .Values.externalSecret.existingSecret=name (chart
+                       uses an operator-created Secret); or
+                   (c) fluxcd/ExternalSecret pointing at AWS Secrets
+                       Manager / GCP Secret Manager / Vault. */ -}}
             {{- if and .Values.inferenceRelayURL (or .Values.externalSecret.create .Values.externalSecret.existingSecret) }}
             - --inference-relay-secret=$(INFERENCE_RELAY_SECRET)
             {{- else if .Values.inferenceRelaySecret }}
-            {{- /* Fallback for operators not using the managed Secret. */ -}}
-            - --inference-relay-secret={{ .Values.inferenceRelaySecret }}
+            {{- /* G47 fix: refuse to render the plaintext path. Fail
+                   at helm-render time with an actionable error rather
+                   than silently exposing the secret. */ -}}
+            {{- fail "G47: .Values.inferenceRelaySecret is set but neither .Values.externalSecret.create nor .Values.externalSecret.existingSecret is configured. The plaintext CLI-arg fallback was removed (visible in `kubectl get pod -o yaml`). Set externalSecret.create=true (chart creates the Secret) or externalSecret.existingSecret=name (use an operator-created Secret)." }}
             {{- end }}
             {{- end }}
             {{- if .Values.controller.inferenceRelay.enabled }}

@@ -175,6 +175,23 @@ func sseConnAllowed(ip string) bool {
 	defer sseConnMu.Unlock()
 
 	now := time.Now()
+	// G42: opportunistic pruning of stale entries. Without this, the
+	// sseConnCounts map grows unbounded over the process lifetime —
+	// every distinct client IP that ever attempts a connection leaves
+	// a permanent entry, even after its resetAt expires. The prune is
+	// O(N) where N is the number of distinct IPs seen in the last
+	// sseConnRateWindow. N is bounded in practice by the per-IP rate
+	// limit (sseConnRateLimit per sseConnRateWindow) — long-lived
+	// deployments with rotating clients (NAT pools, mobile networks)
+	// are the realistic worst case at ~thousands of entries, not
+	// millions. Sweeping on every call avoids a separate goroutine
+	// and the lifecycle complexity it would add.
+	for k, v := range sseConnCounts {
+		if now.After(v.resetAt) {
+			delete(sseConnCounts, k)
+		}
+	}
+
 	entry, ok := sseConnCounts[ip]
 	if !ok || now.After(entry.resetAt) {
 		sseConnCounts[ip] = &sseConnAttempt{count: 1, resetAt: now.Add(sseConnRateWindow)}

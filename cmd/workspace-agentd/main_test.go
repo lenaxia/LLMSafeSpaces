@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"runtime"
 	"sync"
 	"testing"
@@ -1070,4 +1071,39 @@ func TestStartRelayInjector_ExitsOnContextCancellation(t *testing.T) {
 		t.Fatal("KillOpenCode must not be called when health check never passes")
 	default:
 	}
+}
+
+// === G46: readAgentPassword ===
+
+// TestReadAgentPasswordFromPath_HappyPath verifies the password is read
+// and trimmed correctly. This exercises the real production code path
+// (readAgentPasswordFromPath) rather than testing Go stdlib functions.
+func TestReadAgentPasswordFromPath_HappyPath(t *testing.T) {
+	dir := t.TempDir()
+	pwPath := dir + "/password"
+	const want = "super-secret-password-12345"
+	require.NoError(t, os.WriteFile(pwPath, []byte(want+"\n"), 0o600))
+
+	got, err := readAgentPasswordFromPath(pwPath)
+	require.NoError(t, err)
+	assert.Equal(t, want, got, "password should be read and trimmed (trailing newline stripped)")
+}
+
+// TestReadAgentPasswordFromPath_MissingFileReturnsError verifies the
+// G46 behavioral contract: a missing password file returns an error
+// (not an empty string with nil error). The caller (readAgentPassword)
+// uses this error to trigger os.Exit(1) — pre-fix the function returned
+// an empty string and logged only a Warn, leaving the workspace silently
+// non-functional.
+//
+// This test does NOT exercise os.Exit (which would kill the test
+// process). The error return is the meaningful contract; the caller's
+// Error+exit behavior is the caller's responsibility.
+func TestReadAgentPasswordFromPath_MissingFileReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	pwPath := dir + "/nonexistent-password"
+
+	got, err := readAgentPasswordFromPath(pwPath)
+	require.Error(t, err, "G46: missing password file must return an error (pre-fix: returned empty string + nil error)")
+	assert.Empty(t, got, "error path must not return a partial password")
 }

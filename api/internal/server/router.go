@@ -233,6 +233,23 @@ func DefaultRouterConfig() RouterConfig {
 					Burst:  authRateBurst,
 					Window: time.Minute,
 				},
+				// G41/G6: /secrets/:id/reveal takes the user's password
+				// as input to re-authenticate before decrypting. The
+				// endpoint is a credential-bearing target — without a
+				// per-endpoint cap, the global 100/min/IP limiter lets
+				// a single IP attempt 100 password guesses per minute.
+				// 5/min/burst-5 matches the password-verify rate a
+				// legitimate user would produce (re-reveal a few
+				// secrets in quick succession) while making brute-force
+				// impractical (5 attempts/min → 7,200/day; bcrypt cost
+				// 12 makes each attempt ~250ms, so 30min of CPU per
+				// 7,200 guesses — well below practical brute-force
+				// thresholds for strong passwords).
+				"/api/v1/secrets/:id/reveal": {
+					Limit:  5,
+					Burst:  5,
+					Window: time.Minute,
+				},
 			},
 		},
 		SecurityConfig: middleware.DefaultSecurityConfig(),

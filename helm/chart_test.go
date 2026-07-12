@@ -35,6 +35,7 @@ package chart_test
 import (
 	"bytes"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -3798,4 +3799,81 @@ orgSubdomainRouting:
 	require.Error(t, err, "helm template must fail when orgSubdomainRouting.enabled=true but baseDomain is empty")
 	assert.Contains(t, stderr.String(), "baseDomain is required",
 		"error message must explain that baseDomain is required")
+}
+
+// ---------------------------------------------------------------------------
+// G47: inferenceRelaySecret must NOT render as a plaintext CLI arg
+// ---------------------------------------------------------------------------
+
+// TestControllerArgs_G47_NoPlaintextRelaySecretFallback verifies that
+// setting .Values.inferenceRelaySecret WITHOUT configuring the
+// externalSecret mechanism now FAILS at helm-render time, rather than
+// silently rendering the secret as a plaintext CLI arg visible in
+// `kubectl get pod -o yaml`.
+//
+// Pre-fix: the chart rendered `--inference-relay-secret=<value>`
+// directly into the controller Deployment's container args. Anyone
+// with read access to the pod spec (kubectl get pods, monitoring
+// scrapers, audit log aggregators) could see the secret.
+//
+// Post-fix: the chart refuses to render. The error message tells the
+// operator exactly how to fix it (set externalSecret.create=true or
+// externalSecret.existingSecret=name).
+func TestControllerArgs_G47_NoPlaintextRelaySecretFallback(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not on PATH; skipping chart render test")
+	}
+	// Force the env-var path OFF (externalSecret.create: false) so the
+	// only remaining place the secret could render is the plaintext
+	// fallback that G47 removes.
+	values := `
+inferenceRelayURL: https://relay.example.com/v1
+inferenceRelaySecret: plaintext-secret-must-be-rejected
+externalSecret:
+  create: false
+  existingSecret: ""
+`
+	valuesPath := filepath.Join(t.TempDir(), "values.yaml")
+	require.NoError(t, os.WriteFile(valuesPath, []byte(values), 0o600))
+
+	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+
+	require.Error(t, err, "G47: helm template must FAIL when inferenceRelaySecret is set but externalSecret.create=false and existingSecret is empty (was silently rendered as plaintext CLI arg pre-fix)")
+	assert.Contains(t, stderr.String(), "G47",
+		"error message must reference G47 so operators can find the rationale")
+	assert.Contains(t, stderr.String(), "externalSecret",
+		"error message must explain the externalSecret remediation path")
+}
+
+// TestControllerArgs_G47_EnvVarPathStillWorks verifies the fix didn't
+// break the legitimate path: when externalSecret IS configured, the
+// secret is injected via env var ($(INFERENCE_RELAY_SECRET)) and the
+// args contain --inference-relay-secret=$(INFERENCE_RELAY_SECRET)
+// (env-var interpolation, NOT plaintext).
+func TestControllerArgs_G47_EnvVarPathStillWorks(t *testing.T) {
+	values := `
+inferenceRelayURL: https://relay.example.com/v1
+inferenceRelaySecret: secret-via-env-var-path
+externalSecret:
+  create: true
+`
+	docs := helmTemplate(t, values)
+	args := findControllerArgs(t, docs)
+	require.NotEmpty(t, args)
+
+	var relaySecretArg string
+	for _, a := range args {
+		if strings.HasPrefix(a, "--inference-relay-secret=") {
+			relaySecretArg = a
+		}
+	}
+	require.NotEmpty(t, relaySecretArg,
+		"--inference-relay-secret= must render when inferenceRelayURL + externalSecret.create are set")
+	assert.Equal(t, "--inference-relay-secret=$(INFERENCE_RELAY_SECRET)", relaySecretArg,
+		"G47: must use env-var interpolation, NOT plaintext value")
+	assert.NotContains(t, relaySecretArg, "secret-via-env-var-path",
+		"G47: plaintext secret value must NOT appear in pod args")
 }
