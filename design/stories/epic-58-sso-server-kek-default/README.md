@@ -52,7 +52,7 @@ The change is small at the data-model layer and concentrated at boot.
 
 ### Data model
 
-No schema change. The existing `user_keys` table already has:
+Two schema changes are needed (the `dek_source` enum and a nullable `Salt`; see Files). The existing `user_keys` table already has:
 
 ```
 WrappedDEK         BYTEA   -- the DEK, wrapped by some KEK
@@ -61,17 +61,17 @@ Salt               BYTEA   -- Argon2id salt for password-derived KEK
 KeyVersion         INTEGER -- the wrapping key's version
 ```
 
-Today `WrappedDEK` is wrapped by a KEK derived from `Salt` + the user's password. After this epic, for SSO-provisioned users, `WrappedDEK` is wrapped by the **`master-kek` purpose key** — the same `RootKeyProvider` that wraps API-key DEKs today (`api/internal/app/app.go:544-566`, the `apiKeyProv` path). `Salt` is `NULL` because no Argon2id derivation is involved. `KeyVersion` tracks the master-KEK version.
+Today `WrappedDEK` is wrapped by a KEK derived from `Salt` + the user's password. After this epic, for SSO-provisioned users, `WrappedDEK` is wrapped by the **`master-kek` purpose key** — the same `RootKeyProvider` that wraps API-key DEKs today (`api/internal/app/app.go:593`, the `apiKeyProv` path). `Salt` is `NULL` because no Argon2id derivation is involved — and because `Salt` is currently `NOT NULL` (`api/migrations/000001_initial_schema.up.sql:531`), dropping that constraint is the second schema change. `KeyVersion` tracks the master-KEK version.
 
-The schema already supports this. A new column or flag indicating "this `user_keys` row is server-KEK-wrapped, not password-wrapped" is needed so decrypt knows which path to take — but it can live on the existing `users` table as a boolean rather than adding a column to `user_keys`. Specifically:
+The `WrappedDEK` / `KeyVersion` columns are reused as-is; the new state is expressed by `users.dek_source`, not by a column on `user_keys`. A new column or flag indicating "this `user_keys` row is server-KEK-wrapped, not password-wrapped" is needed so decrypt knows which path to take — it can live on the existing `users` table rather than adding a column to `user_keys`. Specifically:
 
 - `users.dek_source` (new, ENUM: `'password'`, `'server_kek'`, default `'password'`). Set to `'server_kek'` for SSO-auto-provisioned users under this epic. Existing SSO users who set a password transition to `'password'`.
 
 ### Boot path
 
-`KeyService.GetDEK` today derives the KEK from the password via Argon2id, then unwraps `WrappedDEK`. The branch this epic adds: when `users.dek_source == 'server_kek'`, skip the Argon2id derivation and unwrap `WrappedDEK` via the master-KEK `RootKeyProvider` (the same provider used for `apiKeyProv`). The provider already exists, is already wrapped in `AuditedProvider` (US-50.12), and is already wired in `app.go`.
+The password→KEK→DEK derivation today happens in `KeyService.UnlockDEKWithSigningKey` at login (`pkg/secrets/key_service.go:322` — `DeriveKEKFromPassword` + `UnwrapDEK`), **not** in `GetDEK`; `GetDEK` (`pkg/secrets/key_service.go:502`) only does Redis-cache lookup plus `jwt_sessions` durable rehydrate and never touches a password or Argon2id. The branch this epic adds: when `users.dek_source == 'server_kek'`, the login/provisioning path skips the Argon2id derivation and unwraps `WrappedDEK` via the master-KEK `RootKeyProvider` (the same provider used for `apiKeyProv`). The provider already exists, is already wrapped in `AuditedProvider` (US-50.12), and is already wired in `app.go`.
 
-The change is one branch in `KeyService.GetDEK` plus the per-user flag. ~50 lines of code + tests.
+The change is one branch on the unlock/provisioning path plus the per-user flag. ~50 lines of code + tests.
 
 ### Provisioning path
 
@@ -86,30 +86,31 @@ The user immediately has a working DEK and can save personal secrets. No "set a 
 
 ### Password-transition path (existing SSO users + opt-up)
 
-`auth.ChangePassword` already re-wraps the DEK when the user sets a password. Add: after a successful `ChangePassword` from an SSO user (`dek_source == 'server_kek'`), flip `dek_source` to `'password'`. The transition is one-directional in the user's favor — they move to the stronger tier voluntarily.
+`KeyService.ChangePassword` (`pkg/secrets/key_service.go:805`) already re-wraps the DEK when the user sets a password (HTTP handler: `RotateKeyHandler.ChangePassword`, `api/internal/handlers/secrets.go:625` — there is no `auth.ChangePassword`). Add: after a successful `ChangePassword` from an SSO user (`dek_source == 'server_kek'`), flip `dek_source` to `'password'`. The transition is one-directional in the user's favor — they move to the stronger tier voluntarily.
 
 The reverse transition (password → server_kek) is NOT added. Once a user has set a password they keep the stronger tier. This makes the stronger tier sticky and prevents an attacker who briefly controls the platform from silently downgrading password users.
 
 ### Recovery
 
-Today: a user with `WrappedDEKRecovery` can recover their DEK from a recovery key. Under this epic, SSO-server-KEK users do not have a recovery blob — their DEK is recoverable from the master KEK, which is operator-controlled. This is consistent with how API-key DEKs work today. If the operator rotates the master KEK (per `helm/KEK-ROTATION.md`), all server-KEK-wrapped user DEKs are re-wrapped automatically by the same `rotate-kek` CLI walk that handles `api_keys` and `org_sso_configs` (the walk over `user_keys` already exists for password users; it just needs a branch to use the master-KEK provider for `dek_source == 'server_kek'` rows).
+Today: a user with `WrappedDEKRecovery` can recover their DEK from a recovery key. Under this epic, SSO-server-KEK users do not have a recovery blob — their DEK is recoverable from the master KEK, which is operator-controlled. This is consistent with how API-key DEKs work today. If the operator rotates the master KEK (per `helm/KEK-ROTATION.md`), server-KEK-wrapped user DEKs need to be re-wrapped too — **but the `rotate-kek` CLI does not currently walk `user_keys` at all.** `RotationCoordinator.RotateAll` (`pkg/secrets/rotation.go:183`) walks only `{"provider_credentials", "api_keys", "org_sso_configs"}`, and `cmd/rotate-kek/main.go:38` hard-codes the same `validTables` set (`{"all", "provider_credentials", "api_keys", "org_sso_configs"}`). Adding `user_keys` to the walk is **new work** for this epic, not a branch in an existing walk: a new table entry in `RotateAll`, a new `validTables` entry in the CLI, and a per-row `dek_source` branch so `'server_kek'` rows re-wrap with the master-KEK provider.
 
 ---
 
 ## Files (new + modified)
 
 - `api/migrations/000046_users_dek_source.up.sql` (new) — add `dek_source` ENUM column.
+- `api/migrations/000047_user_keys_salt_nullable.up.sql` (new) — drop `NOT NULL` on `user_keys.salt` (`api/migrations/000001_initial_schema.up.sql:531`) so server-KEK rows with no Argon2id derivation can have a NULL salt.
 - `pkg/types/user.go` (modified) — add `DEKSource` field to the `User` struct.
 - `api/internal/services/database/pg_user_store.go` (modified) — read/write `dek_source`.
 - `api/internal/services/sso/sso.go` (modified) — `resolveUser` provisions a server-KEK-wrapped DEK.
-- `api/internal/services/auth/auth.go` (modified) — `ChangePassword` flips `dek_source` to `'password'` after re-wrap.
-- `pkg/secrets/key_service.go` (modified) — `GetDEK` branches on `dek_source`; server-KEK path uses the master-KEK provider instead of Argon2id derivation.
-- `pkg/secrets/rotation.go` (modified) — the `rotate-kek` walk over `user_keys` branches on `dek_source`; server-KEK rows re-wrap with the master-KEK provider.
-- `cmd/rotate-kek/main.go` (modified) — wire the master-KEK provider into the `user_keys` walk for the new branch.
+- `api/internal/handlers/secrets.go` (modified) — `RotateKeyHandler.ChangePassword` (`api/internal/handlers/secrets.go:625`) is the HTTP handler for the password-change path. (There is no `auth.ChangePassword`; the `dek_source` flip lives on `KeyService.ChangePassword`, see below.)
+- `pkg/secrets/key_service.go` (modified) — the unlock/provisioning path branches on `dek_source`; server-KEK path uses the master-KEK provider instead of Argon2id derivation. `KeyService.ChangePassword` (`pkg/secrets/key_service.go:805`) flips `dek_source` to `'password'` after re-wrap.
+- `pkg/secrets/rotation.go` (modified) — add `user_keys` to `RotateAll`'s table list (it is absent today — `pkg/secrets/rotation.go:183`) and branch per-row on `dek_source`; server-KEK rows re-wrap with the master-KEK provider.
+- `cmd/rotate-kek/main.go` (modified) — add `user_keys` to `validTables` (`cmd/rotate-kek/main.go:38`) and wire the master-KEK provider into the new walk.
 - `docs/operator/security.md` (modified) — replace the "set a password first" sentence with the two-tier model under SSO + a recommendation that SSO-server-KEK deployments use KMS for the master KEK.
 - `docs/architecture/secrets.md` (modified) — the mermaid diagram gains a `server-KEK DEK` path for SSO users.
 
-~250 LoC of code change + ~10 tests. The user's "small code change" framing is wrong by an order of magnitude; this is a multi-file change touching the boot path, the rotation CLI, and the schema, with a threat-model tradeoff that needs explicit operator sign-off.
+~350 LoC of code change + ~12 tests. The user's "small code change" framing is wrong by an order of magnitude; this is a multi-file change touching the unlock/provisioning path, the rotation CLI (which does not yet walk `user_keys` — that walk is new work, see Recovery above), and two schema migrations, with a threat-model tradeoff that needs explicit operator sign-off.
 
 ---
 
@@ -122,6 +123,8 @@ Today: a user with `WrappedDEKRecovery` can recover their DEK from a recovery ke
 3. **Existing SSO users.** Migrate them to `server_kek` automatically on next login (one-time backfill in the SSO callback), or leave them on the "set a password" path until they choose? Recommendation: backfill — the prompt is what we are removing.
 
 4. **Operator-visible audit.** Today the decrypt audit log (`secret_audit_log`) records every decrypt on `apiKeyProv` / `orgCredsProv` / `providerCredsProv`. Personal secrets of SSO users under this epic would add `user_secrets` decrypts to the same log. Is that the right surface, or does it need a distinct action label to distinguish "platform decrypted an SSO user's personal secret" from "platform decrypted an API key"? Recommendation: distinct action label — the operator should be able to alert on the former independently.
+
+5. **User notification/disclosure.** Existing SSO users' personal secrets move from "platform cannot decrypt" to "platform can decrypt" silently from their perspective. Should the platform notify/disclose this to affected SSO users (e.g. on first login post-epic, with a "your personal secrets are now recoverable by the platform" notice), or treat it as an operator-only decision documented in release notes? Recommendation: disclose on first login post-epic and in release notes — silent tier downgrade is the discoverability loss flagged in the threat-model section above.
 
 ---
 

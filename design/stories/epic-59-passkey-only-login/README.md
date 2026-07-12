@@ -70,7 +70,7 @@ CREATE INDEX user_passkeys_credential_id_idx ON user_passkeys (credential_id);
 
 Multiple passkeys per user are required for recovery (see below). One passkey per user is a footgun — losing it locks the user out.
 
-`users.dek_source` (added by Epic 58) gains a third enum value: `'passkey'`. Default for new passkey-enrolled users; transitions to `'passkey'` from `'password'` when an existing user enrolls a passkey and voluntarily disables their password.
+`users.dek_source` (added by Epic 58 as the enum `('password', 'server_kek')`) gains a third enum value, `'passkey'`, via an Epic 59 migration — Epic 58 does **not** add `'passkey'`. Default for new passkey-enrolled users; transitions to `'passkey'` from `'password'` when an existing user enrolls a passkey and voluntarily disables their password.
 
 `users.password_hash` becomes nullable under this epic (so a passkey-only user has `NULL`). Thebcrypt cost-12 hash stays for users who still have passwords; new passkey-only users have no hash and the login endpoint refuses password login for them.
 
@@ -95,7 +95,7 @@ WebAuthn has two phases: **ceremony** (registration) and **assertion** (login). 
 - Client calls `navigator.credentials.get()`, returns the assertion.
 - Server verifies assertion (signature + sign-count check for cloned-authenticator detection), issues a JWT.
 
-The login flow consumes the same `auth.Service.GenerateToken(userID)` path that SSO uses. The DEK retrieval path post-login is the same as Epic 58's server-KEK path: `KeyService.GetDEK` branches on `dek_source == 'passkey'` and unwraps via the master-KEK provider. Same code path as SSO; the `dek_source` value differs but the unwrap is identical.
+The login flow consumes the same `auth.Service.GenerateToken(userID)` path that SSO uses. The DEK retrieval path post-login is the same shape as Epic 58's server-KEK path: the unlock/provisioning flow (a passkey-time analogue of `KeyService.UnlockDEKWithSigningKey`, `pkg/secrets/key_service.go:322`) branches on `dek_source == 'passkey'` and unwraps `WrappedDEK` via the master-KEK provider rather than deriving a KEK from a password. `GetDEK` (`pkg/secrets/key_service.go:502`) only does Redis-cache lookup + `jwt_sessions` rehydrate — it never unwraps from a password, so the branch belongs on the unlock/provisioning path, not on `GetDEK`. Same code path as SSO; the `dek_source` value differs but the unwrap is identical.
 
 ---
 
@@ -129,7 +129,8 @@ Phase 1 is the only thing this epic covers. Phases 2 and 3 are documented here f
 
 - `api/migrations/000047_user_passkeys.up.sql` (new) — `user_passkeys` table.
 - `api/migrations/000048_user_recovery_codes.up.sql` (new) — `user_recovery_codes` table.
-- `api/migrations/000049_users_password_hash_nullable.up.sql` (new) — drop `NOT NULL` on `users.password_hash`; `dek_source` enum already extended by Epic 58 to include `'passkey'`.
+- `api/migrations/000049_users_password_hash_nullable.up.sql` (new) — drop `NOT NULL` on `users.password_hash`.
+- `api/migrations/000050_users_dek_source_add_passkey.up.sql` (new) — extend the `dek_source` enum (defined by Epic 58 as `('password', 'server_kek')`) to add `'passkey'`. Epic 58 does not add this value; Epic 59 owns it.
 - `pkg/types/passkey.go` (new) — DTOs for registration/login.
 - `api/internal/services/passkey/passkey.go` (new) — wraps `github.com/go-webauthn/webauthn`. Challenge generation, attestation verification, assertion verification. ~300 LoC.
 - `api/internal/handlers/passkey.go` (new) — registration/login HTTP handlers.
