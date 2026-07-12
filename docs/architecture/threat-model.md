@@ -54,13 +54,13 @@ flowchart TD
 | **Controller** | SA token theft (mitigated: bound tokens) | CRD manipulation (mitigated: webhooks) | Actions not individually audited | Secrets persist after deletion — **fixed** (G36 cleanup) | CRD spam (mitigated: quotas) | Namespace-scoped SA |
 | **Sandbox Pod** | N/A | PVC data corruption | No file-level audit | Credential in env (**G3** accepted); env var injection — **fixed** (G37 blocklist); agentd user port unauthenticated (**G40** accepted) | Resource exhaustion (mitigated) | Container escape (mitigated: seccomp, caps; G1 accepted) |
 | **Database** | SQL injection (mitigated: pgx parameterized) | Data corruption (mitigated: tx) | No query audit | Wrapped DEK exposure (mitigated: AES-256-GCM); `key_version` for rotation; authorized-decrypt exfil — **fixed** (G50 AuditedProvider wired) | Connection exhaustion | N/A |
-| **Redis** | Auth bypass (mitigated: auto-gen password + NP) | Cache poisoning | No op audit | DEK in memory (**G10** accepted) | Memory exhaustion; SSE tracking leak — **fixed** (G42 prunes) | N/A |
+| **Redis** | Auth bypass (mitigated: auto-gen password + NP) | Cache poisoning | No op audit | DEK in memory (**G10** accepted) | Memory exhaustion; SSE tracking leak (**G42**) | N/A |
 | **Frontend** | Session theft via XSS (mitigated: rehype-sanitize — needs fuzzing) | DOM tampering (mitigated: React auto-escape) | No client audit | JWT in HttpOnly Secure cookie | UI freeze via huge messages | N/A |
 | **Workspace Network** | Cross-tenant traffic (mitigated: NP) | N/A | NP events not audited | DNS exfil via external resolvers (**G30** accepted); IPv6 unrestricted (**G43**) | N/A | N/A |
 
 ## The gap register (G1–G50)
 
-**Status:** 33 Fixed · 9 Open · 8 Accepted (50 total). See the authoritative [`THREAT-MODEL.md`](https://github.com/lenaxia/LLMSafeSpaces/blob/main/design/stories/epic-17-security-review/THREAT-MODEL.md) for the full per-gap evidence and regression-test references; the summaries below hit the high points.
+**Status:** 29 Fixed · 10 Open · 11 Accepted (50 total). See the authoritative [`THREAT-MODEL.md`](https://github.com/lenaxia/LLMSafeSpaces/blob/main/design/stories/epic-17-security-review/THREAT-MODEL.md) for the full per-gap evidence and regression-test references; the summaries below hit the high points.
 
 ### Critical and High-severity closures (recent)
 
@@ -83,9 +83,6 @@ The 2026-07-11 security sweep closed every High-severity gap that had a code-sid
 
 | # | Gap | Fix |
 |---|---|---|
-| **G6 / G41** (duplicate) | `/secrets/:id/reveal` no per-endpoint rate limit | Added to `PerRouteRateLimitConfig.Routes` (5/min + burst 5). (PR #543) |
-| **G21** | `/sandbox-cfg/password` mode 0644 | `cp` → `install -m 0600` in init-container credScript. (PR #543) |
-| **G42** | SSE connection tracking unbounded memory growth | Opportunistic prune in `sseConnAllowed` on every call. (PR #543) |
 | **G39** | Terminal WebSocket accepted any Origin | `newCheckOriginChecker`: same-origin default + operator allowlist. (PR #515) |
 | **G29** | Path-traversal `mount_path` accepted by API | `validateMountPath` at `secret_service.go:582` rejects; called from CreateSecret. (Already fixed — threat model corrected) |
 | **G50** | Decrypt operations not audited | `AuditedProvider` wired at `app.go:408,409,624`. (Already fixed — threat model corrected) |
@@ -94,9 +91,6 @@ The 2026-07-11 security sweep closed every High-severity gap that had a code-sid
 
 | # | Gap | Fix |
 |---|---|---|
-| **G44** | Pod-level SecurityContext missing RunAsNonRoot | Added `RunAsNonRoot: &true` to `buildPodSecurityContext`. (PR #543) |
-| **G46** | Silent password file read failure | `readAgentPassword` now Error + `os.Exit(1)`. (PR #543) |
-| **G47** | Inference relay secret exposed as CLI arg | Removed plaintext fallback; `{{ fail }}` at helm-template-time. (PR #543) |
 | **G45** | Legacy `source /sandbox-cfg/env` in entrypoint | US-35.7 moved source path. (Already fixed — threat model corrected) |
 
 ### Still open
@@ -105,13 +99,19 @@ These are the gaps to prioritize if you're hardening a deployment:
 
 | # | Gap | Severity | Detail |
 |---|---|---|---|
+| **G6 / G41** (duplicate) | `/secrets/:id/reveal` no per-endpoint rate limit | Medium | Endpoint accepts user password to re-authenticate before decrypting. Global 100/min/IP only; per-endpoint limit (e.g. 5/min) would close brute-force window. |
+| **G21** | `/sandbox-cfg/password` mode 0644 | Medium | Init-container `cp` preserves source Secret `defaultMode: 420` (0644); should use `install -m 0600`. |
+| **G42** | SSE connection tracking unbounded memory growth | Medium | `sseConnCounts` map keyed on IP never pruned; grows monotonically. |
 | **G13** | Account lockout keyed on email only | Medium | `lockoutKey := lockout:%s` keyed on email — attacker who knows victim email can lock them out from any IP. Add IP component or progressive delays + CAPTCHA. |
 | **G9** | opencode/gh binaries downloaded without checksum verification | Medium | Dockerfile uses `curl --fail` over TLS only; no checksum or Sigstore. opencode upstream doesn't publish checksums; gh does (`.sha256`) — should verify. Release images are cosign-signed so image-level provenance is verifiable; individual binary verification is the remaining gap. |
 | **G43** | IPv6 egress not covered by workspace NetworkPolicy | Medium | CIDR allowlist is IPv4-only; IPv6 `::/0` unrestricted. Add IPv6 rules or document IPv4-only assumption. |
+| **G44** | Workspace pod-level SecurityContext missing RunAsNonRoot | Low | Container-level has it but pod-level doesn't; a future sidecar without its own SecurityContext could run as root. |
+| **G46** | Password file read failure is silent | Low | `readAgentPassword` returns empty string on file-read error; workspace starts silently non-functional. Should Error + exit non-zero. |
+| **G47** | Inference relay secret exposed as CLI arg | Low | Helm chart fallback `--inference-relay-secret={{ .Values.inferenceRelaySecret }}` renders the secret into the pod spec. |
 
 ### Full open gap list
 
-G9, G13, G43. (Three gaps — all Medium. No High or Critical open.)
+G6, G9, G13, G21, G41, G42, G43, G44, G46, G47. (Ten gaps — all Medium or Low. No High or Critical open.)
 
 ### Accepted risks
 

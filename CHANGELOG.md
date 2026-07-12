@@ -148,8 +148,8 @@ Threat model counts: 26 Fixed / 16 Open / 8 Accepted →
 **29 Fixed / 10 Open / 11 Accepted** (50 total). Revision 3.0.
 
 The remaining 10 open gaps are tracked in the threat model under
-"Open gaps (require remediation)": G6, G9, G13, G21, G42, G43, G44,
-G46, G47. Subsequent PRs will close the code-fixable ones.
+"Open gaps (require remediation)": G6, G9, G13, G21, G41, G42, G43,
+G44, G46, G47. Subsequent PRs will close the code-fixable ones.
 
 ## [0.3.0] - 2026-07-11
 
