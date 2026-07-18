@@ -73,6 +73,110 @@ annotations:
 
 If you use a different ingress (Traefik, HAProxy), override `annotations` with your controller's equivalent header-injection annotations. CSP `frame-ancestors 'none'` + `X-Frame-Options: DENY` together block clickjacking; HSTS prevents downgrade attacks.
 
+### CORS at the edge
+
+!!! warning "Ingress-controller CORS middleware overrides the app's CORS headers"
+    The API process emits its own CORS response headers via `middleware.SecurityMiddleware` (`api/internal/middleware/security.go`). When a browser makes a cross-origin request (e.g. a separate `chat.example.com` frontend talking to `api.example.com`), **any ingress-controller middleware that sets an `Access-Control-*` response header will overwrite the app's value**, not merge with it. This is by design in Traefik's Headers middleware (`pkg/middlewares/headers/header.go:PostRequestModifyResponseHeaders` — unconditional `res.Header.Set()` for `Allow-Origin`, `Allow-Credentials`, and `Expose-Headers` on every actual response) and equivalent middlewares in other controllers.
+
+    If your ingress CORS middleware lists fewer headers than the app emits, **the missing headers silently disappear from the browser's view** even though they remain physically present on the wire. The API has no way to detect or warn about this — it correctly emitted the headers, and the edge correctly overwrote them.
+
+The app emits these CORS-exposed headers (pinned in `DefaultSecurityConfig().ExposedHeaders`, `security.go:64`):
+
+| Header | Source | Used by frontend for |
+|---|---|---|
+| `X-Request-ID` | request middleware | Correlating client-side errors with server logs |
+| `X-RateLimit-Limit` | rate-limit middleware | Showing the user their quota ceiling |
+| `X-RateLimit-Remaining` | rate-limit middleware | Showing the user their remaining quota |
+| `X-RateLimit-Reset` | rate-limit middleware | Showing the user when their quota resets |
+| `X-Next-Cursor` | message-history pagination (`GetHistory`) | Driving `useInfiniteQuery.hasNextPage` — the "Load earlier messages" button |
+
+If **any** of these are missing from the browser's view, the corresponding frontend feature silently breaks. The most user-visible: a missing `X-Next-Cursor` causes the "Load earlier messages" button to never render (the cursor is on the wire but invisible to JS, so `hasNextPage` stays `false`).
+
+#### Traefik
+
+Traefik's Headers middleware activates its CORS code path when **any** `accessControl*` field is set on the Middleware CR. Once activated, `PostRequestModifyResponseHeaders` unconditionally overwrites `Access-Control-Expose-Headers` on every actual response with the middleware's list — the app's value is discarded. Traefik does NOT overwrite `Allow-Headers`, `Allow-Methods`, or `Max-Age` on actual responses (those are only set on preflight `OPTIONS` responses inside `processCorsHeaders`), so a misconfigured Traefik middleware produces a confusing wire response where some CORS headers match the app and only `Expose-Headers` matches Traefik.
+
+To deploy LLMSafeSpaces behind Traefik with a cross-origin frontend, your API ingress needs a Middleware that mirrors the app's CORS config in full:
+
+```yaml
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: llmsafespaces-api-cors
+  namespace: llmsafespaces
+spec:
+  headers:
+    accessControlAllowOriginList:
+      - https://chat.example.com    # your frontend origin
+    accessControlAllowMethods:
+      - GET
+      - POST
+      - PUT
+      - PATCH
+      - DELETE
+      - OPTIONS
+    accessControlAllowHeaders:
+      - Accept
+      - Authorization
+      - Content-Type
+      - X-Requested-With
+      - X-Request-Id
+    accessControlAllowCredentials: true   # required — frontend uses cookie auth
+    accessControlExposeHeaders:
+      - X-Request-Id                     # ↑↑↑ must mirror the app's full list
+      - X-RateLimit-Limit                # omitting any of these silently
+      - X-RateLimit-Remaining            # breaks the corresponding frontend
+      - X-RateLimit-Reset                # feature — see the table above
+      - X-Next-Cursor
+    # Preflight (OPTIONS) cache duration. Traefik intercepts OPTIONS preflight
+    # (the app never sees it), so this value becomes the *effective* preflight
+    # cache duration for the browser. The app's own MaxAge is 86400 (security.go);
+    # pick whichever value matches your operator posture — operators who copy
+    # this example verbatim get 600s (10 min), which is conservative but safe.
+    accessControlMaxAge: 600
+    addVaryHeader: true
+```
+
+Bind it to the API ingress via annotation (CORS middleware MUST run before any shared security-headers chain so its `Allow-Origin`/`Allow-Methods` are what Traefik returns on short-circuited preflight):
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: llmsafespaces-api
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: llmsafespaces-llmsafespaces-api-cors@kubernetescrd
+```
+
+!!! tip "Verifying on the wire"
+    After deploying, verify the live response exposes all 5 headers. **The expose-list check is unauthenticated** (set by `SecurityMiddleware` pre-routing, visible on any response); **the cursor check requires authentication** (`X-Next-Cursor` is set by `GetHistory` post-auth, only on paginated message responses):
+
+    ```bash
+    # Expose-list check (no auth needed — any response shows it):
+    curl -sI -H "Origin: https://chat.example.com" \
+      "https://api.example.com/api/v1/auth/config" \
+      | grep -i 'access-control-expose'
+    # Expect: access-control-expose-headers: X-Request-Id, X-RateLimit-Limit,
+    #         X-RateLimit-Remaining, X-RateLimit-Reset, X-Next-Cursor
+
+    # Cursor visibility check (auth required — use a real session token):
+    curl -sI -H "Origin: https://chat.example.com" \
+         -H "Authorization: Bearer $TOKEN" \
+         -H "Cookie: lsp_session=$TOKEN" \
+      "https://api.example.com/api/v1/workspaces/<ws>/sessions/<ses>/message?limit=1" \
+      | grep -iE 'access-control-expose|x-next-cursor'
+    # Expect: x-next-cursor: msg_...  (visible to JS only if expose-list includes it)
+    ```
+
+    If only `X-Request-Id` shows up in the expose-list, the middleware's expose-list has bit-rotted against the app.
+
+!!! warning "Drift hazard"
+    The expose-list above is pinned to the app's `DefaultSecurityConfig().ExposedHeaders`. If the app adds a new CORS-exposed header in a future release (e.g. for a new pagination or quota feature), the Traefik middleware will silently strip it until this list is updated. There is no automated check — the regression test in `api/internal/middleware/security_exposed_headers_test.go` covers the app only, not the edge. When upgrading LLMSafeSpaces, diff `security.go:ExposedHeaders` against your middleware's `accessControlExposeHeaders` and reconcile.
+
+#### Other ingress controllers
+
+The same override semantics apply to any middleware that injects CORS response headers — HAProxy's `http-response set-header`, nginx-ingress's `more_set_headers`, Envoy Gateway's CORS filter, etc. The general principle: **either let the app own CORS entirely (set no `Access-Control-*` headers at the edge), or mirror the app's full CORS config at the edge**. Don't do half-and-half.
+
 ---
 
 ## The workspace NetworkPolicy
