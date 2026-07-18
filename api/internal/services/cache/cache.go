@@ -43,7 +43,8 @@ func New(cfg *config.Config, log *logger.Logger) (*Service, error) {
 	}
 	if cfg.Redis.TLS {
 		opts.TLSConfig = &tls.Config{
-			ServerName:         cfg.Redis.Host,
+			ServerName: cfg.Redis.Host,
+			//nolint:gosec // G402: operator-controlled escape hatch for self-signed dev certs (cfg.Redis.InsecureSkipVerify). Production should leave this false and use a CA-signed cert — see worklog 0639 and helm/values.yaml redis.insecureSkipVerify docs.
 			InsecureSkipVerify: cfg.Redis.InsecureSkipVerify,
 			MinVersion:         tls.VersionTLS12, // Go crypto/tls default since 1.18; explicit for clarity
 		}
