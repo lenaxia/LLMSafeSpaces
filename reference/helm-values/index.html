@@ -23,7 +23,7 @@
       
       
       <link rel="icon" href="../../assets/images/favicon.png">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
@@ -31,7 +31,7 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
       
         
         <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
@@ -615,6 +615,8 @@
       
         
       
+        
+      
     
     
     
@@ -1011,6 +1013,34 @@
     
   
     Runbook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../operator/gvisor-benchmark/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    gVisor Overhead Benchmark
   
 
     
@@ -2167,17 +2197,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#inference-relay-globals" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Inference relay globals
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#email-epic-49" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2204,17 +2223,6 @@
     <span class="md-ellipsis">
       
         orgSubdomainRouting (Epic 54, US-54.3)
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#cloudflare" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        cloudflare
       
     </span>
   </a>
@@ -2773,17 +2781,6 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#inference-relay-globals" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Inference relay globals
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
   <a href="#email-epic-49" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2810,17 +2807,6 @@
     <span class="md-ellipsis">
       
         orgSubdomainRouting (Epic 54, US-54.3)
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#cloudflare" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        cloudflare
       
     </span>
   </a>
@@ -2964,6 +2950,12 @@
 <td>string</td>
 <td><code>""</code></td>
 <td>Image tag. Falls back to <code>Chart.AppVersion</code>. <strong>Pin to immutable <code>sha-&lt;7char&gt;</code> or <code>ts-&lt;unix&gt;</code> tags in production</strong> — moving tags (<code>dev</code>, <code>latest</code>) interact poorly with kubelet image caching.</td>
+</tr>
+<tr>
+<td><code>api.image.digest</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Immutable digest pin (#476). When set, takes precedence over <code>tag</code> — image reference becomes <code>repository@digest</code>. Avoids GHCR tag-GC issues (#454); makes the ref content-addressable. Format: <code>sha256:&lt;64 hex&gt;</code>.</td>
 </tr>
 <tr>
 <td><code>api.image.pullPolicy</code></td>
@@ -3300,6 +3292,12 @@
 <td>string</td>
 <td><code>""</code></td>
 <td>Same pinning recommendation as <code>api.image.tag</code>.</td>
+</tr>
+<tr>
+<td><code>controller.image.digest</code></td>
+<td>string</td>
+<td><code>""</code></td>
+<td>Same semantics as <code>api.image.digest</code> (#476).</td>
 </tr>
 <tr>
 <td><code>controller.watchNamespaces</code></td>
@@ -3770,6 +3768,18 @@
 <td>int</td>
 <td><code>20</code></td>
 <td></td>
+</tr>
+<tr>
+<td><code>redis.tls</code></td>
+<td>bool</td>
+<td><code>false</code></td>
+<td>TLS-in-transit to Redis (#465). Required for AWS ElastiCache (TransitEncryptionEnabled), GCP Memorystore with TLS, or self-hosted Redis/Valkey with TLS. The API client uses a <code>tls.Config</code> with <code>ServerName</code> set from <code>redis.host</code>.</td>
+</tr>
+<tr>
+<td><code>redis.insecureSkipVerify</code></td>
+<td>bool</td>
+<td><code>false</code></td>
+<td>When <code>redis.tls=true</code>, skip certificate verification. <strong>DEV ONLY</strong> — for self-signed certs on a local cluster. Never enable in production; use a CA-signed cert instead.</td>
 </tr>
 </tbody>
 </table>
@@ -4326,37 +4336,7 @@
 </tr>
 </tbody>
 </table>
-<h2 id="inference-relay-globals">Inference relay globals<a class="headerlink" href="#inference-relay-globals" title="Permanent link">&para;</a></h2>
-<table>
-<thead>
-<tr>
-<th>Key</th>
-<th>Type</th>
-<th>Default</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>inferenceRelayURL</code></td>
-<td>string</td>
-<td><code>"https://relay.safespaces.dev"</code></td>
-<td>Cloudflare Worker relay URL (Epic 26). Workspace pods use this as the opencode provider baseURL instead of <code>opencode.ai/zen/v1</code> directly.</td>
-</tr>
-<tr>
-<td><code>inferenceRelaySecret</code></td>
-<td>string</td>
-<td><code>""</code></td>
-<td>Relay auth secret. Empty = chart auto-generates a 64-hex-char secret and preserves it across upgrades. Pushed to the CF Worker automatically if <code>cloudflare</code> credentials are set.</td>
-</tr>
-<tr>
-<td><code>internalToken</code></td>
-<td>string</td>
-<td><code>""</code></td>
-<td>Shared secret for controller↔API internal org-status calls (D20). Empty = auto-generate. The internal org-status endpoint <strong>fails closed (403)</strong> when unset.</td>
-</tr>
-</tbody>
-</table>
+<p>| <code>internalToken</code> | string | <code>""</code> | Shared secret for controller↔API internal org-status calls (D20). Empty = auto-generate. The internal org-status endpoint <strong>fails closed (403)</strong> when unset. |</p>
 <h2 id="email-epic-49"><code>email</code> (Epic 49)<a class="headerlink" href="#email-epic-49" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
@@ -4478,38 +4458,6 @@
 </tbody>
 </table>
 <p><strong>Prerequisites:</strong> wildcard DNS, cert-manager, an ingress controller supporting wildcard host rules.</p>
-<h2 id="cloudflare"><code>cloudflare</code><a class="headerlink" href="#cloudflare" title="Permanent link">&para;</a></h2>
-<p>Automated relay secret sync to the CF Worker.</p>
-<table>
-<thead>
-<tr>
-<th>Key</th>
-<th>Type</th>
-<th>Default</th>
-<th>Description</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>cloudflare.apiToken</code></td>
-<td>string</td>
-<td><code>""</code></td>
-<td>CF API token with Workers:Edit. <strong>Never commit.</strong></td>
-</tr>
-<tr>
-<td><code>cloudflare.accountId</code></td>
-<td>string</td>
-<td><code>""</code></td>
-<td>CF account ID.</td>
-</tr>
-<tr>
-<td><code>cloudflare.workerName</code></td>
-<td>string</td>
-<td><code>"llmsafespaces-inference-relay"</code></td>
-<td>CF Worker script name.</td>
-</tr>
-</tbody>
-</table>
 <h2 id="monitoring"><code>monitoring</code><a class="headerlink" href="#monitoring" title="Permanent link">&para;</a></h2>
 <p>Grafana dashboards, Prometheus alerts, ServiceMonitors. Requires Grafana sidecar + Prometheus Operator.</p>
 <table>
@@ -4643,7 +4591,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 12, 2026 11:57:17 UTC"><span class="timeago" datetime="2026-07-12T11:57:17+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 12, 2026 11:57:17 UTC">2026-07-12</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 12, 2026 18:24:14 UTC"><span class="timeago" datetime="2026-07-12T18:24:14+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 12, 2026 18:24:14 UTC">2026-07-12</span>
   </span>
 
     
@@ -4729,7 +4677,7 @@
       <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.sections", "navigation.tabs", "navigation.indexes", "navigation.top", "navigation.tracking", "toc.follow", "search.suggest", "search.highlight", "content.code.copy", "content.code.annotate", "content.tabs.link"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
     
     
-      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
       
         <script src="../../js/timeago.min.js"></script>
       
