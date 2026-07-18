@@ -148,7 +148,7 @@ None.
 ### llmsafespaces (this PR)
 
 - `docs/operator/networking.md` — new "CORS at the edge" subsection under "Ingress and TLS termination".
-- `worklogs/NNNN_2026-07-18_cors-expose-headers-traefik-doc.md` — this worklog.
+- `worklogs/0641_2026-07-18_cors-expose-headers-traefik-doc.md` — this worklog.
 
 ---
 
