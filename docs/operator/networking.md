@@ -128,7 +128,12 @@ spec:
       - X-RateLimit-Remaining            # breaks the corresponding frontend
       - X-RateLimit-Reset                # feature — see the table above
       - X-Next-Cursor
-    accessControlMaxAge: 600              # only affects preflight cache
+    # Preflight (OPTIONS) cache duration. Traefik intercepts OPTIONS preflight
+    # (the app never sees it), so this value becomes the *effective* preflight
+    # cache duration for the browser. The app's own MaxAge is 86400 (security.go);
+    # pick whichever value matches your operator posture — operators who copy
+    # this example verbatim get 600s (10 min), which is conservative but safe.
+    accessControlMaxAge: 600
     addVaryHeader: true
 ```
 
@@ -144,15 +149,26 @@ metadata:
 ```
 
 !!! tip "Verifying on the wire"
-    After deploying, verify the live response exposes all 5 headers:
+    After deploying, verify the live response exposes all 5 headers. **The expose-list check is unauthenticated** (set by `SecurityMiddleware` pre-routing, visible on any response); **the cursor check requires authentication** (`X-Next-Cursor` is set by `GetHistory` post-auth, only on paginated message responses):
 
     ```bash
+    # Expose-list check (no auth needed — any response shows it):
     curl -sI -H "Origin: https://chat.example.com" \
+      "https://api.example.com/api/v1/auth/config" \
+      | grep -i 'access-control-expose'
+    # Expect: access-control-expose-headers: X-Request-Id, X-RateLimit-Limit,
+    #         X-RateLimit-Remaining, X-RateLimit-Reset, X-Next-Cursor
+
+    # Cursor visibility check (auth required — use a real session token):
+    curl -sI -H "Origin: https://chat.example.com" \
+         -H "Authorization: Bearer $TOKEN" \
+         -H "Cookie: lsp_session=$TOKEN" \
       "https://api.example.com/api/v1/workspaces/<ws>/sessions/<ses>/message?limit=1" \
       | grep -iE 'access-control-expose|x-next-cursor'
+    # Expect: x-next-cursor: msg_...  (visible to JS only if expose-list includes it)
     ```
 
-    Expect `access-control-expose-headers` with all 5 entries and `x-next-cursor` visible. If only `X-Request-Id` shows up, the middleware's expose-list has bit-rotted against the app.
+    If only `X-Request-Id` shows up in the expose-list, the middleware's expose-list has bit-rotted against the app.
 
 !!! warning "Drift hazard"
     The expose-list above is pinned to the app's `DefaultSecurityConfig().ExposedHeaders`. If the app adds a new CORS-exposed header in a future release (e.g. for a new pagination or quota feature), the Traefik middleware will silently strip it until this list is updated. There is no automated check — the regression test in `api/internal/middleware/security_exposed_headers_test.go` covers the app only, not the edge. When upgrading LLMSafeSpaces, diff `security.go:ExposedHeaders` against your middleware's `accessControlExposeHeaders` and reconcile.
