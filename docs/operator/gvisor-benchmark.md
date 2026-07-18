@@ -2,7 +2,7 @@
 
 **Acceptance criterion 8:** *"Performance: gVisor overhead on a representative workload (LLM-coding session) measured and documented — accept/reject gVisor based on <30% overhead target."*
 
-This page defines what "measured" means here, how to run the measurement on your cluster, and how to make the accept/reject call. The companion script is at [`helm/scripts/gvisor-benchmark.sh`](../../helm/scripts/gvisor-benchmark.sh).
+This page defines what "measured" means here, how to run the measurement on your cluster, and how to make the accept/reject call. The companion script is at [`helm/scripts/gvisor-benchmark.sh`](https://github.com/lenaxia/LLMSafeSpaces/blob/main/helm/scripts/gvisor-benchmark.sh).
 
 ## Why this isn't already done
 

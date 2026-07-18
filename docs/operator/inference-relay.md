@@ -2,7 +2,7 @@
 
 This page covers how LLMSafeSpaces reaches free-tier LLM inference (opencode Zen models). The default mode is **direct-to-Zen**: workspace pods call `https://opencode.ai/zen/v1` using opencode's built-in anonymous `public` key — no relay, no configuration. Operators who hit free-tier per-IP rate limits at scale can opt into the **self-hosted multi-cloud fleet** (Epic 42): the `InferenceRelay` CRD, `relay-router`, and `relay-proxy` VMs that rotate IPs across AWS, OCI, and GCP.
 
-The Cloudflare Worker relay (Epic 26) was **removed in [Epic 60](../../design/stories/epic-60-remove-cf-worker-relay/README.md)** (2026-07-12) because Zen blocks Cloudflare Worker IPs. It is no longer a deployable option.
+The Cloudflare Worker relay (Epic 26) was **removed in [Epic 60](https://github.com/lenaxia/LLMSafeSpaces/blob/main/design/stories/epic-60-remove-cf-worker-relay/README.md)** (2026-07-12) because Zen blocks Cloudflare Worker IPs. It is no longer a deployable option.
 
 ## On this page
 
@@ -50,7 +50,7 @@ graph TB
 - **Self-hosted multi-cloud fleet (Epic 42).** Opt in with `controller.inferenceRelay.enabled: true`. Workspace pods route through the in-cluster **relay-router**, which distributes traffic across relay VMs and rotates IPs on 429 storms.
 
 !!! note "Cloudflare Worker relay removed"
-    The Cloudflare Worker relay (Epic 26) was removed in [Epic 60](../../design/stories/epic-60-remove-cf-worker-relay/README.md) on 2026-07-12. Zen now blocks Cloudflare Worker egress IPs, making the Worker path unusable. There is no replacement Worker; use direct-to-Zen or the self-hosted fleet.
+    The Cloudflare Worker relay (Epic 26) was removed in [Epic 60](https://github.com/lenaxia/LLMSafeSpaces/blob/main/design/stories/epic-60-remove-cf-worker-relay/README.md) on 2026-07-12. Zen now blocks Cloudflare Worker egress IPs, making the Worker path unusable. There is no replacement Worker; use direct-to-Zen or the self-hosted fleet.
 
 > **Not to be confused with the relay config subsystem.** The [relay config subsystem](https://github.com/lenaxia/LLMSafeSpaces/blob/main/README-LLM.md) describes how `agent-config.json` is built *inside* the workspace pod. This page describes the *external* fleet of VMs the pod's relay injector points at (when the fleet is enabled).
 
