@@ -1289,9 +1289,9 @@ func TestSendPromptAsync_ProceedsWhenQueueEmpty(t *testing.T) {
 // 400 without enqueuing anything.
 func TestSendPromptAsync_RedirectRejectsInvalidBody(t *testing.T) {
 	type testCase struct {
-		name       string
-		body       string
-		wantErr    string // substring of the error message
+		name    string
+		body    string
+		wantErr string // substring of the error message
 	}
 	cases := []testCase{
 		{
@@ -1315,8 +1315,8 @@ func TestSendPromptAsync_RedirectRejectsInvalidBody(t *testing.T) {
 			wantErr: "text must not be empty",
 		},
 		{
-			name: "text exceeds 100KB",
-			body: `{"parts":[{"type":"text","text":"` + strings.Repeat("a", 100_001) + `"}]}`,
+			name:    "text exceeds 100KB",
+			body:    `{"parts":[{"type":"text","text":"` + strings.Repeat("a", 100_001) + `"}]}`,
 			wantErr: "text exceeds 100KB limit",
 		},
 	}
