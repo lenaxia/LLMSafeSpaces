@@ -829,9 +829,20 @@ export function ChatPage() {
   const phaseLabel = status?.phase ? status.phase.toLowerCase() : "loading";
 
   const handleSend = (text: string) => {
-    // If busy, hold the message locally — it will be sent when the session
-    // next goes idle (matching TUI serialized queue behavior).
-    if (isSessionBusy || streaming) {
+    // If busy OR there are still messages waiting in the queue, hold the
+    // new message in the queue too. Without the queue-length check, a
+    // direct send races ahead of the drain goroutine when the session
+    // transitions busy→idle: opencode assigns the direct send an earlier
+    // info.time.created than the still-draining queued message, so on
+    // next reload selectChronological (sort by createdAt) places the
+    // queued message AFTER the direct send — out of FIFO order.
+    //
+    // Residual: there is still a small window between the queue emptying
+    // client-side and opencode finishing persistence of the drained
+    // message; a direct send in that window can still race. Closing it
+    // requires a server-side check in SendPromptAsync — out of scope for
+    // this fix.
+    if (isSessionBusy || streaming || queue.queuedMessages.length > 0) {
       queue.enqueue(text);
       return;
     }

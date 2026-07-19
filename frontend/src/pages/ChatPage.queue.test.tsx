@@ -126,6 +126,9 @@ describe("ChatPage message queue (backend-backed)", () => {
     capturedSSEHandler = null;
     mockBusyState.reset();
     vi.clearAllMocks();
+    // resetAllMocks is needed because some tests use mockImplementation
+    // (not mockReturnValue), which clearAllMocks doesn't reset.
+    (messagesApi.getQueue as ReturnType<typeof vi.fn>).mockResolvedValue({ messages: [] });
     (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active", sessions: [{ id: "ses_1", status: "idle" }] });
     (workspacesApi.list as ReturnType<typeof vi.fn>).mockResolvedValue({ items: [], pagination: { limit: 20, offset: 0, total: 0 } });
     (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([]);
@@ -172,6 +175,65 @@ describe("ChatPage message queue (backend-backed)", () => {
     });
     expect(screen.getByText("queued msg")).toBeInTheDocument();
     expect(screen.getByText("1 message queued")).toBeInTheDocument();
+    expect(messagesApi.sendAsync).not.toHaveBeenCalled();
+  });
+
+  it("holds message in queue when queue is non-empty, even after session goes idle", async () => {
+    // Regression: without checking queue.queuedMessages.length, a direct
+    // send races ahead of the draining queue when the session transitions
+    // busy→idle. opencode assigns the direct send an earlier
+    // info.time.created than the still-draining queued message, so on
+    // reload selectChronological places the queued message AFTER the
+    // direct send — out of FIFO order.
+    //
+    // The race window is: idle event arrives → reconcileOnIdle calls
+    // refreshQueue → GET /queue returns [A] (server hasn't drained yet)
+    // → pill stays visible → user clicks send for B. In this window,
+    // isSessionBusy=false and streaming=false, so without the fix,
+    // handleSend would route to doSendNow (direct send).
+    const user = userEvent.setup();
+    // Stateful getQueue mock: returns empty until user enqueues A, then
+    // returns [A] to simulate the drain window (Redis still holds A).
+    let userEnqueuedA = false;
+    (messagesApi.getQueue as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      return Promise.resolve({
+        messages: userEnqueuedA ? [{
+          id: "msg_q_test",
+          text: "message A",
+          session_id: "ses_1",
+          workspace_id: "ws-1",
+          enqueued_at: new Date().toISOString(),
+          retry_count: 0,
+        }] : [],
+      });
+    });
+    // queueMessage flips the flag so subsequent refreshQueue calls return [A]
+    (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      userEnqueuedA = true;
+      return Promise.resolve({ messageID: "msg_q_test" });
+    });
+
+    renderChat(makeQueryClient(), "/chat/ws-1/ses_1");
+    await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
+
+    // 1. Session busy → enqueue message A
+    sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
+    await user.type(document.querySelector("textarea")!, "message A");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(screen.getByText("1 message queued")).toBeInTheDocument());
+
+    // 2. Session goes idle — server-side drain starts but Redis still holds A.
+    //    refreshQueue (triggered by reconcileOnIdle) keeps the pill visible
+    //    because getQueue now returns [A].
+    sendSSE({ type: "session.status", session_id: "ses_1", status: "idle" });
+
+    // 3. User sends message B during the drain window.
+    await user.type(document.querySelector("textarea")!, "message B");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => {
+      expect(messagesApi.queueMessage).toHaveBeenCalledWith("ws-1", "ses_1", "message B");
+    });
     expect(messagesApi.sendAsync).not.toHaveBeenCalled();
   });
 
