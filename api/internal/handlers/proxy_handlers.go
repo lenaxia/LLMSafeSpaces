@@ -85,7 +85,105 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 		})
 		return
 	}
+	// Close the residual race window left by the frontend fix
+	// (PR #563): if the client's view of the queue is stale (the
+	// refreshQueue poll hasn't landed yet), a direct POST /prompt can
+	// still race ahead of the server-side drain goroutine. Check the
+	// authoritative source (Redis) and redirect to Enqueue when non-
+	// empty. This preserves FIFO ordering regardless of client state
+	// staleness.
+	if h.queueSvc != nil {
+		n, err := h.queueSvc.Len(c.Request.Context(), wid, sid)
+		if err != nil {
+			h.logger.Warn("SendPromptAsync: queue Len check failed; proceeding with direct send",
+				"error", err.Error(), "workspaceID", wid, "sessionID", sid)
+		} else if n > 0 {
+			h.redirectPromptToQueue(c, wid, sid)
+			return
+		}
+	}
 	h.proxyToWorkspace(c, "/session/"+sid+"/prompt_async", true, sid)
+}
+
+// redirectPromptToQueue reads the prompt_async request body, extracts
+// the text content, enqueues it, and writes the same 202 response shape
+// as EnqueueMessage. The body is expected to match the opencode prompt
+// shape {parts: [{type: "text", text: "..."}, ...]}; only text parts
+// are enqueued (tool parts have no analog in the queue). The original
+// body bytes are consumed and not forwarded to opencode.
+func (h *ProxyHandler) redirectPromptToQueue(c *gin.Context, wid, sid string) {
+	bodyBytes, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read request body"})
+		return
+	}
+	_ = c.Request.Body.Close()
+
+	text, perr := extractPromptText(bodyBytes)
+	if perr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": perr.Error()})
+		return
+	}
+	if len(text) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "text must not be empty"})
+		return
+	}
+	if len(text) > 100_000 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "text exceeds 100KB limit"})
+		return
+	}
+
+	msgID, err := h.queueSvc.Enqueue(c.Request.Context(), wid, sid, text)
+	if err != nil {
+		h.logger.Error("SendPromptAsync: redirect to Enqueue failed", err,
+			"workspaceID", wid, "sessionID", sid)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enqueue message"})
+		return
+	}
+
+	if h.userBroker != nil {
+		h.publishWorkspaceEvent(wid, apitypes.WorkspaceSSEEvent{
+			Type:      "queue.update",
+			SessionID: sid,
+			Data: queueUpdateData{
+				Event:     "enqueued",
+				MessageID: msgID,
+			},
+		})
+	}
+
+	// Session is idle (we just checked in SendPromptAsync). Trigger the
+	// drain goroutine immediately so the redirected message does not
+	// wait for the next idle SSE event (which will not come — the
+	// session is already idle).
+	if !h.isSessionActive(c.Request.Context(), wid, sid) && !h.isSessionDeleted(wid, sid) {
+		go h.drainQueuedMessage(wid, sid)
+	}
+
+	c.JSON(http.StatusAccepted, gin.H{"messageID": msgID})
+}
+
+// extractPromptText parses a prompt_async body and returns the
+// concatenation of all text parts. Returns an error only if the body
+// is not valid JSON. Empty/whitespace-only text is returned as "" so
+// the caller can apply its own empty-check policy.
+func extractPromptText(body []byte) (string, error) {
+	var parsed struct {
+		Parts []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"parts"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return "", fmt.Errorf("invalid request body: %w", err)
+	}
+	var sb strings.Builder
+	for _, p := range parsed.Parts {
+		if p.Type == "text" {
+			sb.WriteString(p.Text)
+		}
+	}
+	return sb.String(), nil
 }
 
 // historyPageDefaultLimit is the default page size when ?limit= is omitted.
