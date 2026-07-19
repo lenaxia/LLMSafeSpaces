@@ -7,6 +7,143 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-19
+
+### Added
+
+- **Redis TLS support (#465, #557).** The API's Redis client config now
+  exposes `tls` and `insecureSkipVerify` fields, wired through the chart
+  values and configmap. Required for AWS ElastiCache
+  (`TransitEncryptionEnabled`), GCP Memorystore with TLS, and any
+  self-hosted Redis with TLS. Production should leave
+  `insecureSkipVerify: false` and use a CA-signed cert; the field is a
+  dev/test escape hatch for self-signed certs. Chart test renders the
+  configmap fields; cache test asserts TLS connect + cert-verification
+  paths.
+
+- **Image digest pinning (#476, #556).** Every image section in the chart
+  (`api`, `controller`, `frontend`, `runtimeEnvironments.base`,
+  `relay-router`) now accepts an optional `digest` field. When set, it
+  overrides `tag` and the image reference becomes `repository@digest`.
+  Operators hit by #454 (tag GC'd from GHCR) wanted immutable pins; both
+  `sha-<commit>` and `sha256:<digest>` forms are now first-class. Three
+  new chart tests pin the helper behavior.
+
+- **GCP KMS provider for master KEK (US-57.3, #528).** The KEK provider
+  abstraction now has a GCP KMS implementation alongside AWS KMS. The
+  master KEK can be hosted in either cloud; switching is a configmap
+  change. Closes the multi-cloud KEK story for operators who already
+  run GCP.
+
+- **`migrate-kek` CLI for cross-provider KEK migration (US-57.2, #532).**
+  New binary at `cmd/migrate-kek` that re-wraps the existing master KEK
+  under a new provider (e.g. AWS KMS → GCP KMS, or local → cloud) with
+  zero downtime. The KEK is decrypted in-memory under the old provider,
+  re-encrypted under the new, and the result is atomically written.
+  Audit-logged via the standard `secret_audit_log`.
+
+- **Invitation accept page + settings deep-linking + `return_to`
+  redirect (#533).** Org invite emails now land on a dedicated accept
+  page that handles logged-in vs. logged-out flows. Settings tabs are
+  deep-linkable (`/settings/billing`, `/settings/security`, etc.) with
+  a `return_to` query param preserved across the auth gate. New e2e
+  specs cover invitation accept, return_to redirect, and settings
+  messaging.
+
+- **gVisor overhead benchmark harness (Epic 51, #549).** Operator-run
+  script at `helm/scripts/gvisor-benchmark.sh` that measures gVisor
+  overhead on a representative LLM-coding workload. Documented
+  methodology in `docs/operator/gvisor-benchmark.md` — accept/reject
+  decision per the <30% overhead target.
+
+- **Supply-chain hardening: cosign signing + Trivy scanning + Renovate
+  digest pinning (#534).** All release images are signed with cosign
+  keyless OIDC; `cosign verify` is documented in the install runbook.
+  Trivy scans run in CI on every PR and on the release tag. Renovate
+  is configured to open digest-pinning PRs for base images.
+
+- **Traefik CORS guidance in operator docs (#560).** The chart
+  previously documented only the nginx-ingress security-headers path.
+  Added a "CORS at the edge" subsection to `docs/operator/networking.md`
+  with a complete Traefik Middleware example, the 5-header
+  expose-list pinned to `security.go:64`, the drift-hazard warning, and
+  a verification snippet. Closes the documentation gap that caused a
+  production CORS bug (queued-message button never rendered).
+
+### Fixed
+
+- **FIFO race in message queue — drained messages rendered out-of-order
+  after reload (#563, #564).** When a session transitioned busy→idle,
+  a direct POST /prompt could race ahead of the still-draining queue
+  goroutine. opencode assigned the direct send an earlier
+  `info.time.created` than the queued message, so on reload
+  `selectChronological` placed the queued message AFTER the direct
+  send. Two-layer fix: (1) frontend `handleSend` now also checks
+  `queue.queuedMessages.length > 0` before routing to direct send,
+  closing the common case; (2) backend `SendPromptAsync` checks
+  `queueSvc.Len()` and redirects to `Enqueue` when non-empty, closing
+  the residual race window where the client's view is stale (the
+  `refreshQueue` poll hasn't landed yet). Regression tests at both
+  layers with FIFO-order assertions.
+
+- **Free-models refresher ClusterRole configmaps grant (#469, #558).**
+  The controller's ClusterRole was missing `get/list/watch` on
+  `configmaps`, so `freeModelsRefresher` could not read the cached
+  free-models list. The chart now renders the grant conditionally on
+  `controller.inferenceRelay.enabled`.
+
+- **Relay `scrapeRouterMetrics` silent error swallowing (#475, #555).**
+  The metrics scraper logged at Debug level on HTTP errors, masking
+  real failures (router not yet running, wrong port, wrong path).
+  Elevated to Warn with the status code and URL in the log fields.
+
+- **arm64 image variants contained x86-64 binaries (#462, #554).** The
+  multi-arch build matrix produced arm64 image manifests whose contents
+  were x86-64 binaries — `docker pull ...arm64` followed by
+  `uname -m` returned `x86_64`. Fixed the Dockerfiles and the build
+  matrix's platform handling.
+
+- **copy-html initContainer PSA restricted compatibility (#468, #551).**
+  The frontend pod's initContainer ran `cp -a` into a read-only path
+  under PSA `restricted`. The chart now mounts an `emptyDir` at
+  `/usr/share/nginx/html` and the initContainer copies into it.
+
+- **KEK post-migration audit gate + nil-fallback guard (US-57.2, #548).**
+  After a `migrate-kek` run, the API now refuses to start if the new
+  KEK provider returns nil — previously it would silently fall back to
+  the un-encrypted path. Audit log entries are also gated: a missing
+  audit logger no longer silently drops entries.
+
+- **Materialize test isolation from workspace reload cache (#559).**
+  The materialize test suite shared state with the workspace reload
+  cache, producing flaky failures when run in parallel. Tests now
+  isolate their cache fixture.
+
+- **Production CORS expose-headers override by Traefik Middleware
+  (talos-ops-prod #2053).** The API correctly emitted
+  `Access-Control-Expose-Headers` with 5 entries
+  (`X-Request-ID, X-RateLimit-Limit, X-RateLimit-Remaining,
+  X-RateLimit-Reset, X-Next-Cursor`), but a Traefik Middleware at the
+  cluster edge overwrote the value with only `X-Request-Id`. The
+  browser hid `X-Next-Cursor` from JS, breaking the "Load earlier
+  messages" button. Fix: updated the cluster Middleware to mirror the
+  app's list. Documentation: see "CORS at the edge" above.
+
+### Removed
+
+- **Cloudflare Worker inference relay (Epic 60, #553).** Zen
+  (`opencode.ai/zen/v1`) now blocks all Cloudflare Worker egress IPs,
+  making the Worker relay path unreachable. Removed: the
+  `workers/inference-relay/` directory, the chart's
+  `inferenceRelayURL` / `inferenceRelaySecret` / top-level
+  `cloudflare:` block, the `--inference-relay-secret` controller flag,
+  the `INFERENCE_RELAY_SECRET` env var, and the `relay-secret-sync`
+  Helm Hook Job. Operators should switch to direct-to-Zen (the new
+  default) or the self-hosted InferenceRelay fleet (Epic 42).
+  **Upgrade note:** existing chart values with
+  `inferenceRelayURL: https://relay.safespaces.dev` will break — clear
+  it to empty.
+
 ### Security
 
 - **G13 — Account lockout now keys on email + IP (Medium).** The
@@ -331,7 +468,8 @@ Network hardening sweep + KMS-backed master KEK foundation + Go security bump.
 
 ## [0.1.0] - 2026-07-04
 
-[Unreleased]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.2.0...v0.2.1
