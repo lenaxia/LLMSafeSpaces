@@ -145,7 +145,7 @@ Both are about provider credential resurrection after password reset — unrelat
 
 - `api/internal/handlers/proxy_handlers.go` — `SendPromptAsync` queue check; `redirectPromptToQueue` + `extractPromptText` helpers.
 - `api/internal/handlers/proxy_queue_test.go` — 17 new test cases (regression + unhappy-path + unit).
-- `worklogs/NNNN_2026-07-19_sendpromptasync-queue-nonempty-redirect.md` — this worklog.
+- `worklogs/0642_2026-07-19_sendpromptasync-queue-nonempty-redirect.md` — this worklog.
 
 ---
 
