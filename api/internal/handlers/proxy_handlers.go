@@ -112,6 +112,14 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 // are enqueued (tool parts have no analog in the queue). The original
 // body bytes are consumed and not forwarded to opencode.
 func (h *ProxyHandler) redirectPromptToQueue(c *gin.Context, wid, sid string) {
+	// Cap the body before reading — same pattern as proxy.go:275. The
+	// prompt body shape is ~the text size + ~50 bytes of JSON overhead,
+	// so 100KB+slack is generous; anything bigger is a malicious/mis-
+	// configured client. Without this cap a client could force the API
+	// to allocate an arbitrarily large buffer before the 100KB text
+	// check below rejects it.
+	const maxPromptBodyBytes = 100_000 + 1024 // 100KB text limit + JSON overhead
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPromptBodyBytes)
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read request body"})
