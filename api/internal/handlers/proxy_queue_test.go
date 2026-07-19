@@ -1108,3 +1108,378 @@ func TestBulkReloadHandler_ClearQueueOnDispose(t *testing.T) {
 	assert.Equal(t, int64(0), n1)
 	assert.Equal(t, int64(0), n2)
 }
+
+// TestSendPromptAsync_RedirectsToQueueWhenNonEmpty closes the residual
+// race window left by the frontend fix (PR #563). When the client's view
+// of the queue is stale, a direct POST /prompt can still race ahead of
+// the server-side drain goroutine — opencode assigns the direct send an
+// earlier info.time.created than the still-draining queued message, so
+// on next reload selectChronological places the queued message AFTER the
+// direct send, breaking FIFO order.
+//
+// The fix: SendPromptAsync checks queueSvc.Len() and redirects to Enqueue
+// when non-empty. The redirected request is enqueued behind the existing
+// pending message, preserving FIFO order. This test also asserts the
+// actual FIFO invariant — the pre-existing message A reaches prompt_async
+// BEFORE the redirected message B.
+func TestSendPromptAsync_RedirectsToQueueWhenNonEmpty(t *testing.T) {
+	// Capture prompt_async bodies in order — proves FIFO ordering.
+	var promptMu sync.Mutex
+	var promptTexts []string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/session/ses-1/prompt_async" {
+			bodyBytes, _ := io.ReadAll(r.Body)
+			var body struct {
+				Parts []struct{ Text string } `json:"parts"`
+			}
+			_ = json.Unmarshal(bodyBytes, &body)
+			if len(body.Parts) > 0 {
+				promptMu.Lock()
+				promptTexts = append(promptTexts, body.Parts[0].Text)
+				promptMu.Unlock()
+			}
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+
+	transport := &redirectTransport{server: backend}
+	httpClient := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+
+	k8sMock := newMockK8sWithWorkspace(t, "ws-1", "10.0.0.1")
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient, nil)
+	require.NoError(t, err)
+
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+	svc := msgqueue.NewWithClient(client)
+	handler.SetMessageQueueService(svc)
+	handler.userBroker = eventbroker.NewUserEventBroker()
+	setupPasswordSecret(t, handler, "ws-1", "test-pw")
+
+	// Mark session as active so the drain-on-enqueue goroutine does NOT
+	// fire when we pre-populate the queue. Without this the drain would
+	// race our test's SendPromptAsync call.
+	handler.SetActiveSessionsForTest("ws-1", []string{"ses-1"})
+
+	// Pre-populate the queue with one pending message (msg A).
+	_, err = svc.Enqueue(context.Background(), "ws-1", "ses-1", "message A")
+	require.NoError(t, err)
+	n, _ := svc.Len(context.Background(), "ws-1", "ses-1")
+	require.Equal(t, int64(1), n, "precondition: queue must have 1 pending message")
+
+	// Now mark session as idle so SendPromptAsync doesn't 409. The drain
+	// goroutine will start when Enqueue/redirect fires (matches prod).
+	handler.SetActiveSessionsForTest("ws-1", []string{})
+	require.False(t, handler.isSessionActive(context.Background(), "ws-1", "ses-1"),
+		"precondition: session must be idle")
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST",
+		"/api/v1/workspaces/ws-1/sessions/ses-1/prompt",
+		strings.NewReader(`{"parts":[{"type":"text","text":"message B"}]}`))
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses-1"},
+	}
+
+	handler.SendPromptAsync(c)
+
+	// Expect: 202 Accepted with a messageID — NOT 200 from proxyToWorkspace.
+	assert.Equal(t, http.StatusAccepted, w.Code,
+		"queue non-empty + idle session → SendPromptAsync should redirect to Enqueue (202)")
+	var resp map[string]string
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	assert.NotEmpty(t, resp["messageID"], "redirect response should include a messageID")
+
+	// FIFO assertion: drain should forward A first, then B. Wait for both.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		promptMu.Lock()
+		count := len(promptTexts)
+		promptMu.Unlock()
+		if count >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			promptMu.Lock()
+			t.Fatalf("drain did not forward both messages within deadline; got %d/%d: %v",
+				count, 2, promptTexts)
+			promptMu.Unlock()
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	promptMu.Lock()
+	defer promptMu.Unlock()
+	assert.Equal(t, []string{"message A", "message B"}, promptTexts,
+		"FIFO order: pre-existing message A must reach prompt_async BEFORE redirected message B")
+}
+
+// TestSendPromptAsync_ProceedsWhenQueueEmpty verifies that the redirect
+// guard doesn't false-positive when the queue is empty — the prompt
+// should be forwarded to opencode as before.
+func TestSendPromptAsync_ProceedsWhenQueueEmpty(t *testing.T) {
+	promptCalled := make(chan struct{}, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/session/ses-1/prompt_async" {
+			select {
+			case promptCalled <- struct{}{}:
+			default:
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	transport := &redirectTransport{server: backend}
+	httpClient := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+
+	k8sMock := newMockK8sWithWorkspace(t, "ws-1", "10.0.0.1")
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient, nil)
+	require.NoError(t, err)
+
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+	svc := msgqueue.NewWithClient(client)
+	handler.SetMessageQueueService(svc)
+	handler.userBroker = eventbroker.NewUserEventBroker()
+	setupPasswordSecret(t, handler, "ws-1", "test-pw")
+
+	// Session is idle (not in activeSess) AND queue is empty.
+	require.False(t, handler.isSessionActive(context.Background(), "ws-1", "ses-1"))
+	n, _ := svc.Len(context.Background(), "ws-1", "ses-1")
+	require.Equal(t, int64(0), n)
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST",
+		"/api/v1/workspaces/ws-1/sessions/ses-1/prompt",
+		strings.NewReader(`{"parts":[{"type":"text","text":"hello"}]}`))
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses-1"},
+	}
+
+	handler.SendPromptAsync(c)
+
+	// Empty queue → forward to opencode (200), not redirect (202).
+	assert.Equal(t, http.StatusOK, w.Code,
+		"empty queue + idle session → SendPromptAsync should proceed as before")
+	select {
+	case <-promptCalled:
+		// ok
+	case <-time.After(2 * time.Second):
+		t.Fatal("prompt_async was not called — SendPromptAsync should forward when queue is empty")
+	}
+}
+
+// TestSendPromptAsync_RedirectRejectsInvalidBody covers the unhappy
+// paths in redirectPromptToQueue: malformed JSON, empty parts, tool-only
+// parts (→ empty extracted text), and oversized text. All should return
+// 400 without enqueuing anything.
+func TestSendPromptAsync_RedirectRejectsInvalidBody(t *testing.T) {
+	type testCase struct {
+		name    string
+		body    string
+		wantErr string // substring of the error message
+	}
+	cases := []testCase{
+		{
+			name:    "malformed JSON",
+			body:    `{"parts":[{"type":"text","text":broken`,
+			wantErr: "invalid request body",
+		},
+		{
+			name:    "empty parts array",
+			body:    `{"parts":[]}`,
+			wantErr: "text must not be empty",
+		},
+		{
+			name:    "tool-only parts filtered to empty text",
+			body:    `{"parts":[{"type":"tool","tool":"bash"}]}`,
+			wantErr: "text must not be empty",
+		},
+		{
+			name:    "text part with empty string",
+			body:    `{"parts":[{"type":"text","text":""}]}`,
+			wantErr: "text must not be empty",
+		},
+		{
+			name:    "text exceeds 100KB",
+			body:    `{"parts":[{"type":"text","text":"` + strings.Repeat("a", 100_001) + `"}]}`,
+			wantErr: "text exceeds 100KB limit",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, svc, cleanup := setupQueueTestEnv(t)
+			defer cleanup()
+
+			// Pre-populate queue with 1 message so the redirect path is taken.
+			handler.SetActiveSessionsForTest("ws-1", []string{"ses-1"})
+			_, err := svc.Enqueue(context.Background(), "ws-1", "ses-1", "pre-existing")
+			require.NoError(t, err)
+			// Mark idle so SendPromptAsync doesn't 409.
+			handler.SetActiveSessionsForTest("ws-1", []string{})
+
+			gin.SetMode(gin.TestMode)
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest("POST", "/prompt", strings.NewReader(tc.body))
+			c.Params = gin.Params{
+				{Key: "id", Value: "ws-1"},
+				{Key: "sessionId", Value: "ses-1"},
+			}
+
+			handler.SendPromptAsync(c)
+
+			assert.Equal(t, http.StatusBadRequest, w.Code,
+				"%s: expected 400 for invalid body", tc.name)
+			assert.Contains(t, w.Body.String(), tc.wantErr,
+				"%s: error message mismatch", tc.name)
+
+			// The pre-existing message must remain in the queue — the
+			// rejected body must not have side-effects on the queue.
+			n, _ := svc.Len(context.Background(), "ws-1", "ses-1")
+			assert.Equal(t, int64(1), n,
+				"%s: queue state must be unchanged after 400", tc.name)
+		})
+	}
+}
+
+// TestSendPromptAsync_FailOpenWhenLenErrors verifies that when the
+// queueSvc.Len() probe fails (Redis transient), SendPromptAsync proceeds
+// with a direct send rather than rejecting the request. This is the
+// documented fail-open policy — rejecting legitimate traffic for a
+// queue-length probe failure would be worse than a possible FIFO miss.
+func TestSendPromptAsync_FailOpenWhenLenErrors(t *testing.T) {
+	promptCalled := make(chan struct{}, 1)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/session/ses-1/prompt_async" {
+			select {
+			case promptCalled <- struct{}{}:
+			default:
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	transport := &redirectTransport{server: backend}
+	httpClient := &http.Client{Transport: transport, Timeout: 5 * time.Second}
+
+	k8sMock := newMockK8sWithWorkspace(t, "ws-1", "10.0.0.1")
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient, nil)
+	require.NoError(t, err)
+
+	// Use a closed Redis client to force Len() to error.
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	svc := msgqueue.NewWithClient(client)
+	handler.SetMessageQueueService(svc)
+	handler.userBroker = eventbroker.NewUserEventBroker()
+	setupPasswordSecret(t, handler, "ws-1", "test-pw")
+	// Close miniredis BEFORE the test runs so Len() fails.
+	mr.Close()
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST",
+		"/api/v1/workspaces/ws-1/sessions/ses-1/prompt",
+		strings.NewReader(`{"parts":[{"type":"text","text":"hello"}]}`))
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses-1"},
+	}
+
+	handler.SendPromptAsync(c)
+
+	// Fail-open: should return 200 (direct send), NOT 500 or 503.
+	assert.Equal(t, http.StatusOK, w.Code,
+		"Len() error → fail-open → direct send (200), not 5xx")
+	select {
+	case <-promptCalled:
+		// ok — direct send happened despite Len() failure
+	case <-time.After(2 * time.Second):
+		t.Fatal("fail-open: prompt_async was not called — direct send should proceed on Len() error")
+	}
+}
+
+// TestExtractPromptText unit-tests the body parser directly. Covers
+// single text part, multiple text parts (concatenation), tool-only
+// parts (dropped), empty parts, and malformed JSON.
+func TestExtractPromptText(t *testing.T) {
+	type testCase struct {
+		name    string
+		body    string
+		want    string
+		wantErr bool
+	}
+	cases := []testCase{
+		{
+			name: "single text part",
+			body: `{"parts":[{"type":"text","text":"hello"}]}`,
+			want: "hello",
+		},
+		{
+			name: "multiple text parts are concatenated",
+			body: `{"parts":[{"type":"text","text":"abc"},{"type":"text","text":"def"}]}`,
+			want: "abcdef",
+		},
+		{
+			name: "tool-only parts dropped (returns empty)",
+			body: `{"parts":[{"type":"tool","tool":"bash","state":{"title":"run tests"}}]}`,
+			want: "",
+		},
+		{
+			name: "mixed text and tool parts (only text kept)",
+			body: `{"parts":[{"type":"text","text":"keep"},{"type":"tool","tool":"x"},{"type":"text","text":"this"}]}`,
+			want: "keepthis",
+		},
+		{
+			name: "empty parts array",
+			body: `{"parts":[]}`,
+			want: "",
+		},
+		{
+			name: "missing parts field",
+			body: `{}`,
+			want: "",
+		},
+		{
+			name:    "malformed JSON returns error",
+			body:    `{"parts":[{"type":"text","text":broken`,
+			wantErr: true,
+		},
+		{
+			name:    "valid JSON but wrong shape (parts is string)",
+			body:    `{"parts":"not an array"}`,
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := extractPromptText([]byte(tc.body))
+			if tc.wantErr {
+				assert.Error(t, err, "%s: expected error", tc.name)
+				return
+			}
+			require.NoError(t, err, "%s: unexpected error", tc.name)
+			assert.Equal(t, tc.want, got, "%s: text mismatch", tc.name)
+		})
+	}
+}
