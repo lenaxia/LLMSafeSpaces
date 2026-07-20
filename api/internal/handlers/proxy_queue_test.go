@@ -91,6 +91,46 @@ func TestEnqueueMessage_EmptyText(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
+// TestEnqueueMessage_BodySizeCap verifies that the MaxBytesReader cap
+// fires before ShouldBindJSON allocates an unbounded buffer. A body
+// larger than the cap (101_024 bytes) must be rejected without the
+// queue service being touched. Pre-fix the body was read unbounded and
+// only the post-parse len(text) > 100_000 check applied — by then the
+// allocation had already happened.
+func TestEnqueueMessage_BodySizeCap(t *testing.T) {
+	handler, svc, cleanup := setupQueueTestEnv(t)
+	defer cleanup()
+	handler.SetActiveSessionsForTest("ws-1", []string{"ses-1"}) // prevent drain goroutine
+
+	// Build a body just over the 100KB text limit but under the previous
+	// unbounded read; and a second body over the new 101_024 byte cap.
+	// Case A: 100_005-byte text — under cap, hits text-limit check → 400.
+	// Case B: 200_000-byte text — over cap, hits MaxBytesReader → 400.
+	for _, tc := range []struct {
+		name string
+		size int
+	}{
+		{"text over 100KB but under body cap", 100_005},
+		{"body over MaxBytesReader cap", 200_000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"text":"` + strings.Repeat("a", tc.size) + `"}`
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest("POST", "/queue", strings.NewReader(body))
+			c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses-1"}}
+
+			handler.EnqueueMessage(c)
+
+			assert.Equal(t, http.StatusBadRequest, w.Code,
+				"oversized body must be rejected with 400")
+			n, _ := svc.Len(context.Background(), "ws-1", "ses-1")
+			assert.Equal(t, int64(0), n,
+				"queue must remain empty after rejected enqueue")
+		})
+	}
+}
+
 func TestEnqueueMessage_NoQueueService(t *testing.T) {
 	k8sMock := k8smocks.NewMockKubernetesClient()
 	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)

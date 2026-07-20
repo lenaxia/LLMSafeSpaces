@@ -912,6 +912,12 @@ func (h *ProxyHandler) EnqueueMessage(c *gin.Context) {
 	}
 	wid := c.Param("id")
 
+	// Cap the body before ShouldBindJSON reads it. Without this, a client
+	// could force the API to allocate an arbitrarily large buffer in memory
+	// before the 100KB text check below rejects it. Same pattern as
+	// redirectPromptToQueue above and proxy.go:275. 100KB text limit + 1KB
+	// slack for JSON overhead.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 100_000+1024)
 	var req enqueueRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
