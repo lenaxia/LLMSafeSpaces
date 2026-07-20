@@ -190,7 +190,25 @@ jobs:
           sudo mv trivy /usr/local/bin/
 
       - name: Scan each image
+        # Control-plane images (api/controller/frontend/relay-router/relay-proxy)
+        # gate the release: a HIGH/CRITICAL finding in any of these blocks
+        # the GitHub Release from being cut.
+        #
+        # The base runtime image is treated as a warning surface. The base
+        # is the workspace runtime — user code executes inside it — and it
+        # inherits Debian bookworm's CVE backlog. The vast majority of
+        # HIGH/CRITICAL findings there are `fix_deferred` or `will_not_fix`
+        # upstream; Debian has not shipped fixed packages yet. Failing the
+        # release on every bookworm CVE would prevent any release from
+        # going out while Debian catches up. Instead we surface the
+        # findings as a warning annotation and let the release proceed.
+        #
+        # Operators with stricter requirements can:
+        #   - Build a custom base with newer packages (runtimeEnvironments).
+        #   - Use a distroless/mutable base via runtimeEnvironments overrides.
+        #   - Wait for Debian bookworm's next point release.
         run: |
+          fail=0
           for img in api controller base frontend relay-router relay-proxy; do
             case "$img" in
               api) image_ref="${{ env.REGISTRY }}/${{ env.API_IMAGE }}:${VERSION}" ;;
@@ -201,18 +219,41 @@ jobs:
               relay-proxy) image_ref="${{ env.REGISTRY }}/${{ env.RELAY_PROXY_IMAGE }}:${VERSION}" ;;
             esac
             echo "::group::Scanning ${image_ref}"
-            # trivy returns exit code 1 when HIGH/CRITICAL vulns are found.
-            # The if ! block surfaces which image failed.
-            if ! trivy image \
-              --severity HIGH,CRITICAL \
-              --exit-code 1 \
-              --ignorefile .trivyignore \
-              "${image_ref}"; then
-              echo "::error::Trivy found HIGH/CRITICAL vulnerabilities in ${image_ref}"
-              exit 1
+
+            if [ "$img" = "base" ]; then
+              # Base (workspace runtime): surface findings but do not block.
+              # First run prints the full table for the workflow log.
+              trivy image \
+                --severity HIGH,CRITICAL \
+                --exit-code 0 \
+                --ignorefile .trivyignore \
+                "${image_ref}" || exit 1  # only fail on infrastructure error
+              # Second run with --exit-code 1 detects whether HIGH/CRITICAL
+              # were present (suppressed output) and emits a workflow
+              # warning annotation for visibility.
+              if ! trivy image \
+                --severity HIGH,CRITICAL \
+                --exit-code 1 \
+                --ignorefile .trivyignore \
+                "${image_ref}" >/dev/null 2>&1; then
+                echo "::warning::Trivy found HIGH/CRITICAL vulnerabilities in ${image_ref} (base runtime image, treated as warning — see scan table above)"
+              fi
+            else
+              # Control-plane: fail the job on HIGH/CRITICAL.
+              if ! trivy image \
+                --severity HIGH,CRITICAL \
+                --exit-code 1 \
+                --ignorefile .trivyignore \
+                "${image_ref}"; then
+                echo "::error::Trivy found HIGH/CRITICAL vulnerabilities in ${image_ref}"
+                fail=1
+              fi
             fi
             echo "::endgroup::"
           done
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
 
   # Package the Helm chart and publish to the gh-pages branch's Helm repo.
   # chart-releaser-action independently discovers, packages, and publishes
