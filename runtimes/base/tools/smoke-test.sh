@@ -68,6 +68,7 @@ verify sqlite3 which sqlite3
 verify ssh     which ssh
 verify ssh-keygen which ssh-keygen
 verify_any vim "which vim.tiny || which vim"
+verify zstd   which zstd
 
 # DB clients
 verify psql  which psql
