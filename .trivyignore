@@ -39,3 +39,10 @@ CVE-2026-53571 exp:2026-09-15
 # frontend Dockerfile runs `npm ci --omit=dev` and copies only the built
 # dist/ into the nginx image. Re-evaluate when npm-lock.json is updated.
 CVE-2026-13149 exp:2026-10-21
+
+# CVE-2026-59869 — js-yaml: DoS via crafted YAML
+# Transitive npm dev dependency used by build tooling (eslint, vitest,
+# js-yaml CLI). Not shipped in any production image — the frontend
+# Dockerfile runs npm ci --omit=dev and copies only the built dist/
+# into nginx. Re-evaluate when npm-lock.json is updated.
+CVE-2026-59869 exp:2026-10-21
