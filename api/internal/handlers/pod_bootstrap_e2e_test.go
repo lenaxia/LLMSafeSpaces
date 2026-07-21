@@ -533,6 +533,7 @@ func runBootstrapMaterializeE2EWith(t *testing.T, cfg bootstrapE2EConfig) (agent
 			"LLMSAFESPACES_SSH_DIR":           filepath.Join(dir, ".ssh"),
 			"LLMSAFESPACES_SECRETS_ENV_PATH":  filepath.Join(dir, "env"),
 			"LLMSAFESPACES_GIT_CREDS_PATH":    filepath.Join(dir, ".git-credentials"),
+			"LLMSAFESPACES_RELOAD_CACHE_PATH": filepath.Join(dir, "last-reload-secrets.json"),
 			"HOME":                            dir,
 		},
 	)
@@ -911,6 +912,7 @@ func TestE2E_PasswordReset_PurgeThenBoot_NoResurrect(t *testing.T) {
 				"LLMSAFESPACES_SSH_DIR":           filepath.Join(dir, label+"-ssh"),
 				"LLMSAFESPACES_SECRETS_ENV_PATH":  filepath.Join(dir, label+"-env"),
 				"LLMSAFESPACES_GIT_CREDS_PATH":    filepath.Join(dir, label+"-git"),
+				"LLMSAFESPACES_RELOAD_CACHE_PATH": filepath.Join(dir, label+"-last-reload-secrets.json"),
 				"HOME":                            dir,
 			})
 		require.Equal(t, 0, mExit, "materialize failed (%s); stderr=%s", label, mStderr)
@@ -1001,6 +1003,7 @@ func TestE2E_PasswordReset_FullPurgeThenBoot_NoProviders(t *testing.T) {
 			"LLMSAFESPACES_SSH_DIR":           filepath.Join(dir, "ssh"),
 			"LLMSAFESPACES_SECRETS_ENV_PATH":  filepath.Join(dir, "env"),
 			"LLMSAFESPACES_GIT_CREDS_PATH":    filepath.Join(dir, "git"),
+			"LLMSAFESPACES_RELOAD_CACHE_PATH": filepath.Join(dir, "last-reload-secrets.json"),
 			"HOME":                            dir,
 		})
 	require.Equal(t, 0, mExit, "materialize must succeed on empty secrets; stderr=%s", mStderr)
