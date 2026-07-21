@@ -88,17 +88,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 #   from sandbox without installing a Python/Node driver first.
 # - default-mysql-client — `mysql` client (MariaDB-based, smaller than
 #   Oracle's). Same rationale as postgres.
-#
-# Deliberately excluded:
-# - sudo — sandbox runs as non-root by design; sudo would defeat the
-#   confinement.
-# - docker / kubectl — the sandbox boundary; revisit if/when we have a
-#   concrete need (e.g. dind via gVisor).
-# - cloud CLIs other than AWS — gcloud and azure CLIs add ~350MB combined
-#   and require third-party apt repos with their own GPG keys (extra
-#   supply-chain surface). AWS CLI is installed below from the official
-#   AWS-signed tarball; gcloud/azure are available on demand via mise or
-#   the agent's own install.
+# - zstd — Zstandard compression/decompression. Required by modern package
+#   managers (apt cache, conda, npm tarballs), git's optional zstd pack
+#   compression, and container image layers. Tiny (~150KB).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
     build-essential \
@@ -120,6 +112,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     vim-tiny \
     xz-utils \
+    zstd \
     && apt-get upgrade -y zlib1g \
     && apt-get upgrade -y curl libcurl4 \
     && apt-get upgrade -y sqlite3 libsqlite3-0 \
