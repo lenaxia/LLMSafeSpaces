@@ -4,7 +4,7 @@
 // Package version is the single source of truth for the build version string.
 // The Version variable is overridden at build time via -ldflags:
 //
-//	go build -ldflags "-X github.com/lenaxia/llmsafespaces/pkg/version.Version=v0.4.0"
+//	go build -ldflags "-X github.com/lenaxia/llmsafespaces/pkg/version.Version=v0.4.1"
 //
 // When unset (e.g. local dev), Version is "dev". The release workflow sets
 // it from the git tag.

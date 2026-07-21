@@ -44,7 +44,7 @@ Three CRDs in the `llmsafespaces.dev/v1` API group: `Workspace` (namespaced), `R
 
 ## Status
 
-**v0.4.0** — Active development. Suitable for homelab and small-team deployments with the threat model understood. Not recommended for public multi-tenant SaaS without reviewing the [threat model](architecture/threat-model.md).
+**v0.4.1** — Active development. Suitable for homelab and small-team deployments with the threat model understood. Not recommended for public multi-tenant SaaS without reviewing the [threat model](architecture/threat-model.md).
 
 ## License
 
