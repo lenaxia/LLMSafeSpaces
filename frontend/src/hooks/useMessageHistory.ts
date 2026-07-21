@@ -18,7 +18,7 @@ function selectChronological(data: InfiniteData): Message[] {
   //
   // Pre-fix the tiebreaker was `a.id.localeCompare(b.id)`, which broke
   // for opencode-format IDs that don't lex-sort by creation time
-  // (worklog 0555). Using the flattened index makes the sort stable
+  // (worklog 0564). Using the flattened index makes the sort stable
   // and immune to ID format changes.
   const indexed = data.pages.flatMap((p, pageIdx) =>
     p.messages.map((m, msgIdx) => ({ m, origIdx: pageIdx * 100000 + msgIdx })),

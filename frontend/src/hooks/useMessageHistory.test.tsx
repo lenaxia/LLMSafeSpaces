@@ -29,7 +29,7 @@ describe("useMessageHistory", () => {
     expect(result.current.isFetching).toBe(false);
   });
 
-  it("sorts by createdAt with id as tiebreaker", async () => {
+  it("sorts by createdAt with backend order as tiebreaker", async () => {
     (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({
       messages: [
         { id: "zz", role: "assistant", parts: [{ type: "text", text: "later" }], createdAt: "1970-01-01T00:00:02.000Z" },
