@@ -32,3 +32,10 @@ GHSA-gv7w-rqvm-qjhr exp:2026-09-13
 # do not exist on Linux filesystems. Fix is available in vite 6.4.3/7.3.5/8.0.16;
 # upgrade tracked separately from this bug fix.
 CVE-2026-53571 exp:2026-09-15
+
+# CVE-2026-13149 — brace-expansion: DoS via exponential-time complexity
+# Transitive npm dev dependency (minimatch → brace-expansion) used by build
+# tooling (eslint, vitest, etc.). Not shipped in any production image — the
+# frontend Dockerfile runs `npm ci --omit=dev` and copies only the built
+# dist/ into the nginx image. Re-evaluate when npm-lock.json is updated.
+CVE-2026-13149 exp:2026-10-21
