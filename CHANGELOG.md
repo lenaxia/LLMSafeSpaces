@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-21
+
+### Added
+
+- **zstd in runtime base image (#569).** Added the `zstd` package to
+  the workspace runtime image. Required by modern package managers
+  (apt .deb contents, conda .conda format, npm v10+ tarballs), git
+  pack compression (2.22+), and container image layers. Pre-fix, agents
+  hitting any of these got a confusing "command not found".
+
+- **Synthetic monitor for CORS expose-headers (#571).** New script at
+  `hack/monitor-cors-expose-headers.sh` that catches the class of bug
+  where an ingress-controller middleware overrides the app's
+  `Access-Control-Expose-Headers` — silently stripping `X-Next-Cursor`
+  from the browser's view. The app's own tests cannot catch this
+  because they only cover the app; the override happens at the edge.
+  Schedule via UptimeKuma, cron, or GitHub Actions.
+
+### Fixed
+
+- **EnqueueMessage body cap — DoS hardening (#568).** The canonical
+  `EnqueueMessage` handler at `proxy_handlers.go` read the request body
+  via unbounded `c.ShouldBindJSON`. A client could POST a multi-gigabyte
+  body that the API would buffer in full before the 100KB text limit
+  rejected it. Applied `http.MaxBytesReader` cap (101KB) matching the
+  pattern already used in `redirectPromptToQueue` and `proxy.go:275`.
+
+- **Stable sort tiebreaker in message history (#570).** The
+  `selectChronological` sort used `id.localeCompare` as a tiebreaker
+  when two messages shared the same `createdAt` millisecond — the
+  documented root cause of issue #387. Replaced with stable-sort by
+  original array index (backend delivery order). Immune to future
+  opencode ID format changes; the lex tiebreaker assumed IDs are
+  sortable by creation time (they're not).
+
+- **Test isolation from host's reload-secrets cache (#572).**
+  `TestE2E_PasswordReset_FullPurgeThenBoot_NoProviders` was failing on
+  hosts where `/sandbox-runtime/last-reload-secrets.json` exists
+  (including the opencode sandbox). The materialize subcommand reads
+  this file by default; the test forgot to override
+  `LLMSAFESPACES_RELOAD_CACHE_PATH` to a tempdir. Fixed in all three
+  materialize call sites in `pod_bootstrap_e2e_test.go`.
+
+- **Trivy scan split — control-plane blocks, base warns (#567).** The
+  v0.4.0 release was blocked because Trivy found HIGH-severity CVEs in
+  the base runtime image (Debian bookworm packages, mostly
+  `fix_deferred` upstream). Split the scan loop: control-plane images
+  (api/controller/frontend/relay-router/relay-proxy) still gate the
+  release; the base runtime image surfaces findings as a warning
+  annotation without blocking. The base inherits Debian's CVE backlog;
+  failing on every bookworm CVE would prevent any release from shipping.
+
 ## [0.4.0] - 2026-07-19
 
 ### Added
@@ -468,7 +520,8 @@ Network hardening sweep + KMS-backed master KEK foundation + Go security bump.
 
 ## [0.1.0] - 2026-07-04
 
-[Unreleased]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.2.2...v0.3.0
 [0.2.2]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.2.1...v0.2.2
