@@ -29,7 +29,7 @@ describe("useMessageHistory", () => {
     expect(result.current.isFetching).toBe(false);
   });
 
-  it("sorts by createdAt with id as tiebreaker", async () => {
+  it("sorts by createdAt with backend order as tiebreaker", async () => {
     (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({
       messages: [
         { id: "zz", role: "assistant", parts: [{ type: "text", text: "later" }], createdAt: "1970-01-01T00:00:02.000Z" },
@@ -44,22 +44,31 @@ describe("useMessageHistory", () => {
     expect(result.current.data![1]!.id).toBe("zz");
   });
 
-  it("uses id as tiebreaker when createdAt is equal", async () => {
+  it("preserves backend order as tiebreaker when createdAt is equal", async () => {
+    // The tiebreaker is now stable-sort by original array index (the order
+    // the backend returned), NOT lex ID comparison. Pre-fix used
+    // id.localeCompare which broke for opencode-format IDs that don't
+    // lex-sort by creation time (worklog 0555).
     (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({
       messages: [
-        { id: "b", role: "assistant", parts: [{ type: "text", text: "second" }], createdAt: "1970-01-01T00:00:01.000Z" },
-        { id: "a", role: "user", parts: [{ type: "text", text: "first" }], createdAt: "1970-01-01T00:00:01.000Z" },
+        { id: "b", role: "assistant", parts: [{ type: "text", text: "second in array" }], createdAt: "1970-01-01T00:00:01.000Z" },
+        { id: "a", role: "user", parts: [{ type: "text", text: "first in array" }], createdAt: "1970-01-01T00:00:01.000Z" },
       ],
       nextCursor: undefined,
     });
     const { result } = renderHook(() => useMessageHistory("sb-1", "sess-1"), { wrapper });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data).toHaveLength(2);
-    expect(result.current.data![0]!.id).toBe("a");
-    expect(result.current.data![1]!.id).toBe("b");
+    // Stable: b stays before a because that's the order they arrived.
+    expect(result.current.data![0]!.id).toBe("b");
+    expect(result.current.data![1]!.id).toBe("a");
   });
 
   it("sorts queued messages (msg_q_*) correctly among native messages", async () => {
+    // Regression for issue #387: when timestamps differ, sort by time
+    // regardless of ID format. The lex tiebreaker previously placed
+    // msg_q_* IDs after msg_e* IDs even when their timestamps said
+    // otherwise. With the stable-index tiebreaker, timestamps always win.
     (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({
       messages: [
         { id: "msg_q_ccc", role: "user", parts: [{ type: "text", text: "interjection" }], createdAt: "1970-01-01T00:00:01.500Z" },
@@ -76,7 +85,10 @@ describe("useMessageHistory", () => {
     expect(result.current.data![2]!.id).toBe("msg_q_bbb");
   });
 
-  it("falls back to id sort when createdAt is missing", async () => {
+  it("preserves backend order when createdAt is missing for all messages", async () => {
+    // When every message lacks createdAt, the primary sort key is uniform
+    // (all 0) so the stable-index tiebreaker fully controls order. This
+    // matches the backend's oldest-first delivery.
     (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({
       messages: [
         { id: "c", role: "assistant", parts: [{ type: "text", text: "msg c" }] },
@@ -88,8 +100,9 @@ describe("useMessageHistory", () => {
     const { result } = renderHook(() => useMessageHistory("sb-1", "sess-1"), { wrapper });
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(result.current.data).toHaveLength(3);
-    expect(result.current.data![0]!.id).toBe("a");
-    expect(result.current.data![1]!.id).toBe("b");
-    expect(result.current.data![2]!.id).toBe("c");
+    // Stable order: c, a, b (as-delivered from backend).
+    expect(result.current.data![0]!.id).toBe("c");
+    expect(result.current.data![1]!.id).toBe("a");
+    expect(result.current.data![2]!.id).toBe("b");
   });
 });

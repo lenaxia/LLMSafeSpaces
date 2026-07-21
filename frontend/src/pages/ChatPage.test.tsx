@@ -133,9 +133,9 @@ describe("ChatPage", () => {
     (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active" });
     // API returns newest-first (as opencode does with paginated queries)
     (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "cc0000000003abcdef", role: "assistant", parts: [{ type: "text", text: "Third" }] },
-      { id: "bb0000000002abcdef", role: "user", parts: [{ type: "text", text: "Second" }] },
-      { id: "aa0000000001abcdef", role: "user", parts: [{ type: "text", text: "First" }] },
+      { id: "cc0000000003abcdef", role: "assistant", parts: [{ type: "text", text: "Third" }], createdAt: "2026-01-03T00:00:00.000Z" },
+      { id: "bb0000000002abcdef", role: "user", parts: [{ type: "text", text: "Second" }], createdAt: "2026-01-02T00:00:00.000Z" },
+      { id: "aa0000000001abcdef", role: "user", parts: [{ type: "text", text: "First" }], createdAt: "2026-01-01T00:00:00.000Z" },
     ]);
     renderChatPage("/chat/ws-1/sess-1");
     await waitFor(() => {
@@ -150,9 +150,9 @@ describe("ChatPage", () => {
     (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active" });
     // API returns oldest-first (possible in some opencode versions)
     (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "aa0000000001abcdef", role: "user", parts: [{ type: "text", text: "First" }] },
-      { id: "bb0000000002abcdef", role: "user", parts: [{ type: "text", text: "Second" }] },
-      { id: "cc0000000003abcdef", role: "assistant", parts: [{ type: "text", text: "Third" }] },
+      { id: "aa0000000001abcdef", role: "user", parts: [{ type: "text", text: "First" }], createdAt: "2026-01-01T00:00:00.000Z" },
+      { id: "bb0000000002abcdef", role: "user", parts: [{ type: "text", text: "Second" }], createdAt: "2026-01-02T00:00:00.000Z" },
+      { id: "cc0000000003abcdef", role: "assistant", parts: [{ type: "text", text: "Third" }], createdAt: "2026-01-03T00:00:00.000Z" },
     ]);
     renderChatPage("/chat/ws-1/sess-1");
     await waitFor(() => {
@@ -167,10 +167,10 @@ describe("ChatPage", () => {
     (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active" });
     // Arbitrary/scrambled order
     (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "bb0000000002abcdef", role: "user", parts: [{ type: "text", text: "Second" }] },
-      { id: "dd0000000004abcdef", role: "assistant", parts: [{ type: "text", text: "Fourth" }] },
-      { id: "aa0000000001abcdef", role: "user", parts: [{ type: "text", text: "First" }] },
-      { id: "cc0000000003abcdef", role: "assistant", parts: [{ type: "text", text: "Third" }] },
+      { id: "bb0000000002abcdef", role: "user", parts: [{ type: "text", text: "Second" }], createdAt: "2026-01-02T00:00:00.000Z" },
+      { id: "dd0000000004abcdef", role: "assistant", parts: [{ type: "text", text: "Fourth" }], createdAt: "2026-01-04T00:00:00.000Z" },
+      { id: "aa0000000001abcdef", role: "user", parts: [{ type: "text", text: "First" }], createdAt: "2026-01-01T00:00:00.000Z" },
+      { id: "cc0000000003abcdef", role: "assistant", parts: [{ type: "text", text: "Third" }], createdAt: "2026-01-03T00:00:00.000Z" },
     ]);
     renderChatPage("/chat/ws-1/sess-1");
     await waitFor(() => {
@@ -186,9 +186,9 @@ describe("ChatPage", () => {
     (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active" });
     // Simulate post-reconcile: newest message has highest ID
     (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "ff0000000006abcdef", role: "assistant", parts: [{ type: "text", text: "Latest response" }] },
-      { id: "ee0000000005abcdef", role: "user", parts: [{ type: "text", text: "Latest question" }] },
-      { id: "aa0000000001abcdef", role: "user", parts: [{ type: "text", text: "First message" }] },
+      { id: "ff0000000006abcdef", role: "assistant", parts: [{ type: "text", text: "Latest response" }], createdAt: "2026-01-03T00:00:00.000Z" },
+      { id: "ee0000000005abcdef", role: "user", parts: [{ type: "text", text: "Latest question" }], createdAt: "2026-01-02T00:00:00.000Z" },
+      { id: "aa0000000001abcdef", role: "user", parts: [{ type: "text", text: "First message" }], createdAt: "2026-01-01T00:00:00.000Z" },
     ]);
     renderChatPage("/chat/ws-1/sess-1");
     await waitFor(() => {
@@ -204,8 +204,8 @@ describe("ChatPage", () => {
     const user = userEvent.setup();
     (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active" });
     (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { id: "bb0000000002abcdef", role: "assistant", parts: [{ type: "text", text: "Hi" }] },
-      { id: "aa0000000001abcdef", role: "user", parts: [{ type: "text", text: "Hello" }] },
+      { id: "bb0000000002abcdef", role: "assistant", parts: [{ type: "text", text: "Hi" }], createdAt: "2026-01-02T00:00:00.000Z" },
+      { id: "aa0000000001abcdef", role: "user", parts: [{ type: "text", text: "Hello" }], createdAt: "2026-01-01T00:00:00.000Z" },
     ]);
     (messagesApi.sendAsync as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
     renderChatPage("/chat/ws-1/sess-1");
