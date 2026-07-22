@@ -40,15 +40,24 @@ export function MessageList({ messages, streaming, streamingBubble, trailingProm
 
   const rafId = useRef(0);
   const checkIfAtBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    // Record the user's intent SYNCHRONOUSLY, not in a deferred rAF. During
+    // streaming the MutationObserver auto-scrolls to the bottom on every
+    // token; if this update were deferred to a rAF, a token whose observer
+    // rAF runs first would pull the viewport back to the bottom before the
+    // user's scroll-up was ever observed — trapping the user at the tail and
+    // making earlier content unreadable while waiting for a response. Reading
+    // scrollTop here reflects the position at the moment of the scroll event,
+    // before any later mutation can act on a stale value.
+    stickToBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_THRESHOLD;
+    // The React state update (which drives a re-render) is cheap to coalesce,
+    // so it stays behind a rAF to batch rapid scroll events.
     if (rafId.current) return;
     rafId.current = requestAnimationFrame(() => {
       rafId.current = 0;
-      const el = scrollRef.current;
-      if (!el) return;
-      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_THRESHOLD;
-      stickToBottom.current = atBottom;
       setShowJumpButton((prev) => {
-        const shouldShow = !atBottom;
+        const shouldShow = !stickToBottom.current;
         return prev === shouldShow ? prev : shouldShow;
       });
     });
