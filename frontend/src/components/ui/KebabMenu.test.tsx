@@ -5,18 +5,18 @@ import { render } from "../../test/utils";
 import { KebabMenu, computeMenuPosition } from "./KebabMenu";
 
 describe("KebabMenu", () => {
-  let origOffsetHeight: PropertyDescriptor | undefined;
+  let origScrollHeight: PropertyDescriptor | undefined;
   let origOffsetWidth: PropertyDescriptor | undefined;
   let origInnerHeight: PropertyDescriptor | undefined;
 
   afterEach(() => {
     const proto = HTMLElement.prototype as unknown as Record<string, unknown>;
-    if (origOffsetHeight) Object.defineProperty(HTMLElement.prototype, "offsetHeight", origOffsetHeight);
-    else delete proto.offsetHeight;
+    if (origScrollHeight) Object.defineProperty(HTMLElement.prototype, "scrollHeight", origScrollHeight);
+    else delete proto.scrollHeight;
     if (origOffsetWidth) Object.defineProperty(HTMLElement.prototype, "offsetWidth", origOffsetWidth);
     else delete proto.offsetWidth;
     if (origInnerHeight) Object.defineProperty(window, "innerHeight", origInnerHeight);
-    origOffsetHeight = origOffsetWidth = origInnerHeight = undefined;
+    origScrollHeight = origOffsetWidth = origInnerHeight = undefined;
   });
   it("renders trigger button", () => {
     render(<KebabMenu items={[{ label: "Action", onClick: vi.fn() }]} />);
@@ -86,14 +86,16 @@ describe("KebabMenu", () => {
     Object.defineProperty(el, "getBoundingClientRect", { configurable: true, value: () => rect });
   }
 
-  // offsetHeight/offsetWidth are read on the menu element (menuRef.current),
-  // which only exists after open. Override the prototype so the value is in
-  // place before the layout effect runs on the first open render. Originals
-  // are restored in afterEach.
+  // scrollHeight (height) + offsetWidth (width) are read on the menu element
+  // (menuRef.current), which only exists after open. Override the prototype so
+  // the values are in place before the layout effect runs on the first open
+  // render. scrollHeight is used (not offsetHeight) because the component
+  // measures full content height regardless of any applied maxHeight cap.
+  // Originals are restored in afterEach.
   function mockMenuSize(height: number, width = 160) {
-    origOffsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+    origScrollHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollHeight");
     origOffsetWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetWidth");
-    Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, get: () => height });
+    Object.defineProperty(HTMLElement.prototype, "scrollHeight", { configurable: true, get: () => height });
     Object.defineProperty(HTMLElement.prototype, "offsetWidth", { configurable: true, get: () => width });
   }
 

@@ -92,12 +92,15 @@ export function KebabMenu({ items, align = "right", footer }: Props) {
     if (!btn) return;
     const btnRect = btn.getBoundingClientRect();
     const menu = menuRef.current;
-    // Before the menu has mounted (first open tick), fall back to the
-    // assumed 160px width and an estimated height; once mounted we measure
-    // the real offsetHeight/offsetWidth so flip/clamp use true geometry.
+    // scrollHeight (not offsetHeight) for height: once a maxHeight cap is
+    // applied, offsetHeight returns the *capped* height and a re-measure
+    // would wrongly conclude the menu fits and drop the cap, re-expanding it
+    // past the viewport. scrollHeight always reports the full natural content
+    // height regardless of the cap, so the cap decision is stable across
+    // re-measures. offsetWidth is safe — width is never capped.
     const menuSize = {
       width: menu?.offsetWidth ?? 160,
-      height: menu?.offsetHeight ?? 0,
+      height: menu?.scrollHeight ?? 0,
     };
     setPos(
       computeMenuPosition(
