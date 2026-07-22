@@ -12,7 +12,7 @@ import type { MessagePart as MessagePartType } from "../../api/types";
 
 const ReactDiffViewer = lazy(() => import("react-diff-viewer-continued"));
 
-function MarkdownLink({ href, children, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { node?: unknown }) {
+function MarkdownLink({ href, children, node: _node, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { node?: unknown }) {
   return (
     <a {...props} href={href} target="_blank" rel="noopener noreferrer">
       {children}
