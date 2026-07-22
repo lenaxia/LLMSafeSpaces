@@ -12,6 +12,14 @@ import type { MessagePart as MessagePartType } from "../../api/types";
 
 const ReactDiffViewer = lazy(() => import("react-diff-viewer-continued"));
 
+function MarkdownLink({ href, children, node: _node, ...props }: React.AnchorHTMLAttributes<HTMLAnchorElement> & { node?: unknown }) {
+  return (
+    <a {...props} href={href} target="_blank" rel="noopener noreferrer">
+      {children}
+    </a>
+  );
+}
+
 /**
  * If the text ends with an unclosed CommonMark fenced code block, append
  * the appropriate closing fence. Used during streaming to prevent an
@@ -250,6 +258,7 @@ export function MessagePart({ part, isUser, isStreaming }: Props) {
           remarkPlugins={[remarkGfm]}
           rehypePlugins={[rehypeSanitize]}
           components={{
+            a: MarkdownLink,
             pre({ children }) {
               const child = (Array.isArray(children) ? children[0] : children) as
                 | React.ReactElement<{ className?: string; children?: string }>
@@ -287,7 +296,7 @@ export function MessagePart({ part, isUser, isStreaming }: Props) {
   if ((part.type === "thinking" || part.type === "reasoning") && part.text) {
     const content = (
       <div className="border-l-2 border-muted-foreground/30 pl-3 text-xs text-muted-foreground italic">
-        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>
+        <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]} components={{ a: MarkdownLink }}>
           {part.text}
         </ReactMarkdown>
       </div>

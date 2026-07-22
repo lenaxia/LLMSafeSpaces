@@ -99,6 +99,46 @@ describe("MessagePart", () => {
     expect(del.tagName).toBe("DEL");
   });
 
+  describe("link rendering — open in new tab", () => {
+    it("renders assistant-text links with target=_blank", () => {
+      const { container } = render(
+        <MessagePart part={{ type: "text", text: "[example](https://example.com)" }} isUser={false} />,
+      );
+      const link = container.querySelector("a");
+      expect(link).not.toBeNull();
+      expect(link?.getAttribute("href")).toBe("https://example.com");
+      expect(link?.getAttribute("target")).toBe("_blank");
+    });
+
+    it("renders assistant-text links with rel=noopener noreferrer", () => {
+      const { container } = render(
+        <MessagePart part={{ type: "text", text: "[example](https://example.com)" }} isUser={false} />,
+      );
+      const link = container.querySelector("a");
+      expect(link?.getAttribute("rel")).toContain("noopener");
+      expect(link?.getAttribute("rel")).toContain("noreferrer");
+    });
+
+    it("renders thinking-part links with target=_blank", () => {
+      const { container } = render(
+        <MessagePart part={{ type: "thinking", text: "[docs](https://docs.example.com)" }} isUser={false} />,
+      );
+      const link = container.querySelector("a");
+      expect(link).not.toBeNull();
+      expect(link?.getAttribute("target")).toBe("_blank");
+      expect(link?.getAttribute("rel")).toContain("noopener");
+    });
+
+    it("preserves href on external links", () => {
+      const { container } = render(
+        <MessagePart part={{ type: "text", text: "See <https://auto-link.example.com>" }} isUser={false} />,
+      );
+      const link = container.querySelector("a");
+      expect(link?.getAttribute("href")).toBe("https://auto-link.example.com");
+      expect(link?.getAttribute("target")).toBe("_blank");
+    });
+  });
+
   it("renders code block containing HTML-special characters safely", async () => {
     const md = '```html\n<div class="xss">hello</div>\n```';
     render(<MessagePart part={{ type: "text", text: md }} isUser={false} />);
