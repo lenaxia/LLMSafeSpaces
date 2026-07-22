@@ -158,9 +158,19 @@ jobs:
             # "Wait for CI", "Sign images", "Scan images (Trivy)" [the
             # release one, not the security-scan one], "Publish Helm",
             # "Generate SBOM", "Build relay-proxy", "Create GitHub Release").
+            # ALL_DONE must exclude Release workflow job names for the same
+            # reason FAILED/CI_CHECKS/RUNNING do: the commits/{ref}/check-runs
+            # API returns THIS job's own in-progress "Wait for CI workflow"
+            # check run. Without the filter, ALL_DONE is always >= 1 (it
+            # counts itself), the success branch (ALL_DONE == 0) is
+            # unreachable, and the loop can only exit via the 40-minute
+            # timeout — which fails the release. This is the same
+            # self-referential class of bug #574 replaced wait-on-check to
+            # fix; the filter here closes the gap the original fix missed.
             ALL_DONE=$(printf '%s' "$RESPONSE" | jq -r '
               .check_runs
               | map(select(.status != "completed"))  # any still running?
+              | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|Scan images \\(Trivy\\)") | not))
               | length
             ')
 
