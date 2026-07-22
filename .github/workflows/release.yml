@@ -177,6 +177,14 @@ jobs:
             # fix; the filter here closes the gap the original fix missed.
             ALL_DONE=$(printf '%s' "$RESPONSE" | jq -r '
               .check_runs
+              # GitHub persists BOTH attempts when a job is retried. A flaky
+              # CI job (e.g. the race detector) that fails once and succeeds
+              # on retry leaves a stale failure record alongside the new
+              # success; without dedup, FAILED/ALL_DONE would honour the
+              # stale failure and block the release on a green retry. Keep
+              # only the latest attempt per name (max started_at) before any
+              # pass/fail judgement.
+              | group_by(.name) | map(sort_by(.started_at // "0") | last)
               | map(select(.status != "completed"))  # any still running?
               | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|gremlins|Scan images \\(Trivy\\)") | not))
               | length
@@ -186,6 +194,7 @@ jobs:
             # Filter out Release workflow job names.
             FAILED=$(printf '%s' "$RESPONSE" | jq -r '
               .check_runs
+              | group_by(.name) | map(sort_by(.started_at // "0") | last)
               | map(select(.status == "completed"))
               | map(select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral"))
               | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|gremlins|Scan images \\(Trivy\\)") | not))
@@ -197,6 +206,7 @@ jobs:
             # On a fresh tag push, CI jobs take a few seconds to register.
             CI_CHECKS=$(printf '%s' "$RESPONSE" | jq -r '
               .check_runs
+              | group_by(.name) | map(sort_by(.started_at // "0") | last)
               | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|gremlins|Scan images \\(Trivy\\)") | not))
               | length
             ')
