@@ -96,7 +96,7 @@ test.describe("Sidebar kebab menu viewport awareness", () => {
     await page.setViewportSize({ width: 1024, height: 120 });
     await page.goto(`/chat/${WORKSPACE_ID}/ses_0`);
 
-    await expect(page.getByText("Session 1")).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText("Session 1", { exact: true })).toBeVisible({ timeout: 10_000 });
 
     await sidebarKebab(page).first().click();
     const menu = page.getByRole("menu");
