@@ -7,6 +7,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-07-22
+
+### Fixed
+
+- **Streaming scroll-follow — user no longer yanked to the bottom (#575).**
+  During streaming, scrolling up to read earlier content while waiting
+  for a response immediately pulled the viewport back to the bottom,
+  trapping the user at the tail. Root cause: in
+  `frontend/src/components/chat/MessageList.tsx`, the `scroll` handler
+  deferred the `stickToBottom.current` intent update into a
+  `requestAnimationFrame`. The streaming `MutationObserver` auto-scrolls
+  to the bottom on every token while `stickToBottom` is `true`; because
+  the intent update was deferred one frame, a token whose observer rAF
+  was registered before the user's scroll rAF ran first and re-scrolled
+  to the bottom, so the deferred handler read an at-bottom position and
+  kept `stickToBottom=true`. With tokens arriving every few ms this
+  happened on essentially every scroll attempt. Fix: update
+  `stickToBottom.current` synchronously in the scroll handler; the very
+  next token's observer now sees the user's intent and leaves the
+  viewport alone. Follow mode and the "Resume tailing" button are
+  unchanged.
+
+- **Release workflow — self-referential CI-gate failure (#574).** Both
+  the v0.4.0 and v0.4.1 releases were blocked by a self-referential
+  failure in `lewagon/wait-on-check-action`: when the `Wait for CI`
+  job failed (transient API error) and was re-run, the prior failed
+  check run persisted on the ref, so every retry immediately saw the
+  old failure and re-failed — making the release unrecoverable without
+  manual `gh release create`. Replaced the action with a custom polling
+  script in `release.yml` that filters out Release workflow job names
+  explicitly (in-progress or failed), so it never observes its own
+  check. This is what makes the v0.4.2 release cuttable cleanly.
+
 ## [0.4.1] - 2026-07-21
 
 ### Added
@@ -520,7 +553,8 @@ Network hardening sweep + KMS-backed master KEK foundation + Go security bump.
 
 ## [0.1.0] - 2026-07-04
 
-[Unreleased]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.2.2...v0.3.0

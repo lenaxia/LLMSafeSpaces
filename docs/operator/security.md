@@ -344,7 +344,7 @@ All release images (`ghcr.io/lenaxia/llmsafespaces/*`) are signed with [cosign](
 **Verify an image before deploying:**
 
 ```bash
-cosign verify ghcr.io/lenaxia/llmsafespaces/api:0.4.1 \
+cosign verify ghcr.io/lenaxia/llmsafespaces/api:0.4.2 \
   --certificate-identity-regexp "https://github.com/lenaxia/LLMSafeSpaces" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 ```
