@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-07-22
+
+### Fixed
+
+- **Frontend image — patch system-library CVEs (openssl, libpng,
+  libxml2, musl, nghttp2, zlib).** The frontend image builds on
+  `nginxinc/nginx-unprivileged:1.27-alpine`, whose packaged system
+  libraries lagged Alpine's security advisories. The release Trivy
+  gate found HIGH/CRITICAL CVEs against `libssl3` (CVE-2026-31789
+  CRITICAL, CVE-2025-15467 HIGH), `libpng`, `libxml2`, `musl`,
+  `nghttp2-libs`, and `zlib`. Added `apk upgrade --no-cache` to the
+  nginx stage of `frontend/Dockerfile`, which pulls the fixed
+  versions from Alpine's repository (e.g. openssl 3.3.7-r0, libpng
+  1.6.55-r0). This is a real package upgrade, not a `.trivyignore`
+  accept — the vulnerable bytes no longer ship. The other
+  control-plane images (api/controller/relay-router/relay-proxy) are
+  `gcr.io/distroless/static` and were already clean; the base runtime
+  image is warn-only by design (Debian bookworm CVE backlog).
+
+- **Release workflow — two gate bugs that blocked the v0.4.2 release
+  (#577, #578).** (1) The `wait-for-ci` job's `ALL_DONE` jq computation
+  counted its own in-progress check run (self-referential — the same
+  class of bug #574 had set out to fix), making the success branch
+  unreachable and forcing a 40-minute timeout. (2) After (1) was fixed,
+  nightly `gremlins` (mutation tests) check runs on the tag SHA — which
+  are expected mutation-testing signal, not a release gate — were being
+  treated as release blockers. Both fixes add the appropriate name
+  exclusion to the gate's jq filter.
+
 ## [0.4.2] - 2026-07-22
 
 ### Fixed
@@ -553,7 +582,8 @@ Network hardening sweep + KMS-backed master KEK foundation + Go security bump.
 
 ## [0.1.0] - 2026-07-04
 
-[Unreleased]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.2...HEAD
+[Unreleased]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.3...HEAD
+[0.4.3]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.3.0...v0.4.0
