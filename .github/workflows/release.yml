@@ -158,6 +158,14 @@ jobs:
             # "Wait for CI", "Sign images", "Scan images (Trivy)" [the
             # release one, not the security-scan one], "Publish Helm",
             # "Generate SBOM", "Build relay-proxy", "Create GitHub Release").
+            #
+            # Also exclude ancillary workflows that are NOT tag-push gates
+            # but record check runs against the tag SHA anyway (the tag's
+            # commit is on main, where these run): "gremlins" (mutation.yml,
+            # nightly) is a mutation-testing signal generator whose findings
+            # are expected by design — ci.yml's real test suites gate the
+            # release. Without this exclusion, gremlins findings block every
+            # release cut from a SHA the nightly happened to touch.
             # ALL_DONE must exclude Release workflow job names for the same
             # reason FAILED/CI_CHECKS/RUNNING do: the commits/{ref}/check-runs
             # API returns THIS job's own in-progress "Wait for CI workflow"
@@ -170,7 +178,7 @@ jobs:
             ALL_DONE=$(printf '%s' "$RESPONSE" | jq -r '
               .check_runs
               | map(select(.status != "completed"))  # any still running?
-              | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|Scan images \\(Trivy\\)") | not))
+              | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|gremlins|Scan images \\(Trivy\\)") | not))
               | length
             ')
 
@@ -180,7 +188,7 @@ jobs:
               .check_runs
               | map(select(.status == "completed"))
               | map(select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral"))
-              | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|Scan images \\(Trivy\\)") | not))
+              | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|gremlins|Scan images \\(Trivy\\)") | not))
               | map(.name)
               | .[]
             ')
@@ -189,7 +197,7 @@ jobs:
             # On a fresh tag push, CI jobs take a few seconds to register.
             CI_CHECKS=$(printf '%s' "$RESPONSE" | jq -r '
               .check_runs
-              | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|Scan images \\(Trivy\\)") | not))
+              | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|gremlins|Scan images \\(Trivy\\)") | not))
               | length
             ')
 
@@ -215,7 +223,7 @@ jobs:
             RUNNING=$(printf '%s' "$RESPONSE" | jq -r '
               .check_runs
               | map(select(.status != "completed"))
-              | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|Scan images \\(Trivy\\)") | not))
+              | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|gremlins|Scan images \\(Trivy\\)") | not))
               | map(.name)
               | .[]
             ')
