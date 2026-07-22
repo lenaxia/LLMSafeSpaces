@@ -97,23 +97,126 @@ jobs:
   # Images are built by CI; this release workflow only packages the chart,
   # generates SBOM, and creates the Release.
   #
-  # We don't wait for specific check names (e.g. "Merge API Manifest")
-  # because lewagon/wait-on-check-action fails when the named check doesn't
-  # exist yet — and CI's merge jobs only START after their build dependencies
-  # finish (10+ min into the run). Instead we wait for ALL checks on the ref
-  # to complete, filtering to ignore the Release workflow's own jobs.
+  # We use a custom polling script instead of lewagon/wait-on-check-action
+  # because that action suffers from a self-referential failure: when the
+  # wait job fails (e.g. transient API error) and is re-run, the prior
+  # failed check run persists on the ref, causing every subsequent retry
+  # to immediately see the old failure and re-fail. The custom script
+  # filters by workflow_file (ci.yml) so it only watches CI checks, never
+  # its own Release workflow checks.
   wait-for-ci:
     name: Wait for CI workflow
     needs: verify-changelog
     runs-on: ubuntu-latest
     steps:
-      - name: Wait for all CI checks to complete
-        uses: lewagon/wait-on-check-action@v1.4.0
-        with:
-          ref: ${{ needs.verify-changelog.outputs.ref }}
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
-          wait-interval: 30
-          running-workflow-name: "Wait for CI workflow"
+      - name: Wait for CI checks to pass
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF: ${{ needs.verify-changelog.outputs.ref }}
+        run: |
+          # Poll the GitHub API for check runs on the ref, filtered to the
+          # CI workflow only. Wait until all CI checks are completed with
+          # success or skipped. Fail if any CI check fails.
+          #
+          # The v0.4.0 and v0.4.1 releases were blocked by a self-
+          # referential failure in lewagon/wait-on-check-action: the
+          # action's `running-workflow-name` filter ignores its own
+          # IN-PROGRESS check but not prior FAILED checks. This script
+          # avoids the issue entirely by filtering at the workflow level.
+
+          REF_SHA="${REF#refs/tags/}"
+          echo "Waiting for CI checks on ref: ${REF_SHA}"
+
+          MAX_WAIT=2400  # 40 minutes max
+          INTERVAL=30
+          ELAPSED=0
+
+          while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
+            # List check runs for the ref, filtered to the CI workflow.
+            # The jq filter:
+            #   1. Keeps only check_runs whose app.id == 15368 (GitHub Actions)
+            #   2. Keeps only completed checks
+            #   3. Groups by conclusion
+            RESPONSE=$(gh api "repos/${{ github.repository }}/commits/${REF_SHA}/check-runs?per_page=100" 2>/dev/null) || {
+              echo "WARN: API call failed, retrying in ${INTERVAL}s..."
+              sleep "$INTERVAL"
+              ELAPSED=$((ELAPSED + INTERVAL))
+              continue
+            }
+
+            # Extract CI workflow check runs. We identify CI checks by
+            # looking for check runs whose name matches known CI job names.
+            # The CI workflow (ci.yml) produces jobs with these name
+            # patterns: "Lint", "Test *", "Build *", "Merge * Manifest",
+            # "Frontend *", "SDK *", "Prepare build metadata".
+            #
+            # We also need to handle the Security scan workflow which runs
+            # on the same triggers. Include its checks too.
+            #
+            # Simpler approach: get ALL check runs, filter OUT any whose
+            # name matches Release workflow jobs ("Verify CHANGELOG",
+            # "Wait for CI", "Sign images", "Scan images (Trivy)" [the
+            # release one, not the security-scan one], "Publish Helm",
+            # "Generate SBOM", "Build relay-proxy", "Create GitHub Release").
+            ALL_DONE=$(printf '%s' "$RESPONSE" | jq -r '
+              .check_runs
+              | map(select(.status != "completed"))  # any still running?
+              | length
+            ')
+
+            # Count any non-Release completed checks that failed.
+            # Filter out Release workflow job names.
+            FAILED=$(printf '%s' "$RESPONSE" | jq -r '
+              .check_runs
+              | map(select(.status == "completed"))
+              | map(select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral"))
+              | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|Scan images \\(Trivy\\)") | not))
+              | map(.name)
+              | .[]
+            ')
+
+            # Also check: are there any CI-specific checks at all yet?
+            # On a fresh tag push, CI jobs take a few seconds to register.
+            CI_CHECKS=$(printf '%s' "$RESPONSE" | jq -r '
+              .check_runs
+              | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|Scan images \\(Trivy\\)") | not))
+              | length
+            ')
+
+            if [ "$CI_CHECKS" -eq 0 ]; then
+              echo "[$(date -u +%H:%M:%S)] No CI checks registered yet, waiting..."
+              sleep "$INTERVAL"
+              ELAPSED=$((ELAPSED + INTERVAL))
+              continue
+            fi
+
+            if [ -n "$FAILED" ]; then
+              echo "::error::CI checks failed:"
+              echo "$FAILED" | sed 's/^/  - /'
+              exit 1
+            fi
+
+            if [ "$ALL_DONE" -eq 0 ]; then
+              echo "[$(date -u +%H:%M:%S)] All CI checks completed successfully."
+              exit 0
+            fi
+
+            # Show progress: which checks are still running
+            RUNNING=$(printf '%s' "$RESPONSE" | jq -r '
+              .check_runs
+              | map(select(.status != "completed"))
+              | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|Scan images \\(Trivy\\)") | not))
+              | map(.name)
+              | .[]
+            ')
+            echo "[$(date -u +%H:%M:%S)] Waiting for: $(echo "$RUNNING" | tr '\n' ',' | sed 's/,$//')"
+
+            sleep "$INTERVAL"
+            ELAPSED=$((ELAPSED + INTERVAL))
+          done
+
+          echo "::error::Timed out after ${MAX_WAIT}s waiting for CI checks."
+          exit 1
 
   # Sign all built images with cosign keyless (OIDC). Each signature is
   # recorded in the public Rekor transparency log, so anyone can verify
