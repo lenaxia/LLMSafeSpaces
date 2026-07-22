@@ -23,6 +23,12 @@ const SESSIONS = Array.from({ length: 12 }, (_, i) => ({
   status: "idle",
 }));
 
+// Scoped to the sidebar (<aside aria-label="Navigation">) so we target a
+// session/workspace kebab inside the nav, NOT the ChatPage header kebab
+// (which also has aria-label="Actions" but renders outside the aside).
+const sidebarKebab = (page: import("@playwright/test").Page) =>
+  page.locator('aside[aria-label="Navigation"] button[aria-label="Actions"]');
+
 async function setupAPIMocks(page: Page) {
   await page.route(`${API_PREFIX}/auth/me`, async (route: Route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ id: "u1", username: "testuser", email: "t@t.com", role: "user", active: true }) });
@@ -63,10 +69,11 @@ test.describe("Sidebar kebab menu viewport awareness", () => {
     // Wait for the sidebar to render the sessions.
     await expect(page.getByText("Session 12")).toBeVisible({ timeout: 10_000 });
 
-    // Scroll the last session's kebab into view and click it.
-    const lastKebab = page.getByLabel("Actions").last();
-    await lastKebab.scrollIntoViewIfNeeded();
-    await lastKebab.click();
+    // The last sidebar kebab = the bottom-most session's kebab. Scoped to
+    // the sidebar aside so we don't grab the ChatPage header kebab.
+    const lastSidebarKebab = sidebarKebab(page).last();
+    await lastSidebarKebab.scrollIntoViewIfNeeded();
+    await lastSidebarKebab.click();
 
     const menu = page.getByRole("menu");
     await expect(menu).toBeVisible();
@@ -81,5 +88,28 @@ test.describe("Sidebar kebab menu viewport awareness", () => {
     expect(menuBottom).toBeLessThanOrEqual(viewportHeight);
     // And the top edge must be within the viewport too.
     expect(box!.y).toBeGreaterThanOrEqual(0);
+  });
+
+  test("tall menu in a very short viewport is capped and scrollable, not overflowing", async ({ page }) => {
+    // Very short viewport so even a normal-sized menu is taller than the
+    // available room — exercises the maxHeight + overflow-y-auto path.
+    await page.setViewportSize({ width: 1024, height: 120 });
+    await page.goto(`/chat/${WORKSPACE_ID}/ses_0`);
+
+    await expect(page.getByText("Session 1")).toBeVisible({ timeout: 10_000 });
+
+    await sidebarKebab(page).first().click();
+    const menu = page.getByRole("menu");
+    await expect(menu).toBeVisible();
+
+    const box = await menu.boundingBox();
+    expect(box).not.toBeNull();
+    const viewportHeight = page.viewportSize()?.height ?? 0;
+    // The cap must keep the menu within the viewport even though its
+    // natural height exceeds it.
+    expect(box!.y + box!.height).toBeLessThanOrEqual(viewportHeight);
+    // overflow-y-auto is applied so the capped menu scrolls internally.
+    const overflowY = await menu.evaluate((el) => getComputedStyle(el).overflowY);
+    expect(["auto", "scroll"]).toContain(overflowY);
   });
 });
