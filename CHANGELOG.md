@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.4] - 2026-07-22
+
+### Fixed
+
+- **Chat links open in a new tab (#581).** Markdown links rendered by
+  `ReactMarkdown` in chat messages (both assistant text and
+  thinking/reasoning parts) opened in the same tab, navigating the
+  user away from the chat. Added a shared `MarkdownLink` component
+  that renders every link with `target="_blank"` and
+  `rel="noopener noreferrer"` (the `rel` is required for security —
+  `target="_blank"` without it lets the opened page access
+  `window.opener`). Both `ReactMarkdown` instances in `MessagePart.tsx`
+  now wire the override; `rehype-sanitize` strips `target`/`rel` from
+  the hast tree by default, but the component override adds them at
+  render time so they always reach the DOM.
+
 ## [0.4.3] - 2026-07-22
 
 ### Fixed
@@ -582,7 +598,8 @@ Network hardening sweep + KMS-backed master KEK foundation + Go security bump.
 
 ## [0.1.0] - 2026-07-04
 
-[Unreleased]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.3...HEAD
+[Unreleased]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.4...HEAD
+[0.4.4]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.2...v0.4.3
 [0.4.2]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.0...v0.4.1
