@@ -119,6 +119,14 @@ export function KebabMenu({ items, align = "right", footer }: Props) {
 
   useEffect(() => {
     if (!open) return;
+    // Re-measure after paint. The pre-paint useLayoutEffect above reads the
+    // menu's offsetHeight synchronously after commit; in most cases that is
+    // correct, but a freshly portal-mounted element can report a stale
+    // height (e.g. before fonts/images settle), which would skip the
+    // flip/maxHeight cap and let the menu overflow. This post-paint remeasure
+    // self-corrects that case (a one-frame correction is better than a
+    // permanent overflow). It's a no-op when the first measurement was right.
+    measureAndPosition();
     const handleClick = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node) &&
           buttonRef.current && !buttonRef.current.contains(e.target as Node)) {
