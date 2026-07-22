@@ -1,10 +1,23 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { render } from "../../test/utils";
 import { KebabMenu, computeMenuPosition } from "./KebabMenu";
 
 describe("KebabMenu", () => {
+  let origOffsetHeight: PropertyDescriptor | undefined;
+  let origOffsetWidth: PropertyDescriptor | undefined;
+  let origInnerHeight: PropertyDescriptor | undefined;
+
+  afterEach(() => {
+    const proto = HTMLElement.prototype as unknown as Record<string, unknown>;
+    if (origOffsetHeight) Object.defineProperty(HTMLElement.prototype, "offsetHeight", origOffsetHeight);
+    else delete proto.offsetHeight;
+    if (origOffsetWidth) Object.defineProperty(HTMLElement.prototype, "offsetWidth", origOffsetWidth);
+    else delete proto.offsetWidth;
+    if (origInnerHeight) Object.defineProperty(window, "innerHeight", origInnerHeight);
+    origOffsetHeight = origOffsetWidth = origInnerHeight = undefined;
+  });
   it("renders trigger button", () => {
     render(<KebabMenu items={[{ label: "Action", onClick: vi.fn() }]} />);
     expect(screen.getByLabelText("Actions")).toBeInTheDocument();
@@ -59,6 +72,70 @@ describe("KebabMenu", () => {
     expect(screen.getByRole("menu")).toBeInTheDocument();
     await user.click(document.body);
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  // --- Viewport-aware positioning (integration: component wiring) ---
+  //
+  // jsdom doesn't compute layout, so getBoundingClientRect/offsetHeight
+  // return zeros. These tests mock the geometry on the rendered elements
+  // and assert the menu's computed style reflects the pure function's
+  // flip/clamp/maxHeight output — proving the wiring from DOM measurement
+  // through computeMenuPosition to the applied style.
+
+  function mockButtonRect(el: HTMLElement, rect: { top: number; bottom: number; left: number; right: number }) {
+    Object.defineProperty(el, "getBoundingClientRect", { configurable: true, value: () => rect });
+  }
+
+  // offsetHeight/offsetWidth are read on the menu element (menuRef.current),
+  // which only exists after open. Override the prototype so the value is in
+  // place before the layout effect runs on the first open render. Originals
+  // are restored in afterEach.
+  function mockMenuSize(height: number, width = 160) {
+    origOffsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetHeight");
+    origOffsetWidth = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetWidth");
+    Object.defineProperty(HTMLElement.prototype, "offsetHeight", { configurable: true, get: () => height });
+    Object.defineProperty(HTMLElement.prototype, "offsetWidth", { configurable: true, get: () => width });
+  }
+
+  function mockInnerHeight(h: number) {
+    origInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: h });
+  }
+
+  it("applies flipped-above top when the trigger is near the viewport bottom", async () => {
+    const user = userEvent.setup();
+    mockInnerHeight(600);
+    mockMenuSize(150);
+    render(<KebabMenu items={[{ label: "Action", onClick: vi.fn() }]} align="left" />);
+    mockButtonRect(screen.getByLabelText("Actions"), { top: 580, bottom: 600, left: 50, right: 90 });
+    await user.click(screen.getByLabelText("Actions"));
+    const menu = screen.getByRole("menu");
+    // 580 - 150 - 4 = 426 (flipped above), NOT 604 (below, which overflows).
+    expect(menu.style.top).toBe("426px");
+  });
+
+  it("applies default below top when there is room", async () => {
+    const user = userEvent.setup();
+    mockInnerHeight(800);
+    mockMenuSize(150);
+    render(<KebabMenu items={[{ label: "Action", onClick: vi.fn() }]} align="left" />);
+    mockButtonRect(screen.getByLabelText("Actions"), { top: 100, bottom: 124, left: 50, right: 90 });
+    await user.click(screen.getByLabelText("Actions"));
+    const menu = screen.getByRole("menu");
+    expect(menu.style.top).toBe("128px"); // 124 + 4
+  });
+
+  it("applies maxHeight when the menu is taller than the viewport room", async () => {
+    const user = userEvent.setup();
+    mockInnerHeight(300);
+    mockMenuSize(400);
+    render(<KebabMenu items={[{ label: "Action", onClick: vi.fn() }]} align="left" />);
+    mockButtonRect(screen.getByLabelText("Actions"), { top: 280, bottom: 290, left: 50, right: 90 });
+    await user.click(screen.getByLabelText("Actions"));
+    const menu = screen.getByRole("menu");
+    // Tall menu near the bottom → height is capped to the available room.
+    expect(menu.style.maxHeight).not.toBe("");
+    expect(Number(menu.style.maxHeight.replace("px", ""))).toBeGreaterThan(0);
   });
 
   // --- Section grouping ---
@@ -181,10 +258,10 @@ describe("computeMenuPosition (viewport-aware)", () => {
     expect(r.maxHeight).toBeUndefined();
   });
 
-  it("keeps opening below when spaceBelow >= spaceAbove even if neither fits fully", () => {
-    // Both sides smaller than menu, but below is larger.
-    const btn = { top: 420, bottom: 440, left: 0, right: 40 };
-    // spaceBelow = 800-440-4 = 356; spaceAbove = 420-4 = 416. Above is larger → pick above, clamp.
+  it("opens above and clamps to PAD when above has more room and the menu is taller than both sides", () => {
+    // Both sides smaller than menu; above is larger → pick above, clamp top to PAD.
+    const btn = { top: 420, bottom: 440, left: 50, right: 90 };
+    // spaceBelow = 800-440-4 = 356; spaceAbove = 420-4 = 416. Above is larger → clamp.
     const r = computeMenuPosition(btn, { width: MENU_W, height: 700 }, { width: VW, height: VH }, "left");
     expect(r.maxHeight).toBeDefined();
     expect(r.top).toBe(8); // clamped to PAD
