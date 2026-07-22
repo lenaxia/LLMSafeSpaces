@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { render } from "../../test/utils";
 import { MessageList } from "./MessageList";
 import type { Message } from "../../api/types";
@@ -399,6 +399,101 @@ describe("MessageList", () => {
 
       // stickToBottom branch: jump to bottom.
       expect(el.scrollTop).toBe(1500);
+    });
+  });
+
+  // ── Streaming scroll-follow regression ─────────────────────────────────
+  //
+  // During streaming the MutationObserver auto-scrolls to the bottom on
+  // every token while the user is "pinned" (stickToBottom=true). The user's
+  // scroll-up intent must be recorded synchronously — otherwise a token
+  // whose MutationObserver rAF is registered before the user's scroll rAF
+  // yanks the viewport back to the bottom before the user's intent is ever
+  // observed, trapping the user at the tail and making earlier content
+  // unreadable while waiting for a response.
+
+  describe("streaming scroll-follow (don't trap the user at the bottom)", () => {
+    function setScrollDims(el: HTMLElement, scrollHeight: number, scrollTop: number, clientHeight = 200) {
+      Object.defineProperty(el, "scrollHeight", { value: scrollHeight, configurable: true });
+      Object.defineProperty(el, "clientHeight", { value: clientHeight, configurable: true });
+      Object.defineProperty(el, "scrollTop", { value: scrollTop, writable: true, configurable: true });
+    }
+
+    // Append a DOM node inside the observed subtree (a streaming token) and
+    // flush the MutationObserver microtask so its auto-scroll rAF registers.
+    async function flushMutation(el: HTMLElement) {
+      await act(async () => {
+        el.querySelector(".flex.flex-col.gap-2")!.appendChild(document.createTextNode("token"));
+      });
+    }
+
+    // Flush rAF timers so any pending observer/scroll auto-scrolls run.
+    function flushTimers() {
+      return new Promise((r) => setTimeout(r, 50));
+    }
+
+    it("does not yank the user back to the bottom after they scroll up during streaming", async () => {
+      render(
+        <MessageList messages={messages} streaming={true} streamingBubble={<div data-testid="sb">a</div>} />,
+      );
+      const el = screen.getByRole("log");
+      // Pinned at the bottom (stickToBottom=true).
+      setScrollDims(el, 1000, 800);
+
+      // A streaming token arrives; its MutationObserver rAF is registered
+      // BEFORE the user's scroll rAF below.
+      await flushMutation(el);
+
+      // The user scrolls up to read earlier content.
+      await act(async () => {
+        setScrollDims(el, 1000, 400);
+        fireEvent.scroll(el);
+        await flushTimers();
+      });
+
+      // Buggy code: the observer rAF fires first and pulls scrollTop back to
+      // 1000. Fixed code: the user's intent was recorded synchronously, so
+      // the observer leaves the viewport alone.
+      expect(el.scrollTop).toBe(400);
+    });
+
+    it("keeps auto-scrolling to the bottom during streaming while the user stays pinned", async () => {
+      render(
+        <MessageList messages={messages} streaming={true} streamingBubble={<div data-testid="sb">a</div>} />,
+      );
+      const el = screen.getByRole("log");
+      // At the bottom (1000 - 800 - 200 = 0 < threshold).
+      setScrollDims(el, 1000, 800);
+
+      await flushMutation(el);
+      await act(async () => {
+        await flushTimers();
+      });
+
+      expect(el.scrollTop).toBe(1000);
+    });
+
+    it("resumes following after the user scrolls back to the bottom via the jump button", async () => {
+      render(
+        <MessageList messages={messages} streaming={true} streamingBubble={<div data-testid="sb">a</div>} />,
+      );
+      const el = screen.getByRole("log");
+      setScrollDims(el, 1000, 400);
+      fireEvent.scroll(el);
+      await waitFor(() => {
+        expect(screen.getByText("Resume tailing")).toBeInTheDocument();
+      });
+
+      // User clicks "Resume tailing" → pinned again → next token auto-scrolls.
+      await act(async () => {
+        fireEvent.click(screen.getByText("Resume tailing"));
+      });
+      await flushMutation(el);
+      await act(async () => {
+        await flushTimers();
+      });
+
+      expect(el.scrollTop).toBe(1000);
     });
   });
 });
