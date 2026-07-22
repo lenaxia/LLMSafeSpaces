@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, Fragment } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, Fragment } from "react";
 import { createPortal } from "react-dom";
 import { Copy, MoreHorizontal } from "lucide-react";
 import { cn } from "../../lib/utils";
@@ -25,33 +25,118 @@ interface Props {
   footer?: string[];
 }
 
+const MENU_GAP = 4;
+const VIEWPORT_PAD = 8;
+
+/**
+ * Pure, viewport-aware positioning for the kebab menu. Extracted so the
+ * geometry (flip-above-when-no-room-below, horizontal clamp, maxHeight cap
+ * for menus taller than the viewport) is unit-testable without jsdom layout.
+ *
+ * Returns the absolute (fixed-position) top/left plus an optional maxHeight
+ * the caller must apply (with overflow-y-auto) when the menu is taller than
+ * the available room on the chosen side.
+ */
+export function computeMenuPosition(
+  btnRect: { top: number; bottom: number; left: number; right: number },
+  menuSize: { width: number; height: number },
+  viewport: { width: number; height: number },
+  align: "left" | "right",
+): { top: number; left: number; maxHeight?: number } {
+  const mw = menuSize.width;
+  const mh = menuSize.height;
+  const vw = viewport.width;
+  const vh = viewport.height;
+
+  const spaceBelow = vh - btnRect.bottom - MENU_GAP;
+  const spaceAbove = btnRect.top - MENU_GAP;
+
+  let top: number;
+  let maxHeight: number | undefined;
+
+  if (mh <= spaceBelow) {
+    // Plenty of room below — default placement.
+    top = btnRect.bottom + MENU_GAP;
+  } else if (mh <= spaceAbove) {
+    // Not enough room below, but enough above — flip.
+    top = btnRect.top - mh - MENU_GAP;
+  } else {
+    // Taller than both sides: pick the side with more room, clamp the top,
+    // and cap the menu height so it scrolls inside the viewport instead of
+    // overflowing.
+    if (spaceBelow >= spaceAbove) {
+      top = btnRect.bottom + MENU_GAP;
+      maxHeight = vh - VIEWPORT_PAD - top;
+    } else {
+      top = VIEWPORT_PAD;
+      maxHeight = btnRect.top - MENU_GAP - VIEWPORT_PAD;
+    }
+  }
+  if (top < VIEWPORT_PAD) top = VIEWPORT_PAD;
+
+  let left = align === "right" ? btnRect.right - mw : btnRect.left;
+  if (left + mw > vw - VIEWPORT_PAD) left = vw - VIEWPORT_PAD - mw;
+  if (left < VIEWPORT_PAD) left = VIEWPORT_PAD;
+
+  return { top, left, ...(maxHeight !== undefined ? { maxHeight } : {}) };
+}
+
 export function KebabMenu({ items, align = "right", footer }: Props) {
   const [open, setOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState({ top: 0, left: 0 });
+  const [pos, setPos] = useState<{ top: number; left: number; maxHeight?: number }>({ top: 0, left: 0 });
 
-  const updatePos = useCallback(() => {
-    if (!buttonRef.current) return;
-    const rect = buttonRef.current.getBoundingClientRect();
-    setPos({
-      top: rect.bottom + 4,
-      left: align === "right" ? rect.right - 160 : rect.left,
-    });
+  const measureAndPosition = useCallback(() => {
+    const btn = buttonRef.current;
+    if (!btn) return;
+    const btnRect = btn.getBoundingClientRect();
+    const menu = menuRef.current;
+    // Before the menu has mounted (first open tick), fall back to the
+    // assumed 160px width and an estimated height; once mounted we measure
+    // the real offsetHeight/offsetWidth so flip/clamp use true geometry.
+    const menuSize = {
+      width: menu?.offsetWidth ?? 160,
+      height: menu?.offsetHeight ?? 0,
+    };
+    setPos(
+      computeMenuPosition(
+        btnRect,
+        menuSize,
+        { width: window.innerWidth, height: window.innerHeight },
+        align,
+      ),
+    );
   }, [align]);
+
+  // Position synchronously after the menu mounts, before paint, so there is
+  // no flash at a stale offset. Reads the rendered menu size on the first
+  // committed render.
+  useLayoutEffect(() => {
+    if (!open) return;
+    measureAndPosition();
+  }, [open, measureAndPosition]);
 
   useEffect(() => {
     if (!open) return;
-    updatePos();
     const handleClick = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node) &&
           buttonRef.current && !buttonRef.current.contains(e.target as Node)) {
         setOpen(false);
       }
     };
+    // Re-position on scroll/resize so the menu stays anchored to its trigger
+    // and clamped to the viewport as layout changes (layout-aware).
+    const handleReposition = () => measureAndPosition();
     document.addEventListener("mousedown", handleClick);
-    return () => document.removeEventListener("mousedown", handleClick);
-  }, [open, updatePos]);
+    window.addEventListener("scroll", handleReposition, true);
+    window.addEventListener("resize", handleReposition);
+    return () => {
+      document.removeEventListener("mousedown", handleClick);
+      window.removeEventListener("scroll", handleReposition, true);
+      window.removeEventListener("resize", handleReposition);
+    };
+  }, [open, measureAndPosition]);
 
   const close = () => setOpen(false);
 
@@ -70,8 +155,8 @@ export function KebabMenu({ items, align = "right", footer }: Props) {
       {open && createPortal(
         <div
           ref={menuRef}
-          className="fixed z-[9999] w-40 rounded-md border border-border bg-popover py-1 shadow-md"
-          style={{ top: pos.top, left: pos.left }}
+          className="fixed z-[9999] w-40 rounded-md border border-border bg-popover py-1 shadow-md overflow-y-auto"
+          style={{ top: pos.top, left: pos.left, maxHeight: pos.maxHeight }}
           role="menu"
         >
           <MenuBody items={items} footer={footer} onClose={close} />
