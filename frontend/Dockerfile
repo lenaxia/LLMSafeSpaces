@@ -19,6 +19,12 @@ RUN npm run build
 # start.
 FROM nginxinc/nginx-unprivileged:1.27-alpine
 USER root
+# Patch system libraries (openssl, libpng, libxml2, musl, nghttp2, zlib) to
+# their fixed versions. The nginx-unprivileged:1.27-alpine base lags
+# Alpine's security advisories; an explicit apk upgrade keeps the frontend
+# image clean for the release Trivy gate (control-plane images must have
+# zero HIGH/CRITICAL findings, unlike the warn-only base runtime image).
+RUN apk upgrade --no-cache
 COPY --from=build --chown=nginx:nginx /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY docker-entrypoint.sh /docker-entrypoint.d/40-envsubst-env-json.sh
