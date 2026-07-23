@@ -492,3 +492,19 @@ func TestClient_SessionsDismissQueued(t *testing.T) {
 		t.Fatalf("DismissQueued error: %v", err)
 	}
 }
+
+func TestClient_UsageGetWorkspace_Path(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/usage/workspaces/ws-1" {
+			t.Errorf("unexpected path: %s (expected /api/v1/usage/workspaces/ws-1)", r.URL.Path)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"usage": 100})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	_, err := c.Usage.GetWorkspace(context.Background(), "ws-1")
+	if err != nil {
+		t.Fatalf("GetWorkspace error: %v", err)
+	}
+}

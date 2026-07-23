@@ -453,7 +453,7 @@ func (s *UsageService) Get(ctx context.Context) (map[string]any, error) {
 
 func (s *UsageService) GetWorkspace(ctx context.Context, workspaceID string) (map[string]any, error) {
 	var result map[string]any
-	err := s.c.do(ctx, "GET", "/workspaces/"+workspaceID+"/usage", nil, &result)
+	err := s.c.do(ctx, "GET", "/usage/workspaces/"+workspaceID, nil, &result)
 	return result, err
 }
 
