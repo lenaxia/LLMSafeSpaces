@@ -54,6 +54,9 @@ const OrgAgentConfigTab = lazy(() =>
 const PlatformAuditTab = lazy(() =>
   import("./components/settings/PlatformAuditTab").then((m) => ({ default: m.PlatformAuditTab })),
 );
+const PlatformVersionsTab = lazy(() =>
+  import("./components/settings/PlatformVersionsTab").then((m) => ({ default: m.PlatformVersionsTab })),
+);
 
 const portalFallback = (
   <div className="flex h-screen items-center justify-center">
@@ -137,6 +140,7 @@ export const router = createBrowserRouter([
           { path: "settings", element: <AdminSettingsPage /> },
           { path: "agent-config", element: <PlatformAgentConfigTab /> },
           { path: "audit", element: <PlatformAuditTab /> },
+          { path: "versions", element: <PlatformVersionsTab /> },
         ],
       },
     ],

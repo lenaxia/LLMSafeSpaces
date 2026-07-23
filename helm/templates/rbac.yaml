@@ -465,6 +465,40 @@ subjects:
     name: {{ include "llmsafespaces.api.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
 ---
+# API permission to list Deployments in the release namespace, used by the
+# admin "Versions" display (GET /admin/platform-info) to discover the running
+# component image tags by the app.kubernetes.io/name=llmsafespaces label.
+# `list` cannot be scoped to resourceNames (Kubernetes RBAC limitation), so
+# the API can enumerate all deployments in the namespace — acceptable for a
+# control-plane component scoped to its own release namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "llmsafespaces.fullname" . }}-api-platform-info
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "llmsafespaces.api.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "llmsafespaces.fullname" . }}-api-platform-info
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "llmsafespaces.api.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "llmsafespaces.fullname" . }}-api-platform-info
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "llmsafespaces.api.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+---
 # Lease for API leader election (release namespace).
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role

@@ -8,6 +8,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "credentials", label: "Credentials" },
   { to: "relay", label: "Relay" },
   { to: "settings", label: "Settings" },
+  { to: "versions", label: "Versions" },
   { to: "agent-config", label: "Agent Config" },
   { to: "audit", label: "Audit" },
 ];
