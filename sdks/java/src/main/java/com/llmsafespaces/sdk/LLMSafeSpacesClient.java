@@ -1,68 +1,90 @@
 package com.llmsafespaces.sdk;
 
 import com.google.gson.Gson;
-import com.google.gson.JsonObject;
-import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.google.gson.reflect.TypeToken;
+import com.llmsafespaces.sdk.exceptions.*;
+import com.llmsafespaces.sdk.models.*;
+import com.llmsafespaces.sdk.services.*;
 
 import java.io.IOException;
+import java.lang.reflect.Type;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.List;
+import java.util.Map;
 
-/**
- * LLMSafeSpaces API client for Java 17+.
- */
 public class LLMSafeSpacesClient {
     private final String baseUrl;
     private final String apiKey;
+    private final String email;
+    private final String password;
     private final HttpClient httpClient;
-    private final Gson gson = new Gson();
+    public final Gson gson = new Gson();
     private final Duration timeout;
+    private String token;
 
-    /** Regex pattern for valid secret names. Keep in sync with pkg/validation/name.go. */
-    public static final String SECRET_NAME_PATTERN = "^[a-z0-9._-]+$";
+    public final WorkspacesService workspaces;
+    public final SessionsService sessions;
+    public final AuthService auth;
+    public final SecretsService secrets;
+    public final TerminalService terminal;
+    public final AccountService account;
+    public final UserSettingsService userSettings;
+    public final ProviderCredentialsService providerCredentials;
+    public final AdminProviderCredentialsService adminProviderCredentials;
 
     private LLMSafeSpacesClient(Builder builder) {
         this.baseUrl = builder.baseUrl.replaceAll("/$", "");
         this.apiKey = builder.apiKey;
+        this.email = builder.email;
+        this.password = builder.password;
         this.timeout = builder.timeout;
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
+
+        this.workspaces = new WorkspacesService(this);
+        this.sessions = new SessionsService(this);
+        this.auth = new AuthService(this);
+        this.secrets = new SecretsService(this);
+        this.terminal = new TerminalService(this);
+        this.account = new AccountService(this);
+        this.userSettings = new UserSettingsService(this);
+        this.providerCredentials = new ProviderCredentialsService(this);
+        this.adminProviderCredentials = new AdminProviderCredentialsService(this);
     }
 
     public static Builder builder(String baseUrl) {
         return new Builder(baseUrl);
     }
 
-    public <T> T get(String path, Class<T> type) throws LLMSafeSpacesException {
-        return request("GET", path, null, type);
+    @SuppressWarnings("unchecked")
+    public <T> T request(String method, String path, Object body, Class<T> type) {
+        return requestWithRetry(method, path, body, (Type) type, false);
     }
 
-    public <T> T post(String path, Object body, Class<T> type) throws LLMSafeSpacesException {
-        return request("POST", path, body, type);
+    @SuppressWarnings("unchecked")
+    public <T> T request(String method, String path, Object body, Type type) {
+        return requestWithRetry(method, path, body, type, false);
     }
 
-    public void post(String path, Object body) throws LLMSafeSpacesException {
-        request("POST", path, body, null);
-    }
-
-    public void delete(String path) throws LLMSafeSpacesException {
-        request("DELETE", path, null, null);
-    }
-
-    private <T> T request(String method, String path, Object body, Class<T> responseType) throws LLMSafeSpacesException {
+    @SuppressWarnings("unchecked")
+    private <T> T requestWithRetry(String method, String path, Object body, Type type, boolean retried401) {
         String url = baseUrl + "/api/v1" + path;
-        HttpRequest.Builder reqBuilder = HttpRequest.newBuilder()
+        var reqBuilder = HttpRequest.newBuilder()
                 .uri(URI.create(url))
                 .timeout(timeout)
                 .header("Content-Type", "application/json");
 
-        if (apiKey != null) {
-            reqBuilder.header("Authorization", "Bearer " + apiKey);
+        String authHeader = authHeaders();
+        if (authHeader != null) {
+            reqBuilder.header("Authorization", authHeader);
         }
 
         if (body != null) {
@@ -72,62 +94,139 @@ public class LLMSafeSpacesClient {
         }
 
         try {
-            HttpResponse<String> resp = httpClient.send(reqBuilder.build(), HttpResponse.BodyHandlers.ofString());
+            HttpResponse<String> resp = httpClient.send(reqBuilder.build(),
+                    HttpResponse.BodyHandlers.ofString());
+
+            if (resp.statusCode() == 401 && email != null && token != null && !retried401) {
+                token = null;
+                return requestWithRetry(method, path, body, type, true);
+            }
 
             if (resp.statusCode() >= 400) {
                 String msg = "Unknown error";
                 try {
-                    JsonObject err = gson.fromJson(resp.body(), JsonObject.class);
+                    var err = JsonParser.parseString(resp.body()).getAsJsonObject();
                     if (err.has("error")) msg = err.get("error").getAsString();
                 } catch (Exception ignored) {}
-                throw new LLMSafeSpacesException(msg, resp.statusCode());
+                throw mapException(msg, resp.statusCode());
             }
 
-            if (responseType == null || resp.statusCode() == 204 || resp.statusCode() == 202) {
+            if (type == void.class || type == Void.class ||
+                resp.statusCode() == 204 ||
+                (resp.statusCode() == 202 && (resp.body() == null || resp.body().isEmpty()))) {
                 return null;
             }
 
-            return gson.fromJson(resp.body(), responseType);
+            if (resp.body() == null || resp.body().isEmpty()) {
+                return null;
+            }
+
+            return gson.fromJson(resp.body(), type);
         } catch (IOException | InterruptedException e) {
             throw new LLMSafeSpacesException("Request failed: " + e.getMessage(), 0);
         }
     }
 
-    /** Extract text content from opencode response parts. */
-    public static String extractTextContent(JsonObject raw) {
-        if (raw == null || !raw.has("parts")) return "";
-        JsonArray parts = raw.getAsJsonArray("parts");
-        StringBuilder sb = new StringBuilder();
-        for (JsonElement el : parts) {
-            JsonObject part = el.getAsJsonObject();
-            if ("text".equals(part.get("type").getAsString()) && part.has("text")) {
-                sb.append(part.get("text").getAsString());
-            }
+    public JsonObject requestJson(String method, String path, Object body) {
+        return requestJsonWithRetry(method, path, body, false);
+    }
+
+    private JsonObject requestJsonWithRetry(String method, String path, Object body, boolean retried401) {
+        String url = baseUrl + "/api/v1" + path;
+        var reqBuilder = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .timeout(timeout)
+                .header("Content-Type", "application/json");
+
+        String authHeader = authHeaders();
+        if (authHeader != null) reqBuilder.header("Authorization", authHeader);
+
+        if (body != null) {
+            reqBuilder.method(method, HttpRequest.BodyPublishers.ofString(gson.toJson(body)));
+        } else {
+            reqBuilder.method(method, HttpRequest.BodyPublishers.noBody());
         }
-        return sb.toString();
+
+        try {
+            HttpResponse<String> resp = httpClient.send(reqBuilder.build(),
+                    HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() == 401 && email != null && token != null && !retried401) {
+                token = null;
+                return requestJsonWithRetry(method, path, body, true);
+            }
+            if (resp.statusCode() >= 400) {
+                String msg = "Unknown error";
+                try {
+                    var err = JsonParser.parseString(resp.body()).getAsJsonObject();
+                    if (err.has("error")) msg = err.get("error").getAsString();
+                } catch (Exception ignored) {}
+                throw mapException(msg, resp.statusCode());
+            }
+            if (resp.body() == null || resp.body().isEmpty()) return null;
+            return JsonParser.parseString(resp.body()).getAsJsonObject();
+        } catch (IOException | InterruptedException e) {
+            throw new LLMSafeSpacesException("Request failed: " + e.getMessage(), 0);
+        }
+    }
+
+    public void requestVoid(String method, String path, Object body) {
+        requestJson(method, path, body);
+    }
+
+    private String authHeaders() {
+        if (apiKey != null) return "Bearer " + apiKey;
+        if (token != null) return "Bearer " + token;
+        if (email != null && password != null) {
+            login();
+            return "Bearer " + token;
+        }
+        return null;
+    }
+
+    private void login() {
+        var req = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + "/api/v1/auth/login"))
+                .timeout(Duration.ofSeconds(10))
+                .header("Content-Type", "application/json")
+                .POST(HttpRequest.BodyPublishers.ofString(
+                        gson.toJson(Map.of("email", email, "password", password))))
+                .build();
+        try {
+            HttpResponse<String> resp = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() != 200) {
+                throw new AuthException("Login failed", resp.statusCode());
+            }
+            token = JsonParser.parseString(resp.body()).getAsJsonObject().get("token").getAsString();
+        } catch (IOException | InterruptedException e) {
+            throw new AuthException("Login request failed: " + e.getMessage(), 0);
+        }
+    }
+
+    static LLMSafeSpacesException mapException(String msg, int statusCode) {
+        return switch (statusCode) {
+            case 401, 403 -> new AuthException(msg, statusCode);
+            case 404 -> new NotFoundException(msg);
+            case 409 -> new ConflictException(msg);
+            case 429 -> new RateLimitException(msg);
+            default -> new LLMSafeSpacesException(msg, statusCode);
+        };
     }
 
     public static class Builder {
         private final String baseUrl;
         private String apiKey;
+        private String email;
+        private String password;
         private Duration timeout = Duration.ofSeconds(120);
 
-        private Builder(String baseUrl) {
-            this.baseUrl = baseUrl;
-        }
+        private Builder(String baseUrl) { this.baseUrl = baseUrl; }
 
-        public Builder apiKey(String apiKey) {
-            this.apiKey = apiKey;
-            return this;
+        public Builder apiKey(String apiKey) { this.apiKey = apiKey; return this; }
+        public Builder credentials(String email, String password) {
+            this.email = email; this.password = password; return this;
         }
+        public Builder timeout(Duration timeout) { this.timeout = timeout; return this; }
 
-        public Builder timeout(Duration timeout) {
-            this.timeout = timeout;
-            return this;
-        }
-
-        public LLMSafeSpacesClient build() {
-            return new LLMSafeSpacesClient(this);
-        }
+        public LLMSafeSpacesClient build() { return new LLMSafeSpacesClient(this); }
     }
 }
