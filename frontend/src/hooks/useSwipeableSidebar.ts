@@ -45,6 +45,18 @@ export function useSwipeableSidebar({
       touchStartX.current = t.clientX;
       touchStartY.current = t.clientY;
       isEdgeSwipe.current = t.clientX < EDGE_ZONE;
+      // Claim the gesture at touchstart for edge touches. Mobile browsers
+      // commit to the back-nav gesture during touchstart / first-touchmove;
+      // by the time touchmove fires, the OS may have already latched.
+      // Calling preventDefault() here (requires a non-passive listener)
+      // tells the browser "I own this touch" before it can engage back-nav.
+      // This is the fix for the ~50% of edge swipes that triggered browser
+      // back instead of opening the sidebar. The tradeoff: vertical
+      // scrolling from the leftmost EDGE_ZONE pixels is blocked — acceptable
+      // since that zone is the gesture zone, not a scroll surface.
+      if (isEdgeSwipe.current) {
+        e.preventDefault();
+      }
     };
 
     const onMove = (e: TouchEvent) => {
@@ -131,7 +143,7 @@ export function useSwipeableSidebar({
       isEdgeSwipe.current = false;
     };
 
-    el.addEventListener("touchstart", onStart, { passive: true });
+    el.addEventListener("touchstart", onStart, { passive: false });
     el.addEventListener("touchmove", onMove, { passive: false });
     el.addEventListener("touchend", onEnd, { passive: true });
 
