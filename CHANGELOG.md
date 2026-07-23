@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **SDK refresh, parity, and publishing (Epic 62, #584 #586).** The four
+  hand-written SDKs (Go, Python, TypeScript, Java) are now at typed-surface
+  parity with the current API server. The OpenAPI spec went from 45 → 84
+  paths. Python, TypeScript, and Java SDKs publish to PyPI, npm, and Maven
+  Central respectively on platform release tags. SDK versions track the
+  platform version. The Java SDK was rewritten from a generic HTTP wrapper
+  into a typed facade with unchecked exception hierarchy. A live contract
+  test validates the `/message` blocking + JSON assumption against a real
+  workspace.
+
 ## [0.4.5] - 2026-07-22
 
 ### Fixed
