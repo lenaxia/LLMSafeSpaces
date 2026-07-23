@@ -17,11 +17,14 @@ from .errors import (
 from .types import (
     APIKey,
     AuthResponse,
+    CreateAgentRoleRequest,
     EnsureSessionResponse,
     MessageResponse,
     ProviderCredential,
     SecretResponse,
     TerminalTicket,
+    UpdateAgentRoleRequest,
+    UpdateProviderCredentialRequest,
     Workspace,
     WorkspaceListItem,
     WorkspaceListResult,
@@ -576,10 +579,23 @@ class _AdminProviderCredentialsAPI:
             **self._c._request("GET", f"/admin/provider-credentials/{cred_id}")
         )
 
-    def update(self, cred_id: str, **kwargs: Any) -> ProviderCredential:
+    def update(
+        self, cred_id: str, req: UpdateProviderCredentialRequest
+    ) -> ProviderCredential:
         return ProviderCredential(
             **self._c._request(
-                "PUT", f"/admin/provider-credentials/{cred_id}", json=kwargs
+                "PUT",
+                f"/admin/provider-credentials/{cred_id}",
+                json={
+                    k: v for k, v in {
+                        "name": req.name,
+                        "apiKey": req.apiKey,
+                        "baseURL": req.baseURL,
+                        "modelAllowlist": req.modelAllowlist,
+                        "modelContextLimits": req.modelContextLimits,
+                        "modelOutputLimits": req.modelOutputLimits,
+                    }.items() if v is not None
+                },
             )
         )
 
@@ -652,31 +668,34 @@ class _AgentRolesAPI:
         data = self._c._request("GET", "/admin/agent-roles")
         return data if isinstance(data, list) else data.get("items", [])
 
-    def create_platform(self, **kwargs: Any) -> dict[str, Any]:
-        return self._c._request("POST", "/admin/agent-roles", json=kwargs)
+    def create_platform(self, req: CreateAgentRoleRequest) -> dict[str, Any]:
+        return self._c._request("POST", "/admin/agent-roles", json=req.__dict__)
 
     def get_platform(self, role_id: str) -> dict[str, Any]:
         return self._c._request("GET", f"/admin/agent-roles/{role_id}")
 
-    def update_platform(self, role_id: str, **kwargs: Any) -> dict[str, Any]:
-        return self._c._request("PUT", f"/admin/agent-roles/{role_id}", json=kwargs)
+    def update_platform(self, role_id: str, req: UpdateAgentRoleRequest) -> dict[str, Any]:
+        body = {k: v for k, v in req.__dict__.items() if v is not None}
+        return self._c._request("PUT", f"/admin/agent-roles/{role_id}", json=body)
 
     def delete_platform(self, role_id: str) -> None:
         self._c._request("DELETE", f"/admin/agent-roles/{role_id}")
 
     # Org roles
+
     def list_org(self, org_id: str) -> list[dict[str, Any]]:
         data = self._c._request("GET", f"/orgs/{org_id}/agent-roles")
         return data if isinstance(data, list) else data.get("items", [])
 
-    def create_org(self, org_id: str, **kwargs: Any) -> dict[str, Any]:
-        return self._c._request("POST", f"/orgs/{org_id}/agent-roles", json=kwargs)
+    def create_org(self, org_id: str, req: CreateAgentRoleRequest) -> dict[str, Any]:
+        return self._c._request("POST", f"/orgs/{org_id}/agent-roles", json=req.__dict__)
 
     def get_org(self, org_id: str, role_id: str) -> dict[str, Any]:
         return self._c._request("GET", f"/orgs/{org_id}/agent-roles/{role_id}")
 
-    def update_org(self, org_id: str, role_id: str, **kwargs: Any) -> dict[str, Any]:
-        return self._c._request("PUT", f"/orgs/{org_id}/agent-roles/{role_id}", json=kwargs)
+    def update_org(self, org_id: str, role_id: str, req: UpdateAgentRoleRequest) -> dict[str, Any]:
+        body = {k: v for k, v in req.__dict__.items() if v is not None}
+        return self._c._request("PUT", f"/orgs/{org_id}/agent-roles/{role_id}", json=body)
 
     def delete_org(self, org_id: str, role_id: str) -> None:
         self._c._request("DELETE", f"/orgs/{org_id}/agent-roles/{role_id}")

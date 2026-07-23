@@ -15,11 +15,14 @@ from .errors import (
 from .types import (
     APIKey,
     AuthResponse,
+    CreateAgentRoleRequest,
     EnsureSessionResponse,
     MessageResponse,
     ProviderCredential,
     SecretResponse,
     TerminalTicket,
+    UpdateProviderCredentialRequest,
+    UpdateAgentRoleRequest,
     Workspace,
     WorkspaceListItem,
     WorkspaceListResult,
@@ -49,5 +52,8 @@ __all__ = [
     "TerminalTicket",
     "SecretResponse",
     "ProviderCredential",
+    "UpdateProviderCredentialRequest",
+    "CreateAgentRoleRequest",
+    "UpdateAgentRoleRequest",
     "__version__",
 ]

@@ -3215,25 +3215,27 @@ components:
       properties:
         targetType:
           type: string
-          description: "workspace or org"
+          enum: [all, user, org]
+          description: "Scope of auto-application"
         targetId:
           type: string
-          description: Required when targetType is workspace
+          description: Required when targetType is not 'all'
+        withinPriority:
+          type: integer
+          description: Priority ordering for auto-apply
     AutoApplyRule:
       type: object
       properties:
-        id:
-          type: string
         credentialId:
           type: string
         targetType:
           type: string
+          enum: [all, user, org]
         targetId:
           type: string
           nullable: true
-        createdAt:
-          type: string
-          format: date-time
+        withinPriority:
+          type: integer
     UsageSummary:
       type: object
       properties:

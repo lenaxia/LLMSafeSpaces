@@ -193,3 +193,14 @@ export interface UpdateProviderCredentialRequest {
   modelContextLimits?: Record<string, number>;
   modelOutputLimits?: Record<string, number>;
 }
+
+// --- Queued message (US-62.6) ---
+
+export interface QueuedMessage {
+  id: string;
+  text: string;
+  session_id: string;
+  workspace_id: string;
+  enqueued_at: string;
+  retry_count: number;
+}

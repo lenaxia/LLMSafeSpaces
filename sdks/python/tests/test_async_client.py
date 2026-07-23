@@ -217,6 +217,46 @@ async def test_async_session_delete():
 
 
 @respx.mock
+async def test_async_session_enqueue():
+    respx.post(f"{BASE}/api/v1/workspaces/ws-1/sessions/sess-1/queue").respond(
+        status_code=202, json={"messageID": "qmsg-1"}
+    )
+    async with AsyncLLMSafeSpaces(BASE, api_key="lsp_test") as c:
+        msg_id = await c.sessions.enqueue("ws-1", "sess-1", "hello")
+    assert msg_id == "qmsg-1"
+
+
+@respx.mock
+async def test_async_session_list_queue():
+    respx.get(f"{BASE}/api/v1/workspaces/ws-1/sessions/sess-1/queue").respond(
+        json={"messages": [{"id": "qmsg-1", "text": "hi", "session_id": "sess-1",
+             "workspace_id": "ws-1", "enqueued_at": "2026-07-22T00:00:00Z",
+             "retry_count": 0}]}
+    )
+    async with AsyncLLMSafeSpaces(BASE, api_key="lsp_test") as c:
+        msgs = await c.sessions.list_queue("ws-1", "sess-1")
+    assert len(msgs) == 1
+
+
+@respx.mock
+async def test_async_session_dismiss_queued():
+    respx.delete(f"{BASE}/api/v1/workspaces/ws-1/sessions/sess-1/queue/qmsg-1").respond(
+        status_code=204
+    )
+    async with AsyncLLMSafeSpaces(BASE, api_key="lsp_test") as c:
+        await c.sessions.dismiss_queued("ws-1", "sess-1", "qmsg-1")
+
+
+@respx.mock
+async def test_async_session_mark_seen():
+    respx.put(f"{BASE}/api/v1/workspaces/ws-1/sessions/sess-1/seen").respond(
+        status_code=204
+    )
+    async with AsyncLLMSafeSpaces(BASE, api_key="lsp_test") as c:
+        await c.sessions.mark_seen("ws-1", "sess-1")
+
+
+@respx.mock
 async def test_async_user_settings_get():
     respx.get(f"{BASE}/api/v1/users/me/settings").respond(
         json={"settings": {"theme": "dark"}, "schemaVersion": 1}
@@ -297,6 +337,9 @@ async def test_async_admin_provider_credentials_update():
     respx.put(f"{BASE}/api/v1/admin/provider-credentials/cred-1").respond(
         json=_cred_json()
     )
+    from llmsafespaces import UpdateProviderCredentialRequest
     async with AsyncLLMSafeSpaces(BASE, api_key="lsp_test") as c:
-        result = await c.admin_provider_credentials.update("cred-1", name="renamed")
+        result = await c.admin_provider_credentials.update(
+            "cred-1", UpdateProviderCredentialRequest(name="renamed")
+        )
     assert result.id == "cred-1"

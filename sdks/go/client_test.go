@@ -474,3 +474,21 @@ func TestClient_SessionsMarkSeen(t *testing.T) {
 		t.Fatalf("MarkSeen error: %v", err)
 	}
 }
+
+func TestClient_SessionsDismissQueued(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/workspaces/ws-1/sessions/sess-1/queue/qmsg-1" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Method != "DELETE" {
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+		w.WriteHeader(204)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	if err := c.Sessions.DismissQueued(context.Background(), "ws-1", "sess-1", "qmsg-1"); err != nil {
+		t.Fatalf("DismissQueued error: %v", err)
+	}
+}

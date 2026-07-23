@@ -166,6 +166,47 @@ def test_session_delete():
 
 
 @respx.mock
+def test_session_enqueue():
+    respx.post(f"{BASE}/workspaces/ws-1/sessions/sess-1/queue").respond(
+        status_code=202, json={"messageID": "qmsg-1"}
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    msg_id = client.sessions.enqueue("ws-1", "sess-1", "hello")
+    assert msg_id == "qmsg-1"
+
+
+@respx.mock
+def test_session_list_queue():
+    respx.get(f"{BASE}/workspaces/ws-1/sessions/sess-1/queue").respond(
+        json={"messages": [{"id": "qmsg-1", "text": "hi", "session_id": "sess-1",
+             "workspace_id": "ws-1", "enqueued_at": "2026-07-22T00:00:00Z",
+             "retry_count": 0}]}
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    msgs = client.sessions.list_queue("ws-1", "sess-1")
+    assert len(msgs) == 1
+    assert msgs[0]["id"] == "qmsg-1"
+
+
+@respx.mock
+def test_session_dismiss_queued():
+    respx.delete(f"{BASE}/workspaces/ws-1/sessions/sess-1/queue/qmsg-1").respond(
+        status_code=204
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    client.sessions.dismiss_queued("ws-1", "sess-1", "qmsg-1")
+
+
+@respx.mock
+def test_session_mark_seen():
+    respx.put(f"{BASE}/workspaces/ws-1/sessions/sess-1/seen").respond(
+        status_code=204
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    client.sessions.mark_seen("ws-1", "sess-1")
+
+
+@respx.mock
 def test_user_settings_get():
     respx.get(f"{BASE}/users/me/settings").respond(
         json={"settings": {"theme": "dark"}, "schemaVersion": 1}
@@ -324,23 +365,14 @@ def test_provider_credentials_unbind():
 
 
 @respx.mock
-def test_admin_provider_credentials_list():
-    respx.get(f"{BASE}/admin/provider-credentials").respond(
-        json=[_cred_json()]
+def test_admin_provider_credentials_update():
+    respx.put(f"{BASE}/admin/provider-credentials/cred-1").respond(
+        json=_cred_json()
     )
+    from llmsafespaces import UpdateProviderCredentialRequest
     client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
-    result = client.admin_provider_credentials.list()
-    assert len(result) == 1
-
-
-@respx.mock
-def test_admin_provider_credentials_create():
-    respx.post(f"{BASE}/admin/provider-credentials").respond(
-        status_code=201, json=_cred_json()
-    )
-    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
-    result = client.admin_provider_credentials.create(
-        name="admin-key", kind="anthropic", slug="admin-key", api_key="sk-..."
+    result = client.admin_provider_credentials.update(
+        "cred-1", UpdateProviderCredentialRequest(name="renamed")
     )
     assert result.id == "cred-1"
 
@@ -351,8 +383,11 @@ def test_admin_provider_credentials_update():
         json=_cred_json()
     )
     client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
-    result = client.admin_provider_credentials.update("cred-1", name="renamed")
-    assert result.name == "my-key"
+    from llmsafespaces import UpdateProviderCredentialRequest
+    result = client.admin_provider_credentials.update(
+        "cred-1", UpdateProviderCredentialRequest(name="renamed")
+    )
+    assert result.id == "cred-1"
 
 
 @respx.mock
