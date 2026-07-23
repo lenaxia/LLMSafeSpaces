@@ -1,14 +1,17 @@
 package com.llmsafespaces.sdk;
 
+import com.llmsafespaces.sdk.exceptions.AuthException;
 import com.llmsafespaces.sdk.exceptions.ConflictException;
 import com.llmsafespaces.sdk.exceptions.LLMSafeSpacesException;
 import com.llmsafespaces.sdk.exceptions.NotFoundException;
+import com.llmsafespaces.sdk.exceptions.RateLimitException;
 import com.llmsafespaces.sdk.models.Workspace;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.net.InetSocketAddress;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -163,6 +166,126 @@ class LLMSafeSpacesClientTest {
                     .apiKey("lsp_test").build();
             var val = client.secrets.reveal("sec-1", "mypw");
             assertEquals("secret-val", val);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void authError_throwsAuthException() throws Exception {
+        var server = startMockServer(401, "{\"error\":\"authentication required\"}");
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_bad").build();
+            assertThrows(AuthException.class, () -> client.workspaces.list());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void rateLimit_throwsRateLimitException() throws Exception {
+        var server = startMockServer(429, "{\"error\":\"rate limit exceeded\"}");
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            assertThrows(RateLimitException.class, () -> client.workspaces.get("ws-1"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void providerCredentialsCreate_207UnwrapsCredential() throws Exception {
+        String json = """
+            {"credential":{"id":"cred-1","name":"my-key","kind":"openai","slug":"my-key",
+             "createdAt":"2026-07-22T00:00:00Z","updatedAt":"2026-07-22T00:00:00Z"},
+             "bindWarning":"failed to auto-bind"}""";
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/api/v1/provider-credentials", exchange -> {
+            exchange.sendResponseHeaders(207, json.length());
+            exchange.getResponseBody().write(json.getBytes());
+            exchange.close();
+        });
+        server.start();
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            var cred = client.providerCredentials.create("my-key", "openai", "my-key", "sk-test", "");
+            assertEquals("cred-1", cred.id);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void listBindings_extractsWorkspaceIds() throws Exception {
+        String json = "{\"workspaceIds\":[\"ws-1\",\"ws-2\"],\"bindings\":[]}";
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/api/v1/provider-credentials/cred-1/bindings", exchange -> {
+            exchange.sendResponseHeaders(200, json.length());
+            exchange.getResponseBody().write(json.getBytes());
+            exchange.close();
+        });
+        server.start();
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            var bindings = client.providerCredentials.listBindings("cred-1");
+            assertEquals(2, bindings.size());
+            assertTrue(bindings.contains("ws-1"));
+            assertTrue(bindings.contains("ws-2"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void secretsList_unwrapsEnvelope() throws Exception {
+        String json = "{\"secrets\":[{\"id\":\"sec-1\",\"name\":\"my-secret\",\"type\":\"env-secret\"}]}";
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/api/v1/secrets", exchange -> {
+            exchange.sendResponseHeaders(200, json.length());
+            exchange.getResponseBody().write(json.getBytes());
+            exchange.close();
+        });
+        server.start();
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            var secrets = client.secrets.list();
+            assertEquals(1, secrets.size());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void auth401_retriesOnceWithRelogin() throws Exception {
+        AtomicInteger loginCount = new AtomicInteger(0);
+        AtomicInteger requestCount = new AtomicInteger(0);
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/api/v1/auth/login", exchange -> {
+            loginCount.incrementAndGet();
+            String resp = "{\"token\":\"jwt" + loginCount.get() + "\"}";
+            exchange.sendResponseHeaders(200, resp.length());
+            exchange.getResponseBody().write(resp.getBytes());
+            exchange.close();
+        });
+        server.createContext("/", exchange -> {
+            requestCount.incrementAndGet();
+            exchange.sendResponseHeaders(401, 35);
+            exchange.getResponseBody().write("{\"error\":\"authentication required\"}".getBytes());
+            exchange.close();
+        });
+        server.start();
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .credentials("u@x.com", "pw").build();
+            assertThrows(AuthException.class, () -> client.workspaces.get("ws-1"));
+            // loginCount: 2 (initial + 1 retry), requestCount: 2 (initial + 1 retry)
+            assertEquals(2, loginCount.get(), "login should be called exactly twice");
+            assertEquals(2, requestCount.get(), "request should be called exactly twice");
         } finally {
             server.stop(0);
         }

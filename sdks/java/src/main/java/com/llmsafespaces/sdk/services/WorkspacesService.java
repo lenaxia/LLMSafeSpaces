@@ -31,8 +31,8 @@ public class WorkspacesService {
         c.requestVoid("POST", "/workspaces/" + id + "/suspend", null);
     }
 
-    public void activate(String id) {
-        c.requestJson("POST", "/workspaces/" + id + "/activate", null);
+    public Map<String, Object> activate(String id) {
+        return c.request("POST", "/workspaces/" + id + "/activate", null, Map.class);
     }
 
     public void restart(String id) {
@@ -45,5 +45,10 @@ public class WorkspacesService {
 
     public Map<String, Object> getStatus(String id) {
         return c.request("GET", "/workspaces/" + id + "/status", null, Map.class);
+    }
+
+    @SuppressWarnings("unchecked")
+    public List<Workspace> list() {
+        return c.request("GET", "/workspaces", null, new TypeToken<List<Workspace>>(){}.getType());
     }
 }
