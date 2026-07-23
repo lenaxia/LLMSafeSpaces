@@ -1,7 +1,11 @@
 package com.llmsafespaces.sdk.services;
 
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import com.google.gson.reflect.TypeToken;
 import com.llmsafespaces.sdk.LLMSafeSpacesClient;
 
+import java.util.List;
 import java.util.Map;
 
 public class SecretsService {
@@ -14,8 +18,13 @@ public class SecretsService {
                 Map.of("name", name, "type", type, "value", value), Map.class);
     }
 
-    public Object list() {
-        return c.request("GET", "/secrets", null, Object.class);
+    @SuppressWarnings("unchecked")
+    public List<Map<String, Object>> list() {
+        var resp = c.requestJson("GET", "/secrets", null);
+        if (resp != null && resp.has("secrets")) {
+            return c.gson.fromJson(resp.get("secrets"), List.class);
+        }
+        return c.gson.fromJson(resp, List.class);
     }
 
     public void delete(String id) {
