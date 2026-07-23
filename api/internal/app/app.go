@@ -994,6 +994,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		cfg.Kubernetes.Namespace,
 		instanceSettings,
 	)
+	platformInfoHandler.SetLogger(log)
 
 	router := server.NewRouter(svc, log, proxyHandler, server.RouterConfig{
 		Debug:                           cfg.Logging.Development,

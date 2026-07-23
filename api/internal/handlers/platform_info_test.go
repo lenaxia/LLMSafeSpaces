@@ -6,6 +6,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -16,7 +17,9 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 func TestParseImageTag(t *testing.T) {
@@ -160,4 +163,50 @@ func TestPlatformInfoRouteIntegration(t *testing.T) {
 	assert.Equal(t, "0.4.5", resp.Controller)
 	assert.Equal(t, "0.4.5", resp.Frontend)
 	assert.Equal(t, "0.4.5", resp.BaseRuntime)
+}
+
+func TestGetPlatformInfo_ErrorPaths(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	t.Run("K8s list failure returns 200 with empty component versions", func(t *testing.T) {
+		clientset := fake.NewSimpleClientset()
+		clientset.PrependReactor("list", "deployments", func(k8stesting.Action) (bool, runtime.Object, error) {
+			return true, nil, errors.New("k8s api down")
+		})
+		h := NewPlatformInfoHandler(clientset, "test-ns", &fakeSettingGetter{image: "x/base:0.4.5"})
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/admin/platform-info", nil)
+
+		h.GetPlatformInfo(c)
+
+		// Never 500 — the endpoint degrades to partial data so the admin still
+		// sees the API version + base runtime.
+		require.Equal(t, http.StatusOK, w.Code)
+		var resp PlatformInfoResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		assert.Empty(t, resp.Controller)
+		assert.Empty(t, resp.Frontend)
+		assert.Equal(t, "0.4.5", resp.BaseRuntime)
+	})
+
+	t.Run("settings failure leaves baseRuntime empty, not error", func(t *testing.T) {
+		clientset := fake.NewSimpleClientset(
+			deploymentWithImage("c", "controller", "x/controller:0.4.5"),
+		)
+		h := NewPlatformInfoHandler(clientset, "test-ns", &fakeSettingGetter{err: errors.New("db down")})
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/admin/platform-info", nil)
+
+		h.GetPlatformInfo(c)
+
+		require.Equal(t, http.StatusOK, w.Code)
+		var resp PlatformInfoResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		assert.Equal(t, "0.4.5", resp.Controller)
+		assert.Empty(t, resp.BaseRuntime)
+	})
 }
