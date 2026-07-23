@@ -215,7 +215,7 @@ All release images are signed with cosign keyless (OIDC). After a security incid
 ```bash
 for img in api controller base frontend relay-router relay-proxy; do
   echo "Verifying ${img}..."
-  cosign verify "ghcr.io/lenaxia/llmsafespaces/${img}:0.5.0" \
+  cosign verify "ghcr.io/lenaxia/llmsafespaces/${img}:0.5.1" \
     --certificate-identity-regexp "https://github.com/lenaxia/LLMSafeSpaces" \
     --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 done

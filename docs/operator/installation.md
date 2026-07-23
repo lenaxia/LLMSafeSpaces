@@ -265,7 +265,7 @@ Before trusting the running pods, verify the images haven't been tampered with:
 ```bash
 # Install cosign if you don't have it: https://github.com/sigstore/cosign
 for img in api controller base frontend relay-router relay-proxy; do
-  cosign verify "ghcr.io/lenaxia/llmsafespaces/${img}:0.5.0" \
+  cosign verify "ghcr.io/lenaxia/llmsafespaces/${img}:0.5.1" \
     --certificate-identity-regexp "https://github.com/lenaxia/LLMSafeSpaces" \
     --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
 done

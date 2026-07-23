@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-07-23
+
+### Fixed
+
+- **Swipe-to-open-sidebar no longer triggers browser back-nav (#590).**
+  In mobile mode, ~50% of swipe-to-open-sidebar gestures triggered the
+  browser's back navigation instead. Root cause: `touchstart` was
+  registered `{ passive: true }`, making `preventDefault()` impossible at
+  the moment of contact — the browser/OS committed to the back-nav
+  gesture during touchstart / first-touchmove before the JS `touchmove`
+  handler could claim it. Fix: make `touchstart` non-passive and call
+  `preventDefault()` for edge touches (`clientX < EDGE_ZONE`) at contact,
+  claiming the gesture before the OS can engage back-nav. Applies to both
+  `AppShell` (chat) and `PortalLayout` (admin/orgs portals).
+
 ## [0.5.0] - 2026-07-23
 
 ### Added
@@ -646,7 +661,8 @@ Network hardening sweep + KMS-backed master KEK foundation + Go security bump.
 
 ## [0.1.0] - 2026-07-04
 
-[Unreleased]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.5...v0.5.0
 [0.4.5]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.3...v0.4.4
