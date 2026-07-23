@@ -133,3 +133,31 @@ func TestGetPlatformInfo(t *testing.T) {
 		require.Equal(t, http.StatusOK, w.Code)
 	})
 }
+
+// Integration test: exercises the full route registration → handler → JSON
+// serialization wiring through the real gin engine (not a direct handler
+// call), proving the route binding and response shape are correct end-to-end.
+func TestPlatformInfoRouteIntegration(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	clientset := fake.NewSimpleClientset(
+		deploymentWithImage("release-controller", "controller", "ghcr.io/x/controller:0.4.5"),
+		deploymentWithImage("release-frontend", "frontend", "ghcr.io/x/frontend:0.4.5"),
+	)
+	h := NewPlatformInfoHandler(clientset, "test-ns", &fakeSettingGetter{image: "ghcr.io/x/base:0.4.5"})
+
+	r := gin.New()
+	g := r.Group("/api/v1/admin/platform-info")
+	g.GET("", h.GetPlatformInfo)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/platform-info", nil)
+	r.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "application/json; charset=utf-8", w.Header().Get("Content-Type"))
+	var resp PlatformInfoResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "0.4.5", resp.Controller)
+	assert.Equal(t, "0.4.5", resp.Frontend)
+	assert.Equal(t, "0.4.5", resp.BaseRuntime)
+}
