@@ -88,3 +88,23 @@ class SecretResponse:
     createdAt: str
     updatedAt: str
     metadata: Any = None
+
+
+@dataclass
+class ProviderCredential:
+    id: str
+    name: str
+    kind: str
+    slug: str
+    createdAt: str
+    updatedAt: str
+    baseURL: str | None = None
+    modelAllowlist: list[str] | None = None
+    modelContextLimits: dict[str, int] | None = None
+    modelOutputLimits: dict[str, int] | None = None
+
+
+@dataclass
+class UserSettings:
+    settings: dict[str, Any]
+    schemaVersion: int

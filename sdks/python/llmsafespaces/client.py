@@ -19,6 +19,7 @@ from .types import (
     AuthResponse,
     EnsureSessionResponse,
     MessageResponse,
+    ProviderCredential,
     SecretResponse,
     TerminalTicket,
     Workspace,
@@ -53,6 +54,9 @@ class LLMSafeSpaces:
         self.account = _AccountAPI(self)
         self.secrets = _SecretsAPI(self)
         self.terminal = _TerminalAPI(self)
+        self.user_settings = _UserSettingsAPI(self)
+        self.provider_credentials = _ProviderCredentialsAPI(self)
+        self.admin_provider_credentials = _AdminProviderCredentialsAPI(self)
         self.prompts = _PromptsAPI(self)
         self.agent_roles = _AgentRolesAPI(self)
 
@@ -272,6 +276,12 @@ class _SessionsAPI:
             json={"message": message},
         )
 
+    def delete(self, workspace_id: str, session_id: str) -> None:
+        self._c._request(
+            "DELETE",
+            f"/workspaces/{workspace_id}/sessions/{session_id}",
+        )
+
 
 class _AuthAPI:
     def __init__(self, client: LLMSafeSpaces):
@@ -384,6 +394,153 @@ def _extract_text(raw: Any) -> str:
         for p in parts
         if isinstance(p, dict) and p.get("type") == "text"
     )
+
+
+class _UserSettingsAPI:
+    def __init__(self, client: LLMSafeSpaces):
+        self._c = client
+
+    def get(self) -> dict[str, Any]:
+        return self._c._request("GET", "/users/me/settings")
+
+    def get_schema(self) -> dict[str, Any]:
+        return self._c._request("GET", "/users/me/settings/schema")
+
+    def set(self, key: str, value: Any) -> dict[str, Any]:
+        return self._c._request(
+            "PUT", f"/users/me/settings/{key}", json={"value": value}
+        )
+
+
+class _ProviderCredentialsAPI:
+    def __init__(self, client: LLMSafeSpaces):
+        self._c = client
+
+    def create(
+        self,
+        *,
+        name: str,
+        kind: str,
+        slug: str,
+        api_key: str,
+        base_url: str = "",
+    ) -> ProviderCredential:
+        body: dict[str, Any] = {
+            "name": name,
+            "kind": kind,
+            "slug": slug,
+            "apiKey": api_key,
+        }
+        if base_url:
+            body["baseURL"] = base_url
+        return ProviderCredential(
+            **self._c._request("POST", "/provider-credentials", json=body)
+        )
+
+    def list(self) -> list[ProviderCredential]:
+        data = self._c._request("GET", "/provider-credentials")
+        return [ProviderCredential(**c) for c in data]
+
+    def get(self, cred_id: str) -> ProviderCredential:
+        return ProviderCredential(
+            **self._c._request("GET", f"/provider-credentials/{cred_id}")
+        )
+
+    def delete(self, cred_id: str) -> None:
+        self._c._request("DELETE", f"/provider-credentials/{cred_id}")
+
+    def probe_models(self, cred_id: str) -> dict[str, Any]:
+        return self._c._request(
+            "GET", f"/provider-credentials/{cred_id}/models"
+        )
+
+    def list_bindings(self, cred_id: str) -> list[str]:
+        return self._c._request(
+            "GET", f"/provider-credentials/{cred_id}/bindings"
+        )
+
+    def bind(self, cred_id: str, workspace_id: str) -> dict[str, Any]:
+        return self._c._request(
+            "POST", f"/provider-credentials/{cred_id}/bind/{workspace_id}"
+        )
+
+    def unbind(self, cred_id: str, workspace_id: str) -> None:
+        self._c._request(
+            "DELETE", f"/provider-credentials/{cred_id}/bind/{workspace_id}"
+        )
+
+
+class _AdminProviderCredentialsAPI:
+    def __init__(self, client: LLMSafeSpaces):
+        self._c = client
+
+    def create(
+        self,
+        *,
+        name: str,
+        kind: str,
+        slug: str,
+        api_key: str,
+        base_url: str = "",
+    ) -> ProviderCredential:
+        body: dict[str, Any] = {
+            "name": name,
+            "kind": kind,
+            "slug": slug,
+            "apiKey": api_key,
+        }
+        if base_url:
+            body["baseURL"] = base_url
+        return ProviderCredential(
+            **self._c._request("POST", "/admin/provider-credentials", json=body)
+        )
+
+    def list(self) -> list[ProviderCredential]:
+        data = self._c._request("GET", "/admin/provider-credentials")
+        return [ProviderCredential(**c) for c in data]
+
+    def get(self, cred_id: str) -> ProviderCredential:
+        return ProviderCredential(
+            **self._c._request("GET", f"/admin/provider-credentials/{cred_id}")
+        )
+
+    def update(self, cred_id: str, **kwargs: Any) -> ProviderCredential:
+        return ProviderCredential(
+            **self._c._request(
+                "PUT", f"/admin/provider-credentials/{cred_id}", json=kwargs
+            )
+        )
+
+    def delete(self, cred_id: str) -> None:
+        self._c._request("DELETE", f"/admin/provider-credentials/{cred_id}")
+
+    def probe_models(self, cred_id: str) -> dict[str, Any]:
+        return self._c._request(
+            "GET", f"/admin/provider-credentials/{cred_id}/models"
+        )
+
+    def create_auto_apply(
+        self, cred_id: str, *, target_type: str, target_id: str = ""
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"targetType": target_type}
+        if target_id:
+            body["targetId"] = target_id
+        return self._c._request(
+            "POST", f"/admin/provider-credentials/{cred_id}/auto-apply", json=body
+        )
+
+    def list_auto_apply(self, cred_id: str) -> list[dict[str, Any]]:
+        return self._c._request(
+            "GET", f"/admin/provider-credentials/{cred_id}/auto-apply"
+        )
+
+    def delete_auto_apply(
+        self, cred_id: str, target_type: str, target_id: str
+    ) -> None:
+        self._c._request(
+            "DELETE",
+            f"/admin/provider-credentials/{cred_id}/auto-apply/{target_type}/{target_id}",
+        )
 
 
 class _PromptsAPI:
