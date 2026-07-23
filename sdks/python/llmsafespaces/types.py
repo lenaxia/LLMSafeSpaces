@@ -88,3 +88,47 @@ class SecretResponse:
     createdAt: str
     updatedAt: str
     metadata: Any = None
+
+
+@dataclass
+class ProviderCredential:
+    id: str
+    name: str
+    kind: str
+    slug: str
+    createdAt: str
+    updatedAt: str
+    baseURL: str | None = None
+    modelAllowlist: list[str] | None = None
+    modelContextLimits: dict[str, int] | None = None
+    modelOutputLimits: dict[str, int] | None = None
+
+
+@dataclass
+class UpdateProviderCredentialRequest:
+    name: str | None = None
+    apiKey: str | None = None
+    baseURL: str | None = None
+    modelAllowlist: list[str] | None = None
+    modelContextLimits: dict[str, int] | None = None
+    modelOutputLimits: dict[str, int] | None = None
+
+
+@dataclass
+class CreateAgentRoleRequest:
+    name: str
+    slug: str
+    description: str = ""
+    extends: str | None = None
+    isDefault: bool = False
+    config: dict[str, Any] | None = None
+
+
+@dataclass
+class UpdateAgentRoleRequest:
+    name: str | None = None
+    slug: str | None = None
+    description: str | None = None
+    extends: str | None = None
+    isDefault: bool | None = None
+    config: dict[str, Any] | None = None

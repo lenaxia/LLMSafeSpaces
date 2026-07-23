@@ -4,7 +4,7 @@ info:
   description: |
     LLMSafeSpaces is a Kubernetes-first platform for running AI agents securely in isolated sandboxes.
     Every sandbox runs `opencode serve` as a persistent HTTP server with a PVC-backed persistent workspace.
-  version: "1.0.0"
+  version: "1.1.0"
   license:
     name: AGPL-3.0-or-later
     url: https://www.gnu.org/licenses/agpl-3.0.html
@@ -26,7 +26,9 @@ tags:
   - name: settings
     description: Admin and user settings
   - name: credentials
-    description: Admin credential set management
+    description: Provider credentials, agent roles, and prompts
+  - name: usage
+    description: Usage metering and quota (feature-gated)
   - name: account
     description: Account management (key rotation, password)
   - name: health
@@ -334,6 +336,202 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/restart:
+    post:
+      tags: [workspaces]
+      summary: Restart a workspace (bumps restartGeneration, controller rebuilds the pod)
+      description: |
+        Declarative recovery from Failed phase or force-restart from Active.
+        Idempotent at the spec layer — bumps spec.restartGeneration so the
+        controller observes the change and transitions back through Pending.
+      operationId: restartWorkspace
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "202":
+          description: Restart initiated
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/agent/reload:
+    post:
+      tags: [workspaces]
+      summary: Reload the agent process without restarting the pod
+      description: |
+        Disposes the current opencode process and starts a fresh one, re-reading
+        agent-config.json. Useful for picking up credential changes without a
+        full pod restart (~22s). The workspace stays Active throughout.
+      operationId: reloadAgent
+      x-feature-gated: true
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "202":
+          description: Agent reload initiated
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/models:
+    get:
+      tags: [workspaces]
+      summary: List available models for a workspace
+      operationId: listWorkspaceModels
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "200":
+          description: Model list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ModelListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/model:
+    put:
+      tags: [workspaces]
+      summary: Set the workspace's default model
+      operationId: setWorkspaceModel
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [model]
+              properties:
+                model:
+                  type: string
+                  description: Model ID (e.g. "claude-sonnet-4-20250514")
+      responses:
+        "204":
+          description: Model set
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/prompt:
+    get:
+      tags: [workspaces]
+      summary: Get the workspace-level system prompt override
+      operationId: getWorkspacePrompt
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "200":
+          description: Workspace prompt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  prompt:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [workspaces]
+      summary: Set the workspace-level system prompt override
+      operationId: setWorkspacePrompt
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prompt]
+              properties:
+                prompt:
+                  type: string
+      responses:
+        "204":
+          description: Prompt set
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/agent-role:
+    get:
+      tags: [workspaces]
+      summary: Get the workspace's assigned agent role
+      operationId: getWorkspaceRole
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "200":
+          description: Agent role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRole"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [workspaces]
+      summary: Set the workspace's agent role
+      operationId: setWorkspaceRole
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [roleId]
+              properties:
+                roleId:
+                  type: string
+      responses:
+        "204":
+          description: Role set
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [workspaces]
+      summary: Clear the workspace's agent role (inherit from org/platform)
+      operationId: clearWorkspaceRole
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "204":
+          description: Role cleared
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/effective-agent-role:
+    get:
+      tags: [workspaces]
+      summary: Get the effective agent role with inheritance chain
+      operationId: getEffectiveWorkspaceRole
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "200":
+          description: Effective agent role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EffectiveAgentRole"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
   # --- Sessions ---
   /workspaces/{id}/sessions:
     get:
@@ -578,6 +776,104 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/sessions/{sessionId}/queue:
+    post:
+      tags: [sessions]
+      summary: Enqueue a message for a busy session
+      description: |
+        When the session is busy (processing a turn), the message is queued in Redis
+        and drained automatically once the session goes idle. If the session is
+        already idle, the message is sent immediately. Returns a queue message ID.
+      operationId: enqueueMessage
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/SessionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text:
+                  type: string
+                  maxLength: 100000
+                  description: Message text to enqueue
+      responses:
+        "202":
+          description: Message enqueued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  messageID:
+                    type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    get:
+      tags: [sessions]
+      summary: List queued messages for a session
+      operationId: listQueue
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          description: Queued messages
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  messages:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/QueuedMessage"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/sessions/{sessionId}/queue/{messageId}:
+    delete:
+      tags: [sessions]
+      summary: Dismiss a queued message
+      operationId: dismissQueuedMessage
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/SessionId"
+        - name: messageId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Message dismissed
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/sessions/{sessionId}/seen:
+    put:
+      tags: [sessions]
+      summary: Mark a session as seen (clears unread state)
+      operationId: markSessionSeen
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "204":
+          description: Session marked as seen
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /workspaces/{id}/session-events:
     get:
       tags: [sessions]
@@ -598,6 +894,138 @@ paths:
               schema:
                 type: string
                 description: "Newline-delimited SSE events"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  # --- Agent Input Requests (Epic 16) ---
+  /workspaces/{id}/question:
+    get:
+      tags: [sessions]
+      summary: List pending questions from the agent
+      description: |
+        Proxies to the workspace pod. Questions originate from the agent
+        (opencode) when it needs user input. Response schema tracks upstream.
+      operationId: listQuestions
+      x-opencode-proxy: true
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "200":
+          description: Pending questions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  description: Question object (schema tracks upstream opencode)
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/question/{requestID}/reply:
+    post:
+      tags: [sessions]
+      summary: Reply to a pending question
+      description: Proxies the reply body to the workspace pod. Request ID must match `^que_[a-zA-Z0-9]+$`.
+      operationId: replyQuestion
+      x-opencode-proxy: true
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - name: requestID
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^que_[a-zA-Z0-9]+$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Reply body (forwarded to agent — schema tracks upstream)
+      responses:
+        "200":
+          description: Reply accepted
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/question/{requestID}/reject:
+    post:
+      tags: [sessions]
+      summary: Reject a pending question
+      operationId: rejectQuestion
+      x-opencode-proxy: true
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - name: requestID
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^que_[a-zA-Z0-9]+$'
+      responses:
+        "200":
+          description: Rejection accepted
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/permission:
+    get:
+      tags: [sessions]
+      summary: List pending permission requests from the agent
+      operationId: listPermissions
+      x-opencode-proxy: true
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "200":
+          description: Pending permissions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  description: Permission object (schema tracks upstream opencode)
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/permission/{requestID}/reply:
+    post:
+      tags: [sessions]
+      summary: Reply to a pending permission request
+      operationId: replyPermission
+      x-opencode-proxy: true
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - name: requestID
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^per_[a-zA-Z0-9_]+$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Reply body (forwarded to agent — schema tracks upstream)
+      responses:
+        "200":
+          description: Reply accepted
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -1155,6 +1583,811 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  # --- Provider Credentials (Epic 30) ---
+  /provider-credentials:
+    post:
+      tags: [credentials]
+      summary: Create a user-scoped provider credential
+      description: |
+        Creates a credential with a per-owner-unique slug that becomes the
+        agent-config.json provider key. Kind selects the SDK class (openai,
+        anthropic, openai_compatible, etc.).
+      operationId: createProviderCredential
+      x-feature-gated: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProviderCredentialRequest"
+      responses:
+        "201":
+          description: Credential created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderCredential"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "207":
+          description: Partial success — credential created but auto-bind to existing workspaces failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  credential:
+                    $ref: "#/components/schemas/ProviderCredential"
+                  bindWarning:
+                    type: string
+    get:
+      tags: [credentials]
+      summary: List user-scoped provider credentials
+      operationId: listProviderCredentials
+      x-feature-gated: true
+      responses:
+        "200":
+          description: Credential list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProviderCredential"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /provider-credentials/{id}:
+    get:
+      tags: [credentials]
+      summary: Get a provider credential
+      operationId: getProviderCredential
+      x-feature-gated: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Credential
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderCredential"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [credentials]
+      summary: Delete a provider credential
+      operationId: deleteProviderCredential
+      x-feature-gated: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Credential deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /provider-credentials/{id}/models:
+    get:
+      tags: [credentials]
+      summary: Probe models available with a stored credential
+      operationId: probeProviderCredentialModels
+      x-feature-gated: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Available models
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProbeModelsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /provider-credentials/{id}/bindings:
+    get:
+      tags: [credentials]
+      summary: List workspaces bound to a credential
+      operationId: listProviderCredentialBindings
+      x-feature-gated: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Binding list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  workspaceIds:
+                    type: array
+                    items:
+                      type: string
+                  bindings:
+                    type: array
+                    items:
+                      type: object
+                      description: Binding details with source type (explicit vs auto)
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /provider-credentials/{id}/bind/{workspaceId}:
+    post:
+      tags: [credentials]
+      summary: Bind a credential to a workspace
+      operationId: bindProviderCredential
+      x-feature-gated: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Credential bound
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [credentials]
+      summary: Unbind a credential from a workspace
+      operationId: unbindProviderCredential
+      x-feature-gated: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Credential unbound
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /admin/provider-credentials:
+    post:
+      tags: [credentials]
+      summary: Create an admin-scoped provider credential
+      operationId: createAdminProviderCredential
+      x-feature-gated: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProviderCredentialRequest"
+      responses:
+        "201":
+          description: Credential created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderCredential"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    get:
+      tags: [credentials]
+      summary: List admin-scoped provider credentials
+      operationId: listAdminProviderCredentials
+      x-feature-gated: true
+      responses:
+        "200":
+          description: Credential list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProviderCredential"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /admin/provider-credentials/{id}:
+    get:
+      tags: [credentials]
+      summary: Get an admin provider credential
+      operationId: getAdminProviderCredential
+      x-feature-gated: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Credential
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderCredential"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [credentials]
+      summary: Update an admin provider credential
+      operationId: updateAdminProviderCredential
+      x-feature-gated: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateProviderCredentialRequest"
+      responses:
+        "200":
+          description: Credential updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderCredential"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [credentials]
+      summary: Delete an admin provider credential
+      operationId: deleteAdminProviderCredential
+      x-feature-gated: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Credential deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /admin/provider-credentials/{id}/models:
+    get:
+      tags: [credentials]
+      summary: Probe models for an admin credential
+      operationId: probeAdminProviderCredentialModels
+      x-feature-gated: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Available models
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProbeModelsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /admin/provider-credentials/{id}/auto-apply:
+    post:
+      tags: [credentials]
+      summary: Create an auto-apply rule for an admin credential
+      operationId: createAdminAutoApply
+      x-feature-gated: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAutoApplyRequest"
+      responses:
+        "201":
+          description: Auto-apply rule created
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    get:
+      tags: [credentials]
+      summary: List auto-apply rules for an admin credential
+      operationId: listAdminAutoApply
+      x-feature-gated: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Auto-apply rules
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AutoApplyRule"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /admin/provider-credentials/{id}/auto-apply/{targetType}/{targetId}:
+    delete:
+      tags: [credentials]
+      summary: Delete an auto-apply rule
+      operationId: deleteAdminAutoApply
+      x-feature-gated: true
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: targetType
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: targetId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Auto-apply rule deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  # --- Usage & Quota (Epic 12) ---
+  /usage:
+    get:
+      tags: [usage]
+      summary: Get current user's usage summary
+      operationId: getUsage
+      x-feature-gated: true
+      responses:
+        "200":
+          description: Usage summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UsageSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /usage/workspaces/{id}:
+    get:
+      tags: [usage]
+      summary: Get per-workspace usage
+      operationId: getWorkspaceUsage
+      x-feature-gated: true
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "200":
+          description: Workspace usage
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UsageSummary"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /usage/quota:
+    get:
+      tags: [usage]
+      summary: Get quota status
+      operationId: getQuotaStatus
+      x-feature-gated: true
+      responses:
+        "200":
+          description: Quota status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QuotaStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  # --- Probe Models (anonymous) ---
+  /probe-models:
+    post:
+      tags: [credentials]
+      summary: Probe available models with raw credentials (not stored)
+      description: |
+        Accepts apiKey + baseURL directly and probes the provider for available
+        models without creating a stored credential. Auth still required.
+        baseURL is SSRF-validated before any outbound request.
+      operationId: probeModelsAnon
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ProbeModelsRequest"
+      responses:
+        "200":
+          description: Available models
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProbeModelsResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  # --- Auth Lifecycle (Epics 49, 54, 56) ---
+  /auth/password-reset/request:
+    post:
+      tags: [auth]
+      summary: Request a password reset email
+      description: |
+        Always returns 202 regardless of whether the email exists
+        (enumeration-safe). The reset token is sent via email.
+      security: []
+      operationId: requestPasswordReset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+      responses:
+        "202":
+          description: Reset email sent (or would be sent if the email exists)
+  /auth/password-reset/confirm:
+    post:
+      tags: [auth]
+      summary: Confirm a password reset with a token
+      security: []
+      operationId: confirmPasswordReset
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, newPassword]
+              properties:
+                token:
+                  type: string
+                newPassword:
+                  type: string
+                  minLength: 8
+      responses:
+        "200":
+          description: Password reset successful
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /auth/verify-email:
+    post:
+      tags: [auth]
+      summary: Verify email with a token
+      security: []
+      operationId: verifyEmail
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token:
+                  type: string
+      responses:
+        "200":
+          description: Email verified
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /auth/verify-email/resend:
+    post:
+      tags: [auth]
+      summary: Resend email verification
+      security: []
+      operationId: resendEmailVerification
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+      responses:
+        "200":
+          description: Verification email resent (or would be sent)
+  /auth/lookup:
+    post:
+      tags: [auth]
+      summary: Email-led login discovery (enumeration-safe)
+      description: |
+        Resolves an email to a redirect URL pointing at the user's org.
+        Always returns 200 with { redirectUrl } on valid input; DB errors masked.
+      security: []
+      operationId: lookupEmail
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+      responses:
+        "200":
+          description: Redirect URL (may be the default login if no org)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  redirectUrl:
+                    type: string
+  /auth/unlock-dek:
+    post:
+      tags: [auth]
+      summary: Unlock the user DEK with a password
+      description: |
+        Soft-unlock endpoint for Epic 56 (durable DEK session). Registered under
+        /auth/, not /account/. Unlocks the DEK when the session has a valid JWT
+        but the DEK is not yet unlocked (post-restart scenario).
+      operationId: unlockDek
+      x-feature-gated: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [password]
+              properties:
+                password:
+                  type: string
+      responses:
+        "200":
+          description: DEK unlocked
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Invalid password
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  # --- Agent Roles (Platform/Org scope, Epic 55) ---
+  /admin/agent-roles:
+    get:
+      tags: [credentials]
+      summary: List platform-scoped agent roles
+      operationId: listPlatformAgentRoles
+      responses:
+        "200":
+          description: Agent roles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AgentRole"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [credentials]
+      summary: Create a platform-scoped agent role
+      operationId: createPlatformAgentRole
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAgentRoleRequest"
+      responses:
+        "201":
+          description: Role created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRole"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /admin/agent-roles/{id}:
+    get:
+      tags: [credentials]
+      summary: Get a platform-scoped agent role
+      operationId: getPlatformAgentRole
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Agent role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRole"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [credentials]
+      summary: Update a platform-scoped agent role
+      operationId: updatePlatformAgentRole
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAgentRoleRequest"
+      responses:
+        "200":
+          description: Role updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRole"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [credentials]
+      summary: Delete a platform-scoped agent role
+      operationId: deletePlatformAgentRole
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Role deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /admin/prompt:
+    get:
+      tags: [credentials]
+      summary: Get the platform-level system prompt
+      operationId: getPlatformPrompt
+      responses:
+        "200":
+          description: Platform prompt
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  prompt:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    put:
+      tags: [credentials]
+      summary: Set the platform-level system prompt
+      operationId: setPlatformPrompt
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [prompt]
+              properties:
+                prompt:
+                  type: string
+      responses:
+        "204":
+          description: Prompt set
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
   # --- Health ---
   /livez:
     get:
@@ -1267,6 +2500,12 @@ components:
             $ref: "#/components/schemas/Error"
     NotFound:
       description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Conflict:
+      description: Conflict (duplicate resource)
       content:
         application/json:
           schema:
@@ -1748,3 +2987,309 @@ components:
           items:
             type: object
             description: Setting definition with key, type, default, description
+    # --- US-62.1: New schemas ---
+    QueuedMessage:
+      type: object
+      properties:
+        id:
+          type: string
+        text:
+          type: string
+        session_id:
+          type: string
+        workspace_id:
+          type: string
+        enqueued_at:
+          type: string
+          format: date-time
+        retry_count:
+          type: integer
+    ModelListResponse:
+      type: object
+      properties:
+        models:
+          type: array
+          items:
+            $ref: "#/components/schemas/ModelItem"
+        currentModel:
+          type: string
+    ModelItem:
+      type: object
+      properties:
+        id:
+          type: string
+        providerID:
+          type: string
+        name:
+          type: string
+        enabled:
+          type: boolean
+        tier:
+          type: string
+        freeTier:
+          type: boolean
+        selected:
+          type: boolean
+    AgentRole:
+      type: object
+      properties:
+        id:
+          type: string
+        scope:
+          type: string
+          enum: [platform, org]
+        orgId:
+          type: string
+          nullable: true
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+        extends:
+          type: string
+          nullable: true
+        isDefault:
+          type: boolean
+        config:
+          $ref: "#/components/schemas/RoleConfig"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    EffectiveAgentRole:
+      allOf:
+        - $ref: "#/components/schemas/AgentRole"
+        - type: object
+          properties:
+            effectiveConfig:
+              $ref: "#/components/schemas/RoleConfig"
+            inheritanceChain:
+              type: array
+              items:
+                type: string
+    RoleConfig:
+      type: object
+      properties:
+        version:
+          type: integer
+        system:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        color:
+          type: string
+          nullable: true
+        model:
+          type: string
+          nullable: true
+        mode:
+          type: string
+          nullable: true
+        hidden:
+          type: boolean
+          nullable: true
+        permissions:
+          type: array
+          items:
+            $ref: "#/components/schemas/PermissionRule"
+    PermissionRule:
+      type: object
+      properties:
+        action:
+          type: string
+        resource:
+          type: string
+        effect:
+          type: string
+    CreateAgentRoleRequest:
+      type: object
+      required: [name, slug, description]
+      properties:
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+        extends:
+          type: string
+        isDefault:
+          type: boolean
+        config:
+          $ref: "#/components/schemas/RoleConfig"
+    UpdateAgentRoleRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+        extends:
+          type: string
+        isDefault:
+          type: boolean
+        config:
+          $ref: "#/components/schemas/RoleConfig"
+    ProviderCredential:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        kind:
+          type: string
+          description: SDK-class enum (openai, anthropic, openai_compatible, etc.)
+        slug:
+          type: string
+          description: Per-owner unique identity, becomes the agent-config.json provider key
+        baseURL:
+          type: string
+        modelAllowlist:
+          type: array
+          items:
+            type: string
+        modelContextLimits:
+          type: object
+          additionalProperties:
+            type: integer
+        modelOutputLimits:
+          type: object
+          additionalProperties:
+            type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    CreateProviderCredentialRequest:
+      type: object
+      required: [name, kind, slug, apiKey]
+      properties:
+        name:
+          type: string
+        kind:
+          type: string
+        slug:
+          type: string
+          pattern: '^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$'
+        apiKey:
+          type: string
+        baseURL:
+          type: string
+    UpdateProviderCredentialRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        apiKey:
+          type: string
+        baseURL:
+          type: string
+        modelAllowlist:
+          type: array
+          items:
+            type: string
+        modelContextLimits:
+          type: object
+          additionalProperties:
+            type: integer
+        modelOutputLimits:
+          type: object
+          additionalProperties:
+            type: integer
+    ProbeModelsRequest:
+      type: object
+      required: [apiKey, baseURL]
+      properties:
+        apiKey:
+          type: string
+        baseURL:
+          type: string
+          description: SSRF-validated before any outbound request
+    ProbeModelsResponse:
+      type: object
+      properties:
+        models:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+    CreateAutoApplyRequest:
+      type: object
+      required: [targetType]
+      properties:
+        targetType:
+          type: string
+          enum: [all, user, org]
+          description: "Scope of auto-application"
+        targetId:
+          type: string
+          description: Required when targetType is not 'all'
+        withinPriority:
+          type: integer
+          description: Priority ordering for auto-apply
+    AutoApplyRule:
+      type: object
+      properties:
+        credentialId:
+          type: string
+        targetType:
+          type: string
+          enum: [all, user, org]
+        targetId:
+          type: string
+          nullable: true
+        withinPriority:
+          type: integer
+    UsageSummary:
+      type: object
+      properties:
+        events:
+          type: array
+          items:
+            type: object
+            properties:
+              eventType:
+                type: string
+              quantity:
+                type: integer
+                format: int64
+              windowStart:
+                type: string
+                format: date-time
+              windowEnd:
+                type: string
+                format: date-time
+    QuotaStatus:
+      type: object
+      properties:
+        quotas:
+          type: array
+          items:
+            type: object
+            properties:
+              eventType:
+                type: string
+              limit:
+                type: integer
+                format: int64
+              used:
+                type: integer
+                format: int64
+              remaining:
+                type: integer
+                format: int64

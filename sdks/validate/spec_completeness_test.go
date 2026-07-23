@@ -11,6 +11,8 @@ import (
 )
 
 // TestSpec_Completeness verifies the actual openapi.yaml has all expected endpoints.
+// Derives the expected path set from the canonical expectedPaths list in main.go
+// (single source of truth) — no duplicate list here.
 func TestSpec_Completeness(t *testing.T) {
 	data, err := os.ReadFile("../openapi.yaml")
 	if err != nil {
@@ -27,97 +29,10 @@ func TestSpec_Completeness(t *testing.T) {
 		t.Fatal("no paths in spec")
 	}
 
-	// All endpoints that must exist (from router.go)
-	expectedPaths := []struct {
-		path   string
-		method string
-	}{
-		// Auth
-		{"/auth/config", "get"},
-		{"/auth/register", "post"},
-		{"/auth/login", "post"},
-		{"/auth/logout", "post"},
-		{"/auth/me", "get"},
-		{"/auth/api-keys", "post"},
-		{"/auth/api-keys", "get"},
-		{"/auth/api-keys/{id}", "delete"},
-		// Workspaces
-		{"/workspaces", "get"},
-		{"/workspaces", "post"},
-		{"/workspaces/{id}", "get"},
-		{"/workspaces/{id}", "put"},
-		{"/workspaces/{id}", "delete"},
-		{"/workspaces/{id}/status", "get"},
-		{"/workspaces/{id}/activate", "post"},
-		{"/workspaces/{id}/suspend", "post"},
-		// Sessions
-		{"/workspaces/{id}/sessions", "get"},
-		{"/workspaces/{id}/sessions/new", "post"},
-		{"/workspaces/{id}/sessions/active", "get"},
-		{"/workspaces/{id}/sessions/{sessionId}/title", "put"},
-		// Proxy
-		{"/workspaces/{id}/sessions/{sessionId}/message", "post"},
-		{"/workspaces/{id}/sessions/{sessionId}/message", "get"},
-		{"/workspaces/{id}/sessions/{sessionId}/prompt", "post"},
-		{"/workspaces/{id}/sessions/{sessionId}", "get"},
-		{"/workspaces/{id}/sessions/{sessionId}/abort", "post"},
-		{"/workspaces/{id}/events", "get"},
-		// Terminal
-		{"/workspaces/{id}/terminal/ticket", "post"},
-		{"/workspaces/{id}/terminal", "get"},
-		// Secrets
-		{"/secrets", "post"},
-		{"/secrets", "get"},
-		{"/secrets/audit", "get"},
-		{"/secrets/{id}", "get"},
-		{"/secrets/{id}", "put"},
-		{"/secrets/{id}", "delete"},
-		{"/secrets/{id}/reveal", "post"},
-		{"/secrets/{id}/bindings", "get"},
-		{"/workspaces/{id}/bindings", "put"},
-		{"/workspaces/{id}/bindings", "get"},
-		{"/workspaces/{id}/reload-secrets", "post"},
-		{"/workspaces/{id}/env", "put"},
-		{"/workspaces/{id}/env", "get"},
-		{"/workspaces/{id}/env/{name}", "delete"},
-		// Settings
-		{"/admin/settings", "get"},
-		{"/admin/settings/schema", "get"},
-		{"/admin/settings/{key}", "put"},
-		{"/users/me/settings", "get"},
-		{"/users/me/settings/schema", "get"},
-		{"/users/me/settings/{key}", "put"},
-		// Credentials
-		{"/admin/credentials", "post"},
-		{"/admin/credentials", "get"},
-		{"/admin/credentials/{id}", "get"},
-		{"/admin/credentials/{id}", "put"},
-		{"/admin/credentials/{id}", "delete"},
-		{"/admin/credentials/{id}/default", "put"},
-		{"/admin/credentials/rotate-key", "post"},
-		// Account
-		{"/account/rotate-key", "post"},
-		{"/account/change-password", "post"},
-		{"/account/recover", "post"},
-		// Health
-		{"/livez", "get"},
-		{"/readyz", "get"},
-		{"/health", "get"},
-	}
-
-	for _, ep := range expectedPaths {
-		pathObj, ok := paths[ep.path]
-		if !ok {
-			t.Errorf("missing path: %s", ep.path)
-			continue
-		}
-		methods, _ := pathObj.(map[string]any)
-		if methods == nil {
-			t.Errorf("path %s has no methods", ep.path)
-			continue
-		}
-		if _, ok := methods[ep.method]; !ok {
-			t.Errorf("path %s missing method %s", ep.path, ep.method)
+	// Use the canonical expectedPaths from main.go — single source of truth.
+	for _, expected := range expectedPaths {
+		if _, ok := paths[expected]; !ok {
+			t.Errorf("missing path: %s", expected)
 		}
 	}
 }

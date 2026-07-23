@@ -1,5 +1,7 @@
 """LLMSafeSpaces Python SDK."""
 
+from importlib.metadata import PackageNotFoundError, version as _version
+
 from .client import LLMSafeSpaces
 from .async_client import AsyncLLMSafeSpaces
 from .errors import (
@@ -13,14 +15,23 @@ from .errors import (
 from .types import (
     APIKey,
     AuthResponse,
+    CreateAgentRoleRequest,
     EnsureSessionResponse,
     MessageResponse,
+    ProviderCredential,
     SecretResponse,
     TerminalTicket,
+    UpdateProviderCredentialRequest,
+    UpdateAgentRoleRequest,
     Workspace,
     WorkspaceListItem,
     WorkspaceListResult,
 )
+
+try:
+    __version__ = _version("llmsafespaces")
+except PackageNotFoundError:
+    __version__ = "dev"
 
 __all__ = [
     "LLMSafeSpaces",
@@ -40,4 +51,9 @@ __all__ = [
     "APIKey",
     "TerminalTicket",
     "SecretResponse",
+    "ProviderCredential",
+    "UpdateProviderCredentialRequest",
+    "CreateAgentRoleRequest",
+    "UpdateAgentRoleRequest",
+    "__version__",
 ]

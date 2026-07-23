@@ -38,6 +38,15 @@ func main() {
 		}
 		os.Exit(1)
 	}
+
+	routeErrors := validateRouteCoverage(data)
+	if len(routeErrors) > 0 {
+		fmt.Fprintf(os.Stderr, "Route coverage check failed with %d error(s):\n", len(routeErrors))
+		for _, e := range routeErrors {
+			fmt.Fprintf(os.Stderr, "  ✗ %s\n", e)
+		}
+		os.Exit(1)
+	}
 }
 
 // validate checks the OpenAPI spec for structural correctness.
@@ -140,4 +149,147 @@ func resolveRef(root map[string]any, ref string) bool {
 		}
 	}
 	return true
+}
+
+// expectedPaths is the explicit list of in-scope API routes that the OpenAPI
+// spec MUST document. Derived from api/internal/server/router.go. When a new
+// route is added to the router, add it here too — the CI check will fail if
+// you forget.
+//
+// Routes NOT listed here (intentionally excluded — infrastructure/internal):
+//   - POST /webhooks/stripe, POST /internal/v1/pod-bootstrap,
+//     GET /internal/orgs/{orgID}/status (server-to-server)
+//   - GET /metrics, GET /livez, GET /readyz, GET /health (infra probes)
+//   - GET /events, GET /workspaces/{id}/session-events (SSE — excluded from SDKs)
+//   - GET /workspaces/{id}/terminal (WebSocket — only ticket endpoint is SDK-facing)
+//   - POST /users/me/agents/reload (bulk agent reload — deferred until consumer needs it)
+//   - All /admin/usage/*, /admin/billing/*, /admin/orgs/*, /admin/users/*,
+//     /admin/email/*, /admin/relay/*, /admin/audit (operator surfaces, not SDK-facing)
+//   - All /orgs/* (operator surface — deferred per epic out-of-scope)
+var expectedPaths = []string{
+	// Auth
+	"/auth/config",
+	"/auth/register",
+	"/auth/login",
+	"/auth/logout",
+	"/auth/me",
+	"/auth/api-keys",
+	"/auth/api-keys/{id}",
+	"/auth/password-reset/request",
+	"/auth/password-reset/confirm",
+	"/auth/verify-email",
+	"/auth/verify-email/resend",
+	"/auth/lookup",
+	"/auth/unlock-dek",
+
+	// Workspaces
+	"/workspaces",
+	"/workspaces/{id}",
+	"/workspaces/{id}/status",
+	"/workspaces/{id}/activate",
+	"/workspaces/{id}/suspend",
+	"/workspaces/{id}/restart",
+	"/workspaces/{id}/refresh-compute",
+	"/workspaces/{id}/agent/reload",
+	"/workspaces/{id}/models",
+	"/workspaces/{id}/model",
+	"/workspaces/{id}/prompt",
+	"/workspaces/{id}/agent-role",
+	"/workspaces/{id}/effective-agent-role",
+
+	// Sessions
+	"/workspaces/{id}/sessions",
+	"/workspaces/{id}/sessions/new",
+	"/workspaces/{id}/sessions/active",
+	"/workspaces/{id}/sessions/{sessionId}",
+	"/workspaces/{id}/sessions/{sessionId}/title",
+	"/workspaces/{id}/sessions/{sessionId}/seen",
+	"/workspaces/{id}/sessions/{sessionId}/message",
+	"/workspaces/{id}/sessions/{sessionId}/prompt",
+	"/workspaces/{id}/sessions/{sessionId}/abort",
+	"/workspaces/{id}/sessions/{sessionId}/queue",
+	"/workspaces/{id}/sessions/{sessionId}/queue/{messageId}",
+
+	// Agent input requests
+	"/workspaces/{id}/question",
+	"/workspaces/{id}/question/{requestID}/reply",
+	"/workspaces/{id}/question/{requestID}/reject",
+	"/workspaces/{id}/permission",
+	"/workspaces/{id}/permission/{requestID}/reply",
+
+	// Terminal
+	"/workspaces/{id}/terminal/ticket",
+
+	// Secrets
+	"/secrets",
+	"/secrets/audit",
+	"/secrets/{id}",
+	"/secrets/{id}/reveal",
+	"/secrets/{id}/bindings",
+	"/workspaces/{id}/bindings",
+	"/workspaces/{id}/reload-secrets",
+	"/workspaces/{id}/env",
+	"/workspaces/{id}/env/{name}",
+
+	// Settings
+	"/admin/settings",
+	"/admin/settings/schema",
+	"/admin/settings/{key}",
+	"/users/me/settings",
+	"/users/me/settings/schema",
+	"/users/me/settings/{key}",
+
+	// Account
+	"/account/rotate-key",
+	"/account/change-password",
+	"/account/recover",
+
+	// Provider credentials (user)
+	"/provider-credentials",
+	"/provider-credentials/{id}",
+	"/provider-credentials/{id}/models",
+	"/provider-credentials/{id}/bindings",
+	"/provider-credentials/{id}/bind/{workspaceId}",
+
+	// Provider credentials (admin)
+	"/admin/provider-credentials",
+	"/admin/provider-credentials/{id}",
+	"/admin/provider-credentials/{id}/models",
+	"/admin/provider-credentials/{id}/auto-apply",
+	"/admin/provider-credentials/{id}/auto-apply/{targetType}/{targetId}",
+
+	// Agent roles (platform)
+	"/admin/agent-roles",
+	"/admin/agent-roles/{id}",
+
+	// Platform prompt
+	"/admin/prompt",
+
+	// Usage
+	"/usage",
+	"/usage/workspaces/{id}",
+	"/usage/quota",
+
+	// Probe
+	"/probe-models",
+}
+
+// validateRouteCoverage checks that every expected in-scope API route has a
+// corresponding path entry in the OpenAPI spec.
+func validateRouteCoverage(data []byte) []string {
+	var doc map[string]any
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return []string{"YAML parse error during route coverage check"}
+	}
+
+	paths, _ := doc["paths"].(map[string]any)
+
+	var errors []string
+	for _, expected := range expectedPaths {
+		if _, ok := paths[expected]; !ok {
+			errors = append(errors, fmt.Sprintf("expected path %q not found in spec (add it or update expectedPaths in validate/main.go)", expected))
+		}
+	}
+
+	return errors
 }

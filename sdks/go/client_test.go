@@ -416,3 +416,412 @@ func TestAdminProviderCredentialsService_List_WireFormat(t *testing.T) {
 		t.Errorf("Slug: got %q, want opencode-free-tier", list[0].Slug)
 	}
 }
+
+func TestClient_SessionsEnqueue(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/workspaces/ws-1/sessions/sess-1/queue" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Method != "POST" {
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+		w.WriteHeader(202)
+		json.NewEncoder(w).Encode(map[string]string{"messageID": "qmsg-1"})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	msgID, err := c.Sessions.Enqueue(context.Background(), "ws-1", "sess-1", "hello")
+	if err != nil {
+		t.Fatalf("Enqueue error: %v", err)
+	}
+	if msgID != "qmsg-1" {
+		t.Errorf("got %q, want qmsg-1", msgID)
+	}
+}
+
+func TestClient_SessionsListQueue(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"messages": []map[string]any{
+				{"id": "qmsg-1", "text": "hello", "session_id": "sess-1", "workspace_id": "ws-1", "enqueued_at": "2026-07-22T00:00:00Z", "retry_count": 0},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	msgs, err := c.Sessions.ListQueue(context.Background(), "ws-1", "sess-1")
+	if err != nil {
+		t.Fatalf("ListQueue error: %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].ID != "qmsg-1" {
+		t.Errorf("unexpected: %+v", msgs)
+	}
+}
+
+func TestClient_SessionsMarkSeen(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/workspaces/ws-1/sessions/sess-1/seen" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(204)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	if err := c.Sessions.MarkSeen(context.Background(), "ws-1", "sess-1"); err != nil {
+		t.Fatalf("MarkSeen error: %v", err)
+	}
+}
+
+func TestClient_SessionsDismissQueued(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/workspaces/ws-1/sessions/sess-1/queue/qmsg-1" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Method != "DELETE" {
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+		w.WriteHeader(204)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	if err := c.Sessions.DismissQueued(context.Background(), "ws-1", "sess-1", "qmsg-1"); err != nil {
+		t.Fatalf("DismissQueued error: %v", err)
+	}
+}
+
+func TestClient_UsageGetWorkspace_Path(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/usage/workspaces/ws-1" {
+			t.Errorf("unexpected path: %s (expected /api/v1/usage/workspaces/ws-1)", r.URL.Path)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"usage": 100})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	_, err := c.Usage.GetWorkspace(context.Background(), "ws-1")
+	if err != nil {
+		t.Fatalf("GetWorkspace error: %v", err)
+	}
+}
+
+func TestClient_UsageGet(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/usage" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"events": []any{}})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	_, err := c.Usage.Get(context.Background())
+	if err != nil {
+		t.Fatalf("Usage.Get error: %v", err)
+	}
+}
+
+func TestClient_UsageGetQuota(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/usage/quota" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"quotas": []any{}})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	_, err := c.Usage.GetQuota(context.Background())
+	if err != nil {
+		t.Fatalf("Usage.GetQuota error: %v", err)
+	}
+}
+
+func TestClient_InputRequests_ListQuestions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/workspaces/ws-1/question" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		json.NewEncoder(w).Encode([]map[string]any{})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	_, err := c.InputRequests.ListQuestions(context.Background(), "ws-1")
+	if err != nil {
+		t.Fatalf("ListQuestions error: %v", err)
+	}
+}
+
+func TestClient_InputRequests_ReplyQuestion(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/workspaces/ws-1/question/que_123/reply" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	err := c.InputRequests.ReplyQuestion(context.Background(), "ws-1", "que_123", map[string]any{"answer": "yes"})
+	if err != nil {
+		t.Fatalf("ReplyQuestion error: %v", err)
+	}
+}
+
+func TestClient_InputRequests_RejectQuestion(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/workspaces/ws-1/question/que_123/reject" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	err := c.InputRequests.RejectQuestion(context.Background(), "ws-1", "que_123")
+	if err != nil {
+		t.Fatalf("RejectQuestion error: %v", err)
+	}
+}
+
+func TestClient_InputRequests_ListPermissions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/workspaces/ws-1/permission" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		json.NewEncoder(w).Encode([]map[string]any{})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	_, err := c.InputRequests.ListPermissions(context.Background(), "ws-1")
+	if err != nil {
+		t.Fatalf("ListPermissions error: %v", err)
+	}
+}
+
+func TestClient_InputRequests_ReplyPermission(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/workspaces/ws-1/permission/per_123/reply" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	err := c.InputRequests.ReplyPermission(context.Background(), "ws-1", "per_123", map[string]any{"decision": "allow"})
+	if err != nil {
+		t.Fatalf("ReplyPermission error: %v", err)
+	}
+}
+
+func TestClient_AuthRegister(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/auth/register" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(201)
+		json.NewEncoder(w).Encode(map[string]any{"token": "jwt"})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	_, err := c.Auth.Register(context.Background(), "user1", "u@x.com", "password123")
+	if err != nil {
+		t.Fatalf("Register error: %v", err)
+	}
+}
+
+func TestClient_AuthLogout(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/auth/logout" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(204)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	err := c.Auth.Logout(context.Background())
+	if err != nil {
+		t.Fatalf("Logout error: %v", err)
+	}
+}
+
+func TestClient_AuthLookup(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/auth/lookup" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		json.NewEncoder(w).Encode(map[string]string{"redirectUrl": "https://org.example.com"})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	url, err := c.Auth.Lookup(context.Background(), "u@x.com")
+	if err != nil {
+		t.Fatalf("Lookup error: %v", err)
+	}
+	if url != "https://org.example.com" {
+		t.Errorf("got %q, want https://org.example.com", url)
+	}
+}
+
+func TestClient_AuthUnlockDek(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/auth/unlock-dek" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	err := c.Auth.UnlockDek(context.Background(), "password123")
+	if err != nil {
+		t.Fatalf("UnlockDek error: %v", err)
+	}
+}
+
+func TestClient_WorkspacesReloadAgent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/workspaces/ws-1/agent/reload" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(202)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	err := c.Workspaces.ReloadAgent(context.Background(), "ws-1")
+	if err != nil {
+		t.Fatalf("ReloadAgent error: %v", err)
+	}
+}
+
+func TestClient_ProbeModels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/probe-models" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"models": []any{}})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	_, err := c.Probe.ProbeModels(context.Background(), "sk-test", "https://api.openai.com/v1")
+	if err != nil {
+		t.Fatalf("ProbeModels error: %v", err)
+	}
+}
+
+func TestClient_AuthRequestPasswordReset(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/auth/password-reset/request" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(202)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	err := c.Auth.RequestPasswordReset(context.Background(), "u@x.com")
+	if err != nil {
+		t.Fatalf("RequestPasswordReset error: %v", err)
+	}
+}
+
+func TestClient_AuthConfirmPasswordReset(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/auth/password-reset/confirm" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	err := c.Auth.ConfirmPasswordReset(context.Background(), "token", "newpass123")
+	if err != nil {
+		t.Fatalf("ConfirmPasswordReset error: %v", err)
+	}
+}
+
+func TestClient_AuthVerifyEmail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/auth/verify-email" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	err := c.Auth.VerifyEmail(context.Background(), "token")
+	if err != nil {
+		t.Fatalf("VerifyEmail error: %v", err)
+	}
+}
+
+func TestClient_AuthResendVerification(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/auth/verify-email/resend" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	err := c.Auth.ResendVerification(context.Background(), "u@x.com")
+	if err != nil {
+		t.Fatalf("ResendVerification error: %v", err)
+	}
+}
+
+func TestClient_ProviderCredentials_Create_207PartialSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(207)
+		json.NewEncoder(w).Encode(map[string]any{
+			"credential": map[string]any{
+				"id":        "cred-1",
+				"name":      "my-key",
+				"kind":      "openai",
+				"slug":      "my-key",
+				"createdAt": "2026-07-22T00:00:00Z",
+				"updatedAt": "2026-07-22T00:00:00Z",
+			},
+			"bindWarning": "failed to auto-bind",
+		})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	cred, err := c.ProviderCredentials.Create(context.Background(), "my-key", "openai", "my-key", "sk-test", "")
+	if err != nil {
+		t.Fatalf("Create (207) error: %v", err)
+	}
+	if cred.ID != "cred-1" {
+		t.Errorf("got ID %q, want cred-1", cred.ID)
+	}
+}
+
+func TestClient_SessionsEnqueue_EmptyText_400(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "text must not be empty"})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	_, err := c.Sessions.Enqueue(context.Background(), "ws-1", "sess-1", "")
+	if err == nil {
+		t.Fatal("expected error for empty text")
+	}
+}

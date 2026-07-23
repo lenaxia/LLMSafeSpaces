@@ -176,4 +176,173 @@ describe("LLMSafeSpaces Client", () => {
       expect(result.ticket).toBe("tkt_abc123");
     });
   });
+
+  describe("sessions (US-62.4 additions)", () => {
+    it("deletes a session", async () => {
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 200 }));
+      await client.sessions.delete("ws-1", "sess-1");
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://localhost:8080/api/v1/workspaces/ws-1/sessions/sess-1",
+        expect.objectContaining({ method: "DELETE" }),
+      );
+    });
+  });
+
+  describe("agentRoles (US-62.4 additions)", () => {
+    it("clears workspace role", async () => {
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 204 }));
+      await client.agentRoles.clearWorkspaceRole("ws-1");
+      expect(mockFetch).toHaveBeenCalledWith(
+        "http://localhost:8080/api/v1/workspaces/ws-1/agent-role",
+        expect.objectContaining({ method: "DELETE" }),
+      );
+    });
+  });
+
+  describe("providerCredentials (US-62.4)", () => {
+    const credJson = {
+      id: "cred-1",
+      name: "my-key",
+      kind: "openai",
+      slug: "my-key",
+      baseURL: "https://api.openai.com/v1",
+      createdAt: "2026-07-22T00:00:00Z",
+      updatedAt: "2026-07-22T00:00:00Z",
+    };
+
+    it("creates a credential", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse(credJson, 201));
+      const result = await client.providerCredentials.create({
+        name: "my-key", kind: "openai", slug: "my-key", apiKey: "sk-...",
+      });
+      expect(result.id).toBe("cred-1");
+    });
+
+    it("lists credentials", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse([credJson]));
+      const result = await client.providerCredentials.list();
+      expect(result).toHaveLength(1);
+    });
+
+    it("gets a credential", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse(credJson));
+      const result = await client.providerCredentials.get("cred-1");
+      expect(result.slug).toBe("my-key");
+    });
+
+    it("deletes a credential", async () => {
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 204 }));
+      await client.providerCredentials.delete("cred-1");
+    });
+
+    it("probes models", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ models: [{ id: "gpt-4" }] }));
+      const result = await client.providerCredentials.probeModels("cred-1");
+      expect(result.models).toHaveLength(1);
+    });
+
+    it("lists bindings", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ workspaceIds: ["ws-1", "ws-2"], bindings: [] }));
+      const result = await client.providerCredentials.listBindings("cred-1");
+      expect(result).toEqual(["ws-1", "ws-2"]);
+    });
+
+    it("binds to a workspace", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ ok: true }));
+      await client.providerCredentials.bind("cred-1", "ws-1");
+    });
+
+    it("unbinds from a workspace", async () => {
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 204 }));
+      await client.providerCredentials.unbind("cred-1", "ws-1");
+    });
+  });
+
+  describe("adminProviderCredentials (US-62.4)", () => {
+    const credJson = {
+      id: "cred-1",
+      name: "admin-key",
+      kind: "anthropic",
+      slug: "admin-key",
+      createdAt: "2026-07-22T00:00:00Z",
+      updatedAt: "2026-07-22T00:00:00Z",
+    };
+
+    it("lists admin credentials", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse([credJson]));
+      const result = await client.adminProviderCredentials.list();
+      expect(result).toHaveLength(1);
+    });
+
+    it("updates an admin credential", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse(credJson));
+      const result = await client.adminProviderCredentials.update("cred-1", { name: "renamed" });
+      expect(result.id).toBe("cred-1");
+    });
+
+    it("creates an admin credential", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse(credJson, 201));
+      const result = await client.adminProviderCredentials.create({
+        name: "admin-key", kind: "anthropic", slug: "admin-key", apiKey: "sk-...",
+      });
+      expect(result.id).toBe("cred-1");
+    });
+
+    it("gets an admin credential", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse(credJson));
+      const result = await client.adminProviderCredentials.get("cred-1");
+      expect(result.slug).toBe("admin-key");
+    });
+
+    it("deletes an admin credential", async () => {
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 204 }));
+      await client.adminProviderCredentials.delete("cred-1");
+    });
+
+    it("probes models for admin credential", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ models: [{ id: "claude-3" }] }));
+      const result = await client.adminProviderCredentials.probeModels("cred-1");
+      expect(result.models).toHaveLength(1);
+    });
+
+    it("creates auto-apply rule", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ credentialId: "cred-1", targetType: "all", withinPriority: 0 }, 201));
+      await client.adminProviderCredentials.createAutoApply("cred-1", { targetType: "all" });
+    });
+
+    it("lists auto-apply rules", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse([{ credentialId: "cred-1", targetType: "all", withinPriority: 0 }]));
+      const result = await client.adminProviderCredentials.listAutoApply("cred-1");
+      expect(result).toHaveLength(1);
+    });
+
+    it("deletes auto-apply rule", async () => {
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 204 }));
+      await client.adminProviderCredentials.deleteAutoApply("cred-1", "user", "u1");
+    });
+  });
+
+  describe("sessions queue (US-62.6)", () => {
+    it("enqueues a message", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ messageID: "qmsg-1" }, 202));
+      const result = await client.sessions.enqueue("ws-1", "sess-1", "hello");
+      expect(result.messageID).toBe("qmsg-1");
+    });
+
+    it("lists queued messages", async () => {
+      mockFetch.mockResolvedValueOnce(jsonResponse({ messages: [{ id: "qmsg-1", text: "hi", session_id: "s1", workspace_id: "w1", enqueued_at: "2026-01-01T00:00:00Z", retry_count: 0 }] }));
+      const result = await client.sessions.listQueue("ws-1", "sess-1");
+      expect(result.messages[0].id).toBe("qmsg-1");
+    });
+
+    it("dismisses a queued message", async () => {
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 204 }));
+      await client.sessions.dismissQueued("ws-1", "sess-1", "qmsg-1");
+    });
+
+    it("marks session seen", async () => {
+      mockFetch.mockResolvedValueOnce(new Response(null, { status: 204 }));
+      await client.sessions.markSeen("ws-1", "sess-1");
+    });
+  });
 });

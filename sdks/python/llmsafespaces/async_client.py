@@ -22,10 +22,14 @@ from .errors import (
 from .types import (
     APIKey,
     AuthResponse,
+    CreateAgentRoleRequest,
     EnsureSessionResponse,
     MessageResponse,
+    ProviderCredential,
     SecretResponse,
     TerminalTicket,
+    UpdateAgentRoleRequest,
+    UpdateProviderCredentialRequest,
     Workspace,
     WorkspaceListItem,
     WorkspaceListResult,
@@ -58,6 +62,12 @@ class AsyncLLMSafeSpaces:
         self.account = _AsyncAccountAPI(self)
         self.secrets = _AsyncSecretsAPI(self)
         self.terminal = _AsyncTerminalAPI(self)
+        self.user_settings = _AsyncUserSettingsAPI(self)
+        self.provider_credentials = _AsyncProviderCredentialsAPI(self)
+        self.admin_provider_credentials = _AsyncAdminProviderCredentialsAPI(self)
+        self.usage = _AsyncUsageAPI(self)
+        self.input_requests = _AsyncInputRequestsAPI(self)
+        self.probe = _AsyncProbeAPI(self)
         self.prompts = _AsyncPromptsAPI(self)
         self.agent_roles = _AsyncAgentRolesAPI(self)
 
@@ -277,6 +287,39 @@ class _AsyncSessionsAPI:
             json={"message": message},
         )
 
+    async def delete(self, workspace_id: str, session_id: str) -> None:
+        await self._c._request(
+            "DELETE",
+            f"/workspaces/{workspace_id}/sessions/{session_id}",
+        )
+
+    async def enqueue(self, workspace_id: str, session_id: str, text: str) -> str:
+        resp = await self._c._request(
+            "POST",
+            f"/workspaces/{workspace_id}/sessions/{session_id}/queue",
+            json={"text": text},
+        )
+        return resp["messageID"]
+
+    async def list_queue(self, workspace_id: str, session_id: str) -> list[dict[str, Any]]:
+        resp = await self._c._request(
+            "GET",
+            f"/workspaces/{workspace_id}/sessions/{session_id}/queue",
+        )
+        return resp.get("messages", [])
+
+    async def dismiss_queued(self, workspace_id: str, session_id: str, message_id: str) -> None:
+        await self._c._request(
+            "DELETE",
+            f"/workspaces/{workspace_id}/sessions/{session_id}/queue/{message_id}",
+        )
+
+    async def mark_seen(self, workspace_id: str, session_id: str) -> None:
+        await self._c._request(
+            "PUT",
+            f"/workspaces/{workspace_id}/sessions/{session_id}/seen",
+        )
+
 
 class _AsyncAuthAPI:
     def __init__(self, client: AsyncLLMSafeSpaces):
@@ -294,6 +337,35 @@ class _AsyncAuthAPI:
 
     async def delete_api_key(self, key_id: str) -> None:
         await self._c._request("DELETE", f"/auth/api-keys/{key_id}")
+
+    async def register(self, username: str, email: str, password: str) -> dict[str, Any]:
+        return await self._c._request(
+            "POST", "/auth/register",
+            json={"username": username, "email": email, "password": password},
+        )
+
+    async def logout(self) -> None:
+        await self._c._request("POST", "/auth/logout")
+
+    async def request_password_reset(self, email: str) -> None:
+        await self._c._request("POST", "/auth/password-reset/request", json={"email": email})
+
+    async def confirm_password_reset(self, token: str, new_password: str) -> None:
+        await self._c._request("POST", "/auth/password-reset/confirm",
+                               json={"token": token, "newPassword": new_password})
+
+    async def verify_email(self, token: str) -> None:
+        await self._c._request("POST", "/auth/verify-email", json={"token": token})
+
+    async def resend_verification(self, email: str) -> None:
+        await self._c._request("POST", "/auth/verify-email/resend", json={"email": email})
+
+    async def lookup(self, email: str) -> str:
+        resp = await self._c._request("POST", "/auth/lookup", json={"email": email})
+        return resp.get("redirectUrl", "")
+
+    async def unlock_dek(self, password: str) -> None:
+        await self._c._request("POST", "/auth/unlock-dek", json={"password": password})
 
 
 class _AsyncAccountAPI:
@@ -390,6 +462,160 @@ def _extract_text(raw: Any) -> str:
     )
 
 
+class _AsyncUserSettingsAPI:
+    def __init__(self, client: AsyncLLMSafeSpaces):
+        self._c = client
+
+    async def get(self) -> dict[str, Any]:
+        return await self._c._request("GET", "/users/me/settings")
+
+    async def get_schema(self) -> dict[str, Any]:
+        return await self._c._request("GET", "/users/me/settings/schema")
+
+    async def set(self, key: str, value: Any) -> dict[str, Any]:
+        return await self._c._request(
+            "PUT", f"/users/me/settings/{key}", json={"value": value}
+        )
+
+
+class _AsyncProviderCredentialsAPI:
+    def __init__(self, client: AsyncLLMSafeSpaces):
+        self._c = client
+
+    async def create(
+        self,
+        *,
+        name: str,
+        kind: str,
+        slug: str,
+        api_key: str,
+        base_url: str = "",
+    ) -> ProviderCredential:
+        body: dict[str, Any] = {
+            "name": name,
+            "kind": kind,
+            "slug": slug,
+            "apiKey": api_key,
+        }
+        if base_url:
+            body["baseURL"] = base_url
+        data = await self._c._request("POST", "/provider-credentials", json=body)
+        if isinstance(data, dict) and "credential" in data:
+            return ProviderCredential(**data["credential"])
+        return ProviderCredential(**data)
+
+    async def list(self) -> list[ProviderCredential]:
+        data = await self._c._request("GET", "/provider-credentials")
+        return [ProviderCredential(**c) for c in data]
+
+    async def get(self, cred_id: str) -> ProviderCredential:
+        return ProviderCredential(
+            **await self._c._request("GET", f"/provider-credentials/{cred_id}")
+        )
+
+    async def delete(self, cred_id: str) -> None:
+        await self._c._request("DELETE", f"/provider-credentials/{cred_id}")
+
+    async def probe_models(self, cred_id: str) -> dict[str, Any]:
+        return await self._c._request(
+            "GET", f"/provider-credentials/{cred_id}/models"
+        )
+
+    async def list_bindings(self, cred_id: str) -> list[str]:
+        data = await self._c._request(
+            "GET", f"/provider-credentials/{cred_id}/bindings"
+        )
+        return data.get("workspaceIds", [])
+
+    async def bind(self, cred_id: str, workspace_id: str) -> dict[str, Any]:
+        return await self._c._request(
+            "POST", f"/provider-credentials/{cred_id}/bind/{workspace_id}"
+        )
+
+    async def unbind(self, cred_id: str, workspace_id: str) -> None:
+        await self._c._request(
+            "DELETE", f"/provider-credentials/{cred_id}/bind/{workspace_id}"
+        )
+
+
+class _AsyncAdminProviderCredentialsAPI:
+    def __init__(self, client: AsyncLLMSafeSpaces):
+        self._c = client
+
+    async def create(
+        self,
+        *,
+        name: str,
+        kind: str,
+        slug: str,
+        api_key: str,
+        base_url: str = "",
+    ) -> ProviderCredential:
+        body: dict[str, Any] = {
+            "name": name,
+            "kind": kind,
+            "slug": slug,
+            "apiKey": api_key,
+        }
+        if base_url:
+            body["baseURL"] = base_url
+        return ProviderCredential(
+            **await self._c._request("POST", "/admin/provider-credentials", json=body)
+        )
+
+    async def list(self) -> list[ProviderCredential]:
+        data = await self._c._request("GET", "/admin/provider-credentials")
+        return [ProviderCredential(**c) for c in data]
+
+    async def get(self, cred_id: str) -> ProviderCredential:
+        return ProviderCredential(
+            **await self._c._request("GET", f"/admin/provider-credentials/{cred_id}")
+        )
+
+    async def update(
+        self, cred_id: str, req: UpdateProviderCredentialRequest
+    ) -> ProviderCredential:
+        body = {k: v for k, v in {
+            "name": req.name, "apiKey": req.apiKey, "baseURL": req.baseURL,
+            "modelAllowlist": req.modelAllowlist, "modelContextLimits": req.modelContextLimits,
+            "modelOutputLimits": req.modelOutputLimits,
+        }.items() if v is not None}
+        return ProviderCredential(
+            **await self._c._request("PUT", f"/admin/provider-credentials/{cred_id}", json=body)
+        )
+
+    async def delete(self, cred_id: str) -> None:
+        await self._c._request("DELETE", f"/admin/provider-credentials/{cred_id}")
+
+    async def probe_models(self, cred_id: str) -> dict[str, Any]:
+        return await self._c._request(
+            "GET", f"/admin/provider-credentials/{cred_id}/models"
+        )
+
+    async def create_auto_apply(
+        self, cred_id: str, *, target_type: str, target_id: str = "", within_priority: int = 0
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"targetType": target_type, "withinPriority": within_priority}
+        if target_id:
+            body["targetId"] = target_id
+        return await self._c._request(
+            "POST", f"/admin/provider-credentials/{cred_id}/auto-apply", json=body
+        )
+
+    async def list_auto_apply(self, cred_id: str) -> list[dict[str, Any]]:
+        return await self._c._request(
+            "GET", f"/admin/provider-credentials/{cred_id}/auto-apply"
+        )
+
+    async def delete_auto_apply(
+        self, cred_id: str, target_type: str, target_id: str
+    ) -> None:
+        await self._c._request(
+            "DELETE",
+            f"/admin/provider-credentials/{cred_id}/auto-apply/{target_type}/{target_id}",
+        )
+
+
 class _AsyncPromptsAPI:
     def __init__(self, client: AsyncLLMSafeSpaces):
         self._c = client
@@ -426,30 +652,34 @@ class _AsyncAgentRolesAPI:
         data = await self._c._request("GET", "/admin/agent-roles")
         return data if isinstance(data, list) else data.get("items", [])
 
-    async def create_platform(self, **kwargs: Any) -> dict[str, Any]:
-        return await self._c._request("POST", "/admin/agent-roles", json=kwargs)
+    async def create_platform(self, req: CreateAgentRoleRequest) -> dict[str, Any]:
+        return await self._c._request("POST", "/admin/agent-roles", json=req.__dict__)
 
     async def get_platform(self, role_id: str) -> dict[str, Any]:
         return await self._c._request("GET", f"/admin/agent-roles/{role_id}")
 
-    async def update_platform(self, role_id: str, **kwargs: Any) -> dict[str, Any]:
-        return await self._c._request("PUT", f"/admin/agent-roles/{role_id}", json=kwargs)
+    async def update_platform(self, role_id: str, req: UpdateAgentRoleRequest) -> dict[str, Any]:
+        body = {k: v for k, v in req.__dict__.items() if v is not None}
+        return await self._c._request("PUT", f"/admin/agent-roles/{role_id}", json=body)
 
     async def delete_platform(self, role_id: str) -> None:
         await self._c._request("DELETE", f"/admin/agent-roles/{role_id}")
+
+    # Org roles
 
     async def list_org(self, org_id: str) -> list[dict[str, Any]]:
         data = await self._c._request("GET", f"/orgs/{org_id}/agent-roles")
         return data if isinstance(data, list) else data.get("items", [])
 
-    async def create_org(self, org_id: str, **kwargs: Any) -> dict[str, Any]:
-        return await self._c._request("POST", f"/orgs/{org_id}/agent-roles", json=kwargs)
+    async def create_org(self, org_id: str, req: CreateAgentRoleRequest) -> dict[str, Any]:
+        return await self._c._request("POST", f"/orgs/{org_id}/agent-roles", json=req.__dict__)
 
     async def get_org(self, org_id: str, role_id: str) -> dict[str, Any]:
         return await self._c._request("GET", f"/orgs/{org_id}/agent-roles/{role_id}")
 
-    async def update_org(self, org_id: str, role_id: str, **kwargs: Any) -> dict[str, Any]:
-        return await self._c._request("PUT", f"/orgs/{org_id}/agent-roles/{role_id}", json=kwargs)
+    async def update_org(self, org_id: str, role_id: str, req: UpdateAgentRoleRequest) -> dict[str, Any]:
+        body = {k: v for k, v in req.__dict__.items() if v is not None}
+        return await self._c._request("PUT", f"/orgs/{org_id}/agent-roles/{role_id}", json=body)
 
     async def delete_org(self, org_id: str, role_id: str) -> None:
         await self._c._request("DELETE", f"/orgs/{org_id}/agent-roles/{role_id}")
@@ -460,5 +690,51 @@ class _AsyncAgentRolesAPI:
     async def set_workspace_role(self, workspace_id: str, role_id: str) -> None:
         await self._c._request("PUT", f"/workspaces/{workspace_id}/agent-role", json={"roleId": role_id})
 
+    async def clear_workspace_role(self, workspace_id: str) -> None:
+        await self._c._request("DELETE", f"/workspaces/{workspace_id}/agent-role")
+
     async def get_effective_workspace_role(self, workspace_id: str) -> dict[str, Any]:
         return await self._c._request("GET", f"/workspaces/{workspace_id}/effective-agent-role")
+
+
+class _AsyncUsageAPI:
+    def __init__(self, client: AsyncLLMSafeSpaces):
+        self._c = client
+
+    async def get(self) -> dict[str, Any]:
+        return await self._c._request("GET", "/usage")
+
+    async def get_workspace(self, workspace_id: str) -> dict[str, Any]:
+        return await self._c._request("GET", f"/usage/workspaces/{workspace_id}")
+
+    async def get_quota(self) -> dict[str, Any]:
+        return await self._c._request("GET", "/usage/quota")
+
+
+class _AsyncInputRequestsAPI:
+    def __init__(self, client: AsyncLLMSafeSpaces):
+        self._c = client
+
+    async def list_questions(self, workspace_id: str) -> list[dict[str, Any]]:
+        return await self._c._request("GET", f"/workspaces/{workspace_id}/question")
+
+    async def reply_question(self, workspace_id: str, request_id: str, body: dict[str, Any]) -> None:
+        await self._c._request("POST", f"/workspaces/{workspace_id}/question/{request_id}/reply", json=body)
+
+    async def reject_question(self, workspace_id: str, request_id: str) -> None:
+        await self._c._request("POST", f"/workspaces/{workspace_id}/question/{request_id}/reject")
+
+    async def list_permissions(self, workspace_id: str) -> list[dict[str, Any]]:
+        return await self._c._request("GET", f"/workspaces/{workspace_id}/permission")
+
+    async def reply_permission(self, workspace_id: str, request_id: str, body: dict[str, Any]) -> None:
+        await self._c._request("POST", f"/workspaces/{workspace_id}/permission/{request_id}/reply", json=body)
+
+
+class _AsyncProbeAPI:
+    def __init__(self, client: AsyncLLMSafeSpaces):
+        self._c = client
+
+    async def probe_models(self, api_key: str, base_url: str) -> dict[str, Any]:
+        return await self._c._request("POST", "/probe-models",
+                                      json={"apiKey": api_key, "baseURL": base_url})
