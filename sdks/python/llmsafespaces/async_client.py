@@ -24,6 +24,7 @@ from .types import (
     AuthResponse,
     EnsureSessionResponse,
     MessageResponse,
+    ProviderCredential,
     SecretResponse,
     TerminalTicket,
     Workspace,
@@ -58,6 +59,9 @@ class AsyncLLMSafeSpaces:
         self.account = _AsyncAccountAPI(self)
         self.secrets = _AsyncSecretsAPI(self)
         self.terminal = _AsyncTerminalAPI(self)
+        self.user_settings = _AsyncUserSettingsAPI(self)
+        self.provider_credentials = _AsyncProviderCredentialsAPI(self)
+        self.admin_provider_credentials = _AsyncAdminProviderCredentialsAPI(self)
         self.prompts = _AsyncPromptsAPI(self)
         self.agent_roles = _AsyncAgentRolesAPI(self)
 
@@ -277,6 +281,12 @@ class _AsyncSessionsAPI:
             json={"message": message},
         )
 
+    async def delete(self, workspace_id: str, session_id: str) -> None:
+        await self._c._request(
+            "DELETE",
+            f"/workspaces/{workspace_id}/sessions/{session_id}",
+        )
+
 
 class _AsyncAuthAPI:
     def __init__(self, client: AsyncLLMSafeSpaces):
@@ -388,6 +398,153 @@ def _extract_text(raw: Any) -> str:
         for p in parts
         if isinstance(p, dict) and p.get("type") == "text"
     )
+
+
+class _AsyncUserSettingsAPI:
+    def __init__(self, client: AsyncLLMSafeSpaces):
+        self._c = client
+
+    async def get(self) -> dict[str, Any]:
+        return await self._c._request("GET", "/users/me/settings")
+
+    async def get_schema(self) -> dict[str, Any]:
+        return await self._c._request("GET", "/users/me/settings/schema")
+
+    async def set(self, key: str, value: Any) -> dict[str, Any]:
+        return await self._c._request(
+            "PUT", f"/users/me/settings/{key}", json={"value": value}
+        )
+
+
+class _AsyncProviderCredentialsAPI:
+    def __init__(self, client: AsyncLLMSafeSpaces):
+        self._c = client
+
+    async def create(
+        self,
+        *,
+        name: str,
+        kind: str,
+        slug: str,
+        api_key: str,
+        base_url: str = "",
+    ) -> ProviderCredential:
+        body: dict[str, Any] = {
+            "name": name,
+            "kind": kind,
+            "slug": slug,
+            "apiKey": api_key,
+        }
+        if base_url:
+            body["baseURL"] = base_url
+        return ProviderCredential(
+            **await self._c._request("POST", "/provider-credentials", json=body)
+        )
+
+    async def list(self) -> list[ProviderCredential]:
+        data = await self._c._request("GET", "/provider-credentials")
+        return [ProviderCredential(**c) for c in data]
+
+    async def get(self, cred_id: str) -> ProviderCredential:
+        return ProviderCredential(
+            **await self._c._request("GET", f"/provider-credentials/{cred_id}")
+        )
+
+    async def delete(self, cred_id: str) -> None:
+        await self._c._request("DELETE", f"/provider-credentials/{cred_id}")
+
+    async def probe_models(self, cred_id: str) -> dict[str, Any]:
+        return await self._c._request(
+            "GET", f"/provider-credentials/{cred_id}/models"
+        )
+
+    async def list_bindings(self, cred_id: str) -> list[str]:
+        return await self._c._request(
+            "GET", f"/provider-credentials/{cred_id}/bindings"
+        )
+
+    async def bind(self, cred_id: str, workspace_id: str) -> dict[str, Any]:
+        return await self._c._request(
+            "POST", f"/provider-credentials/{cred_id}/bind/{workspace_id}"
+        )
+
+    async def unbind(self, cred_id: str, workspace_id: str) -> None:
+        await self._c._request(
+            "DELETE", f"/provider-credentials/{cred_id}/bind/{workspace_id}"
+        )
+
+
+class _AsyncAdminProviderCredentialsAPI:
+    def __init__(self, client: AsyncLLMSafeSpaces):
+        self._c = client
+
+    async def create(
+        self,
+        *,
+        name: str,
+        kind: str,
+        slug: str,
+        api_key: str,
+        base_url: str = "",
+    ) -> ProviderCredential:
+        body: dict[str, Any] = {
+            "name": name,
+            "kind": kind,
+            "slug": slug,
+            "apiKey": api_key,
+        }
+        if base_url:
+            body["baseURL"] = base_url
+        return ProviderCredential(
+            **await self._c._request("POST", "/admin/provider-credentials", json=body)
+        )
+
+    async def list(self) -> list[ProviderCredential]:
+        data = await self._c._request("GET", "/admin/provider-credentials")
+        return [ProviderCredential(**c) for c in data]
+
+    async def get(self, cred_id: str) -> ProviderCredential:
+        return ProviderCredential(
+            **await self._c._request("GET", f"/admin/provider-credentials/{cred_id}")
+        )
+
+    async def update(self, cred_id: str, **kwargs: Any) -> ProviderCredential:
+        return ProviderCredential(
+            **await self._c._request(
+                "PUT", f"/admin/provider-credentials/{cred_id}", json=kwargs
+            )
+        )
+
+    async def delete(self, cred_id: str) -> None:
+        await self._c._request("DELETE", f"/admin/provider-credentials/{cred_id}")
+
+    async def probe_models(self, cred_id: str) -> dict[str, Any]:
+        return await self._c._request(
+            "GET", f"/admin/provider-credentials/{cred_id}/models"
+        )
+
+    async def create_auto_apply(
+        self, cred_id: str, *, target_type: str, target_id: str = ""
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"targetType": target_type}
+        if target_id:
+            body["targetId"] = target_id
+        return await self._c._request(
+            "POST", f"/admin/provider-credentials/{cred_id}/auto-apply", json=body
+        )
+
+    async def list_auto_apply(self, cred_id: str) -> list[dict[str, Any]]:
+        return await self._c._request(
+            "GET", f"/admin/provider-credentials/{cred_id}/auto-apply"
+        )
+
+    async def delete_auto_apply(
+        self, cred_id: str, target_type: str, target_id: str
+    ) -> None:
+        await self._c._request(
+            "DELETE",
+            f"/admin/provider-credentials/{cred_id}/auto-apply/{target_type}/{target_id}",
+        )
 
 
 class _AsyncPromptsAPI:

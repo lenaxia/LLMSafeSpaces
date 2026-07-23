@@ -202,3 +202,101 @@ async def test_async_401_persistent_after_relogin_does_not_loop():
             await c.workspaces.list()
     # Exactly 2 login calls: initial + one retry. NOT unbounded.
     assert login.call_count == 2
+
+
+# --- US-62.3: Async parity tests ---
+
+
+@respx.mock
+async def test_async_session_delete():
+    respx.delete(f"{BASE}/api/v1/workspaces/ws-1/sessions/sess-1").respond(
+        status_code=200
+    )
+    async with AsyncLLMSafeSpaces(BASE, api_key="lsp_test") as c:
+        await c.sessions.delete("ws-1", "sess-1")
+
+
+@respx.mock
+async def test_async_user_settings_get():
+    respx.get(f"{BASE}/api/v1/users/me/settings").respond(
+        json={"settings": {"theme": "dark"}, "schemaVersion": 1}
+    )
+    async with AsyncLLMSafeSpaces(BASE, api_key="lsp_test") as c:
+        result = await c.user_settings.get()
+    assert result["settings"]["theme"] == "dark"
+
+
+@respx.mock
+async def test_async_user_settings_set():
+    respx.put(f"{BASE}/api/v1/users/me/settings/theme").respond(
+        json={"key": "theme", "value": "dark"}
+    )
+    async with AsyncLLMSafeSpaces(BASE, api_key="lsp_test") as c:
+        result = await c.user_settings.set("theme", "dark")
+    assert result["key"] == "theme"
+
+
+def _cred_json(cred_id: str = "cred-1") -> dict:
+    return {
+        "id": cred_id,
+        "name": "my-key",
+        "kind": "openai",
+        "slug": "my-key",
+        "baseURL": "https://api.openai.com/v1",
+        "modelAllowlist": [],
+        "modelContextLimits": {},
+        "modelOutputLimits": {},
+        "createdAt": "2026-07-22T00:00:00Z",
+        "updatedAt": "2026-07-22T00:00:00Z",
+    }
+
+
+@respx.mock
+async def test_async_provider_credentials_create():
+    respx.post(f"{BASE}/api/v1/provider-credentials").respond(
+        status_code=201, json=_cred_json()
+    )
+    async with AsyncLLMSafeSpaces(BASE, api_key="lsp_test") as c:
+        result = await c.provider_credentials.create(
+            name="my-key", kind="openai", slug="my-key", api_key="sk-..."
+        )
+    assert result.id == "cred-1"
+
+
+@respx.mock
+async def test_async_provider_credentials_list():
+    respx.get(f"{BASE}/api/v1/provider-credentials").respond(
+        json=[_cred_json("c1"), _cred_json("c2")]
+    )
+    async with AsyncLLMSafeSpaces(BASE, api_key="lsp_test") as c:
+        result = await c.provider_credentials.list()
+    assert len(result) == 2
+
+
+@respx.mock
+async def test_async_provider_credentials_delete():
+    respx.delete(f"{BASE}/api/v1/provider-credentials/cred-1").respond(
+        status_code=204
+    )
+    async with AsyncLLMSafeSpaces(BASE, api_key="lsp_test") as c:
+        await c.provider_credentials.delete("cred-1")
+
+
+@respx.mock
+async def test_async_admin_provider_credentials_list():
+    respx.get(f"{BASE}/api/v1/admin/provider-credentials").respond(
+        json=[_cred_json()]
+    )
+    async with AsyncLLMSafeSpaces(BASE, api_key="lsp_test") as c:
+        result = await c.admin_provider_credentials.list()
+    assert len(result) == 1
+
+
+@respx.mock
+async def test_async_admin_provider_credentials_update():
+    respx.put(f"{BASE}/api/v1/admin/provider-credentials/cred-1").respond(
+        json=_cred_json()
+    )
+    async with AsyncLLMSafeSpaces(BASE, api_key="lsp_test") as c:
+        result = await c.admin_provider_credentials.update("cred-1", name="renamed")
+    assert result.id == "cred-1"
