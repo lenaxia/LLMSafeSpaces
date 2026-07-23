@@ -1,6 +1,6 @@
 {
   "name": "@llmsafespaces/sdk",
-  "version": "1.0.0",
+  "version": "0.4.5",
   "description": "TypeScript SDK for LLMSafeSpaces API",
   "type": "module",
   "main": "./dist/index.cjs",
