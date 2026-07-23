@@ -57,6 +57,9 @@ class LLMSafeSpaces:
         self.user_settings = _UserSettingsAPI(self)
         self.provider_credentials = _ProviderCredentialsAPI(self)
         self.admin_provider_credentials = _AdminProviderCredentialsAPI(self)
+        self.usage = _UsageAPI(self)
+        self.input_requests = _InputRequestsAPI(self)
+        self.probe = _ProbeAPI(self)
         self.prompts = _PromptsAPI(self)
         self.agent_roles = _AgentRolesAPI(self)
 
@@ -206,6 +209,9 @@ class _WorkspacesAPI:
             "PUT", f"/workspaces/{workspace_id}/model", json={"model": model}
         )
 
+    def reload_agent(self, workspace_id: str) -> None:
+        self._c._request("POST", f"/workspaces/{workspace_id}/agent/reload")
+
     def get_models(self, workspace_id: str) -> dict[str, Any]:
         return self._c._request("GET", f"/workspaces/{workspace_id}/models")
 
@@ -326,6 +332,43 @@ class _AuthAPI:
 
     def delete_api_key(self, key_id: str) -> None:
         self._c._request("DELETE", f"/auth/api-keys/{key_id}")
+
+    def register(self, username: str, email: str, password: str) -> dict[str, Any]:
+        return self._c._request(
+            "POST",
+            "/auth/register",
+            json={"username": username, "email": email, "password": password},
+        )
+
+    def logout(self) -> None:
+        self._c._request("POST", "/auth/logout")
+
+    def request_password_reset(self, email: str) -> None:
+        self._c._request(
+            "POST", "/auth/password-reset/request", json={"email": email}
+        )
+
+    def confirm_password_reset(self, token: str, new_password: str) -> None:
+        self._c._request(
+            "POST",
+            "/auth/password-reset/confirm",
+            json={"token": token, "newPassword": new_password},
+        )
+
+    def verify_email(self, token: str) -> None:
+        self._c._request("POST", "/auth/verify-email", json={"token": token})
+
+    def resend_verification(self, email: str) -> None:
+        self._c._request(
+            "POST", "/auth/verify-email/resend", json={"email": email}
+        )
+
+    def lookup(self, email: str) -> str:
+        resp = self._c._request("POST", "/auth/lookup", json={"email": email})
+        return resp.get("redirectUrl", "")
+
+    def unlock_dek(self, password: str) -> None:
+        self._c._request("POST", "/auth/unlock-dek", json={"password": password})
 
 
 class _AccountAPI:
@@ -647,3 +690,63 @@ class _AgentRolesAPI:
 
     def get_effective_workspace_role(self, workspace_id: str) -> dict[str, Any]:
         return self._c._request("GET", f"/workspaces/{workspace_id}/effective-agent-role")
+
+
+class _UsageAPI:
+    def __init__(self, client: LLMSafeSpaces):
+        self._c = client
+
+    def get(self) -> dict[str, Any]:
+        return self._c._request("GET", "/usage")
+
+    def get_workspace(self, workspace_id: str) -> dict[str, Any]:
+        return self._c._request("GET", f"/usage/workspaces/{workspace_id}")
+
+    def get_quota(self) -> dict[str, Any]:
+        return self._c._request("GET", "/usage/quota")
+
+
+class _InputRequestsAPI:
+    def __init__(self, client: LLMSafeSpaces):
+        self._c = client
+
+    def list_questions(self, workspace_id: str) -> list[dict[str, Any]]:
+        return self._c._request("GET", f"/workspaces/{workspace_id}/question")
+
+    def reply_question(
+        self, workspace_id: str, request_id: str, body: dict[str, Any]
+    ) -> None:
+        self._c._request(
+            "POST",
+            f"/workspaces/{workspace_id}/question/{request_id}/reply",
+            json=body,
+        )
+
+    def reject_question(self, workspace_id: str, request_id: str) -> None:
+        self._c._request(
+            "POST", f"/workspaces/{workspace_id}/question/{request_id}/reject"
+        )
+
+    def list_permissions(self, workspace_id: str) -> list[dict[str, Any]]:
+        return self._c._request("GET", f"/workspaces/{workspace_id}/permission")
+
+    def reply_permission(
+        self, workspace_id: str, request_id: str, body: dict[str, Any]
+    ) -> None:
+        self._c._request(
+            "POST",
+            f"/workspaces/{workspace_id}/permission/{request_id}/reply",
+            json=body,
+        )
+
+
+class _ProbeAPI:
+    def __init__(self, client: LLMSafeSpaces):
+        self._c = client
+
+    def probe_models(self, api_key: str, base_url: str) -> dict[str, Any]:
+        return self._c._request(
+            "POST",
+            "/probe-models",
+            json={"apiKey": api_key, "baseURL": base_url},
+        )

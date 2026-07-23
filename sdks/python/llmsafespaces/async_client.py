@@ -62,6 +62,9 @@ class AsyncLLMSafeSpaces:
         self.user_settings = _AsyncUserSettingsAPI(self)
         self.provider_credentials = _AsyncProviderCredentialsAPI(self)
         self.admin_provider_credentials = _AsyncAdminProviderCredentialsAPI(self)
+        self.usage = _AsyncUsageAPI(self)
+        self.input_requests = _AsyncInputRequestsAPI(self)
+        self.probe = _AsyncProbeAPI(self)
         self.prompts = _AsyncPromptsAPI(self)
         self.agent_roles = _AsyncAgentRolesAPI(self)
 
@@ -331,6 +334,35 @@ class _AsyncAuthAPI:
 
     async def delete_api_key(self, key_id: str) -> None:
         await self._c._request("DELETE", f"/auth/api-keys/{key_id}")
+
+    async def register(self, username: str, email: str, password: str) -> dict[str, Any]:
+        return await self._c._request(
+            "POST", "/auth/register",
+            json={"username": username, "email": email, "password": password},
+        )
+
+    async def logout(self) -> None:
+        await self._c._request("POST", "/auth/logout")
+
+    async def request_password_reset(self, email: str) -> None:
+        await self._c._request("POST", "/auth/password-reset/request", json={"email": email})
+
+    async def confirm_password_reset(self, token: str, new_password: str) -> None:
+        await self._c._request("POST", "/auth/password-reset/confirm",
+                               json={"token": token, "newPassword": new_password})
+
+    async def verify_email(self, token: str) -> None:
+        await self._c._request("POST", "/auth/verify-email", json={"token": token})
+
+    async def resend_verification(self, email: str) -> None:
+        await self._c._request("POST", "/auth/verify-email/resend", json={"email": email})
+
+    async def lookup(self, email: str) -> str:
+        resp = await self._c._request("POST", "/auth/lookup", json={"email": email})
+        return resp.get("redirectUrl", "")
+
+    async def unlock_dek(self, password: str) -> None:
+        await self._c._request("POST", "/auth/unlock-dek", json={"password": password})
 
 
 class _AsyncAccountAPI:
@@ -648,3 +680,46 @@ class _AsyncAgentRolesAPI:
 
     async def get_effective_workspace_role(self, workspace_id: str) -> dict[str, Any]:
         return await self._c._request("GET", f"/workspaces/{workspace_id}/effective-agent-role")
+
+
+class _AsyncUsageAPI:
+    def __init__(self, client: AsyncLLMSafeSpaces):
+        self._c = client
+
+    async def get(self) -> dict[str, Any]:
+        return await self._c._request("GET", "/usage")
+
+    async def get_workspace(self, workspace_id: str) -> dict[str, Any]:
+        return await self._c._request("GET", f"/usage/workspaces/{workspace_id}")
+
+    async def get_quota(self) -> dict[str, Any]:
+        return await self._c._request("GET", "/usage/quota")
+
+
+class _AsyncInputRequestsAPI:
+    def __init__(self, client: AsyncLLMSafeSpaces):
+        self._c = client
+
+    async def list_questions(self, workspace_id: str) -> list[dict[str, Any]]:
+        return await self._c._request("GET", f"/workspaces/{workspace_id}/question")
+
+    async def reply_question(self, workspace_id: str, request_id: str, body: dict[str, Any]) -> None:
+        await self._c._request("POST", f"/workspaces/{workspace_id}/question/{request_id}/reply", json=body)
+
+    async def reject_question(self, workspace_id: str, request_id: str) -> None:
+        await self._c._request("POST", f"/workspaces/{workspace_id}/question/{request_id}/reject")
+
+    async def list_permissions(self, workspace_id: str) -> list[dict[str, Any]]:
+        return await self._c._request("GET", f"/workspaces/{workspace_id}/permission")
+
+    async def reply_permission(self, workspace_id: str, request_id: str, body: dict[str, Any]) -> None:
+        await self._c._request("POST", f"/workspaces/{workspace_id}/permission/{request_id}/reply", json=body)
+
+
+class _AsyncProbeAPI:
+    def __init__(self, client: AsyncLLMSafeSpaces):
+        self._c = client
+
+    async def probe_models(self, api_key: str, base_url: str) -> dict[str, Any]:
+        return await self._c._request("POST", "/probe-models",
+                                      json={"apiKey": api_key, "baseURL": base_url})

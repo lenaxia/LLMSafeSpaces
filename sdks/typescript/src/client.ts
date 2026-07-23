@@ -50,6 +50,9 @@ export class LLMSafeSpaces {
   public readonly account: AccountAPI;
   public readonly providerCredentials: ProviderCredentialsAPI;
   public readonly adminProviderCredentials: AdminProviderCredentialsAPI;
+  public readonly usage: UsageAPI;
+  public readonly inputRequests: InputRequestsAPI;
+  public readonly probe: ProbeAPI;
   public readonly prompts: PromptsAPI;
   public readonly agentRoles: AgentRolesAPI;
 
@@ -69,6 +72,9 @@ export class LLMSafeSpaces {
     this.account = new AccountAPI(this);
     this.providerCredentials = new ProviderCredentialsAPI(this);
     this.adminProviderCredentials = new AdminProviderCredentialsAPI(this);
+    this.usage = new UsageAPI(this);
+    this.inputRequests = new InputRequestsAPI(this);
+    this.probe = new ProbeAPI(this);
     this.prompts = new PromptsAPI(this);
     this.agentRoles = new AgentRolesAPI(this);
   }
@@ -420,6 +426,27 @@ class AdminProviderCredentialsAPI {
   deleteAutoApply(id: string, targetType: string, targetId: string) {
     return this.client.request<void>("DELETE", `/admin/provider-credentials/${id}/auto-apply/${targetType}/${targetId}`);
   }
+}
+
+class UsageAPI {
+  constructor(private client: LLMSafeSpaces) {}
+  get() { return this.client.request<Record<string, unknown>>("GET", "/usage"); }
+  getWorkspace(workspaceId: string) { return this.client.request<Record<string, unknown>>("GET", `/usage/workspaces/${workspaceId}`); }
+  getQuota() { return this.client.request<Record<string, unknown>>("GET", "/usage/quota"); }
+}
+
+class InputRequestsAPI {
+  constructor(private client: LLMSafeSpaces) {}
+  listQuestions(workspaceId: string) { return this.client.request<unknown[]>("GET", `/workspaces/${workspaceId}/question`); }
+  replyQuestion(workspaceId: string, requestId: string, body: Record<string, unknown>) { return this.client.request<void>("POST", `/workspaces/${workspaceId}/question/${requestId}/reply`, body); }
+  rejectQuestion(workspaceId: string, requestId: string) { return this.client.request<void>("POST", `/workspaces/${workspaceId}/question/${requestId}/reject`); }
+  listPermissions(workspaceId: string) { return this.client.request<unknown[]>("GET", `/workspaces/${workspaceId}/permission`); }
+  replyPermission(workspaceId: string, requestId: string, body: Record<string, unknown>) { return this.client.request<void>("POST", `/workspaces/${workspaceId}/permission/${requestId}/reply`, body); }
+}
+
+class ProbeAPI {
+  constructor(private client: LLMSafeSpaces) {}
+  probeModels(apiKey: string, baseURL: string) { return this.client.request<{ models: unknown[] }>("POST", "/probe-models", { apiKey, baseURL }); }
 }
 
 /** Extract text content from opencode response parts. */

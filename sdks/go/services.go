@@ -109,6 +109,10 @@ func (s *WorkspacesService) SetModel(ctx context.Context, id, model string) erro
 	return s.c.do(ctx, "PUT", "/workspaces/"+id+"/model", map[string]string{"model": model}, nil)
 }
 
+func (s *WorkspacesService) ReloadAgent(ctx context.Context, id string) error {
+	return s.c.do(ctx, "POST", "/workspaces/"+id+"/agent/reload", nil, nil)
+}
+
 // SessionsService handles session operations.
 type SessionsService struct{ c *Client }
 
@@ -435,5 +439,102 @@ type AdminProviderCredentialsService struct{ c *Client }
 func (s *AdminProviderCredentialsService) List(ctx context.Context) ([]ProviderCredentialResponse, error) {
 	var result []ProviderCredentialResponse
 	err := s.c.do(ctx, "GET", "/admin/provider-credentials", nil, &result)
+	return result, err
+}
+
+// UsageService handles usage and quota queries.
+type UsageService struct{ c *Client }
+
+func (s *UsageService) Get(ctx context.Context) (map[string]any, error) {
+	var result map[string]any
+	err := s.c.do(ctx, "GET", "/usage", nil, &result)
+	return result, err
+}
+
+func (s *UsageService) GetWorkspace(ctx context.Context, workspaceID string) (map[string]any, error) {
+	var result map[string]any
+	err := s.c.do(ctx, "GET", "/workspaces/"+workspaceID+"/usage", nil, &result)
+	return result, err
+}
+
+func (s *UsageService) GetQuota(ctx context.Context) (map[string]any, error) {
+	var result map[string]any
+	err := s.c.do(ctx, "GET", "/usage/quota", nil, &result)
+	return result, err
+}
+
+// InputRequestsService handles agent question and permission requests.
+type InputRequestsService struct{ c *Client }
+
+func (s *InputRequestsService) ListQuestions(ctx context.Context, workspaceID string) ([]map[string]any, error) {
+	var result []map[string]any
+	err := s.c.do(ctx, "GET", "/workspaces/"+workspaceID+"/question", nil, &result)
+	return result, err
+}
+
+func (s *InputRequestsService) ReplyQuestion(ctx context.Context, workspaceID, requestID string, body map[string]any) error {
+	return s.c.do(ctx, "POST", fmt.Sprintf("/workspaces/%s/question/%s/reply", workspaceID, requestID), body, nil)
+}
+
+func (s *InputRequestsService) RejectQuestion(ctx context.Context, workspaceID, requestID string) error {
+	return s.c.do(ctx, "POST", fmt.Sprintf("/workspaces/%s/question/%s/reject", workspaceID, requestID), nil, nil)
+}
+
+func (s *InputRequestsService) ListPermissions(ctx context.Context, workspaceID string) ([]map[string]any, error) {
+	var result []map[string]any
+	err := s.c.do(ctx, "GET", "/workspaces/"+workspaceID+"/permission", nil, &result)
+	return result, err
+}
+
+func (s *InputRequestsService) ReplyPermission(ctx context.Context, workspaceID, requestID string, body map[string]any) error {
+	return s.c.do(ctx, "POST", fmt.Sprintf("/workspaces/%s/permission/%s/reply", workspaceID, requestID), body, nil)
+}
+
+// AuthService additions: auth lifecycle methods.
+func (s *AuthService) Register(ctx context.Context, username, email, password string) (map[string]any, error) {
+	body := map[string]string{"username": username, "email": email, "password": password}
+	var result map[string]any
+	err := s.c.do(ctx, "POST", "/auth/register", body, &result)
+	return result, err
+}
+
+func (s *AuthService) Logout(ctx context.Context) error {
+	return s.c.do(ctx, "POST", "/auth/logout", nil, nil)
+}
+
+func (s *AuthService) RequestPasswordReset(ctx context.Context, email string) error {
+	return s.c.do(ctx, "POST", "/auth/password-reset/request", map[string]string{"email": email}, nil)
+}
+
+func (s *AuthService) ConfirmPasswordReset(ctx context.Context, token, newPassword string) error {
+	return s.c.do(ctx, "POST", "/auth/password-reset/confirm", map[string]string{"token": token, "newPassword": newPassword}, nil)
+}
+
+func (s *AuthService) VerifyEmail(ctx context.Context, token string) error {
+	return s.c.do(ctx, "POST", "/auth/verify-email", map[string]string{"token": token}, nil)
+}
+
+func (s *AuthService) ResendVerification(ctx context.Context, email string) error {
+	return s.c.do(ctx, "POST", "/auth/verify-email/resend", map[string]string{"email": email}, nil)
+}
+
+func (s *AuthService) Lookup(ctx context.Context, email string) (string, error) {
+	var result struct {
+		RedirectURL string `json:"redirectUrl"`
+	}
+	err := s.c.do(ctx, "POST", "/auth/lookup", map[string]string{"email": email}, &result)
+	return result.RedirectURL, err
+}
+
+func (s *AuthService) UnlockDek(ctx context.Context, password string) error {
+	return s.c.do(ctx, "POST", "/auth/unlock-dek", map[string]string{"password": password}, nil)
+}
+
+// ProbeService handles anonymous credential model probing.
+type ProbeService struct{ c *Client }
+
+func (s *ProbeService) ProbeModels(ctx context.Context, apiKey, baseURL string) (map[string]any, error) {
+	var result map[string]any
+	err := s.c.do(ctx, "POST", "/probe-models", map[string]string{"apiKey": apiKey, "baseURL": baseURL}, &result)
 	return result, err
 }
