@@ -123,7 +123,7 @@ To add a runtime the base/language images don't cover (Rust, Ruby, Java, a custo
 
 ```dockerfile
 # runtimes/rust/Dockerfile
-FROM ghcr.io/lenaxia/llmsafespaces/base:0.4.5
+FROM ghcr.io/lenaxia/llmsafespaces/base:0.5.0
 
 # Install Rust via mise (attestation-verified)
 RUN mise install rust@1.78.0 && mise global rust@1.78.0
@@ -269,14 +269,14 @@ For air-gapped clusters or private registries, you need to mirror the images and
 
 ```bash
 # Pull the upstream images
-docker pull ghcr.io/lenaxia/llmsafespaces/base:0.4.5
-docker pull ghcr.io/lenaxia/llmsafespaces/api:0.4.5
-docker pull ghcr.io/lenaxia/llmsafespaces/controller:0.4.5
+docker pull ghcr.io/lenaxia/llmsafespaces/base:0.5.0
+docker pull ghcr.io/lenaxia/llmsafespaces/api:0.5.0
+docker pull ghcr.io/lenaxia/llmsafespaces/controller:0.5.0
 
 # Retag and push to your private registry
-docker tag ghcr.io/lenaxia/llmsafespaces/base:0.4.5 \
-    registry.internal:5000/sandboxes/base:0.4.5
-docker push registry.internal:5000/sandboxes/base:0.4.5
+docker tag ghcr.io/lenaxia/llmsafespaces/base:0.5.0 \
+    registry.internal:5000/sandboxes/base:0.5.0
+docker push registry.internal:5000/sandboxes/base:0.5.0
 # ... repeat for api, controller, frontend
 ```
 
@@ -287,19 +287,19 @@ runtimeEnvironments:
   base:
     image:
       repository: registry.internal:5000/sandboxes/base
-      tag: "0.4.5"
+      tag: "0.5.0"
 
 api:
   image:
     repository: registry.internal:5000/sandboxes/api
-    tag: "0.4.5"
+    tag: "0.5.0"
   imagePullSecrets:
     - name: registry-creds   # Secret with private registry credentials
 
 controller:
   image:
     repository: registry.internal:5000/sandboxes/controller
-    tag: "0.4.5"
+    tag: "0.5.0"
 
 webhooks:
   allowedImageRegistries:
