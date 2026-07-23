@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.4] - 2026-07-23
+
+### Fixed
+
+- **SDK publish pipeline: PyPI packages-dir and TypeScript build path.**
+  The PyPI publish job looked for `dist/` at the workspace root instead of
+  `sdks/python/dist/`. The TypeScript npm job failed because v0.5.2 was
+  manually published without build output. Both fixed.
+
 ## [0.5.2] - 2026-07-23
 
 ### Added
