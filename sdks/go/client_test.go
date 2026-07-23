@@ -720,3 +720,108 @@ func TestClient_ProbeModels(t *testing.T) {
 		t.Fatalf("ProbeModels error: %v", err)
 	}
 }
+
+func TestClient_AuthRequestPasswordReset(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/auth/password-reset/request" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(202)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	err := c.Auth.RequestPasswordReset(context.Background(), "u@x.com")
+	if err != nil {
+		t.Fatalf("RequestPasswordReset error: %v", err)
+	}
+}
+
+func TestClient_AuthConfirmPasswordReset(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/auth/password-reset/confirm" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	err := c.Auth.ConfirmPasswordReset(context.Background(), "token", "newpass123")
+	if err != nil {
+		t.Fatalf("ConfirmPasswordReset error: %v", err)
+	}
+}
+
+func TestClient_AuthVerifyEmail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/auth/verify-email" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	err := c.Auth.VerifyEmail(context.Background(), "token")
+	if err != nil {
+		t.Fatalf("VerifyEmail error: %v", err)
+	}
+}
+
+func TestClient_AuthResendVerification(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/auth/verify-email/resend" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(200)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	err := c.Auth.ResendVerification(context.Background(), "u@x.com")
+	if err != nil {
+		t.Fatalf("ResendVerification error: %v", err)
+	}
+}
+
+func TestClient_ProviderCredentials_Create_207PartialSuccess(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(207)
+		json.NewEncoder(w).Encode(map[string]any{
+			"credential": map[string]any{
+				"id":        "cred-1",
+				"name":      "my-key",
+				"kind":      "openai",
+				"slug":      "my-key",
+				"createdAt": "2026-07-22T00:00:00Z",
+				"updatedAt": "2026-07-22T00:00:00Z",
+			},
+			"bindWarning": "failed to auto-bind",
+		})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	cred, err := c.ProviderCredentials.Create(context.Background(), "my-key", "openai", "my-key", "sk-test", "")
+	if err != nil {
+		t.Fatalf("Create (207) error: %v", err)
+	}
+	if cred.ID != "cred-1" {
+		t.Errorf("got ID %q, want cred-1", cred.ID)
+	}
+}
+
+func TestClient_SessionsEnqueue_EmptyText_400(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "text must not be empty"})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	_, err := c.Sessions.Enqueue(context.Background(), "ws-1", "sess-1", "")
+	if err == nil {
+		t.Fatal("expected error for empty text")
+	}
+}

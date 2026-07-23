@@ -9,6 +9,7 @@ from llmsafespaces import (
     NotFoundError,
     AuthError,
     ConflictError,
+    LLMSafeSpacesError,
     TimeoutError,
     MessageResponse,
     ProviderCredential,
@@ -204,6 +205,46 @@ def test_session_mark_seen():
     )
     client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
     client.sessions.mark_seen("ws-1", "sess-1")
+
+
+@respx.mock
+def test_session_enqueue_empty_text_400():
+    respx.post(f"{BASE}/workspaces/ws-1/sessions/sess-1/queue").respond(
+        status_code=400, json={"error": "text must not be empty"}
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    with pytest.raises(LLMSafeSpacesError):
+        client.sessions.enqueue("ws-1", "sess-1", "")
+
+
+@respx.mock
+def test_session_delete_not_found():
+    respx.delete(f"{BASE}/workspaces/ws-1/sessions/nonexistent").respond(
+        status_code=404, json={"error": "session not found"}
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    with pytest.raises(NotFoundError):
+        client.sessions.delete("ws-1", "nonexistent")
+
+
+@respx.mock
+def test_user_settings_set_not_found():
+    respx.put(f"{BASE}/users/me/settings/nonexistent_key").respond(
+        status_code=404, json={"error": "setting not found"}
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    with pytest.raises(NotFoundError):
+        client.user_settings.set("nonexistent_key", "value")
+
+
+@respx.mock
+def test_admin_provider_credentials_get_not_found():
+    respx.get(f"{BASE}/admin/provider-credentials/nonexistent").respond(
+        status_code=404, json={"error": "credential not found"}
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    with pytest.raises(NotFoundError):
+        client.admin_provider_credentials.get("nonexistent")
 
 
 @respx.mock
