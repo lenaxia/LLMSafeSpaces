@@ -21,7 +21,7 @@ import (
 
 func TestParseImageTag(t *testing.T) {
 	cases := []struct {
-		name string
+		name  string
 		image string
 		want  string
 	}{
