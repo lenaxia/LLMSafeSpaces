@@ -986,6 +986,16 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		log.Warn("failed to construct LlmsafespacesV1 client, relay admin routes will not be available", "error", err.Error())
 	}
 
+	// PlatformInfoHandler reads deployed Deployment image tags for the admin
+	// "Versions" tab. Uses the same clientset as RelayAdminHandler and the
+	// instance settings for the base-runtime default image.
+	platformInfoHandler := handlers.NewPlatformInfoHandler(
+		k8sClient.Clientset(),
+		cfg.Kubernetes.Namespace,
+		instanceSettings,
+	)
+	platformInfoHandler.SetLogger(log)
+
 	router := server.NewRouter(svc, log, proxyHandler, server.RouterConfig{
 		Debug:                           cfg.Logging.Development,
 		LoggingConfig:                   server.DefaultRouterConfig().LoggingConfig,
@@ -1017,6 +1027,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		AgentRoleHandler:                agentRoleHandler,
 		AuditHandler:                    auditHandler,
 		RelayAdminHandler:               relayAdminHandler,
+		PlatformInfoHandler:             platformInfoHandler,
 		AdminSessionHandler:             adminSessionHandler,
 		PlatformAdminHandler:            platformAdminHandler,
 		InternalOrgStatusHandler:        internalOrgStatusHandler,
