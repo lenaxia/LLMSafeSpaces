@@ -7,16 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-23
+
 ### Added
 
-- **SDK refresh, parity, and publishing (Epic 62, #584 #586).** The four
-  hand-written SDKs (Go, Python, TypeScript, Java) are now at typed-surface
-  parity with the current API server. The OpenAPI spec went from 45 → 84
-  paths. Python and TypeScript SDKs publish to PyPI and npm respectively on
-  platform release tags. SDK versions track the platform version. The Java
-  SDK was rewritten from a generic HTTP wrapper into a typed facade with
-  unchecked exception hierarchy. A live contract test validates the
-  `/message` blocking + JSON assumption against a real workspace.
+- **Platform versions display in the admin portal (#587).** A new
+  "Versions" tab (`/admin/versions`) shows the running version of every
+  platform component (API, Controller, Frontend, Relay Router, Base
+  Runtime) in a table. Versions are read from the deployed Deployment
+  image tags via a new `GET /api/v1/admin/platform-info` endpoint
+  (admin-gated) — the most truthful "what is running" signal — rather
+  than each component self-reporting. The handler discovers components
+  by the `app.kubernetes.io/name=llmsafespaces` label (release-name
+  independent) and degrades gracefully (200 with partial data) if the
+  K8s API or settings are temporarily unavailable.
 
 ## [0.4.5] - 2026-07-22
 
@@ -628,7 +632,8 @@ Network hardening sweep + KMS-backed master KEK foundation + Go security bump.
 
 ## [0.1.0] - 2026-07-04
 
-[Unreleased]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.5...HEAD
+[Unreleased]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.5...v0.5.0
 [0.4.5]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.4...v0.4.5
 [0.4.4]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.2...v0.4.3
