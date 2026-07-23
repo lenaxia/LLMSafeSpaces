@@ -231,6 +231,58 @@ describe("useSwipeableSidebar", () => {
     });
   });
 
+  // ── Browser back-nav suppression ──────────────────────────────────────
+  //
+  // The browser's edge-swipe-to-back gesture latches during touchstart /
+  // first-touchmove — by the time touchmove fires, the OS may have already
+  // committed to back navigation. Calling preventDefault() on touchstart
+  // (for edge touches) claims the gesture at the earliest possible moment,
+  // before the browser/OS can engage. Without this, ~50% of edge swipes
+  // trigger browser back instead of opening the sidebar.
+
+  describe("browser back-nav suppression (touchstart preventDefault)", () => {
+    it("prevents default on touchstart at the left edge to claim the gesture early", () => {
+      const { dom } = setupHook(false);
+
+      const startEvent = dispatchTouch(dom.container, "touchstart", [
+        { clientX: 10, clientY: 200 },
+      ]);
+
+      expect(startEvent.defaultPrevented).toBe(true);
+    });
+
+    it("does not prevent default on touchstart outside the edge zone", () => {
+      const { dom } = setupHook(false);
+
+      const startEvent = dispatchTouch(dom.container, "touchstart", [
+        { clientX: 100, clientY: 200 },
+      ]);
+
+      expect(startEvent.defaultPrevented).toBe(false);
+    });
+
+    it("prevents default on touchstart at edge when sidebar is open (to allow swipe-to-close)", () => {
+      const { dom } = setupHook(true);
+
+      const startEvent = dispatchTouch(dom.container, "touchstart", [
+        { clientX: 15, clientY: 200 },
+      ]);
+
+      expect(startEvent.defaultPrevented).toBe(true);
+    });
+
+    it("does not prevent default on multi-touch touchstart", () => {
+      const { dom } = setupHook(false);
+
+      const startEvent = dispatchTouch(dom.container, "touchstart", [
+        { clientX: 5, clientY: 100 },
+        { clientX: 200, clientY: 100 },
+      ]);
+
+      expect(startEvent.defaultPrevented).toBe(false);
+    });
+  });
+
   describe("when disabled", () => {
     it("does not attach touch listeners when enabled is false", () => {
       const setIsOpen = vi.fn();
