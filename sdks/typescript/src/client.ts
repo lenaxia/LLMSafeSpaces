@@ -418,7 +418,7 @@ class AdminProviderCredentialsAPI {
   probeModels(id: string) {
     return this.client.request<{ models: unknown[] }>("GET", `/admin/provider-credentials/${id}/models`);
   }
-  createAutoApply(id: string, req: { targetType: string; targetId?: string }) {
+  createAutoApply(id: string, req: { targetType: string; targetId?: string; withinPriority?: number }) {
     return this.client.request<unknown>("POST", `/admin/provider-credentials/${id}/auto-apply`, req);
   }
   listAutoApply(id: string) {

@@ -593,9 +593,9 @@ class _AsyncAdminProviderCredentialsAPI:
         )
 
     async def create_auto_apply(
-        self, cred_id: str, *, target_type: str, target_id: str = ""
+        self, cred_id: str, *, target_type: str, target_id: str = "", within_priority: int = 0
     ) -> dict[str, Any]:
-        body: dict[str, Any] = {"targetType": target_type}
+        body: dict[str, Any] = {"targetType": target_type, "withinPriority": within_priority}
         if target_id:
             body["targetId"] = target_id
         return await self._c._request(
@@ -689,6 +689,9 @@ class _AsyncAgentRolesAPI:
 
     async def set_workspace_role(self, workspace_id: str, role_id: str) -> None:
         await self._c._request("PUT", f"/workspaces/{workspace_id}/agent-role", json={"roleId": role_id})
+
+    async def clear_workspace_role(self, workspace_id: str) -> None:
+        await self._c._request("DELETE", f"/workspaces/{workspace_id}/agent-role")
 
     async def get_effective_workspace_role(self, workspace_id: str) -> dict[str, Any]:
         return await self._c._request("GET", f"/workspaces/{workspace_id}/effective-agent-role")
