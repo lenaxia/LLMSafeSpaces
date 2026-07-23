@@ -161,3 +161,35 @@ export interface CreateSecretRequest {
   value: string;
   metadata?: unknown;
 }
+
+// --- Provider credentials (US-62.4) ---
+
+export interface ProviderCredential {
+  id: string;
+  name: string;
+  kind: string;
+  slug: string;
+  baseURL?: string;
+  modelAllowlist?: string[];
+  modelContextLimits?: Record<string, number>;
+  modelOutputLimits?: Record<string, number>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateProviderCredentialRequest {
+  name: string;
+  kind: string;
+  slug: string;
+  apiKey: string;
+  baseURL?: string;
+}
+
+export interface UpdateProviderCredentialRequest {
+  name?: string;
+  apiKey?: string;
+  baseURL?: string;
+  modelAllowlist?: string[];
+  modelContextLimits?: Record<string, number>;
+  modelOutputLimits?: Record<string, number>;
+}

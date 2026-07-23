@@ -12,14 +12,17 @@ import type {
   APIKey,
   AuthResponse,
   ClientOptions,
+  CreateProviderCredentialRequest,
   CreateSecretRequest,
   CreateWorkspaceRequest,
   EnsureSessionResponse,
   FetchFn,
   MessageResponse,
+  ProviderCredential,
   SecretResponse,
   SessionListItem,
   TerminalTicket,
+  UpdateProviderCredentialRequest,
   User,
   Workspace,
   WorkspaceListResult,
@@ -45,6 +48,8 @@ export class LLMSafeSpaces {
   public readonly terminal: TerminalAPI;
   public readonly userSettings: UserSettingsAPI;
   public readonly account: AccountAPI;
+  public readonly providerCredentials: ProviderCredentialsAPI;
+  public readonly adminProviderCredentials: AdminProviderCredentialsAPI;
   public readonly prompts: PromptsAPI;
   public readonly agentRoles: AgentRolesAPI;
 
@@ -62,6 +67,8 @@ export class LLMSafeSpaces {
     this.terminal = new TerminalAPI(this);
     this.userSettings = new UserSettingsAPI(this);
     this.account = new AccountAPI(this);
+    this.providerCredentials = new ProviderCredentialsAPI(this);
+    this.adminProviderCredentials = new AdminProviderCredentialsAPI(this);
     this.prompts = new PromptsAPI(this);
     this.agentRoles = new AgentRolesAPI(this);
   }
@@ -248,6 +255,9 @@ class SessionsAPI {
   sendPromptAsync(workspaceId: string, sessionId: string, message: string) {
     return this.client.request<void>("POST", `/workspaces/${workspaceId}/sessions/${sessionId}/prompt`, { message });
   }
+  delete(workspaceId: string, sessionId: string) {
+    return this.client.request<void>("DELETE", `/workspaces/${workspaceId}/sessions/${sessionId}`);
+  }
 }
 
 class AuthAPI {
@@ -331,6 +341,67 @@ class AccountAPI {
   }
   recover(userId: string, recoveryKey: string, newPassword: string) {
     return this.client.request<{ recoveryKey: string }>("POST", "/account/recover", { userId, recoveryKey, newPassword });
+  }
+}
+
+class ProviderCredentialsAPI {
+  constructor(private client: LLMSafeSpaces) {}
+
+  create(req: CreateProviderCredentialRequest) {
+    return this.client.request<ProviderCredential>("POST", "/provider-credentials", req);
+  }
+  list() {
+    return this.client.request<ProviderCredential[]>("GET", "/provider-credentials");
+  }
+  get(id: string) {
+    return this.client.request<ProviderCredential>("GET", `/provider-credentials/${id}`);
+  }
+  delete(id: string) {
+    return this.client.request<void>("DELETE", `/provider-credentials/${id}`);
+  }
+  probeModels(id: string) {
+    return this.client.request<{ models: unknown[] }>("GET", `/provider-credentials/${id}/models`);
+  }
+  listBindings(id: string) {
+    return this.client.request<string[]>("GET", `/provider-credentials/${id}/bindings`);
+  }
+  bind(credId: string, workspaceId: string) {
+    return this.client.request<unknown>("POST", `/provider-credentials/${credId}/bind/${workspaceId}`);
+  }
+  unbind(credId: string, workspaceId: string) {
+    return this.client.request<void>("DELETE", `/provider-credentials/${credId}/bind/${workspaceId}`);
+  }
+}
+
+class AdminProviderCredentialsAPI {
+  constructor(private client: LLMSafeSpaces) {}
+
+  list() {
+    return this.client.request<ProviderCredential[]>("GET", "/admin/provider-credentials");
+  }
+  create(req: CreateProviderCredentialRequest) {
+    return this.client.request<ProviderCredential>("POST", "/admin/provider-credentials", req);
+  }
+  get(id: string) {
+    return this.client.request<ProviderCredential>("GET", `/admin/provider-credentials/${id}`);
+  }
+  update(id: string, req: UpdateProviderCredentialRequest) {
+    return this.client.request<ProviderCredential>("PUT", `/admin/provider-credentials/${id}`, req);
+  }
+  delete(id: string) {
+    return this.client.request<void>("DELETE", `/admin/provider-credentials/${id}`);
+  }
+  probeModels(id: string) {
+    return this.client.request<{ models: unknown[] }>("GET", `/admin/provider-credentials/${id}/models`);
+  }
+  createAutoApply(id: string, req: { targetType: string; targetId?: string }) {
+    return this.client.request<unknown>("POST", `/admin/provider-credentials/${id}/auto-apply`, req);
+  }
+  listAutoApply(id: string) {
+    return this.client.request<unknown[]>("GET", `/admin/provider-credentials/${id}/auto-apply`);
+  }
+  deleteAutoApply(id: string, targetType: string, targetId: string) {
+    return this.client.request<void>("DELETE", `/admin/provider-credentials/${id}/auto-apply/${targetType}/${targetId}`);
   }
 }
 
@@ -422,6 +493,10 @@ class AgentRolesAPI {
 
   setWorkspaceRole(workspaceId: string, roleId: string) {
     return this.client.request<void>("PUT", `/workspaces/${workspaceId}/agent-role`, { roleId });
+  }
+
+  clearWorkspaceRole(workspaceId: string) {
+    return this.client.request<void>("DELETE", `/workspaces/${workspaceId}/agent-role`);
   }
 
   getEffectiveWorkspaceRole(workspaceId: string) {
