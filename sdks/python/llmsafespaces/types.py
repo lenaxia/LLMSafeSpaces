@@ -102,9 +102,3 @@ class ProviderCredential:
     modelAllowlist: list[str] | None = None
     modelContextLimits: dict[str, int] | None = None
     modelOutputLimits: dict[str, int] | None = None
-
-
-@dataclass
-class UserSettings:
-    settings: dict[str, Any]
-    schemaVersion: int

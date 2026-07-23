@@ -20,7 +20,6 @@ from .types import (
     ProviderCredential,
     SecretResponse,
     TerminalTicket,
-    UserSettings,
     Workspace,
     WorkspaceListItem,
     WorkspaceListResult,
@@ -50,6 +49,5 @@ __all__ = [
     "TerminalTicket",
     "SecretResponse",
     "ProviderCredential",
-    "UserSettings",
     "__version__",
 ]

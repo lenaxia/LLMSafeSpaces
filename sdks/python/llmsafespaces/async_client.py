@@ -464,9 +464,10 @@ class _AsyncProviderCredentialsAPI:
         }
         if base_url:
             body["baseURL"] = base_url
-        return ProviderCredential(
-            **await self._c._request("POST", "/provider-credentials", json=body)
-        )
+        data = await self._c._request("POST", "/provider-credentials", json=body)
+        if isinstance(data, dict) and "credential" in data:
+            return ProviderCredential(**data["credential"])
+        return ProviderCredential(**data)
 
     async def list(self) -> list[ProviderCredential]:
         data = await self._c._request("GET", "/provider-credentials")
@@ -486,9 +487,10 @@ class _AsyncProviderCredentialsAPI:
         )
 
     async def list_bindings(self, cred_id: str) -> list[str]:
-        return await self._c._request(
+        data = await self._c._request(
             "GET", f"/provider-credentials/{cred_id}/bindings"
         )
+        return data.get("workspaceIds", [])
 
     async def bind(self, cred_id: str, workspace_id: str) -> dict[str, Any]:
         return await self._c._request(

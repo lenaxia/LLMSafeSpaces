@@ -360,7 +360,12 @@ class ProviderCredentialsAPI {
   constructor(private client: LLMSafeSpaces) {}
 
   create(req: CreateProviderCredentialRequest) {
-    return this.client.request<ProviderCredential>("POST", "/provider-credentials", req);
+    return this.client.request<ProviderCredential | { credential: ProviderCredential; bindWarning: string }>("POST", "/provider-credentials", req).then((data) => {
+      if (data && typeof data === "object" && "credential" in data) {
+        return (data as { credential: ProviderCredential }).credential;
+      }
+      return data as ProviderCredential;
+    });
   }
   list() {
     return this.client.request<ProviderCredential[]>("GET", "/provider-credentials");
@@ -375,7 +380,7 @@ class ProviderCredentialsAPI {
     return this.client.request<{ models: unknown[] }>("GET", `/provider-credentials/${id}/models`);
   }
   listBindings(id: string) {
-    return this.client.request<string[]>("GET", `/provider-credentials/${id}/bindings`);
+    return this.client.request<{ workspaceIds: string[]; bindings: unknown[] }>("GET", `/provider-credentials/${id}/bindings`).then((data) => data.workspaceIds);
   }
   bind(credId: string, workspaceId: string) {
     return this.client.request<unknown>("POST", `/provider-credentials/${credId}/bind/${workspaceId}`);

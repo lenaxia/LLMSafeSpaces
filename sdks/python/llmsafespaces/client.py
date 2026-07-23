@@ -460,9 +460,10 @@ class _ProviderCredentialsAPI:
         }
         if base_url:
             body["baseURL"] = base_url
-        return ProviderCredential(
-            **self._c._request("POST", "/provider-credentials", json=body)
-        )
+        data = self._c._request("POST", "/provider-credentials", json=body)
+        if isinstance(data, dict) and "credential" in data:
+            return ProviderCredential(**data["credential"])
+        return ProviderCredential(**data)
 
     def list(self) -> list[ProviderCredential]:
         data = self._c._request("GET", "/provider-credentials")
@@ -482,9 +483,10 @@ class _ProviderCredentialsAPI:
         )
 
     def list_bindings(self, cred_id: str) -> list[str]:
-        return self._c._request(
+        data = self._c._request(
             "GET", f"/provider-credentials/{cred_id}/bindings"
         )
+        return data.get("workspaceIds", [])
 
     def bind(self, cred_id: str, workspace_id: str) -> dict[str, Any]:
         return self._c._request(

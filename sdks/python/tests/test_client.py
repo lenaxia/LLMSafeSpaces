@@ -8,6 +8,7 @@ from llmsafespaces import (
     LLMSafeSpaces,
     NotFoundError,
     AuthError,
+    ConflictError,
     TimeoutError,
     MessageResponse,
     ProviderCredential,
@@ -223,6 +224,42 @@ def test_provider_credentials_create():
 
 
 @respx.mock
+def test_provider_credentials_create_207_partial_success():
+    respx.post(f"{BASE}/provider-credentials").respond(
+        status_code=207,
+        json={"credential": _cred_json(), "bindWarning": "failed to auto-bind"},
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    result = client.provider_credentials.create(
+        name="my-key", kind="openai", slug="my-key", api_key="sk-..."
+    )
+    assert isinstance(result, ProviderCredential)
+    assert result.id == "cred-1"
+
+
+@respx.mock
+def test_provider_credentials_create_conflict():
+    respx.post(f"{BASE}/provider-credentials").respond(
+        status_code=409, json={"error": "slug already exists"}
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    with pytest.raises(ConflictError):
+        client.provider_credentials.create(
+            name="dup", kind="openai", slug="dup", api_key="sk-..."
+        )
+
+
+@respx.mock
+def test_provider_credentials_get_not_found():
+    respx.get(f"{BASE}/provider-credentials/nonexistent").respond(
+        status_code=404, json={"error": "credential not found"}
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    with pytest.raises(NotFoundError):
+        client.provider_credentials.get("nonexistent")
+
+
+@respx.mock
 def test_provider_credentials_list():
     respx.get(f"{BASE}/provider-credentials").respond(
         json=[_cred_json("c1"), _cred_json("c2")]
@@ -261,7 +298,7 @@ def test_provider_credentials_probe_models():
 @respx.mock
 def test_provider_credentials_list_bindings():
     respx.get(f"{BASE}/provider-credentials/cred-1/bindings").respond(
-        json=["ws-1", "ws-2"]
+        json={"workspaceIds": ["ws-1", "ws-2"], "bindings": []}
     )
     client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
     result = client.provider_credentials.list_bindings("cred-1")
@@ -344,7 +381,7 @@ def test_admin_provider_credentials_auto_apply_create():
     )
     client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
     client.admin_provider_credentials.create_auto_apply(
-        "cred-1", target_type="workspace", target_id="ws-1"
+        "cred-1", target_type="all"
     )
 
 
@@ -361,9 +398,9 @@ def test_admin_provider_credentials_auto_apply_list():
 @respx.mock
 def test_admin_provider_credentials_auto_apply_delete():
     respx.delete(
-        f"{BASE}/admin/provider-credentials/cred-1/auto-apply/workspace/ws-1"
+        f"{BASE}/admin/provider-credentials/cred-1/auto-apply/user/u1"
     ).respond(status_code=204)
     client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
     client.admin_provider_credentials.delete_auto_apply(
-        "cred-1", "workspace", "ws-1"
+        "cred-1", "user", "u1"
     )

@@ -242,7 +242,7 @@ describe("LLMSafeSpaces Client", () => {
     });
 
     it("lists bindings", async () => {
-      mockFetch.mockResolvedValueOnce(jsonResponse(["ws-1", "ws-2"]));
+      mockFetch.mockResolvedValueOnce(jsonResponse({ workspaceIds: ["ws-1", "ws-2"], bindings: [] }));
       const result = await client.providerCredentials.listBindings("cred-1");
       expect(result).toEqual(["ws-1", "ws-2"]);
     });
