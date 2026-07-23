@@ -403,9 +403,24 @@ func (s *ProviderCredentialsService) Create(ctx context.Context, name, kind, slu
 	if baseURL != "" {
 		body["baseURL"] = baseURL
 	}
+	var raw json.RawMessage
+	err := s.c.do(ctx, "POST", "/provider-credentials", body, &raw)
+	if err != nil {
+		return nil, err
+	}
 	var result ProviderCredentialResponse
-	err := s.c.do(ctx, "POST", "/provider-credentials", body, &result)
-	return &result, err
+	var wrapper struct {
+		Credential   ProviderCredentialResponse `json:"credential"`
+		BindWarning  string                     `json:"bindWarning"`
+	}
+	if json.Unmarshal(raw, &wrapper) == nil && wrapper.Credential.ID != "" {
+		result = wrapper.Credential
+	} else {
+		if jErr := json.Unmarshal(raw, &result); jErr != nil {
+			return nil, fmt.Errorf("decode provider credential: %w", jErr)
+		}
+	}
+	return &result, nil
 }
 
 func (s *ProviderCredentialsService) List(ctx context.Context) ([]ProviderCredentialResponse, error) {

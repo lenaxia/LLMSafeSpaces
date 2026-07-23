@@ -442,7 +442,7 @@ def test_admin_provider_credentials_auto_apply_create():
 @respx.mock
 def test_admin_provider_credentials_auto_apply_list():
     respx.get(f"{BASE}/admin/provider-credentials/cred-1/auto-apply").respond(
-        json=[{"id": "aa-1", "targetType": "workspace"}]
+        json=[{"credentialId": "cred-1", "targetType": "all", "withinPriority": 0}]
     )
     client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
     result = client.admin_provider_credentials.list_auto_apply("cred-1")
