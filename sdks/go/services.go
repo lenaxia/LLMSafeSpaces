@@ -410,8 +410,8 @@ func (s *ProviderCredentialsService) Create(ctx context.Context, name, kind, slu
 	}
 	var result ProviderCredentialResponse
 	var wrapper struct {
-		Credential   ProviderCredentialResponse `json:"credential"`
-		BindWarning  string                     `json:"bindWarning"`
+		Credential  ProviderCredentialResponse `json:"credential"`
+		BindWarning string                     `json:"bindWarning"`
 	}
 	if json.Unmarshal(raw, &wrapper) == nil && wrapper.Credential.ID != "" {
 		result = wrapper.Credential
