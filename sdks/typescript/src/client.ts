@@ -258,6 +258,18 @@ class SessionsAPI {
   delete(workspaceId: string, sessionId: string) {
     return this.client.request<void>("DELETE", `/workspaces/${workspaceId}/sessions/${sessionId}`);
   }
+  enqueue(workspaceId: string, sessionId: string, text: string) {
+    return this.client.request<{ messageID: string }>("POST", `/workspaces/${workspaceId}/sessions/${sessionId}/queue`, { text });
+  }
+  listQueue(workspaceId: string, sessionId: string) {
+    return this.client.request<{ messages: unknown[] }>("GET", `/workspaces/${workspaceId}/sessions/${sessionId}/queue`);
+  }
+  dismissQueued(workspaceId: string, sessionId: string, messageId: string) {
+    return this.client.request<void>("DELETE", `/workspaces/${workspaceId}/sessions/${sessionId}/queue/${messageId}`);
+  }
+  markSeen(workspaceId: string, sessionId: string) {
+    return this.client.request<void>("PUT", `/workspaces/${workspaceId}/sessions/${sessionId}/seen`);
+  }
 }
 
 class AuthAPI {

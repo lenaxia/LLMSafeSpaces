@@ -210,3 +210,13 @@ type UserSettings struct {
 	Settings      map[string]any `json:"settings"`
 	SchemaVersion int            `json:"schemaVersion"`
 }
+
+// QueuedMessage is a message waiting in the session queue.
+type QueuedMessage struct {
+	ID          string `json:"id"`
+	Text        string `json:"text"`
+	SessionID   string `json:"session_id"`
+	WorkspaceID string `json:"workspace_id"`
+	EnqueuedAt  string `json:"enqueued_at"`
+	RetryCount  int    `json:"retry_count"`
+}

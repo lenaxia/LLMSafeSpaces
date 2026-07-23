@@ -282,6 +282,33 @@ class _SessionsAPI:
             f"/workspaces/{workspace_id}/sessions/{session_id}",
         )
 
+    def enqueue(self, workspace_id: str, session_id: str, text: str) -> str:
+        resp = self._c._request(
+            "POST",
+            f"/workspaces/{workspace_id}/sessions/{session_id}/queue",
+            json={"text": text},
+        )
+        return resp["messageID"]
+
+    def list_queue(self, workspace_id: str, session_id: str) -> list[dict[str, Any]]:
+        resp = self._c._request(
+            "GET",
+            f"/workspaces/{workspace_id}/sessions/{session_id}/queue",
+        )
+        return resp.get("messages", [])
+
+    def dismiss_queued(self, workspace_id: str, session_id: str, message_id: str) -> None:
+        self._c._request(
+            "DELETE",
+            f"/workspaces/{workspace_id}/sessions/{session_id}/queue/{message_id}",
+        )
+
+    def mark_seen(self, workspace_id: str, session_id: str) -> None:
+        self._c._request(
+            "PUT",
+            f"/workspaces/{workspace_id}/sessions/{session_id}/seen",
+        )
+
 
 class _AuthAPI:
     def __init__(self, client: LLMSafeSpaces):

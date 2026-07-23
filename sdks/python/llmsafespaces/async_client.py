@@ -287,6 +287,33 @@ class _AsyncSessionsAPI:
             f"/workspaces/{workspace_id}/sessions/{session_id}",
         )
 
+    async def enqueue(self, workspace_id: str, session_id: str, text: str) -> str:
+        resp = await self._c._request(
+            "POST",
+            f"/workspaces/{workspace_id}/sessions/{session_id}/queue",
+            json={"text": text},
+        )
+        return resp["messageID"]
+
+    async def list_queue(self, workspace_id: str, session_id: str) -> list[dict[str, Any]]:
+        resp = await self._c._request(
+            "GET",
+            f"/workspaces/{workspace_id}/sessions/{session_id}/queue",
+        )
+        return resp.get("messages", [])
+
+    async def dismiss_queued(self, workspace_id: str, session_id: str, message_id: str) -> None:
+        await self._c._request(
+            "DELETE",
+            f"/workspaces/{workspace_id}/sessions/{session_id}/queue/{message_id}",
+        )
+
+    async def mark_seen(self, workspace_id: str, session_id: str) -> None:
+        await self._c._request(
+            "PUT",
+            f"/workspaces/{workspace_id}/sessions/{session_id}/seen",
+        )
+
 
 class _AsyncAuthAPI:
     def __init__(self, client: AsyncLLMSafeSpaces):

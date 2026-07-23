@@ -416,3 +416,61 @@ func TestAdminProviderCredentialsService_List_WireFormat(t *testing.T) {
 		t.Errorf("Slug: got %q, want opencode-free-tier", list[0].Slug)
 	}
 }
+
+func TestClient_SessionsEnqueue(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/workspaces/ws-1/sessions/sess-1/queue" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Method != "POST" {
+			t.Errorf("unexpected method: %s", r.Method)
+		}
+		w.WriteHeader(202)
+		json.NewEncoder(w).Encode(map[string]string{"messageID": "qmsg-1"})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	msgID, err := c.Sessions.Enqueue(context.Background(), "ws-1", "sess-1", "hello")
+	if err != nil {
+		t.Fatalf("Enqueue error: %v", err)
+	}
+	if msgID != "qmsg-1" {
+		t.Errorf("got %q, want qmsg-1", msgID)
+	}
+}
+
+func TestClient_SessionsListQueue(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]any{
+			"messages": []map[string]any{
+				{"id": "qmsg-1", "text": "hello", "session_id": "sess-1", "workspace_id": "ws-1", "enqueued_at": "2026-07-22T00:00:00Z", "retry_count": 0},
+			},
+		})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	msgs, err := c.Sessions.ListQueue(context.Background(), "ws-1", "sess-1")
+	if err != nil {
+		t.Fatalf("ListQueue error: %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].ID != "qmsg-1" {
+		t.Errorf("unexpected: %+v", msgs)
+	}
+}
+
+func TestClient_SessionsMarkSeen(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/workspaces/ws-1/sessions/sess-1/seen" {
+			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		w.WriteHeader(204)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	if err := c.Sessions.MarkSeen(context.Background(), "ws-1", "sess-1"); err != nil {
+		t.Fatalf("MarkSeen error: %v", err)
+	}
+}

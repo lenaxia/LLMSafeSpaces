@@ -175,6 +175,31 @@ func (s *SessionsService) Delete(ctx context.Context, workspaceID, sessionID str
 	return s.c.do(ctx, "DELETE", fmt.Sprintf("/workspaces/%s/sessions/%s", workspaceID, sessionID), nil, nil)
 }
 
+func (s *SessionsService) Enqueue(ctx context.Context, workspaceID, sessionID, text string) (string, error) {
+	var resp struct {
+		MessageID string `json:"messageID"`
+	}
+	err := s.c.do(ctx, "POST", fmt.Sprintf("/workspaces/%s/sessions/%s/queue", workspaceID, sessionID),
+		map[string]string{"text": text}, &resp)
+	return resp.MessageID, err
+}
+
+func (s *SessionsService) ListQueue(ctx context.Context, workspaceID, sessionID string) ([]QueuedMessage, error) {
+	var resp struct {
+		Messages []QueuedMessage `json:"messages"`
+	}
+	err := s.c.do(ctx, "GET", fmt.Sprintf("/workspaces/%s/sessions/%s/queue", workspaceID, sessionID), nil, &resp)
+	return resp.Messages, err
+}
+
+func (s *SessionsService) DismissQueued(ctx context.Context, workspaceID, sessionID, messageID string) error {
+	return s.c.do(ctx, "DELETE", fmt.Sprintf("/workspaces/%s/sessions/%s/queue/%s", workspaceID, sessionID, messageID), nil, nil)
+}
+
+func (s *SessionsService) MarkSeen(ctx context.Context, workspaceID, sessionID string) error {
+	return s.c.do(ctx, "PUT", fmt.Sprintf("/workspaces/%s/sessions/%s/seen", workspaceID, sessionID), nil, nil)
+}
+
 // AuthService handles authentication operations.
 type AuthService struct{ c *Client }
 
