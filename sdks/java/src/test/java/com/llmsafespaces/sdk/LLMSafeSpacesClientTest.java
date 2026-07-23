@@ -1,5 +1,7 @@
 package com.llmsafespaces.sdk;
 
+import com.llmsafespaces.sdk.exceptions.ConflictException;
+import com.llmsafespaces.sdk.exceptions.LLMSafeSpacesException;
 import com.llmsafespaces.sdk.exceptions.NotFoundException;
 import com.llmsafespaces.sdk.models.Workspace;
 import com.sun.net.httpserver.HttpServer;
@@ -78,6 +80,89 @@ class LLMSafeSpacesClientTest {
             var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
                     .apiKey("lsp_test").build();
             assertDoesNotThrow(() -> client.workspaces.delete("ws-1"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void notFound_throwsNotFoundException_unchecked() throws Exception {
+        var server = startMockServer(404, "{\"error\":\"not found\"}");
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            assertThrows(NotFoundException.class, () -> client.workspaces.get("x"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void conflict_throwsConflictException() throws Exception {
+        var server = startMockServer(409, "{\"error\":\"duplicate slug\"}");
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            assertThrows(ConflictException.class, () -> client.workspaces.create("x", "base", "1Gi"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void exceptionsAreUnchecked_noThrowsNeeded() {
+        assertDoesNotThrow(() -> {
+            var client = LLMSafeSpacesClient.builder("http://localhost:1")
+                    .apiKey("lsp_test").build();
+            try {
+                client.workspaces.get("x");
+            } catch (LLMSafeSpacesException e) {
+                // Expected — connection refused
+            }
+        });
+    }
+
+    @Test
+    void sendMessage_extractsContentFromMultipleParts() throws Exception {
+        String json = """
+            {"id":"msg-1","role":"assistant","parts":[
+                {"type":"text","text":"Hello "},
+                {"type":"text","text":"world!"},
+                {"type":"tool-invocation","toolName":"read"}
+            ]}""";
+        var server = startMockServer(200, json);
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            var result = client.sessions.sendMessage("ws-1", "sess-1", "hi");
+            assertEquals("Hello world!", result.getContent());
+            assertNotNull(result.getRaw());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void secretsReveal_acceptsPasswordParameter() throws Exception {
+        String json = "{\"value\":\"secret-val\"}";
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/api/v1/secrets/sec-1/reveal", exchange -> {
+            var body = new String(exchange.getRequestBody().readAllBytes());
+            if (!body.contains("\"password\":\"mypw\"")) {
+                exchange.sendResponseHeaders(403, 0);
+                exchange.close();
+                return;
+            }
+            exchange.sendResponseHeaders(200, json.length());
+            exchange.getResponseBody().write(json.getBytes());
+            exchange.close();
+        });
+        server.start();
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            var val = client.secrets.reveal("sec-1", "mypw");
+            assertEquals("secret-val", val);
         } finally {
             server.stop(0);
         }

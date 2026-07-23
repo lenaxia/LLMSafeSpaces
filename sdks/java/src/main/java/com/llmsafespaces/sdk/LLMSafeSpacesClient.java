@@ -66,11 +66,16 @@ public class LLMSafeSpacesClient {
 
     @SuppressWarnings("unchecked")
     public <T> T request(String method, String path, Object body, Class<T> type) {
-        return request(method, path, body, (Type) type);
+        return requestWithRetry(method, path, body, (Type) type, false);
     }
 
     @SuppressWarnings("unchecked")
     public <T> T request(String method, String path, Object body, Type type) {
+        return requestWithRetry(method, path, body, type, false);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> T requestWithRetry(String method, String path, Object body, Type type, boolean retried401) {
         String url = baseUrl + "/api/v1" + path;
         var reqBuilder = HttpRequest.newBuilder()
                 .uri(URI.create(url))
@@ -82,10 +87,8 @@ public class LLMSafeSpacesClient {
             reqBuilder.header("Authorization", authHeader);
         }
 
-        String bodyStr = null;
         if (body != null) {
-            bodyStr = gson.toJson(body);
-            reqBuilder.method(method, HttpRequest.BodyPublishers.ofString(bodyStr));
+            reqBuilder.method(method, HttpRequest.BodyPublishers.ofString(gson.toJson(body)));
         } else {
             reqBuilder.method(method, HttpRequest.BodyPublishers.noBody());
         }
@@ -94,9 +97,9 @@ public class LLMSafeSpacesClient {
             HttpResponse<String> resp = httpClient.send(reqBuilder.build(),
                     HttpResponse.BodyHandlers.ofString());
 
-            if (resp.statusCode() == 401 && email != null && token != null) {
+            if (resp.statusCode() == 401 && email != null && token != null && !retried401) {
                 token = null;
-                return request(method, path, body, type);
+                return requestWithRetry(method, path, body, type, true);
             }
 
             if (resp.statusCode() >= 400) {
@@ -125,6 +128,10 @@ public class LLMSafeSpacesClient {
     }
 
     public JsonObject requestJson(String method, String path, Object body) {
+        return requestJsonWithRetry(method, path, body, false);
+    }
+
+    private JsonObject requestJsonWithRetry(String method, String path, Object body, boolean retried401) {
         String url = baseUrl + "/api/v1" + path;
         var reqBuilder = HttpRequest.newBuilder()
                 .uri(URI.create(url))
@@ -143,9 +150,9 @@ public class LLMSafeSpacesClient {
         try {
             HttpResponse<String> resp = httpClient.send(reqBuilder.build(),
                     HttpResponse.BodyHandlers.ofString());
-            if (resp.statusCode() == 401 && email != null && token != null) {
+            if (resp.statusCode() == 401 && email != null && token != null && !retried401) {
                 token = null;
-                return requestJson(method, path, body);
+                return requestJsonWithRetry(method, path, body, true);
             }
             if (resp.statusCode() >= 400) {
                 String msg = "Unknown error";
@@ -164,12 +171,6 @@ public class LLMSafeSpacesClient {
 
     public void requestVoid(String method, String path, Object body) {
         requestJson(method, path, body);
-    }
-
-    @SuppressWarnings("unchecked")
-    <T> T fromJsonField(JsonObject obj, String field, Class<T> type) {
-        if (obj == null || !obj.has(field)) return null;
-        return gson.fromJson(obj.get(field), type);
     }
 
     private String authHeaders() {

@@ -22,8 +22,8 @@ public class SecretsService {
         c.requestVoid("DELETE", "/secrets/" + id, null);
     }
 
-    public String reveal(String id) {
-        var resp = c.requestJson("POST", "/secrets/" + id + "/reveal", Map.of("password", ""));
+    public String reveal(String id, String password) {
+        var resp = c.requestJson("POST", "/secrets/" + id + "/reveal", Map.of("password", password));
         return resp != null && resp.has("value") ? resp.get("value").getAsString() : null;
     }
 }
