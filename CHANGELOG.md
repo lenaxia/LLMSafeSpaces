@@ -22,6 +22,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   independent) and degrades gracefully (200 with partial data) if the
   K8s API or settings are temporarily unavailable.
 
+- **SDK refresh — OpenAPI parity + Python/Java/TypeScript SDKs (#584,
+  #586, #588).** Closes the drift between the four hand-written SDKs and
+  the current API server:
+  - **OpenAPI spec refresh (US-62.1):** 45 → 84 paths covering the full
+    in-scope router surface; version 1.0.0 → 1.1.0.
+  - **Python SDK parity (US-62.2):** rewritten for parity with the
+    refreshed spec; contract tests (US-62.9).
+  - **Java SDK typed-facade rewrite (US-62.5, #586):** builder-constructed
+    facade with 9 service groups + typed model classes, replacing the
+    generic HTTP wrapper.
+  - **Python/TypeScript SDKs published to PyPI + npm (US-62.8, #588):**
+    SDK versions now track the platform version; trusted-publishing
+    release pipelines (OIDC, no stored tokens) run on `v*.*.*` tags.
+
 ## [0.4.5] - 2026-07-22
 
 ### Fixed
