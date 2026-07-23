@@ -365,15 +365,34 @@ def test_provider_credentials_unbind():
 
 
 @respx.mock
-def test_admin_provider_credentials_update():
-    respx.put(f"{BASE}/admin/provider-credentials/cred-1").respond(
+def test_admin_provider_credentials_list():
+    respx.get(f"{BASE}/admin/provider-credentials").respond(
+        json=[_cred_json()]
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    result = client.admin_provider_credentials.list()
+    assert len(result) == 1
+
+
+@respx.mock
+def test_admin_provider_credentials_create():
+    respx.post(f"{BASE}/admin/provider-credentials").respond(
+        status_code=201, json=_cred_json()
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    result = client.admin_provider_credentials.create(
+        name="admin-key", kind="anthropic", slug="admin-key", api_key="sk-..."
+    )
+    assert result.id == "cred-1"
+
+
+@respx.mock
+def test_admin_provider_credentials_get():
+    respx.get(f"{BASE}/admin/provider-credentials/cred-1").respond(
         json=_cred_json()
     )
-    from llmsafespaces import UpdateProviderCredentialRequest
     client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
-    result = client.admin_provider_credentials.update(
-        "cred-1", UpdateProviderCredentialRequest(name="renamed")
-    )
+    result = client.admin_provider_credentials.get("cred-1")
     assert result.id == "cred-1"
 
 
@@ -382,8 +401,8 @@ def test_admin_provider_credentials_update():
     respx.put(f"{BASE}/admin/provider-credentials/cred-1").respond(
         json=_cred_json()
     )
-    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
     from llmsafespaces import UpdateProviderCredentialRequest
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
     result = client.admin_provider_credentials.update(
         "cred-1", UpdateProviderCredentialRequest(name="renamed")
     )

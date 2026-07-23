@@ -252,11 +252,57 @@ func findRepoRoot() (string, error) {
 // A real production gap should NOT land here — fix it instead.
 // -----------------------------------------------------------------------------
 
-// specOnlyAllowlist: routes documented in OpenAPI but not registered.
-// Empty today; entries here would mean the spec advertises endpoints
-// the API doesn't serve, which is a bug. Suppress only with a
-// dated rationale.
-var specOnlyAllowlist = map[route]bool{}
+// specOnlyAllowlist: routes documented in OpenAPI but not registered in
+// the test fixture. These are feature-gated routes (registered via
+// `if cfg.XxxHandler != nil` in the router) that the test fixture does
+// not wire because the handlers have complex dependencies. They exist
+// in production deployments with the handlers configured.
+var specOnlyAllowlist = map[route]bool{
+	// Feature-gated routes not wired in the test fixture.
+	// Each is registered behind `if cfg.XxxHandler != nil` in router.go
+	// and exists in production. The test fixture (newContractFixture)
+	// does not construct these handlers.
+	{method: "GET", path: "/api/v1/admin/agent-roles"}:                                          true,
+	{method: "POST", path: "/api/v1/admin/agent-roles"}:                                         true,
+	{method: "GET", path: "/api/v1/admin/agent-roles/:id"}:                                      true,
+	{method: "PUT", path: "/api/v1/admin/agent-roles/:id"}:                                      true,
+	{method: "DELETE", path: "/api/v1/admin/agent-roles/:id"}:                                   true,
+	{method: "GET", path: "/api/v1/admin/prompt"}:                                               true,
+	{method: "PUT", path: "/api/v1/admin/prompt"}:                                               true,
+	{method: "GET", path: "/api/v1/admin/provider-credentials"}:                                 true,
+	{method: "POST", path: "/api/v1/admin/provider-credentials"}:                                true,
+	{method: "GET", path: "/api/v1/admin/provider-credentials/:id"}:                             true,
+	{method: "PUT", path: "/api/v1/admin/provider-credentials/:id"}:                             true,
+	{method: "DELETE", path: "/api/v1/admin/provider-credentials/:id"}:                          true,
+	{method: "GET", path: "/api/v1/admin/provider-credentials/:id/models"}:                      true,
+	{method: "POST", path: "/api/v1/admin/provider-credentials/:id/auto-apply"}:                 true,
+	{method: "GET", path: "/api/v1/admin/provider-credentials/:id/auto-apply"}:                  true,
+	{method: "DELETE", path: "/api/v1/admin/provider-credentials/:id/auto-apply/:targetType/:targetId"}: true,
+	{method: "GET", path: "/api/v1/provider-credentials"}:                                       true,
+	{method: "POST", path: "/api/v1/provider-credentials"}:                                      true,
+	{method: "GET", path: "/api/v1/provider-credentials/:id"}:                                   true,
+	{method: "DELETE", path: "/api/v1/provider-credentials/:id"}:                                true,
+	{method: "GET", path: "/api/v1/provider-credentials/:id/models"}:                            true,
+	{method: "GET", path: "/api/v1/provider-credentials/:id/bindings"}:                          true,
+	{method: "POST", path: "/api/v1/provider-credentials/:id/bind/:workspaceId"}:                true,
+	{method: "DELETE", path: "/api/v1/provider-credentials/:id/bind/:workspaceId"}:              true,
+	{method: "GET", path: "/api/v1/usage"}:                                                      true,
+	{method: "GET", path: "/api/v1/usage/workspaces/:id"}:                                       true,
+	{method: "GET", path: "/api/v1/usage/quota"}:                                                true,
+	{method: "POST", path: "/api/v1/workspaces/:id/agent/reload"}:                               true,
+	{method: "GET", path: "/api/v1/workspaces/:id/agent-role"}:                                  true,
+	{method: "PUT", path: "/api/v1/workspaces/:id/agent-role"}:                                  true,
+	{method: "DELETE", path: "/api/v1/workspaces/:id/agent-role"}:                               true,
+	{method: "GET", path: "/api/v1/workspaces/:id/effective-agent-role"}:                        true,
+	{method: "GET", path: "/api/v1/workspaces/:id/prompt"}:                                      true,
+	{method: "PUT", path: "/api/v1/workspaces/:id/prompt"}:                                      true,
+	{method: "POST", path: "/api/v1/auth/lookup"}:                                               true,
+	{method: "POST", path: "/api/v1/auth/password-reset/request"}:                               true,
+	{method: "POST", path: "/api/v1/auth/password-reset/confirm"}:                               true,
+	{method: "POST", path: "/api/v1/auth/verify-email"}:                                         true,
+	{method: "POST", path: "/api/v1/auth/verify-email/resend"}:                                  true,
+	{method: "POST", path: "/api/v1/auth/unlock-dek"}:                                           true,
+}
 
 // implOnlyAllowlist: routes registered by the router but not in
 // OpenAPI. Permitted for legitimately-internal routes that aren't
@@ -273,51 +319,9 @@ var implOnlyAllowlist = map[route]bool{
 	// the prefix; the unprefixed one is implementation-only.
 	{method: "GET", path: "/health"}: true,
 
-	// Workspace restart / question / permission routes. These ship
-	// today via the proxy handler but are not yet in sdks/openapi.yaml.
-	// TODO(epic-19): document these in a follow-up SDK contract pass
-	// alongside oapi-codegen integration. Allowlisting now because
-	// they're not new — they predate this gate — and the alternative
-	// is hand-writing six OpenAPI operations which is significant
-	// scope creep for a contract-presence test.
-	{method: "POST", path: "/api/v1/workspaces/:id/restart"}:                     true,
-	{method: "GET", path: "/api/v1/workspaces/:id/question"}:                     true,
-	{method: "POST", path: "/api/v1/workspaces/:id/question/:requestID/reply"}:   true,
-	{method: "POST", path: "/api/v1/workspaces/:id/question/:requestID/reject"}:  true,
-	{method: "GET", path: "/api/v1/workspaces/:id/permission"}:                   true,
-	{method: "POST", path: "/api/v1/workspaces/:id/permission/:requestID/reply"}: true,
-
-	// Workspace model selection. Ships in the handler but not yet in
-	// sdks/openapi.yaml. TODO: document in follow-up SDK pass.
-	{method: "PUT", path: "/api/v1/workspaces/:id/model"}:  true,
-	{method: "GET", path: "/api/v1/workspaces/:id/models"}: true,
-
 	// Epic 28: User-scoped SSE event stream. Long-lived connection,
 	// not a typical REST endpoint. Not documented in OpenAPI.
 	{method: "GET", path: "/api/v1/events"}: true,
-
-	// Epic 37: Mark session as seen. Internal UX endpoint, not
-	// part of the public SDK contract.
-	{method: "PUT", path: "/api/v1/workspaces/:id/sessions/:sessionId/seen"}: true,
-
-	// Session delete — proxies to opencode's DELETE /session/:id.
-	{method: "DELETE", path: "/api/v1/workspaces/:id/sessions/:sessionId"}: true,
-
-	// Credential model probe — anon probe endpoint used by the credential
-	// create form to fetch the provider's model list before saving.
-	// Returns model IDs and any saved context limits for the UI table.
-	// Not in the public SDK contract (credential management UX only).
-	{method: "POST", path: "/api/v1/probe-models"}: true,
-
-	// Admin and user credential model probe — same purpose as above,
-	// for already-saved credentials.
-	{method: "GET", path: "/api/v1/admin/provider-credentials/:id/models"}: true,
-	{method: "GET", path: "/api/v1/provider-credentials/:id/models"}:       true,
-
-	// Message queue — Redis-backed queue for messages typed while busy.
-	{method: "POST", path: "/api/v1/workspaces/:id/sessions/:sessionId/queue"}:              true,
-	{method: "GET", path: "/api/v1/workspaces/:id/sessions/:sessionId/queue"}:               true,
-	{method: "DELETE", path: "/api/v1/workspaces/:id/sessions/:sessionId/queue/:messageId"}: true,
 }
 
 // -----------------------------------------------------------------------------

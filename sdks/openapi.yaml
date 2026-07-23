@@ -1613,6 +1613,17 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "409":
           $ref: "#/components/responses/Conflict"
+        "207":
+          description: Partial success — credential created but auto-bind to existing workspaces failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  credential:
+                    $ref: "#/components/schemas/ProviderCredential"
+                  bindWarning:
+                    type: string
     get:
       tags: [credentials]
       summary: List user-scoped provider credentials
