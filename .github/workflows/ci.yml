@@ -644,6 +644,36 @@ jobs:
           LLMSAFESPACES_URL: http://localhost:8080
         run: go run ./scenarios/s-error-format/
 
+      - name: Go canary — S-EMAIL-RESET
+        env:
+          LLMSAFESPACES_URL: http://localhost:8080
+        run: go run ./scenarios/s-email-reset/
+
+      - name: Go canary — S-RATE-LIMIT
+        env:
+          LLMSAFESPACES_URL: http://localhost:8080
+        run: go run ./scenarios/s-rate-limit/
+
+      - name: Go canary — S-WS-QUOTA
+        env:
+          LLMSAFESPACES_URL: http://localhost:8080
+        run: go run ./scenarios/s-ws-quota/
+
+      - name: Go canary — D-ACCOUNT-RECOVER
+        env:
+          LLMSAFESPACES_URL: http://localhost:8080
+        run: go run ./scenarios/d-account-recover/
+
+      - name: Go canary — D-CHANGE-PASSWORD
+        env:
+          LLMSAFESPACES_URL: http://localhost:8080
+        run: go run ./scenarios/d-change-password/
+
+      - name: Go canary — D-KEY-ROTATE
+        env:
+          LLMSAFESPACES_URL: http://localhost:8080
+        run: go run ./scenarios/d-key-rotate/
+
       # ── Python SDK canaries (all ci:fast scenarios) ────────────────────────
       - name: Python SDK install
         working-directory: sdks/python
@@ -658,7 +688,9 @@ jobs:
           for scenario in \
             s_health s_auth s_auth_config s_logout s_apikey s_user_settings \
             s_ws_crud s_ws_status s_secret_crud s_secret_reveal s_secret_audit \
-            s_secret_bindings s_env_vars s_cred_crud s_error_format s_ownership; do
+            s_secret_bindings s_env_vars s_cred_crud s_error_format s_ownership \
+            s_email_reset s_rate_limit s_ws_quota \
+            d_account_recover d_change_password d_key_rotate; do
             echo "--- Python: $scenario ---"
             python sdks/canary/python/scenarios/${scenario}.py
           done
@@ -679,7 +711,9 @@ jobs:
           for scenario in \
             s-health s-auth s-auth-config s-logout s-apikey s-user-settings \
             s-ws-crud s-ws-status s-secret-crud s-secret-reveal s-secret-audit \
-            s-secret-bindings s-env-vars s-cred-crud s-error-format s-ownership; do
+            s-secret-bindings s-env-vars s-cred-crud s-error-format s-ownership \
+            s-email-reset s-rate-limit s-ws-quota \
+            d-account-recover d-change-password d-key-rotate; do
             echo "--- TypeScript: $scenario ---"
             npx tsx sdks/canary/typescript/scenarios/${scenario}.ts
           done
