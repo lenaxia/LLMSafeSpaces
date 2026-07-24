@@ -1556,6 +1556,96 @@ func TestDeleteAPIKey_DeleteFails(t *testing.T) {
 	mockDb.AssertExpectations(t)
 }
 
+// TestDeleteAPIKey_DeleteFails_PopulatedHash_NoCacheEviction is the third
+// review finding on PR #597. The existing TestDeleteAPIKey_DeleteFails uses
+// an APIKey with an empty Key field, so it cannot catch a regression where
+// someone moves the cache-eviction call BEFORE the DB-delete error check
+// (evicting the cache while leaving the DB row intact would let a key
+// briefly bypass auth during the window, then re-authenticate once the
+// cache re-warms). This test populates Key="somehash" so any premature
+// cache.Delete call would be observable; the gomock-based MockCacheService
+// has no Delete expectation set, so an unexpected call fails the test.
+func TestDeleteAPIKey_DeleteFails_PopulatedHash_NoCacheEviction(t *testing.T) {
+	svc, mockDb, mockCache := newTestService(t)
+	ctx := context.Background()
+
+	mockDb.On("GetAPIKey", ctx, "user-1", "key-1").Return(&types.APIKey{
+		ID:  "key-1",
+		Key: "somehash", // populated — cache.Delete would be called if eviction ran prematurely
+	}, nil)
+	mockDb.On("DeleteAPIKey", ctx, "user-1", "key-1").Return(errors.New("delete failed"))
+	// Deliberately NO mockCache.On("Delete", ...) — any call fails the test.
+
+	err := svc.DeleteAPIKey(ctx, "user-1", "key-1")
+
+	assert.Error(t, err)
+	mockDb.AssertExpectations(t)
+	mockCache.AssertExpectations(t)
+}
+
+// TestDeleteAPIKey_E2E_LifecycleEvictsCache is the end-to-end regression
+// test for the SDK canary failure "deleted-key: expected 401" (PR #597
+// review finding #2). It exercises the real DB→cache→eviction wiring
+// using an in-memory cache (memCache, defined in auth_revocation_test.go)
+// rather than gomock, so the test proves the eviction actually removes
+// the entry — not just that cache.Delete was called.
+//
+// Precedent: TestG18_RevocationSurvivesCacheRoundTrip
+// (auth_revocation_test.go:228) uses the same memCache pattern for JWT
+// revocation. This is the API-key equivalent: warm the validation cache,
+// delete the key, verify the cache entry is gone.
+func TestDeleteAPIKey_E2E_LifecycleEvictsCache(t *testing.T) {
+	log, _ := logger.New(true, "debug", "console")
+	cfg := &config.Config{}
+	cfg.Auth.JWTSecret = "test-secret-e2e-apikey"
+	cfg.Auth.TokenDuration = 24 * time.Hour
+	cfg.Auth.APIKeyPrefix = "lsp_"
+
+	cache := newMemCache()
+	mockDB := new(mocks.MockDatabaseService)
+
+	svc, err := New(cfg, log, mockDB, cache)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	userID := "user-e2e-apikey"
+	keyID := "key-e2e"
+	storedHash := "e2ehashabcdef0123456789" // what api_keys.key holds
+	cacheKey := "apikey:" + storedHash
+
+	// Warm the validation cache as validateAPIKey would: it caches
+	// "apikey:<sha256(plaintext)>" = userID for 15 minutes. Here we
+	// simulate a prior successful validation that populated the cache.
+	require.NoError(t, cache.Set(ctx, cacheKey, userID, 15*time.Minute))
+
+	// Sanity: cache entry exists before delete.
+	cached, gerr := cache.Get(ctx, cacheKey)
+	require.NoError(t, gerr)
+	require.Equal(t, userID, cached)
+
+	// Mock the DB layer: GetAPIKey returns the row with the hash populated
+	// (as the real database.go:GetAPIKey does post-fix), DeleteAPIKey
+	// succeeds.
+	mockDB.On("GetAPIKey", ctx, userID, keyID).Return(&types.APIKey{
+		ID:  keyID,
+		Key: storedHash,
+	}, nil)
+	mockDB.On("DeleteAPIKey", ctx, userID, keyID).Return(nil)
+
+	// Delete the key — this must evict the cache entry.
+	require.NoError(t, svc.DeleteAPIKey(ctx, userID, keyID))
+
+	// The cache entry must be gone. A subsequent validateAPIKey call
+	// would miss the cache and fall through to the DB lookup, which
+	// returns "invalid API key" (row deleted) → 401. This is the
+	// property the SDK canary's P6 ("deleted key rejected") checks.
+	_, gerr = cache.Get(ctx, cacheKey)
+	require.Error(t, gerr, "cache entry must be evicted after DeleteAPIKey — "+
+		"otherwise the deleted key continues to authenticate for up to 15 minutes (the cache TTL)")
+
+	mockDB.AssertExpectations(t)
+}
+
 // --- Account Lockout ---
 
 func newLockoutService(t *testing.T) (*Service, *mocks.MockDatabaseService, *mocks.MockCacheService) {

@@ -1237,6 +1237,68 @@ func TestGetAPIKeyRecordByHash_NotFound(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestGetAPIKey_PopulatesHashFromKeyColumn is the DB-layer regression test
+// for the API key cache eviction fix (PR #597 review finding #1). The
+// auth.DeleteAPIKey path relies on GetAPIKey returning the stored hash in
+// the .Key field so it can construct the cache key "apikey:<hash>" and
+// evict it. Pre-fix, GetAPIKey scanned the key column into a discarded
+// local variable; if someone reverts that, .Key is empty, the
+// "if existing.Key != \"\"" guard in DeleteAPIKey skips eviction, and the
+// bug silently returns — every auth-service test passes because they all
+// mock the DatabaseService interface.
+//
+// This test uses sqlmock to verify the real SQL scan path populates .Key
+// from the api_keys.key column, closing the gap the mock-based tests
+// cannot cover.
+func TestGetAPIKey_PopulatesHashFromKeyColumn(t *testing.T) {
+	service, mock, cleanup := setupMockDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	storedHash := "deadbeefcafebabe" // what api_keys.key holds (= sha256(plaintext))
+	createdAt := time.Now()
+
+	rows := sqlmock.NewRows([]string{
+		"id", "key", "name", "active", "created_at", "expires_at",
+	}).AddRow(
+		"key-1", storedHash, "my-key", true, createdAt, nil,
+	)
+
+	mock.ExpectQuery("SELECT id, key, name, active, created_at, expires_at").
+		WithArgs("key-1", "user-1").
+		WillReturnRows(rows)
+
+	rec, err := service.GetAPIKey(ctx, "user-1", "key-1")
+	assert.NoError(t, err)
+	require.NotNil(t, rec)
+	assert.Equal(t, "key-1", rec.ID)
+	assert.Equal(t, storedHash, rec.Key,
+		"GetAPIKey must populate .Key with the stored hash from the api_keys.key "+
+			"column — DeleteAPIKey uses it to construct the cache eviction key")
+	assert.Equal(t, "my-key", rec.Name)
+	assert.True(t, rec.Active)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestGetAPIKey_NotFound_ReturnsNilNil verifies the no-rows case returns
+// (nil, nil) rather than an error, matching the contract DeleteAPIKey
+// relies on (nil check at auth.go:1368 produces "api key not found").
+func TestGetAPIKey_NotFound_ReturnsNilNil(t *testing.T) {
+	service, mock, cleanup := setupMockDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+
+	mock.ExpectQuery("SELECT id, key, name, active, created_at, expires_at").
+		WithArgs("nonexistent", "user-1").
+		WillReturnError(sql.ErrNoRows)
+
+	rec, err := service.GetAPIKey(ctx, "user-1", "nonexistent")
+	assert.NoError(t, err)
+	assert.Nil(t, rec)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestUpdateAPIKeyDEK(t *testing.T) {
 	service, mock, cleanup := setupMockDB(t)
 	defer cleanup()
