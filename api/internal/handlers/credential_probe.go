@@ -22,6 +22,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -275,7 +276,14 @@ func (h *UserProviderCredentialsHandler) ProbeModels(c *gin.Context) {
 	resolveDecrypt := func(ctx context.Context) (func(context.Context, []byte) ([]byte, error), string, int) {
 		dek, err := h.keys.GetDEK(ctx, sessionID, matchedKey)
 		if err != nil {
-			return nil, "", http.StatusServiceUnavailable
+			// Issue #593 Option C: same actionable message as the
+			// Create endpoint. The probe path was the same opaque
+			// "encryption unavailable" pre-fix and had the same
+			// recovery paths the message points the caller at.
+			if errors.Is(err, secrets.ErrDEKUnavailable) {
+				return nil, "user credential encryption requires a password-authenticated session or an API key created with decryptAccess=true", http.StatusForbidden
+			}
+			return nil, "encryption key service unavailable", http.StatusServiceUnavailable
 		}
 		return func(_ context.Context, ct []byte) ([]byte, error) { return secrets.DecryptSecret(dek, ct) }, "", 0
 	}

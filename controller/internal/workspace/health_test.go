@@ -163,6 +163,11 @@ func TestCheckAgentHealth_Healthy(t *testing.T) {
 	defer server.Close()
 
 	r.checkAgentHealth(context.Background(), ws)
+	// Deep-status enrichment is what writes the healthy
+	// "connected=... sessions=... version=..." message. Without this
+	// call the AgentHealthy condition only reflects liveness
+	// ("agentd alive, uptime=Ns").
+	r.enrichAgentStatus(context.Background(), ws, 60*time.Second)
 
 	found := false
 	for _, c := range ws.Status.Conditions {
@@ -170,6 +175,14 @@ func TestCheckAgentHealth_Healthy(t *testing.T) {
 			found = true
 			assert.Equal(t, "True", c.Status)
 			assert.Equal(t, v1.ReasonAgentHealthy, c.Reason)
+			// Regression for issue #593: the healthy condition message
+			// must include configured=N so the API's regex parser
+			// (configuredRe in workspace_service.go) can surface the
+			// real provider count to clients. Without this, every
+			// healthy workspace reports providersConfigured=0.
+			assert.Contains(t, c.Message, "configured=1",
+				"healthy AgentHealthy message must include the configured provider count")
+			assert.Contains(t, c.Message, "connected=[opencode]")
 		}
 	}
 	assert.True(t, found)

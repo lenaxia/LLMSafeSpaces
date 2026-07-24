@@ -694,6 +694,49 @@ func TestUserProviderCredentials_Create_RequiresSessionID(t *testing.T) {
 	assert.Empty(t, store.creds, "no credential should be persisted without a session")
 }
 
+// TestUserProviderCredentials_Create_DEKUnavailable_ReturnsActionableError
+// is the regression test for issue #593 Option C: when GetDEK returns
+// ErrDEKUnavailable (typical for API-key auth without decrypt_access),
+// the response must carry an actionable message pointing the caller at
+// the two recovery paths — a password-authenticated session OR an API
+// key created with decrypt_access=true. The previous response was an
+// opaque {"error":"encryption unavailable"} that gave the caller no way
+// to know what to do next.
+func TestUserProviderCredentials_Create_DEKUnavailable_ReturnsActionableError(t *testing.T) {
+	store := newFakeUserCredStore()
+	// Empty cache: GetDEK("sess-1") misses and falls through to
+	// rehydrate, which returns ErrDEKUnavailable because no JWT
+	// session store is wired.
+	dekCache := &testDEKCacheForHandler{cache: map[string][]byte{}}
+	h := &UserProviderCredentialsHandler{
+		store:    store,
+		bindings: store,
+		keys:     secrets.NewKeyService(&fakeKeyStore{version: 1}, dekCache),
+		keyStore: &fakeKeyStore{version: 1},
+	}
+	router := setupUserCredRouter(h)
+
+	body := `{"name":"my-anthropic","kind":"anthropic","slug":"anthropic","apiKey":"sk-ant-123"}`
+	req, _ := http.NewRequest(http.MethodPost, "/api/v1/provider-credentials", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusForbidden, w.Code,
+		"DEK-unavailable is an auth/permission condition (403), not a service outage (503)")
+	var resp map[string]string
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	msg, ok := resp["error"]
+	require.True(t, ok, "response must include an error field")
+	assert.Contains(t, msg, "decryptAccess",
+		"error must point the caller at the decryptAccess=true API-key path (matches the CreateAPIKeyRequest JSON field)")
+	assert.Contains(t, msg, "password",
+		"error must point the caller at the password-session path")
+	assert.NotEqual(t, "encryption unavailable", msg,
+		"the opaque pre-fix message must be replaced with actionable guidance")
+	assert.Empty(t, store.creds, "no credential should be persisted when the DEK is unavailable")
+}
+
 // TestUserProviderCredentials_ProbeModels_NotFound verifies 404 for unknown credential.
 func TestUserProviderCredentials_ProbeModels_NotFound(t *testing.T) {
 	store := newFakeUserCredStore()
@@ -711,6 +754,44 @@ func TestUserProviderCredentials_ProbeModels_NotFound(t *testing.T) {
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+// TestUserProviderCredentials_ProbeModels_DEKUnavailable_ReturnsActionableError
+// extends the issue #593 Option C fix to the probe endpoint. Without this,
+// an API-key-only caller hitting GET /provider-credentials/:id/models sees
+// the same opaque {"error":"encryption unavailable"} as the Create endpoint
+// had pre-fix — same root cause, same recovery path, same fix.
+func TestUserProviderCredentials_ProbeModels_DEKUnavailable_ReturnsActionableError(t *testing.T) {
+	store := newFakeUserCredStore()
+	// Stash a credential row so we get past the 404 and into the decrypt path.
+	store.creds["c1"] = &secrets.CredentialRow{
+		ID:         "c1",
+		OwnerType:  "user",
+		OwnerID:    "user-1",
+		Kind:       "openai",
+		Slug:       "openai",
+		Ciphertext: []byte("anything"),
+	}
+	dekCache := &testDEKCacheForHandler{cache: map[string][]byte{}} // empty → DEK unavailable
+	h := &UserProviderCredentialsHandler{
+		store:    store,
+		bindings: store,
+		keys:     secrets.NewKeyService(&fakeKeyStore{version: 1}, dekCache),
+		keyStore: &fakeKeyStore{version: 1},
+	}
+	router := setupUserCredRouter(h)
+
+	req, _ := http.NewRequest("GET", "/api/v1/provider-credentials/c1/models", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusForbidden, w.Code,
+		"DEK-unavailable on probe must be 403, matching the Create endpoint fix")
+	var resp map[string]string
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Contains(t, resp["error"], "decryptAccess",
+		"probe error must point at the decryptAccess=true path")
+	assert.NotEqual(t, "encryption unavailable", resp["error"])
 }
 
 // TestUserProviderCredentials_ProbeModels_NoBaseURL verifies graceful warning
