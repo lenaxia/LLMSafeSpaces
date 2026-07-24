@@ -375,6 +375,12 @@ jobs:
           pip install -e ".[dev]" -q
           pytest tests/test_client.py tests/test_async_client.py -q
 
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
       - name: Java SDK — build and test
         working-directory: sdks/java
         run: mvn test -B
@@ -524,10 +530,17 @@ jobs:
       # Seed test accounts
       - name: Seed canary test accounts
         run: |
+          # Verify API server is ready before seeding
+          for i in $(seq 1 10); do
+            if curl -sf http://localhost:8080/readyz >/dev/null 2>&1; then
+              break
+            fi
+            echo "Waiting for API readyz..."
+            sleep 2
+          done
           go run ./cmd/seed-accounts/ \
             --url http://localhost:8080 \
             --out /tmp/canary-keys.env
-        continue-on-error: true  # seed may fail if accounts exist (idempotent)
 
       - name: Load canary API keys
         run: |
