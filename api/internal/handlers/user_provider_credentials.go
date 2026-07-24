@@ -126,13 +126,18 @@ func (h *UserProviderCredentialsHandler) Create(c *gin.Context) {
 		if errors.Is(err, secrets.ErrDEKUnavailable) {
 			c.JSON(http.StatusForbidden, gin.H{
 				"error": "user credential encryption requires a password-authenticated session or an API key created with decryptAccess=true",
-				"code":  "dek_unavailable",
 			})
 			return
 		}
-		// A non-ErrDEKUnavailable error here is a genuine infrastructure
-		// failure (Redis down + rehydrate path returned an unexpected
-		// error). 503 is appropriate — the service really is degraded.
+		// Defense-in-depth: KeyService.GetDEK currently maps every
+		// failure to ErrDEKUnavailable via rehydrateDEKFromJWTSession
+		// (key_service.go:525-595 catches Redis errors, missing rows,
+		// expired rows, unwrap failures, and wrong-signing-key rows
+		// and returns ErrDEKUnavailable in every case). This branch
+		// is therefore unreachable through any current path. It is
+		// retained as a guard against a future contract change that
+		// introduces a new error type — surfacing a generic 503 is
+		// safer than letting the dek dereference below crash.
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "encryption key service unavailable"})
 		return
 	}
