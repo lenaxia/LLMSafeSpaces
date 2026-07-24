@@ -1368,7 +1368,30 @@ func (s *Service) DeleteAPIKey(ctx context.Context, userID, keyID string) error 
 	if existing == nil {
 		return errors.New("api key not found")
 	}
-	return s.dbService.DeleteAPIKey(ctx, userID, keyID)
+	if err := s.dbService.DeleteAPIKey(ctx, userID, keyID); err != nil {
+		return fmt.Errorf("failed to delete api key: %w", err)
+	}
+	// Evict the validation cache entry so the deleted key is rejected
+	// immediately on the next request. validateAPIKey caches
+	// "apikey:<sha256(plaintext)>" for 15 minutes (auth.go:836); without
+	// this eviction, a deleted key continues to authenticate until the
+	// cache TTL expires. The stored api_keys.key column IS the
+	// sha256(plaintext) hash (set at create time, auth.go:1291), so the
+	// cache key is reconstructable from the row we just fetched.
+	//
+	// Cache failure is non-fatal: the DB row is gone (source of truth),
+	// so the stale cache entry will reject the key once it expires. We
+	// log the failure so operators notice a persistent Redis issue.
+	if existing.Key != "" {
+		cacheKey := fmt.Sprintf("apikey:%s", existing.Key)
+		if err := s.cacheService.Delete(ctx, cacheKey); err != nil {
+			if s.logger != nil {
+				s.logger.Warn("failed to evict api key cache after delete; stale entry will expire via TTL",
+					"error", err.Error(), "key_id", keyID)
+			}
+		}
+	}
+	return nil
 }
 
 // extractToken extracts the JWT or API-key token from the Authorization header

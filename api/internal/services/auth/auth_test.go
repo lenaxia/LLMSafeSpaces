@@ -1422,7 +1422,7 @@ func TestListAPIKeys_DBError(t *testing.T) {
 }
 
 func TestDeleteAPIKey_Success(t *testing.T) {
-	svc, mockDb, _ := newTestService(t)
+	svc, mockDb, mockCache := newTestService(t)
 	ctx := context.Background()
 
 	mockDb.On("GetAPIKey", ctx, "user-1", "key-1").Return(&types.APIKey{ID: "key-1"}, nil)
@@ -1432,6 +1432,91 @@ func TestDeleteAPIKey_Success(t *testing.T) {
 
 	assert.NoError(t, err)
 	mockDb.AssertExpectations(t)
+	mockCache.AssertExpectations(t)
+}
+
+// TestDeleteAPIKey_EvictsCache is the regression test for the SDK canary
+// failure "deleted-key: AuthError: expected 401". When an API key is
+// deleted, the validateAPIKey path's 15-minute Redis cache
+// (apikey:<sha256(key)>) must be evicted so subsequent requests with the
+// deleted key are rejected immediately rather than serving stale auth for
+// up to 15 minutes. The DB row deletion alone is insufficient — the
+// cache hit short-circuits the DB lookup entirely (auth.go:735-750).
+//
+// The test verifies the eviction is keyed on the API key's stored hash
+// (api_keys.key column = sha256(plaintext)), matching the cache key format
+// used at validation time (apikey:<sha256(plaintext)>).
+func TestDeleteAPIKey_EvictsCache(t *testing.T) {
+	svc, mockDb, mockCache := newTestService(t)
+	ctx := context.Background()
+
+	// The stored hash in the DB. validateAPIKey computes
+	// sha256(plaintext) and looks up by that hash; the cache key is
+	// "apikey:" + that same hash.
+	keyHash := "abc123def456"
+	expectedCacheKey := "apikey:" + keyHash
+
+	mockDb.On("GetAPIKey", ctx, "user-1", "key-1").Return(&types.APIKey{
+		ID:  "key-1",
+		Key: keyHash, // populated by the DB layer's GetAPIKey
+	}, nil)
+	mockDb.On("DeleteAPIKey", ctx, "user-1", "key-1").Return(nil)
+	// The eviction must happen — Delete on the cache with the exact key.
+	mockCache.On("Delete", ctx, expectedCacheKey).Return(nil)
+
+	err := svc.DeleteAPIKey(ctx, "user-1", "key-1")
+
+	assert.NoError(t, err)
+	mockDb.AssertExpectations(t)
+	mockCache.AssertExpectations(t)
+}
+
+// TestDeleteAPIKey_EvictsCache_SkipsWhenHashEmpty guards against calling
+// cache.Delete with an empty/bogus key when the DB row lacks a hash
+// (legacy data, or a future code path that doesn't populate Key). A
+// "apikey:" cache key with no hash suffix would be a no-op at best and
+// could collide with a real entry at worst.
+func TestDeleteAPIKey_EvictsCache_SkipsWhenHashEmpty(t *testing.T) {
+	svc, mockDb, mockCache := newTestService(t)
+	ctx := context.Background()
+
+	mockDb.On("GetAPIKey", ctx, "user-1", "key-1").Return(&types.APIKey{
+		ID: "key-1",
+		// Key empty — legacy row or DB layer regression
+	}, nil)
+	mockDb.On("DeleteAPIKey", ctx, "user-1", "key-1").Return(nil)
+	// No cache.Delete expectation — if the service calls it, the test
+	// fails with "unexpected call".
+
+	err := svc.DeleteAPIKey(ctx, "user-1", "key-1")
+
+	assert.NoError(t, err)
+	mockDb.AssertExpectations(t)
+	mockCache.AssertExpectations(t)
+}
+
+// TestDeleteAPIKey_EvictsCache_ContinuesOnCacheError verifies cache
+// eviction failure does NOT roll back the DB delete. The DB deletion is
+// the source of truth; a cache eviction failure means the stale entry
+// will expire via TTL (15min) — undesirable but not a correctness
+// violation. Surfacing the cache error as a delete failure would mislead
+// the caller (the key IS deleted) and leave a half-done operation.
+func TestDeleteAPIKey_EvictsCache_ContinuesOnCacheError(t *testing.T) {
+	svc, mockDb, mockCache := newTestService(t)
+	ctx := context.Background()
+
+	mockDb.On("GetAPIKey", ctx, "user-1", "key-1").Return(&types.APIKey{
+		ID:  "key-1",
+		Key: "somehash",
+	}, nil)
+	mockDb.On("DeleteAPIKey", ctx, "user-1", "key-1").Return(nil)
+	mockCache.On("Delete", ctx, "apikey:somehash").Return(errors.New("redis down"))
+
+	err := svc.DeleteAPIKey(ctx, "user-1", "key-1")
+
+	assert.NoError(t, err, "cache eviction failure must not fail the delete")
+	mockDb.AssertExpectations(t)
+	mockCache.AssertExpectations(t)
 }
 
 func TestDeleteAPIKey_NotFound(t *testing.T) {
