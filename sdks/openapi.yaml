@@ -2530,6 +2530,7 @@ components:
           type: string
     AuthConfig:
       type: object
+      required: [registrationEnabled, oidcEnabled, instanceName, motd]
       properties:
         registrationEnabled:
           type: boolean
@@ -2543,6 +2544,7 @@ components:
           type: string
         motd:
           type: string
+          description: Message of the day. Always present; empty string when unset.
     RegisterRequest:
       type: object
       required: [username, email, password]
