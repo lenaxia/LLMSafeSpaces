@@ -375,6 +375,10 @@ jobs:
           pip install -e ".[dev]" -q
           pytest tests/test_client.py tests/test_async_client.py -q
 
+      - name: Java SDK — build and test
+        working-directory: sdks/java
+        run: mvn test -B
+
       - name: VS Code extension — install, typecheck, build
         working-directory: sdks/vscode-llmsafespaces
         run: |
@@ -389,7 +393,6 @@ jobs:
 
       - name: Hurl contract tests against Prism mock
         working-directory: sdks
-        continue-on-error: true
         run: make contract-test-mock
 
   # SDK Canary CI — runs the ci:fast (Tier 1 shallow) canary scenarios
@@ -397,16 +400,14 @@ jobs:
   # Kubernetes cluster, LLM credentials, or waiting for pod scheduling.
   # They verify auth, CRUD, error shapes, and SDK parsing regressions.
   sdk-canary:
-    name: SDK Canary (ci:fast scenarios)
+    name: SDK Integration (live API canaries)
     runs-on: ubuntu-latest
     needs: [sdk-contract]
-    if: false # Disabled: requires seeded accounts not yet committed (issue #27)
-    # Non-blocking: canary scenarios that require seeded accounts (valid-key,
-    # login flows, workspace CRUD) will fail until seed-accounts source is
-    # committed to the repo (tracked in issue #27). Health, error-shape, and
-    # unauthenticated tests pass. Marked continue-on-error so canary failures
-    # do not block merges; regressions are visible in the check detail.
-    continue-on-error: true
+    # Previously disabled (if: false) citing issue #27, which was a relay
+    # handler bug unrelated to canary infrastructure. The seed-accounts tool
+    # is committed and the API server starts correctly with service containers.
+    # Enabled: exercises all four SDKs against a live API server with real
+    # Postgres + Redis, catching contract drift that mock-based unit tests miss.
     # Most canary scenario steps run inside the canary sub-module.
     # Steps that need the repo root override working-directory individually.
     defaults:
