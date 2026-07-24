@@ -18,6 +18,7 @@ class Workspace:
     updatedAt: str
     pvcName: str | None = None
     labels: dict[str, str] | None = None
+    agentNeedsRefresh: bool = False
 
 
 @dataclass
@@ -68,6 +69,8 @@ class APIKey:
     createdAt: str
     key: str | None = None
     expiresAt: str | None = None
+    decryptAccess: bool = False
+    dekSynced: bool = False
 
 
 @dataclass
