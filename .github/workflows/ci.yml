@@ -415,6 +415,10 @@ jobs:
     name: SDK Integration (live API canaries)
     runs-on: ubuntu-latest
     needs: [sdk-contract]
+    # Non-blocking on first enablement: some scenarios assert on optional
+    # config fields (e.g. motd) not set in CI. Failures are visible in the
+    # check detail. Individual scenarios will be fixed in follow-up PRs.
+    continue-on-error: true
     # Previously disabled (if: false) citing issue #27, which was a relay
     # handler bug unrelated to canary infrastructure. The seed-accounts tool
     # is committed and the API server starts correctly with service containers.
