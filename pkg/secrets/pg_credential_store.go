@@ -84,6 +84,16 @@ func (s *PgSecretStore) UpsertFreeTierCredential(ctx context.Context, ciphertext
 // Idempotent — uses ON CONFLICT DO NOTHING throughout.
 //   - orgID nil: personal workspace — org auto-apply rules are not applied.
 //   - orgID non-nil: org workspace — org auto-apply rules and all org credentials are bound.
+//
+// Issue #593 Option A: when the workspace owner has users.role='admin',
+// every admin credential is bound unconditionally — including ones with
+// no credential_auto_apply rule. Rationale: POST /admin/provider-credentials
+// creates a credential but does not auto-create an auto-apply rule, so an
+// admin's own workspaces would otherwise never see admin credentials they
+// added via the admin UI without a second manual API call. The cascade is
+// gated on role='admin' via a SQL EXISTS subquery so non-admin owners are
+// unaffected (they only see admin credentials that have target_type='all'
+// or target_type='user' auto-apply rules — same as before).
 func (s *PgSecretStore) SeedWorkspaceCredentials(ctx context.Context, workspaceID, userID string, orgID *string) error {
 	// Bind admin auto-apply rules (target_type='all' or 'user' matching userID).
 	_, err := s.pool.Exec(ctx, `
@@ -96,6 +106,23 @@ func (s *PgSecretStore) SeedWorkspaceCredentials(ctx context.Context, workspaceI
 	`, workspaceID, userID)
 	if err != nil {
 		return fmt.Errorf("seed workspace credentials (admin rules): %w", err)
+	}
+
+	// Issue #593 Option A: when the workspace owner is an admin, bind
+	// every admin credential unconditionally. Credentials already bound
+	// by the auto-apply block above are skipped via ON CONFLICT. The
+	// EXISTS subquery is the privilege gate: non-admin owners get zero
+	// rows here, preserving the pre-fix behavior for them.
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO workspace_credential_bindings (credential_id, workspace_id, source_type, within_priority)
+		SELECT pc.id, $1, 'auto', 0
+		FROM provider_credentials pc
+		WHERE pc.owner_type = 'admin'
+		  AND EXISTS (SELECT 1 FROM users WHERE id = $2 AND role = 'admin')
+		ON CONFLICT (credential_id, workspace_id) DO NOTHING
+	`, workspaceID, userID)
+	if err != nil {
+		return fmt.Errorf("seed workspace credentials (admin cascade): %w", err)
 	}
 
 	// Bind all personal credentials owned by this user.
