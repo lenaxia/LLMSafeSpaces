@@ -105,7 +105,7 @@ type AuthConfig struct {
 	OIDCEnabled         bool     `json:"oidcEnabled"`
 	SSOProviders        []string `json:"ssoProviders,omitempty"`
 	InstanceName        string   `json:"instanceName"`
-	MOTD                string   `json:"motd,omitempty"`
+	MOTD                string   `json:"motd"`
 }
 
 // UserStatus is the authoritative operational status of a user account.

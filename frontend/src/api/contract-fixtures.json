@@ -16,7 +16,8 @@
     "ssoProviders": [
       "okta"
     ],
-    "instanceName": ""
+    "instanceName": "",
+    "motd": ""
   },
   "AuthResponse": {
     "token": "jwt-token",

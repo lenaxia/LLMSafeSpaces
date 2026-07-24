@@ -91,6 +91,31 @@ func TestAuthConfig_DefaultInstanceName_WhenNotSet(t *testing.T) {
 	assert.Empty(t, cfg.MOTD)
 }
 
+// TestAuthConfig_MOTDKeyAlwaysPresentInJSON is the regression test for the
+// SDK canary failure on PR #595: when instance.motd is unset (the default
+// for every fresh install), the motd JSON key was omitted from the response
+// because AuthConfig.MOTD had json:"motd,omitempty". The Go SDK canary
+// (sdks/canary/go/scenarios/s-auth-config) and the frontend both expect the
+// key to always be present — an empty string is a valid "no message" value.
+// This test unmarshals into a raw map (like the canary does) rather than a
+// typed struct so it catches the omitempty omission the struct-based test
+// above cannot.
+func TestAuthConfig_MOTDKeyAlwaysPresentInJSON(t *testing.T) {
+	router := newAuthConfigWithSettings(t, map[string]any{})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/config", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var raw map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &raw))
+	assert.Contains(t, raw, "motd",
+		"motd key must always be present in /auth/config JSON, even when empty — "+
+			"frontend clients and SDK canaries reference it unconditionally")
+	assert.Equal(t, "", raw["motd"])
+}
+
 func TestAuthConfig_RegistrationDisabledFromSettings(t *testing.T) {
 	router := newAuthConfigWithSettings(t, map[string]any{
 		"auth.registrationEnabled": false,
