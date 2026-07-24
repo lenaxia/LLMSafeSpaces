@@ -366,8 +366,8 @@ func (r *WorkspaceReconciler) enrichAgentStatus(ctx context.Context, ws *v1.Work
 	}
 
 	r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "True",
-		v1.ReasonAgentHealthy, fmt.Sprintf("connected=%v sessions=%d version=%s",
-			status.Connected, status.SessionsActive, status.AgentVersion))
+		v1.ReasonAgentHealthy, fmt.Sprintf("connected=%v configured=%d sessions=%d version=%s",
+			status.Connected, status.ProvidersConfigured, status.SessionsActive, status.AgentVersion))
 	// S18.11: Surface provider connectivity as a dedicated condition so
 	// operators can `kubectl wait --for=condition=ProviderReady` without
 	// regex-parsing the AgentHealthy message.

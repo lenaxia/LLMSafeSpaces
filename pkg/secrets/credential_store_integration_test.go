@@ -142,6 +142,192 @@ func TestPgCredentialStore_SeedWorkspaceCredentials(t *testing.T) {
 	}
 }
 
+// TestPgCredentialStore_SeedWorkspaceCredentials_AdminOwnerBindsAdminCreds
+// is the regression test for issue #593 Option A: when the workspace
+// owner has role='admin', SeedWorkspaceCredentials must bind ALL admin
+// credentials to their workspace — including ones that have no
+// credential_auto_apply rule. Without this, an admin who added a custom
+// LLM credential via POST /admin/provider-credentials (which does NOT
+// auto-create an auto-apply rule) had no way to get that credential
+// into their own workspace without a second manual API call.
+//
+// Pre-fix: only the free-tier credential (which has target_type='all')
+// was bound — count=1 regardless of admin role.
+// Post-fix: admin-owned workspace gets the free-tier (via auto-apply)
+// PLUS every other admin credential (via the cascade) — count=2 here.
+func TestPgCredentialStore_SeedWorkspaceCredentials_AdminOwnerBindsAdminCreds(t *testing.T) {
+	pool := getTestPool(t)
+	defer pool.Close()
+	store := NewPgSecretStore(pool)
+	ctx := context.Background()
+
+	userID := "cred-seed-admin-1"
+	wsID := "00000000-0000-0000-0000-000000000010"
+	ensureTestUser(t, pool, userID)
+	// Promote to admin — the trigger condition for Option A.
+	if _, err := pool.Exec(ctx, `UPDATE users SET role = 'admin' WHERE id = $1`, userID); err != nil {
+		t.Fatalf("promote user to admin: %v", err)
+	}
+	ensureTestWorkspace(t, pool, wsID, userID)
+	defer cleanupProviderCredentials(t, store, "admin", "_platform")
+	defer pool.Exec(ctx, "DELETE FROM workspace_credential_bindings WHERE workspace_id = $1", wsID)
+	defer pool.Exec(ctx, "DELETE FROM workspaces WHERE id = $1", wsID)
+	defer pool.Exec(ctx, "DELETE FROM users WHERE id = $1", userID)
+
+	// Free-tier credential — has target_type='all' auto-apply rule
+	// (created by UpsertFreeTierCredential).
+	if err := store.UpsertFreeTierCredential(ctx, []byte("free-tier-cipher")); err != nil {
+		t.Fatalf("UpsertFreeTierCredential: %v", err)
+	}
+
+	// Custom admin credential WITHOUT any auto-apply rule. This is the
+	// gap: pre-fix, this credential would never reach any workspace
+	// unless the admin separately called POST /admin/.../auto-apply.
+	var customAdminCredID string
+	err := pool.QueryRow(ctx,
+		`INSERT INTO provider_credentials (owner_type, owner_id, name, kind, slug, ciphertext)
+		 VALUES ('admin', '_platform', 'paid-openai', 'openai', 'paid-openai', $1)
+		 RETURNING id`, []byte("paid-openai-cipher")).Scan(&customAdminCredID)
+	if err != nil {
+		t.Fatalf("insert custom admin cred: %v", err)
+	}
+
+	// Seed.
+	if err := store.SeedWorkspaceCredentials(ctx, wsID, userID, nil); err != nil {
+		t.Fatalf("SeedWorkspaceCredentials: %v", err)
+	}
+
+	// Expect BOTH admin credentials bound to the admin-owned workspace.
+	var count int
+	err = pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM workspace_credential_bindings wcb
+		 JOIN provider_credentials pc ON pc.id = wcb.credential_id
+		 WHERE wcb.workspace_id = $1 AND pc.owner_type = 'admin'`, wsID).Scan(&count)
+	if err != nil {
+		t.Fatalf("count admin bindings: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("admin-owned workspace must have both admin credentials bound (free-tier via auto-apply + custom via cascade); got %d", count)
+	}
+
+	// Verify the custom credential specifically is bound (not just the free-tier).
+	var boundCustom bool
+	err = pool.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM workspace_credential_bindings
+		 WHERE workspace_id = $1 AND credential_id = $2)`, wsID, customAdminCredID).Scan(&boundCustom)
+	if err != nil {
+		t.Fatalf("check custom cred bound: %v", err)
+	}
+	if !boundCustom {
+		t.Fatal("custom admin credential without auto-apply rule must be bound to admin-owned workspace (issue #593 Option A)")
+	}
+}
+
+// TestPgCredentialStore_SeedWorkspaceCredentials_NonAdminOwnerSkipsAdminCascade
+// verifies the negative side of issue #593 Option A: a non-admin owner
+// must NOT receive admin credentials that lack an explicit auto-apply
+// rule. Only credentials with target_type='all' (e.g. free-tier) or
+// target_type='user' matching this user reach the workspace.
+//
+// This guards against the cascade over-reaching: if the EXISTS check
+// on users.role='admin' were removed, every workspace would receive
+// every admin credential — a privilege boundary violation.
+func TestPgCredentialStore_SeedWorkspaceCredentials_NonAdminOwnerSkipsAdminCascade(t *testing.T) {
+	pool := getTestPool(t)
+	defer pool.Close()
+	store := NewPgSecretStore(pool)
+	ctx := context.Background()
+
+	userID := "cred-seed-user-2" // ensureTestUser creates with role='user'
+	wsID := "00000000-0000-0000-0000-000000000011"
+	ensureTestUser(t, pool, userID)
+	ensureTestWorkspace(t, pool, wsID, userID)
+	defer cleanupProviderCredentials(t, store, "admin", "_platform")
+	defer pool.Exec(ctx, "DELETE FROM workspace_credential_bindings WHERE workspace_id = $1", wsID)
+	defer pool.Exec(ctx, "DELETE FROM workspaces WHERE id = $1", wsID)
+	defer pool.Exec(ctx, "DELETE FROM users WHERE id = $1", userID)
+
+	// Free-tier (auto-apply target_type='all') — SHOULD bind.
+	if err := store.UpsertFreeTierCredential(ctx, []byte("free-tier-cipher")); err != nil {
+		t.Fatalf("UpsertFreeTierCredential: %v", err)
+	}
+	// Custom admin credential WITHOUT auto-apply — must NOT bind.
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO provider_credentials (owner_type, owner_id, name, kind, slug, ciphertext)
+		 VALUES ('admin', '_platform', 'paid-openai-2', 'openai', 'paid-openai-2', $1)`,
+		[]byte("paid-openai-cipher")); err != nil {
+		t.Fatalf("insert custom admin cred: %v", err)
+	}
+
+	if err := store.SeedWorkspaceCredentials(ctx, wsID, userID, nil); err != nil {
+		t.Fatalf("SeedWorkspaceCredentials: %v", err)
+	}
+
+	// Non-admin workspace must have ONLY the free-tier binding.
+	var count int
+	err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM workspace_credential_bindings wcb
+		 JOIN provider_credentials pc ON pc.id = wcb.credential_id
+		 WHERE wcb.workspace_id = $1 AND pc.owner_type = 'admin'`, wsID).Scan(&count)
+	if err != nil {
+		t.Fatalf("count admin bindings: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("non-admin workspace must have only the auto-apply admin credential (free-tier); got %d — cascade is over-reaching", count)
+	}
+}
+
+// TestPgCredentialStore_SeedWorkspaceCredentials_AdminCascadeIdempotent
+// verifies that calling SeedWorkspaceCredentials twice on an
+// admin-owned workspace does not produce duplicate bindings (the SQL
+// uses ON CONFLICT (credential_id, workspace_id) DO NOTHING).
+func TestPgCredentialStore_SeedWorkspaceCredentials_AdminCascadeIdempotent(t *testing.T) {
+	pool := getTestPool(t)
+	defer pool.Close()
+	store := NewPgSecretStore(pool)
+	ctx := context.Background()
+
+	userID := "cred-seed-admin-2"
+	wsID := "00000000-0000-0000-0000-000000000012"
+	ensureTestUser(t, pool, userID)
+	if _, err := pool.Exec(ctx, `UPDATE users SET role = 'admin' WHERE id = $1`, userID); err != nil {
+		t.Fatalf("promote user to admin: %v", err)
+	}
+	ensureTestWorkspace(t, pool, wsID, userID)
+	defer cleanupProviderCredentials(t, store, "admin", "_platform")
+	defer pool.Exec(ctx, "DELETE FROM workspace_credential_bindings WHERE workspace_id = $1", wsID)
+	defer pool.Exec(ctx, "DELETE FROM workspaces WHERE id = $1", wsID)
+	defer pool.Exec(ctx, "DELETE FROM users WHERE id = $1", userID)
+
+	if err := store.UpsertFreeTierCredential(ctx, []byte("cipher")); err != nil {
+		t.Fatalf("UpsertFreeTierCredential: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO provider_credentials (owner_type, owner_id, name, kind, slug, ciphertext)
+		 VALUES ('admin', '_platform', 'cascade-idem', 'openai', 'cascade-idem', $1)`,
+		[]byte("cipher")); err != nil {
+		t.Fatalf("insert admin cred: %v", err)
+	}
+
+	// Seed twice.
+	if err := store.SeedWorkspaceCredentials(ctx, wsID, userID, nil); err != nil {
+		t.Fatalf("SeedWorkspaceCredentials (1st): %v", err)
+	}
+	if err := store.SeedWorkspaceCredentials(ctx, wsID, userID, nil); err != nil {
+		t.Fatalf("SeedWorkspaceCredentials (2nd): %v", err)
+	}
+
+	var count int
+	err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM workspace_credential_bindings WHERE workspace_id = $1`, wsID).Scan(&count)
+	if err != nil {
+		t.Fatalf("count after re-seed: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("idempotent re-seed must not duplicate; expected 2 (free-tier + custom), got %d", count)
+	}
+}
+
 func TestPgCredentialStore_GetWorkspaceCredentials(t *testing.T) {
 	pool := getTestPool(t)
 	defer pool.Close()

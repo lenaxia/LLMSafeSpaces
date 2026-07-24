@@ -110,7 +110,30 @@ func (h *UserProviderCredentialsHandler) Create(c *gin.Context) {
 
 	dek, err := h.keys.GetDEK(c.Request.Context(), sessionID, extractMatchedSigningKey(c))
 	if err != nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "encryption unavailable"})
+		// Issue #593 Option C: surface an actionable message instead
+		// of the previous opaque "encryption unavailable". The DEK is
+		// unavailable in two common cases — (a) the caller authenticated
+		// with an API key created without decrypt_access (the default),
+		// or (b) the caller's JWT session has expired and not yet been
+		// re-cached. Both have a clear recovery path; tell the caller
+		// what it is.
+		//
+		// Status is 403, not 503: the service is healthy, the caller
+		// just lacks the key material this endpoint needs. This matches
+		// the secrets-package convention (ErrDEKUnavailable.Status =
+		// http.StatusForbidden) used by the other handlers that go
+		// through handleSecretError.
+		if errors.Is(err, secrets.ErrDEKUnavailable) {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "user credential encryption requires a password-authenticated session or an API key created with decryptAccess=true",
+				"code":  "dek_unavailable",
+			})
+			return
+		}
+		// A non-ErrDEKUnavailable error here is a genuine infrastructure
+		// failure (Redis down + rehydrate path returned an unexpected
+		// error). 503 is appropriate — the service really is degraded.
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "encryption key service unavailable"})
 		return
 	}
 
