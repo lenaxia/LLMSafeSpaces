@@ -375,6 +375,16 @@ jobs:
           pip install -e ".[dev]" -q
           pytest tests/test_client.py tests/test_async_client.py -q
 
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Java SDK — build and test
+        working-directory: sdks/java
+        run: mvn test -B
+
       - name: VS Code extension — install, typecheck, build
         working-directory: sdks/vscode-llmsafespaces
         run: |
@@ -391,22 +401,29 @@ jobs:
         working-directory: sdks
         continue-on-error: true
         run: make contract-test-mock
+        # Prism mock status-code matching is imperfect for public endpoints
+        # (security: []) and complex response shapes. The Hurl suite is
+        # informational — real integration coverage comes from the sdk-canary
+        # job which runs against a live API server. Kept non-blocking so spec
+        # edits don't fail CI on Prism quirks.
 
   # SDK Canary CI — runs the ci:fast (Tier 1 shallow) canary scenarios
   # against the local API server. These scenarios do not require a live
   # Kubernetes cluster, LLM credentials, or waiting for pod scheduling.
   # They verify auth, CRUD, error shapes, and SDK parsing regressions.
   sdk-canary:
-    name: SDK Canary (ci:fast scenarios)
+    name: SDK Integration (live API canaries)
     runs-on: ubuntu-latest
     needs: [sdk-contract]
-    if: false # Disabled: requires seeded accounts not yet committed (issue #27)
-    # Non-blocking: canary scenarios that require seeded accounts (valid-key,
-    # login flows, workspace CRUD) will fail until seed-accounts source is
-    # committed to the repo (tracked in issue #27). Health, error-shape, and
-    # unauthenticated tests pass. Marked continue-on-error so canary failures
-    # do not block merges; regressions are visible in the check detail.
+    # Non-blocking on first enablement: some scenarios assert on optional
+    # config fields (e.g. motd) not set in CI. Failures are visible in the
+    # check detail. Individual scenarios will be fixed in follow-up PRs.
     continue-on-error: true
+    # Previously disabled (if: false) citing issue #27, which was a relay
+    # handler bug unrelated to canary infrastructure. The seed-accounts tool
+    # is committed and the API server starts correctly with service containers.
+    # Enabled: exercises all four SDKs against a live API server with real
+    # Postgres + Redis, catching contract drift that mock-based unit tests miss.
     # Most canary scenario steps run inside the canary sub-module.
     # Steps that need the repo root override working-directory individually.
     defaults:
@@ -482,8 +499,8 @@ jobs:
           LLMSAFESPACES_REDIS_PORT: "6379"
           # Auth: the API reads LLMSAFESPACES_AUTH_JWTSECRET (not JWT_SECRET)
           LLMSAFESPACES_AUTH_JWTSECRET: canary-ci-jwt-secret-not-for-production
-          # DEK master key for secrets encryption (optional — uses no-op if absent)
-          LLMSAFESPACES_DEK_MASTER_KEY: "63616e6172792d63692d6d61737465722d6b65792d33326279746573303030"
+          # Master KEK for at-rest encryption (Epic 34: enforced at startup, min 32 bytes)
+          LLMSAFESPACES_MASTER_SECRET: "63616e6172792d63692d6d61737465722d6b65792d3332627974657330303030"
           LLMSAFESPACES_PORT: "8080"
           LLMSAFESPACES_KUBERNETES_INCLUSTER: "false"
           LLMSAFESPACES_KUBERNETES_CONFIGPATH: "/tmp/ci-kubeconfig.yaml"
@@ -523,10 +540,17 @@ jobs:
       # Seed test accounts
       - name: Seed canary test accounts
         run: |
+          # Verify API server is ready before seeding
+          for i in $(seq 1 10); do
+            if curl -sf http://localhost:8080/readyz >/dev/null 2>&1; then
+              break
+            fi
+            echo "Waiting for API readyz..."
+            sleep 2
+          done
           go run ./cmd/seed-accounts/ \
             --url http://localhost:8080 \
             --out /tmp/canary-keys.env
-        continue-on-error: true  # seed may fail if accounts exist (idempotent)
 
       - name: Load canary API keys
         run: |
