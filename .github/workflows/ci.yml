@@ -495,8 +495,8 @@ jobs:
           LLMSAFESPACES_REDIS_PORT: "6379"
           # Auth: the API reads LLMSAFESPACES_AUTH_JWTSECRET (not JWT_SECRET)
           LLMSAFESPACES_AUTH_JWTSECRET: canary-ci-jwt-secret-not-for-production
-          # DEK master key for secrets encryption (optional — uses no-op if absent)
-          LLMSAFESPACES_DEK_MASTER_KEY: "63616e6172792d63692d6d61737465722d6b65792d33326279746573303030"
+          # Master KEK for at-rest encryption (Epic 34: enforced at startup, min 32 bytes)
+          LLMSAFESPACES_MASTER_SECRET: "63616e6172792d63692d6d61737465722d6b65792d3332627974657330303030"
           LLMSAFESPACES_PORT: "8080"
           LLMSAFESPACES_KUBERNETES_INCLUSTER: "false"
           LLMSAFESPACES_KUBERNETES_CONFIGPATH: "/tmp/ci-kubeconfig.yaml"
