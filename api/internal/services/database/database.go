@@ -900,10 +900,9 @@ func (s *Service) GetAPIKey(ctx context.Context, userID, keyID string) (*types.A
         WHERE id = $1 AND user_id = $2
     `
 	var k types.APIKey
-	var keyStr string
 	var expiresAt sql.NullTime
 	err := s.DB.QueryRowContext(ctx, query, keyID, userID).Scan(
-		&k.ID, &keyStr, &k.Name, &k.Active, &k.CreatedAt, &expiresAt,
+		&k.ID, &k.Key, &k.Name, &k.Active, &k.CreatedAt, &expiresAt,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {

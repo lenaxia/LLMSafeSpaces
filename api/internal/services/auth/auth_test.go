@@ -1422,7 +1422,7 @@ func TestListAPIKeys_DBError(t *testing.T) {
 }
 
 func TestDeleteAPIKey_Success(t *testing.T) {
-	svc, mockDb, _ := newTestService(t)
+	svc, mockDb, mockCache := newTestService(t)
 	ctx := context.Background()
 
 	mockDb.On("GetAPIKey", ctx, "user-1", "key-1").Return(&types.APIKey{ID: "key-1"}, nil)
@@ -1432,6 +1432,91 @@ func TestDeleteAPIKey_Success(t *testing.T) {
 
 	assert.NoError(t, err)
 	mockDb.AssertExpectations(t)
+	mockCache.AssertExpectations(t)
+}
+
+// TestDeleteAPIKey_EvictsCache is the regression test for the SDK canary
+// failure "deleted-key: AuthError: expected 401". When an API key is
+// deleted, the validateAPIKey path's 15-minute Redis cache
+// (apikey:<sha256(key)>) must be evicted so subsequent requests with the
+// deleted key are rejected immediately rather than serving stale auth for
+// up to 15 minutes. The DB row deletion alone is insufficient — the
+// cache hit short-circuits the DB lookup entirely (auth.go:735-750).
+//
+// The test verifies the eviction is keyed on the API key's stored hash
+// (api_keys.key column = sha256(plaintext)), matching the cache key format
+// used at validation time (apikey:<sha256(plaintext)>).
+func TestDeleteAPIKey_EvictsCache(t *testing.T) {
+	svc, mockDb, mockCache := newTestService(t)
+	ctx := context.Background()
+
+	// The stored hash in the DB. validateAPIKey computes
+	// sha256(plaintext) and looks up by that hash; the cache key is
+	// "apikey:" + that same hash.
+	keyHash := "abc123def456"
+	expectedCacheKey := "apikey:" + keyHash
+
+	mockDb.On("GetAPIKey", ctx, "user-1", "key-1").Return(&types.APIKey{
+		ID:  "key-1",
+		Key: keyHash, // populated by the DB layer's GetAPIKey
+	}, nil)
+	mockDb.On("DeleteAPIKey", ctx, "user-1", "key-1").Return(nil)
+	// The eviction must happen — Delete on the cache with the exact key.
+	mockCache.On("Delete", ctx, expectedCacheKey).Return(nil)
+
+	err := svc.DeleteAPIKey(ctx, "user-1", "key-1")
+
+	assert.NoError(t, err)
+	mockDb.AssertExpectations(t)
+	mockCache.AssertExpectations(t)
+}
+
+// TestDeleteAPIKey_EvictsCache_SkipsWhenHashEmpty guards against calling
+// cache.Delete with an empty/bogus key when the DB row lacks a hash
+// (legacy data, or a future code path that doesn't populate Key). A
+// "apikey:" cache key with no hash suffix would be a no-op at best and
+// could collide with a real entry at worst.
+func TestDeleteAPIKey_EvictsCache_SkipsWhenHashEmpty(t *testing.T) {
+	svc, mockDb, mockCache := newTestService(t)
+	ctx := context.Background()
+
+	mockDb.On("GetAPIKey", ctx, "user-1", "key-1").Return(&types.APIKey{
+		ID: "key-1",
+		// Key empty — legacy row or DB layer regression
+	}, nil)
+	mockDb.On("DeleteAPIKey", ctx, "user-1", "key-1").Return(nil)
+	// No cache.Delete expectation — if the service calls it, the test
+	// fails with "unexpected call".
+
+	err := svc.DeleteAPIKey(ctx, "user-1", "key-1")
+
+	assert.NoError(t, err)
+	mockDb.AssertExpectations(t)
+	mockCache.AssertExpectations(t)
+}
+
+// TestDeleteAPIKey_EvictsCache_ContinuesOnCacheError verifies cache
+// eviction failure does NOT roll back the DB delete. The DB deletion is
+// the source of truth; a cache eviction failure means the stale entry
+// will expire via TTL (15min) — undesirable but not a correctness
+// violation. Surfacing the cache error as a delete failure would mislead
+// the caller (the key IS deleted) and leave a half-done operation.
+func TestDeleteAPIKey_EvictsCache_ContinuesOnCacheError(t *testing.T) {
+	svc, mockDb, mockCache := newTestService(t)
+	ctx := context.Background()
+
+	mockDb.On("GetAPIKey", ctx, "user-1", "key-1").Return(&types.APIKey{
+		ID:  "key-1",
+		Key: "somehash",
+	}, nil)
+	mockDb.On("DeleteAPIKey", ctx, "user-1", "key-1").Return(nil)
+	mockCache.On("Delete", ctx, "apikey:somehash").Return(errors.New("redis down"))
+
+	err := svc.DeleteAPIKey(ctx, "user-1", "key-1")
+
+	assert.NoError(t, err, "cache eviction failure must not fail the delete")
+	mockDb.AssertExpectations(t)
+	mockCache.AssertExpectations(t)
 }
 
 func TestDeleteAPIKey_NotFound(t *testing.T) {
@@ -1469,6 +1554,96 @@ func TestDeleteAPIKey_DeleteFails(t *testing.T) {
 
 	assert.Error(t, err)
 	mockDb.AssertExpectations(t)
+}
+
+// TestDeleteAPIKey_DeleteFails_PopulatedHash_NoCacheEviction is the third
+// review finding on PR #597. The existing TestDeleteAPIKey_DeleteFails uses
+// an APIKey with an empty Key field, so it cannot catch a regression where
+// someone moves the cache-eviction call BEFORE the DB-delete error check
+// (evicting the cache while leaving the DB row intact would let a key
+// briefly bypass auth during the window, then re-authenticate once the
+// cache re-warms). This test populates Key="somehash" so any premature
+// cache.Delete call would be observable; the gomock-based MockCacheService
+// has no Delete expectation set, so an unexpected call fails the test.
+func TestDeleteAPIKey_DeleteFails_PopulatedHash_NoCacheEviction(t *testing.T) {
+	svc, mockDb, mockCache := newTestService(t)
+	ctx := context.Background()
+
+	mockDb.On("GetAPIKey", ctx, "user-1", "key-1").Return(&types.APIKey{
+		ID:  "key-1",
+		Key: "somehash", // populated — cache.Delete would be called if eviction ran prematurely
+	}, nil)
+	mockDb.On("DeleteAPIKey", ctx, "user-1", "key-1").Return(errors.New("delete failed"))
+	// Deliberately NO mockCache.On("Delete", ...) — any call fails the test.
+
+	err := svc.DeleteAPIKey(ctx, "user-1", "key-1")
+
+	assert.Error(t, err)
+	mockDb.AssertExpectations(t)
+	mockCache.AssertExpectations(t)
+}
+
+// TestDeleteAPIKey_E2E_LifecycleEvictsCache is the end-to-end regression
+// test for the SDK canary failure "deleted-key: expected 401" (PR #597
+// review finding #2). It exercises the real DB→cache→eviction wiring
+// using an in-memory cache (memCache, defined in auth_revocation_test.go)
+// rather than gomock, so the test proves the eviction actually removes
+// the entry — not just that cache.Delete was called.
+//
+// Precedent: TestG18_RevocationSurvivesCacheRoundTrip
+// (auth_revocation_test.go:228) uses the same memCache pattern for JWT
+// revocation. This is the API-key equivalent: warm the validation cache,
+// delete the key, verify the cache entry is gone.
+func TestDeleteAPIKey_E2E_LifecycleEvictsCache(t *testing.T) {
+	log, _ := logger.New(true, "debug", "console")
+	cfg := &config.Config{}
+	cfg.Auth.JWTSecret = "test-secret-e2e-apikey"
+	cfg.Auth.TokenDuration = 24 * time.Hour
+	cfg.Auth.APIKeyPrefix = "lsp_"
+
+	cache := newMemCache()
+	mockDB := new(mocks.MockDatabaseService)
+
+	svc, err := New(cfg, log, mockDB, cache)
+	require.NoError(t, err)
+
+	ctx := context.Background()
+	userID := "user-e2e-apikey"
+	keyID := "key-e2e"
+	storedHash := "e2ehashabcdef0123456789" // what api_keys.key holds
+	cacheKey := "apikey:" + storedHash
+
+	// Warm the validation cache as validateAPIKey would: it caches
+	// "apikey:<sha256(plaintext)>" = userID for 15 minutes. Here we
+	// simulate a prior successful validation that populated the cache.
+	require.NoError(t, cache.Set(ctx, cacheKey, userID, 15*time.Minute))
+
+	// Sanity: cache entry exists before delete.
+	cached, gerr := cache.Get(ctx, cacheKey)
+	require.NoError(t, gerr)
+	require.Equal(t, userID, cached)
+
+	// Mock the DB layer: GetAPIKey returns the row with the hash populated
+	// (as the real database.go:GetAPIKey does post-fix), DeleteAPIKey
+	// succeeds.
+	mockDB.On("GetAPIKey", ctx, userID, keyID).Return(&types.APIKey{
+		ID:  keyID,
+		Key: storedHash,
+	}, nil)
+	mockDB.On("DeleteAPIKey", ctx, userID, keyID).Return(nil)
+
+	// Delete the key — this must evict the cache entry.
+	require.NoError(t, svc.DeleteAPIKey(ctx, userID, keyID))
+
+	// The cache entry must be gone. A subsequent validateAPIKey call
+	// would miss the cache and fall through to the DB lookup, which
+	// returns "invalid API key" (row deleted) → 401. This is the
+	// property the SDK canary's P6 ("deleted key rejected") checks.
+	_, gerr = cache.Get(ctx, cacheKey)
+	require.Error(t, gerr, "cache entry must be evicted after DeleteAPIKey — "+
+		"otherwise the deleted key continues to authenticate for up to 15 minutes (the cache TTL)")
+
+	mockDB.AssertExpectations(t)
 }
 
 // --- Account Lockout ---
