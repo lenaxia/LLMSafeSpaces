@@ -2,19 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { screen, waitFor, fireEvent, act } from "@testing-library/react";
 import { render } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import * as ReactRouter from "react-router-dom";
 import { AuthProvider } from "../providers/AuthProvider";
 import { RegisterPage } from "./RegisterPage";
-
-const mockNavigate = vi.fn();
-
-vi.mock("react-router-dom", async (importOriginal) => {
-  const actual = (await importOriginal()) as typeof ReactRouter;
-  return {
-    ...actual,
-    useNavigate: () => mockNavigate,
-  };
-});
 
 const mockRegister = vi.fn();
 
@@ -69,11 +58,24 @@ describe("RegisterPage", () => {
 
     it("navigates to return_to after successful register", async () => {
       window.history.replaceState({}, "", "/register?return_to=%2Fchat");
-      mockNavigate.mockClear();
       mockRegister.mockResolvedValue({ user: { id: "u-1", role: "user" as const } });
+
+      const hrefSetter = vi.fn();
+      const originalDescriptor = Object.getOwnPropertyDescriptor(window, "location");
 
       renderRegisterPage();
       await waitFor(() => expect(screen.getByPlaceholderText("Username")).toBeInTheDocument());
+
+      Object.defineProperty(window, "location", {
+        value: { href: "https://localhost/register" },
+        writable: true,
+        configurable: true,
+      });
+      Object.defineProperty(window.location, "href", {
+        get: () => "https://localhost/register",
+        set: hrefSetter,
+        configurable: true,
+      });
 
       fireEvent.change(screen.getByPlaceholderText("Username"), { target: { value: "alice" } });
       fireEvent.change(screen.getByPlaceholderText("Email"), { target: { value: "a@b.com" } });
@@ -84,8 +86,50 @@ describe("RegisterPage", () => {
       });
 
       await waitFor(() => {
-        expect(mockNavigate).toHaveBeenCalledWith("/chat");
+        expect(hrefSetter).toHaveBeenCalledWith("/chat");
       });
+
+      if (originalDescriptor) {
+        Object.defineProperty(window, "location", originalDescriptor);
+      }
+    });
+
+    it("does NOT redirect to return_to when register fails", async () => {
+      window.history.replaceState({}, "", "/register?return_to=%2Fchat");
+      mockRegister.mockRejectedValue(new Error("409 email already exists"));
+
+      const hrefSetter = vi.fn();
+      const originalDescriptor = Object.getOwnPropertyDescriptor(window, "location");
+
+      renderRegisterPage();
+      await waitFor(() => expect(screen.getByPlaceholderText("Username")).toBeInTheDocument());
+
+      Object.defineProperty(window, "location", {
+        value: { href: "https://localhost/register" },
+        writable: true,
+        configurable: true,
+      });
+      Object.defineProperty(window.location, "href", {
+        get: () => "https://localhost/register",
+        set: hrefSetter,
+        configurable: true,
+      });
+
+      fireEvent.change(screen.getByPlaceholderText("Username"), { target: { value: "alice" } });
+      fireEvent.change(screen.getByPlaceholderText("Email"), { target: { value: "a@b.com" } });
+      fireEvent.change(screen.getByPlaceholderText("Password"), { target: { value: "password123" } });
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /create account/i }));
+      });
+
+      // The register promise rejects — onSubmit throws before reaching
+      // window.location.href. The user stays on /register.
+      expect(hrefSetter).not.toHaveBeenCalled();
+
+      if (originalDescriptor) {
+        Object.defineProperty(window, "location", originalDescriptor);
+      }
     });
   });
 });

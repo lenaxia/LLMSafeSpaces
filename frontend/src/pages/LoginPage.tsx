@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { useAuth } from "../providers/AuthProvider";
 import { authApi } from "../api/auth";
 import { ssoApi, ssoRedirectURL, type SSODomain } from "../api/sso";
@@ -11,7 +11,6 @@ import { ApiClientError } from "../api/client";
 
 export function LoginPage() {
   const { login } = useAuth();
-  const navigate = useNavigate();
   const [registrationEnabled, setRegistrationEnabled] = useState(false);
   const [instanceName, setInstanceName] = useState("Safe Space");
   const [motd, setMotd] = useState("");
@@ -143,7 +142,16 @@ export function LoginPage() {
       <LoginForm
         onSubmit={async (u, p, r) => {
           await login(u, p, r);
-          if (returnTo) navigate(returnTo);
+          // react-router v7 wraps state updates in startTransition by
+          // default, so the setUser inside login can commit and trigger
+          // GuestOnly's <Navigate to="/chat"> before this navigate runs.
+          // For the returnTo case, use a full-page navigation so the
+          // redirect target wins the race deterministically. The page
+          // reloads at /settings with the now-valid auth cookie, and
+          // RequireAuth lets it through.
+          if (returnTo) {
+            window.location.href = returnTo;
+          }
         }}
         onEmailChange={setEmail}
       />
