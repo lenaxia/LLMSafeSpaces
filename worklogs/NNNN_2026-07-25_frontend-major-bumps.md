@@ -47,7 +47,7 @@ Result: the user lands on `/chat` instead of the `returnTo` target (e.g., `/sett
 
 **Tests updated**:
 - `LoginPage.test.tsx` and `RegisterPage.test.tsx`: the `returnTo` happy-path tests now spy on `window.location.href` setter (via `Object.defineProperty(window, "location", ...)`) instead of the mocked `useNavigate`. The mock is installed AFTER render (so the component's `useEffect` can read `return_to` from real search params) but BEFORE the submit click.
-- Added unhappy-path test: `does NOT redirect to return_to when login fails` — verifies that a rejected login promise does not trigger `window.location.href`.
+- Added unhappy-path tests: `does NOT redirect to return_to when login fails` (LoginPage) and `does NOT redirect to return_to when register fails` (RegisterPage) — verify that a rejected auth promise does not trigger `window.location.href`.
 - Removed dead `useNavigate` / `mockNavigate` from both test files (no longer used after the component change).
 
 ### `.trivyignore` updates
