@@ -2,7 +2,6 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { screen, waitFor, fireEvent, act } from "@testing-library/react";
 import { render } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import * as ReactRouter from "react-router-dom";
 import { AuthProvider } from "../providers/AuthProvider";
 import { LoginPage } from "./LoginPage";
 
@@ -11,15 +10,6 @@ const mockGetConfig = vi.fn();
 const mockDomains = vi.fn();
 const mockLookup = vi.fn();
 const mockLoginApi = vi.fn();
-const mockNavigate = vi.fn();
-
-vi.mock("react-router-dom", async (importOriginal) => {
-  const actual = (await importOriginal()) as typeof ReactRouter;
-  return {
-    ...actual,
-    useNavigate: () => mockNavigate,
-  };
-});
 
 vi.mock("../api/auth", () => ({
   authApi: {
@@ -366,6 +356,43 @@ describe("LoginPage", () => {
       });
 
       expect(hrefSetter).toHaveBeenCalledWith("/chat");
+
+      if (originalDescriptor) {
+        Object.defineProperty(window, "location", originalDescriptor);
+      }
+    });
+
+    it("does NOT redirect to return_to when login fails", async () => {
+      window.history.replaceState({}, "", "/login?return_to=%2Fchat");
+      mockLoginApi.mockRejectedValue(new Error("401 invalid credentials"));
+
+      const hrefSetter = vi.fn();
+      const originalDescriptor = Object.getOwnPropertyDescriptor(window, "location");
+
+      renderLoginPage();
+      await waitFor(() => expect(screen.getByPlaceholderText("Email")).toBeInTheDocument());
+
+      Object.defineProperty(window, "location", {
+        value: { href: "https://localhost/login" },
+        writable: true,
+        configurable: true,
+      });
+      Object.defineProperty(window.location, "href", {
+        get: () => "https://localhost/login",
+        set: hrefSetter,
+        configurable: true,
+      });
+
+      fireEvent.change(screen.getByPlaceholderText("Email"), { target: { value: "a@b.com" } });
+      fireEvent.change(screen.getByPlaceholderText("Password"), { target: { value: "wrong" } });
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
+      });
+
+      // The login promise rejects — the onSubmit handler throws before
+      // reaching window.location.href. The user stays on /login.
+      expect(hrefSetter).not.toHaveBeenCalled();
 
       if (originalDescriptor) {
         Object.defineProperty(window, "location", originalDescriptor);

@@ -2,19 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { screen, waitFor, fireEvent, act } from "@testing-library/react";
 import { render } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import * as ReactRouter from "react-router-dom";
 import { AuthProvider } from "../providers/AuthProvider";
 import { RegisterPage } from "./RegisterPage";
-
-const mockNavigate = vi.fn();
-
-vi.mock("react-router-dom", async (importOriginal) => {
-  const actual = (await importOriginal()) as typeof ReactRouter;
-  return {
-    ...actual,
-    useNavigate: () => mockNavigate,
-  };
-});
 
 const mockRegister = vi.fn();
 

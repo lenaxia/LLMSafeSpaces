@@ -30,7 +30,25 @@ Trivy's `--severity HIGH,CRITICAL` config was not flagging the moderate CVEs, bu
 
 - **vite 5→8**: three major versions jumped, but the app's `vite.config.ts` uses only stable, long-standing APIs (`defineConfig`, `react()`, `tailwindcss()`, `VitePWA()`). No config changes required. Build passes; bundle sizes unchanged within noise.
 - **vitest 2→3**: no API changes consumed — the test files use standard `describe/it/expect`, `vi.mock`, jsdom environment. All 127 test files / 1437 tests pass.
-- **react-router 6→7**: the app already used `createBrowserRouter` (the v6.4+ data-router API), which is the v7 recommended pattern. v7 makes the v6 future flags (`v7_startTransition`, `v7_relativeSplatPath`) the default — the warnings disappeared post-bump. No code changes required.
+- **react-router 6→7**: the app already used `createBrowserRouter` (the v6.4+ data-router API), which is the v7 recommended pattern. v7 makes the v6 future flags (`v7_startTransition`, `v7_relativeSplatPath`) the default. **One code change required** — see "returnTo redirect fix" below.
+
+### returnTo redirect fix (react-router v7 startTransition race)
+
+v7 wraps router state updates in `React.startTransition` by default (the `v7_startTransition` future flag became the default). This exposed a race in the login/register `returnTo` redirect:
+
+1. User submits login form → `onSubmit` calls `await login(email, password)`.
+2. Inside `login`, `setUser(res.user)` dispatches a state update.
+3. The state update triggers `GuestOnly` to render `<Navigate to="/chat" replace />` (because `user` is now non-null).
+4. The line after `await login()` — `if (returnTo) navigate(returnTo)` — runs, but the `GuestOnly` redirect has already committed in the startTransition batch.
+
+Result: the user lands on `/chat` instead of the `returnTo` target (e.g., `/settings`). The e2e test `return-to.spec.ts:100` ("login with return_to navigates back to target") caught this.
+
+**Fix**: replaced `navigate(returnTo)` with `window.location.href = returnTo` in both `LoginPage.tsx` and `RegisterPage.tsx`. A full-page navigation is deterministic — the browser navigates before React re-renders. The page reloads at the target URL with the now-valid auth cookie, and `RequireAuth` lets it through.
+
+**Tests updated**:
+- `LoginPage.test.tsx` and `RegisterPage.test.tsx`: the `returnTo` happy-path tests now spy on `window.location.href` setter (via `Object.defineProperty(window, "location", ...)`) instead of the mocked `useNavigate`. The mock is installed AFTER render (so the component's `useEffect` can read `return_to` from real search params) but BEFORE the submit click.
+- Added unhappy-path test: `does NOT redirect to return_to when login fails` — verifies that a rejected login promise does not trigger `window.location.href`.
+- Removed dead `useNavigate` / `mockNavigate` from both test files (no longer used after the component change).
 
 ### `.trivyignore` updates
 
@@ -49,8 +67,9 @@ Trivy's `--severity HIGH,CRITICAL` config was not flagging the moderate CVEs, bu
 ```
 cd frontend && npx tsc --noEmit          # clean
 cd frontend && npx vite build            # ✓ built in 1.97s
-cd frontend && npx vitest run            # 127 files, 1437 pass / 1 skip
+cd frontend && npx vitest run            # 127 files, 1437 pass / 1 skip (after returnTo fix + new unhappy-path test)
 cd frontend && npm audit                 # 2 remaining (both documented non-exploitable)
+# CI validates: Frontend (unit + typecheck + e2e) — includes the Playwright return-to.spec.ts e2e
 ```
 
 ---
@@ -83,5 +102,9 @@ None.
 
 - `frontend/package.json` — 5 version bumps.
 - `frontend/package-lock.json` — regenerated.
+- `frontend/src/pages/LoginPage.tsx` — `navigate(returnTo)` → `window.location.href = returnTo` (v7 startTransition race fix); removed `useNavigate` import.
+- `frontend/src/pages/RegisterPage.tsx` — same fix as LoginPage.
+- `frontend/src/pages/LoginPage.test.tsx` — updated returnTo test to spy on `window.location.href`; added unhappy-path test (login failure does not redirect); removed dead `useNavigate`/`mockNavigate`.
+- `frontend/src/pages/RegisterPage.test.tsx` — same test updates as LoginPage.
 - `.trivyignore` — removed 2 obsolete entries (esbuild, vite), added 2 new entries (brace-expansion, react-router RSC) with documented rationale + expiration.
 - `worklogs/NNNN_2026-07-25_frontend-major-bumps.md` — this worklog.
