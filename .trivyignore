@@ -19,20 +19,6 @@
 # We do NOT use a global ignore; instead .trivyignore.yaml scopes by path.
 # Keep this file for global CVE accepts only.
 
-# GHSA-gv7w-rqvm-qjhr — esbuild: missing binary integrity verification in Deno
-# Not exploitable: esbuild is used as a Vite transpiler (server-side bundling),
-# not as a Deno module resolver. The fix requires esbuild >= 0.28.1 which is
-# incompatible with Vite 5 (drops destructuring transpile for ES2020 targets).
-# Re-evaluate when upgrading to Vite 6+.
-GHSA-gv7w-rqvm-qjhr exp:2026-09-13
-
-# CVE-2026-53571 — vite: server.fs.deny bypass on Windows alternate paths
-# Not exploitable: LLMSafeSpaces runs on Linux (Debian-based containers) only.
-# The vulnerability affects Windows-specific alternate data stream paths which
-# do not exist on Linux filesystems. Fix is available in vite 6.4.3/7.3.5/8.0.16;
-# upgrade tracked separately from this bug fix.
-CVE-2026-53571 exp:2026-09-15
-
 # CVE-2026-13149 — brace-expansion: DoS via exponential-time complexity
 # Transitive npm dev dependency (minimatch → brace-expansion) used by build
 # tooling (eslint, vitest, etc.). Not shipped in any production image — the
@@ -48,6 +34,17 @@ CVE-2026-13149 exp:2026-10-21
 # too new to adopt without testing. Re-evaluate when vitest 4 stabilizes.
 CVE-2026-14257 exp:2026-10-21
 GHSA-mh99-v99m-4gvg exp:2026-10-21
+
+# GHSA-qwww-vcr4-c8h2 — react-router: RSC Mode CSRF Bypass
+# Not exploitable: this advisory affects React Server Components (RSC) mode
+# with server actions. LLMSafeSpaces uses client-side routing only
+# (createBrowserRouter — no SSR, no server actions, no RSC). The vulnerable
+# code path (action execution before 400 response) requires an RSC server
+# runtime that this codebase does not run. Affects react-router 7.12.0-8.2.0;
+# no patched release exists yet (downgrade to 7.11.0 is the only npm-audit
+# suggestion, which would lose bug fixes). Re-evaluate when a patched
+# react-router release ships.
+GHSA-qwww-vcr4-c8h2 exp:2026-10-21
 
 # CVE-2026-59869 — js-yaml: DoS via crafted YAML
 # Transitive npm dev dependency used by build tooling (eslint, vitest,
