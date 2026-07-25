@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { useAuth } from "../providers/AuthProvider";
 import { sanitiseReturnTo } from "../lib/returnTo";
 import { AuthCard } from "../components/auth/AuthCard";
@@ -7,7 +7,6 @@ import { RegisterForm } from "../components/auth/RegisterForm";
 
 export function RegisterPage() {
   const { register } = useAuth();
-  const navigate = useNavigate();
   const [returnTo, setReturnTo] = useState("");
 
   useEffect(() => {
@@ -28,7 +27,12 @@ export function RegisterPage() {
       <RegisterForm
         onSubmit={async (u, e, p, t) => {
           await register(u, e, p, t);
-          if (returnTo) navigate(returnTo);
+          // See LoginPage for rationale: full-page navigation avoids
+          // the react-router v7 startTransition race with GuestOnly's
+          // <Navigate to="/chat">.
+          if (returnTo) {
+            window.location.href = returnTo;
+          }
         }}
       />
     </AuthCard>

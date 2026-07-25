@@ -69,11 +69,24 @@ describe("RegisterPage", () => {
 
     it("navigates to return_to after successful register", async () => {
       window.history.replaceState({}, "", "/register?return_to=%2Fchat");
-      mockNavigate.mockClear();
       mockRegister.mockResolvedValue({ user: { id: "u-1", role: "user" as const } });
+
+      const hrefSetter = vi.fn();
+      const originalDescriptor = Object.getOwnPropertyDescriptor(window, "location");
 
       renderRegisterPage();
       await waitFor(() => expect(screen.getByPlaceholderText("Username")).toBeInTheDocument());
+
+      Object.defineProperty(window, "location", {
+        value: { href: "https://localhost/register" },
+        writable: true,
+        configurable: true,
+      });
+      Object.defineProperty(window.location, "href", {
+        get: () => "https://localhost/register",
+        set: hrefSetter,
+        configurable: true,
+      });
 
       fireEvent.change(screen.getByPlaceholderText("Username"), { target: { value: "alice" } });
       fireEvent.change(screen.getByPlaceholderText("Email"), { target: { value: "a@b.com" } });
@@ -84,8 +97,12 @@ describe("RegisterPage", () => {
       });
 
       await waitFor(() => {
-        expect(mockNavigate).toHaveBeenCalledWith("/chat");
+        expect(hrefSetter).toHaveBeenCalledWith("/chat");
       });
+
+      if (originalDescriptor) {
+        Object.defineProperty(window, "location", originalDescriptor);
+      }
     });
   });
 });

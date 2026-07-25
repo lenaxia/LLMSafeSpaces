@@ -329,10 +329,26 @@ describe("LoginPage", () => {
     it("navigates to return_to after successful login", async () => {
       window.history.replaceState({}, "", "/login?return_to=%2Fchat");
       mockLoginApi.mockResolvedValue({ user: { id: "u-1", role: "user" as const } });
-      mockNavigate.mockClear();
+
+      const hrefSetter = vi.fn();
+      const originalDescriptor = Object.getOwnPropertyDescriptor(window, "location");
 
       renderLoginPage();
       await waitFor(() => expect(screen.getByPlaceholderText("Email")).toBeInTheDocument());
+
+      // Mock window.location.href AFTER render so the useEffect could
+      // read return_to from the real search params, but BEFORE the
+      // login click triggers the redirect.
+      Object.defineProperty(window, "location", {
+        value: { href: "https://localhost/login" },
+        writable: true,
+        configurable: true,
+      });
+      Object.defineProperty(window.location, "href", {
+        get: () => "https://localhost/login",
+        set: hrefSetter,
+        configurable: true,
+      });
 
       fireEvent.change(screen.getByPlaceholderText("Email"), { target: { value: "a@b.com" } });
       fireEvent.change(screen.getByPlaceholderText("Password"), { target: { value: "password123" } });
@@ -349,7 +365,11 @@ describe("LoginPage", () => {
         });
       });
 
-      expect(mockNavigate).toHaveBeenCalledWith("/chat");
+      expect(hrefSetter).toHaveBeenCalledWith("/chat");
+
+      if (originalDescriptor) {
+        Object.defineProperty(window, "location", originalDescriptor);
+      }
     });
   });
 });
