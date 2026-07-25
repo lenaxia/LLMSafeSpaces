@@ -107,4 +107,4 @@ None.
 - `frontend/src/pages/LoginPage.test.tsx` — updated returnTo test to spy on `window.location.href`; added unhappy-path test (login failure does not redirect); removed dead `useNavigate`/`mockNavigate`.
 - `frontend/src/pages/RegisterPage.test.tsx` — same test updates as LoginPage.
 - `.trivyignore` — removed 2 obsolete entries (esbuild, vite), added 2 new entries (brace-expansion, react-router RSC) with documented rationale + expiration.
-- `worklogs/NNNN_2026-07-25_frontend-major-bumps.md` — this worklog.
+- `worklogs/0652_2026-07-25_frontend-major-bumps.md` — this worklog.
