@@ -744,6 +744,7 @@ jobs:
 
       - name: Delete kind cluster
         if: always()
+        working-directory: ${{ github.workspace }}
         run: ./kind delete cluster --name llmsafespaces-canary 2>/dev/null || true
 
   # Compute a single unix timestamp shared by all image-build jobs in this run
