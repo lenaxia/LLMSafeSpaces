@@ -7,6 +7,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-07-25
+
+### Fixed
+
+- **API-key-only admin workspaces now reach Active (#593, #595).** Three
+  root-cause fixes: (1) `agentHealth.providersConfigured` was always `0` for
+  healthy workspaces because the controller's healthy condition message
+  omitted the `configured=N` token the API regex parses; (2) `POST
+  /provider-credentials` and `GET /provider-credentials/:id/models` returned
+  an opaque `503 "encryption unavailable"` for API-key callers — now returns
+  `403` with actionable guidance pointing at `decryptAccess=true` or password
+  auth; (3) admin credentials never reached admin-owned workspaces without a
+  manual second API call — `SeedWorkspaceCredentials` now cascades all admin
+  credentials when the workspace owner has `users.role='admin'`.
+
+- **Deleted API keys are now immediately rejected (#597).** The 15-minute
+  validation cache was not evicted on delete, so a deleted key kept
+  authenticating until the TTL expired. `DeleteAPIKey` now evicts the
+  `apikey:<hash>` cache entry after the DB delete.
+
+- **`motd` field always present in `/auth/config` response (#596).**
+  `AuthConfig.MOTD` had `json:"motd,omitempty"` which dropped the key when
+  the value was empty (the default). All three SDK canaries assert field
+  presence.
+
+- **returnTo redirect race under react-router v7 (#600).** v7's
+  `startTransition` default caused `navigate(returnTo)` to lose a race with
+  `GuestOnly`'s `<Navigate to="/chat">`. Login and Register pages now use
+  `window.location.href` for the returnTo redirect.
+
+### Changed
+
+- **Frontend major-version bumps: vite 5→8, vitest 2→3, react-router-dom
+  6→7 (#600).** Clears all moderate+ npm CVEs (esbuild dev-server CORS,
+  vite server.fs.deny, react-router open-redirect ×3). Zero config changes;
+  the app already used `createBrowserRouter` (v6.4+ data-router API). The
+  returnTo fix above was the only code change required.
+
+- **SDK canary CI runs a real kind cluster (#599).** The `sdk-canary` job
+  previously used a stub kubeconfig pointing at a non-existent server, which
+  broke workspace-creating scenarios (`S-WS-CRUD`, `S-WS-STATUS`,
+  `S-WS-QUOTA`, `S-OWNERSHIP`). Now creates a kind cluster + installs CRDs
+  so workspace CRUD operations succeed.
+
+- **SDK versions synced to 0.5.4 (#598).** Python `pyproject.toml`,
+  TypeScript `package.json`/`package-lock.json`, Java `pom.xml`, and
+  `openapi.yaml` were stale at `0.4.5` on main (the release pipeline
+  overwrites at publish time and never bumped them back).
+
+- **postcss bumped to 8.5.18+ via npm overrides (#597).** Clears
+  GHSA-r28c-9q8g-f849 (path traversal, HIGH).
+
 ## [0.5.4] - 2026-07-23
 
 ### Fixed
