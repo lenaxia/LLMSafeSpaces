@@ -415,9 +415,10 @@ jobs:
     name: SDK Integration (live API canaries)
     runs-on: ubuntu-latest
     needs: [sdk-contract]
-    # Non-blocking on first enablement: some scenarios assert on optional
-    # config fields (e.g. motd) not set in CI. Failures are visible in the
-    # check detail. Individual scenarios will be fixed in follow-up PRs.
+    # Non-blocking while the workspace-creating scenarios (S-WS-CRUD,
+    # S-WS-STATUS, S-WS-QUOTA, S-OWNERSHIP) are being fixed to run against
+    # the kind cluster. Once all ci:fast scenarios pass consistently,
+    # flip to false so the canary gates merges.
     continue-on-error: true
     # Previously disabled (if: false) citing issue #27, which was a relay
     # handler bug unrelated to canary infrastructure. The seed-accounts tool
@@ -480,11 +481,36 @@ jobs:
           go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
           migrate -path api/migrations -database "postgres://llmsafespaces:changeme@localhost:5432/llmsafespaces?sslmode=disable" up
 
+      # Create a real kind cluster and install the LLMSafeSpaces CRDs.
+      # Several ci:fast scenarios (S-WS-CRUD, S-WS-STATUS, S-WS-QUOTA,
+      # S-OWNERSHIP) call Workspaces.Create, which needs the K8s API to
+      # accept the Workspace CRD. The previously-used stub kubeconfig
+      # (pointing at a non-existent server on :19999) only worked for
+      # scenarios that never touch workspace endpoints.
+      #
+      # No controller is deployed — workspaces stay in Pending phase
+      # (no reconciler to advance them), but all CRUD operations succeed,
+      # which is all the canaries assert on. Avoids the full Helm install
+      # + cert-manager + image load that e2e-nightly does (~10min setup);
+      # this adds ~30s.
+      - name: Create kind cluster and install CRDs
+        working-directory: ${{ github.workspace }}
+        run: |
+          curl -sLo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          chmod +x ./kind
+          ./kind create cluster --name llmsafespaces-canary
+          # Point kubectl at the cluster and apply the CRDs.
+          ./kind get kubeconfig --name llmsafespaces-canary > /tmp/ci-kubeconfig.yaml
+          kubectl --kubeconfig /tmp/ci-kubeconfig.yaml apply -f helm/crds/
+          # Create the namespace the API server expects (default: llmsafespaces).
+          kubectl --kubeconfig /tmp/ci-kubeconfig.yaml create namespace llmsafespaces --dry-run=client -o yaml | kubectl --kubeconfig /tmp/ci-kubeconfig.yaml apply -f -
+          # Wait for the CRDs to be established before the API tries to use them.
+          kubectl --kubeconfig /tmp/ci-kubeconfig.yaml wait --for=condition=Established crd/workspaces.llmsafespaces.dev --timeout=30s
+
       # Start the API server in the background.
-      # We write a stub kubeconfig pointing at a non-existent server so the
-      # kubernetes client initialises without in-cluster creds. The canary
-      # ci:fast scenarios only exercise auth, CRUD, secrets, and session
-      # endpoints — none of which schedule real workspace pods.
+      # The kubeconfig now points at the real kind cluster — workspace
+      # CRUD scenarios create real Workspace CRDs (in Pending phase,
+      # since no controller runs).
       - name: Start API server
         working-directory: ${{ github.workspace }}
         env:
@@ -508,24 +534,6 @@ jobs:
           # Development mode: disables RequireHTTPS so canary can use plain HTTP.
           LLMSAFESPACES_LOGGING_DEVELOPMENT: "true"
         run: |
-          # Stub kubeconfig — API client initialises but no real cluster exists.
-          printf '%s\n' \
-            'apiVersion: v1' \
-            'kind: Config' \
-            'clusters:' \
-            '- cluster:' \
-            '    server: http://127.0.0.1:19999' \
-            '  name: ci-stub' \
-            'contexts:' \
-            '- context:' \
-            '    cluster: ci-stub' \
-            '    user: ci-user' \
-            '  name: ci-context' \
-            'current-context: ci-context' \
-            'users:' \
-            '- name: ci-user' \
-            '  user: {}' \
-            > /tmp/ci-kubeconfig.yaml
           /tmp/llmsafespaces-api &
           echo "API_PID=$!" >> "$GITHUB_ENV"
           # Wait up to 30s for the API to become ready
@@ -733,6 +741,10 @@ jobs:
       - name: Stop API server
         if: always()
         run: kill $API_PID 2>/dev/null || true
+
+      - name: Delete kind cluster
+        if: always()
+        run: ./kind delete cluster --name llmsafespaces-canary 2>/dev/null || true
 
   # Compute a single unix timestamp shared by all image-build jobs in this run
   # so every artifact built from one workflow invocation carries the same
