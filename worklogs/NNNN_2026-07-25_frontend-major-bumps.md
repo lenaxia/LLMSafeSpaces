@@ -55,9 +55,33 @@ cd frontend && npm audit                 # 2 remaining (both documented non-expl
 
 ---
 
+## Key Decisions
+
+1. **Jump vite 5→8 directly (not 5→6→7→8).** The app's `vite.config.ts` uses only stable APIs that didn't change across those majors. Incremental bumps would have tripled the testing effort for zero additional safety. All intermediate breaking changes (CJS Node API removal in v6, default SSR externalization in v7, rolldown integration in v8) don't affect this config.
+
+2. **`react-router-dom@7` not `react-router@7`.** v7 merged `react-router-dom` re-exports into `react-router`, but `react-router-dom` remains the correct package for apps using DOM APIs (`createBrowserRouter`). The merged package is `react-router` (framework mode). Keeping `react-router-dom` avoids touching imports.
+
+3. **Document non-exploitable advisories rather than blocking on them.** `brace-expansion` is dev-only (vitest transitive); `react-router RSC CSRF` requires a server runtime this app doesn't run. Both have 2026-10-21 review dates so they don't linger.
+
+---
+
+## Blockers
+
+None.
+
+---
+
+## Next Steps
+
+1. After merge, the frontend Dockerfile build will use vite 8 / vitest 3 / react-router 7 — verify the production image build (`make build-frontend`) succeeds in the release pipeline.
+2. Re-evaluate the 2 `.trivyignore` entries at 2026-10-21: check if vitest 4 is stable (clears brace-expansion) and if react-router has shipped a patched release (clears RSC CSRF).
+3. Optional: the `@types/node@^24` and `typescript@~6.0.2` versions are already current — no further TypeScript-side bumps needed.
+
+---
+
 ## Files Modified
 
 - `frontend/package.json` — 5 version bumps.
 - `frontend/package-lock.json` — regenerated.
 - `.trivyignore` — removed 2 obsolete entries (esbuild, vite), added 2 new entries (brace-expansion, react-router RSC) with documented rationale + expiration.
-- `worklogs/0652_2026-07-25_frontend-major-bumps.md` — this worklog.
+- `worklogs/NNNN_2026-07-25_frontend-major-bumps.md` — this worklog.
