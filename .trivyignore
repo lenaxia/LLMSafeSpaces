@@ -34,6 +34,7 @@ CVE-2026-13149 exp:2026-10-21
 # too new to adopt without testing. Re-evaluate when vitest 4 stabilizes.
 CVE-2026-14257 exp:2026-10-21
 GHSA-mh99-v99m-4gvg exp:2026-10-21
+CVE-2026-14257 exp:2026-10-21
 
 # GHSA-qwww-vcr4-c8h2 — react-router: RSC Mode CSRF Bypass
 # Not exploitable: this advisory affects React Server Components (RSC) mode
