@@ -43,6 +43,17 @@ const (
 // entering recovery backoff.
 const pendingPhaseTimeout = 5 * time.Minute
 
+// stuckScheduledPendingTimeout is how long a pod can remain Pending
+// despite being scheduled (PodScheduled=True) before the controller
+// declares it stuck and enters recovery. This catches node-level
+// volume-mount deadlocks (stale CSI mounts, dead CSI plugins, kubelet
+// volume queue saturation) that block container creation without the
+// pod ever becoming Unschedulable. The 10-minute window is generous:
+// measured workspace startup is ~22s; init containers rarely exceed
+// 2 min. A pod that is Pending with zero containers after 10 min has
+// a broken node, not a slow startup.
+const stuckScheduledPendingTimeout = 10 * time.Minute
+
 // Labels applied to workspace pods.
 const (
 	LabelApp       = "app"

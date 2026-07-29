@@ -196,3 +196,155 @@ func TestHandleCreating_UnschedulablePod_5Min_EntersRecovery(t *testing.T) {
 	assert.Equal(t, string(FailureClassInfrastructure), updated.Status.LastFailureClass)
 	assert.NotNil(t, updated.Status.NextRetryAt)
 }
+
+func TestHandleCreating_RestartGenBump_PersistedWhenPodPendingScheduled(t *testing.T) {
+	scheme := testScheme(t)
+	ws := makeWorkspace("ws-genpersist", "default", v1.WorkspacePhaseCreating)
+	ws.UID = "ws-genpersist-uid"
+	ws.Spec.RestartGeneration = 2
+	ws.Status.ObservedRestartGeneration = 1
+	ws.Status.ConsecutiveFailures = 3
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              podName("ws-genpersist", string(ws.UID)),
+			Namespace:         "default",
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-30 * time.Second)),
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodPending,
+			Conditions: []corev1.PodCondition{
+				{Type: corev1.PodScheduled, Status: corev1.ConditionTrue},
+			},
+		},
+	}
+
+	fc := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(ws, pod).
+		WithStatusSubresource(&v1.Workspace{}).
+		Build()
+	r := &WorkspaceReconciler{Client: fc, Scheme: scheme}
+
+	_, err := r.handleCreating(context.Background(), ws)
+	require.NoError(t, err)
+
+	updated := &v1.Workspace{}
+	require.NoError(t, fc.Get(context.Background(), types.NamespacedName{Name: "ws-genpersist", Namespace: "default"}, updated))
+	assert.Equal(t, int64(2), updated.Status.ObservedRestartGeneration,
+		"ObservedRestartGeneration must be persisted to avoid hot-loop reconcile")
+	assert.Equal(t, int32(0), updated.Status.ConsecutiveFailures,
+		"recovery state must be cleared by restartGeneration bump and persisted")
+}
+
+func TestHandleCreating_ScheduledStuckPending_10Min_EntersRecovery(t *testing.T) {
+	scheme := testScheme(t)
+	ws := makeWorkspace("ws-stuck", "default", v1.WorkspacePhaseCreating)
+	ws.UID = "ws-stuck-uid"
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              podName("ws-stuck", string(ws.UID)),
+			Namespace:         "default",
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-11 * time.Minute)),
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodPending,
+			Conditions: []corev1.PodCondition{
+				{Type: corev1.PodScheduled, Status: corev1.ConditionTrue},
+			},
+		},
+	}
+
+	fc := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(ws, pod).
+		WithStatusSubresource(&v1.Workspace{}).
+		Build()
+	r := &WorkspaceReconciler{Client: fc, Scheme: scheme}
+
+	_, err := r.handleCreating(context.Background(), ws)
+	require.NoError(t, err)
+
+	updated := &v1.Workspace{}
+	require.NoError(t, fc.Get(context.Background(), types.NamespacedName{Name: "ws-stuck", Namespace: "default"}, updated))
+	assert.Equal(t, int32(1), updated.Status.ConsecutiveFailures,
+		"scheduled pod stuck Pending with no containers for >10min must enter recovery")
+	assert.Equal(t, string(FailureClassInfrastructure), updated.Status.LastFailureClass)
+	assert.NotNil(t, updated.Status.NextRetryAt)
+}
+
+func TestHandleCreating_ScheduledPendingWithInit_NoRecovery(t *testing.T) {
+	scheme := testScheme(t)
+	ws := makeWorkspace("ws-init-progress", "default", v1.WorkspacePhaseCreating)
+	ws.UID = "ws-init-progress-uid"
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              podName("ws-init-progress", string(ws.UID)),
+			Namespace:         "default",
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-11 * time.Minute)),
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodPending,
+			Conditions: []corev1.PodCondition{
+				{Type: corev1.PodScheduled, Status: corev1.ConditionTrue},
+			},
+			InitContainerStatuses: []corev1.ContainerStatus{
+				{Name: "workspace-dirs", State: corev1.ContainerState{
+					Waiting: &corev1.ContainerStateWaiting{Reason: "PodInitializing"},
+				}},
+			},
+		},
+	}
+
+	fc := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(ws, pod).
+		WithStatusSubresource(&v1.Workspace{}).
+		Build()
+	r := &WorkspaceReconciler{Client: fc, Scheme: scheme}
+
+	_, err := r.handleCreating(context.Background(), ws)
+	require.NoError(t, err)
+
+	updated := &v1.Workspace{}
+	require.NoError(t, fc.Get(context.Background(), types.NamespacedName{Name: "ws-init-progress", Namespace: "default"}, updated))
+	assert.Equal(t, int32(0), updated.Status.ConsecutiveFailures,
+		"pod with init containers running must NOT enter stuck-pending recovery")
+}
+
+func TestHandleCreating_ScheduledPendingUnderTimeout_NoRecovery(t *testing.T) {
+	scheme := testScheme(t)
+	ws := makeWorkspace("ws-soon", "default", v1.WorkspacePhaseCreating)
+	ws.UID = "ws-soon-uid"
+
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              podName("ws-soon", string(ws.UID)),
+			Namespace:         "default",
+			CreationTimestamp: metav1.NewTime(time.Now().Add(-5 * time.Minute)),
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodPending,
+			Conditions: []corev1.PodCondition{
+				{Type: corev1.PodScheduled, Status: corev1.ConditionTrue},
+			},
+		},
+	}
+
+	fc := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(ws, pod).
+		WithStatusSubresource(&v1.Workspace{}).
+		Build()
+	r := &WorkspaceReconciler{Client: fc, Scheme: scheme}
+
+	_, err := r.handleCreating(context.Background(), ws)
+	require.NoError(t, err)
+
+	updated := &v1.Workspace{}
+	require.NoError(t, fc.Get(context.Background(), types.NamespacedName{Name: "ws-soon", Namespace: "default"}, updated))
+	assert.Equal(t, int32(0), updated.Status.ConsecutiveFailures,
+		"scheduled pod pending for <10min must NOT enter recovery")
+}
