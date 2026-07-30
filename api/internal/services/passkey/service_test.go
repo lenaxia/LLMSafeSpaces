@@ -383,12 +383,6 @@ func TestFinishLogin_ExpiredChallenge(t *testing.T) {
 	_, err := svc.FinishLogin(context.Background(), "never-existed", "alice@test.com", emptyParsed)
 	assert.ErrorIs(t, err, ErrChallengeExpired)
 }
-func (s *failDeleteSessionStore) GetChallenge(_ context.Context, _ string) ([]byte, error) {
-	return s.data, nil
-}
-func (s *failDeleteSessionStore) DeleteChallenge(_ context.Context, _ string) error {
-	return assert.AnError
-}
 
 func TestCacheSessionStore_RoundTrip(t *testing.T) {
 	store := newMemSessionStore()
