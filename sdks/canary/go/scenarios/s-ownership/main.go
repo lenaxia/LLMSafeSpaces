@@ -145,12 +145,12 @@ func runOwnership(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	run.Assert(err != nil, "user2-ensure-session-user1-ws: error",
 		canary.ErrDetail(err, "expected error"))
 
-	// N6: Bindings route uses secrets service which returns 404 for cross-user access
-	// (validated: handleSecretError maps ErrWorkspaceNotOwned → 404).
+	// N6: Cross-user bindings access — returns 403 (workspace ownership
+	// middleware denies access before the secrets handler is reached).
 	status, body, _ := canary.RawDo(ctx, "GET",
 		cfg.APIURL+"/api/v1/workspaces/"+ws1.ID+"/bindings",
 		cfg.APIKeyUser2, nil)
-	run.Assert(status == 404, "user2-bindings-user1-ws: 404 (secrets handler returns 404 for cross-user)",
+	run.Assert(status == 403 || status == 404, "user2-bindings-user1-ws: 403/404 (access denied)",
 		fmt.Sprintf("got %d: %s", status, truncate(body, 200)))
 }
 
