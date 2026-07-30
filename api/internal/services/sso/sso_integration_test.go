@@ -42,7 +42,7 @@ type integrationKeyService struct {
 func (r *integrationKeyService) InitializeUserKeys(_ context.Context, _ string, _ []byte) (string, error) {
 	return "", nil
 }
-func (r *integrationKeyService) InitializeUserKeysServerKEK(_ context.Context, userID string) error {
+func (r *integrationKeyService) InitializeUserKeysServerKEK(_ context.Context, userID, _ string) error {
 	r.serverKEKInitUserIDs = append(r.serverKEKInitUserIDs, userID)
 	return r.serverKEKInitErr
 }
@@ -270,8 +270,8 @@ type realKeyServiceAdapter struct{ inner *secrets.KeyService }
 func (a realKeyServiceAdapter) InitializeUserKeys(_ context.Context, _ string, _ []byte) (string, error) {
 	return "", nil
 }
-func (a realKeyServiceAdapter) InitializeUserKeysServerKEK(ctx context.Context, userID string) error {
-	return a.inner.InitializeUserKeysServerKEK(ctx, userID)
+func (a realKeyServiceAdapter) InitializeUserKeysServerKEK(ctx context.Context, userID, dekSource string) error {
+	return a.inner.InitializeUserKeysServerKEK(ctx, userID, dekSource)
 }
 func (a realKeyServiceAdapter) UnlockDEK(ctx context.Context, userID string, pw []byte, sid string, ttl time.Duration) error {
 	return a.inner.UnlockDEKWithSigningKey(ctx, userID, pw, sid, ttl, nil)

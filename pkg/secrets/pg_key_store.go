@@ -71,7 +71,7 @@ func (s *PgKeyStore) CreateUserKey(ctx context.Context, record *UserKeyRecord) e
 		   created_at = EXCLUDED.created_at,
 		   rotated_at = NULL`
 
-	if record.DEKSource == dekSourceServerKEK {
+	if dekSourceIsServerWrapped(record.DEKSource) {
 		tx, err := s.pool.Begin(ctx)
 		if err != nil {
 			return fmt.Errorf("begin server-kek provisioning tx: %w", err)
@@ -81,7 +81,7 @@ func (s *PgKeyStore) CreateUserKey(ctx context.Context, record *UserKeyRecord) e
 			record.UserID, record.KeyVersion, record.WrappedDEK, record.WrappedDEKRecovery, record.Salt, record.RecoverySalt, record.CreatedAt); err != nil {
 			return fmt.Errorf("upsert user_keys: %w", err)
 		}
-		if _, err := tx.Exec(ctx, `UPDATE users SET dek_source = 'server_kek' WHERE id = $1`, record.UserID); err != nil {
+		if _, err := tx.Exec(ctx, `UPDATE users SET dek_source = $2 WHERE id = $1`, record.UserID, record.DEKSource); err != nil {
 			return fmt.Errorf("set dek_source: %w", err)
 		}
 		if err := tx.Commit(ctx); err != nil {

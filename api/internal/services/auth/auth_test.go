@@ -1070,7 +1070,7 @@ func (f *fakeKeyService) InitializeUserKeys(ctx context.Context, userID string, 
 	return f.recoveryKey, nil
 }
 
-func (f *fakeKeyService) InitializeUserKeysServerKEK(_ context.Context, userID string) error {
+func (f *fakeKeyService) InitializeUserKeysServerKEK(_ context.Context, userID, _ string) error {
 	f.serverKEKInitCalls = append(f.serverKEKInitCalls, userID)
 	return f.serverKEKInitErr
 }

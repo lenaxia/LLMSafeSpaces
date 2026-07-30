@@ -29,7 +29,7 @@ func (f *fakeKeyManager) ProvisionServerKEKKeys(_ context.Context, userID string
 	return f.provisionErr
 }
 
-func (f *fakeKeyManager) IssueTokenAndUnlockDEK(_ context.Context, userID string, ttl time.Duration) (string, error) {
+func (f *fakeKeyManager) IssueTokenAndUnlockDEK(_ context.Context, userID string, ttl time.Duration, _ string) (string, error) {
 	f.issueUnlockUserID = userID
 	f.issueUnlockTTL = ttl
 	if f.issueErr != nil {

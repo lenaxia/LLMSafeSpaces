@@ -426,8 +426,8 @@ func (c *capturingKeyService) InitializeUserKeys(ctx context.Context, userID str
 	return recoveryKey, err
 }
 
-func (c *capturingKeyService) InitializeUserKeysServerKEK(ctx context.Context, userID string) error {
-	return c.inner.InitializeUserKeysServerKEK(ctx, userID)
+func (c *capturingKeyService) InitializeUserKeysServerKEK(ctx context.Context, userID, dekSource string) error {
+	return c.inner.InitializeUserKeysServerKEK(ctx, userID, dekSource)
 }
 
 func (c *capturingKeyService) UnlockDEK(ctx context.Context, userID string, password []byte, sessionID string, ttl time.Duration) error {
