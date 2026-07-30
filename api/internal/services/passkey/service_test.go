@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/google/uuid"
 
 	"github.com/lenaxia/llmsafespaces/pkg/types"
@@ -266,6 +267,94 @@ func TestRandomRecoveryCode_CorrectLength(t *testing.T) {
 	code, err := randomRecoveryCode()
 	require.NoError(t, err)
 	assert.Len(t, code, RecoveryCodeLen)
+}
+
+func TestRandInt_Unbiased(t *testing.T) {
+	// Statistical test: 10000 samples should distribute roughly uniformly.
+	// With max=31, each bucket should get ~322 ± ~35 (3 sigma).
+	counts := make(map[int]int)
+	for i := 0; i < 10000; i++ {
+		v, err := randInt(31)
+		require.NoError(t, err)
+		counts[v]++
+	}
+	for i := 0; i < 31; i++ {
+		assert.Greater(t, counts[i], 200, "bucket %d severely underrepresented: %d", i, counts[i])
+	}
+}
+
+// TestFinishRegistration_ConsumesChallenge verifies that FinishRegistration
+// consumes the challenge (single-use) even when the attestation verification
+// fails. This is the security-critical single-use guarantee: a failed
+// ceremony cannot be retried with the same session token.
+func TestFinishRegistration_ConsumesChallenge(t *testing.T) {
+	svc, _, sessions, _ := newTestService(t)
+	ctx := context.Background()
+
+	// Start a registration to store a challenge.
+	opts, err := svc.BeginRegistration(ctx, "user-1", "alice")
+	require.NoError(t, err)
+
+	// Call FinishRegistration with an empty attestation (will fail at
+	// verification, but the challenge must be consumed FIRST). Using an empty
+	// struct rather than nil avoids a nil-pointer dereference in go-webauthn.
+	emptyParsed := &protocol.ParsedCredentialCreationData{}
+	_, err = svc.FinishRegistration(ctx, opts.SessionToken, "alice", "Alice Key", emptyParsed)
+	require.Error(t, err, "FinishRegistration with empty attestation must fail")
+
+	// The challenge MUST be consumed (deleted) — single-use guarantee.
+	data, _ := sessions.GetChallenge(ctx, opts.SessionToken)
+	assert.Nil(t, data, "challenge must be consumed even on verification failure")
+
+	// A second call with the same token must fail with ErrChallengeExpired.
+	_, err = svc.FinishRegistration(ctx, opts.SessionToken, "alice", "Alice Key", emptyParsed)
+	assert.ErrorIs(t, err, ErrChallengeExpired, "consumed challenge must not be reusable")
+}
+
+// TestFinishRegistration_ExpiredChallenge verifies the error path when the
+// session token has no stored challenge (expired or never begun).
+func TestFinishRegistration_ExpiredChallenge(t *testing.T) {
+	svc, _, _, _ := newTestService(t)
+	emptyParsed := &protocol.ParsedCredentialCreationData{}
+	_, err := svc.FinishRegistration(context.Background(), "never-existed", "bob", "Bob Key", emptyParsed)
+	assert.ErrorIs(t, err, ErrChallengeExpired)
+}
+
+// TestConsumeChallenge_DeleteFailure_Propagates verifies that a delete failure
+// during challenge consumption surfaces as an error (not silently swallowed),
+// so a surviving challenge cannot be replayed.
+func TestConsumeChallenge_DeleteFailure_Propagates(t *testing.T) {
+	store := &failDeleteSessionStore{}
+	svc, err := New(ServiceConfig{
+		RPID:      "localhost",
+		RPName:    "Test",
+		RPOrigins: []string{"https://localhost"},
+		Store:     &memStore{},
+		Users:     &fakeUserLookup{users: map[string]*types.User{}},
+		Sessions:  store,
+	})
+	require.NoError(t, err)
+
+	// Store a challenge first.
+	require.NoError(t, store.SaveChallenge(context.Background(), "tok-1", []byte("{}"), time.Minute))
+
+	// Attempting to consume must fail because DeleteChallenge errors.
+	_, err = svc.FinishRegistration(context.Background(), "tok-1", "alice", "A", nil)
+	require.Error(t, err, "delete failure must propagate, not be swallowed")
+}
+
+// failDeleteSessionStore returns a valid challenge but fails on delete.
+type failDeleteSessionStore struct{ data []byte }
+
+func (s *failDeleteSessionStore) SaveChallenge(_ context.Context, _ string, data []byte, _ time.Duration) error {
+	s.data = data
+	return nil
+}
+func (s *failDeleteSessionStore) GetChallenge(_ context.Context, _ string) ([]byte, error) {
+	return s.data, nil
+}
+func (s *failDeleteSessionStore) DeleteChallenge(_ context.Context, _ string) error {
+	return assert.AnError
 }
 
 func TestCacheSessionStore_RoundTrip(t *testing.T) {

@@ -37,8 +37,8 @@ type passkeyUserStore interface {
 }
 
 // PasskeyHandler handles WebAuthn passkey registration, login, and recovery.
-// PasskeyService is the narrow interface the handler needs from the ceremony
-// service. passkey.Service satisfies it; tests substitute a fake.
+// PasskeyService interface defines the ceremony methods the handler needs.
+// passkey.Service satisfies it; tests substitute a fake.
 type PasskeyService interface {
 	BeginRegistration(ctx context.Context, userID, username string) (*passkey.BeginRegistrationOptions, error)
 	FinishRegistration(ctx context.Context, sessionToken, username, name string, parsed *protocol.ParsedCredentialCreationData) (*passkey.FinishRegistrationResult, error)
