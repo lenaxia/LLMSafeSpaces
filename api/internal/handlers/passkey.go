@@ -36,7 +36,6 @@ type passkeyUserStore interface {
 	CreateUser(ctx context.Context, user *types.User) error
 }
 
-// PasskeyHandler handles WebAuthn passkey registration, login, and recovery.
 // PasskeyService interface defines the ceremony methods the handler needs.
 // passkey.Service satisfies it; tests substitute a fake.
 type PasskeyService interface {
@@ -44,10 +43,10 @@ type PasskeyService interface {
 	FinishRegistration(ctx context.Context, sessionToken, username, name string, parsed *protocol.ParsedCredentialCreationData) (*passkey.FinishRegistrationResult, error)
 	BeginLogin(ctx context.Context, email string) (*passkey.BeginLoginOptions, string, error)
 	FinishLogin(ctx context.Context, sessionToken, email string, parsed *protocol.ParsedCredentialAssertionData) (string, error)
-	ConsumeRecoveryCode(ctx context.Context, email, code string) (string, error)
 	CreateCredentialAndRecoveryCodes(ctx context.Context, cred *passkey.Credential, hashes []string) error
 }
 
+// PasskeyHandler handles WebAuthn passkey registration, login, and recovery.
 type PasskeyHandler struct {
 	svc      PasskeyService
 	auth     passkeyAuthService

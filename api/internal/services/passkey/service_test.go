@@ -357,6 +357,39 @@ func (s *failDeleteSessionStore) DeleteChallenge(_ context.Context, _ string) er
 	return assert.AnError
 }
 
+// TestFinishLogin_ConsumesChallenge verifies the same single-use guarantee for
+// the login ceremony as TestFinishRegistration_ConsumesChallenge.
+func TestFinishLogin_ConsumesChallenge(t *testing.T) {
+	svc, store, sessions, lookup := newTestService(t)
+	ctx := context.Background()
+	lookup.users["alice@test.com"] = &types.User{ID: "u1", Username: "alice", Email: "alice@test.com"}
+	store.creds = []Credential{{UserID: "u1", CredentialID: []byte("cred-1")}}
+
+	opts, _, err := svc.BeginLogin(ctx, "alice@test.com")
+	require.NoError(t, err)
+
+	emptyParsed := &protocol.ParsedCredentialAssertionData{}
+	_, err = svc.FinishLogin(ctx, opts.SessionToken, "alice@test.com", emptyParsed)
+	require.Error(t, err, "FinishLogin with empty assertion must fail")
+
+	data, _ := sessions.GetChallenge(ctx, opts.SessionToken)
+	assert.Nil(t, data, "challenge must be consumed even on verification failure")
+}
+
+func TestFinishLogin_ExpiredChallenge(t *testing.T) {
+	svc, _, _, lookup := newTestService(t)
+	lookup.users["alice@test.com"] = &types.User{ID: "u1", Username: "alice", Email: "alice@test.com"}
+	emptyParsed := &protocol.ParsedCredentialAssertionData{}
+	_, err := svc.FinishLogin(context.Background(), "never-existed", "alice@test.com", emptyParsed)
+	assert.ErrorIs(t, err, ErrChallengeExpired)
+}
+func (s *failDeleteSessionStore) GetChallenge(_ context.Context, _ string) ([]byte, error) {
+	return s.data, nil
+}
+func (s *failDeleteSessionStore) DeleteChallenge(_ context.Context, _ string) error {
+	return assert.AnError
+}
+
 func TestCacheSessionStore_RoundTrip(t *testing.T) {
 	store := newMemSessionStore()
 	ctx := context.Background()
