@@ -193,22 +193,29 @@ func (s *Service) BeginRegistration(ctx context.Context, userID, username string
 		return nil, fmt.Errorf("save challenge: %w", err)
 	}
 
-	opts := marshalResponse(creation.Response)
+	opts, err := marshalResponse(creation.Response)
+	if err != nil {
+		return nil, err
+	}
 	return &BeginRegistrationOptions{Options: opts, SessionToken: token}, nil
 }
 
 // FinishRegistrationResult holds the verified credential + recovery codes
-// generated at enrollment (one-time display).
+// generated at enrollment (one-time display). Neither is persisted by the
+// service — the CALLER (HTTP handler) must create the user row FIRST (so the
+// FK constraint on user_passkeys.user_id is satisfied), then atomically
+// persist both via Store.CreateCredentialAndRecoveryCodes.
 type FinishRegistrationResult struct {
-	Credential    Credential
-	RecoveryCodes []string
+	Credential         Credential
+	RecoveryCodes      []string
+	RecoveryCodeHashes []string
 }
 
 // FinishRegistration verifies the authenticator's attestation against the
-// stored challenge, persists the credential, and generates recovery codes.
-// The stored challenge is consumed (deleted) regardless of outcome —
-// single-use. The userID is recovered from the stored WebAuthn session
-// (set at BeginRegistration time); the caller does not need to pass it.
+// stored challenge and returns the verified credential + generated recovery
+// codes. Does NOT persist — the caller orchestrates user creation + credential
+// storage in the correct order (user row before credential FK, both before
+// recovery codes). The stored challenge IS consumed (single-use) regardless.
 func (s *Service) FinishRegistration(ctx context.Context, sessionToken, username, name string, parsed *protocol.ParsedCredentialCreationData) (*FinishRegistrationResult, error) {
 	sessionData, err := s.consumeChallenge(ctx, sessionToken)
 	if err != nil {
@@ -216,19 +223,18 @@ func (s *Service) FinishRegistration(ctx context.Context, sessionToken, username
 	}
 
 	userID := string(sessionData.UserID)
-	user := &webauthnUser{
+	waUser := &webauthnUser{
 		id:          sessionData.UserID,
 		name:        username,
 		displayName: username,
 		creds:       []webauthn.Credential{},
 	}
 
-	cred, err := s.wan.CreateCredential(user, *sessionData, parsed)
+	cred, err := s.wan.CreateCredential(waUser, *sessionData, parsed)
 	if err != nil {
 		return nil, fmt.Errorf("verify attestation: %w", err)
 	}
 
-	// Persist the verified credential.
 	stored := Credential{
 		ID:                uuid.New(),
 		UserID:            userID,
@@ -241,20 +247,25 @@ func (s *Service) FinishRegistration(ctx context.Context, sessionToken, username
 		Name:              name,
 		CreatedAt:         time.Now(),
 	}
-	if err := s.store.CreateCredential(ctx, &stored); err != nil {
-		return nil, fmt.Errorf("store credential: %w", err)
-	}
 
-	// Generate recovery codes.
 	codes, hashes, err := generateRecoveryCodes(RecoveryCodeCount)
 	if err != nil {
 		return nil, fmt.Errorf("generate recovery codes: %w", err)
 	}
-	if err := s.store.CreateRecoveryCodes(ctx, userID, hashes); err != nil {
-		return nil, fmt.Errorf("store recovery codes: %w", err)
-	}
 
-	return &FinishRegistrationResult{Credential: stored, RecoveryCodes: codes}, nil
+	return &FinishRegistrationResult{
+		Credential:         stored,
+		RecoveryCodes:      codes,
+		RecoveryCodeHashes: hashes,
+	}, nil
+}
+
+// CreateCredentialAndRecoveryCodes atomically persists a credential AND its
+// recovery-code hashes via the Store. The handler calls this after creating
+// the user row, so the FK constraint is satisfied. Exposed on the service so
+// the handler doesn't reach into the Store directly.
+func (s *Service) CreateCredentialAndRecoveryCodes(ctx context.Context, cred *Credential, hashes []string) error {
+	return s.store.CreateCredentialAndRecoveryCodes(ctx, cred, hashes)
 }
 
 // --- Login ceremony ---
@@ -314,7 +325,10 @@ func (s *Service) BeginLogin(ctx context.Context, email string) (*BeginLoginOpti
 		return nil, "", fmt.Errorf("save challenge: %w", err)
 	}
 
-	opts := marshalResponse(assertion.Response)
+	opts, err := marshalResponse(assertion.Response)
+	if err != nil {
+		return nil, "", err
+	}
 	return &BeginLoginOptions{Options: opts, SessionToken: token}, user.ID, nil
 }
 
@@ -413,9 +427,11 @@ func (s *Service) consumeChallenge(ctx context.Context, token string) (*webauthn
 	if data == nil {
 		return nil, ErrChallengeExpired
 	}
-	// Delete FIRST (single-use guarantee) — even if the subsequent verification
-	// fails, the challenge cannot be replayed.
-	_ = s.sessions.DeleteChallenge(ctx, token)
+	// Delete FIRST (single-use guarantee). If the delete fails, surface it —
+	// a surviving challenge is a replay vector, not a "best-effort" concern.
+	if err := s.sessions.DeleteChallenge(ctx, token); err != nil {
+		return nil, fmt.Errorf("consume challenge (delete failed — potential replay): %w", err)
+	}
 
 	var session webauthn.SessionData
 	if err := json.Unmarshal(data, &session); err != nil {
@@ -477,14 +493,17 @@ func randomRecoveryCode() (string, error) {
 }
 
 // marshalResponse converts a go-webauthn protocol struct to a map[string]any
-// suitable for JSON-serializing to the browser. The browser feeds this to
-// navigator.credentials.create() (registration) or .get() (login).
-func marshalResponse(v any) map[string]any {
+// suitable for JSON-serializing to the browser. Returns an error on marshal
+// or unmarshal failure rather than silently returning nil (Rule 6: explicit
+// error handling).
+func marshalResponse(v any) (map[string]any, error) {
 	raw, err := json.Marshal(v)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("marshal webauthn response: %w", err)
 	}
 	var m map[string]any
-	_ = json.Unmarshal(raw, &m)
-	return m
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil, fmt.Errorf("unmarshal webauthn response: %w", err)
+	}
+	return m, nil
 }

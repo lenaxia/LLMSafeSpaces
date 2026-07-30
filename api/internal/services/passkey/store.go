@@ -86,6 +86,11 @@ type Store interface {
 	// duplicate credential_id (unique index) — an authenticator cannot be bound
 	// to two accounts.
 	CreateCredential(ctx context.Context, c *Credential) error
+	// CreateCredentialAndRecoveryCodes atomically persists a credential AND
+	// its associated recovery-code hashes in a single transaction. Used at
+	// passkey enrollment so a partial failure (credential committed, recovery
+	// codes lost) cannot leave a passkey-only user with zero recovery codes.
+	CreateCredentialAndRecoveryCodes(ctx context.Context, cred *Credential, recoveryCodeHashes []string) error
 	// UpdateCredentialAfterLogin records the post-assertion sign count (cloned-
 	// authenticator detection) and last-used timestamp.
 	UpdateCredentialAfterLogin(ctx context.Context, id uuid.UUID, signCount uint32, lastUsedAt time.Time) error

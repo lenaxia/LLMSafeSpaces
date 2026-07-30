@@ -6,6 +6,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/passkey"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
@@ -104,20 +106,13 @@ func (h *PasskeyHandler) RegisterFinish(c *gin.Context) {
 		return
 	}
 
-	parsed, err := protocol.ParseCredentialCreationResponseBody(c.Request.Body)
+	parsed, err := parseCreationFromMap(req.Response)
 	if err != nil {
-		// The request body was already consumed by ShouldBindJSON. Reparse
-		// from the Response field which carries the raw attestation.
-		parsed, err = parseCreationFromMap(req.Response)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid attestation response"})
-			return
-		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid attestation response"})
+		return
 	}
 
-	// Look up or create the user. The attestation is bound to the user handle
-	// generated at /begin (stored in the challenge session), so the ceremony
-	// verification enforces that the credential matches the correct user.
+	// Look up existing user.
 	existing, err := h.users.GetUserByEmail(c.Request.Context(), req.Email)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "lookup failed"})
@@ -134,6 +129,9 @@ func (h *PasskeyHandler) RegisterFinish(c *gin.Context) {
 		}
 	}
 
+	// Verify the attestation. Returns the verified credential + recovery codes
+	// WITHOUT persisting — the handler orchestrates persistence in the correct
+	// order (user row → credential FK → recovery codes).
 	result, err := h.svc.FinishRegistration(c.Request.Context(), req.SessionToken, username, req.Name, parsed)
 	if err != nil {
 		status := http.StatusInternalServerError
@@ -144,9 +142,8 @@ func (h *PasskeyHandler) RegisterFinish(c *gin.Context) {
 		return
 	}
 
-	// Create the user row if this is a new signup. The credential is already
-	// persisted by FinishRegistration; the user row must exist for the DEK
-	// provisioning (users.dek_source flip) to succeed.
+	// Create the user row FIRST so the FK constraint on user_passkeys.user_id
+	// is satisfied before the credential is inserted.
 	if existing == nil {
 		newUser := &types.User{
 			ID:            result.Credential.UserID,
@@ -156,12 +153,18 @@ func (h *PasskeyHandler) RegisterFinish(c *gin.Context) {
 			Role:          "user",
 			Status:        types.UserStatusActive,
 			EmailVerified: true,
-			PasswordHash:  dummyUnusableHash,
+			PasswordHash:  randomUnusableHash(),
 		}
 		if err := h.users.CreateUser(c.Request.Context(), newUser); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "user creation failed"})
 			return
 		}
+	}
+
+	// Atomically persist credential + recovery codes (single transaction).
+	if err := h.svc.CreateCredentialAndRecoveryCodes(c.Request.Context(), &result.Credential, result.RecoveryCodeHashes); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "credential persistence failed"})
+		return
 	}
 
 	// Issue session token + unlock the DEK (passkey tier).
@@ -249,10 +252,18 @@ func (h *PasskeyHandler) LoginFinish(c *gin.Context) {
 
 // --- helpers ---
 
-// dummyUnusableHash is a well-formed bcrypt hash that no password can match,
-// so password login is permanently blocked for passkey-only users. Same pattern
-// as SSO resolveUser.
-const dummyUnusableHash = "$2a$12$7c6XjTynpWE0yY.2/uC1IufZqmLuVCoJSv3MFVWCPBaWVDaPPwXj."
+// randomUnusableHash generates a unique random bcrypt hash per passkey-only
+// user so password login is permanently blocked. Unique per user (not a shared
+// constant) to match SSO's pattern — a single preimage discovery cannot affect
+// other accounts. The input is crypto-random; no password produces this hash.
+func randomUnusableHash() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "$2a$12$7c6XjTynpWE0yY.2/uC1IufZqmLuVCoJSv3MFVWCPBaWVDaPPwXj."
+	}
+	h, _ := bcrypt.GenerateFromPassword(b, 12)
+	return string(h)
+}
 
 // emailLocalPart extracts the local part of an email for a default username.
 func emailLocalPart(email string) string {

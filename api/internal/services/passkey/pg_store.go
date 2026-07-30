@@ -74,6 +74,37 @@ func (s *PgStore) CreateCredential(ctx context.Context, c *Credential) error {
 	return nil
 }
 
+// CreateCredentialAndRecoveryCodes atomically persists the credential AND the
+// recovery-code hashes in a single transaction. Partial failure rolls back
+// both — a passkey-only user always gets either (credential + recovery codes)
+// or neither.
+func (s *PgStore) CreateCredentialAndRecoveryCodes(ctx context.Context, cred *Credential, hashes []string) error {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin credential+recovery tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO user_passkeys
+		   (id, user_id, credential_id, public_key, attestation_type, attestation_format, aaguid, sign_count, transports, name, created_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, COALESCE($11, now()))`,
+		cred.ID, cred.UserID, cred.CredentialID, cred.PublicKey, cred.AttestationType, cred.AttestationFormat, cred.AAGUID,
+		cred.SignCount, cred.Transports, cred.Name, cred.CreatedAt); err != nil {
+		return fmt.Errorf("insert user_passkeys: %w", err)
+	}
+	for _, h := range hashes {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO user_recovery_codes (id, user_id, code_hash) VALUES ($1, $2, $3)`,
+			uuid.New(), cred.UserID, h); err != nil {
+			return fmt.Errorf("insert recovery code: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit credential+recovery: %w", err)
+	}
+	return nil
+}
+
 func (s *PgStore) UpdateCredentialAfterLogin(ctx context.Context, id uuid.UUID, signCount uint32, lastUsedAt time.Time) error {
 	_, err := s.pool.Exec(ctx,
 		`UPDATE user_passkeys SET sign_count = $1, last_used_at = $2 WHERE id = $3`,

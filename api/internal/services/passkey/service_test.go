@@ -69,6 +69,13 @@ func (s *memStore) DeleteCredential(_ context.Context, _ string, _ uuid.UUID) er
 func (s *memStore) CountCredentials(_ context.Context, _ string) (int, error) {
 	return len(s.creds), nil
 }
+func (s *memStore) CreateCredentialAndRecoveryCodes(_ context.Context, c *Credential, hashes []string) error {
+	s.creds = append(s.creds, *c)
+	for _, h := range hashes {
+		s.recoveryCodes = append(s.recoveryCodes, RecoveryCode{CodeHash: h})
+	}
+	return nil
+}
 func (s *memStore) CreateRecoveryCodes(_ context.Context, _ string, hashes []string) error {
 	for _, h := range hashes {
 		s.recoveryCodes = append(s.recoveryCodes, RecoveryCode{CodeHash: h})
