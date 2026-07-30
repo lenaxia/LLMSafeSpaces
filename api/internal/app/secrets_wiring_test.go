@@ -322,6 +322,49 @@ func TestPodBootstrapHandler_LoggerWired(t *testing.T) {
 	}
 }
 
+// TestPodBootstrapHandler_SettingsReaderWired is the regression guard for
+// the SetSettingsReader wiring in app.go. Without it, the
+// workspace.allowedExternalDirectories setting is never delivered to agentd
+// and agents prompt for /tmp/* on every session. Mirrors
+// TestPodBootstrapHandler_LoggerWired's approach: mirror the exact
+// construction+wire sequence app.go uses so a future reordering regresses
+// loudly instead of silently disabling the feature.
+func TestPodBootstrapHandler_SettingsReaderWired(t *testing.T) {
+	keyStore := &dbKeyStoreAdapter{}
+	dekCache := &memDEKCache{store: make(map[string][]byte)}
+	keyService := secrets.NewKeyService(keyStore, dekCache)
+	secretStore := &dbSecretStoreAdapter{}
+	secretService := secrets.NewSecretService(keyService, secretStore)
+
+	fakeClientset := k8sfake.NewSimpleClientset()
+	dbSvc := &fakeAppDBLookup{}
+	h := handlers.NewPodBootstrapHandlerFromClientset(
+		fakeClientset, secretService, dbSvc, nil, "test-namespace",
+	)
+	if h.HasSettingsReader() {
+		t.Fatalf("freshly-constructed PodBootstrapHandler must not have a settings reader before SetSettingsReader is called")
+	}
+
+	// Mirror the exact call app.go makes. settings.InstanceService satisfies
+	// the local bootstrapSettingsReader interface; here we use a minimal fake
+	// since the real InstanceService requires PostgreSQL.
+	h.SetSettingsReader(&fakeBootstrapSettingsReader{})
+
+	if !h.HasSettingsReader() {
+		t.Fatalf("SetSettingsReader must populate the handler so allowed-external-directories is delivered to agentd; " +
+			"otherwise the /tmp/* auto-approval feature is dead code in production")
+	}
+}
+
+// fakeBootstrapSettingsReader satisfies handlers.bootstrapSettingsReader
+// for the wiring test. No behavior needed — we only assert the wiring
+// call was made, not that GetStrings returns a value.
+type fakeBootstrapSettingsReader struct{}
+
+func (f *fakeBootstrapSettingsReader) GetStrings(_ context.Context, _ string) ([]string, error) {
+	return nil, nil
+}
+
 // fakeAppCRDGetter / fakeAppDBLookup are placeholders used only to
 // confirm the resolver constructor accepts compatible adapter types.
 // Behavioral tests live in secrets_podip_resolver_test.go.

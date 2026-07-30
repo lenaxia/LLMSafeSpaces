@@ -4,6 +4,7 @@
 package settings
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -109,6 +110,41 @@ func TestInstanceSettingIndex(t *testing.T) {
 	}
 	if def.Type != TypeBool {
 		t.Errorf("expected TypeBool, got %v", def.Type)
+	}
+}
+
+// TestInstanceSetting_AllowedExternalDirectories pins the contract for the
+// workspace.allowedExternalDirectories setting: it exists, is TypeStrings,
+// defaults to ["/tmp/*"] only (NOT /sandbox-cfg/* — that emptyDir holds
+// plaintext credential files the agent must never silently read), and is
+// registered in KnownKeys so the typed constant and schema agree.
+func TestInstanceSetting_AllowedExternalDirectories(t *testing.T) {
+	idx := InstanceSettingIndex()
+	def, ok := idx["workspace.allowedExternalDirectories"]
+	if !ok {
+		t.Fatal("workspace.allowedExternalDirectories missing from InstanceSettings")
+	}
+	if def.Type != TypeStrings {
+		t.Errorf("expected TypeStrings, got %v", def.Type)
+	}
+	got, ok := def.Default.([]string)
+	if !ok {
+		t.Fatalf("expected []string default, got %T", def.Default)
+	}
+	if len(got) != 1 || got[0] != "/tmp/*" {
+		t.Errorf("expected default [/tmp/*], got %v", got)
+	}
+	if !IsKnown("workspace.allowedExternalDirectories") {
+		t.Error("workspace.allowedExternalDirectories not registered in KnownKeys")
+	}
+	if KeyWorkspaceAllowedExternalDirs.Name() != "workspace.allowedExternalDirectories" {
+		t.Errorf("typed key name mismatch: %q", KeyWorkspaceAllowedExternalDirs.Name())
+	}
+	// Sanity: /sandbox-cfg/* must NOT be in the default (credential path).
+	for _, p := range got {
+		if strings.HasPrefix(p, "/sandbox-cfg") {
+			t.Errorf("default must not include credential path %q", p)
+		}
 	}
 }
 

@@ -46,6 +46,7 @@ var (
 	KeyWorkspaceDefaultNetworkEgress     = register(Key{"workspace.defaultNetworkAccess.egressDomains", "workspace", []string{}})
 	KeyWorkspaceDefaultMaxActiveSessions = register(Key{"workspace.defaultMaxActiveSessions", "workspace", 0})
 	KeyWorkspaceMaxActivePerUser         = register(Key{"workspace.maxActiveWorkspacesPerUser", "workspace", 0})
+	KeyWorkspaceAllowedExternalDirs      = register(Key{"workspace.allowedExternalDirectories", "workspace", []string{"/tmp/*"}})
 )
 
 // Auth settings

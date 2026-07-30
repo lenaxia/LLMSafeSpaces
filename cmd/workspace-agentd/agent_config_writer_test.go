@@ -497,3 +497,227 @@ func TestAgentConfigWriter_Rebuild_AdminPromptPreservesExistingBuildAgent(t *tes
 	require.Equal(t, true, build.Tools["write"],
 		"sibling field `tools.write` must be preserved across the admin-prompt merge")
 }
+
+// ---------------------------------------------------------------------------
+// Allowed-external-directories source (instance setting → mode.permissions).
+//
+// The bootstrap subcommand writes the instance's allowedExternalDirectories
+// setting to agentd.AllowedDirsPath as a JSON array. The writer reads it once
+// at init (loadAllowedDirs) and merges each glob into
+// mode.permissions.external_directory as an "allow" rule on every Rebuild.
+// This is the mechanism that stops agents prompting for /tmp/* on every
+// session.
+//
+// Contracts (each test turns red if its fix is reverted):
+//  1. Allowed dirs present → rebuild emits mode.permissions.external_directory
+//     with each pattern mapped to "allow".
+//  2. Existing mode block (incl. sibling permission tools like bash) is
+//     preserved across the merge — only external_directory is touched.
+//  3. Empty/missing allowed-dirs file → no mode block emitted (no-op).
+//  4. Output validates against opencode's actual schema (#486 class guard).
+// ---------------------------------------------------------------------------
+
+// writeAllowedDirs writes a JSON array of patterns to a temp dir, returning
+// the path. Mirrors the bootstrap subcommand's output shape.
+func writeAllowedDirs(t *testing.T, dir string, patterns []string) {
+	t.Helper()
+	data, err := json.Marshal(patterns)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "allowed-dirs.json"), data, 0o600))
+}
+
+// TestAllowedDirs_RebuildEmitsExternalDirectoryAllowRules verifies that
+// patterns loaded from AllowedDirsPath are merged into the rendered
+// agent-config.json as mode.permissions.external_directory allow-rules.
+// This is the load-bearing test: reverting the merge logic makes it fail.
+func TestAllowedDirs_RebuildEmitsExternalDirectoryAllowRules(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-config.json")
+	writeAllowedDirs(t, dir, []string{"/tmp/*", "/var/cache/*"})
+
+	w := newAgentConfigWriter(path)
+	w.setAllowedDirsPath(filepath.Join(dir, "allowed-dirs.json"))
+	w.loadAllowedDirs()
+	require.NoError(t, w.rebuild())
+
+	written, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	var cfg struct {
+		Mode struct {
+			Permissions struct {
+				ExternalDirectory map[string]string `json:"external_directory"`
+			} `json:"permissions"`
+		} `json:"mode"`
+	}
+	require.NoError(t, json.Unmarshal(written, &cfg))
+	require.Len(t, cfg.Mode.Permissions.ExternalDirectory, 2,
+		"both patterns must be present as allow-rules")
+	assert.Equal(t, "allow", cfg.Mode.Permissions.ExternalDirectory["/tmp/*"])
+	assert.Equal(t, "allow", cfg.Mode.Permissions.ExternalDirectory["/var/cache/*"])
+}
+
+// TestAllowedDirs_PreservesExistingModeBlock verifies that an existing
+// mode block (e.g. mode.permissions.bash set by another path) is preserved
+// when allowed-dirs are merged — only external_directory is added/merged.
+func TestAllowedDirs_PreservesExistingModeBlock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-config.json")
+	existing := `{
+		"$schema": "https://opencode.ai/config.json",
+		"provider": {"openai": {"options": {"apiKey": "sk-test"}}},
+		"mode": {
+			"permissions": {
+				"bash": "ask",
+				"external_directory": {"/opt/data/*": "allow"}
+			}
+		}
+	}`
+	require.NoError(t, os.WriteFile(path, []byte(existing), 0o600))
+	writeAllowedDirs(t, dir, []string{"/tmp/*"})
+
+	w := newAgentConfigWriter(path)
+	w.setAllowedDirsPath(filepath.Join(dir, "allowed-dirs.json"))
+	w.loadAllowedDirs()
+	require.NoError(t, w.rebuild())
+
+	written, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	var cfg struct {
+		Mode struct {
+			Permissions struct {
+				Bash              string            `json:"bash"`
+				ExternalDirectory map[string]string `json:"external_directory"`
+			} `json:"permissions"`
+		} `json:"mode"`
+	}
+	require.NoError(t, json.Unmarshal(written, &cfg))
+	assert.Equal(t, "ask", cfg.Mode.Permissions.Bash,
+		"sibling permission rule `bash` must be preserved")
+	require.Contains(t, cfg.Mode.Permissions.ExternalDirectory, "/opt/data/*",
+		"existing external_directory rule must be preserved")
+	require.Contains(t, cfg.Mode.Permissions.ExternalDirectory, "/tmp/*",
+		"injected /tmp/* rule must be present")
+	assert.Equal(t, "allow", cfg.Mode.Permissions.ExternalDirectory["/tmp/*"])
+}
+
+// TestAllowedDirs_MissingFile_NoModeBlock verifies that a missing or empty
+// allowed-dirs file results in NO mode block being emitted (true no-op,
+// not an empty mode object).
+func TestAllowedDirs_MissingFile_NoModeBlock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-config.json")
+
+	w := newAgentConfigWriter(path)
+	w.setAllowedDirsPath(filepath.Join(dir, "does-not-exist.json"))
+	w.loadAllowedDirs()
+	require.NoError(t, w.rebuild())
+
+	written, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, string(written), `"mode"`,
+		"missing allowed-dirs file must not emit a mode block")
+}
+
+// TestAllowedDirs_BareStringExternalDirectory_Preserved verifies that when
+// the existing external_directory is a bare action string (e.g. "ask"),
+// it is preserved as-is — NOT overwritten with a map that only contains
+// /tmp/*. Converting a bare "allow" (all dirs) to {"/tmp/*": "allow"}
+// would silently narrow a global policy.
+func TestAllowedDirs_BareStringExternalDirectory_Preserved(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-config.json")
+	existing := `{
+		"$schema": "https://opencode.ai/config.json",
+		"mode": {
+			"permissions": {
+				"external_directory": "ask"
+			}
+		}
+	}`
+	require.NoError(t, os.WriteFile(path, []byte(existing), 0o600))
+	writeAllowedDirs(t, dir, []string{"/tmp/*"})
+
+	w := newAgentConfigWriter(path)
+	w.setAllowedDirsPath(filepath.Join(dir, "allowed-dirs.json"))
+	w.loadAllowedDirs()
+	require.NoError(t, w.rebuild())
+
+	written, err := os.ReadFile(path)
+	require.NoError(t, err)
+
+	var cfg struct {
+		Mode struct {
+			Permissions struct {
+				ExternalDirectory json.RawMessage `json:"external_directory"`
+			} `json:"permissions"`
+		} `json:"mode"`
+	}
+	require.NoError(t, json.Unmarshal(written, &cfg))
+	// Must still be a bare string, not a map — the global policy is preserved.
+	var bare string
+	require.NoError(t, json.Unmarshal(cfg.Mode.Permissions.ExternalDirectory, &bare),
+		"bare-string external_directory must be preserved as a bare string, not converted to a map")
+	assert.Equal(t, "ask", bare,
+		"bare-string external_directory value must be unchanged")
+}
+
+// TestAllowedDirs_EmptyDirs_NoExternalDirectoryNoise verifies that when
+// allowedDirs is empty but an existing mode block has permissions (e.g.
+// bash: "ask"), the rebuild does NOT add an empty "external_directory": {}
+// to the rendered config.
+func TestAllowedDirs_EmptyDirs_NoExternalDirectoryNoise(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-config.json")
+	existing := `{
+		"$schema": "https://opencode.ai/config.json",
+		"mode": {
+			"permissions": {
+				"bash": "ask"
+			}
+		}
+	}`
+	require.NoError(t, os.WriteFile(path, []byte(existing), 0o600))
+
+	// No allowed-dirs file → loadAllowedDirs is a no-op.
+	w := newAgentConfigWriter(path)
+	w.setAllowedDirsPath(filepath.Join(dir, "does-not-exist.json"))
+	w.loadAllowedDirs()
+	require.NoError(t, w.rebuild())
+
+	written, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.NotContains(t, string(written), "external_directory",
+		"empty allowedDirs must not add external_directory to an existing mode block")
+
+	// But bash rule must survive.
+	var cfg struct {
+		Mode struct {
+			Permissions struct {
+				Bash string `json:"bash"`
+			} `json:"permissions"`
+		} `json:"mode"`
+	}
+	require.NoError(t, json.Unmarshal(written, &cfg))
+	assert.Equal(t, "ask", cfg.Mode.Permissions.Bash,
+		"existing bash permission rule must be preserved")
+}
+
+// TestAllowedDirs_SchemaValid asserts the merged output validates against
+// opencode's actual config schema (the #486 class guard — internal
+// round-trip tests previously validated intent, not the external contract).
+func TestAllowedDirs_SchemaValid(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-config.json")
+	writeAllowedDirs(t, dir, []string{"/tmp/*"})
+
+	w := newAgentConfigWriter(path)
+	w.setAllowedDirsPath(filepath.Join(dir, "allowed-dirs.json"))
+	w.loadAllowedDirs()
+	w.setProviders([]byte(`{"provider": {"openai": {"options": {"apiKey": "sk-test"}}}}`))
+	w.setModel("openai/gpt-4o")
+	require.NoError(t, w.rebuild())
+
+	assertMatchesOpencodeSchema(t, path)
+}

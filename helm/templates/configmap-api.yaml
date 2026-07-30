@@ -38,6 +38,7 @@ data:
       insecureSkipVerify: {{ .Values.redis.insecureSkipVerify }}
     auth:
       tokenDuration: {{ .Values.api.config.auth.tokenDuration }}
+      rememberMeDuration: {{ .Values.api.config.auth.rememberMeDuration }}
       apiKeyPrefix: {{ .Values.api.config.auth.apiKeyPrefix | quote }}
       {{- with .Values.api.config.auth.jwtIssuer }}
       jwtIssuer: {{ . | quote }}

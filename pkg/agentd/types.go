@@ -36,6 +36,15 @@ const (
 	// LLM providers) are live-pushed after boot and would otherwise be lost on
 	// every container restart.
 	ReloadSecretsCachePath = "/sandbox-runtime/last-reload-secrets.json"
+	// AllowedDirsPath is where the bootstrap subcommand writes the instance's
+	// allowedExternalDirectories setting (a JSON array of glob patterns). The
+	// AgentConfigWriter reads it once at init and merges each pattern into
+	// agent-config.json's mode.permissions.external_directory as an "allow"
+	// rule, so agents stop prompting for /tmp/* on every session. Lives on
+	// /sandbox-runtime tmpfs for the same reasons as ReloadSecretsCachePath —
+	// survives container restart, wiped on pod death, no plaintext-on-PVC
+	// concern (it's a list of public path globs, not secrets).
+	AllowedDirsPath = "/sandbox-runtime/allowed-dirs.json"
 )
 
 // Ports and network constants shared between agentd and the controller.

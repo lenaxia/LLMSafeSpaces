@@ -26,7 +26,11 @@ package settings
 // default; Ctrl/Cmd+Enter sends; mobile is button-only). Same class of
 // change as v3/v4 (modifying a property of an existing key) — admin UI and
 // frontend schema caches must refresh to show the new description.
-const SchemaVersion = 6
+// Bumped to 7 (2026-07-30): added workspace.allowedExternalDirectories
+// (TypeStrings) — directories pre-approved as opencode
+// external_directory "allow" rules so agents stop prompting for /tmp/* on
+// every session. New key; admin UI schema cache must refresh.
+const SchemaVersion = 7
 
 // SettingType defines the data type of a setting.
 type SettingType string
@@ -85,6 +89,14 @@ func InstanceSettings() []SettingDef {
 		{Key: "workspace.defaultStorageClass", Tier: 2, Type: TypeString, Default: "", Category: "Workspace", Label: "Storage Class", Description: "K8s StorageClass (empty = cluster default)"},
 		{Key: "workspace.maxActiveWorkspacesPerUser", Tier: 2, Type: TypeInt, Default: 10, Min: intPtr(1), Max: intPtr(50), Category: "Workspace", Label: "Max Active Workspaces", Description: "Max running pods per user; oldest auto-suspended"},
 		{Key: "workspace.defaultMaxActiveSessions", Tier: 2, Type: TypeInt, Default: 5, Min: intPtr(1), Max: intPtr(20), Category: "Workspace", Label: "Max Sessions", Description: "Concurrent sessions per workspace"},
+		// workspace.allowedExternalDirectories: glob patterns pre-approved as
+		// opencode external_directory "allow" rules, injected into every
+		// workspace's agent-config.json at boot. Agents prompt for any path
+		// outside the /workspace project root; /tmp/* is a PVC subPath with no
+		// credentials (US-35.7 moved them to tmpfs), so auto-approving it is
+		// safe. DO NOT add /sandbox-cfg/* here — that emptyDir holds plaintext
+		// credential files the agent must never silently read.
+		{Key: "workspace.allowedExternalDirectories", Tier: 2, Type: TypeStrings, Default: []string{"/tmp/*"}, Category: "Workspace", Label: "Allowed External Dirs", Description: "Glob patterns auto-approved as agent external_directory allow-rules (e.g. /tmp/*). Avoid credential paths like /sandbox-cfg/*."},
 		{Key: "workspace.defaultResources.cpu", Tier: 2, Type: TypeString, Default: "500m", Pattern: CPUQuantityPattern, Category: "Workspace", Label: "Default CPU", Description: "Default CPU limit (e.g. 500m, 1.0)"},
 		{Key: "workspace.defaultResources.memory", Tier: 2, Type: TypeString, Default: "1Gi", Pattern: MemoryQuantityPattern, Category: "Workspace", Label: "Default Memory", Description: "Default memory limit (e.g. 512Mi, 1Gi). Suffix is case-sensitive; must be > 0."},
 

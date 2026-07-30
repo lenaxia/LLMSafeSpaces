@@ -103,6 +103,13 @@ api:
       encoding: json
     auth:
       tokenDuration: 24h
+      # rememberMeDuration: TTL for JWTs minted when the user checks "remember
+      # me" on the login page. Must be > 0 to enable the feature; 0 disables
+      # it (rememberMe falls back to tokenDuration). The Go auth service only
+      # honors the rememberMe flag when this is strictly positive
+      # (auth.go:1072). Must be >= tokenDuration or remember-me sessions
+      # expire sooner than standard sessions (the API logs a warning on boot).
+      rememberMeDuration: 720h
       apiKeyPrefix: "lsp_"
       # jwtIssuer / jwtAudience: iss/aud claims minted on every JWT and
       # validated on every parse. Default "llmsafespaces" is applied at API

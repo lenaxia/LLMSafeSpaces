@@ -21,11 +21,16 @@ import (
 // bootstrapResponse is the JSON envelope returned by POST /internal/v1/pod-bootstrap.
 // Secrets is the decrypted credential array (same shape as secrets.json);
 // WorkspaceConfig carries the default-model selection read from PostgreSQL
-// (F1 — previously delivered via the K8s Secret's workspace-config.json key).
+// (F1 — previously delivered via the K8s Secret's workspace-config.json key);
+// AdminPrompt is the merged platform→org→role→user system prompt;
+// AllowedExternalDirectories is the instance setting that the AgentConfigWriter
+// merges into mode.permissions.external_directory as "allow" rules (stops
+// agents prompting for /tmp/* on every session).
 type bootstrapResponse struct {
-	Secrets         json.RawMessage `json:"secrets"`
-	WorkspaceConfig json.RawMessage `json:"workspaceConfig,omitempty"`
-	AdminPrompt     string          `json:"adminPrompt,omitempty"`
+	Secrets                    json.RawMessage `json:"secrets"`
+	WorkspaceConfig            json.RawMessage `json:"workspaceConfig,omitempty"`
+	AdminPrompt                string          `json:"adminPrompt,omitempty"`
+	AllowedExternalDirectories []string        `json:"allowedExternalDirectories,omitempty"`
 }
 
 // bootstrapRequest is the JSON body POSTed to the API.
@@ -59,6 +64,13 @@ func runBootstrapCommand(args []string, _ io.Writer, stderr io.Writer) int {
 	// Symmetric with --out; exposed as a flag so tests can write to a
 	// t.TempDir() rather than the production tmpfs path.
 	adminPromptOut := fs.String("admin-prompt-out", agentd.AdminPromptPath, "output admin-prompt.md path")
+	// allowedDirsOut is the file the bootstrap subcommand writes the instance's
+	// allowedExternalDirectories setting to (as a JSON array of glob patterns),
+	// if the API returns a non-empty list. The AgentConfigWriter reads it via
+	// loadAllowedDirs and merges each pattern into mode.permissions.external_directory
+	// as an "allow" rule. Defaults to agentd.AllowedDirsPath. Symmetric with
+	// --admin-prompt-out; exposed as a flag so tests can target a t.TempDir().
+	allowedDirsOut := fs.String("allowed-dirs-out", agentd.AllowedDirsPath, "output allowed-dirs.json path")
 
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -81,7 +93,7 @@ func runBootstrapCommand(args []string, _ io.Writer, stderr io.Writer) int {
 		return 0
 	}
 
-	secrets, wsCfg, adminPrompt, err := fetchBootstrapSecrets(*apiURL, *workspaceID, string(token))
+	secrets, wsCfg, adminPrompt, allowedDirs, err := fetchBootstrapSecrets(*apiURL, *workspaceID, string(token))
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "bootstrap: fetch failed: %v\n", err)
 		writeEmptySecrets(*out)
@@ -108,14 +120,25 @@ func runBootstrapCommand(args []string, _ io.Writer, stderr io.Writer) int {
 		}
 	}
 
+	if len(allowedDirs) > 0 {
+		dirsJSON, mErr := json.Marshal(allowedDirs)
+		if mErr != nil {
+			_, _ = fmt.Fprintf(stderr, "bootstrap: failed to marshal allowed-dirs: %v\n", mErr)
+		} else if err := atomicWriteSecrets(*allowedDirsOut, dirsJSON); err != nil {
+			_, _ = fmt.Fprintf(stderr, "bootstrap: failed to write allowed-dirs.json: %v\n", err)
+		} else {
+			_, _ = fmt.Fprintf(stderr, "bootstrap: wrote allowed-dirs (%d patterns)\n", len(allowedDirs))
+		}
+	}
+
 	_, _ = fmt.Fprintf(stderr, "bootstrap: success, %d bytes secrets\n", len(secrets))
 	return 0
 }
 
-func fetchBootstrapSecrets(apiURL, workspaceID, token string) (json.RawMessage, json.RawMessage, string, error) {
+func fetchBootstrapSecrets(apiURL, workspaceID, token string) (json.RawMessage, json.RawMessage, string, []string, error) {
 	body, err := json.Marshal(bootstrapRequest{WorkspaceID: workspaceID})
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", nil, err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -124,7 +147,7 @@ func fetchBootstrapSecrets(apiURL, workspaceID, token string) (json.RawMessage, 
 	//nolint:gosec // G704: apiURL is controller-set via LLMSAFESPACE_API_URL env var, not user-controllable
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL+"/internal/v1/pod-bootstrap", bytes.NewReader(body))
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
@@ -133,23 +156,23 @@ func fetchBootstrapSecrets(apiURL, workspaceID, token string) (json.RawMessage, 
 	//nolint:gosec // G704: apiURL is controller-set, not user-controllable
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, "", fmt.Errorf("API returned %d", resp.StatusCode)
+		return nil, nil, "", nil, fmt.Errorf("API returned %d", resp.StatusCode)
 	}
 
 	var result bootstrapResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, nil, "", fmt.Errorf("decode response: %w", err)
+		return nil, nil, "", nil, fmt.Errorf("decode response: %w", err)
 	}
 
 	if len(result.Secrets) == 0 {
 		result.Secrets = json.RawMessage("[]")
 	}
-	return result.Secrets, result.WorkspaceConfig, result.AdminPrompt, nil
+	return result.Secrets, result.WorkspaceConfig, result.AdminPrompt, result.AllowedExternalDirectories, nil
 }
 
 func writeEmptySecrets(path string) {

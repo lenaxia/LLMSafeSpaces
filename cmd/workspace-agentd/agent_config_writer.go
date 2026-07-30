@@ -56,13 +56,16 @@ type relaySource struct {
 // read-merge-write cycle so concurrent reloads and relay injection
 // cannot interleave.
 type AgentConfigWriter struct {
-	mu          sync.Mutex
-	path        string
-	providerRaw json.RawMessage // raw "provider" map JSON from FormatOpenCodeConfig; nil = no providers
-	model       string          // fully-qualified "providerID/modelID" form; "" = no model
-	relay       *relaySource    // nil = relay not yet injected / skipped
-	adminPrompt string          // admin-configured system prompt from agentd.AdminPromptPath; "" = none
-	agentRaw    json.RawMessage // existing "agent" config from loadExisting, preserved across rebuilds
+	mu              sync.Mutex
+	path            string
+	providerRaw     json.RawMessage // raw "provider" map JSON from FormatOpenCodeConfig; nil = no providers
+	model           string          // fully-qualified "providerID/modelID" form; "" = no model
+	relay           *relaySource    // nil = relay not yet injected / skipped
+	adminPrompt     string          // admin-configured system prompt from agentd.AdminPromptPath; "" = none
+	agentRaw        json.RawMessage // existing "agent" config from loadExisting, preserved across rebuilds
+	modeRaw         json.RawMessage // existing "mode" config from loadExisting, preserved across rebuilds
+	allowedDirs     []string        // glob patterns from AllowedDirsPath, merged as external_directory allow-rules
+	allowedDirsPath string          // path to the allowed-dirs JSON file; defaults to agentd.AllowedDirsPath
 }
 
 // newAgentConfigWriter creates the writer and initializes its sources
@@ -70,9 +73,10 @@ type AgentConfigWriter struct {
 // subcommand at boot). If the file is absent or corrupt, sources start
 // empty and the first Rebuild() creates a fresh file.
 func newAgentConfigWriter(path string) *AgentConfigWriter {
-	w := &AgentConfigWriter{path: path}
+	w := &AgentConfigWriter{path: path, allowedDirsPath: agentd.AllowedDirsPath}
 	w.loadExisting()
 	w.loadAdminPrompt()
+	w.loadAllowedDirs()
 	return w
 }
 
@@ -89,6 +93,7 @@ func (w *AgentConfigWriter) loadExisting() {
 		Provider json.RawMessage `json:"provider"`
 		Model    string          `json:"model,omitempty"`
 		Agent    json.RawMessage `json:"agent,omitempty"`
+		Mode     json.RawMessage `json:"mode,omitempty"`
 	}
 	if json.Unmarshal(data, &cfg) != nil {
 		return
@@ -96,6 +101,7 @@ func (w *AgentConfigWriter) loadExisting() {
 	w.providerRaw = cfg.Provider
 	w.model = cfg.Model
 	w.agentRaw = cfg.Agent
+	w.modeRaw = cfg.Mode
 
 	// 2026-06-23 cold-start optimization (item #1a, Phase D): detect
 	// a pre-boot-injected relay block and set the writer's relay
@@ -131,6 +137,48 @@ func (w *AgentConfigWriter) loadAdminPrompt() {
 		return
 	}
 	w.adminPrompt = string(data)
+}
+
+// setAllowedDirsPath overrides the allowed-dirs file path. Test seam so
+// tests can point at a t.TempDir() file instead of the production tmpfs
+// path. The constructor already calls loadAllowedDirs() with the default
+// path (agentd.AllowedDirsPath); calling this after construction + calling
+// loadAllowedDirs() again re-reads from the new path. The second call
+// appends to the slice (not replaces) — tests rely on the first call being
+// a no-op (the production path doesn't exist in a test environment).
+func (w *AgentConfigWriter) setAllowedDirsPath(p string) {
+	w.allowedDirsPath = p
+}
+
+// loadAllowedDirs reads the instance's allowedExternalDirectories setting
+// (written by the bootstrap subcommand as a JSON array of glob patterns)
+// and stores the patterns as the external_directory allow-rule source.
+// Called once at construction. Silent on error — a missing or corrupt file
+// means no allow-rules are injected, which is correct (agents prompt as
+// before). Patterns are de-duplicated to keep the rendered config clean.
+func (w *AgentConfigWriter) loadAllowedDirs() {
+	if w.allowedDirsPath == "" {
+		return
+	}
+	data, err := os.ReadFile(w.allowedDirsPath)
+	if err != nil || len(data) == 0 {
+		return
+	}
+	var patterns []string
+	if json.Unmarshal(data, &patterns) != nil {
+		return
+	}
+	seen := make(map[string]struct{}, len(patterns))
+	for _, p := range patterns {
+		if p == "" {
+			continue
+		}
+		if _, dup := seen[p]; dup {
+			continue
+		}
+		seen[p] = struct{}{}
+		w.allowedDirs = append(w.allowedDirs, p)
+	}
 }
 
 // parseRelayFromExisting extracts URL + models from a pre-injected
@@ -315,6 +363,80 @@ func (w *AgentConfigWriter) rebuild() error {
 			return fmt.Errorf("agent-config writer: marshal agent: %w", err)
 		}
 		cfg["agent"] = agentJSON
+	}
+
+	// Merge allowed-external-directories into mode.permissions.external_directory.
+	// The instance's allowedExternalDirectories setting (e.g. ["/tmp/*"]) is
+	// injected as "allow" rules so opencode stops prompting for paths outside
+	// the /workspace project root. The existing mode block is preserved —
+	// only the external_directory sub-object gains entries — so sibling
+	// permission rules (bash, edit, etc.) and other mode fields survive.
+	//
+	// The mode block is re-emitted when EITHER we have allowed-dirs to inject
+	// OR an existing mode block needs preserving (loadExisting captured it).
+	// When allowedDirs is empty and no mode exists, no mode block is emitted
+	// (true no-op, no empty-object noise).
+	if len(w.allowedDirs) > 0 || len(w.modeRaw) > 0 {
+		mode := make(map[string]json.RawMessage)
+		if len(w.modeRaw) > 0 {
+			_ = json.Unmarshal(w.modeRaw, &mode)
+		}
+
+		// Only touch external_directory when we have patterns to inject.
+		// Without this guard, an existing mode block with no external_directory
+		// key would gain an empty "external_directory": {} — functional but
+		// unnecessary noise in the rendered config.
+		if len(w.allowedDirs) > 0 {
+			var perms map[string]json.RawMessage
+			if raw, ok := mode["permissions"]; ok {
+				_ = json.Unmarshal(raw, &perms)
+			}
+			if perms == nil {
+				perms = map[string]json.RawMessage{}
+			}
+			// external_directory may be a bare action string ("ask"/"allow"/
+			// "deny") or an object map of {pattern: action} (both valid per
+			// opencode's PermissionRuleConfig schema). If it's a bare string,
+			// we PRESERVE it as-is — converting to a map would silently narrow
+			// a global policy (e.g. "allow" for all dirs → "allow" only for
+			// /tmp/*). Only merge our patterns when the value is absent or is
+			// already in the map form.
+			if raw, ok := perms["external_directory"]; ok {
+				var existing map[string]string
+				if json.Unmarshal(raw, &existing) == nil {
+					for _, p := range w.allowedDirs {
+						existing[p] = "allow"
+					}
+					extDirJSON, err := json.Marshal(existing)
+					if err != nil {
+						return fmt.Errorf("agent-config writer: marshal external_directory: %w", err)
+					}
+					perms["external_directory"] = extDirJSON
+				}
+				// Bare-string branch: preserved as-is, no injection.
+			} else {
+				extDir := make(map[string]string, len(w.allowedDirs))
+				for _, p := range w.allowedDirs {
+					extDir[p] = "allow"
+				}
+				extDirJSON, err := json.Marshal(extDir)
+				if err != nil {
+					return fmt.Errorf("agent-config writer: marshal external_directory: %w", err)
+				}
+				perms["external_directory"] = extDirJSON
+			}
+			permsJSON, err := json.Marshal(perms)
+			if err != nil {
+				return fmt.Errorf("agent-config writer: marshal permissions: %w", err)
+			}
+			mode["permissions"] = permsJSON
+		}
+
+		modeJSON, err := json.Marshal(mode)
+		if err != nil {
+			return fmt.Errorf("agent-config writer: marshal mode: %w", err)
+		}
+		cfg["mode"] = modeJSON
 	}
 
 	output, err := json.MarshalIndent(cfg, "", "  ")

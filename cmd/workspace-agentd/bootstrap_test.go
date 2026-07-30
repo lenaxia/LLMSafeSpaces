@@ -374,3 +374,93 @@ func TestAdminPromptPathDefault(t *testing.T) {
 			"at-rest data isolation (US-35.7) and because the credential-setup "+
 			"init container's /tmp is read-only. See LLMSafeSpaces#483.")
 }
+
+// ---------------------------------------------------------------------------
+// Allowed-external-directories plumbing (bootstrap subcommand).
+//
+// The bootstrap subcommand writes the instance's allowedExternalDirectories
+// setting to agentd.AllowedDirsPath as a JSON array, so the AgentConfigWriter
+// can merge each pattern into mode.permissions.external_directory as an
+// "allow" rule. This is the boot-time delivery channel that stops agents
+// prompting for /tmp/* on every session.
+//
+// Contracts (each test turns red if its fix is reverted):
+//  1. Non-empty AllowedExternalDirectories → file written as a JSON array.
+//  2. Empty/nil AllowedExternalDirectories → file NOT written (clean no-op).
+//  3. AllowedDirsPath default points at /sandbox-runtime tmpfs.
+// ---------------------------------------------------------------------------
+
+// TestRunBootstrapCommand_WritesAllowedDirs asserts the bootstrap
+// subcommand writes the allowed-external-directories array to the
+// --allowed-dirs-out path as a JSON array of patterns.
+func TestRunBootstrapCommand_WritesAllowedDirs(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "secrets.json")
+	allowedDirsPath := filepath.Join(dir, "allowed-dirs.json")
+	tokenPath := writeBootstrapToken(t, dir)
+
+	wantDirs := []string{"/tmp/*", "/var/cache/*"}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(bootstrapResponse{
+			Secrets:                    rawJSON(t, []map[string]any{{"name": "x"}}),
+			AllowedExternalDirectories: wantDirs,
+		})
+	}))
+	defer srv.Close()
+
+	code := runBootstrap([]string{
+		"--workspace-id", "ws-dirs",
+		"--api-url", srv.URL,
+		"--token-file", tokenPath,
+		"--out", outPath,
+		"--allowed-dirs-out", allowedDirsPath,
+	})
+	require.Equal(t, 0, code, "bootstrap must exit 0 on success")
+
+	data, err := os.ReadFile(allowedDirsPath)
+	require.NoError(t, err, "allowed-dirs file must be written to --allowed-dirs-out path")
+
+	var got []string
+	require.NoError(t, json.Unmarshal(data, &got), "allowed-dirs file must be a JSON array")
+	require.Equal(t, wantDirs, got, "patterns must round-trip exactly")
+}
+
+// TestRunBootstrapCommand_NoAllowedDirsWhenEmpty asserts the file is NOT
+// created when the API returns no allowed directories. Symmetric with the
+// admin-prompt empty guard.
+func TestRunBootstrapCommand_NoAllowedDirsWhenEmpty(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "secrets.json")
+	allowedDirsPath := filepath.Join(dir, "allowed-dirs.json")
+	tokenPath := writeBootstrapToken(t, dir)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(bootstrapResponse{
+			Secrets: rawJSON(t, []map[string]any{{"name": "x"}}),
+		})
+	}))
+	defer srv.Close()
+
+	code := runBootstrap([]string{
+		"--workspace-id", "ws-no-dirs",
+		"--api-url", srv.URL,
+		"--token-file", tokenPath,
+		"--out", outPath,
+		"--allowed-dirs-out", allowedDirsPath,
+	})
+	require.Equal(t, 0, code)
+
+	_, err := os.Stat(allowedDirsPath)
+	require.True(t, os.IsNotExist(err),
+		"allowed-dirs file must NOT be created when API returns none")
+}
+
+// TestAllowedDirsPathDefault asserts the production default points at the
+// /sandbox-runtime tmpfs (not /tmp), for the same reasons as
+// AdminPromptPath: at-rest isolation + the init container's read-only /tmp.
+func TestAllowedDirsPathDefault(t *testing.T) {
+	require.Equal(t, "/sandbox-runtime/allowed-dirs.json", agentd.AllowedDirsPath,
+		"AllowedDirsPath must live on the /sandbox-runtime tmpfs — same "+
+			"rationale as AdminPromptPath (see LLMSafeSpaces#483).")
+}

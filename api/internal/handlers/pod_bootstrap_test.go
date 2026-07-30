@@ -288,3 +288,102 @@ func TestPodBootstrap_CrossNamespaceSA_Rejected(t *testing.T) {
 	w := doBootstrap(t, router, "token", `{"workspaceID":"ws-abc"}`)
 	assert.Equal(t, http.StatusForbidden, w.Code, "cross-namespace SA must be rejected (S1)")
 }
+
+// ---------------------------------------------------------------------------
+// Allowed-external-directories delivery (instance setting → bootstrap response).
+//
+// The handler reads workspace.allowedExternalDirectories from instance settings
+// and returns it in the bootstrap response so agentd can pre-approve /tmp/* (and
+// other operator-configured paths) as external_directory allow-rules. This is
+// the API-side half of the "stop prompting for /tmp" feature.
+//
+// Contracts (each test turns red if its fix is reverted):
+//  1. Settings reader returns dirs → response carries them verbatim.
+//  2. Settings error → response omits the field (non-fatal degradation).
+//  3. No settings reader wired → response omits the field.
+// ---------------------------------------------------------------------------
+
+// fakeSettingsReader is a minimal SettingsReader for bootstrap handler tests.
+type fakeSettingsReader struct {
+	strings    []string
+	stringsErr error
+}
+
+func (f *fakeSettingsReader) GetBool(_ context.Context, _ string) (bool, error) {
+	return false, nil
+}
+func (f *fakeSettingsReader) GetInt(_ context.Context, _ string) (int, error) {
+	return 0, nil
+}
+func (f *fakeSettingsReader) GetString(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
+func (f *fakeSettingsReader) GetStrings(_ context.Context, _ string) ([]string, error) {
+	return f.strings, f.stringsErr
+}
+
+// TestPodBootstrap_ReturnsAllowedExternalDirectories verifies the handler
+// propagates the instance setting into the response when a settings reader
+// is wired and returns a value.
+func TestPodBootstrap_ReturnsAllowedExternalDirectories(t *testing.T) {
+	reviewer := &fakeTokenReviewer{username: "system:serviceaccount:llmsafespace:workspace-ws-abc"}
+	injector := &fakeBootstrapInjector{secrets: []byte(`[]`)}
+	lookup := &fakeBootstrapLookup{ws: &types.WorkspaceMetadata{ID: "ws-abc", UserID: "user-1"}}
+	sr := &fakeSettingsReader{strings: []string{"/tmp/*", "/var/cache/*"}}
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := NewPodBootstrapHandler(reviewer, injector, lookup, nil, testBootstrapNamespace)
+	h.SetSettingsReader(sr)
+	r.POST("/internal/v1/pod-bootstrap", h.Bootstrap)
+
+	w := doBootstrap(t, r, "token", `{"workspaceID":"ws-abc"}`)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp bootstrapAPIResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Equal(t, []string{"/tmp/*", "/var/cache/*"}, resp.AllowedExternalDirectories,
+		"allowed-external-directories must propagate from settings into the response verbatim")
+}
+
+// TestPodBootstrap_SettingsError_OmitsField verifies a settings read failure
+// is non-fatal — the response omits allowedExternalDirectories and the pod
+// still boots (agents prompt for /tmp/* as before).
+func TestPodBootstrap_SettingsError_OmitsField(t *testing.T) {
+	reviewer := &fakeTokenReviewer{username: "system:serviceaccount:llmsafespace:workspace-ws-abc"}
+	injector := &fakeBootstrapInjector{secrets: []byte(`[]`)}
+	lookup := &fakeBootstrapLookup{ws: &types.WorkspaceMetadata{ID: "ws-abc", UserID: "user-1"}}
+	sr := &fakeSettingsReader{stringsErr: errors.New("settings unavailable")}
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := NewPodBootstrapHandler(reviewer, injector, lookup, nil, testBootstrapNamespace)
+	h.SetSettingsReader(sr)
+	r.POST("/internal/v1/pod-bootstrap", h.Bootstrap)
+
+	w := doBootstrap(t, r, "token", `{"workspaceID":"ws-abc"}`)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp bootstrapAPIResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Nil(t, resp.AllowedExternalDirectories,
+		"settings error must degrade gracefully — field omitted, boot still succeeds")
+}
+
+// TestPodBootstrap_NoSettingsReader_OmitsField verifies that without a wired
+// settings reader (nil), the field is omitted. Backward-compat for handlers
+// constructed before the field existed.
+func TestPodBootstrap_NoSettingsReader_OmitsField(t *testing.T) {
+	reviewer := &fakeTokenReviewer{username: "system:serviceaccount:llmsafespace:workspace-ws-abc"}
+	injector := &fakeBootstrapInjector{secrets: []byte(`[]`)}
+	lookup := &fakeBootstrapLookup{ws: &types.WorkspaceMetadata{ID: "ws-abc", UserID: "user-1"}}
+
+	router := newTestBootstrapRouter(t, reviewer, injector, lookup)
+	w := doBootstrap(t, router, "token", `{"workspaceID":"ws-abc"}`)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp bootstrapAPIResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Nil(t, resp.AllowedExternalDirectories,
+		"no settings reader wired → field must be omitted")
+}

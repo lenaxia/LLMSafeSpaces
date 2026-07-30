@@ -4280,3 +4280,68 @@ func findClusterRoleByNameSubstr(t *testing.T, docs []map[string]any, nameSubstr
 	}
 	return nil
 }
+
+// ---------------------------------------------------------------------------
+// Auth session TTL wiring (remember-me).
+//
+// The chart's generated config.yaml must emit `auth.rememberMeDuration` so
+// that "remember me" logins mint 30-day JWTs (configurable). Pre-fix the
+// chart only emitted `tokenDuration` (24h), so in any Helm-deployed install
+// the rememberMe flag was silently downgraded to the standard 24h TTL —
+// users clicking "remember me" got bounced back to the login screen daily.
+//
+// The Go guard at auth.go:1072 (`req.RememberMe && RememberMeDuration > 0`)
+// only honors the flag when the duration is strictly positive; the Go
+// zero-value (0) means the feature is disabled and falls back to
+// tokenDuration. These tests pin the chart→ConfigMap→Go-config path so the
+// regression cannot return.
+//
+// Contracts (each test is designed to turn red if its fix is reverted):
+//   1. Default render includes `rememberMeDuration: 720h` (30 days).
+//   2. Custom operator value flows through verbatim.
+//   3. tokenDuration still renders (existing contract, now locked in).
+// ---------------------------------------------------------------------------
+
+// TestAuth_RememberMeDuration_DefaultRender asserts the chart's default
+// render includes rememberMeDuration: 720h. This is the load-bearing
+// regression guard: removing the line from configmap-api.yaml makes this
+// test fail, restoring the silent 24h-downgrade bug.
+func TestAuth_RememberMeDuration_DefaultRender(t *testing.T) {
+	docs := helmTemplate(t, "")
+	cm := findAPIConfigMap(t, docs)
+	require.NotNil(t, cm, "API config ConfigMap must be rendered by default")
+	cfg := configYAML(t, cm)
+	require.Contains(t, cfg, "rememberMeDuration: 720h",
+		"default auth.rememberMeDuration must render as 720h (30d); config.yaml was:\n%s", cfg)
+}
+
+// TestAuth_RememberMeDuration_CustomValue asserts an operator-supplied
+// override propagates to the rendered configmap. Guards against a typo'd
+// .Values path or a copy/paste error in the template.
+func TestAuth_RememberMeDuration_CustomValue(t *testing.T) {
+	docs := helmTemplate(t, `api:
+  config:
+    auth:
+      tokenDuration: 12h
+      rememberMeDuration: 168h
+`)
+	cm := findAPIConfigMap(t, docs)
+	require.NotNil(t, cm)
+	cfg := configYAML(t, cm)
+	require.Contains(t, cfg, "rememberMeDuration: 168h",
+		"operator auth.rememberMeDuration must flow through; config.yaml was:\n%s", cfg)
+	require.Contains(t, cfg, "tokenDuration: 12h",
+		"operator auth.tokenDuration must flow through; config.yaml was:\n%s", cfg)
+}
+
+// TestAuth_TokenDuration_DefaultRender locks in the existing tokenDuration
+// default (24h). Adding rememberMeDuration must not regress the standard
+// session TTL render.
+func TestAuth_TokenDuration_DefaultRender(t *testing.T) {
+	docs := helmTemplate(t, "")
+	cm := findAPIConfigMap(t, docs)
+	require.NotNil(t, cm, "API config ConfigMap must be rendered by default")
+	cfg := configYAML(t, cm)
+	require.Contains(t, cfg, "tokenDuration: 24h",
+		"default auth.tokenDuration must render as 24h; config.yaml was:\n%s", cfg)
+}
