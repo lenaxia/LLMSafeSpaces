@@ -4291,7 +4291,7 @@ func findClusterRoleByNameSubstr(t *testing.T, docs []map[string]any, nameSubstr
 // users clicking "remember me" got bounced back to the login screen daily.
 //
 // The Go guard at auth.go:1072 (`req.RememberMe && RememberMeDuration > 0`)
-// only honours the flag when the duration is strictly positive; the Go
+// only honors the flag when the duration is strictly positive; the Go
 // zero-value (0) means the feature is disabled and falls back to
 // tokenDuration. These tests pin the chart→ConfigMap→Go-config path so the
 // regression cannot return.
