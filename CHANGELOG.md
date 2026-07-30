@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-30
+
+### Added
+
+- **Instance-default `/tmp/*` auto-approval for agent permissions (#602).** New
+  instance setting `workspace.allowedExternalDirectories` (default `["/tmp/*"]`)
+  injects `mode.permissions.external_directory` allow-rules into every
+  workspace's `agent-config.json` at boot. Agents no longer prompt for `/tmp/*`
+  on every session. `/sandbox-cfg/*` is deliberately excluded (plaintext
+  credential path). Configurable via admin UI; schema v7.
+
+- **Go SDK `Secrets.CreateWithMetadata` method (#603).** Non-breaking addition
+  alongside existing `Create` (which delegates with nil metadata). Required for
+  `env-secret` type secrets that need `metadata.var_name`.
+
+### Fixed
+
+- **Remember-me sessions last 30 days, not 24 hours (#602).** The Helm chart's
+  ConfigMap never rendered `auth.rememberMeDuration`, so the Go auth service
+  silently fell back to `tokenDuration` (24h) for every Helm-deployed install.
+  Users checking "remember me" were bounced to `/login` daily.
+
+- **API-layer workspace storage validation (#603).** The API had no storage size
+  format/magnitude validation (only the controller webhook did, which can be
+  disabled). Added format regex (`^[1-9][0-9]*(Gi|Mi)$`) + 1024Gi max cap.
+
+- **GetWorkspace returns 404 after deletion (#603).** Previously returned the
+  DB row with `Phase=""` when the CRD was garbage-collected — clients couldn't
+  distinguish "deleted" from "creating". Now returns 404 NotFound.
+
+- **SDK `BindingItem.ID` JSON tag corrected (#603).** Changed from `json:"id"`
+  to `json:"secretId"` to match the API's actual response shape.
+
+- **10+ SDK canary assertion fixes (#603).** Fixed cascading pre-existing
+  failures across S-WS-CRUD, S-WS-STATUS, S-SECRET-CRUD, S-SECRET-REVEAL,
+  S-SECRET-AUDIT, S-SECRET-BINDINGS, S-ENV-VARS, S-OWNERSHIP, S-USER-SETTINGS,
+  S-RATE-LIMIT scenarios. Root causes: env-secret metadata requirement, DEK
+  requires JWT auth (not API key), binding JSON tag mismatch, schema version
+  bump, rate-limit burst threshold.
+
 ## [0.5.5] - 2026-07-25
 
 ### Fixed
