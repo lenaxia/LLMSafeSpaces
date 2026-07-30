@@ -18,6 +18,7 @@ import (
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/prompt"
 	"github.com/lenaxia/llmsafespaces/pkg/interfaces"
+	"github.com/lenaxia/llmsafespaces/pkg/settings"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
@@ -37,6 +38,15 @@ var errTokenNotAuthenticated = errors.New("token not authenticated")
 // "system:serviceaccount:<ns>:workspace-<id>") on success.
 type TokenReviewer interface {
 	Review(ctx context.Context, token string) (string, error)
+}
+
+// bootstrapSettingsReader resolves instance settings (read-only subset).
+// Local interface so this file does not need to import
+// api/internal/interfaces (which would collide with the pkg/interfaces
+// alias used for LoggerInterface). Mirrors the file's TokenReviewer /
+// bootstrapInjector local-interface pattern.
+type bootstrapSettingsReader interface {
+	GetStrings(ctx context.Context, key string) ([]string, error)
 }
 
 // bootstrapInjector prepares decrypted secrets for pod injection.
@@ -89,6 +99,11 @@ type bootstrapAPIResponse struct {
 	Secrets         json.RawMessage `json:"secrets"`
 	WorkspaceConfig json.RawMessage `json:"workspaceConfig,omitempty"`
 	AdminPrompt     string          `json:"adminPrompt,omitempty"`
+	// AllowedExternalDirectories is the instance setting that the agentd
+	// bootstrap subcommand materializes into /sandbox-runtime/allowed-dirs.json
+	// and the AgentConfigWriter merges into mode.permissions.external_directory
+	// as "allow" rules (stops agents prompting for /tmp/* on every session).
+	AllowedExternalDirectories []string `json:"allowedExternalDirectories,omitempty"`
 }
 
 // PodBootstrapHandler handles POST /internal/v1/pod-bootstrap — the
@@ -104,6 +119,7 @@ type PodBootstrapHandler struct {
 	injector          bootstrapInjector
 	lookup            bootstrapWorkspaceLookup
 	promptSvc         *prompt.Service
+	settings          bootstrapSettingsReader
 	expectedNamespace string
 	logger            interfaces.LoggerInterface
 }
@@ -132,6 +148,16 @@ func NewPodBootstrapHandlerFromClientset(clientset kubernetes.Interface, injecto
 // Used when the prompt service is built later in the startup sequence.
 func (h *PodBootstrapHandler) SetPromptService(svc *prompt.Service) {
 	h.promptSvc = svc
+}
+
+// SetSettingsReader wires the instance settings reader used to resolve the
+// workspace.allowedExternalDirectories setting into the bootstrap response.
+// Optional — when nil, no allow-rules are delivered and agents prompt for
+// /tmp/* as before (the agentd writer's loadAllowedDirs finds no file).
+// Accepts api/internal/interfaces.SettingsReader (which satisfies the local
+// bootstrapSettingsReader interface) or any other GetStrings-capable reader.
+func (h *PodBootstrapHandler) SetSettingsReader(sr bootstrapSettingsReader) {
+	h.settings = sr
 }
 
 // SetLogger installs a structured logger so the handler can emit
@@ -246,6 +272,17 @@ func (h *PodBootstrapHandler) Bootstrap(c *gin.Context) {
 		effective, err := h.promptSvc.ResolveEffective(c.Request.Context(), req.WorkspaceID)
 		if err == nil && effective != nil && effective.Resolved != "" {
 			resp.AdminPrompt = effective.Resolved
+		}
+	}
+
+	// Resolve allowed-external-directories (instance setting). Failures are
+	// non-fatal — the pod boots without pre-approved allow-rules and agents
+	// prompt for /tmp/* as before. Delivered so the agentd bootstrap
+	// subcommand can materialize /sandbox-runtime/allowed-dirs.json and the
+	// AgentConfigWriter can inject mode.permissions.external_directory rules.
+	if h.settings != nil {
+		if dirs, err := h.settings.GetStrings(c.Request.Context(), settings.KeyWorkspaceAllowedExternalDirs.Name()); err == nil {
+			resp.AllowedExternalDirectories = dirs
 		}
 	}
 
