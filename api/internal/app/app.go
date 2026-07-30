@@ -656,6 +656,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			if stateKey != nil {
 				ssoSvc, ssoErr := sso.New(pgOrgStore, dbSvc, sso.ServiceConfig{
 					TokenIssuer:         authSvc,
+					KeyManager:          authSvc,
 					KeyProvider:         apiKeyProv,
 					StateKey:            stateKey,
 					TokenTTL:            cfg.Auth.TokenDuration,

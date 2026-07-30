@@ -22,16 +22,27 @@ import (
 // and the login durable-write path produce byte-identical KEKs.
 const JWTSessionKEKInfo = "llmsafespaces-jwt-session-dek-kek"
 
+// dekSourceServerKEK is the users.dek_source value indicating a server-KEK-
+// wrapped DEK (SSO users under Epic 58). It matches the DB enum value and
+// pkg/types.DEKSourceServerKEK; pkg/secrets keeps a local copy to stay
+// decoupled from the API DTO layer.
+const dekSourceServerKEK = "server_kek"
+
 // UserKeyRecord represents a row in the user_keys table.
 type UserKeyRecord struct {
 	UserID             string
 	KeyVersion         int
 	WrappedDEK         []byte
 	WrappedDEKRecovery []byte // nil if user opted out
-	Salt               []byte
+	Salt               []byte // nil for server_kek rows (no Argon2id derivation)
 	RecoverySalt       []byte // nil if user opted out
-	CreatedAt          time.Time
-	RotatedAt          *time.Time
+	// DEKSource is the user's encryption tier, read from users.dek_source via
+	// the PgKeyStore.GetUserKey JOIN. "password" → unwrap via Argon2id(password,
+	// salt); "server_kek" → unwrap via the master-KEK RootKeyProvider. Empty for
+	// test fakes that don't populate it (treated as "password").
+	DEKSource string
+	CreatedAt time.Time
+	RotatedAt *time.Time
 }
 
 // KeyStore abstracts database operations for user keys.
@@ -39,6 +50,14 @@ type KeyStore interface {
 	GetUserKey(ctx context.Context, userID string) (*UserKeyRecord, error)
 	CreateUserKey(ctx context.Context, record *UserKeyRecord) error
 	UpdateWrappedDEK(ctx context.Context, userID string, wrappedDEK []byte, salt []byte, keyVersion int) error
+	// UpdateWrappedDEKAndSource atomically re-wraps the DEK AND flips
+	// users.dek_source in a single transaction. Used by ChangePassword when a
+	// server_kek-tier user sets a password (transitioning them to the stronger
+	// password tier). The atomicity matters: a split write (re-wrap succeeds,
+	// dek_source flip fails, or vice versa) leaves the user_keys wrap and the
+	// users.dek_source flag disagreeing, which makes the next unlock try the
+	// wrong unwrap method and fail. One tx, both writes, commit-or-rollback.
+	UpdateWrappedDEKAndSource(ctx context.Context, userID string, wrappedDEK, salt []byte, keyVersion int, dekSource string) error
 	UpdateWrappedDEKRecovery(ctx context.Context, userID string, wrappedDEKRecovery []byte, recoverySalt []byte) error
 }
 
@@ -266,6 +285,7 @@ func (s *KeyService) InitializeUserKeys(ctx context.Context, userID string, pass
 		WrappedDEKRecovery: wrappedDEKRecovery,
 		Salt:               salt,
 		RecoverySalt:       recoverySalt,
+		DEKSource:          "password",
 		CreatedAt:          time.Now(),
 	}
 
@@ -274,6 +294,44 @@ func (s *KeyService) InitializeUserKeys(ctx context.Context, userID string, pass
 	}
 
 	return hex.EncodeToString(recoveryKey), nil
+}
+
+// InitializeUserKeysServerKEK provisions a DEK wrapped by the master-KEK
+// RootKeyProvider rather than by a password-derived KEK, for an SSO
+// auto-provisioned user (Epic 58) who has no password to derive from. The
+// store atomically flips users.dek_source to 'server_kek' alongside the
+// user_keys insert so the record and the tier flag can never disagree.
+//
+// Unlike the password path there is no recovery blob: a server-KEK user's DEK
+// is recoverable from the master KEK (operator-controlled), which is consistent
+// with how API-key DEKs already work. Fail-closed when no provider is wired.
+func (s *KeyService) InitializeUserKeysServerKEK(ctx context.Context, userID string) error {
+	if s.rootKeyProvider == nil {
+		return ErrServerKEKUnavailable
+	}
+	dek, err := GenerateDEK()
+	if err != nil {
+		return fmt.Errorf("generate DEK: %w", err)
+	}
+
+	wrapped, err := s.rootKeyProvider.Encrypt(ctx, dek)
+	if err != nil {
+		return fmt.Errorf("server-kek wrap DEK: %w", err)
+	}
+
+	record := &UserKeyRecord{
+		UserID:     userID,
+		KeyVersion: ActiveVersionOf(s.rootKeyProvider),
+		WrappedDEK: wrapped,
+		// Salt + recovery wrap intentionally nil: no Argon2id derivation, no
+		// recovery blob (DEK is recoverable from the master KEK).
+		DEKSource: dekSourceServerKEK,
+		CreatedAt: time.Now(),
+	}
+	if err := s.store.CreateUserKey(ctx, record); err != nil {
+		return fmt.Errorf("store user key: %w", err)
+	}
+	return nil
 }
 
 // UnlockDEK derives the KEK from the password, unwraps the DEK, and caches it.
@@ -329,16 +387,33 @@ func (s *KeyService) UnlockDEKWithSigningKey(ctx context.Context, userID string,
 		return nil
 	}
 
-	kek, err := DeriveKEKFromPassword(password, record.Salt)
-	if err != nil {
-		return fmt.Errorf("derive KEK: %w", err)
+	var dek []byte
+	if record.DEKSource == dekSourceServerKEK {
+		// Server-KEK tier (Epic 58 SSO users / Epic 59 passkey users): the DEK
+		// is wrapped by the master-KEK provider, not by a password-derived KEK.
+		// The password argument is ignored — these users have no password.
+		if s.rootKeyProvider == nil {
+			return ErrServerKEKUnavailable
+		}
+		dek, err = s.rootKeyProvider.Decrypt(ctx, record.WrappedDEK)
+		if err != nil {
+			return fmt.Errorf("server-kek unwrap DEK: %w", err)
+		}
+	} else {
+		kek, err := DeriveKEKFromPassword(password, record.Salt)
+		if err != nil {
+			return fmt.Errorf("derive KEK: %w", err)
+		}
+		defer zeroBytes(kek)
+		dek, err = UnwrapDEK(kek, record.WrappedDEK)
+		if err != nil {
+			return fmt.Errorf("unwrap DEK: %w", err)
+		}
 	}
-	defer zeroBytes(kek)
-
-	dek, err := UnwrapDEK(kek, record.WrappedDEK)
-	if err != nil {
-		return fmt.Errorf("unwrap DEK: %w", err)
-	}
+	// NOTE: dek is intentionally NOT zeroed here. It is cached by reference
+	// (some caches store the slice without copying) and used downstream by the
+	// durable write; zeroing it at return would corrupt the cached DEK. The
+	// codebase convention is to zero the derived KEK, never the DEK itself.
 
 	if err := s.cache.CacheDEK(ctx, sessionID, dek, ttl); err != nil {
 		return fmt.Errorf("cache DEK: %w", err)
@@ -811,20 +886,34 @@ func (s *KeyService) ChangePassword(ctx context.Context, userID, sessionID strin
 		return ErrUserKeysMissing
 	}
 
-	// Unwrap with old password
-	oldKEK, err := DeriveKEKFromPassword(oldPassword, record.Salt)
-	if err != nil {
-		return fmt.Errorf("derive old KEK: %w", err)
-	}
-	defer zeroBytes(oldKEK)
-	dek, err := UnwrapDEK(oldKEK, record.WrappedDEK)
-	if err != nil {
-		// Invalid password: uniform failure code so the handler can
-		// map to 403 via errors.Is. We deliberately drop the wrapped
-		// AEAD/bcrypt diagnostic so a future log-formatter that
-		// prints the error verbatim does not leak the underlying
-		// failure mode (validator pass-3 finding NEW-7).
-		return ErrInvalidPassword
+	// Unwrap with the OLD method. A server_kek/passkey-tier user (SSO/passkey)
+	// has no password — their DEK unwraps via the master-KEK provider, and
+	// oldPassword is ignored. A password-tier user unwraps via
+	// Argon2id(oldPassword, salt).
+	var dek []byte
+	if record.DEKSource == dekSourceServerKEK {
+		if s.rootKeyProvider == nil {
+			return ErrServerKEKUnavailable
+		}
+		dek, err = s.rootKeyProvider.Decrypt(ctx, record.WrappedDEK)
+		if err != nil {
+			return fmt.Errorf("server-kek unwrap DEK: %w", err)
+		}
+	} else {
+		oldKEK, err := DeriveKEKFromPassword(oldPassword, record.Salt)
+		if err != nil {
+			return fmt.Errorf("derive old KEK: %w", err)
+		}
+		defer zeroBytes(oldKEK)
+		dek, err = UnwrapDEK(oldKEK, record.WrappedDEK)
+		if err != nil {
+			// Invalid password: uniform failure code so the handler can
+			// map to 403 via errors.Is. We deliberately drop the wrapped
+			// AEAD/bcrypt diagnostic so a future log-formatter that
+			// prints the error verbatim does not leak the underlying
+			// failure mode (validator pass-3 finding NEW-7).
+			return ErrInvalidPassword
+		}
 	}
 	defer zeroBytes(dek)
 
@@ -881,8 +970,20 @@ func (s *KeyService) ChangePassword(ctx context.Context, userID, sessionID strin
 		s.deleteDurableSession(ctx, sessionID)
 	}
 
-	if err := s.store.UpdateWrappedDEK(ctx, userID, newWrappedDEK, newSalt, record.KeyVersion); err != nil {
-		return err
+	// Commit the re-wrap. When this call is the server_kek/passkey→password
+	// opt-up transition, the dek_source flag must flip in the SAME transaction
+	// so the user_keys wrap and the users.dek_source tier flag can never
+	// disagree (a split would make the next unlock pick the wrong unwrap method
+	// and fail). The password→password path needs no flip — plain
+	// UpdateWrappedDEK suffices.
+	if record.DEKSource == dekSourceServerKEK {
+		if err := s.store.UpdateWrappedDEKAndSource(ctx, userID, newWrappedDEK, newSalt, record.KeyVersion, "password"); err != nil {
+			return err
+		}
+	} else {
+		if err := s.store.UpdateWrappedDEK(ctx, userID, newWrappedDEK, newSalt, record.KeyVersion); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -117,12 +117,25 @@ type TokenIssuer interface {
 	GenerateToken(userID string) (string, error)
 }
 
+// UserKeyManager is the server-KEK DEK capability the auth.Service exposes to
+// the SSO (Epic 58) and passkey (Epic 59) login flows. It provisions a
+// server-KEK-wrapped DEK for users who have none, and issues a session token
+// whose jti is bound to the unlocked DEK — the non-password analog of
+// auth.Service.Login's unlock step. Optional on the SSO service: when nil,
+// completeLogin falls back to TokenIssuer.GenerateToken (pre-epic behavior;
+// SSO users then have no personal-secret encryption until a later login).
+type UserKeyManager interface {
+	ProvisionServerKEKKeys(ctx context.Context, userID string) error
+	IssueTokenAndUnlockDEK(ctx context.Context, userID string, ttl time.Duration) (string, error)
+}
+
 // Service implements the OIDC SSO login flow and SSO-config encryption.
 type Service struct {
 	orgs         orgStore
 	users        userStore
 	dns          dnsResolver
 	issuer       TokenIssuer
+	keyManager   UserKeyManager
 	keyProvider  secrets.RootKeyProvider
 	stateKey     []byte
 	tokenTTL     time.Duration
@@ -136,6 +149,7 @@ type Service struct {
 // ServiceConfig holds the non-store dependencies of the SSO service.
 type ServiceConfig struct {
 	TokenIssuer         TokenIssuer
+	KeyManager          UserKeyManager
 	KeyProvider         secrets.RootKeyProvider
 	StateKey            []byte
 	TokenTTL            time.Duration
@@ -175,6 +189,7 @@ func New(orgs orgStore, users userStore, cfg ServiceConfig) (*Service, error) {
 		users:        users,
 		dns:          netResolver{},
 		issuer:       cfg.TokenIssuer,
+		keyManager:   cfg.KeyManager,
 		keyProvider:  cfg.KeyProvider,
 		stateKey:     cfg.StateKey,
 		tokenTTL:     cfg.TokenTTL,
@@ -585,9 +600,9 @@ func (s *Service) HandleCallback(ctx context.Context, orgSlug, redirectURL, code
 		return nil, fmt.Errorf("ensure membership: %w", err)
 	}
 
-	jwt, err := s.issuer.GenerateToken(user.ID)
+	jwt, err := s.issueSession(ctx, user.ID)
 	if err != nil {
-		return nil, fmt.Errorf("issue session token: %w", err)
+		return nil, err
 	}
 	return &CallbackResult{
 		Token:       jwt,
@@ -596,6 +611,18 @@ func (s *Service) HandleCallback(ctx context.Context, orgSlug, redirectURL, code
 		CreatedUser: created,
 		Role:        role,
 	}, nil
+}
+
+// issueSession issues the post-SSO session token. When a UserKeyManager is
+// wired (Epic 58), it also provisions a server-KEK DEK for users who have none
+// and unlocks it for the new session — so an auto-provisioned SSO user can save
+// personal secrets without ever setting a password. Falls back to the plain
+// TokenIssuer when no manager is wired (pre-epic / test setups).
+func (s *Service) issueSession(ctx context.Context, userID string) (string, error) {
+	if s.keyManager != nil {
+		return s.keyManager.IssueTokenAndUnlockDEK(ctx, userID, s.tokenTTL)
+	}
+	return s.issuer.GenerateToken(userID)
 }
 
 // resolveUser returns the existing user for the email, or auto-provisions a new

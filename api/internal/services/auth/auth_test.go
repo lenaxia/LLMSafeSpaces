@@ -1037,10 +1037,12 @@ func TestRegister_CreateUserError(t *testing.T) {
 // on the Register/Login DEK lifecycle without spinning up a real key service.
 type fakeKeyService struct {
 	initCalls                       []fakeKeyInitCall
+	serverKEKInitCalls              []string
 	unlockCalls                     []fakeKeyUnlockCall
 	deleteDurableSessionsForUserIDs []string // Epic 56: records userIDs of every DeleteDurableSessionsForUser call
 	hasKeysFn                       func(ctx context.Context, userID string) (bool, error)
 	initErr                         error
+	serverKEKInitErr                error
 	unlockErr                       error
 	recoveryKey                     string
 }
@@ -1066,6 +1068,11 @@ func (f *fakeKeyService) InitializeUserKeys(ctx context.Context, userID string, 
 		return "deadbeefcafef00d", nil
 	}
 	return f.recoveryKey, nil
+}
+
+func (f *fakeKeyService) InitializeUserKeysServerKEK(_ context.Context, userID string) error {
+	f.serverKEKInitCalls = append(f.serverKEKInitCalls, userID)
+	return f.serverKEKInitErr
 }
 
 func (f *fakeKeyService) UnlockDEK(ctx context.Context, userID string, password []byte, sessionID string, ttl time.Duration) error {

@@ -87,6 +87,26 @@ func (a *dbKeyStoreAdapter) UpdateWrappedDEK(_ context.Context, userID string, w
 	return nil
 }
 
+// UpdateWrappedDEKAndSource mirrors the password-path UpdateWrappedDEK and also
+// records the dek_source tier flip. The real PgKeyStore does both writes in one
+// transaction; this in-memory adapter only needs to keep the record consistent.
+func (a *dbKeyStoreAdapter) UpdateWrappedDEKAndSource(_ context.Context, userID string, wrappedDEK []byte, salt []byte, keyVersion int, dekSource string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.memKeys == nil {
+		return nil
+	}
+	r, ok := a.memKeys[userID]
+	if !ok {
+		return nil
+	}
+	r.WrappedDEK = wrappedDEK
+	r.Salt = salt
+	r.KeyVersion = keyVersion
+	r.DEKSource = dekSource
+	return nil
+}
+
 func (a *dbKeyStoreAdapter) UpdateWrappedDEKRecovery(_ context.Context, userID string, wrappedDEKRecovery []byte, recoverySalt []byte) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()

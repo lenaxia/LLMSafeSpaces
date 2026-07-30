@@ -11,6 +11,7 @@ type User struct {
 	Username      string     `json:"username" db:"username"`
 	Email         string     `json:"email" db:"email"`
 	PasswordHash  string     `json:"-" db:"password_hash"`
+	DEKSource     DEKSource  `json:"-" db:"dek_source"`
 	CreatedAt     time.Time  `json:"createdAt" db:"created_at"`
 	UpdatedAt     time.Time  `json:"updatedAt" db:"updated_at"`
 	Active        bool       `json:"active" db:"active"`
@@ -89,6 +90,7 @@ type UserUpdates struct {
 	Status        *UserStatus `json:"status,omitempty"`
 	PasswordHash  *string     `json:"-"`
 	EmailVerified *bool       `json:"-"`
+	DEKSource     *DEKSource  `json:"-"`
 }
 
 // CachedSession is the typed representation of a WebSocket session stored in
@@ -107,6 +109,20 @@ type AuthConfig struct {
 	InstanceName        string   `json:"instanceName"`
 	MOTD                string   `json:"motd"`
 }
+
+// DEKSource identifies which encryption tier a user's personal secrets live in.
+//
+//   - "password"   DEK wrapped by a KEK derived from the user's password
+//     (Argon2id). The platform cannot decrypt without the password.
+//   - "server_kek" DEK wrapped by the master-KEK RootKeyProvider (same provider
+//     as api_keys). SSO auto-provisioned users (Epic 58) and
+//     passkey-only users (Epic 59).
+type DEKSource string
+
+const (
+	DEKSourcePassword  DEKSource = "password"
+	DEKSourceServerKEK DEKSource = "server_kek"
+)
 
 // UserStatus is the authoritative operational status of a user account.
 type UserStatus string

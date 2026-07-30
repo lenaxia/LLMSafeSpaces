@@ -38,6 +38,11 @@ import (
 // KeyServiceInterface abstracts the key service for DEK lifecycle.
 type KeyServiceInterface interface {
 	InitializeUserKeys(ctx context.Context, userID string, password []byte) (recoveryKeyHex string, err error)
+	// InitializeUserKeysServerKEK (Epic 58) provisions a DEK wrapped by the
+	// master-KEK RootKeyProvider rather than a password-derived KEK, for an SSO
+	// auto-provisioned user who has no password. The store atomically flips
+	// users.dek_source to 'server_kek' alongside the user_keys insert.
+	InitializeUserKeysServerKEK(ctx context.Context, userID string) error
 	UnlockDEK(ctx context.Context, userID string, password []byte, sessionID string, ttl time.Duration) error
 	// UnlockDEKWithSigningKey is UnlockDEK + durable jwt_sessions write
 	// (Epic 56). Login calls this with the active signing key (s.jwtSecret)
@@ -444,6 +449,79 @@ func (s *Service) CheckResourceAccess(userID, resourceType, resourceID, action s
 // It delegates to GenerateTokenWithDuration, which is the canonical implementation.
 func (s *Service) GenerateToken(userID string) (string, error) {
 	return s.GenerateTokenWithDuration(userID, s.tokenDuration)
+}
+
+// ProvisionServerKEKKeys provisions a server-KEK-wrapped DEK for a user who has
+// none (SSO auto-provisioned under Epic 58, passkey-only under Epic 59). It is
+// the server-KEK analog of InitializeUserKeys: no password, no recovery blob —
+// the DEK is recoverable from the master KEK (operator-controlled). The
+// keyService flips users.dek_source to 'server_kek' atomically with the key
+// material write. Exposed for the SSO/passkey flows via the UserKeyManager
+// capability (consumed by the sso package).
+func (s *Service) ProvisionServerKEKKeys(ctx context.Context, userID string) error {
+	if s.keyService == nil {
+		return errors.New("server-kek provisioning unavailable: key service not wired")
+	}
+	return s.keyService.InitializeUserKeysServerKEK(ctx, userID)
+}
+
+// IssueTokenAndUnlockDEK is the non-password login completion: generate a JWT and
+// unlock (and, if necessary, first provision) the caller's server-KEK DEK so the
+// issued session is immediately usable for personal-secret operations. Used by
+// the SSO callback (Epic 58). The password argument is intentionally absent —
+// these users authenticate without one, and the keyService.UnlockDEKWithSigningKey
+// path branches on users.dek_source to unwrap via the master-KEK provider.
+//
+// Provisioning is idempotent-guarded via HasKeys: an SSO user who already has a
+// server-KEK DEK (the common case after first login) skips re-provisioning; a
+// user created before this epic with no keys is provisioned on first post-epic
+// login (the implicit backfill the design recommends).
+func (s *Service) IssueTokenAndUnlockDEK(ctx context.Context, userID string, ttl time.Duration) (string, error) {
+	token, err := s.GenerateTokenWithDuration(userID, ttl)
+	if err != nil {
+		return "", fmt.Errorf("issue session token: %w", err)
+	}
+	if s.keyService == nil {
+		// No secret management wired (dev/test). Token is still valid for auth.
+		return token, nil
+	}
+	jti := utilities.ExtractJTI(token)
+	if jti == "" {
+		// Cannot unlock without a jti; the token is still returned so login
+		// itself does not fail. Personal-secret ops will soft-unlock later.
+		if s.logger != nil {
+			s.logger.Warn("IssueTokenAndUnlockDEK: token has empty jti; DEK not unlocked", "user_id", userID)
+		}
+		return token, nil
+	}
+	hasKeys, hasKeysErr := s.keyService.HasKeys(ctx, userID)
+	if hasKeysErr != nil {
+		// Cannot safely determine key state — DO NOT provision. A transient DB
+		// read failure here must NOT trigger InitializeUserKeysServerKEK →
+		// CreateUserKey, whose ON CONFLICT (user_id) DO UPDATE would overwrite
+		// an existing DEK with a fresh random one and permanently orphan every
+		// personal secret the user already has. The safe action on "I don't
+		// know whether keys exist" is to skip provisioning and fall through to
+		// unlock (a no-op when no keys exist; a normal unlock when they do).
+		// The user retries on next login once the DB read is healthy.
+		if s.logger != nil {
+			s.logger.Warn("IssueTokenAndUnlockDEK: HasKeys check failed; skipping provisioning to avoid DEK overwrite",
+				"user_id", userID, "error", hasKeysErr.Error())
+		}
+	} else if !hasKeys {
+		if err := s.keyService.InitializeUserKeysServerKEK(ctx, userID); err != nil {
+			if s.logger != nil {
+				s.logger.Warn("IssueTokenAndUnlockDEK: server-kek provisioning failed", "user_id", userID, "error", err.Error())
+			}
+			return token, nil
+		}
+	}
+	if err := s.keyService.UnlockDEKWithSigningKey(ctx, userID, nil, jti, ttl, s.jwtSecret); err != nil {
+		if s.logger != nil {
+			s.logger.Warn("IssueTokenAndUnlockDEK: DEK unlock failed", "user_id", userID, "error", err.Error())
+		}
+	}
+	return token, nil
 }
 
 // GenerateTokenWithDuration generates a JWT token for a user with an explicit TTL.
