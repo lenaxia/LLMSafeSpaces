@@ -106,7 +106,7 @@ api:
       # rememberMeDuration: TTL for JWTs minted when the user checks "remember
       # me" on the login page. Must be > 0 to enable the feature; 0 disables
       # it (rememberMe falls back to tokenDuration). The Go auth service only
-      # honours the rememberMe flag when this is strictly positive
+      # honors the rememberMe flag when this is strictly positive
       # (auth.go:1072). Must be >= tokenDuration or remember-me sessions
       # expire sooner than standard sessions (the API logs a warning on boot).
       rememberMeDuration: 720h
