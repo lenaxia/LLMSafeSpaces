@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -30,6 +31,38 @@ import (
 
 func init() {
 	opencode.Register()
+}
+
+// storageSizeRegex validates workspace storage size format. Matches the
+// webhook's storageSizePattern (controller/internal/webhooks/workspace_webhook.go)
+// and settings.StorageQuantityPattern — all three must agree on the accept-set.
+var storageSizeRegex = regexp.MustCompile(`^([1-9][0-9]*)(Gi|Mi)$`)
+
+// maxWorkspaceStorageGi is the API-layer cap on workspace storage, matching
+// the controller webhook's default (--max-workspace-storage-gi=1024). Keeps
+// the API self-contained when the webhook is disabled.
+const maxWorkspaceStorageGi = 1024
+
+// storageSizeInGi parses a storage size string (e.g. "15Gi", "512Mi") and
+// returns the value in GiB, rounding Mi up. Returns (0, false) on malformed
+// input. Mirrors the webhook's storageSizeGi.
+func storageSizeInGi(s string) (int64, bool) {
+	m := storageSizeRegex.FindStringSubmatch(s)
+	if m == nil {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(m[1], 10, 64)
+	if err != nil || n < 1 {
+		return 0, false
+	}
+	if m[2] == "Mi" {
+		gi := (n + 1023) / 1024
+		if gi < 1 {
+			gi = 1
+		}
+		return gi, true
+	}
+	return n, true
 }
 
 // WorkspaceConfig is non-sensitive workspace metadata persisted for pod boot.
@@ -206,6 +239,24 @@ func (s *Service) CreateWorkspace(ctx context.Context, userID string, req types.
 			"storage size is required",
 			map[string]interface{}{"field": "storageSize"},
 			fmt.Errorf("storageSize is empty"),
+		)
+	}
+	// D-canary: validate format + magnitude at the API layer so the API is
+	// self-contained (does not depend solely on the controller validating
+	// webhook, which may be disabled in some environments). Matches the
+	// webhook's storageSizePattern and MaxStorageGi (default 1024Gi).
+	if !storageSizeRegex.MatchString(req.StorageSize) {
+		return nil, apierrors.NewValidationError(
+			fmt.Sprintf("storage size %q must match format <positive-int>(Gi|Mi)", req.StorageSize),
+			map[string]interface{}{"field": "storageSize"},
+			fmt.Errorf("storageSize format invalid"),
+		)
+	}
+	if gi, ok := storageSizeInGi(req.StorageSize); ok && gi > maxWorkspaceStorageGi {
+		return nil, apierrors.NewValidationError(
+			fmt.Sprintf("storage size %s (%d Gi) exceeds maximum %d Gi", req.StorageSize, gi, maxWorkspaceStorageGi),
+			map[string]interface{}{"field": "storageSize"},
+			fmt.Errorf("storageSize too large"),
 		)
 	}
 
@@ -398,12 +449,16 @@ func (s *Service) GetWorkspace(ctx context.Context, userID, workspaceID string) 
 	}()
 	if err != nil {
 		if k8serrors.IsNotFound(err) {
+			// The CRD is gone — the workspace has been garbage-collected
+			// after deletion. Return 404 so clients see a clean terminal
+			// signal rather than a ghost row with an empty phase. The DB
+			// row (soft-deleted by markDeleted below) is for cleanup only.
 			s.markDeleted(ctx, workspaceID)
-			crd = nil
-		} else {
-			s.logger.Warn("Failed to get workspace CRD status", "error", err, "workspaceID", workspaceID)
-			crd = nil
+			return nil, apierrors.NewNotFoundError("workspace", workspaceID,
+				fmt.Errorf("workspace CRD not found"))
 		}
+		s.logger.Warn("Failed to get workspace CRD status", "error", err, "workspaceID", workspaceID)
+		crd = nil
 	}
 
 	ws := &types.Workspace{
