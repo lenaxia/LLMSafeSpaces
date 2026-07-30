@@ -38,7 +38,11 @@ func main() {
 }
 
 func runEnvVars(ctx context.Context, run *canary.Runner, cfg canary.Config) {
-	c := cfg.Client()
+	if cfg.Password == "" {
+		run.OK("skipped (LLMSAFESPACES_PASSWORD not set — JWT login required for DEK-dependent operations)")
+		return
+	}
+	c := cfg.JWTClient()
 
 	ws, err := c.Workspaces.Create(ctx, llm.CreateWorkspaceRequest{
 		Name: "canary-envvars-test", Runtime: "base", StorageSize: "1Gi",
