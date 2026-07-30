@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	llm "github.com/lenaxia/llmsafespaces/sdk/go"
@@ -57,13 +58,15 @@ func runEnvVars(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	err = c.Workspaces.SetEnv(ctx, wsID, map[string]string{"CANARY_VAR": "hello"})
 	run.AssertNoError(err, "set-env: no error")
 
-	// P2: Get env — contains CANARY_VAR
+	// P2: Get env — contains the env var. The API returns secret names
+	// (<wsID>-env-<lowercased_var>) not the original var names, so check
+	// for the lowercased suffix.
 	env, err := c.Workspaces.GetEnv(ctx, wsID)
 	if run.AssertNoError(err, "get-env: no error") {
 		vars, _ := env["vars"].([]any)
 		found := false
 		for _, v := range vars {
-			if s, ok := v.(string); ok && s == "CANARY_VAR" {
+			if s, ok := v.(string); ok && strings.HasSuffix(s, "-env-canary_var") {
 				found = true
 				break
 			}
