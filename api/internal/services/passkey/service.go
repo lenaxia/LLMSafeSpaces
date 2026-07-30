@@ -488,14 +488,34 @@ func generateRecoveryCodes(n int) (codes, hashes []string, err error) {
 }
 
 func randomRecoveryCode() (string, error) {
-	b := make([]byte, RecoveryCodeLen)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
+	code := make([]byte, RecoveryCodeLen)
+	for i := range code {
+		idx, err := randInt(len(recoveryCodeAlphabet))
+		if err != nil {
+			return "", err
+		}
+		code[i] = recoveryCodeAlphabet[idx]
 	}
-	for i := range b {
-		b[i] = recoveryCodeAlphabet[int(b[i])%len(recoveryCodeAlphabet)]
+	return string(code), nil
+}
+
+// randInt returns a crypto-random int in [0, max) without modulo bias, via
+// rejection sampling. The bias from int(b) % max is small (256 % 31 = 8 →
+// ~12.5% for the first 8), but rejection sampling is the correct approach for
+// security-sensitive random selection.
+func randInt(max int) (int, error) {
+	// Rejection sampling: reject values in the incomplete final bucket.
+	// The largest multiple of max that fits in a byte:
+	limit := 256 - (256 % max)
+	for {
+		b := make([]byte, 1)
+		if _, err := rand.Read(b); err != nil {
+			return 0, err
+		}
+		if int(b[0]) < limit {
+			return int(b[0]) % max, nil
+		}
 	}
-	return string(b), nil
 }
 
 // marshalResponse converts a go-webauthn protocol struct to a map[string]any

@@ -26,7 +26,6 @@ import (
 // (rather than importing auth.Service directly) keeps the handler decoupled
 // and testable with a fake.
 type passkeyAuthService interface {
-	GenerateToken(userID string) (string, error)
 	IssueTokenAndUnlockDEK(ctx context.Context, userID string, ttl time.Duration, dekSource string) (string, error)
 }
 
@@ -38,12 +37,22 @@ type passkeyUserStore interface {
 }
 
 // PasskeyHandler handles WebAuthn passkey registration, login, and recovery.
+// PasskeyService is the narrow interface the handler needs from the ceremony
+// service. passkey.Service satisfies it; tests substitute a fake.
+type PasskeyService interface {
+	BeginRegistration(ctx context.Context, userID, username string) (*passkey.BeginRegistrationOptions, error)
+	FinishRegistration(ctx context.Context, sessionToken, username, name string, parsed *protocol.ParsedCredentialCreationData) (*passkey.FinishRegistrationResult, error)
+	BeginLogin(ctx context.Context, email string) (*passkey.BeginLoginOptions, string, error)
+	FinishLogin(ctx context.Context, sessionToken, email string, parsed *protocol.ParsedCredentialAssertionData) (string, error)
+	ConsumeRecoveryCode(ctx context.Context, email, code string) (string, error)
+	CreateCredentialAndRecoveryCodes(ctx context.Context, cred *passkey.Credential, hashes []string) error
+}
+
 type PasskeyHandler struct {
-	svc      *passkey.Service
+	svc      PasskeyService
 	auth     passkeyAuthService
 	users    passkeyUserStore
 	tokenTTL time.Duration
-	tokenDur time.Duration
 }
 
 // maxPasskeyBodySize limits the passkey ceremony request body (1 MiB), matching
@@ -51,8 +60,8 @@ type PasskeyHandler struct {
 const maxPasskeyBodySize = 1 << 20
 
 // NewPasskeyHandler constructs the handler.
-func NewPasskeyHandler(svc *passkey.Service, auth passkeyAuthService, users passkeyUserStore, tokenTTL time.Duration) *PasskeyHandler {
-	return &PasskeyHandler{svc: svc, auth: auth, users: users, tokenTTL: tokenTTL, tokenDur: tokenTTL}
+func NewPasskeyHandler(svc PasskeyService, auth passkeyAuthService, users passkeyUserStore, tokenTTL time.Duration) *PasskeyHandler {
+	return &PasskeyHandler{svc: svc, auth: auth, users: users, tokenTTL: tokenTTL}
 }
 
 // RegisterBegin handles POST /api/v1/auth/passkey/register/begin.
