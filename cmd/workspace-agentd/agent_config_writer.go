@@ -141,7 +141,11 @@ func (w *AgentConfigWriter) loadAdminPrompt() {
 
 // setAllowedDirsPath overrides the allowed-dirs file path. Test seam so
 // tests can point at a t.TempDir() file instead of the production tmpfs
-// path. Must be called BEFORE loadAllowedDirs.
+// path. The constructor already calls loadAllowedDirs() with the default
+// path (agentd.AllowedDirsPath); calling this after construction + calling
+// loadAllowedDirs() again re-reads from the new path. The second call
+// appends to the slice (not replaces) — tests rely on the first call being
+// a no-op (the production path doesn't exist in a test environment).
 func (w *AgentConfigWriter) setAllowedDirsPath(p string) {
 	w.allowedDirsPath = p
 }
@@ -367,45 +371,67 @@ func (w *AgentConfigWriter) rebuild() error {
 	// the /workspace project root. The existing mode block is preserved —
 	// only the external_directory sub-object gains entries — so sibling
 	// permission rules (bash, edit, etc.) and other mode fields survive.
+	//
+	// The mode block is re-emitted when EITHER we have allowed-dirs to inject
+	// OR an existing mode block needs preserving (loadExisting captured it).
+	// When allowedDirs is empty and no mode exists, no mode block is emitted
+	// (true no-op, no empty-object noise).
 	if len(w.allowedDirs) > 0 || len(w.modeRaw) > 0 {
 		mode := make(map[string]json.RawMessage)
 		if len(w.modeRaw) > 0 {
 			_ = json.Unmarshal(w.modeRaw, &mode)
 		}
-		var perms map[string]json.RawMessage
-		if raw, ok := mode["permissions"]; ok {
-			_ = json.Unmarshal(raw, &perms)
-		}
-		if perms == nil {
-			perms = map[string]json.RawMessage{}
-		}
-		var extDir map[string]string
-		if raw, ok := perms["external_directory"]; ok {
-			// external_directory may be a bare action string ("ask") or an
-			// object map of {pattern: action}. Only the map form can carry
-			// our injected allow-rules; a bare string is left untouched
-			// (preserving any user-set global policy) and our rules are
-			// added as a fresh map.
-			if json.Unmarshal(raw, &extDir) != nil {
-				extDir = map[string]string{}
+
+		// Only touch external_directory when we have patterns to inject.
+		// Without this guard, an existing mode block with no external_directory
+		// key would gain an empty "external_directory": {} — functional but
+		// unnecessary noise in the rendered config.
+		if len(w.allowedDirs) > 0 {
+			var perms map[string]json.RawMessage
+			if raw, ok := mode["permissions"]; ok {
+				_ = json.Unmarshal(raw, &perms)
 			}
+			if perms == nil {
+				perms = map[string]json.RawMessage{}
+			}
+			// external_directory may be a bare action string ("ask"/"allow"/
+			// "deny") or an object map of {pattern: action} (both valid per
+			// opencode's PermissionRuleConfig schema). If it's a bare string,
+			// we PRESERVE it as-is — converting to a map would silently narrow
+			// a global policy (e.g. "allow" for all dirs → "allow" only for
+			// /tmp/*). Only merge our patterns when the value is absent or is
+			// already in the map form.
+			if raw, ok := perms["external_directory"]; ok {
+				var existing map[string]string
+				if json.Unmarshal(raw, &existing) == nil {
+					for _, p := range w.allowedDirs {
+						existing[p] = "allow"
+					}
+					extDirJSON, err := json.Marshal(existing)
+					if err != nil {
+						return fmt.Errorf("agent-config writer: marshal external_directory: %w", err)
+					}
+					perms["external_directory"] = extDirJSON
+				}
+				// Bare-string branch: preserved as-is, no injection.
+			} else {
+				extDir := make(map[string]string, len(w.allowedDirs))
+				for _, p := range w.allowedDirs {
+					extDir[p] = "allow"
+				}
+				extDirJSON, err := json.Marshal(extDir)
+				if err != nil {
+					return fmt.Errorf("agent-config writer: marshal external_directory: %w", err)
+				}
+				perms["external_directory"] = extDirJSON
+			}
+			permsJSON, err := json.Marshal(perms)
+			if err != nil {
+				return fmt.Errorf("agent-config writer: marshal permissions: %w", err)
+			}
+			mode["permissions"] = permsJSON
 		}
-		if extDir == nil {
-			extDir = map[string]string{}
-		}
-		for _, p := range w.allowedDirs {
-			extDir[p] = "allow"
-		}
-		extDirJSON, err := json.Marshal(extDir)
-		if err != nil {
-			return fmt.Errorf("agent-config writer: marshal external_directory: %w", err)
-		}
-		perms["external_directory"] = extDirJSON
-		permsJSON, err := json.Marshal(perms)
-		if err != nil {
-			return fmt.Errorf("agent-config writer: marshal permissions: %w", err)
-		}
-		mode["permissions"] = permsJSON
+
 		modeJSON, err := json.Marshal(mode)
 		if err != nil {
 			return fmt.Errorf("agent-config writer: marshal mode: %w", err)

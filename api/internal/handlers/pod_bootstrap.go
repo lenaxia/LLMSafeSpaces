@@ -184,6 +184,15 @@ func (h *PodBootstrapHandler) HasLogger() bool {
 	return h.logger != nil
 }
 
+// HasSettingsReader reports whether a settings reader has been wired. Used
+// by the app-level wiring test to enforce that production constructs the
+// handler with SetSettingsReader called — without it, the allowed-
+// external-directories setting is never delivered to agentd and agents
+// prompt for /tmp/* on every session (the very gap this feature closes).
+func (h *PodBootstrapHandler) HasSettingsReader() bool {
+	return h.settings != nil
+}
+
 // Bootstrap handles POST /internal/v1/pod-bootstrap.
 func (h *PodBootstrapHandler) Bootstrap(c *gin.Context) {
 	token := extractBearerToken(c.GetHeader("Authorization"))
