@@ -99,3 +99,25 @@ var errSentinel = errSentinelErr{}
 type errSentinelErr struct{}
 
 func (errSentinelErr) Error() string { return "provisioning failed (injected)" }
+
+// TestIssueTokenAndUnlockDEK_HasKeysError_DoesNotProvision is the regression
+// test for the data-loss bug the PR review caught: when HasKeys returns a
+// transient DB error, the code MUST NOT fall through to provisioning. Doing so
+// would call CreateUserKey (INSERT ... ON CONFLICT DO UPDATE), overwriting an
+// existing DEK and permanently orphaning the user's existing secrets. Safe
+// behavior: skip provisioning, still attempt unlock (no-op if no keys, normal
+// if keys exist), return the token so login itself does not fail.
+func TestIssueTokenAndUnlockDEK_HasKeysError_DoesNotProvision(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	ks := &fakeKeyService{
+		hasKeysFn: func(_ context.Context, _ string) (bool, error) {
+			return false, assertAnError(t) // transient DB read failure
+		},
+	}
+	svc.SetKeyService(ks)
+
+	tok, err := svc.IssueTokenAndUnlockDEK(context.Background(), "user-sso-4", time.Hour)
+	require.NoError(t, err, "login must not fail when the HasKeys check errors")
+	assert.NotEmpty(t, tok, "token must still be returned")
+	assert.Empty(t, ks.serverKEKInitCalls, "provisioning MUST NOT run when HasKeys errored — it would overwrite an existing DEK")
+}

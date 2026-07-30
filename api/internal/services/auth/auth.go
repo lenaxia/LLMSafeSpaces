@@ -494,8 +494,21 @@ func (s *Service) IssueTokenAndUnlockDEK(ctx context.Context, userID string, ttl
 		}
 		return token, nil
 	}
-	hasKeys, _ := s.keyService.HasKeys(ctx, userID)
-	if !hasKeys {
+	hasKeys, hasKeysErr := s.keyService.HasKeys(ctx, userID)
+	if hasKeysErr != nil {
+		// Cannot safely determine key state — DO NOT provision. A transient DB
+		// read failure here must NOT trigger InitializeUserKeysServerKEK →
+		// CreateUserKey, whose ON CONFLICT (user_id) DO UPDATE would overwrite
+		// an existing DEK with a fresh random one and permanently orphan every
+		// personal secret the user already has. The safe action on "I don't
+		// know whether keys exist" is to skip provisioning and fall through to
+		// unlock (a no-op when no keys exist; a normal unlock when they do).
+		// The user retries on next login once the DB read is healthy.
+		if s.logger != nil {
+			s.logger.Warn("IssueTokenAndUnlockDEK: HasKeys check failed; skipping provisioning to avoid DEK overwrite",
+				"user_id", userID, "error", hasKeysErr.Error())
+		}
+	} else if !hasKeys {
 		if err := s.keyService.InitializeUserKeysServerKEK(ctx, userID); err != nil {
 			if s.logger != nil {
 				s.logger.Warn("IssueTokenAndUnlockDEK: server-kek provisioning failed", "user_id", userID, "error", err.Error())
