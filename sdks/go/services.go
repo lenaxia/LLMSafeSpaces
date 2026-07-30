@@ -233,7 +233,16 @@ func (s *AuthService) DeleteAPIKey(ctx context.Context, id string) error {
 type SecretsService struct{ c *Client }
 
 func (s *SecretsService) Create(ctx context.Context, name, secretType, value string) (*SecretResponse, error) {
-	body := map[string]string{"name": name, "type": secretType, "value": value}
+	return s.CreateWithMetadata(ctx, name, secretType, value, nil)
+}
+
+// CreateWithMetadata creates a secret with optional metadata (e.g.
+// {"var_name":"DB_URL"} for env-secrets, {"key_type":"ed25519"} for ssh-keys).
+func (s *SecretsService) CreateWithMetadata(ctx context.Context, name, secretType, value string, metadata map[string]string) (*SecretResponse, error) {
+	body := map[string]any{"name": name, "type": secretType, "value": value}
+	if metadata != nil {
+		body["metadata"] = metadata
+	}
 	var resp SecretResponse
 	err := s.c.do(ctx, "POST", "/secrets", body, &resp)
 	return &resp, err

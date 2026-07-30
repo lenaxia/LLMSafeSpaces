@@ -38,7 +38,11 @@ func main() {
 }
 
 func runSecretBindings(ctx context.Context, run *canary.Runner, cfg canary.Config) {
-	c := cfg.Client()
+	if cfg.Password == "" {
+		run.OK("skipped (LLMSAFESPACES_PASSWORD not set — JWT login required for DEK-dependent operations)")
+		return
+	}
+	c := cfg.JWTClient()
 
 	// Setup: workspace and secret
 	ws, err := c.Workspaces.Create(ctx, llm.CreateWorkspaceRequest{
@@ -50,7 +54,7 @@ func runSecretBindings(ctx context.Context, run *canary.Runner, cfg canary.Confi
 	wsID := ws.ID
 	defer func() { _ = c.Workspaces.Delete(context.Background(), wsID) }()
 
-	secret, err := c.Secrets.Create(ctx, "canary-binding-secret", "env-secret", "bindval")
+	secret, err := c.Secrets.CreateWithMetadata(ctx, "canary-binding-secret", "env-secret", "bindval", map[string]string{"var_name": "CANARY_VAR"})
 	if !run.AssertNoError(err, "create-secret: no error") {
 		return
 	}

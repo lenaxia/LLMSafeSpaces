@@ -36,10 +36,14 @@ func main() {
 }
 
 func runSecretAudit(ctx context.Context, run *canary.Runner, cfg canary.Config) {
-	c := cfg.Client()
+	if cfg.Password == "" {
+		run.OK("skipped (LLMSAFESPACES_PASSWORD not set — JWT login required for DEK-dependent operations)")
+		return
+	}
+	c := cfg.JWTClient()
 
 	// Create a secret to generate an audit entry
-	s, err := c.Secrets.Create(ctx, "canary-audit-probe", "env-secret", "auditval")
+	s, err := c.Secrets.CreateWithMetadata(ctx, "canary-audit-probe", "env-secret", "auditval", map[string]string{"var_name": "CANARY_VAR"})
 	if run.AssertNoError(err, "create-for-audit: no error") {
 		defer func() { _ = c.Secrets.Delete(context.Background(), s.ID) }()
 	}

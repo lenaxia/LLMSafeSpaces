@@ -103,15 +103,11 @@ func runWSCRUD(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	err = c.Workspaces.Delete(ctx, wsID)
 	run.AssertNoError(err, "delete: no error")
 
-	// P8: After delete — 404 or terminal phase
+	// P8: After delete — 404 (CRD is garbage-collected; API returns NotFound)
 	time.Sleep(1 * time.Second)
-	deleted, err := c.Workspaces.Get(ctx, wsID)
-	if err != nil {
-		run.Assert(llm.IsNotFound(err), "after-delete: 404", canary.ErrDetail(err, "expected 404"))
-	} else {
-		run.Assert(deleted.Phase == "Deleted" || deleted.Phase == "Terminating",
-			"after-delete: terminal phase", deleted.Phase)
-	}
+	_, err = c.Workspaces.Get(ctx, wsID)
+	run.Assert(err != nil && llm.IsNotFound(err), "after-delete: 404",
+		canary.ErrDetail(err, "expected 404 after delete"))
 
 	// N1: Get nonexistent
 	_, err = c.Workspaces.Get(ctx, "00000000-0000-0000-0000-000000000000")
@@ -121,9 +117,19 @@ func runWSCRUD(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	err = c.Workspaces.Delete(ctx, "00000000-0000-0000-0000-000000000001")
 	run.Assert(err != nil, "delete-nonexistent: error", canary.ErrDetail(err, "expected error"))
 
-	// N3: Create with empty runtime
-	_, err = c.Workspaces.Create(ctx, llm.CreateWorkspaceRequest{Name: "x", Runtime: "", StorageSize: "1Gi"})
-	run.Assert(err != nil, "create-empty-runtime: error", canary.ErrDetail(err, "expected validation error"))
+	// N3: Create with empty runtime — the API defaults it to the instance's
+	// workspace.defaultImage, so it should succeed (not fail). Verify the
+	// returned workspace has a non-empty runtime (the default was applied).
+	wsDefault, err := c.Workspaces.Create(ctx, llm.CreateWorkspaceRequest{Name: "canary-default-runtime", Runtime: "", StorageSize: "1Gi"})
+	if run.AssertNoError(err, "create-empty-runtime: defaults (no error)") {
+		detail := ""
+		if wsDefault != nil {
+			detail = wsDefault.Runtime
+		}
+		run.Assert(wsDefault != nil && wsDefault.Runtime != "", "create-empty-runtime: runtime defaulted", detail)
+		// Clean up the defaulted workspace.
+		_ = c.Workspaces.Delete(ctx, wsDefault.ID)
+	}
 
 	// N5: Storage size too large
 	_, err = c.Workspaces.Create(ctx, llm.CreateWorkspaceRequest{

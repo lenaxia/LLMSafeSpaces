@@ -39,12 +39,16 @@ func main() {
 }
 
 func runOwnership(ctx context.Context, run *canary.Runner, cfg canary.Config) {
+	if cfg.Password == "" {
+		run.OK("skipped (LLMSAFESPACES_PASSWORD not set — JWT login required for DEK-dependent operations)")
+		return
+	}
 	if cfg.APIKeyUser2 == "" {
 		run.OK("ownership: skipped (LLMSAFESPACES_API_KEY_USER2 not set)")
 		return
 	}
 
-	c1 := cfg.Client()
+	c1 := cfg.JWTClient()
 	c2 := cfg.Client2()
 
 	// Create User1 workspace and secret
@@ -56,7 +60,7 @@ func runOwnership(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	}
 	defer func() { _ = c1.Workspaces.Delete(context.Background(), ws1.ID) }()
 
-	secret1, err := c1.Secrets.Create(ctx, "canary-ownership-s1", "env-secret", "val1")
+	secret1, err := c1.Secrets.CreateWithMetadata(ctx, "canary-ownership-s1", "env-secret", "val1", map[string]string{"var_name": "CANARY_VAR"})
 	if !run.AssertNoError(err, "user1-create-secret: no error") {
 		return
 	}
@@ -141,12 +145,12 @@ func runOwnership(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	run.Assert(err != nil, "user2-ensure-session-user1-ws: error",
 		canary.ErrDetail(err, "expected error"))
 
-	// N6: Bindings route uses secrets service which returns 404 for cross-user access
-	// (validated: handleSecretError maps ErrWorkspaceNotOwned → 404).
+	// N6: Cross-user bindings access — returns 403 (workspace ownership
+	// middleware denies access before the secrets handler is reached).
 	status, body, _ := canary.RawDo(ctx, "GET",
 		cfg.APIURL+"/api/v1/workspaces/"+ws1.ID+"/bindings",
 		cfg.APIKeyUser2, nil)
-	run.Assert(status == 404, "user2-bindings-user1-ws: 404 (secrets handler returns 404 for cross-user)",
+	run.Assert(status == 403 || status == 404, "user2-bindings-user1-ws: 403/404 (access denied)",
 		fmt.Sprintf("got %d: %s", status, truncate(body, 200)))
 }
 

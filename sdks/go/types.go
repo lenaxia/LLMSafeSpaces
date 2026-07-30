@@ -168,7 +168,7 @@ type BindingsResponse struct {
 
 // BindingItem is a single binding entry.
 type BindingItem struct {
-	ID   string `json:"id"`
+	ID   string `json:"secretId"`
 	Name string `json:"name"`
 	Type string `json:"type"`
 }
