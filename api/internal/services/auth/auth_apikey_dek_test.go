@@ -46,6 +46,9 @@ type dekJKeyService struct {
 func (d *dekJKeyService) InitializeUserKeys(_ context.Context, _ string, _ []byte) (string, error) {
 	return "fake-recovery", nil
 }
+func (d *dekJKeyService) InitializeUserKeysServerKEK(_ context.Context, _ string) error {
+	return nil
+}
 func (d *dekJKeyService) UnlockDEK(_ context.Context, _ string, _ []byte, _ string, _ time.Duration) error {
 	return nil
 }

@@ -59,6 +59,20 @@ func (m *testKeyStore) UpdateWrappedDEK(_ context.Context, userID string, wrappe
 	return nil
 }
 
+func (m *testKeyStore) UpdateWrappedDEKAndSource(_ context.Context, userID string, wrappedDEK []byte, salt []byte, keyVersion int, dekSource string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.records[userID]
+	if !ok {
+		return errors.New("not found")
+	}
+	r.WrappedDEK = wrappedDEK
+	r.Salt = salt
+	r.KeyVersion = keyVersion
+	r.DEKSource = dekSource
+	return nil
+}
+
 func (m *testKeyStore) UpdateWrappedDEKRecovery(_ context.Context, userID string, wrappedDEKRecovery []byte, recoverySalt []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

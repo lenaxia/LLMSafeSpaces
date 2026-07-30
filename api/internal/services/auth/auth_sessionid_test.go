@@ -239,6 +239,14 @@ func (t *trackingKeyService) InitializeUserKeys(_ context.Context, userID string
 	return "recovery-key-hex", nil
 }
 
+func (t *trackingKeyService) InitializeUserKeysServerKEK(_ context.Context, userID string) error {
+	if t.initialized == nil {
+		t.initialized = make(map[string]bool)
+	}
+	t.initialized[userID] = true
+	return nil
+}
+
 func (t *trackingKeyService) UnlockDEK(_ context.Context, _ string, _ []byte, _ string, _ time.Duration) error {
 	return nil
 }

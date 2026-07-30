@@ -257,7 +257,58 @@ func TestRotationCoordinator_AllTables_HappyPath(t *testing.T) {
 	assert.Equal(t, 2, results["provider_credentials"].Processed)
 	assert.Equal(t, 1, results["api_keys"].Processed)
 	assert.Equal(t, 1, results["org_sso_configs"].Processed)
+	// user_keys has no seeded rows → no-op, no error (RotateAll must tolerate it).
+	assert.Equal(t, 0, results["user_keys"].Processed)
 	assert.True(t, store.flushed)
+}
+
+// TestRotationCoordinator_UserKeys_RotatesServerKEKRows verifies the Epic 58
+// user_keys walk: server_kek rows re-wrap under the master-kek purpose. The
+// store contract is that password-tier rows are excluded upstream.
+func TestRotationCoordinator_UserKeys_RotatesServerKEKRows(t *testing.T) {
+	store := newMockRotationStore()
+	oldKey := make([]byte, 32)
+	for i := range oldKey {
+		oldKey[i] = byte(i + 1)
+	}
+
+	// Server-KEK-wrapped user DEK — rotatable.
+	store.addRow("user_keys", "user-sso", "", encryptWithKey(t, oldKey, []byte("sso-user-dek")), 1)
+	row := store.rows["user_keys"][0]
+	row.DEKSource = "server_kek"
+	store.rows["user_keys"][0] = row
+
+	oldProv, newProv := buildProviderSets(t)
+	coord := NewRotationCoordinator(store, oldProv, newProv)
+
+	res, err := coord.RotateTable(context.Background(), "user_keys", "", 2, false)
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Processed)
+	assert.Equal(t, 2, store.rows["user_keys"][0].KeyVersion, "server_kek row must be re-wrapped to the target version")
+}
+
+// TestRotationCoordinator_UserKeys_PurposeIsMasterKEK guards that a user_keys
+// row routed under the WRONG purpose (no master-kek provider) fails rather than
+// silently skipping — proving the purpose dispatch selects master-kek.
+func TestRotationCoordinator_UserKeys_PurposeIsMasterKEK(t *testing.T) {
+	store := newMockRotationStore()
+	oldKey := make([]byte, 32)
+	for i := range oldKey {
+		oldKey[i] = byte(i + 1)
+	}
+	store.addRow("user_keys", "u1", "", encryptWithKey(t, oldKey, []byte("dek")), 1)
+	store.rows["user_keys"][0].DEKSource = "server_kek"
+
+	// Old/new providers MISSING the master-kek purpose.
+	oldSP, err := NewStaticKeyProvider(oldKey)
+	require.NoError(t, err)
+	coord := NewRotationCoordinator(store,
+		map[string]RootKeyProvider{"provider-credentials": oldSP},
+		map[string]RootKeyProvider{"provider-credentials": oldSP})
+
+	res, err := coord.RotateTable(context.Background(), "user_keys", "", 2, false)
+	require.NoError(t, err)
+	assert.Equal(t, 1, res.Failed, "user_keys rotation must require the master-kek purpose provider")
 }
 
 func TestRotationCoordinator_ResumeFromCursor_ContinuesFromLastRow(t *testing.T) {

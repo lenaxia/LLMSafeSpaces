@@ -165,6 +165,9 @@ func (e2eKeyStore) CreateUserKey(_ context.Context, _ *secrets.UserKeyRecord) er
 func (e2eKeyStore) UpdateWrappedDEK(_ context.Context, _ string, _, _ []byte, _ int) error {
 	return nil
 }
+func (e2eKeyStore) UpdateWrappedDEKAndSource(_ context.Context, _ string, _, _ []byte, _ int, _ string) error {
+	return nil
+}
 func (e2eKeyStore) UpdateWrappedDEKRecovery(_ context.Context, _ string, _, _ []byte) error {
 	return nil
 }

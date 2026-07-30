@@ -18,7 +18,7 @@ func main() {
 	newMasterFile := flag.String("new-master-file", "", "path to the NEW master KEK file (required)")
 	databaseURL := flag.String("database-url", "", "PostgreSQL connection string (required)")
 	redisURL := flag.String("redis-url", "", "Redis connection string (required for DEK cache flush)")
-	table := flag.String("table", "all", "table to rotate: provider_credentials, api_keys, org_sso_configs, or all")
+	table := flag.String("table", "all", "table to rotate: provider_credentials, api_keys, org_sso_configs, user_keys, or all")
 	resumeFrom := flag.String("resume-from", "", "resume from this row ID (per table; for interrupted runs)")
 	targetVersion := flag.Int("target-version", 2, "target key version (default: 2)")
 	dryRun := flag.Bool("dry-run", false, "report counts without writing")
@@ -35,9 +35,9 @@ func main() {
 		os.Exit(2)
 	}
 
-	validTables := map[string]bool{"all": true, "provider_credentials": true, "api_keys": true, "org_sso_configs": true}
+	validTables := map[string]bool{"all": true, "provider_credentials": true, "api_keys": true, "org_sso_configs": true, "user_keys": true}
 	if !validTables[*table] {
-		fmt.Fprintf(os.Stderr, "rotate-kek: --table must be one of: all, provider_credentials, api_keys, org_sso_configs (got %q)\n", *table)
+		fmt.Fprintf(os.Stderr, "rotate-kek: --table must be one of: all, provider_credentials, api_keys, org_sso_configs, user_keys (got %q)\n", *table)
 		os.Exit(2)
 	}
 
@@ -109,7 +109,7 @@ func run(oldFile, newFile, dbURL, redisURL, table, resumeFrom string, targetVer 
 		}
 		totalProcessed := 0
 		totalFailed := 0
-		for _, tbl := range []string{"provider_credentials", "api_keys", "org_sso_configs"} {
+		for _, tbl := range []string{"provider_credentials", "api_keys", "org_sso_configs", "user_keys"} {
 			r := results[tbl]
 			totalProcessed += r.Processed
 			totalFailed += r.Failed

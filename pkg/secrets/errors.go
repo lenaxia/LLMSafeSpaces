@@ -103,6 +103,18 @@ var (
 		Message: "user key material not initialized; please re-login",
 	}
 
+	// ErrServerKEKUnavailable is returned when a server_kek-tier operation
+	// (unwrap or provisioning) is attempted but the master-KEK RootKeyProvider
+	// is not wired. This is fail-closed: a server_kek user whose DEK cannot be
+	// unwrapped must not silently fall through to a weaker path. In production
+	// the provider is always wired (app.go constructs apiKeyProv); this fires
+	// only on misconfiguration or in tests that forget to wire it.
+	ErrServerKEKUnavailable = &pkgerrors.StatusError{
+		Status:  http.StatusServiceUnavailable,
+		Code:    "server_kek_unavailable",
+		Message: "server key provider is not available; contact an administrator",
+	}
+
 	// ErrInvalidLLMProvider is returned when LLMProviderData validation
 	// fails (missing provider, missing API key, etc.).
 	ErrInvalidLLMProvider = &pkgerrors.StatusError{
