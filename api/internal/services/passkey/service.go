@@ -378,6 +378,12 @@ func (s *Service) FinishLogin(ctx context.Context, sessionToken, email string, p
 		}
 	}
 	if credID != (uuid.UUID{}) {
+		// Sign-count update is non-fatal — login already succeeded. If this
+		// fails (Redis/DB blip), cloned-authenticator detection is degraded
+		// for this credential until the next successful login updates the
+		// count. We intentionally do NOT return the error: doing so would
+		// make the handler return 500 for a login that actually succeeded,
+		// confusing the user. The degradation is bounded by the next login.
 		_ = s.store.UpdateCredentialAfterLogin(ctx, credID, cred.Authenticator.SignCount, time.Now())
 	}
 

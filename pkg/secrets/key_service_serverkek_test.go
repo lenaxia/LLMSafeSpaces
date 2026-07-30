@@ -50,7 +50,7 @@ func TestInitializeUserKeysServerKEK_GeneratesServerKEKWrappedDEK(t *testing.T) 
 	prov := &recordingProvider{}
 	svc.SetAPIKeyStore(nil, prov) // wires rootKeyProvider
 
-	if err := svc.InitializeUserKeysServerKEK(context.Background(), "user-sso"); err != nil {
+	if err := svc.InitializeUserKeysServerKEK(context.Background(), "user-sso", "server_kek"); err != nil {
 		t.Fatalf("InitializeUserKeysServerKEK: %v", err)
 	}
 
@@ -78,7 +78,7 @@ func TestInitializeUserKeysServerKEK_NoProvider_Fails(t *testing.T) {
 	svc := NewKeyService(store, cache)
 	// rootKeyProvider intentionally NOT wired.
 
-	err := svc.InitializeUserKeysServerKEK(context.Background(), "user-sso")
+	err := svc.InitializeUserKeysServerKEK(context.Background(), "user-sso", "server_kek")
 	if !errors.Is(err, ErrServerKEKUnavailable) {
 		t.Errorf("expected ErrServerKEKUnavailable, got %v", err)
 	}
@@ -94,7 +94,7 @@ func TestUnlockDEKWithSigningKey_ServerKEK_UsesRootKeyProvider(t *testing.T) {
 	prov := &recordingProvider{}
 	svc.SetAPIKeyStore(nil, prov)
 
-	_ = svc.InitializeUserKeysServerKEK(context.Background(), "u1")
+	_ = svc.InitializeUserKeysServerKEK(context.Background(), "u1", "server_kek")
 
 	// Unlock with an arbitrary "password" — must be ignored for server_kek.
 	if err := svc.UnlockDEKWithSigningKey(context.Background(), "u1", []byte("ignored-password"), "sess-1", time.Hour, nil); err != nil {
@@ -181,7 +181,7 @@ func TestChangePassword_TransitionsServerKEKToPassword(t *testing.T) {
 	prov := &recordingProvider{}
 	svc.SetAPIKeyStore(nil, prov)
 
-	_ = svc.InitializeUserKeysServerKEK(context.Background(), "u1")
+	_ = svc.InitializeUserKeysServerKEK(context.Background(), "u1", "server_kek")
 	origRec, _ := store.GetUserKey(context.Background(), "u1")
 	origDEK, _ := prov.Decrypt(context.Background(), origRec.WrappedDEK)
 

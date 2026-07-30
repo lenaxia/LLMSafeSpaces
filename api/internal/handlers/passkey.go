@@ -46,6 +46,10 @@ type PasskeyHandler struct {
 	tokenDur time.Duration
 }
 
+// maxPasskeyBodySize limits the passkey ceremony request body (1 MiB), matching
+// the auth endpoints' convention (password_reset, login_discovery).
+const maxPasskeyBodySize = 1 << 20
+
 // NewPasskeyHandler constructs the handler.
 func NewPasskeyHandler(svc *passkey.Service, auth passkeyAuthService, users passkeyUserStore, tokenTTL time.Duration) *PasskeyHandler {
 	return &PasskeyHandler{svc: svc, auth: auth, users: users, tokenTTL: tokenTTL, tokenDur: tokenTTL}
@@ -58,29 +62,34 @@ func (h *PasskeyHandler) RegisterBegin(c *gin.Context) {
 		Email string `json:"email" binding:"required,email"`
 		Name  string `json:"name"`
 	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPasskeyBodySize)
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
 
-	// Look up or provision a user ID. For a brand-new user, generate a
-	// provisional UUID — the user row is created at /finish only after the
-	// attestation is verified, so an incomplete ceremony leaves no orphan rows.
+	// RegisterBegin is for NEW user signup ONLY. If the email already exists,
+	// refuse — allowing unauthenticated enrollment on an existing account would
+	// be an account-takeover vector (attacker enrolls their authenticator for
+	// the victim's email). Existing users add passkeys via an authenticated
+	// settings flow (future).
 	existing, err := h.users.GetUserByEmail(c.Request.Context(), req.Email)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "lookup failed"})
 		return
 	}
-	var userID, username string
 	if existing != nil {
-		userID = existing.ID
-		username = existing.Username
-	} else {
-		userID = uuid.NewString()
-		username = req.Name
-		if username == "" {
-			username = emailLocalPart(req.Email)
-		}
+		c.JSON(http.StatusConflict, gin.H{"error": "account already exists"})
+		return
+	}
+
+	// New user — generate a provisional UUID. The user row is created at
+	// /finish only after the attestation is verified, so an incomplete ceremony
+	// leaves no orphan rows.
+	userID := uuid.NewString()
+	username := req.Name
+	if username == "" {
+		username = emailLocalPart(req.Email)
 	}
 
 	opts, err := h.svc.BeginRegistration(c.Request.Context(), userID, username)
@@ -101,6 +110,7 @@ func (h *PasskeyHandler) RegisterFinish(c *gin.Context) {
 		Name         string         `json:"name"`
 		Response     map[string]any `json:"response" binding:"required"`
 	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPasskeyBodySize)
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
@@ -186,6 +196,7 @@ func (h *PasskeyHandler) LoginBegin(c *gin.Context) {
 	var req struct {
 		Email string `json:"email" binding:"required,email"`
 	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPasskeyBodySize)
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
@@ -211,6 +222,7 @@ func (h *PasskeyHandler) LoginFinish(c *gin.Context) {
 		Email        string         `json:"email" binding:"required,email"`
 		Response     map[string]any `json:"response" binding:"required"`
 	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPasskeyBodySize)
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
