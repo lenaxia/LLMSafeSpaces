@@ -39,7 +39,7 @@ func runSecretAudit(ctx context.Context, run *canary.Runner, cfg canary.Config) 
 	c := cfg.Client()
 
 	// Create a secret to generate an audit entry
-	s, err := c.Secrets.Create(ctx, "canary-audit-probe", "env-secret", "auditval")
+	s, err := c.Secrets.CreateWithMetadata(ctx, "canary-audit-probe", "env-secret", "auditval", map[string]string{"var_name":"CANARY_VAR"})
 	if run.AssertNoError(err, "create-for-audit: no error") {
 		defer func() { _ = c.Secrets.Delete(context.Background(), s.ID) }()
 	}

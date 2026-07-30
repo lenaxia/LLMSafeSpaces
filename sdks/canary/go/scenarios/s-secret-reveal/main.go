@@ -45,7 +45,7 @@ func runSecretReveal(ctx context.Context, run *canary.Runner, cfg canary.Config)
 	c := cfg.Client()
 	const secretValue = "canary-reveal-test-val-xyz"
 
-	secret, err := c.Secrets.Create(ctx, "canary-reveal-test", "env-secret", secretValue)
+	secret, err := c.Secrets.CreateWithMetadata(ctx, "canary-reveal-test", "env-secret", secretValue, map[string]string{"var_name":"CANARY_VAR"})
 	if !run.AssertNoError(err, "create: no error") {
 		return
 	}

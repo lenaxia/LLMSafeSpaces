@@ -56,7 +56,7 @@ func runOwnership(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	}
 	defer func() { _ = c1.Workspaces.Delete(context.Background(), ws1.ID) }()
 
-	secret1, err := c1.Secrets.Create(ctx, "canary-ownership-s1", "env-secret", "val1")
+	secret1, err := c1.Secrets.CreateWithMetadata(ctx, "canary-ownership-s1", "env-secret", "val1", map[string]string{"var_name":"CANARY_VAR"})
 	if !run.AssertNoError(err, "user1-create-secret: no error") {
 		return
 	}

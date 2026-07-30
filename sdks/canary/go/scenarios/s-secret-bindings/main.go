@@ -50,7 +50,7 @@ func runSecretBindings(ctx context.Context, run *canary.Runner, cfg canary.Confi
 	wsID := ws.ID
 	defer func() { _ = c.Workspaces.Delete(context.Background(), wsID) }()
 
-	secret, err := c.Secrets.Create(ctx, "canary-binding-secret", "env-secret", "bindval")
+	secret, err := c.Secrets.CreateWithMetadata(ctx, "canary-binding-secret", "env-secret", "bindval", map[string]string{"var_name":"CANARY_VAR"})
 	if !run.AssertNoError(err, "create-secret: no error") {
 		return
 	}

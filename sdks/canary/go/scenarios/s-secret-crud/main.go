@@ -43,7 +43,7 @@ func runSecretCRUD(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	const value = "canary-value-xyz-123"
 
 	// P1: Create
-	secret, err := c.Secrets.Create(ctx, name, "env-secret", value)
+	secret, err := c.Secrets.CreateWithMetadata(ctx, name, "env-secret", value, map[string]string{"var_name":"CANARY_VAR"})
 	if !run.AssertNoError(err, "create: no error") {
 		return
 	}
@@ -87,7 +87,7 @@ func runSecretCRUD(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	run.AssertNoError(err, "delete: no error")
 
 	// P6: Re-create with same name after delete — should succeed (no lingering 409)
-	secret2, err := c.Secrets.Create(ctx, name, "env-secret", value)
+	secret2, err := c.Secrets.CreateWithMetadata(ctx, name, "env-secret", value, map[string]string{"var_name":"CANARY_VAR"})
 	if run.AssertNoError(err, "re-create-after-delete: no error") {
 		run.Assert(secret2.ID != secretID, "re-create-after-delete: new id", "")
 		_ = c.Secrets.Delete(ctx, secret2.ID)
@@ -99,18 +99,18 @@ func runSecretCRUD(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 		canary.ErrDetail(err, "expected 404"))
 
 	// N2: Invalid name (uppercase)
-	_, err = c.Secrets.Create(ctx, "My-Secret-UPPER", "env-secret", "val")
+	_, err = c.Secrets.CreateWithMetadata(ctx, "My-Secret-UPPER", "env-secret", "val", map[string]string{"var_name":"CANARY_VAR"})
 	run.Assert(err != nil, "create-invalid-name: error", canary.ErrDetail(err, "expected 400"))
 
 	// N3: Empty name
-	_, err = c.Secrets.Create(ctx, "", "env-secret", "val")
+	_, err = c.Secrets.CreateWithMetadata(ctx, "", "env-secret", "val", map[string]string{"var_name":"CANARY_VAR"})
 	run.Assert(err != nil, "create-empty-name: error", canary.ErrDetail(err, "expected 400"))
 
 	// N4: Duplicate name — create two with same name
-	s1, _ := c.Secrets.Create(ctx, "canary-dup-test", "env-secret", "val1")
+	s1, _ := c.Secrets.CreateWithMetadata(ctx, "canary-dup-test", "env-secret", "val1", map[string]string{"var_name":"CANARY_VAR"})
 	if s1 != nil {
 		defer func() { _ = c.Secrets.Delete(context.Background(), s1.ID) }()
-		_, err = c.Secrets.Create(ctx, "canary-dup-test", "env-secret", "val2")
+		_, err = c.Secrets.CreateWithMetadata(ctx, "canary-dup-test", "env-secret", "val2", map[string]string{"var_name":"CANARY_VAR"})
 		run.Assert(err != nil && llm.IsConflict(err), "create-duplicate: 409 Conflict",
 			canary.ErrDetail(err, "expected 409"))
 	}
