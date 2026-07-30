@@ -42,7 +42,7 @@ func runSecretReveal(ctx context.Context, run *canary.Runner, cfg canary.Config)
 		return
 	}
 
-	c := cfg.Client()
+	c := cfg.JWTClient()
 	const secretValue = "canary-reveal-test-val-xyz"
 
 	secret, err := c.Secrets.CreateWithMetadata(ctx, "canary-reveal-test", "env-secret", secretValue, map[string]string{"var_name": "CANARY_VAR"})

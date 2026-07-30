@@ -39,12 +39,16 @@ func main() {
 }
 
 func runOwnership(ctx context.Context, run *canary.Runner, cfg canary.Config) {
+	if cfg.Password == "" {
+		run.OK("skipped (LLMSAFESPACES_PASSWORD not set — JWT login required for DEK-dependent operations)")
+		return
+	}
 	if cfg.APIKeyUser2 == "" {
 		run.OK("ownership: skipped (LLMSAFESPACES_API_KEY_USER2 not set)")
 		return
 	}
 
-	c1 := cfg.Client()
+	c1 := cfg.JWTClient()
 	c2 := cfg.Client2()
 
 	// Create User1 workspace and secret

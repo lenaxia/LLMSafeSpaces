@@ -38,7 +38,11 @@ func main() {
 }
 
 func runSecretCRUD(ctx context.Context, run *canary.Runner, cfg canary.Config) {
-	c := cfg.Client()
+	if cfg.Password == "" {
+		run.OK("skipped (LLMSAFESPACES_PASSWORD not set — JWT login required for DEK-dependent operations)")
+		return
+	}
+	c := cfg.JWTClient()
 	const name = "canary-secret-crud"
 	const value = "canary-value-xyz-123"
 
