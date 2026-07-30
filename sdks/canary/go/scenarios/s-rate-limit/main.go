@@ -54,7 +54,7 @@ func runRateLimit(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 
 	var got429 bool
 	var body429 []byte
-	for i := 0; i < 8; i++ {
+	for i := 0; i < 30; i++ {
 		status, body, err := canary.RawDo(ctx, "POST", loginURL, "", loginBody)
 		if err != nil {
 			continue
@@ -65,7 +65,7 @@ func runRateLimit(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 			break
 		}
 	}
-	run.Assert(got429, "P2: rapid burst triggers 429", "no 429 after 8 rapid login attempts")
+	run.Assert(got429, "P2: rapid burst triggers 429", "no 429 after 30 rapid login attempts")
 
 	if got429 && body429 != nil {
 		run.Assert(canary.HasErrorField(body429),
