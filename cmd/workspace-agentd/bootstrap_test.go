@@ -403,7 +403,7 @@ func TestRunBootstrapCommand_WritesAllowedDirs(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(bootstrapResponse{
-			Secrets:                  rawJSON(t, []map[string]any{{"name": "x"}}),
+			Secrets:                    rawJSON(t, []map[string]any{{"name": "x"}}),
 			AllowedExternalDirectories: wantDirs,
 		})
 	}))

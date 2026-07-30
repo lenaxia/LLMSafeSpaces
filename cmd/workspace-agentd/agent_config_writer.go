@@ -56,16 +56,16 @@ type relaySource struct {
 // read-merge-write cycle so concurrent reloads and relay injection
 // cannot interleave.
 type AgentConfigWriter struct {
-	mu          sync.Mutex
-	path        string
-	providerRaw json.RawMessage // raw "provider" map JSON from FormatOpenCodeConfig; nil = no providers
-	model       string          // fully-qualified "providerID/modelID" form; "" = no model
-	relay       *relaySource    // nil = relay not yet injected / skipped
-	adminPrompt string          // admin-configured system prompt from agentd.AdminPromptPath; "" = none
-	agentRaw    json.RawMessage // existing "agent" config from loadExisting, preserved across rebuilds
-	modeRaw     json.RawMessage // existing "mode" config from loadExisting, preserved across rebuilds
-	allowedDirs []string        // glob patterns from AllowedDirsPath, merged as external_directory allow-rules
-	allowedDirsPath string      // path to the allowed-dirs JSON file; defaults to agentd.AllowedDirsPath
+	mu              sync.Mutex
+	path            string
+	providerRaw     json.RawMessage // raw "provider" map JSON from FormatOpenCodeConfig; nil = no providers
+	model           string          // fully-qualified "providerID/modelID" form; "" = no model
+	relay           *relaySource    // nil = relay not yet injected / skipped
+	adminPrompt     string          // admin-configured system prompt from agentd.AdminPromptPath; "" = none
+	agentRaw        json.RawMessage // existing "agent" config from loadExisting, preserved across rebuilds
+	modeRaw         json.RawMessage // existing "mode" config from loadExisting, preserved across rebuilds
+	allowedDirs     []string        // glob patterns from AllowedDirsPath, merged as external_directory allow-rules
+	allowedDirsPath string          // path to the allowed-dirs JSON file; defaults to agentd.AllowedDirsPath
 }
 
 // newAgentConfigWriter creates the writer and initializes its sources
