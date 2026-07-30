@@ -465,6 +465,18 @@ func (s *Service) ProvisionServerKEKKeys(ctx context.Context, userID string) err
 	return s.keyService.InitializeUserKeysServerKEK(ctx, userID, "server_kek")
 }
 
+// ProvisionPasskeyUserKeys is the passkey-signup analogue of ProvisionServerKEKKeys:
+// it provisions a master-KEK-wrapped DEK with dek_source='passkey' for a user who
+// authenticates with a passkey and has no password. Same encryption tier as SSO;
+// the dek_source value differs only for audit/telemetry. Called by the passkey
+// enrollment flow (Epic 59).
+func (s *Service) ProvisionPasskeyUserKeys(ctx context.Context, userID string) error {
+	if s.keyService == nil {
+		return errors.New("passkey provisioning unavailable: key service not wired")
+	}
+	return s.keyService.InitializeUserKeysServerKEK(ctx, userID, "passkey")
+}
+
 // IssueTokenAndUnlockDEK is the non-password login completion: generate a JWT and
 // unlock (and, if necessary, first provision) the caller's server-KEK DEK so the
 // issued session is immediately usable for personal-secret operations. Used by

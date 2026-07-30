@@ -16,6 +16,8 @@ import (
 	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/google/uuid"
+
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 // ChallengeTTL is how long a WebAuthn challenge is valid. 5 minutes is the
@@ -35,11 +37,10 @@ const recoveryCodeAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 
 // UserLookup abstracts the user-lookup the ceremony needs: email→user at login
 // begin, and user existence verification at registration. Implementations are
-// the database service (real) or a fake (tests).
+// the database service (real) or a fake (tests). Matches the existing
+// database.Service.GetUserByEmail shape.
 type UserLookup interface {
-	// LookupUserByEmail returns the user's ID and username for the given email,
-	// or ("", "", nil) if no user exists.
-	LookupUserByEmail(ctx context.Context, email string) (userID, username string, err error)
+	GetUserByEmail(ctx context.Context, email string) (*types.User, error)
 }
 
 // SessionStore abstracts the WebAuthn challenge store. Challenges MUST be
@@ -206,16 +207,17 @@ type FinishRegistrationResult struct {
 // FinishRegistration verifies the authenticator's attestation against the
 // stored challenge, persists the credential, and generates recovery codes.
 // The stored challenge is consumed (deleted) regardless of outcome —
-// single-use. recoveryCodeHasher bcrypt-hashes the recovery codes before
-// storage; the plaintext is returned once and never persisted.
-func (s *Service) FinishRegistration(ctx context.Context, sessionToken, userID, username, name string, parsed *protocol.ParsedCredentialCreationData) (*FinishRegistrationResult, error) {
+// single-use. The userID is recovered from the stored WebAuthn session
+// (set at BeginRegistration time); the caller does not need to pass it.
+func (s *Service) FinishRegistration(ctx context.Context, sessionToken, username, name string, parsed *protocol.ParsedCredentialCreationData) (*FinishRegistrationResult, error) {
 	sessionData, err := s.consumeChallenge(ctx, sessionToken)
 	if err != nil {
 		return nil, err
 	}
 
+	userID := string(sessionData.UserID)
 	user := &webauthnUser{
-		id:          []byte(userID),
+		id:          sessionData.UserID,
 		name:        username,
 		displayName: username,
 		creds:       []webauthn.Credential{},
@@ -268,15 +270,15 @@ type BeginLoginOptions struct {
 // user must have at least one registered passkey. Generates a challenge
 // scoped to the user's allowed credentials.
 func (s *Service) BeginLogin(ctx context.Context, email string) (*BeginLoginOptions, string, error) {
-	userID, username, err := s.users.LookupUserByEmail(ctx, email)
+	user, err := s.users.GetUserByEmail(ctx, email)
 	if err != nil {
 		return nil, "", fmt.Errorf("lookup user: %w", err)
 	}
-	if userID == "" {
+	if user == nil {
 		return nil, "", ErrUserNotFound
 	}
 
-	creds, err := s.store.ListCredentials(ctx, userID)
+	creds, err := s.store.ListCredentials(ctx, user.ID)
 	if err != nil {
 		return nil, "", fmt.Errorf("list credentials: %w", err)
 	}
@@ -288,14 +290,14 @@ func (s *Service) BeginLogin(ctx context.Context, email string) (*BeginLoginOpti
 	for i, c := range creds {
 		waCreds[i] = toWebAuthnCredential(c)
 	}
-	user := &webauthnUser{
-		id:          []byte(userID),
-		name:        username,
-		displayName: username,
+	waUser := &webauthnUser{
+		id:          []byte(user.ID),
+		name:        user.Username,
+		displayName: user.Username,
 		creds:       waCreds,
 	}
 
-	assertion, session, err := s.wan.BeginLogin(user)
+	assertion, session, err := s.wan.BeginLogin(waUser)
 	if err != nil {
 		return nil, "", fmt.Errorf("begin login: %w", err)
 	}
@@ -313,7 +315,7 @@ func (s *Service) BeginLogin(ctx context.Context, email string) (*BeginLoginOpti
 	}
 
 	opts := marshalResponse(assertion.Response)
-	return &BeginLoginOptions{Options: opts, SessionToken: token}, userID, nil
+	return &BeginLoginOptions{Options: opts, SessionToken: token}, user.ID, nil
 }
 
 // FinishLogin verifies the authenticator's assertion against the stored
@@ -321,11 +323,11 @@ func (s *Service) BeginLogin(ctx context.Context, email string) (*BeginLoginOpti
 // session token + unlocks the DEK. Updates the sign count (cloned-
 // authenticator detection) after a successful assertion.
 func (s *Service) FinishLogin(ctx context.Context, sessionToken, email string, parsed *protocol.ParsedCredentialAssertionData) (string, error) {
-	userID, username, err := s.users.LookupUserByEmail(ctx, email)
+	user, err := s.users.GetUserByEmail(ctx, email)
 	if err != nil {
 		return "", fmt.Errorf("lookup user: %w", err)
 	}
-	if userID == "" {
+	if user == nil {
 		return "", ErrUserNotFound
 	}
 
@@ -334,7 +336,7 @@ func (s *Service) FinishLogin(ctx context.Context, sessionToken, email string, p
 		return "", err
 	}
 
-	creds, err := s.store.ListCredentials(ctx, userID)
+	creds, err := s.store.ListCredentials(ctx, user.ID)
 	if err != nil {
 		return "", fmt.Errorf("list credentials: %w", err)
 	}
@@ -342,21 +344,18 @@ func (s *Service) FinishLogin(ctx context.Context, sessionToken, email string, p
 	for i, c := range creds {
 		waCreds[i] = toWebAuthnCredential(c)
 	}
-	user := &webauthnUser{
-		id:          []byte(userID),
-		name:        username,
-		displayName: username,
+	waUser := &webauthnUser{
+		id:          []byte(user.ID),
+		name:        user.Username,
+		displayName: user.Username,
 		creds:       waCreds,
 	}
 
-	cred, err := s.wan.ValidateLogin(user, *sessionData, parsed)
+	cred, err := s.wan.ValidateLogin(waUser, *sessionData, parsed)
 	if err != nil {
 		return "", fmt.Errorf("verify assertion: %w", err)
 	}
 
-	// Update sign count (cloned-authenticator detection). Lenient enforcement
-	// per the design: we accept the login and log if the count regressed,
-	// rather than refusing — strict enforcement breaks some authenticators.
 	var credID uuid.UUID
 	for _, c := range creds {
 		if equalBytes(c.CredentialID, cred.ID) {
@@ -368,7 +367,7 @@ func (s *Service) FinishLogin(ctx context.Context, sessionToken, email string, p
 		_ = s.store.UpdateCredentialAfterLogin(ctx, credID, cred.Authenticator.SignCount, time.Now())
 	}
 
-	return userID, nil
+	return user.ID, nil
 }
 
 // --- recovery code consumption ---
@@ -379,24 +378,24 @@ func (s *Service) FinishLogin(ctx context.Context, sessionToken, email string, p
 // verification. The caller forces the user to enroll a new passkey after a
 // recovery-code login.
 func (s *Service) ConsumeRecoveryCode(ctx context.Context, email, code string) (string, error) {
-	userID, _, err := s.users.LookupUserByEmail(ctx, email)
+	user, err := s.users.GetUserByEmail(ctx, email)
 	if err != nil {
 		return "", fmt.Errorf("lookup user: %w", err)
 	}
-	if userID == "" {
+	if user == nil {
 		return "", ErrUserNotFound
 	}
 
-	codes, err := s.store.ListAvailableRecoveryCodes(ctx, userID)
+	codes, err := s.store.ListAvailableRecoveryCodes(ctx, user.ID)
 	if err != nil {
 		return "", fmt.Errorf("list recovery codes: %w", err)
 	}
 	for _, rc := range codes {
 		if bcrypt.CompareHashAndPassword([]byte(rc.CodeHash), []byte(code)) == nil {
-			if err := s.store.ConsumeRecoveryCode(ctx, userID, rc.CodeHash); err != nil {
+			if err := s.store.ConsumeRecoveryCode(ctx, user.ID, rc.CodeHash); err != nil {
 				return "", fmt.Errorf("consume recovery code: %w", err)
 			}
-			return userID, nil
+			return user.ID, nil
 		}
 	}
 	return "", ErrRecoveryCodeNotFound

@@ -188,6 +188,11 @@ type RouterConfig struct {
 	// uniform body shape across all non-validation branches; DB errors masked.
 	LoginDiscoveryHandler *handlers.LoginDiscoveryHandler
 
+	// PasskeyHandler handles WebAuthn passkey registration + login ceremonies
+	// (Epic 59). Public routes (no auth middleware) — the ceremony itself is
+	// the authentication. Nil when passkey support is not configured (no RPID).
+	PasskeyHandler *handlers.PasskeyHandler
+
 	// Turnstile, when Enabled is true, gates POST /auth/register with a
 	// Cloudflare Turnstile CAPTCHA middleware. The middleware fails
 	// closed: any of {missing token, verify request fails, verify
@@ -332,6 +337,16 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 	// Always returns 200 with { redirectUrl } on valid input; DB errors masked.
 	if cfg.LoginDiscoveryHandler != nil {
 		authGroup.POST("/lookup", cfg.LoginDiscoveryHandler.Lookup)
+	}
+
+	// Epic 59: WebAuthn passkey registration + login (public — the ceremony IS
+	// the authentication). Nil when passkey support is not configured.
+	if cfg.PasskeyHandler != nil {
+		pg := authGroup.Group("/passkey")
+		pg.POST("/register/begin", cfg.PasskeyHandler.RegisterBegin)
+		pg.POST("/register/finish", cfg.PasskeyHandler.RegisterFinish)
+		pg.POST("/login/begin", cfg.PasskeyHandler.LoginBegin)
+		pg.POST("/login/finish", cfg.PasskeyHandler.LoginFinish)
 	}
 
 	// Authenticated workspace routes
