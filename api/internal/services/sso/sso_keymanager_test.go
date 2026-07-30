@@ -16,13 +16,12 @@ import (
 
 // fakeKeyManager records the calls made by the SSO service's issueSession path.
 type fakeKeyManager struct {
-	issueProvisionUserID string
-	issueUnlockUserID    string
-	issueUnlockTTL       time.Duration
-	issueToken           string
-	issueErr             error
-	provisionUserID      string
-	provisionErr         error
+	issueUnlockUserID string
+	issueUnlockTTL    time.Duration
+	issueToken        string
+	issueErr          error
+	provisionUserID   string
+	provisionErr      error
 }
 
 func (f *fakeKeyManager) ProvisionServerKEKKeys(_ context.Context, userID string) error {

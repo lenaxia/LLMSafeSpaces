@@ -453,7 +453,7 @@ func (s *Service) GenerateToken(userID string) (string, error) {
 
 // ProvisionServerKEKKeys provisions a server-KEK-wrapped DEK for a user who has
 // none (SSO auto-provisioned under Epic 58, passkey-only under Epic 59). It is
-// the server-KEK analogue of InitializeUserKeys: no password, no recovery blob —
+// the server-KEK analog of InitializeUserKeys: no password, no recovery blob —
 // the DEK is recoverable from the master KEK (operator-controlled). The
 // keyService flips users.dek_source to 'server_kek' atomically with the key
 // material write. Exposed for the SSO/passkey flows via the UserKeyManager

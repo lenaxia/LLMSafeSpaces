@@ -120,7 +120,7 @@ type TokenIssuer interface {
 // UserKeyManager is the server-KEK DEK capability the auth.Service exposes to
 // the SSO (Epic 58) and passkey (Epic 59) login flows. It provisions a
 // server-KEK-wrapped DEK for users who have none, and issues a session token
-// whose jti is bound to the unlocked DEK — the non-password analogue of
+// whose jti is bound to the unlocked DEK — the non-password analog of
 // auth.Service.Login's unlock step. Optional on the SSO service: when nil,
 // completeLogin falls back to TokenIssuer.GenerateToken (pre-epic behavior;
 // SSO users then have no personal-secret encryption until a later login).

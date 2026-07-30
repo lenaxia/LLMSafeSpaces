@@ -43,16 +43,6 @@ func (p *recordingProvider) Decrypt(_ context.Context, ciphertext []byte) ([]byt
 	return cp, nil
 }
 
-// dekSourceOf reads the stored record's DEKSource via the mock store.
-func dekSourceOf(t *testing.T, store *mockKeyStore, userID string) string {
-	t.Helper()
-	r, err := store.GetUserKey(context.Background(), userID)
-	if err != nil || r == nil {
-		t.Fatalf("record missing for %s", userID)
-	}
-	return string(r.DEKSource)
-}
-
 func TestInitializeUserKeysServerKEK_GeneratesServerKEKWrappedDEK(t *testing.T) {
 	store := newMockKeyStore()
 	cache := newMockDEKCache()
