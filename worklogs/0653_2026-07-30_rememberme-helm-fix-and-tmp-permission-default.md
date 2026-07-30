@@ -131,7 +131,7 @@ Verdict was REQUEST CHANGES; all items addressed.
 - `api/internal/handlers/pod_bootstrap_test.go` — 3 handler tests
 - `api/internal/app/app.go` — production wiring
 - `api/internal/app/secrets_wiring_test.go` — wiring guard test
-- `worklogs/NNNN_2026-07-30_rememberme-helm-fix-and-tmp-permission-default.md` — this file
+- `worklogs/0653_2026-07-30_rememberme-helm-fix-and-tmp-permission-default.md` — this file
 
 ---
 
