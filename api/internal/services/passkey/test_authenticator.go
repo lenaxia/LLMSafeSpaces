@@ -56,8 +56,8 @@ func (a *testAuthenticator) generateRegistrationResponse(challengeB64 string) (*
 	}
 	a.privateKey = privKey
 
-	xPadded := padTo32(privKey.PublicKey.X.Bytes())
-	yPadded := padTo32(privKey.PublicKey.Y.Bytes())
+	xPadded := padTo32(privKey.X.Bytes())
+	yPadded := padTo32(privKey.Y.Bytes())
 
 	rpIDHash := sha256.Sum256([]byte(a.rpID))
 	flags := byte(0x41) // UP=1, AT=1
@@ -82,7 +82,7 @@ func (a *testAuthenticator) generateRegistrationResponse(challengeB64 string) (*
 	authData = append(authData, flags)
 	authData = append(authData, 0, 0, 0, 0)
 	authData = append(authData, aaguid...)
-	authData = append(authData, byte(credIDLen>>8), byte(credIDLen))
+	authData = append(authData, byte(credIDLen>>8), byte(credIDLen)) //nolint:gosec// G115: credIDLen is 32
 	authData = append(authData, a.credentialID...)
 	authData = append(authData, coseKeyCBOR...)
 
@@ -142,7 +142,7 @@ func (a *testAuthenticator) generateAssertionResponse(challengeB64 string) (*pro
 	authData := make([]byte, 0, 37)
 	authData = append(authData, rpIDHash[:]...)
 	authData = append(authData, flags)
-	authData = append(authData, byte(a.signCount>>24), byte(a.signCount>>16), byte(a.signCount>>8), byte(a.signCount))
+	authData = append(authData, byte(a.signCount>>24), byte(a.signCount>>16), byte(a.signCount>>8), byte(a.signCount)) //nolint:gosec // G115: signCount is uint32, fits in 4 bytes
 
 	clientDataHash := sha256.Sum256(clientDataJSON)
 	signedData := append(authData, clientDataHash[:]...)
