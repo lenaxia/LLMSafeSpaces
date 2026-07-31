@@ -58,7 +58,7 @@ func TestPgStore_CreateAndGetCredential(t *testing.T) {
 	defer pool.Close()
 	store := NewPgStore(pool)
 	ctx := context.Background()
-	userID := "test-pk-" + uuid.NewString()
+	userID := uuid.NewString()
 
 	cleanupPasskeyTables(t, pool, userID)
 	ensureTestUser(t, pool, userID)
@@ -88,7 +88,7 @@ func TestPgStore_CreateCredential_DuplicateCredentialID(t *testing.T) {
 	defer pool.Close()
 	store := NewPgStore(pool)
 	ctx := context.Background()
-	userID := "test-dup-" + uuid.NewString()
+	userID := uuid.NewString()
 
 	cleanupPasskeyTables(t, pool, userID)
 	ensureTestUser(t, pool, userID)
@@ -109,7 +109,7 @@ func TestPgStore_DeleteCredential_LastCredentialRefused(t *testing.T) {
 	defer pool.Close()
 	store := NewPgStore(pool)
 	ctx := context.Background()
-	userID := "test-last-" + uuid.NewString()
+	userID := uuid.NewString()
 
 	cleanupPasskeyTables(t, pool, userID)
 	ensureTestUser(t, pool, userID)
@@ -128,7 +128,7 @@ func TestPgStore_CreateCredentialAndRecoveryCodes_Atomic(t *testing.T) {
 	defer pool.Close()
 	store := NewPgStore(pool)
 	ctx := context.Background()
-	userID := "test-atomic-" + uuid.NewString()
+	userID := uuid.NewString()
 
 	cleanupPasskeyTables(t, pool, userID)
 	ensureTestUser(t, pool, userID)
@@ -153,7 +153,7 @@ func TestPgStore_ConsumeRecoveryCode(t *testing.T) {
 	defer pool.Close()
 	store := NewPgStore(pool)
 	ctx := context.Background()
-	userID := "test-rc-" + uuid.NewString()
+	userID := uuid.NewString()
 
 	cleanupPasskeyTables(t, pool, userID)
 	ensureTestUser(t, pool, userID)
@@ -178,7 +178,7 @@ func TestPgStore_UpdateCredentialAfterLogin(t *testing.T) {
 	defer pool.Close()
 	store := NewPgStore(pool)
 	ctx := context.Background()
-	userID := "test-signcount-" + uuid.NewString()
+	userID := uuid.NewString()
 
 	cleanupPasskeyTables(t, pool, userID)
 	ensureTestUser(t, pool, userID)
