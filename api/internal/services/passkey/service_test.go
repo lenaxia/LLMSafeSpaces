@@ -66,7 +66,14 @@ func (s *memStore) CreateCredential(_ context.Context, c *Credential) error {
 	s.creds = append(s.creds, *c)
 	return nil
 }
-func (s *memStore) UpdateCredentialAfterLogin(_ context.Context, _ uuid.UUID, _ uint32, _ time.Time) error {
+func (s *memStore) UpdateCredentialAfterLogin(_ context.Context, id uuid.UUID, signCount uint32, lastUsed time.Time) error {
+	for i := range s.creds {
+		if s.creds[i].ID == id {
+			s.creds[i].SignCount = signCount
+			s.creds[i].LastUsedAt = &lastUsed
+			return nil
+		}
+	}
 	return nil
 }
 func (s *memStore) DeleteCredential(_ context.Context, _ string, _ uuid.UUID) error { return nil }
