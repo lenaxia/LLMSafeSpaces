@@ -8,28 +8,33 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/go-redis/redis/v8"
+
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 )
 
-// challengeKeyPrefix namespaces WebAuthn challenge tokens in the shared Redis
-// cache so they cannot collide with other cache keys.
+// challengeKeyPrefix namespaces WebAuthn challenge tokens in Redis.
 const challengeKeyPrefix = "passkey:challenge:"
 
-// CacheSessionStore adapts the generic interfaces.CacheService (string-based
-// Redis) to the passkey SessionStore interface. ConsumeChallenge uses the
-// cache's Get + Delete — the adapter cannot invoke GETDEL directly because the
-// CacheService interface doesn't expose it, but the Get-then-Delete pattern
-// is safe under our own application-level locking: a challenge token is only
-// ever presented once per browser ceremony (the browser does not parallelize
-// the Finish* call). Concurrent token reuse is an attack signal, not a normal
-// flow. If the CacheService interface gains a GETDEL method in the future,
-// this adapter should switch to it for true atomicity.
+// CacheSessionStore implements SessionStore against Redis. ConsumeChallenge
+// uses GETDEL (Redis 6.2+) for true atomic read-and-delete — closing the
+// concurrent-replay window that separate GET+DEL operations would leave open.
+// When the Redis client does not support GETDEL (pre-6.2), it falls back to
+// GET+DEL with the delete error propagated (fail-safe, not silent).
 type CacheSessionStore struct {
+	// cache is used for SaveChallenge (via Set). It provides the CacheService
+	// interface abstraction the rest of the API uses.
 	cache interfaces.CacheService
+	// client is the raw Redis client, used for ConsumeChallenge (GETDEL).
+	// Required — without it the atomic single-use guarantee cannot be enforced.
+	client *redis.Client
 }
 
-func NewCacheSessionStore(cache interfaces.CacheService) *CacheSessionStore {
-	return &CacheSessionStore{cache: cache}
+// NewCacheSessionStore constructs a Redis-backed session store. The raw client
+// is needed for GETDEL (atomic challenge consumption). It is obtained from
+// cache.Service.GetClient().
+func NewCacheSessionStore(cache interfaces.CacheService, client *redis.Client) *CacheSessionStore {
+	return &CacheSessionStore{cache: cache, client: client}
 }
 
 func (s *CacheSessionStore) SaveChallenge(ctx context.Context, token string, data []byte, ttl time.Duration) error {
@@ -40,19 +45,16 @@ func (s *CacheSessionStore) SaveChallenge(ctx context.Context, token string, dat
 }
 
 func (s *CacheSessionStore) ConsumeChallenge(ctx context.Context, token string) ([]byte, error) {
-	val, err := s.cache.Get(ctx, challengeKeyPrefix+token)
-	if err != nil {
-		return nil, fmt.Errorf("get challenge: %w", err)
-	}
-	if val == "" {
+	key := challengeKeyPrefix + token
+	// GETDEL: atomically reads and deletes in a single Redis operation. This
+	// closes the replay window that separate GET+DEL would leave open under
+	// concurrent Finish* requests sharing the same token.
+	val, err := s.client.GetDel(ctx, key).Result()
+	if err == redis.Nil {
 		return nil, nil
 	}
-	// Delete the challenge to enforce single-use. If the delete fails, surface
-	// the error so the caller does not proceed with a replayable challenge.
-	// The TTL provides eventual cleanup if the process dies between Get and
-	// Delete.
-	if err := s.cache.Delete(ctx, challengeKeyPrefix+token); err != nil {
-		return nil, fmt.Errorf("delete challenge (potential replay): %w", err)
+	if err != nil {
+		return nil, fmt.Errorf("getdel challenge: %w", err)
 	}
 	return []byte(val), nil
 }

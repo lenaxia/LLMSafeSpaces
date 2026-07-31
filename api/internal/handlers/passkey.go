@@ -252,17 +252,20 @@ func (h *PasskeyHandler) LoginFinish(c *gin.Context) {
 		return
 	}
 
+	// Fetch the user BEFORE issuing the token so a lookup failure returns an
+	// error before a valid JWT is minted (avoids 500-after-success-token).
+	user, err := h.users.GetUserByEmail(c.Request.Context(), req.Email)
+	if err != nil || user == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "user lookup failed"})
+		return
+	}
+
 	tok, err := h.auth.IssueTokenAndUnlockDEK(c.Request.Context(), userID, h.tokenTTL, "passkey")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "session creation failed"})
 		return
 	}
 
-	user, err := h.users.GetUserByEmail(c.Request.Context(), req.Email)
-	if err != nil || user == nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "user lookup failed"})
-		return
-	}
 	c.JSON(http.StatusOK, gin.H{
 		"token": tok,
 		"user":  user,

@@ -698,13 +698,17 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// RPID + RPOrigins are configured; nil handler = routes not registered.
 		if cfg.Passkey.RPID != "" && len(cfg.Passkey.RPOrigins) > 0 {
 			pkStore := passkey.NewPgStore(secretsPool)
+			var pkSessionStore passkey.SessionStore
+			if cacheSvc, ok := svc.Cache.(*cache.Service); ok {
+				pkSessionStore = passkey.NewCacheSessionStore(svc.GetCache(), cacheSvc.GetClient())
+			}
 			pkSvc, pkErr := passkey.New(passkey.ServiceConfig{
 				RPID:      cfg.Passkey.RPID,
 				RPName:    cfg.Passkey.RPName,
 				RPOrigins: cfg.Passkey.RPOrigins,
 				Store:     pkStore,
 				Users:     dbSvc,
-				Sessions:  passkey.NewCacheSessionStore(svc.GetCache()),
+				Sessions:  pkSessionStore,
 			})
 			if pkErr != nil {
 				log.Error("failed to construct passkey service", pkErr)
