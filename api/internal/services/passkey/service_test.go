@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/bcrypt"
@@ -262,12 +261,12 @@ func TestConsumeChallenge_SingleUse(t *testing.T) {
 	opts, err := svc.BeginRegistration(ctx, "u1", "bob")
 	require.NoError(t, err)
 
-	emptyParsed := &protocol.ParsedCredentialCreationData{}
-	_, err = svc.FinishRegistration(ctx, opts.SessionToken, "bob", "Bob Key", emptyParsed)
+	emptyMap := map[string]any{}
+	_, err = svc.FinishRegistration(ctx, opts.SessionToken, "bob", "Bob Key", emptyMap)
 	require.Error(t, err)
 
 	// Second call with same token must fail with ErrChallengeExpired.
-	_, err = svc.FinishRegistration(ctx, opts.SessionToken, "bob", "Bob Key", emptyParsed)
+	_, err = svc.FinishRegistration(ctx, opts.SessionToken, "bob", "Bob Key", emptyMap)
 	assert.ErrorIs(t, err, ErrChallengeExpired)
 }
 
@@ -291,16 +290,16 @@ func TestBeginLogin_NoPasskeyRegistered(t *testing.T) {
 
 func TestFinishRegistration_ExpiredChallenge(t *testing.T) {
 	svc, _, _, _ := newTestService(t)
-	emptyParsed := &protocol.ParsedCredentialCreationData{}
-	_, err := svc.FinishRegistration(context.Background(), "never-existed", "bob", "Bob Key", emptyParsed)
+	emptyMap := map[string]any{}
+	_, err := svc.FinishRegistration(context.Background(), "never-existed", "bob", "Bob Key", emptyMap)
 	assert.ErrorIs(t, err, ErrChallengeExpired)
 }
 
 func TestFinishLogin_ExpiredChallenge(t *testing.T) {
 	svc, _, _, lookup := newTestService(t)
 	lookup.users["alice@test.com"] = &types.User{ID: "u1", Username: "alice", Email: "alice@test.com"}
-	emptyParsed := &protocol.ParsedCredentialAssertionData{}
-	_, err := svc.FinishLogin(context.Background(), "never-existed", "alice@test.com", emptyParsed)
+	emptyMap := map[string]any{}
+	_, err := svc.FinishLogin(context.Background(), "never-existed", "alice@test.com", emptyMap)
 	assert.ErrorIs(t, err, ErrChallengeExpired)
 }
 
@@ -390,11 +389,11 @@ func TestFinishRegistration_ConsumesChallenge_OnFailure(t *testing.T) {
 	opts, err := svc.BeginRegistration(ctx, "user-1", "alice")
 	require.NoError(t, err)
 
-	emptyParsed := &protocol.ParsedCredentialCreationData{}
-	_, err = svc.FinishRegistration(ctx, opts.SessionToken, "alice", "Alice Key", emptyParsed)
+	emptyMap := map[string]any{}
+	_, err = svc.FinishRegistration(ctx, opts.SessionToken, "alice", "Alice Key", emptyMap)
 	require.Error(t, err)
 
-	_, err = svc.FinishRegistration(ctx, opts.SessionToken, "alice", "Alice Key", emptyParsed)
+	_, err = svc.FinishRegistration(ctx, opts.SessionToken, "alice", "Alice Key", emptyMap)
 	assert.ErrorIs(t, err, ErrChallengeExpired)
 }
 
@@ -448,12 +447,12 @@ func TestFinishLogin_ConsumesChallenge_OnFailure(t *testing.T) {
 	opts, _, err := svc.BeginLogin(ctx, "alice@test.com")
 	require.NoError(t, err)
 
-	emptyParsed := &protocol.ParsedCredentialAssertionData{}
-	_, err = svc.FinishLogin(ctx, opts.SessionToken, "alice@test.com", emptyParsed)
+	emptyMap := map[string]any{}
+	_, err = svc.FinishLogin(ctx, opts.SessionToken, "alice@test.com", emptyMap)
 	require.Error(t, err)
 
 	// The challenge must be consumed (single-use).
-	_, err = svc.FinishLogin(ctx, opts.SessionToken, "alice@test.com", emptyParsed)
+	_, err = svc.FinishLogin(ctx, opts.SessionToken, "alice@test.com", emptyMap)
 	assert.ErrorIs(t, err, ErrChallengeExpired)
 }
 

@@ -4,6 +4,7 @@
 package passkey
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -218,12 +219,11 @@ type FinishRegistrationResult struct {
 	RecoveryCodeHashes []string
 }
 
-// FinishRegistration verifies the authenticator's attestation against the
-// stored challenge and returns the verified credential + generated recovery
-// codes. Does NOT persist — the caller orchestrates user creation + credential
-// storage in the correct order (user row before credential FK, both before
-// recovery codes). The stored challenge IS consumed (single-use) regardless.
-func (s *Service) FinishRegistration(ctx context.Context, sessionToken, username, name string, parsed *protocol.ParsedCredentialCreationData) (*FinishRegistrationResult, error) {
+func (s *Service) FinishRegistration(ctx context.Context, sessionToken, username, name string, response map[string]any) (*FinishRegistrationResult, error) {
+	parsed, err := parseCreationFromMap(response)
+	if err != nil {
+		return nil, fmt.Errorf("parse attestation: %w", err)
+	}
 	sessionData, err := s.consumeChallenge(ctx, sessionToken)
 	if err != nil {
 		return nil, err
@@ -273,6 +273,26 @@ func (s *Service) FinishRegistration(ctx context.Context, sessionToken, username
 // the handler doesn't reach into the Store directly.
 func (s *Service) CreateCredentialAndRecoveryCodes(ctx context.Context, cred *Credential, hashes []string) error {
 	return s.store.CreateCredentialAndRecoveryCodes(ctx, cred, hashes)
+}
+
+// parseCreationFromMap parses a WebAuthn attestation response from a
+// map[string]any (the browser's PublicKeyCredential JSON).
+func parseCreationFromMap(m map[string]any) (*protocol.ParsedCredentialCreationData, error) {
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return nil, err
+	}
+	return protocol.ParseCredentialCreationResponseBody(bytes.NewReader(raw))
+}
+
+// parseAssertionFromMap parses a WebAuthn assertion response from a
+// map[string]any (the browser's PublicKeyCredential JSON).
+func parseAssertionFromMap(m map[string]any) (*protocol.ParsedCredentialAssertionData, error) {
+	raw, err := json.Marshal(m)
+	if err != nil {
+		return nil, err
+	}
+	return protocol.ParseCredentialRequestResponseBody(bytes.NewReader(raw))
 }
 
 // --- Login ceremony ---
@@ -343,7 +363,11 @@ func (s *Service) BeginLogin(ctx context.Context, email string) (*BeginLoginOpti
 // challenge and returns the user ID. The caller (HTTP handler) issues the
 // session token + unlocks the DEK. Updates the sign count (cloned-
 // authenticator detection) after a successful assertion.
-func (s *Service) FinishLogin(ctx context.Context, sessionToken, email string, parsed *protocol.ParsedCredentialAssertionData) (string, error) {
+func (s *Service) FinishLogin(ctx context.Context, sessionToken, email string, response map[string]any) (string, error) {
+	parsed, err := parseAssertionFromMap(response)
+	if err != nil {
+		return "", fmt.Errorf("parse assertion: %w", err)
+	}
 	user, err := s.users.GetUserByEmail(ctx, email)
 	if err != nil {
 		return "", fmt.Errorf("lookup user: %w", err)

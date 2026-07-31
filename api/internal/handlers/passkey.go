@@ -4,16 +4,13 @@
 package handlers
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
 
@@ -37,12 +34,14 @@ type passkeyUserStore interface {
 }
 
 // PasskeyService interface defines the ceremony methods the handler needs.
-// passkey.Service satisfies it; tests substitute a fake.
+// passkey.Service satisfies it; tests substitute a fake. The ceremony methods
+// take raw response maps — parsing and verification are the service's job,
+// not the handler's.
 type PasskeyService interface {
 	BeginRegistration(ctx context.Context, userID, username string) (*passkey.BeginRegistrationOptions, error)
-	FinishRegistration(ctx context.Context, sessionToken, username, name string, parsed *protocol.ParsedCredentialCreationData) (*passkey.FinishRegistrationResult, error)
+	FinishRegistration(ctx context.Context, sessionToken, username, name string, response map[string]any) (*passkey.FinishRegistrationResult, error)
 	BeginLogin(ctx context.Context, email string) (*passkey.BeginLoginOptions, string, error)
-	FinishLogin(ctx context.Context, sessionToken, email string, parsed *protocol.ParsedCredentialAssertionData) (string, error)
+	FinishLogin(ctx context.Context, sessionToken, email string, response map[string]any) (string, error)
 	CreateCredentialAndRecoveryCodes(ctx context.Context, cred *passkey.Credential, hashes []string) error
 }
 
@@ -124,33 +123,23 @@ func (h *PasskeyHandler) RegisterFinish(c *gin.Context) {
 		return
 	}
 
-	parsed, err := parseCreationFromMap(req.Response)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid attestation response"})
-		return
-	}
-
-	// Look up existing user.
+	// Look up existing user (must not exist — account-takeover prevention is
+	// enforced in RegisterBegin, but we re-check here for safety).
 	existing, err := h.users.GetUserByEmail(c.Request.Context(), req.Email)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "lookup failed"})
 		return
 	}
-
-	var username string
 	if existing != nil {
-		username = existing.Username
-	} else {
-		username = req.Name
-		if username == "" {
-			username = emailLocalPart(req.Email)
-		}
+		c.JSON(http.StatusConflict, gin.H{"error": "account already exists"})
+		return
+	}
+	username := req.Name
+	if username == "" {
+		username = emailLocalPart(req.Email)
 	}
 
-	// Verify the attestation. Returns the verified credential + recovery codes
-	// WITHOUT persisting — the handler orchestrates persistence in the correct
-	// order (user row → credential FK → recovery codes).
-	result, err := h.svc.FinishRegistration(c.Request.Context(), req.SessionToken, username, req.Name, parsed)
+	result, err := h.svc.FinishRegistration(c.Request.Context(), req.SessionToken, username, req.Name, req.Response)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, passkey.ErrChallengeExpired) {
@@ -236,13 +225,7 @@ func (h *PasskeyHandler) LoginFinish(c *gin.Context) {
 		return
 	}
 
-	parsed, err := parseAssertionFromMap(req.Response)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid assertion response"})
-		return
-	}
-
-	userID, err := h.svc.FinishLogin(c.Request.Context(), req.SessionToken, req.Email, parsed)
+	userID, err := h.svc.FinishLogin(c.Request.Context(), req.SessionToken, req.Email, req.Response)
 	if err != nil {
 		status := http.StatusUnauthorized
 		if errors.Is(err, passkey.ErrChallengeExpired) {
@@ -295,32 +278,4 @@ func emailLocalPart(email string) string {
 		}
 	}
 	return email
-}
-
-// parseCreationFromMap parses a WebAuthn attestation response from a
-// map[string]any (the browser's PublicKeyCredential JSON).
-func parseCreationFromMap(m map[string]any) (*protocol.ParsedCredentialCreationData, error) {
-	raw, err := json.Marshal(m)
-	if err != nil {
-		return nil, err
-	}
-	ccr, err := protocol.ParseCredentialCreationResponseBody(bytes.NewReader(raw))
-	if err != nil {
-		return nil, err
-	}
-	return ccr, nil
-}
-
-// parseAssertionFromMap parses a WebAuthn assertion response from a
-// map[string]any (the browser's PublicKeyCredential JSON).
-func parseAssertionFromMap(m map[string]any) (*protocol.ParsedCredentialAssertionData, error) {
-	raw, err := json.Marshal(m)
-	if err != nil {
-		return nil, err
-	}
-	car, err := protocol.ParseCredentialRequestResponseBody(bytes.NewReader(raw))
-	if err != nil {
-		return nil, err
-	}
-	return car, nil
 }

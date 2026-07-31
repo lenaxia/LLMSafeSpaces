@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/go-webauthn/webauthn/protocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -63,13 +62,13 @@ type fakePasskeySvc struct {
 func (s *fakePasskeySvc) BeginRegistration(_ context.Context, _, _ string) (*passkey.BeginRegistrationOptions, error) {
 	return s.beginRegResult, s.beginRegErr
 }
-func (s *fakePasskeySvc) FinishRegistration(_ context.Context, _, _, _ string, _ *protocol.ParsedCredentialCreationData) (*passkey.FinishRegistrationResult, error) {
+func (s *fakePasskeySvc) FinishRegistration(_ context.Context, _, _, _ string, _ map[string]any) (*passkey.FinishRegistrationResult, error) {
 	return s.finishRegResult, s.finishRegErr
 }
 func (s *fakePasskeySvc) BeginLogin(_ context.Context, _ string) (*passkey.BeginLoginOptions, string, error) {
 	return s.beginLoginResult, s.beginLoginUserID, s.beginLoginErr
 }
-func (s *fakePasskeySvc) FinishLogin(_ context.Context, _, _ string, _ *protocol.ParsedCredentialAssertionData) (string, error) {
+func (s *fakePasskeySvc) FinishLogin(_ context.Context, _, _ string, _ map[string]any) (string, error) {
 	return s.finishLoginUserID, s.finishLoginErr
 }
 func (s *fakePasskeySvc) CreateCredentialAndRecoveryCodes(_ context.Context, _ *passkey.Credential, _ []string) error {
@@ -166,6 +165,36 @@ func TestLoginFinish_MissingFields(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
+// validRegistrationResponseJSON returns a minimal valid WebAuthn attestation
+// response JSON that parseCreationFromMap can parse without erroring. It is
+// NOT a valid attestation — just structurally valid enough for parsing.
+func validRegistrationResponseJSON() map[string]any {
+	return map[string]any{
+		"id":    "e30",
+		"rawId": "e30",
+		"type":  "public-key",
+		"response": map[string]any{
+			"attestationObject": "omNmbXRkbm9uZWdhdHRTdG10gGhhdXRoRGF0YVjUe30",
+			"clientDataJSON":    "e30",
+		},
+	}
+}
+
+// validAssertionResponseJSON returns a minimal valid WebAuthn assertion
+// response JSON that parseAssertionFromMap can parse without erroring.
+func validAssertionResponseJSON() map[string]any {
+	return map[string]any{
+		"id":    "e30",
+		"rawId": "e30",
+		"type":  "public-key",
+		"response": map[string]any{
+			"authenticatorData": "AQIDBA",
+			"clientDataJSON":    "e30",
+			"signature":         "AA",
+		},
+	}
+}
+
 // --- handler success-path tests ---
 
 func TestRegisterFinish_NewUser_Succeeds(t *testing.T) {
@@ -185,7 +214,7 @@ func TestRegisterFinish_NewUser_Succeeds(t *testing.T) {
 		"sessionToken": "tok-1",
 		"email":        "newfinish@test.com",
 		"name":         "New User",
-		"response":     map[string]any{"id": "x"},
+		"response":     validRegistrationResponseJSON(),
 	})
 
 	assert.Equal(t, http.StatusOK, resp.Code)
@@ -218,7 +247,7 @@ func TestLoginFinish_Success(t *testing.T) {
 	resp := doPasskeyRequest(t, r, "POST", "/passkey/login/finish", map[string]any{
 		"sessionToken": "tok-1",
 		"email":        "alice@test.com",
-		"response":     map[string]any{"id": "x"},
+		"response":     validAssertionResponseJSON(),
 	})
 
 	assert.Equal(t, http.StatusOK, resp.Code)
