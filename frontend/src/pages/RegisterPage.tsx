@@ -14,7 +14,6 @@ type Mode = "passkey" | "password" | "recovery-codes";
 export function RegisterPage() {
   const { register, loginWithToken } = useAuth();
   const [returnTo, setReturnTo] = useState("");
-  const [passkeyDefault, setPasskeyDefault] = useState(false);
   const [passkeyEnabled, setPasskeyEnabled] = useState(false);
   const [mode, setMode] = useState<Mode>("password");
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
@@ -26,7 +25,6 @@ export function RegisterPage() {
       setPasskeyEnabled(c.passkeyEnabled ?? false);
       if (c.passkeyDefaultSignup && c.passkeyEnabled) {
         setMode("passkey");
-        setPasskeyDefault(true);
       }
     }).catch(() => {});
   }, []);
@@ -90,15 +88,13 @@ export function RegisterPage() {
           <PasskeyRegisterForm onSuccess={async (_token, codes) => {
             await handlePasskeySuccess(_token, codes);
           }} />
-          {passkeyDefault && (
-            <button
-              type="button"
-              onClick={() => setMode("password")}
-              className="text-sm text-muted-foreground underline-offset-4 hover:underline"
-            >
-              Use password instead
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => setMode("password")}
+            className="text-sm text-muted-foreground underline-offset-4 hover:underline"
+          >
+            Use password instead
+          </button>
         </div>
       ) : (
         <div className="flex flex-col gap-4">

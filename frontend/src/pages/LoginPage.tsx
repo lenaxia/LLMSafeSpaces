@@ -69,6 +69,12 @@ export function LoginPage() {
     }
   };
 
+  const redirectAfterAuthWithFlag = (flag: string) => {
+    const base = returnTo || "/chat";
+    const sep = base.includes("?") ? "&" : "?";
+    window.location.href = `${base}${sep}${flag}=1`;
+  };
+
   const matchedDomain = domains.find((d) => email.toLowerCase().endsWith(d.domain.toLowerCase()));
   const emailLooksValid = email.includes("@") && email.split("@")[1]?.includes(".");
   const showDiscoveryButton = domains.length > 0 && !matchedDomain && emailLooksValid;
@@ -119,13 +125,12 @@ export function LoginPage() {
     return (
       <AuthCard title={`Welcome to ${instanceName}`} description="Recover your account">
         <RecoveryCodeForm
-          onSuccess={async (token) => {
+          onSuccess={async (token, _mustEnrollPasskey) => {
             await loginWithToken(token);
-            redirectAfterAuth();
-            // mustEnrollPasskey=true means the user needs to enroll a new
-            // passkey — the settings page (future) handles this. For now,
-            // the session is established so they can use the password-free
-            // account. TODO: redirect to passkey enrollment page.
+            // mustEnrollPasskey=true: the user used a recovery code and has
+            // no passkey. Show a query param so the app can prompt them to
+            // enroll a new passkey at the next opportunity.
+            redirectAfterAuthWithFlag("must_enroll_passkey");
           }}
           onCancel={() => setMode(passkeyEnabled ? "passkey" : "password")}
         />
