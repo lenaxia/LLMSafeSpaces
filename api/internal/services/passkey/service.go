@@ -389,18 +389,6 @@ func (s *Service) FinishLogin(ctx context.Context, sessionToken, email string, r
 	if err != nil {
 		return "", fmt.Errorf("parse assertion: %w", err)
 	}
-	user, err := s.users.GetUserByEmail(ctx, email)
-	if err != nil {
-		return "", fmt.Errorf("lookup user: %w", err)
-	}
-	if user == nil {
-		return "", ErrUserNotFound
-	}
-
-	sessionData, err := s.consumeChallenge(ctx, sessionToken)
-	if err != nil {
-		return "", err
-	}
 
 	creds, err := s.store.ListCredentials(ctx, user.ID)
 	if err != nil {
