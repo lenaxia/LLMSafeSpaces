@@ -62,3 +62,28 @@ describe("LoginPage with passkey enabled", () => {
     });
   });
 });
+
+import { fireEvent } from "@testing-library/react";
+
+describe("LoginPage passkey interactions", () => {
+  it("switches to password mode when 'Use password instead' clicked", async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText("Use password instead")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Use password instead"));
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText("Password")).toBeInTheDocument();
+    });
+    // Passkey login form should be gone, but "Sign in with passkey" button
+    // appears in password mode as the switch-back option.
+    expect(screen.queryByText("Sign in with passkey")).toBeInTheDocument();
+  });
+
+  it("switches to recovery mode when 'Lost your passkey?' clicked", async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText(/recovery code/i)).toBeInTheDocument());
+    fireEvent.click(screen.getByText(/recovery code/i));
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText("Recovery code")).toBeInTheDocument();
+    });
+  });
+});
