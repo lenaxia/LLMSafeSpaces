@@ -36,8 +36,6 @@ const RecoveryCodeLen = 20
 // production; overridable via the recoveryBcryptCost package var for tests.
 var recoveryBcryptCost = 12
 
-const RecoveryCodeLen = 20
-
 // recoveryCodeAlphabet excludes visually-ambiguous characters (0/O, 1/I/l).
 const recoveryCodeAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 
