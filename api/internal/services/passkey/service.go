@@ -69,6 +69,14 @@ type Service struct {
 	store    Store
 	users    UserLookup
 	sessions SessionStore
+	logger   Logger
+}
+
+// Logger is a minimal logger interface for non-fatal warnings (sign-count
+// update failures, etc.). Implementations: *logger.Logger in production,
+// nil in tests.
+type Logger interface {
+	Warn(msg string, args ...any)
 }
 
 // ServiceConfig holds the constructor-time deps for the ceremony service.
@@ -79,6 +87,7 @@ type ServiceConfig struct {
 	Store     Store
 	Users     UserLookup
 	Sessions  SessionStore
+	Logger    Logger
 }
 
 // New constructs the ceremony service. Returns an error when the WebAuthn RP
@@ -108,7 +117,7 @@ func New(cfg ServiceConfig) (*Service, error) {
 	if err != nil {
 		return nil, fmt.Errorf("passkey: construct webauthn: %w", err)
 	}
-	return &Service{wan: wan, store: cfg.Store, users: cfg.Users, sessions: cfg.Sessions}, nil
+	return &Service{wan: wan, store: cfg.Store, users: cfg.Users, sessions: cfg.Sessions, logger: cfg.Logger}, nil
 }
 
 // --- webauthn.User adapter ---
@@ -278,6 +287,29 @@ func (s *Service) CreateCredentialAndRecoveryCodes(ctx context.Context, cred *Cr
 	return s.store.CreateCredentialAndRecoveryCodes(ctx, cred, hashes)
 }
 
+// ListUserCredentials returns all passkeys for a user (for the settings page).
+func (s *Service) ListUserCredentials(ctx context.Context, userID string) ([]Credential, error) {
+	return s.store.ListCredentials(ctx, userID)
+}
+
+// DeleteUserCredential removes a passkey. Refuses the last remaining one.
+func (s *Service) DeleteUserCredential(ctx context.Context, userID string, credID uuid.UUID) error {
+	return s.store.DeleteCredential(ctx, userID, credID)
+}
+
+// RegenerateRecoveryCodes generates a new set of recovery codes, replacing
+// all existing unused codes. Returns the plaintext codes (one-time display).
+func (s *Service) RegenerateRecoveryCodes(ctx context.Context, userID string) ([]string, error) {
+	codes, hashes, err := generateRecoveryCodes(RecoveryCodeCount)
+	if err != nil {
+		return nil, fmt.Errorf("generate recovery codes: %w", err)
+	}
+	if err := s.store.CreateRecoveryCodes(ctx, userID, hashes); err != nil {
+		return nil, fmt.Errorf("store recovery codes: %w", err)
+	}
+	return codes, nil
+}
+
 // parseCreationFromMap parses a WebAuthn attestation response from a
 // map[string]any (the browser's PublicKeyCredential JSON).
 func parseCreationFromMap(m map[string]any) (*protocol.ParsedCredentialCreationData, error) {
@@ -418,13 +450,12 @@ func (s *Service) FinishLogin(ctx context.Context, sessionToken, email string, r
 		}
 	}
 	if credID != (uuid.UUID{}) {
-		// Sign-count update is non-fatal — login already succeeded. If this
-		// fails (Redis/DB blip), cloned-authenticator detection is degraded
-		// for this credential until the next successful login updates the
-		// count. We intentionally do NOT return the error: doing so would
-		// make the handler return 500 for a login that actually succeeded,
-		// confusing the user. The degradation is bounded by the next login.
-		_ = s.store.UpdateCredentialAfterLogin(ctx, credID, cred.Authenticator.SignCount, time.Now())
+		if err := s.store.UpdateCredentialAfterLogin(ctx, credID, cred.Authenticator.SignCount, time.Now()); err != nil {
+			if s.logger != nil {
+				s.logger.Warn("passkey: sign-count update failed (cloned-auth detection degraded)",
+					"credential_id", credID.String(), "error", err.Error())
+			}
+		}
 	}
 
 	return user.ID, nil

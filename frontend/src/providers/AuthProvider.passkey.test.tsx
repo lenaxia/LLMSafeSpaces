@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { AuthProvider, useAuth } from "./AuthProvider";
 
@@ -20,31 +20,27 @@ function useAuthHook() {
 
 describe("loginWithToken", () => {
   beforeEach(() => {
-    localStorage.clear();
     vi.mocked(authApi.me).mockRejectedValue(new Error("401"));
   });
 
-  afterEach(() => {
-    localStorage.clear();
-  });
-
-  it("stores token in localStorage and fetches user", async () => {
-    // First me() call is from AuthProvider's useEffect (rejects = not logged in).
-    // Second me() call is from loginWithToken (resolves with user).
+  it("fetches user after token issued (cookie-based auth)", async () => {
+    // AuthProvider's useEffect calls me() first (rejects = not logged in).
+    // loginWithToken calls me() again (resolves with user).
     vi.mocked(authApi.me).mockResolvedValueOnce(null as never);
-    vi.mocked(authApi.me).mockResolvedValueOnce({ id: "u1", username: "a", email: "a@b.com", role: "user", active: true, createdAt: "" });
+    vi.mocked(authApi.me).mockResolvedValueOnce({
+      id: "u1", username: "a", email: "a@b.com", role: "user", active: true, createdAt: "",
+    });
     const { result } = useAuthHook();
 
     await act(async () => {
-      await result.current.loginWithToken("jwt-token-123");
+      await result.current.loginWithToken("cookie-set-by-server");
     });
 
-    expect(localStorage.getItem("lsp_token")).toBe("jwt-token-123");
+    // No localStorage token — the server sets the HttpOnly cookie.
     expect(result.current.user?.id).toBe("u1");
   });
 
-  it("clears token on logout", async () => {
-    localStorage.setItem("lsp_token", "old-token");
+  it("clears user state on logout", async () => {
     vi.mocked(authApi.logout).mockResolvedValueOnce(undefined);
     const { result } = useAuthHook();
 
@@ -52,6 +48,6 @@ describe("loginWithToken", () => {
       await result.current.logout();
     });
 
-    expect(localStorage.getItem("lsp_token")).toBeNull();
+    expect(result.current.user).toBeNull();
   });
 });

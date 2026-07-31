@@ -36,25 +36,21 @@ export function RegisterPage() {
   };
 
   // Passkey registration success → show recovery codes → login → redirect
-  const handlePasskeySuccess = async (token: string, codes: string[]) => {
-    // Store the token immediately so the session is established even if
-    // the recovery-code display page is navigated away from. But show the
-    // recovery codes BEFORE loginWithToken — if me() fails (transient
-    // network error), the user still sees their one-time codes. The token
-    // is already in localStorage; loginWithToken on Continue is best-effort.
-    localStorage.setItem("lsp_token", token);
+  const handlePasskeySuccess = async (_token: string, codes: string[]) => {
+    // The passkey handler sets the lsp_session cookie (HttpOnly + Secure).
+    // Recovery codes are displayed BEFORE loginWithToken — if me() fails
+    // (transient network error), the user still sees their one-time codes.
     setRecoveryCodes(codes);
     setMode("recovery-codes");
   };
 
   const handleRecoveryCodesContinue = async () => {
-    // Best-effort: populate the user state. If this fails (transient
-    // error), the token is already in localStorage — the next page load
-    // will be authenticated.
+    // Best-effort: populate the user state. The cookie is already set by
+    // the server; loginWithToken just calls /auth/me.
     try {
-      await loginWithToken(localStorage.getItem("lsp_token") ?? "");
+      await loginWithToken("");
     } catch {
-      // Non-fatal — token is stored, session will work on reload.
+      // Non-fatal — cookie is set, session will work on reload.
     }
     redirectAfterAuth();
   };

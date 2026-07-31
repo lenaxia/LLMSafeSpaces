@@ -6,6 +6,7 @@ const allTabs = [
   { id: "provider-keys", label: "Provider Keys" },
   { id: "secrets", label: "Secrets" },
   { id: "api-keys", label: "API Keys" },
+  { id: "passkeys", label: "Passkeys" },
   { id: "my-organisation", label: "My Organisation" },
 ] as const;
 

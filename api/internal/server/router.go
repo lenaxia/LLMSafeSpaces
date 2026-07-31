@@ -392,6 +392,15 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 		userGroup.POST("/agents/reload", cfg.BulkReloadHandler.BulkReload)
 	}
 
+	// Epic 59: Authenticated passkey account settings (list/delete/regenerate).
+	if cfg.PasskeyHandler != nil {
+		pkSettings := router.Group("/api/v1/account/passkeys")
+		pkSettings.Use(services.GetAuth().AuthMiddleware())
+		pkSettings.GET("", cfg.PasskeyHandler.ListPasskeys)
+		pkSettings.DELETE("/:id", cfg.PasskeyHandler.DeletePasskey)
+		pkSettings.POST("/recovery-codes/regenerate", cfg.PasskeyHandler.RegenerateRecoveryCodes)
+	}
+
 	// Sessions/active endpoint — needs proxyHandler for active session data.
 	// Registered on idGroup so it inherits WorkspaceAccessMiddleware.
 	if proxyHandler != nil {

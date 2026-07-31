@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/google/uuid"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -87,6 +88,15 @@ func (s *fakePasskeySvc) ConsumeRecoveryCode(_ context.Context, email, _ string)
 	}
 	return "", passkey.ErrRecoveryCodeNotFound
 }
+func (s *fakePasskeySvc) ListUserCredentials(_ context.Context, _ string) ([]passkey.Credential, error) {
+	return nil, nil
+}
+func (s *fakePasskeySvc) DeleteUserCredential(_ context.Context, _ string, _ uuid.UUID) error {
+	return nil
+}
+func (s *fakePasskeySvc) RegenerateRecoveryCodes(_ context.Context, _ string) ([]string, error) {
+	return []string{"NEW1", "NEW2"}, nil
+}
 
 // --- tests ---
 
@@ -95,7 +105,7 @@ func setupPasskeyRouter(svc PasskeyService) (*gin.Engine, *fakePasskeyUsers) {
 	r := gin.New()
 	users := &fakePasskeyUsers{users: make(map[string]*types.User)}
 	auth := &fakePasskeyAuth{token: "jwt-token"}
-	h := NewPasskeyHandler(svc, auth, users, time.Hour)
+	h := NewPasskeyHandler(svc, auth, users, time.Hour, "lsp_session", "")
 	r.POST("/passkey/register/begin", h.RegisterBegin)
 	r.POST("/passkey/register/finish", h.RegisterFinish)
 	r.POST("/passkey/login/begin", h.LoginBegin)
@@ -238,7 +248,7 @@ func TestRegisterFinish_NewUser_Succeeds(t *testing.T) {
 	created, _ := users.GetUserByEmail(context.Background(), "newfinish@test.com")
 	require.NotNil(t, created, "user must be created on new signup")
 	assert.Equal(t, "new-user-id", created.ID)
-	assert.False(t, created.EmailVerified, "email must NOT be verified without verification")
+	assert.True(t, created.EmailVerified, "email must be auto-verified in dev mode (no email verifier wired)")
 	assert.True(t, svc.credStored, "credential + recovery codes must be persisted")
 }
 
@@ -276,7 +286,7 @@ func TestRecover_ValidCode_Succeeds(t *testing.T) {
 		"alice@test.com": {ID: "user-1", Email: "alice@test.com", Username: "alice"},
 	}}
 	auth := &fakePasskeyAuth{token: "jwt-tok"}
-	h := NewPasskeyHandler(svc, auth, users, time.Hour)
+	h := NewPasskeyHandler(svc, auth, users, time.Hour, "lsp_session", "")
 	r := gin.New()
 	r.POST("/passkey/recover", h.Recover)
 
@@ -296,7 +306,7 @@ func TestRecover_InvalidCode_Rejected(t *testing.T) {
 	svc := &fakePasskeySvc{}
 	users := &fakePasskeyUsers{users: map[string]*types.User{}}
 	auth := &fakePasskeyAuth{token: "jwt-tok"}
-	h := NewPasskeyHandler(svc, auth, users, time.Hour)
+	h := NewPasskeyHandler(svc, auth, users, time.Hour, "lsp_session", "")
 	r := gin.New()
 	r.POST("/passkey/recover", h.Recover)
 
@@ -309,7 +319,7 @@ func TestRecover_InvalidCode_Rejected(t *testing.T) {
 
 func TestRecover_MissingFields(t *testing.T) {
 	users := &fakePasskeyUsers{users: map[string]*types.User{}}
-	h := NewPasskeyHandler(&fakePasskeySvc{}, &fakePasskeyAuth{}, users, time.Hour)
+	h := NewPasskeyHandler(&fakePasskeySvc{}, &fakePasskeyAuth{}, users, time.Hour, "lsp_session", "")
 	r := gin.New()
 	r.POST("/passkey/recover", h.Recover)
 
@@ -322,7 +332,7 @@ func TestRecover_UserLookupFailure(t *testing.T) {
 	// User NOT in the store — GetUserByEmail returns nil.
 	users := &fakePasskeyUsers{users: map[string]*types.User{}}
 	auth := &fakePasskeyAuth{token: "jwt-tok"}
-	h := NewPasskeyHandler(svc, auth, users, time.Hour)
+	h := NewPasskeyHandler(svc, auth, users, time.Hour, "lsp_session", "")
 	r := gin.New()
 	r.POST("/passkey/recover", h.Recover)
 
@@ -339,7 +349,7 @@ func TestRecover_TokenIssuanceFailure(t *testing.T) {
 		"alice@test.com": {ID: "user-1", Email: "alice@test.com", Username: "alice"},
 	}}
 	auth := &fakePasskeyAuth{err: fmt.Errorf("KEK unavailable")}
-	h := NewPasskeyHandler(svc, auth, users, time.Hour)
+	h := NewPasskeyHandler(svc, auth, users, time.Hour, "lsp_session", "")
 	r := gin.New()
 	r.POST("/passkey/recover", h.Recover)
 
@@ -405,7 +415,7 @@ func TestLoginFinish_TokenIssuanceFailure(t *testing.T) {
 		"alice@test.com": {ID: "user-1", Email: "alice@test.com", Username: "alice"},
 	}}
 	auth := &fakePasskeyAuth{err: fmt.Errorf("KEK unavailable")}
-	h := NewPasskeyHandler(svc, auth, users, time.Hour)
+	h := NewPasskeyHandler(svc, auth, users, time.Hour, "lsp_session", "")
 	r := gin.New()
 	r.POST("/passkey/login/finish", h.LoginFinish)
 

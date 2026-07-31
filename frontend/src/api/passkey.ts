@@ -30,6 +30,13 @@ export interface PasskeyRecoverResponse {
   mustEnrollPasskey: boolean;
 }
 
+export interface PasskeyListItem {
+  id: string;
+  name?: string;
+  createdAt: string;
+  lastUsedAt?: string;
+}
+
 export const passkeyApi = {
   registerBegin: (email: string, name?: string) =>
     api.post<PasskeyBeginResponse>("/auth/passkey/register/begin", { email, name }),
@@ -50,4 +57,10 @@ export const passkeyApi = {
     }),
   recover: (email: string, code: string) =>
     api.post<PasskeyRecoverResponse>("/auth/passkey/recover", { email, code }),
+  listPasskeys: () =>
+    api.get<{ passkeys: PasskeyListItem[] }>("/account/passkeys"),
+  deletePasskey: (id: string) =>
+    api.delete<{ deleted: boolean }>(`/account/passkeys/${id}`),
+  regenerateRecoveryCodes: () =>
+    api.post<{ recoveryCodes: string[] }>("/account/passkeys/recovery-codes/regenerate"),
 };

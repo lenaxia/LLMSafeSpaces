@@ -44,14 +44,26 @@ type PasskeyService interface {
 	FinishLogin(ctx context.Context, sessionToken, email string, response map[string]any) (string, error)
 	ConsumeRecoveryCode(ctx context.Context, email, code string) (string, error)
 	CreateCredentialAndRecoveryCodes(ctx context.Context, cred *passkey.Credential, hashes []string) error
+	ListUserCredentials(ctx context.Context, userID string) ([]passkey.Credential, error)
+	DeleteUserCredential(ctx context.Context, userID string, credID uuid.UUID) error
+	RegenerateRecoveryCodes(ctx context.Context, userID string) ([]string, error)
 }
 
 // PasskeyHandler handles WebAuthn passkey registration, login, and recovery.
 type PasskeyHandler struct {
-	svc      PasskeyService
-	auth     passkeyAuthService
-	users    passkeyUserStore
-	tokenTTL time.Duration
+	svc           PasskeyService
+	auth          passkeyAuthService
+	users         passkeyUserStore
+	tokenTTL      time.Duration
+	cookieName    string
+	cookieDomain  string
+	emailVerifier PasskeyEmailVerifier
+}
+
+// PasskeyEmailVerifier sends email verification for new passkey users.
+// When nil (dev mode), EmailVerified is set to true immediately.
+type PasskeyEmailVerifier interface {
+	SendVerification(ctx context.Context, userID, email string) error
 }
 
 // maxPasskeyBodySize limits the passkey ceremony request body (1 MiB), matching
@@ -59,8 +71,26 @@ type PasskeyHandler struct {
 const maxPasskeyBodySize = 1 << 20
 
 // NewPasskeyHandler constructs the handler.
-func NewPasskeyHandler(svc PasskeyService, auth passkeyAuthService, users passkeyUserStore, tokenTTL time.Duration) *PasskeyHandler {
-	return &PasskeyHandler{svc: svc, auth: auth, users: users, tokenTTL: tokenTTL}
+func NewPasskeyHandler(svc PasskeyService, auth passkeyAuthService, users passkeyUserStore, tokenTTL time.Duration, cookieName, cookieDomain string) *PasskeyHandler {
+	return &PasskeyHandler{svc: svc, auth: auth, users: users, tokenTTL: tokenTTL, cookieName: cookieName, cookieDomain: cookieDomain}
+}
+
+// SetEmailVerifier wires the email-verification hook for new passkey users.
+// Optional — nil means dev mode (auto-verify). Mirrors auth.Service.SetEmailVerifier.
+func (h *PasskeyHandler) SetEmailVerifier(v PasskeyEmailVerifier) {
+	h.emailVerifier = v
+}
+
+// setCookie sets the session cookie (HttpOnly + Secure), matching the
+// /auth/login pattern. The token is also returned in the JSON body for
+// clients that cannot use cookies (e.g., CLI SDKs), but the cookie is
+// the primary auth mechanism for browser sessions.
+func (h *PasskeyHandler) setCookie(c *gin.Context, token string) {
+	maxAge := int(h.tokenTTL.Seconds())
+	if maxAge <= 0 {
+		maxAge = 86400
+	}
+	c.SetCookie(h.cookieName, token, maxAge, "/", h.cookieDomain, true, true)
 }
 
 // RegisterBegin handles POST /api/v1/auth/passkey/register/begin.
@@ -153,6 +183,10 @@ func (h *PasskeyHandler) RegisterFinish(c *gin.Context) {
 	// Create the user row FIRST so the FK constraint on user_passkeys.user_id
 	// is satisfied before the credential is inserted. existing is guaranteed
 	// nil here (we returned 409 above if not).
+	emailVerified := true // dev mode default
+	if h.emailVerifier != nil {
+		emailVerified = false
+	}
 	newUser := &types.User{
 		ID:            result.Credential.UserID,
 		Username:      username,
@@ -160,12 +194,17 @@ func (h *PasskeyHandler) RegisterFinish(c *gin.Context) {
 		Active:        true,
 		Role:          "user",
 		Status:        types.UserStatusActive,
-		EmailVerified: false,
+		EmailVerified: emailVerified,
 		PasswordHash:  randomUnusableHash(),
 	}
 	if err := h.users.CreateUser(c.Request.Context(), newUser); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "user creation failed"})
 		return
+	}
+	if h.emailVerifier != nil {
+		if err := h.emailVerifier.SendVerification(c.Request.Context(), newUser.ID, newUser.Email); err != nil {
+			// Non-fatal — user is created; they can request a resend later.
+		}
 	}
 
 	// Atomically persist credential + recovery codes (single transaction).
@@ -180,6 +219,7 @@ func (h *PasskeyHandler) RegisterFinish(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "session creation failed"})
 		return
 	}
+	h.setCookie(c, tok)
 
 	c.JSON(http.StatusOK, gin.H{
 		"token":         tok,
@@ -248,6 +288,7 @@ func (h *PasskeyHandler) LoginFinish(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "session creation failed"})
 		return
 	}
+	h.setCookie(c, tok)
 
 	c.JSON(http.StatusOK, gin.H{
 		"token": tok,
@@ -311,10 +352,93 @@ func (h *PasskeyHandler) Recover(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "session creation failed"})
 		return
 	}
+	h.setCookie(c, tok)
 
 	c.JSON(http.StatusOK, gin.H{
 		"token":             tok,
 		"user":              user,
 		"mustEnrollPasskey": true,
 	})
+}
+
+// --- authenticated settings endpoints ---
+
+// extractUserID gets the authenticated user's ID from the gin context.
+func extractUserID(c *gin.Context) string {
+	if id, exists := c.Get("userID"); exists {
+		if s, ok := id.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+// ListPasskeys handles GET /api/v1/account/passkeys.
+func (h *PasskeyHandler) ListPasskeys(c *gin.Context) {
+	userID := extractUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+		return
+	}
+	creds, err := h.svc.ListUserCredentials(c.Request.Context(), userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list passkeys"})
+		return
+	}
+	dtos := make([]map[string]any, 0, len(creds))
+	for _, cred := range creds {
+		dto := map[string]any{
+			"id":        cred.ID,
+			"name":      cred.Name,
+			"createdAt": cred.CreatedAt,
+		}
+		if cred.LastUsedAt != nil {
+			dto["lastUsedAt"] = cred.LastUsedAt
+		}
+		dtos = append(dtos, dto)
+	}
+	c.JSON(http.StatusOK, gin.H{"passkeys": dtos})
+}
+
+// DeletePasskey handles DELETE /api/v1/account/passkeys/:id.
+func (h *PasskeyHandler) DeletePasskey(c *gin.Context) {
+	userID := extractUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+		return
+	}
+	credIDStr := c.Param("id")
+	credID, err := uuid.Parse(credIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid credential ID"})
+		return
+	}
+	if err := h.svc.DeleteUserCredential(c.Request.Context(), userID, credID); err != nil {
+		if errors.Is(err, passkey.ErrLastCredential) {
+			c.JSON(http.StatusConflict, gin.H{"error": "cannot delete your last passkey"})
+			return
+		}
+		if errors.Is(err, passkey.ErrCredentialNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "passkey not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to delete passkey"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"deleted": true})
+}
+
+// RegenerateRecoveryCodes handles POST /api/v1/account/passkeys/recovery-codes/regenerate.
+func (h *PasskeyHandler) RegenerateRecoveryCodes(c *gin.Context) {
+	userID := extractUserID(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+		return
+	}
+	codes, err := h.svc.RegenerateRecoveryCodes(c.Request.Context(), userID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to regenerate recovery codes"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"recoveryCodes": codes})
 }

@@ -70,7 +70,7 @@ export function LoginPage() {
   };
 
   const redirectAfterAuthWithFlag = (flag: string) => {
-    const base = returnTo || "/chat";
+    const base = "/settings/passkeys";
     const sep = base.includes("?") ? "&" : "?";
     window.location.href = `${base}${sep}${flag}=1`;
   };

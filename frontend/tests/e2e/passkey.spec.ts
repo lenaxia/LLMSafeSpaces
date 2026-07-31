@@ -89,6 +89,9 @@ async function mockPasskeyApi(page: Page) {
 }
 
 test.describe("Passkey e2e", () => {
+  // Ceremony tests need longer timeouts — the virtual authenticator + browser
+  // WebAuthn API is async and may take several seconds.
+  test.setTimeout(60_000);
   test("register page defaults to passkey mode when enabled", async ({ page }) => {
     await mockPasskeyApi(page);
     await page.goto("/register");

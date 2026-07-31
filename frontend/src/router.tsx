@@ -14,6 +14,7 @@ import { UserProviderCredentialsTab } from "./components/settings/UserProviderCr
 import { SecretsTab } from "./components/settings/SecretsTab";
 import { ApiKeysTab } from "./components/settings/ApiKeysTab";
 import { MyOrganisationTab } from "./components/settings/MyOrganisationTab";
+import { PasskeySettings } from "./components/settings/PasskeySettings";
 import { OrgAdminLayout } from "./components/org-admin/OrgAdminLayout";
 import { OrgOverviewTab } from "./components/org-admin/OrgOverviewTab";
 import { OrgMembersTab } from "./components/org-admin/OrgMembersTab";
@@ -104,6 +105,7 @@ export const router = createBrowserRouter([
               { path: "provider-keys", element: <UserProviderCredentialsTab /> },
               { path: "secrets", element: <SecretsTab /> },
               { path: "api-keys", element: <ApiKeysTab /> },
+              { path: "passkeys", element: <PasskeySettings /> },
               { path: "my-organisation", element: <MyOrganisationTab /> },
             ],
           },
