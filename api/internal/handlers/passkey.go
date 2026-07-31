@@ -364,19 +364,9 @@ func (h *PasskeyHandler) Recover(c *gin.Context) {
 
 // --- authenticated settings endpoints ---
 
-// extractUserID gets the authenticated user's ID from the gin context.
-func extractUserID(c *gin.Context) string {
-	if id, exists := c.Get("userID"); exists {
-		if s, ok := id.(string); ok {
-			return s
-		}
-	}
-	return ""
-}
-
 // ListPasskeys handles GET /api/v1/account/passkeys.
 func (h *PasskeyHandler) ListPasskeys(c *gin.Context) {
-	userID := extractUserID(c)
+	userID, _ := extractAuth(c)
 	if userID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 		return
@@ -386,24 +376,27 @@ func (h *PasskeyHandler) ListPasskeys(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list passkeys"})
 		return
 	}
-	dtos := make([]map[string]any, 0, len(creds))
+	type passkeyDTO struct {
+		ID         uuid.UUID  `json:"id"`
+		Name       string     `json:"name,omitempty"`
+		CreatedAt  time.Time  `json:"createdAt"`
+		LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
+	}
+	dtos := make([]passkeyDTO, 0, len(creds))
 	for _, cred := range creds {
-		dto := map[string]any{
-			"id":        cred.ID,
-			"name":      cred.Name,
-			"createdAt": cred.CreatedAt,
-		}
-		if cred.LastUsedAt != nil {
-			dto["lastUsedAt"] = cred.LastUsedAt
-		}
-		dtos = append(dtos, dto)
+		dtos = append(dtos, passkeyDTO{
+			ID:         cred.ID,
+			Name:       cred.Name,
+			CreatedAt:  cred.CreatedAt,
+			LastUsedAt: cred.LastUsedAt,
+		})
 	}
 	c.JSON(http.StatusOK, gin.H{"passkeys": dtos})
 }
 
 // DeletePasskey handles DELETE /api/v1/account/passkeys/:id.
 func (h *PasskeyHandler) DeletePasskey(c *gin.Context) {
-	userID := extractUserID(c)
+	userID, _ := extractAuth(c)
 	if userID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 		return
@@ -431,7 +424,7 @@ func (h *PasskeyHandler) DeletePasskey(c *gin.Context) {
 
 // RegenerateRecoveryCodes handles POST /api/v1/account/passkeys/recovery-codes/regenerate.
 func (h *PasskeyHandler) RegenerateRecoveryCodes(c *gin.Context) {
-	userID := extractUserID(c)
+	userID, _ := extractAuth(c)
 	if userID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 		return

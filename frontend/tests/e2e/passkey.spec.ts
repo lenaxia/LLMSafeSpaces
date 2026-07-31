@@ -208,6 +208,7 @@ test.describe("Passkey e2e", () => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
+        headers: { "Set-Cookie": "lsp_session=e2e-jwt-token; Path=/; HttpOnly" },
         body: JSON.stringify({
           token: "e2e-jwt-token",
           recoveryCodes: ["RECOVERY1", "RECOVERY2", "RECOVERY3"],
@@ -265,6 +266,7 @@ test.describe("Passkey e2e", () => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
+        headers: { "Set-Cookie": "lsp_session=e2e-jwt-token; Path=/; HttpOnly" },
         body: JSON.stringify({
           token: "e2e-jwt-token",
           user: {

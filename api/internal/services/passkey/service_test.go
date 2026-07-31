@@ -471,3 +471,29 @@ func TestSessionStore_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	assert.Nil(t, got2, "consumed challenge must return nil")
 }
+
+// --- settings method tests ---
+
+func TestListUserCredentials_ReturnsStoredCreds(t *testing.T) {
+	svc, store, _, _ := newTestService(t)
+	store.creds = []Credential{{ID: uuid.New(), UserID: "u1", Name: "YubiKey"}}
+
+	creds, err := svc.ListUserCredentials(context.Background(), "u1")
+	require.NoError(t, err)
+	assert.Len(t, creds, 1)
+	assert.Equal(t, "YubiKey", creds[0].Name)
+}
+
+func TestDeleteUserCredential_DelegatesToStore(t *testing.T) {
+	svc, _, _, _ := newTestService(t)
+	err := svc.DeleteUserCredential(context.Background(), "u1", uuid.New())
+	assert.NoError(t, err)
+}
+
+func TestRegenerateRecoveryCodes_ReturnsCodes(t *testing.T) {
+	svc, store, _, _ := newTestService(t)
+	codes, err := svc.RegenerateRecoveryCodes(context.Background(), "u1")
+	require.NoError(t, err)
+	assert.Len(t, codes, RecoveryCodeCount)
+	assert.Len(t, store.recoveryCodes, RecoveryCodeCount)
+}
