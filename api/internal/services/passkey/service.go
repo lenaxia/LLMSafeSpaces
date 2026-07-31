@@ -32,6 +32,12 @@ const RecoveryCodeCount = 10
 // formatting). 20 random characters from an unambiguous alphabet.
 const RecoveryCodeLen = 20
 
+// recoveryBcryptCost is the bcrypt cost for recovery-code hashing. 12 in
+// production; overridable via the recoveryBcryptCost package var for tests.
+var recoveryBcryptCost = 12
+
+const RecoveryCodeLen = 20
+
 // recoveryCodeAlphabet excludes visually-ambiguous characters (0/O, 1/I/l).
 const recoveryCodeAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 
@@ -476,7 +482,7 @@ func generateRecoveryCodes(n int) (codes, hashes []string, err error) {
 			return nil, nil, err
 		}
 		codes[i] = code
-		hash, err := bcrypt.GenerateFromPassword([]byte(code), 12)
+		hash, err := bcrypt.GenerateFromPassword([]byte(code), recoveryBcryptCost)
 		if err != nil {
 			return nil, nil, fmt.Errorf("hash recovery code: %w", err)
 		}

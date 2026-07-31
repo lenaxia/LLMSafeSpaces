@@ -18,6 +18,13 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
+func init() {
+	// Lower the bcrypt cost for tests to avoid CI timeouts. Production uses
+	// cost 12 (~250ms/hash); tests need 40 hashes × cost 4 (~1ms each) to
+	// stay well under the 5-minute CI timeout under coverage instrumentation.
+	recoveryBcryptCost = 4
+}
+
 // --- fakes ---
 
 type memSessionStore struct {
