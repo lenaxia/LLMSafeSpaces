@@ -220,13 +220,16 @@ type FinishRegistrationResult struct {
 }
 
 func (s *Service) FinishRegistration(ctx context.Context, sessionToken, username, name string, response map[string]any) (*FinishRegistrationResult, error) {
-	parsed, err := parseCreationFromMap(response)
-	if err != nil {
-		return nil, fmt.Errorf("parse attestation: %w", err)
-	}
+	// Consume the challenge BEFORE parsing. Single-use guarantee: once
+	// submitted, consumed regardless of parse/verify outcome.
 	sessionData, err := s.consumeChallenge(ctx, sessionToken)
 	if err != nil {
 		return nil, err
+	}
+
+	parsed, err := parseCreationFromMap(response)
+	if err != nil {
+		return nil, fmt.Errorf("parse attestation: %w", err)
 	}
 
 	userID := string(sessionData.UserID)
@@ -364,6 +367,24 @@ func (s *Service) BeginLogin(ctx context.Context, email string) (*BeginLoginOpti
 // session token + unlocks the DEK. Updates the sign count (cloned-
 // authenticator detection) after a successful assertion.
 func (s *Service) FinishLogin(ctx context.Context, sessionToken, email string, response map[string]any) (string, error) {
+	user, err := s.users.GetUserByEmail(ctx, email)
+	if err != nil {
+		return "", fmt.Errorf("lookup user: %w", err)
+	}
+	if user == nil {
+		return "", ErrUserNotFound
+	}
+
+	// Consume the challenge BEFORE parsing the response. The single-use
+	// guarantee means: once the browser submits a FinishLogin request, the
+	// challenge is consumed regardless of whether verification succeeds. This
+	// prevents replay even on parse/verify failure.
+	sessionData, err := s.consumeChallenge(ctx, sessionToken)
+	if err != nil {
+		return "", err
+	}
+
+	// Parse after consuming — so a malformed response still burns the challenge.
 	parsed, err := parseAssertionFromMap(response)
 	if err != nil {
 		return "", fmt.Errorf("parse assertion: %w", err)
