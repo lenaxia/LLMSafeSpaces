@@ -1195,6 +1195,28 @@ oidc:
   frontendRedirectUrl: ""
   stateCookieName: ""
 
+# Epic 59: WebAuthn passkey support. When rpId is non-empty, the passkey
+# ceremony endpoints (/api/v1/auth/passkey/*) are registered and
+# /auth/config advertises passkeyEnabled=true. Otherwise the feature is
+# fully disabled (no routes, no frontend UI).
+#
+# rpId is the WebAuthn Relying Party ID — the registrable domain the
+# browser associates with the credential. Must match the effective domain
+# the frontend is served from (e.g. "app.example.com"). A passkey enrolled
+# on one rpId cannot authenticate on another.
+#
+# rpOrigins is the allow-list of fully-qualified origins the browser may
+# assert (e.g. ["https://app.example.com"]). Must include the scheme.
+#
+# WARNING: changing rpId after users have enrolled passkeys invalidates
+# all existing passkeys — they were bound to the old rpId. Set this once
+# at deployment time.
+passkey:
+  rpId: ""
+  rpName: ""
+  rpOrigins: []
+  defaultSignup: false
+
 # Epic 54, US-54.3: Org-scoped login via wildcard subdomain routing.
 # When enabled, POST /auth/lookup (US-54.1) redirects found users to
 # https://<orgSlug>.<baseDomain>, where this chart's wildcard Ingress

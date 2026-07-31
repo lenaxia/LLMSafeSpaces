@@ -105,6 +105,7 @@ type CachedSession struct {
 type AuthConfig struct {
 	RegistrationEnabled bool     `json:"registrationEnabled"`
 	OIDCEnabled         bool     `json:"oidcEnabled"`
+	PasskeyEnabled      bool     `json:"passkeyEnabled"`
 	SSOProviders        []string `json:"ssoProviders,omitempty"`
 	InstanceName        string   `json:"instanceName"`
 	MOTD                string   `json:"motd"`

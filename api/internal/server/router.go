@@ -327,7 +327,7 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 
 	// Auth routes (public — no auth middleware)
 	authGroup := router.Group("/api/v1/auth")
-	registerAuthRoutes(authGroup, services, cfg.InstanceSettings, logger, cfg.cookieName(), cfg.CookieDomain, cfg.SSOHandler, cfg.Turnstile)
+	registerAuthRoutes(authGroup, services, cfg.InstanceSettings, logger, cfg.cookieName(), cfg.CookieDomain, cfg.SSOHandler, cfg.Turnstile, cfg.PasskeyHandler != nil)
 
 	// US-49.5: Password reset via email (public — the token IS the credential
 	// for confirm; request is always 202 with no enumeration).
@@ -357,6 +357,7 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 		pg.POST("/register/finish", cfg.PasskeyHandler.RegisterFinish)
 		pg.POST("/login/begin", cfg.PasskeyHandler.LoginBegin)
 		pg.POST("/login/finish", cfg.PasskeyHandler.LoginFinish)
+		pg.POST("/recover", cfg.PasskeyHandler.Recover)
 	}
 
 	// Authenticated workspace routes
@@ -759,7 +760,7 @@ func setSessionCookie(c *gin.Context, token string, maxAge int, cookieName, cook
 }
 
 // API key management routes.
-func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, instanceSettings *settings.InstanceService, logger *apilogger.Logger, cookieName, cookieDomain string, ssoHandler *handlers.SSOHandler, turnstile TurnstileRouterConfig) {
+func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, instanceSettings *settings.InstanceService, logger *apilogger.Logger, cookieName, cookieDomain string, ssoHandler *handlers.SSOHandler, turnstile TurnstileRouterConfig, passkeyEnabled bool) {
 	authSvc := services.GetAuth()
 
 	// Public: feature flag discovery
@@ -787,6 +788,7 @@ func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, insta
 		c.JSON(http.StatusOK, types.AuthConfig{
 			RegistrationEnabled: regEnabled,
 			OIDCEnabled:         oidcEnabled,
+			PasskeyEnabled:      passkeyEnabled,
 			InstanceName:        instanceName,
 			MOTD:                motd,
 		})

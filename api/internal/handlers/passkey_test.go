@@ -62,6 +62,7 @@ type fakePasskeySvc struct {
 	finishLoginUserID string
 	finishLoginErr    error
 	credStored        bool
+	recoveryUserID    string
 }
 
 func (s *fakePasskeySvc) BeginRegistration(_ context.Context, _, _ string) (*passkey.BeginRegistrationOptions, error) {
@@ -79,6 +80,12 @@ func (s *fakePasskeySvc) FinishLogin(_ context.Context, _, _ string, _ map[strin
 func (s *fakePasskeySvc) CreateCredentialAndRecoveryCodes(_ context.Context, _ *passkey.Credential, _ []string) error {
 	s.credStored = true
 	return nil
+}
+func (s *fakePasskeySvc) ConsumeRecoveryCode(_ context.Context, email, _ string) (string, error) {
+	if s.recoveryUserID != "" {
+		return s.recoveryUserID, nil
+	}
+	return "", passkey.ErrRecoveryCodeNotFound
 }
 
 // --- tests ---
@@ -198,6 +205,122 @@ func validAssertionResponseJSON() map[string]any {
 			"signature":         "AA",
 		},
 	}
+}
+
+// --- handler success-path tests ---
+
+func TestRegisterFinish_NewUser_Succeeds(t *testing.T) {
+	svc := &fakePasskeySvc{
+		finishRegResult: &passkey.FinishRegistrationResult{
+			Credential: passkey.Credential{
+				UserID:       "new-user-id",
+				CredentialID: []byte("cred-1"),
+			},
+			RecoveryCodes:      []string{"CODE1", "CODE2"},
+			RecoveryCodeHashes: []string{"hash1", "hash2"},
+		},
+	}
+	r, users := setupPasskeyRouter(svc)
+	resp := doPasskeyRequest(t, r, "POST", "/passkey/register/finish", map[string]any{
+		"sessionToken": "tok-1",
+		"email":        "newfinish@test.com",
+		"name":         "New User",
+		"response":     validRegistrationResponseJSON(),
+	})
+
+	assert.Equal(t, http.StatusOK, resp.Code)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &body))
+	assert.NotEmpty(t, body["token"], "session token must be returned")
+	assert.NotEmpty(t, body["recoveryCodes"], "recovery codes must be returned")
+
+	created, _ := users.GetUserByEmail(context.Background(), "newfinish@test.com")
+	require.NotNil(t, created, "user must be created on new signup")
+	assert.Equal(t, "new-user-id", created.ID)
+	assert.False(t, created.EmailVerified, "email must NOT be verified without verification")
+	assert.True(t, svc.credStored, "credential + recovery codes must be persisted")
+}
+
+func TestLoginFinish_Success(t *testing.T) {
+	svc := &fakePasskeySvc{
+		finishLoginUserID: "user-1",
+	}
+	r, users := setupPasskeyRouter(svc)
+	users.users["alice@test.com"] = &types.User{
+		ID:            "user-1",
+		Username:      "alice",
+		Email:         "alice@test.com",
+		EmailVerified: true,
+	}
+
+	resp := doPasskeyRequest(t, r, "POST", "/passkey/login/finish", map[string]any{
+		"sessionToken": "tok-1",
+		"email":        "alice@test.com",
+		"response":     validAssertionResponseJSON(),
+	})
+
+	assert.Equal(t, http.StatusOK, resp.Code)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &body))
+	assert.NotEmpty(t, body["token"], "session token must be returned")
+	assert.NotNil(t, body["user"], "user object must be returned")
+}
+
+// --- recovery handler tests ---
+
+func TestRecover_ValidCode_Succeeds(t *testing.T) {
+	svc := &fakePasskeySvc{recoveryUserID: "user-1"}
+	r, users := setupPasskeyRouter(svc)
+	users.users["alice@test.com"] = &types.User{ID: "user-1", Email: "alice@test.com", Username: "alice"}
+
+	r2 := gin.New()
+	r2.POST("/passkey/recover", func(c *gin.Context) {
+		h := NewPasskeyHandler(svc, &fakePasskeyAuth{token: "jwt-tok"}, users, time.Hour)
+		h.Recover(c)
+	})
+
+	resp := doPasskeyRequest(t, r2, "POST", "/passkey/recover", map[string]string{
+		"email": "alice@test.com",
+		"code":  "VALIDRECOVERYCODE12",
+	})
+	assert.Equal(t, http.StatusOK, resp.Code)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &body))
+	assert.NotEmpty(t, body["token"])
+	assert.Equal(t, true, body["mustEnrollPasskey"])
+}
+
+func TestRecover_InvalidCode_Rejected(t *testing.T) {
+	svc := &fakePasskeySvc{} // recoveryUserID empty → ConsumeRecoveryCode returns ErrRecoveryCodeNotFound
+	r, _ := setupPasskeyRouter(svc)
+
+	r2 := gin.New()
+	r2.POST("/passkey/recover", func(c *gin.Context) {
+		h := NewPasskeyHandler(svc, &fakePasskeyAuth{token: "jwt-tok"}, &fakePasskeyUsers{users: map[string]*types.User{}}, time.Hour)
+		h.Recover(c)
+	})
+
+	resp := doPasskeyRequest(t, r2, "POST", "/passkey/recover", map[string]string{
+		"email": "alice@test.com",
+		"code":  "WRONG-CODE",
+	})
+	assert.Equal(t, http.StatusUnauthorized, resp.Code)
+}
+
+func TestRecover_MissingFields(t *testing.T) {
+	r, _ := setupPasskeyRouter(&fakePasskeySvc{})
+
+	r2 := gin.New()
+	r2.POST("/passkey/recover", func(c *gin.Context) {
+		h := NewPasskeyHandler(&fakePasskeySvc{}, &fakePasskeyAuth{}, &fakePasskeyUsers{users: map[string]*types.User{}}, time.Hour)
+		h.Recover(c)
+	})
+
+	resp := doPasskeyRequest(t, r2, "POST", "/passkey/recover", map[string]string{"email": "a@test.com"})
+	assert.Equal(t, http.StatusBadRequest, resp.Code)
 }
 
 // --- handler success-path tests ---
