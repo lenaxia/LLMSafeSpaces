@@ -42,7 +42,7 @@ describe("RecoveryCodeForm", () => {
     fireEvent.change(screen.getByPlaceholderText("Recovery code"), { target: { value: "VALIDCODE12" } });
     fireEvent.click(screen.getByText("Recover account"));
 
-    await waitFor(() => expect(onSuccess).toHaveBeenCalledWith("jwt-token"));
+    await waitFor(() => expect(onSuccess).toHaveBeenCalledWith("jwt-token", true));
   });
 
   it("calls onCancel when back button clicked", () => {

@@ -122,6 +122,10 @@ export function LoginPage() {
           onSuccess={async (token) => {
             await loginWithToken(token);
             redirectAfterAuth();
+            // mustEnrollPasskey=true means the user needs to enroll a new
+            // passkey — the settings page (future) handles this. For now,
+            // the session is established so they can use the password-free
+            // account. TODO: redirect to passkey enrollment page.
           }}
           onCancel={() => setMode(passkeyEnabled ? "passkey" : "password")}
         />

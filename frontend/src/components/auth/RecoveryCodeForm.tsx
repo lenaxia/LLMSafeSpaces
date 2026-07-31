@@ -5,7 +5,7 @@ import { ApiClientError } from "../../api/client";
 import { passkeyApi } from "../../api/passkey";
 
 interface Props {
-  onSuccess: (token: string) => Promise<void>;
+  onSuccess: (token: string, mustEnrollPasskey: boolean) => Promise<void>;
   onCancel?: () => void;
 }
 
@@ -21,7 +21,7 @@ export function RecoveryCodeForm({ onSuccess, onCancel }: Props) {
     setLoading(true);
     try {
       const resp = await passkeyApi.recover(email, code);
-      await onSuccess(resp.token);
+      await onSuccess(resp.token, resp.mustEnrollPasskey);
     } catch (err) {
       setError(
         err instanceof ApiClientError

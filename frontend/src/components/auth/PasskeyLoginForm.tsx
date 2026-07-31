@@ -50,8 +50,19 @@ export function PasskeyLoginForm({ onSuccess, onUsePassword, onRecover }: Props)
     }
   };
 
-  if (!supported && onUsePassword) {
-    return null;
+  if (!supported) {
+    return (
+      <div className="flex flex-col gap-4">
+        <p className="text-center text-sm text-muted-foreground">
+          Your browser does not support passkeys.
+        </p>
+        {onUsePassword && (
+          <Button variant="outline" onClick={onUsePassword}>
+            Use password instead
+          </Button>
+        )}
+      </div>
+    );
   }
 
   return (

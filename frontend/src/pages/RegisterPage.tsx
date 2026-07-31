@@ -38,13 +38,26 @@ export function RegisterPage() {
   };
 
   // Passkey registration success → show recovery codes → login → redirect
-  const handlePasskeySuccess = async (_token: string, codes: string[]) => {
+  const handlePasskeySuccess = async (token: string, codes: string[]) => {
+    // Store the token immediately so the session is established even if
+    // the recovery-code display page is navigated away from. But show the
+    // recovery codes BEFORE loginWithToken — if me() fails (transient
+    // network error), the user still sees their one-time codes. The token
+    // is already in localStorage; loginWithToken on Continue is best-effort.
+    localStorage.setItem("lsp_token", token);
     setRecoveryCodes(codes);
     setMode("recovery-codes");
   };
 
   const handleRecoveryCodesContinue = async () => {
-    // The passkey registration already returned a token; use it to log in.
+    // Best-effort: populate the user state. If this fails (transient
+    // error), the token is already in localStorage — the next page load
+    // will be authenticated.
+    try {
+      await loginWithToken(localStorage.getItem("lsp_token") ?? "");
+    } catch {
+      // Non-fatal — token is stored, session will work on reload.
+    }
     redirectAfterAuth();
   };
 
@@ -74,9 +87,8 @@ export function RegisterPage() {
     >
       {mode === "passkey" ? (
         <div className="flex flex-col gap-4">
-          <PasskeyRegisterForm onSuccess={async (token, codes) => {
-            await loginWithToken(token);
-            await handlePasskeySuccess(token, codes);
+          <PasskeyRegisterForm onSuccess={async (_token, codes) => {
+            await handlePasskeySuccess(_token, codes);
           }} />
           {passkeyDefault && (
             <button
