@@ -56,9 +56,10 @@ async function mockPasskeyApi(page: Page) {
     });
   });
   await page.route(`${API_PREFIX}/auth/me`, async (route: Route) => {
-    // After login, /auth/me returns the user.
-    const authHeader = route.request().headers()["authorization"];
-    if (authHeader && authHeader.startsWith("Bearer ")) {
+    // After login, /auth/me returns the user. The passkey handlers set
+    // the lsp_session cookie; the mock checks for its presence.
+    const cookie = route.request().headers()["cookie"] || "";
+    if (cookie.includes("lsp_session=")) {
       await route.fulfill({
         status: 200,
         contentType: "application/json",

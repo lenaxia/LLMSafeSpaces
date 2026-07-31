@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -200,12 +199,13 @@ func (h *PasskeyHandler) RegisterFinish(c *gin.Context) {
 		return
 	}
 	if h.emailVerifier != nil {
-		if err := h.emailVerifier.SendVerification(c.Request.Context(), newUser.ID, newUser.Email); err != nil {
-			// Non-fatal — user is created and the session is valid. Record
-			// the error so the logging middleware can surface it; the user
-			// can request a resend via /verify-email/resend.
-			_ = c.Error(fmt.Errorf("send verification email: %w", err))
-		}
+		_ = h.emailVerifier.SendVerification(c.Request.Context(), newUser.ID, newUser.Email)
+		// Non-fatal: user is created, session is valid, and the user can
+		// request a resend via /verify-email/resend. Intentionally not using
+		// c.Error() — the error-handler middleware would overwrite the 200
+		// registration response. auth.Service.Register uses the same pattern
+		// (logger.Warn), but PasskeyHandler has no logger; the silent
+		// non-failure is the safe tradeoff.
 	}
 
 	// Atomically persist credential + recovery codes (single transaction).
