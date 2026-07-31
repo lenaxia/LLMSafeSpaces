@@ -272,16 +272,15 @@ func TestLoginFinish_Success(t *testing.T) {
 
 func TestRecover_ValidCode_Succeeds(t *testing.T) {
 	svc := &fakePasskeySvc{recoveryUserID: "user-1"}
-	r, users := setupPasskeyRouter(svc)
-	users.users["alice@test.com"] = &types.User{ID: "user-1", Email: "alice@test.com", Username: "alice"}
+	users := &fakePasskeyUsers{users: map[string]*types.User{
+		"alice@test.com": {ID: "user-1", Email: "alice@test.com", Username: "alice"},
+	}}
+	auth := &fakePasskeyAuth{token: "jwt-tok"}
+	h := NewPasskeyHandler(svc, auth, users, time.Hour)
+	r := gin.New()
+	r.POST("/passkey/recover", h.Recover)
 
-	r2 := gin.New()
-	r2.POST("/passkey/recover", func(c *gin.Context) {
-		h := NewPasskeyHandler(svc, &fakePasskeyAuth{token: "jwt-tok"}, users, time.Hour)
-		h.Recover(c)
-	})
-
-	resp := doPasskeyRequest(t, r2, "POST", "/passkey/recover", map[string]string{
+	resp := doPasskeyRequest(t, r, "POST", "/passkey/recover", map[string]string{
 		"email": "alice@test.com",
 		"code":  "VALIDRECOVERYCODE12",
 	})
@@ -322,71 +321,6 @@ func TestRecover_MissingFields(t *testing.T) {
 	resp := doPasskeyRequest(t, r2, "POST", "/passkey/recover", map[string]string{"email": "a@test.com"})
 	assert.Equal(t, http.StatusBadRequest, resp.Code)
 }
-
-// --- handler success-path tests ---
-
-func TestRegisterFinish_NewUser_Succeeds(t *testing.T) {
-	svc := &fakePasskeySvc{
-		finishRegResult: &passkey.FinishRegistrationResult{
-			Credential: passkey.Credential{
-				UserID:       "new-user-id",
-				CredentialID: []byte("cred-1"),
-			},
-			RecoveryCodes:      []string{"CODE1", "CODE2"},
-			RecoveryCodeHashes: []string{"hash1", "hash2"},
-		},
-	}
-	r, users := setupPasskeyRouter(svc)
-	// Ensure user does NOT exist (new signup).
-	resp := doPasskeyRequest(t, r, "POST", "/passkey/register/finish", map[string]any{
-		"sessionToken": "tok-1",
-		"email":        "newfinish@test.com",
-		"name":         "New User",
-		"response":     validRegistrationResponseJSON(),
-	})
-
-	assert.Equal(t, http.StatusOK, resp.Code)
-
-	var body map[string]any
-	require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &body))
-	assert.NotEmpty(t, body["token"], "session token must be returned")
-	assert.NotEmpty(t, body["recoveryCodes"], "recovery codes must be returned")
-
-	// User must have been created.
-	created, _ := users.GetUserByEmail(context.Background(), "newfinish@test.com")
-	require.NotNil(t, created, "user must be created on new signup")
-	assert.Equal(t, "new-user-id", created.ID)
-	assert.False(t, created.EmailVerified, "email must NOT be verified without verification")
-	assert.True(t, svc.credStored, "credential + recovery codes must be persisted")
-}
-
-func TestLoginFinish_Success(t *testing.T) {
-	svc := &fakePasskeySvc{
-		finishLoginUserID: "user-1",
-	}
-	r, users := setupPasskeyRouter(svc)
-	users.users["alice@test.com"] = &types.User{
-		ID:            "user-1",
-		Username:      "alice",
-		Email:         "alice@test.com",
-		EmailVerified: true,
-	}
-
-	resp := doPasskeyRequest(t, r, "POST", "/passkey/login/finish", map[string]any{
-		"sessionToken": "tok-1",
-		"email":        "alice@test.com",
-		"response":     validAssertionResponseJSON(),
-	})
-
-	assert.Equal(t, http.StatusOK, resp.Code)
-
-	var body map[string]any
-	require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &body))
-	assert.NotEmpty(t, body["token"], "session token must be returned")
-	assert.NotNil(t, body["user"], "user object must be returned")
-}
-
-// --- handler unhappy-path tests ---
 
 func TestRegisterFinish_ChallengeExpired(t *testing.T) {
 	svc := &fakePasskeySvc{
