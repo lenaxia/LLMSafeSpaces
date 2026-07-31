@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/mock"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/handlers"
+	apilogger "github.com/lenaxia/llmsafespaces/api/internal/logger"
 	imocks "github.com/lenaxia/llmsafespaces/api/internal/mocks"
 )
 
@@ -21,6 +22,7 @@ import (
 // NewRouter() function — matching the pattern of all other router tests.
 func TestRouter_PasskeyRoutes_RegisteredWhenHandlerNotNil(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	log, _ := apilogger.New(false, "error", "json")
 
 	met := &imocks.MockMetricsService{}
 	met.On("RecordRequest", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
@@ -37,7 +39,7 @@ func TestRouter_PasskeyRoutes_RegisteredWhenHandlerNotNil(t *testing.T) {
 	// Zero-value PasskeyHandler — route registration test only checks routes
 	// exist (non-404). The handler methods will 400 on empty body before
 	// touching the nil service fields.
-	router := NewRouter(svc, testLogger(), nil, RouterConfig{
+	router := NewRouter(svc, log, nil, RouterConfig{
 		Debug:          false,
 		PasskeyHandler: &handlers.PasskeyHandler{},
 	})
@@ -55,10 +57,9 @@ func TestRouter_PasskeyRoutes_RegisteredWhenHandlerNotNil(t *testing.T) {
 	}
 }
 
-// TestRouter_PasskeyRoutes_NotRegisteredWhenHandlerNil verifies passkey routes
-// are absent (404) when PasskeyHandler is nil (feature not configured).
 func TestRouter_PasskeyRoutes_NotRegisteredWhenHandlerNil(t *testing.T) {
 	gin.SetMode(gin.TestMode)
+	log, _ := apilogger.New(false, "error", "json")
 
 	met := &imocks.MockMetricsService{}
 	met.On("RecordRequest", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
@@ -72,7 +73,7 @@ func TestRouter_PasskeyRoutes_NotRegisteredWhenHandlerNil(t *testing.T) {
 	svc.auth.On("AuthMiddleware").Return(gin.HandlerFunc(func(c *gin.Context) { c.Next() })).Maybe()
 	svc.auth.On("GetUserID", mock.Anything).Return("").Maybe()
 
-	router := NewRouter(svc, testLogger(), nil, RouterConfig{
+	router := NewRouter(svc, log, nil, RouterConfig{
 		Debug:          false,
 		PasskeyHandler: nil,
 	})
