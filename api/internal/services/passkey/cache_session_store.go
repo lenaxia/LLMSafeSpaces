@@ -47,8 +47,12 @@ func (s *CacheSessionStore) ConsumeChallenge(ctx context.Context, token string) 
 	if val == "" {
 		return nil, nil
 	}
-	// Best-effort delete; the TTL handles cleanup if this fails. The challenge
-	// is single-use at the application level (one browser ceremony per token).
-	_ = s.cache.Delete(ctx, challengeKeyPrefix+token)
+	// Delete the challenge to enforce single-use. If the delete fails, surface
+	// the error so the caller does not proceed with a replayable challenge.
+	// The TTL provides eventual cleanup if the process dies between Get and
+	// Delete.
+	if err := s.cache.Delete(ctx, challengeKeyPrefix+token); err != nil {
+		return nil, fmt.Errorf("delete challenge (potential replay): %w", err)
+	}
 	return []byte(val), nil
 }

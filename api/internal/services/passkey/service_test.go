@@ -426,8 +426,9 @@ func TestFinishLogin_HappyPath(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "user-login", userID)
 
-	// Sign count must have been updated.
-	assert.True(t, store.creds[0].SignCount > 0 || true, "sign count should be tracked")
+	// Sign count must have been updated to the authenticator's value.
+	require.NotEmpty(t, store.creds)
+	assert.GreaterOrEqual(t, store.creds[0].SignCount, uint32(1), "sign count must be updated after login")
 }
 
 // TestFinishLogin_ConsumesChallenge_OnFailure proves single-use for login.
