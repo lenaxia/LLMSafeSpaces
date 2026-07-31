@@ -38,6 +38,19 @@ func cleanupPasskeyTables(t *testing.T, pool *pgxpool.Pool, userID string) {
 	t.Helper()
 	pool.Exec(context.Background(), "DELETE FROM user_passkeys WHERE user_id = $1", userID)
 	pool.Exec(context.Background(), "DELETE FROM user_recovery_codes WHERE user_id = $1", userID)
+	pool.Exec(context.Background(), "DELETE FROM users WHERE id = $1", userID)
+}
+
+// ensureTestUser inserts a minimal users row so the FK constraint on
+// user_passkeys.user_id is satisfied.
+func ensureTestUser(t *testing.T, pool *pgxpool.Pool, userID string) {
+	t.Helper()
+	_, err := pool.Exec(context.Background(),
+		`INSERT INTO users (id, username, email, password_hash, active, role)
+		 VALUES ($1, $2, $3, '$2a$12$dummy', true, 'user')
+		 ON CONFLICT (id) DO NOTHING`,
+		userID, "test-"+userID[:8], userID+"@test.local")
+	require.NoError(t, err, "failed to create test user")
 }
 
 func TestPgStore_CreateAndGetCredential(t *testing.T) {
@@ -48,7 +61,9 @@ func TestPgStore_CreateAndGetCredential(t *testing.T) {
 	userID := "test-pk-" + uuid.NewString()
 
 	cleanupPasskeyTables(t, pool, userID)
+	ensureTestUser(t, pool, userID)
 	defer cleanupPasskeyTables(t, pool, userID)
+	ensureTestUser(t, pool, userID)
 
 	cred := &Credential{
 		ID:              uuid.New(),
@@ -76,7 +91,9 @@ func TestPgStore_CreateCredential_DuplicateCredentialID(t *testing.T) {
 	userID := "test-dup-" + uuid.NewString()
 
 	cleanupPasskeyTables(t, pool, userID)
+	ensureTestUser(t, pool, userID)
 	defer cleanupPasskeyTables(t, pool, userID)
+	ensureTestUser(t, pool, userID)
 
 	credID := []byte("shared-cred-id")
 	c1 := &Credential{ID: uuid.New(), UserID: userID, CredentialID: credID, PublicKey: []byte("k1"), AttestationType: "none", CreatedAt: time.Now()}
@@ -95,7 +112,9 @@ func TestPgStore_DeleteCredential_LastCredentialRefused(t *testing.T) {
 	userID := "test-last-" + uuid.NewString()
 
 	cleanupPasskeyTables(t, pool, userID)
+	ensureTestUser(t, pool, userID)
 	defer cleanupPasskeyTables(t, pool, userID)
+	ensureTestUser(t, pool, userID)
 
 	c := &Credential{ID: uuid.New(), UserID: userID, CredentialID: []byte("only-cred"), PublicKey: []byte("k"), AttestationType: "none", CreatedAt: time.Now()}
 	require.NoError(t, store.CreateCredential(ctx, c))
@@ -112,7 +131,9 @@ func TestPgStore_CreateCredentialAndRecoveryCodes_Atomic(t *testing.T) {
 	userID := "test-atomic-" + uuid.NewString()
 
 	cleanupPasskeyTables(t, pool, userID)
+	ensureTestUser(t, pool, userID)
 	defer cleanupPasskeyTables(t, pool, userID)
+	ensureTestUser(t, pool, userID)
 
 	cred := &Credential{ID: uuid.New(), UserID: userID, CredentialID: []byte("atomic-cred"), PublicKey: []byte("k"), AttestationType: "none", CreatedAt: time.Now()}
 	hashes := []string{"hash1", "hash2", "hash3"}
@@ -135,7 +156,9 @@ func TestPgStore_ConsumeRecoveryCode(t *testing.T) {
 	userID := "test-rc-" + uuid.NewString()
 
 	cleanupPasskeyTables(t, pool, userID)
+	ensureTestUser(t, pool, userID)
 	defer cleanupPasskeyTables(t, pool, userID)
+	ensureTestUser(t, pool, userID)
 
 	require.NoError(t, store.CreateRecoveryCodes(ctx, userID, []string{"hash-a", "hash-b"}))
 
@@ -158,7 +181,9 @@ func TestPgStore_UpdateCredentialAfterLogin(t *testing.T) {
 	userID := "test-signcount-" + uuid.NewString()
 
 	cleanupPasskeyTables(t, pool, userID)
+	ensureTestUser(t, pool, userID)
 	defer cleanupPasskeyTables(t, pool, userID)
+	ensureTestUser(t, pool, userID)
 
 	c := &Credential{ID: uuid.New(), UserID: userID, CredentialID: []byte("sc-cred"), PublicKey: []byte("k"), AttestationType: "none", SignCount: 0, CreatedAt: time.Now()}
 	require.NoError(t, store.CreateCredential(ctx, c))
