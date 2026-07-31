@@ -62,8 +62,10 @@ func TestE2E_CeremonyThroughHTTP(t *testing.T) {
 			Email string `json:"email"`
 			Name  string `json:"name"`
 		}
-		_ = json.NewDecoder(c.Request.Body).Decode(&req)
-		// New user only — reject existing.
+		if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
+			c.JSON(400, gin.H{"error": "invalid request"})
+			return
+		}
 		if _, exists := users.users[req.Email]; exists {
 			c.JSON(409, gin.H{"error": "exists"})
 			return
@@ -78,7 +80,6 @@ func TestE2E_CeremonyThroughHTTP(t *testing.T) {
 			c.JSON(500, gin.H{"error": err.Error()})
 			return
 		}
-		// Stash the provisional userID so /finish can use it.
 		opts.Options["_provisionalUserID"] = userID
 		c.JSON(200, opts)
 	})
@@ -89,7 +90,10 @@ func TestE2E_CeremonyThroughHTTP(t *testing.T) {
 			Name         string         `json:"name"`
 			Response     map[string]any `json:"response"`
 		}
-		_ = json.NewDecoder(c.Request.Body).Decode(&req)
+		if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
+			c.JSON(400, gin.H{"error": "invalid request"})
+			return
+		}
 		username := req.Name
 		if username == "" {
 			username = strings.Split(req.Email, "@")[0]
@@ -111,7 +115,10 @@ func TestE2E_CeremonyThroughHTTP(t *testing.T) {
 		var req struct {
 			Email string `json:"email"`
 		}
-		_ = json.NewDecoder(c.Request.Body).Decode(&req)
+		if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
+			c.JSON(400, gin.H{"error": "invalid request"})
+			return
+		}
 		opts, _, err := svc.BeginLogin(c.Request.Context(), req.Email)
 		if err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
@@ -125,7 +132,10 @@ func TestE2E_CeremonyThroughHTTP(t *testing.T) {
 			Email        string         `json:"email"`
 			Response     map[string]any `json:"response"`
 		}
-		_ = json.NewDecoder(c.Request.Body).Decode(&req)
+		if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
+			c.JSON(400, gin.H{"error": "invalid request"})
+			return
+		}
 		userID, err := svc.FinishLogin(c.Request.Context(), req.SessionToken, req.Email, req.Response)
 		if err != nil {
 			c.JSON(401, gin.H{"error": err.Error()})
@@ -151,8 +161,10 @@ func TestE2E_CeremonyThroughHTTP(t *testing.T) {
 	require.NotEmpty(t, regBeginResp.SessionToken)
 
 	// Extract the challenge from the WebAuthn options.
-	pkOpts := regBeginResp.Options["publicKey"].(map[string]any)
-	challenge := pkOpts["challenge"].(string)
+	pkOpts, ok := regBeginResp.Options["publicKey"].(map[string]any)
+	require.True(t, ok, "options must contain publicKey map")
+	challenge, ok := pkOpts["challenge"].(string)
+	require.True(t, ok, "publicKey must contain a challenge string")
 	require.NotEmpty(t, challenge)
 
 	// Step 2: generate attestation with the test authenticator.
@@ -195,8 +207,10 @@ func TestE2E_CeremonyThroughHTTP(t *testing.T) {
 	require.NotEmpty(t, loginBeginResp.SessionToken)
 
 	// Extract the login challenge.
-	loginPkOpts := loginBeginResp.Options["publicKey"].(map[string]any)
-	loginChallenge := loginPkOpts["challenge"].(string)
+	loginPkOpts, ok := loginBeginResp.Options["publicKey"].(map[string]any)
+	require.True(t, ok)
+	loginChallenge, ok := loginPkOpts["challenge"].(string)
+	require.True(t, ok, "login publicKey must contain a challenge string")
 	require.NotEmpty(t, loginChallenge)
 
 	// Step 5: generate assertion with the test authenticator (same key).
@@ -257,7 +271,10 @@ func TestE2E_Replay_RejectedOverHTTP(t *testing.T) {
 			SessionToken string         `json:"sessionToken"`
 			Response     map[string]any `json:"response"`
 		}
-		_ = json.NewDecoder(c.Request.Body).Decode(&req)
+		if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
+			c.JSON(400, gin.H{"error": "invalid request"})
+			return
+		}
 		_, err := svc.FinishRegistration(c.Request.Context(), req.SessionToken, "replay", "Replay", req.Response)
 		if err != nil {
 			c.JSON(400, gin.H{"error": err.Error()})
@@ -298,4 +315,79 @@ func doPost(t *testing.T, r http.Handler, method, path string, body any) *httpte
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	return w
+}
+
+// TestE2E_InvalidAttestation_RejectedOverHTTP verifies that a malformed
+// attestation response is rejected over HTTP, and the challenge is consumed
+// (single-use) so it cannot be retried.
+func TestE2E_InvalidAttestation_RejectedOverHTTP(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+	redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer redisClient.Close()
+
+	store := &memStore{}
+	users := &fakeUserLookup{users: make(map[string]*types.User)}
+	svc, err := New(ServiceConfig{
+		RPID:      "localhost",
+		RPName:    "Test",
+		RPOrigins: []string{"https://localhost"},
+		Store:     store,
+		Users:     users,
+		Sessions:  NewCacheSessionStore(redisClient),
+	})
+	require.NoError(t, err)
+
+	r := gin.New()
+	r.POST("/passkey/register/begin", func(c *gin.Context) {
+		var req struct{ Email string }
+		if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
+			c.JSON(400, gin.H{"error": "invalid"})
+			return
+		}
+		opts, _ := svc.BeginRegistration(c.Request.Context(), "invalid-user", "test")
+		c.JSON(200, opts)
+	})
+	r.POST("/passkey/register/finish", func(c *gin.Context) {
+		var req struct {
+			SessionToken string         `json:"sessionToken"`
+			Response     map[string]any `json:"response"`
+		}
+		if err := json.NewDecoder(c.Request.Body).Decode(&req); err != nil {
+			c.JSON(400, gin.H{"error": "invalid"})
+			return
+		}
+		_, err := svc.FinishRegistration(c.Request.Context(), req.SessionToken, "test", "Test", req.Response)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(200, gin.H{"ok": true})
+	})
+
+	// Begin registration.
+	regBegin := doPost(t, r, "POST", "/passkey/register/begin", map[string]string{"email": "invalid@test.com"})
+	require.Equal(t, 200, regBegin.Code)
+	var beginResp struct {
+		SessionToken string `json:"sessionToken"`
+	}
+	require.NoError(t, json.Unmarshal(regBegin.Body.Bytes(), &beginResp))
+
+	// Send an invalid attestation (empty response map — will fail at verification).
+	badFinish := doPost(t, r, "POST", "/passkey/register/finish", map[string]any{
+		"sessionToken": beginResp.SessionToken,
+		"response":     map[string]any{"id": "bad", "rawId": "bad", "type": "public-key"},
+	})
+	require.NotEqual(t, 200, badFinish.Code, "invalid attestation must be rejected")
+
+	// The challenge must be consumed — retry must fail with "expired".
+	retry := doPost(t, r, "POST", "/passkey/register/finish", map[string]any{
+		"sessionToken": beginResp.SessionToken,
+		"response":     map[string]any{"id": "bad", "rawId": "bad", "type": "public-key"},
+	})
+	require.NotEqual(t, 200, retry.Code)
+	assert.Contains(t, retry.Body.String(), "expired", "consumed challenge must not be reusable")
 }
