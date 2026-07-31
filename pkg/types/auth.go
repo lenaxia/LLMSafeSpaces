@@ -122,6 +122,11 @@ type DEKSource string
 const (
 	DEKSourcePassword  DEKSource = "password"
 	DEKSourceServerKEK DEKSource = "server_kek"
+	// DEKSourcePasskey marks passkey-only users (Epic 59). Their DEK is wrapped
+	// by the master-KEK provider exactly like DEKSourceServerKEK; the distinct
+	// value distinguishes the auth source for audit/telemetry, not a different
+	// encryption tier.
+	DEKSourcePasskey DEKSource = "passkey"
 )
 
 // UserStatus is the authoritative operational status of a user account.

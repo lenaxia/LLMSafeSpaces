@@ -28,6 +28,17 @@ const JWTSessionKEKInfo = "llmsafespaces-jwt-session-dek-kek"
 // decoupled from the API DTO layer.
 const dekSourceServerKEK = "server_kek"
 
+// dekSourcePasskey is the passkey-only user's dek_source value (Epic 59). The
+// DEK is wrapped by the master-KEK provider identically to dekSourceServerKEK.
+const dekSourcePasskey = "passkey"
+
+// dekSourceIsServerWrapped reports whether a dek_source value means the user's
+// DEK is wrapped by the master-KEK RootKeyProvider (server_kek via SSO, passkey
+// via passkey-only login). Both share one unwrap path: rootKeyProvider.Decrypt.
+func dekSourceIsServerWrapped(s string) bool {
+	return s == dekSourceServerKEK || s == dekSourcePasskey
+}
+
 // UserKeyRecord represents a row in the user_keys table.
 type UserKeyRecord struct {
 	UserID             string
@@ -297,15 +308,16 @@ func (s *KeyService) InitializeUserKeys(ctx context.Context, userID string, pass
 }
 
 // InitializeUserKeysServerKEK provisions a DEK wrapped by the master-KEK
-// RootKeyProvider rather than by a password-derived KEK, for an SSO
-// auto-provisioned user (Epic 58) who has no password to derive from. The
-// store atomically flips users.dek_source to 'server_kek' alongside the
-// user_keys insert so the record and the tier flag can never disagree.
-//
-// Unlike the password path there is no recovery blob: a server-KEK user's DEK
-// is recoverable from the master KEK (operator-controlled), which is consistent
-// with how API-key DEKs already work. Fail-closed when no provider is wired.
-func (s *KeyService) InitializeUserKeysServerKEK(ctx context.Context, userID string) error {
+// RootKeyProvider rather than by a password-derived KEK. Used for users who
+// have no password: SSO auto-provisioned users (Epic 58, dekSource "server_kek")
+// and passkey-only users (Epic 59, dekSource "passkey"). Both are server-wrapped
+// (same provider, same unwrap path); the value distinguishes the auth source.
+// The store atomically flips users.dek_source alongside the user_keys insert.
+// Fail-closed when no provider is wired.
+func (s *KeyService) InitializeUserKeysServerKEK(ctx context.Context, userID, dekSource string) error {
+	if !dekSourceIsServerWrapped(dekSource) {
+		return fmt.Errorf("invalid server-wrapped dek_source %q", dekSource)
+	}
 	if s.rootKeyProvider == nil {
 		return ErrServerKEKUnavailable
 	}
@@ -325,7 +337,7 @@ func (s *KeyService) InitializeUserKeysServerKEK(ctx context.Context, userID str
 		WrappedDEK: wrapped,
 		// Salt + recovery wrap intentionally nil: no Argon2id derivation, no
 		// recovery blob (DEK is recoverable from the master KEK).
-		DEKSource: dekSourceServerKEK,
+		DEKSource: dekSource,
 		CreatedAt: time.Now(),
 	}
 	if err := s.store.CreateUserKey(ctx, record); err != nil {
@@ -388,7 +400,7 @@ func (s *KeyService) UnlockDEKWithSigningKey(ctx context.Context, userID string,
 	}
 
 	var dek []byte
-	if record.DEKSource == dekSourceServerKEK {
+	if dekSourceIsServerWrapped(record.DEKSource) {
 		// Server-KEK tier (Epic 58 SSO users / Epic 59 passkey users): the DEK
 		// is wrapped by the master-KEK provider, not by a password-derived KEK.
 		// The password argument is ignored — these users have no password.
@@ -891,7 +903,7 @@ func (s *KeyService) ChangePassword(ctx context.Context, userID, sessionID strin
 	// oldPassword is ignored. A password-tier user unwraps via
 	// Argon2id(oldPassword, salt).
 	var dek []byte
-	if record.DEKSource == dekSourceServerKEK {
+	if dekSourceIsServerWrapped(record.DEKSource) {
 		if s.rootKeyProvider == nil {
 			return ErrServerKEKUnavailable
 		}
@@ -976,7 +988,7 @@ func (s *KeyService) ChangePassword(ctx context.Context, userID, sessionID strin
 	// disagree (a split would make the next unlock pick the wrong unwrap method
 	// and fail). The password→password path needs no flip — plain
 	// UpdateWrappedDEK suffices.
-	if record.DEKSource == dekSourceServerKEK {
+	if dekSourceIsServerWrapped(record.DEKSource) {
 		if err := s.store.UpdateWrappedDEKAndSource(ctx, userID, newWrappedDEK, newSalt, record.KeyVersion, "password"); err != nil {
 			return err
 		}

@@ -126,7 +126,7 @@ type TokenIssuer interface {
 // SSO users then have no personal-secret encryption until a later login).
 type UserKeyManager interface {
 	ProvisionServerKEKKeys(ctx context.Context, userID string) error
-	IssueTokenAndUnlockDEK(ctx context.Context, userID string, ttl time.Duration) (string, error)
+	IssueTokenAndUnlockDEK(ctx context.Context, userID string, ttl time.Duration, dekSource string) (string, error)
 }
 
 // Service implements the OIDC SSO login flow and SSO-config encryption.
@@ -620,7 +620,7 @@ func (s *Service) HandleCallback(ctx context.Context, orgSlug, redirectURL, code
 // TokenIssuer when no manager is wired (pre-epic / test setups).
 func (s *Service) issueSession(ctx context.Context, userID string) (string, error) {
 	if s.keyManager != nil {
-		return s.keyManager.IssueTokenAndUnlockDEK(ctx, userID, s.tokenTTL)
+		return s.keyManager.IssueTokenAndUnlockDEK(ctx, userID, s.tokenTTL, "server_kek")
 	}
 	return s.issuer.GenerateToken(userID)
 }

@@ -43,7 +43,7 @@ func TestIssueTokenAndUnlockDEK_ProvisionsWhenNoKeys(t *testing.T) {
 	}}
 	svc.SetKeyService(ks)
 
-	tok, err := svc.IssueTokenAndUnlockDEK(context.Background(), "user-sso-1", time.Hour)
+	tok, err := svc.IssueTokenAndUnlockDEK(context.Background(), "user-sso-1", time.Hour, "server_kek")
 	require.NoError(t, err)
 	assert.NotEmpty(t, tok, "a valid session token must be returned")
 	require.Len(t, ks.serverKEKInitCalls, 1, "server-KEK provisioning must run when the user has no keys")
@@ -63,7 +63,7 @@ func TestIssueTokenAndUnlockDEK_SkipsProvisionWhenKeysExist(t *testing.T) {
 	}}
 	svc.SetKeyService(ks)
 
-	tok, err := svc.IssueTokenAndUnlockDEK(context.Background(), "user-sso-2", time.Hour)
+	tok, err := svc.IssueTokenAndUnlockDEK(context.Background(), "user-sso-2", time.Hour, "server_kek")
 	require.NoError(t, err)
 	assert.NotEmpty(t, tok)
 	assert.Empty(t, ks.serverKEKInitCalls, "must NOT re-provision a user who already has keys")
@@ -82,7 +82,7 @@ func TestIssueTokenAndUnlockDEK_ProvisionFailureStillReturnsToken(t *testing.T) 
 	}
 	svc.SetKeyService(ks)
 
-	tok, err := svc.IssueTokenAndUnlockDEK(context.Background(), "user-sso-3", time.Hour)
+	tok, err := svc.IssueTokenAndUnlockDEK(context.Background(), "user-sso-3", time.Hour, "server_kek")
 	require.NoError(t, err, "provisioning failure must not fail login")
 	assert.NotEmpty(t, tok)
 	assert.Empty(t, ks.unlockCalls, "unlock must be skipped when provisioning failed (no keys to unlock)")
@@ -116,7 +116,7 @@ func TestIssueTokenAndUnlockDEK_HasKeysError_DoesNotProvision(t *testing.T) {
 	}
 	svc.SetKeyService(ks)
 
-	tok, err := svc.IssueTokenAndUnlockDEK(context.Background(), "user-sso-4", time.Hour)
+	tok, err := svc.IssueTokenAndUnlockDEK(context.Background(), "user-sso-4", time.Hour, "server_kek")
 	require.NoError(t, err, "login must not fail when the HasKeys check errors")
 	assert.NotEmpty(t, tok, "token must still be returned")
 	assert.Empty(t, ks.serverKEKInitCalls, "provisioning MUST NOT run when HasKeys errored — it would overwrite an existing DEK")

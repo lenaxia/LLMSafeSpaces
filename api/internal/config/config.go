@@ -174,6 +174,16 @@ type Config struct {
 		StateCookieName string `mapstructure:"stateCookieName"`
 	} `mapstructure:"oidc"`
 
+	// Passkey holds WebAuthn Relying Party configuration (Epic 59). RPID is the
+	// registrable domain shared across all access origins. When empty, passkey
+	// endpoints are not registered (nil handler).
+	Passkey struct {
+		RPID          string   `mapstructure:"rpId"`
+		RPName        string   `mapstructure:"rpName"`
+		RPOrigins     []string `mapstructure:"rpOrigins"`
+		DefaultSignup bool     `mapstructure:"defaultSignup"`
+	} `mapstructure:"passkey"`
+
 	// OrgSubdomainRouting holds Epic 54 (US-54.1) email-led login discovery
 	// config. When BaseDomain is non-empty, POST /auth/lookup redirects found
 	// users to https://<orgSlug>.<baseDomain>. When empty (subdomain routing

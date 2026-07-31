@@ -42,7 +42,7 @@ type KeyServiceInterface interface {
 	// master-KEK RootKeyProvider rather than a password-derived KEK, for an SSO
 	// auto-provisioned user who has no password. The store atomically flips
 	// users.dek_source to 'server_kek' alongside the user_keys insert.
-	InitializeUserKeysServerKEK(ctx context.Context, userID string) error
+	InitializeUserKeysServerKEK(ctx context.Context, userID, dekSource string) error
 	UnlockDEK(ctx context.Context, userID string, password []byte, sessionID string, ttl time.Duration) error
 	// UnlockDEKWithSigningKey is UnlockDEK + durable jwt_sessions write
 	// (Epic 56). Login calls this with the active signing key (s.jwtSecret)
@@ -462,7 +462,7 @@ func (s *Service) ProvisionServerKEKKeys(ctx context.Context, userID string) err
 	if s.keyService == nil {
 		return errors.New("server-kek provisioning unavailable: key service not wired")
 	}
-	return s.keyService.InitializeUserKeysServerKEK(ctx, userID)
+	return s.keyService.InitializeUserKeysServerKEK(ctx, userID, "server_kek")
 }
 
 // IssueTokenAndUnlockDEK is the non-password login completion: generate a JWT and
@@ -476,7 +476,7 @@ func (s *Service) ProvisionServerKEKKeys(ctx context.Context, userID string) err
 // server-KEK DEK (the common case after first login) skips re-provisioning; a
 // user created before this epic with no keys is provisioned on first post-epic
 // login (the implicit backfill the design recommends).
-func (s *Service) IssueTokenAndUnlockDEK(ctx context.Context, userID string, ttl time.Duration) (string, error) {
+func (s *Service) IssueTokenAndUnlockDEK(ctx context.Context, userID string, ttl time.Duration, dekSource string) (string, error) {
 	token, err := s.GenerateTokenWithDuration(userID, ttl)
 	if err != nil {
 		return "", fmt.Errorf("issue session token: %w", err)
@@ -509,7 +509,7 @@ func (s *Service) IssueTokenAndUnlockDEK(ctx context.Context, userID string, ttl
 				"user_id", userID, "error", hasKeysErr.Error())
 		}
 	} else if !hasKeys {
-		if err := s.keyService.InitializeUserKeysServerKEK(ctx, userID); err != nil {
+		if err := s.keyService.InitializeUserKeysServerKEK(ctx, userID, dekSource); err != nil {
 			if s.logger != nil {
 				s.logger.Warn("IssueTokenAndUnlockDEK: server-kek provisioning failed", "user_id", userID, "error", err.Error())
 			}

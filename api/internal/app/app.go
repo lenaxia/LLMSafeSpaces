@@ -33,6 +33,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/metering"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/metrics"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/msgqueue"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/passkey"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/policy"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/prompt"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/role"
@@ -309,6 +310,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	var podBootstrapHandler *handlers.PodBootstrapHandler
 	var ssoHandler *handlers.SSOHandler
 	var loginDiscoveryHandler *handlers.LoginDiscoveryHandler
+	var passkeyHandler *handlers.PasskeyHandler
 	var asyncAudit *secrets.AsyncAuditLogger // populated when secrets are enabled; drained on Shutdown
 	var secretsPool *pgxpool.Pool            // closed on Shutdown
 	var dekCacheClient *redis.Client         // closed on Shutdown
@@ -691,6 +693,32 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		if apiKeyProv != nil {
 			keyService.SetAPIKeyStore(&apiKeyStoreAdapter{db: dbSvc}, apiKeyProv)
 		}
+
+		// Epic 59: WebAuthn passkey registration + login. Constructed only when
+		// RPID + RPOrigins are configured; nil handler = routes not registered.
+		if cfg.Passkey.RPID != "" && len(cfg.Passkey.RPOrigins) > 0 {
+			pkStore := passkey.NewPgStore(secretsPool)
+			var pkSessionStore passkey.SessionStore
+			if cacheSvc, ok := svc.Cache.(*cache.Service); ok {
+				pkSessionStore = passkey.NewCacheSessionStore(cacheSvc.GetClient())
+			}
+			pkSvc, pkErr := passkey.New(passkey.ServiceConfig{
+				RPID:      cfg.Passkey.RPID,
+				RPName:    cfg.Passkey.RPName,
+				RPOrigins: cfg.Passkey.RPOrigins,
+				Store:     pkStore,
+				Users:     dbSvc,
+				Sessions:  pkSessionStore,
+			})
+			if pkErr != nil {
+				log.Error("failed to construct passkey service", pkErr)
+			} else {
+				if authSvc, ok := svc.Auth.(*auth.Service); ok {
+					passkeyHandler = handlers.NewPasskeyHandler(pkSvc, authSvc, dbSvc, cfg.Auth.TokenDuration)
+				}
+			}
+		}
+
 		wsSvc, wsSvcOk := svc.Workspace.(*workspace.Service)
 		if wsSvcOk {
 			wsSvc.SetCredentialProvisioner(pgStore)
@@ -1041,6 +1069,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		PodBootstrapHandler:             podBootstrapHandler,
 		SSOHandler:                      ssoHandler,
 		LoginDiscoveryHandler:           loginDiscoveryHandler,
+		PasskeyHandler:                  passkeyHandler,
 		CookieName:                      cfg.Auth.CookieName,
 		CookieDomain:                    cfg.OrgSubdomainRouting.CookieDomain,
 		Turnstile: server.TurnstileRouterConfig{
