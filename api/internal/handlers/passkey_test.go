@@ -8,11 +8,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/google/uuid"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -64,6 +65,8 @@ type fakePasskeySvc struct {
 	finishLoginErr    error
 	credStored        bool
 	recoveryUserID    string
+	listResult        []passkey.Credential
+	deleteErr         error
 }
 
 func (s *fakePasskeySvc) BeginRegistration(_ context.Context, _, _ string) (*passkey.BeginRegistrationOptions, error) {
@@ -89,10 +92,10 @@ func (s *fakePasskeySvc) ConsumeRecoveryCode(_ context.Context, email, _ string)
 	return "", passkey.ErrRecoveryCodeNotFound
 }
 func (s *fakePasskeySvc) ListUserCredentials(_ context.Context, _ string) ([]passkey.Credential, error) {
-	return nil, nil
+	return s.listResult, nil
 }
 func (s *fakePasskeySvc) DeleteUserCredential(_ context.Context, _ string, _ uuid.UUID) error {
-	return nil
+	return s.deleteErr
 }
 func (s *fakePasskeySvc) RegenerateRecoveryCodes(_ context.Context, _ string) ([]string, error) {
 	return []string{"NEW1", "NEW2"}, nil
@@ -425,4 +428,88 @@ func TestLoginFinish_TokenIssuanceFailure(t *testing.T) {
 		"response":     validAssertionResponseJSON(),
 	})
 	assert.Equal(t, http.StatusInternalServerError, resp.Code)
+}
+
+// --- settings endpoint tests ---
+
+func setupAuthenticatedRouter(svc PasskeyService, userID string) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	users := &fakePasskeyUsers{users: map[string]*types.User{}}
+	auth := &fakePasskeyAuth{token: "jwt"}
+	h := NewPasskeyHandler(svc, auth, users, time.Hour, "lsp_session", "")
+	// Inject userID into context (simulates AuthMiddleware).
+	r.Use(func(c *gin.Context) { c.Set("userID", userID); c.Next() })
+	r.GET("/account/passkeys", h.ListPasskeys)
+	r.DELETE("/account/passkeys/:id", h.DeletePasskey)
+	r.POST("/account/passkeys/recovery-codes/regenerate", h.RegenerateRecoveryCodes)
+	return r
+}
+
+func TestListPasskeys_ReturnsCredentials(t *testing.T) {
+	svc := &fakePasskeySvc{}
+	svc.listResult = []passkey.Credential{
+		{ID: uuid.New(), UserID: "u1", Name: "YubiKey", CreatedAt: time.Now()},
+	}
+	r := setupAuthenticatedRouter(svc, "u1")
+
+	w := doPasskeyRequest(t, r, "GET", "/account/passkeys", nil)
+	assert.Equal(t, 200, w.Code)
+
+	var resp struct{ Passkeys []map[string]any }
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Len(t, resp.Passkeys, 1)
+}
+
+func TestListPasskeys_RequiresAuth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &fakePasskeySvc{}
+	users := &fakePasskeyUsers{users: map[string]*types.User{}}
+	h := NewPasskeyHandler(svc, &fakePasskeyAuth{}, users, time.Hour, "lsp_session", "")
+	r := gin.New()
+	// No userID in context.
+	r.GET("/account/passkeys", h.ListPasskeys)
+
+	w := doPasskeyRequest(t, r, "GET", "/account/passkeys", nil)
+	assert.Equal(t, 401, w.Code)
+}
+
+func TestDeletePasskey_Succeeds(t *testing.T) {
+	svc := &fakePasskeySvc{}
+	credID := uuid.New()
+	svc.listResult = []passkey.Credential{{ID: credID, UserID: "u1"}}
+	r := setupAuthenticatedRouter(svc, "u1")
+
+	w := doPasskeyRequest(t, r, "DELETE", "/account/passkeys/"+credID.String(), nil)
+	assert.Equal(t, 200, w.Code)
+}
+
+func TestDeletePasskey_LastCredentialRefused(t *testing.T) {
+	svc := &fakePasskeySvc{deleteErr: passkey.ErrLastCredential}
+	r := setupAuthenticatedRouter(svc, "u1")
+	credID := uuid.New()
+
+	w := doPasskeyRequest(t, r, "DELETE", "/account/passkeys/"+credID.String(), nil)
+	assert.Equal(t, 409, w.Code)
+}
+
+func TestDeletePasskey_NotFound(t *testing.T) {
+	svc := &fakePasskeySvc{deleteErr: passkey.ErrCredentialNotFound}
+	r := setupAuthenticatedRouter(svc, "u1")
+	credID := uuid.New()
+
+	w := doPasskeyRequest(t, r, "DELETE", "/account/passkeys/"+credID.String(), nil)
+	assert.Equal(t, 404, w.Code)
+}
+
+func TestRegenerateRecoveryCodes_ReturnsNewCodes(t *testing.T) {
+	svc := &fakePasskeySvc{}
+	r := setupAuthenticatedRouter(svc, "u1")
+
+	w := doPasskeyRequest(t, r, "POST", "/account/passkeys/recovery-codes/regenerate", nil)
+	assert.Equal(t, 200, w.Code)
+
+	var resp struct{ RecoveryCodes []string }
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Len(t, resp.RecoveryCodes, 2) // fakePasskeySvc returns 2 codes
 }

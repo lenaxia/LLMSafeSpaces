@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -203,7 +204,10 @@ func (h *PasskeyHandler) RegisterFinish(c *gin.Context) {
 	}
 	if h.emailVerifier != nil {
 		if err := h.emailVerifier.SendVerification(c.Request.Context(), newUser.ID, newUser.Email); err != nil {
-			// Non-fatal — user is created; they can request a resend later.
+			// Non-fatal — user is created and the session is valid. Record
+			// the error so the logging middleware can surface it; the user
+			// can request a resend via /verify-email/resend.
+			_ = c.Error(fmt.Errorf("send verification email: %w", err))
 		}
 	}
 
