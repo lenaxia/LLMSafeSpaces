@@ -229,3 +229,54 @@ func TestChangePassword_PasswordPath_Unchanged(t *testing.T) {
 		t.Errorf("DEKSource = %q, want password", after.DEKSource)
 	}
 }
+
+func TestDekSourceIsServerWrapped_TruthTable(t *testing.T) {
+	tests := []struct {
+		source string
+		want   bool
+	}{
+		{"password", false},
+		{"server_kek", true},
+		{"passkey", true},
+		{"", false},
+		{"unknown", false},
+	}
+	for _, tc := range tests {
+		got := dekSourceIsServerWrapped(tc.source)
+		if got != tc.want {
+			t.Errorf("dekSourceIsServerWrapped(%q) = %v, want %v", tc.source, got, tc.want)
+		}
+	}
+}
+
+func TestInitializeUserKeysServerKEK_RejectsInvalidSource(t *testing.T) {
+	store := newMockKeyStore()
+	cache := newMockDEKCache()
+	svc := NewKeyService(store, cache)
+	prov := &recordingProvider{}
+	svc.SetAPIKeyStore(nil, prov)
+
+	invalidSources := []string{"", "password", "unknown", "PASSWORD", "Server_KEK"}
+	for _, src := range invalidSources {
+		err := svc.InitializeUserKeysServerKEK(context.Background(), "u1", src)
+		if err == nil {
+			t.Errorf("InitializeUserKeysServerKEK with source %q should fail", src)
+		}
+	}
+}
+
+func TestInitializeUserKeysServerKEK_AcceptsPasskeySource(t *testing.T) {
+	store := newMockKeyStore()
+	cache := newMockDEKCache()
+	svc := NewKeyService(store, cache)
+	prov := &recordingProvider{}
+	svc.SetAPIKeyStore(nil, prov)
+
+	if err := svc.InitializeUserKeysServerKEK(context.Background(), "u1", "passkey"); err != nil {
+		t.Fatalf("passkey should be accepted: %v", err)
+	}
+	rec, _ := store.GetUserKey(context.Background(), "u1")
+	if rec.DEKSource != "passkey" {
+		t.Errorf("DEKSource = %q, want passkey", rec.DEKSource)
+	}
+}
