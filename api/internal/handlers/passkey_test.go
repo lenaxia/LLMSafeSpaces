@@ -313,7 +313,7 @@ func TestRecover_MissingFields(t *testing.T) {
 	r := gin.New()
 	r.POST("/passkey/recover", h.Recover)
 
-	resp := doPasskeyRequest(t, r2, "POST", "/passkey/recover", map[string]string{"email": "a@test.com"})
+	resp := doPasskeyRequest(t, r, "POST", "/passkey/recover", map[string]string{"email": "a@test.com"})
 	assert.Equal(t, http.StatusBadRequest, resp.Code)
 }
 
