@@ -7,10 +7,7 @@ interface AuthContextValue {
   user: User | null;
   loading: boolean;
   login: (username: string, password: string, rememberMe?: boolean) => Promise<void>;
-  // register accepts an optional Turnstile token; supply it when
-  // Cloudflare's Turnstile widget is enabled (chart: turnstile.enabled=true).
-  // Omit or pass "" when disabled — the API middleware is a no-op in
-  // that case and ignores the header.
+  loginWithToken: (token: string) => Promise<void>;
   register: (
     username: string,
     email: string,
@@ -35,6 +32,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(res.user);
   }, []);
 
+  const loginWithToken = useCallback(async (_token: string) => {
+    // The token is set as a cookie by the API; fetch /auth/me to populate
+    // the user state so the UI reflects the authenticated session.
+    const user = await authApi.me();
+    setUser(user);
+  }, []);
+
   const register = useCallback(
     async (username: string, email: string, password: string, turnstileToken = "") => {
       const res = await authApi.register({ username, email, password }, turnstileToken);
@@ -49,7 +53,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout }}>
+    <AuthContext.Provider value={{ user, loading, login, loginWithToken, register, logout }}>
       {children}
     </AuthContext.Provider>
   );

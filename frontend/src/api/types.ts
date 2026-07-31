@@ -13,6 +13,8 @@ export interface User {
 export interface AuthConfig {
   registrationEnabled: boolean;
   oidcEnabled: boolean;
+  passkeyEnabled?: boolean;
+  passkeyDefaultSignup?: boolean;
   ssoProviders?: string[];
   instanceName: string;
   motd?: string;
