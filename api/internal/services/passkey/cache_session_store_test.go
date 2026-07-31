@@ -14,13 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// minimalCache implements just the Set method of interfaces.CacheService for
-// CacheSessionStore.SaveChallenge. The other methods are not called by
-// CacheSessionStore — ConsumeChallenge uses the raw *redis.Client.
-type minimalCache struct {
-	client *redis.Client
-}
-
 func (m *minimalCache) Set(ctx context.Context, key, value string, ttl time.Duration) error {
 	return m.client.Set(ctx, key, value, ttl).Err()
 }
@@ -37,7 +30,7 @@ func TestCacheSessionStore_GetDel_Atomic(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer client.Close()
 
-	store := NewCacheSessionStore(&minimalCache{client: client}, client)
+	store := NewCacheSessionStore(client)
 	ctx := context.Background()
 	data := []byte(`{"challenge":"abc"}`)
 
@@ -65,7 +58,7 @@ func TestCacheSessionStore_ConsumeMissing_ReturnsNil(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer client.Close()
 
-	store := NewCacheSessionStore(&minimalCache{client: client}, client)
+	store := NewCacheSessionStore(client)
 
 	got, err := store.ConsumeChallenge(context.Background(), "never-existed")
 	require.NoError(t, err)
@@ -81,7 +74,7 @@ func TestCacheSessionStore_SaveAndConsume(t *testing.T) {
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer client.Close()
 
-	store := NewCacheSessionStore(&minimalCache{client: client}, client)
+	store := NewCacheSessionStore(client)
 	ctx := context.Background()
 	data := []byte(`{"challenge":"xyz","user_id":"u1"}`)
 

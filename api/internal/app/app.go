@@ -700,7 +700,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			pkStore := passkey.NewPgStore(secretsPool)
 			var pkSessionStore passkey.SessionStore
 			if cacheSvc, ok := svc.Cache.(*cache.Service); ok {
-				pkSessionStore = passkey.NewCacheSessionStore(svc.GetCache(), cacheSvc.GetClient())
+				pkSessionStore = passkey.NewCacheSessionStore(cacheSvc.GetClient())
 			}
 			pkSvc, pkErr := passkey.New(passkey.ServiceConfig{
 				RPID:      cfg.Passkey.RPID,
