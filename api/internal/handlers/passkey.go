@@ -150,22 +150,21 @@ func (h *PasskeyHandler) RegisterFinish(c *gin.Context) {
 	}
 
 	// Create the user row FIRST so the FK constraint on user_passkeys.user_id
-	// is satisfied before the credential is inserted.
-	if existing == nil {
-		newUser := &types.User{
-			ID:            result.Credential.UserID,
-			Username:      username,
-			Email:         req.Email,
-			Active:        true,
-			Role:          "user",
-			Status:        types.UserStatusActive,
-			EmailVerified: false,
-			PasswordHash:  randomUnusableHash(),
-		}
-		if err := h.users.CreateUser(c.Request.Context(), newUser); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "user creation failed"})
-			return
-		}
+	// is satisfied before the credential is inserted. existing is guaranteed
+	// nil here (we returned 409 above if not).
+	newUser := &types.User{
+		ID:            result.Credential.UserID,
+		Username:      username,
+		Email:         req.Email,
+		Active:        true,
+		Role:          "user",
+		Status:        types.UserStatusActive,
+		EmailVerified: false,
+		PasswordHash:  randomUnusableHash(),
+	}
+	if err := h.users.CreateUser(c.Request.Context(), newUser); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "user creation failed"})
+		return
 	}
 
 	// Atomically persist credential + recovery codes (single transaction).

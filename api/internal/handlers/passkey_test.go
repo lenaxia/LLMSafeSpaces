@@ -225,7 +225,7 @@ func TestRegisterFinish_NewUser_Succeeds(t *testing.T) {
 	assert.NotEmpty(t, body["recoveryCodes"], "recovery codes must be returned")
 
 	// User must have been created.
-	created, _ := users.GetUserByEmail(nil, "newfinish@test.com")
+	created, _ := users.GetUserByEmail(context.Background(), "newfinish@test.com")
 	require.NotNil(t, created, "user must be created on new signup")
 	assert.Equal(t, "new-user-id", created.ID)
 	assert.False(t, created.EmailVerified, "email must NOT be verified without verification")
