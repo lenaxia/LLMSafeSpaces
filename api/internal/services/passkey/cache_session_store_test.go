@@ -14,10 +14,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func (m *minimalCache) Set(ctx context.Context, key, value string, ttl time.Duration) error {
-	return m.client.Set(ctx, key, value, ttl).Err()
-}
-
 // TestCacheSessionStore_GetDel_Atomic verifies the CacheSessionStore uses
 // GETDEL for truly atomic challenge consumption (read+delete in one Redis
 // operation). This closes the concurrent-replay window flagged in prior
