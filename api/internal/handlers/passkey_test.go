@@ -293,16 +293,14 @@ func TestRecover_ValidCode_Succeeds(t *testing.T) {
 }
 
 func TestRecover_InvalidCode_Rejected(t *testing.T) {
-	svc := &fakePasskeySvc{} // recoveryUserID empty → ConsumeRecoveryCode returns ErrRecoveryCodeNotFound
-	r, _ := setupPasskeyRouter(svc)
+	svc := &fakePasskeySvc{}
+	users := &fakePasskeyUsers{users: map[string]*types.User{}}
+	auth := &fakePasskeyAuth{token: "jwt-tok"}
+	h := NewPasskeyHandler(svc, auth, users, time.Hour)
+	r := gin.New()
+	r.POST("/passkey/recover", h.Recover)
 
-	r2 := gin.New()
-	r2.POST("/passkey/recover", func(c *gin.Context) {
-		h := NewPasskeyHandler(svc, &fakePasskeyAuth{token: "jwt-tok"}, &fakePasskeyUsers{users: map[string]*types.User{}}, time.Hour)
-		h.Recover(c)
-	})
-
-	resp := doPasskeyRequest(t, r2, "POST", "/passkey/recover", map[string]string{
+	resp := doPasskeyRequest(t, r, "POST", "/passkey/recover", map[string]string{
 		"email": "alice@test.com",
 		"code":  "WRONG-CODE",
 	})
@@ -310,13 +308,10 @@ func TestRecover_InvalidCode_Rejected(t *testing.T) {
 }
 
 func TestRecover_MissingFields(t *testing.T) {
-	r, _ := setupPasskeyRouter(&fakePasskeySvc{})
-
-	r2 := gin.New()
-	r2.POST("/passkey/recover", func(c *gin.Context) {
-		h := NewPasskeyHandler(&fakePasskeySvc{}, &fakePasskeyAuth{}, &fakePasskeyUsers{users: map[string]*types.User{}}, time.Hour)
-		h.Recover(c)
-	})
+	users := &fakePasskeyUsers{users: map[string]*types.User{}}
+	h := NewPasskeyHandler(&fakePasskeySvc{}, &fakePasskeyAuth{}, users, time.Hour)
+	r := gin.New()
+	r.POST("/passkey/recover", h.Recover)
 
 	resp := doPasskeyRequest(t, r2, "POST", "/passkey/recover", map[string]string{"email": "a@test.com"})
 	assert.Equal(t, http.StatusBadRequest, resp.Code)
