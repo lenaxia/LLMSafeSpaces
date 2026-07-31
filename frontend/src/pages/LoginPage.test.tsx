@@ -41,7 +41,7 @@ describe("LoginPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetConfig.mockResolvedValue({
-      registrationEnabled: true,
+      registrationEnabled: true, passkeyEnabled: false, passkeyDefaultSignup: false,
       oidcEnabled: false,
       instanceName: "TestSpace",
     });
@@ -65,7 +65,7 @@ describe("LoginPage", () => {
 
   it("shows SSO button when email domain matches claimed domain", async () => {
     mockGetConfig.mockResolvedValue({
-      registrationEnabled: true,
+      registrationEnabled: true, passkeyEnabled: false, passkeyDefaultSignup: false,
       oidcEnabled: true,
       instanceName: "TestSpace",
     });
@@ -85,7 +85,7 @@ describe("LoginPage", () => {
 
   it("shows Continue button when SSO enabled and email domain does not match", async () => {
     mockGetConfig.mockResolvedValue({
-      registrationEnabled: true,
+      registrationEnabled: true, passkeyEnabled: false, passkeyDefaultSignup: false,
       oidcEnabled: true,
       instanceName: "TestSpace",
     });
@@ -118,7 +118,7 @@ describe("LoginPage", () => {
 
   it("does not show Continue button for invalid email", async () => {
     mockGetConfig.mockResolvedValue({
-      registrationEnabled: true,
+      registrationEnabled: true, passkeyEnabled: false, passkeyDefaultSignup: false,
       oidcEnabled: true,
       instanceName: "TestSpace",
     });
@@ -137,7 +137,7 @@ describe("LoginPage", () => {
 
   it("calls lookup and redirects on Continue click", async () => {
     mockGetConfig.mockResolvedValue({
-      registrationEnabled: true,
+      registrationEnabled: true, passkeyEnabled: false, passkeyDefaultSignup: false,
       oidcEnabled: true,
       instanceName: "TestSpace",
     });
@@ -186,7 +186,7 @@ describe("LoginPage", () => {
 
   it("shows not-found message when lookup returns not-found redirect", async () => {
     mockGetConfig.mockResolvedValue({
-      registrationEnabled: true,
+      registrationEnabled: true, passkeyEnabled: false, passkeyDefaultSignup: false,
       oidcEnabled: true,
       instanceName: "TestSpace",
     });
@@ -214,7 +214,7 @@ describe("LoginPage", () => {
 
   it("shows rate-limited message when lookup returns 429", async () => {
     mockGetConfig.mockResolvedValue({
-      registrationEnabled: true,
+      registrationEnabled: true, passkeyEnabled: false, passkeyDefaultSignup: false,
       oidcEnabled: true,
       instanceName: "TestSpace",
     });
@@ -240,7 +240,7 @@ describe("LoginPage", () => {
 
   it("shows error message when lookup fails with network error", async () => {
     mockGetConfig.mockResolvedValue({
-      registrationEnabled: true,
+      registrationEnabled: true, passkeyEnabled: false, passkeyDefaultSignup: false,
       oidcEnabled: true,
       instanceName: "TestSpace",
     });
@@ -291,7 +291,7 @@ describe("LoginPage", () => {
     it("\"create an account\" link after lookup not-found preserves return_to", async () => {
       window.history.replaceState({}, "", "/login?return_to=%2Finvitations%2Fabc123");
       mockGetConfig.mockResolvedValue({
-        registrationEnabled: true,
+        registrationEnabled: true, passkeyEnabled: false, passkeyDefaultSignup: false,
         oidcEnabled: true,
         instanceName: "TestSpace",
       });

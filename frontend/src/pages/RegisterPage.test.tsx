@@ -11,6 +11,12 @@ vi.mock("../api/auth", () => ({
   authApi: {
     me: vi.fn().mockRejectedValue(new Error("401")),
     register: (...args: unknown[]) => mockRegister(...args),
+    getConfig: vi.fn().mockResolvedValue({
+      registrationEnabled: true,
+      oidcEnabled: false,
+      passkeyEnabled: false,
+      instanceName: "Safe Space",
+    }),
   },
 }));
 
