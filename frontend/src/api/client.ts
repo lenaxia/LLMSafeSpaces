@@ -43,13 +43,18 @@ async function request<T>(
 ): Promise<T> {
   const { apiBaseUrl } = getEnv();
   const url = `${apiBaseUrl}${path}`;
+  const token = typeof localStorage !== "undefined" ? localStorage.getItem("lsp_token") : null;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...options.headers as Record<string, string>,
+  };
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
   const res = await fetch(url, {
     ...options,
     credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
+    headers,
   });
 
   if (!res.ok) {

@@ -192,13 +192,15 @@ export function LoginPage() {
               </Button>
             </div>
           )}
-          <button
-            type="button"
-            onClick={() => setMode("recovery")}
-            className="text-center text-xs text-muted-foreground underline-offset-4 hover:underline"
-          >
-            Lost your passkey? Use a recovery code
-          </button>
+          {passkeyEnabled && (
+            <button
+              type="button"
+              onClick={() => setMode("recovery")}
+              className="text-center text-xs text-muted-foreground underline-offset-4 hover:underline"
+            >
+              Lost your passkey? Use a recovery code
+            </button>
+          )}
         </div>
       )}
 

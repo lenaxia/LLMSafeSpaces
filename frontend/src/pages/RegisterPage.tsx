@@ -40,6 +40,7 @@ export function RegisterPage() {
   // Passkey registration success → show recovery codes → login → redirect
   const handlePasskeySuccess = async (_token: string, codes: string[]) => {
     setRecoveryCodes(codes);
+    setMode("recovery-codes");
   };
 
   const handleRecoveryCodesContinue = async () => {

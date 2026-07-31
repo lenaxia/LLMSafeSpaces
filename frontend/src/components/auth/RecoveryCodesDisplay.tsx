@@ -11,9 +11,12 @@ export function RecoveryCodesDisplay({ codes, onContinue }: Props) {
   const [acknowledged, setAcknowledged] = useState(false);
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(codes.join("\n"));
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(codes.join("\n")).then(() => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }).catch(() => {});
+    }
   };
 
   return (
