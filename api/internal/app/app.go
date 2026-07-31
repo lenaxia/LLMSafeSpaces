@@ -1070,6 +1070,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		SSOHandler:                      ssoHandler,
 		LoginDiscoveryHandler:           loginDiscoveryHandler,
 		PasskeyHandler:                  passkeyHandler,
+		PasskeyDefaultSignup:            cfg.Passkey.DefaultSignup,
 		CookieName:                      cfg.Auth.CookieName,
 		CookieDomain:                    cfg.OrgSubdomainRouting.CookieDomain,
 		Turnstile: server.TurnstileRouterConfig{

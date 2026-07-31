@@ -79,6 +79,16 @@ data:
       stateCookieName: {{ . | quote }}
       {{- end }}
     {{- end }}
+    {{- if .Values.passkey }}
+    passkey:
+      rpId: {{ .Values.passkey.rpId | quote }}
+      rpName: {{ .Values.passkey.rpName | quote }}
+      {{- with .Values.passkey.rpOrigins }}
+      rpOrigins:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      defaultSignup: {{ .Values.passkey.defaultSignup }}
+    {{- end }}
     {{- if .Values.orgSubdomainRouting }}
     orgSubdomainRouting:
       baseDomain: {{ .Values.orgSubdomainRouting.baseDomain | quote }}

@@ -4,6 +4,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -11,10 +12,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/handlers"
 	apilogger "github.com/lenaxia/llmsafespaces/api/internal/logger"
 	imocks "github.com/lenaxia/llmsafespaces/api/internal/mocks"
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 // TestRouter_PasskeyRoutes_RegisteredWhenHandlerNotNil verifies the passkey
@@ -49,6 +52,7 @@ func TestRouter_PasskeyRoutes_RegisteredWhenHandlerNotNil(t *testing.T) {
 		"/api/v1/auth/passkey/register/finish",
 		"/api/v1/auth/passkey/login/begin",
 		"/api/v1/auth/passkey/login/finish",
+		"/api/v1/auth/passkey/recover",
 	} {
 		req := httptest.NewRequest(http.MethodPost, path, nil)
 		w := httptest.NewRecorder()
@@ -87,4 +91,72 @@ func TestRouter_PasskeyRoutes_NotRegisteredWhenHandlerNil(t *testing.T) {
 		router.ServeHTTP(w, req)
 		assert.Equal(t, http.StatusNotFound, w.Code, "route %s must NOT be registered when handler is nil", path)
 	}
+}
+
+// TestRouter_AuthConfig_PasskeyEnabled verifies the /auth/config endpoint
+// advertises passkeyEnabled=true when the handler is wired.
+func TestRouter_AuthConfig_PasskeyEnabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	log, _ := apilogger.New(false, "error", "json")
+
+	met := &imocks.MockMetricsService{}
+	met.On("RecordRequest", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+	svc := &authMockServices{
+		auth:     &imocks.MockAuthMiddlewareService{},
+		metrics:  met,
+		database: &imocks.MockDatabaseService{},
+		cache:    &imocks.MockCacheService{},
+	}
+	svc.auth.On("AuthMiddleware").Return(gin.HandlerFunc(func(c *gin.Context) { c.Next() })).Maybe()
+	svc.auth.On("GetUserID", mock.Anything).Return("").Maybe()
+
+	router := NewRouter(svc, log, nil, RouterConfig{
+		Debug:                false,
+		PasskeyHandler:       &handlers.PasskeyHandler{},
+		PasskeyDefaultSignup: true,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/config", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var cfg types.AuthConfig
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &cfg))
+	assert.True(t, cfg.PasskeyEnabled, "passkeyEnabled must be true when handler is wired")
+	assert.True(t, cfg.PasskeyDefaultSignup, "passkeyDefaultSignup must reflect the config")
+}
+
+// TestRouter_AuthConfig_PasskeyDisabled verifies the /auth/config endpoint
+// advertises passkeyEnabled=false when the handler is nil.
+func TestRouter_AuthConfig_PasskeyDisabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	log, _ := apilogger.New(false, "error", "json")
+
+	met := &imocks.MockMetricsService{}
+	met.On("RecordRequest", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+
+	svc := &authMockServices{
+		auth:     &imocks.MockAuthMiddlewareService{},
+		metrics:  met,
+		database: &imocks.MockDatabaseService{},
+		cache:    &imocks.MockCacheService{},
+	}
+	svc.auth.On("AuthMiddleware").Return(gin.HandlerFunc(func(c *gin.Context) { c.Next() })).Maybe()
+	svc.auth.On("GetUserID", mock.Anything).Return("").Maybe()
+
+	router := NewRouter(svc, log, nil, RouterConfig{
+		Debug:          false,
+		PasskeyHandler: nil,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/config", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusOK, w.Code)
+
+	var cfg types.AuthConfig
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &cfg))
+	assert.False(t, cfg.PasskeyEnabled, "passkeyEnabled must be false when handler is nil")
 }

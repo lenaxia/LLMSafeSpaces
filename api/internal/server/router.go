@@ -192,6 +192,9 @@ type RouterConfig struct {
 	// (Epic 59). Public routes (no auth middleware) — the ceremony itself is
 	// the authentication. Nil when passkey support is not configured (no RPID).
 	PasskeyHandler *handlers.PasskeyHandler
+	// PasskeyDefaultSignup, when true, tells the frontend to default to passkey
+	// enrollment at registration with "use password" as the explicit opt-in.
+	PasskeyDefaultSignup bool
 
 	// Turnstile, when Enabled is true, gates POST /auth/register with a
 	// Cloudflare Turnstile CAPTCHA middleware. The middleware fails
@@ -269,6 +272,16 @@ func DefaultRouterConfig() RouterConfig {
 					Burst:  5,
 					Window: time.Minute,
 				},
+				// Recovery codes are bcrypt-hashed shared secrets — the one
+				// phishable factor. Without a per-route cap, the global
+				// 100/min/IP limiter allows ~100 recovery-code guesses per
+				// minute. 5/min/burst-5 matches the /secrets/:id/reveal
+				// credential-brute-force pattern.
+				"/api/v1/auth/passkey/recover": {
+					Limit:  5,
+					Burst:  5,
+					Window: time.Minute,
+				},
 			},
 		},
 		SecurityConfig: middleware.DefaultSecurityConfig(),
@@ -327,7 +340,7 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 
 	// Auth routes (public — no auth middleware)
 	authGroup := router.Group("/api/v1/auth")
-	registerAuthRoutes(authGroup, services, cfg.InstanceSettings, logger, cfg.cookieName(), cfg.CookieDomain, cfg.SSOHandler, cfg.Turnstile)
+	registerAuthRoutes(authGroup, services, cfg.InstanceSettings, logger, cfg.cookieName(), cfg.CookieDomain, cfg.SSOHandler, cfg.Turnstile, cfg.PasskeyHandler != nil, cfg.PasskeyDefaultSignup)
 
 	// US-49.5: Password reset via email (public — the token IS the credential
 	// for confirm; request is always 202 with no enumeration).
@@ -357,6 +370,7 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 		pg.POST("/register/finish", cfg.PasskeyHandler.RegisterFinish)
 		pg.POST("/login/begin", cfg.PasskeyHandler.LoginBegin)
 		pg.POST("/login/finish", cfg.PasskeyHandler.LoginFinish)
+		pg.POST("/recover", cfg.PasskeyHandler.Recover)
 	}
 
 	// Authenticated workspace routes
@@ -759,7 +773,7 @@ func setSessionCookie(c *gin.Context, token string, maxAge int, cookieName, cook
 }
 
 // API key management routes.
-func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, instanceSettings *settings.InstanceService, logger *apilogger.Logger, cookieName, cookieDomain string, ssoHandler *handlers.SSOHandler, turnstile TurnstileRouterConfig) {
+func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, instanceSettings *settings.InstanceService, logger *apilogger.Logger, cookieName, cookieDomain string, ssoHandler *handlers.SSOHandler, turnstile TurnstileRouterConfig, passkeyEnabled, passkeyDefaultSignup bool) {
 	authSvc := services.GetAuth()
 
 	// Public: feature flag discovery
@@ -785,10 +799,12 @@ func registerAuthRoutes(rg *gin.RouterGroup, services interfaces.Services, insta
 			oidcEnabled = ssoHandler.OIDCEnabled(c.Request.Context())
 		}
 		c.JSON(http.StatusOK, types.AuthConfig{
-			RegistrationEnabled: regEnabled,
-			OIDCEnabled:         oidcEnabled,
-			InstanceName:        instanceName,
-			MOTD:                motd,
+			RegistrationEnabled:  regEnabled,
+			OIDCEnabled:          oidcEnabled,
+			PasskeyEnabled:       passkeyEnabled,
+			PasskeyDefaultSignup: passkeyDefaultSignup,
+			InstanceName:         instanceName,
+			MOTD:                 motd,
 		})
 	})
 

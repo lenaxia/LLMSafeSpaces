@@ -42,6 +42,7 @@ type PasskeyService interface {
 	FinishRegistration(ctx context.Context, sessionToken, username, name string, response map[string]any) (*passkey.FinishRegistrationResult, error)
 	BeginLogin(ctx context.Context, email string) (*passkey.BeginLoginOptions, string, error)
 	FinishLogin(ctx context.Context, sessionToken, email string, response map[string]any) (string, error)
+	ConsumeRecoveryCode(ctx context.Context, email, code string) (string, error)
 	CreateCredentialAndRecoveryCodes(ctx context.Context, cred *passkey.Credential, hashes []string) error
 }
 
@@ -277,4 +278,43 @@ func emailLocalPart(email string) string {
 		}
 	}
 	return email
+}
+
+// Recover handles POST /api/v1/auth/passkey/recover. Validates a recovery code,
+// consumes it (single-use), and issues a session token. The frontend must
+// redirect the user to enroll a new passkey — the response carries mustEnrollPasskey.
+func (h *PasskeyHandler) Recover(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPasskeyBodySize)
+	var req struct {
+		Email string `json:"email" binding:"required,email"`
+		Code  string `json:"code" binding:"required,min=8"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+
+	userID, err := h.svc.ConsumeRecoveryCode(c.Request.Context(), req.Email, req.Code)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid recovery code"})
+		return
+	}
+
+	user, err := h.users.GetUserByEmail(c.Request.Context(), req.Email)
+	if err != nil || user == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "user lookup failed"})
+		return
+	}
+
+	tok, err := h.auth.IssueTokenAndUnlockDEK(c.Request.Context(), userID, h.tokenTTL, "passkey")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "session creation failed"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"token":             tok,
+		"user":              user,
+		"mustEnrollPasskey": true,
+	})
 }

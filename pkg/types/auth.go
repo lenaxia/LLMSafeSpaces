@@ -103,11 +103,13 @@ type CachedSession struct {
 
 // AuthConfig is returned by GET /auth/config for feature-flag discovery.
 type AuthConfig struct {
-	RegistrationEnabled bool     `json:"registrationEnabled"`
-	OIDCEnabled         bool     `json:"oidcEnabled"`
-	SSOProviders        []string `json:"ssoProviders,omitempty"`
-	InstanceName        string   `json:"instanceName"`
-	MOTD                string   `json:"motd"`
+	RegistrationEnabled  bool     `json:"registrationEnabled"`
+	OIDCEnabled          bool     `json:"oidcEnabled"`
+	PasskeyEnabled       bool     `json:"passkeyEnabled"`
+	PasskeyDefaultSignup bool     `json:"passkeyDefaultSignup,omitempty"`
+	SSOProviders         []string `json:"ssoProviders,omitempty"`
+	InstanceName         string   `json:"instanceName"`
+	MOTD                 string   `json:"motd"`
 }
 
 // DEKSource identifies which encryption tier a user's personal secrets live in.
