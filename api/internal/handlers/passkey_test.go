@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -23,13 +24,17 @@ import (
 // --- fakes ---
 
 type fakePasskeyUsers struct {
-	users map[string]*types.User
+	users         map[string]*types.User
+	createUserErr error
 }
 
 func (f *fakePasskeyUsers) GetUserByEmail(_ context.Context, email string) (*types.User, error) {
 	return f.users[email], nil
 }
 func (f *fakePasskeyUsers) CreateUser(_ context.Context, u *types.User) error {
+	if f.createUserErr != nil {
+		return f.createUserErr
+	}
 	f.users[u.Email] = u
 	return nil
 }
@@ -256,4 +261,73 @@ func TestLoginFinish_Success(t *testing.T) {
 	require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &body))
 	assert.NotEmpty(t, body["token"], "session token must be returned")
 	assert.NotNil(t, body["user"], "user object must be returned")
+}
+
+// --- handler unhappy-path tests ---
+
+func TestRegisterFinish_ChallengeExpired(t *testing.T) {
+	svc := &fakePasskeySvc{
+		finishRegErr: passkey.ErrChallengeExpired,
+	}
+	r, _ := setupPasskeyRouter(svc)
+
+	resp := doPasskeyRequest(t, r, "POST", "/passkey/register/finish", map[string]any{
+		"sessionToken": "expired-tok",
+		"email":        "new@test.com",
+		"response":     validRegistrationResponseJSON(),
+	})
+	assert.Equal(t, http.StatusBadRequest, resp.Code)
+}
+
+func TestLoginFinish_ChallengeExpired(t *testing.T) {
+	svc := &fakePasskeySvc{
+		finishLoginErr: passkey.ErrChallengeExpired,
+	}
+	r, users := setupPasskeyRouter(svc)
+	users.users["alice@test.com"] = &types.User{ID: "u1", Email: "alice@test.com", Username: "alice"}
+
+	resp := doPasskeyRequest(t, r, "POST", "/passkey/login/finish", map[string]any{
+		"sessionToken": "expired-tok",
+		"email":        "alice@test.com",
+		"response":     validAssertionResponseJSON(),
+	})
+	assert.Equal(t, http.StatusBadRequest, resp.Code)
+}
+
+func TestRegisterFinish_PersistenceFailure(t *testing.T) {
+	svc := &fakePasskeySvc{
+		finishRegResult: &passkey.FinishRegistrationResult{
+			Credential:         passkey.Credential{UserID: "new-id"},
+			RecoveryCodes:      []string{"c1"},
+			RecoveryCodeHashes: []string{"h1"},
+		},
+	}
+	r, users := setupPasskeyRouter(svc)
+	users.createUserErr = fmt.Errorf("DB down")
+
+	resp := doPasskeyRequest(t, r, "POST", "/passkey/register/finish", map[string]any{
+		"sessionToken": "tok-1",
+		"email":        "persist-fail@test.com",
+		"response":     validRegistrationResponseJSON(),
+	})
+	assert.Equal(t, http.StatusInternalServerError, resp.Code)
+}
+
+func TestLoginFinish_TokenIssuanceFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc := &fakePasskeySvc{finishLoginUserID: "user-1"}
+	users := &fakePasskeyUsers{users: map[string]*types.User{
+		"alice@test.com": {ID: "user-1", Email: "alice@test.com", Username: "alice"},
+	}}
+	auth := &fakePasskeyAuth{err: fmt.Errorf("KEK unavailable")}
+	h := NewPasskeyHandler(svc, auth, users, time.Hour)
+	r := gin.New()
+	r.POST("/passkey/login/finish", h.LoginFinish)
+
+	resp := doPasskeyRequest(t, r, "POST", "/passkey/login/finish", map[string]any{
+		"sessionToken": "tok-1",
+		"email":        "alice@test.com",
+		"response":     validAssertionResponseJSON(),
+	})
+	assert.Equal(t, http.StatusInternalServerError, resp.Code)
 }

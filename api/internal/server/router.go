@@ -259,6 +259,16 @@ func DefaultRouterConfig() RouterConfig {
 					Burst:  5,
 					Window: time.Minute,
 				},
+				// Epic 59: passkey login/finish is a credential-bearing
+				// target (assertion verification + potential recovery-code
+				// brute-force). 10/min matches a legitimate user retrying
+				// after a failed assertion, while capping automated
+				// guessing well below the global 100/min.
+				"/api/v1/auth/passkey/login/finish": {
+					Limit:  10,
+					Burst:  5,
+					Window: time.Minute,
+				},
 			},
 		},
 		SecurityConfig: middleware.DefaultSecurityConfig(),
