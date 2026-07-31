@@ -317,6 +317,39 @@ func TestRecover_MissingFields(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.Code)
 }
 
+func TestRecover_UserLookupFailure(t *testing.T) {
+	svc := &fakePasskeySvc{recoveryUserID: "user-1"}
+	// User NOT in the store — GetUserByEmail returns nil.
+	users := &fakePasskeyUsers{users: map[string]*types.User{}}
+	auth := &fakePasskeyAuth{token: "jwt-tok"}
+	h := NewPasskeyHandler(svc, auth, users, time.Hour)
+	r := gin.New()
+	r.POST("/passkey/recover", h.Recover)
+
+	resp := doPasskeyRequest(t, r, "POST", "/passkey/recover", map[string]string{
+		"email": "ghost@test.com",
+		"code":  "VALIDRECOVERYCODE12",
+	})
+	assert.Equal(t, http.StatusInternalServerError, resp.Code, "user-not-found after recovery-code consumption must 500")
+}
+
+func TestRecover_TokenIssuanceFailure(t *testing.T) {
+	svc := &fakePasskeySvc{recoveryUserID: "user-1"}
+	users := &fakePasskeyUsers{users: map[string]*types.User{
+		"alice@test.com": {ID: "user-1", Email: "alice@test.com", Username: "alice"},
+	}}
+	auth := &fakePasskeyAuth{err: fmt.Errorf("KEK unavailable")}
+	h := NewPasskeyHandler(svc, auth, users, time.Hour)
+	r := gin.New()
+	r.POST("/passkey/recover", h.Recover)
+
+	resp := doPasskeyRequest(t, r, "POST", "/passkey/recover", map[string]string{
+		"email": "alice@test.com",
+		"code":  "VALIDRECOVERYCODE12",
+	})
+	assert.Equal(t, http.StatusInternalServerError, resp.Code, "token issuance failure must 500")
+}
+
 func TestRegisterFinish_ChallengeExpired(t *testing.T) {
 	svc := &fakePasskeySvc{
 		finishRegErr: passkey.ErrChallengeExpired,
