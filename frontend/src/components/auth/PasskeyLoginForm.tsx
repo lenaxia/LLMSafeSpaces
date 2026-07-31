@@ -4,7 +4,6 @@ import {
   startAuthentication,
   browserSupportsWebAuthn,
 } from "@simplewebauthn/browser";
-import type { PublicKeyCredentialRequestOptionsJSON } from "@simplewebauthn/browser";
 import { Button, Input } from "../ui";
 import { ApiClientError } from "../../api/client";
 import { passkeyApi } from "../../api/passkey";
@@ -28,7 +27,7 @@ export function PasskeyLoginForm({ onSuccess, onUsePassword, onRecover }: Props)
     setLoading(true);
     try {
       const beginResp = await passkeyApi.loginBegin(email);
-      const assertResp = await startAuthentication({ optionsJSON: beginResp.options as unknown as PublicKeyCredentialRequestOptionsJSON });
+      const assertResp = await startAuthentication({ optionsJSON: beginResp.options });
       const finishResp = await passkeyApi.loginFinish(beginResp.sessionToken, email, assertResp);
       await onSuccess(finishResp.token);
     } catch (err) {

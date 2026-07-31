@@ -31,7 +31,7 @@ describe("PasskeyLoginForm", () => {
     vi.mocked(startAuthentication).mockRejectedValueOnce(
       Object.assign(new Error("cancelled"), { name: "NotAllowedError" }),
     );
-    vi.mocked(passkeyApi.loginBegin).mockResolvedValueOnce({ options: {}, sessionToken: "tok" });
+    vi.mocked(passkeyApi.loginBegin).mockResolvedValueOnce({ options: { challenge: "abc" } as any, sessionToken: "tok" });
 
     render(<PasskeyLoginForm onSuccess={vi.fn()} />);
     fireEvent.change(screen.getByPlaceholderText("Email"), { target: { value: "a@b.com" } });

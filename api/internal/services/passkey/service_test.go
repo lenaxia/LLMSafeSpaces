@@ -352,10 +352,8 @@ func TestFinishRegistration_HappyPath(t *testing.T) {
 	opts, err := svc.BeginRegistration(ctx, "user-happy", "alice")
 	require.NoError(t, err)
 
-	// Extract the challenge from the options (base64url-encoded).
-	challenge, ok := opts.Options["publicKey"].(map[string]any)
-	require.True(t, ok)
-	challengeB64, ok := challenge["challenge"].(string)
+	// Extract the challenge from the flat options (base64url-encoded).
+	challengeB64, ok := opts.Options["challenge"].(string)
 	require.True(t, ok, "options must contain a challenge string")
 
 	// Generate a valid attestation response using the test authenticator.
@@ -409,8 +407,8 @@ func TestFinishLogin_HappyPath(t *testing.T) {
 	// Phase 1: register a credential (happy path).
 	regOpts, err := svc.BeginRegistration(ctx, "user-login", "bob")
 	require.NoError(t, err)
-	pkOpts := regOpts.Options["publicKey"].(map[string]any)
-	regChallenge := pkOpts["challenge"].(string)
+	regChallenge, ok := regOpts.Options["challenge"].(string)
+	require.True(t, ok, "regOpts must contain a challenge")
 	regParsed, err := auth.generateRegistrationResponse(regChallenge)
 	require.NoError(t, err)
 	regResult, err := svc.FinishRegistration(ctx, regOpts.SessionToken, "bob", "Bob Passkey", regParsed)
@@ -423,8 +421,8 @@ func TestFinishLogin_HappyPath(t *testing.T) {
 	// Phase 2: perform a login assertion.
 	loginOpts, _, err := svc.BeginLogin(ctx, "bob@test.com")
 	require.NoError(t, err)
-	loginPkOpts := loginOpts.Options["publicKey"].(map[string]any)
-	loginChallenge := loginPkOpts["challenge"].(string)
+	loginChallenge, ok := loginOpts.Options["challenge"].(string)
+	require.True(t, ok, "loginOpts must contain a challenge")
 	loginParsed, err := auth.generateAssertionResponse(loginChallenge)
 	require.NoError(t, err)
 

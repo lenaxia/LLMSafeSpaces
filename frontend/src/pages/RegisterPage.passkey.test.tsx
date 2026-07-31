@@ -64,7 +64,7 @@ vi.mock("../api/passkey", () => ({
 describe("RegisterPage passkey interactions", () => {
   it("transitions to recovery-codes display after registration", async () => {
     vi.mocked(passkeyApi.registerBegin).mockResolvedValueOnce({
-      options: { publicKey: { challenge: "abc" } } as unknown as Record<string, unknown>,
+      options: { rp: { name: "t" }, user: { id: "x" }, challenge: "abc", pubKeyCredParams: [] } as any,
       sessionToken: "tok",
     });
     vi.mocked(startRegistration).mockResolvedValueOnce({} as never);

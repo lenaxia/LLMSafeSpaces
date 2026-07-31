@@ -41,7 +41,7 @@ describe("PasskeyRegisterForm", () => {
 
   it("shows error on NotAllowedError (cancelled)", async () => {
     const { startRegistration } = await import("@simplewebauthn/browser");
-    vi.mocked(passkeyApi.registerBegin).mockResolvedValueOnce({ options: {}, sessionToken: "tok" });
+    vi.mocked(passkeyApi.registerBegin).mockResolvedValueOnce({ options: { rp: {}, user: {}, challenge: "x", pubKeyCredParams: [] } as any, sessionToken: "tok" });
     vi.mocked(startRegistration).mockRejectedValueOnce(
       Object.assign(new Error("cancelled"), { name: "NotAllowedError" }),
     );

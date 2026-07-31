@@ -160,42 +160,43 @@ test.describe("Passkey e2e", () => {
   });
 
   test("full passkey registration ceremony via virtual authenticator", async ({ browser }) => {
-    // This test requires a Chromium-based browser (CDP WebAuthn domain).
-    test.skip(process.env.CI !== undefined && !process.env.PASSKEY_E2E, "Passkey ceremony e2e requires PASSKEY_E2E=1 in CI (needs Chromium + CDP)");
-
+    // Uses Chrome DevTools Protocol (CDP) WebAuthn domain to create a
+    // virtual authenticator. This works in headless Chromium — CI's
+    // Playwright runner already installs Chromium.
     const page = await browser.newPage();
     const { cdp, authenticatorId } = await setupVirtualAuthenticator(page);
     await mockPasskeyApi(page);
 
     // Mock the registration endpoints.
-    let beginOptions: Record<string, unknown> | null = null;
     await page.route(`${API_PREFIX}/auth/passkey/register/begin`, async (route: Route) => {
       const body = route.request().postDataJSON();
-      // Return WebAuthn registration options with the correct RP ID.
       const challenge = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
-      beginOptions = {
-        publicKey: {
-          rp: { id: RP_ID, name: "E2E Test" },
-          user: {
-            id: btoa("user-e2e"),
-            name: body?.email || "e2e@test.com",
-            displayName: body?.name || "E2E User",
-          },
-          challenge,
-          pubKeyCredParams: [{ type: "public-key", alg: -7 }],
-          authenticatorSelection: {
-            authenticatorAttachment: "platform",
-            userVerification: "preferred",
-            residentKey: "preferred",
-          },
-          timeout: 60000,
-          attestation: "none",
-        },
-      };
+      // Return flat PublicKeyCredentialCreationOptionsJSON (what
+      // @simplewebauthn/browser v13 expects in optionsJSON — NOT wrapped
+      // in { publicKey: ... }).
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ options: beginOptions, sessionToken: "e2e-session-tok" }),
+        body: JSON.stringify({
+          options: {
+            rp: { name: "E2E Test" },
+            user: {
+              id: btoa("user-e2e"),
+              name: body?.email || "e2e@test.com",
+              displayName: body?.name || "E2E User",
+            },
+            challenge,
+            pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+            authenticatorSelection: {
+              authenticatorAttachment: "platform",
+              userVerification: "preferred",
+              residentKey: "preferred",
+            },
+            timeout: 60000,
+            attestation: "none",
+          },
+          sessionToken: "e2e-session-tok",
+        }),
       });
     });
 
@@ -233,8 +234,6 @@ test.describe("Passkey e2e", () => {
   });
 
   test("full passkey login ceremony via virtual authenticator", async ({ browser }) => {
-    test.skip(process.env.CI !== undefined && !process.env.PASSKEY_E2E, "Passkey ceremony e2e requires PASSKEY_E2E=1 in CI");
-
     const page = await browser.newPage();
     const { cdp, authenticatorId } = await setupVirtualAuthenticator(page);
     await mockPasskeyApi(page);
@@ -247,13 +246,11 @@ test.describe("Passkey e2e", () => {
         contentType: "application/json",
         body: JSON.stringify({
           options: {
-            publicKey: {
-              rpId: RP_ID,
-              challenge,
-              allowCredentials: [],
-              userVerification: "preferred",
-              timeout: 60000,
-            },
+            rpId: RP_ID,
+            challenge,
+            allowCredentials: [],
+            userVerification: "preferred",
+            timeout: 60000,
           },
           sessionToken: "e2e-login-tok",
         }),
