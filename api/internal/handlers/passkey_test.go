@@ -66,7 +66,9 @@ type fakePasskeySvc struct {
 	credStored        bool
 	recoveryUserID    string
 	listResult        []passkey.Credential
+	listErr           error
 	deleteErr         error
+	regenerateErr     error
 }
 
 func (s *fakePasskeySvc) BeginRegistration(_ context.Context, _, _ string) (*passkey.BeginRegistrationOptions, error) {
@@ -92,12 +94,15 @@ func (s *fakePasskeySvc) ConsumeRecoveryCode(_ context.Context, email, _ string)
 	return "", passkey.ErrRecoveryCodeNotFound
 }
 func (s *fakePasskeySvc) ListUserCredentials(_ context.Context, _ string) ([]passkey.Credential, error) {
-	return s.listResult, nil
+	return s.listResult, s.listErr
 }
 func (s *fakePasskeySvc) DeleteUserCredential(_ context.Context, _ string, _ uuid.UUID) error {
 	return s.deleteErr
 }
 func (s *fakePasskeySvc) RegenerateRecoveryCodes(_ context.Context, _ string) ([]string, error) {
+	if s.regenerateErr != nil {
+		return nil, s.regenerateErr
+	}
 	return []string{"NEW1", "NEW2"}, nil
 }
 
@@ -512,4 +517,18 @@ func TestRegenerateRecoveryCodes_ReturnsNewCodes(t *testing.T) {
 	var resp struct{ RecoveryCodes []string }
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Len(t, resp.RecoveryCodes, 2) // fakePasskeySvc returns 2 codes
+}
+
+func TestListPasskeys_StoreError_500(t *testing.T) {
+	svc := &fakePasskeySvc{listErr: fmt.Errorf("DB down")}
+	r := setupAuthenticatedRouter(svc, "u1")
+	w := doPasskeyRequest(t, r, "GET", "/account/passkeys", nil)
+	assert.Equal(t, 500, w.Code)
+}
+
+func TestRegenerateRecoveryCodes_StoreError_500(t *testing.T) {
+	svc := &fakePasskeySvc{regenerateErr: fmt.Errorf("DB down")}
+	r := setupAuthenticatedRouter(svc, "u1")
+	w := doPasskeyRequest(t, r, "POST", "/account/passkeys/recovery-codes/regenerate", nil)
+	assert.Equal(t, 500, w.Code)
 }

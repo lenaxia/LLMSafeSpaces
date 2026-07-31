@@ -27,3 +27,21 @@ describe("PasskeySettings", () => {
     });
   });
 });
+
+it("shows error when listPasskeys fails", async () => {
+  vi.mocked(passkeyApi.listPasskeys).mockRejectedValueOnce(new Error("network"));
+  render(<PasskeySettings />);
+  await waitFor(() => {
+    expect(screen.getByText(/Failed to load passkeys/i)).toBeInTheDocument();
+  });
+});
+
+it("shows delete button for each passkey", async () => {
+  vi.mocked(passkeyApi.listPasskeys).mockResolvedValueOnce({
+    passkeys: [{ id: "pk-1", name: "YubiKey", createdAt: "2026-01-01T00:00:00Z" }],
+  });
+  render(<PasskeySettings />);
+  await waitFor(() => {
+    expect(screen.getByText("Remove")).toBeInTheDocument();
+  });
+});

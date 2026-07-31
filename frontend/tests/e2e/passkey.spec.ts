@@ -302,6 +302,7 @@ test.describe("Passkey e2e", () => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
+        headers: { "Set-Cookie": "lsp_session=recovered-token; Path=/; HttpOnly" },
         body: JSON.stringify({
           token: "recovered-token",
           user: {
