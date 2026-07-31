@@ -184,10 +184,7 @@ func (h *PasskeyHandler) RegisterFinish(c *gin.Context) {
 	// Create the user row FIRST so the FK constraint on user_passkeys.user_id
 	// is satisfied before the credential is inserted. existing is guaranteed
 	// nil here (we returned 409 above if not).
-	emailVerified := true // dev mode default
-	if h.emailVerifier != nil {
-		emailVerified = false
-	}
+	emailVerified := h.emailVerifier == nil // dev mode auto-verifies
 	newUser := &types.User{
 		ID:            result.Credential.UserID,
 		Username:      username,

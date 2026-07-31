@@ -393,13 +393,7 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 	}
 
 	// Epic 59: Authenticated passkey account settings (list/delete/regenerate).
-	if cfg.PasskeyHandler != nil {
-		pkSettings := router.Group("/api/v1/account/passkeys")
-		pkSettings.Use(services.GetAuth().AuthMiddleware())
-		pkSettings.GET("", cfg.PasskeyHandler.ListPasskeys)
-		pkSettings.DELETE("/:id", cfg.PasskeyHandler.DeletePasskey)
-		pkSettings.POST("/recovery-codes/regenerate", cfg.PasskeyHandler.RegenerateRecoveryCodes)
-	}
+	registerPasskeySettingsRoutes(router, services, cfg.PasskeyHandler)
 
 	// Sessions/active endpoint — needs proxyHandler for active session data.
 	// Registered on idGroup so it inherits WorkspaceAccessMiddleware.
@@ -1508,4 +1502,18 @@ func registerOrgRoutes(router *gin.Engine, services interfaces.Services, h *hand
 		authedInv.POST("/:token/accept", invH.Accept)
 		authedInv.POST("/:token/decline", invH.Decline)
 	}
+}
+
+// registerPasskeySettingsRoutes registers the authenticated passkey account
+// management endpoints (list/delete/regenerate). Extracted from NewRouter to
+// keep that function under the funlen limit.
+func registerPasskeySettingsRoutes(router *gin.Engine, services interfaces.Services, handler *handlers.PasskeyHandler) {
+	if handler == nil {
+		return
+	}
+	pkSettings := router.Group("/api/v1/account/passkeys")
+	pkSettings.Use(services.GetAuth().AuthMiddleware())
+	pkSettings.GET("", handler.ListPasskeys)
+	pkSettings.DELETE("/:id", handler.DeletePasskey)
+	pkSettings.POST("/recovery-codes/regenerate", handler.RegenerateRecoveryCodes)
 }
