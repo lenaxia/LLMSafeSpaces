@@ -160,11 +160,9 @@ func TestE2E_CeremonyThroughHTTP(t *testing.T) {
 	require.NoError(t, json.Unmarshal(regBegin.Body.Bytes(), &regBeginResp))
 	require.NotEmpty(t, regBeginResp.SessionToken)
 
-	// Extract the challenge from the WebAuthn options.
-	pkOpts, ok := regBeginResp.Options["publicKey"].(map[string]any)
-	require.True(t, ok, "options must contain publicKey map")
-	challenge, ok := pkOpts["challenge"].(string)
-	require.True(t, ok, "publicKey must contain a challenge string")
+	// Extract the challenge from the flat WebAuthn options.
+	challenge, ok := regBeginResp.Options["challenge"].(string)
+	require.True(t, ok, "options must contain a challenge string")
 	require.NotEmpty(t, challenge)
 
 	// Step 2: generate attestation with the test authenticator.
@@ -207,10 +205,10 @@ func TestE2E_CeremonyThroughHTTP(t *testing.T) {
 	require.NotEmpty(t, loginBeginResp.SessionToken)
 
 	// Extract the login challenge.
-	loginPkOpts, ok := loginBeginResp.Options["publicKey"].(map[string]any)
+	loginChallenge, ok := loginBeginResp.Options["challenge"].(string)
 	require.True(t, ok)
-	loginChallenge, ok := loginPkOpts["challenge"].(string)
-	require.True(t, ok, "login publicKey must contain a challenge string")
+
+	require.True(t, ok, "login options must contain a challenge string")
 	require.NotEmpty(t, loginChallenge)
 
 	// Step 5: generate assertion with the test authenticator (same key).

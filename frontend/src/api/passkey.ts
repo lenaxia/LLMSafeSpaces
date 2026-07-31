@@ -1,7 +1,16 @@
 import { api } from "./client";
+import type {
+  PublicKeyCredentialCreationOptionsJSON,
+  PublicKeyCredentialRequestOptionsJSON,
+} from "@simplewebauthn/browser";
 
 export interface PasskeyBeginResponse {
-  options: Record<string, unknown>;
+  options: PublicKeyCredentialCreationOptionsJSON;
+  sessionToken: string;
+}
+
+export interface PasskeyLoginBeginResponse {
+  options: PublicKeyCredentialRequestOptionsJSON;
   sessionToken: string;
 }
 
@@ -32,7 +41,7 @@ export const passkeyApi = {
       name,
     }),
   loginBegin: (email: string) =>
-    api.post<PasskeyBeginResponse>("/auth/passkey/login/begin", { email }),
+    api.post<PasskeyLoginBeginResponse>("/auth/passkey/login/begin", { email }),
   loginFinish: (sessionToken: string, email: string, response: unknown) =>
     api.post<PasskeyLoginFinishResponse>("/auth/passkey/login/finish", {
       sessionToken,

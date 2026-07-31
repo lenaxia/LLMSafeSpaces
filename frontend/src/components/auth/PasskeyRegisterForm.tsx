@@ -4,7 +4,6 @@ import {
   startRegistration,
   browserSupportsWebAuthn,
 } from "@simplewebauthn/browser";
-import type { PublicKeyCredentialCreationOptionsJSON } from "@simplewebauthn/browser";
 import { Button, Input } from "../ui";
 import { ApiClientError } from "../../api/client";
 import { passkeyApi } from "../../api/passkey";
@@ -27,7 +26,7 @@ export function PasskeyRegisterForm({ onSuccess }: Props) {
     setLoading(true);
     try {
       const beginResp = await passkeyApi.registerBegin(email, name || undefined);
-      const attResp = await startRegistration({ optionsJSON: beginResp.options as unknown as PublicKeyCredentialCreationOptionsJSON });
+      const attResp = await startRegistration({ optionsJSON: beginResp.options });
       const finishResp = await passkeyApi.registerFinish(
         beginResp.sessionToken,
         email,

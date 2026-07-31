@@ -201,7 +201,7 @@ func (s *Service) BeginRegistration(ctx context.Context, userID, username string
 		return nil, fmt.Errorf("save challenge: %w", err)
 	}
 
-	opts, err := marshalResponse(creation)
+	opts, err := marshalResponse(creation.Response)
 	if err != nil {
 		return nil, err
 	}
@@ -355,7 +355,7 @@ func (s *Service) BeginLogin(ctx context.Context, email string) (*BeginLoginOpti
 		return nil, "", fmt.Errorf("save challenge: %w", err)
 	}
 
-	opts, err := marshalResponse(assertion)
+	opts, err := marshalResponse(assertion.Response)
 	if err != nil {
 		return nil, "", err
 	}
