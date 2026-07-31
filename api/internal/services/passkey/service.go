@@ -48,8 +48,11 @@ type UserLookup interface {
 // The implementation is Redis-backed in production.
 type SessionStore interface {
 	SaveChallenge(ctx context.Context, token string, data []byte, ttl time.Duration) error
-	GetChallenge(ctx context.Context, token string) ([]byte, error)
-	DeleteChallenge(ctx context.Context, token string) error
+	// ConsumeChallenge atomically reads and deletes a challenge in a single
+	// operation (e.g. Redis GETDEL). This closes the replay window that
+	// separate Get+Delete calls would leave open under concurrent requests.
+	// Returns (nil, nil) when the token has no stored challenge.
+	ConsumeChallenge(ctx context.Context, token string) ([]byte, error)
 }
 
 // Service implements the WebAuthn registration and login ceremonies, wrapping
@@ -193,7 +196,7 @@ func (s *Service) BeginRegistration(ctx context.Context, userID, username string
 		return nil, fmt.Errorf("save challenge: %w", err)
 	}
 
-	opts, err := marshalResponse(creation.Response)
+	opts, err := marshalResponse(creation)
 	if err != nil {
 		return nil, err
 	}
@@ -325,7 +328,7 @@ func (s *Service) BeginLogin(ctx context.Context, email string) (*BeginLoginOpti
 		return nil, "", fmt.Errorf("save challenge: %w", err)
 	}
 
-	opts, err := marshalResponse(assertion.Response)
+	opts, err := marshalResponse(assertion)
 	if err != nil {
 		return nil, "", err
 	}
@@ -426,17 +429,12 @@ func (s *Service) ConsumeRecoveryCode(ctx context.Context, email, code string) (
 // consumeChallenge retrieves and deletes a challenge (single-use). Returns
 // an error if the challenge is missing, expired, or malformed.
 func (s *Service) consumeChallenge(ctx context.Context, token string) (*webauthn.SessionData, error) {
-	data, err := s.sessions.GetChallenge(ctx, token)
+	data, err := s.sessions.ConsumeChallenge(ctx, token)
 	if err != nil {
-		return nil, fmt.Errorf("get challenge: %w", err)
+		return nil, fmt.Errorf("consume challenge: %w", err)
 	}
 	if data == nil {
 		return nil, ErrChallengeExpired
-	}
-	// Delete FIRST (single-use guarantee). If the delete fails, surface it —
-	// a surviving challenge is a replay vector, not a "best-effort" concern.
-	if err := s.sessions.DeleteChallenge(ctx, token); err != nil {
-		return nil, fmt.Errorf("consume challenge (delete failed — potential replay): %w", err)
 	}
 
 	var session webauthn.SessionData

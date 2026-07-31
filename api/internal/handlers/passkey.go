@@ -170,7 +170,7 @@ func (h *PasskeyHandler) RegisterFinish(c *gin.Context) {
 			Active:        true,
 			Role:          "user",
 			Status:        types.UserStatusActive,
-			EmailVerified: true,
+			EmailVerified: false,
 			PasswordHash:  randomUnusableHash(),
 		}
 		if err := h.users.CreateUser(c.Request.Context(), newUser); err != nil {
@@ -263,7 +263,6 @@ func (h *PasskeyHandler) LoginFinish(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "user lookup failed"})
 		return
 	}
-	user.PasswordHash = ""
 	c.JSON(http.StatusOK, gin.H{
 		"token": tok,
 		"user":  user,

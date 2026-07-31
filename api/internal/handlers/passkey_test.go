@@ -72,9 +72,6 @@ func (s *fakePasskeySvc) BeginLogin(_ context.Context, _ string) (*passkey.Begin
 func (s *fakePasskeySvc) FinishLogin(_ context.Context, _, _ string, _ *protocol.ParsedCredentialAssertionData) (string, error) {
 	return s.finishLoginUserID, s.finishLoginErr
 }
-func (s *fakePasskeySvc) ConsumeRecoveryCode(_ context.Context, _, _ string) (string, error) {
-	return "", nil
-}
 func (s *fakePasskeySvc) CreateCredentialAndRecoveryCodes(_ context.Context, _ *passkey.Credential, _ []string) error {
 	s.credStored = true
 	return nil
