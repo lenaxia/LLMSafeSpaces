@@ -56,29 +56,23 @@ async function mockPasskeyApi(page: Page) {
     });
   });
   await page.route(`${API_PREFIX}/auth/me`, async (route: Route) => {
-    // After login, /auth/me returns the user. The passkey handlers set
-    // the lsp_session cookie; the mock checks for its presence.
-    const cookie = route.request().headers()["cookie"] || "";
-    if (cookie.includes("lsp_session=")) {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: JSON.stringify({
-          id: "user-e2e",
-          username: "e2euser",
-          email: "e2e@test.com",
-          role: "user",
-          active: true,
-          createdAt: "2026-01-01T00:00:00Z",
-        }),
-      });
-    } else {
-      await route.fulfill({
-        status: 401,
-        contentType: "application/json",
-        body: JSON.stringify({ error: "unauthorized" }),
-      });
-    }
+    // Always return the user in ceremony tests. Playwright's route.fulfill
+    // does not process Set-Cookie headers (the cookie is never stored in
+    // the browser jar), so checking for lsp_session would always fail.
+    // The ceremony tests verify the WebAuthn flow (navigator.credentials),
+    // not cookie management.
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: "user-e2e",
+        username: "e2euser",
+        email: "e2e@test.com",
+        role: "user",
+        active: true,
+        createdAt: "2026-01-01T00:00:00Z",
+      }),
+    });
   });
   await page.route("**/env.json", async (route: Route) => {
     await route.fulfill({
