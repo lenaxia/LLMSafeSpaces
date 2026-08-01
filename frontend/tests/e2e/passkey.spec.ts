@@ -231,7 +231,7 @@ test.describe("Passkey e2e", () => {
             rp: { name: "E2E Test" },
             user: { id: btoa("user-e2e"), name: "e2e@test.com", displayName: "E2E User" },
             challenge, pubKeyCredParams: [{ type: "public-key", alg: -7 }],
-            authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "preferred", residentKey: "preferred" },
+            authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "preferred", residentKey: "required" },
             timeout: 60000, attestation: "none",
           },
           sessionToken: "e2e-reg-tok",
@@ -288,7 +288,8 @@ test.describe("Passkey e2e", () => {
       });
     });
 
-    // Perform login.
+    // Perform login. The email field is required, so fill it first.
+    await page.getByPlaceholder("Email").fill("e2e@test.com");
     await page.getByText("Sign in with passkey").click();
 
     // The virtual authenticator should respond to navigator.credentials.get()
@@ -393,7 +394,7 @@ test.describe("Passkey settings", () => {
     });
 
     await page.goto("/settings/passkeys");
-    await expect(page.getByText("Passkeys")).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole("heading", { name: "Passkeys" })).toBeVisible({ timeout: 5000 });
     await expect(page.getByText("YubiKey")).toBeVisible();
     await expect(page.getByText("Add passkey")).toBeVisible();
     await expect(page.getByText("Regenerate recovery codes")).toBeVisible();
@@ -563,7 +564,7 @@ test.describe("Passkey settings", () => {
     await expect(page.getByText(/recovery code to sign in/i)).toBeVisible();
 
     // Click "Add passkey".
-    await page.getByText("Add passkey").click();
+    await page.getByRole("button", { name: "Add passkey" }).click();
 
     // After enrollment, the new passkey should appear.
     await expect(page.getByText("New Passkey")).toBeVisible({ timeout: 15000 });
