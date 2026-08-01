@@ -124,9 +124,11 @@ func (s *MCPStoreIntegrationSuite) TestUpdateMCPServer_PreservesCiphertext() {
 // helper to create a workspace row for FK satisfaction. Also creates the
 // referenced user row if it doesn't exist (workspaces.user_id FKs to users.id).
 func (s *MCPStoreIntegrationSuite) createTestWorkspace(ctx context.Context, wsID, userID string) {
+	// Use a unique email per user to avoid users_email_key collisions
+	// when multiple tests create users in the same DB session.
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO users (id, username, email, password_hash, role, status, active, created_at, updated_at)
-		VALUES ($1, 'test-user', 'test@test.com', 'x', 'user', 'active', true, now(), now())
+		VALUES ($1, 'test-user-' || $1, 'test-' || $1 || '@test.com', 'x', 'user', 'active', true, now(), now())
 		ON CONFLICT (id) DO NOTHING
 	`, userID)
 	s.Require().NoError(err)
