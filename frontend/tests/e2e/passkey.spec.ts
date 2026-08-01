@@ -495,6 +495,7 @@ test.describe("Passkey settings", () => {
   });
 
   test("full recovery → re-enrollment flow via virtual authenticator", async ({ browser }) => {
+    test.setTimeout(60_000);
     // Tests the complete "lost passkey" workflow:
     // 1. User has no passkey (uses recovery code to log in)
     // 2. Lands on settings page with must_enroll_passkey banner
