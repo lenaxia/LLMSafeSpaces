@@ -132,3 +132,19 @@ it("shows session-expired message on enroll failure", async () => {
     expect(screen.getByText(/session expired/i)).toBeInTheDocument();
   });
 });
+
+it("refreshes list after successful enroll", async () => {
+  vi.mocked(passkeyApi.listPasskeys).mockResolvedValueOnce({ passkeys: [] });
+  vi.mocked(passkeyApi.enrollBegin).mockResolvedValueOnce({ options: {}, sessionToken: "tok" });
+  vi.mocked(passkeyApi.enrollFinish).mockResolvedValueOnce({ enrolled: true });
+  vi.mocked(passkeyApi.listPasskeys).mockResolvedValueOnce({
+    passkeys: [{ id: "pk-new", name: "New Passkey", createdAt: "2026-01-01T00:00:00Z" }],
+  });
+  const { fireEvent, waitFor } = await import("@testing-library/react");
+  render(<PasskeySettings />);
+  await waitFor(() => expect(screen.getByText("Add passkey")).toBeInTheDocument());
+  fireEvent.click(screen.getByText("Add passkey"));
+  await waitFor(() => {
+    expect(screen.getByText("New Passkey")).toBeInTheDocument();
+  });
+});

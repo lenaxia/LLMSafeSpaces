@@ -400,3 +400,43 @@ test.describe("Passkey settings", () => {
     await expect(page.getByText(/recovery code to sign in/i)).toBeVisible({ timeout: 5000 });
   });
 });
+
+  test("Add passkey ceremony via virtual authenticator", async ({ browser }) => {
+    const page = await browser.newPage();
+    const { cdp, authenticatorId } = await setupVirtualAuthenticator(page);
+    const mockState = await mockPasskeyApi(page);
+    mockState.loggedIn = true;
+
+    await page.route(`${API_PREFIX}/account/passkeys`, async (route: Route) => {
+      const method = route.request().method();
+      if (method === "GET") {
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ passkeys: [{ id: "pk-new", name: "New Key", createdAt: "2026-01-01T00:00:00Z" }] }) });
+      } else {
+        await route.fulfill({ status: 200 });
+      }
+    });
+    await page.route(`${API_PREFIX}/account/passkeys/enroll/begin`, async (route: Route) => {
+      const challenge = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
+      await route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          options: { rp: { name: "Test" }, user: { id: btoa("u1"), name: "user", displayName: "user" }, challenge, pubKeyCredParams: [{ type: "public-key", alg: -7 }], timeout: 60000, attestation: "none" },
+          sessionToken: "enroll-tok",
+        }),
+      });
+    });
+    await page.route(`${API_PREFIX}/account/passkeys/enroll/finish`, async (route: Route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ enrolled: true }) });
+    });
+
+    await page.goto("/settings/passkeys");
+    await page.getByText("Add passkey").click();
+
+    // The virtual authenticator auto-responds. After enrollment, the list
+    // refreshes and shows the new passkey.
+    await expect(page.getByText("New Key")).toBeVisible({ timeout: 15000 });
+
+    await cdp.send("WebAuthn.removeVirtualAuthenticator", { authenticatorId });
+    await cdp.detach();
+    await page.close();
+  });
