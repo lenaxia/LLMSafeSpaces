@@ -121,7 +121,7 @@ it("shows expired error when ceremony times out", async () => {
   vi.mocked(passkeyApi.listPasskeys).mockResolvedValueOnce({ passkeys: [] });
   const { ApiClientError } = await import("../../api/client");
   vi.mocked(passkeyApi.enrollBegin).mockRejectedValueOnce(
-    new ApiClientError(400, { error: "passkey registration failed" }),
+    new ApiClientError(500, { error: "internal" }),
   );
   const { fireEvent, waitFor } = await import("@testing-library/react");
   render(<PasskeySettings />);

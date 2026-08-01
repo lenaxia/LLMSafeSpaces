@@ -723,3 +723,10 @@ func TestFinishEnrollPasskey_ChallengeExpired_400(t *testing.T) {
 	})
 	assert.Equal(t, 400, w.Code)
 }
+
+func TestBeginEnrollPasskey_BeginRegistrationFails_500(t *testing.T) {
+	svc := &fakePasskeySvc{beginRegErr: fmt.Errorf("webauthn init failed")}
+	r := setupAuthenticatedRouter(svc, "u1")
+	w := doPasskeyRequest(t, r, "POST", "/account/passkeys/enroll/begin", nil)
+	assert.Equal(t, 500, w.Code)
+}
