@@ -4,6 +4,10 @@ import { PasskeySettings } from "./PasskeySettings";
 import { passkeyApi } from "../../api/passkey";
 
 vi.mock("../../api/passkey");
+vi.mock("@simplewebauthn/browser", () => ({
+  startRegistration: vi.fn().mockRejectedValue(new Error("mock")),
+  browserSupportsWebAuthn: () => true,
+}));
 vi.mock("react-router-dom", () => ({
   useSearchParams: () => [new URLSearchParams(), vi.fn()],
 }));
@@ -84,4 +88,31 @@ it("shows conflict error when deleting last passkey", async () => {
   await waitFor(() => {
     expect(screen.getByText(/Cannot delete your last passkey/i)).toBeInTheDocument();
   });
+});
+
+it("shows Add passkey button", async () => {
+  vi.mocked(passkeyApi.listPasskeys).mockResolvedValueOnce({ passkeys: [] });
+  render(<PasskeySettings />);
+  await waitFor(() => {
+    expect(screen.getByText("Add passkey")).toBeInTheDocument();
+  });
+});
+
+it("shows error when enroll fails", async () => {
+  vi.mocked(passkeyApi.listPasskeys).mockResolvedValueOnce({ passkeys: [] });
+  vi.mocked(passkeyApi.enrollBegin).mockResolvedValueOnce({ options: {}, sessionToken: "tok" });
+  const { ApiClientError } = await import("../../api/client");
+  vi.mocked(passkeyApi.enrollFinish).mockRejectedValueOnce(
+    new ApiClientError(500, { error: "failed" }),
+  );
+  const { fireEvent, waitFor } = await import("@testing-library/react");
+  render(<PasskeySettings />);
+  await waitFor(() => expect(screen.getByText("Add passkey")).toBeInTheDocument());
+  fireEvent.click(screen.getByText("Add passkey"));
+  // startRegistration will fail because the mock options don't have the
+  // required fields. The error will be caught and displayed.
+  await waitFor(() => {
+    const errEl = screen.queryByText(/Failed to add passkey|cancelled/i);
+    expect(errEl).toBeTruthy();
+  }, { timeout: 5000 });
 });
