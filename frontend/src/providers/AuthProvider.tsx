@@ -32,11 +32,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(res.user);
   }, []);
 
-  const loginWithToken = useCallback(async (token: string) => {
-    // The passkey ceremony endpoints return the token in the JSON body but
-    // do NOT set a cookie (unlike /auth/login). Store it in localStorage and
-    // inject it into subsequent requests as a Bearer header.
-    localStorage.setItem("lsp_token", token);
+  const loginWithToken = useCallback(async (_token: string) => {
+    // The passkey handlers now set the lsp_session cookie (HttpOnly + Secure),
+    // matching /auth/login. No localStorage needed — the browser sends the
+    // cookie automatically on subsequent requests.
     const user = await authApi.me();
     setUser(user);
   }, []);
@@ -51,7 +50,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = useCallback(async () => {
     await authApi.logout();
-    localStorage.removeItem("lsp_token");
     setUser(null);
   }, []);
 

@@ -5,6 +5,7 @@ package passkey
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -51,8 +52,9 @@ func (s *memSessionStore) ConsumeChallenge(_ context.Context, token string) ([]b
 }
 
 type memStore struct {
-	creds         []Credential
-	recoveryCodes []RecoveryCode
+	createRecoveryErr error
+	creds             []Credential
+	recoveryCodes     []RecoveryCode
 }
 
 func (s *memStore) ListCredentials(_ context.Context, _ string) ([]Credential, error) {
@@ -87,6 +89,9 @@ func (s *memStore) CreateCredentialAndRecoveryCodes(_ context.Context, c *Creden
 	return nil
 }
 func (s *memStore) CreateRecoveryCodes(_ context.Context, _ string, hashes []string) error {
+	if s.createRecoveryErr != nil {
+		return s.createRecoveryErr
+	}
 	for _, h := range hashes {
 		s.recoveryCodes = append(s.recoveryCodes, RecoveryCode{CodeHash: h})
 	}
@@ -470,4 +475,37 @@ func TestSessionStore_RoundTrip(t *testing.T) {
 	got2, err := store.ConsumeChallenge(ctx, "tok-1")
 	require.NoError(t, err)
 	assert.Nil(t, got2, "consumed challenge must return nil")
+}
+
+// --- settings method tests ---
+
+func TestListUserCredentials_ReturnsStoredCreds(t *testing.T) {
+	svc, store, _, _ := newTestService(t)
+	store.creds = []Credential{{ID: uuid.New(), UserID: "u1", Name: "YubiKey"}}
+
+	creds, err := svc.ListUserCredentials(context.Background(), "u1")
+	require.NoError(t, err)
+	assert.Len(t, creds, 1)
+	assert.Equal(t, "YubiKey", creds[0].Name)
+}
+
+func TestDeleteUserCredential_DelegatesToStore(t *testing.T) {
+	svc, _, _, _ := newTestService(t)
+	err := svc.DeleteUserCredential(context.Background(), "u1", uuid.New())
+	assert.NoError(t, err)
+}
+
+func TestRegenerateRecoveryCodes_ReturnsCodes(t *testing.T) {
+	svc, store, _, _ := newTestService(t)
+	codes, err := svc.RegenerateRecoveryCodes(context.Background(), "u1")
+	require.NoError(t, err)
+	assert.Len(t, codes, RecoveryCodeCount)
+	assert.Len(t, store.recoveryCodes, RecoveryCodeCount)
+}
+
+func TestRegenerateRecoveryCodes_StoreError(t *testing.T) {
+	svc, store, _, _ := newTestService(t)
+	store.createRecoveryErr = fmt.Errorf("DB down")
+	_, err := svc.RegenerateRecoveryCodes(context.Background(), "u1")
+	require.Error(t, err)
 }

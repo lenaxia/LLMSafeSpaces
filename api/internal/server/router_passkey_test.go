@@ -160,3 +160,29 @@ func TestRouter_AuthConfig_PasskeyDisabled(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &cfg))
 	assert.False(t, cfg.PasskeyEnabled, "passkeyEnabled must be false when handler is nil")
 }
+
+// TestRouter_PasskeySettingsRoutes_Registered verifies the authenticated
+// settings endpoints are registered when PasskeyHandler is wired.
+func TestRouter_PasskeySettingsRoutes_Registered(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	log, _ := apilogger.New(false, "error", "json")
+	met := &imocks.MockMetricsService{}
+	met.On("RecordRequest", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	svc := &authMockServices{
+		auth: &imocks.MockAuthMiddlewareService{}, metrics: met,
+		database: &imocks.MockDatabaseService{}, cache: &imocks.MockCacheService{},
+	}
+	svc.auth.On("AuthMiddleware").Return(gin.HandlerFunc(func(c *gin.Context) { c.Set("userID", "u1"); c.Next() })).Maybe()
+	svc.auth.On("GetUserID", mock.Anything).Return("u1").Maybe()
+	router := NewRouter(svc, log, nil, RouterConfig{Debug: false, PasskeyHandler: &handlers.PasskeyHandler{}})
+	// GET route
+	req1 := httptest.NewRequest(http.MethodGet, "/api/v1/account/passkeys", nil)
+	w1 := httptest.NewRecorder()
+	router.ServeHTTP(w1, req1)
+	assert.NotEqual(t, http.StatusNotFound, w1.Code, "GET /account/passkeys must be registered")
+	// POST route
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/account/passkeys/recovery-codes/regenerate", nil)
+	w2 := httptest.NewRecorder()
+	router.ServeHTTP(w2, req2)
+	assert.NotEqual(t, http.StatusNotFound, w2.Code, "POST /account/passkeys/recovery-codes/regenerate must be registered")
+}

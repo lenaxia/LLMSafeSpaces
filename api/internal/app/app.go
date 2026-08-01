@@ -709,12 +709,13 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				Store:     pkStore,
 				Users:     dbSvc,
 				Sessions:  pkSessionStore,
+				Logger:    log,
 			})
 			if pkErr != nil {
 				log.Error("failed to construct passkey service", pkErr)
 			} else {
 				if authSvc, ok := svc.Auth.(*auth.Service); ok {
-					passkeyHandler = handlers.NewPasskeyHandler(pkSvc, authSvc, dbSvc, cfg.Auth.TokenDuration)
+					passkeyHandler = handlers.NewPasskeyHandler(pkSvc, authSvc, dbSvc, cfg.Auth.TokenDuration, cfg.Auth.CookieName, cfg.OrgSubdomainRouting.CookieDomain)
 				}
 			}
 		}
@@ -960,6 +961,9 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	if emailService.ProviderName() != "noop" {
 		if authSvc, ok := svc.GetAuth().(*auth.Service); ok {
 			authSvc.SetEmailVerifier(verifier)
+		}
+		if passkeyHandler != nil {
+			passkeyHandler.SetEmailVerifier(verifier)
 		}
 	}
 
