@@ -206,8 +206,13 @@ func (s *PgSecretStore) GetWorkspaceMCPServers(ctx context.Context, workspaceID 
 // SeedWorkspaceMCPServers inserts MCP server bindings for a new workspace.
 // Idempotent (ON CONFLICT DO NOTHING). Mirrors SeedWorkspaceCredentials.
 //
-// D11 enforcement: when orgID is non-empty, user-scope rules are skipped —
-// org admin owns the tool surface. Platform/org servers are always seeded.
+// Seeding logic:
+//   - Platform (target_type='all') rules always apply.
+//   - User-scope (target_type='user') rules always apply — the workspace's
+//     user_id is available regardless of org membership. Whether the user
+//     is ALLOWED to create personal MCP servers is gated at CRUD time by
+//     the allow_user_mcp_servers org policy, not at seed time.
+//   - Org-scope (target_type='org') rules apply when orgID is non-empty.
 func (s *PgSecretStore) SeedWorkspaceMCPServers(ctx context.Context, workspaceID, userID string, orgID *string) error {
 	// Bind platform auto-apply rules (target_type='all').
 	_, err := s.pool.Exec(ctx, `
@@ -222,19 +227,21 @@ func (s *PgSecretStore) SeedWorkspaceMCPServers(ctx context.Context, workspaceID
 		return fmt.Errorf("seed mcp (platform rules): %w", err)
 	}
 
+	// Bind user-scope auto-apply rules (always — the user_id is on every
+	// workspace row, personal or org-owned).
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO mcp_server_bindings (server_id, workspace_id, source_type)
+		SELECT maa.server_id, $1, 'auto'
+		FROM mcp_server_auto_apply maa
+		JOIN mcp_servers s ON s.id = maa.server_id AND s.enabled = true
+		WHERE maa.target_type = 'user' AND maa.target_id = $2
+		ON CONFLICT (server_id, workspace_id) DO NOTHING
+	`, workspaceID, userID)
+	if err != nil {
+		return fmt.Errorf("seed mcp (user rules): %w", err)
+	}
+
 	if orgID == nil || *orgID == "" {
-		// Personal workspace: bind user-scope auto-apply rules.
-		_, err = s.pool.Exec(ctx, `
-			INSERT INTO mcp_server_bindings (server_id, workspace_id, source_type)
-			SELECT maa.server_id, $1, 'auto'
-			FROM mcp_server_auto_apply maa
-			JOIN mcp_servers s ON s.id = maa.server_id AND s.enabled = true
-			WHERE maa.target_type = 'user' AND maa.target_id = $2
-			ON CONFLICT (server_id, workspace_id) DO NOTHING
-		`, workspaceID, userID)
-		if err != nil {
-			return fmt.Errorf("seed mcp (user rules): %w", err)
-		}
 		return nil
 	}
 

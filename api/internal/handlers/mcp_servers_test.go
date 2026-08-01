@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 	"github.com/stretchr/testify/assert"
@@ -34,9 +35,9 @@ func (s *stubMCPStore) CreateMCPServer(_ context.Context, row *secrets.MCPServer
 func (s *stubMCPStore) ListMCPServers(_ context.Context, _, _ string) ([]*secrets.MCPServerRow, error) {
 	return s.servers, nil
 }
-func (s *stubMCPStore) GetMCPServer(_ context.Context, _, _, serverID string) (*secrets.MCPServerRow, error) {
+func (s *stubMCPStore) GetMCPServer(_ context.Context, ownerType, ownerID, serverID string) (*secrets.MCPServerRow, error) {
 	for _, r := range s.servers {
-		if r.ID == serverID {
+		if r.ID == serverID && r.OwnerType == ownerType && r.OwnerID == ownerID {
 			return r, nil
 		}
 	}
@@ -45,9 +46,14 @@ func (s *stubMCPStore) GetMCPServer(_ context.Context, _, _, serverID string) (*
 func (s *stubMCPStore) UpdateMCPServer(_ context.Context, _, _, _ string, row *secrets.MCPServerRow) error {
 	return nil
 }
-func (s *stubMCPStore) DeleteMCPServer(_ context.Context, _, _, serverID string) error {
-	s.deleted = serverID
-	return nil
+func (s *stubMCPStore) DeleteMCPServer(_ context.Context, ownerType, ownerID, serverID string) error {
+	for _, r := range s.servers {
+		if r.ID == serverID && r.OwnerType == ownerType && r.OwnerID == ownerID {
+			s.deleted = serverID
+			return nil
+		}
+	}
+	return pgx.ErrNoRows
 }
 func (s *stubMCPStore) CountMCPServersByOwner(_ context.Context, _, _ string) (int, error) {
 	return s.count, s.countErr
@@ -216,4 +222,177 @@ func TestUserCreate_SoloUnlimitedPlan(t *testing.T) {
 	// Enterprise passes quota; reaches DEK gate (no session → 403)
 	assert.Equal(t, http.StatusForbidden, w.Code)
 	assert.Contains(t, w.Body.String(), "password-authenticated session")
+}
+
+// --- Bind/Unbind ownership tests ---
+
+func TestBind_RejectsForeignServer(t *testing.T) {
+	store := &stubMCPStore{
+		servers: []*secrets.MCPServerRow{
+			{ID: "srv-org-1", OwnerType: "org", OwnerID: "org-999", Name: "foreign", Transport: "http", Enabled: true},
+		},
+	}
+	h := NewUserMCPServersHandler(store, &stubMcpOrgChecker{}, nil, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("userID", "user-1")
+	c.Params = gin.Params{{Key: "id", Value: "srv-org-1"}}
+	c.Request = httptest.NewRequest("POST", "/", strings.NewReader(`{"workspaceId":"ws-1"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.Bind(c)
+
+	// verifyServerOwnership checks (ownerType="user", ownerID="user-1") →
+	// server "srv-org-1" belongs to org-999, not user-1 → 404.
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestBind_AllowsOwnedServer(t *testing.T) {
+	store := &stubMCPStore{
+		servers: []*secrets.MCPServerRow{
+			{ID: "srv-user-1", OwnerType: "user", OwnerID: "user-1", Name: "mine", Transport: "http", Enabled: true},
+		},
+	}
+	h := NewUserMCPServersHandler(store, &stubMcpOrgChecker{}, nil, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("userID", "user-1")
+	c.Params = gin.Params{{Key: "id", Value: "srv-user-1"}}
+	c.Request = httptest.NewRequest("POST", "/", strings.NewReader(`{"workspaceId":"ws-1"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.Bind(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "bound")
+}
+
+func TestUnbind_RejectsForeignServer(t *testing.T) {
+	store := &stubMCPStore{
+		servers: []*secrets.MCPServerRow{
+			{ID: "srv-org-1", OwnerType: "org", OwnerID: "org-999", Name: "foreign", Transport: "http", Enabled: true},
+		},
+	}
+	h := NewUserMCPServersHandler(store, &stubMcpOrgChecker{}, nil, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("userID", "user-1")
+	c.Params = gin.Params{
+		{Key: "id", Value: "srv-org-1"},
+		{Key: "workspaceId", Value: "ws-1"},
+	}
+	c.Request = httptest.NewRequest("DELETE", "/", nil)
+	h.Unbind(c)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+// --- Admin create happy-path ---
+
+func TestAdminCreate_HappyPath(t *testing.T) {
+	store := &stubMCPStore{}
+	// Use a test encryptor that just base64-encodes (not real crypto).
+	enc := &stubEncryptor{}
+	h := NewAdminMCPServersHandler(store, enc)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("userID", "admin-1")
+	c.Request = httptest.NewRequest("POST", "/", strings.NewReader(`{"name":"wiki","transport":"http","url":"https://wiki.example.com/mcp","headers":{"Authorization":"Bearer tok"}}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.AdminCreate(c)
+
+	assert.Equal(t, http.StatusCreated, w.Code)
+	assert.NotNil(t, store.created)
+	assert.Equal(t, "wiki", store.created.Name)
+	assert.True(t, store.created.Enabled)
+}
+
+// --- Admin delete ---
+
+func TestAdminDelete_NotFound(t *testing.T) {
+	store := &stubMCPStore{}
+	h := NewAdminMCPServersHandler(store, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "nonexistent"}}
+	c.Request = httptest.NewRequest("DELETE", "/", nil)
+	h.AdminDelete(c)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestAdminDelete_Success(t *testing.T) {
+	store := &stubMCPStore{
+		servers: []*secrets.MCPServerRow{
+			{ID: "srv-1", OwnerType: "admin", OwnerID: "_platform", Name: "wiki", Transport: "http", Enabled: true},
+		},
+	}
+	h := NewAdminMCPServersHandler(store, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "srv-1"}}
+	c.Request = httptest.NewRequest("DELETE", "/", nil)
+	h.AdminDelete(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "srv-1", store.deleted)
+}
+
+// --- Kill-switch ---
+
+func TestOrgCreate_KillSwitchDisabled(t *testing.T) {
+	store := &stubMCPStore{}
+	enc := &stubEncryptor{}
+	h := NewOrgMCPServersHandler(store, enc, &stubMcpOrgChecker{})
+	h.SetSettings(&stubSettings{allowOrgAdmin: false})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "org-1"}}
+	c.Request = httptest.NewRequest("POST", "/", strings.NewReader(`{"name":"wiki","transport":"http","url":"https://x.com"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.OrgCreate(c)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.Contains(t, w.Body.String(), "disabled")
+}
+
+func TestOrgCreate_KillSwitchEnabled(t *testing.T) {
+	store := &stubMCPStore{}
+	enc := &stubEncryptor{}
+	h := NewOrgMCPServersHandler(store, enc, &stubMcpOrgChecker{})
+	h.SetSettings(&stubSettings{allowOrgAdmin: true})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "org-1"}}
+	c.Request = httptest.NewRequest("POST", "/", strings.NewReader(`{"name":"wiki","transport":"http","url":"https://x.com"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.OrgCreate(c)
+
+	assert.Equal(t, http.StatusCreated, w.Code)
+}
+
+// --- Test helpers ---
+
+type stubEncryptor struct{}
+
+func (s *stubEncryptor) Encrypt(_ context.Context, plaintext []byte) ([]byte, error) {
+	return append([]byte("enc:"), plaintext...), nil
+}
+func (s *stubEncryptor) Decrypt(_ context.Context, ciphertext []byte) ([]byte, error) {
+	if len(ciphertext) > 4 && string(ciphertext[:4]) == "enc:" {
+		return ciphertext[4:], nil
+	}
+	return ciphertext, nil
+}
+
+type stubSettings struct{ allowOrgAdmin bool }
+
+func (s *stubSettings) GetBool(_ context.Context, _ string) (bool, error) {
+	return s.allowOrgAdmin, nil
 }
