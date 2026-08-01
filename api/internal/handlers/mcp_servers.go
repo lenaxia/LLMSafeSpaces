@@ -493,6 +493,8 @@ func (h *MCPServersHandler) update(c *gin.Context, ownerType, ownerID string, en
 	existing.Name = row.Name
 	existing.URL = row.URL
 	existing.Command = row.Command
+	existing.Args = row.Args
+	existing.TimeoutMs = row.TimeoutMs
 	existing.Enabled = row.Enabled
 	existing.UpdatedAt = row.UpdatedAt
 	c.JSON(http.StatusOK, mcpRowToResponse(existing))
@@ -869,7 +871,11 @@ func (h *MCPServersHandler) decryptExisting(ctx context.Context, ownerType, owne
 		if h.keys == nil {
 			return nil, fmt.Errorf("key service not configured")
 		}
-		sessionID := ctx.Value(sessionIDKey{}).(string)
+		// Comma-ok pattern: a future caller may forget to set sessionIDKey.
+		sessionID, _ := ctx.Value(sessionIDKey{}).(string)
+		if sessionID == "" {
+			return nil, fmt.Errorf("session ID required for user-scope decrypt")
+		}
 		dek, dErr := h.keys.GetDEK(ctx, sessionID, nil)
 		if dErr != nil {
 			return nil, dErr

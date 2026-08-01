@@ -57,7 +57,11 @@ type MCPServerBindingRow struct {
 // CreateMCPServer inserts a row into mcp_servers. The caller supplies a
 // pre-generated ID and pre-encrypted ciphertext.
 func (s *PgSecretStore) CreateMCPServer(ctx context.Context, row *MCPServerRow) error {
-	args, _ := json.Marshal(row.Args) // []string → JSON array; nil → "[]"
+	// json.Marshal(nil []string) returns []byte("null"), which Postgres
+	// stores as JSONB null. The read path normalizes nil back to []string{},
+	// so the roundtrip works. The column default '[]'::jsonb applies only
+	// when the INSERT omits the column entirely (not when nil is passed).
+	args, _ := json.Marshal(row.Args)
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO mcp_servers (id, owner_type, owner_id, name, transport, url, command, args, timeout_ms, ciphertext, key_version, enabled, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
