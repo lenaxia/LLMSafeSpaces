@@ -116,10 +116,10 @@ func NewHTTPTestServer() *HTTPTestServer {
 	})
 
 	srv := &http.Server{
-		Handler:            mux,
-		ReadHeaderTimeout:  5 * time.Second,
-		ReadTimeout:        30 * time.Second,
-		WriteTimeout:       30 * time.Second,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
 	}
 	listener, err := netListen()
 	if err != nil {
@@ -158,10 +158,10 @@ func NewSSETestServer() *SSETestServer {
 	})
 
 	srv := &http.Server{
-		Handler:            mux,
-		ReadHeaderTimeout:  5 * time.Second,
-		ReadTimeout:        30 * time.Second,
-		WriteTimeout:       30 * time.Second,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
 	}
 	listener, err := netListen()
 	if err != nil {

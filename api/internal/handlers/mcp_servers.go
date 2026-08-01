@@ -67,16 +67,16 @@ type mcpSecretPusher func(ctx context.Context, userID, workspaceID string) error
 
 // MCPServersHandler handles MCP server CRUD for all three scopes.
 type MCPServersHandler struct {
-	store          mcpServerStore
-	orgChecker     mcpOrgChecker
-	adminEncrypt   secrets.RootKeyProvider
-	orgEncrypt     secrets.RootKeyProvider
-	keys           *secrets.KeyService // user-scope DEK; nil for admin/org handlers
-	keyStore       secrets.KeyStore    // user-scope key version read
-	audit          mcpAuditLogger
-	pusher         mcpSecretPusher
-	logger         mcpLogger
-	settings       mcpSettingsReader
+	store        mcpServerStore
+	orgChecker   mcpOrgChecker
+	adminEncrypt secrets.RootKeyProvider
+	orgEncrypt   secrets.RootKeyProvider
+	keys         *secrets.KeyService // user-scope DEK; nil for admin/org handlers
+	keyStore     secrets.KeyStore    // user-scope key version read
+	audit        mcpAuditLogger
+	pusher       mcpSecretPusher
+	logger       mcpLogger
+	settings     mcpSettingsReader
 	// ownerType is the scope this handler instance serves ("admin"/"org"/"user").
 	// Set at construction; used by Bind/Unbind to verify the server belongs to
 	// the caller before mutating bindings (prevents cross-tenant tool injection).
