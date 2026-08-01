@@ -556,7 +556,6 @@ test.describe("Passkey settings", () => {
         }),
       });
     });
-    let enrollDone = false;
     await page.route(`${API_PREFIX}/account/passkeys/enroll/finish`, async (route: Route) => {
       enrollDone = true;
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ enrolled: true }) });
