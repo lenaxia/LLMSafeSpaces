@@ -266,6 +266,14 @@ test.describe("Passkey e2e", () => {
     mockState.loggedIn = false;
     await page.goto("/login");
 
+    // The virtual authenticator only responds to credentials.get() when the
+    // allowCredentials list contains the registered credential's ID — empty
+    // allowCredentials triggers a discoverable-credential probe that the CDP
+    // virtual authenticator does not answer (NotAllowedError) in headless.
+    // Query the authenticator for the ID registered in PHASE 1.
+    const creds = await cdp.send("WebAuthn.getCredentials", { authenticatorId });
+    const registeredId = creds.credentials[0]?.credentialId;
+
     // Mock login endpoints.
     await page.route(`${API_PREFIX}/auth/passkey/login/begin`, async (route: Route) => {
       const challenge = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
@@ -275,7 +283,7 @@ test.describe("Passkey e2e", () => {
           options: {
             rpId: RP_ID,
             challenge,
-            allowCredentials: [],
+            allowCredentials: [{ type: "public-key", id: registeredId, transports: ["internal"] }],
             userVerification: "preferred",
             timeout: 60000,
           },
