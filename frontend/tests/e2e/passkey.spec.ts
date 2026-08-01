@@ -517,19 +517,9 @@ test.describe("Passkey settings", () => {
       });
     });
 
-    // PHASE 1: Recover via recovery code.
-    await page.goto("/login");
-    await page.getByText(/recovery code/i).click();
-    await page.getByPlaceholder("Email").fill("e2e@test.com");
-    await page.getByPlaceholder("Recovery code").fill("VALIDCODE123456");
-    await page.getByText("Recover account").click();
-
-    // Should land on settings page with enrollment banner.
-    await expect(page).toHaveURL(/\/settings\/passkeys/, { timeout: 5000 });
-    await expect(page.getByText(/recovery code to sign in/i)).toBeVisible();
-
     // PHASE 2: Mock passkey list + enroll endpoints.
     // First GET returns empty list; after enroll, GET returns the new passkey.
+    // Registered before navigation so the initial GET by PasskeySettings is mocked.
     let enrollDone = false;
     await page.route(`${API_PREFIX}/account/passkeys`, async (route: Route) => {
       if (route.request().method() === "GET") {
@@ -560,6 +550,17 @@ test.describe("Passkey settings", () => {
       enrollDone = true;
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ enrolled: true }) });
     });
+
+    // PHASE 1: Recover via recovery code.
+    await page.goto("/login");
+    await page.getByText(/recovery code/i).click();
+    await page.getByPlaceholder("Email").fill("e2e@test.com");
+    await page.getByPlaceholder("Recovery code").fill("VALIDCODE123456");
+    await page.getByText("Recover account").click();
+
+    // Should land on settings page with enrollment banner.
+    await expect(page).toHaveURL(/\/settings\/passkeys/, { timeout: 5000 });
+    await expect(page.getByText(/recovery code to sign in/i)).toBeVisible();
 
     // Click "Add passkey".
     await page.getByText("Add passkey").click();
