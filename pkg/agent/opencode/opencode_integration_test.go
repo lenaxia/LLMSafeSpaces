@@ -21,7 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const opencodeVersion = "1.15.12"
+const opencodeVersion = "1.18.10"
 
 func findOrDownloadBinary(t *testing.T) string {
 	t.Helper()
@@ -333,7 +333,7 @@ func TestOpencode_SSEEventEnvelope_HasTypeField(t *testing.T) {
 		assert.NotNil(t, evt.Properties, "event must have properties field")
 
 		if evt.Type == "server.heartbeat" {
-			assert.NotEmpty(t, evt.ID, "v1.15.12 heartbeat events must have id field")
+			assert.NotEmpty(t, evt.ID, "heartbeat events must have id field (present since opencode 1.15)")
 		}
 
 		resp.Body.Close()

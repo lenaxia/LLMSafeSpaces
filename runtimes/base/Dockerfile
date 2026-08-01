@@ -37,12 +37,16 @@ FROM debian:bookworm-slim
 ARG TARGETARCH
 
 # Override to use a different release: --build-arg OPENCODE_VERSION=<version>
-# Pinned to 1.15.12 (May 2026) — validated against the proxy code in
-# api/internal/handlers/proxy.go and session_tracker.go. See worklog 0070
-# for the full v1.2.27→v1.15.12 impact analysis (15 items, all non-breaking).
-# Key changes: Effect HttpApi replaces Hono, events gain "id" field, responses
-# may be gzip-compressed (proxy streams transparently).
-ARG OPENCODE_VERSION=1.15.12
+# Pinned to 1.18.10 (July 2026) — validated against the proxy code in
+# api/internal/handlers/proxy.go and session_tracker.go. The v1.15.12→v1.18.10
+# upgrade preserves every legacy/v1 HTTP route, auth scheme, SSE envelope, and
+# config-schema shape LLMSafeSpaces depends on (verified by upstream source
+# diff at both tags). See worklog 0657 for the full impact analysis.
+# Notable upstream changes since 1.15.12: new "current/V2" HTTP API served
+# alongside legacy (additive, not breaking), MCP hardening (v1.18.8/1.18.9),
+# per-session event stream, server-managed integration/credential store,
+# published OpenAPI spec at packages/sdk/openapi.json.
+ARG OPENCODE_VERSION=1.18.10
 
 ARG MISE_VERSION=2026.5.15
 

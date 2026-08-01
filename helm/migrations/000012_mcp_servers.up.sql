@@ -78,11 +78,17 @@ DO $$ BEGIN
     END IF;
 END $$;
 
-ALTER TABLE ONLY public.mcp_server_bindings
-    ADD CONSTRAINT mcp_server_bindings_workspace_id_fkey FOREIGN KEY (workspace_id) REFERENCES public.workspaces(id) ON DELETE CASCADE;
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'mcp_server_bindings_workspace_id_fkey') THEN
+        ALTER TABLE ONLY public.mcp_server_bindings ADD CONSTRAINT mcp_server_bindings_workspace_id_fkey FOREIGN KEY (workspace_id) REFERENCES public.workspaces(id) ON DELETE CASCADE;
+    END IF;
+END $$;
 
-ALTER TABLE ONLY public.mcp_server_bindings
-    ADD CONSTRAINT mcp_server_bindings_server_id_fkey FOREIGN KEY (server_id) REFERENCES public.mcp_servers(id) ON DELETE CASCADE;
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'mcp_server_bindings_server_id_fkey') THEN
+        ALTER TABLE ONLY public.mcp_server_bindings ADD CONSTRAINT mcp_server_bindings_server_id_fkey FOREIGN KEY (server_id) REFERENCES public.mcp_servers(id) ON DELETE CASCADE;
+    END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_mcp_server_bindings_workspace ON public.mcp_server_bindings USING btree (workspace_id);
 
@@ -98,8 +104,11 @@ CREATE TABLE IF NOT EXISTS public.mcp_server_auto_apply (
     CONSTRAINT mcp_server_auto_apply_target_type_check CHECK ((target_type = ANY (ARRAY['all'::text, 'org'::text, 'user'::text])))
 );
 
-ALTER TABLE ONLY public.mcp_server_auto_apply
-    ADD CONSTRAINT mcp_server_auto_apply_server_id_fkey FOREIGN KEY (server_id) REFERENCES public.mcp_servers(id) ON DELETE CASCADE;
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'mcp_server_auto_apply_server_id_fkey') THEN
+        ALTER TABLE ONLY public.mcp_server_auto_apply ADD CONSTRAINT mcp_server_auto_apply_server_id_fkey FOREIGN KEY (server_id) REFERENCES public.mcp_servers(id) ON DELETE CASCADE;
+    END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_mcp_auto_apply_all ON public.mcp_server_auto_apply USING btree (target_type) WHERE (target_type = 'all'::text);
 CREATE INDEX IF NOT EXISTS idx_mcp_auto_apply_org ON public.mcp_server_auto_apply USING btree (target_id) WHERE (target_type = 'org'::text);

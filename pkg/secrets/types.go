@@ -197,7 +197,7 @@ type AuditQuery struct {
 // `"required": ["context", "output"]` and `"additionalProperties": false`.
 // Therefore FormatOpenCodeConfig emits a `limit` block ONLY when BOTH are
 // non-zero — emitting a partial block (only context, or only output) makes
-// opencode 1.15.12 reject the entire config with
+// opencode reject the entire config with
 // SchemaError: Missing key, which causes every endpoint that calls
 // Config.state() (including POST /session) to return 500.
 //
