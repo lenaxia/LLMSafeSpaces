@@ -51,7 +51,6 @@ func newUUID() string { return uuid.New().String() }
 
 // TestCreateGetMCPServer_AdminScope round-trips an admin-scope MCP server.
 func (s *MCPStoreIntegrationSuite) TestCreateGetMCPServer_AdminScope() {
-	t := s.T()
 	store := &PgSecretStore{pool: s.pool}
 	ctx := context.Background()
 
