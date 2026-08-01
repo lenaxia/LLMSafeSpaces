@@ -517,3 +517,26 @@ func TestRegenerateRecoveryCodes_StoreError(t *testing.T) {
 	_, err := svc.RegenerateRecoveryCodes(context.Background(), "u1")
 	require.Error(t, err)
 }
+
+func TestAddCredential_DelegatesToStore(t *testing.T) {
+	svc, store, _, _ := newTestService(t)
+	cred := &Credential{ID: uuid.New(), UserID: "u1"}
+	err := svc.AddCredential(context.Background(), cred)
+	require.NoError(t, err)
+	assert.Len(t, store.creds, 1)
+}
+
+func TestGetUserName_ReturnsUsername(t *testing.T) {
+	svc, _, _, lookup := newTestService(t)
+	lookup.users["a@b.com"] = &types.User{ID: "u1", Username: "alice"}
+	name, err := svc.GetUserName(context.Background(), "u1")
+	require.NoError(t, err)
+	assert.Equal(t, "alice", name)
+}
+
+func TestGetUserName_NotFound(t *testing.T) {
+	svc, _, _, _ := newTestService(t)
+	name, err := svc.GetUserName(context.Background(), "nobody")
+	require.NoError(t, err)
+	assert.Empty(t, name)
+}

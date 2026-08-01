@@ -226,7 +226,9 @@ func (h *PasskeyHandler) RegisterFinish(c *gin.Context) {
 		// Cleanup: the user row was created but credential persistence
 		// failed. Delete the orphaned user so the email can be re-used.
 		// Without this, RegisterBegin returns 409 on retry.
-		_ = h.users.DeleteUser(c.Request.Context(), newUser.ID)
+		if delErr := h.users.DeleteUser(c.Request.Context(), newUser.ID); delErr != nil {
+			log.Printf("ERROR: passkey RegisterFinish: failed to clean up orphaned user after credential persistence failure: user_id=%s err=%v", newUser.ID, delErr)
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "credential persistence failed"})
 		return
 	}
@@ -498,6 +500,14 @@ func (h *PasskeyHandler) FinishEnrollPasskey(c *gin.Context) {
 			status = http.StatusBadRequest
 		}
 		c.JSON(status, gin.H{"error": "passkey enrollment failed"})
+		return
+	}
+	// Defense-in-depth: verify the credential belongs to the authenticated user.
+	// The userID in the credential comes from the WebAuthn session data, which
+	// should match the authenticated user — but if a session token from a
+	// different ceremony is supplied, this check prevents credential injection.
+	if result.Credential.UserID != userID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "credential does not belong to this account"})
 		return
 	}
 	// Persist the credential without recovery codes (user already has them).

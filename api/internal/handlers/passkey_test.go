@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -85,6 +85,7 @@ type fakePasskeySvc struct {
 	listErr           error
 	deleteErr         error
 	regenerateErr     error
+	credPersistErr    error
 }
 
 func (s *fakePasskeySvc) BeginRegistration(_ context.Context, _, _ string) (*passkey.BeginRegistrationOptions, error) {
@@ -100,6 +101,9 @@ func (s *fakePasskeySvc) FinishLogin(_ context.Context, _, _ string, _ map[strin
 	return s.finishLoginUserID, s.finishLoginErr
 }
 func (s *fakePasskeySvc) CreateCredentialAndRecoveryCodes(_ context.Context, _ *passkey.Credential, _ []string) error {
+	if s.credPersistErr != nil {
+		return s.credPersistErr
+	}
 	s.credStored = true
 	return nil
 }
@@ -470,6 +474,8 @@ func setupAuthenticatedRouter(svc PasskeyService, userID string) *gin.Engine {
 	r.GET("/account/passkeys", h.ListPasskeys)
 	r.DELETE("/account/passkeys/:id", h.DeletePasskey)
 	r.POST("/account/passkeys/recovery-codes/regenerate", h.RegenerateRecoveryCodes)
+	r.POST("/account/passkeys/enroll/begin", h.BeginEnrollPasskey)
+	r.POST("/account/passkeys/enroll/finish", h.FinishEnrollPasskey)
 	return r
 }
 
@@ -575,6 +581,117 @@ func TestRegenerateRecoveryCodes_RequiresAuth(t *testing.T) {
 	h := NewPasskeyHandler(&fakePasskeySvc{}, &fakePasskeyAuth{}, &fakePasskeyUsers{users: map[string]*types.User{}}, time.Hour, "lsp_session", "")
 	r := gin.New()
 	r.POST("/account/passkeys/recovery-codes/regenerate", h.RegenerateRecoveryCodes)
+	r.POST("/account/passkeys/enroll/begin", h.BeginEnrollPasskey)
+	r.POST("/account/passkeys/enroll/finish", h.FinishEnrollPasskey)
 	w := doPasskeyRequest(t, r, "POST", "/account/passkeys/recovery-codes/regenerate", nil)
 	assert.Equal(t, 401, w.Code)
+}
+
+// --- enroll endpoint tests ---
+
+func TestBeginEnrollPasskey_Succeeds(t *testing.T) {
+	svc := &fakePasskeySvc{
+		beginRegResult: &passkey.BeginRegistrationOptions{
+			Options:      map[string]any{"challenge": "xyz"},
+			SessionToken: "enroll-tok",
+		},
+	}
+	r := setupAuthenticatedRouter(svc, "u1")
+	w := doPasskeyRequest(t, r, "POST", "/account/passkeys/enroll/begin", nil)
+	assert.Equal(t, 200, w.Code)
+}
+
+func TestBeginEnrollPasskey_RequiresAuth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := NewPasskeyHandler(&fakePasskeySvc{}, &fakePasskeyAuth{}, &fakePasskeyUsers{users: map[string]*types.User{}}, time.Hour, "lsp_session", "")
+	r := gin.New()
+	r.POST("/account/passkeys/enroll/begin", h.BeginEnrollPasskey)
+	w := doPasskeyRequest(t, r, "POST", "/account/passkeys/enroll/begin", nil)
+	assert.Equal(t, 401, w.Code)
+}
+
+func TestFinishEnrollPasskey_Succeeds(t *testing.T) {
+	svc := &fakePasskeySvc{
+		finishRegResult: &passkey.FinishRegistrationResult{
+			Credential: passkey.Credential{UserID: "u1"},
+		},
+	}
+	r := setupAuthenticatedRouter(svc, "u1")
+	w := doPasskeyRequest(t, r, "POST", "/account/passkeys/enroll/finish", map[string]any{
+		"sessionToken": "tok",
+		"response":     map[string]any{"id": "x"},
+	})
+	assert.Equal(t, 200, w.Code)
+}
+
+func TestFinishEnrollPasskey_CredentialOwnershipMismatch_403(t *testing.T) {
+	svc := &fakePasskeySvc{
+		finishRegResult: &passkey.FinishRegistrationResult{
+			Credential: passkey.Credential{UserID: "different-user"},
+		},
+	}
+	r := setupAuthenticatedRouter(svc, "u1")
+	w := doPasskeyRequest(t, r, "POST", "/account/passkeys/enroll/finish", map[string]any{
+		"sessionToken": "tok",
+		"response":     map[string]any{"id": "x"},
+	})
+	assert.Equal(t, 403, w.Code)
+}
+
+func TestFinishEnrollPasskey_RequiresAuth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := NewPasskeyHandler(&fakePasskeySvc{}, &fakePasskeyAuth{}, &fakePasskeyUsers{users: map[string]*types.User{}}, time.Hour, "lsp_session", "")
+	r := gin.New()
+	r.POST("/account/passkeys/enroll/finish", h.FinishEnrollPasskey)
+	w := doPasskeyRequest(t, r, "POST", "/account/passkeys/enroll/finish", map[string]any{
+		"sessionToken": "tok",
+		"response":     map[string]any{"id": "x"},
+	})
+	assert.Equal(t, 401, w.Code)
+}
+
+func TestFinishEnrollPasskey_MissingFields_400(t *testing.T) {
+	r := setupAuthenticatedRouter(&fakePasskeySvc{}, "u1")
+	w := doPasskeyRequest(t, r, "POST", "/account/passkeys/enroll/finish", map[string]any{})
+	assert.Equal(t, 400, w.Code)
+}
+
+// --- regression tests for bug fixes ---
+
+func TestRegisterFinish_OrphanCleanup_OnCredentialFailure(t *testing.T) {
+	svc := &fakePasskeySvc{
+		finishRegResult: &passkey.FinishRegistrationResult{
+			Credential:         passkey.Credential{UserID: "orphan-user"},
+			RecoveryCodeHashes: []string{"h1"},
+		},
+		credPersistErr: fmt.Errorf("DB down"),
+	}
+	r, users := setupPasskeyRouter(svc)
+	resp := doPasskeyRequest(t, r, "POST", "/passkey/register/finish", map[string]any{
+		"sessionToken": "tok",
+		"email":        "orphan@test.com",
+		"response":     validRegistrationResponseJSON(),
+	})
+	assert.Equal(t, 500, resp.Code)
+	// User must have been cleaned up (deleted).
+	created, _ := users.GetUserByEmail(context.Background(), "orphan@test.com")
+	assert.Nil(t, created, "orphaned user must be deleted after credential persistence failure")
+}
+
+func TestRegisterFinish_UniqueViolation_Returns409(t *testing.T) {
+	svc := &fakePasskeySvc{
+		finishRegResult: &passkey.FinishRegistrationResult{
+			Credential:         passkey.Credential{UserID: "dup-user"},
+			RecoveryCodeHashes: []string{"h1"},
+		},
+	}
+	r, users := setupPasskeyRouter(svc)
+	// Simulate unique-constraint violation on CreateUser.
+	users.createUserErr = &pgconn.PgError{Code: "23505", Message: "duplicate key"}
+	resp := doPasskeyRequest(t, r, "POST", "/passkey/register/finish", map[string]any{
+		"sessionToken": "tok",
+		"email":        "dup@test.com",
+		"response":     validRegistrationResponseJSON(),
+	})
+	assert.Equal(t, 409, resp.Code)
 }
