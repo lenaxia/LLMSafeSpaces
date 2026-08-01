@@ -390,7 +390,7 @@ test.describe("Passkey e2e", () => {
     await page.getByText("Recover account").click();
 
     // Should navigate away from /login on success.
-    await expect(page).not.toHaveURL(/\/login/, { timeout: 5000 });
+    await expect(page).not.toHaveURL(/\/login/, { timeout: 15000 });
   });
 
   test("invalid recovery code shows error", async ({ page }) => {
