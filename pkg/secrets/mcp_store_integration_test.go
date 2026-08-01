@@ -124,8 +124,8 @@ func (s *MCPStoreIntegrationSuite) TestUpdateMCPServer_PreservesCiphertext() {
 // helper to create a workspace row for FK satisfaction.
 func (s *MCPStoreIntegrationSuite) createTestWorkspace(ctx context.Context, wsID, userID string) {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO workspaces (id, user_id, name, phase, created_at, updated_at)
-		VALUES ($1, $2, 'test-ws', 'Active', now(), now())
+		INSERT INTO workspaces (id, user_id, name, created_at, updated_at)
+		 VALUES ($1, $2, 'test-ws', now(), now())
 		ON CONFLICT (id) DO NOTHING
 	`, wsID, userID)
 	s.Require().NoError(err)
