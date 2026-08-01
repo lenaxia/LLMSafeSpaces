@@ -56,9 +56,13 @@ async function mockPasskeyApi(page: Page) {
     });
   });
   await page.route(`${API_PREFIX}/auth/me`, async (route: Route) => {
-    // After login, /auth/me returns the user.
+    // After login, /auth/me returns the user. Auth works via either:
+    // 1. Bearer token header (passkey token in localStorage — legacy)
+    // 2. lsp_session cookie (HttpOnly — current production behavior)
     const authHeader = route.request().headers()["authorization"];
-    if (authHeader && authHeader.startsWith("Bearer ")) {
+    const cookieHeader = route.request().headers()["cookie"] || "";
+    const hasAuth = (authHeader && authHeader.startsWith("Bearer ")) || cookieHeader.includes("lsp_session=");
+    if (hasAuth) {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -363,6 +367,13 @@ test.describe("Passkey e2e", () => {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
+        headers: {
+          // loginWithToken relies on the HttpOnly cookie set by the server.
+          // In the mock environment no real server sets it, so we inject it
+          // via the response header. The browser stores it and sends it on
+          // subsequent requests (credentials: "include").
+          "Set-Cookie": "lsp_session=recovered-token; Path=/; HttpOnly",
+        },
         body: JSON.stringify({
           token: "recovered-token",
           user: {
