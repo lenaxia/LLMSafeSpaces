@@ -63,4 +63,8 @@ export const passkeyApi = {
     api.delete<{ deleted: boolean }>(`/account/passkeys/${id}`),
   regenerateRecoveryCodes: () =>
     api.post<{ recoveryCodes: string[] }>("/account/passkeys/recovery-codes/regenerate"),
+  enrollBegin: () =>
+    api.post<{ options: unknown; sessionToken: string }>("/account/passkeys/enroll/begin"),
+  enrollFinish: (sessionToken: string, response: unknown, name?: string) =>
+    api.post<{ enrolled: boolean }>("/account/passkeys/enroll/finish", { sessionToken, response, name }),
 };

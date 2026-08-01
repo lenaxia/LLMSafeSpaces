@@ -349,3 +349,116 @@ test.describe("Passkey e2e", () => {
     await expect(page.getByText("Use password instead")).toBeVisible();
   });
 });
+
+test.describe("Passkey settings", () => {
+  test("settings page shows passkey list and Add passkey button", async ({ page }) => {
+    const mockState = await mockPasskeyApi(page);
+    mockState.loggedIn = true;
+
+    await page.route(`${API_PREFIX}/account/passkeys`, async (route: Route) => {
+      await route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ passkeys: [{ id: "pk-1", name: "YubiKey", createdAt: "2026-01-01T00:00:00Z" }] }),
+      });
+    });
+
+    await page.goto("/settings/passkeys");
+    await expect(page.getByText("Passkeys")).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText("YubiKey")).toBeVisible();
+    await expect(page.getByText("Add passkey")).toBeVisible();
+    await expect(page.getByText("Regenerate recovery codes")).toBeVisible();
+  });
+
+  test("settings page shows empty state with enrollment prompt", async ({ page }) => {
+    const mockState = await mockPasskeyApi(page);
+    mockState.loggedIn = true;
+
+    await page.route(`${API_PREFIX}/account/passkeys`, async (route: Route) => {
+      await route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ passkeys: [] }),
+      });
+    });
+
+    await page.goto("/settings/passkeys");
+    await expect(page.getByText(/No passkeys registered/i)).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText("Add passkey")).toBeVisible();
+  });
+
+  test("settings page shows must_enroll_passkey banner", async ({ page }) => {
+    const mockState = await mockPasskeyApi(page);
+    mockState.loggedIn = true;
+
+    await page.route(`${API_PREFIX}/account/passkeys`, async (route: Route) => {
+      await route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ passkeys: [] }),
+      });
+    });
+
+    await page.goto("/settings/passkeys?must_enroll_passkey=1");
+    await expect(page.getByText(/recovery code to sign in/i)).toBeVisible({ timeout: 5000 });
+  });
+});
+
+  test("Add passkey ceremony via virtual authenticator", async ({ browser }) => {
+    const page = await browser.newPage();
+    const { cdp, authenticatorId } = await setupVirtualAuthenticator(page);
+    const mockState = await mockPasskeyApi(page);
+    mockState.loggedIn = true;
+
+    await page.route(`${API_PREFIX}/account/passkeys`, async (route: Route) => {
+      const method = route.request().method();
+      if (method === "GET") {
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ passkeys: [{ id: "pk-new", name: "New Key", createdAt: "2026-01-01T00:00:00Z" }] }) });
+      } else {
+        await route.fulfill({ status: 200 });
+      }
+    });
+    await page.route(`${API_PREFIX}/account/passkeys/enroll/begin`, async (route: Route) => {
+      const challenge = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
+      await route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          options: { rp: { name: "Test" }, user: { id: btoa("u1"), name: "user", displayName: "user" }, challenge, pubKeyCredParams: [{ type: "public-key", alg: -7 }], timeout: 60000, attestation: "none" },
+          sessionToken: "enroll-tok",
+        }),
+      });
+    });
+    await page.route(`${API_PREFIX}/account/passkeys/enroll/finish`, async (route: Route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ enrolled: true }) });
+    });
+
+    await page.goto("/settings/passkeys");
+    await page.getByText("Add passkey").click();
+
+    // The virtual authenticator auto-responds. After enrollment, the list
+    // refreshes and shows the new passkey.
+    await expect(page.getByText("New Key")).toBeVisible({ timeout: 15000 });
+
+    await cdp.send("WebAuthn.removeVirtualAuthenticator", { authenticatorId });
+    await cdp.detach();
+    await page.close();
+  });
+
+  test("Add passkey ceremony failure shows error", async ({ browser }) => {
+    const page = await browser.newPage();
+    const mockState = await mockPasskeyApi(page);
+    mockState.loggedIn = true;
+
+    await page.route(`${API_PREFIX}/account/passkeys`, async (route: Route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ passkeys: [] }) });
+    });
+    // Mock enroll/finish to fail.
+    await page.route(`${API_PREFIX}/account/passkeys/enroll/begin`, async (route: Route) => {
+      await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "internal" }) });
+    });
+
+    await page.goto("/settings/passkeys");
+    await page.getByText("Add passkey").click();
+
+    // Should show an error message.
+    await expect(page.getByText(/Failed to add passkey/i)).toBeVisible({ timeout: 5000 });
+
+    await page.close();
+  });

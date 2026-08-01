@@ -4,6 +4,11 @@ import { PasskeySettings } from "./PasskeySettings";
 import { passkeyApi } from "../../api/passkey";
 
 vi.mock("../../api/passkey");
+vi.mock("@simplewebauthn/browser", () => ({
+  startRegistration: vi.fn().mockResolvedValue({} as never),
+  browserSupportsWebAuthn: () => true,
+}));
+import { startRegistration } from "@simplewebauthn/browser";
 vi.mock("react-router-dom", () => ({
   useSearchParams: () => [new URLSearchParams(), vi.fn()],
 }));
@@ -83,5 +88,79 @@ it("shows conflict error when deleting last passkey", async () => {
   fireEvent.click(screen.getByText("Remove"));
   await waitFor(() => {
     expect(screen.getByText(/Cannot delete your last passkey/i)).toBeInTheDocument();
+  });
+});
+
+it("shows Add passkey button", async () => {
+  vi.mocked(passkeyApi.listPasskeys).mockResolvedValueOnce({ passkeys: [] });
+  render(<PasskeySettings />);
+  await waitFor(() => {
+    expect(screen.getByText("Add passkey")).toBeInTheDocument();
+  });
+});
+
+it("shows error when enroll fails", async () => {
+  vi.mocked(passkeyApi.listPasskeys).mockResolvedValueOnce({ passkeys: [] });
+  vi.mocked(passkeyApi.enrollBegin).mockResolvedValueOnce({ options: {}, sessionToken: "tok" });
+  const { ApiClientError } = await import("../../api/client");
+  vi.mocked(passkeyApi.enrollFinish).mockRejectedValueOnce(
+    new ApiClientError(500, { error: "failed" }),
+  );
+  const { fireEvent, waitFor } = await import("@testing-library/react");
+  render(<PasskeySettings />);
+  await waitFor(() => expect(screen.getByText("Add passkey")).toBeInTheDocument());
+  fireEvent.click(screen.getByText("Add passkey"));
+  // startRegistration will fail because the mock options don't have the
+  // required fields. The error will be caught and displayed.
+  await waitFor(() => {
+    const errEl = screen.queryByText(/Failed to add passkey|cancelled/i);
+    expect(errEl).toBeTruthy();
+  }, { timeout: 5000 });
+});
+
+it("shows session-expired message on enroll failure", async () => {
+  vi.mocked(passkeyApi.listPasskeys).mockResolvedValueOnce({ passkeys: [] });
+  vi.mocked(passkeyApi.enrollBegin).mockResolvedValueOnce({ options: {}, sessionToken: "tok" });
+  const { ApiClientError } = await import("../../api/client");
+  vi.mocked(passkeyApi.enrollFinish).mockRejectedValueOnce(
+    new ApiClientError(400, { error: "passkey enrollment failed" }),
+  );
+  const { fireEvent, waitFor } = await import("@testing-library/react");
+  render(<PasskeySettings />);
+  await waitFor(() => expect(screen.getByText("Add passkey")).toBeInTheDocument());
+  fireEvent.click(screen.getByText("Add passkey"));
+  await waitFor(() => {
+    expect(screen.getByText(/session expired/i)).toBeInTheDocument();
+  });
+});
+
+it("refreshes list after successful enroll", async () => {
+  vi.mocked(passkeyApi.listPasskeys).mockResolvedValueOnce({ passkeys: [] });
+  vi.mocked(passkeyApi.enrollBegin).mockResolvedValueOnce({ options: {}, sessionToken: "tok" });
+  vi.mocked(passkeyApi.enrollFinish).mockResolvedValueOnce({ enrolled: true });
+  vi.mocked(passkeyApi.listPasskeys).mockResolvedValueOnce({
+    passkeys: [{ id: "pk-new", name: "New Passkey", createdAt: "2026-01-01T00:00:00Z" }],
+  });
+  const { fireEvent, waitFor } = await import("@testing-library/react");
+  render(<PasskeySettings />);
+  await waitFor(() => expect(screen.getByText("Add passkey")).toBeInTheDocument());
+  fireEvent.click(screen.getByText("Add passkey"));
+  await waitFor(() => {
+    expect(screen.getByText("New Passkey")).toBeInTheDocument();
+  });
+});
+
+it("shows cancelled message when enroll is cancelled", async () => {
+  vi.mocked(passkeyApi.listPasskeys).mockResolvedValueOnce({ passkeys: [] });
+  vi.mocked(passkeyApi.enrollBegin).mockResolvedValueOnce({ options: {}, sessionToken: "tok" });
+  Object.assign(global, { NameNotAllowedError: undefined });
+  const cancelErr = Object.assign(new Error("cancelled"), { name: "NotAllowedError" });
+  vi.mocked(startRegistration).mockRejectedValueOnce(cancelErr);
+  const { fireEvent, waitFor } = await import("@testing-library/react");
+  render(<PasskeySettings />);
+  await waitFor(() => expect(screen.getByText("Add passkey")).toBeInTheDocument());
+  fireEvent.click(screen.getByText("Add passkey"));
+  await waitFor(() => {
+    expect(screen.getByText(/cancelled or timed out/i)).toBeInTheDocument();
   });
 });

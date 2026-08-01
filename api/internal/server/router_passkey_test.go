@@ -185,4 +185,16 @@ func TestRouter_PasskeySettingsRoutes_Registered(t *testing.T) {
 	w2 := httptest.NewRecorder()
 	router.ServeHTTP(w2, req2)
 	assert.NotEqual(t, http.StatusNotFound, w2.Code, "POST /account/passkeys/recovery-codes/regenerate must be registered")
+
+	// Enroll routes
+	req3 := httptest.NewRequest(http.MethodPost, "/api/v1/account/passkeys/enroll/begin", nil)
+	w3 := httptest.NewRecorder()
+	router.ServeHTTP(w3, req3)
+	assert.NotEqual(t, http.StatusNotFound, w3.Code, "enroll/begin must be registered")
+
+	// Enroll/finish route
+	req4 := httptest.NewRequest(http.MethodPost, "/api/v1/account/passkeys/enroll/finish", nil)
+	w4 := httptest.NewRecorder()
+	router.ServeHTTP(w4, req4)
+	assert.NotEqual(t, http.StatusNotFound, w4.Code, "enroll/finish must be registered")
 }

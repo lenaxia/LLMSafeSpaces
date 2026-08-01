@@ -36,7 +36,13 @@ export function PasskeyRegisterForm({ onSuccess }: Props) {
       await onSuccess(finishResp.token, finishResp.recoveryCodes ?? []);
     } catch (err) {
       if (err instanceof ApiClientError) {
-        setError(err.body?.error === "account already exists" ? "An account with this email already exists." : err.message);
+        if (err.body?.error === "account already exists") {
+          setError("An account with this email already exists.");
+        } else if (err.body?.error?.includes("expired") || err.body?.error?.includes("registration failed")) {
+          setError("Your registration session expired. Please try again.");
+        } else {
+          setError(err.message);
+        }
       } else if (err instanceof Error) {
         if (err.name === "NotAllowedError") {
           setError("Passkey creation was cancelled or timed out. Please try again.");

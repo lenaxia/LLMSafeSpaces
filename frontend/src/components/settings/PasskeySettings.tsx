@@ -1,5 +1,9 @@
 import { useEffect, useState, useCallback } from "react";
 import { useSearchParams } from "react-router-dom";
+import {
+  startRegistration,
+  browserSupportsWebAuthn,
+} from "@simplewebauthn/browser";
 import { Button } from "../ui/Button";
 import { passkeyApi } from "../../api/passkey";
 import type { PasskeyListItem } from "../../api/passkey";
@@ -12,6 +16,8 @@ export function PasskeySettings() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [newRecoveryCodes, setNewRecoveryCodes] = useState<string[] | null>(null);
+  const [enrolling, setEnrolling] = useState(false);
+  const [enrollError, setEnrollError] = useState("");
   const mustEnroll = searchParams.get("must_enroll_passkey") === "1";
 
   const fetchPasskeys = useCallback(async () => {
@@ -52,6 +58,27 @@ export function PasskeySettings() {
     }
   };
 
+  const handleEnroll = async () => {
+    setEnrolling(true);
+    setEnrollError("");
+    try {
+      const begin = await passkeyApi.enrollBegin();
+      const attResp = await startRegistration({ optionsJSON: begin.options as Parameters<typeof startRegistration>[0]["optionsJSON"] });
+      await passkeyApi.enrollFinish(begin.sessionToken, attResp);
+      await fetchPasskeys();
+    } catch (err) {
+      if (err instanceof Error && err.name === "NotAllowedError") {
+        setEnrollError("Passkey creation was cancelled or timed out. Please try again.");
+      } else if (err instanceof ApiClientError && (err.body?.error?.includes("expired") || err.body?.error?.includes("enrollment failed"))) {
+        setEnrollError("Your session expired. Please try again.");
+      } else {
+        setEnrollError("Failed to add passkey. Please try again.");
+      }
+    } finally {
+      setEnrolling(false);
+    }
+  };
+
   if (newRecoveryCodes) {
     return (
       <RecoveryCodesDisplay
@@ -60,6 +87,8 @@ export function PasskeySettings() {
       />
     );
   }
+
+  const webAuthnSupported = typeof window !== "undefined" && browserSupportsWebAuthn();
 
   return (
     <div className="space-y-4">
@@ -72,12 +101,20 @@ export function PasskeySettings() {
       )}
       {error && <p className="text-sm text-destructive">{error}</p>}
       <div>
-        <h3 className="mb-2 text-lg font-semibold">Passkeys</h3>
+        <div className="flex items-center justify-between">
+          <h3 className="mb-2 text-lg font-semibold">Passkeys</h3>
+          {webAuthnSupported && (
+            <Button variant="outline" size="sm" onClick={handleEnroll} disabled={enrolling}>
+              {enrolling ? "Adding..." : "Add passkey"}
+            </Button>
+          )}
+        </div>
+        {enrollError && <p className="mb-2 text-sm text-destructive">{enrollError}</p>}
         {loading ? (
           <p className="text-sm text-muted-foreground">Loading...</p>
         ) : passkeys.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            No passkeys registered. {mustEnroll ? "Enroll one to continue." : ""}
+            No passkeys registered. {mustEnroll ? "Click 'Add passkey' to continue." : ""}
           </p>
         ) : (
           <ul className="space-y-2">
