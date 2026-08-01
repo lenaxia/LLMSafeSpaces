@@ -259,7 +259,7 @@ func TestAgentConfigWriter_Rebuild_MatchesOpencodeSchema_MCPServers(t *testing.T
 			[]mcpServerEntry{{
 				Name: "github", Transport: "stdio", Command: "npx",
 				Args: []string{"-y", "@modelcontextprotocol/server-github"},
-				Env: map[string]string{"GITHUB_TOKEN": "{env:GITHUB_TOKEN}"},
+				Env:  map[string]string{"GITHUB_TOKEN": "{env:GITHUB_TOKEN}"},
 			}},
 			nil,
 		},

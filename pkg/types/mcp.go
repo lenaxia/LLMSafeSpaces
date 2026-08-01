@@ -132,15 +132,15 @@ func (s *MCPServer) ToResponse() MCPServerResponse {
 
 // CreateMCPServerRequest is the body for POST .../mcp-servers.
 type CreateMCPServerRequest struct {
-	Name      string            `json:"name" binding:"required"`
-	Transport string            `json:"transport" binding:"required"`
-	URL       string            `json:"url,omitempty"`
-	Command   string            `json:"command,omitempty"`
-	Args      []string          `json:"args,omitempty"`
-	TimeoutMs *int              `json:"timeoutMs,omitempty"`
-	Enabled   *bool             `json:"enabled,omitempty"`
-	Env       map[string]string `json:"env,omitempty"`
-	Headers   map[string]string `json:"headers,omitempty"`
+	Name      string                    `json:"name" binding:"required"`
+	Transport string                    `json:"transport" binding:"required"`
+	URL       string                    `json:"url,omitempty"`
+	Command   string                    `json:"command,omitempty"`
+	Args      []string                  `json:"args,omitempty"`
+	TimeoutMs *int                      `json:"timeoutMs,omitempty"`
+	Enabled   *bool                     `json:"enabled,omitempty"`
+	Env       map[string]string         `json:"env,omitempty"`
+	Headers   map[string]string         `json:"headers,omitempty"`
 	AutoApply *MCPServerAutoApplyTarget `json:"autoApply,omitempty"`
 }
 

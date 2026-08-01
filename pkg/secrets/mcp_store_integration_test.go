@@ -115,8 +115,8 @@ func (s *MCPStoreIntegrationSuite) TestUpdateMCPServer_PreservesCiphertext() {
 
 	// Update name + enabled, but do NOT touch ciphertext.
 	update := &MCPServerRow{
-		Name:      "renamed",
-		Enabled:   false,
+		Name:       "renamed",
+		Enabled:    false,
 		Ciphertext: nil, // nil = preserve existing
 	}
 	require.NoError(t, store.UpdateMCPServer(ctx, "admin", "_platform", "upd-test", update))

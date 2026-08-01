@@ -41,12 +41,19 @@ CREATE TABLE IF NOT EXISTS public.mcp_servers (
     CONSTRAINT mcp_servers_name_check CHECK ((name ~ '^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$'::text))
 );
 
-ALTER TABLE ONLY public.mcp_servers
-    ADD CONSTRAINT mcp_servers_pkey PRIMARY KEY (id);
+-- Add PK/unique only if missing (idempotent: ADD CONSTRAINT does not support IF NOT EXISTS,
+-- so we guard with a DO block that checks pg_constraint first).
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'mcp_servers_pkey') THEN
+        ALTER TABLE public.mcp_servers ADD CONSTRAINT mcp_servers_pkey PRIMARY KEY (id);
+    END IF;
+END $$;
 
--- Per-owner uniqueness on name (name is also the opencode mcp config key).
-ALTER TABLE ONLY public.mcp_servers
-    ADD CONSTRAINT mcp_servers_owner_name_uniq UNIQUE (owner_type, owner_id, name);
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'mcp_servers_owner_name_uniq') THEN
+        ALTER TABLE public.mcp_servers ADD CONSTRAINT mcp_servers_owner_name_uniq UNIQUE (owner_type, owner_id, name);
+    END IF;
+END $$;
 
 CREATE INDEX IF NOT EXISTS idx_mcp_servers_owner ON public.mcp_servers USING btree (owner_type, owner_id);
 
@@ -65,8 +72,11 @@ CREATE TABLE IF NOT EXISTS public.mcp_server_bindings (
     CONSTRAINT mcp_server_bindings_source_type_check CHECK ((source_type = ANY (ARRAY['explicit'::text, 'auto'::text])))
 );
 
-ALTER TABLE ONLY public.mcp_server_bindings
-    ADD CONSTRAINT mcp_server_bindings_pkey PRIMARY KEY (workspace_id, server_id);
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'mcp_server_bindings_pkey') THEN
+        ALTER TABLE ONLY public.mcp_server_bindings ADD CONSTRAINT mcp_server_bindings_pkey PRIMARY KEY (workspace_id, server_id);
+    END IF;
+END $$;
 
 ALTER TABLE ONLY public.mcp_server_bindings
     ADD CONSTRAINT mcp_server_bindings_workspace_id_fkey FOREIGN KEY (workspace_id) REFERENCES public.workspaces(id) ON DELETE CASCADE;

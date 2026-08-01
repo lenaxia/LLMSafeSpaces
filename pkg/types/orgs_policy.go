@@ -25,7 +25,7 @@ const (
 	PolicyAllowUserPrompt OrgPolicyKey = "allow_user_prompt"
 
 	// Epic 53 — MCP server governance policies
-	PolicyAllowUserMcpServers      OrgPolicyKey = "allow_user_mcp_servers"
+	PolicyAllowUserMcpServers       OrgPolicyKey = "allow_user_mcp_servers"
 	PolicyMaxMcpServersPerWorkspace OrgPolicyKey = "max_mcp_servers_per_workspace"
 )
 
@@ -53,7 +53,7 @@ type OrgPolicyValues struct {
 	AllowUserPrompt *bool   `json:"allowUserPrompt,omitempty"`
 
 	// Epic 53 — MCP server governance
-	AllowUserMcpServers      *bool `json:"allowUserMcpServers,omitempty"`
+	AllowUserMcpServers       *bool `json:"allowUserMcpServers,omitempty"`
 	MaxMcpServersPerWorkspace *int  `json:"maxMcpServersPerWorkspace,omitempty"`
 }
 

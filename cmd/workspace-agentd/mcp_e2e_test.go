@@ -35,8 +35,8 @@ func TestMaterialize_MCPServers_RenderedToAgentConfig(t *testing.T) {
 		},
 		{
 			Name: "github", Transport: "stdio", Command: "npx",
-			Args:   []string{"-y", "server-github"},
-			Env:    map[string]string{"GITHUB_TOKEN": "ghp_secret"},
+			Args: []string{"-y", "server-github"},
+			Env:  map[string]string{"GITHUB_TOKEN": "ghp_secret"},
 		},
 	}
 

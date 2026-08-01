@@ -21,6 +21,8 @@ type lineScanner interface {
 	Bytes() []byte
 }
 
-func newLineScanner(r interface{ Read(p []byte) (n int, err error) }) lineScanner {
+func newLineScanner(r interface {
+	Read(p []byte) (n int, err error)
+}) lineScanner {
 	return bufio.NewScanner(r)
 }

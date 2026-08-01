@@ -58,15 +58,15 @@ type relaySource struct {
 type AgentConfigWriter struct {
 	mu              sync.Mutex
 	path            string
-	providerRaw     json.RawMessage // raw "provider" map JSON from FormatOpenCodeConfig; nil = no providers
-	model           string          // fully-qualified "providerID/modelID" form; "" = no model
-	relay           *relaySource    // nil = relay not yet injected / skipped
+	providerRaw     json.RawMessage  // raw "provider" map JSON from FormatOpenCodeConfig; nil = no providers
+	model           string           // fully-qualified "providerID/modelID" form; "" = no model
+	relay           *relaySource     // nil = relay not yet injected / skipped
 	mcpServers      []mcpServerEntry // staged MCP servers from applyMCPServer; nil = none
-	adminPrompt     string          // admin-configured system prompt from agentd.AdminPromptPath; "" = none
-	agentRaw        json.RawMessage // existing "agent" config from loadExisting, preserved across rebuilds
-	modeRaw         json.RawMessage // existing "mode" config from loadExisting, preserved across rebuilds
-	allowedDirs     []string        // glob patterns from AllowedDirsPath, merged as external_directory allow-rules
-	allowedDirsPath string          // path to the allowed-dirs JSON file; defaults to agentd.AllowedDirsPath
+	adminPrompt     string           // admin-configured system prompt from agentd.AdminPromptPath; "" = none
+	agentRaw        json.RawMessage  // existing "agent" config from loadExisting, preserved across rebuilds
+	modeRaw         json.RawMessage  // existing "mode" config from loadExisting, preserved across rebuilds
+	allowedDirs     []string         // glob patterns from AllowedDirsPath, merged as external_directory allow-rules
+	allowedDirsPath string           // path to the allowed-dirs JSON file; defaults to agentd.AllowedDirsPath
 }
 
 // newAgentConfigWriter creates the writer and initializes its sources

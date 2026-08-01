@@ -66,16 +66,16 @@ type mcpSecretPusher func(ctx context.Context, userID, workspaceID string) error
 
 // MCPServersHandler handles MCP server CRUD for all three scopes.
 type MCPServersHandler struct {
-	store          mcpServerStore
-	orgChecker     mcpOrgChecker
-	adminEncrypt   secrets.RootKeyProvider
-	orgEncrypt     secrets.RootKeyProvider
-	keys           *secrets.KeyService // user-scope DEK; nil for admin/org handlers
-	keyStore       secrets.KeyStore    // user-scope key version read
-	audit          mcpAuditLogger
-	pusher         mcpSecretPusher
-	logger         mcpLogger
-	settings       mcpSettingsReader
+	store        mcpServerStore
+	orgChecker   mcpOrgChecker
+	adminEncrypt secrets.RootKeyProvider
+	orgEncrypt   secrets.RootKeyProvider
+	keys         *secrets.KeyService // user-scope DEK; nil for admin/org handlers
+	keyStore     secrets.KeyStore    // user-scope key version read
+	audit        mcpAuditLogger
+	pusher       mcpSecretPusher
+	logger       mcpLogger
+	settings     mcpSettingsReader
 }
 
 // mcpLogger is a minimal logger for non-fatal warnings (audit failures etc).
@@ -213,7 +213,7 @@ func (h *MCPServersHandler) UserCreate(c *gin.Context) {
 	maxMcp := features.MaxPersonalMcpServers
 	if maxMcp == 0 {
 		c.JSON(http.StatusPaymentRequired, gin.H{
-			"error":  "personal MCP servers are not available on your plan",
+			"error":   "personal MCP servers are not available on your plan",
 			"feature": "personal_mcp_servers",
 			"planId":  string(plan),
 		})

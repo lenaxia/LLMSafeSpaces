@@ -638,6 +638,7 @@ func applyMCPServersToConfig(agentConfigPath string, servers []secrets.StagedMCP
 	merged, _ := json.MarshalIndent(cfg, "", "  ")
 	_ = os.WriteFile(agentConfigPath, merged, 0o600)
 }
+
 // returns "providerID/modelID" when the flat modelID is found in any provider's
 // models map. Returns the flat modelID unchanged if no provider claims it
 // (e.g. when the provider list hasn't been written yet, or the model was

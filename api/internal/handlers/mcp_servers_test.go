@@ -42,7 +42,9 @@ func (s *stubMCPStore) GetMCPServer(_ context.Context, _, _, serverID string) (*
 	}
 	return nil, nil
 }
-func (s *stubMCPStore) UpdateMCPServer(_ context.Context, _, _, _ string, row *secrets.MCPServerRow) error { return nil }
+func (s *stubMCPStore) UpdateMCPServer(_ context.Context, _, _, _ string, row *secrets.MCPServerRow) error {
+	return nil
+}
 func (s *stubMCPStore) DeleteMCPServer(_ context.Context, _, _, serverID string) error {
 	s.deleted = serverID
 	return nil
@@ -56,24 +58,36 @@ func (s *stubMCPStore) CountWorkspaceMCPServers(_ context.Context, _ string) (in
 func (s *stubMCPStore) GetWorkspaceMCPServers(_ context.Context, _ string) ([]secrets.MCPServerBindingRow, error) {
 	return nil, nil
 }
-func (s *stubMCPStore) BindMCPServerToWorkspace(_ context.Context, _, _ string) error { return s.bindErr }
+func (s *stubMCPStore) BindMCPServerToWorkspace(_ context.Context, _, _ string) error {
+	return s.bindErr
+}
 func (s *stubMCPStore) UnbindMCPServerFromWorkspace(_ context.Context, _, _ string) error { return nil }
-func (s *stubMCPStore) CreateMCPServerAutoApply(_ context.Context, _, _ string, _ *string) error { return nil }
-func (s *stubMCPStore) DeleteMCPServerAutoApply(_ context.Context, _, _ string, _ *string) error { return nil }
+func (s *stubMCPStore) CreateMCPServerAutoApply(_ context.Context, _, _ string, _ *string) error {
+	return nil
+}
+func (s *stubMCPStore) DeleteMCPServerAutoApply(_ context.Context, _, _ string, _ *string) error {
+	return nil
+}
 func (s *stubMCPStore) ListMCPServerAutoApply(_ context.Context, _ string) ([]secrets.MCPAutoApplyRule, error) {
 	return nil, nil
 }
-func (s *stubMCPStore) BackfillMCPServerAutoApply(_ context.Context, _ string) (int64, error) { return 0, nil }
-func (s *stubMCPStore) SeedWorkspaceMCPServers(_ context.Context, _, _ string, _ *string) error { return nil }
+func (s *stubMCPStore) BackfillMCPServerAutoApply(_ context.Context, _ string) (int64, error) {
+	return 0, nil
+}
+func (s *stubMCPStore) SeedWorkspaceMCPServers(_ context.Context, _, _ string, _ *string) error {
+	return nil
+}
 
 // stubMcpOrgChecker for user-scope gate tests.
 type stubMcpOrgChecker struct {
-	orgID     string
-	policies  []*types.OrgPolicy
-	userPlan  string
+	orgID    string
+	policies []*types.OrgPolicy
+	userPlan string
 }
 
-func (m *stubMcpOrgChecker) GetUserOrgID(_ context.Context, _ string) (string, error) { return m.orgID, nil }
+func (m *stubMcpOrgChecker) GetUserOrgID(_ context.Context, _ string) (string, error) {
+	return m.orgID, nil
+}
 func (m *stubMcpOrgChecker) GetOrgPolicies(_ context.Context, _ string) ([]*types.OrgPolicy, error) {
 	return m.policies, nil
 }
