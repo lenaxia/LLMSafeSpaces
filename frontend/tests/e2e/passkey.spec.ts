@@ -274,6 +274,59 @@ test.describe("Passkey e2e", () => {
     const creds = await cdp.send("WebAuthn.getCredentials", { authenticatorId });
     const registeredId = creds.credentials[0]?.credentialId;
 
+    // STEP 1: Register a credential first. The virtual authenticator starts
+    // empty — without a prior registration, navigator.credentials.get() for
+    // login finds no credentials and times out.
+    await page.route(`${API_PREFIX}/auth/passkey/register/begin`, async (route: Route) => {
+      const body = route.request().postDataJSON();
+      const challenge = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          options: {
+            rp: { name: "E2E Test", id: RP_ID },
+            user: {
+              id: btoa("user-e2e"),
+              name: body?.email || "e2e@test.com",
+              displayName: body?.name || "E2E User",
+            },
+            challenge,
+            pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+            authenticatorSelection: {
+              authenticatorAttachment: "platform",
+              userVerification: "preferred",
+              residentKey: "preferred",
+            },
+            timeout: 60000,
+            attestation: "none",
+          },
+          sessionToken: "e2e-reg-session",
+        }),
+      });
+    });
+
+    await page.route(`${API_PREFIX}/auth/passkey/register/finish`, async (route: Route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          token: "e2e-reg-token",
+          recoveryCodes: ["RC1", "RC2", "RC3"],
+        }),
+      });
+    });
+
+    // Perform registration to populate the virtual authenticator.
+    await page.goto("/register");
+    await page.getByPlaceholder("Email").fill("e2e@test.com");
+    await page.getByText("Create account with passkey").click();
+    // Wait for recovery codes (indicates registration succeeded).
+    await expect(page.getByText("Save your recovery codes")).toBeVisible({ timeout: 10000 });
+    await page.getByRole("checkbox").check();
+    await page.getByText("Continue").click();
+
+    // STEP 2: Now login with the registered credential.
     // Mock login endpoints.
     await page.route(`${API_PREFIX}/auth/passkey/login/begin`, async (route: Route) => {
       const challenge = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32))));
