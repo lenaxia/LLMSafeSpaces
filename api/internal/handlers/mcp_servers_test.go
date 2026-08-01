@@ -43,7 +43,17 @@ func (s *stubMCPStore) GetMCPServer(_ context.Context, ownerType, ownerID, serve
 	}
 	return nil, nil
 }
-func (s *stubMCPStore) UpdateMCPServer(_ context.Context, _, _, _ string, row *secrets.MCPServerRow) error {
+func (s *stubMCPStore) UpdateMCPServer(_ context.Context, ownerType, ownerID, _ string, row *secrets.MCPServerRow) error {
+	for i, r := range s.servers {
+		if r.OwnerType == ownerType && r.OwnerID == ownerID {
+			if row.Ciphertext != nil {
+				s.servers[i].Ciphertext = row.Ciphertext
+			}
+			s.servers[i].Name = row.Name
+			s.servers[i].Enabled = row.Enabled
+			return nil
+		}
+	}
 	return nil
 }
 func (s *stubMCPStore) DeleteMCPServer(_ context.Context, ownerType, ownerID, serverID string) error {
@@ -375,6 +385,80 @@ func TestOrgCreate_KillSwitchEnabled(t *testing.T) {
 	h.OrgCreate(c)
 
 	assert.Equal(t, http.StatusCreated, w.Code)
+}
+
+// --- Update handler test (the decryptExisting path) ---
+
+func TestAdminUpdate_PartialHeadersPreservesEnv(t *testing.T) {
+	// Pre-existing server with both env and headers.
+	existingPayload, _ := types.DecodeMCPServerSecretPayload([]byte(`{"env":{"TOKEN":"secret123"},"headers":{"X-Old":"old-val"}}`))
+	plaintext, _ := existingPayload.Encode()
+	enc := &stubEncryptor{}
+	ciphertext, _ := enc.Encrypt(context.Background(), plaintext)
+
+	store := &stubMCPStore{
+		servers: []*secrets.MCPServerRow{
+			{
+				ID: "srv-1", OwnerType: "admin", OwnerID: "_platform",
+				Name: "wiki", Transport: "http", URL: "https://wiki.com",
+				Ciphertext: ciphertext, Enabled: true,
+			},
+		},
+	}
+	h := NewAdminMCPServersHandler(store, enc)
+
+	// PUT only headers — env must be preserved.
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "srv-1"}}
+	c.Request = httptest.NewRequest("PUT", "/", strings.NewReader(`{"headers":{"Authorization":"Bearer new-tok"}}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.AdminUpdate(c)
+
+	assert.Equal(t, http.StatusOK, w.Code, "update should succeed: %s", w.Body.String())
+
+	// Verify the stored ciphertext now has the NEW headers but PRESERVED env.
+	updated := store.servers[0]
+	decrypted, err := enc.Decrypt(context.Background(), updated.Ciphertext)
+	assert.NoError(t, err)
+	payload, err := types.DecodeMCPServerSecretPayload(decrypted)
+	assert.NoError(t, err)
+	assert.Equal(t, "secret123", payload.Env["TOKEN"], "existing env must be preserved")
+	assert.Equal(t, "Bearer new-tok", payload.Headers["Authorization"], "new headers must be applied")
+	assert.Empty(t, payload.Headers["X-Old"], "old headers should be replaced")
+}
+
+func TestAdminUpdate_EnableToggle(t *testing.T) {
+	store := &stubMCPStore{
+		servers: []*secrets.MCPServerRow{
+			{ID: "srv-1", OwnerType: "admin", OwnerID: "_platform", Name: "wiki", Transport: "http", Enabled: true},
+		},
+	}
+	h := NewAdminMCPServersHandler(store, &stubEncryptor{})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "srv-1"}}
+	c.Request = httptest.NewRequest("PUT", "/", strings.NewReader(`{"enabled":false}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.AdminUpdate(c)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"enabled":false`)
+}
+
+func TestAdminUpdate_NotFound(t *testing.T) {
+	store := &stubMCPStore{}
+	h := NewAdminMCPServersHandler(store, &stubEncryptor{})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "nonexistent"}}
+	c.Request = httptest.NewRequest("PUT", "/", strings.NewReader(`{"enabled":false}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.AdminUpdate(c)
+
+	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
 // --- Test helpers ---
