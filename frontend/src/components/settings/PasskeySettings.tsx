@@ -69,7 +69,7 @@ export function PasskeySettings() {
     } catch (err) {
       if (err instanceof Error && err.name === "NotAllowedError") {
         setEnrollError("Passkey creation was cancelled or timed out. Please try again.");
-      } else if (err instanceof ApiClientError && err.body?.error?.includes("expired")) {
+      } else if (err instanceof ApiClientError && (err.body?.error?.includes("expired") || err.body?.error?.includes("enrollment failed"))) {
         setEnrollError("Your session expired. Please try again.");
       } else {
         setEnrollError("Failed to add passkey. Please try again.");
