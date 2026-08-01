@@ -192,6 +192,10 @@ test.describe("Passkey e2e", () => {
 
     await page.goto("/register");
 
+    // Wait for the passkey form to be rendered (mode switches from the
+    // default "password" to "passkey" only after /auth/config resolves).
+    await expect(page.getByText("Create account with passkey")).toBeVisible({ timeout: 10000 });
+
     // Fill email and submit the passkey form.
     await page.getByPlaceholder("Email").fill("e2e@test.com");
     await page.getByText("Create account with passkey").click();
@@ -247,6 +251,9 @@ test.describe("Passkey e2e", () => {
     });
 
     await page.goto("/register");
+    // Wait for the passkey form (mode switches from "password" to "passkey"
+    // after /auth/config resolves).
+    await expect(page.getByText("Create account with passkey")).toBeVisible({ timeout: 10000 });
     await page.getByPlaceholder("Email").fill("e2e@test.com");
     await page.getByText("Create account with passkey").click();
     // Wait for recovery codes (proves registration succeeded).
@@ -288,7 +295,11 @@ test.describe("Passkey e2e", () => {
       });
     });
 
-    // Perform login. The email field is required, so fill it first.
+    // Perform login. The email field is required, so fill it first. Wait for
+    // the passkey form specifically — "Sign in with passkey" also appears as
+    // a switch button in password mode, but the "Lost your passkey?" link only
+    // exists on the passkey form.
+    await expect(page.getByText(/Lost your passkey/i)).toBeVisible({ timeout: 10000 });
     await page.getByPlaceholder("Email").fill("e2e@test.com");
     await page.getByText("Sign in with passkey").click();
 
