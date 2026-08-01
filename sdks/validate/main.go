@@ -258,6 +258,16 @@ var expectedPaths = []string{
 	"/admin/provider-credentials/{id}/auto-apply",
 	"/admin/provider-credentials/{id}/auto-apply/{targetType}/{targetId}",
 
+	// MCP servers (Epic 53)
+	"/admin/mcp-servers",
+	"/admin/mcp-servers/{id}",
+	"/admin/mcp-servers/{id}/bindings",
+	"/admin/mcp-servers/{id}/auto-apply",
+	"/orgs/{id}/mcp-servers",
+	"/orgs/{id}/mcp-servers/{serverId}",
+	"/me/mcp-servers",
+	"/me/mcp-servers/{id}",
+
 	// Agent roles (platform)
 	"/admin/agent-roles",
 	"/admin/agent-roles/{id}",

@@ -111,6 +111,9 @@ func (s *Service) SetPolicyChecker(checker PolicyChecker) {
 // CredentialProvisioner seeds workspace_credential_bindings from credential_auto_apply.
 type CredentialProvisioner interface {
 	SeedWorkspaceCredentials(ctx context.Context, workspaceID, userID string, orgID *string) error
+	// SeedWorkspaceMCPServers seeds mcp_server_bindings from auto-apply rules.
+	// Epic 53. Best-effort: a failure does not block workspace creation.
+	SeedWorkspaceMCPServers(ctx context.Context, workspaceID, userID string, orgID *string) error
 }
 
 // SecretAutoProvisioner seeds user_secret_bindings from user_secrets where
@@ -388,6 +391,10 @@ func (s *Service) CreateWorkspace(ctx context.Context, userID string, req types.
 	if s.credProvisioner != nil {
 		if err := s.credProvisioner.SeedWorkspaceCredentials(ctx, meta.ID, userID, meta.OrgID); err != nil {
 			s.logger.Error("credential seeding failed for new workspace; it will have no LLM credentials",
+				err, "workspaceID", meta.ID, "userID", userID)
+		}
+		if err := s.credProvisioner.SeedWorkspaceMCPServers(ctx, meta.ID, userID, meta.OrgID); err != nil {
+			s.logger.Error("MCP server seeding failed for new workspace",
 				err, "workspaceID", meta.ID, "userID", userID)
 		}
 	}

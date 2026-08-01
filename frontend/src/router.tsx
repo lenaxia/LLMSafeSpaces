@@ -42,6 +42,15 @@ const OrgSettingsTab = lazy(() =>
 const AdminProviderCredentialsTab = lazy(() =>
   import("./components/settings/AdminProviderCredentialsTab").then((m) => ({ default: m.AdminProviderCredentialsTab })),
 );
+const AdminMcpServersTab = lazy(() =>
+  import("./components/settings/McpServersTab").then((m) => ({ default: m.McpServersTab })),
+);
+const UserMcpServersTab = lazy(() =>
+  import("./components/settings/McpServersTab").then((m) => ({ default: m.McpServersTab })),
+);
+const OrgMcpServersTab = lazy(() =>
+  import("./components/settings/McpServersTab").then((m) => ({ default: m.McpServersTab })),
+);
 const RelayTab = lazy(() => import("./components/settings/RelayTab").then((m) => ({ default: m.RelayTab })));
 const AdminSettingsPage = lazy(() =>
   import("./pages/AdminSettingsPage").then((m) => ({ default: m.AdminSettingsPage })),
@@ -103,6 +112,7 @@ export const router = createBrowserRouter([
               { index: true, element: <Navigate to="preferences" replace /> },
               { path: "preferences", element: <UserSettingsTab /> },
               { path: "provider-keys", element: <UserProviderCredentialsTab /> },
+              { path: "mcp-servers", element: <UserMcpServersTab scope="user" /> },
               { path: "secrets", element: <SecretsTab /> },
               { path: "api-keys", element: <ApiKeysTab /> },
               { path: "passkeys", element: <PasskeySettings /> },
@@ -119,6 +129,7 @@ export const router = createBrowserRouter([
           { path: "overview", element: <OrgOverviewTab /> },
           { path: "members", element: <OrgMembersTab /> },
           { path: "credentials", element: <OrgCredentialsTab /> },
+          { path: "mcp-servers", element: <OrgMcpServersTab scope="org" /> },
           { path: "workspaces", element: <OrgWorkspacesTab /> },
           { path: "audit", element: <OrgAuditTab /> },
           { path: "billing", element: <OrgBillingTab /> },
@@ -138,6 +149,7 @@ export const router = createBrowserRouter([
           { path: "users", element: <PlatformUsersTab /> },
           { path: "organisations", element: <OrgSettingsTab /> },
           { path: "credentials", element: <AdminProviderCredentialsTab /> },
+          { path: "mcp-servers", element: <AdminMcpServersTab scope="admin" /> },
           { path: "relay", element: <RelayTab /> },
           { path: "settings", element: <AdminSettingsPage /> },
           { path: "agent-config", element: <PlatformAgentConfigTab /> },

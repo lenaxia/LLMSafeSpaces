@@ -137,6 +137,9 @@ func (s *SecretService) InjectSecrets(ctx context.Context, userID, sessionID str
 		return nil, err
 	}
 
+	mcpEntries := s.loadMCPServers(ctx, userID, sessionID, matchedSigningKey, workspaceID)
+	nonLLM = append(nonLLM, mcpEntries...)
+
 	return buildSecretsJSON(providerData, nonLLM)
 }
 
@@ -174,6 +177,9 @@ func (s *SecretService) InjectSessionlessSecrets(ctx context.Context, userID, wo
 	if err != nil {
 		return nil, err
 	}
+
+	mcpEntries := s.loadMCPServers(ctx, userID, "", nil, workspaceID)
+	nonLLM = append(nonLLM, mcpEntries...)
 
 	return buildSecretsJSON(providerData, nonLLM)
 }
@@ -525,4 +531,114 @@ func buildSecretsJSON(providerData []LLMProviderData, nonLLM []InjectedSecret) (
 	}
 	out = append(out, nonLLM...)
 	return json.Marshal(out)
+}
+
+// loadMCPServers returns injected MCP server entries for a workspace.
+// Each bound+enabled server is decrypted using the appropriate KEK
+// (admin/org via RootKeyProvider, user via session DEK) and rendered as
+// an InjectedSecret{Type:"mcp-server"} entry. Decrypt failures for one
+// server are audited and skipped — a single corrupted ciphertext does
+// not block delivery of the others (D4: additive composition).
+//
+// User-scope servers require an active session DEK. Without one
+// (sessionID="" — boot/API-key path), user-scope servers are skipped
+// with an audit event, identical to user LLM credential behavior (D13).
+func (s *SecretService) loadMCPServers(ctx context.Context, userID, sessionID string, matchedSigningKey []byte, workspaceID string) []InjectedSecret {
+	// Use the CredentialStore interface (not a concrete type assertion) so
+	// the AsyncAuditLogger wrapper in production delegates correctly. Stores
+	// that don't implement CredentialStore (test mocks) silently skip MCP.
+	cs, ok := s.store.(CredentialStore)
+	if !ok {
+		return nil
+	}
+	servers, err := cs.GetWorkspaceMCPServers(ctx, workspaceID)
+	if err != nil || len(servers) == 0 {
+		return nil
+	}
+
+	adminDecrypt := decryptFnFor(s.adminProvider)
+	orgDecrypt := decryptFnFor(s.orgProvider)
+	var dek []byte
+	dekFetched := false
+
+	var out []InjectedSecret
+	for _, srv := range servers {
+		var plaintext []byte
+		switch srv.OwnerType {
+		case "admin":
+			if adminDecrypt == nil {
+				s.audit(ctx, userID, "mcp_decrypt_failed", &srv.ServerID, &workspaceID,
+					map[string]string{"name": srv.Name, "ownerType": "admin", "error": "admin provider not configured"})
+				continue
+			}
+			pt, err := adminDecrypt(ctx, srv.Ciphertext)
+			if err != nil {
+				s.audit(ctx, userID, "mcp_decrypt_failed", &srv.ServerID, &workspaceID,
+					map[string]string{"name": srv.Name, "ownerType": "admin", "error": err.Error()})
+				continue
+			}
+			plaintext = pt
+		case "org":
+			if orgDecrypt == nil {
+				s.audit(ctx, userID, "mcp_decrypt_failed", &srv.ServerID, &workspaceID,
+					map[string]string{"name": srv.Name, "ownerType": "org", "error": "org provider not configured"})
+				continue
+			}
+			pt, err := orgDecrypt(ctx, srv.Ciphertext)
+			if err != nil {
+				s.audit(ctx, userID, "mcp_decrypt_failed", &srv.ServerID, &workspaceID,
+					map[string]string{"name": srv.Name, "ownerType": "org", "error": err.Error()})
+				continue
+			}
+			plaintext = pt
+		case "user":
+			if sessionID == "" {
+				s.audit(ctx, userID, "mcp_skipped_no_session", &srv.ServerID, &workspaceID,
+					map[string]string{"name": srv.Name, "ownerType": "user"})
+				continue
+			}
+			if !dekFetched {
+				d, err := s.keys.GetDEK(ctx, sessionID, matchedSigningKey)
+				if err != nil {
+					for _, remaining := range servers {
+						if remaining.OwnerType == "user" {
+							sid := remaining.ServerID
+							s.audit(ctx, userID, "mcp_skipped_no_session", &sid, &workspaceID,
+								map[string]string{"name": remaining.Name, "ownerType": "user", "reason": err.Error()})
+						}
+					}
+					return out
+				}
+				dek = d
+				dekFetched = true
+			}
+			pt, err := DecryptSecret(dek, srv.Ciphertext)
+			if err != nil {
+				s.audit(ctx, userID, "mcp_decrypt_failed", &srv.ServerID, &workspaceID,
+					map[string]string{"name": srv.Name, "ownerType": "user", "error": err.Error()})
+				continue
+			}
+			plaintext = pt
+		default:
+			continue
+		}
+
+		meta := map[string]any{
+			"transport": srv.Transport,
+			"url":       srv.URL,
+			"command":   srv.Command,
+			"args":      srv.Args,
+		}
+		if srv.TimeoutMs != nil && *srv.TimeoutMs > 0 {
+			meta["timeoutMs"] = *srv.TimeoutMs
+		}
+		metaJSON, _ := json.Marshal(meta)
+		out = append(out, InjectedSecret{
+			Type:      SecretTypeMcpServer,
+			Name:      srv.Name,
+			Metadata:  metaJSON,
+			Plaintext: string(plaintext),
+		})
+	}
+	return out
 }

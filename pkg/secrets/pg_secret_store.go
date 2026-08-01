@@ -736,6 +736,16 @@ func (l *AsyncAuditLogger) HasUserProviderCredential(ctx context.Context, userID
 	return false, nil
 }
 
+// GetWorkspaceMCPServers delegates to the inner store's MCP server query.
+// Epic 53: required so loadMCPServers works through the AsyncAuditLogger
+// wrapper used in production (app.go wraps PgSecretStore in AsyncAuditLogger).
+func (l *AsyncAuditLogger) GetWorkspaceMCPServers(ctx context.Context, workspaceID string) ([]MCPServerBindingRow, error) {
+	if cs, ok := l.store.(CredentialStore); ok {
+		return cs.GetWorkspaceMCPServers(ctx, workspaceID)
+	}
+	return nil, nil
+}
+
 // ReEncryptOrgCredentials re-encrypts all provider_credentials rows where
 // owner_type='org' AND owner_id=orgID atomically within tx.
 func (s *PgSecretStore) ReEncryptOrgCredentials(ctx context.Context, tx pgx.Tx, orgID string, oldDEK, newDEK []byte) (int, error) {

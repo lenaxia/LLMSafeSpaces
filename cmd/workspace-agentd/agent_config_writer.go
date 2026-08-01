@@ -58,14 +58,15 @@ type relaySource struct {
 type AgentConfigWriter struct {
 	mu              sync.Mutex
 	path            string
-	providerRaw     json.RawMessage // raw "provider" map JSON from FormatOpenCodeConfig; nil = no providers
-	model           string          // fully-qualified "providerID/modelID" form; "" = no model
-	relay           *relaySource    // nil = relay not yet injected / skipped
-	adminPrompt     string          // admin-configured system prompt from agentd.AdminPromptPath; "" = none
-	agentRaw        json.RawMessage // existing "agent" config from loadExisting, preserved across rebuilds
-	modeRaw         json.RawMessage // existing "mode" config from loadExisting, preserved across rebuilds
-	allowedDirs     []string        // glob patterns from AllowedDirsPath, merged as external_directory allow-rules
-	allowedDirsPath string          // path to the allowed-dirs JSON file; defaults to agentd.AllowedDirsPath
+	providerRaw     json.RawMessage  // raw "provider" map JSON from FormatOpenCodeConfig; nil = no providers
+	model           string           // fully-qualified "providerID/modelID" form; "" = no model
+	relay           *relaySource     // nil = relay not yet injected / skipped
+	mcpServers      []mcpServerEntry // staged MCP servers from applyMCPServer; nil = none
+	adminPrompt     string           // admin-configured system prompt from agentd.AdminPromptPath; "" = none
+	agentRaw        json.RawMessage  // existing "agent" config from loadExisting, preserved across rebuilds
+	modeRaw         json.RawMessage  // existing "mode" config from loadExisting, preserved across rebuilds
+	allowedDirs     []string         // glob patterns from AllowedDirsPath, merged as external_directory allow-rules
+	allowedDirsPath string           // path to the allowed-dirs JSON file; defaults to agentd.AllowedDirsPath
 }
 
 // newAgentConfigWriter creates the writer and initializes its sources
@@ -258,6 +259,28 @@ func (w *AgentConfigWriter) setRelay(url string, models []relayModel) {
 	w.mu.Unlock()
 }
 
+// mcpServerEntry is one staged MCP server, carrying the fields needed to
+// render its opencode config entry (local or remote shape per the contract).
+type mcpServerEntry struct {
+	Name      string
+	Transport string // http, sse, or stdio
+	URL       string
+	Command   string
+	Args      []string
+	TimeoutMs int
+	Env       map[string]string
+	Headers   map[string]string
+}
+
+// SetMCPServers replaces the MCP server source and rebuilds. Called after
+// materialize stages MCP server entries from secrets.json. Each server
+// renders as one entry in the opencode "mcp" top-level config section.
+func (w *AgentConfigWriter) SetMCPServers(servers []mcpServerEntry) {
+	w.mu.Lock()
+	w.mcpServers = servers
+	w.mu.Unlock()
+}
+
 // hasRelay returns true if the relay injector has successfully injected
 // relay config. Used by the readyz handler for the RelayInjected signal
 // (replaces the old getActiveRelayModels() != nil check).
@@ -439,12 +462,60 @@ func (w *AgentConfigWriter) rebuild() error {
 		cfg["mode"] = modeJSON
 	}
 
+	// Merge MCP servers into the top-level "mcp" section. Each server
+	// becomes one named entry. Remote transports (http/sse) render as
+	// opencode "remote"; stdio renders as "local". The section is only
+	// emitted when at least one server is staged — a no-MCP workspace
+	// produces byte-equivalent output to the pre-Epic-53 writer.
+	if len(w.mcpServers) > 0 {
+		mcp := make(map[string]json.RawMessage, len(w.mcpServers))
+		for _, srv := range w.mcpServers {
+			entry := buildOpencodeMCPServerEntry(srv)
+			entryJSON, err := json.Marshal(entry)
+			if err != nil {
+				return fmt.Errorf("agent-config writer: marshal mcp server %q: %w", srv.Name, err)
+			}
+			mcp[srv.Name] = entryJSON
+		}
+		mcpJSON, err := json.Marshal(mcp)
+		if err != nil {
+			return fmt.Errorf("agent-config writer: marshal mcp section: %w", err)
+		}
+		cfg["mcp"] = mcpJSON
+	}
+
 	output, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("agent-config writer: marshal config: %w", err)
 	}
 
 	return atomicRenameWrite(w.path, output, 0o600)
+}
+
+// buildOpencodeMCPServerEntry renders one MCP server into the opencode config
+// shape per MATERIALIZE-CONTRACT.md. Remote transports (http/sse) → "remote"
+// with url+headers; stdio → "local" with command+environment.
+func buildOpencodeMCPServerEntry(srv mcpServerEntry) map[string]any {
+	isRemote := srv.Transport == "http" || srv.Transport == "sse"
+	entry := map[string]any{"enabled": true}
+	if isRemote {
+		entry["type"] = "remote"
+		entry["url"] = srv.URL
+		if len(srv.Headers) > 0 {
+			entry["headers"] = srv.Headers
+		}
+	} else {
+		entry["type"] = "local"
+		cmd := srv.Command
+		entry["command"] = append([]string{cmd}, srv.Args...)
+		if len(srv.Env) > 0 {
+			entry["environment"] = srv.Env
+		}
+	}
+	if srv.TimeoutMs > 0 {
+		entry["timeout"] = srv.TimeoutMs
+	}
+	return entry
 }
 
 // atomicRenameWrite writes data to a temp file in the same directory as

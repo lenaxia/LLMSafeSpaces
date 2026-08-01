@@ -367,3 +367,7 @@ func (m *testSecretStore) BindCredentialToAllUserWorkspaces(_ context.Context, _
 func (m *testSecretStore) HasUserProviderCredential(_ context.Context, _, _ string) (bool, error) {
 	return false, nil
 }
+
+func (m *testSecretStore) GetWorkspaceMCPServers(_ context.Context, _ string) ([]secrets.MCPServerBindingRow, error) {
+	return nil, nil
+}

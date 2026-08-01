@@ -4,6 +4,7 @@ import { cn } from "../lib/utils";
 const allTabs = [
   { id: "preferences", label: "Preferences" },
   { id: "provider-keys", label: "Provider Keys" },
+  { id: "mcp-servers", label: "MCP Servers" },
   { id: "secrets", label: "Secrets" },
   { id: "api-keys", label: "API Keys" },
   { id: "passkeys", label: "Passkeys" },

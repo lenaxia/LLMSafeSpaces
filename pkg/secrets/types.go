@@ -34,6 +34,10 @@ const (
 	SecretTypeGitCredential SecretType = "git-credential"
 	SecretTypeSecretFile    SecretType = "secret-file"
 	SecretTypeEnvSecret     SecretType = "env-secret"
+	// SecretTypeMcpServer (Epic 53) carries an external MCP server config
+	// through the injection pipeline. Metadata holds transport/url/command/args;
+	// Plaintext is the JSON-encoded env+headers map (decrypted at injection).
+	SecretTypeMcpServer SecretType = "mcp-server"
 )
 
 // isAPIKeySunset reports whether the fixed api-key sunset date has
@@ -53,6 +57,7 @@ var ValidSecretTypes = map[SecretType]bool{
 	SecretTypeGitCredential: true,
 	SecretTypeSecretFile:    true,
 	SecretTypeEnvSecret:     true,
+	SecretTypeMcpServer:     true,
 }
 
 // ValidSecretTypesList returns the canonical list of valid secret types,
@@ -66,6 +71,7 @@ func ValidSecretTypesList() []SecretType {
 		SecretTypeGitCredential,
 		SecretTypeSecretFile,
 		SecretTypeEnvSecret,
+		SecretTypeMcpServer,
 	}
 }
 
@@ -191,7 +197,7 @@ type AuditQuery struct {
 // `"required": ["context", "output"]` and `"additionalProperties": false`.
 // Therefore FormatOpenCodeConfig emits a `limit` block ONLY when BOTH are
 // non-zero — emitting a partial block (only context, or only output) makes
-// opencode 1.15.12 reject the entire config with
+// opencode reject the entire config with
 // SchemaError: Missing key, which causes every endpoint that calls
 // Config.state() (including POST /session) to return 500.
 //

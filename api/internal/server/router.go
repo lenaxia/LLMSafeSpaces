@@ -169,6 +169,13 @@ type RouterConfig struct {
 	// init container has no user identity); auth is the TokenReview itself.
 	PodBootstrapHandler *handlers.PodBootstrapHandler
 
+	// MCPServersHandler handles external MCP server CRUD for all three
+	// scopes (platform/org/user). Optional — when nil, no MCP routes are
+	// registered (Epic 53).
+	AdminMCPServersHandler *handlers.MCPServersHandler
+	OrgMCPServersHandler   *handlers.MCPServersHandler
+	UserMCPServersHandler  *handlers.MCPServersHandler
+
 	CookieName string
 
 	// CookieDomain (Epic 54, US-54.3): when non-empty, set as the Domain
@@ -570,6 +577,9 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 		roleAdmin.DELETE("/:id", cfg.AgentRoleHandler.DeletePlatform)
 	}
 
+	// Epic 53: MCP server routes (all three scopes).
+	registerMCPRoutes(router, services, cfg)
+
 	// AuthMiddleware + AdminGuard so only users.role='admin' can call them.
 	// US-43.18: the same group also hosts the dashboard list endpoints
 	// (GET /admin/orgs, GET /admin/users).
@@ -671,7 +681,6 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 	if cfg.OrgsHandler != nil {
 		registerOrgRoutes(router, services, cfg.OrgsHandler, cfg.OrgCredentialsHandler, cfg.InvitationsHandler, cfg.PolicyHandler, cfg.PromptHandler, cfg.AgentRoleHandler, cfg.AuditHandler, cfg.SSOHandler)
 	}
-
 	// Metrics endpoint.
 	//
 	// F1.1.3 (Epic 17): pre-fix /metrics was unauthenticated, leaking
@@ -1518,4 +1527,55 @@ func registerPasskeySettingsRoutes(router *gin.Engine, services interfaces.Servi
 	pkSettings.POST("/recovery-codes/regenerate", handler.RegenerateRecoveryCodes)
 	pkSettings.POST("/enroll/begin", handler.BeginEnrollPasskey)
 	pkSettings.POST("/enroll/finish", handler.FinishEnrollPasskey)
+}
+
+// registerMCPRoutes registers all Epic 53 MCP server routes across the three
+// scopes (admin/org/user). Extracted from NewRouter to keep NewRouter under
+// the funlen limit (350 lines).
+func registerMCPRoutes(router *gin.Engine, services interfaces.Services, cfg RouterConfig) {
+	if cfg.AdminMCPServersHandler != nil {
+		mcpAdmin := router.Group("/api/v1/admin/mcp-servers")
+		mcpAdmin.Use(services.GetAuth().AuthMiddleware())
+		mcpAdmin.Use(middleware.AdminGuard())
+		mcpAdmin.GET("", cfg.AdminMCPServersHandler.AdminList)
+		mcpAdmin.POST("", cfg.AdminMCPServersHandler.AdminCreate)
+		mcpAdmin.GET("/:id", cfg.AdminMCPServersHandler.AdminGet)
+		mcpAdmin.PUT("/:id", cfg.AdminMCPServersHandler.AdminUpdate)
+		mcpAdmin.DELETE("/:id", cfg.AdminMCPServersHandler.AdminDelete)
+		mcpAdmin.POST("/:id/bindings", cfg.AdminMCPServersHandler.Bind)
+		mcpAdmin.DELETE("/:id/bindings/:workspaceId", cfg.AdminMCPServersHandler.Unbind)
+		mcpAdmin.POST("/:id/auto-apply", cfg.AdminMCPServersHandler.CreateAutoApply)
+		mcpAdmin.GET("/:id/auto-apply", cfg.AdminMCPServersHandler.ListAutoApply)
+		mcpAdmin.DELETE("/:id/auto-apply/:targetType/:targetId", cfg.AdminMCPServersHandler.DeleteAutoApply)
+		mcpAdmin.DELETE("/:id/auto-apply/:targetType", cfg.AdminMCPServersHandler.DeleteAutoApply)
+	}
+
+	if cfg.OrgMCPServersHandler != nil && cfg.OrgsHandler != nil {
+		orgMcp := router.Group("/api/v1/orgs/:id/mcp-servers")
+		orgMcp.Use(services.GetAuth().AuthMiddleware())
+		orgMcp.Use(middleware.OrgAdminGuard(cfg.OrgsHandler))
+		orgMcp.GET("", cfg.OrgMCPServersHandler.OrgList)
+		orgMcp.POST("", cfg.OrgMCPServersHandler.OrgCreate)
+		orgMcp.GET("/:serverId", cfg.OrgMCPServersHandler.OrgGet)
+		orgMcp.PUT("/:serverId", cfg.OrgMCPServersHandler.OrgUpdate)
+		orgMcp.DELETE("/:serverId", cfg.OrgMCPServersHandler.OrgDelete)
+		orgMcp.POST("/:serverId/bindings", cfg.OrgMCPServersHandler.Bind)
+		orgMcp.DELETE("/:serverId/bindings/:workspaceId", cfg.OrgMCPServersHandler.Unbind)
+		orgMcp.POST("/:serverId/auto-apply", cfg.OrgMCPServersHandler.CreateAutoApply)
+		orgMcp.GET("/:serverId/auto-apply", cfg.OrgMCPServersHandler.ListAutoApply)
+	}
+
+	if cfg.UserMCPServersHandler != nil {
+		userMcp := router.Group("/api/v1/me/mcp-servers")
+		userMcp.Use(services.GetAuth().AuthMiddleware())
+		userMcp.GET("", cfg.UserMCPServersHandler.UserList)
+		userMcp.POST("", cfg.UserMCPServersHandler.UserCreate)
+		userMcp.GET("/:id", cfg.UserMCPServersHandler.UserGet)
+		userMcp.PUT("/:id", cfg.UserMCPServersHandler.UserUpdate)
+		userMcp.DELETE("/:id", cfg.UserMCPServersHandler.UserDelete)
+		userMcp.POST("/:id/bindings", cfg.UserMCPServersHandler.Bind)
+		userMcp.DELETE("/:id/bindings/:workspaceId", cfg.UserMCPServersHandler.Unbind)
+		userMcp.POST("/:id/auto-apply", cfg.UserMCPServersHandler.CreateAutoApply)
+		userMcp.GET("/:id/auto-apply", cfg.UserMCPServersHandler.ListAutoApply)
+	}
 }

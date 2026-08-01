@@ -6,6 +6,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "users", label: "Users" },
   { to: "organisations", label: "Organisations" },
   { to: "credentials", label: "Credentials" },
+  { to: "mcp-servers", label: "MCP Servers" },
   { to: "relay", label: "Relay" },
   { to: "settings", label: "Settings" },
   { to: "versions", label: "Versions" },

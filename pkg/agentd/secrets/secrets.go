@@ -60,6 +60,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
@@ -350,9 +351,10 @@ type LLMProviderFormatter func(providers []sec.LLMProviderData) ([]byte, error)
 // NewMaterializer or pass a Materializer{} with field defaults filled in
 // by the caller.
 type Materializer struct {
-	FS              Filesystem
-	Paths           Paths
-	stagedProviders []sec.LLMProviderData
+	FS               Filesystem
+	Paths            Paths
+	stagedProviders  []sec.LLMProviderData
+	stagedMCPServers []StagedMCPServer
 }
 
 // NewMaterializer returns a Materializer using the production filesystem
@@ -393,6 +395,7 @@ func (m *Materializer) Materialize(secrets []Secret) (*MaterializeResult, error)
 
 func (m *Materializer) reset() error {
 	m.stagedProviders = nil
+	m.stagedMCPServers = nil
 
 	if err := m.FS.RemoveAll(m.Paths.SecretsBaseDir); err != nil && !os.IsNotExist(err) {
 		return err
@@ -441,6 +444,8 @@ func (m *Materializer) applyOne(s Secret) SecretResult {
 		err = m.applySecretFile(s)
 	case "env-secret":
 		err = m.applyEnvSecret(s)
+	case "mcp-server":
+		err = m.applyMCPServer(s)
 	default:
 		r.Outcome = OutcomeSkipped
 		r.Reason = fmt.Sprintf("unknown secret type %q", s.Type)
@@ -596,6 +601,55 @@ func (m *Materializer) applyLLMProvider(s Secret) error {
 	return nil
 }
 
+// applyMCPServer stages an MCP server config for later rendering into the
+// opencode mcp section. The plaintext carries the JSON-encoded env+headers
+// payload (MCPServerSecretPayload); the metadata carries transport/url/
+// command/args. The staged entry is consumed by FormatMCPServers →
+// AgentConfigWriter.SetMCPServers.
+func (m *Materializer) applyMCPServer(s Secret) error {
+	transport := s.Metadata["transport"]
+	if transport == "" {
+		return newValidationError("mcp-server metadata missing transport")
+	}
+
+	var payload struct {
+		Env     map[string]string `json:"env"`
+		Headers map[string]string `json:"headers"`
+	}
+	if s.Plaintext != "" {
+		if err := json.Unmarshal([]byte(s.Plaintext), &payload); err != nil {
+			return newValidationError("mcp-server plaintext: %v", err)
+		}
+	}
+
+	var args []string
+	if argsStr := s.Metadata["args"]; argsStr != "" {
+		_ = json.Unmarshal([]byte(argsStr), &args) //nolint:errcheck
+	}
+	timeoutMs := 0
+	if ts := s.Metadata["timeoutMs"]; ts != "" {
+		if n, err := strconv.Atoi(ts); err == nil {
+			timeoutMs = n
+		}
+	}
+
+	staged := StagedMCPServer{
+		Name:      s.Name,
+		Transport: transport,
+		URL:       s.Metadata["url"],
+		Command:   s.Metadata["command"],
+		Args:      args,
+		TimeoutMs: timeoutMs,
+		Env:       payload.Env,
+		Headers:   payload.Headers,
+	}
+	if staged.Args == nil {
+		staged.Args = []string{}
+	}
+	m.stagedMCPServers = append(m.stagedMCPServers, staged)
+	return nil
+}
+
 // StagedProviders returns the LLM provider data accumulated during
 // Materialize. Returns nil if no llm-provider secrets were in the batch.
 // This allows callers to use the structured data for direct API injection
@@ -603,6 +657,23 @@ func (m *Materializer) applyLLMProvider(s Secret) error {
 // config rendering via FlushProviders.
 func (m *Materializer) StagedProviders() []sec.LLMProviderData {
 	return m.stagedProviders
+}
+
+// StagedMCPServer is one materialized MCP server awaiting config rendering.
+type StagedMCPServer struct {
+	Name      string
+	Transport string
+	URL       string
+	Command   string
+	Args      []string
+	TimeoutMs int
+	Env       map[string]string
+	Headers   map[string]string
+}
+
+// StagedMCPServers returns the MCP servers accumulated during Materialize.
+func (m *Materializer) StagedMCPServers() []StagedMCPServer {
+	return m.stagedMCPServers
 }
 
 // EnrichProviders applies fn to the staged provider slice, replacing it with

@@ -27,6 +27,8 @@ tags:
     description: Admin and user settings
   - name: credentials
     description: Provider credentials, agent roles, and prompts
+  - name: mcp
+    description: External MCP server management (Epic 53)
   - name: usage
     description: Usage metering and quota (feature-gated)
   - name: account
@@ -2007,6 +2009,529 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "403":
           $ref: "#/components/responses/Forbidden"
+  # --- MCP Servers (Epic 53) ---
+  /admin/mcp-servers:
+    get:
+      tags: [mcp]
+      summary: List platform-scoped MCP servers
+      operationId: listAdminMcpServers
+      responses:
+        "200":
+          description: MCP server list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  servers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/McpServer"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [mcp]
+      summary: Create a platform-scoped MCP server
+      operationId: createAdminMcpServer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMcpServerRequest"
+      responses:
+        "201":
+          description: MCP server created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/McpServer"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /admin/mcp-servers/{id}:
+    get:
+      tags: [mcp]
+      summary: Get a platform-scoped MCP server
+      operationId: getAdminMcpServer
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: MCP server
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/McpServer"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [mcp]
+      summary: Update a platform-scoped MCP server
+      operationId: updateAdminMcpServer
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMcpServerRequest"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/McpServer"
+    delete:
+      tags: [mcp]
+      summary: Delete a platform-scoped MCP server
+      operationId: deleteAdminMcpServer
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Deleted
+  /admin/mcp-servers/{id}/bindings:
+    post:
+      tags: [mcp]
+      summary: Bind an MCP server to a workspace
+      operationId: bindAdminMcpServer
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                workspaceId:
+                  type: string
+              required: [workspaceId]
+      responses:
+        "200":
+          description: Bound
+        "409":
+          description: Quota exceeded
+  /admin/mcp-servers/{id}/auto-apply:
+    get:
+      tags: [mcp]
+      summary: List auto-apply rules for an MCP server
+      operationId: listAdminMcpServerAutoApply
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Auto-apply rules
+    post:
+      tags: [mcp]
+      summary: Create an auto-apply rule
+      operationId: createAdminMcpServerAutoApply
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                targetType:
+                  type: string
+                  enum: [all, org, user]
+                targetId:
+                  type: string
+      responses:
+        "201":
+          description: Created
+  /orgs/{id}/mcp-servers:
+    get:
+      tags: [mcp]
+      summary: List org-scoped MCP servers
+      operationId: listOrgMcpServers
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: MCP server list
+    post:
+      tags: [mcp]
+      summary: Create an org-scoped MCP server
+      operationId: createOrgMcpServer
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMcpServerRequest"
+      responses:
+        "201":
+          description: Created
+  /orgs/{id}/mcp-servers/{serverId}:
+    get:
+      tags: [mcp]
+      summary: Get an org-scoped MCP server
+      operationId: getOrgMcpServer
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: serverId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: MCP server
+    put:
+      tags: [mcp]
+      summary: Update an org-scoped MCP server
+      operationId: updateOrgMcpServer
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: serverId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMcpServerRequest"
+      responses:
+        "200":
+          description: Updated
+    delete:
+      tags: [mcp]
+      summary: Delete an org-scoped MCP server
+      operationId: deleteOrgMcpServer
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: serverId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Deleted
+  /me/mcp-servers:
+    get:
+      tags: [mcp]
+      summary: List user-scoped (personal) MCP servers
+      operationId: listUserMcpServers
+      responses:
+        "200":
+          description: MCP server list
+    post:
+      tags: [mcp]
+      summary: Create a personal MCP server
+      operationId: createUserMcpServer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateMcpServerRequest"
+      responses:
+        "201":
+          description: Created
+        "402":
+          description: Feature not enabled
+        "403":
+          description: Org member blocked or session required
+        "409":
+          description: Quota exceeded
+  /me/mcp-servers/{id}:
+    get:
+      tags: [mcp]
+      summary: Get a personal MCP server
+      operationId: getUserMcpServer
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: MCP server
+    put:
+      tags: [mcp]
+      summary: Update a personal MCP server
+      operationId: updateUserMcpServer
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateMcpServerRequest"
+      responses:
+        "200":
+          description: Updated
+    delete:
+      tags: [mcp]
+      summary: Delete a personal MCP server
+      operationId: deleteUserMcpServer
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Deleted
+  /admin/mcp-servers/{id}/bindings/{workspaceId}:
+    delete:
+      tags: [mcp]
+      summary: Unbind an MCP server from a workspace
+      operationId: unbindAdminMcpServer
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: workspaceId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Unbound
+  /admin/mcp-servers/{id}/auto-apply/{targetType}:
+    delete:
+      tags: [mcp]
+      summary: Delete an auto-apply rule by target type
+      operationId: deleteAdminMcpServerAutoApplyByType
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: targetType
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Deleted
+  /admin/mcp-servers/{id}/auto-apply/{targetType}/{targetId}:
+    delete:
+      tags: [mcp]
+      summary: Delete a targeted auto-apply rule
+      operationId: deleteAdminMcpServerAutoApplyTargeted
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: targetType
+          in: path
+          required: true
+          schema: { type: string }
+        - name: targetId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Deleted
+  /orgs/{id}/mcp-servers/{serverId}/bindings:
+    post:
+      tags: [mcp]
+      summary: Bind an org MCP server to a workspace
+      operationId: bindOrgMcpServer
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: serverId
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                workspaceId: { type: string }
+              required: [workspaceId]
+      responses:
+        "200":
+          description: Bound
+  /orgs/{id}/mcp-servers/{serverId}/bindings/{workspaceId}:
+    delete:
+      tags: [mcp]
+      summary: Unbind an org MCP server from a workspace
+      operationId: unbindOrgMcpServer
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: serverId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: workspaceId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Unbound
+  /orgs/{id}/mcp-servers/{serverId}/auto-apply:
+    get:
+      tags: [mcp]
+      summary: List auto-apply rules for an org MCP server
+      operationId: listOrgMcpServerAutoApply
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: serverId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Auto-apply rules
+    post:
+      tags: [mcp]
+      summary: Create an auto-apply rule for an org MCP server
+      operationId: createOrgMcpServerAutoApply
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: serverId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "201":
+          description: Created
+  /me/mcp-servers/{id}/bindings:
+    post:
+      tags: [mcp]
+      summary: Bind a personal MCP server to a workspace
+      operationId: bindUserMcpServer
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                workspaceId: { type: string }
+              required: [workspaceId]
+      responses:
+        "200":
+          description: Bound
+  /me/mcp-servers/{id}/bindings/{workspaceId}:
+    delete:
+      tags: [mcp]
+      summary: Unbind a personal MCP server from a workspace
+      operationId: unbindUserMcpServer
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+        - name: workspaceId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Unbound
+  /me/mcp-servers/{id}/auto-apply:
+    get:
+      tags: [mcp]
+      summary: List auto-apply rules for a personal MCP server
+      operationId: listUserMcpServerAutoApply
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: Auto-apply rules
+    post:
+      tags: [mcp]
+      summary: Create an auto-apply rule for a personal MCP server
+      operationId: createUserMcpServerAutoApply
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "201":
+          description: Created
   # --- Usage & Quota (Epic 12) ---
   /usage:
     get:
@@ -3173,6 +3698,98 @@ components:
         updatedAt:
           type: string
           format: date-time
+    McpServer:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        transport:
+          type: string
+          enum: [http, sse, stdio]
+        url:
+          type: string
+        command:
+          type: string
+        args:
+          type: array
+          items:
+            type: string
+        timeoutMs:
+          type: integer
+        hasSecret:
+          type: boolean
+        enabled:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    CreateMcpServerRequest:
+      type: object
+      required: [name, transport]
+      properties:
+        name:
+          type: string
+        transport:
+          type: string
+          enum: [http, sse, stdio]
+        url:
+          type: string
+        command:
+          type: string
+        args:
+          type: array
+          items:
+            type: string
+        timeoutMs:
+          type: integer
+        enabled:
+          type: boolean
+        env:
+          type: object
+          additionalProperties:
+            type: string
+        headers:
+          type: object
+          additionalProperties:
+            type: string
+        autoApply:
+          type: object
+          properties:
+            targetType:
+              type: string
+              enum: [all, org, user]
+            targetId:
+              type: string
+    UpdateMcpServerRequest:
+      type: object
+      properties:
+        name:
+          type: string
+        url:
+          type: string
+        command:
+          type: string
+        args:
+          type: array
+          items:
+            type: string
+        timeoutMs:
+          type: integer
+        enabled:
+          type: boolean
+        env:
+          type: object
+          additionalProperties:
+            type: string
+        headers:
+          type: object
+          additionalProperties:
+            type: string
     CreateProviderCredentialRequest:
       type: object
       required: [name, kind, slug, apiKey]

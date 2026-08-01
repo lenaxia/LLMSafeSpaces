@@ -11,7 +11,7 @@ import (
 )
 
 // FormatOpenCodeConfig renders a slice of validated LLMProviderData into
-// the JSON shape opencode 1.15.12 accepts.
+// the JSON shape opencode accepts.
 //
 // **Schema** (evidence-driven; established by live cluster probe in
 // worklog 0128. Do NOT change without re-validating against a running

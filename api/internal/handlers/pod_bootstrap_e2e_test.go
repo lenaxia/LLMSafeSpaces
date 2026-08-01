@@ -109,6 +109,10 @@ func (s *e2eSecretStore) HasUserProviderCredential(_ context.Context, _, _ strin
 	return false, nil
 }
 
+func (s *e2eSecretStore) GetWorkspaceMCPServers(_ context.Context, _ string) ([]secrets.MCPServerBindingRow, error) {
+	return nil, nil
+}
+
 // --- SecretStore surface (only the methods touched by the injection path
 // return real values; the rest panic to surface drift loudly) ---
 

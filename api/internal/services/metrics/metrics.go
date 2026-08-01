@@ -664,3 +664,32 @@ func RecordSecretAutoPush(outcome string) {
 func SecretAutoPushCounter() *prometheus.CounterVec {
 	return secretAutoPushTotal
 }
+
+// --- Epic 53: MCP server metrics ---
+
+var (
+	mcpServersTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmsafespaces_mcp_servers_total",
+			Help: "Total MCP server operations by scope and action",
+		},
+		[]string{"scope", "action"},
+	)
+	mcpBindingsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmsafespaces_mcp_bindings_total",
+			Help: "Total MCP server binding operations by source_type",
+		},
+		[]string{"source_type"},
+	)
+)
+
+// RecordMCPServerOp records an MCP server CRUD operation.
+func RecordMCPServerOp(scope, action string) {
+	mcpServersTotal.WithLabelValues(scope, action).Inc()
+}
+
+// RecordMCPBinding records an MCP binding operation.
+func RecordMCPBinding(sourceType string) {
+	mcpBindingsTotal.WithLabelValues(sourceType).Inc()
+}

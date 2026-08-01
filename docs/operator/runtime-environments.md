@@ -67,7 +67,7 @@ The base image ([`runtimes/base/Dockerfile`](https://github.com/lenaxia/LLMSafeS
 
 | Binary | Version | Verification |
 |---|---|---|
-| **opencode** | 1.15.12 (pinned) | Downloaded over TLS; **not checksum-verified** (upstream does not publish checksums — gap G9, accepted). Pinned to a specific validated release. |
+| **opencode** | 1.18.10 (pinned) | Downloaded over TLS; **not checksum-verified** (upstream does not publish checksums — gap G9, accepted). Pinned to a specific validated release. |
 | **gh** (GitHub CLI) | 2.74.1 (pinned) | Downloaded over TLS; **checksum-verified** via `checksums.txt` (G9 partial fix). |
 | **AWS CLI v2** | 2.34.57 (pinned) | Full PGP verification (AWS CLI Team key). |
 | **mise** | 2026.5.15 (pinned) | `MISE_GITHUB_ATTESTATIONS=1` — verifies Sigstore-backed GitHub attestations on every tool install. |

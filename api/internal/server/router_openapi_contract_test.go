@@ -322,6 +322,24 @@ var implOnlyAllowlist = map[route]bool{
 	// Epic 28: User-scoped SSE event stream. Long-lived connection,
 	// not a typical REST endpoint. Not documented in OpenAPI.
 	{method: "GET", path: "/api/v1/events"}: true,
+
+	// Org management routes (CRUD, members, billing) are registered by
+	// registerOrgRoutes when OrgsHandler is set. These are intentionally
+	// undocumented in OpenAPI — the public API contract covers the
+	// workspace/credential surface; org admin is a separate UX.
+	{method: "GET", path: "/api/v1/orgs"}:                             true,
+	{method: "POST", path: "/api/v1/orgs"}:                            true,
+	{method: "GET", path: "/api/v1/orgs/:id"}:                         true,
+	{method: "PUT", path: "/api/v1/orgs/:id"}:                         true,
+	{method: "DELETE", path: "/api/v1/orgs/:id"}:                      true,
+	{method: "GET", path: "/api/v1/orgs/:id/members"}:                 true,
+	{method: "POST", path: "/api/v1/orgs/:id/members"}:                true,
+	{method: "DELETE", path: "/api/v1/orgs/:id/members/:userID"}:      true,
+	{method: "PUT", path: "/api/v1/orgs/:id/members/:userID"}:         true,
+	{method: "POST", path: "/api/v1/orgs/:id/members/:userID/verify"}: true,
+	{method: "GET", path: "/api/v1/orgs/:id/workspaces"}:              true,
+	{method: "POST", path: "/api/v1/orgs/:id/billing/checkout"}:       true,
+	{method: "POST", path: "/api/v1/orgs/:id/billing/portal"}:         true,
 }
 
 // -----------------------------------------------------------------------------
@@ -375,6 +393,14 @@ func newContractFixture(t *testing.T) *gin.Engine {
 		WorkspaceEnvHandler: &handlers.WorkspaceEnvHandler{},
 		RotateKeyHandler:    &handlers.RotateKeyHandler{},
 		TerminalHandler:     &handlers.TerminalHandler{},
+		// Epic 53: MCP server handlers. Zero-value stubs are sufficient —
+		// the contract test only checks route presence, not behavior.
+		// OrgsHandler is required because registerMCPRoutes uses it for
+		// the OrgAdminGuard on org MCP routes.
+		AdminMCPServersHandler: &handlers.MCPServersHandler{},
+		OrgMCPServersHandler:   &handlers.MCPServersHandler{},
+		UserMCPServersHandler:  &handlers.MCPServersHandler{},
+		OrgsHandler:            &handlers.OrgsHandler{},
 	}
 	// proxyHandler also has a conditional wiring guard (sessions,
 	// events, message, prompt, abort routes). Pass a zero-value stub

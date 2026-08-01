@@ -286,6 +286,12 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	var unlockDEKHandler *handlers.UnlockDEKHandler
 	var adminProvCredHandler *handlers.AdminProviderCredentialsHandler
 	var userProvCredHandler *handlers.UserProviderCredentialsHandler
+	var adminMcpHandler *handlers.MCPServersHandler
+	var orgMcpHandler *handlers.MCPServersHandler
+	var userMcpHandler *handlers.MCPServersHandler
+	// mcpPushAdapter is assigned after agentPusher is constructed; used by
+	// all three MCP handler scopes for live reload after bind.
+	var mcpPushAdapter func(ctx context.Context, userID, workspaceID string) error
 	var orgsHandler *handlers.OrgsHandler
 	var orgCredsHandler *handlers.OrgCredentialsHandler
 	var pgOrgStore *database.PgOrgStore
@@ -456,6 +462,22 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		userProvCredHandler = handlers.NewUserProviderCredentialsHandler(pgStore, pgStore, keyService, secrets.NewPgKeyStore(secretsPool))
 		userProvCredHandler.SetCredentialStateWriter(dbSvc)
 
+		// Epic 53: MCP server handlers. Admin/org use the same RootKeyProvider
+		// as their credential counterparts (D3 — reuse existing crypto purposes).
+		// User-scope uses the session DEK (zero-knowledge, D13), mirroring the
+		// user provider-credential handler.
+		adminMcpHandler = handlers.NewAdminMCPServersHandler(pgStore, providerCredsProv)
+		userMcpHandler = handlers.NewUserMCPServersHandler(pgStore, pgOrgStore, keyService, secrets.NewPgKeyStore(secretsPool))
+
+		// Wire governance + operational deps shared across all MCP scopes.
+		for _, mh := range []*handlers.MCPServersHandler{adminMcpHandler, userMcpHandler} {
+			mh.SetSettings(instanceSettings)
+			mh.SetLogger(log)
+		}
+		// Audit uses the pgOrgStore (it implements LogAuditEvent/LogOrgEvent).
+		adminMcpHandler.SetAudit(pgOrgStore)
+		userMcpHandler.SetAudit(pgOrgStore)
+
 		// Seed the free-tier opencode credential (Epic 30 US-30.4).
 		if err := ensureFreeTierCredential(context.Background(), pgStore, providerCredsProv, log); err != nil {
 			log.Warn("free-tier credential seeding skipped", "error", err.Error())
@@ -493,6 +515,19 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			agentpush.WithLogger(log),
 		)
 		secretsHandler.SetAgentPusher(agentPusher)
+
+		// Epic 53: wire the shared agent pusher into the MCP handlers so
+		// bound MCP servers reach running pods via live reload-secrets push.
+		mcpPushAdapter = func(ctx context.Context, userID, workspaceID string) error {
+			_, err := agentPusher.Push(ctx, userID, workspaceID)
+			return err
+		}
+		if adminMcpHandler != nil {
+			adminMcpHandler.SetSecretPusher(mcpPushAdapter)
+		}
+		if userMcpHandler != nil {
+			userMcpHandler.SetSecretPusher(mcpPushAdapter)
+		}
 		// worklog 0591: the workspace service is no longer a consumer
 		// of the auto-push (that role moved to secretautopush below).
 		// SecretsHandler still needs the shared agentPusher for
@@ -648,6 +683,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		pgOrgStore = database.NewPgOrgStore(dbSvc.DB)
 		orgsHandler = handlers.NewOrgsHandler(pgOrgStore, svc.GetAuth())
 		orgCredsHandler = handlers.NewOrgCredentialsHandler(pgStore, pgStore, orgCredsProv, svc.GetAuth())
+		orgMcpHandler = handlers.NewOrgMCPServersHandler(pgStore, orgCredsProv, pgOrgStore)
+		orgMcpHandler.SetSettings(instanceSettings)
+		orgMcpHandler.SetLogger(log)
+		orgMcpHandler.SetAudit(pgOrgStore)
+		orgMcpHandler.SetSecretPusher(mcpPushAdapter)
 
 		// US-43.10: OIDC SSO. The service reuses the auth service as the JWT
 		// issuer (GenerateToken) and the server KEK (RootKeyProvider) to encrypt
@@ -1045,6 +1085,9 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		InstanceSettings:                instanceSettings,
 		AdminProviderCredentialsHandler: adminProvCredHandler,
 		UserProviderCredentialsHandler:  userProvCredHandler,
+		AdminMCPServersHandler:          adminMcpHandler,
+		OrgMCPServersHandler:            orgMcpHandler,
+		UserMCPServersHandler:           userMcpHandler,
 		SecretsHandler:                  secretsHandler,
 		ModelsHandler:                   modelsHandler,
 		WorkspaceEnvHandler:             workspaceEnvHandler,

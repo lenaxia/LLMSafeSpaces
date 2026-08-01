@@ -1,10 +1,22 @@
 # Epic 53: MCP Server Integration
 
-**Status:** Planning (definition only — no implementation in this epic)
+**Status:** In implementation (backend + frontend, all stories). Originally "Planning."
 **Created:** 2026-06-21
+**Last Revised:** 2026-08-01 — reconciled against the actual codebase snapshot (see "Snapshot Reconciliation" below).
 **Priority:** Medium-High (unblocks enterprise "bring your own tooling" workflows; security-sensitive)
 **Depends On:** Epic 30 (Unified Credential Model — injection pipeline), Epic 11/43 (organizations, org admin guard). Soft-depends on Epic 50 (master KEK hardening) for clean crypto, but does NOT block on it.
 **Authoritative for:** How the platform lets admins register, secure, bind, and inject **external** MCP servers so that agents running inside workspaces gain their tools.
+
+---
+
+## Snapshot Reconciliation (2026-08-01)
+
+This document was originally written against a newer codebase projection. Implementation against the actual snapshot (`/workspace/LLMSafespaces`, latest migration `000011`) required the following corrections:
+
+1. **Migration numbers corrected.** The original cited `000015/000026/000030/000033/000041-043`; none exist here. The actual new migration is **`000012_mcp_servers`**. Features the doc attributed to those future migrations already exist in `000001` (e.g. `users.plan_id` at `000001:286`; `org_policies` at `000001:243`).
+2. **US-53.1 complete.** A6/A7/A17 are validated by the pinned opencode schema (`cmd/workspace-agentd/testdata/opencode-config.schema.json:1014, 550-673`) — no live spike required. Contract captured in `MATERIALIZE-CONTRACT.md`.
+3. **D11 + D12 + US-53.11b revised** (see revised decisions below). The org-membership gate is retained (D11), but the solo-user gate is now a **plan-tier registration quota** (`MaxPersonalMcpServers`), not a boolean flag. An org-admin policy (`allow_user_mcp_servers`) gates org members. The `UserFeatureGuard` returns 402 only when the quota is 0 (disabled).
+4. **`GetUserPlan` does not exist** and is added by this epic (single-column read of `users.plan_id`). `OrgPlan` constants (`free/team/business/enterprise`) are reused for user-scope — there is no separate `UserPlan` type and no `basic` tier.
 
 ---
 
@@ -282,31 +294,30 @@ An org policy `allowed_mcp_servers` allowlist is a plausible governance feature 
 
 The asymmetry is deliberate and threat-model-driven. Org members *can* manage personal **LLM provider credentials** (which model answers their prompts — preference/cost, low exfiltration risk) but *cannot* manage personal **MCP servers** (which external systems their agent can call — high data-exfiltration risk: a malicious MCP server receives whatever the agent sends it, including code, in-context secrets, and workspace files). An org admin is accountable for the org's data-egress surface; letting members add arbitrary MCP servers would let them bypass org egress controls and audit. So org membership transfers ownership of the *tool* surface to the admin while leaving the *model-preference* surface with the member.
 
-Mechanically: the user-scope CRUD handler calls `GetUserOrgID(userID)` (`pg_org_store.go:801`); a non-empty result → `403`. This is a single, cheap, indexed query at the gate — no per-request cost concern.
+**Revised gate (2026-08-01):** the org-membership check is retained, but it now consults an **org-admin-controlled policy** rather than being an unconditional hard lockout. The user-scope CRUD handler calls `GetUserOrgID(userID)` (`pg_org_store.go:866`); a non-empty result → consult the org's `allow_user_mcp_servers` policy. When the policy is unset or false (the default — locked), the request is refused with `403`. When the org admin sets it to true, members CAN register personal MCP servers. This mirrors the proven `allow_user_prompt` pattern exactly (same policy table, same default-locked semantics, same resolution path).
 
-### D12 — User-scope is gated by a feature flag; feature flagging and billing are separate concerns
+### D12 — Solo-user user-scope is bounded by a plan-tier registration quota
 
-User-scope MCP servers are gated behind a **feature flag** (`PersonalMcpServers`), not behind a billing integration. Feature flagging answers one question: *"is this capability enabled for this principal?"* Billing answers a different question: *"how did the principal obtain (and keep) the capability?"* These are separate concerns with a clean integration point between them — they must not be conflated.
+**Revised (2026-08-01):** the original boolean `PersonalMcpServers` flag is replaced by an integer quota field `MaxPersonalMcpServers` on `PlanFeatures` (`pkg/billing/plan_tiers.go`). The semantics:
 
-**What we build in this epic (feature enablement):**
+| Value | Meaning |
+|---|---|
+| `0`  | Disabled — solo users on this plan cannot register personal MCP servers (`402`). |
+| `-1` | Unlimited. |
+| `N>0` | At most N personal MCP servers may be registered. |
 
-The platform already has a feature-flag layer: `PlanFeatures` struct + `IsFeatureAllowed(plan, feature)` in `pkg/billing/plan_tiers.go` (the package name is pre-existing and somewhat misleading — `plan_tiers.go` is pure feature-flag logic with zero Stripe/payment code). It maps a plan tier to a static set of boolean capability flags. This is the authoritative "is the feature on?" source for every gated route. The work here is:
+Tier mapping (the four existing `OrgPlan` constants; there is no `basic` tier):
 
-1. Add a `PersonalMcpServers bool` flag to `PlanFeatures`, enabled on `team`/`business`/`enterprise`, disabled on `free`.
-2. Wire it into `IsFeatureAllowed` as the `"personal_mcp_servers"` feature name.
-3. Add a `UserFeatureGuard` middleware (parallel to the existing org-scoped `FeatureGuard`) that reads the caller's plan and checks the flag. On denial → `402` (the established convention for plan-tier denial in this codebase, matching the existing `FeatureGuard` at `feature_guard.go:55`; the response body carries `{feature, planId, hint}` so the client can act).
+| Plan | `MaxPersonalMcpServers` |
+|---|---|
+| `free`       | `5`  |
+| `team`       | `-1` (unlimited) |
+| `business`   | `-1` (unlimited) |
+| `enterprise` | `-1` (unlimited) |
 
-That is the entirety of the feature-enablement work. It depends on no billing code.
+The feature-flag layer (`PlanFeatures`/`GetPlanFeatures`) remains the authoritative "is the capability enabled, and to what ceiling?" source — it is plan-driven and contains no billing code. The separation of concerns from the original D12 rationale is preserved: billing (Stripe, Epic 12) is a *writer* of `users.plan_id`; the flag layer *reads* it. A deployment with no Stripe configured can still gate the feature by setting `users.plan_id` directly.
 
-**What is explicitly out of scope (billing):**
-
-Stripe checkout sessions, payment webhooks, invoice handling, subscription lifecycle, price/product configuration — all of that lives in `pkg/billing/stripe_provider.go`, `webhook.go`, and `org_billing.go`, and is Epic 12's territory. We do not touch it, depend on it, or build parallel versions of it.
-
-**The integration point (well-defined, wired later):**
-
-The two concerns connect at exactly one seam: the `users.plan_id` column (`TEXT`, migration `000026:17`). When billing is wired (Epic 12 or a dedicated follow-up), a successful Stripe purchase updates `users.plan_id`; the feature-flag layer reads it and the capability turns on automatically. A cancelled subscription flips it back off. No feature-flag code changes when billing lands — the flag layer is plan-driven, and billing is one (of potentially several) mechanisms that writes the plan. The flag layer is the source of truth for "enabled?"; billing is a writer of the state the flag reads.
-
-**Why this separation matters:** a deployment that has no Stripe configured (self-hosted, air-gapped, dev) can still gate features by setting `users.plan_id` directly (via admin API, a CLI, or database seeding). Feature enablement must not require a live payment provider. Building the flag layer without the billing layer preserves this.
+`IsFeatureAllowed(plan, "personal_mcp_servers")` returns `true` when `MaxPersonalMcpServers != 0` (so the `UserFeatureGuard` 402 path fires only for fully-disabled plans). The quota ceiling is enforced separately at Create time by counting the caller's existing user-scope servers.
 
 ### D13 — User-scope encryption uses the user password-derived DEK (zero-knowledge), requiring an active session
 
