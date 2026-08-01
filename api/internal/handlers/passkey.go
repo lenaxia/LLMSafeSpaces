@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"log"
 	"net/http"
 	"time"
 
@@ -183,7 +184,7 @@ func (h *PasskeyHandler) RegisterFinish(c *gin.Context) {
 	// Create the user row FIRST so the FK constraint on user_passkeys.user_id
 	// is satisfied before the credential is inserted. existing is guaranteed
 	// nil here (we returned 409 above if not).
-	emailVerified := h.emailVerifier == nil // dev mode auto-verifies
+	emailVerified := h.emailVerifier == nil
 	newUser := &types.User{
 		ID:            result.Credential.UserID,
 		Username:      username,
@@ -199,13 +200,13 @@ func (h *PasskeyHandler) RegisterFinish(c *gin.Context) {
 		return
 	}
 	if h.emailVerifier != nil {
-		_ = h.emailVerifier.SendVerification(c.Request.Context(), newUser.ID, newUser.Email)
-		// Non-fatal: user is created, session is valid, and the user can
-		// request a resend via /verify-email/resend. Intentionally not using
-		// c.Error() — the error-handler middleware would overwrite the 200
-		// registration response. auth.Service.Register uses the same pattern
-		// (logger.Warn), but PasskeyHandler has no logger; the silent
-		// non-failure is the safe tradeoff.
+		if err := h.emailVerifier.SendVerification(c.Request.Context(), newUser.ID, newUser.Email); err != nil {
+			// Non-fatal: user is created, session is valid. The user can
+			// request a resend via /verify-email/resend. Matches auth.go's
+			// Register pattern which uses s.logger.Warn. PasskeyHandler has
+			// no structured logger, so we use stdlib log as a fallback.
+			log.Printf("WARN: passkey RegisterFinish: failed to send verification email: user_id=%s err=%v", newUser.ID, err)
+		}
 	}
 
 	// Atomically persist credential + recovery codes (single transaction).
@@ -376,20 +377,9 @@ func (h *PasskeyHandler) ListPasskeys(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list passkeys"})
 		return
 	}
-	type passkeyDTO struct {
-		ID         uuid.UUID  `json:"id"`
-		Name       string     `json:"name,omitempty"`
-		CreatedAt  time.Time  `json:"createdAt"`
-		LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
-	}
-	dtos := make([]passkeyDTO, 0, len(creds))
+	dtos := make([]types.PasskeyCredential, 0, len(creds))
 	for _, cred := range creds {
-		dtos = append(dtos, passkeyDTO{
-			ID:         cred.ID,
-			Name:       cred.Name,
-			CreatedAt:  cred.CreatedAt,
-			LastUsedAt: cred.LastUsedAt,
-		})
+		dtos = append(dtos, cred.ToDTO())
 	}
 	c.JSON(http.StatusOK, gin.H{"passkeys": dtos})
 }

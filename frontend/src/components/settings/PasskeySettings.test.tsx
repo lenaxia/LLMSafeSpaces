@@ -45,3 +45,26 @@ it("shows delete button for each passkey", async () => {
     expect(screen.getByText("Remove")).toBeInTheDocument();
   });
 });
+
+it("calls deletePasskey when Remove clicked", async () => {
+  vi.mocked(passkeyApi.listPasskeys).mockResolvedValueOnce({
+    passkeys: [{ id: "pk-1", name: "YubiKey", createdAt: "2026-01-01T00:00:00Z" }],
+  });
+  vi.mocked(passkeyApi.deletePasskey).mockResolvedValueOnce({ deleted: true });
+  vi.mocked(passkeyApi.listPasskeys).mockResolvedValueOnce({ passkeys: [] });
+  const { fireEvent, waitFor } = await import("@testing-library/react");
+  render(<PasskeySettings />);
+  await waitFor(() => expect(screen.getByText("YubiKey")).toBeInTheDocument());
+  fireEvent.click(screen.getByText("Remove"));
+  await waitFor(() => expect(passkeyApi.deletePasskey).toHaveBeenCalledWith("pk-1"));
+});
+
+it("shows regenerate button and calls API", async () => {
+  vi.mocked(passkeyApi.listPasskeys).mockResolvedValueOnce({ passkeys: [] });
+  vi.mocked(passkeyApi.regenerateRecoveryCodes).mockResolvedValueOnce({ recoveryCodes: ["CODE1"] });
+  const { fireEvent, waitFor } = await import("@testing-library/react");
+  render(<PasskeySettings />);
+  await waitFor(() => expect(screen.getByText("Regenerate recovery codes")).toBeInTheDocument());
+  fireEvent.click(screen.getByText("Regenerate recovery codes"));
+  await waitFor(() => expect(passkeyApi.regenerateRecoveryCodes).toHaveBeenCalled());
+});

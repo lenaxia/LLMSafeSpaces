@@ -5,6 +5,7 @@ package passkey
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -51,8 +52,9 @@ func (s *memSessionStore) ConsumeChallenge(_ context.Context, token string) ([]b
 }
 
 type memStore struct {
-	creds         []Credential
-	recoveryCodes []RecoveryCode
+	createRecoveryErr error
+	creds             []Credential
+	recoveryCodes     []RecoveryCode
 }
 
 func (s *memStore) ListCredentials(_ context.Context, _ string) ([]Credential, error) {
@@ -87,6 +89,9 @@ func (s *memStore) CreateCredentialAndRecoveryCodes(_ context.Context, c *Creden
 	return nil
 }
 func (s *memStore) CreateRecoveryCodes(_ context.Context, _ string, hashes []string) error {
+	if s.createRecoveryErr != nil {
+		return s.createRecoveryErr
+	}
 	for _, h := range hashes {
 		s.recoveryCodes = append(s.recoveryCodes, RecoveryCode{CodeHash: h})
 	}
@@ -496,4 +501,11 @@ func TestRegenerateRecoveryCodes_ReturnsCodes(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, codes, RecoveryCodeCount)
 	assert.Len(t, store.recoveryCodes, RecoveryCodeCount)
+}
+
+func TestRegenerateRecoveryCodes_StoreError(t *testing.T) {
+	svc, store, _, _ := newTestService(t)
+	store.createRecoveryErr = fmt.Errorf("DB down")
+	_, err := svc.RegenerateRecoveryCodes(context.Background(), "u1")
+	require.Error(t, err)
 }
