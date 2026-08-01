@@ -301,13 +301,6 @@ test.describe("Passkey e2e", () => {
     await page.close();
   });
 
-
-
-    await cdp.send("WebAuthn.removeVirtualAuthenticator", { authenticatorId });
-    await cdp.detach();
-    await page.close();
-  });
-
   test("recovery code flow", async ({ page }) => {
     const mockState = await mockPasskeyApi(page);
 
@@ -535,17 +528,15 @@ test.describe("Passkey settings", () => {
     await expect(page).toHaveURL(/\/settings\/passkeys/, { timeout: 5000 });
     await expect(page.getByText(/recovery code to sign in/i)).toBeVisible();
 
-    // PHASE 2: Mock passkey list (empty) + enroll endpoints.
+    // PHASE 2: Mock passkey list + enroll endpoints.
+    // First GET returns empty list; after enroll, GET returns the new passkey.
+    let enrollDone = false;
     await page.route(`${API_PREFIX}/account/passkeys`, async (route: Route) => {
-      const method = route.request().method();
-      if (method === "GET") {
-        const body = await route.request().postData();
-        if (!body) {
-          // After enroll, return the new passkey.
-          await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ passkeys: [{ id: "pk-new", name: "New Passkey", createdAt: "2026-01-01T00:00:00Z" }] }) });
-        } else {
-          await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ passkeys: [] }) });
-        }
+      if (route.request().method() === "GET") {
+        const passkeys = enrollDone
+          ? [{ id: "pk-new", name: "New Passkey", createdAt: "2026-01-01T00:00:00Z" }]
+          : [];
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ passkeys }) });
       } else {
         await route.fulfill({ status: 200 });
       }
@@ -565,7 +556,9 @@ test.describe("Passkey settings", () => {
         }),
       });
     });
+    let enrollDone = false;
     await page.route(`${API_PREFIX}/account/passkeys/enroll/finish`, async (route: Route) => {
+      enrollDone = true;
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ enrolled: true }) });
     });
 
