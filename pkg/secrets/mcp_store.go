@@ -168,6 +168,17 @@ func (s *PgSecretStore) GetWorkspaceOrgIDForMCP(ctx context.Context, workspaceID
 	return *orgID, nil
 }
 
+// GetWorkspaceUserIDForMCP resolves the user_id of a workspace, used by
+// the MCP bind handler to verify the caller owns the target workspace.
+func (s *PgSecretStore) GetWorkspaceUserIDForMCP(ctx context.Context, workspaceID string) (string, error) {
+	var userID string
+	err := s.pool.QueryRow(ctx, `SELECT user_id FROM workspaces WHERE id = $1`, workspaceID).Scan(&userID)
+	if err != nil {
+		return "", err
+	}
+	return userID, nil
+}
+
 // GetWorkspaceMCPServers returns all bound+enabled MCP servers for a workspace,
 // carrying ciphertext for downstream decryption by the injection pipeline.
 // Disabled servers are skipped (omitted, not emitted as the disable form).

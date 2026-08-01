@@ -38,6 +38,7 @@ type mcpServerStore interface {
 	CountMCPServersByOwner(ctx context.Context, ownerType, ownerID string) (int, error)
 	CountWorkspaceMCPServers(ctx context.Context, workspaceID string) (int, error)
 	GetWorkspaceOrgIDForMCP(ctx context.Context, workspaceID string) (string, error)
+	GetWorkspaceUserIDForMCP(ctx context.Context, workspaceID string) (string, error)
 	BindMCPServerToWorkspace(ctx context.Context, serverID, workspaceID string) error
 	UnbindMCPServerFromWorkspace(ctx context.Context, serverID, workspaceID string) error
 	CreateMCPServerAutoApply(ctx context.Context, serverID, targetType string, targetID *string) error
@@ -490,11 +491,24 @@ func (h *MCPServersHandler) update(c *gin.Context, ownerType, ownerID string, en
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update MCP server"})
 		return
 	}
-	existing.Name = row.Name
-	existing.URL = row.URL
-	existing.Command = row.Command
-	existing.Args = row.Args
-	existing.TimeoutMs = row.TimeoutMs
+	// Copy updated fields to existing for the response. Only overwrite when
+	// the request actually provided a value (nil = preserve existing), matching
+	// the store's nil-preservation semantics.
+	if row.Name != "" {
+		existing.Name = row.Name
+	}
+	if row.URL != "" {
+		existing.URL = row.URL
+	}
+	if row.Command != "" {
+		existing.Command = row.Command
+	}
+	if row.Args != nil {
+		existing.Args = row.Args
+	}
+	if row.TimeoutMs != nil {
+		existing.TimeoutMs = row.TimeoutMs
+	}
 	existing.Enabled = row.Enabled
 	existing.UpdatedAt = row.UpdatedAt
 	c.JSON(http.StatusOK, mcpRowToResponse(existing))
@@ -576,14 +590,23 @@ func (h *MCPServersHandler) Bind(c *gin.Context) {
 		return
 	}
 
-	// Verify the caller owns the server. Without this, a user on the /me/
-	// route could bind any serverID to any workspace (cross-tenant tool
-	// injection). The server's owner_type must match this handler's scope,
-	// and the owner_id must match the caller (user) or the org from the path.
+	// Verify the caller owns the server AND the workspace. Without this,
+	// a user on the /me/ route could bind any server to any workspace
+	// (cross-tenant tool injection).
 	ownerID := h.resolveOwnerID(c)
 	if !h.verifyServerOwnership(c, serverID, ownerID) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "MCP server not found"})
 		return
+	}
+	// For user-scope binds, verify the caller owns the target workspace.
+	// Admin/org scopes are behind AdminGuard/OrgAdminGuard which already
+	// verifies authorization.
+	if h.ownerType == types.MCPServerOwnerUser {
+		wsUserID, err := h.store.GetWorkspaceUserIDForMCP(c.Request.Context(), body.WorkspaceID)
+		if err != nil || wsUserID != c.GetString("userID") {
+			c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
+			return
+		}
 	}
 
 	// Enforce org policy quota: max_mcp_servers_per_workspace. The bound

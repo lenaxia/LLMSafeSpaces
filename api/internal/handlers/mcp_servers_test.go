@@ -74,6 +74,9 @@ func (s *stubMCPStore) CountWorkspaceMCPServers(_ context.Context, _ string) (in
 func (s *stubMCPStore) GetWorkspaceOrgIDForMCP(_ context.Context, _ string) (string, error) {
 	return "", nil
 }
+func (s *stubMCPStore) GetWorkspaceUserIDForMCP(_ context.Context, _ string) (string, error) {
+	return "user-1", nil
+}
 func (s *stubMCPStore) GetWorkspaceMCPServers(_ context.Context, _ string) ([]secrets.MCPServerBindingRow, error) {
 	return nil, nil
 }
