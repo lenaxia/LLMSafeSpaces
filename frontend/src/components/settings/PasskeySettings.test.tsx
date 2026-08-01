@@ -117,17 +117,18 @@ it("shows error when enroll fails", async () => {
   }, { timeout: 5000 });
 });
 
-it("shows expired error when ceremony times out", async () => {
+it("shows session-expired message on enroll failure", async () => {
   vi.mocked(passkeyApi.listPasskeys).mockResolvedValueOnce({ passkeys: [] });
+  vi.mocked(passkeyApi.enrollBegin).mockResolvedValueOnce({ options: {}, sessionToken: "tok" });
   const { ApiClientError } = await import("../../api/client");
-  vi.mocked(passkeyApi.enrollBegin).mockRejectedValueOnce(
-    new ApiClientError(500, { error: "internal" }),
+  vi.mocked(passkeyApi.enrollFinish).mockRejectedValueOnce(
+    new ApiClientError(400, { error: "passkey enrollment failed" }),
   );
   const { fireEvent, waitFor } = await import("@testing-library/react");
   render(<PasskeySettings />);
   await waitFor(() => expect(screen.getByText("Add passkey")).toBeInTheDocument());
   fireEvent.click(screen.getByText("Add passkey"));
   await waitFor(() => {
-    expect(screen.getByText(/Failed to add passkey/i)).toBeInTheDocument();
+    expect(screen.getByText(/session expired/i)).toBeInTheDocument();
   });
 });
