@@ -118,6 +118,14 @@ type fakeUserLookup struct {
 func (f *fakeUserLookup) GetUserByEmail(_ context.Context, email string) (*types.User, error) {
 	return f.users[email], nil
 }
+func (f *fakeUserLookup) GetUser(_ context.Context, userID string) (*types.User, error) {
+	for _, u := range f.users {
+		if u != nil && u.ID == userID {
+			return u, nil
+		}
+	}
+	return nil, nil
+}
 
 // --- test service factory ---
 

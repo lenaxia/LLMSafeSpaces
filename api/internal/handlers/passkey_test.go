@@ -33,11 +33,27 @@ type fakePasskeyUsers struct {
 func (f *fakePasskeyUsers) GetUserByEmail(_ context.Context, email string) (*types.User, error) {
 	return f.users[email], nil
 }
+func (f *fakePasskeyUsers) GetUser(_ context.Context, userID string) (*types.User, error) {
+	for _, u := range f.users {
+		if u != nil && u.ID == userID {
+			return u, nil
+		}
+	}
+	return nil, nil
+}
 func (f *fakePasskeyUsers) CreateUser(_ context.Context, u *types.User) error {
 	if f.createUserErr != nil {
 		return f.createUserErr
 	}
 	f.users[u.Email] = u
+	return nil
+}
+func (f *fakePasskeyUsers) DeleteUser(_ context.Context, userID string) error {
+	for email, u := range f.users {
+		if u.ID == userID {
+			delete(f.users, email)
+		}
+	}
 	return nil
 }
 
@@ -104,6 +120,12 @@ func (s *fakePasskeySvc) RegenerateRecoveryCodes(_ context.Context, _ string) ([
 		return nil, s.regenerateErr
 	}
 	return []string{"NEW1", "NEW2"}, nil
+}
+func (s *fakePasskeySvc) AddCredential(_ context.Context, _ *passkey.Credential) error {
+	return nil
+}
+func (s *fakePasskeySvc) GetUserName(_ context.Context, _ string) (string, error) {
+	return "testuser", nil
 }
 
 // --- tests ---

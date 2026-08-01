@@ -46,6 +46,7 @@ const recoveryCodeAlphabet = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
 // database.Service.GetUserByEmail shape.
 type UserLookup interface {
 	GetUserByEmail(ctx context.Context, email string) (*types.User, error)
+	GetUser(ctx context.Context, userID string) (*types.User, error)
 }
 
 // SessionStore abstracts the WebAuthn challenge store. Challenges MUST be
@@ -308,6 +309,25 @@ func (s *Service) RegenerateRecoveryCodes(ctx context.Context, userID string) ([
 		return nil, fmt.Errorf("store recovery codes: %w", err)
 	}
 	return codes, nil
+}
+
+// AddCredential persists a credential for an already-authenticated user
+// (the "Add passkey" flow from settings). Does NOT generate recovery codes.
+func (s *Service) AddCredential(ctx context.Context, cred *Credential) error {
+	return s.store.CreateCredential(ctx, cred)
+}
+
+// GetUserName returns the username for a userID. Used by the enrollment
+// flow to pass the user's name to BeginRegistration.
+func (s *Service) GetUserName(ctx context.Context, userID string) (string, error) {
+	user, err := s.users.GetUser(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	if user == nil {
+		return "", nil
+	}
+	return user.Username, nil
 }
 
 // parseCreationFromMap parses a WebAuthn attestation response from a

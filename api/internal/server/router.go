@@ -1516,4 +1516,6 @@ func registerPasskeySettingsRoutes(router *gin.Engine, services interfaces.Servi
 	pkSettings.GET("", handler.ListPasskeys)
 	pkSettings.DELETE("/:id", handler.DeletePasskey)
 	pkSettings.POST("/recovery-codes/regenerate", handler.RegenerateRecoveryCodes)
+	pkSettings.POST("/enroll/begin", handler.BeginEnrollPasskey)
+	pkSettings.POST("/enroll/finish", handler.FinishEnrollPasskey)
 }

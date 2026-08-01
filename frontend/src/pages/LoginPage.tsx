@@ -70,7 +70,9 @@ export function LoginPage() {
   };
 
   const redirectAfterAuthWithFlag = (flag: string) => {
-    const base = "/settings/passkeys";
+    // Preserve returnTo if present; fall back to settings/passkeys so the
+    // user can enroll a new passkey after using a recovery code.
+    const base = returnTo || "/settings/passkeys";
     const sep = base.includes("?") ? "&" : "?";
     window.location.href = `${base}${sep}${flag}=1`;
   };

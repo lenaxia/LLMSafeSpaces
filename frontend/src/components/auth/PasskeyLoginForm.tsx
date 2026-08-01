@@ -32,9 +32,13 @@ export function PasskeyLoginForm({ onSuccess, onUsePassword, onRecover }: Props)
       await onSuccess(finishResp.token);
     } catch (err) {
       if (err instanceof ApiClientError) {
-        setError(err.body?.error === "no passkey registered for this account"
-          ? "No passkey is registered for this account. Use your password instead."
-          : err.message);
+        if (err.body?.error === "no passkey registered for this account") {
+          setError("No passkey is registered for this account. Use your password instead.");
+        } else if (err.body?.error?.includes("expired") || err.body?.error?.includes("login failed")) {
+          setError("Your login session expired. Please try again.");
+        } else {
+          setError(err.message);
+        }
       } else if (err instanceof Error) {
         if (err.name === "NotAllowedError") {
           setError("Authentication was cancelled or timed out. Please try again.");

@@ -13,6 +13,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/passkey"
@@ -32,6 +33,7 @@ type passkeyAuthService interface {
 type passkeyUserStore interface {
 	GetUserByEmail(ctx context.Context, email string) (*types.User, error)
 	CreateUser(ctx context.Context, user *types.User) error
+	DeleteUser(ctx context.Context, userID string) error
 }
 
 // PasskeyService interface defines the ceremony methods the handler needs.
@@ -48,6 +50,12 @@ type PasskeyService interface {
 	ListUserCredentials(ctx context.Context, userID string) ([]passkey.Credential, error)
 	DeleteUserCredential(ctx context.Context, userID string, credID uuid.UUID) error
 	RegenerateRecoveryCodes(ctx context.Context, userID string) ([]string, error)
+	// AddCredentialToExistingUser persists a credential for an already-authenticated
+	// user (the settings "Add passkey" flow). Unlike CreateCredentialAndRecoveryCodes,
+	// this does NOT generate recovery codes (the user already has them).
+	AddCredential(ctx context.Context, cred *passkey.Credential) error
+	// GetUserName returns the username for a userID (used by BeginEnrollPasskey).
+	GetUserName(ctx context.Context, userID string) (string, error)
 }
 
 // PasskeyHandler handles WebAuthn passkey registration, login, and recovery.
@@ -196,6 +204,10 @@ func (h *PasskeyHandler) RegisterFinish(c *gin.Context) {
 		PasswordHash:  randomUnusableHash(),
 	}
 	if err := h.users.CreateUser(c.Request.Context(), newUser); err != nil {
+		if isUniqueViolation(err) {
+			c.JSON(http.StatusConflict, gin.H{"error": "account already exists"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "user creation failed"})
 		return
 	}
@@ -211,6 +223,10 @@ func (h *PasskeyHandler) RegisterFinish(c *gin.Context) {
 
 	// Atomically persist credential + recovery codes (single transaction).
 	if err := h.svc.CreateCredentialAndRecoveryCodes(c.Request.Context(), &result.Credential, result.RecoveryCodeHashes); err != nil {
+		// Cleanup: the user row was created but credential persistence
+		// failed. Delete the orphaned user so the email can be re-used.
+		// Without this, RegisterBegin returns 409 on retry.
+		_ = h.users.DeleteUser(c.Request.Context(), newUser.ID)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "credential persistence failed"})
 		return
 	}
@@ -314,6 +330,13 @@ func randomUnusableHash() string {
 }
 
 // emailLocalPart extracts the local part of an email for a default username.
+// isUniqueViolation checks if a PostgreSQL error is a unique-constraint
+// violation (error code 23505).
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
 func emailLocalPart(email string) string {
 	for i, c := range email {
 		if c == '@' {
@@ -425,4 +448,62 @@ func (h *PasskeyHandler) RegenerateRecoveryCodes(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"recoveryCodes": codes})
+}
+
+// BeginEnrollPasskey handles POST /api/v1/account/passkeys/enroll/begin.
+// Starts a WebAuthn registration ceremony for an EXISTING authenticated user
+// who wants to add a new passkey (e.g., after recovery-code login or from
+// the settings page).
+func (h *PasskeyHandler) BeginEnrollPasskey(c *gin.Context) {
+	userID, _ := extractAuth(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+		return
+	}
+	username, err := h.svc.GetUserName(c.Request.Context(), userID)
+	if err != nil || username == "" {
+		username = "user"
+	}
+	opts, err := h.svc.BeginRegistration(c.Request.Context(), userID, username)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start enrollment"})
+		return
+	}
+	c.JSON(http.StatusOK, opts)
+}
+
+// FinishEnrollPasskey handles POST /api/v1/account/passkeys/enroll/finish.
+// Verifies the attestation and persists the credential (without recovery codes).
+func (h *PasskeyHandler) FinishEnrollPasskey(c *gin.Context) {
+	userID, _ := extractAuth(c)
+	if userID == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPasskeyBodySize)
+	var req struct {
+		SessionToken string         `json:"sessionToken" binding:"required"`
+		Name         string         `json:"name"`
+		Response     map[string]any `json:"response" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+	username, _ := h.svc.GetUserName(c.Request.Context(), userID)
+	result, err := h.svc.FinishRegistration(c.Request.Context(), req.SessionToken, username, req.Name, req.Response)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, passkey.ErrChallengeExpired) {
+			status = http.StatusBadRequest
+		}
+		c.JSON(status, gin.H{"error": "passkey enrollment failed"})
+		return
+	}
+	// Persist the credential without recovery codes (user already has them).
+	if err := h.svc.AddCredential(c.Request.Context(), &result.Credential); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store passkey"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"enrolled": true})
 }
