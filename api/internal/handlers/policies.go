@@ -119,7 +119,9 @@ func isValidKey(k types.OrgPolicyKey) bool {
 		types.PolicyMaxWorkspacesPerMember,
 		types.PolicyMaxActiveWorkspacesPerMem,
 		types.PolicySysPromptOrg,
-		types.PolicyAllowUserPrompt:
+		types.PolicyAllowUserPrompt,
+		types.PolicyAllowUserMcpServers,
+		types.PolicyMaxMcpServersPerWorkspace:
 		return true
 	}
 	return false
@@ -146,6 +148,15 @@ func isValidValue(key types.OrgPolicyKey, body json.RawMessage) bool {
 	case types.PolicyAllowUserPrompt:
 		var b bool
 		return json.Unmarshal(body, &b) == nil
+	case types.PolicyAllowUserMcpServers:
+		var b bool
+		return json.Unmarshal(body, &b) == nil
+	case types.PolicyMaxMcpServersPerWorkspace:
+		var n int
+		if err := json.Unmarshal(body, &n); err != nil {
+			return false
+		}
+		return n >= 0
 	}
 	return false
 }

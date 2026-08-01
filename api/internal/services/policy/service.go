@@ -145,6 +145,18 @@ func applyPolicyValue(vals *types.OrgPolicyValues, p *types.OrgPolicy) error {
 			return err
 		}
 		vals.AllowUserPrompt = &b
+	case types.PolicyAllowUserMcpServers:
+		var b bool
+		if err := json.Unmarshal(p.Value, &b); err != nil {
+			return err
+		}
+		vals.AllowUserMcpServers = &b
+	case types.PolicyMaxMcpServersPerWorkspace:
+		var n int
+		if err := json.Unmarshal(p.Value, &n); err != nil {
+			return err
+		}
+		vals.MaxMcpServersPerWorkspace = &n
 	}
 	return nil
 }
@@ -169,6 +181,12 @@ func intersect(platform *types.OrgPolicyValues, org *types.OrgPolicyValues) *typ
 	// platform value when the org does not set one.
 	result.SysPromptOrg = firstNonNil(org.SysPromptOrg, platform.SysPromptOrg)
 	result.AllowUserPrompt = firstNonNilBool(org.AllowUserPrompt, platform.AllowUserPrompt)
+
+	// Epic 53 — MCP server governance. AllowUserMcpServers is an org-scoped
+	// toggle passed through like AllowUserPrompt. MaxMcpServersPerWorkspace is a
+	// numeric cap, so the more restrictive (smaller) value wins.
+	result.AllowUserMcpServers = firstNonNilBool(org.AllowUserMcpServers, platform.AllowUserMcpServers)
+	result.MaxMcpServersPerWorkspace = minInt(platform.MaxMcpServersPerWorkspace, org.MaxMcpServersPerWorkspace)
 
 	return result
 }

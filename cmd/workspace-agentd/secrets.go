@@ -433,6 +433,10 @@ func runMaterializeCommand(args []string, stdout, stderr io.Writer) int {
 		return 3
 	}
 
+	// Write the MCP servers section into agent-config.json (US-53.8). The
+	// servers were staged by applyMCPServer during Materialize above.
+	applyMCPServersToConfig(cfg.toPaths().AgentConfigPath, m.StagedMCPServers())
+
 	// Apply workspace-level default model if present. This file is
 	// written by the API server alongside secrets.json.
 	applyWorkspaceConfig(cfg.toPaths().AgentConfigPath, *from)
@@ -582,7 +586,58 @@ func applyWorkspaceConfig(agentConfigPath, secretsPath string) {
 	_ = os.WriteFile(agentConfigPath, merged, 0o600)
 }
 
-// resolveModelWithProvider scans the "provider" map in the agent config and
+// applyMCPServersToConfig reads the current agent-config.json (written by
+// FlushProviders), injects the "mcp" section from staged MCP servers, and
+// writes it back. Mirrors applyWorkspaceConfig's read-modify-write pattern.
+// No-op when servers is empty (byte-equivalent to pre-Epic-53 output).
+func applyMCPServersToConfig(agentConfigPath string, servers []secrets.StagedMCPServer) {
+	if len(servers) == 0 {
+		return
+	}
+
+	var cfg map[string]json.RawMessage
+	existing, err := os.ReadFile(agentConfigPath)
+	if err == nil && len(existing) > 0 {
+		_ = json.Unmarshal(existing, &cfg)
+	}
+	if cfg == nil {
+		cfg = map[string]json.RawMessage{}
+	}
+
+	mcp := make(map[string]any, len(servers))
+	for _, srv := range servers {
+		isRemote := srv.Transport == "http" || srv.Transport == "sse"
+		entry := map[string]any{"enabled": true}
+		if isRemote {
+			entry["type"] = "remote"
+			entry["url"] = srv.URL
+			if len(srv.Headers) > 0 {
+				entry["headers"] = srv.Headers
+			}
+		} else {
+			entry["type"] = "local"
+			entry["command"] = append([]string{srv.Command}, srv.Args...)
+			if len(srv.Env) > 0 {
+				entry["environment"] = srv.Env
+			}
+		}
+		if srv.TimeoutMs > 0 {
+			entry["timeout"] = srv.TimeoutMs
+		}
+		mcp[srv.Name] = entry
+	}
+
+	mcpJSON, _ := json.Marshal(mcp)
+	cfg["mcp"] = mcpJSON
+
+	if _, ok := cfg["$schema"]; !ok {
+		schemaJSON, _ := json.Marshal("https://opencode.ai/config.json")
+		cfg["$schema"] = schemaJSON
+	}
+
+	merged, _ := json.MarshalIndent(cfg, "", "  ")
+	_ = os.WriteFile(agentConfigPath, merged, 0o600)
+}
 // returns "providerID/modelID" when the flat modelID is found in any provider's
 // models map. Returns the flat modelID unchanged if no provider claims it
 // (e.g. when the provider list hasn't been written yet, or the model was
@@ -775,6 +830,23 @@ func reloadSecretsHandler(cfg materializeConfig, deps reloadSecretsDeps) http.Ha
 				w.WriteHeader(http.StatusInternalServerError)
 				_ = json.NewEncoder(w).Encode(map[string]string{"error": "set providers: " + err.Error()})
 				return
+			}
+			// Stage MCP servers (US-53.8): convert materializer's staged
+			// entries to writer entries, then rebuild merges them into
+			// the "mcp" section of agent-config.json.
+			stagedMCP := m.StagedMCPServers()
+			if len(stagedMCP) > 0 {
+				entries := make([]mcpServerEntry, len(stagedMCP))
+				for i, s := range stagedMCP {
+					entries[i] = mcpServerEntry{
+						Name: s.Name, Transport: s.Transport, URL: s.URL,
+						Command: s.Command, Args: s.Args, TimeoutMs: s.TimeoutMs,
+						Env: s.Env, Headers: s.Headers,
+					}
+				}
+				deps.AgentConfigWriter.SetMCPServers(entries)
+			} else {
+				deps.AgentConfigWriter.SetMCPServers(nil)
 			}
 			if rbErr := deps.AgentConfigWriter.rebuild(); rbErr != nil {
 				// C1 regression fix: reset() already deleted agent-config.json.

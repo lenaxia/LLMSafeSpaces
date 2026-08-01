@@ -7,41 +7,46 @@ import "github.com/lenaxia/llmsafespaces/pkg/types"
 
 // PlanFeatures defines what a plan tier allows. Used for feature gating.
 type PlanFeatures struct {
-	MaxWorkspaces     int  `json:"maxWorkspaces"`
-	MaxMembers        int  `json:"maxMembers"`
-	SSOEnabled        bool `json:"ssoEnabled"`
-	PoliciesEnabled   bool `json:"policiesEnabled"`
-	AuditLogEnabled   bool `json:"auditLogEnabled"`
-	CustomCredentials bool `json:"customCredentials"`
+	MaxWorkspaces       int  `json:"maxWorkspaces"`
+	MaxMembers          int  `json:"maxMembers"`
+	SSOEnabled          bool `json:"ssoEnabled"`
+	PoliciesEnabled     bool `json:"policiesEnabled"`
+	AuditLogEnabled     bool `json:"auditLogEnabled"`
+	CustomCredentials   bool `json:"customCredentials"`
+	MaxPersonalMcpServers int `json:"maxPersonalMcpServers"` // 0=disabled, -1=unlimited, N=cap (Epic 53 D12)
 }
 
 // PlanTiers maps each internal plan ID to its feature set. Hardcoded —
 // extend this map when adding a new plan tier.
 var PlanTiers = map[types.OrgPlan]PlanFeatures{
 	types.PlanFree: {
-		MaxWorkspaces:     1,
-		MaxMembers:        1,
-		CustomCredentials: true,
+		MaxWorkspaces:       1,
+		MaxMembers:          1,
+		CustomCredentials:   true,
+		MaxPersonalMcpServers: 5, // Epic 53 D12: free tier capped at 5 personal MCP servers
 	},
 	types.PlanTeam: {
-		MaxWorkspaces:     10,
-		MaxMembers:        25,
-		CustomCredentials: true,
+		MaxWorkspaces:       10,
+		MaxMembers:          25,
+		CustomCredentials:   true,
+		MaxPersonalMcpServers: -1, // unlimited
 	},
 	types.PlanBusiness: {
-		MaxWorkspaces:     50,
-		MaxMembers:        100,
-		PoliciesEnabled:   true,
-		AuditLogEnabled:   true,
-		CustomCredentials: true,
+		MaxWorkspaces:       50,
+		MaxMembers:          100,
+		PoliciesEnabled:     true,
+		AuditLogEnabled:     true,
+		CustomCredentials:   true,
+		MaxPersonalMcpServers: -1, // unlimited
 	},
 	types.PlanEnterprise: {
-		MaxWorkspaces:     -1,
-		MaxMembers:        -1,
-		SSOEnabled:        true,
-		PoliciesEnabled:   true,
-		AuditLogEnabled:   true,
-		CustomCredentials: true,
+		MaxWorkspaces:       -1,
+		MaxMembers:          -1,
+		SSOEnabled:          true,
+		PoliciesEnabled:     true,
+		AuditLogEnabled:     true,
+		CustomCredentials:   true,
+		MaxPersonalMcpServers: -1, // unlimited
 	},
 }
 
@@ -65,6 +70,8 @@ func IsFeatureAllowed(plan types.OrgPlan, feature string) bool {
 		return f.AuditLogEnabled
 	case "custom_credentials":
 		return f.CustomCredentials
+	case "personal_mcp_servers":
+		return f.MaxPersonalMcpServers != 0
 	default:
 		return true
 	}

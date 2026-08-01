@@ -23,6 +23,10 @@ const (
 	// Agent customization policies
 	PolicySysPromptOrg    OrgPolicyKey = "sys_prompt_org"
 	PolicyAllowUserPrompt OrgPolicyKey = "allow_user_prompt"
+
+	// Epic 53 — MCP server governance policies
+	PolicyAllowUserMcpServers      OrgPolicyKey = "allow_user_mcp_servers"
+	PolicyMaxMcpServersPerWorkspace OrgPolicyKey = "max_mcp_servers_per_workspace"
 )
 
 // OrgPolicy is one row of org_policies. The Value is the raw JSONB payload; the
@@ -47,6 +51,10 @@ type OrgPolicyValues struct {
 	// Agent customization
 	SysPromptOrg    *string `json:"sysPromptOrg,omitempty"`
 	AllowUserPrompt *bool   `json:"allowUserPrompt,omitempty"`
+
+	// Epic 53 — MCP server governance
+	AllowUserMcpServers      *bool `json:"allowUserMcpServers,omitempty"`
+	MaxMcpServersPerWorkspace *int  `json:"maxMcpServersPerWorkspace,omitempty"`
 }
 
 // IsModelAllowed reports whether modelID is permitted under the allowed-models
@@ -107,6 +115,34 @@ func (p *OrgPolicyValues) IsUserPromptAllowed() bool {
 		return false
 	}
 	return *p.AllowUserPrompt
+}
+
+// DefaultMaxMcpServersPerWorkspace is the per-workspace MCP server quota when an
+// org has not set PolicyMaxMcpServersPerWorkspace. It bounds agent-startup cost
+// and blast radius (each server is a startup connection).
+const DefaultMaxMcpServersPerWorkspace = 5
+
+// IsUserMcpAllowed reports whether org members can register their own MCP
+// servers (user-scope). Defaults to false (locked) when no policy is set —
+// mirroring IsUserPromptAllowed so a value the org admin must opt into is never
+// silently granted by omission.
+func (p *OrgPolicyValues) IsUserMcpAllowed() bool {
+	if p == nil || p.AllowUserMcpServers == nil {
+		return false
+	}
+	return *p.AllowUserMcpServers
+}
+
+// MaxMcpServers returns the per-workspace MCP server quota, or the default
+// (DefaultMaxMcpServersPerWorkspace) when unset.
+func (p *OrgPolicyValues) MaxMcpServers() int {
+	if p == nil || p.MaxMcpServersPerWorkspace == nil {
+		return DefaultMaxMcpServersPerWorkspace
+	}
+	if *p.MaxMcpServersPerWorkspace < 0 {
+		return 0
+	}
+	return *p.MaxMcpServersPerWorkspace
 }
 
 // --- US-43.13: Org-scoped audit log ---

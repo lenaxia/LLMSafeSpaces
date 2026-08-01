@@ -878,6 +878,26 @@ func (s *PgOrgStore) GetUserOrgID(ctx context.Context, userID string) (string, e
 	return orgID, nil
 }
 
+// GetUserPlan reads users.plan_id for an individual user. Used by the
+// MCP-servers user-scope handler to resolve the MaxPersonalMcpServers
+// quota (Epic 53 D12). Returns PlanFree on any error (fail-safe: a
+// solo user whose plan can't be read gets the free-tier quota, not
+// unlimited).
+func (s *PgOrgStore) GetUserPlan(ctx context.Context, userID string) (string, error) {
+	var plan string
+	err := s.db.QueryRowContext(ctx,
+		`SELECT plan_id FROM users WHERE id = $1`,
+		userID,
+	).Scan(&plan)
+	if err == sql.ErrNoRows {
+		return "free", nil
+	}
+	if err != nil {
+		return "free", fmt.Errorf("get user plan: %w", err)
+	}
+	return plan, nil
+}
+
 func (s *PgOrgStore) UpdateOrgStatus(ctx context.Context, orgID string, status *types.OrgStatus, subStatus *types.OrgSubscriptionStatus, planID *types.OrgPlan) error {
 	if status == nil && subStatus == nil && planID == nil {
 		return nil

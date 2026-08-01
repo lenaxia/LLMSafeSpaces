@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -224,4 +225,110 @@ func TestAgentConfigWriter_Rebuild_MatchesOpencodeSchema_ExistingBuildAgent(t *t
 	require.NoError(t, w.rebuild())
 
 	assertMatchesOpencodeSchema(t, path)
+}
+
+// TestAgentConfigWriter_Rebuild_MatchesOpencodeSchema_MCPServers validates
+// that the "mcp" section emitted by rebuild() conforms to opencode's JSON
+// schema. Exercises all three transports (http, sse, stdio) and the
+// "mcp + providers" combination. Regression harness for Epic 53.
+func TestAgentConfigWriter_Rebuild_MatchesOpencodeSchema_MCPServers(t *testing.T) {
+	baseProviders := []byte(`{"provider": {"openai": {"options": {"apiKey": "sk-test"}}}}`)
+
+	cases := []struct {
+		name    string
+		servers []mcpServerEntry
+		provs   []byte
+	}{
+		{
+			"single-remote-http",
+			[]mcpServerEntry{{
+				Name: "wiki", Transport: "http", URL: "https://wiki.example.com/mcp",
+				Headers: map[string]string{"Authorization": "Bearer tok"},
+			}},
+			nil,
+		},
+		{
+			"single-remote-sse",
+			[]mcpServerEntry{{
+				Name: "events", Transport: "sse", URL: "https://events.example.com/sse",
+			}},
+			nil,
+		},
+		{
+			"single-local-stdio",
+			[]mcpServerEntry{{
+				Name: "github", Transport: "stdio", Command: "npx",
+				Args: []string{"-y", "@modelcontextprotocol/server-github"},
+				Env: map[string]string{"GITHUB_TOKEN": "{env:GITHUB_TOKEN}"},
+			}},
+			nil,
+		},
+		{
+			"multiple-servers-mixed",
+			[]mcpServerEntry{
+				{Name: "wiki", Transport: "http", URL: "https://wiki.example.com/mcp"},
+				{Name: "github", Transport: "stdio", Command: "npx", Args: []string{"-y", "server-github"}},
+			},
+			nil,
+		},
+		{
+			"mcp-plus-providers",
+			[]mcpServerEntry{{Name: "wiki", Transport: "sse", URL: "https://wiki.example.com/sse"}},
+			baseProviders,
+		},
+		{
+			"mcp-with-timeout",
+			[]mcpServerEntry{{Name: "slow", Transport: "http", URL: "https://slow.example.com/mcp", TimeoutMs: 10000}},
+			nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "agent-config.json")
+			w := newAgentConfigWriter(path)
+			if tc.provs != nil {
+				w.setProviders(tc.provs)
+			}
+			w.SetMCPServers(tc.servers)
+
+			require.NoError(t, w.rebuild())
+			assertMatchesOpencodeSchema(t, path)
+
+			// Also assert the mcp section is actually present (not silently omitted).
+			data, err := os.ReadFile(path)
+			require.NoError(t, err)
+			var cfg map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(data, &cfg))
+			mcpRaw, ok := cfg["mcp"]
+			require.True(t, ok, "mcp section must be present when servers are staged")
+			var mcp map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(mcpRaw, &mcp))
+			for _, srv := range tc.servers {
+				_, exists := mcp[srv.Name]
+				assert.True(t, exists, "server %q missing from rendered mcp section", srv.Name)
+			}
+		})
+	}
+}
+
+// TestAgentConfigWriter_Rebuild_NoMCPSectionWhenEmpty asserts that a
+// workspace with zero MCP servers produces NO mcp key — byte-equivalent
+// to pre-Epic-53 output (regression guard for the relay subsystem).
+func TestAgentConfigWriter_Rebuild_NoMCPSectionWhenEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-config.json")
+	w := newAgentConfigWriter(path)
+	w.SetMCPServers(nil) // explicitly empty
+
+	require.NoError(t, w.rebuild())
+	assertMatchesOpencodeSchema(t, path)
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var cfg map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &cfg))
+	_, hasMCP := cfg["mcp"]
+	assert.False(t, hasMCP, "mcp section must NOT be present when no servers are staged")
 }

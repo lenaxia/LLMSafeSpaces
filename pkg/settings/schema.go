@@ -30,7 +30,7 @@ package settings
 // (TypeStrings) — directories pre-approved as opencode
 // external_directory "allow" rules so agents stop prompting for /tmp/* on
 // every session. New key; admin UI schema cache must refresh.
-const SchemaVersion = 7
+const SchemaVersion = 8
 
 // SettingType defines the data type of a setting.
 type SettingType string
@@ -129,6 +129,9 @@ func InstanceSettings() []SettingDef {
 		{Key: "email.sesRegion", Tier: 2, Type: TypeString, Default: "", Category: "Email", Label: "SES Region", Description: "AWS region for SES (e.g. us-east-1)"},
 		{Key: "email.fromAddress", Tier: 2, Type: TypeString, Default: "", Pattern: `^.{0,254}$`, Category: "Email", Label: "From Address", Description: "Verified SES sender address"},
 		{Key: "email.baseUrl", Tier: 2, Type: TypeString, Default: "", Pattern: `^.{0,500}$`, Category: "Email", Label: "Base URL", Description: "Public origin for links in email bodies (e.g. https://app.example.com)"},
+
+		// MCP (Epic 53)
+		{Key: "mcp.allowOrgAdminServers", Tier: 2, Type: TypeBool, Default: true, Category: "MCP", Label: "Allow Org-Admin MCP Servers", Description: "When false, org admins cannot register MCP servers (platform-wide kill-switch)"},
 	}
 }
 

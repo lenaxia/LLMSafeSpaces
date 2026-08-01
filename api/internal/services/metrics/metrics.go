@@ -664,3 +664,44 @@ func RecordSecretAutoPush(outcome string) {
 func SecretAutoPushCounter() *prometheus.CounterVec {
 	return secretAutoPushTotal
 }
+
+// --- Epic 53: MCP server metrics ---
+
+var (
+	mcpServersTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmsafespaces_mcp_servers_total",
+			Help: "Total MCP server operations by scope and action",
+		},
+		[]string{"scope", "action"},
+	)
+	mcpBindingsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmsafespaces_mcp_bindings_total",
+			Help: "Total MCP server binding operations by source_type",
+		},
+		[]string{"source_type"},
+	)
+	mcpUserScopeGateTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmsafespaces_mcp_user_scope_gate_total",
+			Help: "User-scope MCP gate decisions",
+		},
+		[]string{"result"},
+	)
+)
+
+// RecordMCPServerOp records an MCP server CRUD operation.
+func RecordMCPServerOp(scope, action string) {
+	mcpServersTotal.WithLabelValues(scope, action).Inc()
+}
+
+// RecordMCPBinding records an MCP binding operation.
+func RecordMCPBinding(sourceType string) {
+	mcpBindingsTotal.WithLabelValues(sourceType).Inc()
+}
+
+// RecordMCPUserScopeGate records a user-scope gate decision (allowed, org_blocked, quota_exceeded).
+func RecordMCPUserScopeGate(result string) {
+	mcpUserScopeGateTotal.WithLabelValues(result).Inc()
+}
