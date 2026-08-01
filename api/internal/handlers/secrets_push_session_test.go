@@ -50,6 +50,10 @@ func (s *pushPathSessionStore) HasUserProviderCredential(_ context.Context, _, _
 	return false, nil
 }
 
+func (s *pushPathSessionStore) GetWorkspaceMCPServers(_ context.Context, _ string) ([]secrets.MCPServerBindingRow, error) {
+	return nil, nil
+}
+
 func (s *pushPathSessionStore) GetBindings(_ context.Context, ws string) ([]*secrets.UserSecret, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
