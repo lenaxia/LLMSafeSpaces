@@ -8,6 +8,7 @@ vi.mock("@simplewebauthn/browser", () => ({
   startRegistration: vi.fn().mockResolvedValue({} as never),
   browserSupportsWebAuthn: () => true,
 }));
+import { startRegistration } from "@simplewebauthn/browser";
 vi.mock("react-router-dom", () => ({
   useSearchParams: () => [new URLSearchParams(), vi.fn()],
 }));
@@ -146,5 +147,20 @@ it("refreshes list after successful enroll", async () => {
   fireEvent.click(screen.getByText("Add passkey"));
   await waitFor(() => {
     expect(screen.getByText("New Passkey")).toBeInTheDocument();
+  });
+});
+
+it("shows cancelled message when enroll is cancelled", async () => {
+  vi.mocked(passkeyApi.listPasskeys).mockResolvedValueOnce({ passkeys: [] });
+  vi.mocked(passkeyApi.enrollBegin).mockResolvedValueOnce({ options: {}, sessionToken: "tok" });
+  Object.assign(global, { NameNotAllowedError: undefined });
+  const cancelErr = Object.assign(new Error("cancelled"), { name: "NotAllowedError" });
+  vi.mocked(startRegistration).mockRejectedValueOnce(cancelErr);
+  const { fireEvent, waitFor } = await import("@testing-library/react");
+  render(<PasskeySettings />);
+  await waitFor(() => expect(screen.getByText("Add passkey")).toBeInTheDocument());
+  fireEvent.click(screen.getByText("Add passkey"));
+  await waitFor(() => {
+    expect(screen.getByText(/cancelled or timed out/i)).toBeInTheDocument();
   });
 });

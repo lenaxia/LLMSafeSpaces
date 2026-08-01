@@ -440,3 +440,25 @@ test.describe("Passkey settings", () => {
     await cdp.detach();
     await page.close();
   });
+
+  test("Add passkey ceremony failure shows error", async ({ browser }) => {
+    const page = await browser.newPage();
+    const mockState = await mockPasskeyApi(page);
+    mockState.loggedIn = true;
+
+    await page.route(`${API_PREFIX}/account/passkeys`, async (route: Route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ passkeys: [] }) });
+    });
+    // Mock enroll/finish to fail.
+    await page.route(`${API_PREFIX}/account/passkeys/enroll/begin`, async (route: Route) => {
+      await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "internal" }) });
+    });
+
+    await page.goto("/settings/passkeys");
+    await page.getByText("Add passkey").click();
+
+    // Should show an error message.
+    await expect(page.getByText(/Failed to add passkey/i)).toBeVisible({ timeout: 5000 });
+
+    await page.close();
+  });

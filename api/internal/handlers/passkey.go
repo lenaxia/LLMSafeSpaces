@@ -463,7 +463,10 @@ func (h *PasskeyHandler) BeginEnrollPasskey(c *gin.Context) {
 		return
 	}
 	username, err := h.svc.GetUserName(c.Request.Context(), userID)
-	if err != nil || username == "" {
+	if err != nil {
+		log.Printf("WARN: passkey BeginEnrollPasskey: GetUserName failed: user_id=%s err=%v", userID, err)
+	}
+	if username == "" {
 		username = "user"
 	}
 	opts, err := h.svc.BeginRegistration(c.Request.Context(), userID, username)
