@@ -148,7 +148,7 @@ func NewSSETestServer() *SSETestServer {
 		resp := HandleMCPRequest(body)
 		respJSON, _ := json.Marshal(resp)
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprintf(w, "event: message\ndata: %s\n\n", respJSON)
+		_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", respJSON)
 	})
 
 	srv := &http.Server{Handler: mux}
@@ -183,6 +183,6 @@ func RunStdio() {
 		}
 		resp := HandleMCPRequest(line)
 		respJSON, _ := json.Marshal(resp)
-		fmt.Fprintln(os.Stdout, string(respJSON))
+		_, _ = fmt.Fprintln(os.Stdout, string(respJSON))
 	}
 }

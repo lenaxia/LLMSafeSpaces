@@ -4,7 +4,8 @@
 package opencode
 
 // format_test.go — TDD-style tests pinned to the exact JSON shape
-// opencode 1.15.12 accepts.
+// opencode accepts (contract enforced against the pinned schema in
+// cmd/workspace-agentd/testdata/opencode-config.schema.json).
 //
 // **CRITICAL**: the schema produced by FormatOpenCodeConfig is
 // EVIDENCE-DRIVEN, not derived from a public spec. The shape was
@@ -175,7 +176,7 @@ func TestFormatOpenCodeConfig_MultipleProviders_NoneHasDefault(t *testing.T) {
 // separate `endpoint.url` object that opencode discarded, so requests
 // went to api.openai.com instead of the operator's endpoint. This test
 // asserts baseURL lives at provider.<id>.options.baseURL — the only
-// place opencode 1.15.12 reads it from.
+// place opencode reads it from.
 func TestFormatOpenCodeConfig_BaseURL_LivesInOptions(t *testing.T) {
 	providers := []secrets.LLMProviderData{
 		{Kind: "openai", Slug: "openai", APIKey: "sk-oai", BaseURL: "https://litellm.example/v1"},
@@ -201,7 +202,7 @@ func TestFormatOpenCodeConfig_BaseURL_LivesInOptions(t *testing.T) {
 
 // TestFormatOpenCodeConfig_TopLevelKey_IsProviderSingular is the
 // regression guard for the first part of Bug 3: pre-fix the top-level
-// key was `providers` (plural) which opencode 1.15.12 rejected with
+// key was `providers` (plural) which opencode rejected with
 // ConfigInvalidError, blocking opencode boot.
 func TestFormatOpenCodeConfig_TopLevelKey_IsProviderSingular(t *testing.T) {
 	providers := []secrets.LLMProviderData{
@@ -220,7 +221,7 @@ func TestFormatOpenCodeConfig_TopLevelKey_IsProviderSingular(t *testing.T) {
 
 	// MUST NOT have `providers` (plural).
 	_, hasProviders := parsed["providers"]
-	require.False(t, hasProviders, "Bug 3: opencode 1.15.12 rejects the plural `providers` key")
+	require.False(t, hasProviders, "Bug 3: opencode rejects the plural `providers` key")
 }
 
 // TestFormatOpenCodeConfig_Options_NoAisdkWrapper is the regression
@@ -322,7 +323,7 @@ func TestFormatOpenCodeConfig_OutputIsValidJSON(t *testing.T) {
 //
 // The snapshot below was updated in worklog 0183 to include
 // "npm": "@ai-sdk/openai-compatible" for providers with a custom BaseURL.
-// This shape was validated against a live opencode 1.15.12 pod: the
+// This shape was validated against a live opencode pod: the
 // opencode-relay provider (which uses the same npm field) shows as
 // connected in `/provider`. Without the npm field, opencode treats
 // the built-in "openai" provider ID as first-party and calls
@@ -399,7 +400,7 @@ func TestFormatOpenCodeConfig_NoNPMWhenNoBaseURL(t *testing.T) {
 //
 // opencode's published JSON Schema (https://opencode.ai/config.json) declares
 // the model `limit` object with `"required": ["context", "output"]` and
-// `"additionalProperties": false`. Empirically verified on opencode 1.15.12:
+// `"additionalProperties": false`. Empirically verified on opencode:
 // emitting a `limit` block with only `context` set returns
 // `SchemaError: Missing key at [...]["limit"]["output"]` from Config.state(),
 // causing every endpoint that touches config (including POST /session) to
