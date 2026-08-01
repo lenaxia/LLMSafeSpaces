@@ -349,3 +349,54 @@ test.describe("Passkey e2e", () => {
     await expect(page.getByText("Use password instead")).toBeVisible();
   });
 });
+
+test.describe("Passkey settings", () => {
+  test("settings page shows passkey list and Add passkey button", async ({ page }) => {
+    const mockState = await mockPasskeyApi(page);
+    mockState.loggedIn = true;
+
+    await page.route(`${API_PREFIX}/account/passkeys`, async (route: Route) => {
+      await route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ passkeys: [{ id: "pk-1", name: "YubiKey", createdAt: "2026-01-01T00:00:00Z" }] }),
+      });
+    });
+
+    await page.goto("/settings/passkeys");
+    await expect(page.getByText("Passkeys")).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText("YubiKey")).toBeVisible();
+    await expect(page.getByText("Add passkey")).toBeVisible();
+    await expect(page.getByText("Regenerate recovery codes")).toBeVisible();
+  });
+
+  test("settings page shows empty state with enrollment prompt", async ({ page }) => {
+    const mockState = await mockPasskeyApi(page);
+    mockState.loggedIn = true;
+
+    await page.route(`${API_PREFIX}/account/passkeys`, async (route: Route) => {
+      await route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ passkeys: [] }),
+      });
+    });
+
+    await page.goto("/settings/passkeys");
+    await expect(page.getByText(/No passkeys registered/i)).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText("Add passkey")).toBeVisible();
+  });
+
+  test("settings page shows must_enroll_passkey banner", async ({ page }) => {
+    const mockState = await mockPasskeyApi(page);
+    mockState.loggedIn = true;
+
+    await page.route(`${API_PREFIX}/account/passkeys`, async (route: Route) => {
+      await route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({ passkeys: [] }),
+      });
+    });
+
+    await page.goto("/settings/passkeys?must_enroll_passkey=1");
+    await expect(page.getByText(/recovery code to sign in/i)).toBeVisible({ timeout: 5000 });
+  });
+});
