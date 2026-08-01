@@ -326,6 +326,11 @@ test.describe("Passkey e2e", () => {
     await page.getByRole("checkbox").check();
     await page.getByText("Continue").click();
 
+    // Wait for the post-registration redirect to settle (the page navigates
+    // to /chat or another route after registration). Give it a moment, then
+    // navigate explicitly to /login for the login ceremony.
+    await page.waitForTimeout(1000);
+
     // STEP 2: Now login with the registered credential.
     // Mock login endpoints.
     await page.route(`${API_PREFIX}/auth/passkey/login/begin`, async (route: Route) => {
