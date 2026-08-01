@@ -68,3 +68,20 @@ it("shows regenerate button and calls API", async () => {
   fireEvent.click(screen.getByText("Regenerate recovery codes"));
   await waitFor(() => expect(passkeyApi.regenerateRecoveryCodes).toHaveBeenCalled());
 });
+
+it("shows conflict error when deleting last passkey", async () => {
+  vi.mocked(passkeyApi.listPasskeys).mockResolvedValueOnce({
+    passkeys: [{ id: "pk-1", name: "Only Key", createdAt: "2026-01-01T00:00:00Z" }],
+  });
+  const { ApiClientError } = await import("../../api/client");
+  vi.mocked(passkeyApi.deletePasskey).mockRejectedValueOnce(
+    new ApiClientError(409, { error: "cannot delete your last passkey" }),
+  );
+  const { fireEvent, waitFor } = await import("@testing-library/react");
+  render(<PasskeySettings />);
+  await waitFor(() => expect(screen.getByText("Only Key")).toBeInTheDocument());
+  fireEvent.click(screen.getByText("Remove"));
+  await waitFor(() => {
+    expect(screen.getByText(/Cannot delete your last passkey/i)).toBeInTheDocument();
+  });
+});
