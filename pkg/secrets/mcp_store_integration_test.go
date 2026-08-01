@@ -128,9 +128,9 @@ func (s *MCPStoreIntegrationSuite) createTestWorkspace(ctx context.Context, wsID
 	// when multiple tests create users in the same DB session.
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO users (id, username, email, password_hash, role, status, active, created_at, updated_at)
-		VALUES ($1, 'test-user-' || $1, 'test-' || $1 || '@test.com', 'x', 'user', 'active', true, now(), now())
+		VALUES ($1, $2, $3, 'x', 'user', 'active', true, now(), now())
 		ON CONFLICT (id) DO NOTHING
-	`, userID)
+	`, userID, "test-user-"+userID[:8], "test-"+userID[:8]+"@test.com")
 	s.Require().NoError(err)
 	_, err = s.pool.Exec(ctx, `
 		INSERT INTO workspaces (id, user_id, name, created_at, updated_at)
