@@ -110,6 +110,7 @@ None.
 
 ## Files Modified
 
-- `frontend/tests/e2e/passkey.spec.ts` — full login ceremony, recovery→re-enrollment, locator/timeout fixes
+- `worklogs/NNNN_2026-08-01_passkey-confidence-hardening.md` — this entry (added)
+- `frontend/tests/e2e/passkey.spec.ts` — full login ceremony, recovery→re-enrollment, locator/timeout/credential-ID fixes
 - `api/internal/services/passkey/options_shape_contract_test.go` — new contract test
-- `worklogs/NNNN_2026-08-01_passkey-weak-spots.md` — existing entry (from prior session)
+- `frontend/test-results/.last-run.json` — deleted (generated Playwright artifact; now gitignored)

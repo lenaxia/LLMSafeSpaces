@@ -8,8 +8,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/alicebob/miniredis/v2"
-	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -60,23 +58,14 @@ func TestOptionsShape_ContractWithSimpleWebAuthn(t *testing.T) {
 	})
 
 	t.Run("login options match PublicKeyCredentialRequestOptionsJSON", func(t *testing.T) {
-		// Seed a credential so BeginLogin can proceed.
-		store := &memStore{}
+		// Seed a credential so BeginLogin can proceed. Uses the in-memory
+		// session store from newTestService — no Redis client is created, so
+		// there is no client connection pool to leak.
+		svc, store, _, users := newTestService(t)
 		store.creds = []Credential{{UserID: "u1", CredentialID: []byte("cred-1")}}
-		users := &fakeUserLookup{users: map[string]*types.User{
-			"login@test.com": {ID: "u1", Username: "alice", Email: "login@test.com"},
-		}}
-		mr, err := miniredis.Run()
-		require.NoError(t, err)
-		defer mr.Close()
-		loginSvc, err := New(ServiceConfig{
-			RPID: "localhost", RPName: "T", RPOrigins: []string{"https://localhost"},
-			Store: store, Users: users,
-			Sessions: NewCacheSessionStore(redis.NewClient(&redis.Options{Addr: mr.Addr()})),
-		})
-		require.NoError(t, err)
+		users.users["login@test.com"] = &types.User{ID: "u1", Username: "alice", Email: "login@test.com"}
 
-		opts, _, err := loginSvc.BeginLogin(ctx, "login@test.com")
+		opts, _, err := svc.BeginLogin(ctx, "login@test.com")
 		require.NoError(t, err)
 
 		raw, err := json.Marshal(opts.Options)
