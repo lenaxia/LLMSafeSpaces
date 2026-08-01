@@ -5,7 +5,7 @@ import { passkeyApi } from "../../api/passkey";
 
 vi.mock("../../api/passkey");
 vi.mock("@simplewebauthn/browser", () => ({
-  startRegistration: vi.fn().mockRejectedValue(new Error("mock")),
+  startRegistration: vi.fn().mockResolvedValue({} as never),
   browserSupportsWebAuthn: () => true,
 }));
 vi.mock("react-router-dom", () => ({
@@ -115,4 +115,19 @@ it("shows error when enroll fails", async () => {
     const errEl = screen.queryByText(/Failed to add passkey|cancelled/i);
     expect(errEl).toBeTruthy();
   }, { timeout: 5000 });
+});
+
+it("shows expired error when ceremony times out", async () => {
+  vi.mocked(passkeyApi.listPasskeys).mockResolvedValueOnce({ passkeys: [] });
+  const { ApiClientError } = await import("../../api/client");
+  vi.mocked(passkeyApi.enrollBegin).mockRejectedValueOnce(
+    new ApiClientError(400, { error: "passkey registration failed" }),
+  );
+  const { fireEvent, waitFor } = await import("@testing-library/react");
+  render(<PasskeySettings />);
+  await waitFor(() => expect(screen.getByText("Add passkey")).toBeInTheDocument());
+  fireEvent.click(screen.getByText("Add passkey"));
+  await waitFor(() => {
+    expect(screen.getByText(/Failed to add passkey/i)).toBeInTheDocument();
+  });
 });

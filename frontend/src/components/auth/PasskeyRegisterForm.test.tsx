@@ -55,3 +55,15 @@ describe("PasskeyRegisterForm", () => {
     });
   });
 });
+
+it("shows session-expired message on expired challenge", async () => {
+  vi.mocked(passkeyApi.registerBegin).mockRejectedValueOnce(
+    new ApiClientError(400, { error: "passkey registration failed" }),
+  );
+  render(<PasskeyRegisterForm onSuccess={vi.fn()} />);
+  fireEvent.change(screen.getByPlaceholderText("Email"), { target: { value: "a@b.com" } });
+  fireEvent.click(screen.getByText("Create account with passkey"));
+  await waitFor(() => {
+    expect(screen.getByText(/session expired/i)).toBeInTheDocument();
+  });
+});

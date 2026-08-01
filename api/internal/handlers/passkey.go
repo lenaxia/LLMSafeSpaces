@@ -492,7 +492,13 @@ func (h *PasskeyHandler) FinishEnrollPasskey(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
-	username, _ := h.svc.GetUserName(c.Request.Context(), userID)
+	username, err := h.svc.GetUserName(c.Request.Context(), userID)
+	if err != nil {
+		log.Printf("WARN: passkey FinishEnrollPasskey: GetUserName failed: user_id=%s err=%v", userID, err)
+	}
+	if username == "" {
+		username = "user"
+	}
 	result, err := h.svc.FinishRegistration(c.Request.Context(), req.SessionToken, username, req.Name, req.Response)
 	if err != nil {
 		status := http.StatusInternalServerError

@@ -70,3 +70,15 @@ describe("PasskeyLoginForm", () => {
     expect(onRecover).toHaveBeenCalled();
   });
 });
+
+it("shows session-expired message on expired challenge", async () => {
+  vi.mocked(passkeyApi.loginBegin).mockRejectedValueOnce(
+    new ApiClientError(400, { error: "passkey login failed" }),
+  );
+  render(<PasskeyLoginForm onSuccess={vi.fn()} />);
+  fireEvent.change(screen.getByPlaceholderText("Email"), { target: { value: "a@b.com" } });
+  fireEvent.click(screen.getByText("Sign in with passkey"));
+  await waitFor(() => {
+    expect(screen.getByText(/session expired/i)).toBeInTheDocument();
+  });
+});
