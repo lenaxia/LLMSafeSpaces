@@ -258,16 +258,11 @@ test.describe("Passkey e2e", () => {
 
     await page.goto("/login");
 
-    await page.getByPlaceholder("Email").fill("e2e@test.com");
     await page.getByText("Sign in with passkey").click();
 
-    // Wait for the ceremony to complete. The virtual authenticator has no
-    // pre-registered credential for discoverable login, so the ceremony
-    // may produce a NotAllowedError. The actual crypto verification (with
-    // a pre-registered credential) is tested in the backend service-level
-    // e2e (TestE2E_CeremonyThroughHTTP). Here we verify the UI flow works:
-    // the button is clickable and the browser WebAuthn API is invoked.
-    await page.waitForTimeout(3000);
+    // Verify the ceremony was initiated: the button text changes to
+    // "Authenticating..." while the browser WebAuthn API is invoked.
+    await expect(page.getByText("Authenticating...")).toBeVisible({ timeout: 5000 });
 
 
 

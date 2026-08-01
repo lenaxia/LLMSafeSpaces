@@ -532,3 +532,27 @@ func TestRegenerateRecoveryCodes_StoreError_500(t *testing.T) {
 	w := doPasskeyRequest(t, r, "POST", "/account/passkeys/recovery-codes/regenerate", nil)
 	assert.Equal(t, 500, w.Code)
 }
+
+func TestDeletePasskey_InvalidUUID_400(t *testing.T) {
+	r := setupAuthenticatedRouter(&fakePasskeySvc{}, "u1")
+	w := doPasskeyRequest(t, r, "DELETE", "/account/passkeys/not-a-uuid", nil)
+	assert.Equal(t, 400, w.Code)
+}
+
+func TestDeletePasskey_RequiresAuth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := NewPasskeyHandler(&fakePasskeySvc{}, &fakePasskeyAuth{}, &fakePasskeyUsers{users: map[string]*types.User{}}, time.Hour, "lsp_session", "")
+	r := gin.New()
+	r.DELETE("/account/passkeys/:id", h.DeletePasskey)
+	w := doPasskeyRequest(t, r, "DELETE", "/account/passkeys/"+uuid.New().String(), nil)
+	assert.Equal(t, 401, w.Code)
+}
+
+func TestRegenerateRecoveryCodes_RequiresAuth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := NewPasskeyHandler(&fakePasskeySvc{}, &fakePasskeyAuth{}, &fakePasskeyUsers{users: map[string]*types.User{}}, time.Hour, "lsp_session", "")
+	r := gin.New()
+	r.POST("/account/passkeys/recovery-codes/regenerate", h.RegenerateRecoveryCodes)
+	w := doPasskeyRequest(t, r, "POST", "/account/passkeys/recovery-codes/regenerate", nil)
+	assert.Equal(t, 401, w.Code)
+}
