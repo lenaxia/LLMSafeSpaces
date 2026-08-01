@@ -66,6 +66,8 @@ export function LoginPage() {
   const redirectAfterAuth = () => {
     if (returnTo) {
       window.location.href = returnTo;
+    } else {
+      window.location.href = "/chat";
     }
   };
 
