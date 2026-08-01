@@ -121,11 +121,18 @@ func (s *MCPStoreIntegrationSuite) TestUpdateMCPServer_PreservesCiphertext() {
 	s.Equal([]byte("original-secret"), got.Ciphertext)
 }
 
-// helper to create a workspace row for FK satisfaction.
+// helper to create a workspace row for FK satisfaction. Also creates the
+// referenced user row if it doesn't exist (workspaces.user_id FKs to users.id).
 func (s *MCPStoreIntegrationSuite) createTestWorkspace(ctx context.Context, wsID, userID string) {
 	_, err := s.pool.Exec(ctx, `
+		INSERT INTO users (id, username, email, password_hash, role, status, active, created_at, updated_at)
+		VALUES ($1, 'test-user', 'test@test.com', 'x', 'user', 'active', true, now(), now())
+		ON CONFLICT (id) DO NOTHING
+	`, userID)
+	s.Require().NoError(err)
+	_, err = s.pool.Exec(ctx, `
 		INSERT INTO workspaces (id, user_id, name, created_at, updated_at)
-		 VALUES ($1, $2, 'test-ws', now(), now())
+		VALUES ($1, $2, 'test-ws', now(), now())
 		ON CONFLICT (id) DO NOTHING
 	`, wsID, userID)
 	s.Require().NoError(err)
@@ -139,7 +146,7 @@ func (s *MCPStoreIntegrationSuite) TestDeleteMCPServer_CascadesBindings() {
 	wsID := newUUID()
 	userID := "22222222-2222-2222-2222-222222222222"
 	s.createTestWorkspace(ctx, wsID, userID)
-	defer func() { _, _ = s.pool.Exec(ctx, "DELETE FROM workspaces WHERE id = $1", wsID) }()
+	defer func() { _, _ = s.pool.Exec(ctx, "DELETE FROM workspaces WHERE id = $1; DELETE FROM users WHERE id = $2", wsID, userID) }()
 
 	id := newUUID()
 	row := &MCPServerRow{
@@ -178,7 +185,7 @@ func (s *MCPStoreIntegrationSuite) TestSeedWorkspaceMCPServers_AutoApplyAll() {
 	wsID := newUUID()
 	userID := "33333333-3333-3333-3333-333333333333"
 	s.createTestWorkspace(ctx, wsID, userID)
-	defer func() { _, _ = s.pool.Exec(ctx, "DELETE FROM workspaces WHERE id = $1", wsID) }()
+	defer func() { _, _ = s.pool.Exec(ctx, "DELETE FROM workspaces WHERE id = $1; DELETE FROM users WHERE id = $2", wsID, userID) }()
 
 	s.Require().NoError(store.SeedWorkspaceMCPServers(ctx, wsID, userID, nil))
 
@@ -222,7 +229,7 @@ func (s *MCPStoreIntegrationSuite) TestGetWorkspaceMCPServers_SkipsDisabled() {
 	wsID := newUUID()
 	userID := "55555555-5555-5555-5555-555555555555"
 	s.createTestWorkspace(ctx, wsID, userID)
-	defer func() { _, _ = s.pool.Exec(ctx, "DELETE FROM workspaces WHERE id = $1", wsID) }()
+	defer func() { _, _ = s.pool.Exec(ctx, "DELETE FROM workspaces WHERE id = $1; DELETE FROM users WHERE id = $2", wsID, userID) }()
 
 	for _, srv := range []*MCPServerRow{
 		{ID: newUUID(), OwnerType: "admin", OwnerID: "_platform", Name: "enabled-srv", Transport: "http", URL: "https://on.com", Ciphertext: []byte("x"), Enabled: true, CreatedAt: time.Now(), UpdatedAt: time.Now()},
