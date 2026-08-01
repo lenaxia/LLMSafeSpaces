@@ -86,6 +86,7 @@ type fakePasskeySvc struct {
 	deleteErr         error
 	regenerateErr     error
 	credPersistErr    error
+	addCredErr        error
 }
 
 func (s *fakePasskeySvc) BeginRegistration(_ context.Context, _, _ string) (*passkey.BeginRegistrationOptions, error) {
@@ -126,7 +127,7 @@ func (s *fakePasskeySvc) RegenerateRecoveryCodes(_ context.Context, _ string) ([
 	return []string{"NEW1", "NEW2"}, nil
 }
 func (s *fakePasskeySvc) AddCredential(_ context.Context, _ *passkey.Credential) error {
-	return nil
+	return s.addCredErr
 }
 func (s *fakePasskeySvc) GetUserName(_ context.Context, _ string) (string, error) {
 	return "testuser", nil
@@ -694,4 +695,31 @@ func TestRegisterFinish_UniqueViolation_Returns409(t *testing.T) {
 		"response":     validRegistrationResponseJSON(),
 	})
 	assert.Equal(t, 409, resp.Code)
+}
+
+func TestFinishEnrollPasskey_AddCredentialFailure_500(t *testing.T) {
+	svc := &fakePasskeySvc{
+		finishRegResult: &passkey.FinishRegistrationResult{
+			Credential: passkey.Credential{UserID: "u1"},
+		},
+		addCredErr: fmt.Errorf("DB down"),
+	}
+	r := setupAuthenticatedRouter(svc, "u1")
+	w := doPasskeyRequest(t, r, "POST", "/account/passkeys/enroll/finish", map[string]any{
+		"sessionToken": "tok",
+		"response":     map[string]any{"id": "x"},
+	})
+	assert.Equal(t, 500, w.Code)
+}
+
+func TestFinishEnrollPasskey_ChallengeExpired_400(t *testing.T) {
+	svc := &fakePasskeySvc{
+		finishRegErr: passkey.ErrChallengeExpired,
+	}
+	r := setupAuthenticatedRouter(svc, "u1")
+	w := doPasskeyRequest(t, r, "POST", "/account/passkeys/enroll/finish", map[string]any{
+		"sessionToken": "expired",
+		"response":     map[string]any{"id": "x"},
+	})
+	assert.Equal(t, 400, w.Code)
 }

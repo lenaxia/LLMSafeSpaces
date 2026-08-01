@@ -331,7 +331,6 @@ func randomUnusableHash() string {
 	return string(h)
 }
 
-// emailLocalPart extracts the local part of an email for a default username.
 // isUniqueViolation checks if a PostgreSQL error is a unique-constraint
 // violation (error code 23505).
 func isUniqueViolation(err error) bool {
@@ -339,6 +338,7 @@ func isUniqueViolation(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
+// emailLocalPart extracts the local part of an email for a default username.
 func emailLocalPart(email string) string {
 	for i, c := range email {
 		if c == '@' {
