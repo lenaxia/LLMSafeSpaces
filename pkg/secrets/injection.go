@@ -542,13 +542,16 @@ func buildSecretsJSON(providerData []LLMProviderData, nonLLM []InjectedSecret) (
 //
 // User-scope servers require an active session DEK. Without one
 // (sessionID="" — boot/API-key path), user-scope servers are skipped
-// with an audit event, identical to user LLM credential behaviour (D13).
+// with an audit event, identical to user LLM credential behavior (D13).
 func (s *SecretService) loadMCPServers(ctx context.Context, userID, sessionID string, matchedSigningKey []byte, workspaceID string) []InjectedSecret {
-	pgStore, ok := s.store.(*PgSecretStore)
+	// Use the CredentialStore interface (not a concrete type assertion) so
+	// the AsyncAuditLogger wrapper in production delegates correctly. Stores
+	// that don't implement CredentialStore (test mocks) silently skip MCP.
+	cs, ok := s.store.(CredentialStore)
 	if !ok {
 		return nil
 	}
-	servers, err := pgStore.GetWorkspaceMCPServers(ctx, workspaceID)
+	servers, err := cs.GetWorkspaceMCPServers(ctx, workspaceID)
 	if err != nil || len(servers) == 0 {
 		return nil
 	}

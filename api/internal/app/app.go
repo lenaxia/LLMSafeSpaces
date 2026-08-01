@@ -289,6 +289,9 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	var adminMcpHandler *handlers.MCPServersHandler
 	var orgMcpHandler *handlers.MCPServersHandler
 	var userMcpHandler *handlers.MCPServersHandler
+	// mcpPushAdapter is assigned after agentPusher is constructed; used by
+	// all three MCP handler scopes for live reload after bind.
+	var mcpPushAdapter func(ctx context.Context, userID, workspaceID string) error
 	var orgsHandler *handlers.OrgsHandler
 	var orgCredsHandler *handlers.OrgCredentialsHandler
 	var pgOrgStore *database.PgOrgStore
@@ -515,17 +518,12 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 
 		// Epic 53: wire the shared agent pusher into the MCP handlers so
 		// bound MCP servers reach running pods via live reload-secrets push.
-		// The adapter strips the agentpush.Result return — MCP handlers only
-		// need the error signal (best-effort push).
-		mcpPushAdapter := func(ctx context.Context, userID, workspaceID string) error {
+		mcpPushAdapter = func(ctx context.Context, userID, workspaceID string) error {
 			_, err := agentPusher.Push(ctx, userID, workspaceID)
 			return err
 		}
 		if adminMcpHandler != nil {
 			adminMcpHandler.SetSecretPusher(mcpPushAdapter)
-		}
-		if orgMcpHandler != nil {
-			orgMcpHandler.SetSecretPusher(mcpPushAdapter)
 		}
 		if userMcpHandler != nil {
 			userMcpHandler.SetSecretPusher(mcpPushAdapter)
@@ -689,6 +687,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		orgMcpHandler.SetSettings(instanceSettings)
 		orgMcpHandler.SetLogger(log)
 		orgMcpHandler.SetAudit(pgOrgStore)
+		orgMcpHandler.SetSecretPusher(mcpPushAdapter)
 
 		// US-43.10: OIDC SSO. The service reuses the auth service as the JWT
 		// issuer (GenerateToken) and the server KEK (RootKeyProvider) to encrypt

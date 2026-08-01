@@ -37,6 +37,7 @@ type mcpServerStore interface {
 	DeleteMCPServer(ctx context.Context, ownerType, ownerID, serverID string) error
 	CountMCPServersByOwner(ctx context.Context, ownerType, ownerID string) (int, error)
 	CountWorkspaceMCPServers(ctx context.Context, workspaceID string) (int, error)
+	GetWorkspaceOrgIDForMCP(ctx context.Context, workspaceID string) (string, error)
 	BindMCPServerToWorkspace(ctx context.Context, serverID, workspaceID string) error
 	UnbindMCPServerFromWorkspace(ctx context.Context, serverID, workspaceID string) error
 	CreateMCPServerAutoApply(ctx context.Context, serverID, targetType string, targetID *string) error
@@ -66,16 +67,20 @@ type mcpSecretPusher func(ctx context.Context, userID, workspaceID string) error
 
 // MCPServersHandler handles MCP server CRUD for all three scopes.
 type MCPServersHandler struct {
-	store        mcpServerStore
-	orgChecker   mcpOrgChecker
-	adminEncrypt secrets.RootKeyProvider
-	orgEncrypt   secrets.RootKeyProvider
-	keys         *secrets.KeyService // user-scope DEK; nil for admin/org handlers
-	keyStore     secrets.KeyStore    // user-scope key version read
-	audit        mcpAuditLogger
-	pusher       mcpSecretPusher
-	logger       mcpLogger
-	settings     mcpSettingsReader
+	store          mcpServerStore
+	orgChecker     mcpOrgChecker
+	adminEncrypt   secrets.RootKeyProvider
+	orgEncrypt     secrets.RootKeyProvider
+	keys           *secrets.KeyService // user-scope DEK; nil for admin/org handlers
+	keyStore       secrets.KeyStore    // user-scope key version read
+	audit          mcpAuditLogger
+	pusher         mcpSecretPusher
+	logger         mcpLogger
+	settings       mcpSettingsReader
+	// ownerType is the scope this handler instance serves ("admin"/"org"/"user").
+	// Set at construction; used by Bind/Unbind to verify the server belongs to
+	// the caller before mutating bindings (prevents cross-tenant tool injection).
+	ownerType string
 }
 
 // mcpLogger is a minimal logger for non-fatal warnings (audit failures etc).
@@ -90,18 +95,18 @@ type mcpSettingsReader interface {
 
 // NewAdminMCPServersHandler creates a handler for platform-admin scope.
 func NewAdminMCPServersHandler(store mcpServerStore, provider secrets.RootKeyProvider) *MCPServersHandler {
-	return &MCPServersHandler{store: store, adminEncrypt: provider}
+	return &MCPServersHandler{store: store, adminEncrypt: provider, ownerType: types.MCPServerOwnerAdmin}
 }
 
 // NewOrgMCPServersHandler creates a handler for org-admin scope.
 func NewOrgMCPServersHandler(store mcpServerStore, provider secrets.RootKeyProvider, oc mcpOrgChecker) *MCPServersHandler {
-	return &MCPServersHandler{store: store, orgEncrypt: provider, orgChecker: oc}
+	return &MCPServersHandler{store: store, orgEncrypt: provider, orgChecker: oc, ownerType: types.MCPServerOwnerOrg}
 }
 
 // NewUserMCPServersHandler creates a handler for personal scope. The keys
 // and keyStore are required for user-DEK encryption on Create/Update.
 func NewUserMCPServersHandler(store mcpServerStore, oc mcpOrgChecker, keys *secrets.KeyService, keyStore secrets.KeyStore) *MCPServersHandler {
-	return &MCPServersHandler{store: store, orgChecker: oc, keys: keys, keyStore: keyStore}
+	return &MCPServersHandler{store: store, orgChecker: oc, keys: keys, keyStore: keyStore, ownerType: types.MCPServerOwnerUser}
 }
 
 // SetAudit installs the audit logger for MCP CRUD events.
@@ -415,10 +420,27 @@ func (h *MCPServersHandler) update(c *gin.Context, ownerType, ownerID string, en
 		row.Enabled = *req.Enabled
 	}
 
-	// Re-encrypt if env/headers changed.
+	// Re-encrypt if env/headers changed. We must decrypt the existing
+	// ciphertext to preserve the unchanged half (env or headers) — the
+	// stored bytes are AES-GCM ciphertext, not JSON.
 	if req.Env != nil || req.Headers != nil {
-		env := existingEnv(existing)
-		hdrs := existingHeaders(existing)
+		ctx := c.Request.Context()
+		if ownerType == types.MCPServerOwnerUser {
+			ctx = context.WithValue(ctx, sessionIDKey{}, c.GetString("sessionID"))
+		}
+		existingPayload, decErr := h.decryptExisting(ctx, ownerType, ownerID, existing, encryptor)
+		if decErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to read existing MCP secret for merge"})
+			return
+		}
+		env := existingPayload.Env
+		if env == nil {
+			env = map[string]string{}
+		}
+		hdrs := existingPayload.Headers
+		if hdrs == nil {
+			hdrs = map[string]string{}
+		}
 		if req.Env != nil {
 			env = *req.Env
 		}
@@ -552,11 +574,21 @@ func (h *MCPServersHandler) Bind(c *gin.Context) {
 		return
 	}
 
+	// Verify the caller owns the server. Without this, a user on the /me/
+	// route could bind any serverID to any workspace (cross-tenant tool
+	// injection). The server's owner_type must match this handler's scope,
+	// and the owner_id must match the caller (user) or the org from the path.
+	ownerID := h.resolveOwnerID(c)
+	if !h.verifyServerOwnership(c, serverID, ownerID) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "MCP server not found"})
+		return
+	}
+
 	// Enforce org policy quota: max_mcp_servers_per_workspace. The bound
 	// server count is checked BEFORE the bind; if adding this server would
 	// exceed the org's cap, reject with 409. Platform-admin servers (owner_type
 	// 'admin') are exempt from org quotas (they are platform policy).
-	if !h.exemptFromOrgQuota(c) {
+	if h.ownerType != types.MCPServerOwnerAdmin {
 		max := h.resolveWorkspaceQuota(c, body.WorkspaceID)
 		current, err := h.store.CountWorkspaceMCPServers(c.Request.Context(), body.WorkspaceID)
 		if err != nil {
@@ -585,21 +617,52 @@ func (h *MCPServersHandler) Bind(c *gin.Context) {
 	metrics.RecordMCPBinding("explicit")
 }
 
-// exemptFromOrgQuota returns true when the caller is a platform admin
-// (platform servers are exempt from org quotas — they are platform policy).
-func (h *MCPServersHandler) exemptFromOrgQuota(c *gin.Context) bool {
-	return c.Request.URL.Path[:strings.LastIndex(c.Request.URL.Path, "/")] != "" &&
-		strings.Contains(c.Request.URL.Path, "/admin/mcp-servers/")
+// resolveOwnerID returns the owner_id this handler instance is scoped to.
+// For admin: "_platform". For org: the :id path param. For user: the caller's userID.
+func (h *MCPServersHandler) resolveOwnerID(c *gin.Context) string {
+	switch h.ownerType {
+	case types.MCPServerOwnerAdmin:
+		return types.PlatformMcpOwnerID
+	case types.MCPServerOwnerOrg:
+		return c.Param("id")
+	case types.MCPServerOwnerUser:
+		return c.GetString("userID")
+	}
+	return ""
+}
+
+// verifyServerOwnership confirms the server exists and belongs to the
+// (ownerType, ownerID) scope this handler serves. Returns false when the
+// server doesn't exist or belongs to a different owner (404 — route
+// existence hiding, matching AdminGuard convention).
+func (h *MCPServersHandler) verifyServerOwnership(c *gin.Context, serverID, ownerID string) bool {
+	row, err := h.store.GetMCPServer(c.Request.Context(), h.ownerType, ownerID, serverID)
+	if err != nil || row == nil {
+		return false
+	}
+	return true
 }
 
 // resolveWorkspaceQuota resolves max_mcp_servers_per_workspace from the org
-// policy, defaulting to DefaultMaxMcpServersPerWorkspace when no policy is set.
+// policy of the workspace's owning org. Returns the default when the workspace
+// has no org (personal workspace) or no policy is set.
 func (h *MCPServersHandler) resolveWorkspaceQuota(c *gin.Context, workspaceID string) int {
-	// The quota is org-scoped. We can't easily resolve the workspace's org
-	// from the handler without an additional store method. For now, return
-	// the default — the org admin can set the policy and it will be enforced
-	// at the next resolution point. This is a known gap: a future improvement
-	// adds a GetWorkspaceOrgIDForMCP store method.
+	orgID, err := h.store.GetWorkspaceOrgIDForMCP(c.Request.Context(), workspaceID)
+	if err != nil || orgID == "" {
+		return types.DefaultMaxMcpServersPerWorkspace
+	}
+	policies, err := h.orgChecker.GetOrgPolicies(c.Request.Context(), orgID)
+	if err != nil {
+		return types.DefaultMaxMcpServersPerWorkspace
+	}
+	for _, p := range policies {
+		if p.Key == types.PolicyMaxMcpServersPerWorkspace {
+			var n int
+			if json.Unmarshal(p.Value, &n) == nil {
+				return n
+			}
+		}
+	}
 	return types.DefaultMaxMcpServersPerWorkspace
 }
 
@@ -624,6 +687,14 @@ func (h *MCPServersHandler) Unbind(c *gin.Context) {
 		serverID = c.Param("id")
 	}
 	workspaceID := c.Param("workspaceId")
+
+	// Verify ownership (same as Bind — prevents cross-tenant unbind).
+	ownerID := h.resolveOwnerID(c)
+	if !h.verifyServerOwnership(c, serverID, ownerID) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "MCP server not found"})
+		return
+	}
+
 	err := h.store.UnbindMCPServerFromWorkspace(c.Request.Context(), serverID, workspaceID)
 	if err != nil {
 		if errors.Is(err, secrets.ErrAutoBindingProtected) {
@@ -773,30 +844,45 @@ func derefStr(s *string) string {
 	return *s
 }
 
-func existingEnv(row *secrets.MCPServerRow) map[string]string {
+// decryptExisting decrypts an MCP server's ciphertext to recover the
+// plaintext env/headers payload. Used by update() to merge partial updates
+// without destroying the unchanged half. The decryptor is selected by
+// ownerType: admin/org via RootKeyProvider, user via session DEK.
+func (h *MCPServersHandler) decryptExisting(ctx context.Context, ownerType, ownerID string, row *secrets.MCPServerRow, encryptor secrets.RootKeyProvider) (*types.MCPServerSecretPayload, error) {
 	if len(row.Ciphertext) == 0 {
-		return map[string]string{}
+		return &types.MCPServerSecretPayload{}, nil
 	}
-	p, err := types.DecodeMCPServerSecretPayload(row.Ciphertext)
+	var plaintext []byte
+	var err error
+	switch ownerType {
+	case types.MCPServerOwnerAdmin:
+		if encryptor == nil {
+			return nil, fmt.Errorf("admin provider not configured")
+		}
+		plaintext, err = encryptor.Decrypt(ctx, row.Ciphertext)
+	case types.MCPServerOwnerOrg:
+		if encryptor == nil {
+			return nil, fmt.Errorf("org provider not configured")
+		}
+		plaintext, err = encryptor.Decrypt(ctx, row.Ciphertext)
+	case types.MCPServerOwnerUser:
+		if h.keys == nil {
+			return nil, fmt.Errorf("key service not configured")
+		}
+		sessionID := ctx.Value(sessionIDKey{}).(string)
+		dek, dErr := h.keys.GetDEK(ctx, sessionID, nil)
+		if dErr != nil {
+			return nil, dErr
+		}
+		plaintext, err = secrets.DecryptSecret(dek, row.Ciphertext)
+	default:
+		return nil, fmt.Errorf("unsupported owner_type %q", ownerType)
+	}
 	if err != nil {
-		return map[string]string{}
+		return nil, err
 	}
-	if p.Env == nil {
-		return map[string]string{}
-	}
-	return p.Env
+	return types.DecodeMCPServerSecretPayload(plaintext)
 }
 
-func existingHeaders(row *secrets.MCPServerRow) map[string]string {
-	if len(row.Ciphertext) == 0 {
-		return map[string]string{}
-	}
-	p, err := types.DecodeMCPServerSecretPayload(row.Ciphertext)
-	if err != nil {
-		return map[string]string{}
-	}
-	if p.Headers == nil {
-		return map[string]string{}
-	}
-	return p.Headers
-}
+// sessionIDKey is a context key for threading the session ID into decryptExisting.
+type sessionIDKey struct{}

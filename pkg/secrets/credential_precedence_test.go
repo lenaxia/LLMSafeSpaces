@@ -303,6 +303,10 @@ func (m *mockCredentialStore) HasUserProviderCredential(_ context.Context, _, _ 
 	return false, nil
 }
 
+func (m *mockCredentialStore) GetWorkspaceMCPServers(_ context.Context, _ string) ([]MCPServerBindingRow, error) {
+	return nil, nil
+}
+
 // combinedTestStore satisfies both SecretStore and CredentialStore via embedding.
 type combinedTestStore struct {
 	SecretStore

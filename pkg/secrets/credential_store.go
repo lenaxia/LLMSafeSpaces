@@ -86,6 +86,10 @@ type CredentialStore interface {
 	// per-owner unique identity (Epic 55); kind alone is not unique per
 	// owner.
 	HasUserProviderCredential(ctx context.Context, userID, slug string) (bool, error)
+
+	// GetWorkspaceMCPServers returns all bound+enabled MCP servers for a
+	// workspace, carrying ciphertext for downstream decryption. Epic 53.
+	GetWorkspaceMCPServers(ctx context.Context, workspaceID string) ([]MCPServerBindingRow, error)
 }
 
 // AdminKeyDeriver derives a server-side encryption key for admin credentials.

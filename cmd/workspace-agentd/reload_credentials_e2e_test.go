@@ -57,6 +57,9 @@ func (s *reloadE2ECredStore) BindCredentialToAllUserWorkspaces(_ context.Context
 func (s *reloadE2ECredStore) HasUserProviderCredential(_ context.Context, _, _ string) (bool, error) {
 	return false, nil
 }
+func (s *reloadE2ECredStore) GetWorkspaceMCPServers(_ context.Context, _ string) ([]secrets.MCPServerBindingRow, error) {
+	return nil, nil
+}
 
 // reloadE2EStore satisfies secrets.SecretStore (only the injection-touched
 // methods return real values; the rest panic to surface drift loudly).
@@ -76,6 +79,9 @@ func (s *reloadE2EStore) BindCredentialToAllUserWorkspaces(ctx context.Context, 
 }
 func (s *reloadE2EStore) HasUserProviderCredential(ctx context.Context, u, p string) (bool, error) {
 	return s.cred.HasUserProviderCredential(ctx, u, p)
+}
+func (s *reloadE2EStore) GetWorkspaceMCPServers(ctx context.Context, ws string) ([]secrets.MCPServerBindingRow, error) {
+	return s.cred.GetWorkspaceMCPServers(ctx, ws)
 }
 func (s *reloadE2EStore) GetBindings(_ context.Context, _ string) ([]*secrets.UserSecret, error) {
 	return nil, nil

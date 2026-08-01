@@ -682,13 +682,6 @@ var (
 		},
 		[]string{"source_type"},
 	)
-	mcpUserScopeGateTotal = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "llmsafespaces_mcp_user_scope_gate_total",
-			Help: "User-scope MCP gate decisions",
-		},
-		[]string{"result"},
-	)
 )
 
 // RecordMCPServerOp records an MCP server CRUD operation.
@@ -699,9 +692,4 @@ func RecordMCPServerOp(scope, action string) {
 // RecordMCPBinding records an MCP binding operation.
 func RecordMCPBinding(sourceType string) {
 	mcpBindingsTotal.WithLabelValues(sourceType).Inc()
-}
-
-// RecordMCPUserScopeGate records a user-scope gate decision (allowed, org_blocked, quota_exceeded).
-func RecordMCPUserScopeGate(result string) {
-	mcpUserScopeGateTotal.WithLabelValues(result).Inc()
 }

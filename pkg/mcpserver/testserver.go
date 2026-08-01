@@ -14,6 +14,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"time"
 )
 
 // jsonRPCRequest is the MCP JSON-RPC request envelope.
@@ -114,7 +115,12 @@ func NewHTTPTestServer() *HTTPTestServer {
 		_ = json.NewEncoder(w).Encode(resp)
 	})
 
-	srv := &http.Server{Handler: mux}
+	srv := &http.Server{
+		Handler:            mux,
+		ReadHeaderTimeout:  5 * time.Second,
+		ReadTimeout:        30 * time.Second,
+		WriteTimeout:       30 * time.Second,
+	}
 	listener, err := netListen()
 	if err != nil {
 		panic(fmt.Sprintf("failed to listen: %v", err))
@@ -151,7 +157,12 @@ func NewSSETestServer() *SSETestServer {
 		_, _ = fmt.Fprintf(w, "event: message\ndata: %s\n\n", respJSON)
 	})
 
-	srv := &http.Server{Handler: mux}
+	srv := &http.Server{
+		Handler:            mux,
+		ReadHeaderTimeout:  5 * time.Second,
+		ReadTimeout:        30 * time.Second,
+		WriteTimeout:       30 * time.Second,
+	}
 	listener, err := netListen()
 	if err != nil {
 		panic(fmt.Sprintf("failed to listen: %v", err))
@@ -165,15 +176,9 @@ func (s *SSETestServer) Close() { _ = s.srv.Close() }
 
 // --- stdio transport ---
 
-// StdioTestServer is a minimal stdio MCP server. It reads JSON-RPC requests
-// from stdin, one per line, and writes responses to stdout. Designed to be
-// invoked as a subprocess (matching opencode's local MCP server execution model).
-//
-// Usage as a standalone binary:
-//
-//	go run ./cmd/test-mcp-stdio
-//
-// Or import and call RunStdio() from a test.
+// RunStdio reads JSON-RPC requests from stdin, one per line, and writes
+// responses to stdout. Designed to be invoked as a subprocess (matching
+// opencode's local MCP server execution model).
 func RunStdio() {
 	scanner := newLineScanner(os.Stdin)
 	for scanner.Scan() {

@@ -257,6 +257,10 @@ func (m *mockSecretStore) HasUserProviderCredential(_ context.Context, _, _ stri
 	return false, nil
 }
 
+func (m *mockSecretStore) GetWorkspaceMCPServers(_ context.Context, _ string) ([]MCPServerBindingRow, error) {
+	return nil, nil
+}
+
 // duplicateError wraps the package's ErrDuplicateSecret sentinel so
 // errors.Is on the result of mockSecretStore.CreateSecret correctly
 // classifies the error in handler tests. Without the Unwrap method,

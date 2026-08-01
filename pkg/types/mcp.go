@@ -45,15 +45,6 @@ func ValidMCPServerTransport(t string) bool {
 	return false
 }
 
-// OpencodeMCPType maps a platform transport to the opencode config "type" value.
-// http and sse both render as opencode "remote"; stdio renders as "local".
-func OpencodeMCPType(transport string) string {
-	if transport == MCPServerTransportStdio {
-		return "local"
-	}
-	return "remote"
-}
-
 // MCPServerSecretPayload is the JSON shape encoded into mcp_servers.ciphertext.
 // Empty maps are valid (a server may have no secrets); the blob is always present
 // so the NOT NULL column is satisfied.
@@ -74,25 +65,6 @@ func DecodeMCPServerSecretPayload(b []byte) (*MCPServerSecretPayload, error) {
 	return &p, nil
 }
 
-// MCPServer is the DB row shape. Ciphertext holds the encrypted MCPServerSecretPayload
-// and is never serialized to JSON.
-type MCPServer struct {
-	ID         string    `json:"-"`
-	OwnerType  string    `json:"-"`
-	OwnerID    string    `json:"-"`
-	Name       string    `json:"name"`
-	Transport  string    `json:"transport"`
-	URL        string    `json:"url,omitempty"`
-	Command    string    `json:"command,omitempty"`
-	Args       []string  `json:"args,omitempty"`
-	TimeoutMs  *int      `json:"timeoutMs,omitempty"`
-	Ciphertext []byte    `json:"-"`
-	KeyVersion int       `json:"-"`
-	Enabled    bool      `json:"enabled"`
-	CreatedAt  time.Time `json:"createdAt"`
-	UpdatedAt  time.Time `json:"updatedAt"`
-}
-
 // MCPServerResponse is the API response shape. Secret bytes are never present;
 // HasSecret reports whether the server carries an encrypted payload (UI eye-toggle).
 type MCPServerResponse struct {
@@ -107,27 +79,6 @@ type MCPServerResponse struct {
 	Enabled   bool      `json:"enabled"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
-}
-
-// ToResponse builds the secret-free response for a server.
-func (s *MCPServer) ToResponse() MCPServerResponse {
-	args := s.Args
-	if args == nil {
-		args = []string{}
-	}
-	return MCPServerResponse{
-		ID:        s.ID,
-		Name:      s.Name,
-		Transport: s.Transport,
-		URL:       s.URL,
-		Command:   s.Command,
-		Args:      args,
-		TimeoutMs: s.TimeoutMs,
-		HasSecret: len(s.Ciphertext) > 0,
-		Enabled:   s.Enabled,
-		CreatedAt: s.CreatedAt,
-		UpdatedAt: s.UpdatedAt,
-	}
 }
 
 // CreateMCPServerRequest is the body for POST .../mcp-servers.

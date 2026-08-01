@@ -95,23 +95,28 @@ func (s *PgSecretStore) GetMCPServer(ctx context.Context, ownerType, ownerID, se
 }
 
 // UpdateMCPServer updates an existing MCP server scoped to (ownerType, ownerID).
-// Partial update: nil/empty pointer fields preserve existing values. Ciphertext
-// is only rewritten when non-nil (secret rotation). Mirrors UpdateCredential.
+// Partial update: nil fields preserve existing values. Ciphertext is only
+// rewritten when non-nil (secret rotation). Args is only rewritten when non-nil
+// (a nil []string is passed as SQL NULL so the CASE preserves the existing value;
+// passing JSON "null" would overwrite args with JSONB null — see review finding).
 func (s *PgSecretStore) UpdateMCPServer(ctx context.Context, ownerType, ownerID, serverID string, row *MCPServerRow) error {
-	args, _ := json.Marshal(row.Args)
+	var argsJSON any
+	if row.Args != nil {
+		argsJSON, _ = json.Marshal(row.Args)
+	}
 	return s.pool.QueryRow(ctx, `
 		UPDATE mcp_servers
 		SET name = COALESCE(NULLIF($4, ''), name),
 		    url = COALESCE(NULLIF($5, ''), url),
 		    command = COALESCE(NULLIF($6, ''), command),
-		    args = CASE WHEN $7::jsonb IS NOT NULL THEN $7 ELSE args END,
+		    args = CASE WHEN $7::jsonb IS NULL THEN args ELSE $7 END,
 		    timeout_ms = CASE WHEN $8::int IS NULL THEN timeout_ms ELSE $8 END,
 		    enabled = CASE WHEN $9::boolean IS NULL THEN enabled ELSE $9 END,
 		    ciphertext = CASE WHEN $10::bytea IS NOT NULL THEN $10 ELSE ciphertext END,
 		    key_version = CASE WHEN $10::bytea IS NOT NULL THEN $11 ELSE key_version END
 		WHERE id = $1 AND owner_type = $2 AND owner_id = $3
 		RETURNING updated_at
-	`, serverID, ownerType, ownerID, row.Name, row.URL, row.Command, args, row.TimeoutMs, boolPtr(row.Enabled), row.Ciphertext, row.KeyVersion).Scan(&row.UpdatedAt)
+	`, serverID, ownerType, ownerID, row.Name, row.URL, row.Command, argsJSON, row.TimeoutMs, boolPtr(row.Enabled), row.Ciphertext, row.KeyVersion).Scan(&row.UpdatedAt)
 }
 
 // DeleteMCPServer deletes an MCP server by ID scoped to (ownerType, ownerID).
@@ -145,6 +150,18 @@ func (s *PgSecretStore) CountWorkspaceMCPServers(ctx context.Context, workspaceI
 		WHERE b.workspace_id = $1 AND s.enabled = true
 	`, workspaceID).Scan(&n)
 	return n, err
+}
+
+// GetWorkspaceOrgIDForMCP resolves the org_id of a workspace, used by the
+// MCP bind quota check to look up max_mcp_servers_per_workspace. Returns ""
+// for personal workspaces (no org quota applies — only plan-tier quota).
+func (s *PgSecretStore) GetWorkspaceOrgIDForMCP(ctx context.Context, workspaceID string) (string, error) {
+	var orgID *string
+	err := s.pool.QueryRow(ctx, `SELECT org_id FROM workspaces WHERE id = $1`, workspaceID).Scan(&orgID)
+	if err != nil || orgID == nil {
+		return "", err
+	}
+	return *orgID, nil
 }
 
 // GetWorkspaceMCPServers returns all bound+enabled MCP servers for a workspace,

@@ -5,13 +5,15 @@ package mcpserver
 
 import (
 	"bufio"
+	"context"
 	"net"
 )
 
-// netListen returns a listener on a random port (port 0). Separated so
-// tests can run without binding to a fixed port.
+// netListen returns a listener on a random port (port 0). Uses a
+// net.ListenConfig with a context to satisfy the noctx linter.
 func netListen() (net.Listener, error) {
-	return net.Listen("tcp", "127.0.0.1:0")
+	var lc net.ListenConfig
+	return lc.Listen(context.Background(), "tcp", "127.0.0.1:0")
 }
 
 // lineScanner wraps bufio.Scanner for reading newline-delimited JSON-RPC

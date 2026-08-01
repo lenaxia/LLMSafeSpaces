@@ -55,6 +55,9 @@ func (s *stubMCPStore) CountMCPServersByOwner(_ context.Context, _, _ string) (i
 func (s *stubMCPStore) CountWorkspaceMCPServers(_ context.Context, _ string) (int, error) {
 	return 0, nil
 }
+func (s *stubMCPStore) GetWorkspaceOrgIDForMCP(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
 func (s *stubMCPStore) GetWorkspaceMCPServers(_ context.Context, _ string) ([]secrets.MCPServerBindingRow, error) {
 	return nil, nil
 }
