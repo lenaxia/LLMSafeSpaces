@@ -214,3 +214,117 @@ func TestIF_Callback_FailedStoreError500(t *testing.T) {
 	w := postCallback(t, r, "b-1", "tok", callbackRequest{Status: "failed", FailureReason: "apt 404"})
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
+
+// TestIF_Callback_Failed_WithLLMExplainer exercises the full handler path:
+// callback → explainFailure → LLM server → TransitionBuildFailed with the
+// LLM-generated explanation + attribution → SetExtensionReviewRequested.
+// This is the integration test the bot required — it goes through the
+// real handler code, not just Explain() in isolation.
+func TestIF_Callback_Failed_WithLLMExplainer(t *testing.T) {
+	t.Parallel()
+	// LLM test server returns an attributed explanation.
+	llmSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		inner := explainResponse{
+			Explanation:         "package ffmpegx does not exist in bookworm",
+			AttributedExtension: "ffmpegx",
+		}
+		innerJSON, _ := json.Marshal(inner)
+		resp := chatCompletionResponse{}
+		resp.Choices = []struct {
+			Message chatMessage `json:"message"`
+		}{{Message: chatMessage{Role: "assistant", Content: string(innerJSON)}}}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer llmSrv.Close()
+
+	rv := imagefactory.ResolvedValues{
+		"ffmpegx": {Type: imagefactory.ExtensionTypeApt, Value: "ffmpegx"},
+	}
+	bs := &fakeBuildStore{builds: map[string]imagefactory.Build{
+		"b-1": {
+			ID: "b-1", ConfigID: "c-1", Hash: "s-fail", BaseName: "bookworm",
+			BaseVersion: "0.6.0", Status: imagefactory.BuildDispatched, CallbackToken: "tok",
+			ResolvedValues: rv,
+		},
+	}}
+	fr := &fakeExtensionReviewer{}
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := &ImageFactoryHandler{
+		buildStore: bs,
+		imageRepo:  "ghcr.io/ws",
+		explainer:  NewLLMExplainer(LLMExplainerConfig{BaseURL: llmSrv.URL, Model: "m"}),
+		adminStore: fr,
+	}
+	r.POST("/internal/image-factory/builds/:id/callback", h.Callback)
+
+	w := postCallback(t, r, "b-1", "tok", callbackRequest{
+		Status: "failed", FailureReason: "E: Unable to locate package ffmpegx",
+	})
+	require.Equal(t, http.StatusNoContent, w.Code)
+
+	// The known_failure recorded by TransitionBuildFailed must contain the
+	// LLM-generated explanation (not the fallback).
+	assert.Contains(t, bs.lastKnownFail.Explanation, "ffmpegx")
+	assert.Contains(t, bs.lastKnownFail.Explanation, "does not exist")
+	assert.Equal(t, "E: Unable to locate package ffmpegx", bs.lastKnownFail.FailureReason)
+
+	// The attributed extension must be flagged for review.
+	assert.True(t, fr.called, "SetExtensionReviewRequested must be called for attributed extension")
+	assert.Equal(t, "ffmpegx", fr.lastID)
+	assert.True(t, fr.lastValue)
+}
+
+// TestIF_Callback_Failed_LLMDown_UsesFallback exercises the degradation
+// path through the handler: LLM unreachable → fallback explanation, no
+// attribution, no review flag.
+func TestIF_Callback_Failed_LLMDown_UsesFallback(t *testing.T) {
+	t.Parallel()
+	rv := imagefactory.ResolvedValues{
+		"ffmpeg": {Type: imagefactory.ExtensionTypeApt, Value: "ffmpeg"},
+	}
+	bs := &fakeBuildStore{builds: map[string]imagefactory.Build{
+		"b-1": {
+			ID: "b-1", ConfigID: "c-1", Hash: "s-fail2", BaseName: "bookworm",
+			BaseVersion: "0.6.0", Status: imagefactory.BuildDispatched, CallbackToken: "tok",
+			ResolvedValues: rv,
+		},
+	}}
+	fr := &fakeExtensionReviewer{}
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := &ImageFactoryHandler{
+		buildStore: bs,
+		imageRepo:  "ghcr.io/ws",
+		explainer:  NewLLMExplainer(LLMExplainerConfig{BaseURL: "http://127.0.0.1:1", Model: "m"}),
+		adminStore: fr,
+	}
+	r.POST("/internal/image-factory/builds/:id/callback", h.Callback)
+
+	w := postCallback(t, r, "b-1", "tok", callbackRequest{
+		Status: "failed", FailureReason: "apt: 404",
+	})
+	require.Equal(t, http.StatusNoContent, w.Code)
+
+	// Fallback explanation (not the LLM one).
+	assert.Equal(t, "this combination failed to build; contact your administrator for details",
+		bs.lastKnownFail.Explanation)
+	// No attribution → no review flag.
+	assert.False(t, fr.called, "review must NOT be flagged in degradation mode")
+}
+
+// fakeExtensionReviewer tracks SetExtensionReviewRequested calls.
+type fakeExtensionReviewer struct {
+	called    bool
+	lastID    string
+	lastValue bool
+}
+
+func (f *fakeExtensionReviewer) SetExtensionReviewRequested(_ context.Context, id string, v bool) error {
+	f.called = true
+	f.lastID = id
+	f.lastValue = v
+	return nil
+}
