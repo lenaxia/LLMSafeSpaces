@@ -1012,6 +1012,34 @@ runtimeEnvironments:
       # Immutable digest pin (optional, #476). See api.image.digest.
       digest: ""
 
+# --- Image Factory (custom workspace images, design/0046) ---
+#
+# When ghDispatcher.apiToken is empty, image builds are disabled (POST
+# /configs returns 503). Set all four ghDispatcher fields to enable.
+# The apiToken is a GitHub PAT with `repo` + `workflow` scopes.
+#
+# llmExplainer wires the build-failure LLM seam. When empty, the
+# callback handler uses a fallback string. Point at your in-cluster
+# LiteLLM/vLLM instance.
+imageFactory:
+  imageRepo: "ghcr.io/lenaxia/llmsafespaces/ws"
+  callbackURL: "/internal/image-factory"
+  ghDispatcher:
+    owner: ""
+    repo: ""
+    workflowId: "image-build.yml"
+    ref: "main"
+    secretKeyRef:
+      name: ""
+      key: "gh-token"
+  llmExplainer:
+    baseUrl: ""
+    model: ""
+    # apiKey is loaded from a Kubernetes Secret, NOT this ConfigMap.
+    secretKeyRef:
+      name: ""
+      key: "llm-api-key"
+
 # --- Frontend (optional web UI) ---
 frontend:
   enabled: false

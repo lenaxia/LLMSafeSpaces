@@ -1,0 +1,78 @@
+# Catalog seed for the LLMSafeSpaces image factory.
+# This file is loaded at API boot and idempotently upserted into the
+# image_factory_bases, image_factory_extensions, and
+# image_factory_platform_config tables (design/0046 #9).
+#
+# Operators can extend this via PR (the catalog is code-reviewed). Runtime
+# admin changes go through the admin portal API and write directly to the DB.
+
+architectures:
+  - linux/amd64
+  - linux/arm64
+
+bases:
+  - name: bookworm
+    version: "0.6.0"
+    image: ghcr.io/lenaxia/llmsafespaces/base
+    tag: "0.6.0"
+    isDefault: true
+
+extensions:
+  - id: ffmpeg
+    type: apt
+    value: ffmpeg
+    supportedBases: [bookworm]
+    description: "FFmpeg multimedia framework (video/audio processing)"
+
+  - id: libgl1
+    type: apt
+    value: libgl1
+    supportedBases: [bookworm]
+    description: "OpenGL runtime library (needed by many GUI/headless graphics apps)"
+
+  - id: libssl-dev
+    type: apt
+    value: libssl-dev
+    supportedBases: [bookworm]
+    description: "OpenSSL development headers (needed for compiling Rust/C crypto crates)"
+
+  - id: odbc-postgresql
+    type: apt
+    value: odbc-postgresql
+    supportedBases: [bookworm]
+    description: "PostgreSQL ODBC driver"
+
+  - id: python313
+    type: mise
+    value: python@3.13
+    supportedBases: [bookworm]
+    description: "Python 3.13 (via mise — overrides the base image's 3.12)"
+
+  - id: bun
+    type: mise
+    value: bun@latest
+    supportedBases: [bookworm]
+    description: "Bun JavaScript runtime"
+
+  - id: node-lts
+    type: mise
+    value: node@lts
+    supportedBases: [bookworm]
+    description: "Node.js LTS (via mise — overrides the base image's built-in)"
+
+  - id: go-latest
+    type: mise
+    value: go@latest
+    supportedBases: [bookworm]
+    description: "Go latest (via mise — overrides the base image's built-in)"
+
+  - id: motd-welcome
+    type: file
+    value: |
+      Welcome to your LLMSafeSpaces workspace!
+      This image was built by the image factory.
+    fileSpec:
+      path: /etc/motd
+      mode: "0644"
+    supportedBases: [bookworm]
+    description: "Custom MOTD message"

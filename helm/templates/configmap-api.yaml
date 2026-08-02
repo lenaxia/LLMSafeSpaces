@@ -100,6 +100,39 @@ data:
     workspace:
       defaultStorageClass: {{ . | quote }}
     {{- end }}
+    {{- if .Values.imageFactory }}
+    imageFactory:
+      {{- with .Values.imageFactory.imageRepo }}
+      imageRepo: {{ . | quote }}
+      {{- end }}
+      {{- with .Values.imageFactory.callbackURL }}
+      callbackURL: {{ . | quote }}
+      {{- end }}
+      {{- if .Values.imageFactory.ghDispatcher }}
+      ghDispatcher:
+        {{- with .Values.imageFactory.ghDispatcher.owner }}
+        owner: {{ . | quote }}
+        {{- end }}
+        {{- with .Values.imageFactory.ghDispatcher.repo }}
+        repo: {{ . | quote }}
+        {{- end }}
+        {{- with .Values.imageFactory.ghDispatcher.workflowId }}
+        workflowId: {{ . | quote }}
+        {{- end }}
+        {{- with .Values.imageFactory.ghDispatcher.ref }}
+        ref: {{ . | quote }}
+        {{- end }}
+      {{- end }}
+      {{- if .Values.imageFactory.llmExplainer }}
+      llmExplainer:
+        {{- with .Values.imageFactory.llmExplainer.baseUrl }}
+        baseUrl: {{ . | quote }}
+        {{- end }}
+        {{- with .Values.imageFactory.llmExplainer.model }}
+        model: {{ . | quote }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
     {{- with .Values.terminal.allowedOrigins }}
     terminal:
       allowedOrigins:
