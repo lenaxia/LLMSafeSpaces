@@ -64,13 +64,13 @@ type createConfigRequest struct {
 //     On error → return 503, do NOT commit config row.
 //  8. On dispatch success → CreateBuild + CreateConfig in one tx; return 201.
 func (h *ImageFactoryHandler) CreateConfig(c *gin.Context) {
-	if h.dispatcher == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "image builds are not configured"})
-		return
-	}
 	userID := c.GetString("userID")
 	if userID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+		return
+	}
+	if h.dispatcher == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "image builds are not configured"})
 		return
 	}
 	ctx := c.Request.Context()
@@ -220,7 +220,7 @@ func (h *ImageFactoryHandler) CreateConfig(c *gin.Context) {
 	})
 	if err != nil {
 		// Dispatch failed — do NOT commit. No orphaned config row.
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "failed to dispatch build: " + err.Error()})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "failed to dispatch build"})
 		return
 	}
 
@@ -272,7 +272,9 @@ func generateCallbackToken() (string, error) {
 // just for one call site; the handler doesn't need UUID validation.
 func newUUID() string {
 	b := make([]byte, 16)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
 	b[6] = (b[6] & 0x0f) | 0x40 // version 4
 	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])

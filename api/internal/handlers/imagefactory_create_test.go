@@ -175,8 +175,8 @@ func TestIF_CreateConfig_EmptySelection(t *testing.T) {
 
 	w := postConfigs(t, r, s4Body("empty-cfg"))
 	// Empty selection passes binding (it's present as []), but fails validation.
-	assert.True(t, w.Code == http.StatusUnprocessableEntity || w.Code == http.StatusBadRequest,
-		"empty selection should be rejected, got %d", w.Code)
+	assert.Equal(t, http.StatusBadRequest, w.Code,
+		"empty selection must be rejected (binding requires non-empty array)")
 }
 
 func TestIF_CreateConfig_UnknownExtension(t *testing.T) {
