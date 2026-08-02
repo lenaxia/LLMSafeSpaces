@@ -50,6 +50,7 @@ type ImageFactoryStore interface {
 
 	// ── Configs ──────────────────────────────────────────────────────
 	CreateConfig(ctx context.Context, c *imagefactory.Config) error
+	CreateConfigAndBuild(ctx context.Context, c *imagefactory.Config, b *imagefactory.Build) error
 	GetConfig(ctx context.Context, id string) (imagefactory.Config, error)
 	GetConfigByHash(ctx context.Context, hash string, scope imagefactory.ConfigScope, ownerID, orgID *string) (imagefactory.Config, error)
 	ListConfigs(ctx context.Context, scope imagefactory.ConfigScope, ownerID, orgID *string) ([]imagefactory.Config, error)
@@ -356,6 +357,66 @@ func (s *Service) ListRejectedConfigsForFailure(ctx context.Context, selectionHa
 // ── Configs ─────────────────────────────────────────────────────────────
 
 const configColumns = `id, hash, name, selection, resolved_values, base_name, base_version, scope, owner_id, org_id, status`
+
+// CreateConfigAndBuild inserts both rows in a single transaction so a
+// failure in either insert rolls back the other — no orphaned config at
+// 'building' with no build, no build row with no config. The handler
+// calls this after a successful dispatch (design/0046 #17).
+func (s *Service) CreateConfigAndBuild(ctx context.Context, c *imagefactory.Config, b *imagefactory.Build) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("create config+build: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rvJSONCfg, err := json.Marshal(c.ResolvedValues)
+	if err != nil {
+		return fmt.Errorf("create config+build: marshal config resolved_values: %w", err)
+	}
+	var ownerID, orgID interface{}
+	if c.OwnerID != nil {
+		ownerID = *c.OwnerID
+	}
+	if c.OrgID != nil {
+		orgID = *c.OrgID
+	}
+	err = tx.QueryRowContext(ctx,
+		`INSERT INTO image_factory_configs (hash, name, selection, resolved_values, base_name, base_version, scope, owner_id, org_id, status)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		 RETURNING id`,
+		c.Hash, c.Name, pq.Array(c.Selection), rvJSONCfg, c.BaseName, c.BaseVersion,
+		string(c.Scope), ownerID, orgID, string(c.Status),
+	).Scan(&c.ID)
+	if err != nil {
+		return fmt.Errorf("create config+build: insert config: %w", err)
+	}
+
+	rvJSONBuild, err := json.Marshal(b.ResolvedValues)
+	if err != nil {
+		return fmt.Errorf("create config+build: marshal build resolved_values: %w", err)
+	}
+	var triggeredBy interface{}
+	if b.TriggeredBy != nil {
+		triggeredBy = *b.TriggeredBy
+	}
+	b.ConfigID = c.ID
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO image_factory_builds
+		     (id, config_id, hash, base_name, base_version, resolved_values, architectures,
+		      status, gh_run_id, callback_token, triggered_by)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		b.ID, b.ConfigID, b.Hash, b.BaseName, b.BaseVersion, rvJSONBuild, pq.Array(b.Architectures),
+		string(b.Status), b.GHRunID, b.CallbackToken, triggeredBy,
+	)
+	if err != nil {
+		return fmt.Errorf("create config+build: insert build: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("create config+build: commit: %w", err)
+	}
+	return nil
+}
 
 func (s *Service) CreateConfig(ctx context.Context, c *imagefactory.Config) error {
 	rvJSON, err := json.Marshal(c.ResolvedValues)

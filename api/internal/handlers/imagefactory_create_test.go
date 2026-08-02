@@ -261,6 +261,9 @@ func (n *nonRetriableStore) ListVisibleConfigs(ctx context.Context, ownerID, org
 func (n *nonRetriableStore) CreateConfig(ctx context.Context, c *imagefactory.Config) error {
 	return n.inner.CreateConfig(ctx, c)
 }
+func (n *nonRetriableStore) CreateConfigAndBuild(ctx context.Context, c *imagefactory.Config, b *imagefactory.Build) error {
+	return n.inner.CreateConfigAndBuild(ctx, c, b)
+}
 func (n *nonRetriableStore) GetInFlightOrSuccessfulBuild(ctx context.Context, hash, baseVersion string) (*imagefactory.Build, error) {
 	return n.inner.GetInFlightOrSuccessfulBuild(ctx, hash, baseVersion)
 }
