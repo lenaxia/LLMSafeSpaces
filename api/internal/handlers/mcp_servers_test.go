@@ -134,8 +134,15 @@ func TestValidateMCPServerCreate(t *testing.T) {
 		{"invalid transport", &types.CreateMCPServerRequest{Name: "x", Transport: "ws"}, "invalid transport"},
 		{"missing url for http", &types.CreateMCPServerRequest{Name: "x", Transport: "http"}, "url is required"},
 		{"missing command for stdio", &types.CreateMCPServerRequest{Name: "x", Transport: "stdio"}, "command is required"},
-		{"ssrf loopback", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://127.0.0.1/mcp"}, "blocked"},
-		{"ssrf metadata", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://169.254.169.254/mcp"}, "blocked"},
+		{"ssrf loopback", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://127.0.0.1/mcp"}, "private"},
+		{"ssrf metadata", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://169.254.169.254/mcp"}, "private"},
+		{"ssrf rfc1918", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://10.0.0.1/mcp"}, "private"},
+		{"ssrf rfc1918-2", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://192.168.1.1/mcp"}, "private"},
+		{"ssrf localhost", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://localhost/mcp"}, "internal"},
+		{"env injection LD_PRELOAD", &types.CreateMCPServerRequest{Name: "x", Transport: "stdio", Command: "sh", Env: map[string]string{"LD_PRELOAD": "/tmp/evil.so"}}, "blocked"},
+		{"env injection empty", &types.CreateMCPServerRequest{Name: "x", Transport: "stdio", Command: "sh", Env: map[string]string{"": "val"}}, "empty"},
+		{"header crlf injection", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "https://x.com", Headers: map[string]string{"X-Inject\r\nEvil": "val"}}, "CR/LF"},
+		{"valid env+headers", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "https://x.com", Env: map[string]string{"GITHUB_TOKEN": "tok"}, Headers: map[string]string{"Authorization": "Bearer tok"}}, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

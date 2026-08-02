@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -26,6 +27,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/billing"
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
+	"github.com/lenaxia/llmsafespaces/pkg/validation"
 )
 
 // mcpServerStore is the narrow DB interface the handler depends on.
@@ -162,14 +164,15 @@ func (h *MCPServersHandler) OrgCreate(c *gin.Context) {
 }
 
 // orgAdminAllowed checks the mcp.allowOrgAdminServers instance setting.
-// Returns true when the setting is absent or true (fail-open default).
+// Fails CLOSED on read error (return false) — a security control that
+// fails open on transient errors provides no actual kill capability.
 func (h *MCPServersHandler) orgAdminAllowed(c *gin.Context) bool {
 	if h.settings == nil {
-		return true
+		return true // no settings reader configured = fail-open (test environments)
 	}
 	allowed, err := h.settings.GetBool(c.Request.Context(), "mcp.allowOrgAdminServers")
 	if err != nil {
-		return true // fail-open on read error
+		return false // fail-closed on read error
 	}
 	return allowed
 }
@@ -181,11 +184,19 @@ func (h *MCPServersHandler) OrgGet(c *gin.Context) {
 
 func (h *MCPServersHandler) OrgUpdate(c *gin.Context) {
 	orgID := c.Param("id")
+	if !h.orgAdminAllowed(c) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "org-admin MCP server management is disabled on this instance"})
+		return
+	}
 	h.update(c, types.MCPServerOwnerOrg, orgID, h.orgEncrypt)
 }
 
 func (h *MCPServersHandler) OrgDelete(c *gin.Context) {
 	orgID := c.Param("id")
+	if !h.orgAdminAllowed(c) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "org-admin MCP server management is disabled on this instance"})
+		return
+	}
 	h.del(c, types.MCPServerOwnerOrg, orgID)
 }
 
@@ -805,6 +816,19 @@ func validateMCPServerCreate(req *types.CreateMCPServerRequest) error {
 	if req.Transport == types.MCPServerTransportStdio && req.Command == "" {
 		return fmt.Errorf("command is required for stdio transport")
 	}
+	// Validate env var names against injection (LD_PRELOAD, CRLF, etc.).
+	// Reuses the proven validation.ValidateEnvVarName from the env-secret path.
+	for k := range req.Env {
+		if err := validation.ValidateEnvVarName(k); err != nil {
+			return fmt.Errorf("invalid env var name %q: %w", k, err)
+		}
+	}
+	// Validate header names against CRLF injection.
+	for k := range req.Headers {
+		if strings.ContainsAny(k, "\r\n") || k == "" {
+			return fmt.Errorf("invalid header name %q: must not contain CR/LF or be empty", k)
+		}
+	}
 	return nil
 }
 
@@ -820,11 +844,26 @@ func validateMCPURL(raw string) error {
 	if host == "" {
 		return fmt.Errorf("url must have a host")
 	}
-	// SSRF defense-in-depth: block loopback, link-local, cloud metadata.
-	blocked := []string{"127.0.0.1", "localhost", "0.0.0.0", "169.254.169.254", "::1", "[::1]"}
-	for _, b := range blocked {
-		if strings.EqualFold(host, b) {
-			return fmt.Errorf("url host is blocked (loopback/link-local/metadata)")
+	// SSRF defense: reject private/internal addresses. Mirrors the proven
+	// validateProbeBaseURL logic from credential_probe.go — IP range
+	// checking + DNS resolution, not a static blocklist.
+	if ip := net.ParseIP(host); ip != nil {
+		if isPrivateIP(ip) {
+			return fmt.Errorf("url host %q is a private/internal address", host)
+		}
+		return nil
+	}
+	lower := strings.ToLower(host)
+	if lower == "localhost" || strings.HasSuffix(lower, ".local") || strings.HasSuffix(lower, ".internal") {
+		return fmt.Errorf("url host %q is an internal address", host)
+	}
+	addrs, err := net.LookupHost(host)
+	if err != nil {
+		return nil
+	}
+	for _, addr := range addrs {
+		if ip := net.ParseIP(addr); ip != nil && isPrivateIP(ip) {
+			return fmt.Errorf("url host %q resolves to a private address (%s)", host, addr)
 		}
 	}
 	return nil
