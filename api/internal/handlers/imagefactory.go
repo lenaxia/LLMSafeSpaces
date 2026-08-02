@@ -53,9 +53,10 @@ type ImageFactoryHandler struct {
 	dispatcher buildDispatcher
 
 	// S5: callback + failure handling.
-	buildStore buildStore
-	imageRepo  string
-	explainer  failureExplainer
+	buildStore  buildStore
+	imageRepo   string
+	callbackURL string
+	explainer   failureExplainer
 }
 
 // NewImageFactoryHandler constructs the handler.
@@ -75,9 +76,10 @@ func (h *ImageFactoryHandler) SetFailureExplainer(e failureExplainer) {
 }
 
 // SetBuildStore wires the build-scoped store (callback transitions).
-func (h *ImageFactoryHandler) SetBuildStore(bs buildStore, imageRepo string) {
+func (h *ImageFactoryHandler) SetBuildStore(bs buildStore, imageRepo, callbackURL string) {
 	h.buildStore = bs
 	h.imageRepo = imageRepo
+	h.callbackURL = callbackURL
 }
 
 // CatalogResponse is the body of GET /v1/image-factory/catalog. Drives the

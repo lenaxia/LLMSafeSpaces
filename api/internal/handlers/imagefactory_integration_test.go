@@ -42,7 +42,7 @@ func TestIF_RoundTrip_CreateThenCallback(t *testing.T) {
 	})
 	h := NewImageFactoryHandler(store, &fakeOrgResolver{})
 	h.SetDispatcher(disp)
-	h.SetBuildStore(bs, "ghcr.io/acme/ws")
+	h.SetBuildStore(bs, "ghcr.io/acme/ws", "/internal/image-factory/builds")
 	r.POST("/api/v1/image-factory/configs", h.CreateConfig)
 	r.POST("/internal/image-factory/builds/:id/callback", h.Callback)
 

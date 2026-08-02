@@ -97,3 +97,4 @@ node_modules/.vite/
 go.sum.backup
 site/
 crd-doc-gen
+migrate-passkey-dek

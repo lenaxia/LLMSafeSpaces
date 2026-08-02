@@ -185,3 +185,32 @@ func TestIF_Callback_TokenFromBuildA_DoesNotWorkOnBuildB(t *testing.T) {
 	w := postCallback(t, r, "b-2", "tok-A", callbackRequest{Status: "succeeded"})
 	assert.Equal(t, http.StatusForbidden, w.Code, "token from build A must not mutate build B")
 }
+
+func TestIF_Callback_SucceededStoreError500(t *testing.T) {
+	t.Parallel()
+	bs := &fakeBuildStore{
+		builds: map[string]imagefactory.Build{
+			"b-1": {ID: "b-1", ConfigID: "c-1", Hash: "s-abc", BaseName: "bookworm",
+				BaseVersion: "0.6.0", Status: imagefactory.BuildDispatched, CallbackToken: "tok"},
+		},
+		succeedErr: testError("connection lost"),
+	}
+	r := newCallbackRouter(t, bs)
+	w := postCallback(t, r, "b-1", "tok", callbackRequest{Status: "succeeded"})
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestIF_Callback_FailedStoreError500(t *testing.T) {
+	t.Parallel()
+	bs := &fakeBuildStore{
+		builds: map[string]imagefactory.Build{
+			"b-1": {ID: "b-1", ConfigID: "c-1", Hash: "s-abc", BaseName: "bookworm",
+				BaseVersion: "0.6.0", Status: imagefactory.BuildDispatched, CallbackToken: "tok",
+				ResolvedValues: imagefactory.ResolvedValues{"ffmpeg": {Type: imagefactory.ExtensionTypeApt, Value: "ffmpeg"}}},
+		},
+		failErr: testError("FK constraint"),
+	}
+	r := newCallbackRouter(t, bs)
+	w := postCallback(t, r, "b-1", "tok", callbackRequest{Status: "failed", FailureReason: "apt 404"})
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}

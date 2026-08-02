@@ -22,18 +22,19 @@ import (
 // fakeIFStore is the test double for imageFactoryStore. It returns scripted
 // results and records calls so tests assert which methods ran.
 type fakeIFStore struct {
-	platformCfg        imagefactory.PlatformConfig
-	bases              []imagefactory.Base
-	baseByName         map[string]imagefactory.Base
-	extensions         []imagefactory.Extension
-	failures           []imagefactory.KnownFailure
-	knownFailureByHash map[string]imagefactory.KnownFailure
-	configs            []imagefactory.Config // returned by ListVisibleConfigs
-	configByHash       map[string]imagefactory.Config
-	existingBuild      *imagefactory.Build // returned by GetInFlightOrSuccessfulBuild
-	err                error
-	createConfigErr    error
-	createBuildErr     error
+	platformCfg             imagefactory.PlatformConfig
+	bases                   []imagefactory.Base
+	baseByName              map[string]imagefactory.Base
+	extensions              []imagefactory.Extension
+	failures                []imagefactory.KnownFailure
+	knownFailureByHash      map[string]imagefactory.KnownFailure
+	getKnownFailureOverride *imagefactory.KnownFailure
+	configs                 []imagefactory.Config // returned by ListVisibleConfigs
+	configByHash            map[string]imagefactory.Config
+	existingBuild           *imagefactory.Build // returned by GetInFlightOrSuccessfulBuild
+	err                     error
+	createConfigErr         error
+	createBuildErr          error
 
 	// call records
 	listExtIncludeRetired []bool
@@ -86,6 +87,9 @@ func (f *fakeIFStore) GetBase(ctx context.Context, name, version string) (imagef
 }
 
 func (f *fakeIFStore) GetKnownFailure(ctx context.Context, hash, baseName string) (imagefactory.KnownFailure, error) {
+	if f.getKnownFailureOverride != nil {
+		return *f.getKnownFailureOverride, nil
+	}
 	if kf, ok := f.knownFailureByHash[hash]; ok {
 		return kf, nil
 	}

@@ -32,12 +32,15 @@ type buildDispatcher interface {
 // dispatchRequest is the input to the GH Actions workflow_dispatch. Mirrors
 // the dispatch contract in design/0046 "Build dispatch contract".
 type dispatchRequest struct {
-	BuildID       string
-	Hash          string
-	BaseName      string
-	BaseVersion   string
-	BaseImageRef  string
-	Architectures []string
+	BuildID        string
+	CallbackURL    string
+	CallbackToken  string
+	Hash           string
+	BaseName       string
+	BaseVersion    string
+	BaseImageRef   string
+	Architectures  []string
+	ResolvedValues imagefactory.ResolvedValues
 }
 
 // createConfigRequest is the body of POST /v1/image-factory/configs.
@@ -211,12 +214,15 @@ func (h *ImageFactoryHandler) CreateConfig(c *gin.Context) {
 	// use it as the build row's ID.
 	buildID := newUUID()
 	ghRunID, err := h.dispatcher.Dispatch(ctx, dispatchRequest{
-		BuildID:       buildID,
-		Hash:          hash,
-		BaseName:      baseName,
-		BaseVersion:   baseVersion,
-		BaseImageRef:  base.Ref(),
-		Architectures: pc.Architectures,
+		BuildID:        buildID,
+		CallbackURL:    h.callbackURL,
+		CallbackToken:  callbackToken,
+		Hash:           hash,
+		BaseName:       baseName,
+		BaseVersion:    baseVersion,
+		BaseImageRef:   base.Ref(),
+		Architectures:  pc.Architectures,
+		ResolvedValues: resolved,
 	})
 	if err != nil {
 		// Dispatch failed — do NOT commit. No orphaned config row.

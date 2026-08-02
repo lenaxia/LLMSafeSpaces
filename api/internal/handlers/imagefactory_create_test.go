@@ -127,25 +127,16 @@ func TestIF_CreateConfig_DispatchFailureNoCommit(t *testing.T) {
 func TestIF_CreateConfig_KnownFailureNotRetriable(t *testing.T) {
 	t.Parallel()
 	store := s4Store()
-	store.knownFailureByHash = map[string]imagefactory.KnownFailure{
-		// We don't know the exact hash, but we can pre-seed a known failure
-		// that matches. Since the fake returns by-hash, we need to compute
-		// the hash the handler will compute. But the handler computes it
-		// internally. Easier: make GetKnownFailure always return a non-
-		// retriable failure.
+	store.getKnownFailureOverride = &imagefactory.KnownFailure{
+		Retriable: false, Explanation: "permanently blocked",
 	}
-	// Override GetKnownFailure to always return non-retriable.
-	store2 := store
-	store2.err = nil
-	// We can't override a single method on the struct; instead use a wrapper.
-	wrapped := &nonRetriableStore{inner: store2}
 	disp := &fakeDispatcher{ghRunID: 999}
-	r := newIFRouterWithDispatcher(t, wrapped, &fakeOrgResolver{}, disp)
+	r := newIFRouterWithDispatcher(t, store, &fakeOrgResolver{}, disp)
 
 	w := postConfigs(t, r, s4Body("blocked-cfg", "ffmpeg"))
 	require.Equal(t, http.StatusUnprocessableEntity, w.Code)
 	assert.False(t, disp.called, "dispatch must NOT be called for a permanently blocked combo")
-	assert.False(t, wrapped.inner.calledCreateConfig)
+	assert.False(t, store.calledCreateConfig)
 }
 
 func TestIF_CreateConfig_NoDispatcher503(t *testing.T) {
@@ -224,52 +215,3 @@ func newIFRouterWithDispatcher(t *testing.T, store imageFactoryStore, orgs orgRe
 	g.POST("/configs", h.CreateConfig)
 	return r
 }
-
-// nonRetriableStore wraps a fakeIFStore and makes GetKnownFailure always
-// return a non-retriable failure (for the known-failure test).
-type nonRetriableStore struct {
-	inner *fakeIFStore
-}
-
-func (n *nonRetriableStore) GetPlatformConfig(ctx context.Context) (imagefactory.PlatformConfig, error) {
-	return n.inner.GetPlatformConfig(ctx)
-}
-func (n *nonRetriableStore) ListBases(ctx context.Context) ([]imagefactory.Base, error) {
-	return n.inner.ListBases(ctx)
-}
-func (n *nonRetriableStore) GetBase(ctx context.Context, name, version string) (imagefactory.Base, error) {
-	return n.inner.GetBase(ctx, name, version)
-}
-func (n *nonRetriableStore) ListExtensions(ctx context.Context, includeRetired bool) ([]imagefactory.Extension, error) {
-	return n.inner.ListExtensions(ctx, includeRetired)
-}
-func (n *nonRetriableStore) ListKnownFailures(ctx context.Context) ([]imagefactory.KnownFailure, error) {
-	return n.inner.ListKnownFailures(ctx)
-}
-func (n *nonRetriableStore) GetKnownFailure(ctx context.Context, hash, baseName string) (imagefactory.KnownFailure, error) {
-	return imagefactory.KnownFailure{Retriable: false, Explanation: "permanently blocked"}, nil
-}
-func (n *nonRetriableStore) GetConfig(ctx context.Context, id string) (imagefactory.Config, error) {
-	return n.inner.GetConfig(ctx, id)
-}
-func (n *nonRetriableStore) GetConfigByHash(ctx context.Context, hash string, scope imagefactory.ConfigScope, ownerID, orgID *string) (imagefactory.Config, error) {
-	return n.inner.GetConfigByHash(ctx, hash, scope, ownerID, orgID)
-}
-func (n *nonRetriableStore) ListVisibleConfigs(ctx context.Context, ownerID, orgID *string) ([]imagefactory.Config, error) {
-	return n.inner.ListVisibleConfigs(ctx, ownerID, orgID)
-}
-func (n *nonRetriableStore) CreateConfig(ctx context.Context, c *imagefactory.Config) error {
-	return n.inner.CreateConfig(ctx, c)
-}
-func (n *nonRetriableStore) CreateConfigAndBuild(ctx context.Context, c *imagefactory.Config, b *imagefactory.Build) error {
-	return n.inner.CreateConfigAndBuild(ctx, c, b)
-}
-func (n *nonRetriableStore) GetInFlightOrSuccessfulBuild(ctx context.Context, hash, baseVersion string) (*imagefactory.Build, error) {
-	return n.inner.GetInFlightOrSuccessfulBuild(ctx, hash, baseVersion)
-}
-func (n *nonRetriableStore) CreateBuild(ctx context.Context, b *imagefactory.Build) error {
-	return n.inner.CreateBuild(ctx, b)
-}
-
-// compile-time check that nonRetriableStore satisfies imageFactoryStore.
-var _ imageFactoryStore = (*nonRetriableStore)(nil)
