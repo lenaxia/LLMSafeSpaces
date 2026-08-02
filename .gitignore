@@ -75,6 +75,7 @@ controller/bin/
 # One entry per binary so the intent is explicit and the list mirrors cmd/.
 /mcp
 /migrate-kek
+/migrate-passkey-dek
 /redact
 /relay-proxy
 /relay-router
