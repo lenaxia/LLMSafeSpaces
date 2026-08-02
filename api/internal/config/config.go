@@ -236,6 +236,19 @@ type Config struct {
 		DefaultStorageClass string `mapstructure:"defaultStorageClass"`
 	} `mapstructure:"workspace"`
 
+	// ImageFactory holds the image-factory build-failure LLM explainer
+	// config (design/0046 #22). When LLMExplainer.BaseURL is empty, the
+	// failure explainer is disabled and the fallback string is always used.
+	ImageFactory struct {
+		ImageRepo    string `mapstructure:"imageRepo"`
+		CallbackURL  string `mapstructure:"callbackURL"`
+		LLMExplainer struct {
+			BaseURL string `mapstructure:"baseUrl"`
+			Model   string `mapstructure:"model"`
+			APIKey  string `mapstructure:"apiKey"`
+		} `mapstructure:"llmExplainer"`
+	} `mapstructure:"imageFactory"`
+
 	// Terminal holds the WebSocket terminal proxy's security config.
 	//
 	// AllowedOrigins governs the gorilla/websocket Upgrader's CheckOrigin:
