@@ -54,12 +54,8 @@ func renderAptBlock(b *strings.Builder, rv ResolvedValues) {
 	}
 	sort.Strings(pkgs)
 	b.WriteString("RUN apt-get update && apt-get install -y --no-install-recommends \\\n")
-	for i, p := range pkgs {
-		sep := " &&"
-		if i == len(pkgs)-1 {
-			sep = ""
-		}
-		fmt.Fprintf(b, "    %s%s\n", p, sep)
+	for _, p := range pkgs {
+		fmt.Fprintf(b, "    %s \\\n", p)
 	}
 	b.WriteString("    && rm -rf /var/lib/apt/lists/*\n\n")
 }

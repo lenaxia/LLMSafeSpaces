@@ -70,6 +70,50 @@ func TestRenderDockerfile_Apt(t *testing.T) {
 	mustContain(t, out, "buildah")
 }
 
+// TestRenderDockerfile_AptMultiPkgStructural catches the && vs \ separator
+// bug that a substring check cannot: every package must be a continuation
+// line (ends with \), never an && operand. Without this, 2+ apt packages
+// produce a Dockerfile where only the first is installed and the rest are
+// executed as commands.
+func TestRenderDockerfile_AptMultiPkgStructural(t *testing.T) {
+	t.Parallel()
+	out, err := RenderDockerfile(sampleResolvedApt(), sampleBase())
+	if err != nil {
+		t.Fatalf("RenderDockerfile: %v", err)
+	}
+	lines := strings.Split(out, "\n")
+	// Find the apt block.
+	var aptLines []string
+	inApt := false
+	for _, line := range lines {
+		if strings.Contains(line, "apt-get install") {
+			inApt = true
+		}
+		if inApt {
+			aptLines = append(aptLines, line)
+			if strings.Contains(line, "rm -rf /var/lib/apt/lists") {
+				break
+			}
+		}
+	}
+	if len(aptLines) < 4 {
+		t.Fatalf("apt block too short, expected install + 2 pkgs + cleanup:\n%s", out)
+	}
+	// Every package line must end with " \" (backslash continuation), never "&&".
+	for i, line := range aptLines {
+		if strings.Contains(line, "apt-get install") || strings.Contains(line, "rm -rf") {
+			continue
+		}
+		trimmed := strings.TrimRight(line, " \t")
+		if !strings.HasSuffix(trimmed, `\`) {
+			t.Errorf("apt package line %d must end with backslash continuation (not &&):\n  %q", i, line)
+		}
+		if strings.Contains(line, " && ") {
+			t.Errorf("apt package line %d must NOT contain && (packages are arguments, not commands):\n  %q", i, line)
+		}
+	}
+}
+
 func TestRenderDockerfile_Mise(t *testing.T) {
 	t.Parallel()
 	out, err := RenderDockerfile(sampleResolvedMise(), sampleBase())

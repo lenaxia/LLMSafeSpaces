@@ -68,10 +68,11 @@ type ImageFactoryStore interface {
 // Assert *Service satisfies the interface at compile time.
 var _ ImageFactoryStore = (*Service)(nil)
 
-// errNotFound is returned by GetX methods when no row matches. Wrapped into
-// a public sentinel at the handler boundary; the store itself returns a
-// bare error so callers can errors.Is against sql.ErrNoRows.
-var errNotFound = errors.New("not found")
+// ErrNotFound is the store's not-found sentinel, returned by GetX methods
+// when no row matches. Callers use errors.Is(err, database.ErrNotFound).
+// Exported so handler-layer code can distinguish 404 from 500 without
+// fragile string matching.
+var ErrNotFound = errors.New("not found")
 
 // ── Platform config ─────────────────────────────────────────────────────
 
@@ -124,7 +125,7 @@ func (s *Service) GetBase(ctx context.Context, name, version string) (imagefacto
 		name, version,
 	).Scan(&b.Name, &b.Version, &b.Image, &b.Tag, &b.Digest, &b.IsDefault)
 	if errors.Is(err, sql.ErrNoRows) {
-		return imagefactory.Base{}, errNotFound
+		return imagefactory.Base{}, ErrNotFound
 	}
 	if err != nil {
 		return imagefactory.Base{}, fmt.Errorf("get base: %w", err)
@@ -158,7 +159,7 @@ func (s *Service) DeleteBase(ctx context.Context, name, version string) error {
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return errNotFound
+		return ErrNotFound
 	}
 	return nil
 }
@@ -194,7 +195,7 @@ func (s *Service) GetExtension(ctx context.Context, id string) (imagefactory.Ext
 		 FROM image_factory_extensions WHERE id = $1`, id)
 	e, err := scanExtension(row)
 	if errors.Is(err, sql.ErrNoRows) {
-		return imagefactory.Extension{}, errNotFound
+		return imagefactory.Extension{}, ErrNotFound
 	}
 	if err != nil {
 		return imagefactory.Extension{}, fmt.Errorf("get extension: %w", err)
@@ -236,7 +237,7 @@ func (s *Service) RetireExtension(ctx context.Context, id string) error {
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return errNotFound
+		return ErrNotFound
 	}
 	return nil
 }
@@ -282,7 +283,7 @@ func (s *Service) GetKnownFailure(ctx context.Context, selectionHash, baseName s
 	).Scan(&kf.SelectionHash, pq.Array((*[]string)(&kf.Selection)), &kf.BaseName,
 		&kf.Explanation, &kf.FailureReason, &kf.DetectedAt, &kf.Retriable)
 	if errors.Is(err, sql.ErrNoRows) {
-		return imagefactory.KnownFailure{}, errNotFound
+		return imagefactory.KnownFailure{}, ErrNotFound
 	}
 	if err != nil {
 		return imagefactory.KnownFailure{}, fmt.Errorf("get known failure: %w", err)
@@ -317,7 +318,7 @@ func (s *Service) SetKnownFailureRetriable(ctx context.Context, selectionHash, b
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return errNotFound
+		return ErrNotFound
 	}
 	return nil
 }
@@ -331,7 +332,7 @@ func (s *Service) DeleteKnownFailure(ctx context.Context, selectionHash, baseNam
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return errNotFound
+		return ErrNotFound
 	}
 	return nil
 }
@@ -386,7 +387,7 @@ func (s *Service) GetConfig(ctx context.Context, id string) (imagefactory.Config
 		`SELECT `+configColumns+` FROM image_factory_configs WHERE id = $1`, id)
 	c, err := scanConfig(row)
 	if errors.Is(err, sql.ErrNoRows) {
-		return imagefactory.Config{}, errNotFound
+		return imagefactory.Config{}, ErrNotFound
 	}
 	if err != nil {
 		return imagefactory.Config{}, fmt.Errorf("get config: %w", err)
@@ -410,7 +411,7 @@ func (s *Service) GetConfigByHash(ctx context.Context, hash string, scope imagef
 	row := s.DB.QueryRowContext(ctx, q, args...)
 	c, err := scanConfig(row)
 	if errors.Is(err, sql.ErrNoRows) {
-		return imagefactory.Config{}, errNotFound
+		return imagefactory.Config{}, ErrNotFound
 	}
 	if err != nil {
 		return imagefactory.Config{}, fmt.Errorf("get config by hash: %w", err)
@@ -479,7 +480,7 @@ func (s *Service) GetBuild(ctx context.Context, id string) (imagefactory.Build, 
 		`SELECT `+buildColumns+` FROM image_factory_builds WHERE id = $1`, id)
 	b, err := scanBuild(row)
 	if errors.Is(err, sql.ErrNoRows) {
-		return imagefactory.Build{}, errNotFound
+		return imagefactory.Build{}, ErrNotFound
 	}
 	if err != nil {
 		return imagefactory.Build{}, fmt.Errorf("get build: %w", err)
@@ -514,7 +515,7 @@ func (s *Service) GetBuildByGHRunID(ctx context.Context, ghRunID int64) (imagefa
 		`SELECT `+buildColumns+` FROM image_factory_builds WHERE gh_run_id = $1`, ghRunID)
 	b, err := scanBuild(row)
 	if errors.Is(err, sql.ErrNoRows) {
-		return imagefactory.Build{}, errNotFound
+		return imagefactory.Build{}, ErrNotFound
 	}
 	if err != nil {
 		return imagefactory.Build{}, fmt.Errorf("get build by gh_run_id: %w", err)

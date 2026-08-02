@@ -7,7 +7,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -75,7 +74,7 @@ func TestGetBase_NotFound(t *testing.T) {
 	svc, mock := newMockService(t)
 	mock.ExpectQuery(qAny).WillReturnError(sql.ErrNoRows)
 	_, err := svc.GetBase(context.Background(), "ghost", "0.0.0")
-	assert.ErrorIs(t, err, errNotFound)
+	assert.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestListBases(t *testing.T) {
@@ -130,7 +129,7 @@ func TestGetKnownFailure_NotFound(t *testing.T) {
 	svc, mock := newMockService(t)
 	mock.ExpectQuery(qAny).WillReturnError(sql.ErrNoRows)
 	_, err := svc.GetKnownFailure(context.Background(), "s-abc", "bookworm")
-	assert.ErrorIs(t, err, errNotFound)
+	assert.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestRecordKnownFailure_Upsert(t *testing.T) {
@@ -153,7 +152,7 @@ func TestDeleteKnownFailure_NotFound(t *testing.T) {
 	svc, mock := newMockService(t)
 	mock.ExpectExec(qAny).WillReturnResult(sqlmock.NewResult(0, 0))
 	err := svc.DeleteKnownFailure(context.Background(), "s-ghost", "bookworm")
-	assert.ErrorIs(t, err, errNotFound)
+	assert.ErrorIs(t, err, ErrNotFound)
 }
 
 // ── Configs ─────────────────────────────────────────────────────────────
@@ -188,7 +187,7 @@ func TestGetConfig_NotFound(t *testing.T) {
 	svc, mock := newMockService(t)
 	mock.ExpectQuery(qAny).WillReturnError(sql.ErrNoRows)
 	_, err := svc.GetConfig(context.Background(), "cfg-ghost")
-	assert.ErrorIs(t, err, errNotFound)
+	assert.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestListVisibleConfigs(t *testing.T) {
@@ -304,7 +303,7 @@ func TestGetBuildByGHRunID_NotFound(t *testing.T) {
 	svc, mock := newMockService(t)
 	mock.ExpectQuery(qAny).WillReturnError(sql.ErrNoRows)
 	_, err := svc.GetBuildByGHRunID(context.Background(), 999)
-	assert.ErrorIs(t, err, errNotFound)
+	assert.ErrorIs(t, err, ErrNotFound)
 }
 
 func TestListRejectedConfigsForFailure(t *testing.T) {
@@ -327,8 +326,6 @@ func TestListRejectedConfigsForFailure(t *testing.T) {
 
 // strPtr lives in pg_org_store_test.go (same package).
 
-// configColumnsForTest splits the const comma-list into the column slice
-// sqlmock's NewRows wants.
 func configColumnsForTest() []string { return splitCols(configColumns) }
 func buildColumnsForTest() []string  { return splitCols(buildColumns) }
 
@@ -343,6 +340,3 @@ func splitCols(commaCols string) []string {
 	}
 	return out
 }
-
-// Compile-time check that we use errors for something other than ErrorIs.
-var _ = errors.New

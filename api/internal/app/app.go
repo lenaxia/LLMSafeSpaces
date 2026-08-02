@@ -286,6 +286,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	var unlockDEKHandler *handlers.UnlockDEKHandler
 	var adminProvCredHandler *handlers.AdminProviderCredentialsHandler
 	var userProvCredHandler *handlers.UserProviderCredentialsHandler
+	var imageFactoryHandler *handlers.ImageFactoryHandler
 	var adminMcpHandler *handlers.MCPServersHandler
 	var orgMcpHandler *handlers.MCPServersHandler
 	var userMcpHandler *handlers.MCPServersHandler
@@ -681,6 +682,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		}
 
 		pgOrgStore = database.NewPgOrgStore(dbSvc.DB)
+		imageFactoryHandler = handlers.NewImageFactoryHandler(dbSvc, pgOrgStore)
 		orgsHandler = handlers.NewOrgsHandler(pgOrgStore, svc.GetAuth())
 		orgCredsHandler = handlers.NewOrgCredentialsHandler(pgStore, pgStore, orgCredsProv, svc.GetAuth())
 		orgMcpHandler = handlers.NewOrgMCPServersHandler(pgStore, orgCredsProv, pgOrgStore)
@@ -1085,6 +1087,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		InstanceSettings:                instanceSettings,
 		AdminProviderCredentialsHandler: adminProvCredHandler,
 		UserProviderCredentialsHandler:  userProvCredHandler,
+		ImageFactoryHandler:             imageFactoryHandler,
 		AdminMCPServersHandler:          adminMcpHandler,
 		OrgMCPServersHandler:            orgMcpHandler,
 		UserMCPServersHandler:           userMcpHandler,

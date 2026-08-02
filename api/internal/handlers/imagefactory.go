@@ -5,17 +5,17 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/imagefactory"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/database"
 )
 
-// imageFactoryStore is the data-access surface the image-factory handlers
-// depend on. Local interface (the repo DI convention — see auditStore,
-// CredentialStore) so handlers are unit-testable with a fake; *database.Service
-// satisfies it via duck-typing. Grown per story as handlers need more.
+// imageFactoryStore is the data-access surface for image-factory catalog
+// and config data. Satisfied by *database.Service via duck-typing.
 type imageFactoryStore interface {
 	// Catalog reads.
 	GetPlatformConfig(ctx context.Context) (imagefactory.PlatformConfig, error)
@@ -27,8 +27,12 @@ type imageFactoryStore interface {
 	GetConfig(ctx context.Context, id string) (imagefactory.Config, error)
 	GetConfigByHash(ctx context.Context, hash string, scope imagefactory.ConfigScope, ownerID, orgID *string) (imagefactory.Config, error)
 	ListVisibleConfigs(ctx context.Context, ownerID, orgID *string) ([]imagefactory.Config, error)
+}
 
-	// Org resolution for the current user (single-org model; "" if none).
+// orgResolver resolves the current user's org membership. Separate interface
+// (ISP) because GetUserOrgID lives on *database.PgOrgStore, not
+// *database.Service — the handler depends on both, injected separately.
+type orgResolver interface {
 	GetUserOrgID(ctx context.Context, userID string) (string, error)
 }
 
@@ -37,11 +41,12 @@ type imageFactoryStore interface {
 // admin endpoints in S7, callback in S5.
 type ImageFactoryHandler struct {
 	store imageFactoryStore
+	orgs  orgResolver
 }
 
 // NewImageFactoryHandler constructs the handler.
-func NewImageFactoryHandler(store imageFactoryStore) *ImageFactoryHandler {
-	return &ImageFactoryHandler{store: store}
+func NewImageFactoryHandler(store imageFactoryStore, orgs orgResolver) *ImageFactoryHandler {
+	return &ImageFactoryHandler{store: store, orgs: orgs}
 }
 
 // CatalogResponse is the body of GET /v1/image-factory/catalog. Drives the
@@ -116,7 +121,7 @@ func (h *ImageFactoryHandler) ListConfigs(c *gin.Context) {
 
 	ownerID := &userID
 	var orgID *string
-	if oid, err := h.store.GetUserOrgID(ctx, userID); err == nil && oid != "" {
+	if oid, err := h.orgs.GetUserOrgID(ctx, userID); err == nil && oid != "" {
 		o := oid
 		orgID = &o
 	}
@@ -151,7 +156,7 @@ func (h *ImageFactoryHandler) GetConfig(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	var orgID *string
-	if oid, err := h.store.GetUserOrgID(ctx, userID); err == nil && oid != "" {
+	if oid, err := h.orgs.GetUserOrgID(ctx, userID); err == nil && oid != "" {
 		o := oid
 		orgID = &o
 	}
@@ -179,17 +184,10 @@ func (h *ImageFactoryHandler) GetConfig(c *gin.Context) {
 			return
 		}
 		// miss → try next scope; other errors → 500.
-		if !isNotFound(err) {
+		if !errors.Is(err, database.ErrNotFound) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load config"})
 			return
 		}
 	}
 	c.JSON(http.StatusNotFound, gin.H{"error": "config not found"})
-}
-
-// isNotFound reports whether err is the store's not-found sentinel. Kept
-// loose (string match) rather than importing the database package's
-// errNotFound, to preserve the duck-typed store boundary.
-func isNotFound(err error) bool {
-	return err != nil && (err.Error() == "not found")
 }
