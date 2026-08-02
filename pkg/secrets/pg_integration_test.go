@@ -370,7 +370,7 @@ func TestPgE2E_FullSecretLifecycle(t *testing.T) {
 
 	// Init keys
 	password := []byte("e2e-password")
-	recoveryKey, err := keySvc.InitializeUserKeys(ctx, userID, password)
+	recoveryKey, err := keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek")
 	if err != nil {
 		t.Fatalf("InitializeUserKeys: %v", err)
 	}
@@ -477,7 +477,7 @@ func TestPgE2E_RotateKey_AtomicReEncryption(t *testing.T) {
 	password := []byte("rotate-test-password")
 	sessionID := fmt.Sprintf("rotate-sess-%d", time.Now().UnixNano())
 
-	originalRecovery, err := keySvc.InitializeUserKeys(ctx, userID, password)
+	originalRecovery, err := keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek")
 	if err != nil {
 		t.Fatalf("InitializeUserKeys: %v", err)
 	}
@@ -584,7 +584,7 @@ func TestPgE2E_AddBindings_IdempotentAndConcurrent(t *testing.T) {
 	ctx := context.Background()
 	password := []byte("addb-pw")
 	sessionID := fmt.Sprintf("addb-sess-%d", time.Now().UnixNano())
-	if _, err := keySvc.InitializeUserKeys(ctx, userID, password); err != nil {
+	if _, err := keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek"); err != nil {
 		t.Fatalf("InitializeUserKeys: %v", err)
 	}
 	if err := keySvc.UnlockDEK(ctx, userID, password, sessionID, time.Hour); err != nil {

@@ -37,11 +37,9 @@ import (
 
 // KeyServiceInterface abstracts the key service for DEK lifecycle.
 type KeyServiceInterface interface {
-	InitializeUserKeys(ctx context.Context, userID string, password []byte) (recoveryKeyHex string, err error)
-	// InitializeUserKeysServerKEK (Epic 58) provisions a DEK wrapped by the
-	// master-KEK RootKeyProvider rather than a password-derived KEK, for an SSO
-	// auto-provisioned user who has no password. The store atomically flips
-	// users.dek_source to 'server_kek' alongside the user_keys insert.
+	// InitializeUserKeysServerKEK provisions a DEK wrapped by the master-KEK
+	// RootKeyProvider. All users are server-KEK-wrapped (the password-derived
+	// DEK tier has been removed).
 	InitializeUserKeysServerKEK(ctx context.Context, userID, dekSource string) error
 	UnlockDEK(ctx context.Context, userID string, password []byte, sessionID string, ttl time.Duration) error
 	// UnlockDEKWithSigningKey is UnlockDEK + durable jwt_sessions write
@@ -971,10 +969,8 @@ func (s *Service) Register(ctx context.Context, req types.RegisterRequest) (*typ
 	// usable for secret operations immediately. Without this, the new user
 	// would receive a token whose jti has no DEK in cache and every secret
 	// call would return 403 until they re-logged in (Bug 5, worklog 0085).
-	var recoveryKey string
 	if s.keyService != nil {
-		recoveryKey, err = s.keyService.InitializeUserKeys(ctx, userID, []byte(req.Password))
-		if err != nil {
+		if err := s.keyService.InitializeUserKeysServerKEK(ctx, userID, "server_kek"); err != nil {
 			s.logger.Error("Register: failed to initialize user keys", err, "user_id", userID)
 			return nil, errors.New("registration failed")
 		}
@@ -1026,7 +1022,7 @@ func (s *Service) Register(ctx context.Context, req types.RegisterRequest) (*typ
 	}
 
 	user.PasswordHash = ""
-	return &types.AuthResponse{Token: token, User: *user, RecoveryKey: recoveryKey, TokenTTL: s.tokenDuration}, nil
+	return &types.AuthResponse{Token: token, User: *user, RecoveryKey: "", TokenTTL: s.tokenDuration}, nil
 }
 
 // dummyBcryptHash is a real, well-formed bcrypt hash (cost 12) of an
@@ -1172,11 +1168,11 @@ func (s *Service) Login(ctx context.Context, req types.LoginRequest) (*types.Aut
 			// Auto-initialize keys for pre-Epic 10 users on first login
 			hasKeys, _ := s.keyService.HasKeys(ctx, user.ID)
 			if !hasKeys {
-				if _, err := s.keyService.InitializeUserKeys(ctx, user.ID, []byte(req.Password)); err != nil {
+				if err := s.keyService.InitializeUserKeysServerKEK(ctx, user.ID, "server_kek"); err != nil {
 					s.logger.Warn("Login: failed to auto-init keys", "user_id", user.ID, "error", err.Error())
 				}
 			}
-			if err := s.keyService.UnlockDEKWithSigningKey(ctx, user.ID, []byte(req.Password), jti, tokenDur, s.jwtSecret); err != nil {
+			if err := s.keyService.UnlockDEKWithSigningKey(ctx, user.ID, nil, jti, tokenDur, s.jwtSecret); err != nil {
 				s.logger.Warn("Login: failed to unlock DEK", "user_id", user.ID, "error", err.Error())
 			}
 		}

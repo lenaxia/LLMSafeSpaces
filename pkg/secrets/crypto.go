@@ -18,16 +18,14 @@ import (
 const (
 	dekSize  = 32
 	saltSize = 32
-	kekInfo  = "llmsafespaces-kek"
-	recInfo  = "llmsafespaces-recovery"
 
-	KDFVersionHKDF     = 0
-	KDFVersionArgon2id = 1
-	KDFCurrentVersion  = KDFVersionArgon2id
-	argon2Time         = 3
-	argon2Memory       = 64 * 1024
-	argon2Threads      = 4
-	argon2KeyLen       = 32
+	kekInfo = "llmsafespaces-kek"
+	recInfo = "llmsafespaces-recovery"
+
+	argon2Time    = 3
+	argon2Memory  = 64 * 1024
+	argon2Threads = 4
+	argon2KeyLen  = 32
 )
 
 var (
@@ -36,20 +34,16 @@ var (
 	ErrInvalidSaltLength = errors.New("salt must be 32 bytes")
 )
 
+// DeriveKEKFromPassword derives a 32-byte KEK from a passphrase and salt via
+// Argon2id. Despite the name it is a generic KDF primitive — the sealed root-key
+// provider uses it to unseal the master key (unsealKeyV0), independent of any
+// user password tier. The user-password DEK tier was removed; this function stays
+// because the sealed provider depends on it.
 func DeriveKEKFromPassword(password, salt []byte) ([]byte, error) {
 	if len(salt) != saltSize {
 		return nil, ErrInvalidSaltLength
 	}
 	return argon2.IDKey(password, salt, argon2Time, argon2Memory, argon2Threads, argon2KeyLen), nil
-}
-
-func DeriveKEKFromPasswordV0(password, salt []byte, info string) ([]byte, error) {
-	hkdfReader := hkdf.New(sha256.New, password, salt, []byte(info))
-	kek := make([]byte, 32)
-	if _, err := io.ReadFull(hkdfReader, kek); err != nil {
-		return nil, err
-	}
-	return kek, nil
 }
 
 func DeriveKEKFromKey(keyMaterial, salt []byte, info string) ([]byte, error) {
@@ -95,6 +89,8 @@ func GenerateSalt() ([]byte, error) {
 	return salt, nil
 }
 
+// GenerateRecoveryKey generates a 16-byte random recovery key. Retained for
+// the migration CLI and test fixtures.
 func GenerateRecoveryKey() ([]byte, error) {
 	key := make([]byte, 16)
 	if _, err := rand.Read(key); err != nil {
@@ -103,6 +99,9 @@ func GenerateRecoveryKey() ([]byte, error) {
 	return key, nil
 }
 
+// WrapDEK wraps a DEK under a KEK via AES-256-GCM. Retained as a generic
+// primitive — the one-shot migrate-passkey-dek CLI uses it to unwrap legacy
+// password-wrapped DEKs during the tier cutover.
 func WrapDEK(kek, dek []byte) ([]byte, error) {
 	block, err := aes.NewCipher(kek)
 	if err != nil {
@@ -119,6 +118,7 @@ func WrapDEK(kek, dek []byte) ([]byte, error) {
 	return gcm.Seal(nonce, nonce, dek, nil), nil
 }
 
+// UnwrapDEK unwraps a DEK from a KEK via AES-256-GCM. See WrapDEK.
 func UnwrapDEK(kek, wrappedDEK []byte) ([]byte, error) {
 	block, err := aes.NewCipher(kek)
 	if err != nil {

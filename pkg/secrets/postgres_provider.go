@@ -126,7 +126,7 @@ var _ SecretProvider = (*PostgresSecretProvider)(nil)
 
 // Ensure KeyService satisfies the auth integration interface at compile time.
 var _ interface {
-	InitializeUserKeys(ctx context.Context, userID string, password []byte) (string, error)
+	InitializeUserKeysServerKEK(ctx context.Context, userID, dekSource string) error
 	UnlockDEK(ctx context.Context, userID string, password []byte, sessionID string, ttl time.Duration) error
 	HasKeys(ctx context.Context, userID string) (bool, error)
 } = (*KeyService)(nil)

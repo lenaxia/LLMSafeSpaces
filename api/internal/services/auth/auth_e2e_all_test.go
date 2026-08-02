@@ -272,12 +272,9 @@ func setupRealAuthRouter(t *testing.T) (*gin.Engine, string, *testContext) {
 	secretsHandler := handlers.NewSecretsHandler(secretSvc)
 	// US-29.4: WorkspaceEnvHandler is the new owner of env endpoints.
 	envHandler := handlers.NewWorkspaceEnvHandler(secretSvc)
-	rotateHandler := handlers.NewRotateKeyHandler(keySvc)
-	rotateHandler.SetPasswordUpdater(&bcryptUpdater{db: db})
 	// G38: wire the auth service's RevokeAllUserSessions so the e2e
 	// setup mirrors production wiring and the post-change-password old-
 	// JWT-rejection regression can be exercised end-to-end.
-	rotateHandler.SetSessionRevoker(authSvc)
 
 	tc := &testContext{}
 	authSvc.SetKeyService(&capturingKeyService{inner: keySvc, tc: tc})
@@ -317,7 +314,6 @@ func setupRealAuthRouter(t *testing.T) (*gin.Engine, string, *testContext) {
 		}
 		c.JSON(200, resp)
 	})
-	router.POST("/api/v1/account/recover", rotateHandler.RecoverAccount)
 
 	// Authenticated routes
 	authed := router.Group("/api/v1")
@@ -328,8 +324,6 @@ func setupRealAuthRouter(t *testing.T) (*gin.Engine, string, *testContext) {
 	authed.PUT("/workspaces/:id/env", envHandler.SetWorkspaceEnv)
 	authed.GET("/workspaces/:id/env", envHandler.GetWorkspaceEnv)
 	authed.DELETE("/workspaces/:id/env/:name", envHandler.DeleteWorkspaceEnv)
-	authed.POST("/account/rotate-key", rotateHandler.RotateKey)
-	authed.POST("/account/change-password", rotateHandler.ChangePassword)
 	authed.POST("/api-keys", func(c *gin.Context) {
 		var req types.CreateAPIKeyRequest
 		if err := c.ShouldBindJSON(&req); err != nil {

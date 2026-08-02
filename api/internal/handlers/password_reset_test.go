@@ -99,10 +99,9 @@ type memKeyInit struct {
 	initErr  error
 }
 
-func (m *memKeyInit) InitializeUserKeys(_ context.Context, _ string, password []byte) (string, error) {
+func (m *memKeyInit) InitializeUserKeysServerKEK(_ context.Context, _ string, _ string) error {
 	m.calls++
-	m.lastPw = string(password)
-	return m.recoverK, m.initErr
+	return m.initErr
 }
 
 type memPwUpdater struct {

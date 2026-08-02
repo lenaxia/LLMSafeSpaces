@@ -30,13 +30,11 @@ type DEKUnlocker interface {
 // UnlockDEKHandler handles POST /api/v1/auth/unlock-dek (Epic 56).
 //
 // The "soft" in soft-unlock means: no JWT invalidation, no full re-login.
-// The user re-enters their password to repopulate the per-session DEK
-// when the durable rehydrate path fails for one of the residual cases
-// the design enumerates (pre-feature backfill, US-50.4 DEK rotation,
-// row corruption). On success the durable jwt_sessions row is rewritten
-// under the user's MATCHED signing key — not the active key — so that
-// a subsequent rehydrate after Valkey restart still works under the
-// same JWT.
+// The DEK is re-derived from user_keys via the master RootKeyProvider
+// (server-KEK tier — no password needed) and re-cached. On success the
+// durable jwt_sessions row is rewritten under the user's MATCHED signing
+// key — not the active key — so that a subsequent rehydrate after Valkey
+// restart still works under the same JWT.
 type UnlockDEKHandler struct {
 	keys DEKUnlocker
 }
@@ -70,45 +68,24 @@ func (h *UnlockDEKHandler) Unlock(c *gin.Context) {
 		return
 	}
 
-	// Body parse with a strict size cap so a malicious client can't
-	// blow up the request goroutine by posting megabytes.
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 4096)
-	var req struct {
-		Password string `json:"password" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "password required"})
-		return
-	}
-
-	// Re-derive the DEK and re-cache + re-wrap durable row under the
-	// MATCHED key. The TTL is the JWT's remaining lifetime so the
-	// cache + durable row expire when the JWT does.
+	// Re-derive the DEK from user_keys via the master RootKeyProvider
+	// (password is nil — server-KEK tier, no user-held secret) and
+	// re-cache + re-wrap durable row under the MATCHED key. The TTL is
+	// the JWT's remaining lifetime.
 	ttl := remainingTokenTTL(c)
 	if ttl <= 0 {
-		// Token effectively expired between AuthMiddleware accepting it
-		// and us reading exp. Reject so the client re-logs.
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "session expired; please log in again"})
 		return
 	}
 
-	err := h.keys.UnlockDEKWithSigningKey(c.Request.Context(), userID, []byte(req.Password), sessionID, ttl, matchedSigningKey)
-	if err != nil {
-		// Wrong password is the dominant failure. We map AEAD/bcrypt
-		// failures to 401 with a generic message so a leak of err.Error()
-		// in a future logger doesn't expose internal detail. The JWT
-		// itself remains valid — the user just couldn't re-derive their
-		// DEK, so secret reads continue to fail until they retry.
-		if errors.Is(err, secrets.ErrInvalidPassword) {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid password"})
-			return
-		}
-		// Pre-Epic-10 users with no user_keys row reach this path with
-		// a nil-error result from UnlockDEK (existing legacy behavior).
-		// Other errors are server-side — surface as 500 without details.
+	if err := h.keys.UnlockDEKWithSigningKey(c.Request.Context(), userID, nil, sessionID, ttl, matchedSigningKey); err != nil {
 		var se *pkgerrors.StatusError
 		if errors.As(err, &se) {
 			c.JSON(se.Status, gin.H{"error": se.Message})
+			return
+		}
+		if errors.Is(err, secrets.ErrServerKEKUnavailable) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "server key provider unavailable"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "unlock failed"})

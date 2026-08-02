@@ -31,7 +31,6 @@ func TestE2E_RealHTTPServer(t *testing.T) {
 	secretStore := &dbSecretStoreAdapter{}
 	secretService := secrets.NewSecretService(keyService, secretStore)
 	secretsHandler := handlers.NewSecretsHandler(secretService)
-	rotateHandler := handlers.NewRotateKeyHandler(keyService)
 
 	// Initialize user keys (simulates registration)
 	ctx := context.Background()
@@ -39,9 +38,9 @@ func TestE2E_RealHTTPServer(t *testing.T) {
 	password := []byte("e2e-password-123")
 	sessionID := "e2e-jti-abc"
 
-	_, err := keyService.InitializeUserKeys(ctx, userID, password)
+	err := keyService.InitializeUserKeysServerKEK(ctx, userID, "server_kek")
 	if err != nil {
-		t.Fatalf("InitializeUserKeys: %v", err)
+		t.Fatalf("InitializeUserKeysServerKEK: %v", err)
 	}
 	err = keyService.UnlockDEK(ctx, userID, password, sessionID, time.Hour)
 	if err != nil {

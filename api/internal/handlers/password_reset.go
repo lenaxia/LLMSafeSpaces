@@ -41,11 +41,11 @@ type passwordResetUserLookup interface {
 	GetUser(ctx context.Context, userID string) (*types.User, error)
 }
 
-// passwordResetKeyInitializer reinitialises the DEK with a new password.
-// On password reset via email, the old DEK is unrecoverable (no old password,
-// no recovery key available), so InitialiseUserKeys creates a fresh DEK.
+// passwordResetKeyInitializer reinitialises the DEK on password reset.
+// The old DEK is unrecoverable (no old password), so a fresh server-KEK-wrapped
+// DEK is created, orphaning the old ciphertext.
 type passwordResetKeyInitializer interface {
-	InitializeUserKeys(ctx context.Context, userID string, password []byte) (recoveryKeyHex string, err error)
+	InitializeUserKeysServerKEK(ctx context.Context, userID, dekSource string) error
 }
 
 // passwordResetPwUpdater updates the bcrypt hash.
@@ -271,12 +271,11 @@ func (h *PasswordResetHandler) Confirm(c *gin.Context) {
 	}
 
 	// Step 2: Reinitialise DEK. The old DEK is unrecoverable (no old password
-	// or recovery key via email reset). Creates a fresh DEK wrapped with the
-	// new password and generates a new recovery key. If this fails, the user
-	// can still log in (bcrypt was updated); the auto-init on next login
-	// creates a new DEK (secrets from the old DEK are lost regardless).
-	recoveryKey, err := h.keyInit.InitializeUserKeys(ctx, tok.UserID, []byte(req.NewPassword))
-	if err != nil {
+	// or recovery key via email reset). Creates a fresh server-KEK-wrapped DEK.
+	// If this fails, the user can still log in (bcrypt was updated); the
+	// auto-init on next login creates a new DEK (secrets from the old DEK are
+	// lost regardless).
+	if err := h.keyInit.InitializeUserKeysServerKEK(ctx, tok.UserID, "server_kek"); err != nil {
 		if h.log != nil {
 			h.log.Error("password-reset: DEK reinit failed", err, "user_id", tok.UserID)
 		}
@@ -324,7 +323,7 @@ func (h *PasswordResetHandler) Confirm(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"recoveryKey": recoveryKey})
+	c.JSON(http.StatusOK, gin.H{"reset": true})
 }
 
 func generateEmailToken() (token string, hash string, err error) {

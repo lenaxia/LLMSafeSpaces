@@ -107,9 +107,6 @@ type RouterConfig struct {
 	// ImageFactoryAdminHandler serves the platform-owner admin endpoints.
 	ImageFactoryAdminHandler *handlers.ImageFactoryAdminHandler
 
-	// RotateKeyHandler is the handler for key rotation (optional)
-	RotateKeyHandler *handlers.RotateKeyHandler
-
 	// UnlockDEKHandler is the soft-unlock endpoint for re-deriving the
 	// DEK without forcing logout (Epic 56). Optional — when nil the
 	// /auth/unlock-dek route is not registered, which is appropriate
@@ -663,14 +660,8 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 		idGroup.DELETE("/env/:name", cfg.WorkspaceEnvHandler.DeleteWorkspaceEnv)
 	}
 
-	// Key rotation endpoint (Epic 10)
-	if cfg.RotateKeyHandler != nil {
-		accountGroup := router.Group("/api/v1/account")
-		accountGroup.Use(services.GetAuth().AuthMiddleware())
-		accountGroup.POST("/rotate-key", cfg.RotateKeyHandler.RotateKey)
-		accountGroup.POST("/change-password", cfg.RotateKeyHandler.ChangePassword)
-		router.POST("/api/v1/account/recover", cfg.RotateKeyHandler.RecoverAccount)
-	}
+	// Key rotation endpoints removed — the password DEK tier is gone
+	// (server-KEK-only). Key rotation is now operator-side via rotate-kek CLI.
 
 	// Soft-unlock endpoint (Epic 56). Behind AuthMiddleware so the
 	// middleware stashes the matched JWT signing key on the gin context —

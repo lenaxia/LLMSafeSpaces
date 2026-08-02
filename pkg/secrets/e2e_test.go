@@ -25,14 +25,10 @@ func TestE2E_FullSecretLifecycle(t *testing.T) {
 	workspaceID := "ws-e2e-1"
 
 	// === Phase 1: Account creation (register) ===
-	recoveryKey, err := keySvc.InitializeUserKeys(ctx, userID, password)
+	err := keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek")
 	if err != nil {
-		t.Fatalf("InitializeUserKeys: %v", err)
+		t.Fatalf("InitializeUserKeysServerKEK: %v", err)
 	}
-	if recoveryKey == "" {
-		t.Fatal("Recovery key should not be empty")
-	}
-	t.Logf("Recovery key: %s (would be shown to user once)", recoveryKey)
 
 	// === Phase 2: Login (unlock DEK) ===
 	sessionID := "jwt-jti-abc123"

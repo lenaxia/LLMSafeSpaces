@@ -101,43 +101,6 @@ func TestDeriveKEKFromPasswordRejectsWrongSaltLength(t *testing.T) {
 	}
 }
 
-func TestDeriveKEKFromPasswordV0MatchesOldHKDFOutput(t *testing.T) {
-	password := []byte("test-password")
-	salt := make([]byte, 32)
-	for i := range salt {
-		salt[i] = byte(i)
-	}
-	info := "user-kek-v1"
-
-	kek, err := DeriveKEKFromPasswordV0(password, salt, info)
-	require.NoError(t, err)
-
-	reader := hkdf.New(sha256.New, password, salt, []byte(info))
-	expected := make([]byte, 32)
-	_, err = io.ReadFull(reader, expected)
-	require.NoError(t, err)
-
-	require.Equal(t, expected, kek, "V0 HKDF path must produce identical output to the old DeriveKEK")
-}
-
-func TestDeriveKEKFromPasswordDifferentFromV0(t *testing.T) {
-	password := []byte("test-password-123")
-	salt := []byte("0123456789abcdef0123456789abcdef")
-
-	argonKEK, err := DeriveKEKFromPassword(password, salt)
-	if err != nil {
-		t.Fatalf("DeriveKEKFromPassword failed: %v", err)
-	}
-	hkdfKEK, err := DeriveKEKFromPasswordV0(password, salt, kekInfo)
-	if err != nil {
-		t.Fatalf("DeriveKEKFromPasswordV0 failed: %v", err)
-	}
-
-	if bytes.Equal(argonKEK, hkdfKEK) {
-		t.Error("Argon2id and HKDF should produce different outputs")
-	}
-}
-
 func TestDeriveKEKFromKeyDeterministic(t *testing.T) {
 	key := []byte("test-key-material-1234567890123456")
 	salt := []byte("0123456789abcdef0123456789abcdef")
