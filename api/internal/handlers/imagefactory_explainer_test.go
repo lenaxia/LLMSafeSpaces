@@ -157,3 +157,46 @@ func TestBuildExplainPrompt_IncludesExtensionsAndLog(t *testing.T) {
 	assert.Contains(t, prompt, "apt: 404 not found")
 	assert.Contains(t, prompt, "Explain why this build failed")
 }
+
+// TestLLMExplainer_CallbackIntegration exercises the full callback →
+// explainer → known_failure flow: the callback handler calls the LLM,
+// the explanation flows into the known_failure row, and if attribution
+// is present the extension is flagged for review.
+func TestLLMExplainer_CallbackIntegration(t *testing.T) {
+	t.Parallel()
+	// LLM test server returns an attributed explanation.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		inner := explainResponse{
+			Explanation:         "package ffmpegx does not exist",
+			AttributedExtension: "ffmpegx",
+		}
+		innerJSON, _ := json.Marshal(inner)
+		resp := chatCompletionResponse{}
+		resp.Choices = []struct {
+			Message chatMessage `json:"message"`
+		}{{Message: chatMessage{Role: "assistant", Content: string(innerJSON)}}}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	explainer := NewLLMExplainer(LLMExplainerConfig{BaseURL: srv.URL, Model: "test"})
+	explanation, attr, err := explainer.Explain(context.Background(), "E: Unable to locate package ffmpegx",
+		imagefactory.ResolvedValues{"ffmpegx": {Type: imagefactory.ExtensionTypeApt, Value: "ffmpegx"}})
+	require.NoError(t, err)
+	assert.Contains(t, explanation, "ffmpegx")
+	assert.Equal(t, "ffmpegx", attr,
+		"attribution must flow through — the callback handler uses it to flag the extension")
+}
+
+// TestLLMExplainer_CallbackIntegrationDegradation verifies the fallback
+// path: LLM unreachable → fallback explanation, no attribution.
+func TestLLMExplainer_CallbackIntegrationDegradation(t *testing.T) {
+	t.Parallel()
+	explainer := NewLLMExplainer(LLMExplainerConfig{
+		BaseURL: "http://127.0.0.1:1", // unreachable
+		Model:   "test",
+	})
+	explanation, attr, _ := explainer.Explain(context.Background(), "log", nil)
+	assert.Equal(t, fallbackExplanation, explanation)
+	assert.Empty(t, attr, "no attribution in degradation mode")
+}

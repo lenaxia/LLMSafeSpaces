@@ -696,6 +696,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 					Model:   cfg.ImageFactory.LLMExplainer.Model,
 					APIKey:  cfg.ImageFactory.LLMExplainer.APIKey,
 				}))
+			imageFactoryHandler.SetExtensionReviewer(dbSvc)
 		}
 		orgsHandler = handlers.NewOrgsHandler(pgOrgStore, svc.GetAuth())
 		orgCredsHandler = handlers.NewOrgCredentialsHandler(pgStore, pgStore, orgCredsProv, svc.GetAuth())
