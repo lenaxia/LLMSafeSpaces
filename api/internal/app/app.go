@@ -479,9 +479,10 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			mh.SetSettings(instanceSettings)
 			mh.SetLogger(log)
 		}
-		// Audit uses the pgOrgStore (it implements LogAuditEvent/LogOrgEvent).
-		adminMcpHandler.SetAudit(pgOrgStore)
-		userMcpHandler.SetAudit(pgOrgStore)
+		// Audit + settings wiring deferred to after pgOrgStore init for
+		// BOTH admin and user handlers (pgOrgStore is nil here — created
+		// in the org init block below). The old calls at lines 483-484
+		// were nil-wired and silently dropped all audit events.
 
 		// Seed the free-tier opencode credential (Epic 30 US-30.4).
 		if err := ensureFreeTierCredential(context.Background(), pgStore, providerCredsProv, log); err != nil {
@@ -696,10 +697,13 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		orgMcpHandler.SetSecretPusher(mcpPushAdapter)
 
 		// Deferred wiring: now that pgOrgStore is available, install it
-		// on the user MCP handler (was nil at construction time).
+		// on the user AND admin MCP handlers (were nil at construction time).
 		if userMcpHandler != nil {
 			userMcpHandler.SetOrgChecker(pgOrgStore)
 			userMcpHandler.SetAudit(pgOrgStore)
+		}
+		if adminMcpHandler != nil {
+			adminMcpHandler.SetAudit(pgOrgStore)
 		}
 
 		// US-43.10: OIDC SSO. The service reuses the auth service as the JWT

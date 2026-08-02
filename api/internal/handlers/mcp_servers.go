@@ -218,6 +218,12 @@ func (h *MCPServersHandler) UserCreate(c *gin.Context) {
 	// Gate 1: org-membership check. If the user is in an org, the org
 	// admin controls the tool surface — personal MCP servers are refused
 	// unless the org's allow_user_mcp_servers policy is true.
+	// Nil-guard: if orgChecker is not wired (init ordering bug), fail
+	// gracefully with 503 instead of panicking (nil deref → generic 500).
+	if h.orgChecker == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "MCP service not fully initialized"})
+		return
+	}
 	orgID, _ := h.orgChecker.GetUserOrgID(c.Request.Context(), userID)
 	if orgID != "" {
 		policies, _ := h.orgChecker.GetOrgPolicies(c.Request.Context(), orgID)
