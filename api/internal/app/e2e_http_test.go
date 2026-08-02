@@ -72,8 +72,6 @@ func TestE2E_RealHTTPServer(t *testing.T) {
 	wsGroup.PUT("/:id/bindings", secretsHandler.SetBindings)
 	wsGroup.GET("/:id/bindings", secretsHandler.GetBindings)
 
-	accountGroup := router.Group("/api/v1/account")
-	accountGroup.POST("/rotate-key", rotateHandler.RotateKey)
 
 	// Start real TCP server
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

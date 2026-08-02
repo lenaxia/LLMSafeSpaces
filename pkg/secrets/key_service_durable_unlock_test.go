@@ -29,7 +29,7 @@ func TestKeyService_UnlockDEK_WritesDurableRow_WhenSigningKeySupplied(t *testing
 	ctx := context.Background()
 
 	password := []byte("correct horse battery staple")
-	_, err := svc.InitializeUserKeys(ctx, "u-1", password)
+	err := svc.InitializeUserKeysServerKEK(ctx, "u-1", "server_kek")
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
@@ -94,7 +94,7 @@ func TestKeyService_UnlockDEKWithSigningKey_DurableWriteFailureIsNonFatal(t *tes
 	ctx := context.Background()
 
 	password := []byte("pw")
-	_, _ = svc.InitializeUserKeys(ctx, "u-2", password)
+	_ = svc.InitializeUserKeysServerKEK(ctx, "u-2", "server_kek")
 
 	if err := svc.UnlockDEKWithSigningKey(ctx, "u-2", password, uuid.New().String(), time.Hour, []byte("sk")); err != nil {
 		t.Errorf("UnlockDEKWithSigningKey must not fail on durable-write error, got: %v", err)
@@ -110,7 +110,7 @@ func TestKeyService_UnlockDEKWithSigningKey_NoStoreSkipsDurableWrite(t *testing.
 	ctx := context.Background()
 
 	password := []byte("pw")
-	_, _ = svc.InitializeUserKeys(ctx, "u-3", password)
+	_ = svc.InitializeUserKeysServerKEK(ctx, "u-3", "server_kek")
 
 	if err := svc.UnlockDEKWithSigningKey(ctx, "u-3", password, uuid.New().String(), time.Hour, []byte("sk")); err != nil {
 		t.Errorf("no store should still work: %v", err)
@@ -128,7 +128,7 @@ func TestKeyService_UnlockDEKWithSigningKey_NilSigningKeySkipsDurableWrite(t *te
 	ctx := context.Background()
 
 	password := []byte("pw")
-	_, _ = svc.InitializeUserKeys(ctx, "u-4", password)
+	_ = svc.InitializeUserKeysServerKEK(ctx, "u-4", "server_kek")
 
 	if err := svc.UnlockDEKWithSigningKey(ctx, "u-4", password, uuid.New().String(), time.Hour, nil); err != nil {
 		t.Fatalf("nil signing key should still succeed: %v", err)
@@ -151,7 +151,7 @@ func TestKeyService_UnlockDEKWithSigningKey_NonUUIDSessionIDSkipsDurableWrite(t 
 	ctx := context.Background()
 
 	password := []byte("pw")
-	_, _ = svc.InitializeUserKeys(ctx, "u-5", password)
+	_ = svc.InitializeUserKeysServerKEK(ctx, "u-5", "server_kek")
 
 	if err := svc.UnlockDEKWithSigningKey(ctx, "u-5", password, "apikey:hash", time.Hour, []byte("sk")); err != nil {
 		t.Errorf("non-uuid sessionID should not fail unlock: %v", err)
@@ -171,7 +171,7 @@ func TestKeyService_UnlockDEKWithSigningKey_WrongPasswordFails(t *testing.T) {
 	svc.SetJWTSessionStore(jwtStore)
 	ctx := context.Background()
 
-	_, _ = svc.InitializeUserKeys(ctx, "u-6", []byte("correct"))
+	_ = svc.InitializeUserKeysServerKEK(ctx, "u-6", "server_kek")
 
 	err := svc.UnlockDEKWithSigningKey(ctx, "u-6", []byte("wrong"), uuid.New().String(), time.Hour, []byte("sk"))
 	if err == nil {
@@ -193,7 +193,7 @@ func TestKeyService_UnlockDEK_BackwardCompatible(t *testing.T) {
 	ctx := context.Background()
 
 	password := []byte("pw")
-	_, _ = svc.InitializeUserKeys(ctx, "u-7", password)
+	_ = svc.InitializeUserKeysServerKEK(ctx, "u-7", "server_kek")
 
 	if err := svc.UnlockDEK(ctx, "u-7", password, uuid.New().String(), time.Hour); err != nil {
 		t.Fatalf("legacy UnlockDEK: %v", err)

@@ -220,7 +220,7 @@ func TestAuthMiddleware_LoginAutoInitsKeysForExistingUser(t *testing.T) {
 	}
 
 	// After InitializeUserKeys, HasKeys returns true
-	ks.InitializeUserKeys(ctx, "existing-user", []byte("pw"))
+	ks.InitializeUserKeysServerKEK(ctx, "existing-user", "server_kek")
 	has, _ = ks.HasKeys(ctx, "existing-user")
 	if !has {
 		t.Error("Should have keys after init")

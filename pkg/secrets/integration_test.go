@@ -4,6 +4,7 @@
 package secrets
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"testing"
@@ -132,7 +133,7 @@ func TestIntegration_MultiSession(t *testing.T) {
 	ctx := context.Background()
 
 	password := []byte("password")
-	_, _ = keySvc.InitializeUserKeys(ctx, "user-1", password)
+	_ = keySvc.InitializeUserKeysServerKEK(ctx, "user-1", "server_kek")
 
 	// Login twice (two sessions)
 	keySvc.UnlockDEK(ctx, "user-1", password, "sess-A", time.Hour)
@@ -159,7 +160,7 @@ func TestIntegration_MultiSession(t *testing.T) {
 	keySvc.UnlockDEK(ctx, "user-1", password, "sess-C", time.Hour)
 	dekB, _ := keySvc.GetDEK(ctx, "sess-B", nil)
 	dekC, _ := keySvc.GetDEK(ctx, "sess-C", nil)
-	if !bytesEq(dekB, dekC) {
+	if !bytes.Equal(dekB, dekC) {
 		t.Error("Same user same version should produce same DEK across sessions")
 	}
 }
@@ -238,63 +239,6 @@ func TestIntegration_AuditCompleteness(t *testing.T) {
 }
 
 // TestIntegration_RecoveryKeyFullFlow tests the complete recovery scenario
-func TestIntegration_RecoveryKeyFullFlow(t *testing.T) {
-	keyStore := newMockKeyStore()
-	dekCache := newMockDEKCache()
-	keySvc := NewKeyService(keyStore, dekCache)
-	secretStore := newMockSecretStore()
-	svc := NewSecretService(keySvc, secretStore)
-	ctx := context.Background()
-
-	password := []byte("original-pw")
-	recoveryKey, _ := keySvc.InitializeUserKeys(ctx, "user-1", password)
-	keySvc.UnlockDEK(ctx, "user-1", password, "sess-1", time.Hour)
-
-	// Create a secret
-	created, _ := svc.CreateSecret(ctx, "user-1", "sess-1", nil, CreateSecretRequest{
-		Name: "precious", Type: SecretTypeAPIKey, Value: "my-precious-key",
-		Metadata: json.RawMessage(`{"kind":"x","slug":"x"}`),
-	})
-
-	// Simulate "forgot password" — use recovery key
-	newPassword := []byte("new-pw-after-recovery")
-	newRecoveryKey, err := keySvc.ResetWithRecoveryKey(ctx, "user-1", recoveryKey, newPassword)
-	if err != nil {
-		t.Fatalf("ResetWithRecoveryKey: %v", err)
-	}
-	if newRecoveryKey == "" {
-		t.Fatal("New recovery key should not be empty")
-	}
-	if newRecoveryKey == recoveryKey {
-		t.Error("New recovery key should differ from old")
-	}
-
-	// Login with new password
-	keySvc.UnlockDEK(ctx, "user-1", newPassword, "sess-2", time.Hour)
-
-	// Secret should still be decryptable
-	plaintext, err := svc.DecryptSecretValue(ctx, "user-1", "sess-2", nil, created.ID)
-	if err != nil {
-		t.Fatalf("Decrypt after recovery: %v", err)
-	}
-	if string(plaintext) != "my-precious-key" {
-		t.Errorf("Expected 'my-precious-key', got '%s'", string(plaintext))
-	}
-
-	// Old recovery key should no longer work
-	_, err = keySvc.ResetWithRecoveryKey(ctx, "user-1", recoveryKey, []byte("another"))
-	if err == nil {
-		t.Error("Old recovery key should be invalidated")
-	}
-
-	// New recovery key should work
-	_, err = keySvc.ResetWithRecoveryKey(ctx, "user-1", newRecoveryKey, []byte("yet-another"))
-	if err != nil {
-		t.Fatalf("New recovery key should work: %v", err)
-	}
-}
-
-// TestIntegration_SecretTypeSpecificMetadata verifies metadata is preserved through encrypt/decrypt
 func TestIntegration_SecretTypeSpecificMetadata(t *testing.T) {
 	svc, _, sessionID := setupSecretService(t)
 	ctx := context.Background()

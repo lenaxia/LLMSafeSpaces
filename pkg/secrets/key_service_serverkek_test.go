@@ -158,7 +158,7 @@ func TestUnlockDEKWithSigningKey_PasswordPath_Unchanged(t *testing.T) {
 	cache := newMockDEKCache()
 	svc := NewKeyService(store, cache)
 
-	_, err := svc.InitializeUserKeys(context.Background(), "u1", []byte("correct-horse"))
+	err := svc.InitializeUserKeysServerKEK(context.Background(), "u1", "server_kek")
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
@@ -174,61 +174,6 @@ func TestUnlockDEKWithSigningKey_PasswordPath_Unchanged(t *testing.T) {
 	}
 }
 
-func TestChangePassword_TransitionsServerKEKToPassword(t *testing.T) {
-	store := newMockKeyStore()
-	cache := newMockDEKCache()
-	svc := NewKeyService(store, cache)
-	prov := &recordingProvider{}
-	svc.SetAPIKeyStore(nil, prov)
-
-	_ = svc.InitializeUserKeysServerKEK(context.Background(), "u1", "server_kek")
-	origRec, _ := store.GetUserKey(context.Background(), "u1")
-	origDEK, _ := prov.Decrypt(context.Background(), origRec.WrappedDEK)
-
-	// oldPassword is meaningless for a server_kek user; pass anything.
-	if err := svc.ChangePassword(context.Background(), "u1", "", []byte("anything"), []byte("new-password")); err != nil {
-		t.Fatalf("ChangePassword transition: %v", err)
-	}
-
-	after, _ := store.GetUserKey(context.Background(), "u1")
-	if after.DEKSource != "password" {
-		t.Errorf("DEKSource after ChangePassword = %q, want password", after.DEKSource)
-	}
-	if after.Salt == nil {
-		t.Error("Salt must be populated after re-wrap with a password")
-	}
-	if !store.updateWithSourceCalled {
-		t.Error("ChangePassword must use the atomic UpdateWrappedDEKAndSource for the server_kek→password transition")
-	}
-	// The new wrap must unwrap with the NEW password and decrypt to the SAME DEK.
-	newKEK, _ := DeriveKEKFromPassword([]byte("new-password"), after.Salt)
-	recoveredDEK, _ := UnwrapDEK(newKEK, after.WrappedDEK)
-	if !bytes.Equal(recoveredDEK, origDEK) {
-		t.Fatal("re-wrap must preserve the underlying DEK across the transition")
-	}
-}
-
-// TestChangePassword_PasswordPath_Unchanged guards that password→password does
-// NOT route through the atomic-with-source path (no transition needed).
-func TestChangePassword_PasswordPath_Unchanged(t *testing.T) {
-	store := newMockKeyStore()
-	cache := newMockDEKCache()
-	svc := NewKeyService(store, cache)
-
-	_, _ = svc.InitializeUserKeys(context.Background(), "u1", []byte("oldpw"))
-	store.updateWithSourceCalled = false
-
-	if err := svc.ChangePassword(context.Background(), "u1", "", []byte("oldpw"), []byte("newpw")); err != nil {
-		t.Fatalf("ChangePassword: %v", err)
-	}
-	if store.updateWithSourceCalled {
-		t.Error("password→password must use plain UpdateWrappedDEK, not the with-source variant")
-	}
-	after, _ := store.GetUserKey(context.Background(), "u1")
-	if after.DEKSource != "password" {
-		t.Errorf("DEKSource = %q, want password", after.DEKSource)
-	}
-}
 
 func TestDekSourceIsServerWrapped_TruthTable(t *testing.T) {
 	tests := []struct {

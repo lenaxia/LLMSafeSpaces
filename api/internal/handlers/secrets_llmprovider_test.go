@@ -69,7 +69,7 @@ func TestHandler_E2E_LLMProvider_BindTriggersReloadWithFormattedConfig(t *testin
 	secretStore := newTestSecretStore()
 	svc := secrets.NewSecretService(keySvc, secretStore)
 
-	_, err = keySvc.InitializeUserKeys(ctx, userID, password)
+	err = keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek")
 	require.NoError(t, err)
 	err = keySvc.UnlockDEK(ctx, userID, password, sessionID, time.Hour)
 	require.NoError(t, err)
@@ -193,7 +193,7 @@ func TestHandler_E2E_LLMProvider_MultipleProviders_Bind(t *testing.T) {
 	secretStore := newTestSecretStore()
 	svc := secrets.NewSecretService(keySvc, secretStore)
 
-	_, err = keySvc.InitializeUserKeys(ctx, userID, password)
+	err = keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek")
 	require.NoError(t, err)
 	err = keySvc.UnlockDEK(ctx, userID, password, sessionID, time.Hour)
 	require.NoError(t, err)

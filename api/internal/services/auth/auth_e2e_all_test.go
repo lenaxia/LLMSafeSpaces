@@ -412,13 +412,6 @@ type capturingKeyService struct {
 	tc    *testContext
 }
 
-func (c *capturingKeyService) InitializeUserKeys(ctx context.Context, userID string, password []byte) (string, error) {
-	recoveryKey, err := c.inner.InitializeUserKeys(ctx, userID, password)
-	if err == nil {
-		c.tc.testRecoveryKey = recoveryKey
-	}
-	return recoveryKey, err
-}
 
 func (c *capturingKeyService) InitializeUserKeysServerKEK(ctx context.Context, userID, dekSource string) error {
 	return c.inner.InitializeUserKeysServerKEK(ctx, userID, dekSource)

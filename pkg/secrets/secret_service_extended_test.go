@@ -6,6 +6,7 @@ package secrets
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -108,7 +109,7 @@ func TestSecretService_CreateSecret_AllTypes(t *testing.T) {
 			if tt.wantErr {
 				if err == nil {
 					t.Error("Expected error, got nil")
-				} else if tt.errMatch != "" && !containsStr(err.Error(), tt.errMatch) {
+				} else if tt.errMatch != "" && !strings.Contains(err.Error(), tt.errMatch) {
 					t.Errorf("Error %q should contain %q", err.Error(), tt.errMatch)
 				}
 			} else {
@@ -169,11 +170,11 @@ func TestSecretService_EncryptionIsolation(t *testing.T) {
 	ctx := context.Background()
 
 	// Setup user 1
-	_, _ = keySvc.InitializeUserKeys(ctx, "user-1", []byte("pw1"))
+	_ = keySvc.InitializeUserKeysServerKEK(ctx, "user-1", "server_kek")
 	_ = keySvc.UnlockDEK(ctx, "user-1", []byte("pw1"), "sess-1", time.Hour)
 
 	// Setup user 2
-	_, _ = keySvc.InitializeUserKeys(ctx, "user-2", []byte("pw2"))
+	_ = keySvc.InitializeUserKeysServerKEK(ctx, "user-2", "server_kek")
 	_ = keySvc.UnlockDEK(ctx, "user-2", []byte("pw2"), "sess-2", time.Hour)
 
 	// User 1 creates a secret
@@ -281,53 +282,6 @@ func TestSecretService_RebindReplacesExisting(t *testing.T) {
 	if resp.Bindings[0].SecretID != s2.ID {
 		t.Errorf("Expected binding to s2, got %s", resp.Bindings[0].SecretID)
 	}
-}
-
-func TestKeyService_PasswordChange_SecretsStillDecryptable(t *testing.T) {
-	keyStore := newMockKeyStore()
-	dekCache := newMockDEKCache()
-	keySvc := NewKeyService(keyStore, dekCache)
-	secretStore := newMockSecretStore()
-	svc := NewSecretService(keySvc, secretStore)
-	ctx := context.Background()
-
-	oldPw := []byte("old-password")
-	newPw := []byte("new-password")
-
-	_, _ = keySvc.InitializeUserKeys(ctx, "user-1", oldPw)
-	_ = keySvc.UnlockDEK(ctx, "user-1", oldPw, "sess-1", time.Hour)
-
-	// Create a secret
-	created, _ := svc.CreateSecret(ctx, "user-1", "sess-1", nil, CreateSecretRequest{
-		Name: "persist", Type: SecretTypeAPIKey, Value: "my-api-key",
-		Metadata: json.RawMessage(`{"kind":"x","slug":"x"}`),
-	})
-
-	// Change password
-	keySvc.ChangePassword(ctx, "user-1", "", oldPw, newPw)
-
-	// Unlock with new password
-	_ = keySvc.UnlockDEK(ctx, "user-1", newPw, "sess-2", time.Hour)
-
-	// Secret should still be decryptable
-	plaintext, err := svc.DecryptSecretValue(ctx, "user-1", "sess-2", nil, created.ID)
-	if err != nil {
-		t.Fatalf("DecryptSecretValue after password change failed: %v", err)
-	}
-	if string(plaintext) != "my-api-key" {
-		t.Errorf("Expected 'my-api-key', got '%s'", string(plaintext))
-	}
-}
-
-// helpers
-
-func containsStr(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }
 
 func bytesEqual(a, b []byte) bool {

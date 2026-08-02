@@ -403,7 +403,7 @@ func TestHandler_E2E_BindNoReloadWhenNoPod(t *testing.T) {
 	secretStore := newTestSecretStore()
 	svc := secrets.NewSecretService(keySvc, secretStore)
 
-	_, err := keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek")
+	err := keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek")
 	if err != nil {
 		t.Fatalf("InitializeUserKeysServerKEK: %v", err)
 	}
@@ -510,7 +510,7 @@ func TestHandler_BindLogsReloadFailure(t *testing.T) {
 	secretStore := newTestSecretStore()
 	svc := secrets.NewSecretService(keySvc, secretStore)
 
-	if _, err := keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek"); err != nil {
+	if err := keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek"); err != nil {
 		t.Fatalf("InitializeUserKeysServerKEK: %v", err)
 	}
 	if err := keySvc.UnlockDEK(ctx, userID, password, sessionID, time.Hour); err != nil {
@@ -594,7 +594,7 @@ func TestHandler_RevealSecret_RequiresPasswordVerification(t *testing.T) {
 	secretStore := newTestSecretStore()
 	svc := secrets.NewSecretService(keySvc, secretStore)
 
-	if _, err := keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek"); err != nil {
+	if err := keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek"); err != nil {
 		t.Fatalf("InitializeUserKeysServerKEK: %v", err)
 	}
 	if err := keySvc.UnlockDEK(ctx, userID, password, sessionID, time.Hour); err != nil {
@@ -696,7 +696,7 @@ func TestHandler_RevealSecret_CiphertextDecryptFailed_Returns409(t *testing.T) {
 	secretStore := newTestSecretStore()
 	svc := secrets.NewSecretService(keySvc, secretStore)
 
-	if _, err := keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek"); err != nil {
+	if err := keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek"); err != nil {
 		t.Fatalf("InitializeUserKeysServerKEK: %v", err)
 	}
 	if err := keySvc.UnlockDEK(ctx, userID, password, sessionID, time.Hour); err != nil {
@@ -801,7 +801,7 @@ func TestHandler_RevealSecret_DEKUnavailable_Returns403(t *testing.T) {
 	secretStore := newTestSecretStore()
 	svc := secrets.NewSecretService(keySvc, secretStore)
 
-	if _, err := keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek"); err != nil {
+	if err := keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek"); err != nil {
 		t.Fatalf("InitializeUserKeysServerKEK: %v", err)
 	}
 	if err := keySvc.UnlockDEK(ctx, userID, password, sessionID, time.Hour); err != nil {

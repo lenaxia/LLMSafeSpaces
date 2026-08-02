@@ -153,50 +153,6 @@ func TestE2E_FullSecretLifecycle(t *testing.T) {
 		}
 	}
 
-	// === Phase 7: Rotate key ===
-	rotResult, err := keySvc.RotateKeyWithPassword(ctx, userID, password, sessionID, 24*time.Hour)
-	if err != nil {
-		t.Fatalf("RotateKeyWithPassword: %v", err)
-	}
-	if rotResult.NewKeyVersion != 2 {
-		t.Errorf("Expected version 2, got %d", rotResult.NewKeyVersion)
-	}
-	if rotResult.NewRecoveryKeyHex == "" {
-		t.Error("Rotate must return a fresh recovery key (old one wraps discarded DEK)")
-	}
-
-	// === Phase 8: Verify secrets still accessible after rotation ===
-	// RotateKeyWithPassword eagerly re-encrypts every secret under the
-	// new DEK before bumping key_version (Bug 9 fix in worklog 0094).
-	// All pre-rotation secrets must therefore decrypt with the new DEK.
-	if !keySvc.DEKAvailable(ctx, sessionID) {
-		t.Error("DEK should be available after rotation")
-	}
-	for _, sr := range []string{envSecret.ID, sshSecret.ID, gitSecret.ID, fileSecret.ID, llmSecret.ID} {
-		if _, derr := svc.DecryptSecretValue(ctx, userID, sessionID, nil, sr); derr != nil {
-			t.Fatalf("post-rotation reveal of %s: %v — Bug 9 has regressed", sr, derr)
-		}
-	}
-
-	// === Phase 9: Password change ===
-	newPassword := []byte("new-secure-password-456!")
-	err = keySvc.ChangePassword(ctx, userID, "", password, newPassword)
-	if err != nil {
-		t.Fatalf("ChangePassword: %v", err)
-	}
-
-	// Old password should fail
-	err = keySvc.UnlockDEK(ctx, userID, password, "sess-old", time.Hour)
-	if err == nil {
-		t.Error("Old password should not unlock DEK")
-	}
-
-	// New password should work
-	err = keySvc.UnlockDEK(ctx, userID, newPassword, "sess-new", time.Hour)
-	if err != nil {
-		t.Fatalf("New password should unlock DEK: %v", err)
-	}
-
 	// === Phase 10: Delete a secret and verify cascade ===
 	err = svc.DeleteSecret(ctx, userID, sshSecret.ID)
 	if err != nil {

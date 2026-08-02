@@ -44,7 +44,7 @@ func TestSecretsWiring_E2E(t *testing.T) {
 	secretsHandler := handlers.NewSecretsHandler(secretService)
 
 	// Initialize user keys (simulates registration)
-	_, err := keyService.InitializeUserKeys(context.Background(), "test-user", []byte("password"))
+	err := keyService.InitializeUserKeysServerKEK(context.Background(), "test-user", "server_kek")
 	if err != nil {
 		t.Fatalf("InitializeUserKeys: %v", err)
 	}

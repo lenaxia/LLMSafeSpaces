@@ -5,12 +5,9 @@ package secrets
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"io"
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"golang.org/x/crypto/hkdf"
 )
 
 func TestDeriveKEKFromPasswordProduces32Bytes(t *testing.T) {

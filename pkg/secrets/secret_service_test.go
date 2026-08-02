@@ -290,7 +290,7 @@ func setupSecretService(t *testing.T) (*SecretService, *mockSecretStore, string)
 	password := []byte("test-password")
 	sessionID := "session-1"
 
-	_, err := keySvc.InitializeUserKeys(ctx, userID, password)
+	err := keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek")
 	if err != nil {
 		t.Fatalf("InitializeUserKeys failed: %v", err)
 	}
@@ -685,7 +685,7 @@ func TestSecretService_CreateSecret_NoSession(t *testing.T) {
 	ctx := context.Background()
 
 	// Initialize keys but don't unlock
-	_, _ = keySvc.InitializeUserKeys(ctx, "user-1", []byte("pw"))
+	_ = keySvc.InitializeUserKeysServerKEK(ctx, "user-1", "server_kek")
 
 	_, err := svc.CreateSecret(ctx, "user-1", "no-session", nil, CreateSecretRequest{
 		Name:  "test",

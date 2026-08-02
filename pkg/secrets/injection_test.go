@@ -88,7 +88,7 @@ func TestSecretService_InjectSecrets_NoSession(t *testing.T) {
 	ctx := context.Background()
 
 	// Initialize but don't unlock
-	_, _ = keySvc.InitializeUserKeys(ctx, "user-1", []byte("pw"))
+	_ = keySvc.InitializeUserKeysServerKEK(ctx, "user-1", "server_kek")
 
 	_, err := svc.InjectSecrets(ctx, "user-1", "no-session", nil, "ws-1")
 	// Should succeed with empty result (no bindings)
@@ -159,10 +159,10 @@ func setupSecretServiceWithTwoUsers(t *testing.T) (*SecretService, string, strin
 	svc := NewSecretService(keySvc, secretStore)
 	ctx := context.Background()
 
-	_, _ = keySvc.InitializeUserKeys(ctx, "user-1", []byte("pw1"))
+	_ = keySvc.InitializeUserKeysServerKEK(ctx, "user-1", "server_kek")
 	_ = keySvc.UnlockDEK(ctx, "user-1", []byte("pw1"), "sess-1", time.Hour)
 
-	_, _ = keySvc.InitializeUserKeys(ctx, "user-2", []byte("pw2"))
+	_ = keySvc.InitializeUserKeysServerKEK(ctx, "user-2", "server_kek")
 	_ = keySvc.UnlockDEK(ctx, "user-2", []byte("pw2"), "sess-2", time.Hour)
 
 	return svc, "sess-1", "sess-2"
@@ -246,8 +246,8 @@ func TestSecretService_InjectSecrets_BootstrapPath_NoSession_PreservesServerKEKC
 	// created (CreateSecret needs a session DEK). After binding, we'll
 	// run the bootstrap-style call without a session to prove the fix.
 	ctx := context.Background()
-	if _, err := keySvc.InitializeUserKeys(ctx, "user-1", []byte("pw")); err != nil {
-		t.Fatalf("InitializeUserKeys: %v", err)
+	if err := keySvc.InitializeUserKeysServerKEK(ctx, "user-1", "server_kek"); err != nil {
+		t.Fatalf("InitializeUserKeysServerKEK: %v", err)
 	}
 	if err := keySvc.UnlockDEK(ctx, "user-1", []byte("pw"), "create-session", time.Hour); err != nil {
 		t.Fatalf("UnlockDEK: %v", err)
@@ -332,8 +332,8 @@ func TestSecretService_InjectSecrets_BootstrapPath_NoSession_OrgCredential(t *te
 	secretStore := newMockSecretStore()
 
 	ctx := context.Background()
-	if _, err := keySvc.InitializeUserKeys(ctx, "user-1", []byte("pw")); err != nil {
-		t.Fatalf("InitializeUserKeys: %v", err)
+	if err := keySvc.InitializeUserKeysServerKEK(ctx, "user-1", "server_kek"); err != nil {
+		t.Fatalf("InitializeUserKeysServerKEK: %v", err)
 	}
 	if err := keySvc.UnlockDEK(ctx, "user-1", []byte("pw"), "create-session", time.Hour); err != nil {
 		t.Fatalf("UnlockDEK: %v", err)
@@ -548,7 +548,7 @@ func TestSecretService_InjectSecrets_BootstrapPath_DeliversWorkspaceConfigDefaul
 	secretStore := newMockSecretStore()
 
 	ctx := context.Background()
-	_, _ = keySvc.InitializeUserKeys(ctx, "user-1", []byte("pw"))
+	_ = keySvc.InitializeUserKeysServerKEK(ctx, "user-1", "server_kek")
 	_ = keySvc.UnlockDEK(ctx, "user-1", []byte("pw"), "create-session", time.Hour)
 
 	orgKEK := make([]byte, 32)
@@ -613,8 +613,8 @@ func TestSecretService_InjectSessionlessSecrets_UserBindingDoesNotShadowServerKE
 	secretStore := newMockSecretStore()
 
 	ctx := context.Background()
-	if _, err := keySvc.InitializeUserKeys(ctx, "user-1", []byte("pw")); err != nil {
-		t.Fatalf("InitializeUserKeys: %v", err)
+	if err := keySvc.InitializeUserKeysServerKEK(ctx, "user-1", "server_kek"); err != nil {
+		t.Fatalf("InitializeUserKeysServerKEK: %v", err)
 	}
 
 	// User credential for "openai" — encrypted with user DEK. Without a
