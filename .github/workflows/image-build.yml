@@ -91,8 +91,10 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Write Dockerfile from input
+        env:
+          DOCKERFILE_CONTENT: ${{ inputs.dockerfile }}
         run: |
-          printf '%s' "${{ inputs.dockerfile }}" > /tmp/Dockerfile
+          printf '%s\n' "$DOCKERFILE_CONTENT" > /tmp/Dockerfile
           echo "Dockerfile written ($(wc -l < /tmp/Dockerfile) lines)"
 
       - name: Build and push
