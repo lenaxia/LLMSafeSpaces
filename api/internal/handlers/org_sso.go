@@ -229,28 +229,25 @@ func respondVerifyError(c *gin.Context, err error) {
 
 // Start handles GET /api/v1/auth/sso/:orgSlug/start (public). Redirects the
 // browser to the IdP authorization endpoint and sets the signed PKCE/state cookie.
+// All error paths redirect to the frontend with an sso= error token so the
+// user sees a clean message regardless of entry point (direct link, login-page
+// button, or /sso/:orgSlug shortcut).
 func (h *SSOHandler) Start(c *gin.Context) {
 	orgSlug := c.Param("orgSlug")
 	redirectURL, err := h.resolveCallbackURL(c, orgSlug)
 	if err != nil {
 		// F11: redirect base URL unset — refuse rather than trust X-Forwarded-*.
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "SSO is not fully configured: set oidc.redirectBaseUrl"})
+		// resolveCallbackURL already logs the detailed warning.
+		c.Redirect(http.StatusFound, h.frontendRedirectWithError(err))
 		return
 	}
 
 	res, err := h.svc.StartLogin(c.Request.Context(), orgSlug, redirectURL)
 	if err != nil {
-		// Only the sentinel "not configured" reason is user-meaningful; any
-		// wrapped DB/discovery error is logged internally and surfaced as a
-		// generic message to avoid leaking internals.
-		if errors.Is(err, sso.ErrSSONotConfigured) {
-			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-			return
-		}
-		if h.logger != nil {
+		if h.logger != nil && !errors.Is(err, sso.ErrSSONotConfigured) {
 			h.logger.Warn("sso start failed", "orgSlug", orgSlug, "error", err.Error())
 		}
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "single sign-on is currently unavailable"})
+		c.Redirect(http.StatusFound, h.frontendRedirectWithError(err))
 		return
 	}
 	h.setStateCookie(c, res.Cookie)
@@ -357,7 +354,20 @@ func (h *SSOHandler) frontendRedirectWithSuccess() string {
 }
 
 func (h *SSOHandler) frontendRedirectWithError(err error) string {
-	return h.appendSSOParam(h.frontendURL, errorReason(err))
+	base := h.loginRedirectBase()
+	return h.appendSSOParam(base, errorReason(err))
+}
+
+// loginRedirectBase returns the frontend URL targeting /login so that SSO
+// error tokens (?sso=...) are not stripped by the SPA's redirect chain
+// (root → /chat → /login drops query params). Error redirects always land
+// on the login page; success redirects go to the root (the user is
+// authenticated and GuestOnly routes them to /chat).
+func (h *SSOHandler) loginRedirectBase() string {
+	if h.frontendURL == "" {
+		return "/login"
+	}
+	return strings.TrimRight(h.frontendURL, "/") + "/login"
 }
 
 func (h *SSOHandler) appendSSOParam(base, status string) string {
@@ -381,6 +391,8 @@ func errorReason(err error) string {
 		return "suspended"
 	case errors.Is(err, sso.ErrEmailUnverified):
 		return "email_unverified"
+	case errors.Is(err, sso.ErrSSONotConfigured):
+		return "not_configured"
 	case errors.Is(err, sso.ErrStateExpired), errors.Is(err, sso.ErrStateInvalid):
 		return "state_invalid"
 	case errors.Is(err, sso.ErrRedirectBaseURLNotSet):

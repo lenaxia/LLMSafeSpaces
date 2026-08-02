@@ -441,12 +441,34 @@ func TestSSOHandler_Start_RedirectsAndSetsCookie(t *testing.T) {
 	require.Equal(t, u.Query().Get("state"), stateFromCookie(t, h, cookieHeader))
 }
 
-func TestSSOHandler_Start_NoConfig_404(t *testing.T) {
+func TestSSOHandler_Start_NoConfig_RedirectsWithError(t *testing.T) {
 	_, store, _, r := buildSSOHandler(t)
 	store.slugToOrg["acme"] = &types.Organization{ID: "org-acme", Slug: "acme"}
 	// No SSO config.
 	w := doRequest(r, "GET", "/api/v1/auth/sso/acme/start", "")
-	require.Equal(t, http.StatusNotFound, w.Code)
+	require.Equal(t, http.StatusFound, w.Code)
+	loc := w.Header().Get("Location")
+	require.Contains(t, loc, "https://app.test.local")
+	require.Contains(t, loc, "/login")
+	require.Contains(t, loc, "sso=not_configured")
+}
+
+func TestSSOHandler_Start_GenericError_RedirectsWithError(t *testing.T) {
+	h, store, _, r := buildSSOHandler(t)
+	store.slugToOrg["acme"] = &types.Organization{ID: "org-acme", Slug: "acme", Status: types.OrgStatusActive}
+	blob, err := h.svc.EncryptClientSecret(context.Background(), "secret")
+	require.NoError(t, err)
+	store.configs["org-acme"] = &types.OrgSSOConfig{
+		OrgID: "org-acme", DiscoveryURL: "http://127.0.0.1:1/.well-known/openid-configuration",
+		ClientID: "cid", ClientSecret: blob, AutoProvision: true,
+	}
+
+	w := doRequest(r, "GET", "/api/v1/auth/sso/acme/start", "")
+	require.Equal(t, http.StatusFound, w.Code)
+	loc := w.Header().Get("Location")
+	require.Contains(t, loc, "https://app.test.local")
+	require.Contains(t, loc, "/login")
+	require.Contains(t, loc, "sso=error")
 }
 
 func TestSSOHandler_Callback_SuccessSetsSessionCookieAndRedirects(t *testing.T) {
@@ -663,11 +685,10 @@ func TestE2E_SSO_ResolveCallbackURL_NoWarnWhenRedirectBaseURLSet(t *testing.T) {
 	require.Empty(t, log.warns, "no warning when RedirectBaseURL is set (trust gap closed)")
 }
 
-// TestE2E_SSO_Start_UnsetRedirectBaseURL_Returns500 verifies the Start handler
-// surfaces the misconfiguration as a clear 500 to the caller instead of
-// proceeding with a header-derived redirect URL. The check fires before any
-// IdP interaction, so no fake IdP is needed.
-func TestE2E_SSO_Start_UnsetRedirectBaseURL_Returns500(t *testing.T) {
+// TestE2E_SSO_Start_UnsetRedirectBaseURL_RedirectsToFrontend verifies the
+// Start handler redirects to the frontend with a config_error token instead
+// of returning JSON or trusting X-Forwarded-* headers to derive the callback URL.
+func TestE2E_SSO_Start_UnsetRedirectBaseURL_RedirectsToFrontend(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := newMockSSOStore()
 	users := newMockSSOHandlerUserStore()
@@ -681,9 +702,11 @@ func TestE2E_SSO_Start_UnsetRedirectBaseURL_Returns500(t *testing.T) {
 
 	h.Start(c)
 
-	require.Equal(t, http.StatusInternalServerError, w.Code, "misconfiguration must surface as 500, not a redirect")
-	body := w.Body.String()
-	require.Contains(t, body, "oidc.redirectBaseUrl", "response must hint at the missing config")
+	require.Equal(t, http.StatusFound, w.Code, "misconfiguration must redirect to frontend with error token")
+	loc := w.Header().Get("Location")
+	require.Contains(t, loc, "https://app.test.local", "must redirect to the configured frontend")
+	require.Contains(t, loc, "/login", "must target /login so the SPA delivers the error token")
+	require.Contains(t, loc, "sso=config_error", "must carry the config_error token")
 }
 
 // TestE2E_SSO_Callback_UnsetRedirectBaseURL_RedirectsToFrontend verifies the
@@ -708,6 +731,7 @@ func TestE2E_SSO_Callback_UnsetRedirectBaseURL_RedirectsToFrontend(t *testing.T)
 	require.Equal(t, http.StatusFound, w.Code)
 	loc := w.Header().Get("Location")
 	require.Contains(t, loc, "https://app.test.local", "must redirect to the configured frontend")
+	require.Contains(t, loc, "/login", "must target /login so the SPA delivers the error token")
 	require.Contains(t, loc, "sso=config_error", "must carry the config_error token so the frontend surfaces a failure")
 }
 

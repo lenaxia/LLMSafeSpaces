@@ -3,6 +3,7 @@ import { Navigate, Outlet, createBrowserRouter } from "react-router-dom";
 import { useAuth } from "./providers/AuthProvider";
 import { LoginPage } from "./pages/LoginPage";
 import { RegisterPage } from "./pages/RegisterPage";
+import { SSOStartPage } from "./pages/SSOStartPage";
 import { InvitationPage } from "./pages/InvitationPage";
 import { ChatPage } from "./pages/ChatPage";
 import { SettingsPage } from "./pages/SettingsPage";
@@ -161,5 +162,6 @@ export const router = createBrowserRouter([
   },
   { path: "/", element: <Navigate to="/chat" replace /> },
   { path: "/invitations/:token", element: <InvitationPage /> },
+  { path: "/sso/:orgSlug", element: <SSOStartPage /> },
   { path: "*", element: <NotFoundPage /> },
 ]);
