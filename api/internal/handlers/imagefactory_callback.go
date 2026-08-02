@@ -153,7 +153,7 @@ func (h *ImageFactoryHandler) explainFailure(ctx context.Context, logTail string
 			return explanation, attributedExtension
 		}
 	}
-	return "this combination failed to build; contact your administrator for details", ""
+	return fallbackExplanation, ""
 }
 
 // failureExplainer is the LLM seam interface (S6 provides the real impl).
