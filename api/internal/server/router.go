@@ -496,15 +496,8 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 		userCreds.DELETE("/:id/bind/:workspaceId", cfg.UserProviderCredentialsHandler.Unbind)
 	}
 
-	// Image factory consumer endpoints (design/0046). Authenticated; read-only
-	// in S3. POST /configs lands in S4, admin endpoints in S7, callback in S5.
-	if cfg.ImageFactoryHandler != nil {
-		ifg := router.Group("/api/v1/image-factory")
-		ifg.Use(services.GetAuth().AuthMiddleware())
-		ifg.GET("/catalog", cfg.ImageFactoryHandler.Catalog)
-		ifg.GET("/configs", cfg.ImageFactoryHandler.ListConfigs)
-		ifg.GET("/configs/:hash", cfg.ImageFactoryHandler.GetConfig)
-	}
+	// Image factory consumer endpoints (design/0046). Authenticated.
+	registerImageFactoryRoutes(router, services, cfg.ImageFactoryHandler)
 
 	if cfg.UsageHandler != nil {
 		usage := router.Group("/api/v1/usage")
@@ -1354,6 +1347,19 @@ func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, serv
 		idGroup.DELETE("/agent-role", cfg.AgentRoleHandler.ClearWorkspaceRole)
 		idGroup.GET("/effective-agent-role", cfg.AgentRoleHandler.GetEffectiveWorkspaceRole)
 	}
+}
+
+// registerImageFactoryRoutes adds the image-factory consumer endpoints
+// (design/0046). Authenticated; nil when the handler is not wired.
+func registerImageFactoryRoutes(router *gin.Engine, services interfaces.Services, h *handlers.ImageFactoryHandler) {
+	if h == nil {
+		return
+	}
+	ifg := router.Group("/api/v1/image-factory")
+	ifg.Use(services.GetAuth().AuthMiddleware())
+	ifg.GET("/catalog", h.Catalog)
+	ifg.GET("/configs", h.ListConfigs)
+	ifg.GET("/configs/:hash", h.GetConfig)
 }
 
 // registerProxyRoutes adds all /api/v1/workspaces/:id proxy routes on the
