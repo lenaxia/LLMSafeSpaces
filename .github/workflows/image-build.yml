@@ -17,10 +17,10 @@ name: Image Factory Build
 #   dockerfile      — the fully-rendered Dockerfile string (produced by the
 #                     API's pure RenderDockerfile — one renderer, no divergence)
 #
-# Retry: the build step retries once on transient-looking failures
-# (timeout, 5xx, network error). Non-transient failures (apt package not
-# found, etc.) skip the retry and report immediately. This keeps the retry
-# inside the workflow, not the API (design/0046 #12).
+# The API handles retry (single dispatch, one result per design/0046 #12).
+#
+#
+
 
 on:
   workflow_dispatch:
@@ -95,8 +95,9 @@ jobs:
           printf '%s' "${{ inputs.dockerfile }}" > /tmp/Dockerfile
           echo "Dockerfile written ($(wc -l < /tmp/Dockerfile) lines)"
 
-      - name: Build and push (with transient retry)
+      - name: Build and push
         id: build
+        continue-on-error: true
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -105,22 +106,15 @@ jobs:
           tags: |
             ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.hash }}-${{ inputs.base_version }}
           push: true
-          continue-on-error: false
-
-      - name: Get image digest
-        id: digest
-        run: |
-          # The build-push-action outputs the digest of the built image.
-          echo "digest=${{ steps.build.outputs.digest }}" >> $GITHUB_OUTPUT
 
       - name: Report success callback
-        if: success()
+        if: steps.build.outcome == 'success'
         continue-on-error: true
         env:
           CALLBACK_URL: ${{ inputs.callback_url }}
           CALLBACK_TOKEN: ${{ inputs.callback_token }}
           BUILD_ID: ${{ inputs.build_id }}
-          DIGEST: ${{ steps.digest.outputs.digest }}
+          DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           set -euo pipefail
           curl --fail --show-error --silent \
@@ -129,30 +123,31 @@ jobs:
             -H "Authorization: Bearer ${CALLBACK_TOKEN}" \
             -d "{\"status\": \"succeeded\", \"digest\": \"${DIGEST}\"}"
 
-      - name: Capture failure log
-        if: failure() && steps.build.outcome == 'failure'
+      - name: Capture build output on failure
+        if: steps.build.outcome == 'failure'
         run: |
-          # Capture the last 50 lines of the build log (if available) for the
-          # failure callback. The log isn't directly accessible from build-push,
-          # so we capture what we can from the workflow's own output.
-          set +e
-          # The build-push-action logs go to stdout; capture what's available.
+          # build-push-action logs to the step output. GitHub Actions
+          # doesn't expose step stdout directly, but $GITHUB_STEP_SUMMARY
+          # and the workflow log both capture it. We construct a failure
+          # reason from the known build parameters + the step outcome.
           {
             echo "Build failed for ${{ inputs.hash }}-${{ inputs.base_version }}"
-            echo "Base: ${{ inputs.base_name }}@${{ inputs.base_version }}"
+            echo "Base: ${{ inputs.base_name }}@${{ inputs.base_version }} (${{ inputs.base_image_ref }})"
             echo "Architectures: ${{ inputs.architectures }}"
-          } > /tmp/failure_log.txt 2>&1
+            echo ""
+            echo "Dockerfile:"
+            cat /tmp/Dockerfile
+          } > /tmp/failure_reason.txt
 
       - name: Report failure callback
-        if: failure() && steps.build.outcome == 'failure'
+        if: steps.build.outcome == 'failure'
         env:
           CALLBACK_URL: ${{ inputs.callback_url }}
           CALLBACK_TOKEN: ${{ inputs.callback_token }}
           BUILD_ID: ${{ inputs.build_id }}
         run: |
           set +e
-          FAILURE_REASON=$(cat /tmp/failure_log.txt 2>/dev/null | head -50 || echo "build failed; no log available")
-          # Use jq to safely embed the failure reason in JSON.
+          FAILURE_REASON=$(cat /tmp/failure_reason.txt 2>/dev/null | head -50 || echo "build failed; no log available")
           PAYLOAD=$(jq -n --arg reason "$FAILURE_REASON" '{"status": "failed", "failureReason": $reason}')
           curl --fail --show-error --silent \
             -X POST "${CALLBACK_URL}/builds/${BUILD_ID}/callback" \
