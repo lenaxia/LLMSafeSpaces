@@ -1348,6 +1348,9 @@ func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, serv
 
 // registerImageFactoryRoutes adds the image-factory consumer endpoints
 // (design/0046). Authenticated; nil when the handler is not wired.
+// Also registers the internal callback endpoint (token-authed, NOT behind
+// JWT AuthMiddleware — the GH Actions runner authenticates via the
+// per-build callback_token).
 func registerImageFactoryRoutes(router *gin.Engine, services interfaces.Services, h *handlers.ImageFactoryHandler) {
 	if h == nil {
 		return
@@ -1357,6 +1360,11 @@ func registerImageFactoryRoutes(router *gin.Engine, services interfaces.Services
 	ifg.GET("/catalog", h.Catalog)
 	ifg.GET("/configs", h.ListConfigs)
 	ifg.GET("/configs/:hash", h.GetConfig)
+	ifg.POST("/configs", h.CreateConfig)
+
+	// Internal callback: NOT behind AuthMiddleware. The handler authenticates
+	// via subtle.ConstantTimeCompare on the per-build callback_token.
+	router.POST("/internal/image-factory/builds/:id/callback", h.Callback)
 }
 
 // registerProxyRoutes adds all /api/v1/workspaces/:id proxy routes on the

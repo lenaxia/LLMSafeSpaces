@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -339,4 +340,149 @@ func splitCols(commaCols string) []string {
 		}
 	}
 	return out
+}
+
+// ── Transactional method tests (atomicity verification) ─────────────────
+
+func TestCreateConfigAndBuild_AtomicBeginInsertInsertCommit(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	ctx := context.Background()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`INSERT INTO image_factory_configs`).
+		WithArgs("s-hash", "cfg-name", sqlmock.AnyArg(), sqlmock.AnyArg(),
+			"bookworm", "0.6.0", "member", sqlmock.AnyArg(), nil, "building").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("cfg-uuid"))
+	mock.ExpectExec(`INSERT INTO image_factory_builds`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	ownerID := "user-1"
+	cfg := imagefactory.Config{
+		Hash: "s-hash", Name: "cfg-name",
+		Selection:      imagefactory.Selection{"ffmpeg"},
+		ResolvedValues: imagefactory.ResolvedValues{"ffmpeg": {Type: imagefactory.ExtensionTypeApt, Value: "ffmpeg"}},
+		BaseName:       "bookworm", BaseVersion: "0.6.0",
+		Scope: imagefactory.ScopeMember, OwnerID: &ownerID,
+		Status: imagefactory.StatusBuilding,
+	}
+	build := imagefactory.Build{
+		ID: "build-uuid", Hash: "s-hash",
+		BaseName: "bookworm", BaseVersion: "0.6.0",
+		ResolvedValues: cfg.ResolvedValues,
+		Architectures:  []string{"linux/amd64"},
+		Status:         imagefactory.BuildDispatched,
+	}
+	err := svc.CreateConfigAndBuild(ctx, &cfg, &build)
+	require.NoError(t, err)
+	assert.Equal(t, "cfg-uuid", cfg.ID, "config ID populated from RETURNING")
+	assert.Equal(t, "cfg-uuid", build.ConfigID, "build.ConfigID wired to cfg.ID")
+}
+
+func TestTransitionBuildSucceeded_AtomicUpdateUpdateCommit(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	ctx := context.Background()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`UPDATE image_factory_builds SET status = 'succeeded'`).
+		WithArgs("ghcr.io/ws:s-1-0.6.0", "sha256:ok", "b-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE image_factory_configs SET status = 'ready'`).
+		WithArgs("c-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	err := svc.TransitionBuildSucceeded(ctx, "b-1", "c-1", "ghcr.io/ws:s-1-0.6.0", "sha256:ok")
+	require.NoError(t, err)
+}
+
+func TestTransitionBuildFailed_AtomicUpdateInsertUpdateCommit(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	ctx := context.Background()
+
+	kf := imagefactory.KnownFailure{
+		SelectionHash: "s-fail",
+		Selection:     imagefactory.Selection{"ffmpeg"},
+		BaseName:      "bookworm",
+		Explanation:   "apt: package not found",
+		FailureReason: "E: Unable to locate package ffmpegx",
+		Retriable:     true,
+	}
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`UPDATE image_factory_builds SET status = 'failed'`).
+		WithArgs(kf.FailureReason, kf.Explanation, "b-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO image_factory_known_failures`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`UPDATE image_factory_configs SET status = 'rejected'`).
+		WithArgs("c-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	err := svc.TransitionBuildFailed(ctx, "b-1", "c-1", kf)
+	require.NoError(t, err)
+}
+
+func TestCreateConfigAndBuild_RollbackOnError(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	ctx := context.Background()
+
+	mock.ExpectBegin()
+	mock.ExpectQuery(`INSERT INTO image_factory_configs`).
+		WillReturnError(errors.New("constraint violation"))
+	mock.ExpectRollback()
+
+	cfg := imagefactory.Config{Hash: "s-x", Name: "x", ResolvedValues: imagefactory.ResolvedValues{}}
+	build := imagefactory.Build{ID: "b-x"}
+	err := svc.CreateConfigAndBuild(ctx, &cfg, &build)
+	require.Error(t, err, "constraint violation must propagate")
+}
+
+func TestCreateConfigAndBuild_BuildInsertFailureRollsBack(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	ctx := context.Background()
+	mock.ExpectBegin()
+	mock.ExpectQuery(`INSERT INTO image_factory_configs`).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("cfg-ok"))
+	mock.ExpectExec(`INSERT INTO image_factory_builds`).
+		WillReturnError(errors.New("build insert failed"))
+	mock.ExpectRollback()
+	cfg := imagefactory.Config{Hash: "s-x", Name: "x", ResolvedValues: imagefactory.ResolvedValues{}}
+	build := imagefactory.Build{ID: "b-x"}
+	err := svc.CreateConfigAndBuild(ctx, &cfg, &build)
+	require.Error(t, err)
+}
+
+func TestTransitionBuildSucceeded_RollbackOnError(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	ctx := context.Background()
+	mock.ExpectBegin()
+	mock.ExpectExec(`UPDATE image_factory_builds`).
+		WillReturnError(errors.New("connection lost"))
+	mock.ExpectRollback()
+	err := svc.TransitionBuildSucceeded(ctx, "b-1", "c-1", "ref", "sha256:x")
+	require.Error(t, err)
+}
+
+func TestTransitionBuildFailed_RollbackOnError(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	ctx := context.Background()
+	mock.ExpectBegin()
+	mock.ExpectExec(`UPDATE image_factory_builds`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO image_factory_known_failures`).
+		WillReturnError(errors.New("constraint"))
+	mock.ExpectRollback()
+	err := svc.TransitionBuildFailed(ctx, "b-1", "c-1", imagefactory.KnownFailure{
+		SelectionHash: "s-x", Selection: imagefactory.Selection{"x"}, BaseName: "b",
+	})
+	require.Error(t, err)
 }

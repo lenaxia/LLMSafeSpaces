@@ -20,13 +20,21 @@ type imageFactoryStore interface {
 	// Catalog reads.
 	GetPlatformConfig(ctx context.Context) (imagefactory.PlatformConfig, error)
 	ListBases(ctx context.Context) ([]imagefactory.Base, error)
+	GetBase(ctx context.Context, name, version string) (imagefactory.Base, error)
 	ListExtensions(ctx context.Context, includeRetired bool) ([]imagefactory.Extension, error)
 	ListKnownFailures(ctx context.Context) ([]imagefactory.KnownFailure, error)
+	GetKnownFailure(ctx context.Context, selectionHash, baseName string) (imagefactory.KnownFailure, error)
 
-	// Config reads.
+	// Config reads + writes.
 	GetConfig(ctx context.Context, id string) (imagefactory.Config, error)
 	GetConfigByHash(ctx context.Context, hash string, scope imagefactory.ConfigScope, ownerID, orgID *string) (imagefactory.Config, error)
 	ListVisibleConfigs(ctx context.Context, ownerID, orgID *string) ([]imagefactory.Config, error)
+	CreateConfig(ctx context.Context, c *imagefactory.Config) error
+	CreateConfigAndBuild(ctx context.Context, c *imagefactory.Config, b *imagefactory.Build) error
+
+	// Build reads + writes.
+	GetInFlightOrSuccessfulBuild(ctx context.Context, hash, baseVersion string) (*imagefactory.Build, error)
+	CreateBuild(ctx context.Context, b *imagefactory.Build) error
 }
 
 // orgResolver resolves the current user's org membership. Separate interface
@@ -37,16 +45,41 @@ type orgResolver interface {
 }
 
 // ImageFactoryHandler serves the consumer-facing image-factory endpoints
-// (design/0046, design/0047). Read-only in S3; POST /configs lands in S4,
-// admin endpoints in S7, callback in S5.
+// (design/0046, design/0047). Read-only in S3; POST /configs in S4;
+// callback + status derivation in S5; admin endpoints in S7.
 type ImageFactoryHandler struct {
-	store imageFactoryStore
-	orgs  orgResolver
+	store      imageFactoryStore
+	orgs       orgResolver
+	dispatcher buildDispatcher
+
+	// S5: callback + failure handling.
+	buildStore  buildStore
+	imageRepo   string
+	callbackURL string
+	explainer   failureExplainer
 }
 
 // NewImageFactoryHandler constructs the handler.
 func NewImageFactoryHandler(store imageFactoryStore, orgs orgResolver) *ImageFactoryHandler {
 	return &ImageFactoryHandler{store: store, orgs: orgs}
+}
+
+// SetDispatcher wires the GH Actions build dispatcher.
+func (h *ImageFactoryHandler) SetDispatcher(d buildDispatcher) {
+	h.dispatcher = d
+}
+
+// SetFailureExplainer wires the LLM failure explainer (S6). Optional —
+// when nil, a fallback string is used.
+func (h *ImageFactoryHandler) SetFailureExplainer(e failureExplainer) {
+	h.explainer = e
+}
+
+// SetBuildStore wires the build-scoped store (callback transitions).
+func (h *ImageFactoryHandler) SetBuildStore(bs buildStore, imageRepo, callbackURL string) {
+	h.buildStore = bs
+	h.imageRepo = imageRepo
+	h.callbackURL = callbackURL
 }
 
 // CatalogResponse is the body of GET /v1/image-factory/catalog. Drives the
