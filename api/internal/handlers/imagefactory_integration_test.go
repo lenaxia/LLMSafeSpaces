@@ -34,7 +34,6 @@ func TestIF_RoundTrip_CreateThenCallback(t *testing.T) {
 	disp := &fakeDispatcher{ghRunID: 42}
 	bs := &fakeBuildStore{builds: map[string]imagefactory.Build{}}
 
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set("userID", c.GetHeader("X-Test-UserID"))
@@ -118,7 +117,6 @@ func TestIF_RoundTrip_CreateThenCallbackFailed(t *testing.T) {
 		"b-roundtrip-fail": *build,
 	}}
 
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := &ImageFactoryHandler{
 		store:      store,
@@ -158,7 +156,6 @@ func TestIF_RoundTrip_CoalesceThenReady(t *testing.T) {
 	store.existingBuild = &imagefactory.Build{Status: imagefactory.BuildSucceeded}
 	disp := &fakeDispatcher{ghRunID: 1}
 
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set("userID", c.GetHeader("X-Test-UserID"))
@@ -194,7 +191,6 @@ func TestIF_CreateConfig_StoreErrorOnCommit(t *testing.T) {
 	store.createConfigErr = errors.New("DB constraint violation")
 	disp := &fakeDispatcher{ghRunID: 1}
 
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set("userID", c.GetHeader("X-Test-UserID"))
