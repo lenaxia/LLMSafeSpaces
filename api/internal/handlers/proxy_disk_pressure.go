@@ -153,14 +153,21 @@ func diskPressureNotice(level diskPressureLevel, ratio float64) string {
 // ({parts:[...], messageID?, ...}) by prepending a text part carrying the
 // disk-pressure notice when the usage ratio is at/above the warning
 // threshold. Only `parts` is rewritten; ALL other top-level fields
-// (messageID, model, mode, ...) are preserved byte-identical so the
-// proxy never needs to enumerate opencode's full message schema. This
-// matters because the frontend sends a `model` field on /prompt when
-// the user picked a specific model — dropping it would silently reroute
-// the message to opencode's default model.
+// (messageID, model, mode, ...) are preserved so the proxy never needs
+// to enumerate opencode's full message schema. This matters because the
+// frontend sends a `model` field on /prompt when the user picked a
+// specific model — dropping it would silently reroute the message to
+// opencode's default model.
 //
-// Fail-open: empty or malformed bodies pass through byte-identical, as
-// does any ratio below the warning threshold.
+// Field values round-trip unchanged; top-level KEY ORDER may change
+// (encoding/json marshals maps with sorted keys). This is semantically
+// harmless — JSON objects are unordered per RFC 8259 §4, and opencode
+// parses the body with standard order-independent unmarshal (verified:
+// pkg/agent/opencode uses json.Decode; the proxy's own
+// extractPromptText uses json.Unmarshal into a struct).
+//
+// Fail-open: empty or malformed bodies pass through unchanged, as does
+// any ratio below the warning threshold.
 func injectDiskPressureNotice(body []byte, ratio float64) []byte {
 	level := diskPressureLevelForRatio(ratio)
 	if level == diskPressureNone || len(body) == 0 {
