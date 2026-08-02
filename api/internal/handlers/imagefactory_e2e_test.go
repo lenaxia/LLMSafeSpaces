@@ -222,7 +222,7 @@ func TestE2E_ImageFactory_FullRoundTrip(t *testing.T) {
 	disp := &fakeDispatcher{ghRunID: 42}
 	r := newE2ERouter(t, store, disp)
 
-	// Step 1: Read catalog
+	// Read catalog
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("GET", "/api/v1/image-factory/catalog", nil)
 	req.Header.Set("X-Test-UserID", "user-1")
@@ -232,7 +232,7 @@ func TestE2E_ImageFactory_FullRoundTrip(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &cat))
 	assert.Len(t, cat.Extensions, 3, "catalog should have 3 extensions")
 
-	// Step 2: POST /configs — novel dispatch
+	// POST /configs — novel dispatch
 	cfgBody, _ := json.Marshal(createConfigRequest{
 		Name: "e2e-ml-stack", Selection: []string{"ffmpeg", "python313"}, BaseName: "bookworm",
 	})
@@ -259,7 +259,7 @@ func TestE2E_ImageFactory_FullRoundTrip(t *testing.T) {
 	assert.Equal(t, imagefactory.BuildDispatched, build.Status)
 	require.NotEmpty(t, build.CallbackToken, "callback token must be set")
 
-	// Step 3: POST /callback — succeeded
+	// POST /callback — succeeded
 	cbBody, _ := json.Marshal(callbackRequest{
 		Status: "succeeded", Digest: "sha256:e2e-success",
 	})
@@ -281,7 +281,7 @@ func TestE2E_ImageFactory_FullRoundTrip(t *testing.T) {
 		assert.Equal(t, imagefactory.StatusReady, c.Status, "config must be ready after callback")
 	}
 
-	// Step 4: GET /configs — verify visible + ready
+	// GET /configs — verify visible + ready
 	w = httptest.NewRecorder()
 	req = httptest.NewRequest("GET", "/api/v1/image-factory/configs", nil)
 	req.Header.Set("X-Test-UserID", "user-1")
@@ -292,7 +292,7 @@ func TestE2E_ImageFactory_FullRoundTrip(t *testing.T) {
 	require.Len(t, cfgs.Configs, 1)
 	assert.Equal(t, imagefactory.StatusReady, cfgs.Configs[0].Status)
 
-	// Step 5: POST same selection again — must coalesce (no new dispatch)
+	// POST same selection again — must coalesce (no new dispatch)
 	disp.called = false // reset
 	disp2 := &fakeDispatcher{ghRunID: 999}
 	r2 := newE2ERouter(t, store, disp2)
@@ -322,7 +322,7 @@ func TestE2E_ImageFactory_FailurePath(t *testing.T) {
 	disp := &fakeDispatcher{ghRunID: 1}
 	r := newE2ERouter(t, store, disp)
 
-	// Step 1: POST /configs
+	// POST /configs
 	cfgBody, _ := json.Marshal(createConfigRequest{
 		Name: "e2e-bad-stack", Selection: []string{"ffmpeg"}, BaseName: "bookworm",
 	})
@@ -333,7 +333,7 @@ func TestE2E_ImageFactory_FailurePath(t *testing.T) {
 	r.ServeHTTP(w, req)
 	require.Equal(t, http.StatusCreated, w.Code)
 
-	// Find the build
+	// Locate the build row
 	var build *imagefactory.Build
 	for _, b := range store.e2eBuilds {
 		build = b
@@ -341,7 +341,7 @@ func TestE2E_ImageFactory_FailurePath(t *testing.T) {
 	}
 	require.NotNil(t, build)
 
-	// Step 2: POST /callback — failed
+	// POST /callback — failed
 	cbBody, _ := json.Marshal(callbackRequest{
 		Status: "failed", FailureReason: "E: Unable to locate package ffmpeg-nonexistent",
 	})
@@ -369,9 +369,8 @@ func TestE2E_ImageFactory_FailurePath(t *testing.T) {
 	assert.Contains(t, kf.FailureReason, "Unable to locate package")
 	assert.True(t, kf.Retriable)
 
-	// Step 3: POST same selection again → 422 (blocked by known failure... but
+	// POST same selection again — verify known-failure blocking
 	// wait — the known failure is retriable=true, so it WILL dispatch again.
-	// Let's test the non-retriable path instead.)
 	// Set it to non-retriable
 	store.e2eKnownFailureByHash[hash+"|bookworm"].Retriable = false
 

@@ -26,7 +26,7 @@ export function WorkspaceImagesTab() {
       setConfigs(cfgs.configs);
       if (cat.bases.length > 0 && !baseName) {
         const def = cat.bases.find((b) => b.isDefault) ?? cat.bases[0];
-        setBaseName(def.name);
+        if (def) setBaseName(def.name);
       }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to load image factory data");
@@ -57,13 +57,12 @@ export function WorkspaceImagesTab() {
       setConfigs((prev) => [...prev, cfg]);
       setName("");
       setSelected(new Set());
-      toast({ title: "Image config created", description: `${cfg.name} is building` });
+      toast(`Image config created: ${cfg.name} is building`, "success");
     } catch (e: unknown) {
-      toast({
-        title: "Failed to create config",
-        description: e instanceof Error ? e.message : "Unknown error",
-        variant: "destructive",
-      });
+      toast(
+        e instanceof Error ? e.message : "Failed to create config",
+        "error",
+      );
     }
   };
 

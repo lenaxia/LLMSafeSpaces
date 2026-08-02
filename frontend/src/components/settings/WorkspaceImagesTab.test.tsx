@@ -14,8 +14,10 @@ vi.mock("../../api/imageFactory", () => ({
   },
 }));
 
+const mockToast = vi.fn();
+
 vi.mock("../../providers/ToastProvider", () => ({
-  useToast: () => ({ toast: vi.fn() }),
+  useToast: () => ({ toast: mockToast }),
 }));
 
 import { WorkspaceImagesTab } from "./WorkspaceImagesTab";
@@ -85,24 +87,48 @@ describe("WorkspaceImagesTab", () => {
     expect(screen.getByText("Combination blocked")).toBeDisabled();
   });
 
-  it("does not crash on create failure", async () => {
+  it("shows error toast and preserves config list on create failure", async () => {
     mockCreateConfig.mockRejectedValue(new Error("server error"));
     render(<WorkspaceImagesTab />);
     await waitFor(() => { expect(screen.getByText("ffmpeg")).toBeInTheDocument(); });
     fireEvent.click(screen.getByText("ffmpeg"));
     fireEvent.change(screen.getByPlaceholderText("e.g. ml-stack"), { target: { value: "t" } });
     fireEvent.click(screen.getByText("Create & Build"));
-    await waitFor(() => { expect(screen.getByText("Create & Build")).toBeInTheDocument(); });
+    // Wait for the promise to settle
+    await waitFor(() => { expect(mockCreateConfig).toHaveBeenCalled(); }, { timeout: 3000 });
+    // Config list should still show the pre-existing config
+    expect(screen.getByText("ml-stack")).toBeInTheDocument();
   });
-});
 
-  it("creates config on save (happy path)", async () => {
+  it("shows error message on catalog load failure", async () => {
+    mockGetCatalog.mockRejectedValue(new Error("network error"));
+    render(<WorkspaceImagesTab />);
+    await waitFor(() => {
+      expect(screen.getByText(/network error|Failed to load/i)).toBeInTheDocument();
+    });
+  });
+
+  it("creates config on save (happy path): appends config, resets form, fires toast", async () => {
+    mockToast.mockClear();
     render(<WorkspaceImagesTab />);
     await waitFor(() => { expect(screen.getByText("ffmpeg")).toBeInTheDocument(); });
+
+    // Select extension + type name
     fireEvent.click(screen.getByText("ffmpeg"));
     fireEvent.change(screen.getByPlaceholderText("e.g. ml-stack"), { target: { value: "success-cfg" } });
-    const btn = screen.getByText("Create & Build");
-    expect(btn).not.toBeDisabled();
-    fireEvent.click(btn);
+    fireEvent.click(screen.getByText("Create & Build"));
+
     await waitFor(() => { expect(mockCreateConfig).toHaveBeenCalled(); }, { timeout: 3000 });
+
+    // Config appended to the list (the mock returns name="new-cfg")
+    await waitFor(() => { expect(screen.getByText("new-cfg")).toBeInTheDocument(); });
+
+    // Form reset: name input cleared
+    expect(screen.getByPlaceholderText("e.g. ml-stack")).toHaveValue("");
+
+    // Toast fired with success message
+    expect(mockToast).toHaveBeenCalledWith(
+      expect.stringContaining("Image config created"), "success",
+    );
   });
+});
