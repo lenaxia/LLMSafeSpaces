@@ -420,6 +420,12 @@ func (h *MCPServersHandler) update(c *gin.Context, ownerType, ownerID string, en
 		return
 	}
 
+	// Validate mutable fields — prevents SSRF/env injection bypass via the PUT path.
+	if verr := validateMCPServerUpdate(&req); verr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": verr.Error()})
+		return
+	}
+
 	row := &secrets.MCPServerRow{
 		Name:      derefStr(req.Name),
 		URL:       derefStr(req.URL),
@@ -799,32 +805,80 @@ func (h *MCPServersHandler) DeleteAutoApply(c *gin.Context) {
 // --- helpers ---
 
 func validateMCPServerCreate(req *types.CreateMCPServerRequest) error {
+	if err := validateMCPServerFields(req.Transport, req.URL, req.Command); err != nil {
+		return err
+	}
 	if !types.ValidMCPServerName(req.Name) {
 		return fmt.Errorf("invalid name: must match [a-zA-Z0-9][a-zA-Z0-9_-]{0,62}")
 	}
-	if !types.ValidMCPServerTransport(req.Transport) {
-		return fmt.Errorf("invalid transport: must be http, sse, or stdio")
+	return validateEnvHeaders(req.Env, req.Headers)
+}
+
+// validateMCPServerUpdate validates the mutable fields of an update request.
+// Called from update() to prevent SSRF/injection bypass via the PUT path.
+func validateMCPServerUpdate(req *types.UpdateMCPServerRequest) error {
+	transport := ""
+	url := ""
+	command := ""
+	if req.URL != nil {
+		url = *req.URL
 	}
-	if req.Transport == types.MCPServerTransportHTTP || req.Transport == types.MCPServerTransportSSE {
-		if req.URL == "" {
-			return fmt.Errorf("url is required for %s transport", req.Transport)
-		}
-		if verr := validateMCPURL(req.URL); verr != nil {
+	if req.Command != nil {
+		command = *req.Command
+	}
+	if req.Name != nil && *req.Name != "" && !types.ValidMCPServerName(*req.Name) {
+		return fmt.Errorf("invalid name: must match [a-zA-Z0-9][a-zA-Z0-9_-]{0,62}")
+	}
+	// Validate URL if provided — we don't know the transport on update,
+	// but if a URL is present it should pass SSRF regardless.
+	if url != "" {
+		if verr := validateMCPURL(url); verr != nil {
 			return verr
 		}
 	}
-	if req.Transport == types.MCPServerTransportStdio && req.Command == "" {
+	if req.Env != nil {
+		if err := validateEnvHeaders(*req.Env, nil); err != nil {
+			return err
+		}
+	}
+	if req.Headers != nil {
+		if err := validateEnvHeaders(nil, *req.Headers); err != nil {
+			return err
+		}
+	}
+	_ = transport
+	_ = command
+	return nil
+}
+
+// validateMCPServerFields validates transport-specific requirements (URL for
+// remote, command for stdio). Shared between create and update.
+func validateMCPServerFields(transport, urlVal, command string) error {
+	if !types.ValidMCPServerTransport(transport) {
+		return fmt.Errorf("invalid transport: must be http, sse, or stdio")
+	}
+	if transport == types.MCPServerTransportHTTP || transport == types.MCPServerTransportSSE {
+		if urlVal == "" {
+			return fmt.Errorf("url is required for %s transport", transport)
+		}
+		if verr := validateMCPURL(urlVal); verr != nil {
+			return verr
+		}
+	}
+	if transport == types.MCPServerTransportStdio && command == "" {
 		return fmt.Errorf("command is required for stdio transport")
 	}
-	// Validate env var names against injection (LD_PRELOAD, CRLF, etc.).
-	// Reuses the proven validation.ValidateEnvVarName from the env-secret path.
-	for k := range req.Env {
+	return nil
+}
+
+// validateEnvHeaders validates env var names and header names against injection.
+func validateEnvHeaders(env map[string]string, headers map[string]string) error {
+	for k := range env {
 		if err := validation.ValidateEnvVarName(k); err != nil {
 			return fmt.Errorf("invalid env var name %q: %w", k, err)
 		}
 	}
-	// Validate header names against CRLF injection.
-	for k := range req.Headers {
+	for k := range headers {
 		if strings.ContainsAny(k, "\r\n") || k == "" {
 			return fmt.Errorf("invalid header name %q: must not contain CR/LF or be empty", k)
 		}
@@ -844,12 +898,12 @@ func validateMCPURL(raw string) error {
 	if host == "" {
 		return fmt.Errorf("url must have a host")
 	}
-	// SSRF defense: reject private/internal addresses. Mirrors the proven
+	// SSRF defense: reject private/internal/unspecified addresses. Mirrors the proven
 	// validateProbeBaseURL logic from credential_probe.go — IP range
 	// checking + DNS resolution, not a static blocklist.
 	if ip := net.ParseIP(host); ip != nil {
-		if isPrivateIP(ip) {
-			return fmt.Errorf("url host %q is a private/internal address", host)
+		if ip.IsUnspecified() || isPrivateIP(ip) {
+			return fmt.Errorf("url host %q is a private/internal/unspecified address", host)
 		}
 		return nil
 	}
@@ -857,7 +911,7 @@ func validateMCPURL(raw string) error {
 	if lower == "localhost" || strings.HasSuffix(lower, ".local") || strings.HasSuffix(lower, ".internal") {
 		return fmt.Errorf("url host %q is an internal address", host)
 	}
-	addrs, err := net.LookupHost(host)
+	addrs, err := net.DefaultResolver.LookupHost(context.Background(), host)
 	if err != nil {
 		return nil
 	}
