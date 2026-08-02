@@ -165,9 +165,8 @@ func TestIF_CreateConfig_EmptySelection(t *testing.T) {
 	r := newIFRouterWithDispatcher(t, store, &fakeOrgResolver{}, disp)
 
 	w := postConfigs(t, r, s4Body("empty-cfg"))
-	// Empty selection passes binding (it's present as []), but fails validation.
 	assert.Equal(t, http.StatusBadRequest, w.Code,
-		"empty selection must be rejected (binding requires non-empty array)")
+		"empty array fails gin binding (selection has binding:required)")
 }
 
 func TestIF_CreateConfig_UnknownExtension(t *testing.T) {
