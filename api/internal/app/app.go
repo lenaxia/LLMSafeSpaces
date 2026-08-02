@@ -696,7 +696,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		}
 		callbackURL := cfg.ImageFactory.CallbackURL
 		if callbackURL == "" {
-			callbackURL = "/internal/image-factory/builds"
+			callbackURL = "/internal/image-factory"
 		}
 		imageFactoryHandler.SetBuildStore(dbSvc, imageRepo, callbackURL)
 		if cfg.ImageFactory.LLMExplainer.BaseURL != "" {

@@ -78,6 +78,10 @@ func TestIF_CreateConfig_NovelDispatches(t *testing.T) {
 	assert.True(t, store.calledCreateBuild, "build must be committed")
 	assert.Equal(t, imagefactory.StatusBuilding, store.lastCreatedConfig.Status)
 	assert.Equal(t, int64(999), *store.lastCreatedBuild.GHRunID)
+	// Verify the rendered Dockerfile is passed in the dispatch request.
+	assert.NotEmpty(t, disp.lastReq.Dockerfile, "dispatch must carry rendered Dockerfile")
+	assert.Contains(t, disp.lastReq.Dockerfile, "FROM ", "Dockerfile must start with FROM")
+	assert.Contains(t, disp.lastReq.Dockerfile, "ffmpeg", "Dockerfile must contain the apt package")
 }
 
 func TestIF_CreateConfig_CoalesceOnSucceeded(t *testing.T) {

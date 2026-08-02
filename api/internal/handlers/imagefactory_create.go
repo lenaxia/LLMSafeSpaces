@@ -32,15 +32,14 @@ type buildDispatcher interface {
 // dispatchRequest is the input to the GH Actions workflow_dispatch. Mirrors
 // the dispatch contract in design/0046 "Build dispatch contract".
 type dispatchRequest struct {
-	BuildID        string
-	CallbackURL    string
-	CallbackToken  string
-	Hash           string
-	BaseName       string
-	BaseVersion    string
-	BaseImageRef   string
-	Architectures  []string
-	ResolvedValues imagefactory.ResolvedValues
+	BuildID       string
+	CallbackURL   string
+	CallbackToken string
+	Hash          string
+	BaseName      string
+	BaseVersion   string
+	Architectures []string
+	Dockerfile    string
 }
 
 // createConfigRequest is the body of POST /v1/image-factory/configs.
@@ -213,16 +212,20 @@ func (h *ImageFactoryHandler) CreateConfig(c *gin.Context) {
 	// We need a build ID to pass to dispatch. Generate a UUID first, then
 	// use it as the build row's ID.
 	buildID := newUUID()
+	dockerfile, err := imagefactory.RenderDockerfile(resolved, base)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to render Dockerfile"})
+		return
+	}
 	ghRunID, err := h.dispatcher.Dispatch(ctx, dispatchRequest{
-		BuildID:        buildID,
-		CallbackURL:    h.callbackURL,
-		CallbackToken:  callbackToken,
-		Hash:           hash,
-		BaseName:       baseName,
-		BaseVersion:    baseVersion,
-		BaseImageRef:   base.Ref(),
-		Architectures:  pc.Architectures,
-		ResolvedValues: resolved,
+		BuildID:       buildID,
+		CallbackURL:   h.callbackURL,
+		CallbackToken: callbackToken,
+		Hash:          hash,
+		BaseName:      baseName,
+		BaseVersion:   baseVersion,
+		Architectures: pc.Architectures,
+		Dockerfile:    dockerfile,
 	})
 	if err != nil {
 		// Dispatch failed — do NOT commit. No orphaned config row.

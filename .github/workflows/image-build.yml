@@ -1,0 +1,152 @@
+name: Image Factory Build
+
+# Triggered by the API's POST /v1/image-factory/configs handler via
+# workflow_dispatch. Renders a deterministic Dockerfile from the resolved
+# extension values + base image, builds multi-arch via buildx, pushes to
+# ghcr.io, and POSTs the result back to the API's callback endpoint.
+#
+# The workflow is parameterized by:
+#   build_id        — UUID matching the image_factory_builds.id row
+#   callback_url    — API endpoint to POST results to
+#   callback_token  — per-build secret for ConstantTimeCompare auth
+#   hash            — schematic hash (s-<sha256[:16]>)
+#   base_name       — base flavor name
+#   base_version    — base version
+#   architectures   — comma-separated platforms (e.g. "linux/amd64,linux/arm64")
+#   dockerfile      — the fully-rendered Dockerfile string (produced by the
+#                     API's pure RenderDockerfile — one renderer, no divergence)
+#
+# The API issues a single workflow_dispatch per build; the workflow reports
+# one final result (succeeded or failed). Design/0046 #12 assigns retry to
+# the workflow level; this is deferred to a follow-up — the current
+# implementation reports the first build result without internal retry.
+#
+
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_id:
+        description: "Build UUID (image_factory_builds.id)"
+        required: true
+        type: string
+      callback_url:
+        description: "API callback endpoint base URL"
+        required: true
+        type: string
+      callback_token:
+        description: "Per-build callback auth token"
+        required: true
+        type: string
+      hash:
+        description: "Schematic hash (s-...)"
+        required: true
+        type: string
+      base_name:
+        description: "Base flavor name"
+        required: true
+        type: string
+      base_version:
+        description: "Base version"
+        required: true
+        type: string
+      architectures:
+        description: "Comma-separated platforms"
+        required: true
+        type: string
+        default: "linux/amd64"
+      dockerfile:
+        description: "Fully-rendered Dockerfile (from API's RenderDockerfile)"
+        required: true
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: lenaxia/llmsafespaces/ws
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: Build ${{ inputs.hash }}-${{ inputs.base_version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Write Dockerfile from input
+        env:
+          DOCKERFILE_CONTENT: ${{ inputs.dockerfile }}
+        run: |
+          mkdir -p /tmp/build-context
+          printf '%s\n' "$DOCKERFILE_CONTENT" > /tmp/build-context/Dockerfile
+          echo "Dockerfile written ($(wc -l < /tmp/build-context/Dockerfile) lines)"
+
+      - name: Build and push (capture output)
+        id: build
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -eo pipefail
+          IMAGE_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.hash }}-${{ inputs.base_version }}"
+          docker buildx build \
+            --platform "${{ inputs.architectures }}" \
+            --tag "$IMAGE_TAG" \
+            --push \
+            --progress=plain \
+            /tmp/build-context 2>&1 | tee /tmp/build.log
+          # With pipefail, the pipeline exits non-zero if buildx fails.
+          # Extract the digest from the log (buildx prints it on success).
+          DIGEST=$(grep -oP 'digest: \K(sha256:[a-f0-9]+)' /tmp/build.log | tail -1 || true)
+          if [ -n "$DIGEST" ]; then
+            echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Report success callback
+        if: steps.build.outcome == 'success'
+        continue-on-error: true
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+          BUILD_ID: ${{ inputs.build_id }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          PAYLOAD=$(jq -n --arg digest "$DIGEST" '{"status": "succeeded", "digest": $digest}')
+          curl --fail --show-error --silent \
+            -X POST "${CALLBACK_URL}/builds/${BUILD_ID}/callback" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${CALLBACK_TOKEN}" \
+            -d "$PAYLOAD"
+
+      - name: Report failure callback
+        if: steps.build.outcome == 'failure'
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+          BUILD_ID: ${{ inputs.build_id }}
+        run: |
+          # Capture the actual buildx error output (last 50 lines) +
+          # metadata. This gives the LLM explainer real failure content.
+          {
+            echo "Build failed: ${{ inputs.hash }}-${{ inputs.base_version }}"
+            echo "Base: ${{ inputs.base_name }}@${{ inputs.base_version }}"
+            echo ""
+            tail -50 /tmp/build.log 2>/dev/null || echo "(no build log available)"
+          } > /tmp/failure_reason.txt
+          FAILURE_REASON=$(cat /tmp/failure_reason.txt)
+          PAYLOAD=$(jq -n --arg reason "$FAILURE_REASON" '{"status": "failed", "failureReason": $reason}')
+          curl --fail --show-error --silent \
+            -X POST "${CALLBACK_URL}/builds/${BUILD_ID}/callback" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${CALLBACK_TOKEN}" \
+            -d "$PAYLOAD" || true
