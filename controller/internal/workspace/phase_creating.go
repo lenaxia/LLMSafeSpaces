@@ -32,6 +32,7 @@ func (r *WorkspaceReconciler) handleCreating(ctx context.Context, workspace *v1.
 	name := podName(workspace.Name, uid)
 
 	// F19: restartGeneration bump bypasses backoff — user wants immediate retry.
+	restartGenBumped := false
 	if workspace.Spec.RestartGeneration > workspace.Status.ObservedRestartGeneration {
 		logger.Info("RestartGeneration bumped in Creating phase; clearing recovery state",
 			"gen", workspace.Spec.RestartGeneration)
@@ -51,6 +52,7 @@ func (r *WorkspaceReconciler) handleCreating(ctx context.Context, workspace *v1.
 		workspace.Status.ControllerRestartCount = 0
 		workspace.Status.RestartCount++
 		workspace.Status.ObservedRestartGeneration = workspace.Spec.RestartGeneration
+		restartGenBumped = true
 		// Fall through to pod creation below.
 	}
 
@@ -187,16 +189,48 @@ func (r *WorkspaceReconciler) handleCreating(ctx context.Context, workspace *v1.
 		return r.enterRecovery(ctx, workspace, class)
 	}
 
-	// FN3: Pod stuck in Pending + Unschedulable → classify as Infrastructure,
-	// delete pod, enter recovery with backoff. But only if it's been stuck
-	// for > 5 minutes (give the scheduler time to find a node).
+	// FN3: Pod stuck in Pending → recovery.
 	if existingPod.Status.Phase == corev1.PodPending {
 		obs := observePod(existingPod)
+
+		// FN3a: Unschedulable — scheduler cannot place the pod. Only after
+		// 5 minutes (give the scheduler time to find a node).
 		if obs.Unschedulable && !existingPod.CreationTimestamp.IsZero() &&
 			time.Since(existingPod.CreationTimestamp.Time) > 5*time.Minute {
 			logger.Info("Pod unschedulable for >5min; entering recovery", "pod", existingPod.Name)
 			r.deletePodByName(ctx, existingPod.Name, existingPod.Namespace)
 			return r.enterRecovery(ctx, workspace, FailureClassInfrastructure)
+		}
+
+		// FN3b: Scheduled but stuck — kubelet never created any containers.
+		// Catches node-level volume-mount deadlocks (stale CSI mounts, dead
+		// CSI plugins, kubelet volume queue saturation) that block container
+		// creation without making the pod Unschedulable. The pod is bound to
+		// a node but the kubelet cannot mount its volumes, so no init or main
+		// containers ever appear in the status.
+		if obs.Scheduled &&
+			len(existingPod.Status.ContainerStatuses) == 0 &&
+			len(existingPod.Status.InitContainerStatuses) == 0 &&
+			!existingPod.CreationTimestamp.IsZero() &&
+			time.Since(existingPod.CreationTimestamp.Time) > stuckScheduledPendingTimeout {
+			logger.Info("Pod scheduled but stuck in Pending with no containers; entering recovery",
+				"pod", existingPod.Name,
+				"age", time.Since(existingPod.CreationTimestamp.Time).Round(time.Second))
+			r.deletePodByName(ctx, existingPod.Name, existingPod.Namespace)
+			return r.enterRecovery(ctx, workspace, FailureClassInfrastructure)
+		}
+	}
+
+	// Persist any status changes (e.g. ObservedRestartGeneration bump) that
+	// were applied above but didn't fall into a branch that already calls
+	// Status().Update. Without this, the in-memory status is lost on the next
+	// reconcile — the controller re-reads the stale etcd value, detects the
+	// restartGeneration bump again, and enters a hot reconcile loop that logs
+	// every requeueCreating interval and burns API-server read traffic.
+	if restartGenBumped {
+		if err := r.Status().Update(ctx, workspace); err != nil {
+			recordStatusUpdateConflictOnError("handleCreating_gen_bump_persist", err)
+			return ctrl.Result{}, err
 		}
 	}
 
