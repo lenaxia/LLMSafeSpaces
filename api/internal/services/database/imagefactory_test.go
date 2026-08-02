@@ -442,3 +442,47 @@ func TestCreateConfigAndBuild_RollbackOnError(t *testing.T) {
 	err := svc.CreateConfigAndBuild(ctx, &cfg, &build)
 	require.Error(t, err, "constraint violation must propagate")
 }
+
+func TestCreateConfigAndBuild_BuildInsertFailureRollsBack(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	ctx := context.Background()
+	mock.ExpectBegin()
+	mock.ExpectQuery(`INSERT INTO image_factory_configs`).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("cfg-ok"))
+	mock.ExpectExec(`INSERT INTO image_factory_builds`).
+		WillReturnError(errors.New("build insert failed"))
+	mock.ExpectRollback()
+	cfg := imagefactory.Config{Hash: "s-x", Name: "x", ResolvedValues: imagefactory.ResolvedValues{}}
+	build := imagefactory.Build{ID: "b-x"}
+	err := svc.CreateConfigAndBuild(ctx, &cfg, &build)
+	require.Error(t, err)
+}
+
+func TestTransitionBuildSucceeded_RollbackOnError(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	ctx := context.Background()
+	mock.ExpectBegin()
+	mock.ExpectExec(`UPDATE image_factory_builds`).
+		WillReturnError(errors.New("connection lost"))
+	mock.ExpectRollback()
+	err := svc.TransitionBuildSucceeded(ctx, "b-1", "c-1", "ref", "sha256:x")
+	require.Error(t, err)
+}
+
+func TestTransitionBuildFailed_RollbackOnError(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	ctx := context.Background()
+	mock.ExpectBegin()
+	mock.ExpectExec(`UPDATE image_factory_builds`).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`INSERT INTO image_factory_known_failures`).
+		WillReturnError(errors.New("constraint"))
+	mock.ExpectRollback()
+	err := svc.TransitionBuildFailed(ctx, "b-1", "c-1", imagefactory.KnownFailure{
+		SelectionHash: "s-x", Selection: imagefactory.Selection{"x"}, BaseName: "b",
+	})
+	require.Error(t, err)
+}
