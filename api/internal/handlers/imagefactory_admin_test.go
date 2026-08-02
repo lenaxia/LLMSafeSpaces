@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/imagefactory"
+	"github.com/lenaxia/llmsafespaces/api/internal/middleware"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/database"
 )
 
@@ -240,29 +241,31 @@ func TestAdmin_StoreError500(t *testing.T) {
 func TestAdmin_NonAdminReturns404(t *testing.T) {
 	t.Parallel()
 	r := gin.New()
-	// Simulate AdminGuard: non-admin gets 404 (not 403, to hide route).
-	r.Use(func(c *gin.Context) {
-		role := c.GetHeader("X-Test-Role")
-		if role != "admin" {
-			c.AbortWithStatus(http.StatusNotFound)
-			return
-		}
-		c.Next()
-	})
+	// Use the REAL AdminGuard middleware — not a fake — so the test
+	// exercises the actual auth gate the handler will run behind in
+	// production. AdminGuard reads c.Get("userRole").
+	r.Use(middleware.AdminGuard())
 	h := NewImageFactoryAdminHandler(&fakeAdminStore{})
 	r.GET("/api/v1/admin/image-factory/bases", h.ListBases)
 
-	// Non-admin → 404
+	// Non-admin (no userRole set) → 404
 	req := httptest.NewRequest("GET", "/api/v1/admin/image-factory/bases", nil)
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusNotFound, w.Code)
 
-	// Admin → 200
+	// Admin (userRole=admin) → 200
 	req2 := httptest.NewRequest("GET", "/api/v1/admin/image-factory/bases", nil)
-	req2.Header.Set("X-Test-Role", "admin")
+	req2.Header.Set("X-Test-Role", "admin") // ignored by real AdminGuard
 	w2 := httptest.NewRecorder()
-	r.ServeHTTP(w2, req2)
+	// AdminGuard reads from gin context, not headers. Simulate the auth
+	// middleware setting userRole.
+	r2 := gin.New()
+	r2.Use(func(c *gin.Context) { c.Set("userRole", "admin"); c.Next() })
+	r2.Use(middleware.AdminGuard())
+	h2 := NewImageFactoryAdminHandler(&fakeAdminStore{bases: []imagefactory.Base{}})
+	r2.GET("/api/v1/admin/image-factory/bases", h2.ListBases)
+	r2.ServeHTTP(w2, req2)
 	assert.Equal(t, http.StatusOK, w2.Code)
 }
 
