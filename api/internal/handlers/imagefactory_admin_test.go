@@ -77,6 +77,9 @@ func (f *fakeAdminStore) ListKnownFailures(ctx context.Context) ([]imagefactory.
 	return f.failures, f.err
 }
 func (f *fakeAdminStore) SetKnownFailureRetriable(ctx context.Context, hash, baseName string, retriable bool) error {
+	if f.err != nil {
+		return f.err
+	}
 	for i, kf := range f.failures {
 		if kf.SelectionHash == hash && kf.BaseName == baseName {
 			f.failures[i].Retriable = retriable
@@ -86,6 +89,9 @@ func (f *fakeAdminStore) SetKnownFailureRetriable(ctx context.Context, hash, bas
 	return database.ErrNotFound
 }
 func (f *fakeAdminStore) DeleteKnownFailure(ctx context.Context, hash, baseName string) error {
+	if f.err != nil {
+		return f.err
+	}
 	for i, kf := range f.failures {
 		if kf.SelectionHash == hash && kf.BaseName == baseName {
 			f.failures = append(f.failures[:i], f.failures[i+1:]...)
@@ -332,5 +338,27 @@ func TestAdmin_RetireExtension_500(t *testing.T) {
 	}
 	r := newAdminRouter(t, store)
 	w := adminJSON(t, r, "DELETE", "/api/v1/admin/image-factory/extensions/x", nil)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestAdmin_SetKnownFailureRetriable_500(t *testing.T) {
+	t.Parallel()
+	store := &fakeAdminStore{
+		failures: []imagefactory.KnownFailure{{SelectionHash: "s-x", BaseName: "b"}},
+		err:      testError("db down"),
+	}
+	r := newAdminRouter(t, store)
+	w := adminJSON(t, r, "PUT", "/api/v1/admin/image-factory/known-failures/s-x/b", setRetriableRequest{Retriable: false})
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestAdmin_DeleteKnownFailure_500(t *testing.T) {
+	t.Parallel()
+	store := &fakeAdminStore{
+		failures: []imagefactory.KnownFailure{{SelectionHash: "s-x", BaseName: "b"}},
+		err:      testError("db down"),
+	}
+	r := newAdminRouter(t, store)
+	w := adminJSON(t, r, "DELETE", "/api/v1/admin/image-factory/known-failures/s-x/b", nil)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
