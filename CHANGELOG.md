@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-02
+
+### Added
+
+- **MCP Server Integration — Epic 53 (#613, #615, #617).** Platform admins,
+  org admins, and individual users can now register external MCP servers
+  whose tools workspace agents gain at startup. Three scopes (platform/org/user),
+  three transports (http, sse, stdio), and full governance:
+
+  - Three-tier encrypted storage mirroring the Epic 30 credential model:
+    admin/org via master KEK, user via session DEK (zero-knowledge).
+  - Injection pipeline: `mcp-server` entries in `secrets.json` → materializer
+    stages → `AgentConfigWriter` renders opencode `mcp` config section.
+  - Live reload via `agentpush.Service` after bind/unbind/token rotation.
+  - Org policy `allow_user_mcp_servers` (default locked) gates member access.
+  - Plan-tier quota `MaxPersonalMcpServers` (free=5, team+=unlimited).
+  - Org policy `max_mcp_servers_per_workspace` (default 5) enforced at bind.
+  - Instance setting `mcp.allowOrgAdminServers` (default true, fail-closed)
+    kill-switch for all org-admin MCP mutations.
+  - Secret references via `{env:VAR}` — resolves from existing `env-secret`
+    entries at opencode runtime.
+  - SSRF validation: IP range blocking (RFC1918, loopback, link-local, CGNAT,
+    Unspecified) + DNS resolution.
+  - Env var name validation reuses `validation.ValidateEnvVarName` (blocks
+    `LD_PRELOAD` etc). Header CRLF injection prevention.
+  - OpenAPI spec updated with full MCP CRUD + bindings + auto-apply.
+  - Frontend: shared `McpServersTab.tsx` for all three admin surfaces with
+    secret-reference picker.
+  - E2E verified against real opencode 1.15.12 binary — all 3 transports
+    connect successfully.
+
+  Migration `000012`: `mcp_servers`, `mcp_server_bindings`, `mcp_server_auto_apply`.
+  Schema version bumped to 8. No CRD — MCP servers are API-owned relational data.
+
+  Design: `design/stories/epic-53-mcp-server-integration/`. PRs: #613, #615, #617.
+
+- **README-LLM.md MCP Server Integration section (#615).** Documents the
+  as-built system per DoD item 15.
+
+### Fixed
+
+- **Passkey login redirect (#613).** `redirectAfterAuth` only redirected when
+  `return_to` was set. Passkey login without `return_to` stayed on `/login`.
+  Now falls back to `/chat`.
+
+- **Passkey e2e cookie auth (#613).** The Playwright mock for `/auth/me`
+  accepted only Bearer headers; now also accepts `lsp_session` cookies,
+  matching production HttpOnly cookie behavior.
+
 ## [0.6.0] - 2026-07-30
 
 ### Added
