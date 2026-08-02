@@ -136,9 +136,13 @@ func (h *ImageFactoryHandler) handleCallbackFailed(c *gin.Context, ctx context.C
 	}
 	// If the LLM attributed the failure to a single extension, flag it for
 	// admin review (design/0046 attribution). The admin can then investigate
-	// and retire the extension if needed.
+	// and retire the extension if needed. A hallucinated ID (no row affected)
+	// or a store error is non-fatal — the build transition already succeeded.
 	if attributedExtension != "" && h.adminStore != nil {
-		_ = h.adminStore.SetExtensionReviewRequested(ctx, attributedExtension, true)
+		if err := h.adminStore.SetExtensionReviewRequested(ctx, attributedExtension, true); err != nil {
+			// Log but don't fail the callback — the core transition is done.
+			c.Error(err) // gin context logger picks this up
+		}
 	}
 	c.Status(http.StatusNoContent)
 }
