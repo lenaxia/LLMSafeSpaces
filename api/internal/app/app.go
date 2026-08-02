@@ -468,7 +468,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// User-scope uses the session DEK (zero-knowledge, D13), mirroring the
 		// user provider-credential handler.
 		adminMcpHandler = handlers.NewAdminMCPServersHandler(pgStore, providerCredsProv)
-		userMcpHandler = handlers.NewUserMCPServersHandler(pgStore, pgOrgStore, keyService, secrets.NewPgKeyStore(secretsPool))
+		// pgOrgStore is not yet initialized here (it's created in the org
+		// init block below). Pass nil now; SetOrgChecker is called after
+		// pgOrgStore is available. Without this deferred wiring, UserCreate
+		// panics on h.orgChecker.GetUserOrgID (nil pointer).
+		userMcpHandler = handlers.NewUserMCPServersHandler(pgStore, nil, keyService, secrets.NewPgKeyStore(secretsPool))
 
 		// Wire governance + operational deps shared across all MCP scopes.
 		for _, mh := range []*handlers.MCPServersHandler{adminMcpHandler, userMcpHandler} {
@@ -690,6 +694,13 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		orgMcpHandler.SetLogger(log)
 		orgMcpHandler.SetAudit(pgOrgStore)
 		orgMcpHandler.SetSecretPusher(mcpPushAdapter)
+
+		// Deferred wiring: now that pgOrgStore is available, install it
+		// on the user MCP handler (was nil at construction time).
+		if userMcpHandler != nil {
+			userMcpHandler.SetOrgChecker(pgOrgStore)
+			userMcpHandler.SetAudit(pgOrgStore)
+		}
 
 		// US-43.10: OIDC SSO. The service reuses the auth service as the JWT
 		// issuer (GenerateToken) and the server KEK (RootKeyProvider) to encrypt

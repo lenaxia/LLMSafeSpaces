@@ -124,6 +124,11 @@ func (h *MCPServersHandler) SetLogger(l mcpLogger) { h.logger = l }
 // SetSettings installs the instance settings reader (for the kill-switch).
 func (h *MCPServersHandler) SetSettings(s mcpSettingsReader) { h.settings = s }
 
+// SetOrgChecker installs or replaces the org checker. Used by app.go to
+// defer the orgChecker wiring until pgOrgStore is initialized (it's created
+// in a later init block than the MCP handlers).
+func (h *MCPServersHandler) SetOrgChecker(oc mcpOrgChecker) { h.orgChecker = oc }
+
 // --- Admin (platform) endpoints ---
 
 func (h *MCPServersHandler) AdminList(c *gin.Context) {
