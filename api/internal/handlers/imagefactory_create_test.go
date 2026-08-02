@@ -199,7 +199,6 @@ func TestIF_CreateConfig_Unauthed(t *testing.T) {
 
 func newIFRouterWithDispatcher(t *testing.T, store imageFactoryStore, orgs orgResolver, disp buildDispatcher) *gin.Engine {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set("userID", c.GetHeader("X-Test-UserID"))
