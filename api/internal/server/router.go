@@ -104,6 +104,8 @@ type RouterConfig struct {
 	// ImageFactoryHandler serves the consumer-facing image-factory endpoints
 	// (catalog, configs). Optional; nil when image-factory is disabled.
 	ImageFactoryHandler *handlers.ImageFactoryHandler
+	// ImageFactoryAdminHandler serves the platform-owner admin endpoints.
+	ImageFactoryAdminHandler *handlers.ImageFactoryAdminHandler
 
 	// RotateKeyHandler is the handler for key rotation (optional)
 	RotateKeyHandler *handlers.RotateKeyHandler
@@ -496,6 +498,7 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 		userCreds.DELETE("/:id/bind/:workspaceId", cfg.UserProviderCredentialsHandler.Unbind)
 	}
 	registerImageFactoryRoutes(router, services, cfg.ImageFactoryHandler)
+	registerImageFactoryAdminRoutes(router, services, cfg.ImageFactoryAdminHandler)
 	if cfg.UsageHandler != nil {
 		usage := router.Group("/api/v1/usage")
 		usage.Use(services.GetAuth().AuthMiddleware())
@@ -1365,6 +1368,32 @@ func registerImageFactoryRoutes(router *gin.Engine, services interfaces.Services
 	// Internal callback: NOT behind AuthMiddleware. The handler authenticates
 	// via subtle.ConstantTimeCompare on the per-build callback_token.
 	router.POST("/internal/image-factory/builds/:id/callback", h.Callback)
+}
+
+// registerImageFactoryAdminRoutes adds the platform-owner admin endpoints.
+// All behind AuthMiddleware + AdminGuard (platform owner only).
+func registerImageFactoryAdminRoutes(router *gin.Engine, services interfaces.Services, h *handlers.ImageFactoryAdminHandler) {
+	if h == nil {
+		return
+	}
+	g := router.Group("/api/v1/admin/image-factory")
+	g.Use(services.GetAuth().AuthMiddleware())
+	g.Use(middleware.AdminGuard())
+
+	g.GET("/platform-config", h.GetPlatformConfig)
+	g.PUT("/platform-config", h.SetPlatformConfig)
+
+	g.GET("/bases", h.ListBases)
+	g.POST("/bases", h.UpsertBase)
+	g.DELETE("/bases/:name/:version", h.DeleteBase)
+
+	g.GET("/extensions", h.ListExtensions)
+	g.POST("/extensions", h.PublishExtension)
+	g.DELETE("/extensions/:id", h.RetireExtension)
+
+	g.GET("/known-failures", h.ListKnownFailures)
+	g.PUT("/known-failures/:hash/:baseName", h.SetKnownFailureRetriable)
+	g.DELETE("/known-failures/:hash/:baseName", h.DeleteKnownFailure)
 }
 
 // registerProxyRoutes adds all /api/v1/workspaces/:id proxy routes on the

@@ -287,6 +287,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	var adminProvCredHandler *handlers.AdminProviderCredentialsHandler
 	var userProvCredHandler *handlers.UserProviderCredentialsHandler
 	var imageFactoryHandler *handlers.ImageFactoryHandler
+	var imageFactoryAdminHandler *handlers.ImageFactoryAdminHandler
 	var adminMcpHandler *handlers.MCPServersHandler
 	var orgMcpHandler *handlers.MCPServersHandler
 	var userMcpHandler *handlers.MCPServersHandler
@@ -688,6 +689,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 
 		pgOrgStore = database.NewPgOrgStore(dbSvc.DB)
 		imageFactoryHandler = handlers.NewImageFactoryHandler(dbSvc, pgOrgStore)
+		imageFactoryAdminHandler = handlers.NewImageFactoryAdminHandler(dbSvc)
 		imageRepo := cfg.ImageFactory.ImageRepo
 		if imageRepo == "" {
 			imageRepo = "ghcr.io/lenaxia/llmsafespaces/ws"
@@ -1121,6 +1123,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		AdminProviderCredentialsHandler: adminProvCredHandler,
 		UserProviderCredentialsHandler:  userProvCredHandler,
 		ImageFactoryHandler:             imageFactoryHandler,
+		ImageFactoryAdminHandler:        imageFactoryAdminHandler,
 		AdminMCPServersHandler:          adminMcpHandler,
 		OrgMCPServersHandler:            orgMcpHandler,
 		UserMCPServersHandler:           userMcpHandler,
