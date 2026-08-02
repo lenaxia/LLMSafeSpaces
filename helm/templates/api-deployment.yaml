@@ -137,6 +137,20 @@ spec:
             - name: LLMSAFESPACES_TURNSTILE_VERIFYURL
               value: {{ .Values.turnstile.verifyURL | quote }}
             {{- end }}
+            {{- if .Values.imageFactory.ghDispatcher.secretKeyRef.name }}
+            - name: LLMSAFESPACES_IMAGE_FACTORY_GH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.imageFactory.ghDispatcher.secretKeyRef.name | quote }}
+                  key: {{ .Values.imageFactory.ghDispatcher.secretKeyRef.key | quote }}
+            {{- end }}
+            {{- if .Values.imageFactory.llmExplainer.secretKeyRef.name }}
+            - name: LLMSAFESPACES_IMAGE_FACTORY_LLM_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.imageFactory.llmExplainer.secretKeyRef.name | quote }}
+                  key: {{ .Values.imageFactory.llmExplainer.secretKeyRef.key | quote }}
+            {{- end }}
           {{- with .Values.api.livenessProbe }}
           livenessProbe:
             {{- toYaml . | nindent 12 }}

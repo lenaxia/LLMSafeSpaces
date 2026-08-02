@@ -42,12 +42,12 @@ type Extension struct {
 // Base is a (name, version) row of an operator-approved base image.
 // Composite-keyed: old versions persist (design/0046 #8).
 type Base struct {
-	Name      string `json:"name"`
-	Version   string `json:"version"`
-	Image     string `json:"image"`
-	Tag       string `json:"tag,omitempty"`
-	Digest    string `json:"digest,omitempty"` // wins over Tag
-	IsDefault bool   `json:"isDefault"`
+	Name      string `json:"name" yaml:"name"`
+	Version   string `json:"version" yaml:"version"`
+	Image     string `json:"image" yaml:"image"`
+	Tag       string `json:"tag,omitempty" yaml:"tag,omitempty"`
+	Digest    string `json:"digest,omitempty" yaml:"digest,omitempty"`
+	IsDefault bool   `json:"isDefault" yaml:"isDefault"`
 }
 
 // Ref returns the pullable reference. Digest wins over tag; if neither is

@@ -21,6 +21,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/lenaxia/llmsafespaces/api/internal/config"
 	"github.com/lenaxia/llmsafespaces/api/internal/handlers"
+	"github.com/lenaxia/llmsafespaces/api/internal/imagefactory"
 	"github.com/lenaxia/llmsafespaces/api/internal/logger"
 	"github.com/lenaxia/llmsafespaces/api/internal/server"
 	"github.com/lenaxia/llmsafespaces/api/internal/services"
@@ -690,6 +691,12 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		pgOrgStore = database.NewPgOrgStore(dbSvc.DB)
 		imageFactoryHandler = handlers.NewImageFactoryHandler(dbSvc, pgOrgStore)
 		imageFactoryAdminHandler = handlers.NewImageFactoryAdminHandler(dbSvc)
+
+		// Seed the catalog from the embedded YAML (design/0046 #9).
+		if err := imagefactory.SeedCatalog(context.Background(), dbSvc); err != nil {
+			log.Warn("image factory catalog seed failed", "error", err.Error())
+		}
+
 		imageRepo := cfg.ImageFactory.ImageRepo
 		if imageRepo == "" {
 			imageRepo = "ghcr.io/lenaxia/llmsafespaces/ws"
@@ -699,6 +706,19 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			callbackURL = "/internal/image-factory"
 		}
 		imageFactoryHandler.SetBuildStore(dbSvc, imageRepo, callbackURL)
+
+		// Wire the GH Actions dispatcher (enables image builds).
+		if cfg.ImageFactory.GHDispatcher.APIToken != "" {
+			imageFactoryHandler.SetDispatcher(
+				handlers.NewGHActionsDispatcher(
+					cfg.ImageFactory.GHDispatcher.APIToken,
+					cfg.ImageFactory.GHDispatcher.Owner,
+					cfg.ImageFactory.GHDispatcher.Repo,
+					cfg.ImageFactory.GHDispatcher.WorkflowID,
+					cfg.ImageFactory.GHDispatcher.Ref,
+				))
+		}
+
 		if cfg.ImageFactory.LLMExplainer.BaseURL != "" {
 			imageFactoryHandler.SetFailureExplainer(
 				handlers.NewLLMExplainer(handlers.LLMExplainerConfig{

@@ -236,12 +236,20 @@ type Config struct {
 		DefaultStorageClass string `mapstructure:"defaultStorageClass"`
 	} `mapstructure:"workspace"`
 
-	// ImageFactory holds the image-factory build-failure LLM explainer
-	// config (design/0046 #22). When LLMExplainer.BaseURL is empty, the
-	// failure explainer is disabled and the fallback string is always used.
+	// ImageFactory holds the image-factory config (design/0046).
+	// When GHDispatcher.APIToken is empty, image builds are disabled
+	// (POST /configs returns 503). When LLMExplainer.BaseURL is empty,
+	// the failure explainer uses a fallback string.
 	ImageFactory struct {
 		ImageRepo    string `mapstructure:"imageRepo"`
 		CallbackURL  string `mapstructure:"callbackURL"`
+		GHDispatcher struct {
+			APIToken   string `mapstructure:"apiToken"`
+			Owner      string `mapstructure:"owner"`
+			Repo       string `mapstructure:"repo"`
+			WorkflowID string `mapstructure:"workflowId"`
+			Ref        string `mapstructure:"ref"`
+		} `mapstructure:"ghDispatcher"`
 		LLMExplainer struct {
 			BaseURL string `mapstructure:"baseUrl"`
 			Model   string `mapstructure:"model"`
@@ -387,6 +395,15 @@ func applyEnvOverrides(config *Config) {
 	}
 	if v := os.Getenv("LLMSAFESPACES_AUTH_JWTSECRET"); v != "" {
 		config.Auth.JWTSecret = v
+	}
+
+	// Image factory GH Actions PAT + LLM API key — loaded from Kubernetes
+	// Secrets via secretKeyRef in the deployment, NOT from the ConfigMap.
+	if v := os.Getenv("LLMSAFESPACES_IMAGE_FACTORY_GH_TOKEN"); v != "" {
+		config.ImageFactory.GHDispatcher.APIToken = v
+	}
+	if v := os.Getenv("LLMSAFESPACES_IMAGE_FACTORY_LLM_KEY"); v != "" {
+		config.ImageFactory.LLMExplainer.APIKey = v
 	}
 
 	// F1.7.5: comma-separated list of previous JWT secrets for
