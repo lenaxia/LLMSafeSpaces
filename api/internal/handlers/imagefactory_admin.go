@@ -157,6 +157,20 @@ func (h *ImageFactoryAdminHandler) PublishExtension(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
 	}
+	// Validate type is one of the allowed kinds (design/0046: no run/env).
+	switch req.Type {
+	case imagefactory.ExtensionTypeApt, imagefactory.ExtensionTypeMise, imagefactory.ExtensionTypeFile:
+	default:
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "type must be apt, mise, or file"})
+		return
+	}
+	// File extensions must have a valid FileSpec.
+	if req.Type == imagefactory.ExtensionTypeFile {
+		if req.FileSpec == nil || req.FileSpec.Path == "" {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "file extensions require fileSpec with a path"})
+			return
+		}
+	}
 	if err := h.store.PublishExtension(c.Request.Context(), imagefactory.Extension{
 		ID: req.ID, Type: req.Type, Value: req.Value, FileSpec: req.FileSpec,
 		SupportedBases: req.SupportedBases, Description: req.Description,

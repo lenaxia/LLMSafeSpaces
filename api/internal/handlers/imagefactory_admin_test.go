@@ -90,7 +90,6 @@ func (f *fakeAdminStore) DeleteKnownFailure(ctx context.Context, hash, baseName 
 
 func newAdminRouter(t *testing.T, store adminStore) *gin.Engine {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := NewImageFactoryAdminHandler(store)
 	g := r.Group("/api/v1/admin/image-factory")
@@ -230,4 +229,54 @@ func TestAdmin_StoreError500(t *testing.T) {
 	r := newAdminRouter(t, store)
 	w := adminJSON(t, r, "GET", "/api/v1/admin/image-factory/bases", nil)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestAdmin_NonAdminReturns404(t *testing.T) {
+	t.Parallel()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	// Simulate AdminGuard: non-admin gets 404 (not 403, to hide route).
+	r.Use(func(c *gin.Context) {
+		role := c.GetHeader("X-Test-Role")
+		if role != "admin" {
+			c.AbortWithStatus(http.StatusNotFound)
+			return
+		}
+		c.Next()
+	})
+	h := NewImageFactoryAdminHandler(&fakeAdminStore{})
+	r.GET("/api/v1/admin/image-factory/bases", h.ListBases)
+
+	// Non-admin → 404
+	req := httptest.NewRequest("GET", "/api/v1/admin/image-factory/bases", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusNotFound, w.Code)
+
+	// Admin → 200
+	req2 := httptest.NewRequest("GET", "/api/v1/admin/image-factory/bases", nil)
+	req2.Header.Set("X-Test-Role", "admin")
+	w2 := httptest.NewRecorder()
+	r.ServeHTTP(w2, req2)
+	assert.Equal(t, http.StatusOK, w2.Code)
+}
+
+func TestAdmin_PublishExtension_InvalidType422(t *testing.T) {
+	t.Parallel()
+	store := &fakeAdminStore{}
+	r := newAdminRouter(t, store)
+	w := adminJSON(t, r, "POST", "/api/v1/admin/image-factory/extensions", publishExtensionRequest{
+		ID: "bad", Type: "run", Value: "rm -rf /", SupportedBases: []string{"bookworm"},
+	})
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code, "type=run must be rejected")
+}
+
+func TestAdmin_PublishExtension_FileWithoutSpec422(t *testing.T) {
+	t.Parallel()
+	store := &fakeAdminStore{}
+	r := newAdminRouter(t, store)
+	w := adminJSON(t, r, "POST", "/api/v1/admin/image-factory/extensions", publishExtensionRequest{
+		ID: "bad", Type: imagefactory.ExtensionTypeFile, Value: "x", SupportedBases: []string{"bookworm"},
+	})
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code, "file without fileSpec must be rejected")
 }
