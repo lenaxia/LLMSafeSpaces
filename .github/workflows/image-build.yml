@@ -17,8 +17,9 @@ name: Image Factory Build
 #   dockerfile      — the fully-rendered Dockerfile string (produced by the
 #                     API's pure RenderDockerfile — one renderer, no divergence)
 #
-# The API handles retry (single dispatch, one result per design/0046 #12).
-#
+# The API issues a single workflow_dispatch per build; the workflow reports
+# one final result (succeeded or failed). Transient retry is handled inside
+# the workflow via buildx's own retry, not at the API or workflow step level.
 #
 
 
@@ -94,20 +95,29 @@ jobs:
         env:
           DOCKERFILE_CONTENT: ${{ inputs.dockerfile }}
         run: |
-          printf '%s\n' "$DOCKERFILE_CONTENT" > /tmp/Dockerfile
-          echo "Dockerfile written ($(wc -l < /tmp/Dockerfile) lines)"
+          mkdir -p /tmp/build-context
+          printf '%s\n' "$DOCKERFILE_CONTENT" > /tmp/build-context/Dockerfile
+          echo "Dockerfile written ($(wc -l < /tmp/build-context/Dockerfile) lines)"
 
-      - name: Build and push
+      - name: Build and push (capture output)
         id: build
         continue-on-error: true
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: /tmp/Dockerfile
-          platforms: ${{ inputs.architectures }}
-          tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.hash }}-${{ inputs.base_version }}
-          push: true
+        run: |
+          set +e
+          IMAGE_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.hash }}-${{ inputs.base_version }}"
+          docker buildx build \
+            --platform "${{ inputs.architectures }}" \
+            --tag "$IMAGE_TAG" \
+            --push \
+            --progress=plain \
+            /tmp/build-context 2>&1 | tee /tmp/build.log
+          BUILD_EXIT=$?
+          # Extract the digest from the log (buildx prints it on success).
+          if [ $BUILD_EXIT -eq 0 ]; then
+            DIGEST=$(grep -oP 'digest: \K(sha256:[a-f0-9]+)' /tmp/build.log | tail -1)
+            echo "digest=$DIGEST" >> $GITHUB_OUTPUT
+          fi
+          exit $BUILD_EXIT
 
       - name: Report success callback
         if: steps.build.outcome == 'success'
@@ -118,28 +128,12 @@ jobs:
           BUILD_ID: ${{ inputs.build_id }}
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
-          set -euo pipefail
+          PAYLOAD=$(jq -n --arg digest "$DIGEST" '{"status": "succeeded", "digest": $digest}')
           curl --fail --show-error --silent \
             -X POST "${CALLBACK_URL}/builds/${BUILD_ID}/callback" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${CALLBACK_TOKEN}" \
-            -d "{\"status\": \"succeeded\", \"digest\": \"${DIGEST}\"}"
-
-      - name: Capture build output on failure
-        if: steps.build.outcome == 'failure'
-        run: |
-          # build-push-action logs to the step output. GitHub Actions
-          # doesn't expose step stdout directly, but $GITHUB_STEP_SUMMARY
-          # and the workflow log both capture it. We construct a failure
-          # reason from the known build parameters + the step outcome.
-          {
-            echo "Build failed for ${{ inputs.hash }}-${{ inputs.base_version }}"
-            echo "Base: ${{ inputs.base_name }}@${{ inputs.base_version }} (${{ inputs.base_image_ref }})"
-            echo "Architectures: ${{ inputs.architectures }}"
-            echo ""
-            echo "Dockerfile:"
-            cat /tmp/Dockerfile
-          } > /tmp/failure_reason.txt
+            -d "$PAYLOAD"
 
       - name: Report failure callback
         if: steps.build.outcome == 'failure'
@@ -148,8 +142,15 @@ jobs:
           CALLBACK_TOKEN: ${{ inputs.callback_token }}
           BUILD_ID: ${{ inputs.build_id }}
         run: |
-          set +e
-          FAILURE_REASON=$(cat /tmp/failure_reason.txt 2>/dev/null | head -50 || echo "build failed; no log available")
+          # Capture the actual buildx error output (last 50 lines) +
+          # metadata. This gives the LLM explainer real failure content.
+          {
+            echo "Build failed: ${{ inputs.hash }}-${{ inputs.base_version }}"
+            echo "Base: ${{ inputs.base_name }}@${{ inputs.base_version }}"
+            echo ""
+            tail -50 /tmp/build.log 2>/dev/null || echo "(no build log available)"
+          } > /tmp/failure_reason.txt
+          FAILURE_REASON=$(cat /tmp/failure_reason.txt)
           PAYLOAD=$(jq -n --arg reason "$FAILURE_REASON" '{"status": "failed", "failureReason": $reason}')
           curl --fail --show-error --silent \
             -X POST "${CALLBACK_URL}/builds/${BUILD_ID}/callback" \
