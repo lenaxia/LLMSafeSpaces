@@ -155,4 +155,5 @@ type Build struct {
 	TriggeredBy    *string        `json:"triggeredBy,omitempty"`
 	StartedAt      time.Time      `json:"startedAt"`
 	FinishedAt     *time.Time     `json:"finishedAt,omitempty"`
+	CallbackToken  string         `json:"-"` // per-build secret; ConstantTimeCompare on callback
 }
