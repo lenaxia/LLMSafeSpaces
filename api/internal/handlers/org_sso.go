@@ -237,9 +237,7 @@ func (h *SSOHandler) Start(c *gin.Context) {
 	redirectURL, err := h.resolveCallbackURL(c, orgSlug)
 	if err != nil {
 		// F11: redirect base URL unset — refuse rather than trust X-Forwarded-*.
-		if h.logger != nil {
-			h.logger.Warn("sso start: redirect base URL not configured", "slug", orgSlug)
-		}
+		// resolveCallbackURL already logs the detailed warning.
 		c.Redirect(http.StatusFound, h.frontendRedirectWithError(err))
 		return
 	}

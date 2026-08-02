@@ -452,6 +452,23 @@ func TestSSOHandler_Start_NoConfig_RedirectsWithError(t *testing.T) {
 	require.Contains(t, loc, "sso=not_configured")
 }
 
+func TestSSOHandler_Start_GenericError_RedirectsWithError(t *testing.T) {
+	h, store, _, r := buildSSOHandler(t)
+	store.slugToOrg["acme"] = &types.Organization{ID: "org-acme", Slug: "acme", Status: types.OrgStatusActive}
+	blob, err := h.svc.EncryptClientSecret(context.Background(), "secret")
+	require.NoError(t, err)
+	store.configs["org-acme"] = &types.OrgSSOConfig{
+		OrgID: "org-acme", DiscoveryURL: "http://127.0.0.1:1/.well-known/openid-configuration",
+		ClientID: "cid", ClientSecret: blob, AutoProvision: true,
+	}
+
+	w := doRequest(r, "GET", "/api/v1/auth/sso/acme/start", "")
+	require.Equal(t, http.StatusFound, w.Code)
+	loc := w.Header().Get("Location")
+	require.Contains(t, loc, "https://app.test.local")
+	require.Contains(t, loc, "sso=error")
+}
+
 func TestSSOHandler_Callback_SuccessSetsSessionCookieAndRedirects(t *testing.T) {
 	h, store, users, r := buildSSOHandler(t)
 	idp := newHandlerFakeIdP(t, "cid")

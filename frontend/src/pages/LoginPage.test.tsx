@@ -271,6 +271,14 @@ describe("LoginPage", () => {
     });
   });
 
+  it("shows org-not-configured message when ?sso=not_configured", async () => {
+    window.history.replaceState({}, "", "/login?sso=not_configured");
+    renderLoginPage();
+    await waitFor(() => {
+      expect(screen.getByText(/does not have single sign-on configured/i)).toBeInTheDocument();
+    });
+  });
+
   describe("return_to handling", () => {
     it("\"Create an account\" link preserves return_to param", async () => {
       window.history.replaceState({}, "", "/login?return_to=%2Fchat");
