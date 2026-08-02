@@ -18,8 +18,9 @@ name: Image Factory Build
 #                     API's pure RenderDockerfile — one renderer, no divergence)
 #
 # The API issues a single workflow_dispatch per build; the workflow reports
-# one final result (succeeded or failed). Transient retry is handled inside
-# the workflow via buildx's own retry, not at the API or workflow step level.
+# one final result (succeeded or failed). Design/0046 #12 assigns retry to
+# the workflow level; this is deferred to a follow-up — the current
+# implementation reports the first build result without internal retry.
 #
 
 
