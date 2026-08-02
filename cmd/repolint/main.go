@@ -94,6 +94,7 @@ func main() {
 	failures += runWorklogSentinels(root)
 	failures += runChartDrift(root)
 	failures += runCRDDrift(root)
+	failures += runGinSetMode(root)
 	if *clusterDrift {
 		failures += runClusterDrift(root)
 	}
@@ -299,6 +300,28 @@ func runClusterDrift(root string) int {
 		return 1
 	}
 	fmt.Printf("ok    cluster-drift (%d bindings checked against current kubeconfig context)\n", len(bindings))
+	return 0
+}
+
+// runGinSetMode flags *_test.go files that call gin.SetMode from a
+// parallel test body. gin.SetMode writes a package-global in the gin
+// library; concurrent writes from t.Parallel() goroutines trip the race
+// detector under `go test -race`. Set the mode once from init()/TestMain
+// instead.
+//
+// Originating incident: worklog 0663 (2026-08-02) — Image Factory tests
+// raced on gin's mode global, red CI blocked the v0.7.1 release gate.
+func runGinSetMode(root string) int {
+	rep, err := repolint.GinSetModeCheck(root)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL  gin.SetMode parallel-race check: %v\n", err)
+		return 1
+	}
+	if !rep.OK() {
+		fmt.Fprintf(os.Stderr, "FAIL  gin.SetMode parallel-race check:\n%s", rep.String())
+		return 1
+	}
+	fmt.Println("ok    gin.SetMode only from init/TestMain (no parallel writes)")
 	return 0
 }
 
