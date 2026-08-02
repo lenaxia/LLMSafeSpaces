@@ -568,6 +568,53 @@ func TestOrgCreate_KillSwitchNilSettings_FailClosed(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "disabled")
 }
 
+// --- Regression: nil orgChecker must not panic (production 500 fix) ---
+
+func TestUserCreate_NilOrgChecker_DoesNotPanic(t *testing.T) {
+	// Reproduces the production bug: handler constructed with nil orgChecker
+	// (init ordering in app.go). Pre-fix this panicked (nil deref → 500).
+	// Post-fix it returns 503 with a clear error.
+	store := &stubMCPStore{}
+	// Deliberately pass nil for orgChecker, keys, keyStore.
+	h := NewUserMCPServersHandler(store, nil, nil, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("userID", "user-1")
+	c.Set("userPlan", "free")
+	c.Request = httptest.NewRequest("POST", "/", strings.NewReader(`{"name":"wiki","transport":"http","url":"https://wiki.example.com/mcp"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	// Must not panic — should return 503.
+	assert.NotPanics(t, func() {
+		h.UserCreate(c)
+	})
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+}
+
+func TestUserCreate_DeferredOrgChecker_Works(t *testing.T) {
+	// Verifies the deferred-wiring mechanism: construct with nil, then
+	// SetOrgChecker before serving, and the handler works correctly.
+	store := &stubMCPStore{}
+	h := NewUserMCPServersHandler(store, nil, nil, nil)
+
+	// Deferred wiring (as app.go does after pgOrgStore is created).
+	oc := &stubMcpOrgChecker{orgID: "org-123"} // user is in an org
+	h.SetOrgChecker(oc)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("userID", "user-1")
+	c.Set("userPlan", "free")
+	c.Request = httptest.NewRequest("POST", "/", strings.NewReader(`{"name":"wiki","transport":"http","url":"https://wiki.example.com/mcp"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.UserCreate(c)
+
+	// Org member with no policy → 403 (not 503/500/panic).
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.Contains(t, w.Body.String(), "disabled")
+}
+
 // --- Test helpers ---
 
 type stubEncryptor struct{}

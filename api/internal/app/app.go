@@ -468,16 +468,21 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// User-scope uses the session DEK (zero-knowledge, D13), mirroring the
 		// user provider-credential handler.
 		adminMcpHandler = handlers.NewAdminMCPServersHandler(pgStore, providerCredsProv)
-		userMcpHandler = handlers.NewUserMCPServersHandler(pgStore, pgOrgStore, keyService, secrets.NewPgKeyStore(secretsPool))
+		// pgOrgStore is not yet initialized here (it's created in the org
+		// init block below). Pass nil now; SetOrgChecker is called after
+		// pgOrgStore is available. Without this deferred wiring, UserCreate
+		// panics on h.orgChecker.GetUserOrgID (nil pointer).
+		userMcpHandler = handlers.NewUserMCPServersHandler(pgStore, nil, keyService, secrets.NewPgKeyStore(secretsPool))
 
 		// Wire governance + operational deps shared across all MCP scopes.
 		for _, mh := range []*handlers.MCPServersHandler{adminMcpHandler, userMcpHandler} {
 			mh.SetSettings(instanceSettings)
 			mh.SetLogger(log)
 		}
-		// Audit uses the pgOrgStore (it implements LogAuditEvent/LogOrgEvent).
-		adminMcpHandler.SetAudit(pgOrgStore)
-		userMcpHandler.SetAudit(pgOrgStore)
+		// Audit + settings wiring deferred to after pgOrgStore init for
+		// BOTH admin and user handlers (pgOrgStore is nil here — created
+		// in the org init block below). The old calls at lines 483-484
+		// were nil-wired and silently dropped all audit events.
 
 		// Seed the free-tier opencode credential (Epic 30 US-30.4).
 		if err := ensureFreeTierCredential(context.Background(), pgStore, providerCredsProv, log); err != nil {
@@ -691,6 +696,16 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		orgMcpHandler.SetLogger(log)
 		orgMcpHandler.SetAudit(pgOrgStore)
 		orgMcpHandler.SetSecretPusher(mcpPushAdapter)
+
+		// Deferred wiring: now that pgOrgStore is available, install it
+		// on the user AND admin MCP handlers (were nil at construction time).
+		if userMcpHandler != nil {
+			userMcpHandler.SetOrgChecker(pgOrgStore)
+			userMcpHandler.SetAudit(pgOrgStore)
+		}
+		if adminMcpHandler != nil {
+			adminMcpHandler.SetAudit(pgOrgStore)
+		}
 
 		// US-43.10: OIDC SSO. The service reuses the auth service as the JWT
 		// issuer (GenerateToken) and the server KEK (RootKeyProvider) to encrypt
