@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -26,6 +27,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/billing"
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
+	"github.com/lenaxia/llmsafespaces/pkg/validation"
 )
 
 // mcpServerStore is the narrow DB interface the handler depends on.
@@ -162,14 +164,15 @@ func (h *MCPServersHandler) OrgCreate(c *gin.Context) {
 }
 
 // orgAdminAllowed checks the mcp.allowOrgAdminServers instance setting.
-// Returns true when the setting is absent or true (fail-open default).
+// Fails CLOSED on read error (return false) — a security control that
+// fails open on transient errors provides no actual kill capability.
 func (h *MCPServersHandler) orgAdminAllowed(c *gin.Context) bool {
 	if h.settings == nil {
-		return true
+		return true // no settings reader configured = fail-open (test environments)
 	}
 	allowed, err := h.settings.GetBool(c.Request.Context(), "mcp.allowOrgAdminServers")
 	if err != nil {
-		return true // fail-open on read error
+		return false // fail-closed on read error
 	}
 	return allowed
 }
@@ -181,11 +184,19 @@ func (h *MCPServersHandler) OrgGet(c *gin.Context) {
 
 func (h *MCPServersHandler) OrgUpdate(c *gin.Context) {
 	orgID := c.Param("id")
+	if !h.orgAdminAllowed(c) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "org-admin MCP server management is disabled on this instance"})
+		return
+	}
 	h.update(c, types.MCPServerOwnerOrg, orgID, h.orgEncrypt)
 }
 
 func (h *MCPServersHandler) OrgDelete(c *gin.Context) {
 	orgID := c.Param("id")
+	if !h.orgAdminAllowed(c) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "org-admin MCP server management is disabled on this instance"})
+		return
+	}
 	h.del(c, types.MCPServerOwnerOrg, orgID)
 }
 
@@ -406,6 +417,12 @@ func (h *MCPServersHandler) update(c *gin.Context, ownerType, ownerID string, en
 	var req types.UpdateMCPServerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Validate mutable fields — prevents SSRF/env injection bypass via the PUT path.
+	if verr := validateMCPServerUpdate(&req); verr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": verr.Error()})
 		return
 	}
 
@@ -788,22 +805,83 @@ func (h *MCPServersHandler) DeleteAutoApply(c *gin.Context) {
 // --- helpers ---
 
 func validateMCPServerCreate(req *types.CreateMCPServerRequest) error {
+	if err := validateMCPServerFields(req.Transport, req.URL, req.Command); err != nil {
+		return err
+	}
 	if !types.ValidMCPServerName(req.Name) {
 		return fmt.Errorf("invalid name: must match [a-zA-Z0-9][a-zA-Z0-9_-]{0,62}")
 	}
-	if !types.ValidMCPServerTransport(req.Transport) {
-		return fmt.Errorf("invalid transport: must be http, sse, or stdio")
+	return validateEnvHeaders(req.Env, req.Headers)
+}
+
+// validateMCPServerUpdate validates the mutable fields of an update request.
+// Called from update() to prevent SSRF/injection bypass via the PUT path.
+func validateMCPServerUpdate(req *types.UpdateMCPServerRequest) error {
+	transport := ""
+	url := ""
+	command := ""
+	if req.URL != nil {
+		url = *req.URL
 	}
-	if req.Transport == types.MCPServerTransportHTTP || req.Transport == types.MCPServerTransportSSE {
-		if req.URL == "" {
-			return fmt.Errorf("url is required for %s transport", req.Transport)
-		}
-		if verr := validateMCPURL(req.URL); verr != nil {
+	if req.Command != nil {
+		command = *req.Command
+	}
+	if req.Name != nil && *req.Name != "" && !types.ValidMCPServerName(*req.Name) {
+		return fmt.Errorf("invalid name: must match [a-zA-Z0-9][a-zA-Z0-9_-]{0,62}")
+	}
+	// Validate URL if provided — we don't know the transport on update,
+	// but if a URL is present it should pass SSRF regardless.
+	if url != "" {
+		if verr := validateMCPURL(url); verr != nil {
 			return verr
 		}
 	}
-	if req.Transport == types.MCPServerTransportStdio && req.Command == "" {
+	if req.Env != nil {
+		if err := validateEnvHeaders(*req.Env, nil); err != nil {
+			return err
+		}
+	}
+	if req.Headers != nil {
+		if err := validateEnvHeaders(nil, *req.Headers); err != nil {
+			return err
+		}
+	}
+	_ = transport
+	_ = command
+	return nil
+}
+
+// validateMCPServerFields validates transport-specific requirements (URL for
+// remote, command for stdio). Shared between create and update.
+func validateMCPServerFields(transport, urlVal, command string) error {
+	if !types.ValidMCPServerTransport(transport) {
+		return fmt.Errorf("invalid transport: must be http, sse, or stdio")
+	}
+	if transport == types.MCPServerTransportHTTP || transport == types.MCPServerTransportSSE {
+		if urlVal == "" {
+			return fmt.Errorf("url is required for %s transport", transport)
+		}
+		if verr := validateMCPURL(urlVal); verr != nil {
+			return verr
+		}
+	}
+	if transport == types.MCPServerTransportStdio && command == "" {
 		return fmt.Errorf("command is required for stdio transport")
+	}
+	return nil
+}
+
+// validateEnvHeaders validates env var names and header names against injection.
+func validateEnvHeaders(env map[string]string, headers map[string]string) error {
+	for k := range env {
+		if err := validation.ValidateEnvVarName(k); err != nil {
+			return fmt.Errorf("invalid env var name %q: %w", k, err)
+		}
+	}
+	for k := range headers {
+		if strings.ContainsAny(k, "\r\n") || k == "" {
+			return fmt.Errorf("invalid header name %q: must not contain CR/LF or be empty", k)
+		}
 	}
 	return nil
 }
@@ -820,11 +898,26 @@ func validateMCPURL(raw string) error {
 	if host == "" {
 		return fmt.Errorf("url must have a host")
 	}
-	// SSRF defense-in-depth: block loopback, link-local, cloud metadata.
-	blocked := []string{"127.0.0.1", "localhost", "0.0.0.0", "169.254.169.254", "::1", "[::1]"}
-	for _, b := range blocked {
-		if strings.EqualFold(host, b) {
-			return fmt.Errorf("url host is blocked (loopback/link-local/metadata)")
+	// SSRF defense: reject private/internal/unspecified addresses. Mirrors the proven
+	// validateProbeBaseURL logic from credential_probe.go — IP range
+	// checking + DNS resolution, not a static blocklist.
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsUnspecified() || isPrivateIP(ip) {
+			return fmt.Errorf("url host %q is a private/internal/unspecified address", host)
+		}
+		return nil
+	}
+	lower := strings.ToLower(host)
+	if lower == "localhost" || strings.HasSuffix(lower, ".local") || strings.HasSuffix(lower, ".internal") {
+		return fmt.Errorf("url host %q is an internal address", host)
+	}
+	addrs, err := net.DefaultResolver.LookupHost(context.Background(), host)
+	if err != nil {
+		return nil
+	}
+	for _, addr := range addrs {
+		if ip := net.ParseIP(addr); ip != nil && isPrivateIP(ip) {
+			return fmt.Errorf("url host %q resolves to a private address (%s)", host, addr)
 		}
 	}
 	return nil

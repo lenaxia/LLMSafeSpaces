@@ -6,6 +6,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -134,8 +135,15 @@ func TestValidateMCPServerCreate(t *testing.T) {
 		{"invalid transport", &types.CreateMCPServerRequest{Name: "x", Transport: "ws"}, "invalid transport"},
 		{"missing url for http", &types.CreateMCPServerRequest{Name: "x", Transport: "http"}, "url is required"},
 		{"missing command for stdio", &types.CreateMCPServerRequest{Name: "x", Transport: "stdio"}, "command is required"},
-		{"ssrf loopback", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://127.0.0.1/mcp"}, "blocked"},
-		{"ssrf metadata", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://169.254.169.254/mcp"}, "blocked"},
+		{"ssrf loopback", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://127.0.0.1/mcp"}, "private"},
+		{"ssrf metadata", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://169.254.169.254/mcp"}, "private"},
+		{"ssrf rfc1918", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://10.0.0.1/mcp"}, "private"},
+		{"ssrf rfc1918-2", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://192.168.1.1/mcp"}, "private"},
+		{"ssrf localhost", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://localhost/mcp"}, "internal"},
+		{"env injection LD_PRELOAD", &types.CreateMCPServerRequest{Name: "x", Transport: "stdio", Command: "sh", Env: map[string]string{"LD_PRELOAD": "/tmp/evil.so"}}, "blocked"},
+		{"env injection empty", &types.CreateMCPServerRequest{Name: "x", Transport: "stdio", Command: "sh", Env: map[string]string{"": "val"}}, "empty"},
+		{"header crlf injection", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "https://x.com", Headers: map[string]string{"X-Inject\r\nEvil": "val"}}, "CR/LF"},
+		{"valid env+headers", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "https://x.com", Env: map[string]string{"GITHUB_TOKEN": "tok"}, Headers: map[string]string{"Authorization": "Bearer tok"}}, ""},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -390,6 +398,82 @@ func TestOrgCreate_KillSwitchEnabled(t *testing.T) {
 	assert.Equal(t, http.StatusCreated, w.Code)
 }
 
+func TestOrgUpdate_KillSwitchDisabled(t *testing.T) {
+	store := &stubMCPStore{
+		servers: []*secrets.MCPServerRow{
+			{ID: "srv-1", OwnerType: "org", OwnerID: "org-1", Name: "wiki", Transport: "http", Enabled: true},
+		},
+	}
+	enc := &stubEncryptor{}
+	h := NewOrgMCPServersHandler(store, enc, &stubMcpOrgChecker{})
+	h.SetSettings(&stubSettings{allowOrgAdmin: false})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "org-1"}, {Key: "serverId", Value: "srv-1"}}
+	c.Request = httptest.NewRequest("PUT", "/", strings.NewReader(`{"enabled":false}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.OrgUpdate(c)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.Contains(t, w.Body.String(), "disabled")
+}
+
+func TestOrgDelete_KillSwitchDisabled(t *testing.T) {
+	store := &stubMCPStore{
+		servers: []*secrets.MCPServerRow{
+			{ID: "srv-1", OwnerType: "org", OwnerID: "org-1", Name: "wiki", Transport: "http", Enabled: true},
+		},
+	}
+	h := NewOrgMCPServersHandler(store, &stubEncryptor{}, &stubMcpOrgChecker{})
+	h.SetSettings(&stubSettings{allowOrgAdmin: false})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "org-1"}, {Key: "serverId", Value: "srv-1"}}
+	c.Request = httptest.NewRequest("DELETE", "/", nil)
+	h.OrgDelete(c)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.Contains(t, w.Body.String(), "disabled")
+}
+
+func TestOrgUpdate_KillSwitchFailClosed(t *testing.T) {
+	store := &stubMCPStore{
+		servers: []*secrets.MCPServerRow{
+			{ID: "srv-1", OwnerType: "org", OwnerID: "org-1", Name: "wiki", Transport: "http", Enabled: true},
+		},
+	}
+	h := NewOrgMCPServersHandler(store, &stubEncryptor{}, &stubMcpOrgChecker{})
+	h.SetSettings(&stubSettings{readErr: true})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "org-1"}, {Key: "serverId", Value: "srv-1"}}
+	c.Request = httptest.NewRequest("PUT", "/", strings.NewReader(`{"enabled":false}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.OrgUpdate(c)
+
+	// Fail-closed: read error → 403 (not 200/500)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
+func TestValidateMCPServerUpdate_SSRFReject(t *testing.T) {
+	ssrfURL := "http://169.254.169.254/latest/meta-data/"
+	req := &types.UpdateMCPServerRequest{URL: &ssrfURL}
+	err := validateMCPServerUpdate(req)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "private")
+}
+
+func TestValidateMCPServerUpdate_EnvInjection(t *testing.T) {
+	env := map[string]string{"LD_PRELOAD": "/tmp/evil.so"}
+	req := &types.UpdateMCPServerRequest{Env: &env}
+	err := validateMCPServerUpdate(req)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "blocked")
+}
+
 // --- Update handler test (the decryptExisting path) ---
 
 func TestAdminUpdate_PartialHeadersPreservesEnv(t *testing.T) {
@@ -478,8 +562,14 @@ func (s *stubEncryptor) Decrypt(_ context.Context, ciphertext []byte) ([]byte, e
 	return ciphertext, nil
 }
 
-type stubSettings struct{ allowOrgAdmin bool }
+type stubSettings struct {
+	allowOrgAdmin bool
+	readErr       bool
+}
 
 func (s *stubSettings) GetBool(_ context.Context, _ string) (bool, error) {
+	if s.readErr {
+		return false, fmt.Errorf("simulated read error")
+	}
 	return s.allowOrgAdmin, nil
 }

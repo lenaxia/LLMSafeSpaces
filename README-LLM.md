@@ -1815,6 +1815,34 @@ curl -sw '\n%{http_code}\n' -X POST https://safespaces.thekao.cloud/api/v1/auth/
 
 ---
 
+## MCP Server Integration
+
+External MCP servers give workspace agents access to third-party tools (GitHub, Slack, internal databases). Admins register a server once (with its transport, endpoint, and auth secrets); the platform encrypts, binds, and injects it into workspace pods so opencode connects at startup.
+
+**Three scopes:**
+- **Platform** (`AdminGuard`) — auto-applies to all workspaces
+- **Org** (`OrgAdminGuard`) — auto-applies to that org's workspaces
+- **User** (personal) — auto-applies to the caller's own workspaces; gated by org policy `allow_user_mcp_servers` (default locked) + plan-tier quota `MaxPersonalMcpServers`
+
+**Transports:** `http`, `sse` (remote, opencode `"remote"` type), `stdio` (local subprocess, opencode `"local"` type). Secrets are encrypted at rest: admin/org via master KEK (`"provider-credentials"` / `"org-credentials"` purposes), user via session DEK (zero-knowledge). Secret references via `{env:VAR}` resolve from existing `env-secret` entries at opencode runtime.
+
+**Injection path:** `mcp_server_bindings` → `GetWorkspaceMCPServers` (disabled servers skipped) → `loadMCPServers` in `pkg/secrets/injection.go` (3 decrypt paths) → `secrets.json` `mcp-server` entries → `Materializer.applyMCPServer` stages → `AgentConfigWriter.rebuild` merges `mcp` section into `agent-config.json`. On reload (token rotation, bind/unbind), `agentpush.Service.Push` triggers `POST /v1/reload-secrets` on the pod.
+
+**Governance:**
+- Org policy `max_mcp_servers_per_workspace` (default 5) enforced at bind time
+- Instance setting `mcp.allowOrgAdminServers` (default true, fail-closed) — platform kill-switch for all org-admin MCP mutations
+- SSRF validation: IP range blocking (RFC1918, loopback, link-local, CGNAT) + DNS resolution
+- Env var name validation reuses `validation.ValidateEnvVarName` (blocks `LD_PRELOAD`, etc.)
+- Header name CRLF injection prevention
+
+**Data model:** `mcp_servers` (owner_type discriminator, encrypted ciphertext), `mcp_server_bindings` (pure join, no precedence — additive composition), `mcp_server_auto_apply` (mirrors `credential_auto_apply`). Migration `000012`. No CRD — MCP servers are API-owned relational data.
+
+**Endpoints:** `/api/v1/admin/mcp-servers`, `/api/v1/orgs/:id/mcp-servers`, `/api/v1/me/mcp-servers` — each with CRUD + bindings + auto-apply.
+
+**Authoritative design:** `design/stories/epic-53-mcp-server-integration/README.md` + `MATERIALIZE-CONTRACT.md` (the opencode config contract, validated against the pinned schema).
+
+---
+
 ## API Reference
 
 The complete REST API is documented in `README.md` under "REST API". The API has ~90 routes covering:

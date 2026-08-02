@@ -606,25 +606,7 @@ func applyMCPServersToConfig(agentConfigPath string, servers []secrets.StagedMCP
 
 	mcp := make(map[string]any, len(servers))
 	for _, srv := range servers {
-		isRemote := srv.Transport == "http" || srv.Transport == "sse"
-		entry := map[string]any{"enabled": true}
-		if isRemote {
-			entry["type"] = "remote"
-			entry["url"] = srv.URL
-			if len(srv.Headers) > 0 {
-				entry["headers"] = srv.Headers
-			}
-		} else {
-			entry["type"] = "local"
-			entry["command"] = append([]string{srv.Command}, srv.Args...)
-			if len(srv.Env) > 0 {
-				entry["environment"] = srv.Env
-			}
-		}
-		if srv.TimeoutMs > 0 {
-			entry["timeout"] = srv.TimeoutMs
-		}
-		mcp[srv.Name] = entry
+		mcp[srv.Name] = secrets.RenderOpencodeMCPServerEntry(srv)
 	}
 
 	mcpJSON, _ := json.Marshal(mcp)

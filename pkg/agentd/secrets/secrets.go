@@ -676,6 +676,33 @@ func (m *Materializer) StagedMCPServers() []StagedMCPServer {
 	return m.stagedMCPServers
 }
 
+// RenderOpencodeMCPServerEntry renders one MCP server into the opencode config
+// shape per MATERIALIZE-CONTRACT.md. Shared between the AgentConfigWriter
+// (cmd/workspace-agentd/agent_config_writer.go) and the boot-time
+// applyMCPServersToConfig (cmd/workspace-agentd/secrets.go) so both paths
+// produce identical output.
+func RenderOpencodeMCPServerEntry(srv StagedMCPServer) map[string]any {
+	isRemote := srv.Transport == "http" || srv.Transport == "sse"
+	entry := map[string]any{"enabled": true}
+	if isRemote {
+		entry["type"] = "remote"
+		entry["url"] = srv.URL
+		if len(srv.Headers) > 0 {
+			entry["headers"] = srv.Headers
+		}
+	} else {
+		entry["type"] = "local"
+		entry["command"] = append([]string{srv.Command}, srv.Args...)
+		if len(srv.Env) > 0 {
+			entry["environment"] = srv.Env
+		}
+	}
+	if srv.TimeoutMs > 0 {
+		entry["timeout"] = srv.TimeoutMs
+	}
+	return entry
+}
+
 // EnrichProviders applies fn to the staged provider slice, replacing it with
 // the result. Callers use this to inject additional fields (e.g. a live model
 // list fetched from the provider's /models endpoint) after Materialize and

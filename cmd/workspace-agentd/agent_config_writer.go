@@ -38,6 +38,7 @@ import (
 	"sync"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
+	dsecrets "github.com/lenaxia/llmsafespaces/pkg/agentd/secrets"
 )
 
 // relaySource holds the relay URL and free model list that the relay
@@ -470,7 +471,14 @@ func (w *AgentConfigWriter) rebuild() error {
 	if len(w.mcpServers) > 0 {
 		mcp := make(map[string]json.RawMessage, len(w.mcpServers))
 		for _, srv := range w.mcpServers {
-			entry := buildOpencodeMCPServerEntry(srv)
+			// Convert mcpServerEntry → StagedMCPServer → shared renderer.
+			// This is the single render path shared with the materialize subcommand.
+			staged := dsecrets.StagedMCPServer{
+				Name: srv.Name, Transport: srv.Transport, URL: srv.URL,
+				Command: srv.Command, Args: srv.Args, TimeoutMs: srv.TimeoutMs,
+				Env: srv.Env, Headers: srv.Headers,
+			}
+			entry := dsecrets.RenderOpencodeMCPServerEntry(staged)
 			entryJSON, err := json.Marshal(entry)
 			if err != nil {
 				return fmt.Errorf("agent-config writer: marshal mcp server %q: %w", srv.Name, err)
@@ -490,32 +498,6 @@ func (w *AgentConfigWriter) rebuild() error {
 	}
 
 	return atomicRenameWrite(w.path, output, 0o600)
-}
-
-// buildOpencodeMCPServerEntry renders one MCP server into the opencode config
-// shape per MATERIALIZE-CONTRACT.md. Remote transports (http/sse) → "remote"
-// with url+headers; stdio → "local" with command+environment.
-func buildOpencodeMCPServerEntry(srv mcpServerEntry) map[string]any {
-	isRemote := srv.Transport == "http" || srv.Transport == "sse"
-	entry := map[string]any{"enabled": true}
-	if isRemote {
-		entry["type"] = "remote"
-		entry["url"] = srv.URL
-		if len(srv.Headers) > 0 {
-			entry["headers"] = srv.Headers
-		}
-	} else {
-		entry["type"] = "local"
-		cmd := srv.Command
-		entry["command"] = append([]string{cmd}, srv.Args...)
-		if len(srv.Env) > 0 {
-			entry["environment"] = srv.Env
-		}
-	}
-	if srv.TimeoutMs > 0 {
-		entry["timeout"] = srv.TimeoutMs
-	}
-	return entry
 }
 
 // atomicRenameWrite writes data to a temp file in the same directory as
