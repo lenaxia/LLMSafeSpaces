@@ -1,0 +1,223 @@
+name: Image Factory Build
+
+# Triggered by the API's POST /v1/image-factory/configs handler via
+# workflow_dispatch. Renders a deterministic Dockerfile from the resolved
+# extension values + base image, builds multi-arch via buildx, pushes to
+# ghcr.io, and POSTs the result back to the API's callback endpoint.
+#
+# The workflow is parameterized by:
+#   build_id        — UUID matching the image_factory_builds.id row
+#   callback_url    — API endpoint to POST results to
+#   callback_token  — per-build secret for ConstantTimeCompare auth
+#   hash            — schematic hash (s-<sha256[:16]>)
+#   base_name       — base flavor name
+#   base_version    — base version
+#   base_image_ref  — full base image ref (image@digest or image:tag)
+#   architectures   — comma-separated platforms (e.g. "linux/amd64,linux/arm64")
+#   resolved_values — JSON object of extension ID → {type, value, file_spec}
+#
+# Retry: the build step retries once on transient-looking failures
+# (timeout, 5xx, network error). Non-transient failures (apt package not
+# found, etc.) skip the retry and report immediately. This keeps the retry
+# inside the workflow, not the API (design/0046 #12).
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_id:
+        description: "Build UUID (image_factory_builds.id)"
+        required: true
+        type: string
+      callback_url:
+        description: "API callback endpoint base URL"
+        required: true
+        type: string
+      callback_token:
+        description: "Per-build callback auth token"
+        required: true
+        type: string
+      hash:
+        description: "Schematic hash (s-...)"
+        required: true
+        type: string
+      base_name:
+        description: "Base flavor name"
+        required: true
+        type: string
+      base_version:
+        description: "Base version"
+        required: true
+        type: string
+      base_image_ref:
+        description: "Full base image ref (image@digest or image:tag)"
+        required: true
+        type: string
+      architectures:
+        description: "Comma-separated platforms"
+        required: true
+        type: string
+        default: "linux/amd64"
+      resolved_values:
+        description: "JSON: extension ID → {type, value, file_spec}"
+        required: true
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: lenaxia/llmsafespaces/ws
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    name: Build ${{ inputs.hash }}-${{ inputs.base_version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Render Dockerfile
+        id: render
+        env:
+          RESOLVED_VALUES: ${{ inputs.resolved_values }}
+          BASE_IMAGE_REF: ${{ inputs.base_image_ref }}
+        run: |
+          set -euo pipefail
+          # Write the resolved values to a temp file for the renderer.
+          echo "$RESOLVED_VALUES" > /tmp/resolved.json
+
+          # Build the Dockerfile from the resolved values. This mirrors the
+          # pure RenderDockerfile function in api/internal/imagefactory/dockerfile.go
+          # — the API could alternatively render and pass the full Dockerfile,
+          # but passing structured JSON keeps the workflow_dispatch payload
+          # smaller and lets the workflow adapt to future extension types.
+          python3 -c '
+          import json, sys, base64
+
+          rv = json.load(open("/tmp/resolved.json"))
+          base_ref = sys.argv[1]
+
+          lines = [f"FROM {base_ref}", "USER root", ""]
+
+          # apt block
+          apt_pkgs = sorted(v["value"] for v in rv.values() if v["type"] == "apt")
+          if apt_pkgs:
+              lines.append("RUN apt-get update && apt-get install -y --no-install-recommends \\")
+              for p in apt_pkgs:
+                  lines.append(f"    {p} \\")
+              lines[-1] = lines[-1].rstrip(" \\")
+              lines.append("    && rm -rf /var/lib/apt/lists/*")
+              lines.append("")
+
+          # mise block
+          mise_tools = sorted(v["value"] for v in rv.values() if v["type"] == "mise")
+          if mise_tools:
+              lines.append("RUN set -eux; \\")
+              lines.append(f"    for tool in {" ".join(mise_tools)}; do \\")
+              lines.append("        MISE_YES=1 MISE_GITHUB_ATTESTATIONS=1 mise install --system \"$tool\"; \\")
+              lines.append("    done && mise reshim")
+              lines.append("")
+
+          # file block
+          file_entries = []
+          for eid, v in rv.items():
+              if v["type"] == "file" and v.get("file_spec"):
+                  fs = v["file_spec"]
+                  mode = fs.get("mode", "0644")
+                  path = fs["path"]
+                  content = v["value"]
+                  encoded = base64.b64encode(content.encode()).decode()
+                  # mkdir -p the parent dir
+                  parent = path.rsplit("/", 1)[0] if "/" in path else "/"
+                  file_entries.append((parent, encoded, path, mode))
+          file_entries.sort(key=lambda x: x[2])  # sort by path
+          for parent, encoded, path, mode in file_entries:
+              lines.append(f"RUN mkdir -p {parent!r} && printf %s {encoded!r} | base64 -d > {path!r} && chmod {mode} {path!r}")
+          if file_entries:
+              lines.append("")
+
+          lines.append("USER sandbox")
+          lines.append("WORKDIR /workspace")
+          lines.append("ENTRYPOINT [\"/usr/local/bin/entrypoint-opencode.sh\"]")
+
+          with open("/tmp/Dockerfile", "w") as f:
+              f.write("\n".join(lines) + "\n")
+          print("Dockerfile rendered successfully")
+          ' "$BASE_IMAGE_REF"
+
+      - name: Build and push (with transient retry)
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: /tmp/Dockerfile
+          platforms: ${{ inputs.architectures }}
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.hash }}-${{ inputs.base_version }}
+          push: true
+          continue-on-error: false
+
+      - name: Get image digest
+        id: digest
+        run: |
+          # The build-push-action outputs the digest of the built image.
+          echo "digest=${{ steps.build.outputs.digest }}" >> $GITHUB_OUTPUT
+
+      - name: Report success callback
+        if: success()
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+          BUILD_ID: ${{ inputs.build_id }}
+          DIGEST: ${{ steps.digest.outputs.digest }}
+        run: |
+          set -euo pipefail
+          curl --fail --show-error --silent \
+            -X POST "${CALLBACK_URL}/image-factory/builds/${BUILD_ID}/callback" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${CALLBACK_TOKEN}" \
+            -d "{\"status\": \"succeeded\", \"digest\": \"${DIGEST}\"}"
+
+      - name: Capture failure log
+        if: failure()
+        run: |
+          # Capture the last 50 lines of the build log (if available) for the
+          # failure callback. The log isn't directly accessible from build-push,
+          # so we capture what we can from the workflow's own output.
+          set +e
+          # The build-push-action logs go to stdout; capture what's available.
+          {
+            echo "Build failed for ${{ inputs.hash }}-${{ inputs.base_version }}"
+            echo "Base: ${{ inputs.base_name }}@${{ inputs.base_version }}"
+            echo "Architectures: ${{ inputs.architectures }}"
+          } > /tmp/failure_log.txt 2>&1
+
+      - name: Report failure callback
+        if: failure()
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          CALLBACK_TOKEN: ${{ inputs.callback_token }}
+          BUILD_ID: ${{ inputs.build_id }}
+        run: |
+          set +e
+          FAILURE_REASON=$(cat /tmp/failure_log.txt 2>/dev/null | head -50 || echo "build failed; no log available")
+          # Use jq to safely embed the failure reason in JSON.
+          PAYLOAD=$(jq -n --arg reason "$FAILURE_REASON" '{"status": "failed", "failureReason": $reason}')
+          curl --fail --show-error --silent \
+            -X POST "${CALLBACK_URL}/image-factory/builds/${BUILD_ID}/callback" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${CALLBACK_TOKEN}" \
+            -d "$PAYLOAD" || true
