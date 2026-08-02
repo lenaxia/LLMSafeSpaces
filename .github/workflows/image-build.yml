@@ -12,7 +12,6 @@ name: Image Factory Build
 #   hash            — schematic hash (s-<sha256[:16]>)
 #   base_name       — base flavor name
 #   base_version    — base version
-#   base_image_ref  — full base image ref (image@digest or image:tag)
 #   architectures   — comma-separated platforms (e.g. "linux/amd64,linux/arm64")
 #   dockerfile      — the fully-rendered Dockerfile string (produced by the
 #                     API's pure RenderDockerfile — one renderer, no divergence)
@@ -51,9 +50,6 @@ on:
         description: "Base version"
         required: true
         type: string
-      base_image_ref:
-        description: "Full base image ref (image@digest or image:tag)"
-        required: true
         type: string
       architectures:
         description: "Comma-separated platforms"
@@ -79,9 +75,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-
       - name: Set up buildx
         uses: docker/setup-buildx-action@v4
 
