@@ -20,13 +20,20 @@ type imageFactoryStore interface {
 	// Catalog reads.
 	GetPlatformConfig(ctx context.Context) (imagefactory.PlatformConfig, error)
 	ListBases(ctx context.Context) ([]imagefactory.Base, error)
+	GetBase(ctx context.Context, name, version string) (imagefactory.Base, error)
 	ListExtensions(ctx context.Context, includeRetired bool) ([]imagefactory.Extension, error)
 	ListKnownFailures(ctx context.Context) ([]imagefactory.KnownFailure, error)
+	GetKnownFailure(ctx context.Context, selectionHash, baseName string) (imagefactory.KnownFailure, error)
 
-	// Config reads.
+	// Config reads + writes.
 	GetConfig(ctx context.Context, id string) (imagefactory.Config, error)
 	GetConfigByHash(ctx context.Context, hash string, scope imagefactory.ConfigScope, ownerID, orgID *string) (imagefactory.Config, error)
 	ListVisibleConfigs(ctx context.Context, ownerID, orgID *string) ([]imagefactory.Config, error)
+	CreateConfig(ctx context.Context, c imagefactory.Config) error
+
+	// Build reads + writes.
+	GetInFlightOrSuccessfulBuild(ctx context.Context, hash, baseVersion string) (*imagefactory.Build, error)
+	CreateBuild(ctx context.Context, b imagefactory.Build) error
 }
 
 // orgResolver resolves the current user's org membership. Separate interface
@@ -37,16 +44,24 @@ type orgResolver interface {
 }
 
 // ImageFactoryHandler serves the consumer-facing image-factory endpoints
-// (design/0046, design/0047). Read-only in S3; POST /configs lands in S4,
+// (design/0046, design/0047). Read-only in S3; POST /configs in S4,
 // admin endpoints in S7, callback in S5.
 type ImageFactoryHandler struct {
-	store imageFactoryStore
-	orgs  orgResolver
+	store      imageFactoryStore
+	orgs       orgResolver
+	dispatcher buildDispatcher
 }
 
 // NewImageFactoryHandler constructs the handler.
 func NewImageFactoryHandler(store imageFactoryStore, orgs orgResolver) *ImageFactoryHandler {
 	return &ImageFactoryHandler{store: store, orgs: orgs}
+}
+
+// SetDispatcher wires the GH Actions build dispatcher. Called after
+// construction when the dispatcher is available (matching the repo's
+// SetAudit/SetLogger pattern for optional dependencies).
+func (h *ImageFactoryHandler) SetDispatcher(d buildDispatcher) {
+	h.dispatcher = d
 }
 
 // CatalogResponse is the body of GET /v1/image-factory/catalog. Drives the

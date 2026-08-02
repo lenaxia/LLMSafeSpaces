@@ -504,6 +504,7 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 		ifg.GET("/catalog", cfg.ImageFactoryHandler.Catalog)
 		ifg.GET("/configs", cfg.ImageFactoryHandler.ListConfigs)
 		ifg.GET("/configs/:hash", cfg.ImageFactoryHandler.GetConfig)
+		ifg.POST("/configs", cfg.ImageFactoryHandler.CreateConfig)
 	}
 
 	if cfg.UsageHandler != nil {
