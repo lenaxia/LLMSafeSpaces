@@ -7,7 +7,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.7.2] - 2026-08-02
+## [0.8.0] - 2026-08-02
+
+### Added
+
+- **Image Factory — custom workspace images (#616, #619, #624, #628, #629,
+  #631, #634).** Talos-style image factory enabling users to self-serve
+  workspace images with system-level dependencies that mise/pip/npm/go
+  cannot supply. Users select extensions from an operator-curated catalog;
+  the API renders a deterministic Dockerfile and dispatches a GitHub Actions
+  build; the workflow builds multi-arch, pushes to ghcr.io, and calls back
+  with the result.
+
+  **Design:** `design/0046` (28 decisions) + `design/0047` (contracts).
+
+  **Architecture:**
+  - **Immutable extensions** (design #7): catalog entries are publish-new +
+    retire, never edited in place. This makes content-addressing and the
+    failure blocklist simple by construction.
+  - **Eager build on save** (design #12): configs are only launchable once
+    Ready → the workspace controller stays genuinely untouched.
+  - **Dispatch-before-commit** (design #17): GH Actions dispatch happens
+    before the config row commits; on dispatch failure the row is never
+    created.
+  - **Build coalescing** (design #16): duplicate in-flight/succeeded builds
+    are linked, not re-dispatched.
+  - **Per-build callback token** (design #18): `subtle.ConstantTimeCompare`
+    on the callback endpoint — the only path an external runner can mutate
+    build state.
+  - **Atomic transitions** (design): `TransitionBuildSucceeded`/`Failed`
+    do all writes in a single DB transaction.
+
+  **Components:**
+  - Migration `000013`: 6 tables (platform_config, bases, extensions,
+    known_failures, configs, builds).
+  - `api/internal/imagefactory/`: pure logic — `HashSelection` (content-
+    addressed `s-<sha256[:16]>`), `ResolveSelection`, `RenderDockerfile`
+    (deterministic), `ValidateResolved`, `LoadSeed`/`SeedCatalog` (embedded
+    YAML with 9 initial extensions).
+  - `api/internal/handlers/imagefactory*.go`: consumer endpoints (catalog,
+    configs, callback), admin endpoints (bases/extensions/known-failures
+    CRUD), `ghActionsDispatcher` (production GitHub Actions API client),
+    `llmExplainer` (OpenAI-compatible failure explanation with degradation).
+  - `.github/workflows/image-build.yml`: the build workflow — receives a
+    pre-rendered Dockerfile, runs `docker buildx build`, pushes to ghcr.io,
+    POSTs the result via authenticated callback.
+  - Frontend: `WorkspaceImagesTab.tsx` settings page with status pills
+    (building/ready/rejected), extension checkboxes, base selector,
+    create-and-build form. API client `imageFactory.ts`.
+  - Helm chart: `imageFactory.*` values (imageRepo, callbackURL,
+    ghDispatcher with secretKeyRef for PAT, llmExplainer, architectures).
+  - ConfigMap + deployment templates for secret-based credential delivery.
+
+  **Tests:** 60+ Go tests (unit, sqlmock store, postgres integration,
+  handler-level e2e round-trips, dispatcher, seed, callback security,
+  AdminGuard), 9 vitest frontend tests. All `-race` clean.
+
+  **6 design docs** (`design/0046` + `design/0047`) capture the full
+  decision history including 3 stress-test passes.
 
 ### Added
 
