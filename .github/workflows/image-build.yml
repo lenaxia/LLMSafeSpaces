@@ -102,8 +102,9 @@ jobs:
       - name: Build and push (capture output)
         id: build
         continue-on-error: true
+        shell: bash
         run: |
-          set +e
+          set -eo pipefail
           IMAGE_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.hash }}-${{ inputs.base_version }}"
           docker buildx build \
             --platform "${{ inputs.architectures }}" \
@@ -111,13 +112,12 @@ jobs:
             --push \
             --progress=plain \
             /tmp/build-context 2>&1 | tee /tmp/build.log
-          BUILD_EXIT=$?
+          # With pipefail, the pipeline exits non-zero if buildx fails.
           # Extract the digest from the log (buildx prints it on success).
-          if [ $BUILD_EXIT -eq 0 ]; then
-            DIGEST=$(grep -oP 'digest: \K(sha256:[a-f0-9]+)' /tmp/build.log | tail -1)
+          DIGEST=$(grep -oP 'digest: \K(sha256:[a-f0-9]+)' /tmp/build.log | tail -1 || true)
+          if [ -n "$DIGEST" ]; then
             echo "digest=$DIGEST" >> $GITHUB_OUTPUT
           fi
-          exit $BUILD_EXIT
 
       - name: Report success callback
         if: steps.build.outcome == 'success'
