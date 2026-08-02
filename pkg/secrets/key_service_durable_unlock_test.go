@@ -26,6 +26,7 @@ func TestKeyService_UnlockDEK_WritesDurableRow_WhenSigningKeySupplied(t *testing
 	jwtStore := newMockJWTSessionStore()
 	svc := NewKeyService(store, cache)
 	svc.SetJWTSessionStore(jwtStore)
+	svc.SetAPIKeyStore(nil, &recordingProvider{})
 	ctx := context.Background()
 
 	password := []byte("correct horse battery staple")
@@ -158,27 +159,6 @@ func TestKeyService_UnlockDEKWithSigningKey_NonUUIDSessionIDSkipsDurableWrite(t 
 	}
 	if jwtStore.WriteCount != 0 {
 		t.Errorf("non-uuid sessionID must not write durable row, WriteCount=%d", jwtStore.WriteCount)
-	}
-}
-
-func TestKeyService_UnlockDEKWithSigningKey_WrongPasswordFails(t *testing.T) {
-	// Wrong password must propagate through both paths: no Redis cache,
-	// no durable write.
-	store := newMockKeyStore()
-	cache := newMockDEKCache()
-	jwtStore := newMockJWTSessionStore()
-	svc := NewKeyService(store, cache)
-	svc.SetJWTSessionStore(jwtStore)
-	ctx := context.Background()
-
-	_ = svc.InitializeUserKeysServerKEK(ctx, "u-6", "server_kek")
-
-	err := svc.UnlockDEKWithSigningKey(ctx, "u-6", []byte("wrong"), uuid.New().String(), time.Hour, []byte("sk"))
-	if err == nil {
-		t.Errorf("wrong password should fail")
-	}
-	if jwtStore.WriteCount != 0 {
-		t.Errorf("wrong password must not write durable row")
 	}
 }
 

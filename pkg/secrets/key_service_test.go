@@ -141,6 +141,7 @@ func TestKeyService_EvictDEK(t *testing.T) {
 	store := newMockKeyStore()
 	cache := newMockDEKCache()
 	svc := NewKeyService(store, cache)
+	svc.SetAPIKeyStore(nil, &recordingProvider{})
 	ctx := context.Background()
 
 	password := []byte("password")
@@ -168,6 +169,7 @@ func TestKeyService_GetDEK(t *testing.T) {
 	store := newMockKeyStore()
 	cache := newMockDEKCache()
 	svc := NewKeyService(store, cache)
+	svc.SetAPIKeyStore(nil, &recordingProvider{})
 	ctx := context.Background()
 
 	password := []byte("password")
@@ -199,6 +201,7 @@ func TestKeyService_HasKeys(t *testing.T) {
 	store := newMockKeyStore()
 	cache := newMockDEKCache()
 	svc := NewKeyService(store, cache)
+	svc.SetAPIKeyStore(nil, &recordingProvider{})
 	ctx := context.Background()
 
 	has, err := svc.HasKeys(ctx, "user-1")
@@ -224,6 +227,7 @@ func TestKeyService_DEKAvailable(t *testing.T) {
 	store := newMockKeyStore()
 	cache := newMockDEKCache()
 	svc := NewKeyService(store, cache)
+	svc.SetAPIKeyStore(nil, &recordingProvider{})
 	ctx := context.Background()
 
 	if svc.DEKAvailable(ctx, "no-session") {

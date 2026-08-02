@@ -93,11 +93,13 @@ func TestKeyService_UnlockDEK_CacheFailure(t *testing.T) {
 	store := newMockKeyStore()
 	cache := &failingDEKCache{failOn: "cache"}
 	svc := NewKeyService(store, cache)
+	svc.SetAPIKeyStore(nil, &recordingProvider{})
 	ctx := context.Background()
 
 	// Initialize with working store
 	realCache := newMockDEKCache()
 	realSvc := NewKeyService(store, realCache)
+	realSvc.SetAPIKeyStore(nil, &recordingProvider{})
 	realSvc.InitializeUserKeysServerKEK(ctx, "user-1", "server_kek")
 
 	// Now try to unlock with failing cache
