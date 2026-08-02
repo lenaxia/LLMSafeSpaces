@@ -106,7 +106,7 @@ func (s *Service) ListBases(ctx context.Context) ([]imagefactory.Base, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list bases: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []imagefactory.Base
 	for rows.Next() {
 		var b imagefactory.Base
@@ -177,7 +177,7 @@ func (s *Service) ListExtensions(ctx context.Context, includeRetired bool) ([]im
 	if err != nil {
 		return nil, fmt.Errorf("list extensions: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []imagefactory.Extension
 	for rows.Next() {
 		e, err := scanExtension(rows)
@@ -260,7 +260,7 @@ func (s *Service) ListKnownFailures(ctx context.Context) ([]imagefactory.KnownFa
 	if err != nil {
 		return nil, fmt.Errorf("list known failures: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var out []imagefactory.KnownFailure
 	for rows.Next() {
 		var kf imagefactory.KnownFailure
@@ -349,7 +349,7 @@ func (s *Service) ListRejectedConfigsForFailure(ctx context.Context, selectionHa
 	if err != nil {
 		return nil, fmt.Errorf("list rejected configs for failure: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanConfigs(rows)
 }
 
@@ -434,7 +434,7 @@ func (s *Service) ListConfigs(ctx context.Context, scope imagefactory.ConfigScop
 	if err != nil {
 		return nil, fmt.Errorf("list configs: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanConfigs(rows)
 }
 
@@ -457,7 +457,7 @@ func (s *Service) ListVisibleConfigs(ctx context.Context, ownerID, orgID *string
 	if err != nil {
 		return nil, fmt.Errorf("list visible configs: %w", err)
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	return scanConfigs(rows)
 }
 

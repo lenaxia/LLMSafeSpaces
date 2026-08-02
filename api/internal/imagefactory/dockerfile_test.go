@@ -148,7 +148,7 @@ func TestRenderDockerfile_Deterministic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a: %v", err)
 	}
-	// Re-render with a fresh map (Go randomises iteration); same bytes.
+	// Re-render with a fresh map (Go randomizes iteration); same bytes.
 	b, err := RenderDockerfile(rv, sampleBase())
 	if err != nil {
 		t.Fatalf("b: %v", err)
