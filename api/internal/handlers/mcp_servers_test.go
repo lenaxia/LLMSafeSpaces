@@ -139,6 +139,8 @@ func TestValidateMCPServerCreate(t *testing.T) {
 		{"ssrf metadata", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://169.254.169.254/mcp"}, "private"},
 		{"ssrf rfc1918", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://10.0.0.1/mcp"}, "private"},
 		{"ssrf rfc1918-2", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://192.168.1.1/mcp"}, "private"},
+		{"ssrf rfc1918-3", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://172.16.0.1/mcp"}, "private"},
+		{"ssrf unspecified", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://0.0.0.0/mcp"}, "private"},
 		{"ssrf localhost", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://localhost/mcp"}, "internal"},
 		{"env injection LD_PRELOAD", &types.CreateMCPServerRequest{Name: "x", Transport: "stdio", Command: "sh", Env: map[string]string{"LD_PRELOAD": "/tmp/evil.so"}}, "blocked"},
 		{"env injection empty", &types.CreateMCPServerRequest{Name: "x", Transport: "stdio", Command: "sh", Env: map[string]string{"": "val"}}, "empty"},

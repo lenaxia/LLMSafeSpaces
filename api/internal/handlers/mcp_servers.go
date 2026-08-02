@@ -164,11 +164,11 @@ func (h *MCPServersHandler) OrgCreate(c *gin.Context) {
 }
 
 // orgAdminAllowed checks the mcp.allowOrgAdminServers instance setting.
-// Fails CLOSED on read error (return false) — a security control that
-// fails open on transient errors provides no actual kill capability.
+// Fails CLOSED in all error cases (nil settings reader, read error).
+// A kill-switch that fails open provides no kill capability.
 func (h *MCPServersHandler) orgAdminAllowed(c *gin.Context) bool {
 	if h.settings == nil {
-		return true // no settings reader configured = fail-open (test environments)
+		return false // fail-closed: no settings reader = kill switch active
 	}
 	allowed, err := h.settings.GetBool(c.Request.Context(), "mcp.allowOrgAdminServers")
 	if err != nil {
@@ -817,22 +817,11 @@ func validateMCPServerCreate(req *types.CreateMCPServerRequest) error {
 // validateMCPServerUpdate validates the mutable fields of an update request.
 // Called from update() to prevent SSRF/injection bypass via the PUT path.
 func validateMCPServerUpdate(req *types.UpdateMCPServerRequest) error {
-	transport := ""
-	url := ""
-	command := ""
-	if req.URL != nil {
-		url = *req.URL
-	}
-	if req.Command != nil {
-		command = *req.Command
-	}
 	if req.Name != nil && *req.Name != "" && !types.ValidMCPServerName(*req.Name) {
 		return fmt.Errorf("invalid name: must match [a-zA-Z0-9][a-zA-Z0-9_-]{0,62}")
 	}
-	// Validate URL if provided — we don't know the transport on update,
-	// but if a URL is present it should pass SSRF regardless.
-	if url != "" {
-		if verr := validateMCPURL(url); verr != nil {
+	if req.URL != nil && *req.URL != "" {
+		if verr := validateMCPURL(*req.URL); verr != nil {
 			return verr
 		}
 	}
@@ -846,8 +835,6 @@ func validateMCPServerUpdate(req *types.UpdateMCPServerRequest) error {
 			return err
 		}
 	}
-	_ = transport
-	_ = command
 	return nil
 }
 
