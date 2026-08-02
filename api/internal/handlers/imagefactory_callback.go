@@ -134,9 +134,9 @@ func (h *ImageFactoryHandler) handleCallbackFailed(c *gin.Context, ctx context.C
 // explainFailure is the failure-seam placeholder (S6 wires the real LLM).
 // Returns a human-readable explanation of the failure. Degradation mode:
 // if the LLM is unavailable, returns a fallback string.
-func (h *ImageFactoryHandler) explainFailure(_ context.Context, logTail string, _ imagefactory.ResolvedValues) string {
+func (h *ImageFactoryHandler) explainFailure(ctx context.Context, logTail string, rv imagefactory.ResolvedValues) string {
 	if h.explainer != nil {
-		explanation, _, err := h.explainer.Explain(context.Background(), logTail, nil)
+		explanation, _, err := h.explainer.Explain(ctx, logTail, rv)
 		if err == nil && explanation != "" {
 			return explanation
 		}
