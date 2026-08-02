@@ -550,6 +550,24 @@ func TestAdminUpdate_NotFound(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
+func TestOrgCreate_KillSwitchNilSettings_FailClosed(t *testing.T) {
+	store := &stubMCPStore{}
+	enc := &stubEncryptor{}
+	h := NewOrgMCPServersHandler(store, enc, &stubMcpOrgChecker{})
+	// Deliberately do NOT call SetSettings — simulates misconfigured deployment.
+	// orgAdminAllowed should fail-closed (return false), blocking the create.
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "org-1"}}
+	c.Request = httptest.NewRequest("POST", "/", strings.NewReader(`{"name":"wiki","transport":"http","url":"https://x.com"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.OrgCreate(c)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.Contains(t, w.Body.String(), "disabled")
+}
+
 // --- Test helpers ---
 
 type stubEncryptor struct{}

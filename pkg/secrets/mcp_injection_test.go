@@ -25,6 +25,7 @@ func TestInjectSecrets_MCPViaAsyncAuditLogger(t *testing.T) {
 
 	// Wrap in AsyncAuditLogger (production configuration).
 	auditStore := NewAsyncAuditLogger(mockStore, 16, nil)
+	defer auditStore.Stop()
 	svc := NewSecretService(nil, auditStore)
 
 	// Verify the type assertion succeeds — this is the regression guard.
