@@ -14,7 +14,7 @@ name: Image Factory Build
 #   base_version    — base version
 #   base_image_ref  — full base image ref (image@digest or image:tag)
 #   architectures   — comma-separated platforms (e.g. "linux/amd64,linux/arm64")
-#   resolved_values — JSON object of extension ID → {type, value, file_spec}
+#   resolved_values — JSON object of extension ID → {type, value, fileSpec}
 #
 # Retry: the build step retries once on transient-looking failures
 # (timeout, 5xx, network error). Non-transient failures (apt package not
@@ -58,7 +58,7 @@ on:
         type: string
         default: "linux/amd64"
       resolved_values:
-        description: "JSON: extension ID → {type, value, file_spec}"
+        description: "JSON: extension ID → {type, value, fileSpec}"
         required: true
         type: string
 
@@ -135,8 +135,8 @@ jobs:
           # file block
           file_entries = []
           for eid, v in rv.items():
-              if v["type"] == "file" and v.get("file_spec"):
-                  fs = v["file_spec"]
+              if v["type"] == "file" and v.get("fileSpec"):
+                  fs = v["fileSpec"]
                   mode = fs.get("mode", "0644")
                   path = fs["path"]
                   content = v["value"]
