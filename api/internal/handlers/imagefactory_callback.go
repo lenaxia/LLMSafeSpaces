@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 
@@ -136,12 +137,14 @@ func (h *ImageFactoryHandler) handleCallbackFailed(c *gin.Context, ctx context.C
 	}
 	// If the LLM attributed the failure to a single extension, flag it for
 	// admin review (design/0046 attribution). The admin can then investigate
-	// and retire the extension if needed. A hallucinated ID (no row affected)
-	// or a store error is non-fatal — the build transition already succeeded.
+	// and retire the extension if needed. This is a non-fatal side effect:
+	// the core build→failed transition already succeeded, so a transient
+	// store error here must NOT change the 204 response. The known_failure
+	// row (written by TransitionBuildFailed) is the source of truth; the
+	// review flag is a convenience that an admin can trigger manually.
 	if attributedExtension != "" && h.adminStore != nil {
 		if err := h.adminStore.SetExtensionReviewRequested(ctx, attributedExtension, true); err != nil {
-			// Log but don't fail the callback — the core transition is done.
-			c.Error(err) // gin context logger picks this up
+			log.Printf("imagefactory: non-fatal — flag extension %s for review: %v", attributedExtension, err)
 		}
 	}
 	c.Status(http.StatusNoContent)

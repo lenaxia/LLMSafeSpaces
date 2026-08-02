@@ -156,7 +156,7 @@ func buildExplainPrompt(logTail string, rv imagefactory.ResolvedValues) string {
 	var sb strings.Builder
 	for _, id := range ids {
 		v := rv[id]
-		sb.WriteString(fmt.Sprintf("- %s (type=%s, value=%s)\n", id, v.Type, v.Value))
+		fmt.Fprintf(&sb, "- %s (type=%s, value=%s)\n", id, v.Type, v.Value)
 	}
 	return fmt.Sprintf("The following Docker image build failed.\n\nExtensions installed:\n%s\n\nBuild log tail:\n%s\n\nExplain why this build failed and which extension (if any) is responsible.", sb.String(), logTail)
 }
