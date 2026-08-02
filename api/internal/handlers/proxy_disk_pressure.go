@@ -161,10 +161,9 @@ func diskPressureNotice(level diskPressureLevel, ratio float64) string {
 //
 // Field values round-trip unchanged; top-level KEY ORDER may change
 // (encoding/json marshals maps with sorted keys). This is semantically
-// harmless — JSON objects are unordered per RFC 8259 §4, and opencode
-// parses the body with standard order-independent unmarshal (verified:
-// pkg/agent/opencode uses json.Decode; the proxy's own
-// extractPromptText uses json.Unmarshal into a struct).
+// harmless: JSON objects are unordered per RFC 8259 §4, so any
+// spec-compliant parser — including opencode — reads the body
+// identically regardless of key order.
 //
 // Fail-open: empty or malformed bodies pass through unchanged, as does
 // any ratio below the warning threshold.
