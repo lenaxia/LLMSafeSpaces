@@ -22,17 +22,26 @@ import (
 // fakeIFStore is the test double for imageFactoryStore. It returns scripted
 // results and records calls so tests assert which methods ran.
 type fakeIFStore struct {
-	platformCfg  imagefactory.PlatformConfig
-	bases        []imagefactory.Base
-	extensions   []imagefactory.Extension
-	failures     []imagefactory.KnownFailure
-	configs      []imagefactory.Config // returned by ListVisibleConfigs
-	configByHash map[string]imagefactory.Config
-	err          error
+	platformCfg        imagefactory.PlatformConfig
+	bases              []imagefactory.Base
+	baseByName         map[string]imagefactory.Base
+	extensions         []imagefactory.Extension
+	failures           []imagefactory.KnownFailure
+	knownFailureByHash map[string]imagefactory.KnownFailure
+	configs            []imagefactory.Config // returned by ListVisibleConfigs
+	configByHash       map[string]imagefactory.Config
+	existingBuild      *imagefactory.Build // returned by GetInFlightOrSuccessfulBuild
+	err                error
+	createConfigErr    error
+	createBuildErr     error
 
 	// call records
 	listExtIncludeRetired []bool
 	calledListVisible     bool
+	calledCreateConfig    bool
+	calledCreateBuild     bool
+	lastCreatedConfig     *imagefactory.Config
+	lastCreatedBuild      *imagefactory.Build
 }
 
 func (f *fakeIFStore) GetPlatformConfig(ctx context.Context) (imagefactory.PlatformConfig, error) {
@@ -67,6 +76,38 @@ func (f *fakeIFStore) ListVisibleConfigs(ctx context.Context, ownerID, orgID *st
 	return f.configs, f.err
 }
 
+// S4 additions.
+func (f *fakeIFStore) GetBase(ctx context.Context, name, version string) (imagefactory.Base, error) {
+	key := name + "/" + version
+	if b, ok := f.baseByName[key]; ok {
+		return b, nil
+	}
+	return imagefactory.Base{}, database.ErrNotFound
+}
+
+func (f *fakeIFStore) GetKnownFailure(ctx context.Context, hash, baseName string) (imagefactory.KnownFailure, error) {
+	if kf, ok := f.knownFailureByHash[hash]; ok {
+		return kf, nil
+	}
+	return imagefactory.KnownFailure{}, database.ErrNotFound
+}
+
+func (f *fakeIFStore) GetInFlightOrSuccessfulBuild(ctx context.Context, hash, baseVersion string) (*imagefactory.Build, error) {
+	return f.existingBuild, f.err
+}
+
+func (f *fakeIFStore) CreateConfig(ctx context.Context, c *imagefactory.Config) error {
+	f.calledCreateConfig = true
+	f.lastCreatedConfig = c
+	return f.createConfigErr
+}
+
+func (f *fakeIFStore) CreateBuild(ctx context.Context, b *imagefactory.Build) error {
+	f.calledCreateBuild = true
+	f.lastCreatedBuild = b
+	return f.createBuildErr
+}
+
 // fakeOrgResolver is the test double for orgResolver.
 type fakeOrgResolver struct {
 	orgIDByUser map[string]string
@@ -95,6 +136,7 @@ func newIFRouter(t *testing.T, store imageFactoryStore, orgs orgResolver) *gin.E
 	g.GET("/catalog", h.Catalog)
 	g.GET("/configs", h.ListConfigs)
 	g.GET("/configs/:hash", h.GetConfig)
+	g.POST("/configs", h.CreateConfig)
 	return r
 }
 
