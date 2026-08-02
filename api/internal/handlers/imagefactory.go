@@ -7,7 +7,6 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"sync"
 
 	"github.com/gin-gonic/gin"
 
@@ -53,33 +52,20 @@ type ImageFactoryHandler struct {
 	orgs       orgResolver
 	dispatcher buildDispatcher
 
-	// S5: callback + on-read status derivation.
-	buildStore    buildStore
-	imageRepo     string
-	resolver      statusResolver
-	explainer     failureExplainer
-	statusCache   map[int64]statusCacheEntry
-	statusCacheMu sync.RWMutex
+	// S5: callback + failure handling.
+	buildStore buildStore
+	imageRepo  string
+	explainer  failureExplainer
 }
 
 // NewImageFactoryHandler constructs the handler.
 func NewImageFactoryHandler(store imageFactoryStore, orgs orgResolver) *ImageFactoryHandler {
-	return &ImageFactoryHandler{
-		store:       store,
-		orgs:        orgs,
-		statusCache: make(map[int64]statusCacheEntry),
-	}
+	return &ImageFactoryHandler{store: store, orgs: orgs}
 }
 
 // SetDispatcher wires the GH Actions build dispatcher.
 func (h *ImageFactoryHandler) SetDispatcher(d buildDispatcher) {
 	h.dispatcher = d
-}
-
-// SetStatusResolver wires the GH Actions status resolver for on-read
-// derivation (S5).
-func (h *ImageFactoryHandler) SetStatusResolver(r statusResolver) {
-	h.resolver = r
 }
 
 // SetFailureExplainer wires the LLM failure explainer (S6). Optional —
@@ -88,10 +74,7 @@ func (h *ImageFactoryHandler) SetFailureExplainer(e failureExplainer) {
 	h.explainer = e
 }
 
-// SetBuildStore wires the build-scoped store (callback + status derivation).
-// Separate from imageFactoryStore (which is read/catalog-scoped) because the
-// callback needs GetBuild/MarkBuildSucceeded/MarkBuildFailed/
-// SetConfigStatus/RecordKnownFailure — a different subset.
+// SetBuildStore wires the build-scoped store (callback transitions).
 func (h *ImageFactoryHandler) SetBuildStore(bs buildStore, imageRepo string) {
 	h.buildStore = bs
 	h.imageRepo = imageRepo

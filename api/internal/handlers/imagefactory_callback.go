@@ -9,7 +9,6 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -18,25 +17,15 @@ import (
 )
 
 // buildStore is the data-access surface for build lifecycle operations
-// (callback transitions + status derivation). Satisfied by *database.Service.
-// Separate from imageFactoryStore (catalog/config reads) via ISP — the
-// callback handler needs a different method subset.
+// (callback transitions). Satisfied by *database.Service. Separate from
+// imageFactoryStore (catalog/config reads) via ISP — the callback handler
+// needs a different method subset.
 type buildStore interface {
 	GetBuild(ctx context.Context, id string) (imagefactory.Build, error)
 	MarkBuildSucceeded(ctx context.Context, id, imageRef, digest string) error
 	MarkBuildFailed(ctx context.Context, id, failureReason, explanation string) error
 	SetConfigStatus(ctx context.Context, id string, status imagefactory.ConfigStatus) error
 	RecordKnownFailure(ctx context.Context, kf imagefactory.KnownFailure) error
-}
-
-// statusResolver queries the GH Actions API for a run's status. Used by the
-// on-read derivation path (design/0046 #21). Result cached ~30s by the
-// caller (the ImageFactoryHandler holds a TTL cache).
-type statusResolver interface {
-	// Resolve returns (completed, success, logTail, err). When completed is
-	// false, the build is still in flight. logTail is populated only on
-	// completion+failure (for the failure seam).
-	Resolve(ctx context.Context, ghRunID int64) (completed bool, success bool, logTail string, err error)
 }
 
 // callbackRequest is the POST body the GH Actions workflow sends on build
@@ -178,85 +167,4 @@ func (h *ImageFactoryHandler) explainFailure(_ context.Context, logTail string, 
 // failureExplainer is the LLM seam interface (S6 provides the real impl).
 type failureExplainer interface {
 	Explain(ctx context.Context, logTail string, rv imagefactory.ResolvedValues) (explanation string, attributedExtensionID string, err error)
-}
-
-// statusCacheEntry holds a derived GH Actions status with a TTL.
-type statusCacheEntry struct {
-	completed bool
-	success   bool
-	logTail   string
-	fetchedAt time.Time
-}
-
-// deriveBuildStatus is the on-read derivation path (design/0046 #21).
-// If the build is in-flight (dispatched), it queries the GH Actions API
-// (via statusResolver, cached ~30s) and transitions the build if the run
-// has completed. Returns the (possibly updated) build.
-func (h *ImageFactoryHandler) deriveBuildStatus(ctx context.Context, build *imagefactory.Build) (*imagefactory.Build, error) {
-	if build.Status != imagefactory.BuildDispatched || h.resolver == nil || build.GHRunID == nil {
-		return build, nil
-	}
-
-	// Check cache first (avoids hitting GH API on every read).
-	cacheKey := *build.GHRunID
-	h.statusCacheMu.RLock()
-	entry, ok := h.statusCache[cacheKey]
-	h.statusCacheMu.RUnlock()
-
-	if ok && time.Since(entry.fetchedAt) < 30*time.Second {
-		// Cache hit — but only act if completed.
-		if entry.completed {
-			h.transitionBuild(ctx, build, entry.success, entry.logTail)
-		}
-		return build, nil
-	}
-
-	// Cache miss (or stale) — query GH Actions.
-	completed, success, logTail, err := h.resolver.Resolve(ctx, *build.GHRunID)
-	if err != nil {
-		// Transient GH API error — don't fail the read; return stale state.
-		return build, nil
-	}
-
-	// Update cache.
-	h.statusCacheMu.Lock()
-	h.statusCache[cacheKey] = statusCacheEntry{
-		completed: completed,
-		success:   success,
-		logTail:   logTail,
-		fetchedAt: time.Now(),
-	}
-	h.statusCacheMu.Unlock()
-
-	if completed {
-		h.transitionBuild(ctx, build, success, logTail)
-	}
-	return build, nil
-}
-
-// transitionBuild applies the succeeded/failed transition in the DB.
-func (h *ImageFactoryHandler) transitionBuild(ctx context.Context, build *imagefactory.Build, success bool, logTail string) {
-	if success {
-		imageRef := h.imageRepo + ":" + build.Hash + "-" + build.BaseVersion
-		_ = h.buildStore.MarkBuildSucceeded(ctx, build.ID, imageRef, "")
-		_ = h.buildStore.SetConfigStatus(ctx, build.ConfigID, imagefactory.StatusReady)
-		build.Status = imagefactory.BuildSucceeded
-		build.ImageRef = imageRef
-	} else {
-		_ = h.buildStore.MarkBuildFailed(ctx, build.ID, logTail, "")
-		explanation := h.explainFailure(ctx, logTail, build.ResolvedValues)
-		hash, _ := imagefactory.HashSelection(build.ResolvedValues.Selection(), build.BaseName)
-		if hash != "" {
-			_ = h.buildStore.RecordKnownFailure(ctx, imagefactory.KnownFailure{
-				SelectionHash: hash,
-				Selection:     build.ResolvedValues.Selection(),
-				BaseName:      build.BaseName,
-				Explanation:   explanation,
-				FailureReason: logTail,
-				Retriable:     true,
-			})
-		}
-		_ = h.buildStore.SetConfigStatus(ctx, build.ConfigID, imagefactory.StatusRejected)
-		build.Status = imagefactory.BuildFailed
-	}
 }
