@@ -362,3 +362,50 @@ func TestAdmin_DeleteKnownFailure_500(t *testing.T) {
 	w := adminJSON(t, r, "DELETE", "/api/v1/admin/image-factory/known-failures/s-x/b", nil)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
+
+func TestAdmin_PublishExtension_ValidFileSpec(t *testing.T) {
+	t.Parallel()
+	store := &fakeAdminStore{}
+	r := newAdminRouter(t, store)
+	w := adminJSON(t, r, "POST", "/api/v1/admin/image-factory/extensions", publishExtensionRequest{
+		ID: "motd", Type: imagefactory.ExtensionTypeFile, Value: "hi",
+		FileSpec:       &imagefactory.FileSpec{Path: "/etc/motd", Mode: "0644"},
+		SupportedBases: []string{"bookworm"},
+	})
+	assert.Equal(t, http.StatusCreated, w.Code)
+}
+
+func TestAdmin_PublishExtension_InvalidFilePath422(t *testing.T) {
+	t.Parallel()
+	store := &fakeAdminStore{}
+	r := newAdminRouter(t, store)
+	w := adminJSON(t, r, "POST", "/api/v1/admin/image-factory/extensions", publishExtensionRequest{
+		ID: "bad", Type: imagefactory.ExtensionTypeFile, Value: "x",
+		FileSpec:       &imagefactory.FileSpec{Path: "etc/motd"},
+		SupportedBases: []string{"bookworm"},
+	})
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+}
+
+func TestAdmin_PublishExtension_InvalidFileMode422(t *testing.T) {
+	t.Parallel()
+	store := &fakeAdminStore{}
+	r := newAdminRouter(t, store)
+	w := adminJSON(t, r, "POST", "/api/v1/admin/image-factory/extensions", publishExtensionRequest{
+		ID: "bad", Type: imagefactory.ExtensionTypeFile, Value: "x",
+		FileSpec:       &imagefactory.FileSpec{Path: "/etc/motd", Mode: "9999"},
+		SupportedBases: []string{"bookworm"},
+	})
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+}
+
+func TestAdmin_PublishExtension_Mise_HappyPath(t *testing.T) {
+	t.Parallel()
+	store := &fakeAdminStore{}
+	r := newAdminRouter(t, store)
+	w := adminJSON(t, r, "POST", "/api/v1/admin/image-factory/extensions", publishExtensionRequest{
+		ID: "python313", Type: imagefactory.ExtensionTypeMise, Value: "python@3.13",
+		SupportedBases: []string{"bookworm"},
+	})
+	assert.Equal(t, http.StatusCreated, w.Code)
+}
