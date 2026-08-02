@@ -161,6 +161,83 @@ func TestInjectDiskPressureNotice_PreservesNonTextParts(t *testing.T) {
 	assert.Equal(t, "tool", parsed.Parts[2].Type, "tool part must be preserved after the injected notice")
 }
 
+// Regression: the frontend sends a `model` field on /prompt when the user
+// picked a specific model (frontend/src/hooks/useChatStream.ts). The
+// injector must NOT drop unknown top-level fields — it rewrites only
+// `parts`. See PR #632 review: silently dropping `model` routed the
+// message to opencode's default model whenever disk pressure was active.
+func TestInjectDiskPressureNotice_PreservesUnknownTopLevelFields(t *testing.T) {
+	body := []byte(`{"parts":[{"type":"text","text":"hi"}],"model":{"providerID":"openai","modelID":"gpt-4"}}`)
+	out := injectDiskPressureNotice(body, 0.95)
+
+	var parsed struct {
+		Parts []promptPart `json:"parts"`
+		Model struct {
+			ProviderID string `json:"providerID"`
+			ModelID    string `json:"modelID"`
+		} `json:"model"`
+		MessageID string `json:"messageID"`
+	}
+	require.NoError(t, json.Unmarshal(out, &parsed))
+	require.Len(t, parsed.Parts, 2, "notice + original part")
+	assert.Equal(t, "openai", parsed.Model.ProviderID, "model.providerID must survive injection")
+	assert.Equal(t, "gpt-4", parsed.Model.ModelID, "model.modelID must survive injection")
+}
+
+// Regression: multiple unknown sibling fields must all survive, not just
+// the first. Guards against a partial-preservation regression.
+func TestInjectDiskPressureNotice_PreservesMultipleUnknownFields(t *testing.T) {
+	body := []byte(`{"parts":[{"type":"text","text":"hi"}],"mode":"build","model":{"p":"x","m":"y"},"custom":123}`)
+	out := injectDiskPressureNotice(body, 0.90)
+
+	var parsed map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(out, &parsed))
+	assert.Contains(t, parsed, "parts")
+	assert.Contains(t, parsed, "mode", "mode field must survive")
+	assert.Contains(t, parsed, "model", "model field must survive")
+	assert.Contains(t, parsed, "custom", "custom field must survive")
+}
+
+// --- diskPressureNotice rounding boundary ---
+
+// At ratio 0.949999 the level is warning (< 0.95) but math.Round would
+// display "95%", which is confusing alongside warning-level guidance that
+// grants no deletion authority. The display must not round up across a
+// level boundary.
+func TestDiskPressureNotice_Warning_DoesNotRoundUpToCriticalDisplay(t *testing.T) {
+	notice := diskPressureNotice(diskPressureWarning, 0.949999)
+	assert.NotContains(t, notice, "95%", "warning at 0.949999 must not display 95%")
+	assert.Contains(t, notice, "94%", "should floor to the integer below")
+}
+
+func TestDiskPressureNotice_Critical_AtExactBoundary_Displays95(t *testing.T) {
+	notice := diskPressureNotice(diskPressureCritical, 0.95)
+	assert.Contains(t, notice, "95%")
+}
+
+// --- normalizeDiskThresholds cross-validation ---
+
+func TestNormalizeDiskThresholds_Inverted_FallsBackToDefaults(t *testing.T) {
+	// warning >= critical makes the warning tier unreachable (critical is
+	// checked first). Fall back to defaults so the feature degrades to the
+	// documented 90%/95% behavior.
+	w, c := normalizeDiskThresholds(0.98, 0.50, 0.90, 0.95)
+	assert.Equal(t, 0.90, w)
+	assert.Equal(t, 0.95, c)
+}
+
+func TestNormalizeDiskThresholds_Equal_FallsBackToDefaults(t *testing.T) {
+	w, c := normalizeDiskThresholds(0.92, 0.92, 0.90, 0.95)
+	assert.Equal(t, 0.90, w)
+	assert.Equal(t, 0.95, c)
+}
+
+func TestNormalizeDiskThresholds_Valid_Unchanged(t *testing.T) {
+	w, c := normalizeDiskThresholds(0.85, 0.93, 0.90, 0.95)
+	assert.Equal(t, 0.85, w)
+	assert.Equal(t, 0.93, c)
+}
+
 // --- proxy integration: the injection must reach the upstream request ---
 
 // setupWorkspaceWithDiskT registers a workspace CRD whose status carries

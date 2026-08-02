@@ -48,13 +48,42 @@ const (
 	diskPressureCritical diskPressureLevel = "critical" // >= 95% full
 )
 
-// diskWarningThreshold / diskCriticalThreshold are the disk usage ratios
-// (used/total) at which the proxy injects the notice. 90% per user
-// requirement; 95% escalates. Overridable via env.
-var (
-	diskWarningThreshold  = envFloatOr("DISK_WARNING_THRESHOLD", 0.90)
-	diskCriticalThreshold = envFloatOr("DISK_CRITICAL_THRESHOLD", 0.95)
+// Default disk-usage ratios at which the proxy injects the notice.
+// 90% per the user requirement; 95% escalates.
+const (
+	defaultDiskWarningThreshold  = 0.90
+	defaultDiskCriticalThreshold = 0.95
 )
+
+// diskWarningThreshold / diskCriticalThreshold are the disk usage ratios
+// (used/total) at which the proxy injects the notice. Overridable via env
+// (DISK_WARNING_THRESHOLD / DISK_CRITICAL_THRESHOLD). If the overrides
+// invert or collapse the tiers (warning >= critical), both fall back to
+// the defaults so the warning tier is never silently made unreachable.
+var (
+	diskWarningThreshold  = envFloatOr("DISK_WARNING_THRESHOLD", defaultDiskWarningThreshold)
+	diskCriticalThreshold = envFloatOr("DISK_CRITICAL_THRESHOLD", defaultDiskCriticalThreshold)
+)
+
+func init() {
+	w, c := normalizeDiskThresholds(diskWarningThreshold, diskCriticalThreshold,
+		defaultDiskWarningThreshold, defaultDiskCriticalThreshold)
+	diskWarningThreshold = w
+	diskCriticalThreshold = c
+}
+
+// normalizeDiskThresholds enforces warning < critical. When the configured
+// values invert or collapse the tiers (warning >= critical), both fall
+// back to the supplied defaults so the warning tier stays reachable. Each
+// value is also expected to be in (0,1); out-of-range values (which
+// envFloatOr already rejects, but defensive here for direct callers) also
+// trigger the fallback.
+func normalizeDiskThresholds(warning, critical, defW, defC float64) (float64, float64) {
+	if warning <= 0 || warning >= 1 || critical <= 0 || critical >= 1 || warning >= critical {
+		return defW, defC
+	}
+	return warning, critical
+}
 
 // envFloatOr reads a float env var, falling back to def on unset/parse
 // failure. Thresholds must be within (0, 1); anything else is ignored so
@@ -99,7 +128,10 @@ func diskPressureLevelForRatio(ratio float64) diskPressureLevel {
 //     files (build artifacts, caches); logs are the last resort because
 //     they cannot be reproduced; user approval required.
 func diskPressureNotice(level diskPressureLevel, ratio float64) string {
-	pct := fmt.Sprintf("%.0f%%", math.Round(ratio*100))
+	// Floor (not Round) so the displayed % never crosses a level
+	// boundary upward: at ratio 0.949999 the level is warning (< 0.95)
+	// and must display "94%", not "95%" (which would read as critical).
+	pct := fmt.Sprintf("%.0f%%", math.Floor(ratio*100))
 	switch level {
 	case diskPressureCritical:
 		return "System notice: your workspace disk is at " + pct +
@@ -118,9 +150,14 @@ func diskPressureNotice(level diskPressureLevel, ratio float64) string {
 }
 
 // injectDiskPressureNotice rewrites an opencode message body
-// ({parts:[...], messageID?}) by prepending a text part carrying the
+// ({parts:[...], messageID?, ...}) by prepending a text part carrying the
 // disk-pressure notice when the usage ratio is at/above the warning
-// threshold. Original parts and the messageID (if any) are preserved.
+// threshold. Only `parts` is rewritten; ALL other top-level fields
+// (messageID, model, mode, ...) are preserved byte-identical so the
+// proxy never needs to enumerate opencode's full message schema. This
+// matters because the frontend sends a `model` field on /prompt when
+// the user picked a specific model — dropping it would silently reroute
+// the message to opencode's default model.
 //
 // Fail-open: empty or malformed bodies pass through byte-identical, as
 // does any ratio below the warning threshold.
@@ -130,23 +167,36 @@ func injectDiskPressureNotice(body []byte, ratio float64) []byte {
 		return body
 	}
 
-	var msg struct {
-		Parts     []json.RawMessage `json:"parts"`
-		MessageID string            `json:"messageID,omitempty"`
-	}
+	// Decode into a raw map so unknown sibling fields round-trip
+	// untouched. map[string]json.RawMessage is the correct tool here:
+	// the proxy is genuinely passing through arbitrary fields it does
+	// not own (Rule 12 — Containment: the proxy must not enumerate
+	// opencode's schema).
+	var msg map[string]json.RawMessage
 	if err := json.Unmarshal(body, &msg); err != nil {
 		return body
 	}
 
-	noticePart, _ := json.Marshal(promptPart{Type: "text", Text: diskPressureNotice(level, ratio)})
-	parts := make([]json.RawMessage, 0, len(msg.Parts)+1)
-	parts = append(parts, noticePart)
-	parts = append(parts, msg.Parts...)
+	// Parse the existing parts (if any) to prepend the notice.
+	var existing []json.RawMessage
+	if rawParts, ok := msg["parts"]; ok {
+		if err := json.Unmarshal(rawParts, &existing); err != nil {
+			return body
+		}
+	}
 
-	out, err := json.Marshal(struct {
-		Parts     []json.RawMessage `json:"parts"`
-		MessageID string            `json:"messageID,omitempty"`
-	}{Parts: parts, MessageID: msg.MessageID})
+	noticePart, _ := json.Marshal(promptPart{Type: "text", Text: diskPressureNotice(level, ratio)})
+	parts := make([]json.RawMessage, 0, len(existing)+1)
+	parts = append(parts, noticePart)
+	parts = append(parts, existing...)
+
+	partsRaw, err := json.Marshal(parts)
+	if err != nil {
+		return body
+	}
+	msg["parts"] = partsRaw
+
+	out, err := json.Marshal(msg)
 	if err != nil {
 		return body
 	}
