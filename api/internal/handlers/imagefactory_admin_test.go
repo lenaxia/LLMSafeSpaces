@@ -101,7 +101,7 @@ func (f *fakeAdminStore) DeleteKnownFailure(ctx context.Context, hash, baseName 
 	return database.ErrNotFound
 }
 
-func newAdminRouter(t *testing.T, store adminStore) *gin.Engine {
+func newAdminRouter(t *testing.T, store imageFactoryAdminStore) *gin.Engine {
 	t.Helper()
 	r := gin.New()
 	h := NewImageFactoryAdminHandler(store)

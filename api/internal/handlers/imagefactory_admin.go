@@ -14,11 +14,11 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/database"
 )
 
-// adminStore is the data-access surface for admin CRUD over the image-
+// imageFactoryAdminStore is the data-access surface for admin CRUD over the image-
 // factory catalog. Satisfied by *database.Service via duck-typing.
 // Separate from imageFactoryStore (ISP) — admin writes are a different
 // concern from consumer reads.
-type adminStore interface {
+type imageFactoryAdminStore interface {
 	GetPlatformConfig(ctx context.Context) (imagefactory.PlatformConfig, error)
 	SetPlatformConfig(ctx context.Context, pc imagefactory.PlatformConfig) error
 
@@ -39,11 +39,11 @@ type adminStore interface {
 // the image factory (design/0046 admin portal). All endpoints are behind
 // AdminGuard (platform owner only).
 type ImageFactoryAdminHandler struct {
-	store adminStore
+	store imageFactoryAdminStore
 }
 
 // NewImageFactoryAdminHandler constructs the handler.
-func NewImageFactoryAdminHandler(store adminStore) *ImageFactoryAdminHandler {
+func NewImageFactoryAdminHandler(store imageFactoryAdminStore) *ImageFactoryAdminHandler {
 	return &ImageFactoryAdminHandler{store: store}
 }
 
@@ -164,10 +164,18 @@ func (h *ImageFactoryAdminHandler) PublishExtension(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "type must be apt, mise, or file"})
 		return
 	}
-	// File extensions must have a valid FileSpec.
+	// File extensions must have a valid FileSpec (absolute path, valid mode).
 	if req.Type == imagefactory.ExtensionTypeFile {
 		if req.FileSpec == nil || req.FileSpec.Path == "" {
 			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "file extensions require fileSpec with a path"})
+			return
+		}
+		// Reuse the pure-logic validator from the imagefactory package.
+		dummy := imagefactory.ResolvedValues{req.ID: {
+			Type: req.Type, Value: req.Value, FileSpec: req.FileSpec,
+		}}
+		if err := imagefactory.ValidateResolved(dummy); err != nil {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
 			return
 		}
 	}
