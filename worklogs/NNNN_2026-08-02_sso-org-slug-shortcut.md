@@ -43,6 +43,7 @@ Add a short, shareable URL (`/sso/:orgSlug`) so users can log into a specific or
 ## Key Decisions
 
 - **Redirect over JSON for Start errors**: The Start endpoint is a browser-facing redirect endpoint, not a JSON API. Returning JSON for errors showed raw text in the browser. The Callback handler already used the redirect pattern — we aligned Start with it.
+- **Redirect to /login not root for errors**: The SPA's routing chain (`/` → `<Navigate to="/chat">` → `RequireAuth` → `/login`) strips query params. Error redirects must target `/login` directly so the `?sso=` token reaches LoginPage. Success redirects go to root (user is authenticated, goes to `/chat`).
 - **No frontend slug validation**: The backend is the source of truth for slug validity. Client-side validation would duplicate rules and is unnecessary for a single redirect.
 - **Standalone route, not behind GuestOnly**: `/sso/:orgSlug` is a pure redirect — it doesn't render UI beyond a spinner. No auth gate needed, consistent with `/invitations/:token`.
 
@@ -59,6 +60,7 @@ None.
 - `go test -race ./internal/handlers/... -run "SSO|Login"` — all pass
 - `npx vitest run src/pages/SSOStartPage.test.tsx` — 4 pass (Node 18; CI uses compatible version)
 - `npx eslint` on all changed files — clean
+- `npx playwright test sso-start.spec.ts` — deferred to CI (Node 18 incompatible with Playwright runner locally; CI uses Node 20+)
 
 ---
 

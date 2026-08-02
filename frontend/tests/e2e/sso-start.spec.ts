@@ -24,17 +24,16 @@ test.describe("SSO org-slug shortcut /sso/:orgSlug", () => {
   test("redirects to backend SSO start endpoint for valid org", async ({ page }) => {
     await mockUnauthenticated(page);
 
-    const idpAuthorizeURL = "https://idp.example.com/authorize?client_id=cid&redirect_uri=...";
     await page.route(`${API}/auth/sso/acme/start`, async (route: Route) => {
       await route.fulfill({
         status: 302,
-        headers: { Location: idpAuthorizeURL },
+        headers: { Location: "/auth/sso/acme/callback?code=test-code&state=test-state" },
       });
     });
 
     await page.goto("/sso/acme");
 
-    await expect(page).toHaveURL(idpAuthorizeURL, { timeout: 10000 });
+    await expect(page).toHaveURL(/\/auth\/sso\/acme\/callback/, { timeout: 10000 });
   });
 
   test("shows not_configured error on login page for org without SSO", async ({ page }) => {
@@ -43,7 +42,7 @@ test.describe("SSO org-slug shortcut /sso/:orgSlug", () => {
     await page.route(`${API}/auth/sso/ghost/start`, async (route: Route) => {
       await route.fulfill({
         status: 302,
-        headers: { Location: "/?sso=not_configured" },
+        headers: { Location: "/login?sso=not_configured" },
       });
     });
 

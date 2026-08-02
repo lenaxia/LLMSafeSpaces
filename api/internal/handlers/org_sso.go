@@ -354,7 +354,20 @@ func (h *SSOHandler) frontendRedirectWithSuccess() string {
 }
 
 func (h *SSOHandler) frontendRedirectWithError(err error) string {
-	return h.appendSSOParam(h.frontendURL, errorReason(err))
+	base := h.loginRedirectBase()
+	return h.appendSSOParam(base, errorReason(err))
+}
+
+// loginRedirectBase returns the frontend URL targeting /login so that SSO
+// error tokens (?sso=...) are not stripped by the SPA's redirect chain
+// (root → /chat → /login drops query params). Error redirects always land
+// on the login page; success redirects go to the root (the user is
+// authenticated and GuestOnly routes them to /chat).
+func (h *SSOHandler) loginRedirectBase() string {
+	if h.frontendURL == "" {
+		return "/login"
+	}
+	return strings.TrimRight(h.frontendURL, "/") + "/login"
 }
 
 func (h *SSOHandler) appendSSOParam(base, status string) string {

@@ -449,6 +449,7 @@ func TestSSOHandler_Start_NoConfig_RedirectsWithError(t *testing.T) {
 	require.Equal(t, http.StatusFound, w.Code)
 	loc := w.Header().Get("Location")
 	require.Contains(t, loc, "https://app.test.local")
+	require.Contains(t, loc, "/login")
 	require.Contains(t, loc, "sso=not_configured")
 }
 
@@ -466,6 +467,7 @@ func TestSSOHandler_Start_GenericError_RedirectsWithError(t *testing.T) {
 	require.Equal(t, http.StatusFound, w.Code)
 	loc := w.Header().Get("Location")
 	require.Contains(t, loc, "https://app.test.local")
+	require.Contains(t, loc, "/login")
 	require.Contains(t, loc, "sso=error")
 }
 
@@ -703,6 +705,7 @@ func TestE2E_SSO_Start_UnsetRedirectBaseURL_RedirectsToFrontend(t *testing.T) {
 	require.Equal(t, http.StatusFound, w.Code, "misconfiguration must redirect to frontend with error token")
 	loc := w.Header().Get("Location")
 	require.Contains(t, loc, "https://app.test.local", "must redirect to the configured frontend")
+	require.Contains(t, loc, "/login", "must target /login so the SPA delivers the error token")
 	require.Contains(t, loc, "sso=config_error", "must carry the config_error token")
 }
 
@@ -728,6 +731,7 @@ func TestE2E_SSO_Callback_UnsetRedirectBaseURL_RedirectsToFrontend(t *testing.T)
 	require.Equal(t, http.StatusFound, w.Code)
 	loc := w.Header().Get("Location")
 	require.Contains(t, loc, "https://app.test.local", "must redirect to the configured frontend")
+	require.Contains(t, loc, "/login", "must target /login so the SPA delivers the error token")
 	require.Contains(t, loc, "sso=config_error", "must carry the config_error token so the frontend surfaces a failure")
 }
 
