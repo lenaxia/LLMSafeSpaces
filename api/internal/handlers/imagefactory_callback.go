@@ -90,7 +90,7 @@ func (h *ImageFactoryHandler) Callback(c *gin.Context) {
 	// Bind the result payload.
 	var req callbackRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid callback body: " + err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid callback body"})
 		return
 	}
 
@@ -115,9 +115,8 @@ func (h *ImageFactoryHandler) handleCallbackSucceeded(c *gin.Context, ctx contex
 
 func (h *ImageFactoryHandler) handleCallbackFailed(c *gin.Context, ctx context.Context, build *imagefactory.Build, req *callbackRequest) {
 	explanation := h.explainFailure(ctx, req.FailureReason, build.ResolvedValues)
-	hash, _ := imagefactory.HashSelection(build.ResolvedValues.Selection(), build.BaseName)
 	kf := imagefactory.KnownFailure{
-		SelectionHash: hash,
+		SelectionHash: build.Hash,
 		Selection:     build.ResolvedValues.Selection(),
 		BaseName:      build.BaseName,
 		Explanation:   explanation,
