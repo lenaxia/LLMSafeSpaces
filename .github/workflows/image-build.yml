@@ -14,7 +14,8 @@ name: Image Factory Build
 #   base_version    — base version
 #   base_image_ref  — full base image ref (image@digest or image:tag)
 #   architectures   — comma-separated platforms (e.g. "linux/amd64,linux/arm64")
-#   resolved_values — JSON object of extension ID → {type, value, fileSpec}
+#   dockerfile      — the fully-rendered Dockerfile string (produced by the
+#                     API's pure RenderDockerfile — one renderer, no divergence)
 #
 # Retry: the build step retries once on transient-looking failures
 # (timeout, 5xx, network error). Non-transient failures (apt package not
@@ -57,8 +58,8 @@ on:
         required: true
         type: string
         default: "linux/amd64"
-      resolved_values:
-        description: "JSON: extension ID → {type, value, fileSpec}"
+      dockerfile:
+        description: "Fully-rendered Dockerfile (from API's RenderDockerfile)"
         required: true
         type: string
 
@@ -89,75 +90,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Render Dockerfile
-        id: render
-        env:
-          RESOLVED_VALUES: ${{ inputs.resolved_values }}
-          BASE_IMAGE_REF: ${{ inputs.base_image_ref }}
+      - name: Write Dockerfile from input
         run: |
-          set -euo pipefail
-          # Write the resolved values to a temp file for the renderer.
-          echo "$RESOLVED_VALUES" > /tmp/resolved.json
-
-          # Build the Dockerfile from the resolved values. This mirrors the
-          # pure RenderDockerfile function in api/internal/imagefactory/dockerfile.go
-          # — the API could alternatively render and pass the full Dockerfile,
-          # but passing structured JSON keeps the workflow_dispatch payload
-          # smaller and lets the workflow adapt to future extension types.
-          python3 -c '
-          import json, sys, base64
-
-          rv = json.load(open("/tmp/resolved.json"))
-          base_ref = sys.argv[1]
-
-          lines = [f"FROM {base_ref}", "USER root", ""]
-
-          # apt block — every package line ends with \ (line continuation),
-          # including the last; the cleanup line follows. Mirrors the Go
-          # renderer at api/internal/imagefactory/dockerfile.go.
-          apt_pkgs = sorted(v["value"] for v in rv.values() if v["type"] == "apt")
-          if apt_pkgs:
-              lines.append("RUN apt-get update && apt-get install -y --no-install-recommends \\")
-              for p in apt_pkgs:
-                  lines.append(f"    {p} \\")
-              lines.append("    && rm -rf /var/lib/apt/lists/*")
-              lines.append("")
-
-          # mise block
-          mise_tools = sorted(v["value"] for v in rv.values() if v["type"] == "mise")
-          if mise_tools:
-              lines.append("RUN set -eux; \\")
-              lines.append(f"    for tool in {" ".join(mise_tools)}; do \\")
-              lines.append("        MISE_YES=1 MISE_GITHUB_ATTESTATIONS=1 mise install --system \"$tool\"; \\")
-              lines.append("    done && mise reshim")
-              lines.append("")
-
-          # file block
-          file_entries = []
-          for eid, v in rv.items():
-              if v["type"] == "file" and v.get("fileSpec"):
-                  fs = v["fileSpec"]
-                  mode = fs.get("mode", "0644")
-                  path = fs["path"]
-                  content = v["value"]
-                  encoded = base64.b64encode(content.encode()).decode()
-                  # mkdir -p the parent dir
-                  parent = path.rsplit("/", 1)[0] if "/" in path else "/"
-                  file_entries.append((parent, encoded, path, mode))
-          file_entries.sort(key=lambda x: x[2])  # sort by path
-          for parent, encoded, path, mode in file_entries:
-              lines.append(f"RUN mkdir -p {parent!r} && printf %s {encoded!r} | base64 -d > {path!r} && chmod {mode} {path!r}")
-          if file_entries:
-              lines.append("")
-
-          lines.append("USER sandbox")
-          lines.append("WORKDIR /workspace")
-          lines.append("ENTRYPOINT [\"/usr/local/bin/entrypoint-opencode.sh\"]")
-
-          with open("/tmp/Dockerfile", "w") as f:
-              f.write("\n".join(lines) + "\n")
-          print("Dockerfile rendered successfully")
-          ' "$BASE_IMAGE_REF"
+          printf '%s' "${{ inputs.dockerfile }}" > /tmp/Dockerfile
+          echo "Dockerfile written ($(wc -l < /tmp/Dockerfile) lines)"
 
       - name: Build and push (with transient retry)
         id: build
@@ -188,7 +124,7 @@ jobs:
         run: |
           set -euo pipefail
           curl --fail --show-error --silent \
-            -X POST "${CALLBACK_URL}/image-factory/builds/${BUILD_ID}/callback" \
+            -X POST "${CALLBACK_URL}/builds/${BUILD_ID}/callback" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${CALLBACK_TOKEN}" \
             -d "{\"status\": \"succeeded\", \"digest\": \"${DIGEST}\"}"
@@ -219,7 +155,7 @@ jobs:
           # Use jq to safely embed the failure reason in JSON.
           PAYLOAD=$(jq -n --arg reason "$FAILURE_REASON" '{"status": "failed", "failureReason": $reason}')
           curl --fail --show-error --silent \
-            -X POST "${CALLBACK_URL}/image-factory/builds/${BUILD_ID}/callback" \
+            -X POST "${CALLBACK_URL}/builds/${BUILD_ID}/callback" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer ${CALLBACK_TOKEN}" \
             -d "$PAYLOAD" || true
