@@ -287,6 +287,18 @@ func (h *ProxyHandler) proxyToWorkspaceWithErrBody(
 		}
 	}
 
+	// Disk-pressure injection: when the workspace disk is >=90% full,
+	// prepend a notice part to LLM-bound requests (message / prompt_async)
+	// so the agent nudges the user to free up space; >=95% escalates to
+	// safe-cleanup guidance (build artifacts + caches only, logs last).
+	// The ratio comes from the Workspace CRD status (controller-mirrored
+	// from agentd statusz, ~60s freshness — the same data the frontend
+	// shows as a %). Fail-open: no injection on unknown disk state.
+	if len(bodyBytes) > 0 && isLLMPromptPath(targetPath) {
+		bodyBytes = injectDiskPressureNotice(bodyBytes,
+			diskPressureRatio(workspace.Status.DiskUsedBytes, workspace.Status.DiskTotalBytes))
+	}
+
 	podIP := workspace.Status.PodIP
 
 	if h.meteringSvc != nil && workspaceID != "" {

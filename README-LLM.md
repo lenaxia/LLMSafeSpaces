@@ -2,8 +2,8 @@
 
 > **Repository:** `github.com/lenaxia/llmsafespaces`
 
-**Version:** 1.22
-**Last Updated:** 2026-06-29
+**Version:** 1.23
+**Last Updated:** 2026-08-02
 **Project Status:** Active Development
 
 ---
@@ -686,6 +686,23 @@ The pod builder does NOT set `ephemeral-storage` requests or limits on workspace
 | `/sandbox-cfg` (emptyDir, `Medium: Memory`) | No | Counts toward memory, not ephemeral storage |
 
 Container logs are the only consumer, and kubelet's own log rotation already bounds them. A per-pod ephemeral-storage limit added no protection beyond that. If a future feature introduces a node-disk-backed `emptyDir` (`Medium: ""`), per-pod ephemeral limits would need to come back, scoped to the actual concern.
+
+### Disk-pressure prompt injection (LLM disk-space nudges)
+
+When a workspace's `/workspace` PVC crosses **90% usage**, the API proxy prepends a notice part to every LLM-bound chat request (`POST /sessions/:id/message` and `POST /sessions/:id/prompt`, including the queue-drain path) so the agent nudges the user to free up space. At **95%** the notice escalates: the agent may remove ONLY easily-replaceable files (build artifacts, true temp files/caches), with **logs as the last resort** — logs cannot be reproduced once deleted.
+
+**Where the data comes from:** the ratio is read from the Workspace CRD status (`status.diskUsedBytes` / `status.diskTotalBytes`), which the controller mirrors from agentd `/v1/statusz` on its deep-status poll (~60s). This is the same data the frontend's `DiskUsageBar` renders as a % — **no new telemetry is introduced**. The injection is purely a proxy-side rewrite of the request body before it reaches opencode.
+
+**Implementation:** `api/internal/handlers/proxy_disk_pressure.go` — pure functions (`diskPressureRatio`, `diskPressureLevelForRatio`, `diskPressureNotice`, `injectDiskPressureNotice`) wired into `proxyToWorkspaceWithErrBody` (proxy.go) and `sendQueuedToOpencode` (proxy_events.go, for queue parity). The notice is injected as a leading `text` part (opencode has no "system" part type); original parts and any caller-supplied `messageID` are preserved.
+
+**Behavior contract:**
+
+- **< 90%** — no injection. Body passes through byte-identical.
+- **90–95% (warning)** — notice states the usage % and instructs the agent to gently suggest the user free up space; **no deletion authority**.
+- **≥ 95% (critical)** — stronger notice: informs the user, and with user approval may delete ONLY easily-replaceable files (build artifacts, caches); logs are explicitly the last resort because they cannot be reproduced; nothing may be deleted without explicit user approval.
+- **Fail-open** — unknown disk state (`totalBytes == 0`, CRD read error, malformed/empty body) passes the request through unchanged.
+
+**Configuration:** thresholds are package-level vars overridable via API env vars `DISK_WARNING_THRESHOLD` (default `0.90`) and `DISK_CRITICAL_THRESHOLD` (default `0.95`). Values outside `(0,1)` are ignored.
 
 ---
 
@@ -1914,6 +1931,7 @@ The API service is configured via `api/config/config.yaml` with environment vari
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.23 | 2026-08-02 | Added disk-pressure prompt injection: when a workspace's `/workspace` PVC crosses 90% usage the API proxy prepends a notice part to LLM-bound chat requests (message + prompt_async, incl. queue-drain) so the agent nudges the user to free space; at 95% the notice escalates to safe-cleanup guidance (build artifacts + caches only, logs as last resort since they cannot be reproduced). Ratio comes from the existing Workspace CRD status fields (`diskUsedBytes`/`diskTotalBytes`) — no new telemetry. New `api/internal/handlers/proxy_disk_pressure.go`; thresholds env-overridable via `DISK_WARNING_THRESHOLD`/`DISK_CRITICAL_THRESHOLD`. |
 | 1.22 | 2026-06-29 | Secrets UX: added `global_default` boolean to `user_secrets` (migration 000004); propagated through `SecretStore`, `PgSecretStore`, `SecretService`, `AsyncAuditLogger`; `SecretService.SeedGlobalDefaultSecrets` added; `workspace.Service` gains `SecretAutoProvisioner` interface + `SetSecretAutoProvisioner` setter, called best-effort on `CreateWorkspace` after `credProvisioner`; `UpdateSecretRequest.GlobalDefault` is a `*bool` (nil = leave unchanged); frontend: `globalDefault` field on `SecretResponse`/`CreateSecretRequest`/`UpdateSecretRequest`; `SecretsTab` adds "Include in all workspaces" checkbox on create form, "Update" inline form per secret row (carries globalDefault toggle + new value), softened post-creation warning from "will never be shown again" to "you can reveal this value later using your password". |
 | 1.21 | 2026-06-29 | Closed the F11 header-trust gap: `resolveCallbackURL` (`org_sso.go`) no longer derives the SSO callback URL from `X-Forwarded-Proto`/`Host` when `oidc.redirectBaseUrl` is unset. Start returns HTTP 500 with a config hint; Callback redirects to the frontend with `?sso=config_error`. New sentinel `sso.ErrRedirectBaseURLNotSet`. The default (empty) is now safe-by-construction — SSO fails closed instead of trusting attacker-influenceable headers. |
 | 1.19 | 2026-06-22 | Documented the self-hosted multi-cloud inference relay fleet (Epic 42): new `InferenceRelay` cluster-scoped CRD (3rd CRD), `cmd/relay-router` + `cmd/relay-proxy` binaries, `controller/internal/relay` reconciler with AWS/OCI/GCP drivers, and the `/api/v1/admin/relay/*` admin API; noted the WireGuard→HTTPS+per-VM-token transition (worklog 0447). Added Master KEK delivery subsection (Epic 50 US-50.1: file mount, not env var) and Tenant isolation subsection (Epic 51: gVisor RuntimeClass + per-tenant quota webhook). Updated CRD count (2→3), repository structure, deliverables framing, Rule 8 design-doc table, and API route inventory. |
