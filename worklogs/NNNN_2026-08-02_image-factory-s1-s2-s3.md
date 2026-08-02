@@ -79,9 +79,11 @@ retry complexity that an earlier draft spent machinery patching.
 
 ## What remains
 
-- **B2 (open):** Real `postgres:16` integration test for the S2 store per
-  design/0047 mandate. Requires `//go:build integration` + `testharness`.
-  Deferred to a follow-up commit on this PR.
+- **B2 (done):** Real `postgres:16` integration test for the S2 store per
+  design/0047 mandate. Delivered as `imagefactory_integration_test.go`
+  with `//go:build integration` + `testharness.New(t)`. Covers CRUD per
+  table, partial-unique-index enforcement, coalescing probe preference
+  ordering, pq.Array round-trip, JSONB file_spec round-trip.
 - **S4–S10:** POST /configs + coalescing + dispatch, callback + status
   derivation, failure explainer, admin portal, GH Actions workflow, e2e,
   frontend.

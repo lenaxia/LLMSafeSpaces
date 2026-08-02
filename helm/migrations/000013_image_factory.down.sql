@@ -1,6 +1,6 @@
 -- Image Factory rollback (migration 000013).
--- Drops the six tables in reverse dependency order. configs must drop
--- before builds (builds FKs configs).
+-- Drops the six tables in reverse dependency order. builds must drop
+-- before configs (builds.config_id FKs configs.id).
 
 BEGIN;
 

@@ -495,10 +495,7 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 		userCreds.POST("/:id/bind/:workspaceId", cfg.UserProviderCredentialsHandler.Bind)
 		userCreds.DELETE("/:id/bind/:workspaceId", cfg.UserProviderCredentialsHandler.Unbind)
 	}
-
-	// Image factory consumer endpoints (design/0046). Authenticated.
 	registerImageFactoryRoutes(router, services, cfg.ImageFactoryHandler)
-
 	if cfg.UsageHandler != nil {
 		usage := router.Group("/api/v1/usage")
 		usage.Use(services.GetAuth().AuthMiddleware())
@@ -1360,7 +1357,6 @@ func registerImageFactoryRoutes(router *gin.Engine, services interfaces.Services
 	ifg.GET("/catalog", h.Catalog)
 	ifg.GET("/configs", h.ListConfigs)
 	ifg.GET("/configs/:hash", h.GetConfig)
-	ifg.POST("/configs", h.CreateConfig)
 }
 
 // registerProxyRoutes adds all /api/v1/workspaces/:id proxy routes on the
