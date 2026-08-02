@@ -3,7 +3,10 @@
 
 package imagefactory
 
-import "time"
+import (
+	"sort"
+	"time"
+)
 
 // ExtensionType enumerates the catalog extension kinds. "run" and "env"
 // are deliberately absent — they were the injection vectors (design/0046 #5).
@@ -77,6 +80,18 @@ type ResolvedValue struct {
 // exact JSONB shape stored on image_factory_configs.resolved_values and
 // image_factory_builds.resolved_values.
 type ResolvedValues map[string]ResolvedValue
+
+// Selection recovers the extension IDs from the resolved values map, sorted.
+// Used by the callback handler to reconstruct the selection for the
+// known_failures row (the build stores resolved_values, not the selection).
+func (rv ResolvedValues) Selection() Selection {
+	ids := make(Selection, 0, len(rv))
+	for id := range rv {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
 
 // Selection is the user's pick: an unordered set of extension IDs. Hashing
 // sorts, so input order does not affect the result.

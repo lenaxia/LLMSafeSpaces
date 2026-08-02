@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 
@@ -44,24 +45,55 @@ type orgResolver interface {
 }
 
 // ImageFactoryHandler serves the consumer-facing image-factory endpoints
-// (design/0046, design/0047). Read-only in S3; POST /configs in S4,
-// admin endpoints in S7, callback in S5.
+// (design/0046, design/0047). Read-only in S3; POST /configs in S4;
+// callback + status derivation in S5; admin endpoints in S7.
 type ImageFactoryHandler struct {
 	store      imageFactoryStore
 	orgs       orgResolver
 	dispatcher buildDispatcher
+
+	// S5: callback + on-read status derivation.
+	buildStore    buildStore
+	imageRepo     string
+	resolver      statusResolver
+	explainer     failureExplainer
+	statusCache   map[int64]statusCacheEntry
+	statusCacheMu sync.RWMutex
 }
 
 // NewImageFactoryHandler constructs the handler.
 func NewImageFactoryHandler(store imageFactoryStore, orgs orgResolver) *ImageFactoryHandler {
-	return &ImageFactoryHandler{store: store, orgs: orgs}
+	return &ImageFactoryHandler{
+		store:       store,
+		orgs:        orgs,
+		statusCache: make(map[int64]statusCacheEntry),
+	}
 }
 
-// SetDispatcher wires the GH Actions build dispatcher. Called after
-// construction when the dispatcher is available (matching the repo's
-// SetAudit/SetLogger pattern for optional dependencies).
+// SetDispatcher wires the GH Actions build dispatcher.
 func (h *ImageFactoryHandler) SetDispatcher(d buildDispatcher) {
 	h.dispatcher = d
+}
+
+// SetStatusResolver wires the GH Actions status resolver for on-read
+// derivation (S5).
+func (h *ImageFactoryHandler) SetStatusResolver(r statusResolver) {
+	h.resolver = r
+}
+
+// SetFailureExplainer wires the LLM failure explainer (S6). Optional —
+// when nil, a fallback string is used.
+func (h *ImageFactoryHandler) SetFailureExplainer(e failureExplainer) {
+	h.explainer = e
+}
+
+// SetBuildStore wires the build-scoped store (callback + status derivation).
+// Separate from imageFactoryStore (which is read/catalog-scoped) because the
+// callback needs GetBuild/MarkBuildSucceeded/MarkBuildFailed/
+// SetConfigStatus/RecordKnownFailure — a different subset.
+func (h *ImageFactoryHandler) SetBuildStore(bs buildStore, imageRepo string) {
+	h.buildStore = bs
+	h.imageRepo = imageRepo
 }
 
 // CatalogResponse is the body of GET /v1/image-factory/catalog. Drives the
