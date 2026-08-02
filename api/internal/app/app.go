@@ -287,6 +287,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	var adminProvCredHandler *handlers.AdminProviderCredentialsHandler
 	var userProvCredHandler *handlers.UserProviderCredentialsHandler
 	var imageFactoryHandler *handlers.ImageFactoryHandler
+	var imageFactoryAdminHandler *handlers.ImageFactoryAdminHandler
 	var adminMcpHandler *handlers.MCPServersHandler
 	var orgMcpHandler *handlers.MCPServersHandler
 	var userMcpHandler *handlers.MCPServersHandler
@@ -688,6 +689,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 
 		pgOrgStore = database.NewPgOrgStore(dbSvc.DB)
 		imageFactoryHandler = handlers.NewImageFactoryHandler(dbSvc, pgOrgStore)
+		imageFactoryAdminHandler = handlers.NewImageFactoryAdminHandler(dbSvc)
 		imageFactoryHandler.SetBuildStore(dbSvc, "ghcr.io/lenaxia/llmsafespaces/ws", "/internal/image-factory/builds")
 		orgsHandler = handlers.NewOrgsHandler(pgOrgStore, svc.GetAuth())
 		orgCredsHandler = handlers.NewOrgCredentialsHandler(pgStore, pgStore, orgCredsProv, svc.GetAuth())
@@ -1104,6 +1106,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		AdminProviderCredentialsHandler: adminProvCredHandler,
 		UserProviderCredentialsHandler:  userProvCredHandler,
 		ImageFactoryHandler:             imageFactoryHandler,
+		ImageFactoryAdminHandler:        imageFactoryAdminHandler,
 		AdminMCPServersHandler:          adminMcpHandler,
 		OrgMCPServersHandler:            orgMcpHandler,
 		UserMCPServersHandler:           userMcpHandler,
