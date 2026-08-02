@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-08-02
+
+### Added
+
+- **Image Factory S6 — LLM failure explainer (#624).** Wires the platform's
+  in-cluster LLM (LiteLLM/vLLM) into the image-build failure-explainer
+  interface defined in S5, producing human-readable explanations of build
+  failures with graceful degradation when the LLM is unavailable.
+- **Image Factory S7 — Admin portal endpoints (#628).** Platform-owner admin
+  CRUD endpoints for the image factory catalog: bases, extensions,
+  known-failures, and platform config (architectures).
+- **Image Factory S8 — GH Actions image-build workflow (#629).** The
+  `.github/workflows/image-build.yml` triggered by `workflow_dispatch` from
+  the API's `POST /configs` handler; the API pre-renders the Dockerfile and
+  the workflow builds and pushes the custom workspace image.
+
+### Changed
+
+- **Repolint gate: gin.SetMode under t.Parallel (#630).** Adds a repo lint
+  check that fails if a `*_test.go` file calls `gin.SetMode` from a function
+  reachable by a `t.Parallel()` test body. Prevents recurrence of the
+  data race that blocked the v0.7.1 release gate. Detection is per-function
+  transitive reachability; serial-only calls remain allowed.
+
 ## [0.7.1] - 2026-08-02
 
 ### Fixed
