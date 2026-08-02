@@ -38,7 +38,6 @@ type dispatchRequest struct {
 	Hash          string
 	BaseName      string
 	BaseVersion   string
-	BaseImageRef  string
 	Architectures []string
 	Dockerfile    string
 }
@@ -225,7 +224,6 @@ func (h *ImageFactoryHandler) CreateConfig(c *gin.Context) {
 		Hash:          hash,
 		BaseName:      baseName,
 		BaseVersion:   baseVersion,
-		BaseImageRef:  base.Ref(),
 		Architectures: pc.Architectures,
 		Dockerfile:    dockerfile,
 	})
