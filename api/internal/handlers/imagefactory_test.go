@@ -102,6 +102,17 @@ func (f *fakeIFStore) CreateConfig(ctx context.Context, c *imagefactory.Config) 
 	return f.createConfigErr
 }
 
+func (f *fakeIFStore) CreateConfigAndBuild(ctx context.Context, c *imagefactory.Config, b *imagefactory.Build) error {
+	f.calledCreateConfig = true
+	f.calledCreateBuild = true
+	f.lastCreatedConfig = c
+	f.lastCreatedBuild = b
+	if f.createConfigErr != nil {
+		return f.createConfigErr
+	}
+	return f.createBuildErr
+}
+
 func (f *fakeIFStore) CreateBuild(ctx context.Context, b *imagefactory.Build) error {
 	f.calledCreateBuild = true
 	f.lastCreatedBuild = b

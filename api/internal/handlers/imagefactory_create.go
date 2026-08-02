@@ -224,8 +224,9 @@ func (h *ImageFactoryHandler) CreateConfig(c *gin.Context) {
 		return
 	}
 
-	// Dispatch succeeded — commit both rows.
-	ghRun := ghRunID
+	// Dispatch succeeded — commit both rows atomically (design #17).
+	// Single tx: if either insert fails, the other rolls back — no
+	// orphaned config at 'building' with no build row.
 	cfg := imagefactory.Config{
 		Hash:           hash,
 		Name:           req.Name,
@@ -237,26 +238,20 @@ func (h *ImageFactoryHandler) CreateConfig(c *gin.Context) {
 		OwnerID:        &userID,
 		Status:         imagefactory.StatusBuilding,
 	}
-	if err := h.store.CreateConfig(ctx, &cfg); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save config"})
-		return
-	}
-
 	build := imagefactory.Build{
 		ID:             buildID,
-		ConfigID:       cfg.ID,
 		Hash:           hash,
 		BaseName:       baseName,
 		BaseVersion:    baseVersion,
 		ResolvedValues: resolved,
 		Architectures:  pc.Architectures,
 		Status:         imagefactory.BuildDispatched,
-		GHRunID:        &ghRun,
+		GHRunID:        &ghRunID,
 		CallbackToken:  callbackToken,
 		TriggeredBy:    &userID,
 	}
-	if err := h.store.CreateBuild(ctx, &build); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save build record"})
+	if err := h.store.CreateConfigAndBuild(ctx, &cfg, &build); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save config and build"})
 		return
 	}
 
