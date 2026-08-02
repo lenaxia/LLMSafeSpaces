@@ -534,6 +534,13 @@ func (h *ProxyHandler) sendQueuedToOpencode(ctx context.Context, workspaceID, se
 		return fmt.Errorf("marshaling body: %w", err)
 	}
 
+	// Disk-pressure injection parity with the direct message/prompt path:
+	// queued messages are also LLM-bound, so when the workspace disk is
+	// >=90% full the notice part is prepended here too (the queue-drain
+	// path bypasses proxyToWorkspaceWithErrBody). Fail-open on unknown
+	// disk state — the extra CRD read is best-effort.
+	bodyBytes = injectDiskPressureNotice(bodyBytes, h.workspaceDiskRatio(ctx, workspaceID))
+
 	targetURL := fmt.Sprintf("http://%s:%d/session/%s/prompt_async", podIP, opencodePort, sessionID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, targetURL, bytes.NewReader(bodyBytes))
 	if err != nil {
