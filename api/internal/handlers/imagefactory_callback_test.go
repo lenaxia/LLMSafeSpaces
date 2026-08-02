@@ -24,8 +24,6 @@ type fakeBuildStore struct {
 	builds        map[string]imagefactory.Build
 	succeedErr    error
 	failErr       error
-	setStatusErr  error
-	recordKFErr   error
 	lastKnownFail imagefactory.KnownFailure
 }
 
@@ -35,36 +33,30 @@ func (f *fakeBuildStore) GetBuild(_ context.Context, id string) (imagefactory.Bu
 	}
 	return imagefactory.Build{}, database.ErrNotFound
 }
-func (f *fakeBuildStore) MarkBuildSucceeded(_ context.Context, id, imageRef, digest string) error {
+func (f *fakeBuildStore) TransitionBuildSucceeded(_ context.Context, buildID, configID, imageRef, digest string) error {
 	if f.succeedErr != nil {
 		return f.succeedErr
 	}
-	if b, ok := f.builds[id]; ok {
+	if b, ok := f.builds[buildID]; ok {
 		b.Status = imagefactory.BuildSucceeded
 		b.ImageRef = imageRef
 		b.Digest = digest
-		f.builds[id] = b
+		f.builds[buildID] = b
 	}
 	return nil
 }
-func (f *fakeBuildStore) MarkBuildFailed(_ context.Context, id, failureReason, explanation string) error {
+func (f *fakeBuildStore) TransitionBuildFailed(_ context.Context, buildID, configID string, kf imagefactory.KnownFailure) error {
 	if f.failErr != nil {
 		return f.failErr
 	}
-	if b, ok := f.builds[id]; ok {
+	if b, ok := f.builds[buildID]; ok {
 		b.Status = imagefactory.BuildFailed
-		b.FailureReason = failureReason
-		b.Explanation = explanation
-		f.builds[id] = b
+		b.FailureReason = kf.FailureReason
+		b.Explanation = kf.Explanation
+		f.builds[buildID] = b
 	}
-	return nil
-}
-func (f *fakeBuildStore) SetConfigStatus(_ context.Context, id string, status imagefactory.ConfigStatus) error {
-	return f.setStatusErr
-}
-func (f *fakeBuildStore) RecordKnownFailure(_ context.Context, kf imagefactory.KnownFailure) error {
 	f.lastKnownFail = kf
-	return f.recordKFErr
+	return nil
 }
 
 func newCallbackRouter(t *testing.T, bs buildStore) *gin.Engine {

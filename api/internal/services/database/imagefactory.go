@@ -64,6 +64,8 @@ type ImageFactoryStore interface {
 	CreateBuild(ctx context.Context, b *imagefactory.Build) error
 	MarkBuildSucceeded(ctx context.Context, id, imageRef, digest string) error
 	MarkBuildFailed(ctx context.Context, id, failureReason, explanation string) error
+	TransitionBuildSucceeded(ctx context.Context, buildID, configID, imageRef, digest string) error
+	TransitionBuildFailed(ctx context.Context, buildID, configID string, kf imagefactory.KnownFailure) error
 }
 
 // Assert *Service satisfies the interface at compile time.
@@ -630,6 +632,57 @@ func (s *Service) MarkBuildFailed(ctx context.Context, id, failureReason, explan
 		return fmt.Errorf("mark build failed: %w", err)
 	}
 	return nil
+}
+
+// TransitionBuildSucceeded atomically marks a build succeeded and its
+// config ready. Single tx — no partial state if one write fails.
+func (s *Service) TransitionBuildSucceeded(ctx context.Context, buildID, configID, imageRef, digest string) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("transition succeeded: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE image_factory_builds SET status = 'succeeded', image_ref = $1, digest = $2, finished_at = now() WHERE id = $3`,
+		imageRef, digest, buildID); err != nil {
+		return fmt.Errorf("transition succeeded: update build: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE image_factory_configs SET status = 'ready', updated_at = now() WHERE id = $1`,
+		configID); err != nil {
+		return fmt.Errorf("transition succeeded: update config: %w", err)
+	}
+	return tx.Commit()
+}
+
+// TransitionBuildFailed atomically marks a build failed, records the
+// known failure, and flips the config to rejected. Single tx — no
+// partial state.
+func (s *Service) TransitionBuildFailed(ctx context.Context, buildID, configID string, kf imagefactory.KnownFailure) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("transition failed: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE image_factory_builds SET status = 'failed', failure_reason = $1, explanation = $2, finished_at = now() WHERE id = $3`,
+		kf.FailureReason, kf.Explanation, buildID); err != nil {
+		return fmt.Errorf("transition failed: update build: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO image_factory_known_failures (selection_hash, selection, base_name, explanation, failure_reason, detected_at, retriable)
+		 VALUES ($1, $2, $3, $4, $5, now(), $6)
+		 ON CONFLICT (selection_hash, base_name) DO UPDATE SET
+		     explanation = EXCLUDED.explanation, failure_reason = EXCLUDED.failure_reason, detected_at = now(), retriable = EXCLUDED.retriable`,
+		kf.SelectionHash, pq.Array(kf.Selection), kf.BaseName, kf.Explanation, kf.FailureReason, kf.Retriable); err != nil {
+		return fmt.Errorf("transition failed: insert known failure: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE image_factory_configs SET status = 'rejected', updated_at = now() WHERE id = $1`,
+		configID); err != nil {
+		return fmt.Errorf("transition failed: update config: %w", err)
+	}
+	return tx.Commit()
 }
 
 // ── scanners ────────────────────────────────────────────────────────────

@@ -22,10 +22,8 @@ import (
 // needs a different method subset.
 type buildStore interface {
 	GetBuild(ctx context.Context, id string) (imagefactory.Build, error)
-	MarkBuildSucceeded(ctx context.Context, id, imageRef, digest string) error
-	MarkBuildFailed(ctx context.Context, id, failureReason, explanation string) error
-	SetConfigStatus(ctx context.Context, id string, status imagefactory.ConfigStatus) error
-	RecordKnownFailure(ctx context.Context, kf imagefactory.KnownFailure) error
+	TransitionBuildSucceeded(ctx context.Context, buildID, configID, imageRef, digest string) error
+	TransitionBuildFailed(ctx context.Context, buildID, configID string, kf imagefactory.KnownFailure) error
 }
 
 // callbackRequest is the POST body the GH Actions workflow sends on build
@@ -108,44 +106,26 @@ func (h *ImageFactoryHandler) Callback(c *gin.Context) {
 
 func (h *ImageFactoryHandler) handleCallbackSucceeded(c *gin.Context, ctx context.Context, build *imagefactory.Build, req *callbackRequest) {
 	imageRef := h.imageRepo + ":" + build.Hash + "-" + build.BaseVersion
-	if err := h.buildStore.MarkBuildSucceeded(ctx, build.ID, imageRef, req.Digest); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to mark build succeeded"})
-		return
-	}
-	if err := h.buildStore.SetConfigStatus(ctx, build.ConfigID, imagefactory.StatusReady); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update config status"})
+	if err := h.buildStore.TransitionBuildSucceeded(ctx, build.ID, build.ConfigID, imageRef, req.Digest); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to transition build to succeeded"})
 		return
 	}
 	c.Status(http.StatusNoContent)
 }
 
 func (h *ImageFactoryHandler) handleCallbackFailed(c *gin.Context, ctx context.Context, build *imagefactory.Build, req *callbackRequest) {
-	// Mark the build failed with the raw log tail.
-	if err := h.buildStore.MarkBuildFailed(ctx, build.ID, req.FailureReason, ""); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to mark build failed"})
-		return
-	}
-
-	// Invoke the failure seam (S6: LLM explanation). For now, use a
-	// placeholder explanation so the failure path is functional end-to-end.
 	explanation := h.explainFailure(ctx, req.FailureReason, build.ResolvedValues)
-
-	// Record the known failure so future saves of this combo are blocked.
 	hash, _ := imagefactory.HashSelection(build.ResolvedValues.Selection(), build.BaseName)
-	if hash != "" {
-		_ = h.buildStore.RecordKnownFailure(ctx, imagefactory.KnownFailure{
-			SelectionHash: hash,
-			Selection:     build.ResolvedValues.Selection(),
-			BaseName:      build.BaseName,
-			Explanation:   explanation,
-			FailureReason: req.FailureReason,
-			Retriable:     true,
-		})
+	kf := imagefactory.KnownFailure{
+		SelectionHash: hash,
+		Selection:     build.ResolvedValues.Selection(),
+		BaseName:      build.BaseName,
+		Explanation:   explanation,
+		FailureReason: req.FailureReason,
+		Retriable:     true,
 	}
-
-	// Flip the config to rejected.
-	if err := h.buildStore.SetConfigStatus(ctx, build.ConfigID, imagefactory.StatusRejected); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update config status"})
+	if err := h.buildStore.TransitionBuildFailed(ctx, build.ID, build.ConfigID, kf); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to transition build to failed"})
 		return
 	}
 	c.Status(http.StatusNoContent)
