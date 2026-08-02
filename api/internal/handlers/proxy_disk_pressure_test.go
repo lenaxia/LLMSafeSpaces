@@ -198,6 +198,71 @@ func TestInjectDiskPressureNotice_PreservesMultipleUnknownFields(t *testing.T) {
 	assert.Contains(t, parsed, "custom", "custom field must survive")
 }
 
+// Parse-equivalence: the injected output must parse to the SAME value
+// map as the input for every non-parts top-level field. This is the
+// strong form of "fields are preserved" — it catches value corruption
+// even though key order changes (encoding/json sorts map keys). RFC 8259
+// §4 makes object key order semantically insignificant, and opencode
+// parses with standard order-independent unmarshal, so value-equality is
+// the correct invariant.
+func TestInjectDiskPressureNotice_OutputParsesIdenticallyForNonPartsFields(t *testing.T) {
+	body := []byte(`{
+		"parts":[{"type":"text","text":"hi"}],
+		"model":{"providerID":"openai","modelID":"gpt-4"},
+		"messageID":"msg_42",
+		"mode":"build",
+		"custom":{"nested":{"deep":true},"n":7}
+	}`)
+	out := injectDiskPressureNotice(body, 0.95)
+	require.NotEqual(t, body, out, "injection must fire at 95%")
+
+	var in, outMap map[string]any
+	require.NoError(t, json.Unmarshal(body, &in))
+	require.NoError(t, json.Unmarshal(out, &outMap))
+
+	// Every non-parts field must be value-equal.
+	for k, vIn := range in {
+		if k == "parts" {
+			continue
+		}
+		vOut, ok := outMap[k]
+		require.True(t, ok, "field %q was dropped by injection", k)
+		assert.Equal(t, vIn, vOut, "field %q value changed", k)
+	}
+	// No spurious new top-level fields introduced.
+	for k := range outMap {
+		if k == "parts" {
+			continue
+		}
+		_, ok := in[k]
+		assert.True(t, ok, "unexpected new field %q in output", k)
+	}
+	// parts gained exactly one element (the notice).
+	inParts, _ := in["parts"].([]any)
+	outParts, _ := outMap["parts"].([]any)
+	assert.Len(t, outParts, len(inParts)+1, "exactly one notice part must be prepended")
+}
+
+// Body with no `parts` key at all: injection must synthesize a parts
+// array containing only the notice, and still preserve siblings.
+func TestInjectDiskPressureNotice_BodyWithoutPartsKey_SynthesizesAndPreserves(t *testing.T) {
+	body := []byte(`{"model":{"providerID":"openai"},"messageID":"m1"}`)
+	out := injectDiskPressureNotice(body, 0.95)
+
+	var parsed struct {
+		Parts     []promptPart `json:"parts"`
+		MessageID string       `json:"messageID"`
+		Model     struct {
+			ProviderID string `json:"providerID"`
+		} `json:"model"`
+	}
+	require.NoError(t, json.Unmarshal(out, &parsed))
+	require.Len(t, parsed.Parts, 1, "notice part must be the only part")
+	assert.Contains(t, parsed.Parts[0].Text, "critically low")
+	assert.Equal(t, "m1", parsed.MessageID, "messageID must survive")
+	assert.Equal(t, "openai", parsed.Model.ProviderID, "model must survive")
+}
+
 // --- diskPressureNotice rounding boundary ---
 
 // At ratio 0.949999 the level is warning (< 0.95) but math.Round would
@@ -236,6 +301,53 @@ func TestNormalizeDiskThresholds_Valid_Unchanged(t *testing.T) {
 	w, c := normalizeDiskThresholds(0.85, 0.93, 0.90, 0.95)
 	assert.Equal(t, 0.85, w)
 	assert.Equal(t, 0.93, c)
+}
+
+// --- envFloatOr: the env-override parsing path ---
+//
+// Package vars (diskWarningThreshold/diskCriticalThreshold) initialize at
+// load time, so the full override path can't be tested from inside the
+// package without process restart. We test the parsing primitive
+// directly instead — it's the only logic in the override path; the var
+// wiring is a one-line assignment.
+
+func TestEnvFloatOr_ValidValue(t *testing.T) {
+	t.Setenv("LSS_TEST_FLOAT", "0.77")
+	assert.InDelta(t, 0.77, envFloatOr("LSS_TEST_FLOAT", 0.90), 1e-9)
+}
+
+func TestEnvFloatOr_Unset_ReturnsDefault(t *testing.T) {
+	assert.InDelta(t, 0.90, envFloatOr("LSS_TEST_FLOAT_UNSET", 0.90), 1e-9)
+}
+
+func TestEnvFloatOr_EmptyString_ReturnsDefault(t *testing.T) {
+	t.Setenv("LSS_TEST_FLOAT", "")
+	assert.InDelta(t, 0.90, envFloatOr("LSS_TEST_FLOAT", 0.90), 1e-9)
+}
+
+func TestEnvFloatOr_Malformed_ReturnsDefault(t *testing.T) {
+	t.Setenv("LSS_TEST_FLOAT", "not-a-number")
+	assert.InDelta(t, 0.90, envFloatOr("LSS_TEST_FLOAT", 0.90), 1e-9)
+}
+
+func TestEnvFloatOr_OutOfRange_Rejected(t *testing.T) {
+	// Values outside (0,1) must be ignored so a bad value cannot disable
+	// or invert the feature. Zero, one, negatives, and >1 all fall back.
+	for _, bad := range []string{"0", "1", "-0.5", "1.5", "2"} {
+		t.Run(bad, func(t *testing.T) {
+			t.Setenv("LSS_TEST_FLOAT", bad)
+			assert.InDelta(t, 0.90, envFloatOr("LSS_TEST_FLOAT", 0.90), 1e-9,
+				"value %s must be rejected", bad)
+		})
+	}
+}
+
+func TestEnvFloatOr_BoundaryInsideRange_Accepted(t *testing.T) {
+	// Values just inside (0,1) are valid.
+	t.Setenv("LSS_TEST_FLOAT", "0.001")
+	assert.InDelta(t, 0.001, envFloatOr("LSS_TEST_FLOAT", 0.90), 1e-9)
+	t.Setenv("LSS_TEST_FLOAT", "0.999")
+	assert.InDelta(t, 0.999, envFloatOr("LSS_TEST_FLOAT", 0.90), 1e-9)
 }
 
 // --- proxy integration: the injection must reach the upstream request ---
