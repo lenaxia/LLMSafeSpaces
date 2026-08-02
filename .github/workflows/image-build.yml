@@ -112,13 +112,14 @@ jobs:
 
           lines = [f"FROM {base_ref}", "USER root", ""]
 
-          # apt block
+          # apt block — every package line ends with \ (line continuation),
+          # including the last; the cleanup line follows. Mirrors the Go
+          # renderer at api/internal/imagefactory/dockerfile.go.
           apt_pkgs = sorted(v["value"] for v in rv.values() if v["type"] == "apt")
           if apt_pkgs:
               lines.append("RUN apt-get update && apt-get install -y --no-install-recommends \\")
               for p in apt_pkgs:
                   lines.append(f"    {p} \\")
-              lines[-1] = lines[-1].rstrip(" \\")
               lines.append("    && rm -rf /var/lib/apt/lists/*")
               lines.append("")
 
@@ -178,6 +179,7 @@ jobs:
 
       - name: Report success callback
         if: success()
+        continue-on-error: true
         env:
           CALLBACK_URL: ${{ inputs.callback_url }}
           CALLBACK_TOKEN: ${{ inputs.callback_token }}
@@ -192,7 +194,7 @@ jobs:
             -d "{\"status\": \"succeeded\", \"digest\": \"${DIGEST}\"}"
 
       - name: Capture failure log
-        if: failure()
+        if: failure() && steps.build.outcome == 'failure'
         run: |
           # Capture the last 50 lines of the build log (if available) for the
           # failure callback. The log isn't directly accessible from build-push,
@@ -206,7 +208,7 @@ jobs:
           } > /tmp/failure_log.txt 2>&1
 
       - name: Report failure callback
-        if: failure()
+        if: failure() && steps.build.outcome == 'failure'
         env:
           CALLBACK_URL: ${{ inputs.callback_url }}
           CALLBACK_TOKEN: ${{ inputs.callback_token }}
