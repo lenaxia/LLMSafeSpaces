@@ -233,7 +233,6 @@ func TestAdmin_StoreError500(t *testing.T) {
 
 func TestAdmin_NonAdminReturns404(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	// Simulate AdminGuard: non-admin gets 404 (not 403, to hide route).
 	r.Use(func(c *gin.Context) {
