@@ -61,7 +61,6 @@ func (f *fakeBuildStore) TransitionBuildFailed(_ context.Context, buildID, confi
 
 func newCallbackRouter(t *testing.T, bs buildStore) *gin.Engine {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	h := &ImageFactoryHandler{buildStore: bs, imageRepo: "ghcr.io/acme/ws"}
 	r.POST("/internal/image-factory/builds/:id/callback", h.Callback)
