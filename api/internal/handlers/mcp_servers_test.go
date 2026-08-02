@@ -139,6 +139,8 @@ func TestValidateMCPServerCreate(t *testing.T) {
 		{"ssrf metadata", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://169.254.169.254/mcp"}, "private"},
 		{"ssrf rfc1918", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://10.0.0.1/mcp"}, "private"},
 		{"ssrf rfc1918-2", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://192.168.1.1/mcp"}, "private"},
+		{"ssrf rfc1918-3", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://172.16.0.1/mcp"}, "private"},
+		{"ssrf unspecified", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://0.0.0.0/mcp"}, "private"},
 		{"ssrf localhost", &types.CreateMCPServerRequest{Name: "x", Transport: "http", URL: "http://localhost/mcp"}, "internal"},
 		{"env injection LD_PRELOAD", &types.CreateMCPServerRequest{Name: "x", Transport: "stdio", Command: "sh", Env: map[string]string{"LD_PRELOAD": "/tmp/evil.so"}}, "blocked"},
 		{"env injection empty", &types.CreateMCPServerRequest{Name: "x", Transport: "stdio", Command: "sh", Env: map[string]string{"": "val"}}, "empty"},
@@ -546,6 +548,24 @@ func TestAdminUpdate_NotFound(t *testing.T) {
 	h.AdminUpdate(c)
 
 	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestOrgCreate_KillSwitchNilSettings_FailClosed(t *testing.T) {
+	store := &stubMCPStore{}
+	enc := &stubEncryptor{}
+	h := NewOrgMCPServersHandler(store, enc, &stubMcpOrgChecker{})
+	// Deliberately do NOT call SetSettings — simulates misconfigured deployment.
+	// orgAdminAllowed should fail-closed (return false), blocking the create.
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "org-1"}}
+	c.Request = httptest.NewRequest("POST", "/", strings.NewReader(`{"name":"wiki","transport":"http","url":"https://x.com"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.OrgCreate(c)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.Contains(t, w.Body.String(), "disabled")
 }
 
 // --- Test helpers ---
