@@ -29,11 +29,11 @@ type imageFactoryStore interface {
 	GetConfig(ctx context.Context, id string) (imagefactory.Config, error)
 	GetConfigByHash(ctx context.Context, hash string, scope imagefactory.ConfigScope, ownerID, orgID *string) (imagefactory.Config, error)
 	ListVisibleConfigs(ctx context.Context, ownerID, orgID *string) ([]imagefactory.Config, error)
-	CreateConfig(ctx context.Context, c imagefactory.Config) error
+	CreateConfig(ctx context.Context, c *imagefactory.Config) error
 
 	// Build reads + writes.
 	GetInFlightOrSuccessfulBuild(ctx context.Context, hash, baseVersion string) (*imagefactory.Build, error)
-	CreateBuild(ctx context.Context, b imagefactory.Build) error
+	CreateBuild(ctx context.Context, b *imagefactory.Build) error
 }
 
 // orgResolver resolves the current user's org membership. Separate interface

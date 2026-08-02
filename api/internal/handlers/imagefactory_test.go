@@ -40,8 +40,8 @@ type fakeIFStore struct {
 	calledListVisible     bool
 	calledCreateConfig    bool
 	calledCreateBuild     bool
-	lastCreatedConfig     imagefactory.Config
-	lastCreatedBuild      imagefactory.Build
+	lastCreatedConfig     *imagefactory.Config
+	lastCreatedBuild      *imagefactory.Build
 }
 
 func (f *fakeIFStore) GetPlatformConfig(ctx context.Context) (imagefactory.PlatformConfig, error) {
@@ -96,13 +96,13 @@ func (f *fakeIFStore) GetInFlightOrSuccessfulBuild(ctx context.Context, hash, ba
 	return f.existingBuild, f.err
 }
 
-func (f *fakeIFStore) CreateConfig(ctx context.Context, c imagefactory.Config) error {
+func (f *fakeIFStore) CreateConfig(ctx context.Context, c *imagefactory.Config) error {
 	f.calledCreateConfig = true
 	f.lastCreatedConfig = c
 	return f.createConfigErr
 }
 
-func (f *fakeIFStore) CreateBuild(ctx context.Context, b imagefactory.Build) error {
+func (f *fakeIFStore) CreateBuild(ctx context.Context, b *imagefactory.Build) error {
 	f.calledCreateBuild = true
 	f.lastCreatedBuild = b
 	return f.createBuildErr

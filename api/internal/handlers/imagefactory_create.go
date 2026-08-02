@@ -187,7 +187,7 @@ func (h *ImageFactoryHandler) CreateConfig(c *gin.Context) {
 			OwnerID:        &userID,
 			Status:         status,
 		}
-		if err := h.store.CreateConfig(ctx, cfg); err != nil {
+		if err := h.store.CreateConfig(ctx, &cfg); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save config"})
 			return
 		}
@@ -237,7 +237,7 @@ func (h *ImageFactoryHandler) CreateConfig(c *gin.Context) {
 		OwnerID:        &userID,
 		Status:         imagefactory.StatusBuilding,
 	}
-	if err := h.store.CreateConfig(ctx, cfg); err != nil {
+	if err := h.store.CreateConfig(ctx, &cfg); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save config"})
 		return
 	}
@@ -255,7 +255,7 @@ func (h *ImageFactoryHandler) CreateConfig(c *gin.Context) {
 		CallbackToken:  callbackToken,
 		TriggeredBy:    &userID,
 	}
-	if err := h.store.CreateBuild(ctx, build); err != nil {
+	if err := h.store.CreateBuild(ctx, &build); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save build record"})
 		return
 	}
