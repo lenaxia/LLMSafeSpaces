@@ -119,7 +119,18 @@ func isExcludedPath(root, path string) bool {
 }
 
 // ginSetModeViolation parses the test file at path and reports whether it
-// contains a gin.SetMode call that is NOT inside an init() or TestMain.
+// contains a gin.SetMode call that can execute on a t.Parallel() test
+// goroutine.
+//
+// Detection is per-function reachability, not file-level co-occurrence: a
+// function is "parallel-reachable" if it (transitively) calls t.Parallel,
+// or if it is called by such a function. Only gin.SetMode calls inside
+// parallel-reachable functions are flagged. A file where an unrelated
+// serial test calls gin.SetMode while another test uses t.Parallel passes
+// — serial bodies never overlap parallel ones, so the write cannot race.
+//
+// Only the gin package receiver is matched (sel.X ident == "gin"), so an
+// unrelated `foo.SetMode()` helper does not false-positive.
 func ginSetModeViolation(path string) (bool, error) {
 	src, err := os.ReadFile(path)
 	if err != nil {
@@ -140,38 +151,107 @@ func ginSetModeViolation(path string) (bool, error) {
 		return false, err
 	}
 
-	// Map: function name → is it safe (init/TestMain)?
-	unsafe := false
-	ast.Inspect(f, func(n ast.Node) bool {
-		if unsafe {
-			return false
+	// Index top-level function declarations by name.
+	funcs := map[string]*ast.FuncDecl{}
+	for _, decl := range f.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok {
+			funcs[fn.Name.Name] = fn
 		}
-		fn, ok := n.(*ast.FuncDecl)
-		if !ok {
-			return true
-		}
-		name := fn.Name.Name
-		safeFn := name == "init" || name == "TestMain"
-		if safeFn {
-			return true
-		}
-		// Walk this function's body looking for gin.SetMode.
+	}
+
+	// callsParallel reports whether fn's body directly calls t.Parallel().
+	callsParallel := func(fn *ast.FuncDecl) bool {
+		found := false
 		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			if found {
+				return false
+			}
 			call, ok := n.(*ast.CallExpr)
 			if !ok {
 				return true
 			}
 			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "Parallel" {
+				return true
+			}
+			if id, ok := sel.X.(*ast.Ident); ok && id.Name == "t" {
+				found = true
+			}
+			return !found
+		})
+		return found
+	}
+
+	// calledFuncs returns the names of top-level functions fn calls
+	// directly (ident calls that resolve to a FuncDecl in this file).
+	calledFuncs := func(fn *ast.FuncDecl) map[string]bool {
+		called := map[string]bool{}
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
 			if !ok {
 				return true
 			}
-			if sel.Sel.Name == "SetMode" {
-				unsafe = true
-				return false
+			if id, ok := call.Fun.(*ast.Ident); ok {
+				if _, ok := funcs[id.Name]; ok {
+					called[id.Name] = true
+				}
 			}
 			return true
 		})
-		return !unsafe
-	})
-	return unsafe, nil
+		return called
+	}
+
+	// Parallel-reachable set: start from functions that call t.Parallel,
+	// then close over everything they call (transitively).
+	reachable := map[string]bool{}
+	for name, fn := range funcs {
+		if callsParallel(fn) {
+			reachable[name] = true
+		}
+	}
+	for changed := true; changed; {
+		changed = false
+		for name := range reachable {
+			for callee := range calledFuncs(funcs[name]) {
+				if !reachable[callee] {
+					reachable[callee] = true
+					changed = true
+				}
+			}
+		}
+	}
+
+	// hasGinSetMode reports whether fn's body (including closures) calls
+	// gin.SetMode — receiver ident must be `gin`.
+	hasGinSetMode := func(fn *ast.FuncDecl) bool {
+		found := false
+		ast.Inspect(fn.Body, func(n ast.Node) bool {
+			if found {
+				return false
+			}
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok || sel.Sel.Name != "SetMode" {
+				return true
+			}
+			if id, ok := sel.X.(*ast.Ident); ok && id.Name == "gin" {
+				found = true
+			}
+			return !found
+		})
+		return found
+	}
+
+	for name := range reachable {
+		if name == "init" || name == "TestMain" {
+			continue
+		}
+		if hasGinSetMode(funcs[name]) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
