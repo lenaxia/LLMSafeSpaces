@@ -101,6 +101,10 @@ type RouterConfig struct {
 	// UserProviderCredentialsHandler handles user credential CRUD (optional)
 	UserProviderCredentialsHandler *handlers.UserProviderCredentialsHandler
 
+	// ImageFactoryHandler serves the consumer-facing image-factory endpoints
+	// (catalog, configs). Optional; nil when image-factory is disabled.
+	ImageFactoryHandler *handlers.ImageFactoryHandler
+
 	// RotateKeyHandler is the handler for key rotation (optional)
 	RotateKeyHandler *handlers.RotateKeyHandler
 
@@ -490,6 +494,16 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 		userCreds.GET("/:id/bindings", cfg.UserProviderCredentialsHandler.ListBindings)
 		userCreds.POST("/:id/bind/:workspaceId", cfg.UserProviderCredentialsHandler.Bind)
 		userCreds.DELETE("/:id/bind/:workspaceId", cfg.UserProviderCredentialsHandler.Unbind)
+	}
+
+	// Image factory consumer endpoints (design/0046). Authenticated; read-only
+	// in S3. POST /configs lands in S4, admin endpoints in S7, callback in S5.
+	if cfg.ImageFactoryHandler != nil {
+		ifg := router.Group("/api/v1/image-factory")
+		ifg.Use(services.GetAuth().AuthMiddleware())
+		ifg.GET("/catalog", cfg.ImageFactoryHandler.Catalog)
+		ifg.GET("/configs", cfg.ImageFactoryHandler.ListConfigs)
+		ifg.GET("/configs/:hash", cfg.ImageFactoryHandler.GetConfig)
 	}
 
 	if cfg.UsageHandler != nil {
