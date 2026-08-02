@@ -57,6 +57,7 @@ type ImageFactoryHandler struct {
 	imageRepo   string
 	callbackURL string
 	explainer   failureExplainer
+	adminStore  extensionReviewer
 }
 
 // NewImageFactoryHandler constructs the handler.
@@ -73,6 +74,12 @@ func (h *ImageFactoryHandler) SetDispatcher(d buildDispatcher) {
 // when nil, a fallback string is used.
 func (h *ImageFactoryHandler) SetFailureExplainer(e failureExplainer) {
 	h.explainer = e
+}
+
+// SetExtensionReviewer wires the extension review flagger (S6 attribution).
+// Optional — when nil, attribution is recorded but no flag is set.
+func (h *ImageFactoryHandler) SetExtensionReviewer(r extensionReviewer) {
+	h.adminStore = r
 }
 
 // SetBuildStore wires the build-scoped store (callback transitions).

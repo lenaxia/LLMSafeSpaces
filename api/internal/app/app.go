@@ -688,7 +688,24 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 
 		pgOrgStore = database.NewPgOrgStore(dbSvc.DB)
 		imageFactoryHandler = handlers.NewImageFactoryHandler(dbSvc, pgOrgStore)
-		imageFactoryHandler.SetBuildStore(dbSvc, "ghcr.io/lenaxia/llmsafespaces/ws", "/internal/image-factory/builds")
+		imageRepo := cfg.ImageFactory.ImageRepo
+		if imageRepo == "" {
+			imageRepo = "ghcr.io/lenaxia/llmsafespaces/ws"
+		}
+		callbackURL := cfg.ImageFactory.CallbackURL
+		if callbackURL == "" {
+			callbackURL = "/internal/image-factory/builds"
+		}
+		imageFactoryHandler.SetBuildStore(dbSvc, imageRepo, callbackURL)
+		if cfg.ImageFactory.LLMExplainer.BaseURL != "" {
+			imageFactoryHandler.SetFailureExplainer(
+				handlers.NewLLMExplainer(handlers.LLMExplainerConfig{
+					BaseURL: cfg.ImageFactory.LLMExplainer.BaseURL,
+					Model:   cfg.ImageFactory.LLMExplainer.Model,
+					APIKey:  cfg.ImageFactory.LLMExplainer.APIKey,
+				}))
+			imageFactoryHandler.SetExtensionReviewer(dbSvc)
+		}
 		orgsHandler = handlers.NewOrgsHandler(pgOrgStore, svc.GetAuth())
 		orgCredsHandler = handlers.NewOrgCredentialsHandler(pgStore, pgStore, orgCredsProv, svc.GetAuth())
 		orgMcpHandler = handlers.NewOrgMCPServersHandler(pgStore, orgCredsProv, pgOrgStore)

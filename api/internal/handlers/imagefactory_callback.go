@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 
@@ -24,6 +25,13 @@ type buildStore interface {
 	GetBuild(ctx context.Context, id string) (imagefactory.Build, error)
 	TransitionBuildSucceeded(ctx context.Context, buildID, configID, imageRef, digest string) error
 	TransitionBuildFailed(ctx context.Context, buildID, configID string, kf imagefactory.KnownFailure) error
+}
+
+// extensionReviewer flags an extension for admin review when the LLM
+// attributes a build failure to it (design/0046 attribution). Optional —
+// when nil, attribution is recorded but no flag is set.
+type extensionReviewer interface {
+	SetExtensionReviewRequested(ctx context.Context, id string, v bool) error
 }
 
 // callbackRequest is the POST body the GH Actions workflow sends on build
@@ -114,7 +122,7 @@ func (h *ImageFactoryHandler) handleCallbackSucceeded(c *gin.Context, ctx contex
 }
 
 func (h *ImageFactoryHandler) handleCallbackFailed(c *gin.Context, ctx context.Context, build *imagefactory.Build, req *callbackRequest) {
-	explanation := h.explainFailure(ctx, req.FailureReason, build.ResolvedValues)
+	explanation, attributedExtension := h.explainFailure(ctx, req.FailureReason, build.ResolvedValues)
 	kf := imagefactory.KnownFailure{
 		SelectionHash: build.Hash,
 		Selection:     build.ResolvedValues.Selection(),
@@ -127,20 +135,32 @@ func (h *ImageFactoryHandler) handleCallbackFailed(c *gin.Context, ctx context.C
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to transition build to failed"})
 		return
 	}
+	// If the LLM attributed the failure to a single extension, flag it for
+	// admin review (design/0046 attribution). The admin can then investigate
+	// and retire the extension if needed. This is a non-fatal side effect:
+	// the core build→failed transition already succeeded, so a transient
+	// store error here must NOT change the 204 response. The known_failure
+	// row (written by TransitionBuildFailed) is the source of truth; the
+	// review flag is a convenience that an admin can trigger manually.
+	if attributedExtension != "" && h.adminStore != nil {
+		if err := h.adminStore.SetExtensionReviewRequested(ctx, attributedExtension, true); err != nil {
+			log.Printf("imagefactory: non-fatal — flag extension %s for review: %v", attributedExtension, err)
+		}
+	}
 	c.Status(http.StatusNoContent)
 }
 
-// explainFailure is the failure-seam placeholder (S6 wires the real LLM).
-// Returns a human-readable explanation of the failure. Degradation mode:
-// if the LLM is unavailable, returns a fallback string.
-func (h *ImageFactoryHandler) explainFailure(ctx context.Context, logTail string, rv imagefactory.ResolvedValues) string {
+// explainFailure calls the LLM (if configured) for a plain-language
+// explanation + optional extension attribution. Degradation: if the LLM
+// is unavailable, returns a fallback string with no attribution.
+func (h *ImageFactoryHandler) explainFailure(ctx context.Context, logTail string, rv imagefactory.ResolvedValues) (string, string) {
 	if h.explainer != nil {
-		explanation, _, err := h.explainer.Explain(ctx, logTail, rv)
+		explanation, attributedExtension, err := h.explainer.Explain(ctx, logTail, rv)
 		if err == nil && explanation != "" {
-			return explanation
+			return explanation, attributedExtension
 		}
 	}
-	return "this combination failed to build; contact your administrator for details"
+	return fallbackExplanation, ""
 }
 
 // failureExplainer is the LLM seam interface (S6 provides the real impl).
