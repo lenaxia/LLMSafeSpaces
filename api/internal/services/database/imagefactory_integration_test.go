@@ -215,7 +215,7 @@ func TestIntegration_IF_Configs_RoundTrip(t *testing.T) {
 		OwnerID:        &ownerID,
 		Status:         imagefactory.StatusBuilding,
 	}
-	require.NoError(t, svc.CreateConfig(ctx, cfg))
+	require.NoError(t, svc.CreateConfig(ctx, &cfg))
 
 	got, err := svc.GetConfig(ctx, cfg.ID)
 	require.NoError(t, err)
@@ -260,7 +260,7 @@ func TestIntegration_IF_Builds_CoalescingProbe(t *testing.T) {
 
 	// Insert a dispatched (in-flight) build.
 	ghRun1 := int64(100)
-	require.NoError(t, svc.CreateBuild(ctx, imagefactory.Build{
+	require.NoError(t, svc.CreateBuild(ctx, &imagefactory.Build{
 		ConfigID: configID, Hash: "s-coal", BaseName: "bookworm", BaseVersion: "0.6.0",
 		ResolvedValues: rv, Architectures: []string{"linux/amd64"},
 		Status: imagefactory.BuildDispatched, GHRunID: &ghRun1, CallbackToken: "tok-1",
@@ -274,18 +274,21 @@ func TestIntegration_IF_Builds_CoalescingProbe(t *testing.T) {
 
 	// Now insert a succeeded build for the same hash+version.
 	ghRun2 := int64(200)
-	require.NoError(t, svc.CreateBuild(ctx, imagefactory.Build{
+	succeededBuild := &imagefactory.Build{
 		ConfigID: configID, Hash: "s-coal", BaseName: "bookworm", BaseVersion: "0.6.0",
 		ResolvedValues: rv, Architectures: []string{"linux/amd64"},
 		Status: imagefactory.BuildSucceeded, GHRunID: &ghRun2, CallbackToken: "tok-2",
-	}))
-	require.NoError(t, svc.MarkBuildSucceeded(ctx, build.ID, "ghcr.io/ws:s-coal-0.6.0", "sha256:succeeded"))
+	}
+	require.NoError(t, svc.CreateBuild(ctx, succeededBuild))
+	require.NoError(t, svc.MarkBuildSucceeded(ctx, succeededBuild.ID, "ghcr.io/ws:s-coal-0.6.0", "sha256:succeeded"))
 
-	// Probe must now prefer the succeeded build over the dispatched one.
+	// Probe must now prefer the succeeded build (succeededBuild) over the
+	// dispatched one (the first build, still at status=dispatched).
 	build, err = svc.GetInFlightOrSuccessfulBuild(ctx, "s-coal", "0.6.0")
 	require.NoError(t, err)
 	require.NotNil(t, build)
 	assert.Equal(t, imagefactory.BuildSucceeded, build.Status, "probe must prefer succeeded over dispatched")
+	assert.Equal(t, succeededBuild.ID, build.ID, "probe must return the succeeded build, not the dispatched one")
 	assert.Equal(t, "ghcr.io/ws:s-coal-0.6.0", build.ImageRef)
 }
 
