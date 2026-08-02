@@ -179,7 +179,7 @@ func TestCreateConfig(t *testing.T) {
 		OwnerID:        &ownerID,
 		Status:         imagefactory.StatusBuilding,
 	}
-	require.NoError(t, svc.CreateConfig(context.Background(), cfg))
+	require.NoError(t, svc.CreateConfig(context.Background(), &cfg))
 }
 
 func TestGetConfig_NotFound(t *testing.T) {
@@ -222,7 +222,7 @@ func TestCreateBuild(t *testing.T) {
 			sqlmock.AnyArg(), "dispatched", &ghRun, "tok-abc", nil).
 		WillReturnRows(sqlmock.NewRows([]string{"id", "started_at"}).
 			AddRow("build-1", time.Now()))
-	err := svc.CreateBuild(context.Background(), imagefactory.Build{
+	err := svc.CreateBuild(context.Background(), &imagefactory.Build{
 		ConfigID:       "cfg-1",
 		Hash:           "s-hash",
 		BaseName:       "bookworm",

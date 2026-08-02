@@ -49,7 +49,7 @@ type ImageFactoryStore interface {
 	ListRejectedConfigsForFailure(ctx context.Context, selectionHash, baseName string) ([]imagefactory.Config, error)
 
 	// ── Configs ──────────────────────────────────────────────────────
-	CreateConfig(ctx context.Context, c imagefactory.Config) error
+	CreateConfig(ctx context.Context, c *imagefactory.Config) error
 	GetConfig(ctx context.Context, id string) (imagefactory.Config, error)
 	GetConfigByHash(ctx context.Context, hash string, scope imagefactory.ConfigScope, ownerID, orgID *string) (imagefactory.Config, error)
 	ListConfigs(ctx context.Context, scope imagefactory.ConfigScope, ownerID, orgID *string) ([]imagefactory.Config, error)
@@ -60,7 +60,7 @@ type ImageFactoryStore interface {
 	GetBuild(ctx context.Context, id string) (imagefactory.Build, error)
 	GetInFlightOrSuccessfulBuild(ctx context.Context, hash, baseVersion string) (*imagefactory.Build, error)
 	GetBuildByGHRunID(ctx context.Context, ghRunID int64) (imagefactory.Build, error)
-	CreateBuild(ctx context.Context, b imagefactory.Build) error
+	CreateBuild(ctx context.Context, b *imagefactory.Build) error
 	MarkBuildSucceeded(ctx context.Context, id, imageRef, digest string) error
 	MarkBuildFailed(ctx context.Context, id, failureReason, explanation string) error
 }
@@ -357,7 +357,7 @@ func (s *Service) ListRejectedConfigsForFailure(ctx context.Context, selectionHa
 
 const configColumns = `id, hash, name, selection, resolved_values, base_name, base_version, scope, owner_id, org_id, status`
 
-func (s *Service) CreateConfig(ctx context.Context, c imagefactory.Config) error {
+func (s *Service) CreateConfig(ctx context.Context, c *imagefactory.Config) error {
 	rvJSON, err := json.Marshal(c.ResolvedValues)
 	if err != nil {
 		return fmt.Errorf("create config: marshal resolved_values: %w", err)
@@ -523,7 +523,7 @@ func (s *Service) GetBuildByGHRunID(ctx context.Context, ghRunID int64) (imagefa
 	return b, nil
 }
 
-func (s *Service) CreateBuild(ctx context.Context, b imagefactory.Build) error {
+func (s *Service) CreateBuild(ctx context.Context, b *imagefactory.Build) error {
 	rvJSON, err := json.Marshal(b.ResolvedValues)
 	if err != nil {
 		return fmt.Errorf("create build: marshal resolved_values: %w", err)
