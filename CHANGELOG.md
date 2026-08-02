@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-08-02
+
+### Fixed
+
+- **Nil orgChecker panic on POST /me/mcp-servers (#622).** The user MCP
+  handler was constructed with `pgOrgStore` before `pgOrgStore` was
+  initialized (init ordering in `app.go`). `UserCreate` called
+  `h.orgChecker.GetUserOrgID()` on a nil interface → nil pointer dereference
+  → generic 500 on every user-scope MCP server creation. Fixed: pass nil at
+  construction, wire via `SetOrgChecker` after `pgOrgStore` is created.
+  Added nil-guard (503 instead of panic). Same nil-wiring bug fixed on
+  `adminMcpHandler.SetAudit` (was silently dropping all platform-admin MCP
+  audit events).
+
 ## [0.7.0] - 2026-08-02
 
 ### Added
