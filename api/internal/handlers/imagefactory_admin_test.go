@@ -42,6 +42,9 @@ func (f *fakeAdminStore) UpsertBase(ctx context.Context, b imagefactory.Base) er
 	return f.err
 }
 func (f *fakeAdminStore) DeleteBase(ctx context.Context, name, version string) error {
+	if f.err != nil {
+		return f.err
+	}
 	for i, b := range f.bases {
 		if b.Name == name && b.Version == version {
 			f.bases = append(f.bases[:i], f.bases[i+1:]...)
@@ -58,6 +61,9 @@ func (f *fakeAdminStore) PublishExtension(ctx context.Context, e imagefactory.Ex
 	return f.err
 }
 func (f *fakeAdminStore) RetireExtension(ctx context.Context, id string) error {
+	if f.err != nil {
+		return f.err
+	}
 	for i, e := range f.extensions {
 		if e.ID == id {
 			f.extensions[i].Retired = true
@@ -278,4 +284,50 @@ func TestAdmin_PublishExtension_FileWithoutSpec422(t *testing.T) {
 		ID: "bad", Type: imagefactory.ExtensionTypeFile, Value: "x", SupportedBases: []string{"bookworm"},
 	})
 	assert.Equal(t, http.StatusUnprocessableEntity, w.Code, "file without fileSpec must be rejected")
+}
+
+func TestAdmin_Bases_InvalidBody400(t *testing.T) {
+	t.Parallel()
+	store := &fakeAdminStore{}
+	r := newAdminRouter(t, store)
+	w := adminJSON(t, r, "POST", "/api/v1/admin/image-factory/bases", map[string]string{"bad": "shape"})
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestAdmin_Extensions_InvalidBody400(t *testing.T) {
+	t.Parallel()
+	store := &fakeAdminStore{}
+	r := newAdminRouter(t, store)
+	w := adminJSON(t, r, "POST", "/api/v1/admin/image-factory/extensions", map[string]string{"bad": "shape"})
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestAdmin_PlatformConfig_InvalidBody400(t *testing.T) {
+	t.Parallel()
+	store := &fakeAdminStore{}
+	r := newAdminRouter(t, store)
+	w := adminJSON(t, r, "PUT", "/api/v1/admin/image-factory/platform-config", map[string]string{})
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestAdmin_DeleteBase_500(t *testing.T) {
+	t.Parallel()
+	store := &fakeAdminStore{
+		bases: []imagefactory.Base{{Name: "x", Version: "0"}},
+		err:   testError("db down"),
+	}
+	r := newAdminRouter(t, store)
+	w := adminJSON(t, r, "DELETE", "/api/v1/admin/image-factory/bases/x/0", nil)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestAdmin_RetireExtension_500(t *testing.T) {
+	t.Parallel()
+	store := &fakeAdminStore{
+		extensions: []imagefactory.Extension{{ID: "x"}},
+		err:        testError("db down"),
+	}
+	r := newAdminRouter(t, store)
+	w := adminJSON(t, r, "DELETE", "/api/v1/admin/image-factory/extensions/x", nil)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
