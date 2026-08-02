@@ -76,9 +76,15 @@ func (f *fakeOrgResolver) GetUserOrgID(ctx context.Context, userID string) (stri
 	return f.orgIDByUser[userID], nil
 }
 
+func init() {
+	// Set gin to test mode once at package level. Calling SetMode per-test
+	// races under -race when tests run in parallel (gin.SetMode writes a
+	// package-global variable).
+	gin.SetMode(gin.TestMode)
+}
+
 func newIFRouter(t *testing.T, store imageFactoryStore, orgs orgResolver) *gin.Engine {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set("userID", c.GetHeader("X-Test-UserID"))
