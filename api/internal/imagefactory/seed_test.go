@@ -138,3 +138,29 @@ func TestSeedCatalog_TransientDBErrorPropagates(t *testing.T) {
 	assert.NotContains(t, err.Error(), "publish",
 		"must NOT fall through to PublishExtension on a non-not-found error")
 }
+
+func TestLoadSeed_NoDuplicateIDs(t *testing.T) {
+	t.Parallel()
+	seed, err := LoadSeed()
+	require.NoError(t, err)
+	seen := map[string]bool{}
+	for _, ext := range seed.Extensions {
+		assert.False(t, seen[ext.ID], "duplicate extension ID: %s", ext.ID)
+		seen[ext.ID] = true
+	}
+}
+
+func TestLoadSeed_PlaywrightDepsNoTrailingNewline(t *testing.T) {
+	t.Parallel()
+	seed, err := LoadSeed()
+	require.NoError(t, err)
+	for _, ext := range seed.Extensions {
+		if ext.ID == "playwright-deps" {
+			assert.NotContains(t, ext.Value, "\n",
+				"playwright-deps value must not contain newlines (breaks Dockerfile apt block)")
+			assert.Contains(t, ext.Value, "libnss3")
+			return
+		}
+	}
+	t.Fatal("playwright-deps extension not found in seed")
+}

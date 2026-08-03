@@ -79,6 +79,11 @@ func LoadSeed() (SeedCatalogData, error) {
 // are inserted. A transient DB error on GetExtension propagates (does NOT
 // fall through to insert). Bases are always upserted (they're version-pinned
 // and immutable per version).
+//
+// Note: if a seed extension's value changes (e.g. playwright-deps package
+// list), the existing row is NOT updated — the operator must retire the old
+// extension and let the new one be inserted on next boot. This is intentional:
+// extensions are immutable per design/0046 #7.
 func SeedCatalog(ctx context.Context, store SeedCatalogStore) error {
 	seed, err := LoadSeed()
 	if err != nil {
