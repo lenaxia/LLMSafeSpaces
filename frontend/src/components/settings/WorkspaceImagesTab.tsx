@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { imageFactoryApi, type Catalog, type Config } from "../../api/imageFactory";
+import { imageFactoryApi, type Catalog, type Config, type Extension } from "../../api/imageFactory";
 import { Spinner } from "../ui/Spinner";
 import { useToast } from "../../providers/ToastProvider";
 
@@ -78,6 +78,7 @@ export function WorkspaceImagesTab() {
   const currentSelection = Array.from(selected).sort();
   const isCurrentSelectionBlocked = (): boolean => {
     if (currentSelection.length === 0) return false;
+    if (!catalog.knownFailures || catalog.knownFailures.length === 0) return false;
     return catalog.knownFailures.some((kf) => {
       if (kf.baseName !== baseName || kf.retriable) return false;
       const kfSorted = [...kf.selection].sort();
