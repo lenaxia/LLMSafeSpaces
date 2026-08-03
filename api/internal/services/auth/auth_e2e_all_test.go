@@ -410,6 +410,10 @@ func (m *apiKeyAwareDB) ListAllWorkspaceOwners(context.Context) (map[string]stri
 	return nil, nil
 }
 
+ntype testContext struct {
+	testUserID      string
+	testRecoveryKey string
+}
 func setupRealAuthRouter(t *testing.T) (*gin.Engine, string, *testContext) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
