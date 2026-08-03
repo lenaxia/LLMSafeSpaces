@@ -378,6 +378,7 @@ class _AccountAPI:
     def __init__(self, client: LLMSafeSpaces):
         self._c = client
 
+
 class _SecretsAPI:
     def __init__(self, client: LLMSafeSpaces):
         self._c = client
