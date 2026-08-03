@@ -94,7 +94,6 @@ func (s *memUserStore) GetUserEmailVerified(_ context.Context, userID string) (b
 
 type memKeyInit struct {
 	calls    int
-	lastPw   string
 	recoverK string
 	initErr  error
 }
@@ -107,14 +106,12 @@ func (m *memKeyInit) InitializeUserKeysServerKEK(_ context.Context, _ string, _ 
 type memPwUpdater struct {
 	calls  int
 	lastID string
-	lastPw string
 	err    error
 }
 
 func (m *memPwUpdater) UpdatePasswordHash(_ context.Context, userID string, pw []byte) error {
 	m.calls++
 	m.lastID = userID
-	m.lastPw = string(pw)
 	return m.err
 }
 
