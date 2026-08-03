@@ -262,7 +262,7 @@ func (c *realDEKCache) DEKForToken(t *testing.T, tok string) []byte {
 // realKeyServiceAdapter adapts *secrets.KeyService to auth.KeyServiceInterface
 // by implementing the subset of methods auth.Service calls, delegating to the
 // real KeyService. The methods NOT used by IssueTokenAndUnlockDEK
-// (InitializeUserKeys, DeleteDurableSessionsForUser, GetDEK, CacheDEK) return
+// (InitializeUserKeysServerKEK, DeleteDurableSessionsForUser, GetDEK, CacheDEK) return
 // benign values — they are not on the path under test.
 type realKeyServiceAdapter struct{ inner *secrets.KeyService }
 

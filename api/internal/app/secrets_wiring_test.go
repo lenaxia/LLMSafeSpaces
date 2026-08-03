@@ -48,7 +48,7 @@ func TestSecretsWiring_E2E(t *testing.T) {
 	// Initialize user keys (simulates registration)
 	err := keyService.InitializeUserKeysServerKEK(context.Background(), "test-user", "server_kek")
 	if err != nil {
-		t.Fatalf("InitializeUserKeys: %v", err)
+		t.Fatalf("InitializeUserKeysServerKEK: %v", err)
 	}
 
 	// Unlock DEK (simulates login)

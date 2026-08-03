@@ -440,7 +440,7 @@ func (a *apiKeyStoreAdapter) UpdateAPIKeyDEK(ctx context.Context, keyID string, 
 	return a.db.UpdateAPIKeyDEK(ctx, keyID, wrappedDEK, kekSalt, synced)
 }
 
-// bcryptPasswordUpdater implements handlers.PasswordHashUpdater using the DatabaseService.
+// bcryptPasswordUpdater updates the bcrypt hash on password reset.
 type bcryptPasswordUpdater struct {
 	db interfaces.DatabaseService
 }

@@ -154,7 +154,7 @@ func TestUnlockDEK_InternalError_Returns500(t *testing.T) {
 func TestUnlockDEK_StatusError_MapsToStatusFromError(t *testing.T) {
 	// The handler maps *StatusError → se.Status so service-layer HTTP
 	// status codes propagate correctly (e.g. 503 for ErrServerKEKUnavailable).
-	unlocker := &captureUnlocker{err: pkgerrors.NewStatusError(http.StatusServiceUnavailable, "key provider down")}
+	unlocker := &captureUnlocker{err: pkgerrors.NewStatusError(http.StatusServiceUnavailable, "UNAVAILABLE", "key provider down")}
 	r := setupUnlockRouter(t, unlocker, "u-8", "11111111-2222-3333-4444-555555555555", []byte("sk"))
 
 	rec := doUnlockRequest(t, r, nil)
