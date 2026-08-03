@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { imageFactoryApi, type Catalog, type Config } from "../../api/imageFactory";
+import { imageFactoryApi, type Catalog, type Config, type Extension } from "../../api/imageFactory";
 import { Spinner } from "../ui/Spinner";
 import { useToast } from "../../providers/ToastProvider";
 
@@ -78,6 +78,7 @@ export function WorkspaceImagesTab() {
   const currentSelection = Array.from(selected).sort();
   const isCurrentSelectionBlocked = (): boolean => {
     if (currentSelection.length === 0) return false;
+    if (!catalog.knownFailures || catalog.knownFailures.length === 0) return false;
     return catalog.knownFailures.some((kf) => {
       if (kf.baseName !== baseName || kf.retriable) return false;
       const kfSorted = [...kf.selection].sort();
@@ -155,32 +156,45 @@ export function WorkspaceImagesTab() {
             </select>
           </div>
 
-          {/* Extension checkboxes */}
+          {/* Extensions grouped by type */}
           <div>
             <label className="block text-sm font-medium mb-1">Extensions</label>
-            <div className="space-y-1">
-              {catalog.extensions.map((ext) => {
-                return (
-                  <label
-                    key={ext.id}
-                    className="flex items-center gap-2 text-sm cursor-pointer"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={selected.has(ext.id)}
-                      onChange={() => toggleExtension(ext.id)}
-                    />
-                    <span className="font-mono">{ext.id}</span>
-                    <span className="text-xs text-muted-foreground">
-                      ({ext.type}: {ext.value})
-                    </span>
-                    {ext.description && (
-                      <span className="text-xs text-muted-foreground">— {ext.description}</span>
-                    )}
-                  </label>
-                );
-              })}
-            </div>
+            {(() => {
+              const groups: Record<string, Extension[]> = {
+                "Language Packs": catalog.extensions.filter((e) => e.type === "mise"),
+                "System Packages": catalog.extensions.filter((e) => e.type === "apt"),
+                "Files": catalog.extensions.filter((e) => e.type === "file"),
+              };
+              const groupOrder = ["Language Packs", "System Packages", "Files"];
+              return groupOrder
+                .filter((name) => (groups[name] || []).length > 0)
+                .map((groupName) => (
+                  <div key={groupName} className="mb-4">
+                    <h4 className="mb-1 text-xs font-semibold uppercase text-muted-foreground">{groupName}</h4>
+                    <div className="space-y-1">
+                      {(groups[groupName] || []).map((ext) => (
+                        <label
+                          key={ext.id}
+                          className="flex items-center gap-2 text-sm cursor-pointer"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selected.has(ext.id)}
+                            onChange={() => toggleExtension(ext.id)}
+                          />
+                          <span className="font-mono">{ext.id}</span>
+                          <span className="text-xs text-muted-foreground">
+                            ({ext.type}: {ext.value.length > 50 ? ext.value.slice(0, 50) + "…" : ext.value})
+                          </span>
+                          {ext.description && (
+                            <span className="text-xs text-muted-foreground">— {ext.description}</span>
+                          )}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ));
+            })()}
           </div>
 
           {/* Save button */}
