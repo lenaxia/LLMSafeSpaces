@@ -519,7 +519,6 @@ func (h *SecretsHandler) GetAuditLog(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"entries": entries})
 }
 
-// KeyRotator is the interface needed by the rotation handler.
 // extractAuth gets userID and sessionID (jti) from the Gin context.
 // Both values are type-asserted with the comma-ok form so a malformed
 // context (e.g. middleware put a non-string under the key) produces an

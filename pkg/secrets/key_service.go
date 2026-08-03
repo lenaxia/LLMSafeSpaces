@@ -45,10 +45,9 @@ type UserKeyRecord struct {
 	WrappedDEKRecovery []byte // nil if user opted out
 	Salt               []byte // nil for server_kek rows (no Argon2id derivation)
 	RecoverySalt       []byte // nil if user opted out
-	// DEKSource is the user's encryption tier, read from users.dek_source via
-	// the PgKeyStore.GetUserKey JOIN. "password" → unwrap via Argon2id(password,
-	// salt); "server_kek" → unwrap via the master-KEK RootKeyProvider. Empty for
-	// test fakes that don't populate it (treated as "password").
+	// DEKSource is the encryption source, read from users.dek_source via
+	// the PgKeyStore.GetUserKey JOIN. Always "server_kek" or "passkey" —
+	// both unwrap via the master-KEK RootKeyProvider.
 	DEKSource string
 	CreatedAt time.Time
 	RotatedAt *time.Time
@@ -239,10 +238,6 @@ func (s *KeyService) SetSecretStore(store SecretStore) {
 	}
 	s.secretStore = store
 }
-
-// InitializeUserKeysServerKEK generates a DEK and wraps it with the server master-KEK provider.
-// Called during account creation or first secret creation for existing users.
-// Returns the recovery key (hex-encoded) that must be displayed to the user once.
 
 // InitializeUserKeysServerKEK provisions a DEK wrapped by the master-KEK
 // RootKeyProvider rather than by a password-derived KEK. Used for SSO/passkey users who
@@ -804,12 +799,6 @@ func (s *KeyService) HasKeys(ctx context.Context, userID string) (bool, error) {
 	}
 	return record != nil, nil
 }
-
-// RotationResult tracks rotation outcomes. NewKeyVersion
-// is the bumped key_version; NewRecoveryKeyHex is a freshly-issued
-// recovery key (the previous one wraps the now-discarded old DEK and
-// is invalid after rotation). Callers MUST surface NewRecoveryKeyHex
-// to the user once — the API does not store it anywhere recoverable.
 
 // zeroBytes overwrites b with zeros to reduce the time secret material
 // lingers in memory after the function that owned it returns.
