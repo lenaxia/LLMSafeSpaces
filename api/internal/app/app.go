@@ -795,6 +795,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			wsSvc.SetCredentialProvisioner(pgStore)
 			wsSvc.SetSecretAutoProvisioner(secretService)
 			wsSvc.SetOrgStore(pgOrgStore)
+			// Image-factory launch integration (design/0046). The concrete
+			// *database.Service satisfies the workspace.LaunchableConfigResolver
+			// interface via GetLaunchableConfigByHash. dbSvc is the same
+			// store the image-factory handlers use.
+			wsSvc.SetImageFactoryStore(dbSvc)
 		}
 		// Epic 35 US-35.3: pod bootstrap handler. Uses the API's K8s
 		// clientset for TokenReview + the SecretService for credential
