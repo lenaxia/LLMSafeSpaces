@@ -362,8 +362,7 @@ func (m *apiKeyAwareDB) ListAllWorkspaceOwners(context.Context) (map[string]stri
 }
 
 type testContext struct {
-	testUserID      string
-	testRecoveryKey string
+	testUserID string
 }
 
 func startServer(t *testing.T, router *gin.Engine) string {
