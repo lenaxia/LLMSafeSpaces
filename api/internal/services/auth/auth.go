@@ -38,7 +38,7 @@ import (
 // KeyServiceInterface abstracts the key service for DEK lifecycle.
 type KeyServiceInterface interface {
 	// InitializeUserKeysServerKEK provisions a DEK wrapped by the master-KEK
-	// RootKeyProvider. All users are server-KEK-wrapped (the password-derived
+	// RootKeyProvider. All users are server-KEK-wrapped (the legacy password-derived
 	// DEK tier has been removed).
 	InitializeUserKeysServerKEK(ctx context.Context, userID, dekSource string) error
 	UnlockDEK(ctx context.Context, userID string, password []byte, sessionID string, ttl time.Duration) error

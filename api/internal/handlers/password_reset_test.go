@@ -327,8 +327,8 @@ func TestPasswordReset_Confirm_PurgeFailure_IsNonFatal(t *testing.T) {
 		ExpiresAt: time.Now().Add(10 * time.Minute),
 	}
 
-	h.SetSecretPurger(&memSecretPurger{err: errors.New("db down")})
 	h := NewPasswordResetHandler(store, newMemUserStore(), &memKeyInit{}, &memPwUpdater{}, &memSessionRevoker{}, emailsvc.NewService(&fakeEmailProvider{}, "", ""), nil)
+	h.SetSecretPurger(&memSecretPurger{err: errors.New("db down")})
 	h.SetWorkspaceNeutralizer(&memWorkspaceNeutralizer{err: errors.New("k8s down")})
 	router := setupPasswordResetRouter(h)
 
@@ -492,7 +492,7 @@ func TestPasswordReset_Confirm_BcryptUpdateFailure_500(t *testing.T) {
 	}
 
 	pwUp := &memPwUpdater{err: errors.New("db write failed")}
-	h := NewPasswordResetHandler(store, newMemUserStore(), &memKeyInit{}, &memPwUpdater{err: errors.New("db write failed")}, &memSessionRevoker{}, emailsvc.NewService(&fakeEmailProvider{}, "", ""), nil)
+	h := NewPasswordResetHandler(store, newMemUserStore(), &memKeyInit{}, pwUp, &memSessionRevoker{}, emailsvc.NewService(&fakeEmailProvider{}, "", ""), nil)
 
 	router := setupPasswordResetRouter(h)
 
@@ -570,6 +570,7 @@ func TestPasswordReset_RoutesRegistered(t *testing.T) {
 	h := NewPasswordResetHandler(
 		newMemTokenStore(),
 		newMemUserStore(),
+		&memKeyInit{},
 		&memPwUpdater{},
 		&memSessionRevoker{},
 		emailsvc.NewService(&fakeEmailProvider{}, "https://app.test", "noop"),

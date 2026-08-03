@@ -60,7 +60,7 @@ type KeyStore interface {
 	CreateUserKey(ctx context.Context, record *UserKeyRecord) error
 	UpdateWrappedDEK(ctx context.Context, userID string, wrappedDEK []byte, salt []byte, keyVersion int) error
 	// UpdateWrappedDEKAndSource atomically re-wraps the DEK AND flips
-	// users.dek_source in a single transaction. Used by ChangePassword when a
+	// users.dek_source in a single transaction. Used by the provisioning path when a
 	// server_kek-tier user sets a password (transitioning them to the stronger
 	// password tier). The atomicity matters: a split write (re-wrap succeeds,
 	// dek_source flip fails, or vice versa) leaves the user_keys wrap and the
@@ -245,7 +245,7 @@ func (s *KeyService) SetSecretStore(store SecretStore) {
 // Returns the recovery key (hex-encoded) that must be displayed to the user once.
 
 // InitializeUserKeysServerKEK provisions a DEK wrapped by the master-KEK
-// RootKeyProvider rather than by a password-derived KEK. (Historical: used for users who
+// RootKeyProvider rather than by a password-derived KEK. Used for SSO/passkey users who
 // have no password: SSO auto-provisioned users (Epic 58, dekSource "server_kek")
 // and passkey-only users (Epic 59, dekSource "passkey"). Both are server-wrapped
 // (same provider, same unwrap path); the value distinguishes the auth source.
