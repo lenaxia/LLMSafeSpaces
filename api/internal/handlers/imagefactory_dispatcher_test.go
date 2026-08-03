@@ -17,6 +17,8 @@ import (
 )
 
 func TestGHActionsDispatcher_Dispatch_Success(t *testing.T) {
+	// GitHub's workflow_dispatch endpoint returns 204 No Content on success
+	// (not 201 Created). This is the actual production behavior.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "/repos/owner/repo/actions/workflows/image-build.yml/dispatches", r.URL.Path)
 		require.Equal(t, "Bearer fake-installation-token", r.Header.Get("Authorization"))
@@ -28,7 +30,7 @@ func TestGHActionsDispatcher_Dispatch_Success(t *testing.T) {
 		assert.Contains(t, payload.Inputs["dockerfile"], "FROM")
 		assert.Contains(t, payload.Inputs["architectures"], "linux/amd64")
 
-		w.WriteHeader(http.StatusCreated)
+		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer srv.Close()
 
@@ -58,6 +60,29 @@ func TestGHActionsDispatcher_Dispatch_Success(t *testing.T) {
 		Dockerfile:    "FROM base\n",
 	})
 	require.NoError(t, err)
+}
+
+// TestGHActionsDispatcher_Dispatch_Accepts201 verifies the dispatcher also
+// accepts 201 Created (defensive — GitHub returns 204 today, but accepting
+// both guards against future API changes).
+func TestGHActionsDispatcher_Dispatch_Accepts201(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	d := &ghActionsDispatcher{
+		appID: "123", owner: "o", repo: "r", workflowID: "w.yml", ref: "main",
+		client:         srv.Client(),
+		cachedToken:    "tok",
+		cachedTokenExp: time.Now().Add(1 * time.Hour),
+	}
+	oldURL := dispatchURL
+	dispatchURL = srv.URL + "/repos/%s/%s/actions/workflows/%s/dispatches"
+	defer func() { dispatchURL = oldURL }()
+
+	_, err := d.Dispatch(context.Background(), dispatchRequest{Dockerfile: "FROM x\n"})
+	require.NoError(t, err, "201 Created must be accepted as success")
 }
 
 func TestGHActionsDispatcher_Dispatch_GHError(t *testing.T) {
