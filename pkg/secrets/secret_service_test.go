@@ -293,7 +293,7 @@ func setupSecretService(t *testing.T) (*SecretService, *mockSecretStore, string)
 
 	err := keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek")
 	if err != nil {
-		t.Fatalf("InitializeUserKeys failed: %v", err)
+		t.Fatalf("InitializeUserKeysServerKEK failed: %v", err)
 	}
 	err = keySvc.UnlockDEK(ctx, userID, password, sessionID, time.Hour)
 	if err != nil {
