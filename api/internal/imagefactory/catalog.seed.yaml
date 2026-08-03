@@ -1,71 +1,232 @@
-# Catalog seed for the LLMSafeSpaces image factory.
-# This file is loaded at API boot and idempotently upserted into the
-# image_factory_bases, image_factory_extensions, and
-# image_factory_platform_config tables (design/0046 #9).
-#
-# Operators can extend this via PR (the catalog is code-reviewed). Runtime
-# admin changes go through the admin portal API and write directly to the DB.
-
 architectures:
   - linux/amd64
   - linux/arm64
 
 bases:
   - name: bookworm
-    version: "0.6.0"
+    version: "0.8.0"
     image: ghcr.io/lenaxia/llmsafespaces/base
-    tag: "0.6.0"
+    tag: "0.8.0"
     isDefault: true
 
+# ── Language Packs ──────────────────────────────────────────────────────
+# These are mise installs — fast (prebuilt binaries), no root needed.
+# The base image already ships defaults; these let users override versions.
+
 extensions:
-  - id: ffmpeg
-    type: apt
-    value: ffmpeg
-    supportedBases: [bookworm]
-    description: "FFmpeg multimedia framework (video/audio processing)"
-
-  - id: libgl1
-    type: apt
-    value: libgl1
-    supportedBases: [bookworm]
-    description: "OpenGL runtime library (needed by many GUI/headless graphics apps)"
-
-  - id: libssl-dev
-    type: apt
-    value: libssl-dev
-    supportedBases: [bookworm]
-    description: "OpenSSL development headers (needed for compiling Rust/C crypto crates)"
-
-  - id: odbc-postgresql
-    type: apt
-    value: odbc-postgresql
-    supportedBases: [bookworm]
-    description: "PostgreSQL ODBC driver"
-
-  - id: python313
+  # ── Python ────────────────────────────────────────────────────────────
+  - id: python-3.13
     type: mise
     value: python@3.13
     supportedBases: [bookworm]
-    description: "Python 3.13 (via mise — overrides the base image's 3.12)"
+    description: "Python 3.13"
 
-  - id: bun
+  - id: python-3.12
+    type: mise
+    value: python@3.12
+    supportedBases: [bookworm]
+    description: "Python 3.12 (base default)"
+
+  - id: python-3.11
+    type: mise
+    value: python@3.11
+    supportedBases: [bookworm]
+    description: "Python 3.11"
+
+  # ── Node.js ───────────────────────────────────────────────────────────
+  - id: node-22
+    type: mise
+    value: node@22
+    supportedBases: [bookworm]
+    description: "Node.js 22 (current LTS)"
+
+  - id: node-20
+    type: mise
+    value: node@20
+    supportedBases: [bookworm]
+    description: "Node.js 20"
+
+  - id: bun-latest
     type: mise
     value: bun@latest
     supportedBases: [bookworm]
     description: "Bun JavaScript runtime"
 
-  - id: node-lts
+  # ── Go ────────────────────────────────────────────────────────────────
+  - id: go-1.24
     type: mise
-    value: node@lts
+    value: go@1.24
     supportedBases: [bookworm]
-    description: "Node.js LTS (via mise — overrides the base image's built-in)"
+    description: "Go 1.24"
 
-  - id: go-latest
+  - id: go-1.23
     type: mise
-    value: go@latest
+    value: go@1.23
     supportedBases: [bookworm]
-    description: "Go latest (via mise — overrides the base image's built-in)"
+    description: "Go 1.23"
 
+  # ── Rust ──────────────────────────────────────────────────────────────
+  - id: rust-stable
+    type: mise
+    value: rust@stable
+    supportedBases: [bookworm]
+    description: "Rust stable (rustup)"
+
+  # ── Java ──────────────────────────────────────────────────────────────
+  - id: java-lts
+    type: mise
+    value: java@temurin-21.lts
+    supportedBases: [bookworm]
+    description: "Java 21 LTS (Eclipse Temurin)"
+
+  # ── .NET ─────────────────────────────────────────────────────────────
+  - id: dotnet-8
+    type: mise
+    value: dotnet@8.0
+    supportedBases: [bookworm]
+    description: ".NET 8.0 SDK"
+
+  # ── Other languages ───────────────────────────────────────────────────
+  - id: ruby-3.3
+    type: mise
+    value: ruby@3.3
+    supportedBases: [bookworm]
+    description: "Ruby 3.3"
+
+  - id: php-8.3
+    type: mise
+    value: php@8.3
+    supportedBases: [bookworm]
+    description: "PHP 8.3"
+
+# ── System Extensions ───────────────────────────────────────────────────
+# These require apt (root). Things mise/pip/npm/go cannot install.
+
+  # ── Browser automation ────────────────────────────────────────────────
+  - id: playwright-deps
+    type: apt
+    value: >
+      libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2
+      libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1
+      libpango-1.0-0 libcairo2 libasound2
+    supportedBases: [bookworm]
+    description: "Playwright system dependencies (browser libraries)"
+
+  - id: chromium
+    type: apt
+    value: chromium
+    supportedBases: [bookworm]
+    description: "Headless Chromium browser"
+
+  - id: xvfb
+    type: apt
+    value: xvfb
+    supportedBases: [bookworm]
+    description: "Xvfb virtual framebuffer (headless GUI/browser testing)"
+
+  # ── Document processing ───────────────────────────────────────────────
+  - id: poppler-utils
+    type: apt
+    value: poppler-utils
+    supportedBases: [bookworm]
+    description: "PDF tools (pdftotext, pdftoppm, pdfinfo)"
+
+  - id: pandoc
+    type: apt
+    value: pandoc
+    supportedBases: [bookworm]
+    description: "Universal document converter (Markdown → PDF/HTML/DOCX)"
+
+  - id: texlive
+    type: apt
+    value: texlive-latex-extra texlive-fonts-recommended texlive-latex-base latexmk
+    supportedBases: [bookworm]
+    description: "LaTeX (pdflatex + latexmk for PDF generation)"
+
+  # ── Graphics ──────────────────────────────────────────────────────────
+  - id: cairo-pango
+    type: apt
+    value: libcairo2 libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf2.0-0
+    supportedBases: [bookworm]
+    description: "Cairo/Pango (matplotlib PDF backend, SVG rendering)"
+
+  - id: imagemagick
+    type: apt
+    value: imagemagick
+    supportedBases: [bookworm]
+    description: "Image manipulation (convert, mogrify, identify)"
+
+  - id: graphviz
+    type: apt
+    value: graphviz
+    supportedBases: [bookworm]
+    description: "Graph visualization (dot, neato, fdp)"
+
+  - id: ffmpeg
+    type: apt
+    value: ffmpeg
+    supportedBases: [bookworm]
+    description: "Multimedia processing (video/audio encode/decode)"
+
+  # ── OCR / AI ──────────────────────────────────────────────────────────
+  - id: tesseract-ocr
+    type: apt
+    value: tesseract-ocr tesseract-ocr-eng
+    supportedBases: [bookworm]
+    description: "Tesseract OCR engine + English language pack"
+
+  # ── Database clients ──────────────────────────────────────────────────
+  - id: freetds
+    type: apt
+    value: freetds-dev freetds-bin
+    supportedBases: [bookworm]
+    description: "FreeTDS (Microsoft SQL Server connectivity)"
+
+  - id: odbc
+    type: apt
+    value: unixodbc-dev odbc-postgresql
+    supportedBases: [bookworm]
+    description: "ODBC drivers (PostgreSQL + dev headers)"
+
+  # ── System libraries ──────────────────────────────────────────────────
+  - id: libssl-dev
+    type: apt
+    value: libssl-dev
+    supportedBases: [bookworm]
+    description: "OpenSSL development headers (Rust/C crypto crates)"
+
+  - id: libcurl-dev
+    type: apt
+    value: libcurl4-openssl-dev
+    supportedBases: [bookworm]
+    description: "libcurl development headers (C/Rust HTTP clients)"
+
+  - id: libgl1
+    type: apt
+    value: libgl1 libglu1-mesa
+    supportedBases: [bookworm]
+    description: "OpenGL runtime (headless GL rendering, PyOpenGL)"
+
+  # ── Dev tools ─────────────────────────────────────────────────────────
+  - id: valgrind
+    type: apt
+    value: valgrind
+    supportedBases: [bookworm]
+    description: "Memory analysis and profiling (C/C++)"
+
+  - id: cmake
+    type: apt
+    value: cmake
+    supportedBases: [bookworm]
+    description: "CMake build system (C/C++ projects)"
+
+  - id: ninja-build
+    type: apt
+    value: ninja-build
+    supportedBases: [bookworm]
+    description: "Ninja build system (fast C/C++ builds)"
+
+  # ── Misc ──────────────────────────────────────────────────────────────
   - id: motd-welcome
     type: file
     value: |
