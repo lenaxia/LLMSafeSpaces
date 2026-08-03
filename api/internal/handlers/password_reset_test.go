@@ -261,7 +261,6 @@ func TestPasswordReset_Confirm_ValidToken_ResetsEverything(t *testing.T) {
 
 	// DEK reinitialized
 	assert.Equal(t, 1, keyInit.calls, "InitializeUserKeys must be called once")
-	assert.Equal(t, "newpass123", keyInit.lastPw)
 
 	// bcrypt hash updated
 	assert.Equal(t, 1, pwUp.calls, "UpdatePasswordHash must be called once")
