@@ -174,6 +174,7 @@ func TestPasswordReset_Request_KnownVerifiedUser_SendsEmail(t *testing.T) {
 
 	fp := &fakeEmailProvider{}
 	emailSVC := emailsvc.NewService(fp, "https://app.test", "ses")
+	h := NewPasswordResetHandler(store, users, &memKeyInit{}, &memPwUpdater{}, &memSessionRevoker{}, emailSVC, nil)
 
 	router := setupPasswordResetRouter(h)
 
