@@ -412,7 +412,6 @@ type capturingKeyService struct {
 	tc    *testContext
 }
 
-
 func (c *capturingKeyService) InitializeUserKeysServerKEK(ctx context.Context, userID, dekSource string) error {
 	return c.inner.InitializeUserKeysServerKEK(ctx, userID, dekSource)
 }

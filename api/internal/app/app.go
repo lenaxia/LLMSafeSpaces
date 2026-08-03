@@ -1101,7 +1101,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		SecretsHandler:                  secretsHandler,
 		ModelsHandler:                   modelsHandler,
 		WorkspaceEnvHandler:             workspaceEnvHandler,
-		UnlockDEKHandler:                 unlockDEKHandler,
+		UnlockDEKHandler:                unlockDEKHandler,
 		OrgsHandler:                     orgsHandler,
 		OrgCredentialsHandler:           orgCredsHandler,
 		TerminalHandler:                 terminalHandler,

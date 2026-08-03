@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -370,12 +369,9 @@ func TestPgE2E_FullSecretLifecycle(t *testing.T) {
 
 	// Init keys
 	password := []byte("e2e-password")
-	recoveryKey, err := keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek")
+	err := keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek")
 	if err != nil {
 		t.Fatalf("InitializeUserKeys: %v", err)
-	}
-	if recoveryKey == "" {
-		t.Fatal("Recovery key empty")
 	}
 
 	// Unlock
@@ -426,4 +422,3 @@ func TestPgE2E_FullSecretLifecycle(t *testing.T) {
 
 	t.Log("PostgreSQL E2E: full lifecycle passed")
 }
-

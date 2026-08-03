@@ -174,7 +174,6 @@ func TestUnlockDEKWithSigningKey_PasswordPath_Unchanged(t *testing.T) {
 	}
 }
 
-
 func TestDekSourceIsServerWrapped_TruthTable(t *testing.T) {
 	tests := []struct {
 		source string
