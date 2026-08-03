@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"golang.org/x/crypto/bcrypt"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/handlers"
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
@@ -386,24 +385,6 @@ func readAll(t *testing.T, resp *http.Response) string {
 	buf := new(bytes.Buffer)
 	_, _ = buf.ReadFrom(resp.Body)
 	return buf.String()
-}
-
-// bcryptUpdater implements PasswordHashUpdater for tests.
-type bcryptUpdater struct {
-	db *fullMockDB
-}
-
-func (u *bcryptUpdater) UpdatePasswordHash(_ context.Context, userID string, newPassword []byte) error {
-	user := u.db.users[userID]
-	if user == nil {
-		return fmt.Errorf("user not found")
-	}
-	hash, err := bcrypt.GenerateFromPassword(newPassword, 4) // low cost for tests
-	if err != nil {
-		return err
-	}
-	user.PasswordHash = string(hash)
-	return nil
 }
 
 // capturingKeyService wraps a real KeyService and captures the recovery key.
