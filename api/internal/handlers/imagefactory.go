@@ -12,6 +12,7 @@ import (
 
 	"github.com/lenaxia/llmsafespaces/api/internal/imagefactory"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/database"
+	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 )
 
 // imageFactoryStore is the data-access surface for image-factory catalog
@@ -51,6 +52,7 @@ type ImageFactoryHandler struct {
 	store      imageFactoryStore
 	orgs       orgResolver
 	dispatcher buildDispatcher
+	logger     pkginterfaces.LoggerInterface
 
 	// S5: callback + failure handling.
 	buildStore  buildStore
@@ -68,6 +70,13 @@ func NewImageFactoryHandler(store imageFactoryStore, orgs orgResolver) *ImageFac
 // SetDispatcher wires the GH Actions build dispatcher.
 func (h *ImageFactoryHandler) SetDispatcher(d buildDispatcher) {
 	h.dispatcher = d
+}
+
+// SetLogger wires the structured logger used for dispatch diagnostics. The
+// dispatch-failure path logs the underlying error here instead of discarding
+// it; nil-guarded so tests that don't wire a logger still pass.
+func (h *ImageFactoryHandler) SetLogger(l pkginterfaces.LoggerInterface) {
+	h.logger = l
 }
 
 // SetFailureExplainer wires the LLM failure explainer (S6). Optional —

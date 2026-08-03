@@ -229,6 +229,14 @@ func (h *ImageFactoryHandler) CreateConfig(c *gin.Context) {
 	})
 	if err != nil {
 		// Dispatch failed — do NOT commit. No orphaned config row.
+		// Log the underlying error: the dispatcher returns wrapped errors
+		// (e.g. "gh dispatch: unexpected status 403: ...") that identify the
+		// root cause. Without this line a config/permission problem surfaces
+		// only as a generic 503.
+		if h.logger != nil {
+			h.logger.Error("image-factory: build dispatch failed", err,
+				"hash", hash, "baseName", baseName, "baseVersion", baseVersion)
+		}
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "failed to dispatch build"})
 		return
 	}
