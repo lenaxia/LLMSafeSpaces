@@ -19,6 +19,7 @@ import (
 	"k8s.io/client-go/util/retry"
 
 	apierrors "github.com/lenaxia/llmsafespaces/api/internal/errors"
+	"github.com/lenaxia/llmsafespaces/api/internal/imagefactory"
 	apiinterfaces "github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
@@ -82,6 +83,7 @@ type Service struct {
 	instanceSettings  *settings.InstanceService
 	orgStore          OrgMembershipChecker
 	policyChecker     PolicyChecker
+	imageFactoryStore LaunchableConfigResolver
 	config            *Config
 }
 
@@ -99,8 +101,38 @@ type PolicyChecker interface {
 	GetEffectivePolicy(ctx context.Context, orgID string) (*types.OrgPolicyValues, error)
 }
 
+// ErrConfigNotLaunchable is returned by LaunchableConfigResolver when the
+// config doesn't exist, isn't Ready, or has no successful build. It lets
+// the workspace service check for "try next scope" without coupling to the
+// database package's ErrNotFound sentinel.
+var ErrConfigNotLaunchable = errors.New("config not launchable")
+
+// LaunchableConfigResolver looks up an image-factory config by hash and
+// returns its image ref if the config is Ready and owned by the caller.
+// The workspace service uses this to resolve a user-selected config into
+// a concrete image at launch time (design/0046 #15). Nil disables
+// image-factory launch integration (the legacy `runtime` path is used).
+//
+// Implementations return ErrConfigNotLaunchable (wrapped or direct) when
+// the config isn't found/ready/owned — NOT database.ErrNotFound — so the
+// consumer (this package) doesn't import the database package.
+type LaunchableConfigResolver interface {
+	// scope/ownerID/orgID filter which config row the hash resolves to:
+	//   member  → ownerID must equal the calling user
+	//   org     → orgID must equal the caller's org
+	//   platform→ no owner filter (any caller may launch platform configs)
+	GetLaunchableConfigByHash(ctx context.Context, hash string, scope imagefactory.ConfigScope, ownerID, orgID *string) (imagefactory.Config, string, error)
+}
+
 func (s *Service) SetOrgStore(store OrgMembershipChecker) {
 	s.orgStore = store
+}
+
+// SetImageFactoryStore installs the image-factory config resolver for
+// workspace launch integration (design/0046). Optional — nil keeps the
+// legacy runtime-only path.
+func (s *Service) SetImageFactoryStore(store LaunchableConfigResolver) {
+	s.imageFactoryStore = store
 }
 
 // SetPolicyChecker installs the org policy checker for workspace quota enforcement.
@@ -335,6 +367,20 @@ func (s *Service) CreateWorkspace(ctx context.Context, userID string, req types.
 		if img, err := s.instanceSettings.GetString(ctx, settings.KeyWorkspaceDefaultImage.Name()); err == nil && img != "" {
 			req.Runtime = img
 		}
+	}
+
+	// Image-factory launch integration (design/0046 #15). When the caller
+	// supplies ImageConfigHash, resolve it to a Ready config's built image
+	// and override Runtime with the image ref. The config must be Ready and
+	// owned by the caller (or org/platform-scoped). This runs AFTER the
+	// default-runtime lookup so a hash wins over any default — matching
+	// the user's explicit intent.
+	if req.ImageConfigHash != "" {
+		imageRef, err := s.resolveImageFactoryConfig(ctx, req.ImageConfigHash, userID, req.OrgID)
+		if err != nil {
+			return nil, err
+		}
+		req.Runtime = imageRef
 	}
 
 	workspaceID := uuid.New().String()
@@ -1158,6 +1204,74 @@ func buildWorkspaceCRD(workspaceID, userID string, req types.CreateWorkspaceRequ
 		},
 		Spec: spec,
 	}
+}
+
+// resolveImageFactoryConfig looks up an image-factory config by hash and
+// returns the image ref of its successful build. It enforces:
+//   - the store is wired (returns a validation error if not)
+//   - the config exists, is Ready, and is owned by the caller (checked
+//     by the store's scope/owner filter)
+//   - a successful build with an image ref exists
+//
+// The lookup tries member-scope first (the common case: user launches their
+// own config), then org-scope, then platform-scope. This mirrors the
+// ListVisibleConfigs visibility model — a user may launch any config they
+// can see.
+//
+// The org policy gate (design/0046 #19 — assemble vs published_only) is NOT
+// enforced here: org/platform configs are launchable by any org member. The
+// published_only policy concerns which configs are *listed* in the picker,
+// not which are launchable once visible. (Revisit if the design tightens.)
+func (s *Service) resolveImageFactoryConfig(ctx context.Context, hash, userID string, orgID *string) (string, error) {
+	if s.imageFactoryStore == nil {
+		return "", apierrors.NewValidationError(
+			"image factory is not configured",
+			map[string]interface{}{"field": "imageConfigHash"},
+			fmt.Errorf("image factory store not wired"),
+		)
+	}
+	scopes := []struct {
+		scope   imagefactory.ConfigScope
+		ownerID *string
+		orgArg  *string
+	}{
+		{imagefactory.ScopeMember, &userID, nil},
+		{imagefactory.ScopeOrg, nil, orgID},
+		{imagefactory.ScopePlatform, nil, nil},
+	}
+	var lastErr error
+	for _, sc := range scopes {
+		// Skip org-scope if the user has no org.
+		if sc.scope == imagefactory.ScopeOrg && (orgID == nil || *orgID == "") {
+			continue
+		}
+		cfg, imageRef, err := s.imageFactoryStore.GetLaunchableConfigByHash(ctx, hash, sc.scope, sc.ownerID, sc.orgArg)
+		if err == nil {
+			// Found a Ready, owned config with a built image.
+			s.logger.Info("Resolved image-factory config for workspace launch",
+				"hash", hash, "configID", cfg.ID, "scope", sc.scope,
+				"imageRef", imageRef)
+			return imageRef, nil
+		}
+		if errors.Is(err, ErrConfigNotLaunchable) {
+			// Not found in this scope — try the next.
+			continue
+		}
+		// A real error (DB failure etc.) — surface immediately rather
+		// than continuing (a later ErrNotFound would overwrite this).
+		lastErr = err
+		break
+	}
+	if lastErr != nil {
+		return "", apierrors.NewInternalError("image_factory_lookup_failed", lastErr)
+	}
+	// No scope matched → the hash is unknown, not owned by the caller, not
+	// Ready, or has no built image. Distinguish for a better UX.
+	return "", apierrors.NewValidationError(
+		fmt.Sprintf("image config %q is not available for launch (it may not exist, may not be Ready, or you may not have access)", hash),
+		map[string]interface{}{"field": "imageConfigHash", "hash": hash},
+		fmt.Errorf("no launchable config found for hash %q", hash),
+	)
 }
 
 // applyWorkspaceDefaults reads instance settings and applies defaults to the

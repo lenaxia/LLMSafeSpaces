@@ -8,6 +8,7 @@ import { useAuth } from "../../providers/AuthProvider";
 import { useSessionStatus, useWorkspaceBusyCount, useSessionPendingActions } from "../../providers/SessionActivityProvider";
 import type { SessionDisplayStatus } from "../../providers/SessionActivityProvider";
 import { RenameWorkspaceDialog } from "../workspace/RenameWorkspaceDialog";
+import { NewWorkspaceDialog } from "../workspace/NewWorkspaceDialog";
 import { WorkspaceSettingsDrawer } from "../workspace/WorkspaceSettingsDrawer";
 import { RenameSessionDialog } from "../session/RenameSessionDialog";
 import { KebabMenu } from "../ui/KebabMenu";
@@ -30,7 +31,7 @@ import {
 import { Spinner } from "../ui/Spinner";
 import { BusyIndicator } from "../ui/BusyIndicator";
 import type { WorkspaceListItem } from "../../api/types";
-import { sessionDisplayTitle, generateWorkspaceName } from "../../lib/names";
+import { sessionDisplayTitle } from "../../lib/names";
 import { formatRelativeTime } from "../../lib/time";
 import { useNow } from "../../hooks/useNow";
 import { cn } from "../../lib/utils";
@@ -52,6 +53,7 @@ export function Sidebar({ onNavigate }: Props) {
   );
   const [renamingWs, setRenamingWs] = useState<string | null>(null);
   const [renamingSession, setRenamingSession] = useState<{ wsId: string; sessionId: string; title: string } | null>(null);
+  const [showNewWsDialog, setShowNewWsDialog] = useState(false);
 
   const { data: workspaces } = useQuery({
     queryKey: ["workspaces"],
@@ -78,7 +80,7 @@ export function Sidebar({ onNavigate }: Props) {
   }, [workspaces?.items]);
 
   const createMutation = useMutation({
-    mutationFn: async (params: { name: string; orgId?: string }) => {
+    mutationFn: async (params: { name: string; orgId?: string; imageConfigHash?: string }) => {
       const ws = await workspacesApi.create(params);
       return ws;
     },
@@ -176,7 +178,7 @@ export function Sidebar({ onNavigate }: Props) {
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
         <h1 className="text-sm font-semibold">Safe Space</h1>
         <button
-          onClick={() => createMutation.mutate({ name: generateWorkspaceName() })}
+          onClick={() => setShowNewWsDialog(true)}
           disabled={createMutation.isPending}
           className="rounded p-1 hover:bg-accent disabled:opacity-50"
           aria-label="New workspace"
@@ -184,6 +186,17 @@ export function Sidebar({ onNavigate }: Props) {
           {createMutation.isPending ? <Spinner size="sm" /> : <Plus className="h-4 w-4" />}
         </button>
       </div>
+
+      {showNewWsDialog && (
+        <NewWorkspaceDialog
+          onCreate={(params) => {
+            createMutation.mutate(params);
+            setShowNewWsDialog(false);
+          }}
+          onCancel={() => setShowNewWsDialog(false)}
+          loading={createMutation.isPending}
+        />
+      )}
 
       <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-track-transparent scrollbar-thumb-muted-foreground/20 hover:scrollbar-thumb-muted-foreground/40">
         <nav className="flex flex-col gap-0.5 p-2" aria-label="Workspaces">

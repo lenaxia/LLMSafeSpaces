@@ -327,6 +327,61 @@ func TestListRejectedConfigsForFailure(t *testing.T) {
 
 // strPtr lives in pg_org_store_test.go (same package).
 
+// launchConfigColumnsForTest returns the config columns + the extra
+// image_ref column that GetLaunchableConfigByHash's JOIN produces.
+func launchConfigColumnsForTest() []string {
+	return append(configColumnsForTest(), "image_ref")
+}
+
+func TestGetLaunchableConfigByHash_Success(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	rvJSON := mustJSON(t, imagefactory.ResolvedValues{})
+	rows := sqlmock.NewRows(launchConfigColumnsForTest()).
+		AddRow("cfg-1", "s-ready", "My Config", "{ffmpeg,python-3.12}", rvJSON,
+			"bookworm", "0.6.0", "member", "user-1", nil, "ready",
+			"ghcr.io/lenaxia/ws:s-ready-0.6.0")
+	mock.ExpectQuery(qAny).
+		WithArgs("s-ready", "member", "user-1").
+		WillReturnRows(rows)
+
+	cfg, imageRef, err := svc.GetLaunchableConfigByHash(context.Background(), "s-ready", imagefactory.ScopeMember, strPtr("user-1"), nil)
+	require.NoError(t, err)
+	assert.Equal(t, "cfg-1", cfg.ID)
+	assert.Equal(t, imagefactory.StatusReady, cfg.Status)
+	assert.Equal(t, "ghcr.io/lenaxia/ws:s-ready-0.6.0", imageRef)
+	assert.Equal(t, []string{"ffmpeg", "python-3.12"}, []string(cfg.Selection))
+}
+
+func TestGetLaunchableConfigByHash_NotFound(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	mock.ExpectQuery(qAny).
+		WithArgs("s-ghost", "member", "user-1").
+		WillReturnError(sql.ErrNoRows)
+
+	_, _, err := svc.GetLaunchableConfigByHash(context.Background(), "s-ghost", imagefactory.ScopeMember, strPtr("user-1"), nil)
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestGetLaunchableConfigByHash_PlatformScope(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	rvJSON := mustJSON(t, imagefactory.ResolvedValues{})
+	rows := sqlmock.NewRows(launchConfigColumnsForTest()).
+		AddRow("cfg-plat", "s-plat", "Platform Default", "{python-3.12}", rvJSON,
+			"bookworm", "0.6.0", "platform", nil, nil, "ready",
+			"ghcr.io/lenaxia/ws:s-plat-0.6.0")
+	mock.ExpectQuery(qAny).
+		WithArgs("s-plat", "platform").
+		WillReturnRows(rows)
+
+	cfg, imageRef, err := svc.GetLaunchableConfigByHash(context.Background(), "s-plat", imagefactory.ScopePlatform, nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "platform", string(cfg.Scope))
+	assert.Equal(t, "ghcr.io/lenaxia/ws:s-plat-0.6.0", imageRef)
+}
+
 func configColumnsForTest() []string { return splitCols(configColumns) }
 func buildColumnsForTest() []string  { return splitCols(buildColumns) }
 

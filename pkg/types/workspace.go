@@ -33,6 +33,11 @@ type CreateWorkspaceRequest struct {
 	StorageClass string            `json:"storageClass,omitempty"`
 	Labels       map[string]string `json:"labels,omitempty"`
 	OrgID        *string           `json:"orgId,omitempty"`
+	// ImageConfigHash references an image-factory config (design/0046).
+	// When set, the workspace service resolves it to a Ready config's
+	// built image ref and overrides Runtime with it. The config must be
+	// Ready and owned by the user, their org, or be platform-scoped.
+	ImageConfigHash string `json:"imageConfigHash,omitempty"`
 }
 
 // WorkspaceListResult bundles workspace list items with pagination.

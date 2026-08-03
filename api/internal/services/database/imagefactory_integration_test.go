@@ -332,3 +332,56 @@ func TestIntegration_IF_KnownFailures_CRUD(t *testing.T) {
 	_, err = svc.GetKnownFailure(ctx, "s-kf-test", "bookworm")
 	assert.ErrorIs(t, err, ErrNotFound)
 }
+
+// TestIntegration_IF_GetLaunchableConfigByHash validates the JOIN query +
+// pq.Array scan against real PostgreSQL — the failure modes sqlmock can't
+// catch (ambiguous column refs, text[] scan, JOIN cardinality).
+func TestIntegration_IF_GetLaunchableConfigByHash(t *testing.T) {
+	h := testharness.New(t)
+	svc := newIFService(h)
+	ctx := context.Background()
+
+	ownerID := "55555555-5555-5555-5555-555555555555"
+	rv := imagefactory.ResolvedValues{
+		"ffmpeg": {Type: "apt", Value: "ffmpeg"},
+	}
+	rvJSON, _ := json.Marshal(rv)
+
+	// Seed a Ready config with a successful build.
+	var configID string
+	err := svc.DB.QueryRowContext(ctx,
+		`INSERT INTO image_factory_configs (hash, name, selection, resolved_values, base_name, base_version, scope, owner_id, status)
+		 VALUES ('s-launch', 'launch-cfg', '{ffmpeg,python-3.12}', $1, 'bookworm', '0.6.0', 'member', $2, 'ready')
+		 RETURNING id`,
+		rvJSON, ownerID).Scan(&configID)
+	require.NoError(t, err)
+
+	ghRun := int64(300)
+	build := &imagefactory.Build{
+		ConfigID: configID, Hash: "s-launch", BaseName: "bookworm", BaseVersion: "0.6.0",
+		ResolvedValues: rv, Architectures: []string{"linux/amd64"},
+		Status: imagefactory.BuildSucceeded, GHRunID: &ghRun, CallbackToken: "tok-l",
+	}
+	require.NoError(t, svc.CreateBuild(ctx, build))
+	require.NoError(t, svc.MarkBuildSucceeded(ctx, build.ID, "ghcr.io/ws:s-launch-0.6.0", "sha256:abc"))
+
+	// Happy path: Ready config with successful build → returns config + image_ref.
+	cfg, imageRef, err := svc.GetLaunchableConfigByHash(ctx, "s-launch", imagefactory.ScopeMember, &ownerID, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "launch-cfg", cfg.Name)
+	assert.Equal(t, imagefactory.StatusReady, cfg.Status)
+	assert.Equal(t, imagefactory.Selection{"ffmpeg", "python-3.12"}, cfg.Selection, "pq.Array scan must round-trip")
+	assert.Equal(t, "ghcr.io/ws:s-launch-0.6.0", imageRef)
+
+	// Wrong owner → ErrNotFound (scope filter works).
+	_, _, err = svc.GetLaunchableConfigByHash(ctx, "s-launch", imagefactory.ScopeMember, strPtr("wrong-user"), nil)
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	// Unknown hash → ErrNotFound.
+	_, _, err = svc.GetLaunchableConfigByHash(ctx, "s-ghost", imagefactory.ScopeMember, &ownerID, nil)
+	assert.ErrorIs(t, err, ErrNotFound)
+
+	// Platform scope → ErrNotFound (this is a member-scope config).
+	_, _, err = svc.GetLaunchableConfigByHash(ctx, "s-launch", imagefactory.ScopePlatform, nil, nil)
+	assert.ErrorIs(t, err, ErrNotFound)
+}

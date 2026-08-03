@@ -36,11 +36,12 @@ export interface ListModelsResponse {
 
 export const workspacesApi = {
   list: () => api.get<WorkspaceListResponse>("/workspaces"),
-  create: (params: { name: string; runtime?: string; orgId?: string }) =>
+  create: (params: { name: string; runtime?: string; orgId?: string; imageConfigHash?: string }) =>
     api.post<{ id: string; name: string; workspaceId?: string }>("/workspaces", {
       name: params.name,
       runtime: params.runtime || "base",
       ...(params.orgId ? { orgId: params.orgId } : {}),
+      ...(params.imageConfigHash ? { imageConfigHash: params.imageConfigHash } : {}),
     }),
   createWorkspace: (workspaceId: string, runtime = "base") =>
     api.post<{ id: string }>("/workspaces", { runtime, workspaceRef: workspaceId }),
