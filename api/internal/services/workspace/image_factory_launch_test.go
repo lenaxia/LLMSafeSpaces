@@ -13,7 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/imagefactory"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/database"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
@@ -52,7 +51,7 @@ func (f *fakeImageFactoryStore) GetLaunchableConfigByHash(_ context.Context, has
 	}{hash, scope, owner, org})
 	r, ok := f.results[scope]
 	if !ok {
-		return imagefactory.Config{}, "", database.ErrNotFound
+		return imagefactory.Config{}, "", ErrConfigNotLaunchable
 	}
 	return r.cfg, r.imageRef, r.err
 }

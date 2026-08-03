@@ -21,7 +21,6 @@ import (
 	apierrors "github.com/lenaxia/llmsafespaces/api/internal/errors"
 	"github.com/lenaxia/llmsafespaces/api/internal/imagefactory"
 	apiinterfaces "github.com/lenaxia/llmsafespaces/api/internal/interfaces"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/database"
 	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
@@ -102,11 +101,21 @@ type PolicyChecker interface {
 	GetEffectivePolicy(ctx context.Context, orgID string) (*types.OrgPolicyValues, error)
 }
 
+// ErrConfigNotLaunchable is returned by LaunchableConfigResolver when the
+// config doesn't exist, isn't Ready, or has no successful build. It lets
+// the workspace service check for "try next scope" without coupling to the
+// database package's ErrNotFound sentinel.
+var ErrConfigNotLaunchable = errors.New("config not launchable")
+
 // LaunchableConfigResolver looks up an image-factory config by hash and
 // returns its image ref if the config is Ready and owned by the caller.
 // The workspace service uses this to resolve a user-selected config into
 // a concrete image at launch time (design/0046 #15). Nil disables
 // image-factory launch integration (the legacy `runtime` path is used).
+//
+// Implementations return ErrConfigNotLaunchable (wrapped or direct) when
+// the config isn't found/ready/owned — NOT database.ErrNotFound — so the
+// consumer (this package) doesn't import the database package.
 type LaunchableConfigResolver interface {
 	// scope/ownerID/orgID filter which config row the hash resolves to:
 	//   member  → ownerID must equal the calling user
@@ -1244,7 +1253,7 @@ func (s *Service) resolveImageFactoryConfig(ctx context.Context, hash, userID st
 				"imageRef", imageRef)
 			return imageRef, nil
 		}
-		if errors.Is(err, database.ErrNotFound) {
+		if errors.Is(err, ErrConfigNotLaunchable) {
 			// Not found in this scope — try the next.
 			continue
 		}

@@ -75,15 +75,19 @@ describe("NewWorkspaceDialog", () => {
     );
   });
 
-  it("building config is not clickable", async () => {
+  it("building config is not clickable — create has no imageConfigHash", async () => {
     const user = userEvent.setup();
-    render(<NewWorkspaceDialog onCreate={vi.fn()} onCancel={vi.fn()} />);
+    const onCreate = vi.fn();
+    render(<NewWorkspaceDialog onCreate={onCreate} onCancel={vi.fn()} />);
 
     const buildingConfig = await screen.findByText("Building Config");
     // Clicking a disabled button should not select it
     await user.click(buildingConfig);
-    // Create should NOT have imageConfigHash (default is selected)
+    // Create with default image (not the building config)
     await user.click(screen.getByRole("button", { name: /create/i }));
-    // The default-image path has no imageConfigHash
+    // Assert: onCreate must NOT have imageConfigHash (building config was not selectable)
+    expect(onCreate).toHaveBeenCalledWith(
+      expect.not.objectContaining({ imageConfigHash: "s-building1" }),
+    );
   });
 });

@@ -795,11 +795,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			wsSvc.SetCredentialProvisioner(pgStore)
 			wsSvc.SetSecretAutoProvisioner(secretService)
 			wsSvc.SetOrgStore(pgOrgStore)
-			// Image-factory launch integration (design/0046). The concrete
-			// *database.Service satisfies the workspace.LaunchableConfigResolver
-			// interface via GetLaunchableConfigByHash. dbSvc is the same
-			// store the image-factory handlers use.
-			wsSvc.SetImageFactoryStore(dbSvc)
+			// Image-factory launch integration (design/0046). Wrap dbSvc
+			// so database.ErrNotFound is translated to the workspace
+			// package's ErrConfigNotLaunchable sentinel — keeps the
+			// workspace service decoupled from the database package.
+			wsSvc.SetImageFactoryStore(&launchableConfigAdapter{store: dbSvc})
 		}
 		// Epic 35 US-35.3: pod bootstrap handler. Uses the API's K8s
 		// clientset for TokenReview + the SecretService for credential
@@ -1600,4 +1600,20 @@ func initEmailStack(
 		passwordResetHandler.SetWorkspaceNeutralizer(wsSvc)
 	}
 	return emailService, emailHandler, passwordResetHandler, nil
+}
+
+// launchableConfigAdapter wraps a database.ImageFactoryStore so that
+// database.ErrNotFound is translated to workspace.ErrConfigNotLaunchable.
+// This keeps the workspace service decoupled from the database package —
+// it only knows the workspace package's sentinel, not the DB layer's.
+type launchableConfigAdapter struct {
+	store database.ImageFactoryStore
+}
+
+func (a *launchableConfigAdapter) GetLaunchableConfigByHash(ctx context.Context, hash string, scope imagefactory.ConfigScope, ownerID, orgID *string) (imagefactory.Config, string, error) {
+	cfg, ref, err := a.store.GetLaunchableConfigByHash(ctx, hash, scope, ownerID, orgID)
+	if errors.Is(err, database.ErrNotFound) {
+		return imagefactory.Config{}, "", workspace.ErrConfigNotLaunchable
+	}
+	return cfg, ref, err
 }
