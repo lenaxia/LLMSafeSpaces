@@ -321,6 +321,8 @@ func TestHandler_E2E_BindTriggersReloadSecrets(t *testing.T) {
 	keyStore := newTestKeyStore()
 	dekCache := newTestDEKCache()
 	keySvc := secrets.NewKeyService(keyStore, dekCache)
+	testProv, _ := secrets.NewStaticKeyProvider(make([]byte, 32))
+	keySvc.SetAPIKeyStore(nil, testProv)
 	secretStore := newTestSecretStore()
 	svc := secrets.NewSecretService(keySvc, secretStore)
 
@@ -400,6 +402,8 @@ func TestHandler_E2E_BindNoReloadWhenNoPod(t *testing.T) {
 	keyStore := newTestKeyStore()
 	dekCache := newTestDEKCache()
 	keySvc := secrets.NewKeyService(keyStore, dekCache)
+	testProv, _ := secrets.NewStaticKeyProvider(make([]byte, 32))
+	keySvc.SetAPIKeyStore(nil, testProv)
 	secretStore := newTestSecretStore()
 	svc := secrets.NewSecretService(keySvc, secretStore)
 
@@ -507,6 +511,8 @@ func TestHandler_BindLogsReloadFailure(t *testing.T) {
 	keyStore := newTestKeyStore()
 	dekCache := newTestDEKCache()
 	keySvc := secrets.NewKeyService(keyStore, dekCache)
+	testProv, _ := secrets.NewStaticKeyProvider(make([]byte, 32))
+	keySvc.SetAPIKeyStore(nil, testProv)
 	secretStore := newTestSecretStore()
 	svc := secrets.NewSecretService(keySvc, secretStore)
 
@@ -591,6 +597,8 @@ func TestHandler_RevealSecret_RequiresPasswordVerification(t *testing.T) {
 	keyStore := newTestKeyStore()
 	dekCache := newTestDEKCache()
 	keySvc := secrets.NewKeyService(keyStore, dekCache)
+	testProv, _ := secrets.NewStaticKeyProvider(make([]byte, 32))
+	keySvc.SetAPIKeyStore(nil, testProv)
 	secretStore := newTestSecretStore()
 	svc := secrets.NewSecretService(keySvc, secretStore)
 
@@ -693,6 +701,8 @@ func TestHandler_RevealSecret_CiphertextDecryptFailed_Returns409(t *testing.T) {
 	keyStore := newTestKeyStore()
 	dekCache := newTestDEKCache()
 	keySvc := secrets.NewKeyService(keyStore, dekCache)
+	testProv, _ := secrets.NewStaticKeyProvider(make([]byte, 32))
+	keySvc.SetAPIKeyStore(nil, testProv)
 	secretStore := newTestSecretStore()
 	svc := secrets.NewSecretService(keySvc, secretStore)
 
@@ -798,6 +808,8 @@ func TestHandler_RevealSecret_DEKUnavailable_Returns403(t *testing.T) {
 	keyStore := newTestKeyStore()
 	dekCache := newTestDEKCache()
 	keySvc := secrets.NewKeyService(keyStore, dekCache)
+	testProv, _ := secrets.NewStaticKeyProvider(make([]byte, 32))
+	keySvc.SetAPIKeyStore(nil, testProv)
 	secretStore := newTestSecretStore()
 	svc := secrets.NewSecretService(keySvc, secretStore)
 

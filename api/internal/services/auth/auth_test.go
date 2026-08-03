@@ -1125,7 +1125,7 @@ func TestRegister_UnlocksDEKAndReturnsRecoveryKey(t *testing.T) {
 	mockDb.On("CreateUser", ctx, mock.Anything).Return(nil)
 	mockDb.On("UpdateUser", ctx, mock.Anything, mock.Anything).Return(nil).Maybe()
 
-	ks := &fakeKeyService{recoveryKey: "feedfacecafebabe1234567890abcdef"}
+	ks := &fakeKeyService{}
 	svc.SetKeyService(ks)
 
 	resp, err := svc.Register(ctx, types.RegisterRequest{
@@ -1139,19 +1139,15 @@ func TestRegister_UnlocksDEKAndReturnsRecoveryKey(t *testing.T) {
 
 	// Bug 5: UnlockDEK must be invoked with the JWT's jti so the issued
 	// token can be used for secret operations without a re-login.
-	require.Len(t, ks.initCalls, 1, "InitializeUserKeys must be called exactly once")
+	require.Len(t, ks.serverKEKInitCalls, 1, "InitializeUserKeysServerKEK must be called exactly once")
 	require.Len(t, ks.unlockCalls, 1, "UnlockDEK must be called exactly once on register")
-	assert.Equal(t, ks.initCalls[0].UserID, ks.unlockCalls[0].UserID)
-	assert.Equal(t, "securepassword123", ks.unlockCalls[0].Password)
 	assert.NotEmpty(t, ks.unlockCalls[0].SessionID, "UnlockDEK sessionID must be the JWT jti")
 	assert.Equal(t, utilities.ExtractJTI(resp.Token), ks.unlockCalls[0].SessionID,
 		"UnlockDEK sessionID must match the issued token's jti")
 	assert.Equal(t, svc.tokenDuration, ks.unlockCalls[0].TTL)
 
-	// Bug 10: the recovery key produced by InitializeUserKeys must reach
-	// the response. There is no other way for the user to obtain it.
-	assert.Equal(t, "feedfacecafebabe1234567890abcdef", resp.RecoveryKey,
-		"register response must include the one-time recovery key")
+	// The recovery key field is now always empty (password tier removed).
+	assert.Empty(t, resp.RecoveryKey, "register response must not include a recovery key")
 }
 
 // TestRegister_KeyInitFailureFailsClosed verifies that a failure to
@@ -1166,7 +1162,7 @@ func TestRegister_KeyInitFailureFailsClosed(t *testing.T) {
 	mockDb.On("CountUsers", ctx).Return(5, nil)
 	mockDb.On("CreateUser", ctx, mock.Anything).Return(nil)
 
-	ks := &fakeKeyService{initErr: errors.New("key svc down")}
+	ks := &fakeKeyService{serverKEKInitErr: errors.New("key svc down")}
 	svc.SetKeyService(ks)
 
 	resp, err := svc.Register(ctx, types.RegisterRequest{
@@ -1177,7 +1173,7 @@ func TestRegister_KeyInitFailureFailsClosed(t *testing.T) {
 
 	assert.Error(t, err)
 	assert.Nil(t, resp)
-	assert.Empty(t, ks.unlockCalls, "UnlockDEK must not be called when InitializeUserKeys fails")
+	assert.Empty(t, ks.unlockCalls, "UnlockDEK must not be called when key init fails")
 }
 
 // TestLogin_OmitsRecoveryKey ensures the RecoveryKey field is never set on
