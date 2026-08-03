@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-08-03
+
+### Added
+
+- **Image Factory: workspace launch integration (#641).** Workspace creation
+  now supports selecting an image-factory config. The new-workspace dialog
+  shows a config picker with status pills (Ready=selectable, Building/Rejected=
+  disabled). The API resolves the selected config to its built image ref and
+  sets it as the workspace runtime — leveraging the controller's existing
+  image-ref passthrough, so no controller or CRD change is needed.
+
 ## [0.8.4] - 2026-08-03
 
 ### Fixed
