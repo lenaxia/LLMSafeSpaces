@@ -238,14 +238,14 @@ func DefaultRouterConfig() RouterConfig {
 		LoggingConfig:   middleware.DefaultLoggingConfig(),
 		RateLimitConfig: rlCfg,
 		// G35: /account/recover takes userID + recoveryKey as direct
-		// input. The recovery key is 128-bit random so brute-force is
+		// input. The reveal endpoint re-authenticates the user, so brute-force is
 		// mathematically infeasible, but the endpoint still does
-		// Argon2id work (re-derives the DEK under the new password),
+		// attempts are computationally expensive (bcrypt verification),
 		// making it a CPU-exhaustion DoS target. The authRatePerMinute
 		// constant (20) was defined for exactly this purpose but was
 		// never wired (dead code before this PR). authRateBurst (5)
 		// allows legitimate users a few rapid attempts if they fat-
-		// finger the recovery key, while still capping automated
+		// cap automated
 		// guessing from a single IP well below the global 100/min.
 		PerRouteRateLimitConfig: middleware.PerRouteRateLimitConfig{
 			Enabled: true,

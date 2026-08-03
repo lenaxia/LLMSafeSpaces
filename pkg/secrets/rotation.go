@@ -18,7 +18,7 @@ type RotationRow struct {
 	KeyVersion int
 	// DEKSource is users.dek_source for user_keys rows ("server_kek" / "passkey"
 	// / "password"). Password-tier user_keys rows are NOT rotatable by the KEK
-	// rotation CLI (their wrap key is derived from the user's password, which the
+	// rotation CLI (their wrap key is the server master KEK, which the
 	// CLI does not hold) and MUST be excluded by the RotationStore's
 	// ListRotationRows("user_keys", ...). Empty for non-user_keys tables.
 	DEKSource string

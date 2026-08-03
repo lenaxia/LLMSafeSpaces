@@ -141,7 +141,7 @@ func (s *PgKeyStore) UpdateWrappedDEKRecovery(ctx context.Context, userID string
 // UpdateWrappedDEKAndSource atomically re-wraps the DEK AND flips
 // users.dek_source in a single transaction. Used by the provisioning path
 // when a server_kek-tier user sets their first password (opt-up to the stronger
-// password tier). Like the other update methods, an active *pgx.Tx threaded
+// legacy tier). Like the other update methods, an active *pgx.Tx threaded
 // through the context is honored; otherwise a fresh transaction is owned here.
 func (s *PgKeyStore) UpdateWrappedDEKAndSource(ctx context.Context, userID string, wrappedDEK, salt []byte, keyVersion int, dekSource string) error {
 	const (

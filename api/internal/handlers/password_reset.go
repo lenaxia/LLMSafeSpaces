@@ -202,11 +202,11 @@ func (h *PasswordResetHandler) Request(c *gin.Context) {
 // expiry + consumption, then executes the reset:
 //  1. Consume token (single-use)
 //  2. Update bcrypt hash (FIRST — avoids unrecoverable state if DEK reinit fails)
-//  3. Reinitialise DEK (old DEK unrecoverable without old password/recovery key)
+//  3. Reinitialise DEK (old DEK unrecoverable without old password)
 //  4. Revoke all outstanding sessions
 //  5. Send "password changed" notification email
 //
-// Returns the new recovery key so the user can save it.
+// Returns success; no recovery key (server-KEK model has none).
 func (h *PasswordResetHandler) Confirm(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPasswordResetBodySize)
 	var req struct {

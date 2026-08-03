@@ -61,7 +61,7 @@ type KeyStore interface {
 	// UpdateWrappedDEKAndSource atomically re-wraps the DEK AND flips
 	// users.dek_source in a single transaction. Used by the provisioning path when a
 	// server_kek-tier user sets a password (transitioning them to the stronger
-	// password tier). The atomicity matters: a split write (re-wrap succeeds,
+	// legacy tier). The atomicity matters: a split write (re-wrap succeeds,
 	// dek_source flip fails, or vice versa) leaves the user_keys wrap and the
 	// users.dek_source flag disagreeing, which makes the next unlock try the
 	// wrong unwrap method and fail. One tx, both writes, commit-or-rollback.
@@ -240,7 +240,7 @@ func (s *KeyService) SetSecretStore(store SecretStore) {
 }
 
 // InitializeUserKeysServerKEK provisions a DEK wrapped by the master-KEK
-// RootKeyProvider rather than by a password-derived KEK. Used for SSO/passkey users who
+// RootKeyProvider. Used for all users (SSO, passkey, password-login).
 // have no password: SSO auto-provisioned users (Epic 58, dekSource "server_kek")
 // and passkey-only users (Epic 59, dekSource "passkey"). Both are server-wrapped
 // (same provider, same unwrap path); the value distinguishes the auth source.
