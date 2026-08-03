@@ -59,7 +59,6 @@ type KeyStore interface {
 	CreateUserKey(ctx context.Context, record *UserKeyRecord) error
 	UpdateWrappedDEK(ctx context.Context, userID string, wrappedDEK []byte, salt []byte, keyVersion int) error
 	// UpdateWrappedDEKAndSource atomically re-wraps the DEK AND flips
-	// UpdateWrappedDEKAndSource atomically re-wraps the DEK AND flips
 	// users.dek_source in a single transaction. Used by the provisioning path.
 	// The atomicity matters: a split write (re-wrap succeeds,
 	// wrong unwrap method and fail. One tx, both writes, commit-or-rollback.
@@ -220,9 +219,6 @@ func (s *KeyService) SetLogger(l pkginterfaces.LoggerInterface) {
 	s.logger = l
 }
 
-// SetSecretStore wires the SecretStore used by the key service to
-// re-encrypt every user_secrets row under the new DEK. Without this, the
-// rotate endpoint refuses to run rather than orphan secret rows under a
 // SetSecretStore wires the SecretStore used for secret operations.
 // Optional; without it secret operations will fail.
 //
@@ -236,7 +232,6 @@ func (s *KeyService) SetSecretStore(store SecretStore) {
 	s.secretStore = store
 }
 
-// InitializeUserKeysServerKEK provisions a DEK wrapped by the master-KEK
 // InitializeUserKeysServerKEK provisions a DEK wrapped by the master-KEK
 // RootKeyProvider. The dekSource ("server_kek" or "passkey") distinguishes
 // the auth source; both share the same unwrap path (rootKeyProvider.Decrypt).
@@ -274,7 +269,6 @@ func (s *KeyService) InitializeUserKeysServerKEK(ctx context.Context, userID, de
 	return nil
 }
 
-// UnlockDEK derives the KEK from the password, unwraps the DEK, and caches it.
 // UnlockDEK unwraps the DEK via the master RootKeyProvider and caches it.
 // The password parameter is ignored (server-KEK-only model).
 // Called during login. sessionID is the JWT's jti claim.
