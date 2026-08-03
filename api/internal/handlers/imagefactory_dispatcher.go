@@ -112,7 +112,9 @@ func (d *ghActionsDispatcher) Dispatch(ctx context.Context, req dispatchRequest)
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusCreated {
+	// GitHub's workflow_dispatch endpoint returns 204 No Content on success
+	// (not 201 Created). Accept either as success to be robust to API changes.
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent {
 		raw, _ := io.ReadAll(resp.Body)
 		return 0, fmt.Errorf("gh dispatch: unexpected status %d: %s", resp.StatusCode, string(raw))
 	}
