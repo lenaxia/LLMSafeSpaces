@@ -352,15 +352,6 @@ class UserSettingsAPI {
 class AccountAPI {
   constructor(private client: LLMSafeSpaces) {}
 
-  rotateKey(password: string) {
-    return this.client.request<{ keyVersion: number; recoveryKey: string }>("POST", "/account/rotate-key", { password });
-  }
-  changePassword(oldPassword: string, newPassword: string) {
-    return this.client.request<void>("POST", "/account/change-password", { oldPassword, newPassword });
-  }
-  recover(userId: string, recoveryKey: string, newPassword: string) {
-    return this.client.request<{ recoveryKey: string }>("POST", "/account/recover", { userId, recoveryKey, newPassword });
-  }
 }
 
 class ProviderCredentialsAPI {

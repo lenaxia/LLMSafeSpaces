@@ -39,9 +39,6 @@ type integrationKeyService struct {
 	unlockCalls          []string
 }
 
-func (r *integrationKeyService) InitializeUserKeys(_ context.Context, _ string, _ []byte) (string, error) {
-	return "", nil
-}
 func (r *integrationKeyService) InitializeUserKeysServerKEK(_ context.Context, userID, _ string) error {
 	r.serverKEKInitUserIDs = append(r.serverKEKInitUserIDs, userID)
 	return r.serverKEKInitErr
@@ -155,6 +152,8 @@ func TestIntegration_SSOIssueSession_RealKeyService_DEKRoundTripsSecret(t *testi
 	realKeyStore := newRealKeyStore(t)
 	realCache := newRealDEKCache()
 	ks := secrets.NewKeyService(realKeyStore, realCache)
+	testProv, _ := secrets.NewStaticKeyProvider(make([]byte, 32))
+	ks.SetAPIKeyStore(nil, testProv)
 	masterKey := make([]byte, 32)
 	for i := range masterKey {
 		masterKey[i] = byte(i + 7)
@@ -263,13 +262,10 @@ func (c *realDEKCache) DEKForToken(t *testing.T, tok string) []byte {
 // realKeyServiceAdapter adapts *secrets.KeyService to auth.KeyServiceInterface
 // by implementing the subset of methods auth.Service calls, delegating to the
 // real KeyService. The methods NOT used by IssueTokenAndUnlockDEK
-// (InitializeUserKeys, DeleteDurableSessionsForUser, GetDEK, CacheDEK) return
+// (InitializeUserKeysServerKEK, DeleteDurableSessionsForUser, GetDEK, CacheDEK) return
 // benign values — they are not on the path under test.
 type realKeyServiceAdapter struct{ inner *secrets.KeyService }
 
-func (a realKeyServiceAdapter) InitializeUserKeys(_ context.Context, _ string, _ []byte) (string, error) {
-	return "", nil
-}
 func (a realKeyServiceAdapter) InitializeUserKeysServerKEK(ctx context.Context, userID, dekSource string) error {
 	return a.inner.InitializeUserKeysServerKEK(ctx, userID, dekSource)
 }

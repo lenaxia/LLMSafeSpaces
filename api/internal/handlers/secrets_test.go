@@ -25,6 +25,8 @@ func setupTestRouter(t *testing.T) (*gin.Engine, *secrets.SecretService, string)
 	keyStore := newTestKeyStore()
 	dekCache := newTestDEKCache()
 	keySvc := secrets.NewKeyService(keyStore, dekCache)
+	testProv, _ := secrets.NewStaticKeyProvider(make([]byte, 32))
+	keySvc.SetAPIKeyStore(nil, testProv)
 	secretStore := newTestSecretStore()
 	svc := secrets.NewSecretService(keySvc, secretStore)
 
@@ -33,9 +35,9 @@ func setupTestRouter(t *testing.T) (*gin.Engine, *secrets.SecretService, string)
 	password := []byte("test-password")
 	sessionID := "test-session"
 
-	_, err := keySvc.InitializeUserKeys(ctx, userID, password)
+	err := keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek")
 	if err != nil {
-		t.Fatalf("InitializeUserKeys: %v", err)
+		t.Fatalf("InitializeUserKeysServerKEK: %v", err)
 	}
 	err = keySvc.UnlockDEK(ctx, userID, password, sessionID, time.Hour)
 	if err != nil {

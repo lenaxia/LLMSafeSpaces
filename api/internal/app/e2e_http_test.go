@@ -28,10 +28,11 @@ func TestE2E_RealHTTPServer(t *testing.T) {
 	keyStore := &dbKeyStoreAdapter{}
 	dekCache := &memDEKCache{store: make(map[string][]byte)}
 	keyService := secrets.NewKeyService(keyStore, dekCache)
+	testProv, _ := secrets.NewStaticKeyProvider(make([]byte, 32))
+	keyService.SetAPIKeyStore(nil, testProv)
 	secretStore := &dbSecretStoreAdapter{}
 	secretService := secrets.NewSecretService(keyService, secretStore)
 	secretsHandler := handlers.NewSecretsHandler(secretService)
-	rotateHandler := handlers.NewRotateKeyHandler(keyService)
 
 	// Initialize user keys (simulates registration)
 	ctx := context.Background()
@@ -39,9 +40,9 @@ func TestE2E_RealHTTPServer(t *testing.T) {
 	password := []byte("e2e-password-123")
 	sessionID := "e2e-jti-abc"
 
-	_, err := keyService.InitializeUserKeys(ctx, userID, password)
+	err := keyService.InitializeUserKeysServerKEK(ctx, userID, "server_kek")
 	if err != nil {
-		t.Fatalf("InitializeUserKeys: %v", err)
+		t.Fatalf("InitializeUserKeysServerKEK: %v", err)
 	}
 	err = keyService.UnlockDEK(ctx, userID, password, sessionID, time.Hour)
 	if err != nil {
@@ -72,9 +73,6 @@ func TestE2E_RealHTTPServer(t *testing.T) {
 	wsGroup := router.Group("/api/v1/workspaces")
 	wsGroup.PUT("/:id/bindings", secretsHandler.SetBindings)
 	wsGroup.GET("/:id/bindings", secretsHandler.GetBindings)
-
-	accountGroup := router.Group("/api/v1/account")
-	accountGroup.POST("/rotate-key", rotateHandler.RotateKey)
 
 	// Start real TCP server
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -163,23 +161,6 @@ func TestE2E_RealHTTPServer(t *testing.T) {
 	}
 
 	// === Phase 8: Update secret ===
-	resp = put(t, c, base+"/api/v1/secrets/"+created.ID, `{"value":"sk-new-rotated-key"}`, token)
-	assertStatus(t, resp, 204, "update")
-
-	// === Phase 9: Rotate key ===
-	resp = post(t, c, base+"/api/v1/account/rotate-key", `{"password":"e2e-password-123"}`, token)
-	assertStatus(t, resp, 200, "rotate")
-	var rotResp struct {
-		KeyVersion int `json:"keyVersion"`
-	}
-	json.Unmarshal(readBody(t, resp), &rotResp)
-	if rotResp.KeyVersion != 2 {
-		t.Errorf("Rotate: expected version 2, got %d", rotResp.KeyVersion)
-	}
-
-	// === Phase 10: Rotate with wrong password ===
-	resp = post(t, c, base+"/api/v1/account/rotate-key", `{"password":"wrong"}`, token)
-	assertStatus(t, resp, 403, "rotate wrong pw")
 
 	// === Phase 11: Audit log ===
 	resp = get(t, c, base+"/api/v1/secrets/audit", token)

@@ -59,9 +59,9 @@ func (p *PostgresSecretProvider) Decrypt(ctx context.Context, owner SecretOwner,
 }
 
 func (p *PostgresSecretProvider) RotateKey(ctx context.Context, owner SecretOwner) (int, error) {
-	// Rotation requires password — this interface method cannot be used directly.
-	// Use KeyService.RotateKeyWithPassword instead.
-	return 0, fmt.Errorf("use RotateKeyWithPassword for password-confirmed rotation")
+	// Rotation is no longer user-initiated (password tier removed).
+	// Replaced by server-KEK provisioning (InitializeUserKeysServerKEK).
+	return 0, fmt.Errorf("use InitializeUserKeysServerKEK for provisioning")
 }
 
 func (p *PostgresSecretProvider) DEKAvailable(ctx context.Context, owner SecretOwner) bool {
@@ -126,7 +126,7 @@ var _ SecretProvider = (*PostgresSecretProvider)(nil)
 
 // Ensure KeyService satisfies the auth integration interface at compile time.
 var _ interface {
-	InitializeUserKeys(ctx context.Context, userID string, password []byte) (string, error)
+	InitializeUserKeysServerKEK(ctx context.Context, userID, dekSource string) error
 	UnlockDEK(ctx context.Context, userID string, password []byte, sessionID string, ttl time.Duration) error
 	HasKeys(ctx context.Context, userID string) (bool, error)
 } = (*KeyService)(nil)

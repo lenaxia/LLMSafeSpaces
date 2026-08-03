@@ -43,9 +43,6 @@ type dekJKeyService struct {
 	getDEKErr error
 }
 
-func (d *dekJKeyService) InitializeUserKeys(_ context.Context, _ string, _ []byte) (string, error) {
-	return "fake-recovery", nil
-}
 func (d *dekJKeyService) InitializeUserKeysServerKEK(_ context.Context, _ string, _ string) error {
 	return nil
 }
@@ -92,7 +89,7 @@ func TestCreateAPIKey_WithDecryptAccess_StoresWrappedDEK(t *testing.T) {
 	ctx := context.Background()
 
 	dek := make([]byte, 32)
-	rand.Read(dek)
+	_, _ = rand.Read(dek)
 	ks.dek = dek
 	ks.sessionID = "jwt-session-1"
 
@@ -192,7 +189,7 @@ func TestValidateAPIKey_WithDecryptAccess_UnlocksDEK(t *testing.T) {
 	ctx := context.Background()
 
 	dek := make([]byte, 32)
-	rand.Read(dek)
+	_, _ = rand.Read(dek)
 	ks.dek = dek
 	ks.sessionID = "jwt-session-1"
 
@@ -290,7 +287,7 @@ func TestCreateAPIKey_DEKRoundTrip(t *testing.T) {
 	ctx := context.Background()
 
 	originalDEK := make([]byte, 32)
-	rand.Read(originalDEK)
+	_, _ = rand.Read(originalDEK)
 	ks.dek = originalDEK
 	ks.sessionID = "jwt-session-rt"
 
@@ -328,7 +325,7 @@ func TestCreateAPIKey_NonDecryptKey_GetsKeyCiphertext(t *testing.T) {
 	svc, mockDb, _, _ := newDEKTestService(t)
 
 	masterKey := make([]byte, 32)
-	rand.Read(masterKey)
+	_, _ = rand.Read(masterKey)
 	provider, err := secrets.NewStaticKeyProvider(masterKey)
 	require.NoError(t, err)
 	svc.SetRootKeyProvider(provider)
@@ -377,7 +374,7 @@ func TestValidateAPIKey_ConstantTimeCompare_RejectsMismatch(t *testing.T) {
 	svc, mockDb, mockCache, _ := newDEKTestService(t)
 
 	masterKey := make([]byte, 32)
-	rand.Read(masterKey)
+	_, _ = rand.Read(masterKey)
 	provider, err := secrets.NewStaticKeyProvider(masterKey)
 	require.NoError(t, err)
 	svc.SetRootKeyProvider(provider)
@@ -426,7 +423,7 @@ func TestCreateAPIKey_WithSealedKeyProvider(t *testing.T) {
 	passphrase := []byte("test-sealed-passphrase")
 
 	rootKey := make([]byte, 32)
-	rand.Read(rootKey)
+	_, _ = rand.Read(rootKey)
 	require.NoError(t, secrets.SealRootKey(sealedPath, passphrase, rootKey))
 	require.NoError(t, writeToFile(passPath, passphrase))
 
@@ -456,7 +453,7 @@ func TestValidateAPIKey_DEKNotSynced_SkipsUnwrap(t *testing.T) {
 	svc, mockDb, mockCache, ks := newDEKTestService(t)
 
 	masterKey := make([]byte, 32)
-	rand.Read(masterKey)
+	_, _ = rand.Read(masterKey)
 	provider, err := secrets.NewStaticKeyProvider(masterKey)
 	require.NoError(t, err)
 	svc.SetRootKeyProvider(provider)
@@ -473,7 +470,7 @@ func TestValidateAPIKey_DEKNotSynced_SkipsUnwrap(t *testing.T) {
 	require.NoError(t, encErr)
 
 	kekSalt := make([]byte, 32)
-	rand.Read(kekSalt)
+	_, _ = rand.Read(kekSalt)
 	apiKEK, _ := secrets.DeriveKEKFromKey([]byte(rawKey), kekSalt, "llmsafespaces-apikey-kek")
 	wrappedDEK, _ := secrets.EncryptSecret(apiKEK, originalDEK)
 
@@ -533,7 +530,7 @@ func TestValidateAPIKey_CIDREnforcement(t *testing.T) {
 	svc, mockDb, mockCache, _ := newDEKTestService(t)
 
 	masterKey := make([]byte, 32)
-	rand.Read(masterKey)
+	_, _ = rand.Read(masterKey)
 	provider, err := secrets.NewStaticKeyProvider(masterKey)
 	require.NoError(t, err)
 	svc.SetRootKeyProvider(provider)
@@ -572,7 +569,7 @@ func TestValidateAPIKey_CIDRCacheBypass_Blocked(t *testing.T) {
 	svc, mockDb, mockCache, _ := newDEKTestService(t)
 
 	masterKey := make([]byte, 32)
-	rand.Read(masterKey)
+	_, _ = rand.Read(masterKey)
 	provider, err := secrets.NewStaticKeyProvider(masterKey)
 	require.NoError(t, err)
 	svc.SetRootKeyProvider(provider)
@@ -604,7 +601,7 @@ func TestValidateAPIKey_CIDRCacheHit_AllowedIP(t *testing.T) {
 	svc, mockDb, mockCache, _ := newDEKTestService(t)
 
 	masterKey := make([]byte, 32)
-	rand.Read(masterKey)
+	_, _ = rand.Read(masterKey)
 	provider, err := secrets.NewStaticKeyProvider(masterKey)
 	require.NoError(t, err)
 	svc.SetRootKeyProvider(provider)

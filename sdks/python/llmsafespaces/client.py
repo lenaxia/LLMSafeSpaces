@@ -378,23 +378,6 @@ class _AccountAPI:
     def __init__(self, client: LLMSafeSpaces):
         self._c = client
 
-    def rotate_key(self, password: str) -> dict[str, Any]:
-        return self._c._request("POST", "/account/rotate-key", json={"password": password})
-
-    def change_password(self, old_password: str, new_password: str) -> None:
-        self._c._request(
-            "POST",
-            "/account/change-password",
-            json={"oldPassword": old_password, "newPassword": new_password},
-        )
-
-    def recover(self, user_id: str, recovery_key: str, new_password: str) -> dict[str, Any]:
-        return self._c._request(
-            "POST",
-            "/account/recover",
-            json={"userId": user_id, "recoveryKey": recovery_key, "newPassword": new_password},
-        )
-
 
 class _SecretsAPI:
     def __init__(self, client: LLMSafeSpaces):

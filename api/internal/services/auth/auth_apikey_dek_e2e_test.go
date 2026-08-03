@@ -12,11 +12,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/require"
-	"golang.org/x/crypto/bcrypt"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/handlers"
-	"github.com/lenaxia/llmsafespaces/api/internal/utilities"
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 	pkgutil "github.com/lenaxia/llmsafespaces/pkg/utilities"
@@ -51,6 +48,8 @@ func setupDEKRegressionRouter(t *testing.T) (
 	keyStore := &memKeyStore{records: make(map[string]*secrets.UserKeyRecord)}
 	dekCache = &memDEKCache{store: make(map[string][]byte)}
 	keySvc = secrets.NewKeyService(keyStore, dekCache)
+	testProv, _ := secrets.NewStaticKeyProvider(make([]byte, 32))
+	keySvc.SetAPIKeyStore(nil, testProv)
 	secretStore := &memSecretStore{
 		secrets:  make(map[string]*secrets.UserSecret),
 		bindings: make(map[string][]string),
@@ -59,7 +58,7 @@ func setupDEKRegressionRouter(t *testing.T) (
 	secretsHandler = handlers.NewSecretsHandler(secretSvc)
 
 	masterKey = make([]byte, 32)
-	rand.Read(masterKey)
+	_, _ = rand.Read(masterKey)
 	svc.SetMasterKey(masterKey)
 	svc.SetKeyService(keySvc)
 
@@ -122,7 +121,7 @@ func startDEKTestServer(t *testing.T, router *gin.Engine) (*http.Server, string)
 		t.Fatalf("listen: %v", err)
 	}
 	srv := &http.Server{Handler: router}
-	go srv.Serve(ln)
+	go func() { _ = srv.Serve(ln) }()
 	return srv, "http://" + ln.Addr().String()
 }
 
@@ -141,7 +140,7 @@ func registerLoginCreateDEK(t *testing.T, client *http.Client, base, email, pass
 		t.Fatalf("Login: %d", resp.StatusCode)
 	}
 	var loginResp struct{ Token string }
-	json.NewDecoder(resp.Body).Decode(&loginResp)
+	_ = json.NewDecoder(resp.Body).Decode(&loginResp)
 	resp.Body.Close()
 	jwtToken = loginResp.Token
 
@@ -155,7 +154,7 @@ func registerLoginCreateDEK(t *testing.T, client *http.Client, base, email, pass
 	var apiKeyResp struct {
 		Key string `json:"key"`
 	}
-	json.NewDecoder(resp.Body).Decode(&apiKeyResp)
+	_ = json.NewDecoder(resp.Body).Decode(&apiKeyResp)
 	resp.Body.Close()
 	rawAPIKey = apiKeyResp.Key
 	return
@@ -186,29 +185,6 @@ func dekDoPost(t *testing.T, c *http.Client, url, body, token string) *http.Resp
 	return resp
 }
 
-type testAPIKeyStoreAdapter struct {
-	db *apiKeyAwareDB
-}
-
-func (a *testAPIKeyStoreAdapter) ListAPIKeysWithDecrypt(ctx context.Context, userID string) ([]*secrets.APIKeyRecord, error) {
-	keys, _ := a.db.ListAPIKeysWithDecrypt(ctx, userID)
-	var records []*secrets.APIKeyRecord
-	for _, k := range keys {
-		records = append(records, &secrets.APIKeyRecord{
-			ID:            k.ID,
-			WrappedDEK:    k.WrappedDEK,
-			KekSalt:       k.KekSalt,
-			KeyCiphertext: k.KeyCiphertext,
-			DecryptAccess: k.DecryptAccess,
-		})
-	}
-	return records, nil
-}
-
-func (a *testAPIKeyStoreAdapter) UpdateAPIKeyDEK(ctx context.Context, keyID string, wrappedDEK, kekSalt []byte, synced bool) error {
-	return a.db.UpdateAPIKeyDEK(ctx, keyID, wrappedDEK, kekSalt, synced)
-}
-
 func TestE2E_APIKey_WithoutDecryptAccess_SecretsOperation403(t *testing.T) {
 	router, _, _, _, _, _, _, _ := setupDEKRegressionRouter(t)
 	srv, base := startDEKTestServer(t, router)
@@ -229,7 +205,7 @@ func TestE2E_APIKey_WithoutDecryptAccess_SecretsOperation403(t *testing.T) {
 		t.Fatalf("Login: %d", resp.StatusCode)
 	}
 	var loginResp struct{ Token string }
-	json.NewDecoder(resp.Body).Decode(&loginResp)
+	_ = json.NewDecoder(resp.Body).Decode(&loginResp)
 	resp.Body.Close()
 
 	resp = dekDoPost(t, client, base+"/api/v1/api-keys",
@@ -240,7 +216,7 @@ func TestE2E_APIKey_WithoutDecryptAccess_SecretsOperation403(t *testing.T) {
 		t.Fatalf("Create API key: %d: %s", resp.StatusCode, body)
 	}
 	var apiKeyResp struct{ Key string }
-	json.NewDecoder(resp.Body).Decode(&apiKeyResp)
+	_ = json.NewDecoder(resp.Body).Decode(&apiKeyResp)
 	resp.Body.Close()
 
 	resp = dekDoPost(t, client, base+"/api/v1/secrets",
@@ -360,99 +336,6 @@ func TestE2E_APIKey_CreateWithoutDecryptAccess_NoDEKColumns(t *testing.T) {
 	}
 
 	t.Log("E2E non-decrypt API key has no DEK columns: PASSED")
-}
-
-func TestE2E_APIKey_RewrapAfterRotation(t *testing.T) {
-	router, _, db, dekCache, keySvc, _, _, masterKey := setupDEKRegressionRouter(t)
-	srv, base := startDEKTestServer(t, router)
-	defer srv.Close()
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	_, rawAPIKey := registerLoginCreateDEK(t, client, base, "rotate@test.com", "pw-123456")
-
-	resp := dekDoPost(t, client, base+"/api/v1/secrets",
-		`{"name":"pre-rotate","type":"api-key","value":"sk-before","metadata":{"kind":"test","slug":"test"}}`, rawAPIKey)
-	if resp.StatusCode != 201 {
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		t.Fatalf("Create secret before rotation: %d: %s", resp.StatusCode, body)
-	}
-	resp.Body.Close()
-
-	var user *types.User
-	for _, u := range db.users {
-		if u.Email == "rotate@test.com" {
-			user = u
-			break
-		}
-	}
-	if user == nil {
-		t.Fatal("user not found")
-	}
-
-	staticProvider, provErr := secrets.NewStaticKeyProvider(masterKey)
-	require.NoError(t, provErr)
-	keySvc.SetAPIKeyStore(&testAPIKeyStoreAdapter{db: db}, staticProvider)
-
-	loginResp := dekDoPost(t, client, base+"/api/v1/auth/login",
-		`{"email":"rotate@test.com","password":"pw-123456"}`, "")
-	if loginResp.StatusCode != 200 {
-		body, _ := io.ReadAll(loginResp.Body)
-		loginResp.Body.Close()
-		t.Fatalf("Login for session: %d: %s", loginResp.StatusCode, body)
-	}
-	var lr struct{ Token string }
-	json.NewDecoder(loginResp.Body).Decode(&lr)
-	loginResp.Body.Close()
-
-	jwtToken := lr.Token
-	jti := utilities.ExtractJTI(jwtToken)
-	if jti == "" {
-		t.Fatal("JWT must have a jti claim")
-	}
-	_, err := keySvc.GetDEK(context.Background(), jti, nil)
-	if err != nil {
-		t.Fatalf("DEK not available for JWT session (jti=%s): %v", jti, err)
-	}
-
-	oldPassword := []byte("pw-123456")
-	_, err = keySvc.RotateKeyWithPassword(context.Background(), user.ID, oldPassword, jti, 24*time.Hour)
-	if err != nil {
-		t.Fatalf("RotateKeyWithPassword: %v", err)
-	}
-
-	newPassword := []byte("new-pw-654321")
-	hash, _ := bcrypt.GenerateFromPassword(newPassword, 12)
-	for _, u := range db.users {
-		if u.Email == "rotate@test.com" {
-			u.PasswordHash = string(hash)
-			break
-		}
-	}
-
-	for key := range dekCache.store {
-		delete(dekCache.store, key)
-	}
-
-	loginResp = dekDoPost(t, client, base+"/api/v1/auth/login",
-		`{"email":"rotate@test.com","password":"new-pw-654321"}`, "")
-	if loginResp.StatusCode != 200 {
-		body, _ := io.ReadAll(loginResp.Body)
-		loginResp.Body.Close()
-		t.Fatalf("Login with new password: %d: %s", loginResp.StatusCode, body)
-	}
-	loginResp.Body.Close()
-
-	resp = dekDoPost(t, client, base+"/api/v1/secrets",
-		`{"name":"post-rotate","type":"api-key","value":"sk-after","metadata":{"kind":"test","slug":"test"}}`, rawAPIKey)
-	if resp.StatusCode != 201 {
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		t.Fatalf("Create secret after rotation with re-wrapped DEK: %d: %s", resp.StatusCode, body)
-	}
-	resp.Body.Close()
-
-	t.Log("E2E API key DEK re-wrap after rotation: PASSED")
 }
 
 func TestE2E_APIKey_DEKTTLMatters(t *testing.T) {

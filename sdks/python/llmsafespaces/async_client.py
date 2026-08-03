@@ -372,23 +372,6 @@ class _AsyncAccountAPI:
     def __init__(self, client: AsyncLLMSafeSpaces):
         self._c = client
 
-    async def rotate_key(self, password: str) -> dict[str, Any]:
-        return await self._c._request("POST", "/account/rotate-key", json={"password": password})
-
-    async def change_password(self, old_password: str, new_password: str) -> None:
-        await self._c._request(
-            "POST",
-            "/account/change-password",
-            json={"oldPassword": old_password, "newPassword": new_password},
-        )
-
-    async def recover(self, user_id: str, recovery_key: str, new_password: str) -> dict[str, Any]:
-        return await self._c._request(
-            "POST",
-            "/account/recover",
-            json={"userId": user_id, "recoveryKey": recovery_key, "newPassword": new_password},
-        )
-
 
 class _AsyncSecretsAPI:
     def __init__(self, client: AsyncLLMSafeSpaces):

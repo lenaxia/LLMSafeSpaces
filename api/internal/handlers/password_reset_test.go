@@ -93,29 +93,24 @@ func (s *memUserStore) GetUserEmailVerified(_ context.Context, userID string) (b
 }
 
 type memKeyInit struct {
-	calls    int
-	lastPw   string
-	recoverK string
-	initErr  error
+	calls   int
+	initErr error
 }
 
-func (m *memKeyInit) InitializeUserKeys(_ context.Context, _ string, password []byte) (string, error) {
+func (m *memKeyInit) InitializeUserKeysServerKEK(_ context.Context, _ string, _ string) error {
 	m.calls++
-	m.lastPw = string(password)
-	return m.recoverK, m.initErr
+	return m.initErr
 }
 
 type memPwUpdater struct {
 	calls  int
 	lastID string
-	lastPw string
 	err    error
 }
 
 func (m *memPwUpdater) UpdatePasswordHash(_ context.Context, userID string, pw []byte) error {
 	m.calls++
 	m.lastID = userID
-	m.lastPw = string(pw)
 	return m.err
 }
 
@@ -179,8 +174,8 @@ func TestPasswordReset_Request_KnownVerifiedUser_SendsEmail(t *testing.T) {
 
 	fp := &fakeEmailProvider{}
 	emailSVC := emailsvc.NewService(fp, "https://app.test", "ses")
+	h := NewPasswordResetHandler(store, users, &memKeyInit{}, &memPwUpdater{}, &memSessionRevoker{}, emailSVC, nil)
 
-	h := NewPasswordResetHandler(store, users, &memKeyInit{recoverK: "newkey"}, &memPwUpdater{}, &memSessionRevoker{}, emailSVC, nil)
 	router := setupPasswordResetRouter(h)
 
 	w := doRequest(router, http.MethodPost, "/api/v1/auth/password-reset/request", `{"email":"alice@test.com"}`)
@@ -249,9 +244,9 @@ func TestPasswordReset_Confirm_ValidToken_ResetsEverything(t *testing.T) {
 
 	fp := &fakeEmailProvider{}
 	emailSVC := emailsvc.NewService(fp, "https://app.test", "ses")
-	keyInit := &memKeyInit{recoverK: "new-recovery-key"}
 	pwUp := &memPwUpdater{}
 	revoker := &memSessionRevoker{}
+	keyInit := &memKeyInit{}
 
 	h := NewPasswordResetHandler(store, users, keyInit, pwUp, revoker, emailSVC, nil)
 	router := setupPasswordResetRouter(h)
@@ -261,8 +256,7 @@ func TestPasswordReset_Confirm_ValidToken_ResetsEverything(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 
 	// DEK reinitialized
-	assert.Equal(t, 1, keyInit.calls, "InitializeUserKeys must be called once")
-	assert.Equal(t, "newpass123", keyInit.lastPw)
+	assert.Equal(t, 1, keyInit.calls, "InitializeUserKeysServerKEK must be called once")
 
 	// bcrypt hash updated
 	assert.Equal(t, 1, pwUp.calls, "UpdatePasswordHash must be called once")
@@ -279,10 +273,10 @@ func TestPasswordReset_Confirm_ValidToken_ResetsEverything(t *testing.T) {
 	// token consumed (single-use)
 	assert.NotNil(t, store.tokens[tokenHash].ConsumedAt, "token must be consumed")
 
-	// response includes the new recovery key
+	// response confirms reset
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, "new-recovery-key", resp["recoveryKey"])
+	assert.Equal(t, true, resp["reset"])
 }
 
 func TestPasswordReset_Confirm_PurgesUserSecrets(t *testing.T) {
@@ -300,9 +294,9 @@ func TestPasswordReset_Confirm_PurgesUserSecrets(t *testing.T) {
 	users.emailVer["user-1"] = true
 
 	purger := &memSecretPurger{}
+	h := NewPasswordResetHandler(store, newMemUserStore(), &memKeyInit{}, &memPwUpdater{}, &memSessionRevoker{}, emailsvc.NewService(&fakeEmailProvider{}, "", ""), nil)
 	neutralizer := &memWorkspaceNeutralizer{}
 
-	h := NewPasswordResetHandler(store, users, &memKeyInit{recoverK: "rk"}, &memPwUpdater{}, &memSessionRevoker{}, emailsvc.NewService(&fakeEmailProvider{}, "", ""), nil)
 	h.SetSecretPurger(purger)
 	h.SetWorkspaceNeutralizer(neutralizer)
 	router := setupPasswordResetRouter(h)
@@ -322,7 +316,7 @@ func TestPasswordReset_Confirm_PurgesUserSecrets(t *testing.T) {
 func TestPasswordReset_Confirm_PurgeFailure_IsNonFatal(t *testing.T) {
 	// A purge or neutralize failure must NOT fail the reset: the DEK
 	// reinit already cryptographically erased the secrets, so cleanup is
-	// best-effort. The user still gets a recovery key and a 200.
+	// best-effort. The user still gets a 200.
 	store := newMemTokenStore()
 	tokenHash := hashTokenForTest("purgefail-token")
 	store.tokens[tokenHash] = &types.EmailToken{
@@ -333,7 +327,7 @@ func TestPasswordReset_Confirm_PurgeFailure_IsNonFatal(t *testing.T) {
 		ExpiresAt: time.Now().Add(10 * time.Minute),
 	}
 
-	h := NewPasswordResetHandler(store, newMemUserStore(), &memKeyInit{recoverK: "rk"}, &memPwUpdater{}, &memSessionRevoker{}, emailsvc.NewService(&fakeEmailProvider{}, "", ""), nil)
+	h := NewPasswordResetHandler(store, newMemUserStore(), &memKeyInit{}, &memPwUpdater{}, &memSessionRevoker{}, emailsvc.NewService(&fakeEmailProvider{}, "", ""), nil)
 	h.SetSecretPurger(&memSecretPurger{err: errors.New("db down")})
 	h.SetWorkspaceNeutralizer(&memWorkspaceNeutralizer{err: errors.New("k8s down")})
 	router := setupPasswordResetRouter(h)
@@ -344,7 +338,7 @@ func TestPasswordReset_Confirm_PurgeFailure_IsNonFatal(t *testing.T) {
 
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, "rk", resp["recoveryKey"], "recovery key must still be returned")
+	assert.Equal(t, true, resp["reset"])
 }
 
 func TestPasswordReset_Confirm_ExpiredToken_410(t *testing.T) {
@@ -498,8 +492,8 @@ func TestPasswordReset_Confirm_BcryptUpdateFailure_500(t *testing.T) {
 	}
 
 	pwUp := &memPwUpdater{err: errors.New("db write failed")}
+	h := NewPasswordResetHandler(store, newMemUserStore(), &memKeyInit{}, pwUp, &memSessionRevoker{}, emailsvc.NewService(&fakeEmailProvider{}, "", ""), nil)
 
-	h := NewPasswordResetHandler(store, newMemUserStore(), &memKeyInit{recoverK: "k"}, pwUp, &memSessionRevoker{}, emailsvc.NewService(&fakeEmailProvider{}, "", ""), nil)
 	router := setupPasswordResetRouter(h)
 
 	w := doRequest(router, http.MethodPost, "/api/v1/auth/password-reset/confirm",
@@ -576,7 +570,7 @@ func TestPasswordReset_RoutesRegistered(t *testing.T) {
 	h := NewPasswordResetHandler(
 		newMemTokenStore(),
 		newMemUserStore(),
-		&memKeyInit{recoverK: "key"},
+		&memKeyInit{},
 		&memPwUpdater{},
 		&memSessionRevoker{},
 		emailsvc.NewService(&fakeEmailProvider{}, "https://app.test", "noop"),

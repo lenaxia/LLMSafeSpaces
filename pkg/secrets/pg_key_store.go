@@ -49,7 +49,7 @@ func (s *PgKeyStore) GetUserKey(ctx context.Context, userID string) (*UserKeyRec
 // This is required because user_keys.user_id is the PRIMARY KEY and a
 // plain INSERT would fail with unique_violation for any user who has
 // ever created a secret, which is the only case where reinit matters.
-// Overwriting with a freshly-generated DEK (see InitializeUserKeys)
+// Overwriting with a freshly-generated DEK (see InitializeUserKeysServerKEK)
 // is exactly the desired reset behavior: the prior wraps and anything
 // encrypted under the prior DEK become permanently undecryptable.
 //
@@ -139,9 +139,9 @@ func (s *PgKeyStore) UpdateWrappedDEKRecovery(ctx context.Context, userID string
 }
 
 // UpdateWrappedDEKAndSource atomically re-wraps the DEK AND flips
-// users.dek_source in a single transaction. Used by KeyService.ChangePassword
+// users.dek_source in a single transaction. Used by the provisioning path
 // when a server_kek-tier user sets their first password (opt-up to the stronger
-// password tier). Like the other update methods, an active *pgx.Tx threaded
+// legacy tier). Like the other update methods, an active *pgx.Tx threaded
 // through the context is honored; otherwise a fresh transaction is owned here.
 func (s *PgKeyStore) UpdateWrappedDEKAndSource(ctx context.Context, userID string, wrappedDEK, salt []byte, keyVersion int, dekSource string) error {
 	const (

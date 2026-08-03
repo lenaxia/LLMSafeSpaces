@@ -71,8 +71,9 @@ func TestKeyService_InitializeUserKeys_StoreFailure(t *testing.T) {
 	store := &failingKeyStore{failOn: "create"}
 	cache := newMockDEKCache()
 	svc := NewKeyService(store, cache)
+	svc.SetAPIKeyStore(nil, &recordingProvider{})
 
-	_, err := svc.InitializeUserKeys(context.Background(), "user-1", []byte("pw"))
+	err := svc.InitializeUserKeysServerKEK(context.Background(), "user-1", "server_kek")
 	if err == nil {
 		t.Error("Should fail when store.CreateUserKey fails")
 	}
@@ -93,12 +94,14 @@ func TestKeyService_UnlockDEK_CacheFailure(t *testing.T) {
 	store := newMockKeyStore()
 	cache := &failingDEKCache{failOn: "cache"}
 	svc := NewKeyService(store, cache)
+	svc.SetAPIKeyStore(nil, &recordingProvider{})
 	ctx := context.Background()
 
 	// Initialize with working store
 	realCache := newMockDEKCache()
 	realSvc := NewKeyService(store, realCache)
-	realSvc.InitializeUserKeys(ctx, "user-1", []byte("pw"))
+	realSvc.SetAPIKeyStore(nil, &recordingProvider{})
+	realSvc.InitializeUserKeysServerKEK(ctx, "user-1", "server_kek")
 
 	// Now try to unlock with failing cache
 	err := svc.UnlockDEK(ctx, "user-1", []byte("pw"), "sess", time.Hour)
@@ -126,39 +129,6 @@ func TestKeyService_HasKeys_StoreFailure(t *testing.T) {
 	_, err := svc.HasKeys(context.Background(), "user-1")
 	if err == nil {
 		t.Error("Should propagate store error")
-	}
-}
-
-func TestKeyService_ChangePassword_NoKeys(t *testing.T) {
-	store := newMockKeyStore()
-	cache := newMockDEKCache()
-	svc := NewKeyService(store, cache)
-
-	err := svc.ChangePassword(context.Background(), "nonexistent", "", []byte("old"), []byte("new"))
-	if err == nil {
-		t.Error("ChangePassword for user without keys should fail")
-	}
-}
-
-func TestKeyService_ResetWithRecoveryKey_NoKeys(t *testing.T) {
-	store := newMockKeyStore()
-	cache := newMockDEKCache()
-	svc := NewKeyService(store, cache)
-
-	_, err := svc.ResetWithRecoveryKey(context.Background(), "nonexistent", "aabbccdd", []byte("new"))
-	if err == nil {
-		t.Error("ResetWithRecoveryKey for user without keys should fail")
-	}
-}
-
-func TestKeyService_RotateKeyWithPassword_NoKeys(t *testing.T) {
-	store := newMockKeyStore()
-	cache := newMockDEKCache()
-	svc := NewKeyService(store, cache)
-
-	_, err := svc.RotateKeyWithPassword(context.Background(), "nonexistent", []byte("pw"), "sess", time.Hour)
-	if err == nil {
-		t.Error("RotateKeyWithPassword for user without keys should fail")
 	}
 }
 

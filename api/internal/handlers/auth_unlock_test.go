@@ -10,7 +10,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
@@ -18,7 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/lenaxia/llmsafespaces/pkg/secrets"
+	pkgerrors "github.com/lenaxia/llmsafespaces/pkg/errors"
 )
 
 // captureUnlocker is a DEKUnlocker spy that records the call args and
@@ -94,27 +93,14 @@ func TestUnlockDEK_HappyPath(t *testing.T) {
 	matchedKey := []byte("matched-signing-key-32-bytes-pad")
 	r := setupUnlockRouter(t, unlocker, "u-1", "11111111-2222-3333-4444-555555555555", matchedKey)
 
-	rec := doUnlockRequest(t, r, map[string]string{"password": "correct"})
+	rec := doUnlockRequest(t, r, nil)
 
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 	assert.Equal(t, 1, unlocker.calls)
 	assert.Equal(t, "u-1", unlocker.lastUserID)
 	assert.Equal(t, "11111111-2222-3333-4444-555555555555", unlocker.lastSessionID)
-	assert.Equal(t, []byte("correct"), unlocker.lastPassword)
 	assert.Equal(t, matchedKey, unlocker.lastSigningKey, "soft-unlock MUST wrap under matched key, not active")
 	assert.Greater(t, unlocker.lastTTL, time.Duration(0))
-}
-
-func TestUnlockDEK_WrongPassword_Returns401_JWTRemainsValid(t *testing.T) {
-	// JWT not invalidated: the response is a 401 with a clear message,
-	// nothing more. The same JWT remains valid for future requests.
-	unlocker := &captureUnlocker{err: secrets.ErrInvalidPassword}
-	r := setupUnlockRouter(t, unlocker, "u-2", "11111111-2222-3333-4444-555555555555", []byte("sk"))
-
-	rec := doUnlockRequest(t, r, map[string]string{"password": "wrong"})
-
-	assert.Equal(t, http.StatusUnauthorized, rec.Code)
-	assert.Contains(t, rec.Body.String(), "invalid password")
 }
 
 func TestUnlockDEK_Unauthenticated_Returns401(t *testing.T) {
@@ -123,7 +109,7 @@ func TestUnlockDEK_Unauthenticated_Returns401(t *testing.T) {
 	// AuthMiddleware in a misconfigured test or partial outage.
 	r := setupUnlockRouter(t, unlocker, "", "", nil)
 
-	rec := doUnlockRequest(t, r, map[string]string{"password": "anything"})
+	rec := doUnlockRequest(t, r, nil)
 
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 	assert.Equal(t, 0, unlocker.calls)
@@ -136,7 +122,7 @@ func TestUnlockDEK_NoMatchedSigningKey_Returns400(t *testing.T) {
 	unlocker := &captureUnlocker{}
 	r := setupUnlockRouter(t, unlocker, "u-3", "11111111-2222-3333-4444-555555555555", nil)
 
-	rec := doUnlockRequest(t, r, map[string]string{"password": "x"})
+	rec := doUnlockRequest(t, r, nil)
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Contains(t, rec.Body.String(), "requires a JWT session")
@@ -148,42 +134,33 @@ func TestUnlockDEK_APIKeySession_Returns400(t *testing.T) {
 	unlocker := &captureUnlocker{}
 	r := setupUnlockRouter(t, unlocker, "u-4", "apikey:abcdef", []byte("sk"))
 
-	rec := doUnlockRequest(t, r, map[string]string{"password": "x"})
+	rec := doUnlockRequest(t, r, nil)
 
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 	assert.Contains(t, rec.Body.String(), "api_keys")
-}
-
-func TestUnlockDEK_MissingPassword_Returns400(t *testing.T) {
-	unlocker := &captureUnlocker{}
-	r := setupUnlockRouter(t, unlocker, "u-5", "11111111-2222-3333-4444-555555555555", []byte("sk"))
-
-	rec := doUnlockRequest(t, r, map[string]string{})
-
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
-	assert.Contains(t, rec.Body.String(), "password")
-}
-
-func TestUnlockDEK_OversizedBody_Rejected(t *testing.T) {
-	unlocker := &captureUnlocker{}
-	r := setupUnlockRouter(t, unlocker, "u-6", "11111111-2222-3333-4444-555555555555", []byte("sk"))
-
-	huge := strings.Repeat("A", 10*1024)
-	rec := doUnlockRequest(t, r, map[string]string{"password": huge})
-
-	assert.Equal(t, http.StatusBadRequest, rec.Code)
-	assert.Equal(t, 0, unlocker.calls)
 }
 
 func TestUnlockDEK_InternalError_Returns500(t *testing.T) {
 	unlocker := &captureUnlocker{err: errors.New("transient DB outage")}
 	r := setupUnlockRouter(t, unlocker, "u-7", "11111111-2222-3333-4444-555555555555", []byte("sk"))
 
-	rec := doUnlockRequest(t, r, map[string]string{"password": "ok"})
+	rec := doUnlockRequest(t, r, nil)
 
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 	// Generic message — no leak of "transient DB outage" detail.
 	assert.NotContains(t, rec.Body.String(), "transient")
+}
+
+func TestUnlockDEK_StatusError_MapsToStatusFromError(t *testing.T) {
+	// The handler maps *StatusError → se.Status so service-layer HTTP
+	// status codes propagate correctly (e.g. 503 for ErrServerKEKUnavailable).
+	unlocker := &captureUnlocker{err: pkgerrors.NewStatusError(http.StatusServiceUnavailable, "UNAVAILABLE", "key provider down")}
+	r := setupUnlockRouter(t, unlocker, "u-8", "11111111-2222-3333-4444-555555555555", []byte("sk"))
+
+	rec := doUnlockRequest(t, r, nil)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.Contains(t, rec.Body.String(), "key provider down")
 }
 
 func TestUnlockDEK_RegressionForRotatedJWT_WrapsUnderMatchedKey(t *testing.T) {
@@ -198,7 +175,7 @@ func TestUnlockDEK_RegressionForRotatedJWT_WrapsUnderMatchedKey(t *testing.T) {
 	unlocker := &captureUnlocker{}
 	r := setupUnlockRouter(t, unlocker, "u-rot", "11111111-2222-3333-4444-555555555555", keyA)
 
-	rec := doUnlockRequest(t, r, map[string]string{"password": "pw"})
+	rec := doUnlockRequest(t, r, nil)
 
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 	assert.Equal(t, keyA, unlocker.lastSigningKey, "regression: soft-unlock must wrap under matched key A, not the (test) active key")
@@ -212,7 +189,7 @@ func TestUnlockDEK_DurableRowTTLMatchesJWTRemaining(t *testing.T) {
 	expIn4h := time.Now().Add(4 * time.Hour).Unix()
 	r := setupUnlockRouterWithExp(t, unlocker, "u-ttl", "11111111-2222-3333-4444-555555555555", []byte("sk"), expIn4h)
 
-	rec := doUnlockRequest(t, r, map[string]string{"password": "pw"})
+	rec := doUnlockRequest(t, r, nil)
 
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 	// Allow a 5s slack window for test scheduling jitter.
@@ -226,7 +203,7 @@ func TestUnlockDEK_NoJWTExp_FallsBackToOneHour(t *testing.T) {
 	unlocker := &captureUnlocker{}
 	r := setupUnlockRouterWithExp(t, unlocker, "u-noexp", "11111111-2222-3333-4444-555555555555", []byte("sk"), 0)
 
-	rec := doUnlockRequest(t, r, map[string]string{"password": "pw"})
+	rec := doUnlockRequest(t, r, nil)
 
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 	assert.Equal(t, time.Hour, unlocker.lastTTL, "no exp on context → 1h fallback")
@@ -240,7 +217,7 @@ func TestUnlockDEK_TokenAlreadyExpired_Returns401(t *testing.T) {
 	expInPast := time.Now().Add(-time.Minute).Unix()
 	r := setupUnlockRouterWithExp(t, unlocker, "u-exp", "11111111-2222-3333-4444-555555555555", []byte("sk"), expInPast)
 
-	rec := doUnlockRequest(t, r, map[string]string{"password": "pw"})
+	rec := doUnlockRequest(t, r, nil)
 
 	assert.Equal(t, http.StatusUnauthorized, rec.Code)
 	assert.Equal(t, 0, unlocker.calls)
@@ -254,7 +231,7 @@ func TestUnlockDEK_TTLCappedAt30Days(t *testing.T) {
 	expWayOut := time.Now().Add(100 * 365 * 24 * time.Hour).Unix()
 	r := setupUnlockRouterWithExp(t, unlocker, "u-huge", "11111111-2222-3333-4444-555555555555", []byte("sk"), expWayOut)
 
-	rec := doUnlockRequest(t, r, map[string]string{"password": "pw"})
+	rec := doUnlockRequest(t, r, nil)
 
 	assert.Equal(t, http.StatusNoContent, rec.Code)
 	assert.Equal(t, 30*24*time.Hour, unlocker.lastTTL)

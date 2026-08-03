@@ -283,7 +283,6 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	var secretsHandler *handlers.SecretsHandler
 	var modelsHandler *handlers.ModelsHandler
 	var workspaceEnvHandler *handlers.WorkspaceEnvHandler
-	var rotateKeyHandler *handlers.RotateKeyHandler
 	var unlockDEKHandler *handlers.UnlockDEKHandler
 	var adminProvCredHandler *handlers.AdminProviderCredentialsHandler
 	var userProvCredHandler *handlers.UserProviderCredentialsHandler
@@ -386,7 +385,6 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		}
 
 		var secretService *secrets.SecretService
-		var auditStore secrets.SecretStore
 		if pgxErr != nil {
 			// Refusing to start is the only correct response: the
 			// in-memory adapter fallback (dbSecretStoreAdapter,
@@ -432,7 +430,6 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// best-effort — see pkg/secrets/jwt_session_janitor.go.
 		jwtSessionJanitor = secrets.NewJWTSessionJanitor(jwtSessionStore, 0, log)
 		secretService = secrets.NewSecretService(keyService, asyncAudit)
-		auditStore = asyncAudit
 
 		// M2-a: shared model cache between SecretsHandler (evicts on bind) and
 		// ModelsHandler (reads on ListModels). One cache, two consumers.
@@ -587,37 +584,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		// verifier — see pkg/secrets/secret_service.go.
 		secretService.SetAdminProvider(providerCredsProv)
 		secretService.SetOrgProvider(orgCredsProv)
-		rotateKeyHandler = handlers.NewRotateKeyHandler(keyService)
-		rotateKeyHandler.SetPasswordUpdater(&bcryptPasswordUpdater{db: svc.Database})
-		rotateKeyHandler.SetLogger(log)
-		// G38: revoke every outstanding JWT after a successful password
-		// change so a stolen pre-change token stops working. The auth
-		// service is the canonical owner of RevokeAllUserSessions (it
-		// also writes the per-jti + per-hash Redis revocation markers
-		// and clears durable jwt_sessions rows — see auth.go:1163).
-		// The type assertion guards non-production wiring (tests,
-		// alternative auth backends) where svc.Auth is not the concrete
-		// *auth.Service; in that case ChangePassword succeeds without
-		// revocation, matching the pre-G38 behavior.
-		if authSvc, ok := svc.Auth.(*auth.Service); ok {
-			rotateKeyHandler.SetSessionRevoker(authSvc)
-		}
 		// Epic 56: soft-unlock handler — same KeyService backing
 		// UnlockDEKWithSigningKey for rewriting the durable jwt_sessions
 		// row when a Valkey miss + missing/stale durable row needs the
 		// user to re-enter their password.
 		unlockDEKHandler = handlers.NewUnlockDEKHandler(keyService)
-		rotateKeyHandler.SetAuditFunc(func(userID, action string) {
-			entry := &secrets.AuditEntry{
-				UserID:    userID,
-				Action:    action,
-				Metadata:  []byte(`{}`),
-				Timestamp: time.Now(),
-			}
-			if err := auditStore.LogAudit(context.Background(), entry); err != nil {
-				log.Warn("Failed to log audit entry for key rotation", "error", err)
-			}
-		})
 
 		rkp := newRootKeyProvider(cfg, log)
 		// US-57.1 D7: fail-closed guard for the apiKeyProv path.
@@ -1151,7 +1122,6 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		SecretsHandler:                  secretsHandler,
 		ModelsHandler:                   modelsHandler,
 		WorkspaceEnvHandler:             workspaceEnvHandler,
-		RotateKeyHandler:                rotateKeyHandler,
 		UnlockDEKHandler:                unlockDEKHandler,
 		OrgsHandler:                     orgsHandler,
 		OrgCredentialsHandler:           orgCredsHandler,

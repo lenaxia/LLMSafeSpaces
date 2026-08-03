@@ -468,7 +468,7 @@ func TestRevokeAllUserSessions_NoTrackedSessions_Noop(t *testing.T) {
 // victim "logged out everywhere" — exactly the rehydrate path Epic 56 added.
 //
 // PR #421 review pass 2 noted that the three KeyService-level revocation
-// paths (EvictDEK, ChangePassword, RotateKeyWithPassword) all had
+// paths (EvictDEK, session revocation) all had
 // key_service_revocation_test.go coverage, but the fourth — the
 // auth-layer call at auth.go:1112 — was exercised only via stub mocks
 // that didn't record the call. A regression that deletes that one line
@@ -1036,20 +1036,12 @@ func TestRegister_CreateUserError(t *testing.T) {
 // fakeKeyService is a minimal in-process KeyServiceInterface for asserting
 // on the Register/Login DEK lifecycle without spinning up a real key service.
 type fakeKeyService struct {
-	initCalls                       []fakeKeyInitCall
 	serverKEKInitCalls              []string
 	unlockCalls                     []fakeKeyUnlockCall
 	deleteDurableSessionsForUserIDs []string // Epic 56: records userIDs of every DeleteDurableSessionsForUser call
 	hasKeysFn                       func(ctx context.Context, userID string) (bool, error)
-	initErr                         error
 	serverKEKInitErr                error
 	unlockErr                       error
-	recoveryKey                     string
-}
-
-type fakeKeyInitCall struct {
-	UserID   string
-	Password string
 }
 
 type fakeKeyUnlockCall struct {
@@ -1057,17 +1049,6 @@ type fakeKeyUnlockCall struct {
 	Password  string
 	SessionID string
 	TTL       time.Duration
-}
-
-func (f *fakeKeyService) InitializeUserKeys(ctx context.Context, userID string, password []byte) (string, error) {
-	f.initCalls = append(f.initCalls, fakeKeyInitCall{UserID: userID, Password: string(password)})
-	if f.initErr != nil {
-		return "", f.initErr
-	}
-	if f.recoveryKey == "" {
-		return "deadbeefcafef00d", nil
-	}
-	return f.recoveryKey, nil
 }
 
 func (f *fakeKeyService) InitializeUserKeysServerKEK(_ context.Context, userID, _ string) error {
@@ -1112,11 +1093,9 @@ func (f *fakeKeyService) CacheDEK(ctx context.Context, sessionID string, dek []b
 	return nil
 }
 
-// TestRegister_UnlocksDEKAndReturnsRecoveryKey is the regression test for
-// Bug 5 (Register must UnlockDEK so the new user can immediately CreateSecret)
-// and Bug 10 (Register must surface the recovery key one time so the user
-// can save it; the API does not store it anywhere recoverable).
-func TestRegister_UnlocksDEKAndReturnsRecoveryKey(t *testing.T) {
+// TestRegister_UnlocksDEK verifies Register provisions + unlocks the DEK
+
+func TestRegister_UnlocksDEK(t *testing.T) {
 	svc, mockDb, _ := newTestService(t)
 	ctx := context.Background()
 
@@ -1125,7 +1104,7 @@ func TestRegister_UnlocksDEKAndReturnsRecoveryKey(t *testing.T) {
 	mockDb.On("CreateUser", ctx, mock.Anything).Return(nil)
 	mockDb.On("UpdateUser", ctx, mock.Anything, mock.Anything).Return(nil).Maybe()
 
-	ks := &fakeKeyService{recoveryKey: "feedfacecafebabe1234567890abcdef"}
+	ks := &fakeKeyService{}
 	svc.SetKeyService(ks)
 
 	resp, err := svc.Register(ctx, types.RegisterRequest{
@@ -1139,19 +1118,15 @@ func TestRegister_UnlocksDEKAndReturnsRecoveryKey(t *testing.T) {
 
 	// Bug 5: UnlockDEK must be invoked with the JWT's jti so the issued
 	// token can be used for secret operations without a re-login.
-	require.Len(t, ks.initCalls, 1, "InitializeUserKeys must be called exactly once")
+	require.Len(t, ks.serverKEKInitCalls, 1, "InitializeUserKeysServerKEK must be called exactly once")
 	require.Len(t, ks.unlockCalls, 1, "UnlockDEK must be called exactly once on register")
-	assert.Equal(t, ks.initCalls[0].UserID, ks.unlockCalls[0].UserID)
-	assert.Equal(t, "securepassword123", ks.unlockCalls[0].Password)
 	assert.NotEmpty(t, ks.unlockCalls[0].SessionID, "UnlockDEK sessionID must be the JWT jti")
 	assert.Equal(t, utilities.ExtractJTI(resp.Token), ks.unlockCalls[0].SessionID,
 		"UnlockDEK sessionID must match the issued token's jti")
 	assert.Equal(t, svc.tokenDuration, ks.unlockCalls[0].TTL)
 
-	// Bug 10: the recovery key produced by InitializeUserKeys must reach
-	// the response. There is no other way for the user to obtain it.
-	assert.Equal(t, "feedfacecafebabe1234567890abcdef", resp.RecoveryKey,
-		"register response must include the one-time recovery key")
+	// The recovery key field is now always empty (password tier removed).
+	assert.Empty(t, resp.RecoveryKey, "register response must not include a recovery key")
 }
 
 // TestRegister_KeyInitFailureFailsClosed verifies that a failure to
@@ -1166,7 +1141,7 @@ func TestRegister_KeyInitFailureFailsClosed(t *testing.T) {
 	mockDb.On("CountUsers", ctx).Return(5, nil)
 	mockDb.On("CreateUser", ctx, mock.Anything).Return(nil)
 
-	ks := &fakeKeyService{initErr: errors.New("key svc down")}
+	ks := &fakeKeyService{serverKEKInitErr: errors.New("key svc down")}
 	svc.SetKeyService(ks)
 
 	resp, err := svc.Register(ctx, types.RegisterRequest{
@@ -1177,13 +1152,13 @@ func TestRegister_KeyInitFailureFailsClosed(t *testing.T) {
 
 	assert.Error(t, err)
 	assert.Nil(t, resp)
-	assert.Empty(t, ks.unlockCalls, "UnlockDEK must not be called when InitializeUserKeys fails")
+	assert.Empty(t, ks.unlockCalls, "UnlockDEK must not be called when key init fails")
 }
 
 // TestLogin_OmitsRecoveryKey ensures the RecoveryKey field is never set on
-// login responses. The recovery key is generated once at registration; it
-// is not retrievable via login. Returning anything here would be a leak of
-// stale or fabricated material.
+// login responses. In the server-KEK model there is no user-held recovery
+// key by design (the DEK is recoverable from the master KEK), so the field
+// must always be empty.
 func TestLogin_OmitsRecoveryKey(t *testing.T) {
 	svc, mockDb, _ := newTestService(t)
 	ctx := context.Background()

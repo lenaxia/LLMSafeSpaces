@@ -54,6 +54,7 @@ func TestE2E_MasterKey_FullLifecycle(t *testing.T) {
 	keyStore := newMockKeyStore()
 	secretStore := newMockSecretStore()
 	keySvc := NewKeyService(keyStore, cache)
+	keySvc.SetAPIKeyStore(nil, &recordingProvider{})
 	secretSvc := NewSecretService(keySvc, secretStore)
 
 	userID := "e2e-mk-user"
@@ -61,9 +62,9 @@ func TestE2E_MasterKey_FullLifecycle(t *testing.T) {
 	sessionID := "e2e-master-key-session"
 
 	// === Phase 1: Initialize keys and unlock DEK ===
-	_, err := keySvc.InitializeUserKeys(ctx, userID, password)
+	err := keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek")
 	if err != nil {
-		t.Fatalf("InitializeUserKeys: %v", err)
+		t.Fatalf("InitializeUserKeysServerKEK: %v", err)
 	}
 
 	err = keySvc.UnlockDEK(ctx, userID, password, sessionID, time.Hour)

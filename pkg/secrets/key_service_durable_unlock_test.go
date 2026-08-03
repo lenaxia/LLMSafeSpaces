@@ -26,10 +26,11 @@ func TestKeyService_UnlockDEK_WritesDurableRow_WhenSigningKeySupplied(t *testing
 	jwtStore := newMockJWTSessionStore()
 	svc := NewKeyService(store, cache)
 	svc.SetJWTSessionStore(jwtStore)
+	svc.SetAPIKeyStore(nil, &recordingProvider{})
 	ctx := context.Background()
 
 	password := []byte("correct horse battery staple")
-	_, err := svc.InitializeUserKeys(ctx, "u-1", password)
+	err := svc.InitializeUserKeysServerKEK(ctx, "u-1", "server_kek")
 	if err != nil {
 		t.Fatalf("init: %v", err)
 	}
@@ -90,11 +91,12 @@ func TestKeyService_UnlockDEKWithSigningKey_DurableWriteFailureIsNonFatal(t *tes
 	jwtStore.writeErr = errors.New("transient PG error")
 
 	svc := NewKeyService(store, cache)
+	svc.SetAPIKeyStore(nil, &recordingProvider{})
 	svc.SetJWTSessionStore(jwtStore)
 	ctx := context.Background()
 
 	password := []byte("pw")
-	_, _ = svc.InitializeUserKeys(ctx, "u-2", password)
+	_ = svc.InitializeUserKeysServerKEK(ctx, "u-2", "server_kek")
 
 	if err := svc.UnlockDEKWithSigningKey(ctx, "u-2", password, uuid.New().String(), time.Hour, []byte("sk")); err != nil {
 		t.Errorf("UnlockDEKWithSigningKey must not fail on durable-write error, got: %v", err)
@@ -107,10 +109,11 @@ func TestKeyService_UnlockDEKWithSigningKey_NoStoreSkipsDurableWrite(t *testing.
 	store := newMockKeyStore()
 	cache := newMockDEKCache()
 	svc := NewKeyService(store, cache)
+	svc.SetAPIKeyStore(nil, &recordingProvider{})
 	ctx := context.Background()
 
 	password := []byte("pw")
-	_, _ = svc.InitializeUserKeys(ctx, "u-3", password)
+	_ = svc.InitializeUserKeysServerKEK(ctx, "u-3", "server_kek")
 
 	if err := svc.UnlockDEKWithSigningKey(ctx, "u-3", password, uuid.New().String(), time.Hour, []byte("sk")); err != nil {
 		t.Errorf("no store should still work: %v", err)
@@ -125,10 +128,11 @@ func TestKeyService_UnlockDEKWithSigningKey_NilSigningKeySkipsDurableWrite(t *te
 	jwtStore := newMockJWTSessionStore()
 	svc := NewKeyService(store, cache)
 	svc.SetJWTSessionStore(jwtStore)
+	svc.SetAPIKeyStore(nil, &recordingProvider{})
 	ctx := context.Background()
 
 	password := []byte("pw")
-	_, _ = svc.InitializeUserKeys(ctx, "u-4", password)
+	_ = svc.InitializeUserKeysServerKEK(ctx, "u-4", "server_kek")
 
 	if err := svc.UnlockDEKWithSigningKey(ctx, "u-4", password, uuid.New().String(), time.Hour, nil); err != nil {
 		t.Fatalf("nil signing key should still succeed: %v", err)
@@ -148,37 +152,17 @@ func TestKeyService_UnlockDEKWithSigningKey_NonUUIDSessionIDSkipsDurableWrite(t 
 	jwtStore := newMockJWTSessionStore()
 	svc := NewKeyService(store, cache)
 	svc.SetJWTSessionStore(jwtStore)
+	svc.SetAPIKeyStore(nil, &recordingProvider{})
 	ctx := context.Background()
 
 	password := []byte("pw")
-	_, _ = svc.InitializeUserKeys(ctx, "u-5", password)
+	_ = svc.InitializeUserKeysServerKEK(ctx, "u-5", "server_kek")
 
 	if err := svc.UnlockDEKWithSigningKey(ctx, "u-5", password, "apikey:hash", time.Hour, []byte("sk")); err != nil {
 		t.Errorf("non-uuid sessionID should not fail unlock: %v", err)
 	}
 	if jwtStore.WriteCount != 0 {
 		t.Errorf("non-uuid sessionID must not write durable row, WriteCount=%d", jwtStore.WriteCount)
-	}
-}
-
-func TestKeyService_UnlockDEKWithSigningKey_WrongPasswordFails(t *testing.T) {
-	// Wrong password must propagate through both paths: no Redis cache,
-	// no durable write.
-	store := newMockKeyStore()
-	cache := newMockDEKCache()
-	jwtStore := newMockJWTSessionStore()
-	svc := NewKeyService(store, cache)
-	svc.SetJWTSessionStore(jwtStore)
-	ctx := context.Background()
-
-	_, _ = svc.InitializeUserKeys(ctx, "u-6", []byte("correct"))
-
-	err := svc.UnlockDEKWithSigningKey(ctx, "u-6", []byte("wrong"), uuid.New().String(), time.Hour, []byte("sk"))
-	if err == nil {
-		t.Errorf("wrong password should fail")
-	}
-	if jwtStore.WriteCount != 0 {
-		t.Errorf("wrong password must not write durable row")
 	}
 }
 
@@ -190,10 +174,11 @@ func TestKeyService_UnlockDEK_BackwardCompatible(t *testing.T) {
 	jwtStore := newMockJWTSessionStore()
 	svc := NewKeyService(store, cache)
 	svc.SetJWTSessionStore(jwtStore)
+	svc.SetAPIKeyStore(nil, &recordingProvider{})
 	ctx := context.Background()
 
 	password := []byte("pw")
-	_, _ = svc.InitializeUserKeys(ctx, "u-7", password)
+	_ = svc.InitializeUserKeysServerKEK(ctx, "u-7", "server_kek")
 
 	if err := svc.UnlockDEK(ctx, "u-7", password, uuid.New().String(), time.Hour); err != nil {
 		t.Fatalf("legacy UnlockDEK: %v", err)

@@ -391,7 +391,6 @@ func newContractFixture(t *testing.T) *gin.Engine {
 		SecretsHandler:      &handlers.SecretsHandler{},
 		ModelsHandler:       &handlers.ModelsHandler{},
 		WorkspaceEnvHandler: &handlers.WorkspaceEnvHandler{},
-		RotateKeyHandler:    &handlers.RotateKeyHandler{},
 		TerminalHandler:     &handlers.TerminalHandler{},
 		// Epic 53: MCP server handlers. Zero-value stubs are sufficient —
 		// the contract test only checks route presence, not behavior.

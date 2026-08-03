@@ -282,6 +282,7 @@ func setupSecretService(t *testing.T) (*SecretService, *mockSecretStore, string)
 	keyStore := newMockKeyStore()
 	dekCache := newMockDEKCache()
 	keySvc := NewKeyService(keyStore, dekCache)
+	keySvc.SetAPIKeyStore(nil, &recordingProvider{})
 	secretStore := newMockSecretStore()
 	svc := NewSecretService(keySvc, secretStore)
 
@@ -290,9 +291,9 @@ func setupSecretService(t *testing.T) (*SecretService, *mockSecretStore, string)
 	password := []byte("test-password")
 	sessionID := "session-1"
 
-	_, err := keySvc.InitializeUserKeys(ctx, userID, password)
+	err := keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek")
 	if err != nil {
-		t.Fatalf("InitializeUserKeys failed: %v", err)
+		t.Fatalf("InitializeUserKeysServerKEK failed: %v", err)
 	}
 	err = keySvc.UnlockDEK(ctx, userID, password, sessionID, time.Hour)
 	if err != nil {
@@ -685,7 +686,7 @@ func TestSecretService_CreateSecret_NoSession(t *testing.T) {
 	ctx := context.Background()
 
 	// Initialize keys but don't unlock
-	_, _ = keySvc.InitializeUserKeys(ctx, "user-1", []byte("pw"))
+	_ = keySvc.InitializeUserKeysServerKEK(ctx, "user-1", "server_kek")
 
 	_, err := svc.CreateSecret(ctx, "user-1", "no-session", nil, CreateSecretRequest{
 		Name:  "test",

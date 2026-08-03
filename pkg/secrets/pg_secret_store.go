@@ -155,7 +155,7 @@ func txFromContext(ctx context.Context) pgx.Tx {
 // ReEncryptUserSecrets walks every user_secrets row owned by userID
 // inside a single SERIALIZABLE transaction, retrying on serialization
 // failure. After the walk completes the commit closure runs in the
-// same transaction so callers (KeyService.RotateKeyWithPassword) can
+// same transaction so callers can
 // update related rows (e.g. user_keys.wrapped_dek) atomically. If
 // commit returns non-nil the entire transaction rolls back: secrets
 // stay encrypted with the old DEK and user_keys stays unchanged.

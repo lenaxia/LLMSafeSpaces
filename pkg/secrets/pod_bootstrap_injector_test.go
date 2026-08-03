@@ -61,6 +61,7 @@ func TestInjectSecretsForPodBootstrap_NoJWTSessions_DegradesToSessionless(t *tes
 	keyStore := newMockKeyStore()
 	dekCache := newMockDEKCache()
 	keySvc := NewKeyService(keyStore, dekCache) // no SetJWTSessionStore
+	keySvc.SetAPIKeyStore(nil, &recordingProvider{})
 	secretStore := newMockSecretStore()
 	svc := NewSecretService(keySvc, secretStore)
 
@@ -82,6 +83,7 @@ func TestInjectSecretsForPodBootstrap_EmptyJWTSessionsTable_DegradesToSessionles
 	keyStore := newMockKeyStore()
 	dekCache := newMockDEKCache()
 	keySvc := NewKeyService(keyStore, dekCache)
+	keySvc.SetAPIKeyStore(nil, &recordingProvider{})
 	keySvc.SetJWTSessionStore(newMockJWTSessionStore()) // empty
 	secretStore := newMockSecretStore()
 	svc := NewSecretService(keySvc, secretStore)

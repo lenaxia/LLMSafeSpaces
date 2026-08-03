@@ -210,7 +210,7 @@ func TestAuthMiddleware_LoginAutoInitsKeysForExistingUser(t *testing.T) {
 	svc.SetKeyService(ks)
 
 	// Simulate login (we can't call Login directly without password hash, so test the logic path)
-	// Instead, verify the KeyServiceInterface has HasKeys + InitializeUserKeys
+	// Instead, verify the KeyServiceInterface has HasKeys + InitializeUserKeysServerKEK
 	ctx := context.Background()
 
 	// HasKeys returns false for new user
@@ -219,8 +219,8 @@ func TestAuthMiddleware_LoginAutoInitsKeysForExistingUser(t *testing.T) {
 		t.Error("Should not have keys initially")
 	}
 
-	// After InitializeUserKeys, HasKeys returns true
-	ks.InitializeUserKeys(ctx, "existing-user", []byte("pw"))
+	// After InitializeUserKeysServerKEK, HasKeys returns true
+	_ = ks.InitializeUserKeysServerKEK(ctx, "existing-user", "server_kek")
 	has, _ = ks.HasKeys(ctx, "existing-user")
 	if !has {
 		t.Error("Should have keys after init")
@@ -229,14 +229,6 @@ func TestAuthMiddleware_LoginAutoInitsKeysForExistingUser(t *testing.T) {
 
 type trackingKeyService struct {
 	initialized map[string]bool
-}
-
-func (t *trackingKeyService) InitializeUserKeys(_ context.Context, userID string, _ []byte) (string, error) {
-	if t.initialized == nil {
-		t.initialized = make(map[string]bool)
-	}
-	t.initialized[userID] = true
-	return "recovery-key-hex", nil
 }
 
 func (t *trackingKeyService) InitializeUserKeysServerKEK(_ context.Context, userID, _ string) error {

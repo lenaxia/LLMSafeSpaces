@@ -18,7 +18,7 @@ type RotationRow struct {
 	KeyVersion int
 	// DEKSource is users.dek_source for user_keys rows ("server_kek" / "passkey"
 	// / "password"). Password-tier user_keys rows are NOT rotatable by the KEK
-	// rotation CLI (their wrap key is derived from the user's password, which the
+	// rotation CLI (their wrap key is the server master KEK, which the
 	// CLI does not hold) and MUST be excluded by the RotationStore's
 	// ListRotationRows("user_keys", ...). Empty for non-user_keys tables.
 	DEKSource string
@@ -194,7 +194,7 @@ func (c *RotationCoordinator) RotateTable(ctx context.Context, table, resumeFrom
 //
 // "user_keys" is included (Epic 58): the store's ListRotationRows("user_keys")
 // returns ONLY server_kek/passkey rows — password-tier rows are excluded because
-// they wrap the DEK with a password-derived KEK the rotation CLI cannot reproduce.
+// they wrap the DEK with a server-side master KEK the rotation CLI re-wraps.
 func (c *RotationCoordinator) RotateAll(ctx context.Context, targetVersion int, dryRun bool) (map[string]KEKRotationResult, error) {
 	tables := []string{"provider_credentials", "api_keys", "org_sso_configs", "user_keys"}
 	results := make(map[string]KEKRotationResult, len(tables))

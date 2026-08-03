@@ -104,8 +104,8 @@ func (s *Service) SendPasswordChanged(ctx context.Context, to string) error {
 	return s.provider.Send(ctx, email.Message{
 		To:       to,
 		Subject:  "Your LLMSafeSpaces password was changed",
-		TextBody: "Your LLMSafeSpaces password was changed. If this was you, no action is needed. If this was not you, contact your administrator immediately or use your recovery key.",
-		HTMLBody: "<p>Your LLMSafeSpaces password was changed.</p><p>If this was you, no action is needed.</p><p><strong>If this was not you, contact your administrator immediately or use your recovery key.</strong></p>",
+		TextBody: "Your LLMSafeSpaces password was changed. If this was you, no action is needed. If this was not you, contact your administrator immediately or reset your password via email.",
+		HTMLBody: "<p>Your LLMSafeSpaces password was changed.</p><p>If this was you, no action is needed.</p><p><strong>If this was not you, contact your administrator immediately or reset your password via email.</strong></p>",
 	})
 }
 
