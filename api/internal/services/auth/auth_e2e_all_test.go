@@ -409,3 +409,74 @@ func (m *apiKeyAwareDB) Stop() error                                            
 func (m *apiKeyAwareDB) ListAllWorkspaceOwners(context.Context) (map[string]string, error) {
 	return nil, nil
 }
+
+func setupRealAuthRouter(t *testing.T) (*gin.Engine, string, *testContext) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+
+	cfg := testConfig()
+	log := testLogger()
+	db := &fullMockDB{users: make(map[string]*types.User)}
+	cache := newStatefulMockCache()
+
+	authSvc, _ := New(cfg, log, db, cache)
+
+	keyStore := &memKeyStore{records: make(map[string]*secrets.UserKeyRecord)}
+	dekCache := &memDEKCache{store: make(map[string][]byte)}
+	keySvc := secrets.NewKeyService(keyStore, dekCache)
+	testProv, _ := secrets.NewStaticKeyProvider(make([]byte, 32))
+	keySvc.SetAPIKeyStore(nil, testProv)
+	secretStore := &memSecretStore{secrets: make(map[string]*secrets.UserSecret), bindings: make(map[string][]string)}
+	secretSvc := secrets.NewSecretService(keySvc, secretStore)
+	secretsHandler := handlers.NewSecretsHandler(secretSvc)
+	envHandler := handlers.NewWorkspaceEnvHandler(secretSvc)
+
+	tc := &testContext{}
+	authSvc.SetKeyService(&capturingKeyService{inner: keySvc, tc: tc})
+
+	router := gin.New()
+	router.POST("/api/v1/auth/register", func(c *gin.Context) {
+		var req types.RegisterRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+		resp, err := authSvc.Register(c.Request.Context(), req)
+		if err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+		tc.testUserID = resp.User.ID
+		c.JSON(201, resp)
+	})
+	router.POST("/api/v1/auth/login", func(c *gin.Context) {
+		var req types.LoginRequest
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(400, gin.H{"error": err.Error()})
+			return
+		}
+		resp, err := authSvc.Login(c.Request.Context(), req)
+		if err != nil {
+			c.JSON(401, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(200, resp)
+	})
+
+	authed := router.Group("/api/v1")
+	authed.Use(authSvc.AuthMiddleware())
+	authed.POST("/secrets", secretsHandler.CreateSecret)
+	authed.GET("/secrets", secretsHandler.ListSecrets)
+	authed.DELETE("/secrets/:id", secretsHandler.DeleteSecret)
+	authed.PUT("/workspaces/:id/env", envHandler.SetWorkspaceEnv)
+	authed.GET("/workspaces/:id/env", envHandler.GetWorkspaceEnv)
+	authed.DELETE("/workspaces/:id/env/:name", envHandler.DeleteWorkspaceEnv)
+
+	// Register a user and get a token
+	resp, _ := authSvc.Register(context.Background(), types.RegisterRequest{
+		Username: "e2e-user", Email: "e2e@test.com", Password: "e2e-password-123",
+	})
+	token := resp.Token
+
+	return router, token, tc
+}
