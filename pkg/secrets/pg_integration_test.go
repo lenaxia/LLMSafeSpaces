@@ -372,7 +372,7 @@ func TestPgE2E_FullSecretLifecycle(t *testing.T) {
 	password := []byte("e2e-password")
 	err := keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek")
 	if err != nil {
-		t.Fatalf("InitializeUserKeys: %v", err)
+		t.Fatalf("InitializeUserKeysServerKEK: %v", err)
 	}
 
 	// Unlock

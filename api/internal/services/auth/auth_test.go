@@ -1156,9 +1156,9 @@ func TestRegister_KeyInitFailureFailsClosed(t *testing.T) {
 }
 
 // TestLogin_OmitsRecoveryKey ensures the RecoveryKey field is never set on
-// login responses. The recovery key is generated once at registration; it
-// is not retrievable via login. Returning anything here would be a leak of
-// stale or fabricated material.
+// login responses. In the server-KEK model there is no user-held recovery
+// key by design (the DEK is recoverable from the master KEK), so the field
+// must always be empty.
 func TestLogin_OmitsRecoveryKey(t *testing.T) {
 	svc, mockDb, _ := newTestService(t)
 	ctx := context.Background()

@@ -64,7 +64,7 @@ func TestE2E_MasterKey_FullLifecycle(t *testing.T) {
 	// === Phase 1: Initialize keys and unlock DEK ===
 	err := keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek")
 	if err != nil {
-		t.Fatalf("InitializeUserKeys: %v", err)
+		t.Fatalf("InitializeUserKeysServerKEK: %v", err)
 	}
 
 	err = keySvc.UnlockDEK(ctx, userID, password, sessionID, time.Hour)

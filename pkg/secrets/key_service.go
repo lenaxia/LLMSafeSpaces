@@ -61,6 +61,10 @@ type KeyStore interface {
 	// UpdateWrappedDEKAndSource atomically re-wraps the DEK AND flips
 	// users.dek_source in a single transaction. Used by the provisioning path.
 	// The atomicity matters: a split write (re-wrap succeeds,
+	// dek_source stays stale) would cause every unlock to use the
+	// wrong unwrap method and fail. One tx, both writes, commit-or-rollback.
+	// The atomicity matters: a split write (re-wrap succeeds,
+	// dek_source stays stale) would cause every unlock to use the
 	// wrong unwrap method and fail. One tx, both writes, commit-or-rollback.
 	UpdateWrappedDEKAndSource(ctx context.Context, userID string, wrappedDEK, salt []byte, keyVersion int, dekSource string) error
 	UpdateWrappedDEKRecovery(ctx context.Context, userID string, wrappedDEKRecovery []byte, recoverySalt []byte) error
