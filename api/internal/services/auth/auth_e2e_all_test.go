@@ -4,6 +4,7 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -413,6 +414,34 @@ func (m *apiKeyAwareDB) ListAllWorkspaceOwners(context.Context) (map[string]stri
 type testContext struct {
 	testUserID      string
 	testRecoveryKey string
+}
+
+func startServer(t *testing.T, router *gin.Engine) string {
+	t.Helper()
+	srv := httptest.NewServer(router)
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
+
+func doPut(t *testing.T, c *http.Client, url, body, token string) *http.Response {
+	t.Helper()
+	req, _ := http.NewRequest("PUT", url, bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatalf("PUT %s: %v", url, err)
+	}
+	return resp
+}
+
+func readAll(t *testing.T, resp *http.Response) string {
+	t.Helper()
+	buf := new(bytes.Buffer)
+	buf.ReadFrom(resp.Body)
+	return buf.String()
 }
 
 func setupRealAuthRouter(t *testing.T) (*gin.Engine, string, *testContext) {
