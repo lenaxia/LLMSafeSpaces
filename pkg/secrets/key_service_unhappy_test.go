@@ -71,6 +71,7 @@ func TestKeyService_InitializeUserKeys_StoreFailure(t *testing.T) {
 	store := &failingKeyStore{failOn: "create"}
 	cache := newMockDEKCache()
 	svc := NewKeyService(store, cache)
+	svc.SetAPIKeyStore(nil, &recordingProvider{})
 
 	err := svc.InitializeUserKeysServerKEK(context.Background(), "user-1", "server_kek")
 	if err == nil {

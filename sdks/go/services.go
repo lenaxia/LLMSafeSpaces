@@ -350,24 +350,6 @@ func (s *UserSettingsService) Set(ctx context.Context, key string, value any) (m
 // AccountService handles account key management.
 type AccountService struct{ c *Client }
 
-func (s *AccountService) RotateKey(ctx context.Context, password string) (map[string]any, error) {
-	var result map[string]any
-	err := s.c.do(ctx, "POST", "/account/rotate-key", map[string]string{"password": password}, &result)
-	return result, err
-}
-
-func (s *AccountService) ChangePassword(ctx context.Context, oldPassword, newPassword string) error {
-	body := map[string]string{"oldPassword": oldPassword, "newPassword": newPassword}
-	return s.c.do(ctx, "POST", "/account/change-password", body, nil)
-}
-
-func (s *AccountService) Recover(ctx context.Context, userID, recoveryKey, newPassword string) (map[string]any, error) {
-	var result map[string]any
-	body := map[string]string{"userId": userID, "recoveryKey": recoveryKey, "newPassword": newPassword}
-	err := s.c.do(ctx, "POST", "/account/recover", body, &result)
-	return result, err
-}
-
 // --- Provider Credentials (Epic 30) ---
 
 // ProviderCredentialResponse is the API response for a provider credential.
