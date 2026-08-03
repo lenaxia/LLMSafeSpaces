@@ -497,10 +497,16 @@ func (s *Service) GetConfigByHash(ctx context.Context, hash string, scope imagef
 //   - scope/owner/org match (authorization: caller must own the config)
 //   - a joined build row with status='succeeded' AND image_ref <> ” exists
 //
+// All selected columns are qualified with `c.` (or `b.`) because config and
+// build tables share column names (hash, base_name, base_version, etc.) — an
+// unqualified SELECT would be ambiguous and fail at query time.
+//
 // The build's image_ref is what the controller's runtime_resolver will use
 // verbatim as the pod image (any '/'-containing runtime value is a passthrough).
 func (s *Service) GetLaunchableConfigByHash(ctx context.Context, hash string, scope imagefactory.ConfigScope, ownerID, orgID *string) (imagefactory.Config, string, error) {
-	q := `SELECT ` + configColumns + `, b.image_ref
+	q := `SELECT c.id, c.hash, c.name, c.selection, c.resolved_values,
+	             c.base_name, c.base_version, c.scope, c.owner_id, c.org_id, c.status,
+	             b.image_ref
 	      FROM image_factory_configs c
 	      JOIN image_factory_builds b
 	        ON b.hash = c.hash AND b.base_version = c.base_version
@@ -528,33 +534,32 @@ func (s *Service) GetLaunchableConfigByHash(ctx context.Context, hash string, sc
 }
 
 // scanConfigWithImageRef scans a (config, image_ref) pair produced by the
-// GetLaunchableConfigByHash join. The extra image_ref column is written to
-// *out; the config columns are scanned via the shared scanConfigColumns helper.
-func scanConfigWithImageRef(row rowScanner, out *string) (imagefactory.Config, error) {
+// GetLaunchableConfigByHash join. Mirrors scanConfig exactly for the config
+// columns (pq.Array for selection, json for resolved_values), then reads the
+// extra b.image_ref column into *out.
+func scanConfigWithImageRef(sc rowScanner, out *string) (imagefactory.Config, error) {
 	var c imagefactory.Config
-	var selectionJSON, resolvedJSON []byte
+	var rvRaw []byte
+	var scopeStr, statusStr string
 	var ownerID, orgID sql.NullString
-	err := row.Scan(
-		&c.ID, &c.Hash, &c.Name, &selectionJSON, &resolvedJSON,
-		&c.BaseName, &c.BaseVersion, &c.Scope, &ownerID, &orgID, &c.Status,
-		out,
-	)
-	if err != nil {
-		return c, err
+	sel := (*[]string)(&c.Selection)
+	if err := sc.Scan(&c.ID, &c.Hash, &c.Name, pq.Array(sel), &rvRaw,
+		&c.BaseName, &c.BaseVersion, &scopeStr, &ownerID, &orgID, &statusStr,
+		out); err != nil {
+		return imagefactory.Config{}, err
 	}
+	c.Scope = imagefactory.ConfigScope(scopeStr)
+	c.Status = imagefactory.ConfigStatus(statusStr)
 	if ownerID.Valid {
-		s := ownerID.String
-		c.OwnerID = &s
+		v := ownerID.String
+		c.OwnerID = &v
 	}
 	if orgID.Valid {
-		s := orgID.String
-		c.OrgID = &s
+		v := orgID.String
+		c.OrgID = &v
 	}
-	if err := json.Unmarshal(selectionJSON, &c.Selection); err != nil {
-		return c, fmt.Errorf("unmarshal selection: %w", err)
-	}
-	if err := json.Unmarshal(resolvedJSON, &c.ResolvedValues); err != nil {
-		return c, fmt.Errorf("unmarshal resolved_values: %w", err)
+	if err := json.Unmarshal(rvRaw, &c.ResolvedValues); err != nil {
+		return imagefactory.Config{}, fmt.Errorf("scan config with image ref: unmarshal resolved_values: %w", err)
 	}
 	return c, nil
 }
