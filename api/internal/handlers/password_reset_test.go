@@ -246,6 +246,7 @@ func TestPasswordReset_Confirm_ValidToken_ResetsEverything(t *testing.T) {
 	emailSVC := emailsvc.NewService(fp, "https://app.test", "ses")
 	pwUp := &memPwUpdater{}
 	revoker := &memSessionRevoker{}
+	keyInit := &memKeyInit{}
 
 	h := NewPasswordResetHandler(store, users, keyInit, pwUp, revoker, emailSVC, nil)
 	router := setupPasswordResetRouter(h)
