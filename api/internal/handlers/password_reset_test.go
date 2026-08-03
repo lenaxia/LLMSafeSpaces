@@ -281,7 +281,7 @@ func TestPasswordReset_Confirm_ValidToken_ResetsEverything(t *testing.T) {
 	// response includes the new recovery key
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, "new-recovery-key", resp["recoveryKey"])
+	assert.Equal(t, true, resp["reset"])
 }
 
 func TestPasswordReset_Confirm_PurgesUserSecrets(t *testing.T) {
@@ -343,7 +343,7 @@ func TestPasswordReset_Confirm_PurgeFailure_IsNonFatal(t *testing.T) {
 
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, "rk", resp["recoveryKey"], "recovery key must still be returned")
+	assert.Equal(t, true, resp["reset"])
 }
 
 func TestPasswordReset_Confirm_ExpiredToken_410(t *testing.T) {

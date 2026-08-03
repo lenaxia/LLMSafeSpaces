@@ -66,6 +66,8 @@ func TestHandler_E2E_LLMProvider_BindTriggersReloadWithFormattedConfig(t *testin
 	keyStore := newTestKeyStore()
 	dekCache := newTestDEKCache()
 	keySvc := secrets.NewKeyService(keyStore, dekCache)
+	testProv, _ := secrets.NewStaticKeyProvider(make([]byte, 32))
+	keySvc.SetAPIKeyStore(nil, testProv)
 	secretStore := newTestSecretStore()
 	svc := secrets.NewSecretService(keySvc, secretStore)
 
@@ -190,6 +192,8 @@ func TestHandler_E2E_LLMProvider_MultipleProviders_Bind(t *testing.T) {
 	keyStore := newTestKeyStore()
 	dekCache := newTestDEKCache()
 	keySvc := secrets.NewKeyService(keyStore, dekCache)
+	testProv, _ := secrets.NewStaticKeyProvider(make([]byte, 32))
+	keySvc.SetAPIKeyStore(nil, testProv)
 	secretStore := newTestSecretStore()
 	svc := secrets.NewSecretService(keySvc, secretStore)
 

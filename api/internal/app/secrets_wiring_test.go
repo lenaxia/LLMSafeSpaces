@@ -39,6 +39,8 @@ func TestSecretsWiring_E2E(t *testing.T) {
 	keyStore := &dbKeyStoreAdapter{}
 	dekCache := &memDEKCache{store: make(map[string][]byte)}
 	keyService := secrets.NewKeyService(keyStore, dekCache)
+	testProv, _ := secrets.NewStaticKeyProvider(make([]byte, 32))
+	keyService.SetAPIKeyStore(nil, testProv)
 	secretStore := &dbSecretStoreAdapter{}
 	secretService := secrets.NewSecretService(keyService, secretStore)
 	secretsHandler := handlers.NewSecretsHandler(secretService)
@@ -256,6 +258,8 @@ func TestSecretsHandler_PodIPResolverWired(t *testing.T) {
 	keyStore := &dbKeyStoreAdapter{}
 	dekCache := &memDEKCache{store: make(map[string][]byte)}
 	keyService := secrets.NewKeyService(keyStore, dekCache)
+	testProv, _ := secrets.NewStaticKeyProvider(make([]byte, 32))
+	keyService.SetAPIKeyStore(nil, testProv)
 	secretStore := &dbSecretStoreAdapter{}
 	secretService := secrets.NewSecretService(keyService, secretStore)
 
@@ -298,6 +302,8 @@ func TestPodBootstrapHandler_LoggerWired(t *testing.T) {
 	keyStore := &dbKeyStoreAdapter{}
 	dekCache := &memDEKCache{store: make(map[string][]byte)}
 	keyService := secrets.NewKeyService(keyStore, dekCache)
+	testProv, _ := secrets.NewStaticKeyProvider(make([]byte, 32))
+	keyService.SetAPIKeyStore(nil, testProv)
 	secretStore := &dbSecretStoreAdapter{}
 	secretService := secrets.NewSecretService(keyService, secretStore)
 
@@ -333,6 +339,8 @@ func TestPodBootstrapHandler_SettingsReaderWired(t *testing.T) {
 	keyStore := &dbKeyStoreAdapter{}
 	dekCache := &memDEKCache{store: make(map[string][]byte)}
 	keyService := secrets.NewKeyService(keyStore, dekCache)
+	testProv, _ := secrets.NewStaticKeyProvider(make([]byte, 32))
+	keyService.SetAPIKeyStore(nil, testProv)
 	secretStore := &dbSecretStoreAdapter{}
 	secretService := secrets.NewSecretService(keyService, secretStore)
 

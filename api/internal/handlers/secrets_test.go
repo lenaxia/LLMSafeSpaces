@@ -25,6 +25,8 @@ func setupTestRouter(t *testing.T) (*gin.Engine, *secrets.SecretService, string)
 	keyStore := newTestKeyStore()
 	dekCache := newTestDEKCache()
 	keySvc := secrets.NewKeyService(keyStore, dekCache)
+	testProv, _ := secrets.NewStaticKeyProvider(make([]byte, 32))
+	keySvc.SetAPIKeyStore(nil, testProv)
 	secretStore := newTestSecretStore()
 	svc := secrets.NewSecretService(keySvc, secretStore)
 

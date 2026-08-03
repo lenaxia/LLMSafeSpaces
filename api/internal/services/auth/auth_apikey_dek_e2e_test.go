@@ -48,6 +48,8 @@ func setupDEKRegressionRouter(t *testing.T) (
 	keyStore := &memKeyStore{records: make(map[string]*secrets.UserKeyRecord)}
 	dekCache = &memDEKCache{store: make(map[string][]byte)}
 	keySvc = secrets.NewKeyService(keyStore, dekCache)
+	testProv, _ := secrets.NewStaticKeyProvider(make([]byte, 32))
+	keySvc.SetAPIKeyStore(nil, testProv)
 	secretStore := &memSecretStore{
 		secrets:  make(map[string]*secrets.UserSecret),
 		bindings: make(map[string][]string),

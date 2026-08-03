@@ -155,6 +155,8 @@ func TestIntegration_SSOIssueSession_RealKeyService_DEKRoundTripsSecret(t *testi
 	realKeyStore := newRealKeyStore(t)
 	realCache := newRealDEKCache()
 	ks := secrets.NewKeyService(realKeyStore, realCache)
+	testProv, _ := secrets.NewStaticKeyProvider(make([]byte, 32))
+	ks.SetAPIKeyStore(nil, testProv)
 	masterKey := make([]byte, 32)
 	for i := range masterKey {
 		masterKey[i] = byte(i + 7)
