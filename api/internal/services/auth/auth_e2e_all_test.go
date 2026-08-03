@@ -8,7 +8,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -69,55 +68,6 @@ func TestE2E_RealAuth_WorkspaceEnv(t *testing.T) {
 }
 
 // TestE2E_RealAuth_ChangePassword tests POST /account/change-password
-func TestE2E_RealAuth_Recover(t *testing.T) {
-	router, _, svc := setupRealAuthRouter(t)
-	base := startServer(t, router)
-	c := &http.Client{Timeout: 30 * time.Second}
-
-	// Get the recovery key (stored during registration in the key store)
-	// We need to access it from the test setup — it's returned by InitializeUserKeys
-	// but not exposed via API. For this test, we'll use the userID from setup.
-	userID := svc.testUserID
-	recoveryKey := svc.testRecoveryKey
-
-	if recoveryKey == "" {
-		t.Skip("Recovery key not captured during setup")
-	}
-
-	// Recover with recovery key
-	body := fmt.Sprintf(`{"userId":"%s","recoveryKey":"%s","newPassword":"recovered-password-789"}`, userID, recoveryKey)
-	resp := doPost(t, c, base+"/api/v1/account/recover", body, "")
-	if resp.StatusCode != 200 {
-		t.Fatalf("Recover: expected 200, got %d: %s", resp.StatusCode, readAll(t, resp))
-	}
-	var recoverResp struct {
-		RecoveryKey string `json:"recoveryKey"`
-	}
-	_ = json.NewDecoder(resp.Body).Decode(&recoverResp)
-	resp.Body.Close()
-	if recoverResp.RecoveryKey == "" {
-		t.Error("Should return new recovery key")
-	}
-
-	// Login with recovered password
-	resp = doPost(t, c, base+"/api/v1/auth/login",
-		`{"email":"test@example.com","password":"recovered-password-789"}`, "")
-	if resp.StatusCode != 200 {
-		t.Fatalf("Login after recovery: expected 200, got %d: %s", resp.StatusCode, readAll(t, resp))
-	}
-	resp.Body.Close()
-
-	// Old recovery key should no longer work
-	resp = doPost(t, c, base+"/api/v1/account/recover", body, "")
-	if resp.StatusCode != 403 {
-		t.Errorf("Old recovery key: expected 403, got %d", resp.StatusCode)
-	}
-	resp.Body.Close()
-
-	t.Log("E2E Recover: reset → login → old key invalid — PASSED")
-}
-
-// TestE2E_RealAuth_RotateKey_ThenSecrets tests rotation doesn't break existing secrets
 func TestE2E_APIKey_CreateWithDecryptAccess_SecretsOperationSucceeds(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

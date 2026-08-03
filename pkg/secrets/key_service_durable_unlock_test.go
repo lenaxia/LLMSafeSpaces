@@ -91,6 +91,7 @@ func TestKeyService_UnlockDEKWithSigningKey_DurableWriteFailureIsNonFatal(t *tes
 	jwtStore.writeErr = errors.New("transient PG error")
 
 	svc := NewKeyService(store, cache)
+	svc.SetAPIKeyStore(nil, &recordingProvider{})
 	svc.SetJWTSessionStore(jwtStore)
 	ctx := context.Background()
 
@@ -108,6 +109,7 @@ func TestKeyService_UnlockDEKWithSigningKey_NoStoreSkipsDurableWrite(t *testing.
 	store := newMockKeyStore()
 	cache := newMockDEKCache()
 	svc := NewKeyService(store, cache)
+	svc.SetAPIKeyStore(nil, &recordingProvider{})
 	ctx := context.Background()
 
 	password := []byte("pw")
@@ -126,6 +128,7 @@ func TestKeyService_UnlockDEKWithSigningKey_NilSigningKeySkipsDurableWrite(t *te
 	jwtStore := newMockJWTSessionStore()
 	svc := NewKeyService(store, cache)
 	svc.SetJWTSessionStore(jwtStore)
+	svc.SetAPIKeyStore(nil, &recordingProvider{})
 	ctx := context.Background()
 
 	password := []byte("pw")
@@ -149,6 +152,7 @@ func TestKeyService_UnlockDEKWithSigningKey_NonUUIDSessionIDSkipsDurableWrite(t 
 	jwtStore := newMockJWTSessionStore()
 	svc := NewKeyService(store, cache)
 	svc.SetJWTSessionStore(jwtStore)
+	svc.SetAPIKeyStore(nil, &recordingProvider{})
 	ctx := context.Background()
 
 	password := []byte("pw")
@@ -170,6 +174,7 @@ func TestKeyService_UnlockDEK_BackwardCompatible(t *testing.T) {
 	jwtStore := newMockJWTSessionStore()
 	svc := NewKeyService(store, cache)
 	svc.SetJWTSessionStore(jwtStore)
+	svc.SetAPIKeyStore(nil, &recordingProvider{})
 	ctx := context.Background()
 
 	password := []byte("pw")
