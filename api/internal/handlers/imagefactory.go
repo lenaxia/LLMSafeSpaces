@@ -72,11 +72,29 @@ func (h *ImageFactoryHandler) SetDispatcher(d buildDispatcher) {
 	h.dispatcher = d
 }
 
-// SetLogger wires the structured logger used for dispatch diagnostics. The
-// dispatch-failure path logs the underlying error here instead of discarding
-// it; nil-guarded so tests that don't wire a logger still pass.
+// SetLogger installs a structured logger so the dispatch-failure path can
+// emit the underlying error (e.g. "gh dispatch: unexpected status 403: …").
+// Without this, POST /configs returns a generic 503 "failed to dispatch
+// build" and the root cause (a GitHub App permission gap, a token-mint
+// failure, a network error) is silently dropped — exactly the
+// observability gap that made the 2026-08-03 outage look like a
+// wiring/version problem instead of a missing Actions:Write permission.
+//
+// The logger is optional: when nil, the handler falls back to a silent
+// no-op so unit tests that don't care about log emission can omit it.
+// Production wiring (api/internal/app/app.go) MUST install one — see
+// TestImageFactoryHandler_LoggerWired in api/internal/app/ for the
+// regression guard that enforces this.
 func (h *ImageFactoryHandler) SetLogger(l pkginterfaces.LoggerInterface) {
 	h.logger = l
+}
+
+// HasLogger reports whether a logger has been wired. Used by the app-level
+// wiring test to enforce that production constructs the handler with
+// SetLogger called — without it, the underlying error in the 503 path is
+// silently dropped (the very gap this fix closes).
+func (h *ImageFactoryHandler) HasLogger() bool {
+	return h.logger != nil
 }
 
 // SetFailureExplainer wires the LLM failure explainer (S6). Optional —
