@@ -241,8 +241,3 @@ func TestKeyService_DEKAvailable(t *testing.T) {
 		t.Error("DEK should be available after unlock")
 	}
 }
-
-// TestKeyService_RotateKey_EagerlyReEncryptsSecrets is the regression test
-// for Bug 9 in worklog 0085: KEK rotation must walk every user_secrets row
-// and re-encrypt under the new DEK. Without this, all pre-rotation secrets
-// become permanently undecryptable (data loss).

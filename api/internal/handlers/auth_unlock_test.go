@@ -16,6 +16,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	pkgerrors "github.com/lenaxia/llmsafespaces/pkg/errors"
 )
 
 // captureUnlocker is a DEKUnlocker spy that records the call args and
@@ -147,6 +149,18 @@ func TestUnlockDEK_InternalError_Returns500(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 	// Generic message — no leak of "transient DB outage" detail.
 	assert.NotContains(t, rec.Body.String(), "transient")
+}
+
+func TestUnlockDEK_StatusError_MapsToStatusFromError(t *testing.T) {
+	// The handler maps *StatusError → se.Status so service-layer HTTP
+	// status codes propagate correctly (e.g. 503 for ErrServerKEKUnavailable).
+	unlocker := &captureUnlocker{err: pkgerrors.NewStatusError(http.StatusServiceUnavailable, "key provider down")}
+	r := setupUnlockRouter(t, unlocker, "u-8", "11111111-2222-3333-4444-555555555555", []byte("sk"))
+
+	rec := doUnlockRequest(t, r, nil)
+
+	assert.Equal(t, http.StatusServiceUnavailable, rec.Code)
+	assert.Contains(t, rec.Body.String(), "key provider down")
 }
 
 func TestUnlockDEK_RegressionForRotatedJWT_WrapsUnderMatchedKey(t *testing.T) {
