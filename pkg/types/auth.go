@@ -122,7 +122,6 @@ type AuthConfig struct {
 type DEKSource string
 
 const (
-	DEKSourcePassword  DEKSource = "password"
 	DEKSourceServerKEK DEKSource = "server_kek"
 	// DEKSourcePasskey marks passkey-only users (Epic 59). Their DEK is wrapped
 	// by the master-KEK provider exactly like DEKSourceServerKEK; the distinct

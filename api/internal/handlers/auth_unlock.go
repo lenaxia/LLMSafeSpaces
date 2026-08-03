@@ -13,7 +13,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	pkgerrors "github.com/lenaxia/llmsafespaces/pkg/errors"
-	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 )
 
 // DEKUnlocker is the caller-shaped subset of KeyService used by the
@@ -82,10 +81,6 @@ func (h *UnlockDEKHandler) Unlock(c *gin.Context) {
 		var se *pkgerrors.StatusError
 		if errors.As(err, &se) {
 			c.JSON(se.Status, gin.H{"error": se.Message})
-			return
-		}
-		if errors.Is(err, secrets.ErrServerKEKUnavailable) {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "server key provider unavailable"})
 			return
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "unlock failed"})
