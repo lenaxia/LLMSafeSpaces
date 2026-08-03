@@ -1248,8 +1248,10 @@ func (s *Service) resolveImageFactoryConfig(ctx context.Context, hash, userID st
 			// Not found in this scope — try the next.
 			continue
 		}
-		// A real error (DB failure etc.) — stop and surface it.
+		// A real error (DB failure etc.) — surface immediately rather
+		// than continuing (a later ErrNotFound would overwrite this).
 		lastErr = err
+		break
 	}
 	if lastErr != nil {
 		return "", apierrors.NewInternalError("image_factory_lookup_failed", lastErr)
