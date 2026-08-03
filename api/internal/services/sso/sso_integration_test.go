@@ -39,9 +39,6 @@ type integrationKeyService struct {
 	unlockCalls          []string
 }
 
-func (r *integrationKeyService) InitializeUserKeys(_ context.Context, _ string, _ []byte) (string, error) {
-	return "", nil
-}
 func (r *integrationKeyService) InitializeUserKeysServerKEK(_ context.Context, userID, _ string) error {
 	r.serverKEKInitUserIDs = append(r.serverKEKInitUserIDs, userID)
 	return r.serverKEKInitErr
@@ -269,9 +266,6 @@ func (c *realDEKCache) DEKForToken(t *testing.T, tok string) []byte {
 // benign values — they are not on the path under test.
 type realKeyServiceAdapter struct{ inner *secrets.KeyService }
 
-func (a realKeyServiceAdapter) InitializeUserKeys(_ context.Context, _ string, _ []byte) (string, error) {
-	return "", nil
-}
 func (a realKeyServiceAdapter) InitializeUserKeysServerKEK(ctx context.Context, userID, dekSource string) error {
 	return a.inner.InitializeUserKeysServerKEK(ctx, userID, dekSource)
 }

@@ -43,9 +43,6 @@ type dekJKeyService struct {
 	getDEKErr error
 }
 
-func (d *dekJKeyService) InitializeUserKeys(_ context.Context, _ string, _ []byte) (string, error) {
-	return "fake-recovery", nil
-}
 func (d *dekJKeyService) InitializeUserKeysServerKEK(_ context.Context, _ string, _ string) error {
 	return nil
 }

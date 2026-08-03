@@ -213,7 +213,7 @@ func (s *KeyService) JWTSessionStoreSet() bool {
 // (e.g. cache-evict errors during password change). Optional; if
 // nil, those events are silent. Validator pass-5 finding N-3.
 //
-// Note: ChangePassword's evict-failure log includes the sessionID
+// Note: the evict-failure log includes the sessionID
 // (JWT jti). The jti is sensitive — an attacker with log read
 // access can correlate user activity across requests, though it
 // does NOT enable token replay (the JWT signature is never logged).
@@ -223,13 +223,13 @@ func (s *KeyService) SetLogger(l pkginterfaces.LoggerInterface) {
 	s.logger = l
 }
 
-// SetSecretStore wires the SecretStore used by RotateKeyWithPassword to
+// SetSecretStore wires the SecretStore used by the key service to
 // re-encrypt every user_secrets row under the new DEK. Without this, the
 // rotate endpoint refuses to run rather than orphan secret rows under a
 // discarded DEK (Bug 9 in worklog 0085).
 //
 // Once set, the store cannot be silently reassigned: a silent
-// reassignment would mean RotateKeyWithPassword ignores secrets owned
+// reassignment would mean the key service ignores secrets owned
 // by an abandoned store — exactly the Bug 9 hazard. Calling
 // SetSecretStore twice with different stores panics; calling with the
 // same store (idempotent re-init) is allowed.
@@ -240,12 +240,12 @@ func (s *KeyService) SetSecretStore(store SecretStore) {
 	s.secretStore = store
 }
 
-// InitializeUserKeys generates a DEK and wraps it with the user's password-derived KEK.
+// InitializeUserKeysServerKEK generates a DEK and wraps it with the server master-KEK provider.
 // Called during account creation or first secret creation for existing users.
 // Returns the recovery key (hex-encoded) that must be displayed to the user once.
 
 // InitializeUserKeysServerKEK provisions a DEK wrapped by the master-KEK
-// RootKeyProvider rather than by a password-derived KEK. Used for users who
+// RootKeyProvider rather than by a password-derived KEK. (Historical: used for users who
 // have no password: SSO auto-provisioned users (Epic 58, dekSource "server_kek")
 // and passkey-only users (Epic 59, dekSource "passkey"). Both are server-wrapped
 // (same provider, same unwrap path); the value distinguishes the auth source.
@@ -805,7 +805,7 @@ func (s *KeyService) HasKeys(ctx context.Context, userID string) (bool, error) {
 	return record != nil, nil
 }
 
-// RotationResult is what RotateKeyWithPassword returns. NewKeyVersion
+// RotationResult tracks rotation outcomes. NewKeyVersion
 // is the bumped key_version; NewRecoveryKeyHex is a freshly-issued
 // recovery key (the previous one wraps the now-discarded old DEK and
 // is invalid after rotation). Callers MUST surface NewRecoveryKeyHex

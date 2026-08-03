@@ -194,7 +194,7 @@ func (c *RotationCoordinator) RotateTable(ctx context.Context, table, resumeFrom
 //
 // "user_keys" is included (Epic 58): the store's ListRotationRows("user_keys")
 // returns ONLY server_kek/passkey rows — password-tier rows are excluded because
-// they wrap the DEK with a password-derived KEK the rotation CLI cannot reproduce.
+// they wrap the DEK with a server-side master KEK the rotation CLI re-wraps.
 func (c *RotationCoordinator) RotateAll(ctx context.Context, targetVersion int, dryRun bool) (map[string]KEKRotationResult, error) {
 	tables := []string{"provider_credentials", "api_keys", "org_sso_configs", "user_keys"}
 	results := make(map[string]KEKRotationResult, len(tables))

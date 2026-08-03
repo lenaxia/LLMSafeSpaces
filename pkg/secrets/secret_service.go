@@ -26,7 +26,7 @@ type SecretService struct {
 // NewSecretService creates a new SecretService.
 //
 // As a side-effect we register the SecretStore on the KeyService so
-// RotateKeyWithPassword can re-encrypt secrets in-place (Bug 9 in
+// Secret re-encryption was used by the now-removed RotateKeyWithPassword (Bug 9 in
 // worklog 0085). The two services share a store anyway; this just makes
 // the linkage explicit at construction time.
 func NewSecretService(keys *KeyService, store SecretStore) *SecretService {

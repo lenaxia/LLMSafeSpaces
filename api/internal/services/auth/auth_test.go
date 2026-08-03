@@ -1059,17 +1059,6 @@ type fakeKeyUnlockCall struct {
 	TTL       time.Duration
 }
 
-func (f *fakeKeyService) InitializeUserKeys(ctx context.Context, userID string, password []byte) (string, error) {
-	f.initCalls = append(f.initCalls, fakeKeyInitCall{UserID: userID, Password: string(password)})
-	if f.initErr != nil {
-		return "", f.initErr
-	}
-	if f.recoveryKey == "" {
-		return "deadbeefcafef00d", nil
-	}
-	return f.recoveryKey, nil
-}
-
 func (f *fakeKeyService) InitializeUserKeysServerKEK(_ context.Context, userID, _ string) error {
 	f.serverKEKInitCalls = append(f.serverKEKInitCalls, userID)
 	return f.serverKEKInitErr

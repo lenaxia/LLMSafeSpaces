@@ -93,9 +93,8 @@ func (s *memUserStore) GetUserEmailVerified(_ context.Context, userID string) (b
 }
 
 type memKeyInit struct {
-	calls    int
-	recoverK string
-	initErr  error
+	calls   int
+	initErr error
 }
 
 func (m *memKeyInit) InitializeUserKeysServerKEK(_ context.Context, _ string, _ string) error {
@@ -176,7 +175,6 @@ func TestPasswordReset_Request_KnownVerifiedUser_SendsEmail(t *testing.T) {
 	fp := &fakeEmailProvider{}
 	emailSVC := emailsvc.NewService(fp, "https://app.test", "ses")
 
-	h := NewPasswordResetHandler(store, users, &memKeyInit{recoverK: "newkey"}, &memPwUpdater{}, &memSessionRevoker{}, emailSVC, nil)
 	router := setupPasswordResetRouter(h)
 
 	w := doRequest(router, http.MethodPost, "/api/v1/auth/password-reset/request", `{"email":"alice@test.com"}`)
@@ -245,7 +243,6 @@ func TestPasswordReset_Confirm_ValidToken_ResetsEverything(t *testing.T) {
 
 	fp := &fakeEmailProvider{}
 	emailSVC := emailsvc.NewService(fp, "https://app.test", "ses")
-	keyInit := &memKeyInit{recoverK: "new-recovery-key"}
 	pwUp := &memPwUpdater{}
 	revoker := &memSessionRevoker{}
 
@@ -297,7 +294,6 @@ func TestPasswordReset_Confirm_PurgesUserSecrets(t *testing.T) {
 	purger := &memSecretPurger{}
 	neutralizer := &memWorkspaceNeutralizer{}
 
-	h := NewPasswordResetHandler(store, users, &memKeyInit{recoverK: "rk"}, &memPwUpdater{}, &memSessionRevoker{}, emailsvc.NewService(&fakeEmailProvider{}, "", ""), nil)
 	h.SetSecretPurger(purger)
 	h.SetWorkspaceNeutralizer(neutralizer)
 	router := setupPasswordResetRouter(h)
@@ -328,7 +324,6 @@ func TestPasswordReset_Confirm_PurgeFailure_IsNonFatal(t *testing.T) {
 		ExpiresAt: time.Now().Add(10 * time.Minute),
 	}
 
-	h := NewPasswordResetHandler(store, newMemUserStore(), &memKeyInit{recoverK: "rk"}, &memPwUpdater{}, &memSessionRevoker{}, emailsvc.NewService(&fakeEmailProvider{}, "", ""), nil)
 	h.SetSecretPurger(&memSecretPurger{err: errors.New("db down")})
 	h.SetWorkspaceNeutralizer(&memWorkspaceNeutralizer{err: errors.New("k8s down")})
 	router := setupPasswordResetRouter(h)
@@ -494,7 +489,6 @@ func TestPasswordReset_Confirm_BcryptUpdateFailure_500(t *testing.T) {
 
 	pwUp := &memPwUpdater{err: errors.New("db write failed")}
 
-	h := NewPasswordResetHandler(store, newMemUserStore(), &memKeyInit{recoverK: "k"}, pwUp, &memSessionRevoker{}, emailsvc.NewService(&fakeEmailProvider{}, "", ""), nil)
 	router := setupPasswordResetRouter(h)
 
 	w := doRequest(router, http.MethodPost, "/api/v1/auth/password-reset/confirm",
@@ -571,7 +565,6 @@ func TestPasswordReset_RoutesRegistered(t *testing.T) {
 	h := NewPasswordResetHandler(
 		newMemTokenStore(),
 		newMemUserStore(),
-		&memKeyInit{recoverK: "key"},
 		&memPwUpdater{},
 		&memSessionRevoker{},
 		emailsvc.NewService(&fakeEmailProvider{}, "https://app.test", "noop"),

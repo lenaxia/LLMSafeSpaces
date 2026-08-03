@@ -60,7 +60,7 @@ func (p *PostgresSecretProvider) Decrypt(ctx context.Context, owner SecretOwner,
 
 func (p *PostgresSecretProvider) RotateKey(ctx context.Context, owner SecretOwner) (int, error) {
 	// Rotation requires password — this interface method cannot be used directly.
-	// Use KeyService.RotateKeyWithPassword instead.
+	// Replaced by server-KEK provisioning (InitializeUserKeysServerKEK).
 	return 0, fmt.Errorf("use RotateKeyWithPassword for password-confirmed rotation")
 }
 

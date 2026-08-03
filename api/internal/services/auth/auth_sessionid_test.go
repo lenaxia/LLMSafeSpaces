@@ -231,14 +231,6 @@ type trackingKeyService struct {
 	initialized map[string]bool
 }
 
-func (t *trackingKeyService) InitializeUserKeys(_ context.Context, userID string, _ []byte) (string, error) {
-	if t.initialized == nil {
-		t.initialized = make(map[string]bool)
-	}
-	t.initialized[userID] = true
-	return "recovery-key-hex", nil
-}
-
 func (t *trackingKeyService) InitializeUserKeysServerKEK(_ context.Context, userID, _ string) error {
 	if t.initialized == nil {
 		t.initialized = make(map[string]bool)
