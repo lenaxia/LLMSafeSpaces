@@ -1022,16 +1022,20 @@ runtimeEnvironments:
 # callback handler uses a fallback string. Point at your in-cluster
 # LiteLLM/vLLM instance.
 imageFactory:
-  imageRepo: "ghcr.io/lenaxia/llmsafespaces/ws"
+  imageRepo: "ghcr.io/lenaxia/llmsafespaces-images/ws"
   callbackURL: "/internal/image-factory"
   ghDispatcher:
     owner: ""
     repo: ""
     workflowId: "image-build.yml"
     ref: "main"
-    secretKeyRef:
-      name: ""
-      key: "gh-token"
+    appCredentials:
+      # Name of a Kubernetes Secret containing the GitHub App credentials.
+      # The Secret must have keys: app-id, app-private-key.
+      # When empty, image builds are disabled (POST /configs returns 503).
+      secretName: ""
+      appIdKey: "app-id"
+      privateKeyKey: "app-private-key"
   llmExplainer:
     baseUrl: ""
     model: ""

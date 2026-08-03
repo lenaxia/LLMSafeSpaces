@@ -137,12 +137,17 @@ spec:
             - name: LLMSAFESPACES_TURNSTILE_VERIFYURL
               value: {{ .Values.turnstile.verifyURL | quote }}
             {{- end }}
-            {{- if .Values.imageFactory.ghDispatcher.secretKeyRef.name }}
-            - name: LLMSAFESPACES_IMAGE_FACTORY_GH_TOKEN
+            {{- if .Values.imageFactory.ghDispatcher.appCredentials.secretName }}
+            - name: LLMSAFESPACES_IMAGE_FACTORY_APP_ID
               valueFrom:
                 secretKeyRef:
-                  name: {{ .Values.imageFactory.ghDispatcher.secretKeyRef.name | quote }}
-                  key: {{ .Values.imageFactory.ghDispatcher.secretKeyRef.key | quote }}
+                  name: {{ .Values.imageFactory.ghDispatcher.appCredentials.secretName | quote }}
+                  key: {{ .Values.imageFactory.ghDispatcher.appCredentials.appIdKey | quote }}
+            - name: LLMSAFESPACES_IMAGE_FACTORY_APP_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.imageFactory.ghDispatcher.appCredentials.secretName | quote }}
+                  key: {{ .Values.imageFactory.ghDispatcher.appCredentials.privateKeyKey | quote }}
             {{- end }}
             {{- if .Values.imageFactory.llmExplainer.secretKeyRef.name }}
             - name: LLMSAFESPACES_IMAGE_FACTORY_LLM_KEY

@@ -30,6 +30,10 @@ paths = [
   # never a real signing key (verified by inspection 2026-05-31).
   '''api/internal/services/auth/auth_test\.go''',
   '''api/internal/services/auth/auth_settings_test\.go''',
+  # Image factory dispatcher test: contains a generated RSA test key for
+  # exercising the GitHub App JWT → installation token flow. Not a real
+  # credential (generated with openssl on 2026-08-03, never used outside tests).
+  '''api/internal/handlers/imagefactory_dispatcher_test\.go''',
   '''api/internal/middleware/tests/logging_test\.go''',
   # Synthetic test fixtures for the auth-method classifier. Tokens are
   # short, low-entropy, and explicitly invalid — they exist only to

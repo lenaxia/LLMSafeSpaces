@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,7 +19,7 @@ import (
 func TestGHActionsDispatcher_Dispatch_Success(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		require.Equal(t, "/repos/owner/repo/actions/workflows/image-build.yml/dispatches", r.URL.Path)
-		require.Equal(t, "Bearer test-token", r.Header.Get("Authorization"))
+		require.Equal(t, "Bearer fake-installation-token", r.Header.Get("Authorization"))
 
 		var payload ghDispatchPayload
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
@@ -32,12 +33,15 @@ func TestGHActionsDispatcher_Dispatch_Success(t *testing.T) {
 	defer srv.Close()
 
 	d := &ghActionsDispatcher{
-		apiToken:   "test-token",
-		owner:      "owner",
-		repo:       "repo",
-		workflowID: "image-build.yml",
-		ref:        "develop",
-		client:     srv.Client(),
+		appID:          "123",
+		privateKey:     "",
+		owner:          "owner",
+		repo:           "repo",
+		workflowID:     "image-build.yml",
+		ref:            "develop",
+		client:         srv.Client(),
+		cachedToken:    "fake-installation-token",
+		cachedTokenExp: time.Now().Add(1 * time.Hour),
 	}
 	oldURL := dispatchURL
 	dispatchURL = srv.URL + "/repos/%s/%s/actions/workflows/%s/dispatches"
@@ -64,11 +68,15 @@ func TestGHActionsDispatcher_Dispatch_GHError(t *testing.T) {
 	defer srv.Close()
 
 	d := &ghActionsDispatcher{
-		apiToken:   "bad-token",
-		owner:      "owner",
-		repo:       "repo",
-		workflowID: "image-build.yml",
-		client:     srv.Client(),
+		appID:          "123",
+		privateKey:     "",
+		owner:          "owner",
+		repo:           "repo",
+		workflowID:     "image-build.yml",
+		ref:            "main",
+		client:         srv.Client(),
+		cachedToken:    "fake-installation-token",
+		cachedTokenExp: time.Now().Add(1 * time.Hour),
 	}
 	oldURL := dispatchURL
 	dispatchURL = srv.URL + "/repos/%s/%s/actions/workflows/%s/dispatches"
@@ -86,4 +94,158 @@ func TestJoinArchs(t *testing.T) {
 	assert.Equal(t, "linux/amd64", joinArchs([]string{"linux/amd64"}))
 	assert.Equal(t, "linux/amd64,linux/arm64", joinArchs([]string{"linux/amd64", "linux/arm64"}))
 	assert.Equal(t, "", joinArchs(nil))
+}
+
+func TestGHActionsDispatcher_TokenCaching(t *testing.T) {
+	// NOT t.Parallel() — overrides ghBaseURL global.
+	t.Parallel()
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if r.URL.Path == "/repos/owner/repo/installation" {
+			json.NewEncoder(w).Encode(map[string]any{"id": 99999})
+			return
+		}
+		if r.URL.Path == "/app/installations/99999/access_tokens" {
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(map[string]any{"token": "ghs_test_token_" + string(rune('0'+callCount))})
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+
+	d := &ghActionsDispatcher{
+		appID:      "123",
+		privateKey: testRSAKey,
+		owner:      "owner",
+		repo:       "repo",
+		workflowID: "test.yml",
+		ref:        "main",
+		client:     srv.Client(),
+	}
+	oldGH := ghBaseURL
+	ghBaseURL = srv.URL
+	defer func() { ghBaseURL = oldGH }()
+
+	// First call: mints token (2 API calls: installation + access_token)
+	token1, err := d.getInstallationToken(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, "ghs_test_token_2", token1, "token from access_token call (install + access + dispatch)")
+
+	// Second call: cached (0 additional API calls)
+	token2, err := d.getInstallationToken(context.Background())
+	require.NoError(t, err)
+	assert.Equal(t, token1, token2, "cached token must be returned")
+	assert.Equal(t, 2, callCount, "installation lookup must not be repeated")
+}
+
+const testRSAKey = `-----BEGIN PRIVATE KEY-----
+MIIEuwIBADANBgkqhkiG9w0BAQEFAASCBKUwggShAgEAAoIBAQCxM9LUdQTxPukk
+Tm4yRV1uPzmydeCx2p1qXC7sLxTECjD1ZGWaYxplxaG/zetlBk6qdnBDBt3G2D2J
+iDO2RPUoam8uChhOJV6ARedhKpvLNcIBIJZzZDypIh8sDvbocbOdNxvw+Ztmh7YU
+MH3qabvuRUwv7/EjdZKQjZR9cbBfplP44sZRgZPU9ut3s9eKsjdkCWg7YVzYNmNY
+fNpdcddfnXtT/4Qao1V8Pk8WHuGS8dnY06W5FyWPNnX8HFJenYN4vBUOP+3t9IDx
+nQvopj+/909vDTSQ8EvqNNkovSANm1gSvxKVG9WK/ILlerxVc0iY49+bAV+H48uD
+bSJ7Xwg3AgMBAAECgf8QGcB3XetD8qoz2a7hxH5YHPD+picjS9zUfOj8N/+/7r98
+tJPhvmYVQSpamHE7aQMY6LXlZbOI/Hzwy96oP21mkcMqhktO/L6kssx3716vJROk
+P6g4eWxpFC8ye7m0Lj4+OrIeESvjIsCw0171pdSvFWw2PEEIS2fFVgL5mSrTp8lq
+nf6gghjSN0epTIyJG+L7ycMyqVlXR/ZXX3Z2zSTJS09bDuq1hnaEdiVLuFc+a13f
+oFUmaZNxIUM7PefJFpfi993Ke/fI6oMfVciv5IFBOa3mP6LAV7hQfrJ1DUa0xVmF
+Jy3GEK9wSH9X83y2qAzmwTAGpuSZIfAcHH8KPhkCgYEA9Ij6WtrD6fouwgjQ4oqf
+r++xw49lFSQc5zV5puIif/DC6Ki3bmbaH348Nyp+9UpvitDYbzAYJ6rb0Z7xXmvQ
+8QQOS/2wXbCSq5HHrGs7Q7oqTaJEEV6potULt+IkalALzgiy2ohm82p207d1Gmvc
++HWozVdNNV+CyINDt+VoyuMCgYEAuYKwPkjBTyGPfGRcO6Y6PtBhghuGBEf5jV0I
+qW6WiyDn2PInzzshBA6n4Balpc+bPw1UnERyZc2SIPt2uwPslCp+/YVBYwEksWgr
+zU3Da5ezFJ3jRNirZqSj/G+sVarrB0kmLPm+VgK35vCGlZ4Axiv15RvNqv0el3+o
+AZFm6Z0CgYBO1m6opgktwSwcAI2fzAOJzGRqYSu8siTjYfkzlYp75xpfui1RWbWP
+G7q8KmY+HN5zSbvNtRrEhzBRl8XHpEj7u0wEseiPfCL9T4Wpj/TOdBG5b8w0MWnN
+hpQ9l5oX8HCt314SWJGgfr2KqoYFm6rlK8HdWf0ZbQ6UKMXHXx328wKBgQCnOYSw
+EJuZPnJ+umVeK+ETYHqVc0QitdLiOHwnZ5XzQq1cpiV2rCF968wut5uI1ZVniBe+
+agEJff79FlEYElh/07L3y9h+a7hs56+ceT3wziXTLuSA2iPf+ggM9YnPC6yju6/b
+GSIXnIm0dxuK4YxnF5eoeKC0Q0oBXUTQbQbtDQKBgGdda3yHO+nXQbt5PES6WiUZ
+QCaje7fPR04qxWguWrz5Z/n58WwVrNzx/Q83JjXs3vc6x2HXhRoumqRbddZntHBJ
+6kIljGTnmKDiUD7HwW8fVs08QzF83AO02pBC28Z0sRlePZ39iFgDPAd1sAMgAzW1
+LPxUGo39LjLnfvu6VboF
+-----END PRIVATE KEY-----`
+
+func TestGHActionsDispatcher_GetInstallationID_NotFound(t *testing.T) {
+	// NOT t.Parallel() — overrides ghBaseURL global.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = io.WriteString(w, `{"message":"Not Found"}`)
+	}))
+	defer srv.Close()
+
+	d := &ghActionsDispatcher{
+		appID:      "123",
+		privateKey: testRSAKey,
+		owner:      "ghost",
+		repo:       "repo",
+		client:     srv.Client(),
+	}
+	oldGH := ghBaseURL
+	ghBaseURL = srv.URL
+	defer func() { ghBaseURL = oldGH }()
+
+	jwt, err := d.mintAppJWT()
+	require.NoError(t, err)
+	_, err = d.getInstallationID(context.Background(), jwt)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "404")
+}
+
+func TestGHActionsDispatcher_CreateInstallationToken_Unauthorized(t *testing.T) {
+	// NOT t.Parallel() — overrides ghBaseURL global.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"message":"Forbidden"}`)
+	}))
+	defer srv.Close()
+
+	d := &ghActionsDispatcher{
+		appID:      "123",
+		privateKey: testRSAKey,
+		client:     srv.Client(),
+	}
+	oldGH := ghBaseURL
+	ghBaseURL = srv.URL
+	defer func() { ghBaseURL = oldGH }()
+
+	jwt, err := d.mintAppJWT()
+	require.NoError(t, err)
+	_, err = d.createInstallationToken(context.Background(), jwt, 99999)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "403")
+}
+
+func TestGHActionsDispatcher_MintAppJWT_InvalidKey(t *testing.T) {
+	t.Parallel()
+	d := &ghActionsDispatcher{
+		appID:      "123",
+		privateKey: "not-a-real-key",
+	}
+	_, err := d.mintAppJWT()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "parse private key")
+}
+
+func TestGHActionsDispatcher_Dispatch_TokenMintFailure(t *testing.T) {
+	t.Parallel()
+	d := &ghActionsDispatcher{
+		appID:      "123",
+		privateKey: "invalid",
+		owner:      "owner",
+		repo:       "repo",
+		workflowID: "test.yml",
+		ref:        "main",
+		client:     &http.Client{},
+	}
+	// No cached token — will try to mint and fail.
+	_, err := d.Dispatch(context.Background(), dispatchRequest{
+		BuildID: "b", Dockerfile: "FROM x\n",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get token")
+	assert.Contains(t, err.Error(), "parse private key")
 }
