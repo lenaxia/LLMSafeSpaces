@@ -250,11 +250,6 @@ func DefaultRouterConfig() RouterConfig {
 		PerRouteRateLimitConfig: middleware.PerRouteRateLimitConfig{
 			Enabled: true,
 			Routes: map[string]middleware.RouteRateLimit{
-				"/api/v1/account/recover": {
-					Limit:  authRatePerMinute,
-					Burst:  authRateBurst,
-					Window: time.Minute,
-				},
 				// G41/G6: /secrets/:id/reveal takes the user's password
 				// as input to re-authenticate before decrypting. The
 				// endpoint is a credential-bearing target — without a

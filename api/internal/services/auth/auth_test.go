@@ -1036,20 +1036,12 @@ func TestRegister_CreateUserError(t *testing.T) {
 // fakeKeyService is a minimal in-process KeyServiceInterface for asserting
 // on the Register/Login DEK lifecycle without spinning up a real key service.
 type fakeKeyService struct {
-	initCalls                       []fakeKeyInitCall
 	serverKEKInitCalls              []string
 	unlockCalls                     []fakeKeyUnlockCall
 	deleteDurableSessionsForUserIDs []string // Epic 56: records userIDs of every DeleteDurableSessionsForUser call
 	hasKeysFn                       func(ctx context.Context, userID string) (bool, error)
-	initErr                         error
 	serverKEKInitErr                error
 	unlockErr                       error
-	recoveryKey                     string
-}
-
-type fakeKeyInitCall struct {
-	UserID   string
-	Password string
 }
 
 type fakeKeyUnlockCall struct {

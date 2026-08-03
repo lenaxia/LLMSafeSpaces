@@ -64,7 +64,7 @@ simplifies the encryption layer from two tiers to one.
 - `golangci-lint` — clean (pre-existing funlen warnings only)
 
 ## Files Modified
-- `worklogs/NNNN_2026-08-03_dek-server-kek-cut.md` — this entry (added)
+- `worklogs/0673_2026-08-03_dek-server-kek-cut.md` — this entry (added)
 - `pkg/secrets/crypto.go` — deleted password-only primitives, kept shared
 - `pkg/secrets/key_service.go` — collapsed dispatch, deleted password methods
 - `pkg/secrets/postgres_provider.go` — updated compile-time interface assertion
