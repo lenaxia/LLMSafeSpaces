@@ -83,6 +83,7 @@ func TestSecretService_InjectSecrets_NoSession(t *testing.T) {
 	keyStore := newMockKeyStore()
 	dekCache := newMockDEKCache()
 	keySvc := NewKeyService(keyStore, dekCache)
+	keySvc.SetAPIKeyStore(nil, &recordingProvider{})
 	secretStore := newMockSecretStore()
 	svc := NewSecretService(keySvc, secretStore)
 	ctx := context.Background()
@@ -155,6 +156,7 @@ func setupSecretServiceWithTwoUsers(t *testing.T) (*SecretService, string, strin
 	keyStore := newMockKeyStore()
 	dekCache := newMockDEKCache()
 	keySvc := NewKeyService(keyStore, dekCache)
+	keySvc.SetAPIKeyStore(nil, &recordingProvider{})
 	secretStore := newMockSecretStore()
 	svc := NewSecretService(keySvc, secretStore)
 	ctx := context.Background()
@@ -240,6 +242,7 @@ func TestSecretService_InjectSecrets_BootstrapPath_NoSession_PreservesServerKEKC
 	keyStore := newMockKeyStore()
 	dekCache := newMockDEKCache()
 	keySvc := NewKeyService(keyStore, dekCache)
+	keySvc.SetAPIKeyStore(nil, &recordingProvider{})
 	secretStore := newMockSecretStore()
 
 	// Set up the user with a real password so non-LLM secrets can be
@@ -329,6 +332,7 @@ func TestSecretService_InjectSecrets_BootstrapPath_NoSession_OrgCredential(t *te
 	keyStore := newMockKeyStore()
 	dekCache := newMockDEKCache()
 	keySvc := NewKeyService(keyStore, dekCache)
+	keySvc.SetAPIKeyStore(nil, &recordingProvider{})
 	secretStore := newMockSecretStore()
 
 	ctx := context.Background()
@@ -545,6 +549,7 @@ func TestSecretService_InjectSecrets_BootstrapPath_DeliversWorkspaceConfigDefaul
 	keyStore := newMockKeyStore()
 	dekCache := newMockDEKCache()
 	keySvc := NewKeyService(keyStore, dekCache)
+	keySvc.SetAPIKeyStore(nil, &recordingProvider{})
 	secretStore := newMockSecretStore()
 
 	ctx := context.Background()
@@ -610,6 +615,7 @@ func TestSecretService_InjectSessionlessSecrets_UserBindingDoesNotShadowServerKE
 	keyStore := newMockKeyStore()
 	dekCache := newMockDEKCache()
 	keySvc := NewKeyService(keyStore, dekCache)
+	keySvc.SetAPIKeyStore(nil, &recordingProvider{})
 	secretStore := newMockSecretStore()
 
 	ctx := context.Background()

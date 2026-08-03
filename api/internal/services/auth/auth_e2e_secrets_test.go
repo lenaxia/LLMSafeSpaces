@@ -88,7 +88,7 @@ func TestE2E_RealAuth_SecretCRUD(t *testing.T) {
 	// Start real server
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
 	srv := &http.Server{Handler: router}
-	go srv.Serve(ln)
+	go func() { _ = srv.Serve(ln) }()
 	defer srv.Close()
 
 	base := "http://" + ln.Addr().String()
@@ -103,7 +103,7 @@ func TestE2E_RealAuth_SecretCRUD(t *testing.T) {
 		t.Fatalf("Register: %d", resp.StatusCode)
 	}
 	var regResp struct{ Token string }
-	json.NewDecoder(resp.Body).Decode(&regResp)
+	_ = json.NewDecoder(resp.Body).Decode(&regResp)
 	resp.Body.Close()
 
 	// === Login (to get fresh token with DEK unlocked) ===
@@ -113,7 +113,7 @@ func TestE2E_RealAuth_SecretCRUD(t *testing.T) {
 		t.Fatalf("Login: %d", resp.StatusCode)
 	}
 	var loginResp struct{ Token string }
-	json.NewDecoder(resp.Body).Decode(&loginResp)
+	_ = json.NewDecoder(resp.Body).Decode(&loginResp)
 	resp.Body.Close()
 	token := loginResp.Token
 
@@ -126,7 +126,7 @@ func TestE2E_RealAuth_SecretCRUD(t *testing.T) {
 		t.Fatalf("Create secret: expected 201, got %d: %s", resp.StatusCode, string(body[:n]))
 	}
 	var created struct{ ID, Name string }
-	json.NewDecoder(resp.Body).Decode(&created)
+	_ = json.NewDecoder(resp.Body).Decode(&created)
 	resp.Body.Close()
 	if created.ID == "" {
 		t.Fatal("Created secret has no ID")
@@ -138,7 +138,7 @@ func TestE2E_RealAuth_SecretCRUD(t *testing.T) {
 		t.Fatalf("List: %d", resp.StatusCode)
 	}
 	var listResp struct{ Secrets []struct{ ID string } }
-	json.NewDecoder(resp.Body).Decode(&listResp)
+	_ = json.NewDecoder(resp.Body).Decode(&listResp)
 	resp.Body.Close()
 	if len(listResp.Secrets) != 1 {
 		t.Errorf("Expected 1 secret, got %d", len(listResp.Secrets))

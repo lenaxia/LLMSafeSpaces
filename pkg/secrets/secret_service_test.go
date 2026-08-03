@@ -282,6 +282,7 @@ func setupSecretService(t *testing.T) (*SecretService, *mockSecretStore, string)
 	keyStore := newMockKeyStore()
 	dekCache := newMockDEKCache()
 	keySvc := NewKeyService(keyStore, dekCache)
+	keySvc.SetAPIKeyStore(nil, &recordingProvider{})
 	secretStore := newMockSecretStore()
 	svc := NewSecretService(keySvc, secretStore)
 

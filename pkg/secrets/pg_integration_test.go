@@ -364,6 +364,7 @@ func TestPgE2E_FullSecretLifecycle(t *testing.T) {
 	keyStore := NewPgKeyStore(pool)
 	dekCache := newMockDEKCache() // Redis not needed for this test
 	keySvc := NewKeyService(keyStore, dekCache)
+	keySvc.SetAPIKeyStore(nil, &recordingProvider{})
 	secretStore := NewPgSecretStore(pool)
 	svc := NewSecretService(keySvc, secretStore)
 

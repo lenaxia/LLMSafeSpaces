@@ -56,7 +56,7 @@ func setupDEKRegressionRouter(t *testing.T) (
 	secretsHandler = handlers.NewSecretsHandler(secretSvc)
 
 	masterKey = make([]byte, 32)
-	rand.Read(masterKey)
+	_, _ = rand.Read(masterKey)
 	svc.SetMasterKey(masterKey)
 	svc.SetKeyService(keySvc)
 
@@ -119,7 +119,7 @@ func startDEKTestServer(t *testing.T, router *gin.Engine) (*http.Server, string)
 		t.Fatalf("listen: %v", err)
 	}
 	srv := &http.Server{Handler: router}
-	go srv.Serve(ln)
+	go func() { _ = srv.Serve(ln) }()
 	return srv, "http://" + ln.Addr().String()
 }
 
@@ -138,7 +138,7 @@ func registerLoginCreateDEK(t *testing.T, client *http.Client, base, email, pass
 		t.Fatalf("Login: %d", resp.StatusCode)
 	}
 	var loginResp struct{ Token string }
-	json.NewDecoder(resp.Body).Decode(&loginResp)
+	_ = json.NewDecoder(resp.Body).Decode(&loginResp)
 	resp.Body.Close()
 	jwtToken = loginResp.Token
 
@@ -152,7 +152,7 @@ func registerLoginCreateDEK(t *testing.T, client *http.Client, base, email, pass
 	var apiKeyResp struct {
 		Key string `json:"key"`
 	}
-	json.NewDecoder(resp.Body).Decode(&apiKeyResp)
+	_ = json.NewDecoder(resp.Body).Decode(&apiKeyResp)
 	resp.Body.Close()
 	rawAPIKey = apiKeyResp.Key
 	return
@@ -183,28 +183,8 @@ func dekDoPost(t *testing.T, c *http.Client, url, body, token string) *http.Resp
 	return resp
 }
 
-type testAPIKeyStoreAdapter struct {
-	db *apiKeyAwareDB
-}
 
-func (a *testAPIKeyStoreAdapter) ListAPIKeysWithDecrypt(ctx context.Context, userID string) ([]*secrets.APIKeyRecord, error) {
-	keys, _ := a.db.ListAPIKeysWithDecrypt(ctx, userID)
-	var records []*secrets.APIKeyRecord
-	for _, k := range keys {
-		records = append(records, &secrets.APIKeyRecord{
-			ID:            k.ID,
-			WrappedDEK:    k.WrappedDEK,
-			KekSalt:       k.KekSalt,
-			KeyCiphertext: k.KeyCiphertext,
-			DecryptAccess: k.DecryptAccess,
-		})
-	}
-	return records, nil
-}
 
-func (a *testAPIKeyStoreAdapter) UpdateAPIKeyDEK(ctx context.Context, keyID string, wrappedDEK, kekSalt []byte, synced bool) error {
-	return a.db.UpdateAPIKeyDEK(ctx, keyID, wrappedDEK, kekSalt, synced)
-}
 
 func TestE2E_APIKey_WithoutDecryptAccess_SecretsOperation403(t *testing.T) {
 	router, _, _, _, _, _, _, _ := setupDEKRegressionRouter(t)
@@ -226,7 +206,7 @@ func TestE2E_APIKey_WithoutDecryptAccess_SecretsOperation403(t *testing.T) {
 		t.Fatalf("Login: %d", resp.StatusCode)
 	}
 	var loginResp struct{ Token string }
-	json.NewDecoder(resp.Body).Decode(&loginResp)
+	_ = json.NewDecoder(resp.Body).Decode(&loginResp)
 	resp.Body.Close()
 
 	resp = dekDoPost(t, client, base+"/api/v1/api-keys",
@@ -237,7 +217,7 @@ func TestE2E_APIKey_WithoutDecryptAccess_SecretsOperation403(t *testing.T) {
 		t.Fatalf("Create API key: %d: %s", resp.StatusCode, body)
 	}
 	var apiKeyResp struct{ Key string }
-	json.NewDecoder(resp.Body).Decode(&apiKeyResp)
+	_ = json.NewDecoder(resp.Body).Decode(&apiKeyResp)
 	resp.Body.Close()
 
 	resp = dekDoPost(t, client, base+"/api/v1/secrets",

@@ -54,6 +54,7 @@ func TestE2E_MasterKey_FullLifecycle(t *testing.T) {
 	keyStore := newMockKeyStore()
 	secretStore := newMockSecretStore()
 	keySvc := NewKeyService(keyStore, cache)
+	keySvc.SetAPIKeyStore(nil, &recordingProvider{})
 	secretSvc := NewSecretService(keySvc, secretStore)
 
 	userID := "e2e-mk-user"

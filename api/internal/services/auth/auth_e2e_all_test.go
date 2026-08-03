@@ -43,7 +43,7 @@ func TestE2E_RealAuth_WorkspaceEnv(t *testing.T) {
 		t.Fatalf("GetEnv: expected 200, got %d", resp.StatusCode)
 	}
 	var envResp struct{ Vars []string }
-	json.NewDecoder(resp.Body).Decode(&envResp)
+	_ = json.NewDecoder(resp.Body).Decode(&envResp)
 	resp.Body.Close()
 	if len(envResp.Vars) != 2 {
 		t.Errorf("Expected 2 env vars, got %d", len(envResp.Vars))
@@ -60,7 +60,7 @@ func TestE2E_RealAuth_WorkspaceEnv(t *testing.T) {
 
 	// Verify only 1 remains
 	resp = doGet(t, c, base+"/api/v1/workspaces/ws-env-test/env", token)
-	json.NewDecoder(resp.Body).Decode(&envResp)
+	_ = json.NewDecoder(resp.Body).Decode(&envResp)
 	resp.Body.Close()
 	if len(envResp.Vars) != 1 {
 		t.Errorf("Expected 1 env var after delete, got %d", len(envResp.Vars))
@@ -98,7 +98,7 @@ func TestE2E_RealAuth_ChangePassword(t *testing.T) {
 		t.Fatalf("New password login: expected 200, got %d: %s", resp.StatusCode, readAll(t, resp))
 	}
 	var loginResp struct{ Token string }
-	json.NewDecoder(resp.Body).Decode(&loginResp)
+	_ = json.NewDecoder(resp.Body).Decode(&loginResp)
 	resp.Body.Close()
 	newToken := loginResp.Token
 
@@ -176,7 +176,7 @@ func TestE2E_RealAuth_Recover(t *testing.T) {
 	var recoverResp struct {
 		RecoveryKey string `json:"recoveryKey"`
 	}
-	json.NewDecoder(resp.Body).Decode(&recoverResp)
+	_ = json.NewDecoder(resp.Body).Decode(&recoverResp)
 	resp.Body.Close()
 	if recoverResp.RecoveryKey == "" {
 		t.Error("Should return new recovery key")
@@ -233,7 +233,7 @@ func TestE2E_RealAuth_RotateKey_ThenSecrets(t *testing.T) {
 	// List should show both
 	resp = doGet(t, c, base+"/api/v1/secrets", token)
 	var listResp struct{ Secrets []struct{ Name string } }
-	json.NewDecoder(resp.Body).Decode(&listResp)
+	_ = json.NewDecoder(resp.Body).Decode(&listResp)
 	resp.Body.Close()
 	if len(listResp.Secrets) != 2 {
 		t.Errorf("Expected 2 secrets, got %d", len(listResp.Secrets))
@@ -384,7 +384,7 @@ func doPut(t *testing.T, c *http.Client, url, body, token string) *http.Response
 func readAll(t *testing.T, resp *http.Response) string {
 	t.Helper()
 	buf := new(bytes.Buffer)
-	buf.ReadFrom(resp.Body)
+	_, _ = buf.ReadFrom(resp.Body)
 	return buf.String()
 }
 
@@ -464,7 +464,7 @@ func TestE2E_APIKey_CreateWithDecryptAccess_SecretsOperationSucceeds(t *testing.
 	secretsHandler := handlers.NewSecretsHandler(secretSvc)
 
 	masterKey := make([]byte, 32)
-	rand.Read(masterKey)
+	_, _ = rand.Read(masterKey)
 	authSvc.SetMasterKey(masterKey)
 	authSvc.SetKeyService(keySvc)
 
@@ -536,7 +536,7 @@ func TestE2E_APIKey_CreateWithDecryptAccess_SecretsOperationSucceeds(t *testing.
 		t.Fatalf("Login: %d", resp.StatusCode)
 	}
 	var loginResp struct{ Token string }
-	json.NewDecoder(resp.Body).Decode(&loginResp)
+	_ = json.NewDecoder(resp.Body).Decode(&loginResp)
 	resp.Body.Close()
 	jwt := loginResp.Token
 
@@ -552,7 +552,7 @@ func TestE2E_APIKey_CreateWithDecryptAccess_SecretsOperationSucceeds(t *testing.
 		Key           string `json:"key"`
 		DecryptAccess bool   `json:"decryptAccess"`
 	}
-	json.NewDecoder(resp.Body).Decode(&apiKeyResp)
+	_ = json.NewDecoder(resp.Body).Decode(&apiKeyResp)
 	resp.Body.Close()
 
 	if !apiKeyResp.DecryptAccess {
@@ -578,7 +578,7 @@ func TestE2E_APIKey_CreateWithDecryptAccess_SecretsOperationSucceeds(t *testing.
 		t.Fatalf("List secrets with API key: %d: %s", resp.StatusCode, body)
 	}
 	var listResp struct{ Secrets []struct{ Name string } }
-	json.NewDecoder(resp.Body).Decode(&listResp)
+	_ = json.NewDecoder(resp.Body).Decode(&listResp)
 	resp.Body.Close()
 	if len(listResp.Secrets) != 1 || listResp.Secrets[0].Name != "e2e-secret" {
 		t.Fatalf("Expected 1 secret 'e2e-secret', got %v", listResp.Secrets)

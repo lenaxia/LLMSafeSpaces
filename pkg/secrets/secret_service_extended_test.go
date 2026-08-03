@@ -165,6 +165,7 @@ func TestSecretService_EncryptionIsolation(t *testing.T) {
 	keyStore := newMockKeyStore()
 	dekCache := newMockDEKCache()
 	keySvc := NewKeyService(keyStore, dekCache)
+	keySvc.SetAPIKeyStore(nil, &recordingProvider{})
 	secretStore := newMockSecretStore()
 	svc := NewSecretService(keySvc, secretStore)
 	ctx := context.Background()

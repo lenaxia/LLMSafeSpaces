@@ -130,6 +130,7 @@ func TestIntegration_MultiSession(t *testing.T) {
 	keyStore := newMockKeyStore()
 	dekCache := newMockDEKCache()
 	keySvc := NewKeyService(keyStore, dekCache)
+	keySvc.SetAPIKeyStore(nil, &recordingProvider{})
 	ctx := context.Background()
 
 	password := []byte("password")

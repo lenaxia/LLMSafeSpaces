@@ -41,7 +41,7 @@ func newSettingsService(vals map[string]any) *settings.InstanceService {
 	}
 	var log pkginterfaces.LoggerInterface = lmocks.NewMockLogger()
 	svc := settings.NewInstanceService(&stubStore{data: data}, log)
-	svc.Start()
+	_ = svc.Start()
 	return svc
 }
 
