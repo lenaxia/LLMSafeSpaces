@@ -662,6 +662,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		pgOrgStore = database.NewPgOrgStore(dbSvc.DB)
 		imageFactoryHandler = handlers.NewImageFactoryHandler(dbSvc, pgOrgStore)
 		imageFactoryAdminHandler = handlers.NewImageFactoryAdminHandler(dbSvc)
+		imageFactoryHandler.SetLogger(log)
 
 		// Seed the catalog from the embedded YAML (design/0046 #9).
 		if err := imagefactory.SeedCatalog(context.Background(), dbSvc); err != nil {

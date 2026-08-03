@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/imagefactory"
+	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 )
 
 // fakeDispatcher scripts the Dispatch outcome. Records calls so tests
@@ -128,6 +129,48 @@ func TestIF_CreateConfig_DispatchFailureNoCommit(t *testing.T) {
 	assert.False(t, store.calledCreateBuild, "build must NOT be committed on dispatch failure")
 }
 
+// TestIF_CreateConfig_DispatchFailureLogsError locks in the diagnostic
+// behavior: the underlying dispatch error must be surfaced to the logger,
+// not discarded into the generic 503. Regression for the hours-long
+// blind-spot caused by a swallowed error.
+func TestIF_CreateConfig_DispatchFailureLogsError(t *testing.T) {
+	t.Parallel()
+	store := s4Store()
+	dispatchErr := errors.New("gh dispatch: unexpected status 403: forbidden")
+	disp := &fakeDispatcher{err: dispatchErr}
+	log := &captureIFLogger{}
+	h := NewImageFactoryHandler(store, &fakeOrgResolver{})
+	h.SetDispatcher(disp)
+	h.SetLogger(log)
+	r := newIFRouterForHandler(t, h)
+
+	w := postConfigs(t, r, s4Body("fail-cfg", "ffmpeg"))
+	require.Equal(t, http.StatusServiceUnavailable, w.Code)
+	require.Len(t, log.errors, 1, "dispatch failure must be logged exactly once")
+	assert.Contains(t, log.errors[0].msg, "dispatch failed",
+		"log message must identify the failure path")
+	assert.ErrorIs(t, log.errors[0].err, dispatchErr,
+		"the underlying wrapped error must be passed to the logger")
+}
+
+// captureIFLogger records Error calls for assertion. No-ops the other
+// levels — satisfies pkginterfaces.LoggerInterface.
+type captureIFLogger struct{ errors []ifLogEntry }
+type ifLogEntry struct {
+	msg string
+	err error
+}
+
+func (l *captureIFLogger) Debug(string, ...interface{}) {}
+func (l *captureIFLogger) Info(string, ...interface{})  {}
+func (l *captureIFLogger) Warn(string, ...interface{})  {}
+func (l *captureIFLogger) Error(msg string, err error, _ ...interface{}) {
+	l.errors = append(l.errors, ifLogEntry{msg: msg, err: err})
+}
+func (l *captureIFLogger) Fatal(string, error, ...interface{})               {}
+func (l *captureIFLogger) With(...interface{}) pkginterfaces.LoggerInterface { return l }
+func (l *captureIFLogger) Sync() error                                       { return nil }
+
 func TestIF_CreateConfig_KnownFailureNotRetriable(t *testing.T) {
 	t.Parallel()
 	store := s4Store()
@@ -203,13 +246,20 @@ func TestIF_CreateConfig_Unauthed(t *testing.T) {
 
 func newIFRouterWithDispatcher(t *testing.T, store imageFactoryStore, orgs orgResolver, disp buildDispatcher) *gin.Engine {
 	t.Helper()
+	h := NewImageFactoryHandler(store, orgs)
+	h.SetDispatcher(disp)
+	return newIFRouterForHandler(t, h)
+}
+
+// newIFRouterForHandler mounts a pre-constructed handler (e.g. with a
+// capture logger wired) on a minimal router mirroring the real route group.
+func newIFRouterForHandler(t *testing.T, h *ImageFactoryHandler) *gin.Engine {
+	t.Helper()
 	r := gin.New()
 	r.Use(func(c *gin.Context) {
 		c.Set("userID", c.GetHeader("X-Test-UserID"))
 		c.Next()
 	})
-	h := NewImageFactoryHandler(store, orgs)
-	h.SetDispatcher(disp)
 	g := r.Group("/api/v1/image-factory")
 	g.GET("/catalog", h.Catalog)
 	g.GET("/configs", h.ListConfigs)

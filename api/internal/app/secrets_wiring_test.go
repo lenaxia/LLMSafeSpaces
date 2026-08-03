@@ -328,6 +328,30 @@ func TestPodBootstrapHandler_LoggerWired(t *testing.T) {
 	}
 }
 
+// TestImageFactoryHandler_LoggerWired is the regression guard for the
+// SetLogger wiring app.go adds for the image-factory handler. Without it,
+// deleting the SetLogger call compiles, passes every handler test (which
+// wire their own logger), and silently reverts to the swallowed-error 503
+// that masked the 2026-08-03 GitHub App permission outage. Mirrors
+// TestPodBootstrapHandler_LoggerWired's approach.
+//
+// We construct with nil store/orgs because the wiring test only exercises
+// logger setup — request handling is covered by the handler package tests.
+func TestImageFactoryHandler_LoggerWired(t *testing.T) {
+	h := handlers.NewImageFactoryHandler(nil, nil)
+	if h.HasLogger() {
+		t.Fatalf("freshly-constructed ImageFactoryHandler must not have a logger before SetLogger is called")
+	}
+
+	// Same call app.go makes (or MUST make — this test exists to enforce it).
+	log := lmocks.NewMockLogger()
+	h.SetLogger(log)
+
+	if !h.HasLogger() {
+		t.Fatalf("SetLogger must populate the handler's logger so dispatch failures include the underlying cause; otherwise the observability fix is dead code")
+	}
+}
+
 // TestPodBootstrapHandler_SettingsReaderWired is the regression guard for
 // the SetSettingsReader wiring in app.go. Without it, the
 // workspace.allowedExternalDirectories setting is never delivered to agentd

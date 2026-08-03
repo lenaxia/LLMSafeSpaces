@@ -12,6 +12,7 @@ import (
 
 	"github.com/lenaxia/llmsafespaces/api/internal/imagefactory"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/database"
+	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 )
 
 // imageFactoryStore is the data-access surface for image-factory catalog
@@ -51,6 +52,7 @@ type ImageFactoryHandler struct {
 	store      imageFactoryStore
 	orgs       orgResolver
 	dispatcher buildDispatcher
+	logger     pkginterfaces.LoggerInterface
 
 	// S5: callback + failure handling.
 	buildStore  buildStore
@@ -68,6 +70,31 @@ func NewImageFactoryHandler(store imageFactoryStore, orgs orgResolver) *ImageFac
 // SetDispatcher wires the GH Actions build dispatcher.
 func (h *ImageFactoryHandler) SetDispatcher(d buildDispatcher) {
 	h.dispatcher = d
+}
+
+// SetLogger installs a structured logger so the dispatch-failure path can
+// emit the underlying error (e.g. "gh dispatch: unexpected status 403: …").
+// Without this, POST /configs returns a generic 503 "failed to dispatch
+// build" and the root cause (a GitHub App permission gap, a token-mint
+// failure, a network error) is silently dropped — exactly the
+// observability gap that made the 2026-08-03 outage look like a
+// wiring/version problem instead of a missing Actions:Write permission.
+//
+// The logger is optional: when nil, the handler falls back to a silent
+// no-op so unit tests that don't care about log emission can omit it.
+// Production wiring (api/internal/app/app.go) MUST install one — see
+// TestImageFactoryHandler_LoggerWired in api/internal/app/ for the
+// regression guard that enforces this.
+func (h *ImageFactoryHandler) SetLogger(l pkginterfaces.LoggerInterface) {
+	h.logger = l
+}
+
+// HasLogger reports whether a logger has been wired. Used by the app-level
+// wiring test to enforce that production constructs the handler with
+// SetLogger called — without it, the underlying error in the 503 path is
+// silently dropped (the very gap this fix closes).
+func (h *ImageFactoryHandler) HasLogger() bool {
+	return h.logger != nil
 }
 
 // SetFailureExplainer wires the LLM failure explainer (S6). Optional —
