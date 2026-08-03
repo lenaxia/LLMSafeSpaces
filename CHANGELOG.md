@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-08-03
+
+### Fixed
+
+- **Image Factory: accept 204 from GitHub workflow_dispatch (#640).** GitHub's
+  `workflow_dispatch` endpoint returns 204 No Content on success, not 201 Created.
+  The dispatcher only accepted 201, so every successful dispatch was treated as a
+  failure → 503 → DB rollback. This was the second of two compounding bugs behind
+  the 2026-08-03 outage (the first was the missing `Actions: Write` permission,
+  fixed by granting it; #639's logging made this one visible). Accept both 201
+  and 204 as success.
+
 ## [0.8.3] - 2026-08-03
 
 ### Fixed
