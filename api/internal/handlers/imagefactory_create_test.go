@@ -130,7 +130,7 @@ func TestIF_CreateConfig_DispatchFailureNoCommit(t *testing.T) {
 }
 
 // TestIF_CreateConfig_DispatchFailureLogsError locks in the diagnostic
-// behaviour: the underlying dispatch error must be surfaced to the logger,
+// behavior: the underlying dispatch error must be surfaced to the logger,
 // not discarded into the generic 503. Regression for the hours-long
 // blind-spot caused by a swallowed error.
 func TestIF_CreateConfig_DispatchFailureLogsError(t *testing.T) {
