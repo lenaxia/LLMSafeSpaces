@@ -301,3 +301,20 @@ func TestIF_GetConfig_Unauthed401(t *testing.T) {
 	w := doAuthed(t, r, "GET", "/api/v1/image-factory/configs/s-abc", "")
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
+
+func TestIF_Catalog_KnownFailuresNeverNull(t *testing.T) {
+	t.Parallel()
+	store := &fakeIFStore{
+		platformCfg: imagefactory.PlatformConfig{Architectures: []string{"linux/amd64"}},
+		bases:       []imagefactory.Base{{Name: "bookworm", Version: "0.6.0", IsDefault: true}},
+		extensions:  []imagefactory.Extension{{ID: "ffmpeg", Type: imagefactory.ExtensionTypeApt, Value: "ffmpeg"}},
+		failures:    nil, // explicitly nil
+	}
+	r := newIFRouter(t, store, &fakeOrgResolver{})
+	w := doAuthed(t, r, "GET", "/api/v1/image-factory/catalog", "user-1")
+	require.Equal(t, http.StatusOK, w.Code)
+	body := w.Body.String()
+	// knownFailures must serialize as [] not null
+	assert.Contains(t, body, "\"knownFailures\":[]")
+	assert.NotContains(t, body, "\"knownFailures\":null")
+}

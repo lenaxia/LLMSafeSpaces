@@ -127,9 +127,9 @@ func (h *ImageFactoryHandler) Catalog(c *gin.Context) {
 		return
 	}
 
-	// Strip admin-only fields from known failures before returning to members.
-	// FailureReason is json:"-" already (never serialized), but be explicit:
-	// the consumer only needs the explanation + retriable flag for greying.
+	if failures == nil {
+		failures = []imagefactory.KnownFailure{}
+	}
 	for i := range failures {
 		failures[i].FailureReason = ""
 	}
