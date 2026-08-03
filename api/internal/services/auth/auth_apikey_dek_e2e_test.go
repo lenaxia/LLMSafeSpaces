@@ -183,9 +183,6 @@ func dekDoPost(t *testing.T, c *http.Client, url, body, token string) *http.Resp
 	return resp
 }
 
-
-
-
 func TestE2E_APIKey_WithoutDecryptAccess_SecretsOperation403(t *testing.T) {
 	router, _, _, _, _, _, _, _ := setupDEKRegressionRouter(t)
 	srv, base := startDEKTestServer(t, router)

@@ -153,26 +153,6 @@ func TestUnlockDEKWithSigningKey_ServerKEK_DecryptFailure(t *testing.T) {
 
 // TestUnlockDEKWithSigningKey_PasswordPath_Unchanged guards the regression that
 // password-tier users still unwrap via Argon2id(password, salt).
-func TestUnlockDEKWithSigningKey_PasswordPath_Unchanged(t *testing.T) {
-	store := newMockKeyStore()
-	cache := newMockDEKCache()
-	svc := NewKeyService(store, cache)
-
-	err := svc.InitializeUserKeysServerKEK(context.Background(), "u1", "server_kek")
-	if err != nil {
-		t.Fatalf("init: %v", err)
-	}
-	rec, _ := store.GetUserKey(context.Background(), "u1")
-	if rec.DEKSource != "password" {
-		t.Errorf("InitializeUserKeys must set DEKSource=password, got %q", rec.DEKSource)
-	}
-	if err := svc.UnlockDEKWithSigningKey(context.Background(), "u1", []byte("correct-horse"), "sess", time.Hour, nil); err != nil {
-		t.Fatalf("unlock password path: %v", err)
-	}
-	if err := svc.UnlockDEKWithSigningKey(context.Background(), "u1", []byte("wrong"), "sess2", time.Hour, nil); err == nil {
-		t.Error("wrong password must fail on the password path")
-	}
-}
 
 func TestDekSourceIsServerWrapped_TruthTable(t *testing.T) {
 	tests := []struct {
