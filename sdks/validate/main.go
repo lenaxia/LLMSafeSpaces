@@ -239,7 +239,6 @@ var expectedPaths = []string{
 	"/users/me/settings/schema",
 	"/users/me/settings/{key}",
 
-
 	// Provider credentials (user)
 	"/provider-credentials",
 	"/provider-credentials/{id}",
