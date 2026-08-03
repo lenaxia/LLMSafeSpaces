@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-08-03
+
+### Fixed
+
+- **Image Factory: null knownFailures crash (#638).** Go serializes nil
+  slices as JSON null; the catalog endpoint returned "knownFailures":null
+  which crashed the frontend (catalog.knownFailures.some on null). Fixed:
+  API returns [] not null; frontend has a defensive guard.
+
+### Added
+
+- **Image Factory: redesigned catalog — 30 extensions in 3 groups (#638).**
+  Language Packs (Python/Node/Go/Rust/Java/.NET/Ruby/PHP via mise), System
+  Packages (Playwright, Chromium, TeX Live, Tesseract, Graphviz, etc via apt),
+  Files (MOTD). Frontend groups extensions by type.
+
+
 ## [0.8.1] - 2026-08-03
 
 ### Changed
