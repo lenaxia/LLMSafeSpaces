@@ -65,8 +65,8 @@ type RouterConfig struct {
 	RateLimitConfig middleware.RateLimitConfig
 
 	// PerRouteRateLimitConfig is the configuration for stricter per-route
-	// rate limits applied on top of the global RateLimitConfig. Closes
-	// G35 (/account/recover) and G41 (/secrets/:id/reveal) — endpoints
+	// rate limits applied on top of the global RateLimitConfig. Covers
+	// G41 (/secrets/:id/reveal) — endpoints
 	// that take credentials as direct input and therefore warrant a
 	// tighter cap than the global 100/min/IP. Defaults to enabled with
 	// sensible limits; operators can disable by setting Enabled=false.

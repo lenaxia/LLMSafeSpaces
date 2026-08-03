@@ -59,11 +59,9 @@ type KeyStore interface {
 	CreateUserKey(ctx context.Context, record *UserKeyRecord) error
 	UpdateWrappedDEK(ctx context.Context, userID string, wrappedDEK []byte, salt []byte, keyVersion int) error
 	// UpdateWrappedDEKAndSource atomically re-wraps the DEK AND flips
-	// users.dek_source in a single transaction. Used by the provisioning path when a
-	// server_kek-tier user sets a password (transitioning them to the stronger
-	// legacy tier). The atomicity matters: a split write (re-wrap succeeds,
-	// dek_source flip fails, or vice versa) leaves the user_keys wrap and the
-	// users.dek_source flag disagreeing, which makes the next unlock try the
+	// UpdateWrappedDEKAndSource atomically re-wraps the DEK AND flips
+	// users.dek_source in a single transaction. Used by the provisioning path.
+	// The atomicity matters: a split write (re-wrap succeeds,
 	// wrong unwrap method and fail. One tx, both writes, commit-or-rollback.
 	UpdateWrappedDEKAndSource(ctx context.Context, userID string, wrappedDEK, salt []byte, keyVersion int, dekSource string) error
 	UpdateWrappedDEKRecovery(ctx context.Context, userID string, wrappedDEKRecovery []byte, recoverySalt []byte) error
@@ -209,7 +207,7 @@ func (s *KeyService) JWTSessionStoreSet() bool {
 }
 
 // SetLogger installs the logger used to surface non-fatal failures
-// (e.g. cache-evict errors during password change). Optional; if
+// (e.g. cache-evict errors during session revocation). Optional; if
 // nil, those events are silent. Validator pass-5 finding N-3.
 //
 // Note: the evict-failure log includes the sessionID
@@ -225,11 +223,10 @@ func (s *KeyService) SetLogger(l pkginterfaces.LoggerInterface) {
 // SetSecretStore wires the SecretStore used by the key service to
 // re-encrypt every user_secrets row under the new DEK. Without this, the
 // rotate endpoint refuses to run rather than orphan secret rows under a
-// discarded DEK (Bug 9 in worklog 0085).
+// SetSecretStore wires the SecretStore used for secret operations.
+// Optional; without it secret operations will fail.
 //
 // Once set, the store cannot be silently reassigned: a silent
-// reassignment would mean the key service ignores secrets owned
-// by an abandoned store — exactly the Bug 9 hazard. Calling
 // SetSecretStore twice with different stores panics; calling with the
 // same store (idempotent re-init) is allowed.
 func (s *KeyService) SetSecretStore(store SecretStore) {
@@ -240,10 +237,9 @@ func (s *KeyService) SetSecretStore(store SecretStore) {
 }
 
 // InitializeUserKeysServerKEK provisions a DEK wrapped by the master-KEK
-// RootKeyProvider. Used for all users (SSO, passkey, password-login).
-// have no password: SSO auto-provisioned users (Epic 58, dekSource "server_kek")
-// and passkey-only users (Epic 59, dekSource "passkey"). Both are server-wrapped
-// (same provider, same unwrap path); the value distinguishes the auth source.
+// InitializeUserKeysServerKEK provisions a DEK wrapped by the master-KEK
+// RootKeyProvider. The dekSource ("server_kek" or "passkey") distinguishes
+// the auth source; both share the same unwrap path (rootKeyProvider.Decrypt).
 // The store atomically flips users.dek_source alongside the user_keys insert.
 // Fail-closed when no provider is wired.
 func (s *KeyService) InitializeUserKeysServerKEK(ctx context.Context, userID, dekSource string) error {
@@ -279,8 +275,9 @@ func (s *KeyService) InitializeUserKeysServerKEK(ctx context.Context, userID, de
 }
 
 // UnlockDEK derives the KEK from the password, unwraps the DEK, and caches it.
+// UnlockDEK unwraps the DEK via the master RootKeyProvider and caches it.
+// The password parameter is ignored (server-KEK-only model).
 // Called during login. sessionID is the JWT's jti claim.
-//
 // This is the pre-Epic-56 entry point — Redis cache only. Use
 // UnlockDEKWithSigningKey from the login site to additionally write the
 // durable jwt_sessions row (Epic 56). Internal callers (auth.Login)

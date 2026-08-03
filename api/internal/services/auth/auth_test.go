@@ -1095,7 +1095,7 @@ func (f *fakeKeyService) CacheDEK(ctx context.Context, sessionID string, dek []b
 
 // TestRegister_UnlocksDEK verifies Register provisions + unlocks the DEK
 
-func TestRegister_UnlocksDEKAndReturnsRecoveryKey(t *testing.T) {
+func TestRegister_UnlocksDEK(t *testing.T) {
 	svc, mockDb, _ := newTestService(t)
 	ctx := context.Background()
 

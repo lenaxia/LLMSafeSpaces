@@ -210,7 +210,7 @@ func TestAuthMiddleware_LoginAutoInitsKeysForExistingUser(t *testing.T) {
 	svc.SetKeyService(ks)
 
 	// Simulate login (we can't call Login directly without password hash, so test the logic path)
-	// Instead, verify the KeyServiceInterface has HasKeys + InitializeUserKeys
+	// Instead, verify the KeyServiceInterface has HasKeys + InitializeUserKeysServerKEK
 	ctx := context.Background()
 
 	// HasKeys returns false for new user
@@ -219,7 +219,7 @@ func TestAuthMiddleware_LoginAutoInitsKeysForExistingUser(t *testing.T) {
 		t.Error("Should not have keys initially")
 	}
 
-	// After InitializeUserKeys, HasKeys returns true
+	// After InitializeUserKeysServerKEK, HasKeys returns true
 	_ = ks.InitializeUserKeysServerKEK(ctx, "existing-user", "server_kek")
 	has, _ = ks.HasKeys(ctx, "existing-user")
 	if !has {
