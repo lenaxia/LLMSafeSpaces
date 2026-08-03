@@ -514,3 +514,36 @@ func setupRealAuthRouter(t *testing.T) (*gin.Engine, string, *testContext) {
 
 	return router, token, tc
 }
+
+type capturingKeyService struct {
+	inner *secrets.KeyService
+	tc    *testContext
+}
+
+func (c *capturingKeyService) InitializeUserKeysServerKEK(ctx context.Context, userID, dekSource string) error {
+	return c.inner.InitializeUserKeysServerKEK(ctx, userID, dekSource)
+}
+
+func (c *capturingKeyService) UnlockDEK(ctx context.Context, userID string, password []byte, sessionID string, ttl time.Duration) error {
+	return c.inner.UnlockDEK(ctx, userID, password, sessionID, ttl)
+}
+
+func (c *capturingKeyService) UnlockDEKWithSigningKey(ctx context.Context, userID string, password []byte, sessionID string, ttl time.Duration, _ []byte) error {
+	return c.UnlockDEK(ctx, userID, password, sessionID, ttl)
+}
+
+func (c *capturingKeyService) DeleteDurableSessionsForUser(_ context.Context, _ string) error {
+	return nil
+}
+
+func (c *capturingKeyService) HasKeys(ctx context.Context, userID string) (bool, error) {
+	return c.inner.HasKeys(ctx, userID)
+}
+
+func (c *capturingKeyService) GetDEK(ctx context.Context, sessionID string, matchedSigningKey []byte) ([]byte, error) {
+	return c.inner.GetDEK(ctx, sessionID, nil)
+}
+
+func (c *capturingKeyService) CacheDEK(ctx context.Context, sessionID string, dek []byte, ttl time.Duration) error {
+	return c.inner.CacheDEK(ctx, sessionID, dek, ttl)
+}
