@@ -468,7 +468,7 @@ func TestRevokeAllUserSessions_NoTrackedSessions_Noop(t *testing.T) {
 // victim "logged out everywhere" — exactly the rehydrate path Epic 56 added.
 //
 // PR #421 review pass 2 noted that the three KeyService-level revocation
-// paths (EvictDEK, ChangePassword, RotateKeyWithPassword) all had
+// paths (EvictDEK, session revocation) all had
 // key_service_revocation_test.go coverage, but the fourth — the
 // auth-layer call at auth.go:1112 — was exercised only via stub mocks
 // that didn't record the call. A regression that deletes that one line
@@ -1093,10 +1093,8 @@ func (f *fakeKeyService) CacheDEK(ctx context.Context, sessionID string, dek []b
 	return nil
 }
 
-// TestRegister_UnlocksDEKAndReturnsRecoveryKey is the regression test for
-// Bug 5 (Register must UnlockDEK so the new user can immediately CreateSecret)
-// and Bug 10 (Register must surface the recovery key one time so the user
-// can save it; the API does not store it anywhere recoverable).
+// TestRegister_UnlocksDEK verifies Register provisions + unlocks the DEK
+
 func TestRegister_UnlocksDEKAndReturnsRecoveryKey(t *testing.T) {
 	svc, mockDb, _ := newTestService(t)
 	ctx := context.Background()

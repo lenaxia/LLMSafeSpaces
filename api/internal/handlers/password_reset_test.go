@@ -256,7 +256,7 @@ func TestPasswordReset_Confirm_ValidToken_ResetsEverything(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 
 	// DEK reinitialized
-	assert.Equal(t, 1, keyInit.calls, "InitializeUserKeys must be called once")
+	assert.Equal(t, 1, keyInit.calls, "InitializeUserKeysServerKEK must be called once")
 
 	// bcrypt hash updated
 	assert.Equal(t, 1, pwUp.calls, "UpdatePasswordHash must be called once")
@@ -273,7 +273,7 @@ func TestPasswordReset_Confirm_ValidToken_ResetsEverything(t *testing.T) {
 	// token consumed (single-use)
 	assert.NotNil(t, store.tokens[tokenHash].ConsumedAt, "token must be consumed")
 
-	// response includes the new recovery key
+	// response confirms reset
 	var resp map[string]any
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 	assert.Equal(t, true, resp["reset"])
@@ -316,7 +316,7 @@ func TestPasswordReset_Confirm_PurgesUserSecrets(t *testing.T) {
 func TestPasswordReset_Confirm_PurgeFailure_IsNonFatal(t *testing.T) {
 	// A purge or neutralize failure must NOT fail the reset: the DEK
 	// reinit already cryptographically erased the secrets, so cleanup is
-	// best-effort. The user still gets a recovery key and a 200.
+	// best-effort. The user still gets a 200.
 	store := newMemTokenStore()
 	tokenHash := hashTokenForTest("purgefail-token")
 	store.tokens[tokenHash] = &types.EmailToken{

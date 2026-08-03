@@ -114,11 +114,8 @@ type AuthConfig struct {
 
 // DEKSource identifies which encryption tier a user's personal secrets live in.
 //
-//   - "password"   DEK wrapped by a KEK derived from the user's password
-//     (Argon2id). The platform cannot decrypt without the password.
-//   - "server_kek" DEK wrapped by the master-KEK RootKeyProvider (same provider
-//     as api_keys). SSO auto-provisioned users (Epic 58) and
-//     passkey-only users (Epic 59).
+//   - "server_kek" DEK wrapped by the master-KEK RootKeyProvider.
+//   - "passkey"    Same unwrap path; distinguishes passkey-provisioned users.
 type DEKSource string
 
 const (

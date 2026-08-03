@@ -37,7 +37,7 @@ func setupTestRouter(t *testing.T) (*gin.Engine, *secrets.SecretService, string)
 
 	err := keySvc.InitializeUserKeysServerKEK(ctx, userID, "server_kek")
 	if err != nil {
-		t.Fatalf("InitializeUserKeys: %v", err)
+		t.Fatalf("InitializeUserKeysServerKEK: %v", err)
 	}
 	err = keySvc.UnlockDEK(ctx, userID, password, sessionID, time.Hour)
 	if err != nil {

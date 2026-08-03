@@ -67,7 +67,7 @@ func TestE2E_RealAuth_WorkspaceEnv(t *testing.T) {
 	t.Log("E2E WorkspaceEnv: PUT/GET/DELETE — PASSED")
 }
 
-// TestE2E_RealAuth_ChangePassword tests POST /account/change-password
+// TestE2E_APIKey_CreateWithDecryptAccess tests API-key secret operations
 func TestE2E_APIKey_CreateWithDecryptAccess_SecretsOperationSucceeds(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 

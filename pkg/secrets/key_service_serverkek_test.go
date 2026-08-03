@@ -151,9 +151,6 @@ func TestUnlockDEKWithSigningKey_ServerKEK_DecryptFailure(t *testing.T) {
 	}
 }
 
-// TestUnlockDEKWithSigningKey_PasswordPath_Unchanged guards the regression that
-// password-tier users still unwrap via Argon2id(password, salt).
-
 func TestDekSourceIsServerWrapped_TruthTable(t *testing.T) {
 	tests := []struct {
 		source string

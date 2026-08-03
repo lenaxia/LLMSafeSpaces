@@ -202,7 +202,7 @@ func (h *PasswordResetHandler) Request(c *gin.Context) {
 // expiry + consumption, then executes the reset:
 //  1. Consume token (single-use)
 //  2. Update bcrypt hash (FIRST — avoids unrecoverable state if DEK reinit fails)
-//  3. Reinitialise DEK (old DEK unrecoverable without old password)
+//  3. Reinitialise DEK (fresh server-KEK DEK; old ciphertext orphaned)
 //  4. Revoke all outstanding sessions
 //  5. Send "password changed" notification email
 //
