@@ -10,15 +10,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 )
 
 // captureUnlocker is a DEKUnlocker spy that records the call args and
