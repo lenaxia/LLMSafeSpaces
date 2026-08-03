@@ -84,4 +84,4 @@ None for this PR. **Production is still broken** until Fix A is applied: GitHub 
 - `api/internal/app/app.go` — wire `SetLogger(log)`
 - `api/internal/app/secrets_wiring_test.go` — `TestImageFactoryHandler_LoggerWired`
 - `design/0048_2026-08-03_image-factory-handoff.md` — handoff doc (root-cause investigation, verified state, Fix A/B)
-- `worklogs/NNNN_2026-08-03_image-factory-dispatch-logging.md` — this worklog
+- `worklogs/0674_2026-08-03_image-factory-dispatch-logging.md` — this worklog
