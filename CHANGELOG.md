@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-08-03
+
+### Fixed
+
+- **Image Factory: dispatch error logging (#639).** `POST /image-factory/configs`
+  returned a generic `503 "failed to dispatch build"` with the underlying error
+  discarded, making the 2026-08-03 outage (GitHub App missing `Actions: Write`
+  permission → `403 "Resource not accessible by integration"`) look like a
+  wiring/version problem for hours. The dispatch-failure path now logs the
+  dispatcher's wrapped error via the handler logger before returning 503.
+  Adds `SetLogger`/`HasLogger` on `ImageFactoryHandler` (mirrors the
+  `pod_bootstrap.go` precedent for swallowed-error observability gaps) plus a
+  handler-level regression test and an app-level wiring guard.
+
 ## [0.8.2] - 2026-08-03
 
 ### Fixed
