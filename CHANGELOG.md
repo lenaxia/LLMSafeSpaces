@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-08-03
+
+### Changed
+
+- **Image Factory: GitHub App authentication (#637).** Switches from PAT
+  to GitHub App (`llmsafespaces-builder`, App ID 4470040). The dispatcher
+  mints a JWT from the App's private key, exchanges it for an installation
+  token (cached 50min, mutex-protected), and uses it for workflow_dispatch.
+  The workflow uses `actions/create-github-app-token` to push packages to
+  `ghcr.io/lenaxia/llmsafespaces-images/ws`. Config: `appId` + `privateKey`
+  replace `apiToken`. Helm chart: `appCredentials.secretName` replaces
+  `secretKeyRef`. 7 dispatcher tests (happy + error paths + caching).
+
 ## [0.8.0] - 2026-08-02
 
 ### Added
