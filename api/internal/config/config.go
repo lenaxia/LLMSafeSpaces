@@ -244,7 +244,8 @@ type Config struct {
 		ImageRepo    string `mapstructure:"imageRepo"`
 		CallbackURL  string `mapstructure:"callbackURL"`
 		GHDispatcher struct {
-			APIToken   string `mapstructure:"apiToken"`
+			AppID      string `mapstructure:"appId"`
+			PrivateKey string `mapstructure:"privateKey"`
 			Owner      string `mapstructure:"owner"`
 			Repo       string `mapstructure:"repo"`
 			WorkflowID string `mapstructure:"workflowId"`
@@ -397,10 +398,20 @@ func applyEnvOverrides(config *Config) {
 		config.Auth.JWTSecret = v
 	}
 
-	// Image factory GH Actions PAT + LLM API key — loaded from Kubernetes
-	// Secrets via secretKeyRef in the deployment, NOT from the ConfigMap.
-	if v := os.Getenv("LLMSAFESPACES_IMAGE_FACTORY_GH_TOKEN"); v != "" {
-		config.ImageFactory.GHDispatcher.APIToken = v
+	// Image factory config overrides.
+	applyImageFactoryEnvOverrides(config)
+}
+
+// applyImageFactoryEnvOverrides loads image-factory secrets from env vars
+// that viper's AutomaticEnv doesn't reach (nested struct keys). Extracted
+// from applyEnvOverrides to keep cyclomatic complexity under the linter
+// threshold.
+func applyImageFactoryEnvOverrides(config *Config) {
+	if v := os.Getenv("LLMSAFESPACES_IMAGE_FACTORY_APP_ID"); v != "" {
+		config.ImageFactory.GHDispatcher.AppID = v
+	}
+	if v := os.Getenv("LLMSAFESPACES_IMAGE_FACTORY_APP_PRIVATE_KEY"); v != "" {
+		config.ImageFactory.GHDispatcher.PrivateKey = v
 	}
 	if v := os.Getenv("LLMSAFESPACES_IMAGE_FACTORY_LLM_KEY"); v != "" {
 		config.ImageFactory.LLMExplainer.APIKey = v

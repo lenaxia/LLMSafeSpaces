@@ -699,7 +699,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 
 		imageRepo := cfg.ImageFactory.ImageRepo
 		if imageRepo == "" {
-			imageRepo = "ghcr.io/lenaxia/llmsafespaces/ws"
+			imageRepo = "ghcr.io/lenaxia/llmsafespaces-images/ws"
 		}
 		callbackURL := cfg.ImageFactory.CallbackURL
 		if callbackURL == "" {
@@ -707,11 +707,12 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		}
 		imageFactoryHandler.SetBuildStore(dbSvc, imageRepo, callbackURL)
 
-		// Wire the GH Actions dispatcher (enables image builds).
-		if cfg.ImageFactory.GHDispatcher.APIToken != "" {
+		// Wire the GH Actions dispatcher via GitHub App (enables image builds).
+		if cfg.ImageFactory.GHDispatcher.AppID != "" && cfg.ImageFactory.GHDispatcher.PrivateKey != "" {
 			imageFactoryHandler.SetDispatcher(
 				handlers.NewGHActionsDispatcher(
-					cfg.ImageFactory.GHDispatcher.APIToken,
+					cfg.ImageFactory.GHDispatcher.AppID,
+					cfg.ImageFactory.GHDispatcher.PrivateKey,
 					cfg.ImageFactory.GHDispatcher.Owner,
 					cfg.ImageFactory.GHDispatcher.Repo,
 					cfg.ImageFactory.GHDispatcher.WorkflowID,
