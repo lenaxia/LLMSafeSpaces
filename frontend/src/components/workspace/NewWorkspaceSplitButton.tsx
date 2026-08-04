@@ -96,6 +96,7 @@ export function NewWorkspaceSplitButton({ onCreated }: { onCreated: (wsId: strin
       <button
         onClick={() => setShowPopup((v) => !v)}
         disabled={creating || !hasContent}
+        className="flex items-center justify-center rounded-r-md border border-border px-1 hover:bg-accent disabled:opacity-30"
         aria-label="Select workspace image"
         title={hasContent ? "Choose an image" : "No custom images available"}
       >

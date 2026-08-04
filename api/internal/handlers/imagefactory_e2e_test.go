@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"net/http/httptest"
 	"testing"
 
@@ -219,6 +220,8 @@ func newE2ERouter(t *testing.T, store *e2eImageFactoryStore, disp buildDispatche
 	r.GET("/api/v1/image-factory/configs", h.ListConfigs)
 	r.GET("/api/v1/image-factory/configs/:hash", h.GetConfig)
 	r.POST("/api/v1/image-factory/configs", h.CreateConfig)
+	r.DELETE("/api/v1/image-factory/configs/:hash", h.DeleteConfig)
+	r.PATCH("/api/v1/image-factory/configs/:hash", h.RenameConfig)
 	r.POST("/internal/image-factory/builds/:id/callback", h.Callback)
 	return r
 }
@@ -533,6 +536,70 @@ func TestE2E_ImageFactory_AdminGuard(t *testing.T) {
 	w = httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusOK, w.Code)
+}
+
+// ── E2E: Delete + Rename ────────────────────────────────────────────────
+
+func TestE2E_DeleteConfig_ReadyWithBuilds(t *testing.T) {
+	store := newE2EStore()
+	// Seed a ready config with a build
+	cfg := &imagefactory.Config{
+		ID: "cfg-del", Hash: "s-del", Name: "Deletable", Scope: imagefactory.ScopeMember,
+		Status: imagefactory.StatusReady, BaseName: "bookworm", BaseVersion: "0.8.0",
+		Selection: imagefactory.Selection{"ffmpeg"}, ResolvedValues: imagefactory.ResolvedValues{},
+	}
+	store.e2eConfigs["cfg-del"] = cfg
+	store.e2eBuilds["b-del"] = &imagefactory.Build{ID: "b-del", ConfigID: "cfg-del", Hash: "s-del"}
+
+	r := newE2ERouter(t, store, &fakeDispatcher{})
+
+	req := httptest.NewRequest("DELETE", "/api/v1/image-factory/configs/s-del", nil)
+	req.Header.Set("X-Test-UserID", "user-1")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNoContent, w.Code)
+	_, exists := store.e2eConfigs["cfg-del"]
+	assert.False(t, exists, "config should be deleted from store")
+}
+
+func TestE2E_DeleteConfig_Building_Conflict(t *testing.T) {
+	store := newE2EStore()
+	cfg := &imagefactory.Config{
+		ID: "cfg-bld", Hash: "s-bld", Name: "Building", Scope: imagefactory.ScopeMember,
+		Status: imagefactory.StatusBuilding, BaseName: "bookworm", BaseVersion: "0.8.0",
+	}
+	store.e2eConfigs["cfg-bld"] = cfg
+
+	r := newE2ERouter(t, store, &fakeDispatcher{})
+
+	req := httptest.NewRequest("DELETE", "/api/v1/image-factory/configs/s-bld", nil)
+	req.Header.Set("X-Test-UserID", "user-1")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+}
+
+func TestE2E_RenameConfig_Success(t *testing.T) {
+	store := newE2EStore()
+	cfg := &imagefactory.Config{
+		ID: "cfg-rn", Hash: "s-rn", Name: "Old Name", Scope: imagefactory.ScopeMember,
+		Status: imagefactory.StatusReady, BaseName: "bookworm", BaseVersion: "0.8.0",
+	}
+	store.e2eConfigs["cfg-rn"] = cfg
+
+	r := newE2ERouter(t, store, &fakeDispatcher{})
+
+	req := httptest.NewRequest("PATCH", "/api/v1/image-factory/configs/s-rn",
+		strings.NewReader(`{"name":"New Name"}`))
+	req.Header.Set("X-Test-UserID", "user-1")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), "New Name")
 }
 
 // ── Compile-time checks ─────────────────────────────────────────────────
