@@ -5,13 +5,11 @@ package handlers
 
 import (
 	"context"
-	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/imagefactory"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/database"
 	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 )
 
@@ -208,55 +206,12 @@ func (h *ImageFactoryHandler) ListConfigs(c *gin.Context) {
 
 // GetConfig handles GET /v1/image-factory/configs/:hash.
 // Decodes a schematic: returns the config's frozen resolved_values (the
-// cached projection of the immutable extension values at save time) plus its
-// status. Used by "what's in this image?" inspection. Scopes searched in
-// friendly-name resolution order: member, then org, then platform.
+// GetConfig handles GET /configs/:hash. Uses resolveConfigByHash (shared
+// with DeleteConfig/RenameConfig) to search scopes in resolution order.
 func (h *ImageFactoryHandler) GetConfig(c *gin.Context) {
-	hash := c.Param("hash")
-	if hash == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "hash is required"})
+	cfg, _, ok := h.resolveConfigByHash(c)
+	if !ok {
 		return
 	}
-	userID := c.GetString("userID")
-	if userID == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
-		return
-	}
-	ctx := c.Request.Context()
-
-	var orgID *string
-	if oid, err := h.orgs.GetUserOrgID(ctx, userID); err == nil && oid != "" {
-		o := oid
-		orgID = &o
-	}
-	uid := userID
-
-	// Search scopes in resolution order: member, org, platform.
-	for _, scope := range []imagefactory.ConfigScope{
-		imagefactory.ScopeMember,
-		imagefactory.ScopeOrg,
-		imagefactory.ScopePlatform,
-	} {
-		var oidArg, ownerArg *string
-		switch scope {
-		case imagefactory.ScopeMember:
-			ownerArg = &uid
-		case imagefactory.ScopeOrg:
-			oidArg = orgID
-			if oidArg == nil {
-				continue
-			}
-		}
-		cfg, err := h.store.GetConfigByHash(ctx, hash, scope, ownerArg, oidArg)
-		if err == nil {
-			c.JSON(http.StatusOK, cfg)
-			return
-		}
-		// miss → try next scope; other errors → 500.
-		if !errors.Is(err, database.ErrNotFound) {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load config"})
-			return
-		}
-	}
-	c.JSON(http.StatusNotFound, gin.H{"error": "config not found"})
+	c.JSON(http.StatusOK, cfg)
 }

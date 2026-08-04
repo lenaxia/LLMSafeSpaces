@@ -136,6 +136,80 @@ func TestRenameConfig_EmptyName_UnprocessableEntity(t *testing.T) {
 	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
 }
 
+func TestRenameConfig_TooLong_UnprocessableEntity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newFakeManageStore()
+	store.configsByHash["s-long"] = &imagefactory.Config{
+		ID: "cfg-long", Hash: "s-long", Name: "Old", Status: imagefactory.StatusReady, Scope: imagefactory.ScopeMember,
+	}
+	h := NewImageFactoryHandler(store, &fakeManageOrgResolver{})
+
+	longName := strings.Repeat("a", 65)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = append(c.Params, gin.Param{Key: "hash", Value: "s-long"})
+	c.Set("userID", "user-1")
+	c.Request = httptest.NewRequest(http.MethodPatch, "/", strings.NewReader(`{"name":"`+longName+`"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.RenameConfig(c)
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+}
+
+func TestRenameConfig_Conflict_409(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newFakeManageStore()
+	store.configsByHash["s-conf"] = &imagefactory.Config{
+		ID: "cfg-conf", Hash: "s-conf", Name: "Old", Status: imagefactory.StatusReady, Scope: imagefactory.ScopeMember,
+	}
+	store.renameErr = database.ErrConflict
+	h := NewImageFactoryHandler(store, &fakeManageOrgResolver{})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = append(c.Params, gin.Param{Key: "hash", Value: "s-conf"})
+	c.Set("userID", "user-1")
+	c.Request = httptest.NewRequest(http.MethodPatch, "/", strings.NewReader(`{"name":"Taken Name"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	h.RenameConfig(c)
+	assert.Equal(t, http.StatusConflict, w.Code)
+}
+
+func TestDeleteConfig_OrgScope_Forbidden(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newFakeManageStore()
+	store.configsByHash["s-org"] = &imagefactory.Config{
+		ID: "cfg-org", Hash: "s-org", Status: imagefactory.StatusReady, Scope: imagefactory.ScopeOrg,
+	}
+	// Org resolver returns a real org ID so the scope loop tries org-scope
+	h := NewImageFactoryHandler(store, &fakeManageOrgResolver{orgID: "org-1"})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = append(c.Params, gin.Param{Key: "hash", Value: "s-org"})
+	c.Set("userID", "user-1")
+	c.Request = httptest.NewRequest(http.MethodDelete, "/", nil)
+
+	h.DeleteConfig(c)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
+func TestDeleteConfig_NotFound_404(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newFakeManageStore()
+	h := NewImageFactoryHandler(store, &fakeManageOrgResolver{})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = append(c.Params, gin.Param{Key: "hash", Value: "s-ghost"})
+	c.Set("userID", "user-1")
+	c.Request = httptest.NewRequest(http.MethodDelete, "/", nil)
+
+	h.DeleteConfig(c)
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
 // ── Test doubles ────────────────────────────────────────────────────────
 
 type fakeManageStore struct {
@@ -144,6 +218,7 @@ type fakeManageStore struct {
 	deleteCalled  bool
 	renameCalled  bool
 	renameNewName string
+	renameErr     error
 }
 
 func newFakeManageStore() *fakeManageStore {
@@ -179,6 +254,9 @@ func (f *fakeManageStore) DeleteConfig(_ context.Context, id string) error {
 func (f *fakeManageStore) RenameConfig(_ context.Context, id, newName string) error {
 	f.renameCalled = true
 	f.renameNewName = newName
+	if f.renameErr != nil {
+		return f.renameErr
+	}
 	for _, cfg := range f.configsByHash {
 		if cfg.ID == id {
 			cfg.Name = newName
@@ -196,8 +274,10 @@ func (f *fakeManageStore) hashForID(id string) string {
 	return ""
 }
 
-type fakeManageOrgResolver struct{}
+type fakeManageOrgResolver struct {
+	orgID string
+}
 
 func (f *fakeManageOrgResolver) GetUserOrgID(_ context.Context, _ string) (string, error) {
-	return "", nil
+	return f.orgID, nil
 }

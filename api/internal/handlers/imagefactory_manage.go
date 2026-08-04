@@ -148,7 +148,10 @@ func (h *ImageFactoryHandler) RenameConfig(c *gin.Context) {
 
 	updated, err := h.store.GetConfig(ctx, cfg.ID)
 	if err != nil {
-		c.JSON(http.StatusOK, gin.H{"id": cfg.ID, "name": name})
+		// Rename succeeded but re-fetch failed — return the original config
+		// with the new name applied, so frontend state stays consistent.
+		cfg.Name = name
+		c.JSON(http.StatusOK, cfg)
 		return
 	}
 	c.JSON(http.StatusOK, updated)
