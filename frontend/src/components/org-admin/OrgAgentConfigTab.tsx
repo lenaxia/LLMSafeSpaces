@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useOutletContext } from "react-router-dom";
 import { promptsApi } from "../../api/prompts";
+import { policiesApi } from "../../api/policies";
 import {
   agentRolesApi,
   type AgentRole,
@@ -18,6 +19,7 @@ export function OrgAgentConfigTab() {
 
   const [prompt, setPrompt] = useState("");
   const [allowUser, setAllowUser] = useState(false);
+  const [allowMemberMcp, setAllowMemberMcp] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -29,12 +31,18 @@ export function OrgAgentConfigTab() {
   const refreshPrompt = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await promptsApi.getOrg(org.id);
-      setPrompt(data.prompt);
-      setAllowUser(data.allowUserPrompt);
+      const [promptData, policies] = await Promise.all([
+        promptsApi.getOrg(org.id),
+        policiesApi.listOrg(org.id).catch(() => [] as { key: string; value: unknown }[]),
+      ]);
+      setPrompt(promptData.prompt);
+      setAllowUser(promptData.allowUserPrompt);
+      const mcpPolicy = policies.find((p) => p.key === "allow_user_mcp_servers");
+      setAllowMemberMcp(mcpPolicy ? mcpPolicy.value === true : false);
     } catch {
       setPrompt("");
       setAllowUser(false);
+      setAllowMemberMcp(false);
     } finally {
       setLoading(false);
     }
@@ -84,6 +92,17 @@ export function OrgAgentConfigTab() {
     }
   };
 
+  const toggleAllowMemberMcp = async (checked: boolean) => {
+    setAllowMemberMcp(checked);
+    try {
+      await policiesApi.setOrg(org.id, "allow_user_mcp_servers", checked);
+      toast(checked ? "Member MCP servers enabled" : "Member MCP servers disabled");
+    } catch {
+      setAllowMemberMcp(!checked);
+      toast("Failed to toggle", "error");
+    }
+  };
+
   if (loading && loadingRoles) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -101,7 +120,7 @@ export function OrgAgentConfigTab() {
             When enabled, members can customize the agent's instructions in their workspaces. When disabled, members get a uniform agent.
           </p>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-4">
           <div className="flex items-center justify-between">
             <div>
               <span className="font-medium">Allow member prompt customization</span>
@@ -110,6 +129,15 @@ export function OrgAgentConfigTab() {
               </p>
             </div>
             <Toggle checked={allowUser} onCheckedChange={toggleAllowUser} />
+          </div>
+          <div className="flex items-center justify-between">
+            <div>
+              <span className="font-medium">Allow member MCP servers</span>
+              <p className="text-xs text-muted-foreground mt-1">
+                {allowMemberMcp ? "Members can register personal MCP servers" : "Only org admins can add MCP servers"}
+              </p>
+            </div>
+            <Toggle checked={allowMemberMcp} onCheckedChange={toggleAllowMemberMcp} />
           </div>
         </CardContent>
       </Card>

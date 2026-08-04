@@ -1,10 +1,12 @@
 import { useState, useCallback, useEffect } from "react";
+import { useOutletContext } from "react-router-dom";
 import {
   adminMcpServersApi,
   orgMcpServersApi,
   userMcpServersApi,
 } from "../../api/mcpServers";
 import { secretsApi } from "../../api/secrets";
+import type { OrgResponse } from "../../api/orgs";
 import type {
   McpServerResponse,
   CreateMcpServerRequest,
@@ -21,10 +23,15 @@ type ApiClient = {
 
 interface McpServersTabProps {
   scope: "admin" | "org" | "user";
-  orgId?: string;
 }
 
-export function McpServersTab({ scope, orgId }: McpServersTabProps) {
+export function McpServersTab({ scope }: McpServersTabProps) {
+  // Org scope reads orgId from the OrgAdminLayout outlet context (mirrors
+  // OrgAgentConfigTab). The router element at /orgs/:id/mcp-servers cannot
+  // pass orgId as a prop without a wrapper, and the previous absence caused
+  // every org-scope API call to fall through to the user endpoint.
+  const { org } = useOutletContext<{ org?: OrgResponse; isAdmin?: boolean }>();
+  const orgId = scope === "org" ? org?.id : undefined;
   const [servers, setServers] = useState<McpServerResponse[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

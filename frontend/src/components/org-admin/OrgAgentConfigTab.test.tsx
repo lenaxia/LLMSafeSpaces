@@ -8,11 +8,19 @@ import type { OrgResponse } from "../../api/orgs";
 const mockGetOrgPrompt = vi.fn();
 const mockListOrgRoles = vi.fn();
 const mockListPlatformRoles = vi.fn();
+const mockListOrgPolicies = vi.fn();
 const mockOutletContext = vi.fn();
 
 vi.mock("../../api/prompts", () => ({
   promptsApi: {
     getOrg: (id: string) => mockGetOrgPrompt(id),
+    setOrg: vi.fn(),
+  },
+}));
+
+vi.mock("../../api/policies", () => ({
+  policiesApi: {
+    listOrg: (id: string) => mockListOrgPolicies(id),
     setOrg: vi.fn(),
   },
 }));
@@ -64,6 +72,7 @@ beforeEach(() => {
   mockGetOrgPrompt.mockResolvedValue({ prompt: "", allowUserPrompt: true });
   mockListOrgRoles.mockResolvedValue([]);
   mockListPlatformRoles.mockResolvedValue([]);
+  mockListOrgPolicies.mockResolvedValue([]);
 });
 
 // LLMSafeSpaces#480: the org-admin Agent Config tab and the workspace
@@ -150,5 +159,27 @@ describe("OrgAgentConfigTab — copy hides implementation jargon (#480)", () => 
     );
     // The old "Org prompt saved" jargon must not appear in any toast.
     expect(screen.queryByText("Org prompt saved")).not.toBeInTheDocument();
+  });
+
+  it("reflects the allow_user_mcp_servers policy in the member MCP toggle", async () => {
+    mockListOrgPolicies.mockResolvedValue([
+      { key: "allow_user_mcp_servers", value: true, updatedAt: "2026-01-01T00:00:00Z" },
+    ]);
+    renderTab();
+    await waitFor(() =>
+      expect(
+        screen.getByText("Members can register personal MCP servers"),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("shows the locked caption when allow_user_mcp_servers is absent/false", async () => {
+    mockListOrgPolicies.mockResolvedValue([]);
+    renderTab();
+    await waitFor(() =>
+      expect(
+        screen.getByText("Only org admins can add MCP servers"),
+      ).toBeInTheDocument(),
+    );
   });
 });
