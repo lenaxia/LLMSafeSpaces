@@ -308,7 +308,7 @@ function RuntimeSelect({ id, value, onCommit, disabled }: {
     <select
       id={id}
       value={value}
-      onChange={(e) => onCommit(e.target.value || undefined)}
+      onChange={(e) => onCommit(e.target.value)}
       disabled={disabled}
       className="h-8 w-full sm:w-48 rounded-md border border-border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
     >

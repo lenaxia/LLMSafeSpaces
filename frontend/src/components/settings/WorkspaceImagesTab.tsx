@@ -150,19 +150,8 @@ export function WorkspaceImagesTab() {
                       ))}
                     </div>
                     {isEditable && cfg.status !== "building" && (
-                      <div className="mt-3 flex gap-2">
-                        <button
-                          onClick={() => { /* TODO: rename */ }}
-                          className="rounded border border-border px-2 py-1 text-xs hover:bg-accent"
-                        >
-                          Rename
-                        </button>
-                        <button
-                          onClick={() => { /* TODO: delete */ }}
-                          className="rounded border border-destructive/50 px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
-                        >
-                          Delete
-                        </button>
+                      <div className="mt-3 text-[0.65rem] text-muted-foreground">
+                        Rename and delete are coming soon
                       </div>
                     )}
                   </div>
