@@ -84,6 +84,7 @@ type Service struct {
 	orgStore          OrgMembershipChecker
 	policyChecker     PolicyChecker
 	imageFactoryStore LaunchableConfigResolver
+	userSettings      UserDefaultReader
 	config            *Config
 }
 
@@ -106,6 +107,13 @@ type PolicyChecker interface {
 // the workspace service check for "try next scope" without coupling to the
 // database package's ErrNotFound sentinel.
 var ErrConfigNotLaunchable = errors.New("config not launchable")
+
+// UserDefaultReader reads a user's default workspace image setting
+// (preferredRuntime — an image-factory config hash, or empty). Nil
+// disables the user-default tier of the hierarchy.
+type UserDefaultReader interface {
+	GetString(ctx context.Context, userID, key string) (string, error)
+}
 
 // LaunchableConfigResolver looks up an image-factory config by hash and
 // returns its image ref if the config is Ready and owned by the caller.
@@ -133,6 +141,12 @@ func (s *Service) SetOrgStore(store OrgMembershipChecker) {
 // legacy runtime-only path.
 func (s *Service) SetImageFactoryStore(store LaunchableConfigResolver) {
 	s.imageFactoryStore = store
+}
+
+// SetUserSettings installs the user-default reader for the default-image
+// hierarchy (user → org → platform). Optional — nil skips the user tier.
+func (s *Service) SetUserSettings(r UserDefaultReader) {
+	s.userSettings = r
 }
 
 // SetPolicyChecker installs the org policy checker for workspace quota enforcement.
@@ -362,19 +376,26 @@ func (s *Service) CreateWorkspace(ctx context.Context, userID string, req types.
 		}
 	}
 
-	// Apply default runtime from settings if not specified
-	if req.Runtime == "" && s.instanceSettings != nil {
-		if img, err := s.instanceSettings.GetString(ctx, settings.KeyWorkspaceDefaultImage.Name()); err == nil && img != "" {
-			req.Runtime = img
-		}
+	// Resolve the workspace runtime via the default-image hierarchy when
+	// the caller didn't supply one explicitly (design/0046 launch hierarchy):
+	//
+	//   1. User preference (preferredRuntime — a config hash)
+	//   2. Org default (defaultRuntime — a config hash)
+	//   3. Platform default (workspace.defaultImage — a direct image ref)
+	//   4. "base" (RuntimeEnvironment name, resolved by the controller)
+	//
+	// Each tier may store a config hash (resolved via the image factory) or
+	// a direct image ref (used as-is). If req.Runtime is already set (e.g.
+	// a direct API caller), the hierarchy is skipped entirely.
+	if req.Runtime == "" {
+		req.Runtime = s.resolveDefaultRuntime(ctx, userID, req.OrgID)
 	}
 
 	// Image-factory launch integration (design/0046 #15). When the caller
-	// supplies ImageConfigHash, resolve it to a Ready config's built image
-	// and override Runtime with the image ref. The config must be Ready and
-	// owned by the caller (or org/platform-scoped). This runs AFTER the
-	// default-runtime lookup so a hash wins over any default — matching
-	// the user's explicit intent.
+	// supplies ImageConfigHash (the popup-menu path), resolve it to a Ready
+	// config's built image and override Runtime with the image ref. This
+	// takes priority over the default hierarchy — the user explicitly
+	// chose this image for this workspace.
 	if req.ImageConfigHash != "" {
 		imageRef, err := s.resolveImageFactoryConfig(ctx, req.ImageConfigHash, userID, req.OrgID)
 		if err != nil {
@@ -1204,6 +1225,56 @@ func buildWorkspaceCRD(workspaceID, userID string, req types.CreateWorkspaceRequ
 		},
 		Spec: spec,
 	}
+}
+
+// resolveDefaultRuntime walks the default-image hierarchy: user → org →
+// platform → "base". Each tier may store a config hash (resolved via the
+// image factory) or a direct image ref (used as-is). The first non-empty
+// tier wins. Failures at any tier are logged and fall through to the next
+// (a missing user preference should never block workspace creation).
+func (s *Service) resolveDefaultRuntime(ctx context.Context, userID string, orgID *string) string {
+	// 1. User preference (preferredRuntime).
+	if s.userSettings != nil {
+		hash, err := s.userSettings.GetString(ctx, userID, "preferredRuntime")
+		if err != nil {
+			s.logger.Warn("Failed to read user preferredRuntime, falling through", "userID", userID, "error", err)
+		} else if hash != "" {
+			if ref, resolveErr := s.resolveImageFactoryConfig(ctx, hash, userID, orgID); resolveErr == nil {
+				return ref
+			} else {
+				s.logger.Warn("User default image not launchable, falling through", "hash", hash, "userID", userID, "error", resolveErr)
+			}
+		}
+	}
+
+	// 2. Org default (defaultRuntime policy).
+	if s.policyChecker != nil && orgID != nil && *orgID != "" {
+		pol, err := s.policyChecker.GetEffectivePolicy(ctx, *orgID)
+		if err != nil {
+			s.logger.Warn("Failed to read org policy for defaultRuntime, falling through", "orgID", *orgID, "error", err)
+		} else if pol != nil {
+			if hash := pol.DefaultRuntimeImage(); hash != "" {
+				if ref, resolveErr := s.resolveImageFactoryConfig(ctx, hash, userID, orgID); resolveErr == nil {
+					return ref
+				} else {
+					s.logger.Warn("Org default image not launchable, falling through", "hash", hash, "orgID", *orgID, "error", resolveErr)
+				}
+			}
+		}
+	}
+
+	// 3. Platform default (workspace.defaultImage — a direct image ref).
+	if s.instanceSettings != nil {
+		img, err := s.instanceSettings.GetString(ctx, settings.KeyWorkspaceDefaultImage.Name())
+		if err != nil {
+			s.logger.Warn("Failed to read platform defaultImage, falling through", "error", err)
+		} else if img != "" {
+			return img
+		}
+	}
+
+	// 4. Ultimate fallback: "base" RuntimeEnvironment name.
+	return "base"
 }
 
 // resolveImageFactoryConfig looks up an image-factory config by hash and

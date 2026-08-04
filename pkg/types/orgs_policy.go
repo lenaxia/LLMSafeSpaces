@@ -27,6 +27,9 @@ const (
 	// Epic 53 — MCP server governance policies
 	PolicyAllowUserMcpServers       OrgPolicyKey = "allow_user_mcp_servers"
 	PolicyMaxMcpServersPerWorkspace OrgPolicyKey = "max_mcp_servers_per_workspace"
+
+	// Image factory — org default workspace image (design/0046 launch hierarchy)
+	PolicyDefaultRuntime OrgPolicyKey = "default_runtime"
 )
 
 // OrgPolicy is one row of org_policies. The Value is the raw JSONB payload; the
@@ -55,6 +58,9 @@ type OrgPolicyValues struct {
 	// Epic 53 — MCP server governance
 	AllowUserMcpServers       *bool `json:"allowUserMcpServers,omitempty"`
 	MaxMcpServersPerWorkspace *int  `json:"maxMcpServersPerWorkspace,omitempty"`
+
+	// Image factory — org default workspace image (design/0046)
+	DefaultRuntime *string `json:"defaultRuntime,omitempty"`
 }
 
 // IsModelAllowed reports whether modelID is permitted under the allowed-models
@@ -115,6 +121,15 @@ func (p *OrgPolicyValues) IsUserPromptAllowed() bool {
 		return false
 	}
 	return *p.AllowUserPrompt
+}
+
+// DefaultRuntimeImage returns the org's default workspace image config hash,
+// or "" when unset. Used by the workspace service's default-image hierarchy.
+func (p *OrgPolicyValues) DefaultRuntimeImage() string {
+	if p == nil || p.DefaultRuntime == nil {
+		return ""
+	}
+	return *p.DefaultRuntime
 }
 
 // DefaultMaxMcpServersPerWorkspace is the per-workspace MCP server quota when an

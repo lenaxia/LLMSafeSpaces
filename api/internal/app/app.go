@@ -800,6 +800,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			// package's ErrConfigNotLaunchable sentinel — keeps the
 			// workspace service decoupled from the database package.
 			wsSvc.SetImageFactoryStore(&launchableConfigAdapter{store: dbSvc})
+			// Default-image hierarchy: user preference → org policy → platform.
+			// The org tier reads from policyChecker (already wired via
+			// SetPolicyChecker) — the defaultRuntime key is a standard
+			// org_policies entry (migration 000015).
+			wsSvc.SetUserSettings(userSettings)
 		}
 		// Epic 35 US-35.3: pod bootstrap handler. Uses the API's K8s
 		// clientset for TokenReview + the SecretService for credential
