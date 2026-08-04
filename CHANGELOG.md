@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.7] - 2026-08-04
+
+### Fixed
+
+- **PWA: autoUpdate (#648).** Switched service worker from `prompt` to
+  `autoUpdate` to prevent stale-chunk 404 errors after deploys (the admin
+  portal `PlatformAdminLayout` 404).
+- **Dark mode dropdowns (#648).** Native `<option>` elements now inherit
+  dark-mode background/foreground via global CSS.
+- **Image factory UI pills (#648).** Split-button popup shows Ready/Building
+  status pills. Workspace Images tab shows scope pills (Platform/Org/Personal)
+  and an expandable drawer with extension chips. Status pills are dark-mode-safe.
+
+### Added
+
+- **Catalog: R + Julia (#648).** Added `r-base`, `r-devtools` (CRAN build
+  dependencies), and Julia LTS to the image factory catalog.
+- **Preferences: preferredRuntime dropdown (#648).** The Default Image user
+  setting now renders as a dropdown of Ready configs instead of freeform text.
+
 ## [0.8.6] - 2026-08-04
 
 ### Added
