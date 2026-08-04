@@ -1,10 +1,12 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
+import { useOutletContext } from "react-router-dom";
 import {
   adminMcpServersApi,
   orgMcpServersApi,
   userMcpServersApi,
 } from "../../api/mcpServers";
 import { secretsApi } from "../../api/secrets";
+import type { OrgResponse } from "../../api/orgs";
 import type {
   McpServerResponse,
   CreateMcpServerRequest,
@@ -21,21 +23,32 @@ type ApiClient = {
 
 interface McpServersTabProps {
   scope: "admin" | "org" | "user";
-  orgId?: string;
 }
 
-export function McpServersTab({ scope, orgId }: McpServersTabProps) {
+export function McpServersTab({ scope }: McpServersTabProps) {
+  // Org scope reads orgId from the OrgAdminLayout outlet context (mirrors
+  // OrgAgentConfigTab). The router element at /orgs/:id/mcp-servers cannot
+  // pass orgId as a prop without a wrapper, and the previous absence caused
+  // every org-scope API call to fall through to the user endpoint.
+  // Safe destructuring: the user-scope tab is mounted under SettingsPage
+  // which provides no outlet context, so useOutletContext() may return
+  // undefined — use optional chaining to avoid a crash.
+  const outlet = useOutletContext<{ org?: OrgResponse; isAdmin?: boolean }>();
+  const orgId = scope === "org" ? outlet?.org?.id : undefined;
   const [servers, setServers] = useState<McpServerResponse[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
 
-  const api: ApiClient = {
-    list: () => (scope === "org" && orgId ? orgMcpServersApi.list(orgId) : scope === "admin" ? adminMcpServersApi.list() : userMcpServersApi.list()),
-    create: (req) => scope === "org" && orgId ? orgMcpServersApi.create(orgId, req) : scope === "admin" ? adminMcpServersApi.create(req) : userMcpServersApi.create(req),
-    update: (id, req) => scope === "org" && orgId ? orgMcpServersApi.update(orgId, id, req) : scope === "admin" ? adminMcpServersApi.update(id, req) : userMcpServersApi.update(id, req),
-    delete: (id) => (scope === "org" && orgId ? orgMcpServersApi.delete(orgId, id) : scope === "admin" ? adminMcpServersApi.delete(id) : userMcpServersApi.delete(id)) as Promise<void>,
-  };
+  const api: ApiClient = useMemo(
+    () => ({
+      list: () => (scope === "org" && orgId ? orgMcpServersApi.list(orgId) : scope === "admin" ? adminMcpServersApi.list() : userMcpServersApi.list()),
+      create: (req) => scope === "org" && orgId ? orgMcpServersApi.create(orgId, req) : scope === "admin" ? adminMcpServersApi.create(req) : userMcpServersApi.create(req),
+      update: (id, req) => scope === "org" && orgId ? orgMcpServersApi.update(orgId, id, req) : scope === "admin" ? adminMcpServersApi.update(id, req) : userMcpServersApi.update(id, req),
+      delete: (id) => (scope === "org" && orgId ? orgMcpServersApi.delete(orgId, id) : scope === "admin" ? adminMcpServersApi.delete(id) : userMcpServersApi.delete(id)) as Promise<void>,
+    }),
+    [scope, orgId],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -49,6 +62,10 @@ export function McpServersTab({ scope, orgId }: McpServersTabProps) {
       setLoading(false);
     }
   }, [api]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   const handleDelete = async (id: string) => {
     if (!confirm("Delete this MCP server? Bound workspaces will lose its tools.")) return;

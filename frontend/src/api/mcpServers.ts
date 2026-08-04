@@ -12,8 +12,15 @@ export type { McpServerResponse, CreateMcpServerRequest, UpdateMcpServerRequest,
 // Admin (platform) MCP servers — Epic 53 US-53.9
 // Routes: /api/v1/admin/mcp-servers
 // ---------------------------------------------------------------------------
+// list unwraps the {servers: [...]} envelope so callers receive a bare
+// array. The backend handler returns gin.H{"servers": out}; without this
+// unwrap, setServers(data) stored the envelope object and servers.map threw
+// "n.map is not a function" on render.
 export const adminMcpServersApi = {
-  list: () => api.get<McpServerResponse[]>("/admin/mcp-servers"),
+  list: async () => {
+    const r = await api.get<{ servers?: McpServerResponse[] } | McpServerResponse[]>("/admin/mcp-servers");
+    return Array.isArray(r) ? r : (r.servers ?? []);
+  },
   get: (id: string) => api.get<McpServerResponse>(`/admin/mcp-servers/${id}`),
   create: (req: CreateMcpServerRequest) =>
     api.post<McpServerResponse>("/admin/mcp-servers", req),
@@ -37,7 +44,10 @@ export const adminMcpServersApi = {
 // Routes: /api/v1/orgs/:orgId/mcp-servers
 // ---------------------------------------------------------------------------
 export const orgMcpServersApi = {
-  list: (orgId: string) => api.get<McpServerResponse[]>(`/orgs/${orgId}/mcp-servers`),
+  list: async (orgId: string) => {
+    const r = await api.get<{ servers?: McpServerResponse[] } | McpServerResponse[]>(`/orgs/${orgId}/mcp-servers`);
+    return Array.isArray(r) ? r : (r.servers ?? []);
+  },
   get: (orgId: string, id: string) =>
     api.get<McpServerResponse>(`/orgs/${orgId}/mcp-servers/${id}`),
   create: (orgId: string, req: CreateMcpServerRequest) =>
@@ -61,7 +71,10 @@ export const orgMcpServersApi = {
 // Routes: /api/v1/me/mcp-servers
 // ---------------------------------------------------------------------------
 export const userMcpServersApi = {
-  list: () => api.get<McpServerResponse[]>("/me/mcp-servers"),
+  list: async () => {
+    const r = await api.get<{ servers?: McpServerResponse[] } | McpServerResponse[]>("/me/mcp-servers");
+    return Array.isArray(r) ? r : (r.servers ?? []);
+  },
   get: (id: string) => api.get<McpServerResponse>(`/me/mcp-servers/${id}`),
   create: (req: CreateMcpServerRequest) =>
     api.post<McpServerResponse>("/me/mcp-servers", req),

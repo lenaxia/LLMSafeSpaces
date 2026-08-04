@@ -67,11 +67,11 @@ export const api = {
   post: <T>(path: string, body?: unknown, extraHeaders?: Record<string, string>) =>
     request<T>(path, {
       method: "POST",
-      body: body ? JSON.stringify(body) : undefined,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
       headers: extraHeaders,
     }),
   put: <T>(path: string, body?: unknown) =>
-    request<T>(path, { method: "PUT", body: body ? JSON.stringify(body) : undefined }),
+    request<T>(path, { method: "PUT", body: body !== undefined ? JSON.stringify(body) : undefined }),
   delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
 };
 
