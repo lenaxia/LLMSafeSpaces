@@ -49,7 +49,8 @@ describe("NewWorkspaceSplitButton", () => {
 
     // Building config with yellow pill
     expect(screen.getByText("Building Image")).toBeInTheDocument();
-    expect(screen.getByText("Building")).toBeInTheDocument();
+    // "Building" appears in both the section header and the pill
+    expect(screen.getAllByText("Building").length).toBeGreaterThanOrEqual(1);
   });
 
   it("launches workspace when ready config clicked", async () => {
