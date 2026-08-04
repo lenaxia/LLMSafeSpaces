@@ -1114,6 +1114,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		Debug:                           cfg.Logging.Development,
 		LoggingConfig:                   server.DefaultRouterConfig().LoggingConfig,
 		RateLimitConfig:                 rateLimitCfg,
+		PerRouteRateLimitConfig:         server.DefaultRouterConfig().PerRouteRateLimitConfig,
 		SecurityConfig:                  securityCfg,
 		TracingConfig:                   server.DefaultRouterConfig().TracingConfig,
 		SettingsHandler:                 settingsHandler,
