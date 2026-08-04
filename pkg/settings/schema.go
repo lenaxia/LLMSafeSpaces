@@ -30,7 +30,7 @@ package settings
 // (TypeStrings) — directories pre-approved as opencode
 // external_directory "allow" rules so agents stop prompting for /tmp/* on
 // every session. New key; admin UI schema cache must refresh.
-const SchemaVersion = 8
+const SchemaVersion = 9
 
 // SettingType defines the data type of a setting.
 type SettingType string
@@ -147,6 +147,9 @@ func UserSettings() []SettingDef {
 		{Key: "codeBlockWordWrap", Tier: 3, Type: TypeBool, Default: false, Category: "Chat", Label: "Code Word Wrap", Description: "Wrap long lines in code blocks"},
 		{Key: "sendOnEnter", Tier: 3, Type: TypeBool, Default: false, Category: "Chat", Label: "Send on Enter", Description: "Enter sends message on desktop (off: Ctrl+Enter sends; mobile is always button-only)"},
 		{Key: "preferredModel", Tier: 3, Type: TypeString, Default: "", Category: "Chat", Label: "Preferred Model", Description: "Default model ID"},
+
+		// Workspace
+		{Key: "preferredRuntime", Tier: 3, Type: TypeString, Default: "", Category: "Workspace", Label: "Default Image", Description: "Image-factory config hash to use for new workspaces (empty = use org/platform default)"},
 
 		// Notifications
 		{Key: "notifyOnSessionComplete", Tier: 3, Type: TypeBool, Default: true, Category: "Notifications", Label: "Session Complete", Description: "Notify when session completes"},

@@ -91,12 +91,14 @@ func TestCreateWorkspace_ExplicitRuntime_NotOverridden(t *testing.T) {
 	f.ws.AssertExpectations(t)
 }
 
-func TestCreateWorkspace_NoSettings_EmptyRuntimePassesThrough(t *testing.T) {
+func TestCreateWorkspace_NoSettings_EmptyRuntimeFallsBackToBase(t *testing.T) {
 	f := newDefaultsFixture(t, nil) // no settings
 	ctx := context.Background()
 
+	// With the default-image hierarchy (user → org → platform → "base"),
+	// an empty runtime with no settings falls back to "base".
 	f.ws.On("Create", mock.Anything, mock.MatchedBy(func(ws *v1.Workspace) bool {
-		return ws.Spec.Runtime == ""
+		return ws.Spec.Runtime == "base"
 	})).Return(crdWorkspace("ws-1", "default", "user1", "1Gi"), nil)
 	f.db.On("CreateWorkspace", ctx, mock.Anything).Return(nil)
 

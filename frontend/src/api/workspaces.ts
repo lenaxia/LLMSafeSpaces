@@ -39,7 +39,8 @@ export const workspacesApi = {
   create: (params: { name: string; runtime?: string; orgId?: string; imageConfigHash?: string }) =>
     api.post<{ id: string; name: string; workspaceId?: string }>("/workspaces", {
       name: params.name,
-      runtime: params.runtime || "base",
+      // hierarchy resolves at backend
+      ...(params.runtime ? { runtime: params.runtime } : {}),
       ...(params.orgId ? { orgId: params.orgId } : {}),
       ...(params.imageConfigHash ? { imageConfigHash: params.imageConfigHash } : {}),
     }),

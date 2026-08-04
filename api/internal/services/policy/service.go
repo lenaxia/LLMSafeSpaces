@@ -157,6 +157,12 @@ func applyPolicyValue(vals *types.OrgPolicyValues, p *types.OrgPolicy) error {
 			return err
 		}
 		vals.MaxMcpServersPerWorkspace = &n
+	case types.PolicyDefaultRuntime:
+		var s string
+		if err := json.Unmarshal(p.Value, &s); err != nil {
+			return err
+		}
+		vals.DefaultRuntime = &s
 	}
 	return nil
 }
@@ -187,6 +193,10 @@ func intersect(platform *types.OrgPolicyValues, org *types.OrgPolicyValues) *typ
 	// numeric cap, so the more restrictive (smaller) value wins.
 	result.AllowUserMcpServers = firstNonNilBool(org.AllowUserMcpServers, platform.AllowUserMcpServers)
 	result.MaxMcpServersPerWorkspace = minInt(platform.MaxMcpServersPerWorkspace, org.MaxMcpServersPerWorkspace)
+
+	// Image factory — default_runtime is an org-scoped default (not
+	// restrictive): pass the org value through, falling back to platform.
+	result.DefaultRuntime = firstNonNil(org.DefaultRuntime, platform.DefaultRuntime)
 
 	return result
 }

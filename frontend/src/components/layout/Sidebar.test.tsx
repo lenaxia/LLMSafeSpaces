@@ -173,7 +173,7 @@ describe("Sidebar — workspace refresh compute", () => {
 
   it("new workspace button creates immediately without dialog", async () => {
     renderSidebar();
-    const btn = await screen.findByLabelText("New workspace");
+    const btn = await screen.findByLabelText("New workspace (default image)");
     expect(btn).toBeInTheDocument();
     // No dialog should be visible — the button triggers creation directly
     expect(screen.queryByText("New Workspace")).not.toBeInTheDocument();
