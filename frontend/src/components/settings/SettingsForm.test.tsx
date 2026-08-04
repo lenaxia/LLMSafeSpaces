@@ -1,4 +1,5 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render as renderWithQuery } from "../../test/utils";
 import { describe, it, expect, vi } from "vitest";
 import { SettingsForm } from "./SettingsForm";
 import type { SettingDef } from "../../api/settings";
@@ -464,7 +465,7 @@ describe("SettingsForm", () => {
     ];
 
     it("renders a select dropdown with ready configs", async () => {
-      render(<SettingsForm schema={runtimeSchema} values={{ preferredRuntime: "" }} onSave={vi.fn()} />);
+      renderWithQuery(<SettingsForm schema={runtimeSchema} values={{ preferredRuntime: "" }} onSave={vi.fn()} />);
 
       const select = await screen.findByDisplayValue("Use default");
       expect(select.tagName).toBe("SELECT");
@@ -475,10 +476,34 @@ describe("SettingsForm", () => {
       const { imageFactoryApi } = await import("../../api/imageFactory");
       vi.mocked(imageFactoryApi.listConfigs).mockResolvedValueOnce({ configs: [] });
 
-      render(<SettingsForm schema={runtimeSchema} values={{ preferredRuntime: "" }} onSave={vi.fn()} />);
+      renderWithQuery(<SettingsForm schema={runtimeSchema} values={{ preferredRuntime: "" }} onSave={vi.fn()} />);
 
       const input = await screen.findByPlaceholderText("No custom images available — using default");
       expect(input.tagName).toBe("INPUT");
+    });
+
+    it("calls onSave with config hash when a config is selected", async () => {
+      const onSave = vi.fn().mockResolvedValue(undefined);
+      renderWithQuery(<SettingsForm schema={runtimeSchema} values={{ preferredRuntime: "" }} onSave={onSave} />);
+
+      const select = await screen.findByDisplayValue("Use default");
+      fireEvent.change(select, { target: { value: "s-abc" } });
+
+      await waitFor(() => {
+        expect(onSave).toHaveBeenCalledWith("preferredRuntime", "s-abc");
+      });
+    });
+
+    it("calls onSave with empty string when 'Use default' is selected", async () => {
+      const onSave = vi.fn().mockResolvedValue(undefined);
+      renderWithQuery(<SettingsForm schema={runtimeSchema} values={{ preferredRuntime: "s-abc" }} onSave={onSave} />);
+
+      const select = await screen.findByDisplayValue("Python Image");
+      fireEvent.change(select, { target: { value: "" } });
+
+      await waitFor(() => {
+        expect(onSave).toHaveBeenCalledWith("preferredRuntime", "");
+      });
     });
   });
 });
