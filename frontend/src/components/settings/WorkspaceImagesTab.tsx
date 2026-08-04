@@ -14,6 +14,7 @@ export function WorkspaceImagesTab() {
   const [name, setName] = useState("");
   const [baseName, setBaseName] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [expandedConfig, setExpandedConfig] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -102,8 +103,6 @@ export function WorkspaceImagesTab() {
       default: return { label: "Personal", cls: "bg-gray-500/15 text-gray-600 dark:text-gray-400" };
     }
   };
-
-  const [expandedConfig, setExpandedConfig] = useState<string | null>(null);
 
   return (
     <div className="space-y-6">
