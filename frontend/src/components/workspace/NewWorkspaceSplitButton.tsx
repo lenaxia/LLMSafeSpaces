@@ -31,6 +31,12 @@ export function NewWorkspaceSplitButton({ onCreated }: { onCreated: (wsId: strin
     .filter((c) => c.status === "ready")
     .sort((a, b) => a.name.localeCompare(b.name));
 
+  const buildingConfigs = (configsData?.configs ?? [])
+    .filter((c) => c.status === "building")
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const hasContent = readyConfigs.length > 0 || buildingConfigs.length > 0;
+
   // Close popup on outside click.
   useEffect(() => {
     if (!showPopup) return;
@@ -89,30 +95,56 @@ export function NewWorkspaceSplitButton({ onCreated }: { onCreated: (wsId: strin
       {/* Attached dropdown arrow — opens popup */}
       <button
         onClick={() => setShowPopup((v) => !v)}
-        disabled={creating || readyConfigs.length === 0}
-        className="flex items-center justify-center rounded-r-md border border-border px-1 hover:bg-accent disabled:opacity-30"
+        disabled={creating || !hasContent}
         aria-label="Select workspace image"
-        title={readyConfigs.length === 0 ? "No custom images available" : "Choose an image"}
+        title={hasContent ? "Choose an image" : "No custom images available"}
       >
         <ChevronDown className="h-3 w-3" />
       </button>
 
       {/* Popup menu */}
-      {showPopup && readyConfigs.length > 0 && (
-        <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded-md border border-border bg-popover p-1 shadow-lg">
-          <div className="px-2 py-1 text-[0.65rem] font-medium uppercase text-muted-foreground">
-            Custom images
-          </div>
-          {readyConfigs.map((cfg) => (
-            <button
-              key={cfg.id}
-              onClick={() => launchWithConfig(cfg.hash)}
-              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent"
-            >
-              <Package className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              <span className="truncate">{cfg.name}</span>
-            </button>
-          ))}
+      {showPopup && hasContent && (
+        <div className="absolute right-0 top-full z-50 mt-1 w-60 rounded-md border border-border bg-popover p-1 shadow-lg">
+          {readyConfigs.length > 0 && (
+            <>
+              <div className="px-2 py-1 text-[0.65rem] font-medium uppercase text-muted-foreground">
+                Custom images
+              </div>
+              {readyConfigs.map((cfg) => (
+                <button
+                  key={cfg.id}
+                  onClick={() => launchWithConfig(cfg.hash)}
+                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent"
+                >
+                  <Package className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span className="truncate flex-1">{cfg.name}</span>
+                  <span className="rounded-full bg-green-500/15 px-1.5 py-0.5 text-[0.6rem] font-medium text-green-600 dark:text-green-400">
+                    Ready
+                  </span>
+                </button>
+              ))}
+            </>
+          )}
+          {buildingConfigs.length > 0 && (
+            <>
+              <div className="px-2 py-1 mt-1 border-t border-border text-[0.65rem] font-medium uppercase text-muted-foreground">
+                Building
+              </div>
+              {buildingConfigs.map((cfg) => (
+                <div
+                  key={cfg.id}
+                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm opacity-60 cursor-not-allowed"
+                  title="Image is still building"
+                >
+                  <Package className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                  <span className="truncate flex-1">{cfg.name}</span>
+                  <span className="rounded-full bg-yellow-500/15 px-1.5 py-0.5 text-[0.6rem] font-medium text-yellow-600 dark:text-yellow-400">
+                    Building
+                  </span>
+                </div>
+              ))}
+            </>
+          )}
         </div>
       )}
 

@@ -8,6 +8,9 @@ bases:
     image: ghcr.io/lenaxia/llmsafespaces/base
     tag: "0.8.0"
     isDefault: true
+  # NOTE: trixie (Debian 13) support deferred — needs a separate base image
+  # build (runtimes/base/Dockerfile is hardcoded to bookworm-slim). Adding
+  # it without the image would cause every trixie config to fail at build.
 
 # ── Language Packs ──────────────────────────────────────────────────────
 # These are mise installs — fast (prebuilt binaries), no root needed.
@@ -222,6 +225,25 @@ extensions:
     value: ninja-build
     supportedBases: [bookworm]
     description: "Ninja build system (fast C/C++ builds)"
+
+  # ── Statistics / Data Science ──────────────────────────────────────────
+  - id: r-base
+    type: apt
+    value: r-base r-base-dev
+    supportedBases: [bookworm]
+    description: "R statistical computing environment"
+
+  - id: r-devtools
+    type: apt
+    value: libxml2-dev libcurl4-openssl-dev libssl-dev gfortran libblas-dev liblapack-dev
+    supportedBases: [bookworm]
+    description: "R development dependencies (for installing CRAN packages)"
+
+  - id: julia
+    type: mise
+    value: julia@lts
+    supportedBases: [bookworm]
+    description: "Julia (LTS) for scientific computing"
 
   # ── Misc ──────────────────────────────────────────────────────────────
   - id: motd-welcome

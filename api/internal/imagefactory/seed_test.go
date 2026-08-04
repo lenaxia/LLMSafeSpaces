@@ -73,6 +73,22 @@ func TestLoadSeed_ParsesEmbeddedYAML(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "ffmpeg extension should be in seed")
+
+	// Verify R and Julia were added (statistics / data science)
+	rFound := false
+	juliaFound := false
+	for _, ext := range seed.Extensions {
+		if ext.ID == "r-base" {
+			assert.Equal(t, ExtensionTypeApt, ext.Type)
+			rFound = true
+		}
+		if ext.ID == "julia" {
+			assert.Equal(t, ExtensionTypeMise, ext.Type)
+			juliaFound = true
+		}
+	}
+	assert.True(t, rFound, "r-base extension should be in seed")
+	assert.True(t, juliaFound, "julia extension should be in seed")
 }
 
 func TestSeedCatalog_IdempotentUpsert(t *testing.T) {

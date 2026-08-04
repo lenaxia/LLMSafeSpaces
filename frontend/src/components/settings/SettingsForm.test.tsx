@@ -1,7 +1,18 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render as renderWithQuery } from "../../test/utils";
 import { describe, it, expect, vi } from "vitest";
 import { SettingsForm } from "./SettingsForm";
 import type { SettingDef } from "../../api/settings";
+
+vi.mock("../../api/imageFactory", () => ({
+  imageFactoryApi: {
+    listConfigs: vi.fn().mockResolvedValue({
+      configs: [
+        { id: "c1", hash: "s-abc", name: "Python Image", status: "ready", selection: ["python-3.12"], scope: "member" },
+      ],
+    }),
+  },
+}));
 
 const mockSchema: SettingDef[] = [
   { key: "test.bool", tier: 3, type: "bool", default: false, category: "Test", label: "Bool Setting", description: "A boolean" },
@@ -445,6 +456,54 @@ describe("SettingsForm", () => {
     it("does not show badge for non-readOnly settings", () => {
       render(<SettingsForm schema={mockSchema} values={{}} onSave={vi.fn()} />);
       expect(screen.queryByText("Managed by Helm")).not.toBeInTheDocument();
+    });
+  });
+
+  describe("preferredRuntime dropdown", () => {
+    const runtimeSchema: SettingDef[] = [
+      { key: "preferredRuntime", tier: 3, type: "string", default: "", category: "Workspace", label: "Default Image", description: "Test" },
+    ];
+
+    it("renders a select dropdown with ready configs", async () => {
+      renderWithQuery(<SettingsForm schema={runtimeSchema} values={{ preferredRuntime: "" }} onSave={vi.fn()} />);
+
+      const select = await screen.findByDisplayValue("Use default");
+      expect(select.tagName).toBe("SELECT");
+      expect(screen.getByText("Python Image")).toBeInTheDocument();
+    });
+
+    it("falls back to text input when no configs available", async () => {
+      const { imageFactoryApi } = await import("../../api/imageFactory");
+      vi.mocked(imageFactoryApi.listConfigs).mockResolvedValueOnce({ configs: [] });
+
+      renderWithQuery(<SettingsForm schema={runtimeSchema} values={{ preferredRuntime: "" }} onSave={vi.fn()} />);
+
+      const input = await screen.findByPlaceholderText("No custom images available — using default");
+      expect(input.tagName).toBe("INPUT");
+    });
+
+    it("calls onSave with config hash when a config is selected", async () => {
+      const onSave = vi.fn().mockResolvedValue(undefined);
+      renderWithQuery(<SettingsForm schema={runtimeSchema} values={{ preferredRuntime: "" }} onSave={onSave} />);
+
+      const select = await screen.findByDisplayValue("Use default");
+      fireEvent.change(select, { target: { value: "s-abc" } });
+
+      await waitFor(() => {
+        expect(onSave).toHaveBeenCalledWith("preferredRuntime", "s-abc");
+      });
+    });
+
+    it("calls onSave with empty string when 'Use default' is selected", async () => {
+      const onSave = vi.fn().mockResolvedValue(undefined);
+      renderWithQuery(<SettingsForm schema={runtimeSchema} values={{ preferredRuntime: "s-abc" }} onSave={onSave} />);
+
+      const select = await screen.findByDisplayValue("Python Image");
+      fireEvent.change(select, { target: { value: "" } });
+
+      await waitFor(() => {
+        expect(onSave).toHaveBeenCalledWith("preferredRuntime", "");
+      });
     });
   });
 });

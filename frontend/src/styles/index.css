@@ -62,6 +62,15 @@ body {
   touch-action: pan-y;
 }
 
+/* Dark-mode-safe native <select> dropdowns. Browsers default <option>
+ * backgrounds to white, making them unreadable in dark mode. This forces
+ * the option list to inherit the background/foreground colors. */
+.dark option,
+.dark optgroup {
+  background: hsl(222.2 84% 4.9%);
+  color: hsl(210 40% 98%);
+}
+
 html {
   overscroll-behavior: none;
   touch-action: pan-y;

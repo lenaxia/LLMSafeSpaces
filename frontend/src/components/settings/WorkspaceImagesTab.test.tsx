@@ -131,4 +131,26 @@ describe("WorkspaceImagesTab", () => {
       expect.stringContaining("Image config created"), "success",
     );
   });
+
+  it("shows scope pill on config row", async () => {
+    render(<WorkspaceImagesTab />);
+    await waitFor(() => { expect(screen.getByText("ml-stack")).toBeInTheDocument(); });
+    // scope: "member" → renders as "Personal"
+    expect(screen.getByText("Personal")).toBeInTheDocument();
+  });
+
+  it("expands config drawer showing extensions on click", async () => {
+    render(<WorkspaceImagesTab />);
+    await waitFor(() => { expect(screen.getByText("ml-stack")).toBeInTheDocument(); });
+
+    // Click the config name to expand the drawer
+    fireEvent.click(screen.getByText("ml-stack"));
+
+    // The extension chips should appear (selection: ["ffmpeg"])
+    await waitFor(() => {
+      const chips = screen.getAllByText("ffmpeg");
+      // ffmpeg appears in the catalog checkbox AND the expanded drawer
+      expect(chips.length).toBeGreaterThanOrEqual(2);
+    });
+  });
 });
