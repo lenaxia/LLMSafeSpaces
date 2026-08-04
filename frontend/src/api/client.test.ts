@@ -33,6 +33,29 @@ describe("api client", () => {
     );
   });
 
+  it("PUT serializes falsy bodies (false/0/\"\") instead of dropping them", async () => {
+    mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}) });
+    await api.put("/p", false);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "/api/v1/p",
+      expect.objectContaining({ method: "PUT", body: "false" }),
+    );
+    await api.put("/p", 0);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "/api/v1/p",
+      expect.objectContaining({ method: "PUT", body: "0" }),
+    );
+  });
+
+  it("PUT with no body argument sends undefined body", async () => {
+    mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}) });
+    await api.put("/p");
+    expect(mockFetch).toHaveBeenCalledWith(
+      "/api/v1/p",
+      expect.objectContaining({ method: "PUT", body: undefined }),
+    );
+  });
+
   it("makes DELETE request", async () => {
     mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}) });
     await api.delete("/test/1");

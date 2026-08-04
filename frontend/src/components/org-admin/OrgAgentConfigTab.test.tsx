@@ -182,4 +182,52 @@ describe("OrgAgentConfigTab — copy hides implementation jargon (#480)", () => 
       ).toBeInTheDocument(),
     );
   });
+
+  it("clicking the member-MCP toggle calls policiesApi.setOrg with the right key/value", async () => {
+    const { fireEvent } = await import("@testing-library/react");
+    const setPolicyMock = vi.fn().mockResolvedValue(undefined);
+    const policiesApi = (await import("../../api/policies")).policiesApi as unknown as {
+      setOrg: typeof setPolicyMock;
+    };
+    policiesApi.setOrg = setPolicyMock;
+    mockListOrgPolicies.mockResolvedValue([]);
+
+    renderTab();
+    await waitFor(() =>
+      expect(screen.getByText("Only org admins can add MCP servers")).toBeInTheDocument(),
+    );
+
+    // The second switch is the member-MCP toggle (prompt toggle is first).
+    const switches = screen.getAllByRole("switch");
+    fireEvent.click(switches[1]!);
+    await waitFor(() =>
+      expect(setPolicyMock).toHaveBeenCalledWith("org-1", "allow_user_mcp_servers", true),
+    );
+  });
+
+  it("reverts the toggle and shows an error toast when the PUT fails", async () => {
+    const { fireEvent } = await import("@testing-library/react");
+    const setPolicyMock = vi.fn().mockRejectedValue(new Error("feature gate rejected"));
+    const policiesApi = (await import("../../api/policies")).policiesApi as unknown as {
+      setOrg: typeof setPolicyMock;
+    };
+    policiesApi.setOrg = setPolicyMock;
+    mockListOrgPolicies.mockResolvedValue([
+      { key: "allow_user_mcp_servers", value: true, updatedAt: "2026-01-01T00:00:00Z" },
+    ]);
+
+    renderTab();
+    await waitFor(() =>
+      expect(screen.getByText("Members can register personal MCP servers")).toBeInTheDocument(),
+    );
+
+    const switches = screen.getAllByRole("switch");
+    fireEvent.click(switches[1]!);
+    await waitFor(() => expect(screen.getByText("Failed to toggle")).toBeInTheDocument());
+    // Caption reverts to the enabled state (the toggle was true, click set it
+    // to false optimistically, rejection reverted it back to true).
+    await waitFor(() =>
+      expect(screen.getByText("Members can register personal MCP servers")).toBeInTheDocument(),
+    );
+  });
 });

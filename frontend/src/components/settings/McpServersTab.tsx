@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import { useOutletContext } from "react-router-dom";
 import {
   adminMcpServersApi,
@@ -37,12 +37,15 @@ export function McpServersTab({ scope }: McpServersTabProps) {
   const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
 
-  const api: ApiClient = {
-    list: () => (scope === "org" && orgId ? orgMcpServersApi.list(orgId) : scope === "admin" ? adminMcpServersApi.list() : userMcpServersApi.list()),
-    create: (req) => scope === "org" && orgId ? orgMcpServersApi.create(orgId, req) : scope === "admin" ? adminMcpServersApi.create(req) : userMcpServersApi.create(req),
-    update: (id, req) => scope === "org" && orgId ? orgMcpServersApi.update(orgId, id, req) : scope === "admin" ? adminMcpServersApi.update(id, req) : userMcpServersApi.update(id, req),
-    delete: (id) => (scope === "org" && orgId ? orgMcpServersApi.delete(orgId, id) : scope === "admin" ? adminMcpServersApi.delete(id) : userMcpServersApi.delete(id)) as Promise<void>,
-  };
+  const api: ApiClient = useMemo(
+    () => ({
+      list: () => (scope === "org" && orgId ? orgMcpServersApi.list(orgId) : scope === "admin" ? adminMcpServersApi.list() : userMcpServersApi.list()),
+      create: (req) => scope === "org" && orgId ? orgMcpServersApi.create(orgId, req) : scope === "admin" ? adminMcpServersApi.create(req) : userMcpServersApi.create(req),
+      update: (id, req) => scope === "org" && orgId ? orgMcpServersApi.update(orgId, id, req) : scope === "admin" ? adminMcpServersApi.update(id, req) : userMcpServersApi.update(id, req),
+      delete: (id) => (scope === "org" && orgId ? orgMcpServersApi.delete(orgId, id) : scope === "admin" ? adminMcpServersApi.delete(id) : userMcpServersApi.delete(id)) as Promise<void>,
+    }),
+    [scope, orgId],
+  );
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -56,6 +59,10 @@ export function McpServersTab({ scope }: McpServersTabProps) {
       setLoading(false);
     }
   }, [api]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   const handleDelete = async (id: string) => {
     if (!confirm("Delete this MCP server? Bound workspaces will lose its tools.")) return;
