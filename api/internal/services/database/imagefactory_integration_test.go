@@ -374,7 +374,7 @@ func TestIntegration_IF_GetLaunchableConfigByHash(t *testing.T) {
 	assert.Equal(t, "ghcr.io/ws:s-launch-0.6.0", imageRef)
 
 	// Wrong owner → ErrNotFound (scope filter works).
-	_, _, err = svc.GetLaunchableConfigByHash(ctx, "s-launch", imagefactory.ScopeMember, strPtr("wrong-user"), nil)
+	_, _, err = svc.GetLaunchableConfigByHash(ctx, "s-launch", imagefactory.ScopeMember, strPtr("00000000-0000-0000-0000-000000000000"), nil)
 	assert.ErrorIs(t, err, ErrNotFound)
 
 	// Unknown hash → ErrNotFound.

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/lib/pq"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/imagefactory"
@@ -514,9 +515,15 @@ func (s *Service) GetLaunchableConfigByHash(ctx context.Context, hash string, sc
 	      WHERE c.hash = $1 AND c.status = 'ready' AND c.scope = $2`
 	args := []interface{}{hash, string(scope)}
 	if scope == imagefactory.ScopeMember && ownerID != nil {
+		if _, err := uuid.Parse(*ownerID); err != nil {
+			return imagefactory.Config{}, "", ErrNotFound
+		}
 		q += ` AND c.owner_id = $3`
 		args = append(args, *ownerID)
 	} else if scope == imagefactory.ScopeOrg && orgID != nil {
+		if _, err := uuid.Parse(*orgID); err != nil {
+			return imagefactory.Config{}, "", ErrNotFound
+		}
 		q += ` AND c.org_id = $3`
 		args = append(args, *orgID)
 	}

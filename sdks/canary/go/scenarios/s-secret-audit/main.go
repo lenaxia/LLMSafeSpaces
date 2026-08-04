@@ -54,16 +54,26 @@ func runSecretAudit(ctx context.Context, run *canary.Runner, cfg canary.Config) 
 		run.Assert(entries != nil, "get-audit: entries non-nil", "")
 
 		// P2: After creating, log contains an entry for our secret
+		// Retry loop: AsyncAuditLogger writes entries asynchronously;
+		// the entry may not be flushed yet when we read immediately.
 		if s != nil {
 			found := false
-			for _, e := range entries {
-				if e.SecretID == s.ID {
-					found = true
-					// P3: Entry has required fields
-					run.Assert(e.Action != "", "audit-entry: action field", "")
-					run.Assert(e.UserID != "", "audit-entry: userId field", "")
+			for attempt := 0; attempt < 5; attempt++ {
+				entries, err = c.Secrets.GetAuditLog(ctx)
+				if err == nil {
+					for i := range entries {
+						if entries[i].SecretID == s.ID {
+							found = true
+							run.Assert(entries[i].Action != "", "audit-entry: action field", "")
+							run.Assert(entries[i].UserID != "", "audit-entry: userId field", "")
+							break
+						}
+					}
+				}
+				if found {
 					break
 				}
+				time.Sleep(500 * time.Millisecond)
 			}
 			run.Assert(found, "get-audit: entry for created secret present", "")
 		}
