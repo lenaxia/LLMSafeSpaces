@@ -267,6 +267,19 @@ func DefaultRouterConfig() RouterConfig {
 					Burst:  5,
 					Window: time.Minute,
 				},
+				// Password login is a credential-bearing target (bcrypt
+				// password verification). Without a per-route cap, the
+				// global 100/min/burst-20 limiter allows ~100 password
+				// guesses per minute from a single IP. 10/min/burst-10
+				// matches the passkey login pattern and makes automated
+				// brute-force impractical (10 attempts/min → 14,400/day;
+				// bcrypt cost 12 makes each attempt ~250ms, so ~1hr of
+				// CPU per 14,400 guesses).
+				"/api/v1/auth/login": {
+					Limit:  10,
+					Burst:  10,
+					Window: time.Minute,
+				},
 				// Recovery codes are bcrypt-hashed shared secrets — the one
 				// phishable factor. Without a per-route cap, the global
 				// 100/min/IP limiter allows ~100 recovery-code guesses per
