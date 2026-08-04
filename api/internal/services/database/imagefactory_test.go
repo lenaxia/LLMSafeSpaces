@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -615,4 +616,18 @@ func TestRenameConfig_NotFound(t *testing.T) {
 
 	err := svc.RenameConfig(context.Background(), "ghost", "Name")
 	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestRenameConfig_Conflict(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+
+	// Simulate a pq unique violation (SQLSTATE 23505)
+	pqErr := &pq.Error{Code: "23505", Message: "duplicate key"}
+	mock.ExpectExec(`UPDATE image_factory_configs SET name`).
+		WithArgs("Dup", "cfg-1").
+		WillReturnError(pqErr)
+
+	err := svc.RenameConfig(context.Background(), "cfg-1", "Dup")
+	assert.ErrorIs(t, err, ErrConflict)
 }

@@ -604,6 +604,46 @@ func TestE2E_RenameConfig_Success(t *testing.T) {
 
 // ── Compile-time checks ─────────────────────────────────────────────────
 
+func TestE2E_RenameConfig_EmptyName_422(t *testing.T) {
+	store := newE2EStore()
+	cfg := &imagefactory.Config{
+		ID: "cfg-rn2", Hash: "s-rn2", Name: "Old", Scope: imagefactory.ScopeMember,
+		Status: imagefactory.StatusReady, BaseName: "bookworm", BaseVersion: "0.8.0",
+	}
+	store.e2eConfigs["cfg-rn2"] = cfg
+
+	r := newE2ERouter(t, store, &fakeDispatcher{})
+
+	req := httptest.NewRequest("PATCH", "/api/v1/image-factory/configs/s-rn2",
+		strings.NewReader(`{"name":"   "}`))
+	req.Header.Set("X-Test-UserID", "user-1")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusUnprocessableEntity, w.Code)
+}
+
+func TestE2E_RenameConfig_PlatformScope_Forbidden(t *testing.T) {
+	store := newE2EStore()
+	cfg := &imagefactory.Config{
+		ID: "cfg-plat", Hash: "s-plat", Name: "Platform", Scope: imagefactory.ScopePlatform,
+		Status: imagefactory.StatusReady, BaseName: "bookworm", BaseVersion: "0.8.0",
+	}
+	store.e2eConfigs["cfg-plat"] = cfg
+
+	r := newE2ERouter(t, store, &fakeDispatcher{})
+
+	req := httptest.NewRequest("PATCH", "/api/v1/image-factory/configs/s-plat",
+		strings.NewReader(`{"name":"Hacked"}`))
+	req.Header.Set("X-Test-UserID", "user-1")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+}
+
 var _ imageFactoryStore = (*e2eImageFactoryStore)(nil)
 var _ buildStore = (*e2eImageFactoryStore)(nil)
 var _ extensionReviewer = (*e2eImageFactoryStore)(nil)
