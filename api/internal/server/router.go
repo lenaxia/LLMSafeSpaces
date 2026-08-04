@@ -274,7 +274,7 @@ func DefaultRouterConfig() RouterConfig {
 				// passkey login pattern.
 				"/api/v1/auth/login": {
 					Limit:  10,
-					Burst:  10,
+					Burst:  20,
 					Window: time.Minute,
 				},
 				// Recovery codes are bcrypt-hashed shared secrets — the one
