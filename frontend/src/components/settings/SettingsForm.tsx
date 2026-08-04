@@ -1,10 +1,12 @@
 import { useState, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import type { SettingDef } from "../../api/settings";
 import { Toggle } from "../ui/Toggle";
 import { NumberInput } from "../ui/NumberInput";
 import { Select } from "../ui/Select";
 import { TagInput } from "../ui/TagInput";
 import { normalizeSettingValue } from "../../lib/settingsNormalize";
+import { imageFactoryApi } from "../../api/imageFactory";
 
 interface SettingsFormProps {
   schema: SettingDef[];
@@ -120,6 +122,16 @@ function SettingControl({ def, value, onChange, disabled }: SettingControlProps)
         />
       );
     case "string":
+      if (def.key === "preferredRuntime") {
+        return (
+          <RuntimeSelect
+            id={def.key}
+            value={value as string}
+            onCommit={onChange}
+            disabled={disabled}
+          />
+        );
+      }
       return (
         <StringInput
           id={def.key}
@@ -260,4 +272,52 @@ function safeRegExp(pattern: string): RegExp | null {
   } catch {
     return null;
   }
+}
+
+/** RuntimeSelect renders a dropdown of Ready image-factory configs for the
+ * preferredRuntime user setting. Falls back to a plain text input if the
+ * API is unavailable or returns no configs. */
+function RuntimeSelect({ id, value, onCommit, disabled }: {
+  id: string;
+  value: string;
+  onCommit: (v: unknown) => void;
+  disabled?: boolean;
+}) {
+  const { data } = useQuery({
+    queryKey: ["image-factory-configs"],
+    queryFn: () => imageFactoryApi.listConfigs(),
+    staleTime: 30_000,
+  });
+  const readyConfigs = (data?.configs ?? []).filter((c) => c.status === "ready");
+
+  if (readyConfigs.length === 0) {
+    return (
+      <input
+        id={id}
+        type="text"
+        value={value}
+        onChange={(e) => onCommit(e.target.value)}
+        disabled={disabled}
+        placeholder="No custom images available — using default"
+        className="h-8 w-full sm:w-48 rounded-md border border-border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
+      />
+    );
+  }
+
+  return (
+    <select
+      id={id}
+      value={value}
+      onChange={(e) => onCommit(e.target.value || undefined)}
+      disabled={disabled}
+      className="h-8 w-full sm:w-48 rounded-md border border-border bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
+    >
+      <option value="">Use default</option>
+      {readyConfigs.map((cfg) => (
+        <option key={cfg.id} value={cfg.hash}>
+          {cfg.name}
+        </option>
+      ))}
+    </select>
+  );
 }

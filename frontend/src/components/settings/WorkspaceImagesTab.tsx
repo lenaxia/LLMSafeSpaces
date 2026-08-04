@@ -89,11 +89,21 @@ export function WorkspaceImagesTab() {
 
   const statusPill = (status: Config["status"]): string => {
     switch (status) {
-      case "ready": return "bg-green-100 text-green-800";
-      case "building": return "bg-yellow-100 text-yellow-800";
-      case "rejected": return "bg-red-100 text-red-800";
+      case "ready": return "bg-green-500/15 text-green-600 dark:text-green-400";
+      case "building": return "bg-yellow-500/15 text-yellow-600 dark:text-yellow-400";
+      case "rejected": return "bg-red-500/15 text-red-600 dark:text-red-400";
     }
   };
+
+  const scopeLabel = (scope: string) => {
+    switch (scope) {
+      case "platform": return { label: "Platform", cls: "bg-blue-500/15 text-blue-600 dark:text-blue-400" };
+      case "org": return { label: "Org", cls: "bg-purple-500/15 text-purple-600 dark:text-purple-400" };
+      default: return { label: "Personal", cls: "bg-gray-500/15 text-gray-600 dark:text-gray-400" };
+    }
+  };
+
+  const [expandedConfig, setExpandedConfig] = useState<string | null>(null);
 
   return (
     <div className="space-y-6">
@@ -106,19 +116,61 @@ export function WorkspaceImagesTab() {
           {configs.length === 0 && (
             <p className="text-sm text-muted-foreground">No saved images yet.</p>
           )}
-          {configs.map((cfg) => (
-            <div key={cfg.id} className="flex items-center justify-between rounded-md border border-border p-3">
-              <div>
-                <span className="font-medium">{cfg.name}</span>
-                <span className="ml-2 text-xs text-muted-foreground">
-                  {cfg.selection.length} extensions · {cfg.baseName}
-                </span>
+          {configs.map((cfg) => {
+            const sc = scopeLabel(cfg.scope);
+            const isExpanded = expandedConfig === cfg.id;
+            const isEditable = cfg.scope === "member";
+            return (
+              <div key={cfg.id} className="rounded-md border border-border overflow-hidden">
+                <button
+                  onClick={() => setExpandedConfig(isExpanded ? null : cfg.id)}
+                  className="flex w-full items-center justify-between p-3 text-left hover:bg-accent/50"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span className="font-medium truncate">{cfg.name}</span>
+                    <span className={`rounded-full px-1.5 py-0.5 text-[0.6rem] font-medium ${sc.cls}`}>
+                      {sc.label}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${statusPill(cfg.status)}`}>
+                      {cfg.status}
+                    </span>
+                  </div>
+                </button>
+                {isExpanded && (
+                  <div className="border-t border-border px-3 py-2 bg-muted/30">
+                    <div className="text-xs text-muted-foreground mb-2">
+                      Base: {cfg.baseName} · {cfg.selection.length} extensions · {cfg.baseVersion}
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {cfg.selection.map((ext) => (
+                        <span key={ext} className="rounded bg-secondary px-1.5 py-0.5 text-[0.65rem] text-secondary-foreground">
+                          {ext}
+                        </span>
+                      ))}
+                    </div>
+                    {isEditable && cfg.status !== "building" && (
+                      <div className="mt-3 flex gap-2">
+                        <button
+                          onClick={() => { /* TODO: rename */ }}
+                          className="rounded border border-border px-2 py-1 text-xs hover:bg-accent"
+                        >
+                          Rename
+                        </button>
+                        <button
+                          onClick={() => { /* TODO: delete */ }}
+                          className="rounded border border-destructive/50 px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-              <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${statusPill(cfg.status)}`}>
-                {cfg.status}
-              </span>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </section>
 
@@ -146,7 +198,7 @@ export function WorkspaceImagesTab() {
             <select
               value={baseName}
               onChange={(e) => setBaseName(e.target.value)}
-              className="w-full rounded-md border border-border px-3 py-1.5 text-sm"
+              className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground"
             >
               {catalog.bases.map((b) => (
                 <option key={`${b.name}/${b.version}`} value={b.name}>
