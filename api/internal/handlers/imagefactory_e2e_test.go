@@ -182,6 +182,20 @@ func (s *e2eImageFactoryStore) GetBuild(ctx context.Context, id string) (imagefa
 	return imagefactory.Build{}, database.ErrNotFound
 }
 
+func (s *e2eImageFactoryStore) DeleteConfig(ctx context.Context, id string) error {
+	delete(s.e2eConfigs, id)
+	return nil
+}
+
+func (s *e2eImageFactoryStore) RenameConfig(ctx context.Context, id, newName string) error {
+	if cfg, ok := s.e2eConfigs[id]; ok {
+		cfg.Name = newName
+		s.e2eConfigs[id] = cfg
+		return nil
+	}
+	return database.ErrNotFound
+}
+
 // Satisfies orgResolver
 type e2eOrgResolver struct{}
 

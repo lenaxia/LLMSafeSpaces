@@ -32,6 +32,8 @@ type imageFactoryStore interface {
 	ListVisibleConfigs(ctx context.Context, ownerID, orgID *string) ([]imagefactory.Config, error)
 	CreateConfig(ctx context.Context, c *imagefactory.Config) error
 	CreateConfigAndBuild(ctx context.Context, c *imagefactory.Config, b *imagefactory.Build) error
+	DeleteConfig(ctx context.Context, id string) error
+	RenameConfig(ctx context.Context, id, newName string) error
 
 	// Build reads + writes.
 	GetInFlightOrSuccessfulBuild(ctx context.Context, hash, baseVersion string) (*imagefactory.Build, error)

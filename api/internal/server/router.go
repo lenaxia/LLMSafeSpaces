@@ -1353,6 +1353,8 @@ func registerImageFactoryRoutes(router *gin.Engine, services interfaces.Services
 	ifg.GET("/configs", h.ListConfigs)
 	ifg.GET("/configs/:hash", h.GetConfig)
 	ifg.POST("/configs", h.CreateConfig)
+	ifg.DELETE("/configs/:hash", h.DeleteConfig)
+	ifg.PATCH("/configs/:hash", h.RenameConfig)
 
 	// Internal callback: NOT behind AuthMiddleware. The handler authenticates
 	// via subtle.ConstantTimeCompare on the per-build callback_token.
