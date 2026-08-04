@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-08-04
+
+### Added
+
+- **Workspace: split-button launch + default-image hierarchy (#642).** The
+  new-workspace button is now a segmented control: `[+]` launches the default
+  image in one click, `[▼]` opens a popup menu of Ready image-factory configs.
+  Default image is resolved via a 4-tier hierarchy: user preference
+  (`preferredRuntime`) → org policy (`default_runtime`) → platform setting
+  (`workspace.defaultImage`) → `"base"`. Org admins set the default via the
+  existing policy API (`PUT /orgs/:id/policies/default_runtime`).
+
 ## [0.8.5] - 2026-08-03
 
 ### Added
