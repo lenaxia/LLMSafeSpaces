@@ -47,6 +47,20 @@ describe("api client", () => {
     );
   });
 
+  it("POST serializes falsy bodies (false/0) instead of dropping them", async () => {
+    mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}) });
+    await api.post("/p", false);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "/api/v1/p",
+      expect.objectContaining({ method: "POST", body: "false" }),
+    );
+    await api.post("/p", 0);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "/api/v1/p",
+      expect.objectContaining({ method: "POST", body: "0" }),
+    );
+  });
+
   it("PUT with no body argument sends undefined body", async () => {
     mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}) });
     await api.put("/p");
