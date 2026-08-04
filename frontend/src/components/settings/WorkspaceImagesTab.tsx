@@ -24,8 +24,9 @@ export function WorkspaceImagesTab() {
       await imageFactoryApi.deleteConfig(hash);
       setConfigs(configs.filter((c) => c.hash !== hash));
       setExpandedConfig(null);
-    } catch {
-      // error handled by toast
+      toast("Image config deleted", "success");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Failed to delete config", "error");
     }
   };
 
@@ -37,8 +38,9 @@ export function WorkspaceImagesTab() {
       setConfigs(configs.map((c) => (c.hash === hash ? updated : c)));
       setRenamingId(null);
       setRenameValue("");
-    } catch {
-      // error handled by toast
+      toast("Image config renamed", "success");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Failed to rename config", "error");
     }
   };
 

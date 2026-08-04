@@ -557,3 +557,62 @@ func TestTransitionBuildFailed_RollbackOnError(t *testing.T) {
 	})
 	require.Error(t, err)
 }
+
+func TestDeleteConfig_CascadesBuilds(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	ctx := context.Background()
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`DELETE FROM image_factory_builds WHERE config_id = \$1`).
+		WithArgs("cfg-1").
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec(`DELETE FROM image_factory_configs WHERE id = \$1`).
+		WithArgs("cfg-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	err := svc.DeleteConfig(ctx, "cfg-1")
+	require.NoError(t, err)
+}
+
+func TestDeleteConfig_NotFound(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+
+	mock.ExpectBegin()
+	mock.ExpectExec(`DELETE FROM image_factory_builds WHERE config_id = \$1`).
+		WithArgs("ghost").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectExec(`DELETE FROM image_factory_configs WHERE id = \$1`).
+		WithArgs("ghost").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectRollback()
+
+	err := svc.DeleteConfig(context.Background(), "ghost")
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestRenameConfig_Success(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+
+	mock.ExpectExec(`UPDATE image_factory_configs SET name = \$1`).
+		WithArgs("New Name", "cfg-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	err := svc.RenameConfig(context.Background(), "cfg-1", "New Name")
+	require.NoError(t, err)
+}
+
+func TestRenameConfig_NotFound(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+
+	mock.ExpectExec(`UPDATE image_factory_configs SET name`).
+		WithArgs("Name", "ghost").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+
+	err := svc.RenameConfig(context.Background(), "ghost", "Name")
+	assert.ErrorIs(t, err, ErrNotFound)
+}

@@ -629,18 +629,34 @@ func (s *Service) SetConfigStatus(ctx context.Context, id string, status imagefa
 	return nil
 }
 
-// DeleteConfig deletes a config row. Returns ErrNotFound if the config
-// doesn't exist. FK constraint from image_factory_builds means this will
-// fail if builds exist — the handler must guard against that (or cascade).
+// DeleteConfig deletes a config row and its build history. Returns
+// ErrNotFound if the config doesn't exist. Builds are deleted first (the FK
+// has no ON DELETE CASCADE), then the config — both in a single tx so a
+// partial delete can't leave orphaned rows.
 func (s *Service) DeleteConfig(ctx context.Context, id string) error {
-	res, err := s.DB.ExecContext(ctx,
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("delete config: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM image_factory_builds WHERE config_id = $1`, id); err != nil {
+		return fmt.Errorf("delete config: delete builds: %w", err)
+	}
+
+	res, err := tx.ExecContext(ctx,
 		`DELETE FROM image_factory_configs WHERE id = $1`, id)
 	if err != nil {
-		return fmt.Errorf("delete config: %w", err)
+		return fmt.Errorf("delete config: delete config: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return ErrNotFound
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("delete config: commit: %w", err)
 	}
 	return nil
 }
