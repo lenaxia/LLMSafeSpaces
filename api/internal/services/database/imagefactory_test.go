@@ -339,13 +339,13 @@ func TestGetLaunchableConfigByHash_Success(t *testing.T) {
 	rvJSON := mustJSON(t, imagefactory.ResolvedValues{})
 	rows := sqlmock.NewRows(launchConfigColumnsForTest()).
 		AddRow("cfg-1", "s-ready", "My Config", "{ffmpeg,python-3.12}", rvJSON,
-			"bookworm", "0.6.0", "member", "user-1", nil, "ready",
+			"bookworm", "0.6.0", "member", "11111111-1111-1111-1111-111111111111", nil, "ready",
 			"ghcr.io/lenaxia/ws:s-ready-0.6.0")
 	mock.ExpectQuery(qAny).
-		WithArgs("s-ready", "member", "user-1").
+		WithArgs("s-ready", "member", "11111111-1111-1111-1111-111111111111").
 		WillReturnRows(rows)
 
-	cfg, imageRef, err := svc.GetLaunchableConfigByHash(context.Background(), "s-ready", imagefactory.ScopeMember, strPtr("user-1"), nil)
+	cfg, imageRef, err := svc.GetLaunchableConfigByHash(context.Background(), "s-ready", imagefactory.ScopeMember, strPtr("11111111-1111-1111-1111-111111111111"), nil)
 	require.NoError(t, err)
 	assert.Equal(t, "cfg-1", cfg.ID)
 	assert.Equal(t, imagefactory.StatusReady, cfg.Status)
@@ -357,10 +357,10 @@ func TestGetLaunchableConfigByHash_NotFound(t *testing.T) {
 	t.Parallel()
 	svc, mock := newMockService(t)
 	mock.ExpectQuery(qAny).
-		WithArgs("s-ghost", "member", "user-1").
+		WithArgs("s-ghost", "member", "11111111-1111-1111-1111-111111111111").
 		WillReturnError(sql.ErrNoRows)
 
-	_, _, err := svc.GetLaunchableConfigByHash(context.Background(), "s-ghost", imagefactory.ScopeMember, strPtr("user-1"), nil)
+	_, _, err := svc.GetLaunchableConfigByHash(context.Background(), "s-ghost", imagefactory.ScopeMember, strPtr("11111111-1111-1111-1111-111111111111"), nil)
 	assert.ErrorIs(t, err, ErrNotFound)
 }
 
@@ -380,6 +380,22 @@ func TestGetLaunchableConfigByHash_PlatformScope(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "platform", string(cfg.Scope))
 	assert.Equal(t, "ghcr.io/lenaxia/ws:s-plat-0.6.0", imageRef)
+}
+
+func TestGetLaunchableConfigByHash_InvalidOwnerUUID(t *testing.T) {
+	t.Parallel()
+	svc, _ := newMockService(t)
+
+	_, _, err := svc.GetLaunchableConfigByHash(context.Background(), "s-ready", imagefactory.ScopeMember, strPtr("not-a-uuid"), nil)
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestGetLaunchableConfigByHash_InvalidOrgUUID(t *testing.T) {
+	t.Parallel()
+	svc, _ := newMockService(t)
+
+	_, _, err := svc.GetLaunchableConfigByHash(context.Background(), "s-ready", imagefactory.ScopeOrg, nil, strPtr("not-a-uuid"))
+	assert.ErrorIs(t, err, ErrNotFound)
 }
 
 func configColumnsForTest() []string { return splitCols(configColumns) }
