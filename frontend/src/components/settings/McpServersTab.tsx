@@ -30,8 +30,11 @@ export function McpServersTab({ scope }: McpServersTabProps) {
   // OrgAgentConfigTab). The router element at /orgs/:id/mcp-servers cannot
   // pass orgId as a prop without a wrapper, and the previous absence caused
   // every org-scope API call to fall through to the user endpoint.
-  const { org } = useOutletContext<{ org?: OrgResponse; isAdmin?: boolean }>();
-  const orgId = scope === "org" ? org?.id : undefined;
+  // Safe destructuring: the user-scope tab is mounted under SettingsPage
+  // which provides no outlet context, so useOutletContext() may return
+  // undefined — use optional chaining to avoid a crash.
+  const outlet = useOutletContext<{ org?: OrgResponse; isAdmin?: boolean }>();
+  const orgId = scope === "org" ? outlet?.org?.id : undefined;
   const [servers, setServers] = useState<McpServerResponse[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

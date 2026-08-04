@@ -60,6 +60,31 @@ beforeEach(() => {
   mockUserList.mockResolvedValue([]);
 });
 
+// Regression (round-2 review): the user-scope tab is mounted under
+// SettingsPage which provides no outlet context. useOutletContext() returns
+// undefined; destructuring must not crash. Render scope="user" without
+// mocking useOutletContext (use the real hook, which returns undefined when
+// no Outlet context is provided).
+describe("McpServersTab user-scope (no outlet context)", () => {
+  it("renders without crashing when no outlet context is provided", async () => {
+    // Do NOT mock useOutletContext — let the real hook return undefined,
+    // simulating the SettingsPage mount where no context is provided.
+    vi.doUnmock("react-router-dom");
+    const { MemoryRouter: RealMemoryRouter } = await vi.importActual<
+      typeof import("react-router-dom")
+    >("react-router-dom");
+    const { McpServersTab: RealTab } = await import("./McpServersTab");
+
+    const { container } = render(
+      <RealMemoryRouter>
+        <RealTab scope="user" />
+      </RealMemoryRouter>,
+    );
+    // Should render the empty state, not crash.
+    await waitFor(() => expect(container.textContent).toContain("MCP Servers"));
+  });
+});
+
 // Regression (Bug 1): router.tsx mounted <OrgMcpServersTab scope="org" />
 // without orgId, so every org-scope API call fell through to the user
 // endpoint. This test asserts the org API is called with the org ID from
