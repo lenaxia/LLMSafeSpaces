@@ -54,7 +54,7 @@ func runRateLimit(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 
 	var got429 bool
 	var body429 []byte
-	for i := 0; i < 30; i++ {
+	for i := 0; i < 60; i++ {
 		status, body, err := canary.RawDo(ctx, "POST", loginURL, "", loginBody)
 		if err != nil {
 			continue
