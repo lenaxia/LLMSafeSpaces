@@ -204,8 +204,6 @@ func (h *ImageFactoryHandler) ListConfigs(c *gin.Context) {
 	c.JSON(http.StatusOK, ListConfigsResponse{Configs: cfgs})
 }
 
-// GetConfig handles GET /v1/image-factory/configs/:hash.
-// Decodes a schematic: returns the config's frozen resolved_values (the
 // GetConfig handles GET /configs/:hash. Uses resolveConfigByHash (shared
 // with DeleteConfig/RenameConfig) to search scopes in resolution order.
 func (h *ImageFactoryHandler) GetConfig(c *gin.Context) {

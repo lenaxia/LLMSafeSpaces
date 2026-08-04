@@ -34,7 +34,7 @@ Wire up the "Rename" and "Delete" buttons that were placeholders in the Workspac
 
 1. **Member-scope only for delete/rename** — org and platform configs require admin elevation (deferred to the admin portal management section).
 2. **Reject deletion while building** — prevents orphaned GH Actions builds whose callback would reference a deleted config.
-3. **FK constraint** — `image_factory_builds.config_id` has no `ON DELETE CASCADE`. The store's `DeleteConfig` deletes the config; if builds exist, the FK violation surfaces as a 500. Future: add cascade or soft-delete.
+3. **FK cascade** — `image_factory_builds.config_id` has no `ON DELETE CASCADE`. The store's `DeleteConfig` cascades in a single transaction: deletes builds first, then the config, with rollback on failure.
 4. **Name collision** — `RenameConfig` maps postgres unique violation to `ErrConflict` → handler returns 409.
 
 ---
