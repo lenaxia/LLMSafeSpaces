@@ -660,7 +660,14 @@ jobs:
       - name: Go canary — S-RATE-LIMIT
         env:
           LLMSAFESPACES_URL: http://localhost:8080
-        run: go run ./scenarios/s-rate-limit/
+        # Wait for the per-route login rate limit bucket to fully refill
+        # (10/min → 60s for full 10-token refill). Prior canary scenarios
+        # consume login tokens; without this sleep, the bucket may be
+        # exhausted before S-RATE-LIMIT runs, causing spurious failures
+        # in OTHER scenarios that login after this one.
+        run: |
+          sleep 65
+          go run ./scenarios/s-rate-limit/
 
       - name: Go canary — S-WS-QUOTA
         env:
