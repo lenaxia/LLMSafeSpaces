@@ -12,7 +12,7 @@
 |---|---|---|---|
 | A1 | `/sessions/:id/prompt` returns synchronous structured response | ✅ **VALIDATED** (path differs) | `POST /session/:id/message` returns synchronous JSON |
 | A2 | opencode enforces JSON Schema output | ✅ **VALIDATED (negative)** | No schema enforcement in 1.15.12; we must validate+retry |
-| A3 | Script wrapper function-call contract works | ✅ **VALIDATED** | 6 tests pass (Python + Node) |
+| A3 | Script wrapper function-call contract works | ✅ **VALIDATED** (Python + Node) | 8 tests pass; **Go deferred to v2** |
 | A4 | agentd → opencode local call without new auth | ✅ **VALIDATED** | `OpenCodeClient` already does this |
 | A5 | `freemodels/refresher.go` pattern for reconciler | ✅ **KNOWN** | Documented in codebase |
 | A6 | expr-lang type-checks at validate time | ✅ **VALIDATED** | 7 tests pass; requires `reflect.StructOf` |
@@ -159,14 +159,20 @@ process.stdout.write(JSON.stringify(_result));
 - **Non-dict / non-serializable return** → `error_code: script_output_invalid` (JSON parse failure on wrapper stdout)
 - **Context cancellation / timeout** → process killed, error returned
 
-### Validated capabilities
+### Validated capabilities (Python + Node)
 
 - Python round-trip (dict in, dict out) ✓
 - Node round-trip ✓
 - Exception handling (stderr captured, exit code reported) ✓
-- Non-dict return detection (JSON parse failure) ✓
-- Workspace module import (handler can `import json`, `import sys`, etc.) ✓
+- Non-dict return detection at the caller layer (scriptwrap returns `json.RawMessage`; US-64.7 enforces dict shape) ✓
+- Python builtin import (json, sys, os) ✓
 - Context cancellation (timeout kills the process within ~500ms) ✓
+- Unsupported-language rejection ✓
+- Input-marshal-failure handling ✓
+
+### Go — deferred to v2
+
+The original design doc listed `language: python|node|go`. The spike validated Python and Node only. Go handlers are deferred to v2 because: (1) Go is compiled, not interpreted — wrapping `def handler(input) -> dict` requires building a plugin or a generated main package, materially different from the Python/Node source-import pattern; (2) no concrete workflow has demanded Go; (3) the workspace's existing `runtimes/go` image already supports `go run` for ad-hoc scripts, covering the "I need Go" case without workflow integration. Adding Go later is additive (new Language constant + new wrapper).
 
 ---
 
@@ -253,19 +259,27 @@ func (m *Materializer) applyEnvSecret(s Secret) error {
 
 Each line: `VAR_NAME=value\n`
 
-### Key constraint: file only exists when env-secrets are bound
+### Key constraint: file only exists when env-secrets OR api-keys are bound
 
-In a workspace with no env-secret credentials (only llm-providers), the file does NOT exist. The `http` node's secret resolution must:
+In a workspace with no `env-secret` AND no `api-key` credentials (only llm-providers), the file does NOT exist. The `http` node's secret resolution must:
 1. Read `/sandbox-runtime/secrets-env` (if it exists)
 2. Parse `KEY=VALUE` lines into a map
 3. If file doesn't exist → empty map → any `{{secrets.NAME}}` reference → `error_code: secret_not_found`
 4. If NAME not in map → `error_code: secret_not_found`
 
-### What's NOT available to `http` nodes
+### Which secret types are reachable
 
-- `llm-provider` credentials (they're in `agent-config.json`, not `secrets-env`)
-- MCP server secrets (they're in `agent-config.json mcp` section)
-- Only `env-secret` type credentials are in `secrets-env`
+| Type | Written to `secrets-env`? | Format |
+|---|---|---|
+| `env-secret` | ✅ Yes (`applyEnvSecret`, secrets.go:580) | `VAR_NAME=value` (var_name from metadata) |
+| `api-key` | ✅ Yes (`applyAPIKey`, secrets.go:485) | `API_KEY_<NAME>=value` (NAME sanitized from secret name) |
+| `llm-provider` | ❌ No (in `agent-config.json`) | — |
+| `mcp-server` | ❌ No (in `agent-config.json mcp` section) | — |
+| `ssh-key`, `git-credential`, `secret-file` | ❌ No (in `/sandbox-runtime/rt/*`) | — |
+
+Both `env-secret` and `api-key` are reachable via `{{secrets.NAME}}`. The http node resolver must read the whole file and look up either the raw var name (for env-secrets) or `API_KEY_<NAME>` (for api-keys). Downstream design implication: the `{{secrets.NAME}}` syntax alone is ambiguous between env-secret and api-key — recommend either `{{secrets.env.NAME}}` + `{{secrets.apikey.NAME}}` qualifiers, or a unified lookup that tries both.
+
+*Correction note: an earlier version of this contract claimed only `env-secret` was in `secrets-env`. That was wrong — `applyAPIKey` at secrets.go:485-497 also writes here. Caught in PR #655 review.*
 
 ---
 

@@ -61,6 +61,9 @@ Validate assumptions A1–A9 from the Epic 64 design doc before any dependent pr
 2. **POST /session/:id/message** — correct synchronous endpoint, not `/prompt`.
 3. **Validate+retry for structured output** — mandatory since opencode doesn't enforce schemas.
 4. **Pre-validate agent names via GET /agent** — opencode's silent fallback masks config errors.
+5. **Go script language deferred to v2** — original design listed Python/Node/Go; spike validated Python/Node only. Go is compiled (plugin/generated-main pattern), materially different from source-import; no concrete workflow demands it; `runtimes/go` already supports ad-hoc `go run`. (Reviewer finding #3.)
+6. **scriptwrap does NOT enforce dict returns** — `Execute` returns `json.RawMessage`; US-64.7 must validate dict shape on top. (Reviewer finding #2.)
+7. **Both `env-secret` AND `api-key` write to `/sandbox-runtime/secrets-env`** — earlier draft of the contract incorrectly listed only `env-secret`. `applyAPIKey` at `pkg/agentd/secrets/secrets.go:485-497` writes `API_KEY_<NAME>=value` lines. (Reviewer finding #1.)
 
 ---
 

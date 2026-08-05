@@ -363,7 +363,7 @@ Every node: JSON in, JSON out. **Default pass-through:** a node's successor rece
 ```yaml
 type: script
 data:
-  language: python            # python|node|go (via mise)
+  language: python            # python|node (via mise); Go deferred to v2
   handler: |                  # inline source; defines a `handler(input)` function (NOT a stdin/stdout process)
     def handler(input):
         # input is a dict; return a dict
@@ -373,11 +373,11 @@ maxAttempts: 1                # override of defaults
 timeout: 10m
 ```
 **Execution model — function-call, not stdin/stdout process.** agentd writes the handler to a temp file, generates a thin per-language wrapper that imports the handler, feeds it the input dict, and serializes the return value to JSON. Wrapper contract per language:
-- **Python:** `import json, sys, handler; print(json.dumps(handler.handler(json.loads(sys.stdin.read()))))`
+- **Python:** `import json, sys, handler; json.dump(handler.handler(json.loads(sys.stdin.read())), sys.stdout)`
 - **Node:** `const h = require('./handler'); process.stdout.write(JSON.stringify(h.handler(JSON.parse(require('fs').readFileSync(0)))))`
-- **Go:** compiled handler package exposing `Handler(input map[string]any) (map[string]any, error)`; wrapper `main` reads stdin, calls, writes stdout.
+- **Go:** deferred to v2 (requires plugin/generated-main pattern, materially different from source import).
 
-This matches the reference workflow's `def handler(input): return {...}` model (not a stdin-parsing process). On non-dict return or JSON-marshal failure: node fails with `error_code: script_output_invalid`. On unhandled exception/non-zero exit: node fails with `error_code: script_failed`, `error.stderr` captured. Workspace fs, git, mise-installed libs, materialized secrets all available. Runs as the workspace user — the workspace IS the sandbox (`runAsNonRoot`, dropped caps, `readOnlyRootFilesystem` on most paths, NetworkPolicy egress, gVisor opt-in).
+This matches the reference workflow's `def handler(input): return {...}` model (not a stdin-parsing process). The wrapper returns JSON-serialized output; **scriptwrap does NOT enforce dict returns** — US-64.7's node executor must validate the shape (`json.Unmarshal` into `map[string]any`) and fail with `script_output_invalid` on non-dict. On unhandled exception/non-zero exit: node fails with `script_failed`, stderr captured. Workspace fs, git, mise-installed libs, materialized secrets all available. Runs as the workspace user — the workspace IS the sandbox (`runAsNonRoot`, dropped caps, `readOnlyRootFilesystem` on most paths, NetworkPolicy egress, gVisor opt-in).
 
 ### `agent`
 ```yaml
@@ -548,7 +548,7 @@ These must be confirmed with evidence during US-64.1 (the spike) before dependen
 |---|---|---|
 | A1 | opencode's `/sessions/:id/prompt` returns a synchronous structured response suitable for programmatic capture (not just SSE stream chunks) | US-64.1: probe live workspace; capture the actual response shape |
 | A2 | opencode enforces JSON Schema-conformant output when a schema is supplied to a named agent (or whether we must validate/retry on our side) | US-64.1: run a named agent with a schema; check conformance |
-| A3 | agentd can exec a handler via `mise`-installed runtime and capture the wrapper's serialized return within a context deadline | US-64.1: round-trip a `def handler(input): return {...}` Python script via the wrapper contract |
+| A3 | agentd can exec a handler via `mise`-installed runtime and capture the wrapper's serialized return within a context deadline | US-64.1: round-trip a `def handler(input): return {...}` Python + Node script via the wrapper contract (Go deferred to v2) |
 | A4 | The existing session proxy path (`proxy.go`) can be reused by agentd for `agent` node dispatch without a new auth surface | US-64.1: confirm agentd can call opencode locally on port 4096 |
 | A5 | The `freemodels/refresher.go` `manager.Runnable` + `NeedLeaderElection` pattern supports a long-running reconciler that claims PG rows | US-64.8: follow the precedent exactly |
 | A6 | expr-lang (`github.com/expr-lang/expr`) is CGO-free, embeddable, and type-checks against an `outputSchema`-derived environment at workflow-validate time | US-64.1: add dep, compile a condition expression against a typed env, confirm error on field mismatch |
@@ -756,7 +756,7 @@ Each phase ends with `make test && make build && make lint` green and a worklog 
 1. `NODE-EXECUTE-CONTRACT.md` — the request/response JSON shapes for `POST /v1/workflow/node/execute` per node type (`script`, `agent`, `http`, `condition`), with captured examples from real workspace runs.
 2. Confirmation of opencode's structured-output behaviour (A2): does a named agent with a JSON Schema produce conformant output, or must we validate + retry on our side?
 3. The cancel mechanism: how agentd kills an in-flight `script` (process kill) vs `agent` (opencode interrupt) vs `http` (context cancel).
-4. **The script wrapper contract** (A3): the exact wrapper source per language (Python/Node/Go) that turns `def handler(input) -> dict` into a stdin/stdout process. Round-trip a real handler in a real workspace.
+4. **The script wrapper contract** (A3): the exact wrapper source per language (Python/Node — Go deferred to v2; see Node Type Specs) that turns `def handler(input) -> dict` into a stdin/stdout process. Round-trip a real handler. Note: scriptwrap returns `json.RawMessage` — it does NOT enforce dict returns. US-64.7's node executor must validate the shape and fail with `script_output_invalid` on non-dict.
 5. **Named-agent error behaviour** (A8): POST a prompt with a non-existent agent name; capture the error shape that maps to `agent_not_found`.
 6. **Secret resolution path** (A9): read `/sandbox-runtime/secrets-env` from a running workspace; confirm format (KEY=VALUE) and agentd's read access; document the `{{secrets.NAME}}` → env-var-key mapping.
 7. **expr-lang type-check** (A6): add the dep, compile a condition expression against a typed environment derived from a sample `outputSchema`, confirm the error message on field mismatch.
@@ -823,7 +823,7 @@ Each phase ends with `make test && make build && make lint` green and a worklog 
 
 **Goal:** `POST /v1/workflow/node/execute` on agentd (port 4098) dispatching the four node types + `POST /v1/workflow/node/cancel`.
 
-**Deliverables:** `cmd/workspace-agentd/workflow_execute.go`. Dispatch table (one function per node type). `script` → write handler to temp file, generate per-language wrapper per the US-64.1 contract, exec via `mise`, capture wrapper stdout/stderr within context deadline; non-dict return or marshal failure → `script_output_invalid`; non-zero exit → `script_failed`. `agent` → POST to opencode `/sessions/:id/prompt` (local port 4096), capture response, validate schema; **session lifecycle per the `agent` node spec** (`ephemeral` create-and-destroy default, `existing` fails on missing session with `session_not_found`, `new` persists); **missing named agent → `agent_not_found`** (per A8). `http` → `net/http` with context; **resolve `{{secrets.NAME}}` against `/sandbox-runtime/secrets-env`** (per A9); missing NAME → `secret_not_found`. `condition` → expr-lang eval against typed environment. Cancel → kill process / interrupt opencode / cancel context. **Output size check**: if response > `maxNodeOutputBytes`, return an error result with `error_code=output_oversize` (no truncation, no spill — the node fails).
+**Deliverables:** `cmd/workspace-agentd/workflow_execute.go`. Dispatch table (one function per node type). `script` → write handler to temp file, generate per-language wrapper per the US-64.1 contract, exec via `mise`, capture wrapper stdout/stderr within context deadline; **then validate dict shape** (`json.Unmarshal` into `map[string]any` — non-dict → `script_output_invalid`; scriptwrap itself does NOT enforce shape, US-64.7 does); non-zero exit → `script_failed`. `agent` → POST to opencode `/session/:id/message` (NOT `/prompt` — see A1; local port 4096), capture response, validate schema; **session lifecycle per the `agent` node spec** (`ephemeral` create-and-destroy default, `existing` fails on missing session with `session_not_found`, `new` persists); **missing named agent → `agent_not_found`** (pre-validate via `GET /agent` — opencode silently falls back, per A8). `http` → `net/http` with context; **resolve `{{secrets.NAME}}` against `/sandbox-runtime/secrets-env`** (per A9 — both `env-secret` and `api-key` types write here); missing NAME → `secret_not_found`. `condition` → expr-lang eval against typed environment. Cancel → kill process / interrupt opencode / cancel context. **Output size check**: if response > `maxNodeOutputBytes`, return an error result with `error_code=output_oversize` (no truncation, no spill — the node fails).
 
 **Tests:** round-trip per node type against a real workspace (per US-64.1 contract); cancel mid-execution; timeout enforcement; **session-lifecycle per mode**; **named-agent-not-found**; **secret-not-found**; **oversize-output hard-fail**; **script-output-invalid on bad return**.
 

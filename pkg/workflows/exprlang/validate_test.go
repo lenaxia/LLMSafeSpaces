@@ -171,3 +171,82 @@ func TestCompileCondition_NestedMissingField(t *testing.T) {
 		t.Fatal("expected type error for nested missing field, got nil")
 	}
 }
+
+func TestSchemaToEnv_MalformedJSON(t *testing.T) {
+	err := CompileCondition("input.Skipped == true", []byte("not valid json"))
+	if err == nil {
+		t.Fatal("expected error for malformed JSON schema, got nil")
+	}
+}
+
+func TestCompileCondition_DuplicateFieldNameCollision(t *testing.T) {
+	// Both foo_bar and fooBar capitalize to FooBar — reflect.StructOf panics
+	// on duplicate field names; the validator must catch this first.
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"foo_bar": map[string]any{"type": "boolean"},
+			"fooBar":  map[string]any{"type": "boolean"},
+		},
+	}
+	schemaJSON, _ := json.Marshal(schema)
+
+	_, err := SchemaToEnv(schemaJSON)
+	if err == nil {
+		t.Fatal("expected error for duplicate CamelCased field names, got nil (would panic in reflect.StructOf)")
+	}
+}
+
+func TestCompileCondition_InvalidGoIdentifier(t *testing.T) {
+	tests := []struct {
+		name    string
+		propKey string
+	}{
+		{"starts with digit", "1field"},
+		{"contains dollar sign", "$schema"},
+		{"contains space", "with space"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			schema := map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					tt.propKey: map[string]any{"type": "boolean"},
+				},
+			}
+			schemaJSON, _ := json.Marshal(schema)
+			_, err := SchemaToEnv(schemaJSON)
+			if err == nil {
+				t.Fatalf("expected error for invalid identifier %q, got nil", tt.propKey)
+			}
+		})
+	}
+}
+
+// TestCompileCondition_ArrayItemsNotTyped documents the v1 limitation: array
+// properties return []any{} and the items schema is NOT reflected into the
+// element type. Expressions like input.Tags[0].Name compile but the .Name
+// access is not type-checked. This is acceptable for v1; conditions rarely
+// need element-shape checking (most branch on top-level fields).
+func TestCompileCondition_ArrayItemsNotTyped(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"tags": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"name": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+	}
+	schemaJSON, _ := json.Marshal(schema)
+
+	// Len() works on the array.
+	if err := CompileCondition("len(input.Tags) > 0", schemaJSON); err != nil {
+		t.Fatalf("expected len() on array to compile, got: %v", err)
+	}
+}

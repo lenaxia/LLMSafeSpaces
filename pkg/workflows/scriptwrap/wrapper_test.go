@@ -17,7 +17,7 @@ func TestExecutePython_RoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	output, stderr, exitCode, err := Execute(ctx, "python", handler, input)
+	output, stderr, exitCode, err := Execute(ctx, LanguagePython, handler, input)
 	if err != nil {
 		t.Fatalf("Execute failed: %v\nstderr: %s", err, stderr)
 	}
@@ -51,7 +51,7 @@ module.exports = { handler };
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	output, stderr, exitCode, err := Execute(ctx, "node", handler, input)
+	output, stderr, exitCode, err := Execute(ctx, LanguageNode, handler, input)
 	if err != nil {
 		t.Fatalf("Execute failed: %v\nstderr: %s", err, stderr)
 	}
@@ -83,7 +83,7 @@ func TestExecutePython_Exception(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	output, stderr, exitCode, err := Execute(ctx, "python", handler, input)
+	output, stderr, exitCode, err := Execute(ctx, LanguagePython, handler, input)
 
 	if exitCode == 0 {
 		t.Fatalf("expected non-zero exit code, got 0\noutput: %s", string(output))
@@ -96,6 +96,11 @@ func TestExecutePython_Exception(t *testing.T) {
 	}
 }
 
+// TestExecutePython_NonDictReturn verifies that the scriptwrap layer does NOT
+// enforce dict returns — a handler returning a JSON-serializable non-dict
+// succeeds, and the caller is responsible for validating the shape. This is a
+// documented contract: Execute returns json.RawMessage; US-64.7 must enforce
+// dict shape on top.
 func TestExecutePython_NonDictReturn(t *testing.T) {
 	handler := `def handler(input):
     return "not a dict"
@@ -105,16 +110,26 @@ func TestExecutePython_NonDictReturn(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	output, _, _, _ := Execute(ctx, "python", handler, input)
-
+	output, _, exitCode, err := Execute(ctx, LanguagePython, handler, input)
+	if err != nil {
+		t.Fatalf("Execute returned unexpected error: %v", err)
+	}
+	if exitCode != 0 {
+		t.Fatalf("expected exit 0 for valid JSON serialization, got %d", exitCode)
+	}
+	// The wrapper successfully serialized a JSON string. Validate the CALLER
+	// catches the shape mismatch by unmarshaling into a map.
 	var result map[string]any
-	err := json.Unmarshal(output, &result)
-	if err == nil {
-		t.Fatalf("expected JSON parse failure for string return, got valid map: %v", result)
+	if unmarshalErr := json.Unmarshal(output, &result); unmarshalErr == nil {
+		t.Fatalf("expected caller's json.Unmarshal to fail for non-dict, got valid map: %v", result)
 	}
 }
 
-func TestExecutePython_ImportWorkspaceModule(t *testing.T) {
+// TestExecutePython_BuiltinImport confirms the handler can use Python builtins
+// (json, sys, os). Workspace-module import (a real A3 concern — modules
+// installed under the workspace via pip/mise) is not exercised here; it's an
+// integration concern deferred to US-64.7 against a real workspace.
+func TestExecutePython_BuiltinImport(t *testing.T) {
 	handler := `import json
 def handler(input):
     return {"echoed": input["value"], "hasJsonModule": True}
@@ -124,7 +139,7 @@ def handler(input):
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	output, stderr, exitCode, err := Execute(ctx, "python", handler, input)
+	output, stderr, exitCode, err := Execute(ctx, LanguagePython, handler, input)
 	if err != nil {
 		t.Fatalf("Execute failed: %v\nstderr: %s", err, stderr)
 	}
@@ -152,8 +167,32 @@ def handler(input):
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
-	_, _, _, err := Execute(ctx, "python", handler, input)
+	_, _, _, err := Execute(ctx, LanguagePython, handler, input)
 	if err == nil {
 		t.Fatal("expected timeout/cancel error, got nil")
+	}
+}
+
+func TestExecute_UnsupportedLanguage(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, _, _, err := Execute(ctx, Language("perl"), "sub handler { return {} }", map[string]any{})
+	if err == nil {
+		t.Fatal("expected error for unsupported language, got nil")
+	}
+	if !strings.Contains(err.Error(), "unsupported language") {
+		t.Errorf("expected 'unsupported language' in error, got: %v", err)
+	}
+}
+
+func TestExecute_InputMarshalFailure(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Channel cannot be JSON-marshaled.
+	_, _, _, err := Execute(ctx, LanguagePython, "def handler(i): return {}", make(chan int))
+	if err == nil {
+		t.Fatal("expected marshal error for channel input, got nil")
 	}
 }
