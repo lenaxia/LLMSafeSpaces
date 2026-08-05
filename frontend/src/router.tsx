@@ -63,6 +63,9 @@ const PlatformAgentConfigTab = lazy(() =>
 const OrgAgentConfigTab = lazy(() =>
   import("./components/org-admin/OrgAgentConfigTab").then((m) => ({ default: m.OrgAgentConfigTab })),
 );
+const OrgAdminSettingsTab = lazy(() =>
+  import("./components/org-admin/OrgSettingsTab").then((m) => ({ default: m.OrgAdminSettingsTab })),
+);
 const PlatformAuditTab = lazy(() =>
   import("./components/settings/PlatformAuditTab").then((m) => ({ default: m.PlatformAuditTab })),
 );
@@ -138,6 +141,7 @@ export const router = createBrowserRouter([
           { path: "billing", element: <OrgBillingTab /> },
           { path: "sso", element: <OrgSSOTab /> },
           { path: "agent-config", element: <OrgAgentConfigTab /> },
+          { path: "settings", element: <OrgAdminSettingsTab /> },
         ],
       },
       {
