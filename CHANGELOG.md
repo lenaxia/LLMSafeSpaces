@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.8] - 2026-08-05
+
+### Fixed
+
+- **MCP org-tab: routing, list-envelope crash, member-policy toggle (#650).**
+  Three org-admin MCP bugs: (1) org-level add was rejected with "org admin
+  has disabled member MCP servers" because the router mounted the org tab
+  without passing `orgId`, causing every org-scope request to fall through
+  to the user endpoint; (2) `n.map is not a function` crash because the API
+  client typed the `{servers:[...]}` envelope as a bare array; (3) no UI for
+  org admins to manage member MCP servers (`allow_user_mcp_servers` policy
+  was backend-wired but had no frontend toggle). Also fixes a latent
+  `api.put`/`api.post` falsy-body drop (silently dropped `false`/`0`).
+- **MCP deferred-wiring regression gaps (#651).** Closed two gaps from the
+  v0.7.1 production 500 fix: admin audit events were silently dropped
+  (nil-wired `SetAudit`) with no regression test; `resolveWorkspaceQuota`
+  lacked the same nil-orgChecker guard `UserCreate` got. Both now have
+  red→green regression tests.
+
+### Added
+
+- **Image Factory: delete + rename config API and UI (#649).** Member-scope
+  `DELETE /configs/:hash` (rejects building status) and
+  `PATCH /configs/:hash` (rename with collision detection). Shared
+  `resolveConfigByHash` (member → org → platform scope loop).
+
 ## [0.8.7] - 2026-08-04
 
 ### Fixed
