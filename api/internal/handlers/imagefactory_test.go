@@ -123,6 +123,11 @@ func (f *fakeIFStore) CreateBuild(ctx context.Context, b *imagefactory.Build) er
 	return f.createBuildErr
 }
 
+func (f *fakeIFStore) DeleteConfig(ctx context.Context, id string) error { return nil }
+func (f *fakeIFStore) RenameConfig(ctx context.Context, id, newName string) error {
+	return nil
+}
+
 // fakeOrgResolver is the test double for orgResolver.
 type fakeOrgResolver struct {
 	orgIDByUser map[string]string

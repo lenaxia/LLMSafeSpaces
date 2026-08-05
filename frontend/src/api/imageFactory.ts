@@ -68,4 +68,10 @@ export const imageFactoryApi = {
     baseName: string;
     baseVersion?: string;
   }) => api.post<Config>("/image-factory/configs", req),
+
+  deleteConfig: (hash: string) =>
+    api.delete<void>(`/image-factory/configs/${hash}`),
+
+  renameConfig: (hash: string, name: string) =>
+    api.patch<Config>(`/image-factory/configs/${hash}`, { name }),
 };

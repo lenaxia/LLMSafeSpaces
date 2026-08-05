@@ -57,6 +57,8 @@ type ImageFactoryStore interface {
 	ListConfigs(ctx context.Context, scope imagefactory.ConfigScope, ownerID, orgID *string) ([]imagefactory.Config, error)
 	ListVisibleConfigs(ctx context.Context, ownerID, orgID *string) ([]imagefactory.Config, error)
 	SetConfigStatus(ctx context.Context, id string, status imagefactory.ConfigStatus) error
+	DeleteConfig(ctx context.Context, id string) error
+	RenameConfig(ctx context.Context, id, newName string) error
 	// GetLaunchableConfigByHash returns a Ready config matching the hash
 	// and scope/owner filter, together with the image_ref of its
 	// successful build. Used by the workspace launch path to resolve a
@@ -84,6 +86,10 @@ var _ ImageFactoryStore = (*Service)(nil)
 // Exported so handler-layer code can distinguish 404 from 500 without
 // fragile string matching.
 var ErrNotFound = errors.New("not found")
+
+// ErrConflict is returned for unique-constraint violations (e.g. rename
+// collides with an existing name in the same scope).
+var ErrConflict = errors.New("conflict")
 
 // ── Platform config ─────────────────────────────────────────────────────
 
@@ -619,6 +625,58 @@ func (s *Service) SetConfigStatus(ctx context.Context, id string, status imagefa
 		string(status), id)
 	if err != nil {
 		return fmt.Errorf("set config status: %w", err)
+	}
+	return nil
+}
+
+// DeleteConfig deletes a config row and its build history. Returns
+// ErrNotFound if the config doesn't exist. Builds are deleted first (the FK
+// has no ON DELETE CASCADE), then the config — both in a single tx so a
+// partial delete can't leave orphaned rows.
+func (s *Service) DeleteConfig(ctx context.Context, id string) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("delete config: begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM image_factory_builds WHERE config_id = $1`, id); err != nil {
+		return fmt.Errorf("delete config: delete builds: %w", err)
+	}
+
+	res, err := tx.ExecContext(ctx,
+		`DELETE FROM image_factory_configs WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("delete config: delete config: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("delete config: commit: %w", err)
+	}
+	return nil
+}
+
+// RenameConfig updates the friendly name. Returns ErrNotFound if the
+// config doesn't exist, or ErrConflict (via pq unique violation) if the
+// name collides within the same scope.
+func (s *Service) RenameConfig(ctx context.Context, id, newName string) error {
+	res, err := s.DB.ExecContext(ctx,
+		`UPDATE image_factory_configs SET name = $1, updated_at = now() WHERE id = $2`,
+		newName, id)
+	if err != nil {
+		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
+			return ErrConflict
+		}
+		return fmt.Errorf("rename config: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return ErrNotFound
 	}
 	return nil
 }

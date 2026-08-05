@@ -15,6 +15,34 @@ export function WorkspaceImagesTab() {
   const [baseName, setBaseName] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [expandedConfig, setExpandedConfig] = useState<string | null>(null);
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+
+  const handleDelete = async (hash: string) => {
+    if (!confirm(`Delete "${hash}"? This cannot be undone.`)) return;
+    try {
+      await imageFactoryApi.deleteConfig(hash);
+      setConfigs(configs.filter((c) => c.hash !== hash));
+      setExpandedConfig(null);
+      toast("Image config deleted", "success");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Failed to delete config", "error");
+    }
+  };
+
+  const handleRename = async (hash: string) => {
+    const trimmed = renameValue.trim();
+    if (!trimmed) return;
+    try {
+      const updated = await imageFactoryApi.renameConfig(hash, trimmed);
+      setConfigs(configs.map((c) => (c.hash === hash ? updated : c)));
+      setRenamingId(null);
+      setRenameValue("");
+      toast("Image config renamed", "success");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Failed to rename config", "error");
+    }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -150,8 +178,46 @@ export function WorkspaceImagesTab() {
                       ))}
                     </div>
                     {isEditable && cfg.status !== "building" && (
-                      <div className="mt-3 text-[0.65rem] text-muted-foreground">
-                        Rename and delete are coming soon
+                      <div className="mt-3 flex gap-2">
+                        {renamingId === cfg.id ? (
+                          <>
+                            <input
+                              type="text"
+                              value={renameValue}
+                              onChange={(e) => setRenameValue(e.target.value)}
+                              onKeyDown={(e) => { if (e.key === "Enter") handleRename(cfg.hash); if (e.key === "Escape") setRenamingId(null); }}
+                              className="h-7 w-40 rounded border border-border bg-background px-2 text-xs"
+                              autoFocus
+                            />
+                            <button
+                              onClick={() => handleRename(cfg.hash)}
+                              className="rounded border border-border px-2 py-1 text-xs hover:bg-accent"
+                            >
+                              Save
+                            </button>
+                            <button
+                              onClick={() => { setRenamingId(null); setRenameValue(""); }}
+                              className="rounded border border-border px-2 py-1 text-xs hover:bg-accent"
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        ) : (
+                          <>
+                            <button
+                              onClick={() => { setRenamingId(cfg.id); setRenameValue(cfg.name); }}
+                              className="rounded border border-border px-2 py-1 text-xs hover:bg-accent"
+                            >
+                              Rename
+                            </button>
+                            <button
+                              onClick={() => handleDelete(cfg.hash)}
+                              className="rounded border border-destructive/50 px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
+                            >
+                              Delete
+                            </button>
+                          </>
+                        )}
                       </div>
                     )}
                   </div>
