@@ -30,15 +30,17 @@ This PR closes the gap.
 
 ## Work Completed
 
-- **`frontend/tests/e2e/org-admin.spec.ts`** (new) — 7 tests:
-  1. Renders the portal with all admin nav items visible
+- **`frontend/tests/e2e/org-admin.spec.ts`** (new) — 9 tests:
+  1. Renders the portal with all 10 admin nav items visible
   2. Deep-links to `/orgs/:id/settings` and renders all 3 policy cards
      with loaded values
   3. Navigates from overview to settings via sidebar link
   4. Deep-links to `/orgs/:id/agent-config` and renders Member Customization
   5. Deep-links to `/orgs/:id/mcp-servers` and renders the tab
-  6. Saving workspace limits PUTs the policy (asserts request body)
-  7. Non-admin member does not see admin-only tabs (Members, Settings,
+  6. Saving workspace limits PUTs both policies (map-keyed capture)
+  7. Org load failure (404) shows error message
+  8. Save failure (403) shows error toast
+  9. Non-admin member does not see admin-only tabs (Members, Settings,
      Credentials hidden; Overview, Workspaces visible)
 
 ## Tests Run

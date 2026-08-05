@@ -120,11 +120,10 @@ test.describe("Org admin portal", () => {
     await page.waitForLoadState("networkidle");
 
     await expect(page.getByRole("heading", { name: "E2E Org" })).toBeVisible({ timeout: 8000 });
-    // Admin-only tabs visible to admin.
-    await expect(page.getByRole("link", { name: "Members" })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Settings" })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Agent Config" })).toBeVisible();
-    await expect(page.getByRole("link", { name: "MCP Servers" })).toBeVisible();
+    // All admin nav items visible to admin.
+    for (const label of ["Overview", "Members", "Credentials", "MCP Servers", "Workspaces", "Audit", "Billing", "SSO", "Agent Config", "Settings"]) {
+      await expect(page.getByRole("link", { name: label })).toBeVisible();
+    }
   });
 
   test("deep-links to /orgs/:id/settings and renders policy cards", async ({ page }) => {
