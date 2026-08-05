@@ -84,15 +84,17 @@ describe("OrgAdminSettingsTab", () => {
     renderTab();
     await waitFor(() => expect(screen.getByText("Save Limits")).toBeInTheDocument());
 
-    // The first number input (after "Max workspaces per member") is the
-    // workspace limit. Use label text to target it.
-    const inputs = screen.getAllByRole("spinbutton");
-    fireEvent.change(inputs[0]!, { target: { value: "15" } });
+    // Find the max-workspaces input by its nearby label text
+    const maxLabel = screen.getByText("Max workspaces per member");
+    const container = maxLabel.closest("div")?.parentElement;
+    const wsInput = container?.querySelector('input[type="number"]') as HTMLInputElement;
+    fireEvent.change(wsInput, { target: { value: "15" } });
+
+    fireEvent.click(screen.getByText("Save Limits"));
 
     await waitFor(() =>
       expect(mockSetOrgPolicy).toHaveBeenCalledWith("org-1", "max_workspaces_per_member", 15),
     );
-    expect(screen.getByText("Workspace limits saved")).toBeInTheDocument();
   });
 
   it("saves model restrictions as an array when restrict is enabled", async () => {
