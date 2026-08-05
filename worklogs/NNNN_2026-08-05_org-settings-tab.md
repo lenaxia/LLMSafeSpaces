@@ -1,6 +1,8 @@
 # Worklog NNNN — Org admin Settings tab: surface 6 backend-only org policies
 
-**Date:** 2026-08-05
+**Session:** 2026-08-05
+**Status:** Ready for merge
+
 **Scope:** New org-admin Settings tab exposing the 6 org policies that have
 been backend-only since Epic 43 (US-43.7/43.8).
 
@@ -30,7 +32,7 @@ gap from Epic 43, not a regression: no org Settings tab ever existed.
    collision with the platform-admin's `OrgSettingsTab` in
    `components/settings/`.
 
-## Summary of changes
+## Work Completed
 
 - **`frontend/src/components/org-admin/OrgSettingsTab.tsx`** (new) — exports
   `OrgAdminSettingsTab`. Three cards:
@@ -45,28 +47,32 @@ gap from Epic 43, not a regression: no org Settings tab ever existed.
   "Settings" after "Agent Config"
 - **`frontend/src/components/org-admin/OrgSettingsTab.test.tsx`** (new) — 9
   unit tests
+- **`frontend/src/components/org-admin/OrgSettingsTab.outlet.test.tsx`** (new)
+  — 1 integration test (real outlet context wiring)
 
 ## Tests Run
 
 - `npx tsc --noEmit` — clean
 - `npx vitest run src/components/org-admin/OrgSettingsTab.test.tsx` — 9 pass
-- `npx vitest run` — 1532 pass (143 files)
+- `npx vitest run src/components/org-admin/OrgSettingsTab.outlet.test.tsx` — 1 pass
+- `npx vitest run` — 1533 pass (144 files)
 - `npm run build` — succeeds
 
 ## Blockers
 
-None.
+None. E2E coverage for `/orgs/:id/settings` is a codebase-wide gap (no e2e
+exists for any org-admin portal tab); tracked separately, not blocking.
 
 ## Next Steps
 
-- Integration/e2e coverage for `/orgs/:id/settings` — codebase-wide gap (no
-  e2e exists for any org-admin portal tab); tracked separately, not blocking.
-- Consider auto-populating the `default_runtime` dropdown from the image-factory
-  configs API instead of a free-text input.
+- Consider auto-populating the `default_runtime` dropdown from the
+  image-factory configs API instead of a free-text input.
+- Add e2e coverage for the org-admin portal as a codebase-wide effort.
 
 ## Files Modified
 
 - `frontend/src/components/org-admin/OrgSettingsTab.tsx` (new)
 - `frontend/src/components/org-admin/OrgSettingsTab.test.tsx` (new)
+- `frontend/src/components/org-admin/OrgSettingsTab.outlet.test.tsx` (new)
 - `frontend/src/router.tsx` (lazy import + route)
 - `frontend/src/components/org-admin/OrgAdminLayout.tsx` (nav item)
