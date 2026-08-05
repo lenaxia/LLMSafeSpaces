@@ -648,11 +648,11 @@ func (s *stubSettings) GetBool(_ context.Context, _ string) (bool, error) {
 // stubMcpAuditLogger records audit calls so tests can assert events reach
 // the logger after the deferred SetAudit wiring.
 type stubMcpAuditLogger struct {
-	auditCalls  int
-	orgCalls    int
-	lastAction  string
-	lastDomain  string
-	lastTarget  string
+	auditCalls int
+	orgCalls   int
+	lastAction string
+	lastDomain string
+	lastTarget string
 }
 
 func (s *stubMcpAuditLogger) LogAuditEvent(_ context.Context, domain, _, action, targetID string, _ *string, _ map[string]any) error {
