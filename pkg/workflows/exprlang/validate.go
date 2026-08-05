@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"unicode"
 
 	"github.com/expr-lang/expr"
 )
@@ -157,13 +158,13 @@ func isValidGoIdentifier(s string) bool {
 	}
 	for i, r := range s {
 		if i == 0 {
-			if r < 'A' || r > 'Z' {
+			if !unicode.IsUpper(r) {
 				return false
 			}
-		} else {
-			if !((r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
-				return false
-			}
+			continue
+		}
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) {
+			return false
 		}
 	}
 	return true
