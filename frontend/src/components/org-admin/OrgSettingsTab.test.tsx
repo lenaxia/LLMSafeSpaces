@@ -164,4 +164,42 @@ describe("OrgAdminSettingsTab", () => {
     fireEvent.click(screen.getByText("Save Settings"));
     await waitFor(() => expect(screen.getByText("Failed to save")).toBeInTheDocument());
   });
+
+  it("saves provider restrictions as an array when restrict is enabled", async () => {
+    renderTab();
+    await waitFor(() => expect(screen.getByText("Restrict allowed providers")).toBeInTheDocument());
+
+    // Enable provider restriction toggle (second switch)
+    const switches = screen.getAllByRole("switch");
+    fireEvent.click(switches[1]!);
+
+    // Type provider names
+    await waitFor(() => expect(screen.getByPlaceholderText(/openai/)).toBeInTheDocument());
+    fireEvent.change(screen.getByPlaceholderText(/openai/), {
+      target: { value: "openai\nanthropic" },
+    });
+
+    fireEvent.click(screen.getByText("Save Providers"));
+    await waitFor(() =>
+      expect(mockSetOrgPolicy).toHaveBeenCalledWith("org-1", "allowed_providers", ["openai", "anthropic"]),
+    );
+  });
+
+  it("saves empty array when provider restriction is disabled", async () => {
+    // Start with providers restricted
+    mockListOrgPolicies.mockResolvedValue([
+      { key: "allowed_providers", value: ["openai"], updatedAt: "2026-01-01T00:00:00Z" },
+    ]);
+    renderTab();
+    await waitFor(() => expect(screen.getByText("Only listed providers are available to members")).toBeInTheDocument());
+
+    // Disable restriction toggle (second switch)
+    const switches = screen.getAllByRole("switch");
+    fireEvent.click(switches[1]!);
+
+    fireEvent.click(screen.getByText("Save Providers"));
+    await waitFor(() =>
+      expect(mockSetOrgPolicy).toHaveBeenCalledWith("org-1", "allowed_providers", []),
+    );
+  });
 });
