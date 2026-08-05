@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.10] - 2026-08-05
+
+### Added
+
+- **Org admin Settings tab — surface 6 backend-only policies (#653).** New
+  `/orgs/:id/settings` tab with three cards: Workspace Limits
+  (`max_workspaces_per_member`, `max_active_workspaces_per_member`), Model &
+  Provider Restrictions (`allowed_models`, `allowed_providers`), and MCP &
+  Image Defaults (`max_mcp_servers_per_workspace`, `default_runtime`).
+  Previously these 6 policies were backend-only since Epic 43 with no UI.
+- **E2e coverage for org-admin portal (#654).** 9 Playwright tests covering
+  deep-linking, sidebar navigation, role gating, save flow, and unhappy
+  paths (org load 404, save 403). Closes the codebase-wide e2e gap for the
+  org-admin portal.
+
 ## [0.8.9] - 2026-08-05
 
 ### Fixed
