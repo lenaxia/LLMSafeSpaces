@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.9] - 2026-08-05
+
+### Fixed
+
+- **Image-list dropdown: viewport-aware positioning (#652).** The
+  `NewWorkspaceSplitButton` popup was hardcoded to `absolute right-0
+  top-full` and overflowed the viewport edge when the button sat near the
+  right or bottom of the screen. Now portals to `document.body` via
+  `createPortal` and positions via `computeMenuPosition` (reused from
+  `KebabMenu`): flips above when no room below, clamps horizontally, caps
+  height with scroll. Repositions on scroll/resize.
+
 ## [0.8.8] - 2026-08-05
 
 ### Fixed
