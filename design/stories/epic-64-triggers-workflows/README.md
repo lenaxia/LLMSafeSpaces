@@ -202,7 +202,7 @@ This is a conscious strategic decision, not a default. Durable execution is a so
           ▼
 ┌── Workspace pod — agentd (port 4098) ─────────────────────────────┐
 │  • script  → exec handler via mise runtime; stdin←JSON, stdout→JSON│
-│  • agent   → POST opencode /sessions/:id/prompt; validate schema   │
+│  • agent   → POST opencode /session/:id/message; validate schema  │
 │  • http    → net/http through existing egress NetworkPolicy        │
 │  • condition → expr-lang eval, return matched branch handle        │
 │  • /v1/workflow/node/cancel → kill in-flight node                  │
@@ -396,7 +396,7 @@ data:
 maxAttempts: 2
 timeout: 10m
 ```
-agentd posts the rendered prompt to opencode's `/sessions/:id/prompt` (it already proxies this), waits for the response, validates against `outputSchema` if enforced. On schema mismatch: retry within `maxAttempts` with a repair hint appended to the prompt.
+agentd posts the rendered prompt to opencode's `/session/:id/message` (per A1 — NOT `/sessions/:id/prompt`; it already proxies this), waits for the response, validates against `outputSchema` if enforced. On schema mismatch: retry within `maxAttempts` with a repair hint appended to the prompt.
 
 **Session lifecycle (concrete defaults — not advisory):**
 - **Default `session` value: `ephemeral`.** Every run of an `agent` node without an explicit `session` field creates a fresh session and tears it down on completion (the opencode session DB row is deleted, not abandoned — otherwise the workspace's opencode.db grows unboundedly across runs).
@@ -412,13 +412,13 @@ data:
   method: POST
   url: https://api.example.com/widgets
   headers:
-    Authorization: "Bearer {{secrets.GITHUB_TOKEN}}"   # {{secrets.NAME}} resolves against materialized env-secrets
+    Authorization: "Bearer {{secrets.GITHUB_TOKEN}}"   # {{secrets.NAME}} resolves against materialized env-secret AND api-key entries
   body: "{{.input.payload}}"
   timeout: 30s
 ```
 agentd makes the request via Go `net/http`. Goes through the workspace's existing egress NetworkPolicy naturally. Output: `{status, headers, body, duration_ms}`.
 
-**Secret resolution contract (Fix 5):** `{{secrets.NAME}}` resolves against the already-materialized env-secret entries in `/sandbox-runtime/secrets-env` — the same tmpfs file agentd reads for the existing credential reload path (see Relay Config Subsystem in README-LLM.md). `NAME` is the env-var name as it appears in `secrets-env` (e.g. `GITHUB_TOKEN`, `OPENAI_API_KEY`). agentd reads the file once per node execution, builds a `map[string]string`, and substitutes before the request. Secrets injected via Epic 53 MCP servers are **not** reachable here (they live in `agent-config.json`, not `secrets-env`); only `env-secret` type credentials are available to `http` nodes. If `NAME` is not present in `secrets-env`: the node **fails** with `error_code: secret_not_found` (no silent empty-string substitution).
+**Secret resolution contract (Fix 5):** `{{secrets.NAME}}` resolves against the already-materialized env-secret AND api-key entries in `/sandbox-runtime/secrets-env` — the same tmpfs file agentd reads for the existing credential reload path (see Relay Config Subsystem in README-LLM.md). Per A9: `env-secret` types write `VAR_NAME=value` (var_name from metadata); `api-key` types write `API_KEY_<NAME>=value`. `NAME` is the env-var name as it appears in `secrets-env` (e.g. `GITHUB_TOKEN`, `OPENAI_API_KEY`, `API_KEY_STRIPE`). agentd reads the file once per node execution, builds a `map[string]string`, and substitutes before the request. Secrets injected via Epic 53 MCP servers are **not** reachable here (they live in `agent-config.json`, not `secrets-env`); only `env-secret` + `api-key` type credentials are available to `http` nodes. If `NAME` is not present in `secrets-env`: the node **fails** with `error_code: secret_not_found` (no silent empty-string substitution).
 
 **Prompt templates use `text/template` (D9); `{{secrets.X}}` is a custom function registered into the template environment, NOT a field access.** This keeps secret substitution in the same trust-safe interpolation layer while making the syntax familiar.
 
@@ -430,9 +430,9 @@ type: condition
 data:
   conditions:
     - id: skip
-      expression: "input.skipped == true"
+      expression: "input.Skipped == true"
     - id: retry
-      expression: "input.error_code == 'transient'"
+      expression: "input.ErrorCode == 'transient'"
     # implicit: otherwise
 # edges bind to sourceHandle: skip|retry|otherwise
 ```
@@ -546,7 +546,7 @@ These must be confirmed with evidence during US-64.1 (the spike) before dependen
 
 | ID | Assumption | Validation plan |
 |---|---|---|
-| A1 | opencode's `/sessions/:id/prompt` returns a synchronous structured response suitable for programmatic capture (not just SSE stream chunks) | US-64.1: probe live workspace; capture the actual response shape |
+| A1 | opencode's `/session/:id/message` returns a synchronous structured response suitable for programmatic capture (not just SSE stream chunks) | US-64.1: probe live workspace; capture the actual response shape |
 | A2 | opencode enforces JSON Schema-conformant output when a schema is supplied to a named agent (or whether we must validate/retry on our side) | US-64.1: run a named agent with a schema; check conformance |
 | A3 | agentd can exec a handler via `mise`-installed runtime and capture the wrapper's serialized return within a context deadline | US-64.1: round-trip a `def handler(input): return {...}` Python + Node script via the wrapper contract (Go deferred to v2) |
 | A4 | The existing session proxy path (`proxy.go`) can be reused by agentd for `agent` node dispatch without a new auth surface | US-64.1: confirm agentd can call opencode locally on port 4096 |
@@ -554,7 +554,7 @@ These must be confirmed with evidence during US-64.1 (the spike) before dependen
 | A6 | expr-lang (`github.com/expr-lang/expr`) is CGO-free, embeddable, and type-checks against an `outputSchema`-derived environment at workflow-validate time | US-64.1: add dep, compile a condition expression against a typed env, confirm error on field mismatch |
 | A7 | Activating a suspended workspace from the controller takes ~22s (per README-LLM.md) and that is acceptable latency for cron/webhook triggers | US-64.8: measure on a real cluster |
 | A8 | opencode returns a machine-distinguishable error when a named agent profile does not exist (so we can map to `agent_not_found`) | US-64.1: POST a prompt with a non-existent agent name; capture the error |
-| A9 | `/sandbox-runtime/secrets-env` is readable by agentd and contains the env-secret entries the `http` node needs to resolve `{{secrets.NAME}}` | US-64.1: read the file from a running workspace, confirm format (KEY=VALUE lines) and agentd's read access |
+| A9 | `/sandbox-runtime/secrets-env` is readable by agentd and contains the `env-secret` and `api-key` entries the `http` node needs to resolve `{{secrets.NAME}}` | US-64.1: read the file from a running workspace, confirm format (KEY=VALUE lines) and agentd's read access; confirm both secret types write here |
 
 ---
 
@@ -593,7 +593,7 @@ The feature uses **two deliberately separate** mechanisms with different trust b
 
 1. **Prompt templates** (`agent` node `prompt`, `http` node `body`/`headers`/`url`, trigger `input_template`) use **Go `text/template`** with dot-syntax (`{{.input.meetingId}}`). Pure interpolation: no expression evaluation, no method calls, no function calls. Inputs include attacker-controlled webhook payloads — interpolation is safe by construction (a malicious `{{` in `rawSummary` is treated as literal text, not evaluated). Using a full expression engine here would create an injection surface for no benefit.
 
-2. **Condition expressions** (`condition` node) use **expr-lang** (`github.com/expr-lang/expr`). Full expressions (`input.skipped == true`, `input.error_code == 'transient'`). The expression is author-controlled; the input is data only. expr-lang is type-checked at workflow-validate time against the predecessor's `outputSchema` (assumption A6 — closed by the spike).
+2. **Condition expressions** (`condition` node) use **expr-lang** (`github.com/expr-lang/expr`). Full expressions (`input.Skipped == true`, `input.ErrorCode == 'transient'` — note CamelCase field names per A6: expr-lang type-checks structs, not maps, so JSON-Schema property names are converted via `capitalize()`). The expression is author-controlled; the input is data only. expr-lang is type-checked at workflow-validate time against the predecessor's `outputSchema` (assumption A6 — closed by the spike).
 
 Both are CGO-free. expr-lang is a hard dependency only because `condition` is a v1 node (proven necessary by the reference workflow's guard clause). `text/template` is stdlib — no new dependency. **Do not unify these.** The trust boundary difference is the point: interpolation handles untrusted data, expressions handle author-trusted logic.
 

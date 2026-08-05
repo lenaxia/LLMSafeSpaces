@@ -15,7 +15,7 @@
 | A3 | Script wrapper function-call contract works | ✅ **VALIDATED** (Python + Node) | 8 tests pass; **Go deferred to v2** |
 | A4 | agentd → opencode local call without new auth | ✅ **VALIDATED** | `OpenCodeClient` already does this |
 | A5 | `freemodels/refresher.go` pattern for reconciler | ✅ **KNOWN** | Documented in codebase |
-| A6 | expr-lang type-checks at validate time | ✅ **VALIDATED** | 7 tests pass; requires `reflect.StructOf` |
+| A6 | expr-lang type-checks at validate time | ✅ **VALIDATED** | 10 test functions (15 subtests) pass; requires `reflect.StructOf` |
 | A7 | Workspace activation ~22s | ⏸ **DEFERRED** | Needs live cluster |
 | A8 | Named-agent-not-found error | ✅ **VALIDATED (differs)** | opencode silently falls back; use `GET /agent` to pre-validate |
 | A9 | `/sandbox-runtime/secrets-env` format | ✅ **VALIDATED** | `KEY=VALUE` lines; file absent when no env-secrets bound |
@@ -122,7 +122,7 @@ This matches the design doc's plan. The finding confirms it's necessary, not opt
 
 ## A3 — Script Wrapper Contract (VALIDATED)
 
-Package: `pkg/workflows/scriptwrap/` — 6 tests, all pass with `-race`.
+Package: `pkg/workflows/scriptwrap/` — 8 test functions, all pass with `-race`.
 
 ### Contract
 
@@ -189,7 +189,7 @@ For the `agent` node, agentd adds one new method to this client: `PostMessage(ct
 
 ## A6 — expr-lang Type-Checking (VALIDATED with constraint)
 
-Package: `pkg/workflows/exprlang/` — 7 tests, all pass with `-race`.
+Package: `pkg/workflows/exprlang/` — 10 test functions (15 subtests), all pass with `-race`.
 
 ### Key constraint: maps do NOT type-check
 

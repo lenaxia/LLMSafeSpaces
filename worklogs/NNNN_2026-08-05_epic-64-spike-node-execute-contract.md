@@ -17,12 +17,12 @@ Validate assumptions A1–A9 from the Epic 64 design doc before any dependent pr
 ### A6 — expr-lang condition type-checker (VALIDATED)
 - Added `github.com/expr-lang/expr v1.17.8` dependency
 - `pkg/workflows/exprlang/validate.go` — `SchemaToEnv()` converts JSON Schema → `reflect.StructOf` → typed env
-- `pkg/workflows/exprlang/validate_test.go` — 7 tests: valid expressions, missing fields, wrong types, wrong methods, nested objects, syntax errors
+- `pkg/workflows/exprlang/validate_test.go` — 10 test functions / 15 subtests: valid expressions, missing fields, wrong types, wrong methods, nested objects, syntax errors, malformed JSON, duplicate-field collisions, invalid Go identifiers, array-items limitation
 - **Finding:** maps do NOT type-check in expr-lang; must use `reflect.StructOf`. Field names are CamelCase (snake_case → CamelCase).
 
 ### A3 — Script wrapper function-call contract (VALIDATED)
 - `pkg/workflows/scriptwrap/wrapper.go` — Python + Node wrapper generators
-- `pkg/workflows/scriptwrap/wrapper_test.go` — 6 tests: round-trips, exception handling, non-dict return, module import, context cancellation
+- `pkg/workflows/scriptwrap/wrapper_test.go` — 8 test functions: round-trips (Python + Node), exception handling, non-dict return (caller-side detection), builtin import, context cancellation, unsupported language, marshal failure
 - Handler defines `def handler(input) -> dict`; agentd generates a thin wrapper, execs via runtime, captures JSON stdout.
 
 ### A1 — opencode session/message API (VALIDATED)
@@ -76,8 +76,8 @@ None. A7 (workspace activation timing) deferred — needs a live cluster.
 ## Tests Run
 
 ```
-go test -timeout 30s -race -v ./pkg/workflows/exprlang/     → 7/7 PASS
-go test -timeout 30s -race -v ./pkg/workflows/scriptwrap/    → 6/6 PASS
+go test -timeout 30s -race -v ./pkg/workflows/exprlang/     → 10/10 functions PASS (15 subtests)
+go test -timeout 30s -race -v ./pkg/workflows/scriptwrap/    → 8/8 functions PASS
 ```
 
 ---
