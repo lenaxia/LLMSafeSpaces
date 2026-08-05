@@ -90,8 +90,17 @@ async function mockOrgAdmin(page: Page, overrides: Partial<typeof ORG> = {}) {
   await page.route(`${API}/users/me/settings/schema`, async (route: Route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ settings: [], schemaVersion: 1 }) });
   });
+  // Override the generic /users/me/settings stub with the object shape.
+  await page.unroute(`${API}/users/me/settings`);
   await page.route(`${API}/users/me/settings`, async (route: Route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ settings: {}, schemaVersion: 1 }) });
+  });
+  // Stub agent roles (fetched by Agent Config tab).
+  await page.route(`${API}/orgs/${ORG_ID}/agent-roles`, async (route: Route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+  });
+  await page.route(`${API}/admin/agent-roles`, async (route: Route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
   });
   await page.route(`${API}/orgs`, async (route: Route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
@@ -156,11 +165,12 @@ test.describe("Org admin portal", () => {
     await expect(page.getByRole("button", { name: "Add Server" })).toBeVisible({ timeout: 8000 });
   });
 
-  test("saving workspace limits PUTs the policy", async ({ page }) => {
-    let putBody: string | undefined;
+  test("saving workspace limits PUTs both policies", async ({ page }) => {
+    const putBodies: Record<string, string> = {};
     await page.route(`${API}/orgs/${ORG_ID}/policies/*`, async (route: Route) => {
       if (route.request().method() === "PUT") {
-        putBody = route.request().postData() ?? undefined;
+        const key = route.request().url().split("/policies/")[1]!;
+        putBodies[key] = route.request().postData() ?? "";
       }
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status: "ok" }) });
     });
@@ -175,8 +185,38 @@ test.describe("Org admin portal", () => {
     await maxInput.fill("20");
     await page.getByRole("button", { name: "Save Limits" }).click();
 
-    // Wait for the PUT to fire.
-    await expect.poll(() => putBody).toBe("20");
+    // Wait for both PUTs to fire (max_workspaces + max_active).
+    await expect.poll(() => putBodies["max_workspaces_per_member"]).toBe("20");
+    await expect.poll(() => putBodies["max_active_workspaces_per_member"]).toBeDefined();
+  });
+
+  test("org load failure shows error message", async ({ page }) => {
+    await page.route(`${API}/orgs/${ORG_ID}`, async (route: Route) => {
+      await route.fulfill({ status: 404, contentType: "application/json", body: JSON.stringify({ error: "not found" }) });
+    });
+
+    await page.goto(`/orgs/${ORG_ID}`);
+    await page.waitForLoadState("networkidle");
+
+    await expect(page.getByText(/not found|do not have access/i)).toBeVisible({ timeout: 8000 });
+  });
+
+  test("save failure shows error toast", async ({ page }) => {
+    await page.route(`${API}/orgs/${ORG_ID}/policies/*`, async (route: Route) => {
+      if (route.request().method() === "PUT") {
+        await route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: "feature gate rejected" }) });
+      } else {
+        await route.continue();
+      }
+    });
+
+    await page.goto(`/orgs/${ORG_ID}/settings`);
+    await page.waitForLoadState("networkidle");
+
+    await expect(page.getByRole("button", { name: "Save Limits" })).toBeVisible({ timeout: 8000 });
+    await page.getByRole("button", { name: "Save Limits" }).click();
+
+    await expect(page.getByText("Failed to save")).toBeVisible({ timeout: 8000 });
   });
 
   test("non-admin member does not see admin-only tabs", async ({ page }) => {
