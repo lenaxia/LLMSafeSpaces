@@ -704,6 +704,13 @@ func (h *MCPServersHandler) resolveWorkspaceQuota(c *gin.Context, workspaceID st
 	if err != nil || orgID == "" {
 		return types.DefaultMaxMcpServersPerWorkspace
 	}
+	// Defense-in-depth: the deferred wiring in app.go ensures orgChecker is
+	// non-nil before serving, but guard anyway — same nil-orgChecker bug class
+	// as the UserCreate panic (PR #622). Fail-safe: return the default quota
+	// rather than dereferencing a nil interface.
+	if h.orgChecker == nil {
+		return types.DefaultMaxMcpServersPerWorkspace
+	}
 	policies, err := h.orgChecker.GetOrgPolicies(c.Request.Context(), orgID)
 	if err != nil {
 		return types.DefaultMaxMcpServersPerWorkspace

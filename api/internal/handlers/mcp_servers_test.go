@@ -27,6 +27,10 @@ type stubMCPStore struct {
 	count    int
 	countErr error
 	bindErr  error
+	// wsOrgID controls the value returned by GetWorkspaceOrgIDForMCP.
+	// Empty (default) means "personal workspace" → resolveWorkspaceQuota
+	// early-returns. Set non-empty to exercise the org-policy quota path.
+	wsOrgID string
 }
 
 func (s *stubMCPStore) CreateMCPServer(_ context.Context, row *secrets.MCPServerRow) error {
@@ -73,7 +77,7 @@ func (s *stubMCPStore) CountWorkspaceMCPServers(_ context.Context, _ string) (in
 	return 0, nil
 }
 func (s *stubMCPStore) GetWorkspaceOrgIDForMCP(_ context.Context, _ string) (string, error) {
-	return "", nil
+	return s.wsOrgID, nil
 }
 func (s *stubMCPStore) GetWorkspaceUserIDForMCP(_ context.Context, _ string) (string, error) {
 	return "user-1", nil
@@ -639,4 +643,93 @@ func (s *stubSettings) GetBool(_ context.Context, _ string) (bool, error) {
 		return false, fmt.Errorf("simulated read error")
 	}
 	return s.allowOrgAdmin, nil
+}
+
+// stubMcpAuditLogger records audit calls so tests can assert events reach
+// the logger after the deferred SetAudit wiring.
+type stubMcpAuditLogger struct {
+	auditCalls int
+	orgCalls   int
+	lastAction string
+	lastDomain string
+	lastTarget string
+}
+
+func (s *stubMcpAuditLogger) LogAuditEvent(_ context.Context, domain, _, action, targetID string, _ *string, _ map[string]any) error {
+	s.auditCalls++
+	s.lastDomain = domain
+	s.lastAction = action
+	s.lastTarget = targetID
+	return nil
+}
+func (s *stubMcpAuditLogger) LogOrgEvent(_ context.Context, _, _, action, targetID string, _ map[string]any) error {
+	s.orgCalls++
+	s.lastAction = action
+	s.lastTarget = targetID
+	return nil
+}
+
+// --- Regression: admin handler audit events must reach the logger after
+// deferred SetAudit wiring (PR #622 fix — adminMcpHandler.SetAudit was
+// nil-wired, silently dropping all platform-admin MCP audit events). ---
+
+func TestAdminCreate_DeferredAudit_LogsEvent(t *testing.T) {
+	// Construct the admin handler (no audit at construction time — mirrors
+	// app.go which creates pgOrgStore AFTER the handler).
+	store := &stubMCPStore{}
+	enc := &stubEncryptor{}
+	h := NewAdminMCPServersHandler(store, enc)
+
+	// Deferred wiring: SetAudit called after pgOrgStore is created.
+	audit := &stubMcpAuditLogger{}
+	h.SetAudit(audit)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/", strings.NewReader(`{"name":"platform-tools","transport":"http","url":"https://mcp.example.com/sse"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+	h.AdminCreate(c)
+
+	assert.Equal(t, http.StatusCreated, w.Code)
+	assert.Equal(t, 1, audit.auditCalls, "admin create must emit exactly one audit event after deferred SetAudit")
+	assert.Equal(t, "mcp_server.create", audit.lastAction)
+	assert.Equal(t, "admin", audit.lastDomain)
+}
+
+// --- Regression: resolveWorkspaceQuota must not panic when orgChecker is
+// nil (same nil-orgChecker bug class as UserCreate — PR #622 review
+// deferred this guard; it's now added). The path is reachable via Bind on
+// an org-owned workspace when orgChecker is nil (init-ordering window).
+// Fail-safe: return the default quota instead of dereferencing nil. ---
+
+func TestBind_NilOrgChecker_OrgOwnedWorkspace_DoesNotPanic(t *testing.T) {
+	// Store returns a non-empty orgID → resolveWorkspaceQuota does NOT
+	// early-return; it reaches the orgChecker.GetOrgPolicies call.
+	store := &stubMCPStore{
+		servers: []*secrets.MCPServerRow{
+			{ID: "srv-1", OwnerType: types.MCPServerOwnerUser, OwnerID: "user-1"},
+		},
+		wsOrgID: "org-999", // org-owned workspace → exercises the quota path
+	}
+	// Deliberately nil orgChecker (the init-ordering bug condition).
+	h := NewUserMCPServersHandler(store, nil, nil, nil)
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Set("userID", "user-1")
+	// serverID is read from c.Param("serverId") (or "id"). Without this the
+	// ownership check 404s before reaching resolveWorkspaceQuota — the test
+	// would pass identically with or without the nil-guard.
+	c.Params = gin.Params{{Key: "serverId", Value: "srv-1"}}
+	c.Request = httptest.NewRequest("POST", "/", strings.NewReader(`{"serverId":"srv-1","workspaceId":"ws-1"}`))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	// Pre-fix: h.orgChecker.GetOrgPolicies on nil → panic → 500.
+	// Post-fix: nil-guard returns default quota → bind proceeds.
+	assert.NotPanics(t, func() {
+		h.Bind(c)
+	})
+	// Bind should succeed (quota not exceeded — stub count is 0, default
+	// quota is > 0), not crash.
+	assert.NotEqual(t, http.StatusInternalServerError, w.Code)
 }
