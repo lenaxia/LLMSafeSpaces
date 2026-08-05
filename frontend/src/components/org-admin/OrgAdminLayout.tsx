@@ -58,6 +58,7 @@ export function OrgAdminLayout() {
     { to: "billing", label: "Billing", adminOnly: true },
     { to: "sso", label: "SSO", adminOnly: true },
     { to: "agent-config", label: "Agent Config", adminOnly: true },
+    { to: "settings", label: "Settings", adminOnly: true },
   ]
     .filter((item) => !item.adminOnly || isAdmin)
     .map(({ to, label }) => ({ to, label }));
