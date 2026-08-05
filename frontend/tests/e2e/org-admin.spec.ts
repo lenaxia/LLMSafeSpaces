@@ -1,0 +1,199 @@
+import { test, expect } from "@playwright/test";
+import type { Page, Route } from "@playwright/test";
+
+const API = "**/api/v1";
+const ORG_ID = "org-e2e-1";
+
+const ORG = {
+  id: ORG_ID,
+  name: "E2E Org",
+  slug: "e2e-org",
+  createdBy: "admin-1",
+  createdAt: "2026-01-01T00:00:00Z",
+  updatedAt: "2026-01-01T00:00:00Z",
+  status: "active",
+  planId: "team",
+  subscriptionStatus: "active",
+  userRole: "admin",
+  memberCount: 3,
+};
+
+async function mockOrgAdmin(page: Page, overrides: Partial<typeof ORG> = {}) {
+  const org = { ...ORG, ...overrides };
+
+  await page.route(`${API}/auth/me`, async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ id: "admin-1", email: "admin@test.com", role: "member" }),
+    });
+  });
+  await page.route(`${API}/auth/config`, async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ registrationEnabled: true, oidcEnabled: false, instanceName: "E2E" }),
+    });
+  });
+  await page.route(`${API}/orgs/${ORG_ID}`, async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(org),
+    });
+  });
+
+  // Stub org policies.
+  await page.route(`${API}/orgs/${ORG_ID}/policies`, async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([
+        { key: "max_workspaces_per_member", value: 10, updatedAt: "2026-01-01T00:00:00Z" },
+        { key: "max_active_workspaces_per_member", value: 5, updatedAt: "2026-01-01T00:00:00Z" },
+        { key: "max_mcp_servers_per_workspace", value: 3, updatedAt: "2026-01-01T00:00:00Z" },
+        { key: "allow_user_prompt", value: true, updatedAt: "2026-01-01T00:00:00Z" },
+        { key: "allow_user_mcp_servers", value: true, updatedAt: "2026-01-01T00:00:00Z" },
+      ]),
+    });
+  });
+
+  // Stub org prompt config.
+  await page.route(`${API}/orgs/${ORG_ID}/prompt`, async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ prompt: "", allowUserPrompt: true }),
+    });
+  });
+
+  // Stub MCP servers.
+  await page.route(`${API}/orgs/${ORG_ID}/mcp-servers`, async (route: Route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ servers: [] }),
+    });
+  });
+
+  // Stub other commonly-fetched endpoints.
+  for (const ep of [
+    "/users/me/settings",
+    "/secrets",
+    "/provider-credentials",
+    "/auth/api-keys",
+  ]) {
+    await page.route(`${API}${ep}`, async (route: Route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+    });
+  }
+  await page.route(`${API}/users/me/settings/schema`, async (route: Route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ settings: [], schemaVersion: 1 }) });
+  });
+  await page.route(`${API}/users/me/settings`, async (route: Route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ settings: {}, schemaVersion: 1 }) });
+  });
+  await page.route(`${API}/orgs`, async (route: Route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+  });
+  await page.route(`${API}/events`, async (route: Route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+  });
+}
+
+test.describe("Org admin portal", () => {
+  test.beforeEach(async ({ page }) => {
+    await mockOrgAdmin(page);
+  });
+
+  test("renders the portal with all admin nav items", async ({ page }) => {
+    await page.goto(`/orgs/${ORG_ID}`);
+    await page.waitForLoadState("networkidle");
+
+    await expect(page.getByText("E2E Org")).toBeVisible({ timeout: 8000 });
+    // Admin-only tabs visible to admin.
+    await expect(page.getByRole("link", { name: "Members" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Settings" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Agent Config" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "MCP Servers" })).toBeVisible();
+  });
+
+  test("deep-links to /orgs/:id/settings and renders policy cards", async ({ page }) => {
+    await page.goto(`/orgs/${ORG_ID}/settings`);
+    await page.waitForLoadState("networkidle");
+
+    await expect(page.getByText("Workspace Limits")).toBeVisible({ timeout: 8000 });
+    await expect(page.getByText("Model & Provider Restrictions")).toBeVisible();
+    await expect(page.getByText("MCP & Image Defaults")).toBeVisible();
+
+    // Loaded policy values render (max_workspaces = 10).
+    await expect(page.getByDisplayValue("10")).toBeVisible();
+    await expect(page.getByDisplayValue("5")).toBeVisible();
+    await expect(page.getByDisplayValue("3")).toBeVisible();
+  });
+
+  test("can navigate from overview to settings via sidebar", async ({ page }) => {
+    await page.goto(`/orgs/${ORG_ID}`);
+    await page.waitForLoadState("networkidle");
+
+    await expect(page.getByText("E2E Org")).toBeVisible({ timeout: 8000 });
+
+    await page.getByRole("link", { name: "Settings" }).click();
+    await expect(page).toHaveURL(/\/orgs\/.*\/settings/, { timeout: 5000 });
+    await expect(page.getByText("Workspace Limits")).toBeVisible();
+  });
+
+  test("deep-links to /orgs/:id/agent-config and renders toggle", async ({ page }) => {
+    await page.goto(`/orgs/${ORG_ID}/agent-config`);
+    await page.waitForLoadState("networkidle");
+
+    await expect(page.getByText("Member Customization")).toBeVisible({ timeout: 8000 });
+  });
+
+  test("deep-links to /orgs/:id/mcp-servers and renders tab", async ({ page }) => {
+    await page.goto(`/orgs/${ORG_ID}/mcp-servers`);
+    await page.waitForLoadState("networkidle");
+
+    await expect(page.getByText("MCP Servers")).toBeVisible({ timeout: 8000 });
+    await expect(page.getByText("Add Server")).toBeVisible();
+  });
+
+  test("saving workspace limits PUTs the policy", async ({ page }) => {
+    let putBody: string | undefined;
+    await page.route(`${API}/orgs/${ORG_ID}/policies/*`, async (route: Route) => {
+      if (route.request().method() === "PUT") {
+        putBody = route.request().postData() ?? undefined;
+      }
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ status: "ok" }) });
+    });
+
+    await page.goto(`/orgs/${ORG_ID}/settings`);
+    await page.waitForLoadState("networkidle");
+
+    await expect(page.getByText("Save Limits")).toBeVisible({ timeout: 8000 });
+
+    // Change the max-workspaces value and save.
+    const maxInput = page.getByDisplayValue("10");
+    await maxInput.fill("20");
+    await page.getByText("Save Limits").click();
+
+    // Wait for the PUT to fire.
+    await expect.poll(() => putBody).toBe("20");
+  });
+
+  test("non-admin member does not see admin-only tabs", async ({ page }) => {
+    await mockOrgAdmin(page, { userRole: "member" });
+
+    await page.goto(`/orgs/${ORG_ID}`);
+    await page.waitForLoadState("networkidle");
+
+    await expect(page.getByText("E2E Org")).toBeVisible({ timeout: 8000 });
+    // Admin-only tabs hidden from members.
+    await expect(page.getByRole("link", { name: "Members" })).not.toBeVisible();
+    await expect(page.getByRole("link", { name: "Settings" })).not.toBeVisible();
+    await expect(page.getByRole("link", { name: "Credentials" })).not.toBeVisible();
+    // Non-admin tabs still visible.
+    await expect(page.getByRole("link", { name: "Overview" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Workspaces" })).toBeVisible();
+  });
+});
