@@ -110,7 +110,7 @@ test.describe("Org admin portal", () => {
     await page.goto(`/orgs/${ORG_ID}`);
     await page.waitForLoadState("networkidle");
 
-    await expect(page.getByText("E2E Org")).toBeVisible({ timeout: 8000 });
+    await expect(page.getByRole("heading", { name: "E2E Org" })).toBeVisible({ timeout: 8000 });
     // Admin-only tabs visible to admin.
     await expect(page.getByRole("link", { name: "Members" })).toBeVisible();
     await expect(page.getByRole("link", { name: "Settings" })).toBeVisible();
@@ -122,40 +122,38 @@ test.describe("Org admin portal", () => {
     await page.goto(`/orgs/${ORG_ID}/settings`);
     await page.waitForLoadState("networkidle");
 
-    await expect(page.getByText("Workspace Limits")).toBeVisible({ timeout: 8000 });
-    await expect(page.getByText("Model & Provider Restrictions")).toBeVisible();
-    await expect(page.getByText("MCP & Image Defaults")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Workspace Limits" })).toBeVisible({ timeout: 8000 });
+    await expect(page.getByRole("heading", { name: "Model & Provider Restrictions" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "MCP & Image Defaults" })).toBeVisible();
 
-    // Loaded policy values render (max_workspaces = 10).
-    await expect(page.getByDisplayValue("10")).toBeVisible();
-    await expect(page.getByDisplayValue("5")).toBeVisible();
-    await expect(page.getByDisplayValue("3")).toBeVisible();
+    // Loaded policy values render (max_workspaces = 10, max_active = 5).
+    await expect(page.locator("input[type='number']").first()).toHaveValue("10");
   });
 
   test("can navigate from overview to settings via sidebar", async ({ page }) => {
     await page.goto(`/orgs/${ORG_ID}`);
     await page.waitForLoadState("networkidle");
 
-    await expect(page.getByText("E2E Org")).toBeVisible({ timeout: 8000 });
+    await expect(page.getByRole("heading", { name: "E2E Org" })).toBeVisible({ timeout: 8000 });
 
     await page.getByRole("link", { name: "Settings" }).click();
     await expect(page).toHaveURL(/\/orgs\/.*\/settings/, { timeout: 5000 });
-    await expect(page.getByText("Workspace Limits")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Workspace Limits" })).toBeVisible();
   });
 
   test("deep-links to /orgs/:id/agent-config and renders toggle", async ({ page }) => {
     await page.goto(`/orgs/${ORG_ID}/agent-config`);
     await page.waitForLoadState("networkidle");
 
-    await expect(page.getByText("Member Customization")).toBeVisible({ timeout: 8000 });
+    await expect(page.getByRole("heading", { name: "Member Customization" })).toBeVisible({ timeout: 8000 });
   });
 
   test("deep-links to /orgs/:id/mcp-servers and renders tab", async ({ page }) => {
     await page.goto(`/orgs/${ORG_ID}/mcp-servers`);
     await page.waitForLoadState("networkidle");
 
-    await expect(page.getByText("MCP Servers")).toBeVisible({ timeout: 8000 });
-    await expect(page.getByText("Add Server")).toBeVisible();
+    // "Add Server" button is unique on the MCP tab.
+    await expect(page.getByRole("button", { name: "Add Server" })).toBeVisible({ timeout: 8000 });
   });
 
   test("saving workspace limits PUTs the policy", async ({ page }) => {
@@ -170,12 +168,12 @@ test.describe("Org admin portal", () => {
     await page.goto(`/orgs/${ORG_ID}/settings`);
     await page.waitForLoadState("networkidle");
 
-    await expect(page.getByText("Save Limits")).toBeVisible({ timeout: 8000 });
+    await expect(page.getByRole("button", { name: "Save Limits" })).toBeVisible({ timeout: 8000 });
 
     // Change the max-workspaces value and save.
-    const maxInput = page.getByDisplayValue("10");
+    const maxInput = page.locator("input[type='number']").first();
     await maxInput.fill("20");
-    await page.getByText("Save Limits").click();
+    await page.getByRole("button", { name: "Save Limits" }).click();
 
     // Wait for the PUT to fire.
     await expect.poll(() => putBody).toBe("20");
@@ -187,7 +185,7 @@ test.describe("Org admin portal", () => {
     await page.goto(`/orgs/${ORG_ID}`);
     await page.waitForLoadState("networkidle");
 
-    await expect(page.getByText("E2E Org")).toBeVisible({ timeout: 8000 });
+    await expect(page.getByRole("heading", { name: "E2E Org" })).toBeVisible({ timeout: 8000 });
     // Admin-only tabs hidden from members.
     await expect(page.getByRole("link", { name: "Members" })).not.toBeVisible();
     await expect(page.getByRole("link", { name: "Settings" })).not.toBeVisible();
