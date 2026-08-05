@@ -717,6 +717,10 @@ func TestBind_NilOrgChecker_OrgOwnedWorkspace_DoesNotPanic(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Set("userID", "user-1")
+	// serverID is read from c.Param("serverId") (or "id"). Without this the
+	// ownership check 404s before reaching resolveWorkspaceQuota — the test
+	// would pass identically with or without the nil-guard.
+	c.Params = gin.Params{{Key: "serverId", Value: "srv-1"}}
 	c.Request = httptest.NewRequest("POST", "/", strings.NewReader(`{"serverId":"srv-1","workspaceId":"ws-1"}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 
