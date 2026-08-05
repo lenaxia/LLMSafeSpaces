@@ -1,4 +1,4 @@
-# Worklog 0685 — Org admin Settings tab: surface 6 backend-only policies
+# Worklog NNNN — Org admin Settings tab: surface 6 backend-only policies
 
 **Date:** 2026-08-05
 **Scope:** Add an org-level Settings tab that exposes the 6 org policies
