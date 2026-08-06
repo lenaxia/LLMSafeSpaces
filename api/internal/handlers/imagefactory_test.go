@@ -67,7 +67,7 @@ func (f *fakeIFStore) GetConfig(ctx context.Context, id string) (imagefactory.Co
 	return imagefactory.Config{}, database.ErrNotFound
 }
 func (f *fakeIFStore) GetConfigByHash(ctx context.Context, hash string, scope imagefactory.ConfigScope, ownerID, orgID *string) (imagefactory.Config, error) {
-	if c, ok := f.configByHash[hash]; ok {
+	if c, ok := f.configByHash[hash]; ok && c.Scope == scope {
 		return c, nil
 	}
 	return imagefactory.Config{}, database.ErrNotFound
