@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+
+	"github.com/lib/pq"
 )
 
 func TestNullableJSON(t *testing.T) {
@@ -56,7 +58,7 @@ func TestToNullableStringArray(t *testing.T) {
 	}{
 		{"empty → nil", []string{}, nil},
 		{"nil → nil", nil, nil},
-		{"non-empty → slice", []string{"a", "b"}, []string{"a", "b"}},
+		{"non-empty → pq.StringArray", []string{"a", "b"}, pq.StringArray{"a", "b"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -66,12 +68,12 @@ func TestToNullableStringArray(t *testing.T) {
 					t.Errorf("expected nil, got %v", got)
 				}
 			} else {
-				sl, ok := got.([]string)
+				sl, ok := got.(pq.StringArray)
 				if !ok {
-					t.Fatalf("expected []string, got %T", got)
+					t.Fatalf("expected pq.StringArray, got %T", got)
 				}
-				if len(sl) != len(tt.want.([]string)) {
-					t.Errorf("length mismatch: got %d, want %d", len(sl), len(tt.want.([]string)))
+				if len(sl) != len(tt.want.(pq.StringArray)) {
+					t.Errorf("length mismatch: got %d, want %d", len(sl), len(tt.want.(pq.StringArray)))
 				}
 			}
 		})

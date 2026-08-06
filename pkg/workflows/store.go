@@ -18,6 +18,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lib/pq"
 )
 
 // ErrNotFound is returned by Get/Update/Delete when the row does not exist
@@ -89,12 +90,13 @@ type TriggerRow struct {
 
 // WebhookRow is the DB row shape for webhooks. SecretCipher is the encrypted
 // HMAC secret (crypto envelope); callers must decrypt before verifying signatures.
+// AllowedIPs uses pq.StringArray so pgx can scan text[] columns natively.
 type WebhookRow struct {
 	ID                string
 	TriggerID         string
 	SecretCipher      []byte
 	KeyVersion        int
-	AllowedIPs        []string
+	AllowedIPs        pq.StringArray
 	IdempotencyMode   string
 	IdempotencyHeader string
 	CreatedAt         time.Time
@@ -900,13 +902,13 @@ func nullableStrPtr(s *string) any {
 	return *s
 }
 
-// toNullableStringArray converts a []string to a pq-compatible value for cidr[]
+// toNullableStringArray converts a []string to a pq-compatible value for text[]
 // columns. Empty slice → nil (SQL NULL).
 func toNullableStringArray(s []string) any {
 	if len(s) == 0 {
 		return nil
 	}
-	return s
+	return pq.StringArray(s)
 }
 
 // isUniqueViolation reports whether err is a Postgres unique_violation (SQLSTATE 23505).

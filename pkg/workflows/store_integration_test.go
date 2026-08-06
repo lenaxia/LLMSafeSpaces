@@ -14,6 +14,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -53,10 +54,14 @@ func (s *StoreIntegrationSuite) SetupTest() {
 
 func (s *StoreIntegrationSuite) newWorkspaceID() string {
 	// workflows/runs FK to workspaces; insert a stub if not present.
+	// Schema (migration 000001): id, name, user_id, namespace, runtime,
+	// security_level, storage_size, created_at, updated_at, deleted_at,
+	// image_tag, agent_version, default_model, org_id. No 'image' or 'phase'
+	// column (those are on the K8s CRD, not the DB row).
 	id := uuid.New().String()
 	_, err := s.pool.Exec(context.Background(),
-		`INSERT INTO workspaces (id, user_id, name, image, phase, created_at, updated_at)
-		 VALUES ($1, 'test-user', 'test-ws', 'test-img', 'active', now(), now())
+		`INSERT INTO workspaces (id, user_id, name, namespace, created_at, updated_at)
+		 VALUES ($1, 'test-user', 'test-ws', 'default', now(), now())
 		 ON CONFLICT (id) DO NOTHING`, id)
 	s.Require().NoError(err)
 	return id
@@ -195,7 +200,7 @@ func (s *StoreIntegrationSuite) TestWebhookCreateAndGet() {
 	require.NoError(s.T(), s.store.CreateWebhook(ctx, &WebhookRow{
 		ID: hookID, TriggerID: triggerID,
 		SecretCipher: []byte("encrypted-secret-blob"), KeyVersion: 1,
-		AllowedIPs:      []string{"192.168.1.0/24", "10.0.0.0/8"},
+		AllowedIPs:      pq.StringArray{"192.168.1.0/24", "10.0.0.0/8"},
 		IdempotencyMode: "header", IdempotencyHeader: "X-GitHub-Delivery",
 		CreatedAt: now,
 	}))
@@ -205,7 +210,7 @@ func (s *StoreIntegrationSuite) TestWebhookCreateAndGet() {
 	require.NoError(s.T(), err)
 	assert.Equal(s.T(), hookID, got.ID)
 	assert.Equal(s.T(), []byte("encrypted-secret-blob"), got.SecretCipher)
-	assert.Equal(s.T(), []string{"192.168.1.0/24", "10.0.0.0/8"}, got.AllowedIPs)
+	assert.Equal(s.T(), []string{"192.168.1.0/24", "10.0.0.0/8"}, []string(got.AllowedIPs))
 
 	// Get by webhook ID (the public path used by POST /hooks/:id).
 	got2, err := s.store.GetWebhook(ctx, hookID)

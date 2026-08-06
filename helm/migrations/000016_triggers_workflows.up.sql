@@ -146,7 +146,7 @@ CREATE TABLE IF NOT EXISTS public.webhooks (
     trigger_id          uuid NOT NULL,
     secret_cipher       bytea NOT NULL,
     key_version         integer DEFAULT 1 NOT NULL,
-    allowed_ips         cidr[] DEFAULT '{}'::cidr[] NOT NULL,
+    allowed_ips         text[] DEFAULT '{}'::text[] NOT NULL,
     idempotency_mode    text DEFAULT 'header'::text NOT NULL,
     idempotency_header  text DEFAULT 'X-Request-ID'::text NOT NULL,
     created_at          timestamp with time zone DEFAULT now() NOT NULL,
