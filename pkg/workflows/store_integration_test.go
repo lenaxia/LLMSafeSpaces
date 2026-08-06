@@ -14,7 +14,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/lib/pq"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -50,6 +49,13 @@ func (s *StoreIntegrationSuite) SetupTest() {
 		CASCADE
 	`)
 	s.Require().NoError(err)
+	// Ensure a test user exists (workspaces.user_id FKs to users.id).
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO users (id, email, password_hash, role, status, created_at, updated_at)
+		VALUES ('test-user', 'test@example.com', '$2a$12$dummyhashdummyhashdummyhashdummyhashdummyhashdummy', 'user', 'active', now(), now())
+		ON CONFLICT (id) DO NOTHING
+	`)
+	s.Require().NoError(err)
 }
 
 func (s *StoreIntegrationSuite) newWorkspaceID() string {
@@ -57,7 +63,7 @@ func (s *StoreIntegrationSuite) newWorkspaceID() string {
 	// Schema (migration 000001): id, name, user_id, namespace, runtime,
 	// security_level, storage_size, created_at, updated_at, deleted_at,
 	// image_tag, agent_version, default_model, org_id. No 'image' or 'phase'
-	// column (those are on the K8s CRD, not the DB row).
+	// column (those are on the K8s CRD, not the DB row). user_id FKs to users.id.
 	id := uuid.New().String()
 	_, err := s.pool.Exec(context.Background(),
 		`INSERT INTO workspaces (id, user_id, name, namespace, created_at, updated_at)
@@ -200,7 +206,7 @@ func (s *StoreIntegrationSuite) TestWebhookCreateAndGet() {
 	require.NoError(s.T(), s.store.CreateWebhook(ctx, &WebhookRow{
 		ID: hookID, TriggerID: triggerID,
 		SecretCipher: []byte("encrypted-secret-blob"), KeyVersion: 1,
-		AllowedIPs:      pq.StringArray{"192.168.1.0/24", "10.0.0.0/8"},
+		AllowedIPs:      []string{"192.168.1.0/24", "10.0.0.0/8"},
 		IdempotencyMode: "header", IdempotencyHeader: "X-GitHub-Delivery",
 		CreatedAt: now,
 	}))
