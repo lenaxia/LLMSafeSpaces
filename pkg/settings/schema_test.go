@@ -148,6 +148,54 @@ func TestInstanceSetting_AllowedExternalDirectories(t *testing.T) {
 	}
 }
 
+// TestInstanceSettings_WorkflowTriggerKeys pins the contract for the 8 Epic 64
+// instance settings: each must be present in InstanceSettings() (reachable via
+// InstanceService get/set — the bug PR #656 review caught was that they were
+// registered in KnownKeys only), must be registered in KnownKeys (typed constant
+// and schema agree), and the typed Key constant name must match the schema key.
+// This is the regression test for the "registered but unreachable" bug class.
+func TestInstanceSettings_WorkflowTriggerKeys(t *testing.T) {
+	idx := InstanceSettingIndex()
+	pairs := []struct {
+		keyName  string
+		typedKey Key
+		typ      SettingType
+		def      any
+	}{
+		{"workflows.maxPerUser", KeyWorkflowsMaxPerUser, TypeInt, 50},
+		{"workflows.maxPerOrg", KeyWorkflowsMaxPerOrg, TypeInt, 200},
+		{"workflows.maxRunDurationSec", KeyWorkflowsMaxRunDurationSec, TypeInt, 3600},
+		{"workflows.workspaceActivationTimeoutSec", KeyWorkflowsWorkspaceActivationSec, TypeInt, 120},
+		{"workflows.maxNodeOutputBytes", KeyWorkflowsMaxNodeOutputBytes, TypeInt, 1048576},
+		{"triggers.maxPerUser", KeyTriggersMaxPerUser, TypeInt, 20},
+		{"triggers.cronMinIntervalSec", KeyTriggersCronMinIntervalSec, TypeInt, 60},
+		{"triggers.webhookRateLimitPerSec", KeyTriggersWebhookRateLimitPerSec, TypeInt, 10},
+	}
+	for _, p := range pairs {
+		t.Run(p.keyName, func(t *testing.T) {
+			def, ok := idx[p.keyName]
+			if !ok {
+				t.Fatalf("%q missing from InstanceSettings() — InstanceService.Get/Set will reject as unknown", p.keyName)
+			}
+			if def.Type != p.typ {
+				t.Errorf("type = %v, want %v", def.Type, p.typ)
+			}
+			if def.Tier != 2 {
+				t.Errorf("tier = %d, want 2 (instance)", def.Tier)
+			}
+			if !IsKnown(p.keyName) {
+				t.Errorf("%q not registered in KnownKeys (typed constant drift)", p.keyName)
+			}
+			if p.typedKey.Name() != p.keyName {
+				t.Errorf("typed key name = %q, want %q", p.typedKey.Name(), p.keyName)
+			}
+			if p.typedKey.Default() != p.def {
+				t.Errorf("typed key default = %v, want %v", p.typedKey.Default(), p.def)
+			}
+		})
+	}
+}
+
 func TestUserSettingIndex(t *testing.T) {
 	idx := UserSettingIndex()
 	if len(idx) != len(UserSettings()) {
