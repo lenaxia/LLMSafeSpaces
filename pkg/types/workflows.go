@@ -27,7 +27,7 @@ const (
 // TriggerSourceType enumerates trigger source types (design D5: 'manual' is NOT a source type;
 // manual runs go through POST /workflows/:id/runs with trigger_id = null).
 const (
-	TriggerSourceCron   = "cron"
+	TriggerSourceCron    = "cron"
 	TriggerSourceWebhook = "webhook"
 )
 
@@ -47,12 +47,12 @@ const (
 
 // RunStatus is the six-state workflow run state machine (no library, design D8).
 const (
-	RunStatusQueued   = "queued"
-	RunStatusRunning  = "running"
+	RunStatusQueued    = "queued"
+	RunStatusRunning   = "running"
 	RunStatusSucceeded = "succeeded"
-	RunStatusFailed   = "failed"
-	RunStatusCanceled = "canceled"
-	RunStatusTimedOut = "timed_out"
+	RunStatusFailed    = "failed"
+	RunStatusCanceled  = "canceled"
+	RunStatusTimedOut  = "timed_out"
 )
 
 // IsTerminalRunStatus reports whether s is a terminal run state.
@@ -66,11 +66,11 @@ func IsTerminalRunStatus(s string) bool {
 
 // NodeRunStatus is the per-node state.
 const (
-	NodeRunStatusPending  = "pending"
-	NodeRunStatusRunning  = "running"
+	NodeRunStatusPending   = "pending"
+	NodeRunStatusRunning   = "running"
 	NodeRunStatusSucceeded = "succeeded"
-	NodeRunStatusFailed   = "failed"
-	NodeRunStatusSkipped  = "skipped"
+	NodeRunStatusFailed    = "failed"
+	NodeRunStatusSkipped   = "skipped"
 )
 
 // TriggerFireStatus records what happened when a trigger fired.
@@ -94,19 +94,19 @@ const (
 // RunErrorCode is the machine-readable failure categorization on workflow_runs
 // (and workflow_node_runs.error_code). Bounded by the migration's CHECK constraint.
 const (
-	RunErrorCodeNodeFailed            = "node_failed"
-	RunErrorCodeWorkspaceUnavailable  = "workspace_unavailable"
-	RunErrorCodeCanceled              = "canceled"
-	RunErrorCodeTimedOut              = "timed_out"
-	RunErrorCodeValidationError       = "validation_error"
-	RunErrorCodeSchemaMismatch        = "schema_mismatch"
-	RunErrorCodeOutputOversize        = "output_oversize"
-	RunErrorCodeAgentNotFound         = "agent_not_found"
-	RunErrorCodeSessionNotFound       = "session_not_found"
-	RunErrorCodeSecretNotFound        = "secret_not_found"
-	RunErrorCodeScriptFailed          = "script_failed"
-	RunErrorCodeScriptOutputInvalid   = "script_output_invalid"
-	RunErrorCodeAPIRestart            = "api_restart"
+	RunErrorCodeNodeFailed           = "node_failed"
+	RunErrorCodeWorkspaceUnavailable = "workspace_unavailable"
+	RunErrorCodeCanceled             = "canceled"
+	RunErrorCodeTimedOut             = "timed_out"
+	RunErrorCodeValidationError      = "validation_error"
+	RunErrorCodeSchemaMismatch       = "schema_mismatch"
+	RunErrorCodeOutputOversize       = "output_oversize"
+	RunErrorCodeAgentNotFound        = "agent_not_found"
+	RunErrorCodeSessionNotFound      = "session_not_found"
+	RunErrorCodeSecretNotFound       = "secret_not_found"
+	RunErrorCodeScriptFailed         = "script_failed"
+	RunErrorCodeScriptOutputInvalid  = "script_output_invalid"
+	RunErrorCodeAPIRestart           = "api_restart"
 )
 
 // workflowNameRe bounds workflow/trigger names — readable, no shell-special chars.
@@ -247,87 +247,87 @@ type CreateWorkflowRequest struct {
 // in the service layer. Updating spec_yaml creates a new spec_snapshot baseline; in-flight
 // runs are pinned to the snapshot at their start (D6).
 type UpdateWorkflowRequest struct {
-	Name              *string          `json:"name,omitempty"`
-	Slug              *string          `json:"slug,omitempty"`
-	Description       *string          `json:"description,omitempty"`
-	SpecYAML          *string          `json:"specYaml,omitempty"`
-	InputSchema       json.RawMessage  `json:"inputSchema,omitempty"`
-	TargetWorkspaceID *string          `json:"targetWorkspaceId,omitempty"`
-	Status            *string          `json:"status,omitempty"`
-	Defaults          json.RawMessage  `json:"defaults,omitempty"`
+	Name              *string         `json:"name,omitempty"`
+	Slug              *string         `json:"slug,omitempty"`
+	Description       *string         `json:"description,omitempty"`
+	SpecYAML          *string         `json:"specYaml,omitempty"`
+	InputSchema       json.RawMessage `json:"inputSchema,omitempty"`
+	TargetWorkspaceID *string         `json:"targetWorkspaceId,omitempty"`
+	Status            *string         `json:"status,omitempty"`
+	Defaults          json.RawMessage `json:"defaults,omitempty"`
 }
 
 // TriggerResponse is the API response shape for a trigger.
 // source_config and target_config are typed JSON blobs (validated by the handler).
 // next_fire_at is computed by the scheduler for cron triggers.
 type TriggerResponse struct {
-	ID                   string          `json:"id"`
-	OwnerType            string          `json:"ownerType"`
-	OwnerID              string          `json:"ownerId,omitempty"`
-	Name                 string          `json:"name"`
-	Description          string          `json:"description,omitempty"`
-	Enabled              bool            `json:"enabled"`
-	SourceType           string          `json:"sourceType"`
-	SourceConfig         json.RawMessage `json:"sourceConfig"`
-	TargetType           string          `json:"targetType"`
-	TargetConfig         json.RawMessage `json:"targetConfig"`
-	ConsecutiveFailures  int             `json:"consecutiveFailures"`
-	AutoDisableAfter     int             `json:"autoDisableAfter"`
-	LastFiredAt          *time.Time      `json:"lastFiredAt,omitempty"`
-	NextFireAt           *time.Time      `json:"nextFireAt,omitempty"`
-	CreatedAt            time.Time       `json:"createdAt"`
-	UpdatedAt            time.Time       `json:"updatedAt"`
+	ID                  string          `json:"id"`
+	OwnerType           string          `json:"ownerType"`
+	OwnerID             string          `json:"ownerId,omitempty"`
+	Name                string          `json:"name"`
+	Description         string          `json:"description,omitempty"`
+	Enabled             bool            `json:"enabled"`
+	SourceType          string          `json:"sourceType"`
+	SourceConfig        json.RawMessage `json:"sourceConfig"`
+	TargetType          string          `json:"targetType"`
+	TargetConfig        json.RawMessage `json:"targetConfig"`
+	ConsecutiveFailures int             `json:"consecutiveFailures"`
+	AutoDisableAfter    int             `json:"autoDisableAfter"`
+	LastFiredAt         *time.Time      `json:"lastFiredAt,omitempty"`
+	NextFireAt          *time.Time      `json:"nextFireAt,omitempty"`
+	CreatedAt           time.Time       `json:"createdAt"`
+	UpdatedAt           time.Time       `json:"updatedAt"`
 }
 
 // CreateTriggerRequest is the body for POST .../triggers.
 // For webhook sources, an accompanying webhooks row (with secret_cipher) is created
 // in the same transaction. auto_disable_after defaults to 10 if unset.
 type CreateTriggerRequest struct {
-	Name              string          `json:"name" binding:"required"`
-	Description       string          `json:"description,omitempty"`
-	Enabled           *bool           `json:"enabled,omitempty"`
-	SourceType        string          `json:"sourceType" binding:"required"`
-	SourceConfig      json.RawMessage `json:"sourceConfig" binding:"required"`
-	TargetType        string          `json:"targetType" binding:"required"`
-	TargetConfig      json.RawMessage `json:"targetConfig" binding:"required"`
-	AutoDisableAfter  *int            `json:"autoDisableAfter,omitempty"`
+	Name             string          `json:"name" binding:"required"`
+	Description      string          `json:"description,omitempty"`
+	Enabled          *bool           `json:"enabled,omitempty"`
+	SourceType       string          `json:"sourceType" binding:"required"`
+	SourceConfig     json.RawMessage `json:"sourceConfig" binding:"required"`
+	TargetType       string          `json:"targetType" binding:"required"`
+	TargetConfig     json.RawMessage `json:"targetConfig" binding:"required"`
+	AutoDisableAfter *int            `json:"autoDisableAfter,omitempty"`
 	// Webhook-specific fields (required when sourceType == 'webhook'):
-	WebhookAllowedIPs       []string `json:"webhookAllowedIps,omitempty"`
-	WebhookIdempotencyMode  string   `json:"webhookIdempotencyMode,omitempty"`
-	WebhookIdempotencyHeader string  `json:"webhookIdempotencyHeader,omitempty"`
+	WebhookAllowedIPs        []string `json:"webhookAllowedIps,omitempty"`
+	WebhookIdempotencyMode   string   `json:"webhookIdempotencyMode,omitempty"`
+	WebhookIdempotencyHeader string   `json:"webhookIdempotencyHeader,omitempty"`
 }
 
 // UpdateTriggerRequest supports partial update. Pointer fields: nil = "keep existing".
 // source_type is NOT mutable after create (the source defines the trigger's identity).
 // auto_disable_after must be >= 1 (validated at handler).
 type UpdateTriggerRequest struct {
-	Name             *string          `json:"name,omitempty"`
-	Description      *string          `json:"description,omitempty"`
-	Enabled          *bool            `json:"enabled,omitempty"`
-	SourceConfig     json.RawMessage  `json:"sourceConfig,omitempty"`
-	TargetType       *string          `json:"targetType,omitempty"`
-	TargetConfig     json.RawMessage  `json:"targetConfig,omitempty"`
-	AutoDisableAfter *int             `json:"autoDisableAfter,omitempty"`
+	Name             *string         `json:"name,omitempty"`
+	Description      *string         `json:"description,omitempty"`
+	Enabled          *bool           `json:"enabled,omitempty"`
+	SourceConfig     json.RawMessage `json:"sourceConfig,omitempty"`
+	TargetType       *string         `json:"targetType,omitempty"`
+	TargetConfig     json.RawMessage `json:"targetConfig,omitempty"`
+	AutoDisableAfter *int            `json:"autoDisableAfter,omitempty"`
 }
 
 // WorkflowRunResponse is the API response shape for a workflow run.
 // spec_snapshot is the immutable DAG pinned at run start. error_code is null on success.
 type WorkflowRunResponse struct {
-	ID              string          `json:"id"`
-	WorkflowID      string          `json:"workflowId"`
-	SpecSnapshot    json.RawMessage `json:"specSnapshot"`
-	Input           json.RawMessage `json:"input,omitempty"`
-	Output          json.RawMessage `json:"output,omitempty"`
-	Status          string          `json:"status"`
-	ErrorCode       string          `json:"errorCode,omitempty"`
-	Error           json.RawMessage `json:"error,omitempty"`
-	TriggerID       string          `json:"triggerId,omitempty"`
-	TriggerFireID   string          `json:"triggerFireId,omitempty"`
-	WorkspaceID     string          `json:"workspaceId"`
-	StartedAt       *time.Time      `json:"startedAt,omitempty"`
-	FinishedAt      *time.Time      `json:"finishedAt,omitempty"`
-	CreatedAt       time.Time       `json:"createdAt"`
-	UpdatedAt       time.Time       `json:"updatedAt"`
+	ID            string          `json:"id"`
+	WorkflowID    string          `json:"workflowId"`
+	SpecSnapshot  json.RawMessage `json:"specSnapshot"`
+	Input         json.RawMessage `json:"input,omitempty"`
+	Output        json.RawMessage `json:"output,omitempty"`
+	Status        string          `json:"status"`
+	ErrorCode     string          `json:"errorCode,omitempty"`
+	Error         json.RawMessage `json:"error,omitempty"`
+	TriggerID     string          `json:"triggerId,omitempty"`
+	TriggerFireID string          `json:"triggerFireId,omitempty"`
+	WorkspaceID   string          `json:"workspaceId"`
+	StartedAt     *time.Time      `json:"startedAt,omitempty"`
+	FinishedAt    *time.Time      `json:"finishedAt,omitempty"`
+	CreatedAt     time.Time       `json:"createdAt"`
+	UpdatedAt     time.Time       `json:"updatedAt"`
 }
 
 // CreateWorkflowRunRequest is the body for POST .../workflows/:id/runs (manual run).

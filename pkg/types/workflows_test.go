@@ -176,12 +176,12 @@ func TestValidRunErrorCode(t *testing.T) {
 
 func TestWorkflowResponse_JSONRoundTrip(t *testing.T) {
 	resp := WorkflowResponse{
-		ID:         "wf_123",
-		OwnerType:  WorkflowOwnerUser,
-		Name:       "my-workflow",
-		Slug:       "my-workflow",
-		SpecYAML:   "name: test\n",
-		Status:     WorkflowStatusDraft,
+		ID:          "wf_123",
+		OwnerType:   WorkflowOwnerUser,
+		Name:        "my-workflow",
+		Slug:        "my-workflow",
+		SpecYAML:    "name: test\n",
+		Status:      WorkflowStatusDraft,
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"x":{"type":"string"}}}`),
 	}
 	b, err := json.Marshal(resp)
@@ -236,13 +236,13 @@ func TestUpdateWorkflowRequest_PartialUpdate(t *testing.T) {
 
 func TestTriggerResponse_JSONRoundTrip(t *testing.T) {
 	resp := TriggerResponse{
-		ID:          "trg_456",
-		OwnerType:   WorkflowOwnerOrg,
-		Name:        "nightly-backup",
-		Enabled:     true,
-		SourceType:  TriggerSourceCron,
+		ID:           "trg_456",
+		OwnerType:    WorkflowOwnerOrg,
+		Name:         "nightly-backup",
+		Enabled:      true,
+		SourceType:   TriggerSourceCron,
 		SourceConfig: json.RawMessage(`{"expr":"0 2 * * *","tz":"UTC"}`),
-		TargetType:  TriggerTargetRunScript,
+		TargetType:   TriggerTargetRunScript,
 		TargetConfig: json.RawMessage(`{"workspaceId":"ws_1","path":"/scripts/backup.sh"}`),
 	}
 	b, err := json.Marshal(resp)
