@@ -204,6 +204,10 @@ func (e *e2eOrgResolver) GetUserOrgID(ctx context.Context, userID string) (strin
 	return "", nil
 }
 
+func (e *e2eOrgResolver) IsOrgAdmin(ctx context.Context, orgID, userID string) (bool, error) {
+	return false, nil
+}
+
 // ── E2E test router builder ─────────────────────────────────────────────
 
 func newE2ERouter(t *testing.T, store *e2eImageFactoryStore, disp buildDispatcher) *gin.Engine {

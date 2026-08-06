@@ -154,7 +154,10 @@ func TestCanMutateScope_OrgAdmin_CanDeleteOrgConfig(t *testing.T) {
 			"hash-1": {ID: "cfg-1", Hash: "hash-1", Scope: imagefactory.ScopeOrg, OrgID: &orgID, Status: imagefactory.StatusReady},
 		},
 	}
-	orgs := &fakeOrgResolver{orgIDByUser: map[string]string{"admin-1": "org-1"}}
+	orgs := &fakeOrgResolver{
+		orgIDByUser: map[string]string{"admin-1": "org-1"},
+		adminUsers:  map[string]bool{"admin-1:org-1": true},
+	}
 	h := NewImageFactoryHandler(store, orgs)
 
 	r := gin.New()
@@ -168,6 +171,35 @@ func TestCanMutateScope_OrgAdmin_CanDeleteOrgConfig(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, w.Code, "org admin should be able to delete org config; body: %s", w.Body.String())
 }
 
+// TestCanMutateScope_OrgMember_CannotDeleteOrgConfig verifies a regular
+// org member (not admin) cannot delete org-scoped configs. This is the
+// privilege-escalation regression: the initial implementation checked org
+// membership instead of admin status.
+func TestCanMutateScope_OrgMember_CannotDeleteOrgConfig(t *testing.T) {
+	t.Parallel()
+	orgID := "org-1"
+	store := &fakeIFStore{
+		configByHash: map[string]imagefactory.Config{
+			"hash-1": {ID: "cfg-1", Hash: "hash-1", Scope: imagefactory.ScopeOrg, OrgID: &orgID, Status: imagefactory.StatusReady},
+		},
+	}
+	orgs := &fakeOrgResolver{
+		orgIDByUser: map[string]string{"member-1": "org-1"},
+		adminUsers:  map[string]bool{}, // member-1 is NOT an admin
+	}
+	h := NewImageFactoryHandler(store, orgs)
+
+	r := gin.New()
+	r.Use(func(c *gin.Context) { c.Set("userID", "member-1"); c.Next() })
+	r.DELETE("/configs/:hash", h.DeleteConfig)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("DELETE", "/configs/hash-1", nil)
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusForbidden, w.Code, "org member (not admin) should not delete org config")
+}
+
 // TestCanMutateScope_NonOrgMember_CannotDeleteOrgConfig verifies a user
 // outside the org cannot delete an org-scoped config.
 func TestCanMutateScope_NonOrgMember_CannotDeleteOrgConfig(t *testing.T) {
@@ -178,7 +210,10 @@ func TestCanMutateScope_NonOrgMember_CannotDeleteOrgConfig(t *testing.T) {
 			"hash-1": {ID: "cfg-1", Hash: "hash-1", Scope: imagefactory.ScopeOrg, OrgID: &orgID, Status: imagefactory.StatusReady},
 		},
 	}
-	orgs := &fakeOrgResolver{orgIDByUser: map[string]string{"user-2": "org-2"}}
+	orgs := &fakeOrgResolver{
+		orgIDByUser: map[string]string{"user-2": "org-2"},
+		adminUsers:  map[string]bool{},
+	}
 	h := NewImageFactoryHandler(store, orgs)
 
 	r := gin.New()

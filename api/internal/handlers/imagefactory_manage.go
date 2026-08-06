@@ -164,9 +164,14 @@ func (h *ImageFactoryHandler) RenameConfig(c *gin.Context) {
 //
 //   - member: always allowed (resolveConfigByHash already verified ownership
 //     by filtering on owner_id = caller's userID).
-//   - org: allowed if the caller is an admin of the config's org.
+//   - org: allowed if the caller is an admin of the config's org, OR a
+//     platform admin (platform admins can manage any org's configs).
 //   - platform: allowed if the caller is a platform admin (role = "admin").
 func (h *ImageFactoryHandler) canMutateScope(c *gin.Context, scope imagefactory.ConfigScope, cfgOrgID *string) bool {
+	// Platform admin bypass: can mutate any scope.
+	if c.GetString("userRole") == "admin" {
+		return true
+	}
 	switch scope {
 	case imagefactory.ScopeMember:
 		return true
@@ -176,14 +181,11 @@ func (h *ImageFactoryHandler) canMutateScope(c *gin.Context, scope imagefactory.
 		}
 		userID := c.GetString("userID")
 		ctx := c.Request.Context()
-		if oid, err := h.orgs.GetUserOrgID(ctx, userID); err == nil && oid == *cfgOrgID {
-			return true
+		isAdmin, err := h.orgs.IsOrgAdmin(ctx, *cfgOrgID, userID)
+		if err != nil {
+			return false
 		}
-		return false
-	case imagefactory.ScopePlatform:
-		// Platform admin check: the role is set by AdminGuard middleware.
-		// For consumer-mounted routes, check the user's role directly.
-		return c.GetString("userRole") == "admin"
+		return isAdmin
 	default:
 		return false
 	}
