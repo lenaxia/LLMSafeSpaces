@@ -185,7 +185,7 @@ type TriggerUpdate struct {
 func (s *Store) CreateWorkflow(ctx context.Context, row *WorkflowRow) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO workflows (id, owner_type, owner_id, name, slug, description, spec_yaml, spec_json, input_schema, target_workspace_id, status, defaults, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		VALUES ($1, $2, $3, $4, $5, COALESCE($6, ''), $7, $8, $9, $10, COALESCE($11, 'draft'), COALESCE($12, '{}'::jsonb), $13, $14)
 	`, row.ID, row.OwnerType, row.OwnerID, row.Name, row.Slug, row.Description,
 		row.SpecYAML, row.SpecJSON, nullableJSON(row.InputSchema), nullableStrPtr(row.TargetWorkspaceID),
 		row.Status, nullableJSON(row.Defaults), row.CreatedAt, row.UpdatedAt)
@@ -310,9 +310,9 @@ func (s *Store) CountWorkflowsByOwner(ctx context.Context, ownerType, ownerID st
 func (s *Store) CreateTrigger(ctx context.Context, row *TriggerRow) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO triggers (id, owner_type, owner_id, name, description, enabled, source_type, source_config, target_type, target_config, consecutive_failures, auto_disable_after, last_fired_at, next_fire_at, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		VALUES ($1, $2, $3, $4, COALESCE($5, ''), COALESCE($6, true), $7, COALESCE($8, '{}'::jsonb), $9, COALESCE($10, '{}'::jsonb), COALESCE($11, 0), COALESCE($12, 10), $13, $14, $15, $16)
 	`, row.ID, row.OwnerType, row.OwnerID, row.Name, row.Description, row.Enabled,
-		row.SourceType, row.SourceConfig, row.TargetType, row.TargetConfig,
+		row.SourceType, nullableJSON(row.SourceConfig), row.TargetType, nullableJSON(row.TargetConfig),
 		row.ConsecutiveFailures, row.AutoDisableAfter, row.LastFiredAt, row.NextFireAt,
 		row.CreatedAt, row.UpdatedAt)
 	return err
