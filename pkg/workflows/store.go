@@ -407,7 +407,7 @@ func (s *Store) CountTriggersByOwner(ctx context.Context, ownerType, ownerID str
 func (s *Store) CreateWebhook(ctx context.Context, row *WebhookRow) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO webhooks (id, trigger_id, secret_cipher, key_version, allowed_ips, idempotency_mode, idempotency_header, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		VALUES ($1, $2, $3, COALESCE($4, 1), COALESCE($5, ARRAY[]::text[]), COALESCE($6, 'header'), COALESCE($7, 'X-Request-ID'), $8)
 	`, row.ID, row.TriggerID, row.SecretCipher, row.KeyVersion,
 		toNullableStringArray(row.AllowedIPs), row.IdempotencyMode, row.IdempotencyHeader, row.CreatedAt)
 	return err

@@ -60,8 +60,17 @@ func (s *StoreIntegrationSuite) SetupTest() {
 	s.Require().NoError(err)
 }
 
+// assertJSONEqual compares two JSON byte slices structurally (PG re-serializes
+// jsonb with whitespace differences, so byte-equality fails round-trips).
+func assertJSONEqual(t *testing.T, expected string, actual json.RawMessage) {
+	t.Helper()
+	var exp, got any
+	require.NoError(t, json.Unmarshal([]byte(expected), &exp))
+	require.NoError(t, json.Unmarshal(actual, &got))
+	assert.Equal(t, exp, got)
+}
+
 func (s *StoreIntegrationSuite) newWorkspaceID() string {
-	// workflows/runs FK to workspaces; insert a stub if not present.
 	// Schema (migration 000001): id, name, user_id, namespace, runtime,
 	// security_level, storage_size, created_at, updated_at, deleted_at,
 	// image_tag, agent_version, default_model, org_id. No 'image' or 'phase'
@@ -96,7 +105,8 @@ func (s *StoreIntegrationSuite) TestWorkflowCRUD() {
 	require.NoError(s.T(), err)
 	assert.Equal(s.T(), "my-workflow", got.Name)
 	assert.Equal(s.T(), "test wf", got.Description)
-	assert.Equal(s.T(), `{"name":"test"}`, string(got.SpecJSON))
+	// Compare JSON structurally — PG re-serializes jsonb with a space after ':'.
+	assertJSONEqual(s.T(), `{"name":"test"}`, got.SpecJSON)
 	assert.Equal(s.T(), "draft", got.Status)
 
 	// Partial update: only status changes. All other fields nil → preserved.
@@ -393,7 +403,7 @@ func (s *StoreIntegrationSuite) TestNodeRunCreateAndUpdate() {
 	require.NoError(s.T(), err)
 	require.Len(s.T(), nodes, 1)
 	assert.Equal(s.T(), "succeeded", nodes[0].Status)
-	assert.Equal(s.T(), `{"y":2}`, string(nodes[0].Output))
+	assertJSONEqual(s.T(), `{"y":2}`, nodes[0].Output)
 	assert.NotNil(s.T(), nodes[0].FinishedAt)
 }
 
