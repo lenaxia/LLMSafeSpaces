@@ -30,7 +30,11 @@ package settings
 // (TypeStrings) — directories pre-approved as opencode
 // external_directory "allow" rules so agents stop prompting for /tmp/* on
 // every session. New key; admin UI schema cache must refresh.
-const SchemaVersion = 9
+// Bumped to 10 (2026-08-05): added 8 Epic 64 instance settings —
+// workflows.maxPerUser/maxPerOrg/maxRunDurationSec/workspaceActivationTimeoutSec/
+// maxNodeOutputBytes + triggers.maxPerUser/cronMinIntervalSec/webhookRateLimitPerSec.
+// New keys; admin UI schema cache must refresh.
+const SchemaVersion = 10
 
 // SettingType defines the data type of a setting.
 type SettingType string
@@ -132,6 +136,18 @@ func InstanceSettings() []SettingDef {
 
 		// MCP (Epic 53)
 		{Key: "mcp.allowOrgAdminServers", Tier: 2, Type: TypeBool, Default: true, Category: "MCP", Label: "Allow Org-Admin MCP Servers", Description: "When false, org admins cannot register MCP servers (platform-wide kill-switch)"},
+
+		// Workflows (Epic 64)
+		{Key: "workflows.maxPerUser", Tier: 2, Type: TypeInt, Default: 50, Min: intPtr(0), Max: intPtr(10000), Category: "Workflows", Label: "Max Workflows Per User", Description: "Maximum workflow definitions a single user can own (0 = unlimited)"},
+		{Key: "workflows.maxPerOrg", Tier: 2, Type: TypeInt, Default: 200, Min: intPtr(0), Max: intPtr(100000), Category: "Workflows", Label: "Max Workflows Per Org", Description: "Maximum workflow definitions per org (0 = unlimited)"},
+		{Key: "workflows.maxRunDurationSec", Tier: 2, Type: TypeInt, Default: 3600, Min: intPtr(60), Max: intPtr(86400), Category: "Workflows", Label: "Max Run Duration (sec)", Description: "Hard timeout per workflow run"},
+		{Key: "workflows.workspaceActivationTimeoutSec", Tier: 2, Type: TypeInt, Default: 120, Min: intPtr(10), Max: intPtr(600), Category: "Workflows", Label: "Workspace Activation Timeout (sec)", Description: "Deadline for waking a suspended workspace before failing the run fast"},
+		{Key: "workflows.maxNodeOutputBytes", Tier: 2, Type: TypeInt, Default: 1048576, Min: intPtr(1024), Max: intPtr(10485760), Category: "Workflows", Label: "Max Node Output (bytes)", Description: "Per-node output cap; oversize output fails the node (no spill in v1)"},
+
+		// Triggers (Epic 64)
+		{Key: "triggers.maxPerUser", Tier: 2, Type: TypeInt, Default: 20, Min: intPtr(0), Max: intPtr(1000), Category: "Triggers", Label: "Max Triggers Per User", Description: "Maximum triggers a single user can own (0 = unlimited)"},
+		{Key: "triggers.cronMinIntervalSec", Tier: 2, Type: TypeInt, Default: 60, Min: intPtr(10), Max: intPtr(86400), Category: "Triggers", Label: "Cron Min Interval (sec)", Description: "Floor on cron interval (anti-abuse)"},
+		{Key: "triggers.webhookRateLimitPerSec", Tier: 2, Type: TypeInt, Default: 10, Min: intPtr(1), Max: intPtr(1000), Category: "Triggers", Label: "Webhook Rate Limit (per sec)", Description: "Default per-webhook token-bucket rate"},
 	}
 }
 

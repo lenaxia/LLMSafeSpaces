@@ -63,6 +63,18 @@ var (
 	KeyInstanceMOTD = register(Key{"instance.motd", "instance", ""})
 )
 
+// Workflow settings (Epic 64)
+var (
+	KeyWorkflowsMaxPerUser             = register(Key{"workflows.maxPerUser", "workflows", 50})
+	KeyWorkflowsMaxPerOrg              = register(Key{"workflows.maxPerOrg", "workflows", 200})
+	KeyWorkflowsMaxRunDurationSec      = register(Key{"workflows.maxRunDurationSec", "workflows", 3600})
+	KeyWorkflowsWorkspaceActivationSec = register(Key{"workflows.workspaceActivationTimeoutSec", "workflows", 120})
+	KeyWorkflowsMaxNodeOutputBytes     = register(Key{"workflows.maxNodeOutputBytes", "workflows", 1048576})
+	KeyTriggersMaxPerUser              = register(Key{"triggers.maxPerUser", "triggers", 20})
+	KeyTriggersCronMinIntervalSec      = register(Key{"triggers.cronMinIntervalSec", "triggers", 60})
+	KeyTriggersWebhookRateLimitPerSec  = register(Key{"triggers.webhookRateLimitPerSec", "triggers", 10})
+)
+
 // Rate limiting settings
 var (
 	KeyRateLimitingEnabled       = register(Key{"rateLimiting.enabled", "rateLimiting", false})

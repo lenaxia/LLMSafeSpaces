@@ -13,6 +13,7 @@
   "AuthConfig": {
     "registrationEnabled": true,
     "oidcEnabled": false,
+    "passkeyEnabled": false,
     "ssoProviders": [
       "okta"
     ],
