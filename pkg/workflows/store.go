@@ -511,7 +511,7 @@ func (s *Store) CreateWorkflowRunWithFire(ctx context.Context, fire *TriggerFire
 	run.TriggerFireID = &fire.ID
 	_, err = tx.Exec(ctx, `
 		INSERT INTO workflow_runs (id, workflow_id, spec_snapshot, input, output, status, error_code, error, trigger_id, trigger_fire_id, workspace_id, started_at, finished_at, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 	`, run.ID, run.WorkflowID, run.SpecSnapshot, nullableJSON(run.Input), nullableJSON(run.Output),
 		run.Status, nullableStrPtr(run.ErrorCode), nullableJSON(run.Error),
 		nullableStrPtr(run.TriggerID), nullableStrPtr(run.TriggerFireID), run.WorkspaceID,
