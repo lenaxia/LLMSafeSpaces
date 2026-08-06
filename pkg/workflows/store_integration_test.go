@@ -50,9 +50,11 @@ func (s *StoreIntegrationSuite) SetupTest() {
 	`)
 	s.Require().NoError(err)
 	// Ensure a test user exists (workspaces.user_id FKs to users.id).
+	// Schema (migration 000001): id, username, email, password_hash, active,
+	// role, created_at, updated_at, plan_id, status, email_verified.
 	_, err = s.pool.Exec(ctx, `
-		INSERT INTO users (id, email, password_hash, role, status, created_at, updated_at)
-		VALUES ('test-user', 'test@example.com', '$2a$12$dummyhashdummyhashdummyhashdummyhashdummyhashdummy', 'user', 'active', now(), now())
+		INSERT INTO users (id, username, email, password_hash, active, role)
+		VALUES ('test-user', 'test-user', 'test@example.com', 'hash', true, 'user')
 		ON CONFLICT (id) DO NOTHING
 	`)
 	s.Require().NoError(err)
