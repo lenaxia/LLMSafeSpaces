@@ -96,4 +96,22 @@ describe("SettingsPage", () => {
     const contentArea = container.querySelector(".flex-1.min-w-0.overflow-y-auto");
     expect(contentArea).not.toBeNull();
   });
+
+  // Regression: mobile tab bar must scroll horizontally. Pre-fix the <li>
+  // items lacked shrink-0 (flex children compressed instead of overflowing)
+  // and overflow-x-auto was on the <ul> instead of the viewport-constrained
+  // <nav>, so "Workspace Images" was unreachable without rotating to landscape.
+  it("mobile tab bar: nav has overflow-x-auto and items have shrink-0", () => {
+    const { container } = renderSettingsRoute();
+    const nav = container.querySelector("nav");
+    expect(nav).not.toBeNull();
+    expect(nav!.className).toContain("overflow-x-auto");
+    expect(nav!.className).toContain("max-w-full");
+    // Every tab item must have shrink-0 so they don't compress.
+    const items = container.querySelectorAll("nav li");
+    expect(items.length).toBeGreaterThan(0);
+    items.forEach((li) => {
+      expect(li.className).toContain("shrink-0");
+    });
+  });
 });
