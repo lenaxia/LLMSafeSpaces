@@ -1,5 +1,5 @@
 -- Epic 64 rollback: drops the seven trigger/workflow tables and restores the
--- org_policies CHECK to its pre-000016 state (the 8-key set established by 000012).
+-- org_policies CHECK to its pre-000016 state (the 9-key set established by 000015).
 
 BEGIN;
 
@@ -22,7 +22,8 @@ DO $$ BEGIN
         'sys_prompt_org',
         'allow_user_prompt',
         'allow_user_mcp_servers',
-        'max_mcp_servers_per_workspace'
+        'max_mcp_servers_per_workspace',
+        'default_runtime'
     ));
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;

@@ -367,6 +367,7 @@ DO $$ BEGIN
         'allow_user_prompt',
         'allow_user_mcp_servers',
         'max_mcp_servers_per_workspace',
+        'default_runtime',
         'allow_user_workflow_create'
     ));
 EXCEPTION WHEN duplicate_object THEN NULL;
