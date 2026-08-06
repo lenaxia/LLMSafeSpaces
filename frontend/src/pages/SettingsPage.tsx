@@ -16,11 +16,11 @@ export function SettingsPage() {
   return (
     <div className="flex h-full flex-col md:flex-row">
       {/* Mobile: horizontal tab bar. Desktop: vertical sidebar */}
-      <nav className="border-b border-border p-2 md:border-b-0 md:border-r md:w-52 md:p-4 md:shrink-0">
+      <nav className="max-w-full overflow-x-auto border-b border-border p-2 md:border-b-0 md:border-r md:w-52 md:overflow-visible md:p-4 md:shrink-0">
         <h2 className="hidden md:block mb-4 text-sm font-semibold">Settings</h2>
-        <ul className="flex gap-1 overflow-x-auto touch-manipulation md:flex-col">
+        <ul className="flex gap-1 touch-manipulation md:flex-col">
           {allTabs.map((tab) => (
-            <li key={tab.id}>
+            <li key={tab.id} className="shrink-0">
               <NavLink
                 to={`/settings/${tab.id}`}
                 replace
