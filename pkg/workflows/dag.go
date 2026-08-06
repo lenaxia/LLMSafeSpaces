@@ -91,9 +91,7 @@ func ValidateSpec(spec *Spec, predecessorSchemas map[string]json.RawMessage, def
 		errs = append(errs, ValidationError{Code: "no_start", Detail: "no start node found (every node has an incoming edge — possible cycle or missing entry point)"})
 	} else if len(starts) > 1 {
 		ids := make([]string, len(starts))
-		for i, s := range starts {
-			ids[i] = s
-		}
+		copy(ids, starts)
 		errs = append(errs, ValidationError{Code: "multiple_starts", Detail: fmt.Sprintf("multiple start nodes (no incoming edges): %s", strings.Join(ids, ", "))})
 	}
 

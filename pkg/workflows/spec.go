@@ -5,7 +5,6 @@ package workflows
 
 import (
 	"encoding/json"
-	"time"
 )
 
 // Spec is the parsed and validated DAG stored in workflows.spec_json.
@@ -72,7 +71,7 @@ type HTTPNodeData struct {
 
 // DefaultsBlock carries workflow-level defaults that are merged into
 // each node's config (node-level wins). Only maxAttempts and timeout
-// may be defaulted; behavioural fields must be per-node.
+// may be defaulted; behavioral fields must be per-node.
 type DefaultsBlock struct {
 	MaxAttempts *int   `json:"maxAttempts,omitempty"`
 	Timeout     string `json:"timeout,omitempty"`
@@ -86,17 +85,4 @@ func ParseSpec(raw json.RawMessage) (*Spec, error) {
 		return nil, err
 	}
 	return &s, nil
-}
-
-// durationOrZero parses a duration string (e.g. "10m", "30s") and returns
-// the time.Duration. Empty string returns zero (meaning "use system default").
-func durationOrZero(s string) time.Duration {
-	if s == "" {
-		return 0
-	}
-	d, err := time.ParseDuration(s)
-	if err != nil {
-		return 0
-	}
-	return d
 }
