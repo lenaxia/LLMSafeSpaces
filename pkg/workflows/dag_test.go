@@ -222,7 +222,7 @@ func TestValidateSpec_ConditionMissingBranchEdge(t *testing.T) {
 	found := false
 	for _, e := range errs {
 		if e.Code == "missing_branch_edge" && e.NodeID == "choice" {
-			if msg, _ := e.Detail.(string); contains(msg, "retry") {
+			if contains(e.Detail, "retry") {
 				found = true
 			}
 		}
@@ -363,6 +363,64 @@ func TestValidateSpec_SelfLoop(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected cycle error for self-loop, got: %v", errs)
+	}
+}
+
+func TestParseSpec_ValidJSON(t *testing.T) {
+	raw := json.RawMessage(`{
+		"nodes": [
+			{"id": "a", "type": "script", "data": {"language": "python", "handler": "x"}},
+			{"id": "b", "type": "script", "data": {"language": "python", "handler": "y"}}
+		],
+		"edges": [{"source": "a", "target": "b"}]
+	}`)
+	spec, err := ParseSpec(raw)
+	if err != nil {
+		t.Fatalf("ParseSpec error: %v", err)
+	}
+	if len(spec.Nodes) != 2 {
+		t.Fatalf("expected 2 nodes, got %d", len(spec.Nodes))
+	}
+	if spec.Nodes[0].ID != "a" {
+		t.Errorf("expected first node id 'a', got %q", spec.Nodes[0].ID)
+	}
+	if len(spec.Edges) != 1 {
+		t.Fatalf("expected 1 edge, got %d", len(spec.Edges))
+	}
+}
+
+func TestParseSpec_InvalidJSON(t *testing.T) {
+	_, err := ParseSpec(json.RawMessage(`{invalid json`))
+	if err == nil {
+		t.Fatal("expected error for invalid JSON")
+	}
+}
+
+func TestValidateSpec_ConditionExprTypeCheckHappy(t *testing.T) {
+	// Expression references fields that DO exist in predecessor schema → no error.
+	condData, _ := json.Marshal(ConditionNodeData{
+		Conditions: []ConditionCase{
+			{ID: "skip", Expression: "input.Skipped == true"},
+		},
+	})
+	spec := simpleSpec(
+		[]SpecNode{
+			{ID: "start", Type: "script", Data: mustJSON(t, `{"language":"python","handler":"x"}`)},
+			{ID: "choice", Type: "condition", Data: condData},
+			{ID: "skip-path", Type: "script", Data: mustJSON(t, `{"language":"python","handler":"x"}`)},
+			{ID: "else-path", Type: "script", Data: mustJSON(t, `{"language":"python","handler":"x"}`)},
+		},
+		SpecEdge{Source: "start", Target: "choice"},
+		SpecEdge{Source: "choice", Target: "skip-path", SourceHandle: "skip"},
+		SpecEdge{Source: "choice", Target: "else-path", SourceHandle: "otherwise"},
+	)
+
+	predSchema := json.RawMessage(`{"type":"object","properties":{"skipped":{"type":"boolean"},"meetingId":{"type":"string"}}}`)
+	errs := ValidateSpec(spec, map[string]json.RawMessage{"start": predSchema}, DefaultsBlock{})
+	for _, e := range errs {
+		if e.Code == "expr_type_error" {
+			t.Fatalf("expected no expr_type_error for valid field reference, got: %v", e)
+		}
 	}
 }
 

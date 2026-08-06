@@ -16,14 +16,14 @@ import (
 type ValidationError struct {
 	Code   string `json:"code"`
 	NodeID string `json:"nodeId,omitempty"`
-	Detail any    `json:"detail,omitempty"`
+	Detail string `json:"detail,omitempty"`
 }
 
 func (e ValidationError) Error() string {
 	if e.NodeID != "" {
-		return fmt.Sprintf("[%s] node %s: %v", e.Code, e.NodeID, e.Detail)
+		return fmt.Sprintf("[%s] node %s: %s", e.Code, e.NodeID, e.Detail)
 	}
-	return fmt.Sprintf("[%s] %v", e.Code, e.Detail)
+	return fmt.Sprintf("[%s] %s", e.Code, e.Detail)
 }
 
 // ValidateSpec validates a workflow DAG spec and applies defaults merging.
@@ -80,13 +80,13 @@ func ValidateSpec(spec *Spec, predecessorSchemas map[string]json.RawMessage, def
 	}
 
 	// 4. Detect cycles via topological sort (Kahn's algorithm).
-	if cycle := detectCycle(spec, nodeMap); cycle {
+	if cycle := detectCycle(spec); cycle {
 		errs = append(errs, ValidationError{Code: "cycle", Detail: "workflow contains a cycle"})
 		return errs
 	}
 
 	// 5. Find start node(s) — nodes with no incoming edges.
-	starts := findStartNodes(spec, nodeMap)
+	starts := findStartNodes(spec)
 	if len(starts) == 0 {
 		errs = append(errs, ValidationError{Code: "no_start", Detail: "no start node found (every node has an incoming edge — possible cycle or missing entry point)"})
 	} else if len(starts) > 1 {
@@ -96,7 +96,7 @@ func ValidateSpec(spec *Spec, predecessorSchemas map[string]json.RawMessage, def
 	}
 
 	// 6. Check for unreachable nodes.
-	reachable := bfsReachable(spec, nodeMap, starts)
+	reachable := bfsReachable(spec, starts)
 	for i := range spec.Nodes {
 		n := &spec.Nodes[i]
 		if !reachable[n.ID] {
@@ -252,7 +252,7 @@ func validateConditionExprTypes(n *SpecNode, spec *Spec, nodeMap map[string]*Spe
 // detectCycle returns true if the DAG contains a cycle. Uses Kahn's algorithm:
 // compute in-degrees, repeatedly remove nodes with in-degree 0, if any remain
 // there's a cycle.
-func detectCycle(spec *Spec, nodeMap map[string]*SpecNode) bool {
+func detectCycle(spec *Spec) bool {
 	inDegree := make(map[string]int, len(spec.Nodes))
 	for i := range spec.Nodes {
 		inDegree[spec.Nodes[i].ID] = 0
@@ -292,7 +292,7 @@ func detectCycle(spec *Spec, nodeMap map[string]*SpecNode) bool {
 	return removed < len(spec.Nodes)
 }
 
-func findStartNodes(spec *Spec, nodeMap map[string]*SpecNode) []string {
+func findStartNodes(spec *Spec) []string {
 	hasIncoming := make(map[string]bool, len(spec.Nodes))
 	for _, e := range spec.Edges {
 		hasIncoming[e.Target] = true
@@ -306,7 +306,7 @@ func findStartNodes(spec *Spec, nodeMap map[string]*SpecNode) []string {
 	return starts
 }
 
-func bfsReachable(spec *Spec, nodeMap map[string]*SpecNode, starts []string) map[string]bool {
+func bfsReachable(spec *Spec, starts []string) map[string]bool {
 	adj := make(map[string][]string)
 	for _, e := range spec.Edges {
 		adj[e.Source] = append(adj[e.Source], e.Target)
