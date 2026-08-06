@@ -27,13 +27,16 @@ func (e ValidationError) Error() string {
 }
 
 // ValidateSpec validates a workflow DAG spec and applies defaults merging.
-// It mutates the spec in place (defaults applied to nodes that omit maxAttempts/timeout).
+// It mutates the spec in place (defaults applied to nodes that omit maxAttempts/timeout)
+// ONLY when validation passes without structural errors (dangling edges, duplicate IDs,
+// cycles). Non-structural errors (unreachable nodes, missing branch edges) do NOT
+// prevent defaults merging — the spec is still mutated. Callers should discard the
+// spec if any errors are returned.
 // predecessorSchemas maps node ID → that node's outputSchema (JSON Schema bytes),
 // used for expr-lang type-checking condition expressions against the upstream node's
 // output shape. nil/empty schemas skip type-checking for that predecessor.
 //
-// Returns a slice of ValidationErrors (empty if valid). The spec is mutated
-// (defaults merged) even if errors are found — the caller should discard on error.
+// Returns a slice of ValidationErrors (empty if valid).
 func ValidateSpec(spec *Spec, predecessorSchemas map[string]json.RawMessage, defaults DefaultsBlock) []ValidationError {
 	if spec == nil || len(spec.Nodes) == 0 {
 		return []ValidationError{{Code: "empty_spec", Detail: "workflow spec has no nodes"}}

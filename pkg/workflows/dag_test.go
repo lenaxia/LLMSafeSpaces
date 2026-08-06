@@ -424,6 +424,107 @@ func TestValidateSpec_ConditionExprTypeCheckHappy(t *testing.T) {
 	}
 }
 
+func TestValidateSpec_ScriptNodeMissingLanguage(t *testing.T) {
+	spec := simpleSpec(
+		[]SpecNode{
+			{ID: "a", Type: "script", Data: mustJSON(t, `{"handler":"x"}`)}, // missing language
+		},
+	)
+	errs := ValidateSpec(spec, nil, DefaultsBlock{})
+	hasCode(t, errs, "invalid_node_data")
+}
+
+func TestValidateSpec_ScriptNodeMalformedData(t *testing.T) {
+	spec := simpleSpec(
+		[]SpecNode{
+			{ID: "a", Type: "script", Data: mustJSON(t, `"not an object"`)},
+		},
+	)
+	errs := ValidateSpec(spec, nil, DefaultsBlock{})
+	hasCode(t, errs, "invalid_node_data")
+}
+
+func TestValidateSpec_AgentNodeMalformedData(t *testing.T) {
+	spec := simpleSpec(
+		[]SpecNode{
+			{ID: "a", Type: "agent", Data: mustJSON(t, `42`)},
+		},
+	)
+	errs := ValidateSpec(spec, nil, DefaultsBlock{})
+	hasCode(t, errs, "invalid_node_data")
+}
+
+func TestValidateSpec_HTTPNodeMalformedData(t *testing.T) {
+	spec := simpleSpec(
+		[]SpecNode{
+			{ID: "a", Type: "http", Data: mustJSON(t, `"string not object"`)},
+		},
+	)
+	errs := ValidateSpec(spec, nil, DefaultsBlock{})
+	hasCode(t, errs, "invalid_node_data")
+}
+
+func TestValidateSpec_ConditionNodeMalformedData(t *testing.T) {
+	spec := simpleSpec(
+		[]SpecNode{
+			{ID: "a", Type: "condition", Data: mustJSON(t, `null`)},
+		},
+	)
+	errs := ValidateSpec(spec, nil, DefaultsBlock{})
+	hasCode(t, errs, "invalid_node_data")
+}
+
+func TestValidateSpec_ConditionCaseMissingID(t *testing.T) {
+	condData, _ := json.Marshal(ConditionNodeData{
+		Conditions: []ConditionCase{
+			{ID: "", Expression: "input.Skipped == true"},
+		},
+	})
+	spec := simpleSpec(
+		[]SpecNode{
+			{ID: "a", Type: "condition", Data: condData},
+		},
+	)
+	errs := ValidateSpec(spec, nil, DefaultsBlock{})
+	hasCode(t, errs, "invalid_node_data")
+}
+
+func TestValidateSpec_ConditionCaseMissingExpression(t *testing.T) {
+	condData, _ := json.Marshal(ConditionNodeData{
+		Conditions: []ConditionCase{
+			{ID: "skip", Expression: ""},
+		},
+	})
+	spec := simpleSpec(
+		[]SpecNode{
+			{ID: "a", Type: "condition", Data: condData},
+		},
+	)
+	errs := ValidateSpec(spec, nil, DefaultsBlock{})
+	hasCode(t, errs, "invalid_node_data")
+}
+
+func TestValidateSpec_ConditionEmptyConditions(t *testing.T) {
+	condData, _ := json.Marshal(ConditionNodeData{Conditions: []ConditionCase{}})
+	spec := simpleSpec(
+		[]SpecNode{
+			{ID: "a", Type: "condition", Data: condData},
+		},
+	)
+	errs := ValidateSpec(spec, nil, DefaultsBlock{})
+	hasCode(t, errs, "invalid_node_data")
+}
+
+func hasCode(t *testing.T, errs []ValidationError, code string) {
+	t.Helper()
+	for _, e := range errs {
+		if e.Code == code {
+			return
+		}
+	}
+	t.Fatalf("expected error with code %q, got: %+v", code, errs)
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsStr(s, substr))
 }
