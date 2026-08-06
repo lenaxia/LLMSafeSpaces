@@ -149,6 +149,35 @@ type TriggerFireRow struct {
 	CompletedAt   *time.Time
 }
 
+// WorkflowUpdate carries only the fields a partial update may change. Pointer
+// fields: nil means "keep existing". This mirrors the API DTO pattern
+// (UpdateWorkflowRequest) so the handler can pass fields through directly.
+// The zero-value WorkflowUpdate preserves every field (no changes).
+type WorkflowUpdate struct {
+	Name              *string
+	Slug              *string
+	Description       *string
+	SpecYAML          *string
+	SpecJSON          json.RawMessage
+	InputSchema       json.RawMessage
+	TargetWorkspaceID *string // nil = keep; non-nil "" = clear (set NULL); non-nil "uuid" = set
+	Status            *string
+	Defaults          json.RawMessage
+}
+
+// TriggerUpdate carries only the fields a partial update may change. Pointer
+// fields: nil means "keep existing". source_type is NOT in this struct — it's
+// immutable after create (the source defines the trigger's identity).
+type TriggerUpdate struct {
+	Name             *string
+	Description      *string
+	Enabled          *bool
+	SourceConfig     json.RawMessage
+	TargetType       *string
+	TargetConfig     json.RawMessage
+	AutoDisableAfter *int
+}
+
 // --- Workflow CRUD ----------------------------------------------------------
 
 // CreateWorkflow inserts a row into workflows. The caller supplies a
@@ -193,35 +222,62 @@ func (s *Store) ListWorkflows(ctx context.Context, ownerType, ownerID string) ([
 }
 
 // UpdateWorkflow updates an existing workflow scoped to (ownerType, ownerID).
-// Partial update: nil/empty fields preserve existing values. Returns the
-// updated row (with new updated_at) or ErrNotFound.
-func (s *Store) UpdateWorkflow(ctx context.Context, ownerType, ownerID, workflowID string, row *WorkflowRow) error {
+// Partial update via WorkflowUpdate pointer fields: nil preserves existing
+// values. Returns the updated row or ErrNotFound.
+func (s *Store) UpdateWorkflow(ctx context.Context, ownerType, ownerID, workflowID string, upd *WorkflowUpdate) (*WorkflowRow, error) {
+	row := &WorkflowRow{}
 	err := s.pool.QueryRow(ctx, `
 		UPDATE workflows
-		SET name = COALESCE(NULLIF($4, ''), name),
-		    slug = COALESCE(NULLIF($5, ''), slug),
+		SET name = COALESCE($4, name),
+		    slug = COALESCE($5, slug),
 		    description = COALESCE($6, description),
-		    spec_yaml = COALESCE(NULLIF($7, ''), spec_yaml),
+		    spec_yaml = COALESCE($7, spec_yaml),
 		    spec_json = CASE WHEN $8::jsonb IS NOT NULL THEN $8 ELSE spec_json END,
 		    input_schema = CASE WHEN $9::jsonb IS NOT NULL THEN $9 ELSE input_schema END,
-		    target_workspace_id = CASE WHEN $10::text IS NOT NULL THEN NULLIF($10,'')::uuid ELSE target_workspace_id END,
-		    status = COALESCE(NULLIF($11, ''), status),
-		    defaults = CASE WHEN $12::jsonb IS NOT NULL THEN $12 ELSE defaults END
+		    target_workspace_id = CASE WHEN $10::boolean IS NULL THEN target_workspace_id
+		                               WHEN $10::boolean = false THEN NULL
+		                               ELSE $11::uuid END,
+		    status = COALESCE($12, status),
+		    defaults = CASE WHEN $13::jsonb IS NOT NULL THEN $13 ELSE defaults END
 		WHERE id = $1 AND owner_type = $2 AND owner_id = $3
 		RETURNING id, owner_type, owner_id, name, slug, description, spec_yaml, spec_json, input_schema, target_workspace_id, status, defaults, created_at, updated_at
-	`, workflowID, ownerType, ownerID,
-		row.Name, row.Slug, row.Description, row.SpecYAML,
-		nullableJSON(row.SpecJSON), nullableJSON(row.InputSchema),
-		nullableStrPtr(row.TargetWorkspaceID), row.Status, nullableJSON(row.Defaults),
+	`,
+		workflowID, ownerType, ownerID,
+		upd.Name, upd.Slug, upd.Description, upd.SpecYAML,
+		nullableJSON(upd.SpecJSON), nullableJSON(upd.InputSchema),
+		targetWorkspaceUpdateFlag(upd.TargetWorkspaceID),  // $10: NULL=keep, false=clear, true=set
+		targetWorkspaceUpdateValue(upd.TargetWorkspaceID), // $11: the uuid (or NULL)
+		upd.Status,
+		nullableJSON(upd.Defaults),
 	).Scan(
 		&row.ID, &row.OwnerType, &row.OwnerID, &row.Name, &row.Slug, &row.Description,
 		&row.SpecYAML, &row.SpecJSON, &row.InputSchema, &row.TargetWorkspaceID,
 		&row.Status, &row.Defaults, &row.CreatedAt, &row.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrNotFound
+		return nil, ErrNotFound
 	}
-	return err
+	return row, err
+}
+
+// targetWorkspaceUpdateFlag returns the boolean flag for the CASE: NULL=keep,
+// false=clear, true=set. Mirrors the three-state intent of *string.
+func targetWorkspaceUpdateFlag(s *string) any {
+	if s == nil {
+		return nil // keep
+	}
+	if *s == "" {
+		return false // clear
+	}
+	return true // set
+}
+
+// targetWorkspaceUpdateValue returns the uuid value (or nil) for the SET case.
+func targetWorkspaceUpdateValue(s *string) any {
+	if s == nil || *s == "" {
+		return nil
+	}
+	return *s
 }
 
 // DeleteWorkflow deletes a workflow by ID scoped to (ownerType, ownerID). FK
@@ -291,24 +347,26 @@ func (s *Store) ListTriggers(ctx context.Context, ownerType, ownerID string) ([]
 }
 
 // UpdateTrigger updates an existing trigger scoped to (ownerType, ownerID).
-// source_type is NOT mutable (the source defines the trigger's identity).
-// Returns ErrNotFound if the trigger doesn't exist.
-func (s *Store) UpdateTrigger(ctx context.Context, ownerType, ownerID, triggerID string, row *TriggerRow) error {
+// source_type is NOT mutable (not in TriggerUpdate). Partial update via pointer
+// fields: nil preserves existing values. Returns the updated row or ErrNotFound.
+func (s *Store) UpdateTrigger(ctx context.Context, ownerType, ownerID, triggerID string, upd *TriggerUpdate) (*TriggerRow, error) {
+	row := &TriggerRow{}
 	err := s.pool.QueryRow(ctx, `
 		UPDATE triggers
-		SET name = COALESCE(NULLIF($4, ''), name),
+		SET name = COALESCE($4, name),
 		    description = COALESCE($5, description),
-		    enabled = CASE WHEN $6::boolean IS NOT NULL THEN $6 ELSE enabled END,
+		    enabled = COALESCE($6, enabled),
 		    source_config = CASE WHEN $7::jsonb IS NOT NULL THEN $7 ELSE source_config END,
-		    target_type = COALESCE(NULLIF($8, ''), target_type),
+		    target_type = COALESCE($8, target_type),
 		    target_config = CASE WHEN $9::jsonb IS NOT NULL THEN $9 ELSE target_config END,
-		    auto_disable_after = CASE WHEN $10::int IS NOT NULL THEN $10 ELSE auto_disable_after END
+		    auto_disable_after = COALESCE($10, auto_disable_after)
 		WHERE id = $1 AND owner_type = $2 AND owner_id = $3
 		RETURNING id, owner_type, owner_id, name, description, enabled, source_type, source_config, target_type, target_config, consecutive_failures, auto_disable_after, last_fired_at, next_fire_at, created_at, updated_at
-	`, triggerID, ownerType, ownerID,
-		row.Name, row.Description, boolPtr(row.Enabled),
-		nullableJSON(row.SourceConfig), row.TargetType, nullableJSON(row.TargetConfig),
-		row.AutoDisableAfter,
+	`,
+		triggerID, ownerType, ownerID,
+		upd.Name, upd.Description, upd.Enabled,
+		nullableJSON(upd.SourceConfig), upd.TargetType, nullableJSON(upd.TargetConfig),
+		upd.AutoDisableAfter,
 	).Scan(
 		&row.ID, &row.OwnerType, &row.OwnerID, &row.Name, &row.Description, &row.Enabled,
 		&row.SourceType, &row.SourceConfig, &row.TargetType, &row.TargetConfig,
@@ -316,9 +374,9 @@ func (s *Store) UpdateTrigger(ctx context.Context, ownerType, ownerID, triggerID
 		&row.CreatedAt, &row.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return ErrNotFound
+		return nil, ErrNotFound
 	}
-	return err
+	return row, err
 }
 
 // DeleteTrigger deletes a trigger by ID scoped to (ownerType, ownerID). FK
@@ -841,9 +899,6 @@ func nullableStrPtr(s *string) any {
 	}
 	return *s
 }
-
-// boolPtr returns a *bool for COALESCE/CASE patterns (nil = "keep existing").
-func boolPtr(b bool) *bool { return &b }
 
 // toNullableStringArray converts a []string to a pq-compatible value for cidr[]
 // columns. Empty slice → nil (SQL NULL).

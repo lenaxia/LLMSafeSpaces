@@ -86,12 +86,20 @@ func (s *StoreIntegrationSuite) TestWorkflowCRUD() {
 	assert.Equal(s.T(), `{"name":"test"}`, string(got.SpecJSON))
 	assert.Equal(s.T(), "draft", got.Status)
 
-	// Partial update: only status changes.
-	updated := &WorkflowRow{Status: "active"}
-	err = s.store.UpdateWorkflow(ctx, "user", "u1", id, updated)
+	// Partial update: only status changes. All other fields nil → preserved.
+	statusActive := "active"
+	updated, err := s.store.UpdateWorkflow(ctx, "user", "u1", id, &WorkflowUpdate{Status: &statusActive})
 	require.NoError(s.T(), err)
 	assert.Equal(s.T(), "active", updated.Status)
-	assert.Equal(s.T(), "my-workflow", updated.Name, "name should be preserved")
+	assert.Equal(s.T(), "my-workflow", updated.Name, "name should be preserved (nil in update)")
+	assert.Equal(s.T(), "test wf", updated.Description, "description should be preserved (nil in update)")
+
+	// Partial update: set description to empty string (clear it).
+	emptyDesc := ""
+	updated2, err := s.store.UpdateWorkflow(ctx, "user", "u1", id, &WorkflowUpdate{Description: &emptyDesc})
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), "", updated2.Description, "description should be cleared")
+	assert.Equal(s.T(), "active", updated2.Status, "status preserved")
 
 	// List.
 	list, err := s.store.ListWorkflows(ctx, "user", "u1")
@@ -144,15 +152,27 @@ func (s *StoreIntegrationSuite) TestTriggerCRUD() {
 	assert.True(s.T(), got.Enabled)
 	assert.Equal(s.T(), 10, got.AutoDisableAfter)
 
-	// Update enabled + auto_disable_after.
-	updated := &TriggerRow{Enabled: false, AutoDisableAfter: 5}
-	err = s.store.UpdateTrigger(ctx, "user", "u1", id, updated)
+	// Update enabled + auto_disable_after via pointer fields (nil = preserve).
+	enabledFalse := false
+	autoDisable5 := 5
+	updated, err := s.store.UpdateTrigger(ctx, "user", "u1", id, &TriggerUpdate{
+		Enabled:          &enabledFalse,
+		AutoDisableAfter: &autoDisable5,
+	})
 	require.NoError(s.T(), err)
 	assert.False(s.T(), updated.Enabled)
 	assert.Equal(s.T(), 5, updated.AutoDisableAfter)
 
 	// source_type is NOT mutable — verify it stayed 'cron'.
 	assert.Equal(s.T(), "cron", updated.SourceType)
+
+	// Partial update preserving auto_disable_after (nil pointer): must NOT
+	// trigger the CHECK(>=1) violation that the int-0 path would have.
+	descNew := "updated description"
+	updated2, err := s.store.UpdateTrigger(ctx, "user", "u1", id, &TriggerUpdate{Description: &descNew})
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), "updated description", updated2.Description)
+	assert.Equal(s.T(), 5, updated2.AutoDisableAfter, "auto_disable_after preserved (nil pointer)")
 }
 
 // --- Webhook ---------------------------------------------------------------
@@ -201,7 +221,24 @@ func (s *StoreIntegrationSuite) TestWebhookCreateAndGet() {
 
 func (s *StoreIntegrationSuite) TestWebhookDeliveryDedup() {
 	ctx := context.Background()
+	now := time.Now()
+
+	// webhooks FK requires a parent trigger; webhook_deliveries FK requires a parent webhook.
+	triggerID := uuid.New().String()
+	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
+		ID: triggerID, OwnerType: "user", OwnerID: "u1",
+		Name: "wh-for-dedup", Enabled: true, SourceType: "webhook",
+		SourceConfig: json.RawMessage(`{}`), TargetType: "run_workflow",
+		TargetConfig: json.RawMessage(`{}`), AutoDisableAfter: 10,
+		CreatedAt: now, UpdatedAt: now,
+	}))
 	hookID := uuid.New().String()
+	require.NoError(s.T(), s.store.CreateWebhook(ctx, &WebhookRow{
+		ID: hookID, TriggerID: triggerID,
+		SecretCipher: []byte("x"), KeyVersion: 1,
+		IdempotencyMode: "header", IdempotencyHeader: "X-Request-ID",
+		CreatedAt: now,
+	}))
 
 	// First delivery succeeds.
 	err := s.store.RecordWebhookDelivery(ctx, hookID, "delivery-1")
