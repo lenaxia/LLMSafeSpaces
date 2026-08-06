@@ -154,6 +154,19 @@ func TestValidWebhookIdempotencyMode(t *testing.T) {
 	}
 }
 
+func TestValidTriggerFireStatus(t *testing.T) {
+	for _, s := range []string{TriggerFireFired, TriggerFireDelivered, TriggerFireFailed, TriggerFireValidationError, TriggerFireRateLimited, TriggerFireSkipped, TriggerFireAutoDisabled} {
+		if !ValidTriggerFireStatus(s) {
+			t.Errorf("expected %q valid", s)
+		}
+	}
+	for _, s := range []string{"", "pending", "running"} {
+		if ValidTriggerFireStatus(s) {
+			t.Errorf("expected %q invalid", s)
+		}
+	}
+}
+
 func TestValidRunErrorCode(t *testing.T) {
 	codes := []string{
 		RunErrorCodeNodeFailed, RunErrorCodeWorkspaceUnavailable, RunErrorCodeCanceled,

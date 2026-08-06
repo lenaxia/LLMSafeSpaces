@@ -193,6 +193,17 @@ func ValidWebhookIdempotencyMode(m string) bool {
 	return false
 }
 
+// ValidTriggerFireStatus reports whether s is a valid trigger-fire audit status.
+func ValidTriggerFireStatus(s string) bool {
+	switch s {
+	case TriggerFireFired, TriggerFireDelivered, TriggerFireFailed,
+		TriggerFireValidationError, TriggerFireRateLimited, TriggerFireSkipped,
+		TriggerFireAutoDisabled:
+		return true
+	}
+	return false
+}
+
 // ValidRunErrorCode reports whether c is a member of the bounded error_code set
 // (enforced by the workflow_runs.error_code CHECK constraint in migration 000016).
 func ValidRunErrorCode(c string) bool {

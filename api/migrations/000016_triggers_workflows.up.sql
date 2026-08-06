@@ -9,7 +9,8 @@
 --   4. webhook_deliveries    — idempotency dedup (mirrors stripe_events shape)
 --   5. workflow_runs         — execution state machine (queued|running|succeeded|failed|canceled|timed_out)
 --   6. workflow_node_runs    — per-node status/input/output/error (written after each transition)
---   7. trigger_fires         — fire audit + action result (fired|delivered|failed|skipped|auto_disabled)
+--   7. trigger_fires         — fire audit + action result
+--                              (fired|delivered|failed|validation_error|rate_limited|skipped|auto_disabled)
 --
 -- Key invariants enforced at the DB layer:
 --   - Single-in-flight-per-workflow (D8): partial UNIQUE index uq_workflow_run_single_inflight
