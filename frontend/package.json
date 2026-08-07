@@ -61,6 +61,7 @@
     "vitest": "^3.2.7"
   },
   "overrides": {
-    "postcss": "^8.5.18"
+    "postcss": "^8.5.18",
+    "js-yaml": "^4.3.1"
   }
 }
