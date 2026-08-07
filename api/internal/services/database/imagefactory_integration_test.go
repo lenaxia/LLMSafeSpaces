@@ -292,6 +292,47 @@ func TestIntegration_IF_Builds_CoalescingProbe(t *testing.T) {
 	assert.Equal(t, "ghcr.io/ws:s-coal-0.6.0", build.ImageRef)
 }
 
+// TestIntegration_IF_CreateConfigAndBuild_OrgScopeBillingFields verifies
+// that CreateConfigAndBuild writes scope + org_id to the build row, and
+// GetBuild reads them back correctly. This is the integration round-trip
+// for billing attribution (design/0047 Q1).
+func TestIntegration_IF_CreateConfigAndBuild_OrgScopeBillingFields(t *testing.T) {
+	h := testharness.New(t)
+	svc := newIFService(h)
+	ctx := context.Background()
+
+	orgID := "55555555-5555-5555-5555-555555555555"
+	rv := imagefactory.ResolvedValues{}
+	cfg := &imagefactory.Config{
+		Hash: "s-billing", Name: "billing-cfg",
+		Selection:      imagefactory.Selection{"ffmpeg"},
+		ResolvedValues: rv,
+		BaseName:       "bookworm", BaseVersion: "0.6.0",
+		Scope:  imagefactory.ScopeOrg,
+		OrgID:  &orgID,
+		Status: imagefactory.StatusBuilding,
+	}
+	ghRun := int64(777)
+	build := &imagefactory.Build{
+		ID: "66666666-6666-6666-6666-666666666666",
+		Hash: "s-billing", BaseName: "bookworm", BaseVersion: "0.6.0",
+		ResolvedValues: rv, Architectures: []string{"linux/amd64"},
+		Status: imagefactory.BuildDispatched, GHRunID: &ghRun, CallbackToken: "billing-tok",
+		Scope: imagefactory.ScopeOrg, OrgID: &orgID,
+	}
+	require.NoError(t, svc.CreateConfigAndBuild(ctx, cfg, build))
+	assert.Equal(t, cfg.ID, build.ConfigID, "build.ConfigID wired to cfg.ID")
+
+	// Read the build back — scope + org_id must survive the round-trip.
+	got, err := svc.GetBuild(ctx, build.ID)
+	require.NoError(t, err)
+	assert.Equal(t, imagefactory.ScopeOrg, got.Scope,
+		"build scope must be org for billing attribution")
+	require.NotNil(t, got.OrgID, "build org_id must not be nil")
+	assert.Equal(t, orgID, *got.OrgID,
+		"build org_id must match the org for billing attribution")
+}
+
 func TestIntegration_IF_KnownFailures_CRUD(t *testing.T) {
 	h := testharness.New(t)
 	svc := newIFService(h)
