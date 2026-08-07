@@ -122,7 +122,8 @@ func isValidKey(k types.OrgPolicyKey) bool {
 		types.PolicyAllowUserPrompt,
 		types.PolicyAllowUserMcpServers,
 		types.PolicyMaxMcpServersPerWorkspace,
-		types.PolicyDefaultRuntime:
+		types.PolicyDefaultRuntime,
+		types.PolicyAllowedImageConfigs:
 		return true
 	}
 	return false
@@ -161,6 +162,9 @@ func isValidValue(key types.OrgPolicyKey, body json.RawMessage) bool {
 	case types.PolicyDefaultRuntime:
 		var s string
 		return json.Unmarshal(body, &s) == nil
+	case types.PolicyAllowedImageConfigs:
+		var arr []string
+		return json.Unmarshal(body, &arr) == nil
 	}
 	return false
 }

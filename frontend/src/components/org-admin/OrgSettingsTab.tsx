@@ -28,6 +28,10 @@ export function OrgAdminSettingsTab() {
   const [maxMcpPerWs, setMaxMcpPerWs] = useState(0);
   const [defaultRuntime, setDefaultRuntime] = useState("");
 
+  // Image restriction (design/0047 D3)
+  const [restrictImages, setRestrictImages] = useState(false);
+  const [imageHashesText, setImageHashesText] = useState("");
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -47,6 +51,10 @@ export function OrgAdminSettingsTab() {
 
       setMaxMcpPerWs(toInt(get("max_mcp_servers_per_workspace"), 0));
       setDefaultRuntime((get("default_runtime") as string) ?? "");
+
+      const imageHashes = toStringArray(get("allowed_image_configs"));
+      setRestrictImages(imageHashes.length > 0);
+      setImageHashesText(imageHashes.join("\n"));
     } catch {
       // keep defaults
     } finally {
@@ -108,6 +116,13 @@ export function OrgAdminSettingsTab() {
     } finally {
       setSaving(false);
     }
+  }
+
+  async function saveImageRestrictions() {
+    const list = restrictImages
+      ? imageHashesText.split("\n").map((s) => s.trim()).filter(Boolean)
+      : [];
+    await savePolicy("allowed_image_configs", list, restrictImages ? "Image restrictions saved" : "Image restrictions cleared");
   }
 
   if (loading) {
@@ -271,6 +286,42 @@ export function OrgAdminSettingsTab() {
             <Button onClick={saveMcpAndRuntime} disabled={saving}>
               {saving ? "Saving..." : "Save Settings"}
             </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Allowed image configs restriction (design/0047 D3) */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Image Restrictions</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Restrict which org/platform images members can launch. Leave empty for unrestricted access.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <span className="font-medium">Restrict allowed images</span>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {restrictImages ? "Only listed image hashes are launchable by members" : "All visible images are launchable (unrestricted)"}
+                </p>
+              </div>
+              <Toggle checked={restrictImages} onCheckedChange={setRestrictImages} />
+            </div>
+            {restrictImages && (
+              <textarea
+                className="w-full min-h-[100px] rounded-md border border-border bg-background px-3 py-2 text-sm font-mono"
+                placeholder={"s-abc123def456\ns-789abcdef012"}
+                value={imageHashesText}
+                onChange={(e) => setImageHashesText(e.target.value)}
+              />
+            )}
+            <div className="flex justify-end">
+              <Button onClick={saveImageRestrictions} disabled={saving} variant="outline">
+                Save Image Restrictions
+              </Button>
+            </div>
           </div>
         </CardContent>
       </Card>
