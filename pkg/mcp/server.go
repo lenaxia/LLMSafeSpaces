@@ -42,6 +42,9 @@ func NewServer(client APIClient, defaultTimeout time.Duration) *server.MCPServer
 		server.ServerTool{Tool: modelSetTool, Handler: h.modelSet},
 	)
 
+	// Epic 64: workflow + trigger tools for external agents.
+	AddWorkflowTools(srv, h)
+
 	return srv
 }
 
