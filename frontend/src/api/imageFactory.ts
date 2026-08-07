@@ -58,7 +58,10 @@ export interface Config {
 export const imageFactoryApi = {
   getCatalog: () => api.get<Catalog>("/image-factory/catalog"),
 
-  listConfigs: () => api.get<{ configs: Config[] }>("/image-factory/configs"),
+  listConfigs: async () => {
+    const r = await api.get<{ configs?: Config[] } | Config[]>("/image-factory/configs");
+    return Array.isArray(r) ? r : (r.configs ?? []);
+  },
 
   getConfig: (hash: string) => api.get<Config>(`/image-factory/configs/${hash}`),
 
@@ -68,6 +71,20 @@ export const imageFactoryApi = {
     baseName: string;
     baseVersion?: string;
   }) => api.post<Config>("/image-factory/configs", req),
+
+  createOrgConfig: (orgId: string, req: {
+    name: string;
+    selection: string[];
+    baseName: string;
+    baseVersion?: string;
+  }) => api.post<Config>(`/orgs/${orgId}/image-factory/configs`, req),
+
+  createPlatformConfig: (req: {
+    name: string;
+    selection: string[];
+    baseName: string;
+    baseVersion?: string;
+  }) => api.post<Config>("/admin/image-factory/configs", req),
 
   deleteConfig: (hash: string) =>
     api.delete<void>(`/image-factory/configs/${hash}`),

@@ -1,22 +1,51 @@
 import { useState, useEffect, useCallback } from "react";
+import { useOutletContext } from "react-router-dom";
 import { imageFactoryApi, type Catalog, type Config, type Extension } from "../../api/imageFactory";
+import type { OrgResponse } from "../../api/orgs";
 import { Spinner } from "../ui/Spinner";
 import { useToast } from "../../providers/ToastProvider";
 
-export function WorkspaceImagesTab() {
+type ImageScope = "user" | "org" | "platform";
+
+interface WorkspaceImagesTabProps {
+  scope?: ImageScope;
+}
+
+export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) {
+  const outlet = useOutletContext<{ org?: OrgResponse }>();
+  const orgId = scope === "org" ? outlet?.org?.id : undefined;
+
   const [catalog, setCatalog] = useState<Catalog | null>(null);
   const [configs, setConfigs] = useState<Config[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { toast } = useToast();
 
-  // Config builder state
   const [name, setName] = useState("");
   const [baseName, setBaseName] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [expandedConfig, setExpandedConfig] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+
+  // Determine which configs are editable based on scope. For user scope,
+  // only member configs are editable. For org scope, member + org configs.
+  // For platform scope, all configs are editable (platform admin).
+  const canEdit = (cfg: Config): boolean => {
+    if (scope === "platform") return true;
+    if (scope === "org") return cfg.scope === "org" || cfg.scope === "member";
+    return cfg.scope === "member";
+  };
+
+  // Determine which create function to call based on scope.
+  const createConfig = (req: { name: string; selection: string[]; baseName: string }) => {
+    if (scope === "org" && orgId) return imageFactoryApi.createOrgConfig(orgId, req);
+    if (scope === "platform") return imageFactoryApi.createPlatformConfig(req);
+    return imageFactoryApi.createConfig(req);
+  };
+
+  // The scope label for newly created configs (for the section heading).
+  const createScopeLabel = scope === "org" ? "Org" : scope === "platform" ? "Platform" : "Personal";
 
   const handleDelete = async (hash: string) => {
     if (!confirm(`Delete "${hash}"? This cannot be undone.`)) return;
@@ -52,7 +81,7 @@ export function WorkspaceImagesTab() {
         imageFactoryApi.listConfigs(),
       ]);
       setCatalog(cat);
-      setConfigs(cfgs.configs);
+      setConfigs(cfgs);
       if (cat.bases.length > 0 && !baseName) {
         const def = cat.bases.find((b) => b.isDefault) ?? cat.bases[0];
         if (def) setBaseName(def.name);
@@ -78,7 +107,7 @@ export function WorkspaceImagesTab() {
   const handleSave = async () => {
     if (!name.trim() || selected.size === 0 || !baseName) return;
     try {
-      const cfg = await imageFactoryApi.createConfig({
+      const cfg = await createConfig({
         name: name.trim(),
         selection: Array.from(selected).sort(),
         baseName,
@@ -88,10 +117,7 @@ export function WorkspaceImagesTab() {
       setSelected(new Set());
       toast(`Image config created: ${cfg.name} is building`, "success");
     } catch (e: unknown) {
-      toast(
-        e instanceof Error ? e.message : "Failed to create config",
-        "error",
-      );
+      toast(e instanceof Error ? e.message : "Failed to create config", "error");
     }
   };
 
@@ -99,11 +125,6 @@ export function WorkspaceImagesTab() {
   if (error) return <p className="text-destructive">{error}</p>;
   if (!catalog) return <p>No catalog data</p>;
 
-  // Check if the current selection + base combination is a known failure.
-  // The backend blocks by (selection_hash, base_name) — a combination-level
-  // check, not per-extension. We can't compute the hash client-side (it's
-  // SHA-256 over the sorted selection), so we check if ANY known failure
-  // has the same selection set + base name.
   const currentSelection = Array.from(selected).sort();
   const isCurrentSelectionBlocked = (): boolean => {
     if (currentSelection.length === 0) return false;
@@ -124,195 +145,202 @@ export function WorkspaceImagesTab() {
     }
   };
 
-  const scopeLabel = (scope: string) => {
-    switch (scope) {
+  const scopePill = (cfgScope: string) => {
+    switch (cfgScope) {
       case "platform": return { label: "Platform", cls: "bg-blue-500/15 text-blue-600 dark:text-blue-400" };
       case "org": return { label: "Org", cls: "bg-purple-500/15 text-purple-600 dark:text-purple-400" };
       default: return { label: "Personal", cls: "bg-gray-500/15 text-gray-600 dark:text-gray-400" };
     }
   };
 
-  return (
-    <div className="space-y-6">
-      {/* Saved configs */}
-      <section>
-        <h3 className="mb-3 text-sm font-semibold text-muted-foreground uppercase tracking-wide">
-          My Workspace Images
-        </h3>
-        <div className="space-y-2">
-          {configs.length === 0 && (
-            <p className="text-sm text-muted-foreground">No saved images yet.</p>
-          )}
-          {configs.map((cfg) => {
-            const sc = scopeLabel(cfg.scope);
-            const isExpanded = expandedConfig === cfg.id;
-            const isEditable = cfg.scope === "member";
-            return (
-              <div key={cfg.id} className="rounded-md border border-border overflow-hidden">
-                <button
-                  onClick={() => setExpandedConfig(isExpanded ? null : cfg.id)}
-                  className="flex w-full items-center justify-between p-3 text-left hover:bg-accent/50"
-                >
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="font-medium truncate">{cfg.name}</span>
-                    <span className={`rounded-full px-1.5 py-0.5 text-[0.6rem] font-medium ${sc.cls}`}>
-                      {sc.label}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0">
-                    <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${statusPill(cfg.status)}`}>
-                      {cfg.status}
-                    </span>
-                  </div>
-                </button>
-                {isExpanded && (
-                  <div className="border-t border-border px-3 py-2 bg-muted/30">
-                    <div className="text-xs text-muted-foreground mb-2">
-                      Base: {cfg.baseName} · {cfg.selection.length} extensions · {cfg.baseVersion}
-                    </div>
-                    <div className="flex flex-wrap gap-1">
-                      {cfg.selection.map((ext) => (
-                        <span key={ext} className="rounded bg-secondary px-1.5 py-0.5 text-[0.65rem] text-secondary-foreground">
-                          {ext}
-                        </span>
-                      ))}
-                    </div>
-                    {isEditable && cfg.status !== "building" && (
-                      <div className="mt-3 flex gap-2">
-                        {renamingId === cfg.id ? (
-                          <>
-                            <input
-                              type="text"
-                              value={renameValue}
-                              onChange={(e) => setRenameValue(e.target.value)}
-                              onKeyDown={(e) => { if (e.key === "Enter") handleRename(cfg.hash); if (e.key === "Escape") setRenamingId(null); }}
-                              className="h-7 w-40 rounded border border-border bg-background px-2 text-xs"
-                              autoFocus
-                            />
-                            <button
-                              onClick={() => handleRename(cfg.hash)}
-                              className="rounded border border-border px-2 py-1 text-xs hover:bg-accent"
-                            >
-                              Save
-                            </button>
-                            <button
-                              onClick={() => { setRenamingId(null); setRenameValue(""); }}
-                              className="rounded border border-border px-2 py-1 text-xs hover:bg-accent"
-                            >
-                              Cancel
-                            </button>
-                          </>
-                        ) : (
-                          <>
-                            <button
-                              onClick={() => { setRenamingId(cfg.id); setRenameValue(cfg.name); }}
-                              className="rounded border border-border px-2 py-1 text-xs hover:bg-accent"
-                            >
-                              Rename
-                            </button>
-                            <button
-                              onClick={() => handleDelete(cfg.hash)}
-                              className="rounded border border-destructive/50 px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
-                            >
-                              Delete
-                            </button>
-                          </>
-                        )}
-                      </div>
-                    )}
-                  </div>
+  // Split configs into sections based on scope (Q3: member configs separate
+  // from org/platform when scope is org or platform). For user scope, all
+  // configs render in one flat list ("My Workspace Images").
+  const managedScopes = scope === "org"
+    ? ["org", "platform"]
+    : scope === "platform"
+      ? ["org", "platform"]
+      : []; // user: no managed section — everything in one list
+  const memberConfigs = configs.filter((c) => c.scope === "member");
+  const managedConfigs = configs.filter((c) => managedScopes.includes(c.scope));
+  const showMemberSection = (scope === "org" || scope === "platform") && memberConfigs.length > 0;
+  const showManagedSection = managedScopes.length > 0 && managedConfigs.length > 0;
+
+  const renderConfigCard = (cfg: Config) => {
+    const sc = scopePill(cfg.scope);
+    const isExpanded = expandedConfig === cfg.id;
+    const editable = canEdit(cfg);
+    return (
+      <div key={cfg.id} className="rounded-md border border-border overflow-hidden">
+        <button
+          onClick={() => setExpandedConfig(isExpanded ? null : cfg.id)}
+          className="flex w-full items-center justify-between p-3 text-left hover:bg-accent/50"
+        >
+          <div className="flex items-center gap-2 min-w-0">
+            <span className="font-medium truncate">{cfg.name}</span>
+            <span className={`rounded-full px-1.5 py-0.5 text-[0.6rem] font-medium ${sc.cls}`}>
+              {sc.label}
+            </span>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${statusPill(cfg.status)}`}>
+              {cfg.status}
+            </span>
+          </div>
+        </button>
+        {isExpanded && (
+          <div className="border-t border-border px-3 py-2 bg-muted/30">
+            <div className="text-xs text-muted-foreground mb-2">
+              Base: {cfg.baseName} · {cfg.selection.length} extensions · {cfg.baseVersion}
+            </div>
+            <div className="flex flex-wrap gap-1">
+              {cfg.selection.map((ext) => (
+                <span key={ext} className="rounded bg-secondary px-1.5 py-0.5 text-[0.65rem] text-secondary-foreground">
+                  {ext}
+                </span>
+              ))}
+            </div>
+            {editable && cfg.status !== "building" && (
+              <div className="mt-3 flex gap-2">
+                {renamingId === cfg.id ? (
+                  <>
+                    <input
+                      type="text"
+                      value={renameValue}
+                      onChange={(e) => setRenameValue(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") handleRename(cfg.hash); if (e.key === "Escape") setRenamingId(null); }}
+                      className="h-7 w-40 rounded border border-border bg-background px-2 text-xs"
+                      autoFocus
+                    />
+                    <button onClick={() => handleRename(cfg.hash)} className="rounded border border-border px-2 py-1 text-xs hover:bg-accent">Save</button>
+                    <button onClick={() => { setRenamingId(null); setRenameValue(""); }} className="rounded border border-border px-2 py-1 text-xs hover:bg-accent">Cancel</button>
+                  </>
+                ) : (
+                  <>
+                    <button onClick={() => { setRenamingId(cfg.id); setRenameValue(cfg.name); }} className="rounded border border-border px-2 py-1 text-xs hover:bg-accent">Rename</button>
+                    <button onClick={() => handleDelete(cfg.hash)} className="rounded border border-destructive/50 px-2 py-1 text-xs text-destructive hover:bg-destructive/10">Delete</button>
+                  </>
                 )}
               </div>
-            );
-          })}
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderConfigBuilder = () => (
+    <section>
+      <h3 className="mb-3 text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+        Create {createScopeLabel} Image
+      </h3>
+      <div className="space-y-4 rounded-md border border-border p-4">
+        <div>
+          <label className="block text-sm font-medium mb-1">Name</label>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. ml-stack"
+            className="w-full rounded-md border border-border px-3 py-1.5 text-sm"
+          />
         </div>
-      </section>
-
-      {/* Config builder */}
-      <section>
-        <h3 className="mb-3 text-sm font-semibold text-muted-foreground uppercase tracking-wide">
-          Create New Image
-        </h3>
-        <div className="space-y-4 rounded-md border border-border p-4">
-          {/* Name */}
-          <div>
-            <label className="block text-sm font-medium mb-1">Name</label>
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. ml-stack"
-              className="w-full rounded-md border border-border px-3 py-1.5 text-sm"
-            />
-          </div>
-
-          {/* Base selector */}
-          <div>
-            <label className="block text-sm font-medium mb-1">Base Image</label>
-            <select
-              value={baseName}
-              onChange={(e) => setBaseName(e.target.value)}
-              className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground"
-            >
-              {catalog.bases.map((b) => (
-                <option key={`${b.name}/${b.version}`} value={b.name}>
-                  {b.name} ({b.version})
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {/* Extensions grouped by type */}
-          <div>
-            <label className="block text-sm font-medium mb-1">Extensions</label>
-            {(() => {
-              const groups: Record<string, Extension[]> = {
-                "Language Packs": catalog.extensions.filter((e) => e.type === "mise"),
-                "System Packages": catalog.extensions.filter((e) => e.type === "apt"),
-                "Files": catalog.extensions.filter((e) => e.type === "file"),
-              };
-              const groupOrder = ["Language Packs", "System Packages", "Files"];
-              return groupOrder
-                .filter((name) => (groups[name] || []).length > 0)
-                .map((groupName) => (
-                  <div key={groupName} className="mb-4">
-                    <h4 className="mb-1 text-xs font-semibold uppercase text-muted-foreground">{groupName}</h4>
-                    <div className="space-y-1">
-                      {(groups[groupName] || []).map((ext) => (
-                        <label
-                          key={ext.id}
-                          className="flex items-center gap-2 text-sm cursor-pointer"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={selected.has(ext.id)}
-                            onChange={() => toggleExtension(ext.id)}
-                          />
-                          <span className="font-mono">{ext.id}</span>
-                          <span className="text-xs text-muted-foreground">
-                            ({ext.type}: {ext.value.length > 50 ? ext.value.slice(0, 50) + "…" : ext.value})
-                          </span>
-                          {ext.description && (
-                            <span className="text-xs text-muted-foreground">— {ext.description}</span>
-                          )}
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                ));
-            })()}
-          </div>
-
-          {/* Save button */}
-          <button
-            onClick={handleSave}
-            disabled={!name.trim() || selected.size === 0 || isCurrentSelectionBlocked()}
-            className="rounded-md bg-blue-600 px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+        <div>
+          <label className="block text-sm font-medium mb-1">Base Image</label>
+          <select
+            value={baseName}
+            onChange={(e) => setBaseName(e.target.value)}
+            className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground"
           >
-            {isCurrentSelectionBlocked() ? "Combination blocked" : "Create & Build"}
-          </button>
+            {catalog.bases.map((b) => (
+              <option key={`${b.name}/${b.version}`} value={b.name}>
+                {b.name} ({b.version})
+              </option>
+            ))}
+          </select>
         </div>
-      </section>
+        <div>
+          <label className="block text-sm font-medium mb-1">Extensions</label>
+          {(() => {
+            const groups: Record<string, Extension[]> = {
+              "Language Packs": catalog.extensions.filter((e) => e.type === "mise"),
+              "System Packages": catalog.extensions.filter((e) => e.type === "apt"),
+              "Files": catalog.extensions.filter((e) => e.type === "file"),
+            };
+            const groupOrder = ["Language Packs", "System Packages", "Files"];
+            return groupOrder
+              .filter((g) => (groups[g] || []).length > 0)
+              .map((groupName) => (
+                <div key={groupName} className="mb-4">
+                  <h4 className="mb-1 text-xs font-semibold uppercase text-muted-foreground">{groupName}</h4>
+                  <div className="space-y-1">
+                    {(groups[groupName] || []).map((ext) => (
+                      <label key={ext.id} className="flex items-center gap-2 text-sm cursor-pointer">
+                        <input type="checkbox" checked={selected.has(ext.id)} onChange={() => toggleExtension(ext.id)} />
+                        <span className="font-mono">{ext.id}</span>
+                        <span className="text-xs text-muted-foreground">
+                          ({ext.type}: {ext.value.length > 50 ? ext.value.slice(0, 50) + "\u2026" : ext.value})
+                        </span>
+                        {ext.description && <span className="text-xs text-muted-foreground">— {ext.description}</span>}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              ));
+          })()}
+        </div>
+        <button
+          onClick={handleSave}
+          disabled={!name.trim() || selected.size === 0 || isCurrentSelectionBlocked()}
+          className="rounded-md bg-blue-600 px-4 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+        >
+          {isCurrentSelectionBlocked() ? "Combination blocked" : `Create ${createScopeLabel} Image & Build`}
+        </button>
+      </div>
+    </section>
+  );
+
+  return (
+    <div className="space-y-6">
+      {/* Managed configs (org/platform) */}
+      {showManagedSection && (
+        <section>
+          <h3 className="mb-3 text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+            {scope === "org" ? "Org & Platform Images" : scope === "platform" ? "All Images" : "Shared Images"}
+          </h3>
+          <div className="space-y-2">
+            {managedConfigs.length === 0 && <p className="text-sm text-muted-foreground">No shared images yet.</p>}
+            {managedConfigs.map(renderConfigCard)}
+          </div>
+        </section>
+      )}
+
+      {/* Member configs (separate section per Q3) */}
+      {showMemberSection && memberConfigs.length > 0 && (
+        <section>
+          <h3 className="mb-3 text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+            Member Images
+          </h3>
+          <div className="space-y-2">
+            {memberConfigs.map(renderConfigCard)}
+          </div>
+        </section>
+      )}
+
+      {/* User scope: show all personal configs in one list */}
+      {!showManagedSection && !showMemberSection && (
+        <section>
+          <h3 className="mb-3 text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+            My Workspace Images
+          </h3>
+          <div className="space-y-2">
+            {configs.length === 0 && <p className="text-sm text-muted-foreground">No saved images yet.</p>}
+            {configs.map(renderConfigCard)}
+          </div>
+        </section>
+      )}
+
+      {renderConfigBuilder()}
     </div>
   );
 }

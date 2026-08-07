@@ -31,7 +31,7 @@ describe("WorkspaceImagesTab grouping", () => {
       ],
       knownFailures: [],
     });
-    mockListConfigs.mockResolvedValue({ configs: [] });
+    mockListConfigs.mockResolvedValue([]);
   });
 
   it("groups extensions by type with section headers", async () => {

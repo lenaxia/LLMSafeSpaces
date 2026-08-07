@@ -53,6 +53,7 @@ export function OrgAdminLayout() {
     { to: "members", label: "Members", adminOnly: true },
     { to: "credentials", label: "Credentials", adminOnly: true },
     { to: "mcp-servers", label: "MCP Servers", adminOnly: true },
+    { to: "images", label: "Images", adminOnly: true },
     { to: "workspaces", label: "Workspaces", adminOnly: false },
     { to: "audit", label: "Audit", adminOnly: true },
     { to: "billing", label: "Billing", adminOnly: true },
