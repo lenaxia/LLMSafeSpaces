@@ -314,7 +314,7 @@ func TestIntegration_IF_CreateConfigAndBuild_OrgScopeBillingFields(t *testing.T)
 	}
 	ghRun := int64(777)
 	build := &imagefactory.Build{
-		ID: "66666666-6666-6666-6666-666666666666",
+		ID:   "66666666-6666-6666-6666-666666666666",
 		Hash: "s-billing", BaseName: "bookworm", BaseVersion: "0.6.0",
 		ResolvedValues: rv, Architectures: []string{"linux/amd64"},
 		Status: imagefactory.BuildDispatched, GHRunID: &ghRun, CallbackToken: "billing-tok",
