@@ -51,6 +51,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 	"github.com/lenaxia/llmsafespaces/pkg/settings"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
+	"github.com/lenaxia/llmsafespaces/pkg/workflows"
 )
 
 // Compile-time check that *WorkspaceClient satisfies the caller-shaped
@@ -291,6 +292,12 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	var adminMcpHandler *handlers.MCPServersHandler
 	var orgMcpHandler *handlers.MCPServersHandler
 	var userMcpHandler *handlers.MCPServersHandler
+	// Epic 64: workflow + trigger handlers
+	var userWorkflowsHandler *handlers.WorkflowsHandler
+	var orgWorkflowsHandler *handlers.WorkflowsHandler
+	var userTriggersHandler *handlers.TriggersHandler
+	var orgTriggersHandler *handlers.TriggersHandler
+	var webhookReceiverHandler *handlers.WebhookReceiverHandler
 	// mcpPushAdapter is assigned after agentPusher is constructed; used by
 	// all three MCP handler scopes for live reload after bind.
 	var mcpPushAdapter func(ctx context.Context, userID, workspaceID string) error
@@ -487,6 +494,15 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		if err := ensureFreeTierCredential(context.Background(), pgStore, providerCredsProv, log); err != nil {
 			log.Warn("free-tier credential seeding skipped", "error", err.Error())
 		}
+
+		// Epic 64: Workflow + trigger handlers. The workflows.Store wraps the
+		// secrets pgxpool (same connection pool, different table set).
+		wfStore := workflows.NewStore(secretsPool)
+		userWorkflowsHandler = handlers.NewUserWorkflowsHandler(wfStore, instanceSettings)
+		orgWorkflowsHandler = handlers.NewOrgWorkflowsHandler(wfStore, instanceSettings)
+		userTriggersHandler = handlers.NewUserTriggersHandler(wfStore, instanceSettings, providerCredsProv)
+		orgTriggersHandler = handlers.NewOrgTriggersHandler(wfStore, instanceSettings, providerCredsProv)
+		webhookReceiverHandler = handlers.NewWebhookReceiverHandler(wfStore, providerCredsProv, 1<<20)
 		// Wire pod-IP resolver so reload-secrets can reach in-pod agentd.
 		// Without this the SecretsHandler returns 503 for every reload
 		// request and the SetBindings auto-push silently no-ops; see
@@ -717,6 +733,20 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		}
 		if adminMcpHandler != nil {
 			adminMcpHandler.SetAudit(pgOrgStore)
+		}
+
+		// Epic 64: deferred audit wiring for workflow + trigger handlers.
+		if userWorkflowsHandler != nil {
+			userWorkflowsHandler.SetAudit(pgOrgStore)
+		}
+		if orgWorkflowsHandler != nil {
+			orgWorkflowsHandler.SetAudit(pgOrgStore)
+		}
+		if userTriggersHandler != nil {
+			userTriggersHandler.SetAudit(pgOrgStore)
+		}
+		if orgTriggersHandler != nil {
+			orgTriggersHandler.SetAudit(pgOrgStore)
 		}
 
 		// US-43.10: OIDC SSO. The service reuses the auth service as the JWT
@@ -1160,6 +1190,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		LoginDiscoveryHandler:           loginDiscoveryHandler,
 		PasskeyHandler:                  passkeyHandler,
 		PasskeyDefaultSignup:            cfg.Passkey.DefaultSignup,
+		UserWorkflowsHandler:            userWorkflowsHandler,
+		OrgWorkflowsHandler:             orgWorkflowsHandler,
+		UserTriggersHandler:             userTriggersHandler,
+		OrgTriggersHandler:              orgTriggersHandler,
+		WebhookReceiverHandler:          webhookReceiverHandler,
 		CookieName:                      cfg.Auth.CookieName,
 		CookieDomain:                    cfg.OrgSubdomainRouting.CookieDomain,
 		Turnstile: server.TurnstileRouterConfig{

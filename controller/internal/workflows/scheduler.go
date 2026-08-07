@@ -16,6 +16,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lenaxia/llmsafespaces/pkg/types"
@@ -190,17 +192,67 @@ func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger ReconcilerLog
 	logger.Info("scheduler: fired cron trigger", "triggerId", trigger.ID, "runId", runID)
 }
 
-// computeNextFire computes the next fire time. v1 uses a simple interval
-// based on the cron expression's smallest granularity. A proper cron parser
-// is deferred to when a library is chosen (US-64.9 enhancement).
+// computeNextFire computes the next fire time from a cron expression.
+// v1 supports basic 5-field cron expressions: minute hour day-of-month month day-of-week.
+// Uses a simplified interval approach: finds the smallest interval implied by the
+// expression and adds it. Full cron parsing (with field wildcards) requires a library.
 func computeNextFire(trigger *wf.TriggerRow, now time.Time) time.Time {
 	var cfg types.CronSourceConfig
 	_ = json.Unmarshal(trigger.SourceConfig, &cfg)
 
-	// v1: default to 1 hour intervals (the scheduler tick handles the actual
-	// timing; the cron expression parsing is a TODO that needs a cron library).
-	// For now, advance by the tick interval or 1 hour, whichever is larger.
-	return now.Add(time.Hour)
+	expr := cfg.Expr
+	if expr == "" {
+		return now.Add(time.Hour) // default 1h
+	}
+
+	// Parse 5-field cron expression. Fields: minute hour dom month dow.
+	// For v1, we support the common patterns:
+	// - "*/N * * * *" → every N minutes
+	// - "0 * * * *" → hourly
+	// - "0 N * * *" → daily at hour N
+	// - "0 0 * * 1-5" → weekdays at midnight
+	fields := strings.Fields(expr)
+	if len(fields) != 5 {
+		return now.Add(time.Hour) // unknown format, default 1h
+	}
+
+	minuteField := fields[0]
+	hourField := fields[1]
+
+	// */N in minute → every N minutes
+	if strings.HasPrefix(minuteField, "*/") {
+		if n, err := strconv.Atoi(minuteField[2:]); err == nil && n > 0 {
+			return now.Add(time.Duration(n) * time.Minute)
+		}
+	}
+
+	// 0 in minute + * in hour → hourly
+	if minuteField == "0" && hourField == "*" {
+		return now.Add(time.Hour)
+	}
+
+	// Specific minute + specific hour → daily
+	minute, _ := strconv.Atoi(minuteField)
+	hour, _ := strconv.Atoi(hourField)
+
+	// Compute next occurrence at hour:minute tomorrow (or today if not yet passed).
+	next := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, now.Location())
+	if next.Before(now) || next.Equal(now) {
+		next = next.Add(24 * time.Hour)
+	}
+
+	// Check day-of-week filter (field[4])
+	dowField := fields[4]
+	if dowField != "*" {
+		// Simple: "1-5" means Mon-Fri
+		if dowField == "1-5" {
+			for next.Weekday() == time.Sunday || next.Weekday() == time.Saturday {
+				next = next.Add(24 * time.Hour)
+			}
+		}
+	}
+
+	return next
 }
 
 func strPtr(s string) *string { return &s }

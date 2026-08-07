@@ -7,10 +7,14 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth/gcp"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -27,7 +31,9 @@ import (
 	"github.com/lenaxia/llmsafespaces/controller/internal/freemodels"
 	"github.com/lenaxia/llmsafespaces/controller/internal/metrics"
 	"github.com/lenaxia/llmsafespaces/controller/internal/webhooks"
+	wfctrl "github.com/lenaxia/llmsafespaces/controller/internal/workflows"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
+	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
 )
 
 var (
@@ -303,6 +309,62 @@ func main() {
 			"url", freeModelsAPIURL)
 	}
 
+	// Epic 64: Workflow reconciler + scheduler. Both are leader-elected
+	// manager.Runnable — only one controller replica runs them.
+	wfDBURL := os.Getenv("DATABASE_URL")
+	if wfDBURL == "" {
+		wfDBURL = os.Getenv("LLMSAFESPACES_DATABASE_URL")
+	}
+	if wfDBURL == "" {
+		pgHost := os.Getenv("LLMSAFESPACES_DATABASE_HOST")
+		if pgHost == "" {
+			pgHost = "postgres"
+		}
+		pgPort := os.Getenv("LLMSAFESPACES_DATABASE_PORT")
+		if pgPort == "" {
+			pgPort = "5432"
+		}
+		pgUser := os.Getenv("LLMSAFESPACES_DATABASE_USER")
+		if pgUser == "" {
+			pgUser = "llmsafespaces"
+		}
+		pgPass := os.Getenv("LLMSAFESPACES_DATABASE_PASSWORD")
+		pgDB := os.Getenv("LLMSAFESPACES_DATABASE_NAME")
+		if pgDB == "" {
+			pgDB = "llmsafespaces"
+		}
+		wfDBURL = fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=disable",
+			pgHost, pgPort, pgUser, pgPass, pgDB)
+	}
+	wfPool, wfPoolErr := pgxpool.New(context.Background(), wfDBURL)
+	if wfPoolErr != nil {
+		setupLog.Error(wfPoolErr, "failed to create workflow pgxpool; workflow engine disabled")
+	} else {
+		defer wfPool.Close()
+		wfStore := wf.NewStore(wfPool)
+
+		if err := mgr.Add(&wfctrl.WorkflowReconciler{
+			Store:         wfStore,
+			AgentdClient:  &wfctrl.HTTPAgentdExecutor{Port: 4098, Client: &http.Client{Timeout: 15 * time.Minute}},
+			K8sClient:     &workspaceActivator{Client: mgr.GetClient()},
+			Logger:        ctrl.Log.WithName("workflow-reconciler"),
+			MaxConcurrent: 10,
+		}); err != nil {
+			setupLog.Error(err, "failed to add workflow reconciler")
+			os.Exit(1)
+		}
+
+		if err := mgr.Add(&wfctrl.Scheduler{
+			Store:        wfStore,
+			Logger:       ctrl.Log.WithName("workflow-scheduler"),
+			TickInterval: 30 * time.Second,
+		}); err != nil {
+			setupLog.Error(err, "failed to add workflow scheduler")
+			os.Exit(1)
+		}
+		setupLog.Info("workflow engine enabled (reconciler + scheduler)")
+	}
+
 	// Add health check endpoints
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")
@@ -358,3 +420,52 @@ func (s *workspaceGaugeSeeder) Start(ctx context.Context) error {
 	}
 	return nil
 }
+
+// workspaceActivator implements wfctrl.WorkspaceActivator. It checks the
+// Workspace CRD phase and, if suspended, patches it to Active (which the
+// workspace reconciler picks up to start the pod). Returns the pod IP once
+// the workspace is Active.
+type workspaceActivator struct {
+	Client client.Client
+}
+
+func (a *workspaceActivator) EnsureActive(ctx context.Context, workspaceID string, timeout time.Duration) (string, error) {
+	var ws v1.Workspace
+	nsName := types.NamespacedName{Name: workspaceID, Namespace: "llmsafespaces"}
+
+	checkCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	for {
+		if err := a.Client.Get(checkCtx, nsName, &ws); err != nil {
+			if errors.IsNotFound(err) {
+				return "", fmt.Errorf("workspace %s not found", workspaceID)
+			}
+			return "", err
+		}
+
+		if ws.Status.Phase == v1.WorkspacePhaseActive {
+			return ws.Status.PodIP, nil
+		}
+
+		if ws.Status.Phase == v1.WorkspacePhaseSuspended || ws.Status.Phase == v1.WorkspacePhaseFailed {
+			// Patch to Active to wake the workspace.
+			patch := client.MergeFrom(ws.DeepCopy())
+			ws.Spec.Suspend = boolPtr(false)
+			if err := a.Client.Patch(checkCtx, &ws, patch); err != nil {
+				return "", fmt.Errorf("failed to activate workspace: %w", err)
+			}
+		}
+
+		select {
+		case <-checkCtx.Done():
+			return "", fmt.Errorf("workspace activation timed out after %s (phase: %s)", timeout, ws.Status.Phase)
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+// Ensure the types are used (compile-time check).
+var _ wfctrl.WorkspaceActivator = (*workspaceActivator)(nil)
