@@ -166,6 +166,37 @@ describe("WorkspaceImagesTab edit permissions", () => {
     await waitFor(() => expect(screen.getByText("Rename")).toBeInTheDocument());
   });
 
+  // Regression: member configs must NOT be editable from platform/org tabs.
+  // Pre-fix: canEdit returned true for all configs on platform scope, so
+  // member configs showed Rename/Delete buttons. This test expands a member
+  // config on platform scope and asserts NO edit buttons appear.
+  it("platform scope: member configs are read-only (no rename/delete)", async () => {
+    mockListConfigs.mockResolvedValue([
+      { id: "c1", hash: "s-1", name: "Member Image", scope: "member", status: "ready", selection: [], baseName: "bookworm", baseVersion: "0.6.0" },
+    ]);
+    renderWithOutlet("platform");
+    await waitFor(() => expect(screen.getByText("Member Image")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Member Image"));
+    // Wait a moment for any potential edit buttons to render
+    await new Promise((r) => setTimeout(r, 100));
+    expect(screen.queryByText("Rename")).not.toBeInTheDocument();
+    expect(screen.queryByText("Delete")).not.toBeInTheDocument();
+  });
+
+  // Regression: org tab must also show member configs as read-only.
+  it("org scope: member configs are read-only (no rename/delete)", async () => {
+    mockListConfigs.mockResolvedValue([
+      { id: "c1", hash: "s-1", name: "OrgImage", scope: "org", status: "ready", selection: [], baseName: "bookworm", baseVersion: "0.6.0" },
+      { id: "c2", hash: "s-2", name: "MemberImage", scope: "member", status: "ready", selection: [], baseName: "bookworm", baseVersion: "0.6.0" },
+    ]);
+    renderWithOutlet("org", ORG);
+    await waitFor(() => expect(screen.getByText("MemberImage")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("MemberImage"));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(screen.queryByText("Rename")).not.toBeInTheDocument();
+    expect(screen.queryByText("Delete")).not.toBeInTheDocument();
+  });
+
   it("org scope: managed configs render once, not duplicated in flat list", async () => {
     mockListConfigs.mockResolvedValue([
       { id: "c1", hash: "s-1", name: "OrgOnly", scope: "org", status: "ready", selection: [], baseName: "bookworm", baseVersion: "0.6.0" },
