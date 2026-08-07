@@ -44,15 +44,15 @@ type UpdateWorkflowReq struct {
 
 // WorkflowRun represents a single execution of a workflow.
 type WorkflowRun struct {
-	ID          string          `json:"id"`
-	WorkflowID  string          `json:"workflowId"`
-	Status      string          `json:"status"`
-	ErrorCode   string          `json:"errorCode,omitempty"`
-	Input       json.RawMessage `json:"input,omitempty"`
-	Output      json.RawMessage `json:"output,omitempty"`
-	StartedAt   *time.Time      `json:"startedAt,omitempty"`
-	FinishedAt  *time.Time      `json:"finishedAt,omitempty"`
-	CreatedAt   time.Time       `json:"createdAt"`
+	ID         string          `json:"id"`
+	WorkflowID string          `json:"workflowId"`
+	Status     string          `json:"status"`
+	ErrorCode  string          `json:"errorCode,omitempty"`
+	Input      json.RawMessage `json:"input,omitempty"`
+	Output     json.RawMessage `json:"output,omitempty"`
+	StartedAt  *time.Time      `json:"startedAt,omitempty"`
+	FinishedAt *time.Time      `json:"finishedAt,omitempty"`
+	CreatedAt  time.Time       `json:"createdAt"`
 }
 
 // Trigger represents a trigger definition.
