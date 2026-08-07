@@ -209,7 +209,7 @@ func execHTTPNode(ctx context.Context, w http.ResponseWriter, req *workflowExecu
 		writeWorkflowError(w, http.StatusOK, "script_failed", err.Error())
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	headersMap := make(map[string]string)
@@ -234,7 +234,7 @@ func execConditionNode(_ context.Context, w http.ResponseWriter, req *workflowEx
 
 	var input map[string]any
 	if len(req.Input) > 0 {
-		json.Unmarshal(req.Input, &input)
+		_ = json.Unmarshal(req.Input, &input)
 	}
 	if input == nil {
 		input = map[string]any{}
@@ -268,7 +268,7 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 	prompt := data.Prompt
 	if len(req.Input) > 0 {
 		var input map[string]any
-		json.Unmarshal(req.Input, &input)
+		_ = json.Unmarshal(req.Input, &input)
 		for k, v := range input {
 			prompt = strings.ReplaceAll(prompt, "{{."+k+"}}", fmt.Sprintf("%v", v))
 		}
@@ -303,7 +303,7 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 		writeWorkflowError(w, http.StatusOK, "script_failed", err.Error())
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode == http.StatusNotFound {
 		writeWorkflowError(w, http.StatusOK, "session_not_found", fmt.Sprintf("session %s not found", sessionID))
@@ -367,13 +367,13 @@ func writeWorkflowSuccess(w http.ResponseWriter, output any, branch ...string) {
 	if len(branch) > 0 {
 		resp.Branch = branch[0]
 	}
-	json.NewEncoder(w).Encode(resp)
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func writeWorkflowError(w http.ResponseWriter, status int, code, detail string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(workflowExecuteError{ErrorCode: code, Detail: detail})
+	_ = json.NewEncoder(w).Encode(workflowExecuteError{ErrorCode: code, Detail: detail})
 }
 
 func loadSecretsEnv() (map[string]string, error) {
@@ -417,7 +417,7 @@ func createOpencodeSession(ctx context.Context, password string) string {
 	if err != nil || resp.StatusCode != http.StatusOK {
 		return ""
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	var s struct {
 		ID string `json:"id"`
 	}
