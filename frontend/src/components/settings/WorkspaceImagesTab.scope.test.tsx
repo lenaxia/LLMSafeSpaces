@@ -116,17 +116,17 @@ describe("WorkspaceImagesTab scope routing", () => {
 });
 
 describe("WorkspaceImagesTab scope grouping (Q3)", () => {
-  it("org scope: shows member configs in separate section from org/platform", async () => {
+  it("org scope: shows member configs in separate section from org", async () => {
     mockListConfigs.mockResolvedValue([
       { id: "c1", hash: "s-1", name: "Org Image", scope: "org", status: "ready", selection: [], baseName: "bookworm", baseVersion: "0.6.0" },
       { id: "c2", hash: "s-2", name: "Member Image", scope: "member", status: "ready", selection: [], baseName: "bookworm", baseVersion: "0.6.0" },
     ]);
     renderWithOutlet("org", ORG);
     await waitFor(() => expect(screen.getByText("Org Image")).toBeInTheDocument());
-    // Both section headings render
-    expect(screen.getByText("Org & Platform Images")).toBeInTheDocument();
+    // Managed section heading
+    expect(screen.getByText("Org Images")).toBeInTheDocument();
+    // Member configs in separate section
     expect(screen.getByText("Member Images")).toBeInTheDocument();
-    // Member config is in its own section
     expect(screen.getByText("Member Image")).toBeInTheDocument();
   });
 
@@ -138,7 +138,8 @@ describe("WorkspaceImagesTab scope grouping (Q3)", () => {
     await waitFor(() => expect(screen.getByText("My Image")).toBeInTheDocument());
     expect(screen.getByText("My Workspace Images")).toBeInTheDocument();
     expect(screen.queryByText("Member Images")).not.toBeInTheDocument();
-    expect(screen.queryByText("Org & Platform Images")).not.toBeInTheDocument();
+    expect(screen.queryByText("Org Images")).not.toBeInTheDocument();
+    expect(screen.queryByText("Platform Images")).not.toBeInTheDocument();
   });
 });
 
@@ -148,39 +149,30 @@ describe("WorkspaceImagesTab edit permissions", () => {
       { id: "c1", hash: "s-1", name: "EditableOrgImg", scope: "org", status: "ready", selection: [], baseName: "bookworm", baseVersion: "0.6.0" },
     ]);
     renderWithOutlet("org", ORG);
-    // Wait for config to render, then click to expand
     await waitFor(() => expect(screen.getByText("EditableOrgImg")).toBeInTheDocument());
     fireEvent.click(screen.getByText("EditableOrgImg"));
-    // Rename/Delete buttons should appear after expansion
     await waitFor(() => expect(screen.getByText("Delete")).toBeInTheDocument(), { timeout: 3000 });
   });
 
-  it("platform scope: all configs are editable", async () => {
+  it("platform scope: platform configs are editable, member configs are read-only", async () => {
     mockListConfigs.mockResolvedValue([
       { id: "c1", hash: "s-1", name: "Member Image", scope: "member", status: "ready", selection: [], baseName: "bookworm", baseVersion: "0.6.0" },
       { id: "c2", hash: "s-2", name: "Platform Image", scope: "platform", status: "ready", selection: [], baseName: "bookworm", baseVersion: "0.6.0" },
     ]);
     renderWithOutlet("platform");
-    await waitFor(() => expect(screen.getByText("Member Image")).toBeInTheDocument());
-    // Member configs in platform scope are editable
-    fireEvent.click(screen.getByText("Member Image"));
+    await waitFor(() => expect(screen.getByText("Platform Image")).toBeInTheDocument());
+    // Platform configs are editable
+    fireEvent.click(screen.getByText("Platform Image"));
     await waitFor(() => expect(screen.getByText("Rename")).toBeInTheDocument());
   });
 
-  // Regression: when scope is org/platform and managed configs exist (no
-  // member configs), the flat "My Workspace Images" list must NOT also
-  // render them (duplicate display). Pre-fix: managed section + flat list
-  // both rendered the same configs.
   it("org scope: managed configs render once, not duplicated in flat list", async () => {
     mockListConfigs.mockResolvedValue([
       { id: "c1", hash: "s-1", name: "OrgOnly", scope: "org", status: "ready", selection: [], baseName: "bookworm", baseVersion: "0.6.0" },
     ]);
     renderWithOutlet("org", ORG);
     await waitFor(() => expect(screen.getByText("OrgOnly")).toBeInTheDocument());
-    // The flat "My Workspace Images" heading must NOT render for org scope
-    // with managed configs — it would duplicate the managed section.
     expect(screen.queryByText("My Workspace Images")).not.toBeInTheDocument();
-    // The managed section heading renders.
-    expect(screen.getByText("Org & Platform Images")).toBeInTheDocument();
+    expect(screen.getByText("Org Images")).toBeInTheDocument();
   });
 });
