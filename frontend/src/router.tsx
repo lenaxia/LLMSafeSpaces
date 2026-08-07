@@ -17,6 +17,7 @@ import { ApiKeysTab } from "./components/settings/ApiKeysTab";
 import { MyOrganisationTab } from "./components/settings/MyOrganisationTab";
 import { PasskeySettings } from "./components/settings/PasskeySettings";
 import { WorkspaceImagesTab } from "./components/settings/WorkspaceImagesTab";
+import { WorkflowsTab } from "./components/workflows/WorkflowsTab";
 import { OrgAdminLayout } from "./components/org-admin/OrgAdminLayout";
 import { OrgOverviewTab } from "./components/org-admin/OrgOverviewTab";
 import { OrgMembersTab } from "./components/org-admin/OrgMembersTab";
@@ -122,6 +123,7 @@ export const router = createBrowserRouter([
               { path: "api-keys", element: <ApiKeysTab /> },
               { path: "passkeys", element: <PasskeySettings /> },
               { path: "workspace-images", element: <WorkspaceImagesTab /> },
+              { path: "workflows", element: <WorkflowsTab /> },
               { path: "my-organisation", element: <MyOrganisationTab /> },
             ],
           },
