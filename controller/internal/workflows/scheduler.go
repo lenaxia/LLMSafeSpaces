@@ -202,3 +202,5 @@ func computeNextFire(trigger *wf.TriggerRow, now time.Time) time.Time {
 	// For now, advance by the tick interval or 1 hour, whichever is larger.
 	return now.Add(time.Hour)
 }
+
+func strPtr(s string) *string { return &s }
