@@ -290,7 +290,6 @@ class LLMSafeSpacesClientTest {
             server.stop(0);
         }
     }
-}
 
     // ─── Epic 64: Workflows + Triggers ───────────────────────────────────────
 
@@ -355,3 +354,4 @@ class LLMSafeSpacesClientTest {
             server.stop(0);
         }
     }
+}

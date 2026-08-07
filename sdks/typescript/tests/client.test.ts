@@ -406,3 +406,4 @@ describe("LLMSafeSpaces Client", () => {
       expect.objectContaining({ method: "DELETE" }),
     );
   });
+});
