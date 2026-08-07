@@ -1293,6 +1293,38 @@ func (s *Service) resolveDefaultRuntime(ctx context.Context, userID string, orgI
 // enforced here: org/platform configs are launchable by any org member. The
 // published_only policy concerns which configs are *listed* in the picker,
 // not which are launchable once visible. (Revisit if the design tightens.)
+//
+// Design/0047 D3: the allowed_image_configs policy IS enforced here —
+// org/platform configs not in the org's allowed list are rejected. Member
+// configs are always exempt. See isImageConfigRestricted.
+
+// isImageConfigRestricted checks whether an org's allowed_image_configs
+// policy blocks the given hash. Returns (false, "") when unrestricted or
+// when the hash is in the allowed list. Returns (true, message) when blocked.
+// Member-scoped configs should NOT call this (they're always exempt).
+// Fails open: nil policy checker, read error, or nil policy = unrestricted.
+func (s *Service) isImageConfigRestricted(ctx context.Context, orgID, hash string) (bool, string) {
+	if s.policyChecker == nil {
+		return false, ""
+	}
+	pol, err := s.policyChecker.GetEffectivePolicy(ctx, orgID)
+	if err != nil || pol == nil || pol.AllowedImageConfigs == nil {
+		return false, ""
+	}
+	allowed := *pol.AllowedImageConfigs
+	if len(allowed) == 0 {
+		return false, ""
+	}
+	for _, h := range allowed {
+		if h == hash {
+			return false, ""
+		}
+	}
+	return true, fmt.Sprintf("image config %q is not in your organization's allowed image list", hash)
+}
+
+// resolveImageFactoryConfig resolves an image-factory config hash to a
+// launchable image_ref, searching scopes in order (member -> org -> platform).
 func (s *Service) resolveImageFactoryConfig(ctx context.Context, hash, userID string, orgID *string) (string, error) {
 	if s.imageFactoryStore == nil {
 		return "", apierrors.NewValidationError(
@@ -1318,6 +1350,18 @@ func (s *Service) resolveImageFactoryConfig(ctx context.Context, hash, userID st
 		}
 		cfg, imageRef, err := s.imageFactoryStore.GetLaunchableConfigByHash(ctx, hash, sc.scope, sc.ownerID, sc.orgArg)
 		if err == nil {
+			// Design/0047 D3: if the org has an allowed_image_configs policy,
+			// reject org/platform configs not in the allowed list. Member
+			// configs are always exempt (members can always launch their own).
+			if sc.scope != imagefactory.ScopeMember && orgID != nil && *orgID != "" {
+				if blocked, msg := s.isImageConfigRestricted(ctx, *orgID, hash); blocked {
+					return "", apierrors.NewValidationError(
+						msg,
+						map[string]interface{}{"field": "imageConfigHash", "hash": hash},
+						fmt.Errorf("image config %q is not in the org's allowed list", hash),
+					)
+				}
+			}
 			// Found a Ready, owned config with a built image.
 			s.logger.Info("Resolved image-factory config for workspace launch",
 				"hash", hash, "configID", cfg.ID, "scope", sc.scope,
