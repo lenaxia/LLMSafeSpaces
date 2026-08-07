@@ -463,7 +463,7 @@ func isWorkflowUniqueViolation(err error) bool {
 
 // --- Run management endpoints ---
 
-// RunWorkflow starts a manual run (POST /workflows/:id/runs).
+// UserRunWorkflow starts a manual run for a user-scope workflow.
 func (h *WorkflowsHandler) UserRunWorkflow(c *gin.Context) {
 	userID := c.GetString("userID")
 	h.runWorkflow(c, types.WorkflowOwnerUser, userID)
@@ -556,7 +556,7 @@ func (h *WorkflowsHandler) GetRunNodes(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"nodes": out})
 }
 
-// ListRuns returns runs for a workflow (GET /workflows/:id/runs).
+// UserListRuns lists runs for a user-scope workflow.
 func (h *WorkflowsHandler) UserListRuns(c *gin.Context) {
 	userID := c.GetString("userID")
 	h.listRuns(c, types.WorkflowOwnerUser, userID)
