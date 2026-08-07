@@ -29,11 +29,13 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
   const [renameValue, setRenameValue] = useState("");
 
   // Determine which configs are editable based on scope. For user scope,
-  // only member configs are editable. For org scope, member + org configs.
-  // For platform scope, all configs are editable (platform admin).
+  // only member configs are editable. For org scope, only org configs.
+  // For platform scope, only platform configs.
+  // Member configs are NEVER editable from org/platform tabs — each member
+  // manages their own from their personal settings.
   const canEdit = (cfg: Config): boolean => {
-    if (scope === "platform") return true;
-    if (scope === "org") return cfg.scope === "org" || cfg.scope === "member";
+    if (scope === "platform") return cfg.scope === "platform";
+    if (scope === "org") return cfg.scope === "org";
     return cfg.scope === "member";
   };
 
@@ -153,18 +155,32 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
     }
   };
 
-  // Split configs into sections based on scope (Q3: member configs separate
-  // from org/platform when scope is org or platform). For user scope, all
-  // configs render in one flat list ("My Workspace Images").
-  const managedScopes = scope === "org"
-    ? ["org", "platform"]
-    : scope === "platform"
-      ? ["org", "platform"]
-      : []; // user: no managed section — everything in one list
+  // Split configs into sections based on scope. Each tab shows its own
+  // managed configs (editable) first, then cross-scope configs (read-only),
+  // then member configs (read-only). User scope shows all in one flat list.
+  //
+  // Org tab: "Org Images" (editable) + "Platform Images" (read-only) + "Member Images" (read-only)
+  // Platform tab: "Platform Images" (editable) + "Org Images" (read-only) + "Member Images" (read-only)
+  // User tab: "My Workspace Images" (all, editable)
+  const isOrgOrPlatform = scope === "org" || scope === "platform";
+  const platformConfigs = configs.filter((c) => c.scope === "platform");
+  const orgConfigs = configs.filter((c) => c.scope === "org");
   const memberConfigs = configs.filter((c) => c.scope === "member");
-  const managedConfigs = configs.filter((c) => managedScopes.includes(c.scope));
-  const showMemberSection = (scope === "org" || scope === "platform") && memberConfigs.length > 0;
-  const showManagedSection = managedScopes.length > 0 && managedConfigs.length > 0;
+  const showMemberSection = isOrgOrPlatform && memberConfigs.length > 0;
+  const showOrgSection = scope === "platform" && orgConfigs.length > 0;
+
+  // Primary managed section: what this tab creates/manages.
+  const managedConfigs = scope === "platform"
+    ? platformConfigs
+    : scope === "org"
+      ? orgConfigs
+      : [];
+  const showManagedSection = isOrgOrPlatform;
+  // Cross-scope visibility: platform configs from org tab, org configs from platform tab.
+  const platformFromOrgTab = scope === "org" && platformConfigs.length > 0;
+
+  const managedHeading = scope === "org" ? "Org Images" : "Platform Images";
+  const managedEmptyMsg = scope === "org" ? "No org images yet." : "No platform images yet.";
 
   const renderConfigCard = (cfg: Config) => {
     const sc = scopePill(cfg.scope);
@@ -302,21 +318,45 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
 
   return (
     <div className="space-y-6">
-      {/* Managed configs (org/platform) */}
+      {/* Managed configs — what this tab creates */}
       {showManagedSection && (
         <section>
           <h3 className="mb-3 text-sm font-semibold text-muted-foreground uppercase tracking-wide">
-            {scope === "org" ? "Org & Platform Images" : scope === "platform" ? "All Images" : "Shared Images"}
+            {managedHeading}
           </h3>
           <div className="space-y-2">
-            {managedConfigs.length === 0 && <p className="text-sm text-muted-foreground">No shared images yet.</p>}
+            {managedConfigs.length === 0 && <p className="text-sm text-muted-foreground">{managedEmptyMsg}</p>}
             {managedConfigs.map(renderConfigCard)}
           </div>
         </section>
       )}
 
-      {/* Member configs (separate section per Q3) */}
-      {showMemberSection && memberConfigs.length > 0 && (
+      {/* Platform configs visible from org tab (read-only for org admins) */}
+      {platformFromOrgTab && (
+        <section>
+          <h3 className="mb-3 text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+            Platform Images
+          </h3>
+          <div className="space-y-2">
+            {platformConfigs.map(renderConfigCard)}
+          </div>
+        </section>
+      )}
+
+      {/* Org configs visible from platform tab (read-only even for platform admin) */}
+      {showOrgSection && (
+        <section>
+          <h3 className="mb-3 text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+            Org Images
+          </h3>
+          <div className="space-y-2">
+            {orgConfigs.map(renderConfigCard)}
+          </div>
+        </section>
+      )}
+
+      {/* Member configs — always separate and read-only from org/platform */}
+      {showMemberSection && (
         <section>
           <h3 className="mb-3 text-sm font-semibold text-muted-foreground uppercase tracking-wide">
             Member Images
