@@ -281,3 +281,7 @@ type fakeManageOrgResolver struct {
 func (f *fakeManageOrgResolver) GetUserOrgID(_ context.Context, _ string) (string, error) {
 	return f.orgID, nil
 }
+
+func (f *fakeManageOrgResolver) IsOrgAdmin(_ context.Context, _, _ string) (bool, error) {
+	return false, nil
+}

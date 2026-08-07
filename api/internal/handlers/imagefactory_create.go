@@ -50,27 +50,49 @@ type createConfigRequest struct {
 	BaseVersion string   `json:"baseVersion"`
 }
 
-// CreateConfig handles POST /v1/image-factory/configs.
-//
-// The load-bearing handler (design/0046 #12, #15, #16, #17). Exact sequence:
-//
-//  1. Bind + validate body.
-//  2. Resolve base (default version when BaseVersion is empty).
-//  3. Load extensions; ResolveSelection → ResolvedValues; ValidateResolved.
-//  4. HashSelection → hash.
-//  5. Check known_failures for (hash, baseName) with retriable=false → 422.
-//  6. GetInFlightOrSuccessfulBuild(hash, baseVersion):
-//     a. Succeeded exists → create config at status=ready, return 201. No dispatch.
-//     b. In-flight exists → create config at status=building, return 201. No dispatch.
-//  7. No existing build → generate callback_token; Dispatch to GH Actions.
-//     On error → return 503, do NOT commit config row.
-//  8. On dispatch success → CreateBuild + CreateConfig in one tx; return 201.
+// CreateConfig handles POST /v1/image-factory/configs (member scope).
 func (h *ImageFactoryHandler) CreateConfig(c *gin.Context) {
 	userID := c.GetString("userID")
 	if userID == "" {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 		return
 	}
+	uid := userID
+	h.createConfigAtScope(c, imagefactory.ScopeMember, &uid, nil)
+}
+
+// CreateOrgConfig handles POST /v1/orgs/:id/image-factory/configs (org scope).
+// Behind OrgAdminGuard — the caller is verified as an admin of :id.
+func (h *ImageFactoryHandler) CreateOrgConfig(c *gin.Context) {
+	orgID := c.Param("id")
+	if orgID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "org ID is required"})
+		return
+	}
+	oid := orgID
+	h.createConfigAtScope(c, imagefactory.ScopeOrg, nil, &oid)
+}
+
+// CreatePlatformConfig handles POST /v1/admin/image-factory/configs (platform scope).
+// Behind AdminGuard — the caller is a platform admin.
+func (h *ImageFactoryHandler) CreatePlatformConfig(c *gin.Context) {
+	h.createConfigAtScope(c, imagefactory.ScopePlatform, nil, nil)
+}
+
+// createConfigAtScope is the shared create logic for all three scopes.
+// The scope determines which owner/org IDs are set on the Config struct;
+// all validation, coalescing, known-failure checking, and dispatch logic
+// is identical regardless of scope — the build produces the same image.
+//
+// Cross-scope coalescing (design/0047 Q2): GetInFlightOrSuccessfulBuild is
+// scope-agnostic, so an org/platform config will coalesce onto a build
+// initiated by any user/org for the same hash. This is intentional —
+// images are platform-wide artifacts.
+func (h *ImageFactoryHandler) createConfigAtScope(
+	c *gin.Context,
+	scope imagefactory.ConfigScope,
+	ownerID, orgID *string,
+) {
 	if h.dispatcher == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "image builds are not configured"})
 		return
@@ -92,7 +114,6 @@ func (h *ImageFactoryHandler) CreateConfig(c *gin.Context) {
 	baseName := req.BaseName
 	baseVersion := req.BaseVersion
 	if baseVersion == "" {
-		// Default version: find the base row marked is_default for this name.
 		bases, err := h.store.ListBases(ctx)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve base"})
@@ -166,14 +187,13 @@ func (h *ImageFactoryHandler) CreateConfig(c *gin.Context) {
 		return
 	}
 
-	// Coalescing: check for existing in-flight or successful build.
+	// Coalescing: check for existing in-flight or successful build (scope-agnostic).
 	existing, err := h.store.GetInFlightOrSuccessfulBuild(ctx, hash, baseVersion)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check existing builds"})
 		return
 	}
 	if existing != nil {
-		// Link, don't dispatch.
 		status := imagefactory.StatusBuilding
 		if existing.Status == imagefactory.BuildSucceeded {
 			status = imagefactory.StatusReady
@@ -185,8 +205,9 @@ func (h *ImageFactoryHandler) CreateConfig(c *gin.Context) {
 			ResolvedValues: resolved,
 			BaseName:       baseName,
 			BaseVersion:    baseVersion,
-			Scope:          imagefactory.ScopeMember,
-			OwnerID:        &userID,
+			Scope:          scope,
+			OwnerID:        ownerID,
+			OrgID:          orgID,
 			Status:         status,
 		}
 		if err := h.store.CreateConfig(ctx, &cfg); err != nil {
@@ -209,8 +230,6 @@ func (h *ImageFactoryHandler) CreateConfig(c *gin.Context) {
 		return
 	}
 
-	// We need a build ID to pass to dispatch. Generate a UUID first, then
-	// use it as the build row's ID.
 	buildID := newUUID()
 	dockerfile, err := imagefactory.RenderDockerfile(resolved, base)
 	if err != nil {
@@ -228,11 +247,6 @@ func (h *ImageFactoryHandler) CreateConfig(c *gin.Context) {
 		Dockerfile:    dockerfile,
 	})
 	if err != nil {
-		// Dispatch failed — do NOT commit. No orphaned config row.
-		// Log the underlying error: the dispatcher returns wrapped errors
-		// (e.g. "gh dispatch: unexpected status 403: ...") that identify the
-		// root cause. Without this line a config/permission problem surfaces
-		// only as a generic 503.
 		if h.logger != nil {
 			h.logger.Error("image-factory: build dispatch failed", err,
 				"hash", hash, "baseName", baseName, "baseVersion", baseVersion)
@@ -241,9 +255,7 @@ func (h *ImageFactoryHandler) CreateConfig(c *gin.Context) {
 		return
 	}
 
-	// Dispatch succeeded — commit both rows atomically (design #17).
-	// Single tx: if either insert fails, the other rolls back — no
-	// orphaned config at 'building' with no build row.
+	// Dispatch succeeded — commit both rows atomically.
 	cfg := imagefactory.Config{
 		Hash:           hash,
 		Name:           req.Name,
@@ -251,8 +263,9 @@ func (h *ImageFactoryHandler) CreateConfig(c *gin.Context) {
 		ResolvedValues: resolved,
 		BaseName:       baseName,
 		BaseVersion:    baseVersion,
-		Scope:          imagefactory.ScopeMember,
-		OwnerID:        &userID,
+		Scope:          scope,
+		OwnerID:        ownerID,
+		OrgID:          orgID,
 		Status:         imagefactory.StatusBuilding,
 	}
 	build := imagefactory.Build{
@@ -265,7 +278,7 @@ func (h *ImageFactoryHandler) CreateConfig(c *gin.Context) {
 		Status:         imagefactory.BuildDispatched,
 		GHRunID:        &ghRunID,
 		CallbackToken:  callbackToken,
-		TriggeredBy:    &userID,
+		TriggeredBy:    ownerID,
 	}
 	if err := h.store.CreateConfigAndBuild(ctx, &cfg, &build); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save config and build"})

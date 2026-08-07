@@ -43,6 +43,7 @@ type imageFactoryStore interface {
 // *database.Service — the handler depends on both, injected separately.
 type orgResolver interface {
 	GetUserOrgID(ctx context.Context, userID string) (string, error)
+	IsOrgAdmin(ctx context.Context, orgID, userID string) (bool, error)
 }
 
 // ImageFactoryHandler serves the consumer-facing image-factory endpoints

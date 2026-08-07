@@ -67,8 +67,8 @@ func (h *ImageFactoryHandler) resolveConfigByHash(c *gin.Context) (imagefactory.
 }
 
 // DeleteConfig handles DELETE /configs/:hash.
-// Only member-scope configs can be deleted by their owner. Org and platform
-// configs require admin/owner elevation (not implemented here — return 403).
+// Member-scope configs can be deleted by their owner. Org-scope configs
+// can be deleted by org admins. Platform-scope configs by platform admins.
 // Configs with in-flight builds (status=building) cannot be deleted.
 func (h *ImageFactoryHandler) DeleteConfig(c *gin.Context) {
 	cfg, scope, ok := h.resolveConfigByHash(c)
@@ -76,8 +76,8 @@ func (h *ImageFactoryHandler) DeleteConfig(c *gin.Context) {
 		return
 	}
 
-	if scope != imagefactory.ScopeMember {
-		c.JSON(http.StatusForbidden, gin.H{"error": "only personal configs can be deleted"})
+	if !h.canMutateScope(c, scope, cfg.OrgID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you do not have permission to delete this config"})
 		return
 	}
 
@@ -104,15 +104,16 @@ type renameConfigRequest struct {
 }
 
 // RenameConfig handles PATCH /configs/:hash.
-// Only member-scope configs can be renamed by their owner.
+// Member-scope configs can be renamed by their owner. Org-scope configs
+// by org admins. Platform-scope configs by platform admins.
 func (h *ImageFactoryHandler) RenameConfig(c *gin.Context) {
 	cfg, scope, ok := h.resolveConfigByHash(c)
 	if !ok {
 		return
 	}
 
-	if scope != imagefactory.ScopeMember {
-		c.JSON(http.StatusForbidden, gin.H{"error": "only personal configs can be renamed"})
+	if !h.canMutateScope(c, scope, cfg.OrgID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you do not have permission to rename this config"})
 		return
 	}
 
@@ -148,11 +149,44 @@ func (h *ImageFactoryHandler) RenameConfig(c *gin.Context) {
 
 	updated, err := h.store.GetConfig(ctx, cfg.ID)
 	if err != nil {
-		// Rename succeeded but re-fetch failed — return the original config
-		// with the new name applied, so frontend state stays consistent.
 		cfg.Name = name
 		c.JSON(http.StatusOK, cfg)
 		return
 	}
 	c.JSON(http.StatusOK, updated)
+}
+
+// canMutateScope checks whether the caller has permission to mutate a config
+// at the given scope. The middleware guards (OrgAdminGuard, AdminGuard) handle
+// authorization at the route level for creation; this method provides
+// defense-in-depth for the shared delete/rename endpoints, which are mounted
+// under the consumer route group (AuthMiddleware only).
+//
+//   - member: always allowed (resolveConfigByHash already verified ownership
+//     by filtering on owner_id = caller's userID).
+//   - org: allowed if the caller is an admin of the config's org, OR a
+//     platform admin (platform admins can manage any org's configs).
+//   - platform: allowed if the caller is a platform admin (role = "admin").
+func (h *ImageFactoryHandler) canMutateScope(c *gin.Context, scope imagefactory.ConfigScope, cfgOrgID *string) bool {
+	// Platform admin bypass: can mutate any scope.
+	if c.GetString("userRole") == "admin" {
+		return true
+	}
+	switch scope {
+	case imagefactory.ScopeMember:
+		return true
+	case imagefactory.ScopeOrg:
+		if cfgOrgID == nil {
+			return false
+		}
+		userID := c.GetString("userID")
+		ctx := c.Request.Context()
+		isAdmin, err := h.orgs.IsOrgAdmin(ctx, *cfgOrgID, userID)
+		if err != nil {
+			return false
+		}
+		return isAdmin
+	default:
+		return false
+	}
 }

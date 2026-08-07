@@ -67,7 +67,7 @@ func (f *fakeIFStore) GetConfig(ctx context.Context, id string) (imagefactory.Co
 	return imagefactory.Config{}, database.ErrNotFound
 }
 func (f *fakeIFStore) GetConfigByHash(ctx context.Context, hash string, scope imagefactory.ConfigScope, ownerID, orgID *string) (imagefactory.Config, error) {
-	if c, ok := f.configByHash[hash]; ok {
+	if c, ok := f.configByHash[hash]; ok && c.Scope == scope {
 		return c, nil
 	}
 	return imagefactory.Config{}, database.ErrNotFound
@@ -131,10 +131,18 @@ func (f *fakeIFStore) RenameConfig(ctx context.Context, id, newName string) erro
 // fakeOrgResolver is the test double for orgResolver.
 type fakeOrgResolver struct {
 	orgIDByUser map[string]string
+	adminUsers  map[string]bool // "userID:orgID" → true
 }
 
 func (f *fakeOrgResolver) GetUserOrgID(ctx context.Context, userID string) (string, error) {
 	return f.orgIDByUser[userID], nil
+}
+
+func (f *fakeOrgResolver) IsOrgAdmin(ctx context.Context, orgID, userID string) (bool, error) {
+	if f.adminUsers == nil {
+		return false, nil
+	}
+	return f.adminUsers[userID+":"+orgID], nil
 }
 
 func init() {

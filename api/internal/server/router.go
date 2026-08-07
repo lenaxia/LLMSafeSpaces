@@ -492,7 +492,7 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 		userCreds.POST("/:id/bind/:workspaceId", cfg.UserProviderCredentialsHandler.Bind)
 		userCreds.DELETE("/:id/bind/:workspaceId", cfg.UserProviderCredentialsHandler.Unbind)
 	}
-	registerImageFactoryRoutes(router, services, cfg.ImageFactoryHandler)
+	registerImageFactoryRoutes(router, services, cfg.ImageFactoryHandler, cfg.OrgsHandler)
 	registerImageFactoryAdminRoutes(router, services, cfg.ImageFactoryAdminHandler)
 	if cfg.UsageHandler != nil {
 		usage := router.Group("/api/v1/usage")
@@ -1343,7 +1343,7 @@ func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, serv
 // Also registers the internal callback endpoint (token-authed, NOT behind
 // JWT AuthMiddleware — the GH Actions runner authenticates via the
 // per-build callback_token).
-func registerImageFactoryRoutes(router *gin.Engine, services interfaces.Services, h *handlers.ImageFactoryHandler) {
+func registerImageFactoryRoutes(router *gin.Engine, services interfaces.Services, h *handlers.ImageFactoryHandler, orgsHandler *handlers.OrgsHandler) {
 	if h == nil {
 		return
 	}
@@ -1355,6 +1355,22 @@ func registerImageFactoryRoutes(router *gin.Engine, services interfaces.Services
 	ifg.POST("/configs", h.CreateConfig)
 	ifg.DELETE("/configs/:hash", h.DeleteConfig)
 	ifg.PATCH("/configs/:hash", h.RenameConfig)
+
+	// Org-scoped config creation: POST /orgs/:id/image-factory/configs.
+	// Behind OrgAdminGuard — only org admins can create org-scoped images.
+	if orgsHandler != nil {
+		orgIfg := router.Group("/api/v1/orgs/:id/image-factory")
+		orgIfg.Use(services.GetAuth().AuthMiddleware())
+		orgIfg.Use(middleware.OrgAdminGuard(orgsHandler))
+		orgIfg.POST("/configs", h.CreateOrgConfig)
+	}
+
+	// Platform-scoped config creation: POST /admin/image-factory/configs.
+	// Behind AdminGuard — only platform admins can create platform images.
+	adminIfg := router.Group("/api/v1/admin/image-factory")
+	adminIfg.Use(services.GetAuth().AuthMiddleware())
+	adminIfg.Use(middleware.AdminGuard())
+	adminIfg.POST("/configs", h.CreatePlatformConfig)
 
 	// Internal callback: NOT behind AuthMiddleware. The handler authenticates
 	// via subtle.ConstantTimeCompare on the per-build callback_token.
