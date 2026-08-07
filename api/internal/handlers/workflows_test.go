@@ -93,6 +93,23 @@ func (m *mockWorkflowStore) CountWorkflowsByOwner(_ context.Context, ownerType, 
 	return count, nil
 }
 
+func (m *mockWorkflowStore) CreateWorkflowRun(_ context.Context, row *wf.WorkflowRunRow) error {
+	m.workflows[row.ID] = &wf.WorkflowRow{ID: row.ID}
+	return nil
+}
+
+func (m *mockWorkflowStore) GetWorkflowRun(_ context.Context, runID string) (*wf.WorkflowRunRow, error) {
+	return &wf.WorkflowRunRow{ID: runID, Status: "queued"}, nil
+}
+
+func (m *mockWorkflowStore) ListWorkflowRuns(_ context.Context, _ string, _, _ int) ([]*wf.WorkflowRunRow, error) {
+	return nil, nil
+}
+
+func (m *mockWorkflowStore) ListNodeRuns(_ context.Context, _ string) ([]*wf.WorkflowNodeRunRow, error) {
+	return nil, nil
+}
+
 // mockQuotaChecker implements workflowQuotaChecker.
 type mockQuotaChecker struct {
 	values map[string]int
