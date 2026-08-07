@@ -243,8 +243,11 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 
 	resp := triggerRowToResponse(row)
 	if req.SourceType == types.TriggerSourceWebhook {
-		hookURL := fmt.Sprintf("/api/v1/hooks/%s", triggerID)
-		resp.TargetConfig = json.RawMessage(fmt.Sprintf(`{"webhookUrl":%q,"webhookId":%q}`, hookURL, triggerID))
+		c.JSON(http.StatusCreated, gin.H{
+			"trigger":    resp,
+			"webhookUrl": fmt.Sprintf("/api/v1/hooks/%s", triggerID),
+		})
+		return
 	}
 	c.JSON(http.StatusCreated, resp)
 }
