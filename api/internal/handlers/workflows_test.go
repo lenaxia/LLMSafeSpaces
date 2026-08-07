@@ -17,10 +17,12 @@ import (
 
 // mockWorkflowStore implements workflowStore for testing.
 type mockWorkflowStore struct {
-	workflows   map[string]*wf.WorkflowRow
-	createErr   error
-	statuses    map[string]string
-	runStatuses map[string]string
+	workflows    map[string]*wf.WorkflowRow
+	createErr    error
+	statuses     map[string]string
+	runStatuses  map[string]string
+	getRunErr    error
+	updateRunErr error
 }
 
 func newMockWorkflowStore() *mockWorkflowStore {
@@ -109,6 +111,9 @@ func (m *mockWorkflowStore) CreateWorkflowRun(_ context.Context, row *wf.Workflo
 }
 
 func (m *mockWorkflowStore) GetWorkflowRun(_ context.Context, runID string) (*wf.WorkflowRunRow, error) {
+	if m.getRunErr != nil {
+		return nil, m.getRunErr
+	}
 	status := "queued"
 	if s, ok := m.runStatuses[runID]; ok {
 		status = s
@@ -117,6 +122,9 @@ func (m *mockWorkflowStore) GetWorkflowRun(_ context.Context, runID string) (*wf
 }
 
 func (m *mockWorkflowStore) UpdateWorkflowRunStatus(_ context.Context, runID, status string, _ *string, _ json.RawMessage, _ json.RawMessage) error {
+	if m.updateRunErr != nil {
+		return m.updateRunErr
+	}
 	m.statuses[runID] = status
 	return nil
 }
@@ -380,6 +388,26 @@ func TestWorkflowCancelRun_AlreadyTerminal(t *testing.T) {
 
 	w := doWFRequest(t, r, "POST", "/api/v1/me/runs/run-2/cancel", nil)
 	assert.Equal(t, 409, w.Code)
+}
+
+func TestWorkflowCancelRun_NotFound(t *testing.T) {
+	store := newMockWorkflowStore()
+	store.getRunErr = wf.ErrNotFound
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupWorkflowRouter(t, store, quota)
+
+	w := doWFRequest(t, r, "POST", "/api/v1/me/runs/nonexistent/cancel", nil)
+	assert.Equal(t, 404, w.Code)
+}
+
+func TestWorkflowCancelRun_StoreError(t *testing.T) {
+	store := newMockWorkflowStore()
+	store.updateRunErr = errors.New("DB down")
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupWorkflowRouter(t, store, quota)
+
+	w := doWFRequest(t, r, "POST", "/api/v1/me/runs/run-1/cancel", nil)
+	assert.Equal(t, 500, w.Code)
 }
 
 func TestSlugify(t *testing.T) {
