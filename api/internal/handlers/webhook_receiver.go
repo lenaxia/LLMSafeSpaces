@@ -294,7 +294,7 @@ func ipInAllowlist(ipStr string, allowed []string) bool {
 
 func parseTargetConfig(raw json.RawMessage) map[string]any {
 	var m map[string]any
-	json.Unmarshal(raw, &m)
+	_ = json.Unmarshal(raw, &m)
 	return m
 }
 
@@ -304,7 +304,7 @@ func renderInputTemplate(targetCfg map[string]any, envelope []byte) json.RawMess
 		return envelope // pass envelope directly if no template
 	}
 	var envelopeData map[string]any
-	json.Unmarshal(envelope, &envelopeData)
+	_ = json.Unmarshal(envelope, &envelopeData)
 	rendered := make(map[string]any)
 	for k, v := range tmpl {
 		if strVal, ok := v.(string); ok {
