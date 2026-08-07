@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.12] - 2026-08-07
+
+### Added
+
+- **Image factory: build row billing attribution (#679).** Added `scope`
+  and `org_id` columns to `image_factory_builds` (migration 000018).
+  Org-scoped builds are attributed to the org; platform-scoped builds to
+  the platform owner. Backward compatible (nullable + backfill from
+  config scope/org_id). Two partial indexes for billing queries.
+
 ## [0.8.11] - 2026-08-07
 
 ### Added
