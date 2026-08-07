@@ -164,8 +164,11 @@ func (h *ImageFactoryHandler) RenameConfig(c *gin.Context) {
 //
 //   - member: always allowed (resolveConfigByHash already verified ownership
 //     by filtering on owner_id = caller's userID).
-//   - org: allowed if the caller is an admin of the config's org, OR a
-//     platform admin (platform admins can manage any org's configs).
+//   - org: allowed if the caller is an admin of the config's org. Note:
+//     resolveConfigByHash only finds org configs the caller is a member of
+//     (via GetUserOrgID), so platform admins can only delete/rename org
+//     configs from their own org, not other orgs' configs. This is a
+//     limitation of resolveConfigByHash, not canMutateScope.
 //   - platform: allowed if the caller is a platform admin (role = "admin").
 func (h *ImageFactoryHandler) canMutateScope(c *gin.Context, scope imagefactory.ConfigScope, cfgOrgID *string) bool {
 	// Platform admin bypass: can mutate any scope.

@@ -49,8 +49,8 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
   // The scope label for newly created configs (for the section heading).
   const createScopeLabel = scope === "org" ? "Org" : scope === "platform" ? "Platform" : "Personal";
 
-  const handleDelete = async (hash: string) => {
-    if (!confirm(`Delete "${hash}"? This cannot be undone.`)) return;
+  const handleDelete = async (hash: string, name: string) => {
+    if (!confirm(`Delete "${name}"? This cannot be undone.`)) return;
     try {
       await imageFactoryApi.deleteConfig(hash);
       setConfigs(configs.filter((c) => c.hash !== hash));
@@ -234,7 +234,7 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
                 ) : (
                   <>
                     <button onClick={() => { setRenamingId(cfg.id); setRenameValue(cfg.name); }} className="rounded border border-border px-2 py-1 text-xs hover:bg-accent">Rename</button>
-                    <button onClick={() => handleDelete(cfg.hash)} className="rounded border border-destructive/50 px-2 py-1 text-xs text-destructive hover:bg-destructive/10">Delete</button>
+                    <button onClick={() => handleDelete(cfg.hash, cfg.name)} className="rounded border border-destructive/50 px-2 py-1 text-xs text-destructive hover:bg-destructive/10">Delete</button>
                   </>
                 )}
               </div>
@@ -264,12 +264,15 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
         <div>
           <label className="block text-sm font-medium mb-1">Base Image</label>
           <select
-            value={baseName}
-            onChange={(e) => setBaseName(e.target.value)}
+            value={baseName ? `${baseName}/${catalog.bases.find((b) => b.name === baseName)?.version ?? ""}` : ""}
+            onChange={(e) => {
+              const [name, version] = e.target.value.split("/");
+              setBaseName(name ?? "");
+            }}
             className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground"
           >
             {catalog.bases.map((b) => (
-              <option key={`${b.name}/${b.version}`} value={b.name}>
+              <option key={`${b.name}/${b.version}`} value={`${b.name}/${b.version}`}>
                 {b.name} ({b.version})
               </option>
             ))}
