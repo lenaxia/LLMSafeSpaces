@@ -33,6 +33,10 @@ type workflowStore interface {
 	UpdateWorkflow(ctx context.Context, ownerType, ownerID, workflowID string, upd *wf.WorkflowUpdate) (*wf.WorkflowRow, error)
 	DeleteWorkflow(ctx context.Context, ownerType, ownerID, workflowID string) error
 	CountWorkflowsByOwner(ctx context.Context, ownerType, ownerID string) (int, error)
+	CreateWorkflowRun(ctx context.Context, row *wf.WorkflowRunRow) error
+	GetWorkflowRun(ctx context.Context, runID string) (*wf.WorkflowRunRow, error)
+	ListWorkflowRuns(ctx context.Context, workflowID string, limit, offset int) ([]*wf.WorkflowRunRow, error)
+	ListNodeRuns(ctx context.Context, workflowRunID string) ([]*wf.WorkflowNodeRunRow, error)
 }
 
 // workflowQuotaChecker reads instance settings for quota enforcement.
@@ -455,4 +459,168 @@ func isWorkflowUniqueViolation(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "unique") || strings.Contains(msg, "duplicate") || strings.Contains(msg, "violates unique constraint")
+}
+
+// --- Run management endpoints ---
+
+// RunWorkflow starts a manual run (POST /workflows/:id/runs).
+func (h *WorkflowsHandler) UserRunWorkflow(c *gin.Context) {
+	userID := c.GetString("userID")
+	h.runWorkflow(c, types.WorkflowOwnerUser, userID)
+}
+
+func (h *WorkflowsHandler) OrgRunWorkflow(c *gin.Context) {
+	orgID := c.Param("id")
+	h.runWorkflow(c, types.WorkflowOwnerOrg, orgID)
+}
+
+func (h *WorkflowsHandler) runWorkflow(c *gin.Context, ownerType, ownerID string) {
+	workflowID := c.Param("id")
+	var req types.CreateWorkflowRunRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		if err.Error() != "EOF" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+	}
+
+	wfRow, err := h.store.GetWorkflow(c.Request.Context(), ownerType, ownerID, workflowID)
+	if err != nil {
+		if errors.Is(err, wf.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "workflow not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get workflow"})
+		return
+	}
+
+	workspaceID := ""
+	if req.WorkspaceID != "" {
+		workspaceID = req.WorkspaceID
+	} else if wfRow.TargetWorkspaceID != nil {
+		workspaceID = *wfRow.TargetWorkspaceID
+	}
+	if workspaceID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "workspace_id is required (no target_workspace_id set on workflow)"})
+		return
+	}
+
+	now := time.Now().UTC()
+	run := &wf.WorkflowRunRow{
+		ID: uuid.New().String(), WorkflowID: workflowID,
+		SpecSnapshot: wfRow.SpecJSON, Input: req.Input,
+		Status: types.RunStatusQueued, WorkspaceID: workspaceID,
+		CreatedAt: now, UpdatedAt: now,
+	}
+
+	if err := h.store.CreateWorkflowRun(c.Request.Context(), run); err != nil {
+		if errors.Is(err, wf.ErrConcurrentRun) {
+			c.Header("Retry-After", "30")
+			c.JSON(http.StatusConflict, gin.H{"error": "already_running"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create run"})
+		return
+	}
+
+	c.JSON(http.StatusAccepted, workflowRunRowToResponse(run))
+}
+
+// GetRun returns a single run by ID (GET /runs/:runId).
+func (h *WorkflowsHandler) GetRun(c *gin.Context) {
+	runID := c.Param("runId")
+	run, err := h.store.GetWorkflowRun(c.Request.Context(), runID)
+	if err != nil {
+		if errors.Is(err, wf.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "run not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get run"})
+		return
+	}
+	c.JSON(http.StatusOK, workflowRunRowToResponse(run))
+}
+
+// GetRunNodes returns per-node status for a run (GET /runs/:runId/nodes).
+func (h *WorkflowsHandler) GetRunNodes(c *gin.Context) {
+	runID := c.Param("runId")
+	nodes, err := h.store.ListNodeRuns(c.Request.Context(), runID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list nodes"})
+		return
+	}
+	out := make([]types.WorkflowNodeRunResponse, 0, len(nodes))
+	for _, n := range nodes {
+		out = append(out, nodeRunRowToResponse(n))
+	}
+	c.JSON(http.StatusOK, gin.H{"nodes": out})
+}
+
+// ListRuns returns runs for a workflow (GET /workflows/:id/runs).
+func (h *WorkflowsHandler) UserListRuns(c *gin.Context) {
+	userID := c.GetString("userID")
+	h.listRuns(c, types.WorkflowOwnerUser, userID)
+}
+
+func (h *WorkflowsHandler) OrgListRuns(c *gin.Context) {
+	orgID := c.Param("id")
+	h.listRuns(c, types.WorkflowOwnerOrg, orgID)
+}
+
+func (h *WorkflowsHandler) listRuns(c *gin.Context, ownerType, ownerID string) {
+	workflowID := c.Param("id")
+	limit := 20
+	offset := 0
+	runs, err := h.store.ListWorkflowRuns(c.Request.Context(), workflowID, limit, offset)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list runs"})
+		return
+	}
+	out := make([]types.WorkflowRunResponse, 0, len(runs))
+	for _, r := range runs {
+		out = append(out, workflowRunRowToResponse(r))
+	}
+	c.JSON(http.StatusOK, gin.H{"runs": out})
+}
+
+func workflowRunRowToResponse(r *wf.WorkflowRunRow) types.WorkflowRunResponse {
+	resp := types.WorkflowRunResponse{
+		ID: r.ID, WorkflowID: r.WorkflowID, SpecSnapshot: r.SpecSnapshot,
+		Input: r.Input, Output: r.Output, Status: r.Status,
+		WorkspaceID: r.WorkspaceID,
+		StartedAt:   r.StartedAt, FinishedAt: r.FinishedAt,
+		CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
+	}
+	if r.ErrorCode != nil {
+		resp.ErrorCode = *r.ErrorCode
+	}
+	if r.Error != nil {
+		resp.Error = r.Error
+	}
+	if r.TriggerID != nil {
+		resp.TriggerID = *r.TriggerID
+	}
+	if r.TriggerFireID != nil {
+		resp.TriggerFireID = *r.TriggerFireID
+	}
+	return resp
+}
+
+func nodeRunRowToResponse(n *wf.WorkflowNodeRunRow) types.WorkflowNodeRunResponse {
+	resp := types.WorkflowNodeRunResponse{
+		ID: n.ID, WorkflowRunID: n.WorkflowRunID, NodeID: n.NodeID,
+		NodeType: n.NodeType, Status: n.Status, Attempt: n.Attempt,
+		Input: n.Input, Output: n.Output,
+		StartedAt: n.StartedAt, FinishedAt: n.FinishedAt,
+	}
+	if n.Branch != nil {
+		resp.Branch = *n.Branch
+	}
+	if n.ErrorCode != nil {
+		resp.ErrorCode = *n.ErrorCode
+	}
+	if n.Error != nil {
+		resp.Error = n.Error
+	}
+	return resp
 }

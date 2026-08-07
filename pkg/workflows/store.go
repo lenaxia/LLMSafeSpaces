@@ -332,6 +332,20 @@ func (s *Store) GetTrigger(ctx context.Context, ownerType, ownerID, triggerID st
 	return r, err
 }
 
+// GetTriggerByID returns a trigger by its UUID without owner scoping. Used by
+// the webhook receiver where the trigger_id is authoritative (unguessable UUID).
+func (s *Store) GetTriggerByID(ctx context.Context, triggerID string) (*TriggerRow, error) {
+	row := s.pool.QueryRow(ctx, `
+		SELECT id, owner_type, owner_id, name, description, enabled, source_type, source_config, target_type, target_config, consecutive_failures, auto_disable_after, last_fired_at, next_fire_at, created_at, updated_at
+		FROM triggers WHERE id = $1
+	`, triggerID)
+	r, err := scanTriggerRow(row)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return r, err
+}
+
 // ListTriggers returns all triggers owned by (ownerType, ownerID), ordered by created_at ASC.
 func (s *Store) ListTriggers(ctx context.Context, ownerType, ownerID string) ([]*TriggerRow, error) {
 	rows, err := s.pool.Query(ctx, `

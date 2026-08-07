@@ -240,6 +240,11 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	}))
 	userMux.HandleFunc("/v1/agent/reload", agentReloadHandler(deps.password, log))
 
+	// Epic 64: Workflow node execution endpoints. These are called by
+	// the controller's workflow reconciler to dispatch individual nodes.
+	userMux.HandleFunc("/v1/workflow/node/execute", workflowExecuteHandler(deps.password))
+	userMux.HandleFunc("/v1/workflow/node/cancel", workflowCancelHandler())
+
 	// Start admin server (health probes) on dedicated port.
 	adminSrv = &http.Server{
 		Addr:              agentd.AgentdAdminAddr,
