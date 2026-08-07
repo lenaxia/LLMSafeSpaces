@@ -464,4 +464,32 @@ func TestTriggerCreate_NilEncryptorForWebhook(t *testing.T) {
 		"targetType":   "run_workflow", "targetConfig": map[string]any{},
 	})
 	assert.Equal(t, 500, w.Code)
+
+	// Verify cleanup: trigger should NOT exist after webhook creation failure.
+	triggers := store.triggers
+	assert.Empty(t, triggers, "trigger should be cleaned up when webhook creation fails")
+}
+
+// failingEncryptor returns an error on Encrypt, simulating KEK failure.
+type failingEncryptor struct{}
+
+func (m *failingEncryptor) Encrypt(_ context.Context, _ []byte) ([]byte, error) {
+	return nil, errors.New("KEK unavailable")
+}
+
+func TestTriggerCreate_WebhookEncryptFailure_Cleanup(t *testing.T) {
+	store := newMockTriggerStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupTriggerRouter(t, store, quota, &failingEncryptor{})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "wh-encrypt-fail", "sourceType": "webhook",
+		"sourceConfig": map[string]any{},
+		"targetType":   "run_workflow", "targetConfig": map[string]any{},
+	})
+	assert.Equal(t, 500, w.Code)
+
+	// Verify cleanup: trigger should NOT exist after encryption failure.
+	assert.Empty(t, store.triggers, "trigger should be cleaned up when webhook encryption fails")
+	assert.Empty(t, store.webhooks, "webhook should not exist after encryption failure")
 }
