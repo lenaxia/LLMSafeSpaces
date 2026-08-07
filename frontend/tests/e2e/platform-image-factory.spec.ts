@@ -67,4 +67,15 @@ test.describe("Platform admin Image Factory", () => {
     await expect(page).toHaveURL(/\/admin\/image-factory/, { timeout: 5000 });
     await expect(page.getByRole("heading", { name: "Create Platform Image" })).toBeVisible();
   });
+
+  test("catalog load failure shows error", async ({ page }) => {
+    await page.route(`${API}/image-factory/catalog`, async (route: Route) => {
+      await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "internal error" }) });
+    });
+
+    await page.goto("/admin/image-factory");
+    await page.waitForLoadState("networkidle");
+
+    await expect(page.getByText(/Failed to load/i)).toBeVisible({ timeout: 8000 });
+  });
 });

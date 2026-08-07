@@ -121,7 +121,7 @@ test.describe("Org admin portal", () => {
 
     await expect(page.getByRole("heading", { name: "E2E Org" })).toBeVisible({ timeout: 8000 });
     // All admin nav items visible to admin.
-    for (const label of ["Overview", "Members", "Credentials", "MCP Servers", "Workspaces", "Audit", "Billing", "SSO", "Agent Config", "Settings"]) {
+    for (const label of ["Overview", "Members", "Credentials", "MCP Servers", "Images", "Workspaces", "Audit", "Billing", "SSO", "Agent Config", "Settings"]) {
       await expect(page.getByRole("link", { name: label })).toBeVisible();
     }
   });
@@ -186,6 +186,17 @@ test.describe("Org admin portal", () => {
 
     // The org Images tab renders the config builder with "Org" scope label.
     await expect(page.getByRole("heading", { name: "Create Org Image" })).toBeVisible({ timeout: 8000 });
+  });
+
+  test("org images: catalog load failure shows error", async ({ page }) => {
+    await page.route(`${API}/image-factory/catalog`, async (route: Route) => {
+      await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "internal error" }) });
+    });
+
+    await page.goto(`/orgs/${ORG_ID}/images`);
+    await page.waitForLoadState("networkidle");
+
+    await expect(page.getByText(/Failed to load/i)).toBeVisible({ timeout: 8000 });
   });
 
   test("saving workspace limits PUTs both policies", async ({ page }) => {
@@ -253,6 +264,7 @@ test.describe("Org admin portal", () => {
     await expect(page.getByRole("link", { name: "Members" })).not.toBeVisible();
     await expect(page.getByRole("link", { name: "Settings" })).not.toBeVisible();
     await expect(page.getByRole("link", { name: "Credentials" })).not.toBeVisible();
+    await expect(page.getByRole("link", { name: "Images" })).not.toBeVisible();
     // Non-admin tabs still visible.
     await expect(page.getByRole("link", { name: "Overview" })).toBeVisible();
     await expect(page.getByRole("link", { name: "Workspaces" })).toBeVisible();
