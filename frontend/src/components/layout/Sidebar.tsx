@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useLocation } from "react-router-dom";
 import { workspacesApi } from "../../api/workspaces";
 import { orgsApi } from "../../api/orgs";
 import { ApiClientError } from "../../api/client";
@@ -27,6 +27,8 @@ import {
   ChevronDown,
   Play,
   Shield,
+  Workflow,
+  Zap,
 } from "lucide-react";
 import { Spinner } from "../ui/Spinner";
 import { BusyIndicator } from "../ui/BusyIndicator";
@@ -46,6 +48,7 @@ interface Props {
 export function Sidebar({ onNavigate }: Props) {
   const { logout, user } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const queryClient = useQueryClient();
   const { workspaceId, sessionId } = useParams();
   const [expandedWs, setExpandedWs] = useState<Set<string>>(() =>
@@ -174,6 +177,31 @@ export function Sidebar({ onNavigate }: Props) {
       </div>
 
       <div className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-track-transparent scrollbar-thumb-muted-foreground/20 hover:scrollbar-thumb-muted-foreground/40">
+        <div className="flex flex-col gap-0.5 px-2 pt-2 pb-1">
+          <button
+            onClick={() => { navigate("/workflows"); onNavigate?.(); }}
+            className={cn(
+              "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium transition-colors",
+              "hover:bg-accent",
+              location.pathname.startsWith("/workflows") && "bg-accent text-accent-foreground",
+            )}
+          >
+            <Workflow className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <span>Workflows</span>
+          </button>
+          <button
+            onClick={() => { navigate("/triggers"); onNavigate?.(); }}
+            className={cn(
+              "flex items-center gap-2 rounded-md px-2 py-1.5 text-sm font-medium transition-colors",
+              "hover:bg-accent",
+              location.pathname.startsWith("/triggers") && "bg-accent text-accent-foreground",
+            )}
+          >
+            <Zap className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <span>Triggers</span>
+          </button>
+        </div>
+        <div className="border-t border-border mx-2 my-1" />
         <nav className="flex flex-col gap-0.5 p-2" aria-label="Workspaces">
           {(workspaces?.items ?? []).map((ws) => (
             <WorkspaceGroup
