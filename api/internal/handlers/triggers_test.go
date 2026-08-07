@@ -381,3 +381,87 @@ func TestGenerateWebhookSecret(t *testing.T) {
 	assert.True(t, len(s1) > 30, "secret too short: %s", s1)
 	assert.Contains(t, s1, "whsec_")
 }
+
+func TestTriggerCreate_QuotaExceeded(t *testing.T) {
+	store := newMockTriggerStore()
+	quota := &mockQuotaChecker{values: map[string]int{"triggers.maxPerUser": 1}}
+	encrypt := &mockEncryptor{}
+	r := setupTriggerRouter(t, store, quota, encrypt)
+
+	body := map[string]any{
+		"name": "t1", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 * * * *"},
+		"targetType":   "run_workflow", "targetConfig": map[string]any{},
+	}
+
+	// First succeeds (count 0 < 1).
+	w1 := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", body)
+	require.Equal(t, 201, w1.Code)
+
+	// Second fails (count 1 >= 1).
+	w2 := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "t2", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 * * * *"},
+		"targetType":   "run_workflow", "targetConfig": map[string]any{},
+	})
+	assert.Equal(t, 409, w2.Code)
+}
+
+func TestTriggerCreate_CronNextFireAt(t *testing.T) {
+	store := newMockTriggerStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	encrypt := &mockEncryptor{}
+	r := setupTriggerRouter(t, store, quota, encrypt)
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "cron-test", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 2 * * *", "tz": "UTC"},
+		"targetType":   "run_workflow", "targetConfig": map[string]any{},
+	})
+	require.Equal(t, 201, w.Code)
+
+	var resp map[string]any
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	assert.NotNil(t, resp["nextFireAt"], "cron trigger must have next_fire_at set")
+}
+
+func TestTriggerUpdate_AutoDisableAfter(t *testing.T) {
+	store := newMockTriggerStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	encrypt := &mockEncryptor{}
+	r := setupTriggerRouter(t, store, quota, encrypt)
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "test", "sourceType": "cron",
+		"sourceConfig": map[string]any{"expr": "0 * * * *"},
+		"targetType":   "run_workflow", "targetConfig": map[string]any{},
+	})
+	require.Equal(t, 201, w.Code)
+
+	var created map[string]any
+	json.Unmarshal(w.Body.Bytes(), &created)
+	triggerID := created["id"].(string)
+
+	five := 5
+	w2 := doTriggerRequest(t, r, "PUT", "/api/v1/me/triggers/"+triggerID, map[string]any{
+		"autoDisableAfter": five,
+	})
+	require.Equal(t, 200, w2.Code)
+
+	var updated map[string]any
+	json.Unmarshal(w2.Body.Bytes(), &updated)
+	assert.Equal(t, float64(5), updated["autoDisableAfter"])
+}
+
+func TestTriggerCreate_NilEncryptorForWebhook(t *testing.T) {
+	store := newMockTriggerStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupTriggerRouter(t, store, quota, nil)
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "wh-no-encrypt", "sourceType": "webhook",
+		"sourceConfig": map[string]any{},
+		"targetType":   "run_workflow", "targetConfig": map[string]any{},
+	})
+	assert.Equal(t, 500, w.Code)
+}

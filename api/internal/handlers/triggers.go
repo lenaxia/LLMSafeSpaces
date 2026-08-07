@@ -242,6 +242,7 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 	}
 
 	resp := triggerRowToResponse(row)
+	h.logCreate(c, ownerType, ownerID, c.GetString("userID"), triggerID, req.Name)
 	if req.SourceType == types.TriggerSourceWebhook {
 		c.JSON(http.StatusCreated, gin.H{
 			"trigger":    resp,
@@ -325,7 +326,11 @@ func (h *TriggersHandler) checkQuota(c *gin.Context, ownerType, ownerID string) 
 		settingKey = "triggers.maxPerOrg"
 	}
 	maxCount, err := h.quota.GetInt(c.Request.Context(), settingKey)
-	if err != nil || maxCount == 0 {
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to check trigger quota"})
+		return err
+	}
+	if maxCount == 0 {
 		return nil
 	}
 	count, err := h.store.CountTriggersByOwner(c.Request.Context(), ownerType, ownerID)
@@ -338,6 +343,20 @@ func (h *TriggersHandler) checkQuota(c *gin.Context, ownerType, ownerID string) 
 		return fmt.Errorf("quota exceeded")
 	}
 	return nil
+}
+
+// --- audit ---
+
+func (h *TriggersHandler) logCreate(c *gin.Context, ownerType, ownerID, actorID, triggerID, name string) {
+	if h.audit == nil {
+		return
+	}
+	meta := map[string]any{"name": name, "ownerType": ownerType}
+	if ownerType == types.WorkflowOwnerOrg {
+		_ = h.audit.LogOrgEvent(c.Request.Context(), ownerID, actorID, "trigger.create", triggerID, meta)
+	} else {
+		_ = h.audit.LogAuditEvent(c.Request.Context(), "triggers", actorID, "trigger.create", triggerID, nil, meta)
+	}
 }
 
 // --- helpers ---
