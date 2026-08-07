@@ -1706,6 +1706,7 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 		runs.Use(services.GetAuth().AuthMiddleware())
 		runs.GET("/:runId", cfg.UserWorkflowsHandler.GetRun)
 		runs.GET("/:runId/nodes", cfg.UserWorkflowsHandler.GetRunNodes)
+		runs.POST("/:runId/cancel", cfg.UserWorkflowsHandler.CancelRun)
 	}
 
 	// Webhook receiver — public route, no JWT (signature IS the credential).

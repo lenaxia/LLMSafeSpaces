@@ -76,5 +76,6 @@ export const triggerApi = {
 export const runApi = {
   get: (id: string) => api.get(`/me/runs/${id}`),
   cancel: (id: string) => api.post(`/me/runs/${id}/cancel`),
-  nodes: (id: string) => api.get<{ nodes?: unknown[] }>(`/me/runs/${id}/nodes`).then(r => r.nodes || []),
+  nodes: (id: string) => api.get(`/me/runs/${id}/nodes`).then((r: any) => r.nodes || []),
+  listForWorkflow: (workflowId: string) => api.get(`/me/workflows/${workflowId}/runs`).then((r: any) => r.runs || []),
 };
