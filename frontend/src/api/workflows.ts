@@ -52,21 +52,21 @@ export interface Trigger {
 }
 
 export const workflowApi = {
-  list: () => api.get('/me/workflows').then(r => r.workflows || []),
+  list: () => api.get<{ workflows?: Workflow[] }>('/me/workflows').then(r => r.workflows || []),
   get: (id: string) => api.get(`/me/workflows/${id}`),
   create: (data: { name: string; specYaml: string; status?: string }) =>
     api.post('/me/workflows', data),
   update: (id: string, data: Partial<{ name: string; status: string; specYaml: string }>) =>
     api.put(`/me/workflows/${id}`, data),
   delete: (id: string) => api.delete(`/me/workflows/${id}`),
-  run: (id: string, input?: any, workspaceId?: string) =>
+  run: (id: string, input?: unknown, workspaceId?: string) =>
     api.post(`/me/workflows/${id}/runs`, { input, workspaceId }),
 };
 
 export const triggerApi = {
-  list: () => api.get('/me/triggers').then(r => r.triggers || []),
+  list: () => api.get<{ triggers?: unknown[] }>('/me/triggers').then(r => r.triggers || []),
   get: (id: string) => api.get(`/me/triggers/${id}`),
-  create: (data: { name: string; sourceType: string; targetType: string; sourceConfig: any; targetConfig: any }) =>
+  create: (data: { name: string; sourceType: string; targetType: string; sourceConfig: unknown; targetConfig: unknown }) =>
     api.post('/me/triggers', data),
   update: (id: string, data: Partial<{ enabled: boolean; autoDisableAfter: number }>) =>
     api.put(`/me/triggers/${id}`, data),
@@ -76,5 +76,5 @@ export const triggerApi = {
 export const runApi = {
   get: (id: string) => api.get(`/me/runs/${id}`),
   cancel: (id: string) => api.post(`/me/runs/${id}/cancel`),
-  nodes: (id: string) => api.get(`/me/runs/${id}/nodes`).then(r => r.nodes || []),
+  nodes: (id: string) => api.get<{ nodes?: unknown[] }>(`/me/runs/${id}/nodes`).then(r => r.nodes || []),
 };

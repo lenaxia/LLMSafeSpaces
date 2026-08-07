@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { workflowApi, type Workflow } from '@/api/workflows';
+import { workflowApi, type Workflow } from '../../api/workflows';
 
 export function WorkflowsTab() {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
