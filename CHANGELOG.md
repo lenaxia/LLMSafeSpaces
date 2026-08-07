@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.13] - 2026-08-07
+
+### Fixed
+
+- **Image factory: consistent scope sections + member configs read-only
+  (#680).** Org and platform admin tabs now show consistent section
+  headings ("Org Images" / "Platform Images" / "Member Images"). Member
+  configs are always read-only from org/platform tabs. Cross-scope
+  configs shown in separate sections with no edit buttons.
+- **Image factory: audit fixes (#683).** Delete confirmation now shows
+  the config name instead of the hash. Base selector correctly tracks
+  and sends the version to the create API. Backend doc comment corrected
+  for `canMutateScope` cross-org limitation.
+
 ## [0.8.12] - 2026-08-07
 
 ### Added
