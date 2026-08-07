@@ -248,7 +248,7 @@ func TestGetInFlightOrSuccessfulBuild_PrefersSucceededOverDispatched(t *testing.
 		WillReturnRows(sqlmock.NewRows(buildColumnsForTest()).
 			AddRow("b-1", "cfg-1", "s-hash", "bookworm", "0.6.0", rvJSON,
 				"{linux/amd64}", "ghcr.io/ws:s-hash-0.6.0", "sha256:ok",
-				"succeeded", nil, nil, nil, nil, nil, time.Now(), time.Now()))
+				"succeeded", nil, nil, nil, nil, nil, time.Now(), time.Now(), "member", nil))
 	build, err := svc.GetInFlightOrSuccessfulBuild(context.Background(), "s-hash", "0.6.0")
 	require.NoError(t, err)
 	require.NotNil(t, build)
@@ -264,7 +264,7 @@ func TestGetInFlightOrSuccessfulBuild_ReturnsDispatchedIfNoSucceeded(t *testing.
 		WillReturnRows(sqlmock.NewRows(buildColumnsForTest()).
 			AddRow("b-2", "cfg-1", "s-hash", "bookworm", "0.6.0", rvJSON,
 				"{linux/amd64}", nil, nil,
-				"dispatched", ghRun, "tok", nil, nil, nil, time.Now(), nil))
+				"dispatched", ghRun, "tok", nil, nil, nil, time.Now(), nil, "member", nil))
 	build, err := svc.GetInFlightOrSuccessfulBuild(context.Background(), "s-hash", "0.6.0")
 	require.NoError(t, err)
 	require.NotNil(t, build)
