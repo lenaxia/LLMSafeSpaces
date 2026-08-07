@@ -416,13 +416,17 @@ func (s *Service) CreateConfigAndBuild(ctx context.Context, c *imagefactory.Conf
 		triggeredBy = *b.TriggeredBy
 	}
 	b.ConfigID = c.ID
+	var buildOrgID interface{}
+	if b.OrgID != nil {
+		buildOrgID = *b.OrgID
+	}
 	_, err = tx.ExecContext(ctx,
 		`INSERT INTO image_factory_builds
 		     (id, config_id, hash, base_name, base_version, resolved_values, architectures,
-		      status, gh_run_id, callback_token, triggered_by)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		      status, gh_run_id, callback_token, triggered_by, scope, org_id)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		b.ID, b.ConfigID, b.Hash, b.BaseName, b.BaseVersion, rvJSONBuild, pq.Array(b.Architectures),
-		string(b.Status), b.GHRunID, b.CallbackToken, triggeredBy,
+		string(b.Status), b.GHRunID, b.CallbackToken, triggeredBy, string(b.Scope), buildOrgID,
 	)
 	if err != nil {
 		return fmt.Errorf("create config+build: insert build: %w", err)
@@ -683,7 +687,7 @@ func (s *Service) RenameConfig(ctx context.Context, id, newName string) error {
 
 // ── Builds ──────────────────────────────────────────────────────────────
 
-const buildColumns = `id, config_id, hash, base_name, base_version, resolved_values, architectures, image_ref, digest, status, gh_run_id, callback_token, failure_reason, explanation, triggered_by, started_at, finished_at`
+const buildColumns = `id, config_id, hash, base_name, base_version, resolved_values, architectures, image_ref, digest, status, gh_run_id, callback_token, failure_reason, explanation, triggered_by, started_at, finished_at, scope, org_id`
 
 func (s *Service) GetBuild(ctx context.Context, id string) (imagefactory.Build, error) {
 	row := s.DB.QueryRowContext(ctx,
@@ -908,10 +912,11 @@ func scanBuild(sc rowScanner) (imagefactory.Build, error) {
 	var ghRunID sql.NullInt64
 	var triggeredBy sql.NullString
 	var finishedAt sql.NullTime
+	var scope, buildOrgID sql.NullString
 	if err := sc.Scan(&b.ID, &b.ConfigID, &b.Hash, &b.BaseName, &b.BaseVersion,
 		&rvRaw, pq.Array(&b.Architectures), &imageRef, &digest, &statusStr,
 		&ghRunID, &callbackToken, &failureReason, &explanation, &triggeredBy,
-		&b.StartedAt, &finishedAt); err != nil {
+		&b.StartedAt, &finishedAt, &scope, &buildOrgID); err != nil {
 		return imagefactory.Build{}, err
 	}
 	b.Status = imagefactory.BuildStatus(statusStr)
@@ -931,6 +936,11 @@ func scanBuild(sc rowScanner) (imagefactory.Build, error) {
 	if finishedAt.Valid {
 		v := finishedAt.Time
 		b.FinishedAt = &v
+	}
+	b.Scope = imagefactory.ConfigScope(scope.String)
+	if buildOrgID.Valid {
+		v := buildOrgID.String
+		b.OrgID = &v
 	}
 	if err := json.Unmarshal(rvRaw, &b.ResolvedValues); err != nil {
 		return imagefactory.Build{}, fmt.Errorf("scan build: unmarshal resolved_values: %w", err)

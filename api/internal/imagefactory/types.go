@@ -171,4 +171,10 @@ type Build struct {
 	StartedAt      time.Time      `json:"startedAt"`
 	FinishedAt     *time.Time     `json:"finishedAt,omitempty"`
 	CallbackToken  string         `json:"-"` // per-build secret; ConstantTimeCompare on callback
+
+	// Billing attribution (design/0047 Q1). Mirrors the config's scope/org_id
+	// so billing queries can attribute build cost without a join. NULL for
+	// coalesced builds (build initiated by a different scope).
+	Scope ConfigScope `json:"scope,omitempty"`
+	OrgID *string     `json:"orgId,omitempty"`
 }

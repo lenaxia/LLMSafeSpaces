@@ -279,6 +279,8 @@ func (h *ImageFactoryHandler) createConfigAtScope(
 		GHRunID:        &ghRunID,
 		CallbackToken:  callbackToken,
 		TriggeredBy:    ownerID,
+		Scope:          scope,
+		OrgID:          orgID,
 	}
 	if err := h.store.CreateConfigAndBuild(ctx, &cfg, &build); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save config and build"})

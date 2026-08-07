@@ -48,6 +48,12 @@ func TestCreateOrgConfig_SetsOrgScope(t *testing.T) {
 	require.NotNil(t, store.lastCreatedConfig.OrgID)
 	assert.Equal(t, "org-999", *store.lastCreatedConfig.OrgID)
 	assert.Nil(t, store.lastCreatedConfig.OwnerID, "org-scope config must not have owner_id")
+
+	// Build row must carry scope + org_id for billing attribution (design/0047 Q1).
+	require.NotNil(t, store.lastCreatedBuild, "build row must be committed")
+	assert.Equal(t, imagefactory.ScopeOrg, store.lastCreatedBuild.Scope)
+	require.NotNil(t, store.lastCreatedBuild.OrgID)
+	assert.Equal(t, "org-999", *store.lastCreatedBuild.OrgID)
 }
 
 // TestCreatePlatformConfig_SetsPlatformScope verifies the platform-scoped
@@ -77,6 +83,11 @@ func TestCreatePlatformConfig_SetsPlatformScope(t *testing.T) {
 	assert.Equal(t, imagefactory.ScopePlatform, store.lastCreatedConfig.Scope)
 	assert.Nil(t, store.lastCreatedConfig.OwnerID)
 	assert.Nil(t, store.lastCreatedConfig.OrgID)
+
+	// Build row must carry scope for billing attribution (design/0047 Q1).
+	require.NotNil(t, store.lastCreatedBuild)
+	assert.Equal(t, imagefactory.ScopePlatform, store.lastCreatedBuild.Scope)
+	assert.Nil(t, store.lastCreatedBuild.OrgID)
 }
 
 // TestCreateConfig_MemberScope_Unchanged verifies the member-scope path
@@ -105,6 +116,11 @@ func TestCreateConfig_MemberScope_Unchanged(t *testing.T) {
 	assert.Equal(t, imagefactory.ScopeMember, store.lastCreatedConfig.Scope)
 	require.NotNil(t, store.lastCreatedConfig.OwnerID)
 	assert.Equal(t, "user-1", *store.lastCreatedConfig.OwnerID)
+
+	// Build row must carry scope for billing attribution (design/0047 Q1).
+	require.NotNil(t, store.lastCreatedBuild)
+	assert.Equal(t, imagefactory.ScopeMember, store.lastCreatedBuild.Scope)
+	assert.Nil(t, store.lastCreatedBuild.OrgID)
 }
 
 // TestCreateOrgConfig_CoalescesOnExistingBuild verifies cross-scope
