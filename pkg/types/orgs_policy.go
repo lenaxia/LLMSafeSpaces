@@ -30,6 +30,12 @@ const (
 
 	// Image factory — org default workspace image (design/0046 launch hierarchy)
 	PolicyDefaultRuntime OrgPolicyKey = "default_runtime"
+
+	// Image factory — restrict which org/platform configs members can launch
+	// (design/0047 D3). When non-empty, members can only launch workspaces
+	// using org/platform configs whose hash is in this list. Member-scoped
+	// configs are always exempt. Empty (default) = unrestricted.
+	PolicyAllowedImageConfigs OrgPolicyKey = "allowed_image_configs"
 )
 
 // OrgPolicy is one row of org_policies. The Value is the raw JSONB payload; the
@@ -61,6 +67,10 @@ type OrgPolicyValues struct {
 
 	// Image factory — org default workspace image (design/0046)
 	DefaultRuntime *string `json:"defaultRuntime,omitempty"`
+
+	// Image factory — restrict which org/platform configs are launchable
+	// (design/0047 D3). nil = unrestricted; non-empty = only listed hashes.
+	AllowedImageConfigs *[]string `json:"allowedImageConfigs,omitempty"`
 }
 
 // IsModelAllowed reports whether modelID is permitted under the allowed-models
