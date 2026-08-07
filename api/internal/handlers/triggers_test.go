@@ -493,3 +493,46 @@ func TestTriggerCreate_WebhookEncryptFailure_Cleanup(t *testing.T) {
 	assert.Empty(t, store.triggers, "trigger should be cleaned up when webhook encryption fails")
 	assert.Empty(t, store.webhooks, "webhook should not exist after encryption failure")
 }
+
+// failingWebhookStore wraps mockTriggerStore and fails CreateWebhook.
+type failingWebhookStore struct {
+	*mockTriggerStore
+}
+
+func (m *failingWebhookStore) CreateWebhook(_ context.Context, _ *wf.WebhookRow) error {
+	return errors.New("webhook table write failed")
+}
+
+func TestTriggerCreate_WebhookStoreFailure_Cleanup(t *testing.T) {
+	base := newMockTriggerStore()
+	store := &failingWebhookStore{mockTriggerStore: base}
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupTriggerRouter(t, store, quota, &mockEncryptor{})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "wh-store-fail", "sourceType": "webhook",
+		"sourceConfig": map[string]any{},
+		"targetType":   "run_workflow", "targetConfig": map[string]any{},
+	})
+	assert.Equal(t, 500, w.Code)
+
+	// Verify cleanup: trigger should NOT exist after webhook store failure.
+	assert.Empty(t, base.triggers, "trigger should be cleaned up when CreateWebhook fails")
+}
+
+func TestTriggerCreate_WebhookEncryptFailure_Cleanup(t *testing.T) {
+	store := newMockTriggerStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupTriggerRouter(t, store, quota, &failingEncryptor{})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
+		"name": "wh-encrypt-fail", "sourceType": "webhook",
+		"sourceConfig": map[string]any{},
+		"targetType":   "run_workflow", "targetConfig": map[string]any{},
+	})
+	assert.Equal(t, 500, w.Code)
+
+	// Verify cleanup: trigger should NOT exist after encryption failure.
+	assert.Empty(t, store.triggers, "trigger should be cleaned up when webhook encryption fails")
+	assert.Empty(t, store.webhooks, "webhook should not exist after encryption failure")
+}
