@@ -164,6 +164,30 @@ test.describe("Org admin portal", () => {
     await expect(page.getByRole("button", { name: "Add Server" })).toBeVisible({ timeout: 8000 });
   });
 
+  test("deep-links to /orgs/:id/images and renders image config builder", async ({ page }) => {
+    // Stub image factory catalog + configs.
+    await page.route(`${API}/image-factory/catalog`, async (route: Route) => {
+      await route.fulfill({
+        status: 200, contentType: "application/json",
+        body: JSON.stringify({
+          architectures: ["linux/amd64"],
+          bases: [{ name: "bookworm", version: "0.6.0", image: "img", tag: "0.6.0", isDefault: true }],
+          extensions: [{ id: "ffmpeg", type: "apt", value: "ffmpeg", supportedBases: ["bookworm"] }],
+          knownFailures: [],
+        }),
+      });
+    });
+    await page.route(`${API}/image-factory/configs`, async (route: Route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) });
+    });
+
+    await page.goto(`/orgs/${ORG_ID}/images`);
+    await page.waitForLoadState("networkidle");
+
+    // The org Images tab renders the config builder with "Org" scope label.
+    await expect(page.getByRole("heading", { name: "Create Org Image" })).toBeVisible({ timeout: 8000 });
+  });
+
   test("saving workspace limits PUTs both policies", async ({ page }) => {
     const putBodies: Record<string, string> = {};
     await page.route(`${API}/orgs/${ORG_ID}/policies/*`, async (route: Route) => {

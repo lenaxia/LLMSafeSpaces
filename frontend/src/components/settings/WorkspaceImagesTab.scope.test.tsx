@@ -166,4 +166,21 @@ describe("WorkspaceImagesTab edit permissions", () => {
     fireEvent.click(screen.getByText("Member Image"));
     await waitFor(() => expect(screen.getByText("Rename")).toBeInTheDocument());
   });
+
+  // Regression: when scope is org/platform and managed configs exist (no
+  // member configs), the flat "My Workspace Images" list must NOT also
+  // render them (duplicate display). Pre-fix: managed section + flat list
+  // both rendered the same configs.
+  it("org scope: managed configs render once, not duplicated in flat list", async () => {
+    mockListConfigs.mockResolvedValue([
+      { id: "c1", hash: "s-1", name: "OrgOnly", scope: "org", status: "ready", selection: [], baseName: "bookworm", baseVersion: "0.6.0" },
+    ]);
+    renderWithOutlet("org", ORG);
+    await waitFor(() => expect(screen.getByText("OrgOnly")).toBeInTheDocument());
+    // The flat "My Workspace Images" heading must NOT render for org scope
+    // with managed configs — it would duplicate the managed section.
+    expect(screen.queryByText("My Workspace Images")).not.toBeInTheDocument();
+    // The managed section heading renders.
+    expect(screen.getByText("Org & Platform Images")).toBeInTheDocument();
+  });
 });
