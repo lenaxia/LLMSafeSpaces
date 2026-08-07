@@ -421,6 +421,8 @@ func createOpencodeSession(ctx context.Context, password string) string {
 	var s struct {
 		ID string `json:"id"`
 	}
-	json.NewDecoder(resp.Body).Decode(&s)
+	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
+		return ""
+	}
 	return s.ID
 }

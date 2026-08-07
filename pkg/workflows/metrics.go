@@ -20,7 +20,7 @@ var (
 		Help: "Total workflow runs by status and error_code.",
 	}, []string{"status", "error_code", "owner_type"})
 
-	workflowRunDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+	_ = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "workflow_run_duration_seconds",
 		Help:    "Workflow run duration in seconds.",
 		Buckets: prometheus.DefBuckets,

@@ -132,7 +132,7 @@ func (s *Scheduler) fireTrigger(ctx context.Context, logger ReconcilerLogger, tr
 
 func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger ReconcilerLogger, trigger *wf.TriggerRow, envelopeJSON []byte, now time.Time) {
 	var targetCfg map[string]any
-	json.Unmarshal(trigger.TargetConfig, &targetCfg)
+	_ = json.Unmarshal(trigger.TargetConfig, &targetCfg)
 	workflowID, _ := targetCfg["workflowId"].(string)
 	if workflowID == "" {
 		logger.Info("scheduler: trigger target missing workflowId", "triggerId", trigger.ID)
@@ -195,7 +195,7 @@ func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger ReconcilerLog
 // is deferred to when a library is chosen (US-64.9 enhancement).
 func computeNextFire(trigger *wf.TriggerRow, now time.Time) time.Time {
 	var cfg types.CronSourceConfig
-	json.Unmarshal(trigger.SourceConfig, &cfg)
+	_ = json.Unmarshal(trigger.SourceConfig, &cfg)
 
 	// v1: default to 1 hour intervals (the scheduler tick handles the actual
 	// timing; the cron expression parsing is a TODO that needs a cron library).
