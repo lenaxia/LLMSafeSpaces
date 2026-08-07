@@ -345,7 +345,6 @@ describe("LLMSafeSpaces Client", () => {
       await client.sessions.markSeen("ws-1", "sess-1");
     });
   });
-});
 
   // ─── Epic 64: Workflows + Triggers ─────────────────────────────────────────
 
