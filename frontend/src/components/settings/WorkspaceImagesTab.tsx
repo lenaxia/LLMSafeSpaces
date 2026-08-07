@@ -155,13 +155,13 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
     }
   };
 
-  // Split configs into sections based on scope (Q3: member configs separate
-  // from org/platform when scope is org or platform). For user scope, all
-  // configs render in one flat list ("My Workspace Images").
+  // Split configs into sections based on scope. Each tab shows its own
+  // managed configs (editable) first, then cross-scope configs (read-only),
+  // then member configs (read-only). User scope shows all in one flat list.
   //
-  // Org tab: "Org & Platform Images" (managed) + "Member Images" (read-only)
-  // Platform tab: "Platform Images" (managed) + "Org Images" (read-only) + "Member Images" (read-only)
-  // User tab: "My Workspace Images" (all, flat)
+  // Org tab: "Org Images" (editable) + "Platform Images" (read-only) + "Member Images" (read-only)
+  // Platform tab: "Platform Images" (editable) + "Org Images" (read-only) + "Member Images" (read-only)
+  // User tab: "My Workspace Images" (all, editable)
   const isOrgOrPlatform = scope === "org" || scope === "platform";
   const platformConfigs = configs.filter((c) => c.scope === "platform");
   const orgConfigs = configs.filter((c) => c.scope === "org");
@@ -176,7 +176,7 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
       ? orgConfigs
       : [];
   const showManagedSection = isOrgOrPlatform;
-  // Secondary managed section: org configs visible from the platform tab.
+  // Cross-scope visibility: platform configs from org tab, org configs from platform tab.
   const platformFromOrgTab = scope === "org" && platformConfigs.length > 0;
 
   const managedHeading = scope === "org" ? "Org Images" : "Platform Images";
