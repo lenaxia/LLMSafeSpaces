@@ -17,12 +17,22 @@ import (
 
 // mockWorkflowStore implements workflowStore for testing.
 type mockWorkflowStore struct {
-	workflows map[string]*wf.WorkflowRow
-	createErr error
+	workflows   map[string]*wf.WorkflowRow
+	createErr   error
+	statuses    map[string]string
+	runStatuses map[string]string
 }
 
 func newMockWorkflowStore() *mockWorkflowStore {
-	return &mockWorkflowStore{workflows: make(map[string]*wf.WorkflowRow)}
+	return &mockWorkflowStore{
+		workflows:   make(map[string]*wf.WorkflowRow),
+		statuses:    make(map[string]string),
+		runStatuses: make(map[string]string),
+	}
+}
+
+func (m *mockWorkflowStore) preSetStatus(runID, status string) {
+	m.runStatuses[runID] = status
 }
 
 func (m *mockWorkflowStore) CreateWorkflow(_ context.Context, row *wf.WorkflowRow) error {
@@ -99,7 +109,16 @@ func (m *mockWorkflowStore) CreateWorkflowRun(_ context.Context, row *wf.Workflo
 }
 
 func (m *mockWorkflowStore) GetWorkflowRun(_ context.Context, runID string) (*wf.WorkflowRunRow, error) {
-	return &wf.WorkflowRunRow{ID: runID, Status: "queued"}, nil
+	status := "queued"
+	if s, ok := m.runStatuses[runID]; ok {
+		status = s
+	}
+	return &wf.WorkflowRunRow{ID: runID, Status: status}, nil
+}
+
+func (m *mockWorkflowStore) UpdateWorkflowRunStatus(_ context.Context, runID, status string, _ *string, _ json.RawMessage, _ json.RawMessage) error {
+	m.statuses[runID] = status
+	return nil
 }
 
 func (m *mockWorkflowStore) ListWorkflowRuns(_ context.Context, _ string, _, _ int) ([]*wf.WorkflowRunRow, error) {
@@ -131,6 +150,11 @@ func setupWorkflowRouter(t *testing.T, store workflowStore, quota workflowQuotaC
 	group.GET("/:id", h.UserGet)
 	group.PUT("/:id", h.UserUpdate)
 	group.DELETE("/:id", h.UserDelete)
+
+	runs := r.Group("/api/v1/me/runs")
+	runs.Use(func(c *gin.Context) { c.Set("userID", "test-user"); c.Next() })
+	runs.GET("/:runId", h.GetRun)
+	runs.POST("/:runId/cancel", h.CancelRun)
 	return r
 }
 
@@ -335,7 +359,27 @@ func TestWorkflowDelete_NotFound(t *testing.T) {
 	r := setupWorkflowRouter(t, store, quota)
 
 	w := doWFRequest(t, r, "DELETE", "/api/v1/me/workflows/nonexistent", nil)
-	assert.Equal(t, http.StatusNotFound, w.Code)
+	assert.Equal(t, 404, w.Code)
+}
+
+func TestWorkflowCancelRun_Success(t *testing.T) {
+	store := newMockWorkflowStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupWorkflowRouter(t, store, quota)
+
+	w := doWFRequest(t, r, "POST", "/api/v1/me/runs/run-1/cancel", nil)
+	assert.Equal(t, 200, w.Code)
+	assert.Equal(t, "canceled", store.statuses["run-1"])
+}
+
+func TestWorkflowCancelRun_AlreadyTerminal(t *testing.T) {
+	store := newMockWorkflowStore()
+	store.preSetStatus("run-2", "succeeded")
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupWorkflowRouter(t, store, quota)
+
+	w := doWFRequest(t, r, "POST", "/api/v1/me/runs/run-2/cancel", nil)
+	assert.Equal(t, 409, w.Code)
 }
 
 func TestSlugify(t *testing.T) {
