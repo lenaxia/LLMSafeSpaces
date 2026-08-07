@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.11] - 2026-08-07
+
+### Added
+
+- **Image factory: org/platform-scoped config creation (#664, #667).** Org
+  admins and platform admins can now pre-build images at their scope.
+  New routes: `POST /orgs/:id/image-factory/configs` (OrgAdminGuard),
+  `POST /admin/image-factory/configs` (AdminGuard). Cross-scope coalescing
+  (same selection = one shared build). Extended delete/rename ownership
+  (org admin status check, platform admin bypass). Org admin Images tab +
+  platform admin Image Factory tab in the frontend.
+- **Image factory: `allowed_image_configs` restriction policy (#668).** Org
+  admins can restrict which org/platform images members can launch. Empty
+  = unrestricted (default). Member configs always exempt. Enforcement at
+  API (`resolveImageFactoryConfig`) as a backstop. Migration 000017.
+- **Epic 64: Triggers & Workflows (#655, #656, #657, #663, #665, #666).**
+  Data model, storage layer, DAG spec validator, workflow CRUD handlers,
+  trigger CRUD + webhook secret crypto, and design definition.
+
+### Fixed
+
+- **Mobile settings tab horizontal scroll (#658).** Tab items lacked
+  `shrink-0` and `overflow-x-auto` was on the wrong element, making
+  "Workspace Images" unreachable without rotating to landscape.
+
 ## [0.8.10] - 2026-08-05
 
 ### Added
