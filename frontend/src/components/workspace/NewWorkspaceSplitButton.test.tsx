@@ -12,12 +12,10 @@ vi.mock("../../api/workspaces", () => ({
 
 vi.mock("../../api/imageFactory", () => ({
   imageFactoryApi: {
-    listConfigs: vi.fn().mockResolvedValue({
-      configs: [
+    listConfigs: vi.fn().mockResolvedValue([
         { id: "c1", hash: "s-ready1", name: "Python+Node", status: "ready", selection: ["python-3.12", "node-22"], scope: "member" },
         { id: "c2", hash: "s-building1", name: "Building Image", status: "building", selection: ["go-1.24"], scope: "member" },
-      ],
-    }),
+      ]),
   },
 }));
 

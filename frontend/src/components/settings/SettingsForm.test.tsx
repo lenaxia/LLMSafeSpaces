@@ -6,11 +6,9 @@ import type { SettingDef } from "../../api/settings";
 
 vi.mock("../../api/imageFactory", () => ({
   imageFactoryApi: {
-    listConfigs: vi.fn().mockResolvedValue({
-      configs: [
+    listConfigs: vi.fn().mockResolvedValue([
         { id: "c1", hash: "s-abc", name: "Python Image", status: "ready", selection: ["python-3.12"], scope: "member" },
-      ],
-    }),
+      ]),
   },
 }));
 
@@ -474,7 +472,7 @@ describe("SettingsForm", () => {
 
     it("falls back to text input when no configs available", async () => {
       const { imageFactoryApi } = await import("../../api/imageFactory");
-      vi.mocked(imageFactoryApi.listConfigs).mockResolvedValueOnce({ configs: [] });
+      vi.mocked(imageFactoryApi.listConfigs).mockResolvedValueOnce([]);
 
       renderWithQuery(<SettingsForm schema={runtimeSchema} values={{ preferredRuntime: "" }} onSave={vi.fn()} />);
 

@@ -288,7 +288,7 @@ function RuntimeSelect({ id, value, onCommit, disabled }: {
     queryFn: () => imageFactoryApi.listConfigs(),
     staleTime: 30_000,
   });
-  const readyConfigs = (data?.configs ?? []).filter((c) => c.status === "ready");
+  const readyConfigs = (data ?? []).filter((c) => c.status === "ready");
 
   if (readyConfigs.length === 0) {
     return (

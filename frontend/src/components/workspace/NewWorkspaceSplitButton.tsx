@@ -35,11 +35,11 @@ export function NewWorkspaceSplitButton({ onCreated }: { onCreated: (wsId: strin
     staleTime: 30_000,
   });
 
-  const readyConfigs = (configsData?.configs ?? [])
+  const readyConfigs = (configsData ?? [])
     .filter((c) => c.status === "ready")
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  const buildingConfigs = (configsData?.configs ?? [])
+  const buildingConfigs = (configsData ?? [])
     .filter((c) => c.status === "building")
     .sort((a, b) => a.name.localeCompare(b.name));
 

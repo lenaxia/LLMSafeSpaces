@@ -31,7 +31,7 @@ const defaultCatalog = {
   ],
   knownFailures: [] as Array<Record<string, unknown>>,
 };
-const defaultConfigs = { configs: [{ id: "c1", hash: "s-a", name: "ml-stack", selection: ["ffmpeg"], resolvedValues: {}, baseName: "bookworm", baseVersion: "0.6.0", scope: "member", status: "ready" }] };
+const defaultConfigs = [{ id: "c1", hash: "s-a", name: "ml-stack", selection: ["ffmpeg"], resolvedValues: {}, baseName: "bookworm", baseVersion: "0.6.0", scope: "member", status: "ready" }];
 const defaultCreated = { id: "c2", hash: "s-b", name: "new-cfg", selection: ["python313"], resolvedValues: {}, baseName: "bookworm", baseVersion: "0.6.0", scope: "member", status: "building" };
 
 describe("WorkspaceImagesTab", () => {
@@ -57,21 +57,21 @@ describe("WorkspaceImagesTab", () => {
     await waitFor(() => { expect(screen.getByText("ffmpeg")).toBeInTheDocument(); });
     fireEvent.click(screen.getByText("ffmpeg"));
     fireEvent.change(screen.getByPlaceholderText("e.g. ml-stack"), { target: { value: "t" } });
-    expect(screen.getByText("Create & Build")).not.toBeDisabled();
+    expect(screen.getByText("Create Personal Image & Build")).not.toBeDisabled();
   });
 
   it("disables create button when no name", async () => {
     render(<WorkspaceImagesTab />);
     await waitFor(() => { expect(screen.getByText("ffmpeg")).toBeInTheDocument(); });
     fireEvent.click(screen.getByText("ffmpeg"));
-    expect(screen.getByText("Create & Build")).toBeDisabled();
+    expect(screen.getByText("Create Personal Image & Build")).toBeDisabled();
   });
 
   it("disables create button when no extension selected", async () => {
     render(<WorkspaceImagesTab />);
     await waitFor(() => { expect(screen.getByText("ffmpeg")).toBeInTheDocument(); });
     fireEvent.change(screen.getByPlaceholderText("e.g. ml-stack"), { target: { value: "t" } });
-    expect(screen.getByText("Create & Build")).toBeDisabled();
+    expect(screen.getByText("Create Personal Image & Build")).toBeDisabled();
   });
 
   it("shows blocked when selection matches a non-retriable known failure", async () => {
@@ -93,7 +93,7 @@ describe("WorkspaceImagesTab", () => {
     await waitFor(() => { expect(screen.getByText("ffmpeg")).toBeInTheDocument(); });
     fireEvent.click(screen.getByText("ffmpeg"));
     fireEvent.change(screen.getByPlaceholderText("e.g. ml-stack"), { target: { value: "t" } });
-    fireEvent.click(screen.getByText("Create & Build"));
+    fireEvent.click(screen.getByText("Create Personal Image & Build"));
     // Wait for the promise to settle
     await waitFor(() => { expect(mockCreateConfig).toHaveBeenCalled(); }, { timeout: 3000 });
     // Config list should still show the pre-existing config
@@ -116,7 +116,7 @@ describe("WorkspaceImagesTab", () => {
     // Select extension + type name
     fireEvent.click(screen.getByText("ffmpeg"));
     fireEvent.change(screen.getByPlaceholderText("e.g. ml-stack"), { target: { value: "success-cfg" } });
-    fireEvent.click(screen.getByText("Create & Build"));
+    fireEvent.click(screen.getByText("Create Personal Image & Build"));
 
     await waitFor(() => { expect(mockCreateConfig).toHaveBeenCalled(); }, { timeout: 3000 });
 
