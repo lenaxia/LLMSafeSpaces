@@ -34,7 +34,7 @@ import (
 // webhookReceiverStore is the narrow store interface for the webhook receiver.
 type webhookReceiverStore interface {
 	GetWebhook(ctx context.Context, webhookID string) (*wf.WebhookRow, error)
-	GetTrigger(ctx context.Context, ownerType, ownerID, triggerID string) (*wf.TriggerRow, error)
+	GetTriggerByID(ctx context.Context, triggerID string) (*wf.TriggerRow, error)
 	GetWorkflow(ctx context.Context, ownerType, ownerID, workflowID string) (*wf.WorkflowRow, error)
 	RecordWebhookDelivery(ctx context.Context, webhookID, dedupKey string) error
 	CreateWorkflowRunWithFire(ctx context.Context, fire *wf.TriggerFireRow, run *wf.WorkflowRunRow) error
@@ -80,8 +80,9 @@ func (h *WebhookReceiverHandler) HandleWebhook(c *gin.Context) {
 		return
 	}
 
-	// Resolve the trigger to get owner scope for downstream operations.
-	trigger, err := h.store.GetTrigger(c.Request.Context(), "", "", hook.TriggerID)
+	// Resolve the trigger by ID (webhooks → triggers is 1:1; trigger_id is
+	// an unguessable UUID, so no owner-scoping needed for the receiver).
+	trigger, err := h.store.GetTriggerByID(c.Request.Context(), hook.TriggerID)
 	if err != nil {
 		// We need to find the trigger by ID without scope. The store's GetTrigger
 		// is scoped. For webhooks, the trigger_id is authoritative (unguessable UUID).

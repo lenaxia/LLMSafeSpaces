@@ -216,6 +216,13 @@ type RouterConfig struct {
 	// enforces this at startup, fail-closed). VerifyURL defaults to
 	// Cloudflare's production siteverify endpoint if empty.
 	Turnstile TurnstileRouterConfig
+
+	// Epic 64: Workflow + trigger handlers (optional — nil when not wired).
+	UserWorkflowsHandler   *handlers.WorkflowsHandler
+	OrgWorkflowsHandler    *handlers.WorkflowsHandler
+	UserTriggersHandler    *handlers.TriggersHandler
+	OrgTriggersHandler     *handlers.TriggersHandler
+	WebhookReceiverHandler *handlers.WebhookReceiverHandler
 }
 
 // cookieName returns the session cookie name, falling back to "lsp_session" when empty.
@@ -581,6 +588,7 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 
 	// Epic 53: MCP server routes (all three scopes).
 	registerMCPRoutes(router, services, cfg)
+	registerWorkflowRoutes(router, services, cfg)
 
 	// AuthMiddleware + AdminGuard so only users.role='admin' can call them.
 	// US-43.18: the same group also hosts the dashboard list endpoints
@@ -1638,5 +1646,70 @@ func registerMCPRoutes(router *gin.Engine, services interfaces.Services, cfg Rou
 		userMcp.DELETE("/:id/bindings/:workspaceId", cfg.UserMCPServersHandler.Unbind)
 		userMcp.POST("/:id/auto-apply", cfg.UserMCPServersHandler.CreateAutoApply)
 		userMcp.GET("/:id/auto-apply", cfg.UserMCPServersHandler.ListAutoApply)
+	}
+}
+
+// registerWorkflowRoutes registers all Epic 64 workflow/trigger/run routes.
+func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cfg RouterConfig) {
+	// User-scope workflow routes.
+	if cfg.UserWorkflowsHandler != nil {
+		g := router.Group("/api/v1/me/workflows")
+		g.Use(services.GetAuth().AuthMiddleware())
+		g.GET("", cfg.UserWorkflowsHandler.UserList)
+		g.POST("", cfg.UserWorkflowsHandler.UserCreate)
+		g.GET("/:id", cfg.UserWorkflowsHandler.UserGet)
+		g.PUT("/:id", cfg.UserWorkflowsHandler.UserUpdate)
+		g.DELETE("/:id", cfg.UserWorkflowsHandler.UserDelete)
+		g.POST("/:id/runs", cfg.UserWorkflowsHandler.UserRunWorkflow)
+		g.GET("/:id/runs", cfg.UserWorkflowsHandler.UserListRuns)
+	}
+
+	// Org-scope workflow routes.
+	if cfg.OrgWorkflowsHandler != nil && cfg.OrgsHandler != nil {
+		g := router.Group("/api/v1/orgs/:id/workflows")
+		g.Use(services.GetAuth().AuthMiddleware())
+		g.Use(middleware.OrgAdminGuard(cfg.OrgsHandler))
+		g.GET("", cfg.OrgWorkflowsHandler.OrgList)
+		g.POST("", cfg.OrgWorkflowsHandler.OrgCreate)
+		g.GET("/:workflowId", cfg.OrgWorkflowsHandler.OrgGet)
+		g.PUT("/:workflowId", cfg.OrgWorkflowsHandler.OrgUpdate)
+		g.DELETE("/:workflowId", cfg.OrgWorkflowsHandler.OrgDelete)
+		g.POST("/:workflowId/runs", cfg.OrgWorkflowsHandler.OrgRunWorkflow)
+	}
+
+	// User-scope trigger routes.
+	if cfg.UserTriggersHandler != nil {
+		g := router.Group("/api/v1/me/triggers")
+		g.Use(services.GetAuth().AuthMiddleware())
+		g.GET("", cfg.UserTriggersHandler.UserList)
+		g.POST("", cfg.UserTriggersHandler.UserCreate)
+		g.GET("/:id", cfg.UserTriggersHandler.UserGet)
+		g.PUT("/:id", cfg.UserTriggersHandler.UserUpdate)
+		g.DELETE("/:id", cfg.UserTriggersHandler.UserDelete)
+	}
+
+	// Org-scope trigger routes.
+	if cfg.OrgTriggersHandler != nil && cfg.OrgsHandler != nil {
+		g := router.Group("/api/v1/orgs/:id/triggers")
+		g.Use(services.GetAuth().AuthMiddleware())
+		g.Use(middleware.OrgAdminGuard(cfg.OrgsHandler))
+		g.GET("", cfg.OrgTriggersHandler.OrgList)
+		g.POST("", cfg.OrgTriggersHandler.OrgCreate)
+		g.GET("/:triggerId", cfg.OrgTriggersHandler.OrgGet)
+		g.PUT("/:triggerId", cfg.OrgTriggersHandler.OrgUpdate)
+		g.DELETE("/:triggerId", cfg.OrgTriggersHandler.OrgDelete)
+	}
+
+	// Run management (shared — run IDs are unguessable UUIDs).
+	if cfg.UserWorkflowsHandler != nil {
+		runs := router.Group("/api/v1/me/runs")
+		runs.Use(services.GetAuth().AuthMiddleware())
+		runs.GET("/:runId", cfg.UserWorkflowsHandler.GetRun)
+		runs.GET("/:runId/nodes", cfg.UserWorkflowsHandler.GetRunNodes)
+	}
+
+	// Webhook receiver — public route, no JWT (signature IS the credential).
+	if cfg.WebhookReceiverHandler != nil {
+		router.POST("/api/v1/hooks/:webhookId", cfg.WebhookReceiverHandler.HandleWebhook)
 	}
 }

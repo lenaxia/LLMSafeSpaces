@@ -53,6 +53,14 @@ func (m *mockWebhookReceiverStore) GetTrigger(_ context.Context, _, _, id string
 	return r, nil
 }
 
+func (m *mockWebhookReceiverStore) GetTriggerByID(_ context.Context, id string) (*wf.TriggerRow, error) {
+	r, ok := m.triggers[id]
+	if !ok {
+		return nil, wf.ErrNotFound
+	}
+	return r, nil
+}
+
 func (m *mockWebhookReceiverStore) GetWorkflow(_ context.Context, _, _, id string) (*wf.WorkflowRow, error) {
 	r, ok := m.workflows[id]
 	if !ok {

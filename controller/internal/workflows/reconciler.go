@@ -144,8 +144,19 @@ func (r *WorkflowReconciler) executeRun(ctx context.Context, logger ReconcilerLo
 		return
 	}
 
+	// Build a set of nodes reachable from the current frontier, respecting
+	// condition branches. As we walk the topo order, condition nodes narrow
+	// the frontier to only the matched branch's subtree.
+	activeNodes := make(map[int]bool, len(nodeOrder))
+	for _, idx := range nodeOrder {
+		activeNodes[idx] = true
+	}
+
 	currentInput := run.Input
 	for _, idx := range nodeOrder {
+		if !activeNodes[idx] {
+			continue // node is not on the current execution path
+		}
 		node := &spec.Nodes[idx]
 
 		if r.isCanceled(run.ID) {
@@ -164,9 +175,9 @@ func (r *WorkflowReconciler) executeRun(ctx context.Context, logger ReconcilerLo
 			currentInput = output
 		}
 
-		// For condition nodes, adjust traversal to follow the matched branch.
-		if node.Type == types.NodeTypeCondition && branch != "" && branch != "otherwise" {
-			_ = findBranchTarget(&spec, node.ID, branch) // v1: condition traversal via topo order
+		// For condition nodes, prune the active set to only the matched branch.
+		if node.Type == types.NodeTypeCondition {
+			pruneInactiveBranches(&spec, node.ID, branch, nodeOrder, activeNodes, idx)
 		}
 	}
 
@@ -313,6 +324,78 @@ func findBranchTarget(spec *wf.Spec, sourceID, handle string) int {
 		}
 	}
 	return -1
+}
+
+// pruneInactiveBranches marks nodes reachable only through non-matched condition
+// branches as inactive. After a condition node resolves to a specific branch,
+// only nodes reachable from that branch's target remain active.
+func pruneInactiveBranches(spec *wf.Spec, condNodeID, matchedBranch string, nodeOrder []int, active map[int]bool, condIdx int) {
+	// Find all outgoing edges from the condition node.
+	var matchedTargets []string
+	var unmatchedTargets []string
+	for _, e := range spec.Edges {
+		if e.Source != condNodeID {
+			continue
+		}
+		if e.SourceHandle == matchedBranch {
+			matchedTargets = append(matchedTargets, e.Target)
+		} else {
+			unmatchedTargets = append(unmatchedTargets, e.Target)
+		}
+	}
+
+	// For each unmatched target, compute the set of nodes reachable ONLY
+	// through that target (not also reachable through the matched branch).
+	matchedReachable := make(map[string]bool)
+	for _, t := range matchedTargets {
+		for n := range bfsReachableByNodeID(spec, t) {
+			matchedReachable[n] = true
+		}
+	}
+
+	for _, t := range unmatchedTargets {
+		unmatchedReachable := bfsReachableByNodeID(spec, t)
+		for n := range unmatchedReachable {
+			// Only deactivate if the node is NOT also reachable from the matched branch.
+			if !matchedReachable[n] {
+				if idx, ok := findNodeIndexByID(spec, n); ok {
+					active[idx] = false
+				}
+			}
+		}
+	}
+}
+
+// bfsReachableByNodeID returns the set of node IDs reachable from startID
+// (inclusive) following edges in the spec.
+func bfsReachableByNodeID(spec *wf.Spec, startID string) map[string]bool {
+	adj := make(map[string][]string)
+	for _, e := range spec.Edges {
+		adj[e.Source] = append(adj[e.Source], e.Target)
+	}
+	reachable := make(map[string]bool)
+	queue := []string{startID}
+	reachable[startID] = true
+	for len(queue) > 0 {
+		node := queue[0]
+		queue = queue[1:]
+		for _, next := range adj[node] {
+			if !reachable[next] {
+				reachable[next] = true
+				queue = append(queue, next)
+			}
+		}
+	}
+	return reachable
+}
+
+func findNodeIndexByID(spec *wf.Spec, id string) (int, bool) {
+	for i := range spec.Nodes {
+		if spec.Nodes[i].ID == id {
+			return i, true
+		}
+	}
+	return -1, false
 }
 
 type noopLogger struct{}
