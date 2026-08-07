@@ -178,8 +178,10 @@ func TestTriggerCreate_Webhook(t *testing.T) {
 
 	var resp map[string]any
 	json.Unmarshal(w.Body.Bytes(), &resp)
-	triggerID := resp["id"].(string)
-	assert.Equal(t, "webhook", resp["sourceType"])
+	trigger := resp["trigger"].(map[string]any)
+	triggerID := trigger["id"].(string)
+	assert.Equal(t, "webhook", trigger["sourceType"])
+	assert.NotEmpty(t, resp["webhookUrl"])
 
 	hook, err := store.GetWebhookByTriggerID(context.Background(), triggerID)
 	require.NoError(t, err)
