@@ -121,6 +121,59 @@ func (m *MockAPIClient) PermissionReply(ctx context.Context, workspaceID, reques
 	return m.Called(ctx, workspaceID, requestID, reply, message).Error(0)
 }
 
+func (m *MockAPIClient) CancelWorkflowRun(ctx context.Context, runID string) error {
+	return m.Called(ctx, runID).Error(0)
+}
+
+func (m *MockAPIClient) ListWorkflows(ctx context.Context) (json.RawMessage, error) {
+	args := m.Called(ctx)
+	return json.RawMessage(args.String(0)), args.Error(1)
+}
+
+func (m *MockAPIClient) GetWorkflow(ctx context.Context, workflowID string) (json.RawMessage, error) {
+	args := m.Called(ctx, workflowID)
+	return json.RawMessage(args.String(0)), args.Error(1)
+}
+
+func (m *MockAPIClient) CreateWorkflow(ctx context.Context, name, specYAML, status string) (json.RawMessage, error) {
+	args := m.Called(ctx, name, specYAML, status)
+	return json.RawMessage(args.String(0)), args.Error(1)
+}
+
+func (m *MockAPIClient) UpdateWorkflow(ctx context.Context, workflowID, name, status, specYAML string) (json.RawMessage, error) {
+	args := m.Called(ctx, workflowID, name, status, specYAML)
+	return json.RawMessage(args.String(0)), args.Error(1)
+}
+
+func (m *MockAPIClient) RunWorkflow(ctx context.Context, workflowID, input, workspaceID string) (json.RawMessage, error) {
+	args := m.Called(ctx, workflowID, input, workspaceID)
+	return json.RawMessage(args.String(0)), args.Error(1)
+}
+
+func (m *MockAPIClient) GetWorkflowRunStatus(ctx context.Context, runID string) (json.RawMessage, error) {
+	args := m.Called(ctx, runID)
+	return json.RawMessage(args.String(0)), args.Error(1)
+}
+
+func (m *MockAPIClient) ListTriggers(ctx context.Context) (json.RawMessage, error) {
+	args := m.Called(ctx)
+	return json.RawMessage(args.String(0)), args.Error(1)
+}
+
+func (m *MockAPIClient) CreateTrigger(ctx context.Context, name, sourceType, targetType, sourceConfig, targetConfig string) (json.RawMessage, error) {
+	args := m.Called(ctx, name, sourceType, targetType, sourceConfig, targetConfig)
+	return json.RawMessage(args.String(0)), args.Error(1)
+}
+
+func (m *MockAPIClient) UpdateTrigger(ctx context.Context, triggerID, enabled string) (json.RawMessage, error) {
+	args := m.Called(ctx, triggerID, enabled)
+	return json.RawMessage(args.String(0)), args.Error(1)
+}
+
+func (m *MockAPIClient) DeleteTrigger(ctx context.Context, triggerID string) error {
+	return m.Called(ctx, triggerID).Error(0)
+}
+
 func newTestHandlers() (*handlers, *MockAPIClient) {
 	mockClient := &MockAPIClient{}
 	h := &handlers{client: mockClient, timeout: 300 * time.Second}
