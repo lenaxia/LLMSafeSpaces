@@ -7,14 +7,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // mockWebhookReceiverStore implements webhookReceiverStore.
@@ -123,7 +124,7 @@ func TestWebhookReceiver_ValidSignature(t *testing.T) {
 	}
 	store.workflows["wf-1"] = &wf.WorkflowRow{
 		ID: "wf-1", OwnerType: "user", OwnerID: "u1",
-		SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtr("ws-1"),
+		SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtrWF("ws-1"),
 	}
 
 	r := setupWebhookRouter(t, store, &mockDecryptor{secret: secret})
@@ -198,7 +199,7 @@ func TestWebhookReceiver_Dedup(t *testing.T) {
 		TargetType: "run_workflow", TargetConfig: json.RawMessage(`{"workflowId":"wf-1"}`),
 	}
 	store.workflows["wf-1"] = &wf.WorkflowRow{
-		ID: "wf-1", SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtr("ws-1"),
+		ID: "wf-1", SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtrWF("ws-1"),
 		OwnerType: "user", OwnerID: "u1",
 	}
 
@@ -220,7 +221,7 @@ func TestWebhookReceiver_Dedup(t *testing.T) {
 	req2.Header.Set("X-Hub-Signature-256", sig)
 	req2.Header.Set("X-Request-ID", "delivery-1")
 	w2 := httptest.NewRecorder()
-	r.ServeWebhook(w2, req2)
+	r.ServeHTTP(w2, req2)
 	assert.Equal(t, 200, w2.Code)
 	assert.Contains(t, w2.Body.String(), "duplicate")
 }
@@ -250,7 +251,7 @@ func TestWebhookReceiver_ConcurrentRun(t *testing.T) {
 		TargetType: "run_workflow", TargetConfig: json.RawMessage(`{"workflowId":"wf-1"}`),
 	}
 	store.workflows["wf-1"] = &wf.WorkflowRow{
-		ID: "wf-1", SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtr("ws-1"),
+		ID: "wf-1", SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtrWF("ws-1"),
 		OwnerType: "user", OwnerID: "u1",
 	}
 
@@ -302,3 +303,5 @@ func TestInterpolateTemplate(t *testing.T) {
 	result := interpolateTemplate("{{.body.repository.full_name}} #{{.body.issue.number}}", data)
 	assert.Equal(t, "octocat/repo #42", result)
 }
+
+func strPtrWF(s string) *string { return &s }
