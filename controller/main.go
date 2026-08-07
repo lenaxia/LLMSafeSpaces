@@ -431,7 +431,11 @@ type workspaceActivator struct {
 
 func (a *workspaceActivator) EnsureActive(ctx context.Context, workspaceID string, timeout time.Duration) (string, error) {
 	var ws v1.Workspace
-	nsName := types.NamespacedName{Name: workspaceID, Namespace: "llmsafespaces"}
+	podNamespace := os.Getenv("POD_NAMESPACE")
+	if podNamespace == "" {
+		podNamespace = "llmsafespaces"
+	}
+	nsName := types.NamespacedName{Name: workspaceID, Namespace: podNamespace}
 
 	checkCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

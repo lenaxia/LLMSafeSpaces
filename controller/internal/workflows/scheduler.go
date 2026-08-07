@@ -205,6 +205,14 @@ func computeNextFire(trigger *wf.TriggerRow, now time.Time) time.Time {
 		return now.Add(time.Hour) // default 1h
 	}
 
+	// Resolve the timezone from config; default to UTC.
+	loc := time.UTC
+	if cfg.TZ != "" {
+		if parsed, err := time.LoadLocation(cfg.TZ); err == nil {
+			loc = parsed
+		}
+	}
+
 	// Parse 5-field cron expression. Fields: minute hour dom month dow.
 	// For v1, we support the common patterns:
 	// - "*/N * * * *" → every N minutes
@@ -219,7 +227,7 @@ func computeNextFire(trigger *wf.TriggerRow, now time.Time) time.Time {
 	minuteField := fields[0]
 	hourField := fields[1]
 
-	// */N in minute → every N minutes
+	// */N in minute → every N minutes (timezone-independent interval)
 	if strings.HasPrefix(minuteField, "*/") {
 		if n, err := strconv.Atoi(minuteField[2:]); err == nil && n > 0 {
 			return now.Add(time.Duration(n) * time.Minute)
@@ -231,13 +239,15 @@ func computeNextFire(trigger *wf.TriggerRow, now time.Time) time.Time {
 		return now.Add(time.Hour)
 	}
 
-	// Specific minute + specific hour → daily
+	// Specific minute + specific hour → daily at that time in the configured timezone.
 	minute, _ := strconv.Atoi(minuteField)
 	hour, _ := strconv.Atoi(hourField)
 
-	// Compute next occurrence at hour:minute tomorrow (or today if not yet passed).
-	next := time.Date(now.Year(), now.Month(), now.Day(), hour, minute, 0, 0, now.Location())
-	if next.Before(now) || next.Equal(now) {
+	// Convert "now" to the target timezone, compute the next fire there,
+	// then convert back to UTC for storage.
+	nowInTz := now.In(loc)
+	next := time.Date(nowInTz.Year(), nowInTz.Month(), nowInTz.Day(), hour, minute, 0, 0, loc)
+	if next.Before(nowInTz) || next.Equal(nowInTz) {
 		next = next.Add(24 * time.Hour)
 	}
 
@@ -252,7 +262,7 @@ func computeNextFire(trigger *wf.TriggerRow, now time.Time) time.Time {
 		}
 	}
 
-	return next
+	return next.UTC()
 }
 
 func strPtr(s string) *string { return &s }

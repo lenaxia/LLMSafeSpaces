@@ -38,6 +38,8 @@ type Client struct {
 	Usage                    *UsageService
 	InputRequests            *InputRequestsService
 	Probe                    *ProbeService
+	Workflows                *WorkflowsService
+	Triggers                 *TriggersService
 }
 
 // Option configures the client.
@@ -82,6 +84,8 @@ func New(baseURL string, opts ...Option) *Client {
 	c.Usage = &UsageService{c: c}
 	c.InputRequests = &InputRequestsService{c: c}
 	c.Probe = &ProbeService{c: c}
+	c.Workflows = &WorkflowsService{c: c}
+	c.Triggers = &TriggersService{c: c}
 	return c
 }
 

@@ -38,6 +38,8 @@ public class LLMSafeSpacesClient {
     public final UserSettingsService userSettings;
     public final ProviderCredentialsService providerCredentials;
     public final AdminProviderCredentialsService adminProviderCredentials;
+    public final WorkflowsService workflows;
+    public final TriggersService triggers;
 
     private LLMSafeSpacesClient(Builder builder) {
         this.baseUrl = builder.baseUrl.replaceAll("/$", "");
@@ -58,6 +60,8 @@ public class LLMSafeSpacesClient {
         this.userSettings = new UserSettingsService(this);
         this.providerCredentials = new ProviderCredentialsService(this);
         this.adminProviderCredentials = new AdminProviderCredentialsService(this);
+        this.workflows = new WorkflowsService(this);
+        this.triggers = new TriggersService(this);
     }
 
     public static Builder builder(String baseUrl) {
