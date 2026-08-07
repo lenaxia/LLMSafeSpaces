@@ -1293,6 +1293,11 @@ func (s *Service) resolveDefaultRuntime(ctx context.Context, userID string, orgI
 // enforced here: org/platform configs are launchable by any org member. The
 // published_only policy concerns which configs are *listed* in the picker,
 // not which are launchable once visible. (Revisit if the design tightens.)
+//
+// Design/0047 D3: the allowed_image_configs policy IS enforced here —
+// org/platform configs not in the org's allowed list are rejected. Member
+// configs are always exempt. See isImageConfigRestricted.
+
 // isImageConfigRestricted checks whether an org's allowed_image_configs
 // policy blocks the given hash. Returns (false, "") when unrestricted or
 // when the hash is in the allowed list. Returns (true, message) when blocked.

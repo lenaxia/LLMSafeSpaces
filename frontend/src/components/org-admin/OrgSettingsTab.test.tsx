@@ -224,4 +224,21 @@ describe("OrgAdminSettingsTab", () => {
       expect(screen.getByText("All visible images are launchable (unrestricted)")).toBeInTheDocument(),
     );
   });
+
+  it("saves empty array when image restriction is disabled", async () => {
+    mockListOrgPolicies.mockResolvedValue([
+      { key: "allowed_image_configs", value: ["s-abc"], updatedAt: "2026-01-01T00:00:00Z" },
+    ]);
+    renderTab();
+    await waitFor(() =>
+      expect(screen.getByText("Only listed image hashes are launchable by members")).toBeInTheDocument(),
+    );
+    // The image restriction toggle is the third switch (after models + providers)
+    const switches = screen.getAllByRole("switch");
+    fireEvent.click(switches[2]!);
+    fireEvent.click(screen.getByText("Save Image Restrictions"));
+    await waitFor(() =>
+      expect(mockSetOrgPolicy).toHaveBeenCalledWith("org-1", "allowed_image_configs", []),
+    );
+  });
 });
