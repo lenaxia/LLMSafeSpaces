@@ -93,7 +93,7 @@ func (s *WorkflowsService) List(ctx context.Context) ([]Workflow, error) {
 	var resp struct {
 		Workflows []Workflow `json:"workflows"`
 	}
-	if err := s.c.do(ctx, http.MethodGet, "/api/v1/me/workflows", nil, &resp); err != nil {
+	if err := s.c.do(ctx, http.MethodGet, "/me/workflows", nil, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Workflows, nil
@@ -102,7 +102,7 @@ func (s *WorkflowsService) List(ctx context.Context) ([]Workflow, error) {
 // Get returns a single workflow by ID.
 func (s *WorkflowsService) Get(ctx context.Context, id string) (*Workflow, error) {
 	var wf Workflow
-	if err := s.c.do(ctx, http.MethodGet, fmt.Sprintf("/api/v1/me/workflows/%s", id), nil, &wf); err != nil {
+	if err := s.c.do(ctx, http.MethodGet, fmt.Sprintf("/me/workflows/%s", id), nil, &wf); err != nil {
 		return nil, err
 	}
 	return &wf, nil
@@ -111,7 +111,7 @@ func (s *WorkflowsService) Get(ctx context.Context, id string) (*Workflow, error
 // Create creates a new workflow.
 func (s *WorkflowsService) Create(ctx context.Context, req CreateWorkflowReq) (*Workflow, error) {
 	var wf Workflow
-	if err := s.c.do(ctx, http.MethodPost, "/api/v1/me/workflows", req, &wf); err != nil {
+	if err := s.c.do(ctx, http.MethodPost, "/me/workflows", req, &wf); err != nil {
 		return nil, err
 	}
 	return &wf, nil
@@ -120,7 +120,7 @@ func (s *WorkflowsService) Create(ctx context.Context, req CreateWorkflowReq) (*
 // Update partially updates a workflow.
 func (s *WorkflowsService) Update(ctx context.Context, id string, req UpdateWorkflowReq) (*Workflow, error) {
 	var wf Workflow
-	if err := s.c.do(ctx, http.MethodPut, fmt.Sprintf("/api/v1/me/workflows/%s", id), req, &wf); err != nil {
+	if err := s.c.do(ctx, http.MethodPut, fmt.Sprintf("/me/workflows/%s", id), req, &wf); err != nil {
 		return nil, err
 	}
 	return &wf, nil
@@ -128,14 +128,14 @@ func (s *WorkflowsService) Update(ctx context.Context, id string, req UpdateWork
 
 // Delete deletes a workflow.
 func (s *WorkflowsService) Delete(ctx context.Context, id string) error {
-	return s.c.do(ctx, http.MethodDelete, fmt.Sprintf("/api/v1/me/workflows/%s", id), nil, nil)
+	return s.c.do(ctx, http.MethodDelete, fmt.Sprintf("/me/workflows/%s", id), nil, nil)
 }
 
 // Run starts a manual workflow run with optional input JSON.
 func (s *WorkflowsService) Run(ctx context.Context, id string, input json.RawMessage, workspaceID string) (*WorkflowRun, error) {
 	body := map[string]any{"input": input, "workspaceId": workspaceID}
 	var run WorkflowRun
-	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/api/v1/me/workflows/%s/runs", id), body, &run); err != nil {
+	if err := s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/workflows/%s/runs", id), body, &run); err != nil {
 		return nil, err
 	}
 	return &run, nil
@@ -144,7 +144,7 @@ func (s *WorkflowsService) Run(ctx context.Context, id string, input json.RawMes
 // GetRun returns the status of a workflow run.
 func (s *WorkflowsService) GetRun(ctx context.Context, runID string) (*WorkflowRun, error) {
 	var run WorkflowRun
-	if err := s.c.do(ctx, http.MethodGet, fmt.Sprintf("/api/v1/me/runs/%s", runID), nil, &run); err != nil {
+	if err := s.c.do(ctx, http.MethodGet, fmt.Sprintf("/me/runs/%s", runID), nil, &run); err != nil {
 		return nil, err
 	}
 	return &run, nil
@@ -152,7 +152,7 @@ func (s *WorkflowsService) GetRun(ctx context.Context, runID string) (*WorkflowR
 
 // CancelRun cancels a running workflow.
 func (s *WorkflowsService) CancelRun(ctx context.Context, runID string) error {
-	return s.c.do(ctx, http.MethodPost, fmt.Sprintf("/api/v1/me/runs/%s/cancel", runID), nil, nil)
+	return s.c.do(ctx, http.MethodPost, fmt.Sprintf("/me/runs/%s/cancel", runID), nil, nil)
 }
 
 // TriggersService manages trigger definitions.
@@ -163,7 +163,7 @@ func (s *TriggersService) List(ctx context.Context) ([]Trigger, error) {
 	var resp struct {
 		Triggers []Trigger `json:"triggers"`
 	}
-	if err := s.c.do(ctx, http.MethodGet, "/api/v1/me/triggers", nil, &resp); err != nil {
+	if err := s.c.do(ctx, http.MethodGet, "/me/triggers", nil, &resp); err != nil {
 		return nil, err
 	}
 	return resp.Triggers, nil
@@ -172,7 +172,7 @@ func (s *TriggersService) List(ctx context.Context) ([]Trigger, error) {
 // Create creates a new trigger.
 func (s *TriggersService) Create(ctx context.Context, req CreateTriggerReq) (*Trigger, error) {
 	var trig Trigger
-	if err := s.c.do(ctx, http.MethodPost, "/api/v1/me/triggers", req, &trig); err != nil {
+	if err := s.c.do(ctx, http.MethodPost, "/me/triggers", req, &trig); err != nil {
 		return nil, err
 	}
 	return &trig, nil
@@ -181,7 +181,7 @@ func (s *TriggersService) Create(ctx context.Context, req CreateTriggerReq) (*Tr
 // Update partially updates a trigger.
 func (s *TriggersService) Update(ctx context.Context, id string, req UpdateTriggerReq) (*Trigger, error) {
 	var trig Trigger
-	if err := s.c.do(ctx, http.MethodPut, fmt.Sprintf("/api/v1/me/triggers/%s", id), req, &trig); err != nil {
+	if err := s.c.do(ctx, http.MethodPut, fmt.Sprintf("/me/triggers/%s", id), req, &trig); err != nil {
 		return nil, err
 	}
 	return &trig, nil
@@ -189,5 +189,5 @@ func (s *TriggersService) Update(ctx context.Context, id string, req UpdateTrigg
 
 // Delete deletes a trigger.
 func (s *TriggersService) Delete(ctx context.Context, id string) error {
-	return s.c.do(ctx, http.MethodDelete, fmt.Sprintf("/api/v1/me/triggers/%s", id), nil, nil)
+	return s.c.do(ctx, http.MethodDelete, fmt.Sprintf("/me/triggers/%s", id), nil, nil)
 }

@@ -128,3 +128,38 @@ func TestComputeNextFire_TooFewFields(t *testing.T) {
 
 // Ensure types import is used
 var _ = types.TriggerSourceCron
+
+func TestComputeNextFire_TimezoneSupport(t *testing.T) {
+	// A trigger configured for 9am America/New_York should fire at 9am ET,
+	// which is 13:00 UTC during EDT (UTC-4) or 14:00 UTC during EST (UTC-5).
+	// We test with a fixed summer date when EDT is active (UTC-4).
+	trigger := &wf.TriggerRow{
+		SourceConfig: json.RawMessage(`{"expr":"0 9 * * *","tz":"America/New_York"}`),
+	}
+	// Noon UTC on Aug 7 2026 → 8am EDT. Next 9am ET is in 1 hour → 13:00 UTC.
+	now := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
+	next := computeNextFire(trigger, now)
+
+	// Should be 13:00 UTC (9am EDT = UTC-4).
+	if next.Hour() != 13 {
+		t.Errorf("expected 13:00 UTC (9am EDT), got %02d:%02d UTC", next.Hour(), next.Minute())
+	}
+	if next.Minute() != 0 {
+		t.Errorf("expected :00 minutes, got :%02d", next.Minute())
+	}
+}
+
+func TestComputeNextFire_TimezoneInvalid(t *testing.T) {
+	// Invalid timezone should fall back to UTC.
+	trigger := &wf.TriggerRow{
+		SourceConfig: json.RawMessage(`{"expr":"0 14 * * *","tz":"Mars/Olympus"}`),
+	}
+	now := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
+	next := computeNextFire(trigger, now)
+
+	// With UTC fallback: 14:00 hasn't passed → today at 14:00 UTC.
+	expected := time.Date(2026, 8, 7, 14, 0, 0, 0, time.UTC)
+	if !next.Equal(expected) {
+		t.Errorf("invalid TZ fallback to UTC: expected %v, got %v", expected, next)
+	}
+}
