@@ -71,7 +71,7 @@ describe("WorkspaceImagesTab", () => {
     render(<WorkspaceImagesTab />);
     await waitFor(() => { expect(screen.getByText("ffmpeg")).toBeInTheDocument(); });
     fireEvent.change(screen.getByPlaceholderText("e.g. ml-stack"), { target: { value: "t" } });
-    expect(screen.getByText("Create Personal Image & Build")).toBeDisabled();
+    await waitFor(() => { expect(screen.getByText("Create Personal Image & Build")).toBeDisabled(); });
   });
 
   it("shows blocked when selection matches a non-retriable known failure", async () => {
