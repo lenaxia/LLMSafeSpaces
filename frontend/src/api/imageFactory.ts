@@ -59,8 +59,8 @@ export const imageFactoryApi = {
   getCatalog: () => api.get<Catalog>("/image-factory/catalog"),
 
   listConfigs: async () => {
-    const r = await api.get<{ configs: Config[] }>("/image-factory/configs");
-    return r.configs;
+    const r = await api.get<{ configs?: Config[] } | Config[]>("/image-factory/configs");
+    return Array.isArray(r) ? r : (r.configs ?? []);
   },
 
   getConfig: (hash: string) => api.get<Config>(`/image-factory/configs/${hash}`),
