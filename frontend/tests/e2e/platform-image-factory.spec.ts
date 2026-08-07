@@ -76,6 +76,6 @@ test.describe("Platform admin Image Factory", () => {
     await page.goto("/admin/image-factory");
     await page.waitForLoadState("networkidle");
 
-    await expect(page.getByText(/Failed to load/i)).toBeVisible({ timeout: 8000 });
+    await expect(page.getByText("internal error")).toBeVisible({ timeout: 8000 });
   });
 });

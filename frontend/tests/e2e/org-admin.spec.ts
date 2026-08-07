@@ -196,7 +196,8 @@ test.describe("Org admin portal", () => {
     await page.goto(`/orgs/${ORG_ID}/images`);
     await page.waitForLoadState("networkidle");
 
-    await expect(page.getByText(/Failed to load/i)).toBeVisible({ timeout: 8000 });
+    // The component surfaces the API error message from ApiClientError.message.
+    await expect(page.getByText("internal error")).toBeVisible({ timeout: 8000 });
   });
 
   test("saving workspace limits PUTs both policies", async ({ page }) => {
