@@ -433,6 +433,10 @@ func TestCreateConfigAndBuild_AtomicBeginInsertInsertCommit(t *testing.T) {
 			"bookworm", "0.6.0", "member", sqlmock.AnyArg(), nil, "building").
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("cfg-uuid"))
 	mock.ExpectExec(`INSERT INTO image_factory_builds`).
+		WithArgs("build-uuid", "cfg-uuid", "s-hash", "bookworm", "0.6.0",
+			sqlmock.AnyArg(), sqlmock.AnyArg(),
+			"dispatched", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			"member", nil).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
@@ -451,11 +455,57 @@ func TestCreateConfigAndBuild_AtomicBeginInsertInsertCommit(t *testing.T) {
 		ResolvedValues: cfg.ResolvedValues,
 		Architectures:  []string{"linux/amd64"},
 		Status:         imagefactory.BuildDispatched,
+		Scope:          imagefactory.ScopeMember,
+		OrgID:          nil,
 	}
 	err := svc.CreateConfigAndBuild(ctx, &cfg, &build)
 	require.NoError(t, err)
 	assert.Equal(t, "cfg-uuid", cfg.ID, "config ID populated from RETURNING")
 	assert.Equal(t, "cfg-uuid", build.ConfigID, "build.ConfigID wired to cfg.ID")
+}
+
+// TestCreateConfigAndBuild_OrgScopeWritesBillingFields verifies the INSERT
+// for the builds table includes the org scope + org_id billing columns.
+func TestCreateConfigAndBuild_OrgScopeWritesBillingFields(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	ctx := context.Background()
+
+	orgID := "org-billing-1"
+	mock.ExpectBegin()
+	mock.ExpectQuery(`INSERT INTO image_factory_configs`).
+		WithArgs("s-hash", "org-cfg", sqlmock.AnyArg(), sqlmock.AnyArg(),
+			"bookworm", "0.6.0", "org", nil, orgID, "building").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow("cfg-uuid"))
+	// The ExpectExec WithArgs verifies scope ($12) and org_id ($13) are
+	// passed to the INSERT in the correct position.
+	mock.ExpectExec(`INSERT INTO image_factory_builds`).
+		WithArgs("build-uuid", "cfg-uuid", "s-hash", "bookworm", "0.6.0",
+			sqlmock.AnyArg(), sqlmock.AnyArg(),
+			"dispatched", sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			"org", orgID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	cfg := imagefactory.Config{
+		Hash: "s-hash", Name: "org-cfg",
+		Selection:      imagefactory.Selection{"ffmpeg"},
+		ResolvedValues: imagefactory.ResolvedValues{"ffmpeg": {Type: imagefactory.ExtensionTypeApt, Value: "ffmpeg"}},
+		BaseName:       "bookworm", BaseVersion: "0.6.0",
+		Scope: imagefactory.ScopeOrg, OrgID: &orgID,
+		Status: imagefactory.StatusBuilding,
+	}
+	build := imagefactory.Build{
+		ID: "build-uuid", Hash: "s-hash",
+		BaseName: "bookworm", BaseVersion: "0.6.0",
+		ResolvedValues: cfg.ResolvedValues,
+		Architectures:  []string{"linux/amd64"},
+		Status:         imagefactory.BuildDispatched,
+		Scope:          imagefactory.ScopeOrg,
+		OrgID:          &orgID,
+	}
+	err := svc.CreateConfigAndBuild(ctx, &cfg, &build)
+	require.NoError(t, err)
 }
 
 func TestTransitionBuildSucceeded_AtomicUpdateUpdateCommit(t *testing.T) {
