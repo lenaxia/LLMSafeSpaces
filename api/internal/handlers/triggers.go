@@ -203,12 +203,14 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 
 	if req.SourceType == types.TriggerSourceWebhook {
 		if h.encrypt == nil {
+			_ = h.store.DeleteTrigger(c.Request.Context(), ownerType, ownerID, triggerID)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "encryption provider not configured"})
 			return
 		}
 		secret := generateWebhookSecret()
 		ciphertext, err := h.encrypt.Encrypt(c.Request.Context(), []byte(secret))
 		if err != nil {
+			_ = h.store.DeleteTrigger(c.Request.Context(), ownerType, ownerID, triggerID)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt webhook secret"})
 			return
 		}
@@ -222,6 +224,7 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 			idemMode = types.WebhookIdempotencyHeader
 		}
 		if !types.ValidWebhookIdempotencyMode(idemMode) {
+			_ = h.store.DeleteTrigger(c.Request.Context(), ownerType, ownerID, triggerID)
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid idempotency mode"})
 			return
 		}
