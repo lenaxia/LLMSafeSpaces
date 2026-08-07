@@ -328,7 +328,7 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
       )}
 
       {/* User scope: show all personal configs in one list */}
-      {!showMemberSection && (
+      {!showManagedSection && !showMemberSection && (
         <section>
           <h3 className="mb-3 text-sm font-semibold text-muted-foreground uppercase tracking-wide">
             My Workspace Images
