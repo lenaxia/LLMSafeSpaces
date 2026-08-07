@@ -70,6 +70,21 @@ type APIClient interface {
 	// Model management
 	ListModels(ctx context.Context, workspaceID string) (json.RawMessage, error)
 	SetModel(ctx context.Context, workspaceID, model string) error
+
+	// Workflow management (Epic 64)
+	ListWorkflows(ctx context.Context) (json.RawMessage, error)
+	GetWorkflow(ctx context.Context, workflowID string) (json.RawMessage, error)
+	CreateWorkflow(ctx context.Context, name, specYAML, status string) (json.RawMessage, error)
+	UpdateWorkflow(ctx context.Context, workflowID, name, status, specYAML string) (json.RawMessage, error)
+	RunWorkflow(ctx context.Context, workflowID, input, workspaceID string) (json.RawMessage, error)
+	GetWorkflowRunStatus(ctx context.Context, runID string) (json.RawMessage, error)
+	CancelWorkflowRun(ctx context.Context, runID string) error
+
+	// Trigger management (Epic 64)
+	ListTriggers(ctx context.Context) (json.RawMessage, error)
+	CreateTrigger(ctx context.Context, name, sourceType, targetType, sourceConfig, targetConfig string) (json.RawMessage, error)
+	UpdateTrigger(ctx context.Context, triggerID, enabled string) (json.RawMessage, error)
+	DeleteTrigger(ctx context.Context, triggerID string) error
 }
 
 // CreateWorkspaceReq is the request body for workspace creation.
@@ -232,6 +247,55 @@ func (c *HTTPClient) doJSON(ctx context.Context, method, path string, body any, 
 		}
 	}
 	return nil
+}
+
+// doRequestRaw executes an HTTP request and returns the status code + raw JSON body.
+func (c *HTTPClient) doRequestRaw(ctx context.Context, method, path string, body any) (int, json.RawMessage, error) {
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, requestTimeout)
+		defer cancel()
+	}
+
+	var reqBody io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return 0, nil, fmt.Errorf("marshal request: %w", err)
+		}
+		reqBody = bytes.NewReader(b)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, reqBody)
+	if err != nil {
+		return 0, nil, fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if c.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+c.APIKey)
+	}
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return 0, nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	limited := io.LimitReader(resp.Body, maxResponseBody)
+	raw, err := io.ReadAll(limited)
+	if err != nil {
+		return resp.StatusCode, nil, fmt.Errorf("read response: %w", err)
+	}
+
+	if resp.StatusCode >= 400 {
+		errMsg := string(raw)
+		if len(errMsg) > 512 {
+			errMsg = errMsg[:512] + "...(truncated)"
+		}
+		return resp.StatusCode, raw, fmt.Errorf("API error %d: %s", resp.StatusCode, errMsg)
+	}
+
+	return resp.StatusCode, json.RawMessage(raw), nil
 }
 
 func (c *HTTPClient) CreateWorkspace(ctx context.Context, req CreateWorkspaceReq) (*WorkspaceResp, error) {
@@ -534,4 +598,85 @@ func (c *HTTPClient) SetModel(ctx context.Context, workspaceID, model string) er
 	}
 	body := map[string]string{"model": model}
 	return c.doJSON(ctx, http.MethodPut, "/api/v1/workspaces/"+workspaceID+"/model", body, nil)
+}
+
+// --- Epic 64: Workflow & trigger API methods ---
+
+func (c *HTTPClient) ListWorkflows(ctx context.Context) (json.RawMessage, error) {
+	return c.doRaw(ctx, http.MethodGet, "/api/v1/me/workflows", nil)
+}
+
+func (c *HTTPClient) GetWorkflow(ctx context.Context, workflowID string) (json.RawMessage, error) {
+	if err := validateID(workflowID, "workflow_id"); err != nil {
+		return nil, err
+	}
+	return c.doRaw(ctx, http.MethodGet, "/api/v1/me/workflows/"+workflowID, nil)
+}
+
+func (c *HTTPClient) CreateWorkflow(ctx context.Context, name, specYAML, status string) (json.RawMessage, error) {
+	body := map[string]string{"name": name, "specYaml": specYAML, "status": status}
+	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/workflows", body)
+}
+
+func (c *HTTPClient) UpdateWorkflow(ctx context.Context, workflowID, name, status, specYAML string) (json.RawMessage, error) {
+	if err := validateID(workflowID, "workflow_id"); err != nil {
+		return nil, err
+	}
+	body := map[string]string{"name": name, "status": status, "specYaml": specYAML}
+	return c.doRaw(ctx, http.MethodPut, "/api/v1/me/workflows/"+workflowID, body)
+}
+
+func (c *HTTPClient) RunWorkflow(ctx context.Context, workflowID, input, workspaceID string) (json.RawMessage, error) {
+	if err := validateID(workflowID, "workflow_id"); err != nil {
+		return nil, err
+	}
+	body := map[string]string{"input": input, "workspaceId": workspaceID}
+	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/workflows/"+workflowID+"/runs", body)
+}
+
+func (c *HTTPClient) GetWorkflowRunStatus(ctx context.Context, runID string) (json.RawMessage, error) {
+	if err := validateID(runID, "run_id"); err != nil {
+		return nil, err
+	}
+	return c.doRaw(ctx, http.MethodGet, "/api/v1/me/runs/"+runID, nil)
+}
+
+func (c *HTTPClient) CancelWorkflowRun(ctx context.Context, runID string) error {
+	if err := validateID(runID, "run_id"); err != nil {
+		return err
+	}
+	return c.doJSON(ctx, http.MethodPost, "/api/v1/me/runs/"+runID+"/cancel", nil, nil)
+}
+
+func (c *HTTPClient) ListTriggers(ctx context.Context) (json.RawMessage, error) {
+	return c.doRaw(ctx, http.MethodGet, "/api/v1/me/triggers", nil)
+}
+
+func (c *HTTPClient) CreateTrigger(ctx context.Context, name, sourceType, targetType, sourceConfig, targetConfig string) (json.RawMessage, error) {
+	body := map[string]string{
+		"name": name, "sourceType": sourceType, "targetType": targetType,
+		"sourceConfig": sourceConfig, "targetConfig": targetConfig,
+	}
+	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/triggers", body)
+}
+
+func (c *HTTPClient) UpdateTrigger(ctx context.Context, triggerID, enabled string) (json.RawMessage, error) {
+	if err := validateID(triggerID, "trigger_id"); err != nil {
+		return nil, err
+	}
+	body := map[string]string{"enabled": enabled}
+	return c.doRaw(ctx, http.MethodPut, "/api/v1/me/triggers/"+triggerID, body)
+}
+
+func (c *HTTPClient) DeleteTrigger(ctx context.Context, triggerID string) error {
+	if err := validateID(triggerID, "trigger_id"); err != nil {
+		return err
+	}
+	return c.doJSON(ctx, http.MethodDelete, "/api/v1/me/triggers/"+triggerID, nil, nil)
+}
+
+// doRaw executes an HTTP request and returns the raw JSON response body.
+func (c *HTTPClient) doRaw(ctx context.Context, method, path string, body any) (json.RawMessage, error) {
+	_, raw, err := c.doRequestRaw(ctx, method, path, body)
+	return raw, err
 }
