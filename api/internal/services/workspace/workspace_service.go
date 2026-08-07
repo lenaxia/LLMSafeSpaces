@@ -1297,6 +1297,7 @@ func (s *Service) resolveDefaultRuntime(ctx context.Context, userID string, orgI
 // policy blocks the given hash. Returns (false, "") when unrestricted or
 // when the hash is in the allowed list. Returns (true, message) when blocked.
 // Member-scoped configs should NOT call this (they're always exempt).
+// Fails open: nil policy checker, read error, or nil policy = unrestricted.
 func (s *Service) isImageConfigRestricted(ctx context.Context, orgID, hash string) (bool, string) {
 	if s.policyChecker == nil {
 		return false, ""
@@ -1307,16 +1308,18 @@ func (s *Service) isImageConfigRestricted(ctx context.Context, orgID, hash strin
 	}
 	allowed := *pol.AllowedImageConfigs
 	if len(allowed) == 0 {
-		return false, "" // empty = unrestricted
+		return false, ""
 	}
 	for _, h := range allowed {
 		if h == hash {
-			return false, "" // hash is allowed
+			return false, ""
 		}
 	}
 	return true, fmt.Sprintf("image config %q is not in your organization's allowed image list", hash)
 }
 
+// resolveImageFactoryConfig resolves an image-factory config hash to a
+// launchable image_ref, searching scopes in order (member -> org -> platform).
 func (s *Service) resolveImageFactoryConfig(ctx context.Context, hash, userID string, orgID *string) (string, error) {
 	if s.imageFactoryStore == nil {
 		return "", apierrors.NewValidationError(

@@ -133,8 +133,62 @@ func TestImageConfigRestriction_EmptyPolicyUnrestricted(t *testing.T) {
 	assert.Equal(t, "ghcr.io/test/ws:s-any", ref)
 }
 
-// TestImageConfigRestriction_NoPolicyUnrestricted verifies no policy checker
-// means no restriction.
+// TestImageConfigRestriction_PlatformConfigBlocked verifies that a
+// platform-scoped config is also subject to the org's restriction.
+func TestImageConfigRestriction_PlatformConfigBlocked(t *testing.T) {
+	f := newFixture(t)
+	orgID := "org-1"
+	allowed := []string{"s-different"}
+
+	f.svc.SetPolicyChecker(&stubPolicyChecker{
+		policy: &types.OrgPolicyValues{AllowedImageConfigs: &allowed},
+	})
+	f.svc.SetImageFactoryStore(&fakeImageFactoryStore{
+		results: map[imagefactory.ConfigScope]struct {
+			cfg      imagefactory.Config
+			imageRef string
+			err      error
+		}{
+			imagefactory.ScopePlatform: {
+				cfg:      imagefactory.Config{ID: "cfg-1", Hash: "s-platform", Scope: imagefactory.ScopePlatform},
+				imageRef: "ghcr.io/test/ws:s-platform",
+				err:      nil,
+			},
+		},
+	})
+
+	_, err := f.svc.resolveImageFactoryConfig(context.Background(), "s-platform", "user-1", &orgID)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in your organization's allowed image list")
+}
+
+// TestImageConfigRestriction_FailsOpenOnPolicyError verifies that when
+// GetEffectivePolicy returns an error, the launch proceeds (fails open).
+func TestImageConfigRestriction_FailsOpenOnPolicyError(t *testing.T) {
+	f := newFixture(t)
+	orgID := "org-1"
+
+	f.svc.SetPolicyChecker(&stubPolicyChecker{
+		err: assert.AnError,
+	})
+	f.svc.SetImageFactoryStore(&fakeImageFactoryStore{
+		results: map[imagefactory.ConfigScope]struct {
+			cfg      imagefactory.Config
+			imageRef string
+			err      error
+		}{
+			imagefactory.ScopeOrg: {
+				cfg:      imagefactory.Config{ID: "cfg-1", Hash: "s-any", Scope: imagefactory.ScopeOrg},
+				imageRef: "ghcr.io/test/ws:s-any",
+				err:      nil,
+			},
+		},
+	})
+
+	ref, err := f.svc.resolveImageFactoryConfig(context.Background(), "s-any", "user-1", &orgID)
+	require.NoError(t, err, "should fail open when policy read errors")
+	assert.Equal(t, "ghcr.io/test/ws:s-any", ref)
+}
 func TestImageConfigRestriction_NoPolicyChecker(t *testing.T) {
 	f := newFixture(t)
 	orgID := "org-1"
