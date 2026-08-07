@@ -23,6 +23,7 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
 
   const [name, setName] = useState("");
   const [baseName, setBaseName] = useState("");
+  const [baseVersion, setBaseVersion] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [expandedConfig, setExpandedConfig] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -40,7 +41,7 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
   };
 
   // Determine which create function to call based on scope.
-  const createConfig = (req: { name: string; selection: string[]; baseName: string }) => {
+  const createConfig = (req: { name: string; selection: string[]; baseName: string; baseVersion?: string }) => {
     if (scope === "org" && orgId) return imageFactoryApi.createOrgConfig(orgId, req);
     if (scope === "platform") return imageFactoryApi.createPlatformConfig(req);
     return imageFactoryApi.createConfig(req);
@@ -86,7 +87,10 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
       setConfigs(cfgs);
       if (cat.bases.length > 0 && !baseName) {
         const def = cat.bases.find((b) => b.isDefault) ?? cat.bases[0];
-        if (def) setBaseName(def.name);
+        if (def) {
+          setBaseName(def.name);
+          setBaseVersion(def.version);
+        }
       }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to load image factory data");
@@ -113,6 +117,7 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
         name: name.trim(),
         selection: Array.from(selected).sort(),
         baseName,
+        baseVersion: baseVersion || undefined,
       });
       setConfigs((prev) => [...prev, cfg]);
       setName("");
@@ -264,10 +269,12 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
         <div>
           <label className="block text-sm font-medium mb-1">Base Image</label>
           <select
-            value={baseName ? `${baseName}/${catalog.bases.find((b) => b.name === baseName)?.version ?? ""}` : ""}
+            value={baseName ? `${baseName}/${baseVersion}` : ""}
             onChange={(e) => {
-              const [name] = e.target.value.split("/");
+              const selectedValue = e.target.value;
+              const [name, ver] = selectedValue.split("/");
               setBaseName(name ?? "");
+              setBaseVersion(ver ?? "");
             }}
             className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground"
           >
