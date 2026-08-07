@@ -197,6 +197,40 @@ describe("WorkspaceImagesTab edit permissions", () => {
     expect(screen.queryByText("Delete")).not.toBeInTheDocument();
   });
 
+  // Cross-scope visibility: org tab shows platform configs in a separate
+  // read-only section.
+  it("org scope: shows platform configs in a separate section", async () => {
+    mockListConfigs.mockResolvedValue([
+      { id: "c1", hash: "s-1", name: "OrgImg", scope: "org", status: "ready", selection: [], baseName: "bookworm", baseVersion: "0.6.0" },
+      { id: "c2", hash: "s-2", name: "PlatformImg", scope: "platform", status: "ready", selection: [], baseName: "bookworm", baseVersion: "0.6.0" },
+    ]);
+    renderWithOutlet("org", ORG);
+    await waitFor(() => expect(screen.getByText("PlatformImg")).toBeInTheDocument());
+    expect(screen.getByText("Org Images")).toBeInTheDocument();
+    expect(screen.getByText("Platform Images")).toBeInTheDocument();
+    // Platform config is read-only on org tab
+    fireEvent.click(screen.getByText("PlatformImg"));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(screen.queryByText("Rename")).not.toBeInTheDocument();
+  });
+
+  // Cross-scope visibility: platform tab shows org configs in a separate
+  // read-only section.
+  it("platform scope: shows org configs in a separate section", async () => {
+    mockListConfigs.mockResolvedValue([
+      { id: "c1", hash: "s-1", name: "PlatImg", scope: "platform", status: "ready", selection: [], baseName: "bookworm", baseVersion: "0.6.0" },
+      { id: "c2", hash: "s-2", name: "OrgImg", scope: "org", status: "ready", selection: [], baseName: "bookworm", baseVersion: "0.6.0" },
+    ]);
+    renderWithOutlet("platform");
+    await waitFor(() => expect(screen.getByText("OrgImg")).toBeInTheDocument());
+    expect(screen.getByText("Platform Images")).toBeInTheDocument();
+    expect(screen.getByText("Org Images")).toBeInTheDocument();
+    // Org config is read-only on platform tab
+    fireEvent.click(screen.getByText("OrgImg"));
+    await new Promise((r) => setTimeout(r, 100));
+    expect(screen.queryByText("Rename")).not.toBeInTheDocument();
+  });
+
   it("org scope: managed configs render once, not duplicated in flat list", async () => {
     mockListConfigs.mockResolvedValue([
       { id: "c1", hash: "s-1", name: "OrgOnly", scope: "org", status: "ready", selection: [], baseName: "bookworm", baseVersion: "0.6.0" },
