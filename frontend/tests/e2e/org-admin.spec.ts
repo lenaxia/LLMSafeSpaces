@@ -190,14 +190,16 @@ test.describe("Org admin portal", () => {
 
   test("org images: catalog load failure shows error", async ({ page }) => {
     await page.route(`${API}/image-factory/catalog`, async (route: Route) => {
-      await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "internal error" }) });
+      await route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: "catalog-down" }) });
+    });
+    await page.route(`${API}/image-factory/configs`, async (route: Route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) });
     });
 
     await page.goto(`/orgs/${ORG_ID}/images`);
     await page.waitForLoadState("networkidle");
 
-    // The component surfaces the API error message from ApiClientError.message.
-    await expect(page.getByText("internal error")).toBeVisible({ timeout: 8000 });
+    await expect(page.getByText("catalog-down")).toBeVisible({ timeout: 8000 });
   });
 
   test("saving workspace limits PUTs both policies", async ({ page }) => {
