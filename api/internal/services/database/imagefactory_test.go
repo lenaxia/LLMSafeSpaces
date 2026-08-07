@@ -253,6 +253,10 @@ func TestGetInFlightOrSuccessfulBuild_PrefersSucceededOverDispatched(t *testing.
 	require.NoError(t, err)
 	require.NotNil(t, build)
 	assert.Equal(t, imagefactory.BuildSucceeded, build.Status)
+	assert.Equal(t, "ghcr.io/ws:s-hash-0.6.0", build.ImageRef)
+	// Verify billing attribution fields scan correctly (design/0047 Q1).
+	assert.Equal(t, imagefactory.ScopeMember, build.Scope)
+	assert.Nil(t, build.OrgID)
 }
 
 func TestGetInFlightOrSuccessfulBuild_ReturnsDispatchedIfNoSucceeded(t *testing.T) {
@@ -269,6 +273,8 @@ func TestGetInFlightOrSuccessfulBuild_ReturnsDispatchedIfNoSucceeded(t *testing.
 	require.NoError(t, err)
 	require.NotNil(t, build)
 	assert.Equal(t, imagefactory.BuildDispatched, build.Status)
+	assert.Equal(t, imagefactory.ScopeMember, build.Scope)
+	assert.Nil(t, build.OrgID)
 }
 
 func TestGetInFlightOrSuccessfulBuild_ReturnsNilWhenNone(t *testing.T) {
