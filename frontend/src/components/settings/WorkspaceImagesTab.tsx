@@ -23,6 +23,7 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
 
   const [name, setName] = useState("");
   const [baseName, setBaseName] = useState("");
+  const [baseVersion, setBaseVersion] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [expandedConfig, setExpandedConfig] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
@@ -40,7 +41,7 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
   };
 
   // Determine which create function to call based on scope.
-  const createConfig = (req: { name: string; selection: string[]; baseName: string }) => {
+  const createConfig = (req: { name: string; selection: string[]; baseName: string; baseVersion?: string }) => {
     if (scope === "org" && orgId) return imageFactoryApi.createOrgConfig(orgId, req);
     if (scope === "platform") return imageFactoryApi.createPlatformConfig(req);
     return imageFactoryApi.createConfig(req);
@@ -49,8 +50,8 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
   // The scope label for newly created configs (for the section heading).
   const createScopeLabel = scope === "org" ? "Org" : scope === "platform" ? "Platform" : "Personal";
 
-  const handleDelete = async (hash: string) => {
-    if (!confirm(`Delete "${hash}"? This cannot be undone.`)) return;
+  const handleDelete = async (hash: string, name: string) => {
+    if (!confirm(`Delete "${name}"? This cannot be undone.`)) return;
     try {
       await imageFactoryApi.deleteConfig(hash);
       setConfigs(configs.filter((c) => c.hash !== hash));
@@ -86,7 +87,10 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
       setConfigs(cfgs);
       if (cat.bases.length > 0 && !baseName) {
         const def = cat.bases.find((b) => b.isDefault) ?? cat.bases[0];
-        if (def) setBaseName(def.name);
+        if (def) {
+          setBaseName(def.name);
+          setBaseVersion(def.version);
+        }
       }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to load image factory data");
@@ -113,6 +117,7 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
         name: name.trim(),
         selection: Array.from(selected).sort(),
         baseName,
+        baseVersion: baseVersion || undefined,
       });
       setConfigs((prev) => [...prev, cfg]);
       setName("");
@@ -234,7 +239,7 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
                 ) : (
                   <>
                     <button onClick={() => { setRenamingId(cfg.id); setRenameValue(cfg.name); }} className="rounded border border-border px-2 py-1 text-xs hover:bg-accent">Rename</button>
-                    <button onClick={() => handleDelete(cfg.hash)} className="rounded border border-destructive/50 px-2 py-1 text-xs text-destructive hover:bg-destructive/10">Delete</button>
+                    <button onClick={() => handleDelete(cfg.hash, cfg.name)} className="rounded border border-destructive/50 px-2 py-1 text-xs text-destructive hover:bg-destructive/10">Delete</button>
                   </>
                 )}
               </div>
@@ -264,12 +269,17 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
         <div>
           <label className="block text-sm font-medium mb-1">Base Image</label>
           <select
-            value={baseName}
-            onChange={(e) => setBaseName(e.target.value)}
+            value={baseName ? `${baseName}/${baseVersion}` : ""}
+            onChange={(e) => {
+              const selectedValue = e.target.value;
+              const [name, ver] = selectedValue.split("/");
+              setBaseName(name ?? "");
+              setBaseVersion(ver ?? "");
+            }}
             className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground"
           >
             {catalog.bases.map((b) => (
-              <option key={`${b.name}/${b.version}`} value={b.name}>
+              <option key={`${b.name}/${b.version}`} value={`${b.name}/${b.version}`}>
                 {b.name} ({b.version})
               </option>
             ))}

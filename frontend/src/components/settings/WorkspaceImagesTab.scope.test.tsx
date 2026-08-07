@@ -230,6 +230,37 @@ describe("WorkspaceImagesTab edit permissions", () => {
     await new Promise((r) => setTimeout(r, 100));
     expect(screen.queryByText("Rename")).not.toBeInTheDocument();
   });
+});
+
+describe("WorkspaceImagesTab delete confirm + base version", () => {
+  // Regression: delete confirmation showed config hash, not friendly name.
+  it("delete confirm shows the config name, not the hash", async () => {
+    mockListConfigs.mockResolvedValue([
+      { id: "c1", hash: "s-cryptic", name: "My ML Stack", scope: "member", status: "ready", selection: [], baseName: "bookworm", baseVersion: "0.6.0" },
+    ]);
+    renderWithOutlet("user");
+    await waitFor(() => expect(screen.getByText("My ML Stack")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("My ML Stack"));
+    await waitFor(() => expect(screen.getByText("Delete")).toBeInTheDocument());
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    fireEvent.click(screen.getByText("Delete"));
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("My ML Stack"));
+    expect(confirmSpy).not.toHaveBeenCalledWith(expect.stringContaining("s-cryptic"));
+    confirmSpy.mockRestore();
+  });
+
+  // Regression: base selector now tracks version and sends it to the API.
+  it("create sends baseVersion from the selected base", async () => {
+    renderWithOutlet("user");
+    await waitFor(() => expect(screen.getByPlaceholderText("e.g. ml-stack")).toBeInTheDocument());
+    fireEvent.change(screen.getByPlaceholderText("e.g. ml-stack"), { target: { value: "test" } });
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(screen.getByRole("button", { name: /Create Personal Image/ }));
+    await waitFor(() => expect(mockCreateConfig).toHaveBeenCalled());
+    expect(mockCreateConfig).toHaveBeenCalledWith(expect.objectContaining({
+      baseVersion: "0.6.0",
+    }));
+  });
 
   it("org scope: managed configs render once, not duplicated in flat list", async () => {
     mockListConfigs.mockResolvedValue([
