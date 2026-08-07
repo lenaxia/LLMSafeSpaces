@@ -132,22 +132,6 @@ func makeLinearSpec() json.RawMessage {
 	}`)
 }
 
-func makeConditionSpec() json.RawMessage {
-	return json.RawMessage(`{
-		"nodes": [
-			{"id":"start","type":"script","data":{"language":"python","handler":"x"}},
-			{"id":"choice","type":"condition","data":{"conditions":[{"id":"skip","expression":"input.skipped == true"}]}},
-			{"id":"skip-path","type":"script","data":{"language":"python","handler":"z"}},
-			{"id":"else-path","type":"script","data":{"language":"python","handler":"w"}}
-		],
-		"edges": [
-			{"source":"start","target":"choice"},
-			{"source":"choice","target":"skip-path","sourceHandle":"skip"},
-			{"source":"choice","target":"else-path","sourceHandle":"otherwise"}
-		]
-	}`)
-}
-
 func runReconciler(t *testing.T, rec *WorkflowReconciler, store *mockReconcilerStore) {
 	t.Helper()
 	ctx := context.Background()

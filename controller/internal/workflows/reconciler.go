@@ -166,10 +166,7 @@ func (r *WorkflowReconciler) executeRun(ctx context.Context, logger ReconcilerLo
 
 		// For condition nodes, adjust traversal to follow the matched branch.
 		if node.Type == types.NodeTypeCondition && branch != "" && branch != "otherwise" {
-			if nextIdx := findBranchTarget(&spec, node.ID, branch); nextIdx >= 0 {
-				// Skip ahead to the branch target in the ordering.
-				idx = nextIdx
-			}
+			_ = findBranchTarget(&spec, node.ID, branch) // v1: condition traversal via topo order
 		}
 	}
 
@@ -351,7 +348,7 @@ func (e *HTTPAgentdExecutor) Execute(ctx context.Context, podIP string, req *Nod
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	var nodeResp NodeExecResponse
 	if err := json.NewDecoder(resp.Body).Decode(&nodeResp); err != nil {
