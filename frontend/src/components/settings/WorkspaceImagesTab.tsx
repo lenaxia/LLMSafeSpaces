@@ -266,7 +266,7 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
           <select
             value={baseName ? `${baseName}/${catalog.bases.find((b) => b.name === baseName)?.version ?? ""}` : ""}
             onChange={(e) => {
-              const [name, version] = e.target.value.split("/");
+              const [name] = e.target.value.split("/");
               setBaseName(name ?? "");
             }}
             className="w-full rounded-md border border-border bg-background px-3 py-1.5 text-sm text-foreground"
