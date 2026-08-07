@@ -35,6 +35,7 @@ type workflowStore interface {
 	CountWorkflowsByOwner(ctx context.Context, ownerType, ownerID string) (int, error)
 	CreateWorkflowRun(ctx context.Context, row *wf.WorkflowRunRow) error
 	GetWorkflowRun(ctx context.Context, runID string) (*wf.WorkflowRunRow, error)
+	UpdateWorkflowRunStatus(ctx context.Context, runID, status string, errorCode *string, errMsg json.RawMessage, output json.RawMessage) error
 	ListWorkflowRuns(ctx context.Context, workflowID string, limit, offset int) ([]*wf.WorkflowRunRow, error)
 	ListNodeRuns(ctx context.Context, workflowRunID string) ([]*wf.WorkflowNodeRunRow, error)
 }
@@ -554,6 +555,32 @@ func (h *WorkflowsHandler) GetRunNodes(c *gin.Context) {
 		out = append(out, nodeRunRowToResponse(n))
 	}
 	c.JSON(http.StatusOK, gin.H{"nodes": out})
+}
+
+// CancelRun cancels a running workflow (POST /runs/:runId/cancel).
+func (h *WorkflowsHandler) CancelRun(c *gin.Context) {
+	runID := c.Param("runId")
+	run, err := h.store.GetWorkflowRun(c.Request.Context(), runID)
+	if err != nil {
+		if errors.Is(err, wf.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "run not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get run"})
+		return
+	}
+	if types.IsTerminalRunStatus(run.Status) {
+		c.JSON(http.StatusConflict, gin.H{"error": "run is already in terminal state: " + run.Status})
+		return
+	}
+	// Mark as canceled. The reconciler will observe the status change at the
+	// next node boundary and stop execution.
+	ec := types.RunErrorCodeCanceled
+	if err := h.store.UpdateWorkflowRunStatus(c.Request.Context(), runID, types.RunStatusCanceled, &ec, nil, nil); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to cancel run"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"canceled": true})
 }
 
 // UserListRuns lists runs for a user-scope workflow.
