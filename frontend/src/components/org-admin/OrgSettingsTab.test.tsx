@@ -202,4 +202,26 @@ describe("OrgAdminSettingsTab", () => {
       expect(mockSetOrgPolicy).toHaveBeenCalledWith("org-1", "allowed_providers", []),
     );
   });
+
+  it("renders and saves image restriction policy", async () => {
+    mockListOrgPolicies.mockResolvedValue([
+      { key: "allowed_image_configs", value: ["s-abc", "s-def"], updatedAt: "2026-01-01T00:00:00Z" },
+    ]);
+    renderTab();
+    await waitFor(() =>
+      expect(screen.getByText("Only listed image hashes are launchable by members")).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByText("Save Image Restrictions"));
+    await waitFor(() =>
+      expect(mockSetOrgPolicy).toHaveBeenCalledWith("org-1", "allowed_image_configs", ["s-abc", "s-def"]),
+    );
+  });
+
+  it("shows unrestricted caption when image restriction is absent", async () => {
+    mockListOrgPolicies.mockResolvedValue([]);
+    renderTab();
+    await waitFor(() =>
+      expect(screen.getByText("All visible images are launchable (unrestricted)")).toBeInTheDocument(),
+    );
+  });
 });

@@ -189,6 +189,47 @@ func TestImageConfigRestriction_FailsOpenOnPolicyError(t *testing.T) {
 	require.NoError(t, err, "should fail open when policy read errors")
 	assert.Equal(t, "ghcr.io/test/ws:s-any", ref)
 }
+
+// TestCreateWorkspace_ImageRestriction_Blocked is an integration test that
+// exercises the full CreateWorkspace path with the restriction policy set.
+// Verifies that an org-scope config not in the allowed list is rejected.
+func TestCreateWorkspace_ImageRestriction_Blocked(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+	orgID := "org-1"
+	allowed := []string{"s-different"}
+
+	org := newStubOrgChecker()
+	org.members[orgID+":user-1"] = true
+	f.svc.SetOrgStore(org)
+
+	f.svc.SetPolicyChecker(&stubPolicyChecker{
+		policy: &types.OrgPolicyValues{AllowedImageConfigs: &allowed},
+	})
+	f.svc.SetImageFactoryStore(&fakeImageFactoryStore{
+		results: map[imagefactory.ConfigScope]struct {
+			cfg      imagefactory.Config
+			imageRef string
+			err      error
+		}{
+			imagefactory.ScopeOrg: {
+				cfg:      imagefactory.Config{ID: "cfg-1", Hash: "s-blocked", Scope: imagefactory.ScopeOrg},
+				imageRef: "ghcr.io/test/ws:s-blocked",
+				err:      nil,
+			},
+		},
+	})
+
+	req := types.CreateWorkspaceRequest{
+		Name:            "restricted ws",
+		StorageSize:     "1Gi",
+		OrgID:           &orgID,
+		ImageConfigHash: "s-blocked",
+	}
+	_, err := f.svc.CreateWorkspace(ctx, "user-1", req)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "not in your organization's allowed image list")
+}
 func TestImageConfigRestriction_NoPolicyChecker(t *testing.T) {
 	f := newFixture(t)
 	orgID := "org-1"
