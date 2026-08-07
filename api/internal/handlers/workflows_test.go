@@ -117,7 +117,7 @@ func setupWorkflowRouter(t *testing.T, store workflowStore, quota workflowQuotaC
 	return r
 }
 
-func doRequest(t *testing.T, r *gin.Engine, method, path string, body any) *httptest.ResponseRecorder {
+func doWFRequest(t *testing.T, r *gin.Engine, method, path string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	var buf bytes.Buffer
 	if body != nil {
@@ -140,7 +140,7 @@ func TestWorkflowCreate_Success(t *testing.T) {
 
 	validSpec := `{"nodes":[{"id":"start","type":"script","data":{"language":"python","handler":"def handler(i): return {}"}}],"edges":[]}`
 
-	w := doRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{
+	w := doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{
 		"name":     "my-workflow",
 		"specYaml": validSpec,
 	})
@@ -161,7 +161,7 @@ func TestWorkflowCreate_InvalidSpec(t *testing.T) {
 	// Spec with a cycle.
 	cyclicSpec := `{"nodes":[{"id":"a","type":"script","data":{"language":"python","handler":"x"}},{"id":"b","type":"script","data":{"language":"python","handler":"x"}}],"edges":[{"source":"a","target":"b"},{"source":"b","target":"a"}]}`
 
-	w := doRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{
+	w := doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{
 		"name":     "bad-workflow",
 		"specYaml": cyclicSpec,
 	})
@@ -177,7 +177,7 @@ func TestWorkflowCreate_InvalidName(t *testing.T) {
 	quota := &mockQuotaChecker{values: map[string]int{}}
 	r := setupWorkflowRouter(t, store, quota)
 
-	w := doRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{
+	w := doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{
 		"name":     "",
 		"specYaml": `{}`,
 	})
@@ -195,11 +195,11 @@ func TestWorkflowCreate_QuotaExceeded(t *testing.T) {
 	validSpec := `{"nodes":[{"id":"start","type":"script","data":{"language":"python","handler":"x"}}],"edges":[]}`
 
 	// First succeeds (count 0 < 1).
-	w1 := doRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{"name": "first", "specYaml": validSpec})
+	w1 := doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{"name": "first", "specYaml": validSpec})
 	require.Equal(t, http.StatusCreated, w1.Code)
 
 	// Second fails (count 1 >= 1).
-	w2 := doRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{"name": "second", "specYaml": validSpec})
+	w2 := doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{"name": "second", "specYaml": validSpec})
 	assert.Equal(t, http.StatusConflict, w2.Code)
 }
 
@@ -210,7 +210,7 @@ func TestWorkflowGet_Success(t *testing.T) {
 
 	// Create first.
 	validSpec := `{"nodes":[{"id":"start","type":"script","data":{"language":"python","handler":"x"}}],"edges":[]}`
-	w := doRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{"name": "test", "specYaml": validSpec})
+	w := doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{"name": "test", "specYaml": validSpec})
 	require.Equal(t, http.StatusCreated, w.Code)
 
 	var created map[string]any
@@ -218,7 +218,7 @@ func TestWorkflowGet_Success(t *testing.T) {
 	workflowID := created["id"].(string)
 
 	// Get it back.
-	w2 := doRequest(t, r, "GET", "/api/v1/me/workflows/"+workflowID, nil)
+	w2 := doWFRequest(t, r, "GET", "/api/v1/me/workflows/"+workflowID, nil)
 	require.Equal(t, http.StatusOK, w2.Code)
 
 	var got map[string]any
@@ -231,7 +231,7 @@ func TestWorkflowGet_NotFound(t *testing.T) {
 	quota := &mockQuotaChecker{values: map[string]int{}}
 	r := setupWorkflowRouter(t, store, quota)
 
-	w := doRequest(t, r, "GET", "/api/v1/me/workflows/nonexistent", nil)
+	w := doWFRequest(t, r, "GET", "/api/v1/me/workflows/nonexistent", nil)
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
@@ -242,10 +242,10 @@ func TestWorkflowList(t *testing.T) {
 
 	validSpec := `{"nodes":[{"id":"start","type":"script","data":{"language":"python","handler":"x"}}],"edges":[]}`
 
-	doRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{"name": "wf-a", "specYaml": validSpec})
-	doRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{"name": "wf-b", "specYaml": validSpec})
+	doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{"name": "wf-a", "specYaml": validSpec})
+	doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{"name": "wf-b", "specYaml": validSpec})
 
-	w := doRequest(t, r, "GET", "/api/v1/me/workflows", nil)
+	w := doWFRequest(t, r, "GET", "/api/v1/me/workflows", nil)
 	require.Equal(t, http.StatusOK, w.Code)
 
 	var resp map[string]any
@@ -260,7 +260,7 @@ func TestWorkflowUpdate_StatusOnly(t *testing.T) {
 	r := setupWorkflowRouter(t, store, quota)
 
 	validSpec := `{"nodes":[{"id":"start","type":"script","data":{"language":"python","handler":"x"}}],"edges":[]}`
-	w := doRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{"name": "test", "specYaml": validSpec})
+	w := doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{"name": "test", "specYaml": validSpec})
 	require.Equal(t, http.StatusCreated, w.Code)
 
 	var created map[string]any
@@ -268,7 +268,7 @@ func TestWorkflowUpdate_StatusOnly(t *testing.T) {
 	workflowID := created["id"].(string)
 
 	// Update only status → name preserved.
-	w2 := doRequest(t, r, "PUT", "/api/v1/me/workflows/"+workflowID, map[string]any{
+	w2 := doWFRequest(t, r, "PUT", "/api/v1/me/workflows/"+workflowID, map[string]any{
 		"status": "active",
 	})
 	require.Equal(t, http.StatusOK, w2.Code)
@@ -284,7 +284,7 @@ func TestWorkflowUpdate_NotFound(t *testing.T) {
 	quota := &mockQuotaChecker{values: map[string]int{}}
 	r := setupWorkflowRouter(t, store, quota)
 
-	w := doRequest(t, r, "PUT", "/api/v1/me/workflows/nonexistent", map[string]any{
+	w := doWFRequest(t, r, "PUT", "/api/v1/me/workflows/nonexistent", map[string]any{
 		"status": "active",
 	})
 	assert.Equal(t, http.StatusNotFound, w.Code)
@@ -296,7 +296,7 @@ func TestWorkflowDelete_Success(t *testing.T) {
 	r := setupWorkflowRouter(t, store, quota)
 
 	validSpec := `{"nodes":[{"id":"start","type":"script","data":{"language":"python","handler":"x"}}],"edges":[]}`
-	w := doRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{"name": "test", "specYaml": validSpec})
+	w := doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{"name": "test", "specYaml": validSpec})
 	require.Equal(t, http.StatusCreated, w.Code)
 
 	var created map[string]any
@@ -304,11 +304,11 @@ func TestWorkflowDelete_Success(t *testing.T) {
 	workflowID := created["id"].(string)
 
 	// Delete.
-	w2 := doRequest(t, r, "DELETE", "/api/v1/me/workflows/"+workflowID, nil)
+	w2 := doWFRequest(t, r, "DELETE", "/api/v1/me/workflows/"+workflowID, nil)
 	assert.Equal(t, http.StatusOK, w2.Code)
 
 	// Get → 404.
-	w3 := doRequest(t, r, "GET", "/api/v1/me/workflows/"+workflowID, nil)
+	w3 := doWFRequest(t, r, "GET", "/api/v1/me/workflows/"+workflowID, nil)
 	assert.Equal(t, http.StatusNotFound, w3.Code)
 }
 
@@ -317,7 +317,7 @@ func TestWorkflowDelete_NotFound(t *testing.T) {
 	quota := &mockQuotaChecker{values: map[string]int{}}
 	r := setupWorkflowRouter(t, store, quota)
 
-	w := doRequest(t, r, "DELETE", "/api/v1/me/workflows/nonexistent", nil)
+	w := doWFRequest(t, r, "DELETE", "/api/v1/me/workflows/nonexistent", nil)
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 
@@ -347,7 +347,7 @@ func TestWorkflowCreate_SlugProvided(t *testing.T) {
 
 	validSpec := `{"nodes":[{"id":"start","type":"script","data":{"language":"python","handler":"x"}}],"edges":[]}`
 
-	w := doRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{
+	w := doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{
 		"name":     "My Workflow Name",
 		"slug":     "custom-slug",
 		"specYaml": validSpec,
@@ -367,7 +367,7 @@ func TestWorkflowCreate_StoreError(t *testing.T) {
 
 	validSpec := `{"nodes":[{"id":"start","type":"script","data":{"language":"python","handler":"x"}}],"edges":[]}`
 
-	w := doRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{
+	w := doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{
 		"name":     "test",
 		"specYaml": validSpec,
 	})
