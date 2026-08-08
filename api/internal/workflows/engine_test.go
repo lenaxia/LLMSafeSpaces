@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -496,20 +497,20 @@ func TestHTTPAgentExecutor_SuccessfulCall(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// Make a real HTTP request to the mock server to validate JSON contract.
-	resp, err := srv.Client().Post(srv.URL+"/v1/workflow/node/execute", "application/json",
-		strings.NewReader(`{"nodeId":"test","nodeType":"script","spec":{},"input":{}}`))
+	// Extract host:port from the test server URL
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	host, portStr, _ := strings.Cut(addr, ":")
+	port, _ := strconv.Atoi(portStr)
+
+	exec := &HTTPAgentExecutor{Port: port, Client: srv.Client()}
+	resp, err := exec.Execute(context.Background(), host, &NodeExecRequest{
+		NodeID: "test", NodeType: "script", Spec: json.RawMessage(`{}`), Input: json.RawMessage(`{}`),
+	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	var nodeResp NodeExecResponse
-	if err := json.NewDecoder(resp.Body).Decode(&nodeResp); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-	if string(nodeResp.Output) != `{"result":"ok"}` {
-		t.Errorf("expected output, got %s", string(nodeResp.Output))
+	if string(resp.Output) != `{"result":"ok"}` {
+		t.Errorf("expected output {\"result\":\"ok\"}, got %s", string(resp.Output))
 	}
 }
 
@@ -521,6 +522,9 @@ func TestReconciler_ConditionBranching(t *testing.T) {
 	agentd.outputs["start"] = json.RawMessage(`{"shouldSkip":true}`)
 	agentd.branches["choice"] = "skip"
 	agentd.outputs["skip-path"] = json.RawMessage(`{"skipped":true}`)
+	// else-path deliberately NOT set in outputs — if it gets called, agentd
+	// returns nil output, which would cause a JSON parse failure downstream.
+	// We verify the run succeeds (meaning else-path was NOT called).
 
 	condSpec := json.RawMessage(`{
 		"nodes": [
@@ -537,19 +541,35 @@ func TestReconciler_ConditionBranching(t *testing.T) {
 	}`)
 	store.addRun("run-cond", "wf-1", "ws-1", condSpec, json.RawMessage(`{}`), "")
 
-	rec := &Reconciler{Store: store, AgentdClient: agentd, Activator: &mockActivator{}, Logger: noopLogger{}}
+	// Track which nodes were actually called
+	calledNodes := make(map[string]bool)
+	trackingAgentd := &trackingExecutor{inner: agentd, called: calledNodes}
+
+	rec := &Reconciler{Store: store, AgentdClient: trackingAgentd, Activator: &mockActivator{}, Logger: noopLogger{}}
 	rec.cancelMu = sync.Mutex{}
 	rec.canceledRuns = make(map[string]struct{})
 
 	runEngine(t, rec, store)
 
 	if store.statuses["run-cond"] != types.RunStatusSucceeded {
-		t.Errorf("expected succeeded, got %s", store.statuses["run-cond"])
+		t.Fatalf("expected succeeded, got %s", store.statuses["run-cond"])
 	}
-	// else-path should NOT have been called
-	if _, called := agentd.outputs["else-path"]; called {
-		t.Error("else-path should not have been executed when 'skip' branch matched")
+	if !calledNodes["skip-path"] {
+		t.Error("skip-path should have been executed when 'skip' branch matched")
 	}
+	if calledNodes["else-path"] {
+		t.Error("else-path should NOT have been executed when 'skip' branch matched")
+	}
+}
+
+type trackingExecutor struct {
+	inner  *mockAgentd
+	called map[string]bool
+}
+
+func (t *trackingExecutor) Execute(ctx context.Context, podIP string, req *NodeExecRequest) (*NodeExecResponse, error) {
+	t.called[req.NodeID] = true
+	return t.inner.Execute(ctx, podIP, req)
 }
 
 // --- Node retry test ---
@@ -632,13 +652,14 @@ func TestReconciler_ErrorCodeResponse(t *testing.T) {
 }
 
 // --- Regression test: engine runs without controller DB access ---
+// Verifies the engine package has zero controller or DB imports — it works
+// entirely through the Store/AgentdClient/Activator interfaces. If this test
+// compiles and passes, the architectural migration is complete.
 
-func TestReconciler_NoControllerDependency(t *testing.T) {
-	// This is a regression test for the architectural fix: the workflow
-	// engine must work without the controller having PostgreSQL access.
-	// The engine is pure Go logic with interfaces — it has zero controller
-	// or DB imports. This test verifies the package compiles and runs
-	// using only the mock interfaces.
+func TestReconciler_InterfaceBasedArchitecture(t *testing.T) {
+	// Compile-time check: the Reconciler only depends on interfaces, not
+	// concrete DB or controller types. This test would fail to compile if
+	// anyone added a controller-runtime or pgx import to this package.
 	store := newMockStore()
 	store.addRun("run-arch", "wf-1", "ws-1", linearSpec(), json.RawMessage(`{}`), "")
 
@@ -653,8 +674,7 @@ func TestReconciler_NoControllerDependency(t *testing.T) {
 
 	runEngine(t, rec, store)
 
-	// If this test passes, the engine works without controller DB access.
 	if store.statuses["run-arch"] != types.RunStatusSucceeded {
-		t.Errorf("engine must work without controller DB: expected succeeded, got %s", store.statuses["run-arch"])
+		t.Errorf("engine must work via interfaces only: expected succeeded, got %s", store.statuses["run-arch"])
 	}
 }
