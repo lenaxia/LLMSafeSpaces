@@ -545,7 +545,7 @@ func (s *Store) CreateWorkflowRunWithFire(ctx context.Context, fire *TriggerFire
 
 // ClaimQueuedRuns selects up to limit queued runs and atomically marks them
 // running, returning the claimed rows. Uses FOR UPDATE SKIP LOCKED so multiple
-// controller replicas (or multiple goroutines) can claim concurrently without
+// API replicas (or multiple goroutines) can claim concurrently without
 // contention. The reconciler polls this on each tick.
 func (s *Store) ClaimQueuedRuns(ctx context.Context, limit int) ([]*WorkflowRunRow, error) {
 	rows, err := s.pool.Query(ctx, `

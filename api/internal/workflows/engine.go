@@ -458,11 +458,7 @@ func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger Logger, trigg
 
 	inputForRun := json.RawMessage(envelopeJSON)
 	if len(targetCfg.InputTemplate) > 0 {
-		rendered := make(map[string]any, len(targetCfg.InputTemplate))
-		for k, v := range targetCfg.InputTemplate {
-			rendered[k] = v
-		}
-		inputForRun, _ = json.Marshal(rendered)
+		inputForRun, _ = json.Marshal(targetCfg.InputTemplate)
 	}
 
 	fireID := fmt.Sprintf("fire-%s-%d", trigger.ID, now.Unix())

@@ -7,7 +7,7 @@ package main
 //
 // POST /v1/workflow/node/execute — dispatches a single workflow node
 // (script/agent/http/condition) and returns its output. Called by the
-// controller's workflow reconciler (US-64.8).
+// API server's workflow engine (US-64.8).
 //
 // POST /v1/workflow/node/cancel — kills an in-flight node execution.
 
