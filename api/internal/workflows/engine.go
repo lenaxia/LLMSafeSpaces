@@ -8,7 +8,7 @@ package workflows
 // The API already has the pgxpool, K8s client, and HTTP connectivity to workspace
 // pods. Background goroutines (jwtSessionJanitor, pendingOrgCleaner) are the
 // established pattern. FOR UPDATE SKIP LOCKED provides multi-replica safety
-// without leader election.
+// using FOR UPDATE SKIP LOCKED (no leader election needed).
 
 import (
 	"bytes"
@@ -43,7 +43,7 @@ type noopLogger struct{}
 func (noopLogger) Info(string, ...any)         {}
 func (noopLogger) Error(error, string, ...any) {}
 
-// --- ReconcilerStore interface (same as controller version) ---
+// --- ReconcilerStore interface ---
 
 type ReconcilerStore interface {
 	ClaimQueuedRuns(ctx context.Context, limit int) ([]*wf.WorkflowRunRow, error)
@@ -445,22 +445,21 @@ func (s *Scheduler) fireTrigger(ctx context.Context, logger Logger, trigger *wf.
 }
 
 func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger Logger, trigger *wf.TriggerRow, envelopeJSON []byte, now time.Time) {
-	var targetCfg map[string]any
+	var targetCfg types.RunWorkflowTargetConfig
 	_ = json.Unmarshal(trigger.TargetConfig, &targetCfg)
-	workflowID, _ := targetCfg["workflowId"].(string)
-	if workflowID == "" {
+	if targetCfg.WorkflowID == "" {
 		return
 	}
 
-	wfRow, err := s.Store.GetWorkflow(ctx, trigger.OwnerType, trigger.OwnerID, workflowID)
+	wfRow, err := s.Store.GetWorkflow(ctx, trigger.OwnerType, trigger.OwnerID, targetCfg.WorkflowID)
 	if err != nil {
 		return
 	}
 
 	inputForRun := json.RawMessage(envelopeJSON)
-	if tmpl, ok := targetCfg["inputTemplate"].(map[string]any); ok && len(tmpl) > 0 {
-		rendered := make(map[string]any)
-		for k, v := range tmpl {
+	if len(targetCfg.InputTemplate) > 0 {
+		rendered := make(map[string]any, len(targetCfg.InputTemplate))
+		for k, v := range targetCfg.InputTemplate {
 			rendered[k] = v
 		}
 		inputForRun, _ = json.Marshal(rendered)
@@ -480,7 +479,7 @@ func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger Logger, trigg
 		Status: "fired", FiredAt: now,
 	}
 	run := &wf.WorkflowRunRow{
-		ID: runID, WorkflowID: workflowID, SpecSnapshot: wfRow.SpecJSON,
+		ID: runID, WorkflowID: targetCfg.WorkflowID, SpecSnapshot: wfRow.SpecJSON,
 		Input: inputForRun, Status: "queued", TriggerID: &trigger.ID,
 		WorkspaceID: workspaceID, CreatedAt: now, UpdatedAt: now,
 	}
