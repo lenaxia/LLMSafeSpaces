@@ -7,6 +7,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-08
+
+### Added — Epic 64: Triggers & Workflows
+
+- **Workflow engine** (#655–#686). Deterministic DAG-structured pipelines
+  running inside workspace pods, fired by cron/webhook triggers. The engine
+  runs in the API server as background goroutines (reconciler + scheduler),
+  not the controller — preserving the architectural boundary (controller →
+  K8s only, API → PostgreSQL + K8s + HTTP).
+
+- **4 node types**: `script` (Python/Node inline handlers via mise),
+  `agent` (named opencode agent with structured output), `http` (outbound
+  HTTP through workspace egress), `condition` (expr-lang branch routing).
+
+- **Trigger sources**: `cron` (5-field expression with timezone support)
+  and `webhook` (HMAC-SHA256 verified, IP allowlist, idempotency dedup).
+
+- **Single-in-flight enforcement**: partial unique index on
+  `workflow_runs(workflow_id) WHERE status IN ('queued','running')` —
+  atomically prevents concurrent runs without leader election.
+
+- **Circuit breaker**: triggers auto-disable after N consecutive failures
+  (default 10). Missed cron fires are logged as 'skipped', not silent.
+
+- **DAG validator**: 9-pass validation at create/update — cycles, dangling
+  edges, unreachable nodes, condition branch coverage, expr-lang type-check.
+
+- **Migration 000016**: 7 tables (workflows, triggers, webhooks,
+  webhook_deliveries, workflow_runs, workflow_node_runs, trigger_fires).
+
+- **11 MCP tools**: workflow/trigger CRUD for external agents (Claude
+  Desktop, Cursor). Registered on the platform MCP server.
+
+- **4 SDKs**: Go, TypeScript, Python, Java — all have workflow + trigger
+  methods with wire-format tests.
+
+- **Frontend**: sidebar entries (Workflow/Zap icons) + two-column layout
+  pages for workflow and trigger management. YAML editor with server-side
+  validation.
+
+- **7 Prometheus metrics**: run duration, node duration, concurrent runs,
+  trigger fires, webhook deliveries, scheduler tick.
+
+### Fixed
+
+- **agentd: loadAllowedDirs append bug (#687).** `loadAllowedDirs` appended
+  to `allowedDirs` instead of replacing, causing 2 tests to fail in any real
+  workspace. Fixed: reset before each load.
+
+- **agentd port mismatch (#686).** Controller's `HTTPAgentdExecutor` used
+  port 4098 (admin) instead of 4097 (user). Fixed by moving the engine to
+  the API server.
+
 ## [0.8.13] - 2026-08-07
 
 ### Fixed
