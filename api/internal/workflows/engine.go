@@ -101,6 +101,9 @@ type K8sWorkspaceActivator struct {
 }
 
 func (a *K8sWorkspaceActivator) EnsureActive(ctx context.Context, workspaceID string, timeout time.Duration) (string, error) {
+	if a.K8sClient == nil {
+		return "", fmt.Errorf("K8sClient is nil — workspace activator not configured")
+	}
 	v1Client, err := a.K8sClient.LlmsafespacesV1()
 	if err != nil {
 		return "", fmt.Errorf("get k8s client: %w", err)
@@ -254,7 +257,7 @@ func (r *Reconciler) executeRun(ctx context.Context, logger Logger, run *wf.Work
 		}
 
 		if node.Type == types.NodeTypeCondition {
-			pruneInactiveBranches(&spec, node.ID, branch, nodeOrder, activeNodes, idx)
+			pruneInactiveBranches(&spec, node.ID, branch, nodeOrder, activeNodes)
 		}
 	}
 
@@ -581,7 +584,7 @@ func topoSort(spec *wf.Spec) []int {
 	return order
 }
 
-func pruneInactiveBranches(spec *wf.Spec, condNodeID, matchedBranch string, nodeOrder []int, active map[int]bool, _ int) {
+func pruneInactiveBranches(spec *wf.Spec, condNodeID, matchedBranch string, _ []int, active map[int]bool) {
 	var matchedTargets, unmatchedTargets []string
 	for _, e := range spec.Edges {
 		if e.Source != condNodeID {

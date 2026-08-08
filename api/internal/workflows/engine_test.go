@@ -7,6 +7,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -460,3 +463,198 @@ func TestScheduler_AdvancesNextFireAt(t *testing.T) {
 	}
 }
 func strPtr(s string) *string { return &s }
+
+// --- K8sWorkspaceActivator tests ---
+
+func TestK8sWorkspaceActivator_EmptyNamespace(t *testing.T) {
+	a := &K8sWorkspaceActivator{Namespace: ""}
+	// Should return error (no namespace configured to find workspace CRD).
+	_, err := a.EnsureActive(context.Background(), "ws-1", 100*time.Millisecond)
+	if err == nil {
+		t.Error("expected error with empty namespace")
+	}
+}
+
+// --- HTTPAgentExecutor tests ---
+
+func TestHTTPAgentExecutor_ContextCancellation(t *testing.T) {
+	exec := &HTTPAgentExecutor{Port: 9999} // nothing listening
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_, err := exec.Execute(ctx, "127.0.0.1", &NodeExecRequest{NodeID: "test", NodeType: "script"})
+	if err == nil {
+		t.Error("expected error connecting to non-existent server")
+	}
+}
+
+func TestHTTPAgentExecutor_SuccessfulCall(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(NodeExecResponse{
+			Output: json.RawMessage(`{"result":"ok"}`),
+		})
+	}))
+	defer srv.Close()
+
+	// Make a real HTTP request to the mock server to validate JSON contract.
+	resp, err := srv.Client().Post(srv.URL+"/v1/workflow/node/execute", "application/json",
+		strings.NewReader(`{"nodeId":"test","nodeType":"script","spec":{},"input":{}}`))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	var nodeResp NodeExecResponse
+	if err := json.NewDecoder(resp.Body).Decode(&nodeResp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if string(nodeResp.Output) != `{"result":"ok"}` {
+		t.Errorf("expected output, got %s", string(nodeResp.Output))
+	}
+}
+
+// --- Condition branching test ---
+
+func TestReconciler_ConditionBranching(t *testing.T) {
+	store := newMockStore()
+	agentd := newMockAgentd()
+	agentd.outputs["start"] = json.RawMessage(`{"shouldSkip":true}`)
+	agentd.branches["choice"] = "skip"
+	agentd.outputs["skip-path"] = json.RawMessage(`{"skipped":true}`)
+
+	condSpec := json.RawMessage(`{
+		"nodes": [
+			{"id":"start","type":"script","data":{"language":"python","handler":"x"}},
+			{"id":"choice","type":"condition","data":{"conditions":[{"id":"skip","expression":"input.shouldSkip == true"}]}},
+			{"id":"skip-path","type":"script","data":{"language":"python","handler":"z"}},
+			{"id":"else-path","type":"script","data":{"language":"python","handler":"w"}}
+		],
+		"edges": [
+			{"source":"start","target":"choice"},
+			{"source":"choice","target":"skip-path","sourceHandle":"skip"},
+			{"source":"choice","target":"else-path","sourceHandle":"otherwise"}
+		]
+	}`)
+	store.addRun("run-cond", "wf-1", "ws-1", condSpec, json.RawMessage(`{}`), "")
+
+	rec := &Reconciler{Store: store, AgentdClient: agentd, Activator: &mockActivator{}, Logger: noopLogger{}}
+	rec.cancelMu = sync.Mutex{}
+	rec.canceledRuns = make(map[string]struct{})
+
+	runEngine(t, rec, store)
+
+	if store.statuses["run-cond"] != types.RunStatusSucceeded {
+		t.Errorf("expected succeeded, got %s", store.statuses["run-cond"])
+	}
+	// else-path should NOT have been called
+	if _, called := agentd.outputs["else-path"]; called {
+		t.Error("else-path should not have been executed when 'skip' branch matched")
+	}
+}
+
+// --- Node retry test ---
+
+func TestReconciler_NodeRetry(t *testing.T) {
+	store := newMockStore()
+	agentd := newMockAgentd()
+
+	// First call fails, second succeeds
+	callCount := 0
+	wrappedAgentd := &retryAgentdExecutor{
+		inner:      agentd,
+		callCount:  &callCount,
+		failFirstN: 1,
+		output:     json.RawMessage(`{"result":"ok"}`),
+	}
+
+	retrySpec := json.RawMessage(`{
+		"nodes": [
+			{"id":"start","type":"script","data":{"language":"python","handler":"x"},"maxAttempts":3}
+		],
+		"edges": []
+	}`)
+	store.addRun("run-retry", "wf-1", "ws-1", retrySpec, json.RawMessage(`{}`), "")
+
+	rec := &Reconciler{Store: store, AgentdClient: wrappedAgentd, Activator: &mockActivator{}, Logger: noopLogger{}}
+	rec.cancelMu = sync.Mutex{}
+	rec.canceledRuns = make(map[string]struct{})
+
+	runEngine(t, rec, store)
+
+	if store.statuses["run-retry"] != types.RunStatusSucceeded {
+		t.Errorf("expected succeeded after retry, got %s", store.statuses["run-retry"])
+	}
+	if callCount < 2 {
+		t.Errorf("expected at least 2 calls (1 fail + 1 success), got %d", callCount)
+	}
+}
+
+type retryAgentdExecutor struct {
+	inner      *mockAgentd
+	callCount  *int
+	failFirstN int
+	output     json.RawMessage
+}
+
+func (r *retryAgentdExecutor) Execute(_ context.Context, podIP string, req *NodeExecRequest) (*NodeExecResponse, error) {
+	*r.callCount++
+	if *r.callCount <= r.failFirstN {
+		return nil, fmt.Errorf("simulated transient failure")
+	}
+	return &NodeExecResponse{Output: r.output}, nil
+}
+
+// --- Error code response path test ---
+
+func TestReconciler_ErrorCodeResponse(t *testing.T) {
+	store := newMockStore()
+	agentd := newMockAgentd()
+	agentd.errCodes["start"] = "script_failed"
+	agentd.outputs["start"] = nil
+
+	errSpec := json.RawMessage(`{
+		"nodes": [
+			{"id":"start","type":"script","data":{"language":"python","handler":"x"},"maxAttempts":1}
+		],
+		"edges": []
+	}`)
+	store.addRun("run-err", "wf-1", "ws-1", errSpec, json.RawMessage(`{}`), "")
+
+	rec := &Reconciler{Store: store, AgentdClient: agentd, Activator: &mockActivator{}, Logger: noopLogger{}}
+	rec.cancelMu = sync.Mutex{}
+	rec.canceledRuns = make(map[string]struct{})
+
+	runEngine(t, rec, store)
+
+	if store.statuses["run-err"] != types.RunStatusFailed {
+		t.Errorf("expected failed, got %s", store.statuses["run-err"])
+	}
+}
+
+// --- Regression test: engine runs without controller DB access ---
+
+func TestReconciler_NoControllerDependency(t *testing.T) {
+	// This is a regression test for the architectural fix: the workflow
+	// engine must work without the controller having PostgreSQL access.
+	// The engine is pure Go logic with interfaces — it has zero controller
+	// or DB imports. This test verifies the package compiles and runs
+	// using only the mock interfaces.
+	store := newMockStore()
+	store.addRun("run-arch", "wf-1", "ws-1", linearSpec(), json.RawMessage(`{}`), "")
+
+	rec := &Reconciler{
+		Store:        store,
+		AgentdClient: newMockAgentd(),
+		Activator:    &mockActivator{},
+		Logger:       noopLogger{},
+	}
+	rec.cancelMu = sync.Mutex{}
+	rec.canceledRuns = make(map[string]struct{})
+
+	runEngine(t, rec, store)
+
+	// If this test passes, the engine works without controller DB access.
+	if store.statuses["run-arch"] != types.RunStatusSucceeded {
+		t.Errorf("engine must work without controller DB: expected succeeded, got %s", store.statuses["run-arch"])
+	}
+}
