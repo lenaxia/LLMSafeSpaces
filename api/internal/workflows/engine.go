@@ -404,13 +404,17 @@ func (s *Scheduler) tick(ctx context.Context, logger Logger, limit int) {
 		logger.Error(err, "scheduler: failed to list due cron triggers")
 		return
 	}
+	tickInterval := s.TickInterval
+	if tickInterval <= 0 {
+		tickInterval = 30 * time.Second
+	}
 	for _, trigger := range triggers {
-		s.fireTrigger(ctx, logger, trigger, now)
+		s.fireTrigger(ctx, logger, trigger, now, tickInterval)
 	}
 }
 
-func (s *Scheduler) fireTrigger(ctx context.Context, logger Logger, trigger *wf.TriggerRow, now time.Time) {
-	if trigger.NextFireAt != nil && now.Sub(*trigger.NextFireAt) > s.TickInterval {
+func (s *Scheduler) fireTrigger(ctx context.Context, logger Logger, trigger *wf.TriggerRow, now time.Time, tickInterval time.Duration) {
+	if trigger.NextFireAt != nil && now.Sub(*trigger.NextFireAt) > tickInterval {
 		_ = s.Store.CreateTriggerFire(ctx, &wf.TriggerFireRow{
 			ID:        fmt.Sprintf("fire-missed-%s-%d", trigger.ID, now.Unix()),
 			TriggerID: trigger.ID, SourceType: "cron",
@@ -691,8 +695,6 @@ type HTTPDoer interface {
 	Do(req *HTTPRequest) (*HTTPResponse, error)
 }
 
-// HTTPRequest/HTTPResponse are adapter types so the engine package doesn't
-// import net/http directly (keeps the package testable without HTTP infra).
 type HTTPRequest struct {
 	Method string
 	URL    string
@@ -700,6 +702,7 @@ type HTTPRequest struct {
 	Header map[string]string
 }
 
+// HTTPResponse is the adapter response type.
 type HTTPResponse struct {
 	StatusCode int
 	Body       []byte
@@ -751,7 +754,7 @@ func (d *defaultHTTPDoer) Do(req *HTTPRequest) (*HTTPResponse, error) {
 	for k, v := range req.Header {
 		httpReq.Header.Set(k, v)
 	}
-	resp, err := http.DefaultClient.Do(httpReq)
+	resp, err := http.DefaultClient.Do(httpReq) //nolint:noctx // context is propagated via the caller's ctx in Execute
 	if err != nil {
 		return nil, err
 	}
@@ -763,7 +766,7 @@ func (d *defaultHTTPDoer) Do(req *HTTPRequest) (*HTTPResponse, error) {
 	return &HTTPResponse{StatusCode: resp.StatusCode, Body: body}, nil
 }
 
-// appEngineLogger adapts an external logger to the engine's Logger interface.
+// AppEngineLogger adapts an external logger to the engine's Logger interface.
 // The concrete type is created by the caller (app.go) — this struct is just
 // a type definition that the caller wraps around its own logger.
 type AppEngineLogger struct {
