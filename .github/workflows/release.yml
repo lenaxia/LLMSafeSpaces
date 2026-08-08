@@ -114,29 +114,24 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REF: ${{ needs.verify-changelog.outputs.ref }}
         run: |
-          # Poll the GitHub API for check runs on the ref, filtered to the
-          # CI workflow only. Wait until all CI checks are completed with
-          # success or skipped. Fail if any CI check fails.
-          #
-          # The v0.4.0 and v0.4.1 releases were blocked by a self-
-          # referential failure in lewagon/wait-on-check-action: the
-          # action's `running-workflow-name` filter ignores its own
-          # IN-PROGRESS check but not prior FAILED checks. This script
-          # avoids the issue entirely by filtering at the workflow level.
-
           REF_SHA="${REF#refs/tags/}"
           echo "Waiting for CI checks on ref: ${REF_SHA}"
+
+          # Record the timestamp of the tag push so we can filter out
+          # stale check runs from prior CI runs on the same commit SHA.
+          # The tag commit SHA is the same as the main commit SHA, so
+          # the check-runs API returns ALL check runs for that SHA —
+          # including ones from main's CI that ran before the tag was
+          # pushed. Without the timestamp filter, a prior main CI
+          # failure blocks every release cut from that commit.
+          CUTOFF=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "Filtering to check runs started after: ${CUTOFF}"
 
           MAX_WAIT=2400  # 40 minutes max
           INTERVAL=30
           ELAPSED=0
 
           while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
-            # List check runs for the ref, filtered to the CI workflow.
-            # The jq filter:
-            #   1. Keeps only check_runs whose app.id == 15368 (GitHub Actions)
-            #   2. Keeps only completed checks
-            #   3. Groups by conclusion
             RESPONSE=$(gh api "repos/${{ github.repository }}/commits/${REF_SHA}/check-runs?per_page=100" 2>/dev/null) || {
               echo "WARN: API call failed, retrying in ${INTERVAL}s..."
               sleep "$INTERVAL"
@@ -144,63 +139,22 @@ jobs:
               continue
             }
 
-            # Extract CI workflow check runs. We identify CI checks by
-            # looking for check runs whose name matches known CI job names.
-            # The CI workflow (ci.yml) produces jobs with these name
-            # patterns: "Lint", "Test *", "Build *", "Merge * Manifest",
-            # "Frontend *", "SDK *", "Prepare build metadata".
-            #
-            # We also need to handle the Security scan workflow which runs
-            # on the same triggers. Include its checks too.
-            #
-            # Simpler approach: get ALL check runs, filter OUT any whose
-            # name matches Release workflow jobs ("Verify CHANGELOG",
-            # "Wait for CI", "Sign images", "Scan images (Trivy)" [the
-            # release one, not the security-scan one], "Publish Helm",
-            # "Generate SBOM", "Build relay-proxy", "Create GitHub Release").
-            #
-            # Also exclude ancillary workflows that are NOT tag-push gates
-            # but record check runs against the tag SHA anyway (the tag's
-            # commit is on main, where these run): "gremlins" (mutation.yml,
-            # nightly) is a mutation-testing signal generator whose findings
-            # are expected by design — ci.yml's real test suites gate the
-            # release. Without this exclusion, gremlins findings block every
-            # release cut from a SHA the nightly happened to touch.
-            # "SDK Integration (live API canaries)" is `continue-on-error: true`
-            # in ci.yml because the workspace-creating scenarios (s-ws-crud,
-            # s-ws-status) have controller-dependent assertions that can't
-            # pass without a full Helm install. The job records `failure`
-            # (not `neutral`) on GitHub, so without this exclusion it blocks
-            # every release.
-            # ALL_DONE must exclude Release workflow job names for the same
-            # reason FAILED/CI_CHECKS/RUNNING do: the commits/{ref}/check-runs
-            # API returns THIS job's own in-progress "Wait for CI workflow"
-            # check run. Without the filter, ALL_DONE is always >= 1 (it
-            # counts itself), the success branch (ALL_DONE == 0) is
-            # unreachable, and the loop can only exit via the 40-minute
-            # timeout — which fails the release. This is the same
-            # self-referential class of bug #574 replaced wait-on-check to
-            # fix; the filter here closes the gap the original fix missed.
-            ALL_DONE=$(printf '%s' "$RESPONSE" | jq -r '
+            # Count checks still running (excluding Release workflow jobs).
+            # Filter to only checks started after the tag push (CUTOFF).
+            ALL_DONE=$(printf '%s' "$RESPONSE" | jq -r --arg cutoff "$CUTOFF" '
               .check_runs
-              # GitHub persists BOTH attempts when a job is retried. A flaky
-              # CI job (e.g. the race detector) that fails once and succeeds
-              # on retry leaves a stale failure record alongside the new
-              # success; without dedup, FAILED/ALL_DONE would honour the
-              # stale failure and block the release on a green retry. Keep
-              # only the latest attempt per name (max started_at) before any
-              # pass/fail judgement.
               | group_by(.name) | map(sort_by(.started_at // "0") | last)
-              | map(select(.status != "completed"))  # any still running?
+              | map(select(.started_at // "0" > $cutoff))
+              | map(select(.status != "completed"))
               | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|gremlins|Scan images \\(Trivy\\)|Publish Python SDK|Publish TypeScript SDK|SDK Integration") | not))
               | length
             ')
 
-            # Count any non-Release completed checks that failed.
-            # Filter out Release workflow job names.
-            FAILED=$(printf '%s' "$RESPONSE" | jq -r '
+            # Count any non-Release completed checks that failed (post-tag only).
+            FAILED=$(printf '%s' "$RESPONSE" | jq -r --arg cutoff "$CUTOFF" '
               .check_runs
               | group_by(.name) | map(sort_by(.started_at // "0") | last)
+              | map(select(.started_at // "0" > $cutoff))
               | map(select(.status == "completed"))
               | map(select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral"))
               | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|gremlins|Scan images \\(Trivy\\)|Publish Python SDK|Publish TypeScript SDK|SDK Integration") | not))
@@ -208,11 +162,11 @@ jobs:
               | .[]
             ')
 
-            # Also check: are there any CI-specific checks at all yet?
-            # On a fresh tag push, CI jobs take a few seconds to register.
-            CI_CHECKS=$(printf '%s' "$RESPONSE" | jq -r '
+            # Are there any post-tag CI-specific checks at all yet?
+            CI_CHECKS=$(printf '%s' "$RESPONSE" | jq -r --arg cutoff "$CUTOFF" '
               .check_runs
               | group_by(.name) | map(sort_by(.started_at // "0") | last)
+              | map(select(.started_at // "0" > $cutoff))
               | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|gremlins|Scan images \\(Trivy\\)|Publish Python SDK|Publish TypeScript SDK|SDK Integration") | not))
               | length
             ')
@@ -236,8 +190,9 @@ jobs:
             fi
 
             # Show progress: which checks are still running
-            RUNNING=$(printf '%s' "$RESPONSE" | jq -r '
+            RUNNING=$(printf '%s' "$RESPONSE" | jq -r --arg cutoff "$CUTOFF" '
               .check_runs
+              | map(select(.started_at // "0" > $cutoff))
               | map(select(.status != "completed"))
               | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|gremlins|Scan images \\(Trivy\\)|Publish Python SDK|Publish TypeScript SDK|SDK Integration") | not))
               | map(.name)
