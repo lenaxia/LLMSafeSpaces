@@ -220,12 +220,22 @@ func (h *WorkflowsHandler) createWithAudit(c *gin.Context, ownerType, ownerID, a
 		targetWS = &req.TargetWorkspaceID
 	}
 
+	onMissing := req.OnMissingWorkspace
+	if onMissing == "" {
+		onMissing = types.OnMissingAbort
+	}
+	if !types.ValidOnMissingWorkspace(onMissing) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid onMissingWorkspace (must be 'abort' or 'create')"})
+		return
+	}
+
 	now := time.Now().UTC()
 	row := &wf.WorkflowRow{
 		ID: uuid.New().String(), OwnerType: ownerType, OwnerID: ownerID,
 		Name: req.Name, Slug: slug, Description: req.Description,
 		SpecYAML: req.SpecYAML, SpecJSON: specJSON,
 		InputSchema: req.InputSchema, TargetWorkspaceID: targetWS,
+		OnMissingWorkspace: onMissing,
 		Status: status, Defaults: req.Defaults,
 		CreatedAt: now, UpdatedAt: now,
 	}
@@ -268,8 +278,8 @@ func (h *WorkflowsHandler) update(c *gin.Context, ownerType, ownerID string) {
 	upd := &wf.WorkflowUpdate{
 		Name: req.Name, Slug: req.Slug, Description: req.Description,
 		SpecYAML: req.SpecYAML, InputSchema: req.InputSchema,
-		TargetWorkspaceID: req.TargetWorkspaceID, Status: req.Status,
-		Defaults: req.Defaults,
+		TargetWorkspaceID: req.TargetWorkspaceID, OnMissingWorkspace: req.OnMissingWorkspace,
+		Status: req.Status, Defaults: req.Defaults,
 	}
 
 	if req.Name != nil {
@@ -287,6 +297,12 @@ func (h *WorkflowsHandler) update(c *gin.Context, ownerType, ownerID string) {
 	if req.Status != nil {
 		if !types.ValidWorkflowStatus(*req.Status) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid workflow status"})
+			return
+		}
+	}
+	if req.OnMissingWorkspace != nil {
+		if !types.ValidOnMissingWorkspace(*req.OnMissingWorkspace) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid onMissingWorkspace (must be 'abort' or 'create')"})
 			return
 		}
 	}
@@ -411,6 +427,7 @@ func workflowRowToResponse(r *wf.WorkflowRow) types.WorkflowResponse {
 		Description: r.Description,
 		SpecYAML:    r.SpecYAML,
 		InputSchema: r.InputSchema,
+		OnMissingWorkspace: r.OnMissingWorkspace,
 		Status:      r.Status,
 		Defaults:    r.Defaults,
 		CreatedAt:   r.CreatedAt,

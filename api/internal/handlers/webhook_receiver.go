@@ -28,6 +28,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
+	"github.com/lenaxia/llmsafespaces/api/internal/workflows"
 	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
 )
 
@@ -36,6 +37,7 @@ type webhookReceiverStore interface {
 	GetWebhook(ctx context.Context, webhookID string) (*wf.WebhookRow, error)
 	GetTriggerByID(ctx context.Context, triggerID string) (*wf.TriggerRow, error)
 	GetWorkflow(ctx context.Context, ownerType, ownerID, workflowID string) (*wf.WorkflowRow, error)
+	GetOrCreateScriptWorkflow(ctx context.Context, trigger *wf.TriggerRow, specJSON json.RawMessage, workspaceID string) (*wf.WorkflowRow, error)
 	RecordWebhookDelivery(ctx context.Context, webhookID, dedupKey string) error
 	CreateWorkflowRunWithFire(ctx context.Context, fire *wf.TriggerFireRow, run *wf.WorkflowRunRow) error
 	CreateTriggerFire(ctx context.Context, row *wf.TriggerFireRow) error
@@ -46,19 +48,39 @@ type webhookDecryptor interface {
 	Decrypt(ctx context.Context, ciphertext []byte) ([]byte, error)
 }
 
+// RateChecker checks whether a request is allowed under the rate limit.
+// Matches interfaces.RateLimiterService.Allow — injectable for testing.
+type RateChecker interface {
+	Allow(key string, rate float64, burst int) bool
+}
+
 // WebhookReceiverHandler handles inbound webhook deliveries at POST /api/v1/hooks/:webhookId.
 type WebhookReceiverHandler struct {
-	store   webhookReceiverStore
-	decrypt webhookDecryptor
-	maxBody int64
+	store           webhookReceiverStore
+	decrypt         webhookDecryptor
+	rateChecker     RateChecker
+	webhookRateRate float64
+	webhookBurst    int
+	maxBody         int64
 }
 
 // NewWebhookReceiverHandler constructs the handler. maxBody is the max request body size in bytes.
 func NewWebhookReceiverHandler(store webhookReceiverStore, decrypt webhookDecryptor, maxBody int64) *WebhookReceiverHandler {
 	if maxBody <= 0 {
-		maxBody = 1 << 20 // 1 MiB default
+		maxBody = 1 << 20
 	}
-	return &WebhookReceiverHandler{store: store, decrypt: decrypt, maxBody: maxBody}
+	return &WebhookReceiverHandler{store: store, decrypt: decrypt, maxBody: maxBody, webhookRateRate: 10, webhookBurst: 20}
+}
+
+// SetRateChecker wires the rate limiter. If nil, rate limiting is skipped (used in tests).
+func (h *WebhookReceiverHandler) SetRateChecker(rc RateChecker, ratePerSec float64, burst int) {
+	h.rateChecker = rc
+	if ratePerSec > 0 {
+		h.webhookRateRate = ratePerSec
+	}
+	if burst > 0 {
+		h.webhookBurst = burst
+	}
 }
 
 const (
@@ -78,6 +100,15 @@ func (h *WebhookReceiverHandler) HandleWebhook(c *gin.Context) {
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch webhook"})
 		return
+	}
+
+	// 0. Rate limit check (per-webhook token bucket).
+	if h.rateChecker != nil {
+		if !h.rateChecker.Allow("webhook:"+webhookID, h.webhookRateRate, h.webhookBurst) {
+			c.Header("Retry-After", webhookRetryAfter)
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": "rate_limited"})
+			return
+		}
 	}
 
 	// Resolve the trigger by ID (webhooks → triggers is 1:1; trigger_id is
@@ -134,7 +165,13 @@ func (h *WebhookReceiverHandler) HandleWebhook(c *gin.Context) {
 	}
 
 	// 5. Idempotency dedup.
-	dedupKey := extractDedupKey(c, hook)
+	dedupKey := ""
+	if hook.IdempotencyMode == types.WebhookIdempotencyHeader {
+		dedupKey = extractDedupKey(c, hook)
+	} else if hook.IdempotencyMode == types.WebhookIdempotencyHash {
+		tsHeader := c.GetHeader("X-Hub-Signature-Timestamp")
+		dedupKey = computeHashDedupKey(rawBody, tsHeader)
+	}
 	if dedupKey != "" {
 		if err := h.store.RecordWebhookDelivery(c.Request.Context(), webhookID, dedupKey); err != nil {
 			if errors.Is(err, wf.ErrDedupConflict) {
@@ -225,13 +262,53 @@ func (h *WebhookReceiverHandler) HandleWebhook(c *gin.Context) {
 		return
 	}
 
-	// run_script target (no workflow run — just record the fire).
-	_ = h.store.CreateTriggerFire(c.Request.Context(), &wf.TriggerFireRow{
+	// run_script target: build a 2-node spec (script → agent), create a
+	// shadow workflow row, and fire a real run against it.
+	var scriptCfg types.RunScriptTargetConfig
+	_ = json.Unmarshal(trigger.TargetConfig, &scriptCfg)
+	if scriptCfg.WorkspaceID == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "run_script target missing workspaceId"})
+		return
+	}
+
+	specJSON := workflows.BuildRunScriptSpec(&scriptCfg)
+	scriptWF, err := h.store.GetOrCreateScriptWorkflow(c.Request.Context(), trigger, specJSON, scriptCfg.WorkspaceID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create script workflow"})
+		return
+	}
+
+	scriptFire := &wf.TriggerFireRow{
 		ID: fireID, TriggerID: trigger.ID, SourceType: "webhook",
-		InputEnvelope: envelopeJSON, ActionType: trigger.TargetType,
-		Status: "delivered", FiredAt: now, CompletedAt: &now,
-	})
-	c.JSON(http.StatusAccepted, gin.H{"status": "delivered"})
+		InputEnvelope: envelopeJSON, ActionType: "run_script",
+		Status: "fired", FiredAt: now,
+	}
+	scriptRun := &wf.WorkflowRunRow{
+		ID: uuid.New().String(), WorkflowID: scriptWF.ID,
+		SpecSnapshot: specJSON, Input: envelopeJSON,
+		Status: "queued", TriggerID: &trigger.ID,
+		WorkspaceID: scriptCfg.WorkspaceID,
+		CreatedAt: now, UpdatedAt: now,
+	}
+
+	err = h.store.CreateWorkflowRunWithFire(c.Request.Context(), scriptFire, scriptRun)
+	if err != nil {
+		if errors.Is(err, wf.ErrConcurrentRun) {
+			_ = h.store.CreateTriggerFire(c.Request.Context(), &wf.TriggerFireRow{
+				ID: uuid.New().String(), TriggerID: trigger.ID, SourceType: "webhook",
+				InputEnvelope: envelopeJSON, ActionType: "run_script",
+				ActionResult: json.RawMessage(`{"reason":"already_running"}`),
+				Status:       "skipped", FiredAt: now, CompletedAt: &now,
+			})
+			c.Header("Retry-After", webhookRetryAfter)
+			c.JSON(http.StatusConflict, gin.H{"error": "already_running"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create script run"})
+		return
+	}
+
+	c.JSON(http.StatusAccepted, gin.H{"status": "fired", "runId": scriptRun.ID})
 }
 
 // --- helpers ---
@@ -272,8 +349,25 @@ func extractDedupKey(c *gin.Context, hook *wf.WebhookRow) string {
 		}
 		return c.GetHeader(headerName)
 	}
-	// hash mode — derive from body+timestamp window.
 	return ""
+}
+
+// computeHashDedupKey derives a dedup key from body + timestamp window.
+// Same body within the same window = duplicate. The window is 5 minutes
+// (matching the timestamp skew tolerance), so a retried delivery within
+// 5 minutes is collapsed.
+func computeHashDedupKey(body []byte, tsHeader string) string {
+	ts := int64(0)
+	if tsHeader != "" {
+		fmt.Sscanf(tsHeader, "%d", &ts)
+	}
+	window := ts
+	if window == 0 {
+		window = time.Now().Unix()
+	}
+	window = window - (window % int64(webhookTimestampSkew.Seconds()))
+	hash := sha256.Sum256(append(body, []byte(fmt.Sprintf("%d", window))...))
+	return hex.EncodeToString(hash[:])
 }
 
 func ipInAllowlist(ipStr string, allowed []string) bool {

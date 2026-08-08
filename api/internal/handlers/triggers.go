@@ -37,6 +37,8 @@ type triggerStore interface {
 	CountTriggersByOwner(ctx context.Context, ownerType, ownerID string) (int, error)
 	CreateWebhook(ctx context.Context, row *wf.WebhookRow) error
 	GetWebhookByTriggerID(ctx context.Context, triggerID string) (*wf.WebhookRow, error)
+	UpdateWebhookSecret(ctx context.Context, triggerID string, secretCipher []byte, keyVersion int) error
+	ListTriggerFires(ctx context.Context, triggerID string, limit, offset int) ([]*wf.TriggerFireRow, error)
 }
 
 // triggerEncryptor encrypts/decrypts webhook HMAC secrets using the server KEK.
@@ -387,4 +389,118 @@ func generateWebhookSecret() string {
 		panic(fmt.Sprintf("crypto/rand failed: %v", err))
 	}
 	return "whsec_" + hex.EncodeToString(b)
+}
+
+// --- Delivery log (observability) ---
+
+// UserListFires returns recent trigger fire audit rows for a user-scope trigger.
+func (h *TriggersHandler) UserListFires(c *gin.Context) {
+	userID := c.GetString("userID")
+	h.listFires(c, types.WorkflowOwnerUser, userID)
+}
+
+// OrgListFires returns recent trigger fire audit rows for an org-scope trigger.
+func (h *TriggersHandler) OrgListFires(c *gin.Context) {
+	orgID := c.Param("id")
+	h.listFires(c, types.WorkflowOwnerOrg, orgID)
+}
+
+func (h *TriggersHandler) listFires(c *gin.Context, ownerType, ownerID string) {
+	triggerID := c.Param("id")
+	if triggerID == "" {
+		triggerID = c.Param("triggerId")
+	}
+
+	limit := 50
+	offset := 0
+
+	fires, err := h.store.ListTriggerFires(c.Request.Context(), triggerID, limit, offset)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list trigger fires"})
+		return
+	}
+
+	out := make([]types.TriggerFireResponse, 0, len(fires))
+	for _, f := range fires {
+		out = append(out, triggerFireRowToResponse(f))
+	}
+	c.JSON(http.StatusOK, gin.H{"fires": out})
+}
+
+func triggerFireRowToResponse(f *wf.TriggerFireRow) types.TriggerFireResponse {
+	resp := types.TriggerFireResponse{
+		ID:            f.ID,
+		TriggerID:     f.TriggerID,
+		SourceType:    f.SourceType,
+		InputEnvelope: f.InputEnvelope,
+		ActionType:    f.ActionType,
+		ActionResult:  f.ActionResult,
+		Status:        f.Status,
+		FiredAt:       f.FiredAt,
+	}
+	if f.CompletedAt != nil {
+		resp.CompletedAt = f.CompletedAt
+	}
+	return resp
+}
+
+// --- Webhook secret rotation ---
+
+// UserRotateWebhookSecret generates a new HMAC secret for a webhook trigger.
+// Returns the plaintext secret ONE TIME — the caller must store it; it cannot be recovered.
+func (h *TriggersHandler) UserRotateWebhookSecret(c *gin.Context) {
+	userID := c.GetString("userID")
+	h.rotateWebhookSecret(c, types.WorkflowOwnerUser, userID)
+}
+
+// OrgRotateWebhookSecret does the same for org-scope triggers.
+func (h *TriggersHandler) OrgRotateWebhookSecret(c *gin.Context) {
+	orgID := c.Param("id")
+	h.rotateWebhookSecret(c, types.WorkflowOwnerOrg, orgID)
+}
+
+func (h *TriggersHandler) rotateWebhookSecret(c *gin.Context, ownerType, ownerID string) {
+	triggerID := c.Param("id")
+	if triggerID == "" {
+		triggerID = c.Param("triggerId")
+	}
+
+	trigger, err := h.store.GetTrigger(c.Request.Context(), ownerType, ownerID, triggerID)
+	if err != nil {
+		if errors.Is(err, wf.ErrNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "trigger not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch trigger"})
+		return
+	}
+	if trigger.SourceType != types.TriggerSourceWebhook {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "trigger is not a webhook trigger"})
+		return
+	}
+	if h.encrypt == nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "encryption provider not configured"})
+		return
+	}
+
+	secret := generateWebhookSecret()
+	ciphertext, err := h.encrypt.Encrypt(c.Request.Context(), []byte(secret))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt webhook secret"})
+		return
+	}
+	keyVersion := 1
+	if vp, ok := h.encrypt.(secrets.VersionedProvider); ok {
+		keyVersion = vp.ActiveVersion()
+	}
+
+	if err := h.store.UpdateWebhookSecret(c.Request.Context(), triggerID, ciphertext, keyVersion); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update webhook secret"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"webhookSecret": secret,
+		"webhookUrl":    fmt.Sprintf("/api/v1/hooks/%s", triggerID),
+	})
 }

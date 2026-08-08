@@ -31,6 +31,15 @@ const (
 	TriggerSourceWebhook = "webhook"
 )
 
+// OnMissingWorkspace controls behavior when a workflow's target workspace
+// is gone or never existed at run time. 'abort' fails the run fast (default).
+// 'create' provisions a new workspace for the workflow owner, pins it as the
+// workflow's target_workspace_id, and proceeds once it reaches Active.
+const (
+	OnMissingAbort  = "abort"
+	OnMissingCreate = "create"
+)
+
 // TriggerTargetType enumerates what a trigger fires.
 const (
 	TriggerTargetRunWorkflow = "run_workflow"
@@ -148,6 +157,15 @@ func ValidTriggerSourceType(t string) bool {
 	return false
 }
 
+// ValidOnMissingWorkspace reports whether m is a supported on-missing-workspace policy.
+func ValidOnMissingWorkspace(m string) bool {
+	switch m {
+	case OnMissingAbort, OnMissingCreate:
+		return true
+	}
+	return false
+}
+
 // ValidTriggerTargetType reports whether t is a supported trigger target type.
 func ValidTriggerTargetType(t string) bool {
 	switch t {
@@ -224,33 +242,35 @@ func ValidRunErrorCode(c string) bool {
 // spec_yaml is the author's input; spec_json is the parsed DAG (denormalized for execution).
 // target_workspace_id is nullable (null = caller picks at run time).
 type WorkflowResponse struct {
-	ID                string          `json:"id"`
-	OwnerType         string          `json:"ownerType"`
-	OwnerID           string          `json:"ownerId,omitempty"`
-	Name              string          `json:"name"`
-	Slug              string          `json:"slug"`
-	Description       string          `json:"description,omitempty"`
-	SpecYAML          string          `json:"specYaml"`
-	InputSchema       json.RawMessage `json:"inputSchema,omitempty"`
-	TargetWorkspaceID string          `json:"targetWorkspaceId,omitempty"`
-	Status            string          `json:"status"`
-	Defaults          json.RawMessage `json:"defaults,omitempty"`
-	CreatedAt         time.Time       `json:"createdAt"`
-	UpdatedAt         time.Time       `json:"updatedAt"`
+	ID                  string          `json:"id"`
+	OwnerType           string          `json:"ownerType"`
+	OwnerID             string          `json:"ownerId,omitempty"`
+	Name                string          `json:"name"`
+	Slug                string          `json:"slug"`
+	Description         string          `json:"description,omitempty"`
+	SpecYAML            string          `json:"specYaml"`
+	InputSchema         json.RawMessage `json:"inputSchema,omitempty"`
+	TargetWorkspaceID   string          `json:"targetWorkspaceId,omitempty"`
+	OnMissingWorkspace  string          `json:"onMissingWorkspace,omitempty"`
+	Status              string          `json:"status"`
+	Defaults            json.RawMessage `json:"defaults,omitempty"`
+	CreatedAt           time.Time       `json:"createdAt"`
+	UpdatedAt           time.Time       `json:"updatedAt"`
 }
 
 // CreateWorkflowRequest is the body for POST .../workflows.
 // The server computes slug from name if not provided; spec_yaml is validated + parsed
 // into spec_json by the DAG validator (US-64.4).
 type CreateWorkflowRequest struct {
-	Name              string          `json:"name" binding:"required"`
-	Slug              string          `json:"slug,omitempty"`
-	Description       string          `json:"description,omitempty"`
-	SpecYAML          string          `json:"specYaml" binding:"required"`
-	InputSchema       json.RawMessage `json:"inputSchema,omitempty"`
-	TargetWorkspaceID string          `json:"targetWorkspaceId,omitempty"`
-	Status            string          `json:"status,omitempty"`
-	Defaults          json.RawMessage `json:"defaults,omitempty"`
+	Name                string          `json:"name" binding:"required"`
+	Slug                string          `json:"slug,omitempty"`
+	Description         string          `json:"description,omitempty"`
+	SpecYAML            string          `json:"specYaml" binding:"required"`
+	InputSchema         json.RawMessage `json:"inputSchema,omitempty"`
+	TargetWorkspaceID   string          `json:"targetWorkspaceId,omitempty"`
+	OnMissingWorkspace  string          `json:"onMissingWorkspace,omitempty"`
+	Status              string          `json:"status,omitempty"`
+	Defaults            json.RawMessage `json:"defaults,omitempty"`
 }
 
 // UpdateWorkflowRequest supports partial update. Pointer fields: nil = "keep existing".
@@ -258,14 +278,15 @@ type CreateWorkflowRequest struct {
 // in the service layer. Updating spec_yaml creates a new spec_snapshot baseline; in-flight
 // runs are pinned to the snapshot at their start (D6).
 type UpdateWorkflowRequest struct {
-	Name              *string         `json:"name,omitempty"`
-	Slug              *string         `json:"slug,omitempty"`
-	Description       *string         `json:"description,omitempty"`
-	SpecYAML          *string         `json:"specYaml,omitempty"`
-	InputSchema       json.RawMessage `json:"inputSchema,omitempty"`
-	TargetWorkspaceID *string         `json:"targetWorkspaceId,omitempty"`
-	Status            *string         `json:"status,omitempty"`
-	Defaults          json.RawMessage `json:"defaults,omitempty"`
+	Name               *string         `json:"name,omitempty"`
+	Slug               *string         `json:"slug,omitempty"`
+	Description        *string         `json:"description,omitempty"`
+	SpecYAML           *string         `json:"specYaml,omitempty"`
+	InputSchema        json.RawMessage `json:"inputSchema,omitempty"`
+	TargetWorkspaceID  *string         `json:"targetWorkspaceId,omitempty"`
+	OnMissingWorkspace *string         `json:"onMissingWorkspace,omitempty"`
+	Status             *string         `json:"status,omitempty"`
+	Defaults           json.RawMessage `json:"defaults,omitempty"`
 }
 
 // TriggerResponse is the API response shape for a trigger.
@@ -402,9 +423,12 @@ type RunWorkflowTargetConfig struct {
 }
 
 // RunScriptTargetConfig is the typed shape of triggers.target_config for run_script.
+// Prompt is a text/template rendered with {{.input}} where input is the script's
+// stdout/output. If empty, only the script runs (no agent prompt).
 type RunScriptTargetConfig struct {
 	WorkspaceID string            `json:"workspaceId"`
 	Path        string            `json:"path"`
 	Args        []string          `json:"args,omitempty"`
 	Env         map[string]string `json:"env,omitempty"`
+	Prompt      string            `json:"prompt,omitempty"`
 }

@@ -101,6 +101,20 @@ func (m *mockTriggerStore) GetWebhookByTriggerID(_ context.Context, triggerID st
 	return r, nil
 }
 
+func (m *mockTriggerStore) ListTriggerFires(_ context.Context, triggerID string, limit, offset int) ([]*wf.TriggerFireRow, error) {
+	return []*wf.TriggerFireRow{}, nil
+}
+
+func (m *mockTriggerStore) UpdateWebhookSecret(_ context.Context, triggerID string, secretCipher []byte, keyVersion int) error {
+	hook, ok := m.webhooks[triggerID]
+	if !ok {
+		return wf.ErrNotFound
+	}
+	hook.SecretCipher = secretCipher
+	hook.KeyVersion = keyVersion
+	return nil
+}
+
 // mockEncryptor implements triggerEncryptor.
 type mockEncryptor struct{}
 
@@ -120,6 +134,7 @@ func setupTriggerRouter(t *testing.T, store triggerStore, quota workflowQuotaChe
 	group.GET("/:id", h.UserGet)
 	group.PUT("/:id", h.UserUpdate)
 	group.DELETE("/:id", h.UserDelete)
+	group.POST("/:id/rotate-secret", h.UserRotateWebhookSecret)
 	return r
 }
 
@@ -518,4 +533,52 @@ func TestTriggerCreate_WebhookStoreFailure_Cleanup(t *testing.T) {
 
 	// Verify cleanup: trigger should NOT exist after webhook store failure.
 	assert.Empty(t, base.triggers, "trigger should be cleaned up when CreateWebhook fails")
+}
+
+func TestTriggerRotateWebhookSecret_Success(t *testing.T) {
+	store := newMockTriggerStore()
+	store.triggers["trig-wh"] = &wf.TriggerRow{
+		ID: "trig-wh", OwnerType: "user", OwnerID: "test-user",
+		SourceType: "webhook", Enabled: true,
+	}
+	store.webhooks["trig-wh"] = &wf.WebhookRow{
+		ID: "hook-1", TriggerID: "trig-wh",
+		SecretCipher: []byte("old-enc"), KeyVersion: 1,
+	}
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupTriggerRouter(t, store, quota, &mockEncryptor{})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers/trig-wh/rotate-secret", nil)
+	assert.Equal(t, 200, w.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.NotEmpty(t, resp["webhookSecret"])
+	assert.Contains(t, resp["webhookSecret"].(string), "whsec_")
+
+	updated := store.webhooks["trig-wh"]
+	assert.NotEqual(t, []byte("old-enc"), updated.SecretCipher)
+	assert.Contains(t, string(updated.SecretCipher), "enc:whsec_")
+}
+
+func TestTriggerRotateWebhookSecret_NotWebhook(t *testing.T) {
+	store := newMockTriggerStore()
+	store.triggers["trig-cron"] = &wf.TriggerRow{
+		ID: "trig-cron", OwnerType: "user", OwnerID: "test-user",
+		SourceType: "cron", Enabled: true,
+	}
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupTriggerRouter(t, store, quota, &mockEncryptor{})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers/trig-cron/rotate-secret", nil)
+	assert.Equal(t, 400, w.Code)
+}
+
+func TestTriggerRotateWebhookSecret_NotFound(t *testing.T) {
+	store := newMockTriggerStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupTriggerRouter(t, store, quota, &mockEncryptor{})
+
+	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers/nonexistent/rotate-secret", nil)
+	assert.Equal(t, 404, w.Code)
 }

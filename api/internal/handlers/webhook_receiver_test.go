@@ -69,6 +69,12 @@ func (m *mockWebhookReceiverStore) GetWorkflow(_ context.Context, _, _, id strin
 	return r, nil
 }
 
+func (m *mockWebhookReceiverStore) GetOrCreateScriptWorkflow(_ context.Context, trigger *wf.TriggerRow, specJSON json.RawMessage, workspaceID string) (*wf.WorkflowRow, error) {
+	return &wf.WorkflowRow{
+		ID: "wf-script-" + trigger.ID, SpecJSON: specJSON, Status: "active",
+	}, nil
+}
+
 func (m *mockWebhookReceiverStore) RecordWebhookDelivery(_ context.Context, webhookID, dedupKey string) error {
 	key := webhookID + ":" + dedupKey
 	if m.delivered[key] {
@@ -313,3 +319,117 @@ func TestInterpolateTemplate(t *testing.T) {
 }
 
 func strPtrWF(s string) *string { return &s }
+
+// --- Rate limiting tests ---
+
+type mockRateChecker struct {
+	allow bool
+	calls int
+}
+
+func (m *mockRateChecker) Allow(_ string, _ float64, _ int) bool {
+	m.calls++
+	return m.allow
+}
+
+func setupWebhookRouterWithRateLimit(t *testing.T, store webhookReceiverStore, decrypt webhookDecryptor, rc RateChecker) *gin.Engine {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := NewWebhookReceiverHandler(store, decrypt, 1<<20)
+	h.SetRateChecker(rc, 10, 20)
+	r.POST("/api/v1/hooks/:webhookId", h.HandleWebhook)
+	return r
+}
+
+func TestWebhookReceiver_RateLimited(t *testing.T) {
+	store := newMockWebhookReceiverStore()
+	secret := "s"
+	store.webhooks["hook-rl"] = &wf.WebhookRow{
+		ID: "hook-rl", TriggerID: "t-rl",
+		SecretCipher: []byte("enc"), IdempotencyMode: types.WebhookIdempotencyDisabled,
+	}
+	store.triggers["t-rl"] = &wf.TriggerRow{
+		ID: "t-rl", OwnerType: "user", OwnerID: "u1",
+		Enabled: true, SourceType: "webhook",
+		TargetType: "run_workflow", TargetConfig: json.RawMessage(`{}`),
+	}
+
+	rc := &mockRateChecker{allow: false}
+	r := setupWebhookRouterWithRateLimit(t, store, &mockDecryptor{secret: secret}, rc)
+
+	body := `{}`
+	sig := makeHMAC([]byte(body), []byte(secret))
+	req := httptest.NewRequest("POST", "/api/v1/hooks/hook-rl", bytes.NewBufferString(body))
+	req.Header.Set("X-Hub-Signature-256", sig)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, 429, w.Code)
+	assert.Equal(t, "30", w.Header().Get("Retry-After"))
+	assert.Equal(t, 0, store.fireCount)
+}
+
+func TestWebhookReceiver_RateLimitAllows(t *testing.T) {
+	store := newMockWebhookReceiverStore()
+	secret := "s"
+	store.webhooks["hook-ok"] = &wf.WebhookRow{
+		ID: "hook-ok", TriggerID: "t-ok",
+		SecretCipher: []byte("enc"), IdempotencyMode: types.WebhookIdempotencyDisabled,
+	}
+	store.triggers["t-ok"] = &wf.TriggerRow{
+		ID: "t-ok", OwnerType: "user", OwnerID: "u1",
+		Enabled: true, SourceType: "webhook",
+		TargetType: "run_workflow", TargetConfig: json.RawMessage(`{"workflowId":"wf-1"}`),
+	}
+	store.workflows["wf-1"] = &wf.WorkflowRow{
+		ID: "wf-1", SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtrWF("ws-1"),
+		OwnerType: "user", OwnerID: "u1",
+	}
+
+	rc := &mockRateChecker{allow: true}
+	r := setupWebhookRouterWithRateLimit(t, store, &mockDecryptor{secret: secret}, rc)
+
+	body := `{}`
+	sig := makeHMAC([]byte(body), []byte(secret))
+	req := httptest.NewRequest("POST", "/api/v1/hooks/hook-ok", bytes.NewBufferString(body))
+	req.Header.Set("X-Hub-Signature-256", sig)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	assert.Equal(t, 202, w.Code)
+	assert.Equal(t, 1, rc.calls)
+}
+
+// --- Hash idempotency tests ---
+
+func TestComputeHashDedupKey_SameBodySameWindow(t *testing.T) {
+	body := []byte(`{"event":"push"}`)
+	ts := "1700000000"
+
+	key1 := computeHashDedupKey(body, ts)
+	key2 := computeHashDedupKey(body, ts)
+	assert.Equal(t, key1, key2, "same body + same timestamp window = same key")
+}
+
+func TestComputeHashDedupKey_DifferentBodyDifferentKey(t *testing.T) {
+	ts := "1700000000"
+	key1 := computeHashDedupKey([]byte(`{"a":1}`), ts)
+	key2 := computeHashDedupKey([]byte(`{"a":2}`), ts)
+	assert.NotEqual(t, key1, key2, "different body = different key")
+}
+
+func TestComputeHashDedupKey_SameBodyDifferentWindowDifferentKey(t *testing.T) {
+	body := []byte(`{"event":"push"}`)
+	key1 := computeHashDedupKey(body, "1700000000")
+	key2 := computeHashDedupKey(body, "1700000300")
+	assert.NotEqual(t, key1, key2, "same body, different 5-min window = different key")
+}
+
+func TestComputeHashDedupKey_SameBodyAdjacentTimestampsSameWindow(t *testing.T) {
+	body := []byte(`{"event":"push"}`)
+	// 1700000001 and 1700000099 both floor to window 1699999800
+	key1 := computeHashDedupKey(body, "1700000001")
+	key2 := computeHashDedupKey(body, "1700000099")
+	assert.Equal(t, key1, key2, "timestamps within same 5-min window = same key")
+}

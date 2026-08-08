@@ -34,6 +34,7 @@ const CRON_TRIGGER: Trigger = {
   targetType: "run_workflow", targetConfig: { workflowId: "wf-1" },
   consecutiveFailures: 0, autoDisableAfter: 10,
   nextFireAt: "2026-08-08T02:00:00Z",
+  createdAt: "2026-08-01T00:00:00Z", updatedAt: "2026-08-01T00:00:00Z",
 };
 
 const WEBHOOK_TRIGGER: Trigger = {
@@ -41,6 +42,7 @@ const WEBHOOK_TRIGGER: Trigger = {
   sourceType: "webhook", sourceConfig: {},
   targetType: "run_workflow", targetConfig: { workflowId: "wf-2" },
   consecutiveFailures: 3, autoDisableAfter: 10,
+  createdAt: "2026-08-01T00:00:00Z", updatedAt: "2026-08-01T00:00:00Z",
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -89,7 +91,7 @@ describe("TriggersPage", () => {
     mockList.mockResolvedValue([WEBHOOK_TRIGGER]);
     renderPage();
     await waitFor(() => {
-      expect(screen.getByText(/3 consecutive failures/)).toBeInTheDocument();
+      expect(screen.getByText(/3 failures/)).toBeInTheDocument();
     });
   });
 
@@ -107,7 +109,7 @@ describe("TriggersPage", () => {
     await waitFor(() => expect(screen.getByLabelText("New trigger")).toBeInTheDocument());
     fireEvent.click(screen.getByLabelText("New trigger"));
     expect(screen.getByPlaceholderText("Trigger name")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText("Cron expression (e.g. 0 * * * *)")).toBeInTheDocument();
+    expect(screen.getByText("Schedule")).toBeInTheDocument();
   });
 
   it("shows trigger detail when selected", async () => {

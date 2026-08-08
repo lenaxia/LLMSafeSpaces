@@ -18,6 +18,7 @@ import (
 // mockWorkflowStore implements workflowStore for testing.
 type mockWorkflowStore struct {
 	workflows    map[string]*wf.WorkflowRow
+	lastCreated  *wf.WorkflowRow
 	createErr    error
 	statuses     map[string]string
 	runStatuses  map[string]string
@@ -42,6 +43,7 @@ func (m *mockWorkflowStore) CreateWorkflow(_ context.Context, row *wf.WorkflowRo
 		return m.createErr
 	}
 	m.workflows[row.ID] = row
+	m.lastCreated = row
 	return nil
 }
 
@@ -82,6 +84,17 @@ func (m *mockWorkflowStore) UpdateWorkflow(_ context.Context, ownerType, ownerID
 	}
 	if upd.SpecYAML != nil {
 		r.SpecYAML = *upd.SpecYAML
+	}
+	if upd.TargetWorkspaceID != nil {
+		if *upd.TargetWorkspaceID == "" {
+			r.TargetWorkspaceID = nil
+		} else {
+			wsID := *upd.TargetWorkspaceID
+			r.TargetWorkspaceID = &wsID
+		}
+	}
+	if upd.OnMissingWorkspace != nil {
+		r.OnMissingWorkspace = *upd.OnMissingWorkspace
 	}
 	return r, nil
 }
@@ -461,4 +474,112 @@ func TestWorkflowCreate_StoreError(t *testing.T) {
 		"specYaml": validSpec,
 	})
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
+func TestWorkflowCreate_OnMissingWorkspace_Create(t *testing.T) {
+	store := newMockWorkflowStore()
+	quota := &mockQuotaChecker{values: map[string]int{"workflows.maxPerUser": 50}}
+	r := setupWorkflowRouter(t, store, quota)
+
+	validSpec := `{"nodes":[{"id":"start","type":"script","data":{"language":"python","handler":"x"}}],"edges":[]}`
+
+	w := doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{
+		"name":               "auto-create-wf",
+		"specYaml":           validSpec,
+		"onMissingWorkspace": "create",
+	})
+	require.Equal(t, http.StatusCreated, w.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "create", resp["onMissingWorkspace"])
+	assert.Equal(t, "create", store.lastCreated.OnMissingWorkspace)
+}
+
+func TestWorkflowCreate_OnMissingWorkspace_DefaultsToAbort(t *testing.T) {
+	store := newMockWorkflowStore()
+	quota := &mockQuotaChecker{values: map[string]int{"workflows.maxPerUser": 50}}
+	r := setupWorkflowRouter(t, store, quota)
+
+	validSpec := `{"nodes":[{"id":"start","type":"script","data":{"language":"python","handler":"x"}}],"edges":[]}`
+
+	w := doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{
+		"name":     "abort-wf",
+		"specYaml": validSpec,
+	})
+	require.Equal(t, http.StatusCreated, w.Code)
+
+	assert.Equal(t, "abort", store.lastCreated.OnMissingWorkspace)
+}
+
+func TestWorkflowCreate_OnMissingWorkspace_InvalidValue(t *testing.T) {
+	store := newMockWorkflowStore()
+	quota := &mockQuotaChecker{values: map[string]int{"workflows.maxPerUser": 50}}
+	r := setupWorkflowRouter(t, store, quota)
+
+	validSpec := `{"nodes":[{"id":"start","type":"script","data":{"language":"python","handler":"x"}}],"edges":[]}`
+
+	w := doWFRequest(t, r, "POST", "/api/v1/me/workflows", map[string]any{
+		"name":               "bad-policy",
+		"specYaml":           validSpec,
+		"onMissingWorkspace": "skip",
+	})
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestWorkflowUpdate_OnMissingWorkspace(t *testing.T) {
+	store := newMockWorkflowStore()
+	store.workflows["wf-up"] = &wf.WorkflowRow{
+		ID: "wf-up", OwnerType: "user", OwnerID: "test-user",
+		Name: "test", Slug: "test", Status: "draft",
+		OnMissingWorkspace: "abort",
+		SpecYAML: "{}", SpecJSON: json.RawMessage(`{}`),
+	}
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupWorkflowRouter(t, store, quota)
+
+	w := doWFRequest(t, r, "PUT", "/api/v1/me/workflows/wf-up", map[string]any{
+		"onMissingWorkspace": "create",
+	})
+	require.Equal(t, http.StatusOK, w.Code)
+
+	updated := store.workflows["wf-up"]
+	assert.Equal(t, "create", updated.OnMissingWorkspace)
+}
+
+func TestWorkflowUpdate_OnMissingWorkspace_Invalid(t *testing.T) {
+	store := newMockWorkflowStore()
+	store.workflows["wf-bad"] = &wf.WorkflowRow{
+		ID: "wf-bad", OwnerType: "user", OwnerID: "test-user",
+		Name: "test", Slug: "test", Status: "draft",
+		OnMissingWorkspace: "abort",
+		SpecYAML: "{}", SpecJSON: json.RawMessage(`{}`),
+	}
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupWorkflowRouter(t, store, quota)
+
+	w := doWFRequest(t, r, "PUT", "/api/v1/me/workflows/wf-bad", map[string]any{
+		"onMissingWorkspace": "wait",
+	})
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestWorkflowUpdate_TargetWorkspaceID(t *testing.T) {
+	store := newMockWorkflowStore()
+	store.workflows["wf-ws"] = &wf.WorkflowRow{
+		ID: "wf-ws", OwnerType: "user", OwnerID: "test-user",
+		Name: "test", Slug: "test", Status: "draft",
+		SpecYAML: "{}", SpecJSON: json.RawMessage(`{}`),
+	}
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	r := setupWorkflowRouter(t, store, quota)
+
+	w := doWFRequest(t, r, "PUT", "/api/v1/me/workflows/wf-ws", map[string]any{
+		"targetWorkspaceId": "ws-target-1",
+	})
+	require.Equal(t, http.StatusOK, w.Code)
+
+	updated := store.workflows["wf-ws"]
+	require.NotNil(t, updated.TargetWorkspaceID)
+	assert.Equal(t, "ws-target-1", *updated.TargetWorkspaceID)
 }

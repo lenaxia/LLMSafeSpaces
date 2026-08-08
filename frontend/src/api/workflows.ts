@@ -7,7 +7,11 @@ export interface Workflow {
   slug: string;
   description: string;
   specYaml: string;
+  inputSchema?: unknown;
+  targetWorkspaceId?: string;
+  onMissingWorkspace?: string;
   status: string;
+  defaults?: unknown;
   createdAt: string;
   updatedAt: string;
 }
@@ -20,9 +24,12 @@ export interface WorkflowRun {
   error?: any;
   input?: any;
   output?: any;
+  triggerId?: string;
+  workspaceId?: string;
   startedAt?: string;
   finishedAt?: string;
   createdAt: string;
+  updatedAt: string;
 }
 
 export interface NodeRun {
@@ -31,8 +38,11 @@ export interface NodeRun {
   nodeType: string;
   status: string;
   attempt: number;
+  branch?: string;
   output?: any;
+  input?: any;
   errorCode?: string;
+  error?: any;
   startedAt: string;
   finishedAt?: string;
 }
@@ -40,6 +50,7 @@ export interface NodeRun {
 export interface Trigger {
   id: string;
   name: string;
+  description?: string;
   enabled: boolean;
   sourceType: string;
   sourceConfig: any;
@@ -49,33 +60,77 @@ export interface Trigger {
   autoDisableAfter: number;
   lastFiredAt?: string;
   nextFireAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TriggerFire {
+  id: string;
+  triggerId: string;
+  sourceType: string;
+  inputEnvelope?: any;
+  actionType: string;
+  actionResult?: any;
+  status: string;
+  firedAt: string;
+  completedAt?: string;
+}
+
+export interface WebhookCreateResult {
+  trigger: Trigger;
+  webhookUrl?: string;
+  webhookSecret?: string;
 }
 
 export const workflowApi = {
   list: () => api.get<{ workflows?: Workflow[] }>('/me/workflows').then(r => r.workflows || []),
-  get: (id: string) => api.get(`/me/workflows/${id}`),
-  create: (data: { name: string; specYaml: string; status?: string }) =>
-    api.post('/me/workflows', data),
-  update: (id: string, data: Partial<{ name: string; status: string; specYaml: string }>) =>
-    api.put(`/me/workflows/${id}`, data),
+  get: (id: string) => api.get<Workflow>(`/me/workflows/${id}`),
+  create: (data: {
+    name: string; specYaml: string; status?: string; description?: string;
+    targetWorkspaceId?: string; onMissingWorkspace?: string;
+    inputSchema?: unknown; defaults?: unknown;
+  }) => api.post<Workflow>('/me/workflows', data),
+  update: (id: string, data: Partial<{
+    name: string; status: string; specYaml: string; description: string;
+    targetWorkspaceId: string; onMissingWorkspace: string;
+    inputSchema?: unknown; defaults?: unknown;
+  }>) => api.put<Workflow>(`/me/workflows/${id}`, data),
   delete: (id: string) => api.delete(`/me/workflows/${id}`),
   run: (id: string, input?: unknown, workspaceId?: string) =>
-    api.post(`/me/workflows/${id}/runs`, { input, workspaceId }),
+    api.post<WorkflowRun>(`/me/workflows/${id}/runs`, { input, workspaceId }),
 };
 
 export const triggerApi = {
-  list: () => api.get<{ triggers?: unknown[] }>('/me/triggers').then(r => r.triggers || []),
-  get: (id: string) => api.get(`/me/triggers/${id}`),
-  create: (data: { name: string; sourceType: string; targetType: string; sourceConfig: unknown; targetConfig: unknown }) =>
-    api.post('/me/triggers', data),
-  update: (id: string, data: Partial<{ enabled: boolean; autoDisableAfter: number }>) =>
-    api.put(`/me/triggers/${id}`, data),
+  list: () => api.get<{ triggers?: Trigger[] }>('/me/triggers').then(r => r.triggers || []),
+  get: (id: string) => api.get<Trigger>(`/me/triggers/${id}`),
+  create: (data: {
+    name: string;
+    sourceType: string;
+    targetType: string;
+    sourceConfig: unknown;
+    targetConfig: unknown;
+    description?: string;
+    enabled?: boolean;
+    autoDisableAfter?: number;
+    webhookAllowedIps?: string[];
+    webhookIdempotencyMode?: string;
+    webhookIdempotencyHeader?: string;
+  }) => api.post<WebhookCreateResult>('/me/triggers', data),
+  update: (id: string, data: Partial<{
+    name: string; description?: string; enabled: boolean; autoDisableAfter: number;
+    sourceConfig: unknown; targetType: string; targetConfig: unknown;
+  }>) => api.put<Trigger>(`/me/triggers/${id}`, data),
   delete: (id: string) => api.delete(`/me/triggers/${id}`),
+  fires: (id: string) =>
+    api.get<{ fires?: TriggerFire[] }>(`/me/triggers/${id}/fires`).then((r) => r.fires || []),
+  rotateSecret: (id: string) =>
+    api.post<{ webhookSecret: string; webhookUrl: string }>(`/me/triggers/${id}/rotate-secret`),
 };
 
 export const runApi = {
-  get: (id: string) => api.get(`/me/runs/${id}`),
+  get: (id: string) => api.get<WorkflowRun>(`/me/runs/${id}`),
   cancel: (id: string) => api.post(`/me/runs/${id}/cancel`),
-  nodes: (id: string) => api.get(`/me/runs/${id}/nodes`).then((r) => (r as { nodes?: NodeRun[] }).nodes || []),
-  listForWorkflow: (workflowId: string) => api.get(`/me/workflows/${workflowId}/runs`).then((r) => (r as { runs?: WorkflowRun[] }).runs || []),
+  nodes: (id: string) => api.get<{ nodes?: NodeRun[] }>(`/me/runs/${id}/nodes`).then((r) => r.nodes || []),
+  listForWorkflow: (workflowId: string) =>
+    api.get<{ runs?: WorkflowRun[] }>(`/me/workflows/${workflowId}/runs`).then((r) => r.runs || []),
 };

@@ -3,11 +3,25 @@
 
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { WorkflowEditor } from "./WorkflowEditor";
+
+vi.mock("../../api/workspaces", () => ({
+  workspacesApi: {
+    list: vi.fn().mockResolvedValue({ items: [] }),
+  },
+}));
+
+function renderWithProviders(ui: React.ReactElement) {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={qc}>{ui}</QueryClientProvider>,
+  );
+}
 
 describe("WorkflowEditor", () => {
   it("renders create mode with empty fields", () => {
-    render(
+    renderWithProviders(
       <WorkflowEditor
         mode="create"
         onSave={vi.fn()}
@@ -19,7 +33,7 @@ describe("WorkflowEditor", () => {
   });
 
   it("renders edit mode with workflow data", () => {
-    render(
+    renderWithProviders(
       <WorkflowEditor
         mode="edit"
         workflow={{
@@ -39,7 +53,7 @@ describe("WorkflowEditor", () => {
   });
 
   it("disables save button when name is empty", () => {
-    render(
+    renderWithProviders(
       <WorkflowEditor mode="create" onSave={vi.fn()} onCancel={vi.fn()} />,
     );
     const saveButton = screen.getByText("Create").closest("button");
@@ -48,19 +62,19 @@ describe("WorkflowEditor", () => {
 
   it("calls onSave with name, spec, and status", async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
-    render(
+    renderWithProviders(
       <WorkflowEditor mode="create" onSave={onSave} onCancel={vi.fn()} />,
     );
     fireEvent.change(screen.getByPlaceholderText("Workflow name"), { target: { value: "new-wf" } });
     fireEvent.click(screen.getByText("Create"));
     await waitFor(() => {
-      expect(onSave).toHaveBeenCalledWith("new-wf", expect.any(String), "draft");
+      expect(onSave).toHaveBeenCalledWith("new-wf", expect.any(String), "draft", expect.any(Object));
     });
   });
 
   it("shows error message on save failure", async () => {
     const onSave = vi.fn().mockRejectedValue(new Error("API error"));
-    render(
+    renderWithProviders(
       <WorkflowEditor mode="create" onSave={onSave} onCancel={vi.fn()} />,
     );
     fireEvent.change(screen.getByPlaceholderText("Workflow name"), { target: { value: "test" } });
@@ -71,12 +85,13 @@ describe("WorkflowEditor", () => {
   });
 
   it("shows run dialog when Run clicked", () => {
-    render(
+    renderWithProviders(
       <WorkflowEditor
         mode="edit"
         workflow={{
           id: "wf-1", ownerType: "user", name: "test", slug: "test",
           description: "", specYaml: "{}", status: "active",
+          targetWorkspaceId: "ws-1",
           createdAt: "", updatedAt: "",
         }}
         onSave={vi.fn()}

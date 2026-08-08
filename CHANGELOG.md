@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-08-08
+
+### Added — Epic 64: Triggers & Workflows UX v2
+
+- **Visual DAG editor** — `@xyflow/react` canvas with typed node palette
+  (script/agent/http/condition), drag-to-connect edges, condition-branch
+  handles, minimap. Per-node typed edit panels replace raw JSON editing.
+  Visual/JSON toggle.
+
+- **Run detail page** — per-node timeline with status icons, attempt counts,
+  branch labels, durations. Expandable input/output/error per node. Cancel
+  button. Auto-polls while running. Route: `/workflows/:wfId/runs/:runId`.
+
+- **`onMissingWorkspace` policy** — migration `000019`. When a workflow's
+  target workspace is gone: `abort` (default, fails run fast) or `create`
+  (auto-provisions a new workspace for the owner, pins it as target, waits
+  for Active). Includes `WorkspaceCreator` engine interface + app.go wiring.
+
+- **Trigger UX overhaul** — cron frequency builder (every N min/hours, daily,
+  weekdays, timezone) with raw-expression toggle. Webhook create flow with
+  one-time secret reveal, URL copy, signing example, IP allowlist, idempotency
+  mode. Circuit-breaker progress bar + auto-disabled badge + re-enable.
+
+- **Trigger editor** — editable schedule (inline edit with friendly/raw
+  toggle), swap target workflow, edit input template. Full update support.
+
+- **`run_script` target** — trigger create form supports both `run_workflow`
+  and `run_script` targets (workspace + path + args + env).
+
+- **Workspace picker** — workflow editor has a workspace dropdown and an
+  "If missing: abort/create" toggle. Run dialog includes workspace picker
+  when no default target set.
+
+- **inputSchema + defaults editors** — Advanced section in workflow editor
+  for JSON Schema input validation and node defaults block.
+
+- **Delivery log** — `GET /me/triggers/:id/fires` endpoint. Live-polling
+  delivery log panel with expandable rows (envelope + action result).
+
+- **Webhook secret rotation** — `POST /me/triggers/:id/rotate-secret`
+  endpoint. One-time reveal of new secret with copy button.
+
+### Fixed
+
+- **Webhook rate limiting wired** — the handler comment claimed rate limiting
+  but the code didn't do it. Now calls `RateLimiterService.Allow` per-webhook
+  with 429+Retry-After.
+
+- **Hash idempotency implemented** — `computeHashDedupKey(body, ts)` derives
+  dedup key from `sha256(body + 5min-window)`. Was a stub returning empty.
+
 ## [0.9.0] - 2026-08-08
 
 ### Added — Epic 64: Triggers & Workflows

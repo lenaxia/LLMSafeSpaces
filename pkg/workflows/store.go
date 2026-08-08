@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -51,20 +52,21 @@ func NewStore(pool *pgxpool.Pool) *Store {
 
 // WorkflowRow is the DB row shape for workflows.
 type WorkflowRow struct {
-	ID                string
-	OwnerType         string
-	OwnerID           string
-	Name              string
-	Slug              string
-	Description       string
-	SpecYAML          string
-	SpecJSON          json.RawMessage
-	InputSchema       json.RawMessage
-	TargetWorkspaceID *string
-	Status            string
-	Defaults          json.RawMessage
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	ID                 string
+	OwnerType          string
+	OwnerID            string
+	Name               string
+	Slug               string
+	Description        string
+	SpecYAML           string
+	SpecJSON           json.RawMessage
+	InputSchema        json.RawMessage
+	TargetWorkspaceID  *string
+	OnMissingWorkspace string
+	Status             string
+	Defaults           json.RawMessage
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // TriggerRow is the DB row shape for triggers.
@@ -154,15 +156,16 @@ type TriggerFireRow struct {
 // (UpdateWorkflowRequest) so the handler can pass fields through directly.
 // The zero-value WorkflowUpdate preserves every field (no changes).
 type WorkflowUpdate struct {
-	Name              *string
-	Slug              *string
-	Description       *string
-	SpecYAML          *string
-	SpecJSON          json.RawMessage
-	InputSchema       json.RawMessage
-	TargetWorkspaceID *string // nil = keep; non-nil "" = clear (set NULL); non-nil "uuid" = set
-	Status            *string
-	Defaults          json.RawMessage
+	Name               *string
+	Slug               *string
+	Description        *string
+	SpecYAML           *string
+	SpecJSON           json.RawMessage
+	InputSchema        json.RawMessage
+	TargetWorkspaceID  *string
+	OnMissingWorkspace *string
+	Status             *string
+	Defaults           json.RawMessage
 }
 
 // TriggerUpdate carries only the fields a partial update may change. Pointer
@@ -184,11 +187,11 @@ type TriggerUpdate struct {
 // pre-generated UUID. spec_json must already be parsed + validated (US-64.4).
 func (s *Store) CreateWorkflow(ctx context.Context, row *WorkflowRow) error {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO workflows (id, owner_type, owner_id, name, slug, description, spec_yaml, spec_json, input_schema, target_workspace_id, status, defaults, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, COALESCE($6, ''), $7, $8, $9, $10, COALESCE($11, 'draft'), COALESCE($12, '{}'::jsonb), $13, $14)
+		INSERT INTO workflows (id, owner_type, owner_id, name, slug, description, spec_yaml, spec_json, input_schema, target_workspace_id, on_missing_workspace, status, defaults, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, COALESCE($6, ''), $7, $8, $9, $10, COALESCE($11, 'abort'), COALESCE($12, 'draft'), COALESCE($13, '{}'::jsonb), $14, $15)
 	`, row.ID, row.OwnerType, row.OwnerID, row.Name, row.Slug, row.Description,
 		row.SpecYAML, row.SpecJSON, nullableJSON(row.InputSchema), nullableStrPtr(row.TargetWorkspaceID),
-		row.Status, nullableJSON(row.Defaults), row.CreatedAt, row.UpdatedAt)
+		row.OnMissingWorkspace, row.Status, nullableJSON(row.Defaults), row.CreatedAt, row.UpdatedAt)
 	return err
 }
 
@@ -196,7 +199,7 @@ func (s *Store) CreateWorkflow(ctx context.Context, row *WorkflowRow) error {
 // or ErrNotFound if not found / wrong scope.
 func (s *Store) GetWorkflow(ctx context.Context, ownerType, ownerID, workflowID string) (*WorkflowRow, error) {
 	row := s.pool.QueryRow(ctx, `
-		SELECT id, owner_type, owner_id, name, slug, description, spec_yaml, spec_json, input_schema, target_workspace_id, status, defaults, created_at, updated_at
+		SELECT id, owner_type, owner_id, name, slug, description, spec_yaml, spec_json, input_schema, target_workspace_id, on_missing_workspace, status, defaults, created_at, updated_at
 		FROM workflows WHERE id = $1 AND owner_type = $2 AND owner_id = $3
 	`, workflowID, ownerType, ownerID)
 	r, err := scanWorkflowRow(row)
@@ -210,7 +213,7 @@ func (s *Store) GetWorkflow(ctx context.Context, ownerType, ownerID, workflowID 
 // by created_at ASC. Never decrypts — display fields only.
 func (s *Store) ListWorkflows(ctx context.Context, ownerType, ownerID string) ([]*WorkflowRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, owner_type, owner_id, name, slug, description, spec_yaml, spec_json, input_schema, target_workspace_id, status, defaults, created_at, updated_at
+		SELECT id, owner_type, owner_id, name, slug, description, spec_yaml, spec_json, input_schema, target_workspace_id, on_missing_workspace, status, defaults, created_at, updated_at
 		FROM workflows WHERE owner_type = $1 AND owner_id = $2
 		ORDER BY created_at ASC
 	`, ownerType, ownerID)
@@ -237,22 +240,24 @@ func (s *Store) UpdateWorkflow(ctx context.Context, ownerType, ownerID, workflow
 		    target_workspace_id = CASE WHEN $10::boolean IS NULL THEN target_workspace_id
 		                               WHEN $10::boolean = false THEN NULL
 		                               ELSE $11::uuid END,
-		    status = COALESCE($12, status),
-		    defaults = CASE WHEN $13::jsonb IS NOT NULL THEN $13 ELSE defaults END
+		    on_missing_workspace = COALESCE($12, on_missing_workspace),
+		    status = COALESCE($13, status),
+		    defaults = CASE WHEN $14::jsonb IS NOT NULL THEN $14 ELSE defaults END
 		WHERE id = $1 AND owner_type = $2 AND owner_id = $3
-		RETURNING id, owner_type, owner_id, name, slug, description, spec_yaml, spec_json, input_schema, target_workspace_id, status, defaults, created_at, updated_at
+		RETURNING id, owner_type, owner_id, name, slug, description, spec_yaml, spec_json, input_schema, target_workspace_id, on_missing_workspace, status, defaults, created_at, updated_at
 	`,
 		workflowID, ownerType, ownerID,
 		upd.Name, upd.Slug, upd.Description, upd.SpecYAML,
 		nullableJSON(upd.SpecJSON), nullableJSON(upd.InputSchema),
-		targetWorkspaceUpdateFlag(upd.TargetWorkspaceID),  // $10: NULL=keep, false=clear, true=set
-		targetWorkspaceUpdateValue(upd.TargetWorkspaceID), // $11: the uuid (or NULL)
+		targetWorkspaceUpdateFlag(upd.TargetWorkspaceID),
+		targetWorkspaceUpdateValue(upd.TargetWorkspaceID),
+		upd.OnMissingWorkspace,
 		upd.Status,
 		nullableJSON(upd.Defaults),
 	).Scan(
 		&row.ID, &row.OwnerType, &row.OwnerID, &row.Name, &row.Slug, &row.Description,
 		&row.SpecYAML, &row.SpecJSON, &row.InputSchema, &row.TargetWorkspaceID,
-		&row.Status, &row.Defaults, &row.CreatedAt, &row.UpdatedAt,
+		&row.OnMissingWorkspace, &row.Status, &row.Defaults, &row.CreatedAt, &row.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNotFound
@@ -424,6 +429,15 @@ func (s *Store) CreateWebhook(ctx context.Context, row *WebhookRow) error {
 		VALUES ($1, $2, $3, COALESCE($4, 1), COALESCE($5, ARRAY[]::text[]), COALESCE($6, 'header'), COALESCE($7, 'X-Request-ID'), $8)
 	`, row.ID, row.TriggerID, row.SecretCipher, row.KeyVersion,
 		toNullableStringArray(row.AllowedIPs), row.IdempotencyMode, row.IdempotencyHeader, row.CreatedAt)
+	return err
+}
+
+// UpdateWebhookSecret replaces the encrypted HMAC secret + key version for a webhook.
+// Used by the rotate-secret endpoint.
+func (s *Store) UpdateWebhookSecret(ctx context.Context, triggerID string, secretCipher []byte, keyVersion int) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE webhooks SET secret_cipher = $2, key_version = $3 WHERE trigger_id = $1
+	`, triggerID, secretCipher, keyVersion)
 	return err
 }
 
@@ -630,6 +644,84 @@ func (s *Store) HasInFlightRun(ctx context.Context, workflowID string) (bool, er
 	return exists, err
 }
 
+// GetWorkflowPolicy returns the on_missing_workspace policy + owner for a workflow.
+// Used by the engine to decide whether to create a workspace on missing (Epic 64).
+func (s *Store) GetWorkflowPolicy(ctx context.Context, workflowID string) (onMissing, ownerType, ownerID string, err error) {
+	err = s.pool.QueryRow(ctx, `
+		SELECT COALESCE(on_missing_workspace, 'abort'), owner_type, owner_id
+		FROM workflows WHERE id = $1
+	`, workflowID).Scan(&onMissing, &ownerType, &ownerID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", "", ErrNotFound
+	}
+	return
+}
+
+// UpdateRunWorkspace updates the workspace_id on a workflow run. Used by the
+// engine when on_missing_workspace='create' provisions a new workspace.
+func (s *Store) UpdateRunWorkspace(ctx context.Context, runID, workspaceID string) error {
+	_, err := s.pool.Exec(ctx, `
+		UPDATE workflow_runs SET workspace_id = $2, updated_at = now() WHERE id = $1
+	`, runID, workspaceID)
+	return err
+}
+
+// GetOrCreateScriptWorkflow finds or creates a hidden workflow row for a
+// run_script trigger. The workflow carries the synthetic 2-node spec (script → agent)
+// derived from the trigger's target_config. One shadow workflow per trigger.
+func (s *Store) GetOrCreateScriptWorkflow(ctx context.Context, trigger *TriggerRow, specJSON json.RawMessage, workspaceID string) (*WorkflowRow, error) {
+	name := "script:" + trigger.Name
+	slug := "script-" + trigger.Name
+
+	existing, err := s.GetWorkflow(ctx, trigger.OwnerType, trigger.OwnerID, "")
+	_ = existing
+	_ = err
+
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, owner_type, owner_id, name, slug, description, spec_yaml, spec_json, input_schema, target_workspace_id, on_missing_workspace, status, defaults, created_at, updated_at
+		FROM workflows WHERE owner_type = $1 AND owner_id = $2 AND slug = $3
+	`, trigger.OwnerType, trigger.OwnerID, slug)
+	if err == nil {
+		existingRows, scanErr := scanWorkflowRows(rows)
+		if scanErr == nil && len(existingRows) > 0 {
+			_, _ = s.pool.Exec(ctx, `
+				UPDATE workflows SET spec_json = $2, target_workspace_id = $3, updated_at = now()
+				WHERE id = $1
+			`, existingRows[0].ID, specJSON, workspaceID)
+			existingRows[0].SpecJSON = specJSON
+			if workspaceID != "" {
+				existingRows[0].TargetWorkspaceID = &workspaceID
+			}
+			return existingRows[0], nil
+		}
+	}
+
+	now := time.Now().UTC()
+	row := &WorkflowRow{
+		ID: uuid.NewString(), OwnerType: trigger.OwnerType, OwnerID: trigger.OwnerID,
+		Name: name, Slug: slug, Description: "Auto-generated for run_script trigger",
+		SpecYAML: "{}", SpecJSON: specJSON,
+		Status: "active", OnMissingWorkspace: "abort",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if workspaceID != "" {
+		row.TargetWorkspaceID = &workspaceID
+	}
+
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO workflows (id, owner_type, owner_id, name, slug, description, spec_yaml, spec_json, input_schema, target_workspace_id, on_missing_workspace, status, defaults, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, COALESCE($6, ''), $7, $8, $9, $10, COALESCE($11, 'abort'), COALESCE($12, 'active'), COALESCE($13, '{}'::jsonb), $14, $15)
+		ON CONFLICT (owner_type, owner_id, slug) DO UPDATE SET spec_json = $8, target_workspace_id = $10, updated_at = $15
+		RETURNING id
+	`, row.ID, row.OwnerType, row.OwnerID, row.Name, row.Slug, row.Description,
+		row.SpecYAML, row.SpecJSON, nullableJSON(row.InputSchema), nullableStrPtr(row.TargetWorkspaceID),
+		row.OnMissingWorkspace, row.Status, nullableJSON(row.Defaults), row.CreatedAt, row.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return row, nil
+}
+
 // --- Workflow node runs (per-node state) ------------------------------------
 
 // CreateNodeRun inserts a workflow_node_runs row.
@@ -763,7 +855,7 @@ func scanWorkflowRow(row pgx.Row) (*WorkflowRow, error) {
 	err := row.Scan(
 		&r.ID, &r.OwnerType, &r.OwnerID, &r.Name, &r.Slug, &r.Description,
 		&r.SpecYAML, &r.SpecJSON, &r.InputSchema, &r.TargetWorkspaceID,
-		&r.Status, &r.Defaults, &r.CreatedAt, &r.UpdatedAt,
+		&r.OnMissingWorkspace, &r.Status, &r.Defaults, &r.CreatedAt, &r.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err

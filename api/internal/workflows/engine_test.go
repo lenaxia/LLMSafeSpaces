@@ -22,19 +22,23 @@ import (
 // --- Mock types ---
 
 type mockStore struct {
-	mu          sync.Mutex
-	claimed     []*wf.WorkflowRunRow
-	statuses    map[string]string
-	nodeRuns    []*wf.WorkflowNodeRunRow
-	triggerFail map[string]int
-	runUpdates  map[string]int
+	mu           sync.Mutex
+	claimed      []*wf.WorkflowRunRow
+	statuses     map[string]string
+	nodeRuns     []*wf.WorkflowNodeRunRow
+	triggerFail  map[string]int
+	runUpdates   map[string]int
+	wfPolicies   map[string]string
+	runWorkspaces map[string]string
 }
 
 func newMockStore() *mockStore {
 	return &mockStore{
-		statuses:    make(map[string]string),
-		triggerFail: make(map[string]int),
-		runUpdates:  make(map[string]int),
+		statuses:      make(map[string]string),
+		triggerFail:   make(map[string]int),
+		runUpdates:    make(map[string]int),
+		wfPolicies:    make(map[string]string),
+		runWorkspaces: make(map[string]string),
 	}
 }
 
@@ -75,6 +79,31 @@ func (m *mockStore) ResetTriggerFailures(_ context.Context, triggerID string) er
 	defer m.mu.Unlock()
 	m.triggerFail[triggerID] = 0
 	return nil
+}
+
+func (m *mockStore) GetWorkflowPolicy(_ context.Context, workflowID string) (string, string, string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	p, ok := m.wfPolicies[workflowID]
+	if !ok {
+		return types.OnMissingAbort, "user", "test-owner", nil
+	}
+	return p, "user", "test-owner", nil
+}
+
+func (m *mockStore) UpdateRunWorkspace(_ context.Context, runID, workspaceID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.runWorkspaces[runID] = workspaceID
+	return nil
+}
+
+func (m *mockStore) GetOrCreateScriptWorkflow(_ context.Context, trigger *wf.TriggerRow, specJSON json.RawMessage, workspaceID string) (*wf.WorkflowRow, error) {
+	return &wf.WorkflowRow{
+		ID: "wf-script-" + trigger.ID, OwnerType: trigger.OwnerType, OwnerID: trigger.OwnerID,
+		Name: "script:" + trigger.Name, Slug: "script-" + trigger.Name,
+		SpecJSON: specJSON, Status: "active",
+	}, nil
 }
 
 func (m *mockStore) addRun(id, workflowID, workspaceID string, spec json.RawMessage, input json.RawMessage, triggerID string) *wf.WorkflowRunRow {
@@ -129,6 +158,33 @@ func (m *mockActivator) EnsureActive(_ context.Context, _ string, _ time.Duratio
 	return "10.0.0.1", nil
 }
 
+type mockActivatorNotFound struct {
+	notFoundOnce bool
+	succeeded    bool
+}
+
+func (m *mockActivatorNotFound) EnsureActive(_ context.Context, workspaceID string, _ time.Duration) (string, error) {
+	if workspaceID == "ws-gone" && !m.succeeded {
+		m.succeeded = true
+		return "", fmt.Errorf("workspace %s not found", workspaceID)
+	}
+	return "10.0.0.2", nil
+}
+
+type mockWorkspaceCreator struct {
+	createdWorkspaces []string
+	returnID          string
+}
+
+func (m *mockWorkspaceCreator) CreateWorkspace(_ context.Context, _ string, _ string, _ string) (string, error) {
+	id := m.returnID
+	if id == "" {
+		id = "ws-new-" + fmt.Sprintf("%d", len(m.createdWorkspaces)+1)
+	}
+	m.createdWorkspaces = append(m.createdWorkspaces, id)
+	return id, nil
+}
+
 func linearSpec() json.RawMessage {
 	return json.RawMessage(`{"nodes":[{"id":"start","type":"script","data":{"language":"python","handler":"x"}},{"id":"end","type":"script","data":{"language":"python","handler":"y"}}],"edges":[{"source":"start","target":"end"}]}`)
 }
@@ -170,6 +226,61 @@ func TestReconciler_WorkspaceUnavailable(t *testing.T) {
 	runEngine(t, rec, store)
 	if store.statuses["run-2"] != types.RunStatusFailed {
 		t.Errorf("expected failed, got %s", store.statuses["run-2"])
+	}
+}
+
+func TestReconciler_OnMissingCreate(t *testing.T) {
+	store := newMockStore()
+	store.wfPolicies["wf-create"] = types.OnMissingCreate
+	agentd := newMockAgentd()
+	agentd.outputs["start"] = json.RawMessage(`{"x":1}`)
+	agentd.outputs["end"] = json.RawMessage(`{"result":"done"}`)
+	store.addRun("run-create", "wf-create", "ws-gone", linearSpec(), json.RawMessage(`{}`), "")
+
+	activator := &mockActivatorNotFound{}
+	creator := &mockWorkspaceCreator{returnID: "ws-new-1"}
+
+	rec := &Reconciler{
+		Store: store, AgentdClient: agentd, Activator: activator,
+		WorkspaceCreator: creator, Logger: noopLogger{},
+	}
+	rec.canceledRuns = make(map[string]struct{})
+	runEngine(t, rec, store)
+
+	if store.statuses["run-create"] != types.RunStatusSucceeded {
+		t.Errorf("expected succeeded, got %s", store.statuses["run-create"])
+	}
+	if len(creator.createdWorkspaces) != 1 {
+		t.Fatalf("expected 1 workspace created, got %d", len(creator.createdWorkspaces))
+	}
+	if creator.createdWorkspaces[0] != "ws-new-1" {
+		t.Errorf("expected ws-new-1, got %s", creator.createdWorkspaces[0])
+	}
+	if store.runWorkspaces["run-create"] != "ws-new-1" {
+		t.Errorf("expected run workspace updated to ws-new-1, got %s", store.runWorkspaces["run-create"])
+	}
+}
+
+func TestReconciler_OnMissingAbort(t *testing.T) {
+	store := newMockStore()
+	store.wfPolicies["wf-abort"] = types.OnMissingAbort
+	store.addRun("run-abort", "wf-abort", "ws-gone", linearSpec(), json.RawMessage(`{}`), "")
+
+	activator := &mockActivatorNotFound{}
+	creator := &mockWorkspaceCreator{}
+
+	rec := &Reconciler{
+		Store: store, AgentdClient: newMockAgentd(), Activator: activator,
+		WorkspaceCreator: creator, Logger: noopLogger{},
+	}
+	rec.canceledRuns = make(map[string]struct{})
+	runEngine(t, rec, store)
+
+	if store.statuses["run-abort"] != types.RunStatusFailed {
+		t.Errorf("expected failed, got %s", store.statuses["run-abort"])
+	}
+	if len(creator.createdWorkspaces) != 0 {
+		t.Errorf("expected 0 workspaces created (abort mode), got %d", len(creator.createdWorkspaces))
 	}
 }
 
@@ -342,6 +453,12 @@ func (m *mockSchedulerStore) GetWorkflow(_ context.Context, _, _, id string) (*w
 	return r, nil
 }
 
+func (m *mockSchedulerStore) GetOrCreateScriptWorkflow(_ context.Context, trigger *wf.TriggerRow, specJSON json.RawMessage, workspaceID string) (*wf.WorkflowRow, error) {
+	return &wf.WorkflowRow{
+		ID: "wf-script-" + trigger.ID, SpecJSON: specJSON, Status: "active",
+	}, nil
+}
+
 func (m *mockSchedulerStore) CreateWorkflowRunWithFire(_ context.Context, fire *wf.TriggerFireRow, run *wf.WorkflowRunRow) error {
 	m.fires = append(m.fires, fire)
 	m.runs = append(m.runs, run)
@@ -439,8 +556,14 @@ func TestScheduler_RunScriptTarget(t *testing.T) {
 	sched := &Scheduler{Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second}
 	sched.tick(context.Background(), noopLogger{}, 10)
 
-	if len(store.fires) != 1 || store.fires[0].Status != "delivered" {
-		t.Fatalf("expected 1 delivered, got %+v", store.fires)
+	if len(store.fires) != 1 || store.fires[0].Status != "fired" {
+		t.Fatalf("expected 1 fired, got %+v", store.fires)
+	}
+	if len(store.runs) != 1 {
+		t.Fatalf("expected 1 run created, got %d", len(store.runs))
+	}
+	if store.runs[0].WorkspaceID != "ws-1" {
+		t.Errorf("expected run on ws-1, got %s", store.runs[0].WorkspaceID)
 	}
 }
 

@@ -1686,6 +1686,8 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 		g.GET("/:id", cfg.UserTriggersHandler.UserGet)
 		g.PUT("/:id", cfg.UserTriggersHandler.UserUpdate)
 		g.DELETE("/:id", cfg.UserTriggersHandler.UserDelete)
+		g.GET("/:id/fires", cfg.UserTriggersHandler.UserListFires)
+		g.POST("/:id/rotate-secret", cfg.UserTriggersHandler.UserRotateWebhookSecret)
 	}
 
 	// Org-scope trigger routes.

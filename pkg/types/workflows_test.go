@@ -61,6 +61,19 @@ func TestValidWorkflowOwnerType(t *testing.T) {
 	}
 }
 
+func TestValidOnMissingWorkspace(t *testing.T) {
+	for _, s := range []string{OnMissingAbort, OnMissingCreate} {
+		if !ValidOnMissingWorkspace(s) {
+			t.Errorf("expected %q valid", s)
+		}
+	}
+	for _, s := range []string{"", "skip", "wait", "clone"} {
+		if ValidOnMissingWorkspace(s) {
+			t.Errorf("expected %q invalid", s)
+		}
+	}
+}
+
 func TestValidTriggerSourceType(t *testing.T) {
 	for _, s := range []string{TriggerSourceCron, TriggerSourceWebhook} {
 		if !ValidTriggerSourceType(s) {

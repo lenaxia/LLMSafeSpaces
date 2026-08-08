@@ -19,6 +19,7 @@ import { PasskeySettings } from "./components/settings/PasskeySettings";
 import { WorkspaceImagesTab } from "./components/settings/WorkspaceImagesTab";
 import { WorkflowsPage } from "./pages/WorkflowsPage";
 import { TriggersPage } from "./pages/TriggersPage";
+import { RunDetailPage } from "./pages/RunDetailPage";
 import { OrgAdminLayout } from "./components/org-admin/OrgAdminLayout";
 import { OrgOverviewTab } from "./components/org-admin/OrgOverviewTab";
 import { OrgMembersTab } from "./components/org-admin/OrgMembersTab";
@@ -114,6 +115,8 @@ export const router = createBrowserRouter([
           { path: "/chat/:workspaceId/:sessionId", element: <ChatPage /> },
           { path: "/workflows", element: <WorkflowsPage /> },
           { path: "/workflows/:workflowId", element: <WorkflowsPage /> },
+          { path: "/workflows/:workflowId/runs/:runId", element: <RunDetailPage /> },
+          { path: "/runs/:runId", element: <RunDetailPage /> },
           { path: "/triggers", element: <TriggersPage /> },
           { path: "/triggers/:triggerId", element: <TriggersPage /> },
           {

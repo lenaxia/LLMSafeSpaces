@@ -509,6 +509,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		userTriggersHandler = handlers.NewUserTriggersHandler(wfStore, instanceSettings, providerCredsProv)
 		orgTriggersHandler = handlers.NewOrgTriggersHandler(wfStore, instanceSettings, providerCredsProv)
 		webhookReceiverHandler = handlers.NewWebhookReceiverHandler(wfStore, providerCredsProv, 1<<20)
+		webhookReceiverHandler.SetRateChecker(svc.GetRateLimiter(), 10, 20)
 
 		// Epic 64: Construct the workflow engine (reconciler + scheduler).
 		// Started as background goroutines in Start() — same pattern as
@@ -525,6 +526,10 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			Activator: &apiwf.K8sWorkspaceActivator{
 				K8sClient: k8sClient,
 				Namespace: cfg.Kubernetes.Namespace,
+			},
+			WorkspaceCreator: &appWorkspaceCreator{
+				wsSvc:   svc.Workspace.(*workspace.Service),
+				wfStore: wfStore,
 			},
 			Logger: engineLogger,
 		}
@@ -1706,4 +1711,43 @@ func (a *launchableConfigAdapter) GetLaunchableConfigByHash(ctx context.Context,
 		return imagefactory.Config{}, "", workspace.ErrConfigNotLaunchable
 	}
 	return cfg, ref, err
+}
+
+// appWorkspaceCreator implements apiwf.WorkspaceCreator — provisions a new
+// workspace for the workflow owner when on_missing_workspace='create' and
+// the target workspace is gone. Pins the new workspace as the workflow's
+// target_workspace_id so subsequent runs reuse it.
+type appWorkspaceCreator struct {
+	wsSvc   *workspace.Service
+	wfStore *workflows.Store
+}
+
+func (c *appWorkspaceCreator) CreateWorkspace(ctx context.Context, workflowID, ownerType, ownerID string) (string, error) {
+	wfRow, err := c.wfStore.GetWorkflow(ctx, ownerType, ownerID, workflowID)
+	if err != nil {
+		return "", fmt.Errorf("lookup workflow for workspace creation: %w", err)
+	}
+
+	req := types.CreateWorkspaceRequest{
+		Name:    "wf-" + wfRow.Slug,
+		Runtime: "python",
+	}
+	if ownerType == types.WorkflowOwnerOrg {
+		orgID := ownerID
+		req.OrgID = &orgID
+	}
+
+	ws, err := c.wsSvc.CreateWorkspace(ctx, ownerID, req)
+	if err != nil {
+		return "", fmt.Errorf("create workspace for workflow %s: %w", workflowID, err)
+	}
+
+	wsID := ws.ID
+	_, err = c.wfStore.UpdateWorkflow(ctx, ownerType, ownerID, workflowID, &workflows.WorkflowUpdate{
+		TargetWorkspaceID: &wsID,
+	})
+	if err != nil {
+		return "", fmt.Errorf("pin workspace %s on workflow %s: %w", wsID, workflowID, err)
+	}
+	return wsID, nil
 }
