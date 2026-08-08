@@ -162,6 +162,7 @@ func (w *AgentConfigWriter) loadAllowedDirs() {
 	if w.allowedDirsPath == "" {
 		return
 	}
+	w.allowedDirs = nil
 	data, err := os.ReadFile(w.allowedDirsPath)
 	if err != nil || len(data) == 0 {
 		return
