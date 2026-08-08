@@ -521,7 +521,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		}
 		wfReconciler = &apiwf.Reconciler{
 			Store:        wfStore,
-			AgentdClient: &apiwf.HTTPAgentdExecutor{Port: 4097},
+			AgentdClient: &apiwf.HTTPAgentExecutor{Port: 4097},
 			Activator: &apiwf.K8sWorkspaceActivator{
 				K8sClient: k8sClient,
 				Namespace: cfg.Kubernetes.Namespace,

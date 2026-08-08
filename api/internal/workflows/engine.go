@@ -682,33 +682,16 @@ func atoiSafe(s string) int {
 	return n
 }
 
-// --- HTTPAgentdExecutor ---
+// --- HTTPAgentExecutor ---
 
-// HTTPAgentdExecutor calls agentd on the workspace pod via HTTP.
-type HTTPAgentdExecutor struct {
+// HTTPAgentExecutor calls agentd on the workspace pod via HTTP.
+// Uses context for cancellation and timeout propagation.
+type HTTPAgentExecutor struct {
 	Port   int
-	Client HTTPDoer
+	Client *http.Client
 }
 
-// HTTPDoer is the minimal HTTP client interface (net/http.Client satisfies it).
-type HTTPDoer interface {
-	Do(req *HTTPRequest) (*HTTPResponse, error)
-}
-
-type HTTPRequest struct {
-	Method string
-	URL    string
-	Body   []byte
-	Header map[string]string
-}
-
-// HTTPResponse is the adapter response type.
-type HTTPResponse struct {
-	StatusCode int
-	Body       []byte
-}
-
-func (e *HTTPAgentdExecutor) Execute(ctx context.Context, podIP string, req *NodeExecRequest) (*NodeExecResponse, error) {
+func (e *HTTPAgentExecutor) Execute(ctx context.Context, podIP string, req *NodeExecRequest) (*NodeExecResponse, error) {
 	body, _ := json.Marshal(req)
 	port := e.Port
 	if port == 0 {
@@ -724,46 +707,25 @@ func (e *HTTPAgentdExecutor) Execute(ctx context.Context, podIP string, req *Nod
 
 	client := e.Client
 	if client == nil {
-		client = &defaultHTTPDoer{}
+		client = &http.Client{Timeout: 15 * time.Minute}
 	}
 
-	resp, err := client.Do(&HTTPRequest{
-		Method: "POST",
-		URL:    url,
-		Body:   body,
-		Header: map[string]string{"Content-Type": "application/json"},
-	})
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
 		return nil, err
 	}
 
 	var nodeResp NodeExecResponse
-	if err := json.Unmarshal(resp.Body, &nodeResp); err != nil {
+	if err := json.Unmarshal(respBody, &nodeResp); err != nil {
 		return nil, err
 	}
 	return &nodeResp, nil
-}
-
-type defaultHTTPDoer struct{}
-
-func (d *defaultHTTPDoer) Do(req *HTTPRequest) (*HTTPResponse, error) {
-	httpReq, err := http.NewRequest(req.Method, req.URL, bytes.NewReader(req.Body))
-	if err != nil {
-		return nil, err
-	}
-	for k, v := range req.Header {
-		httpReq.Header.Set(k, v)
-	}
-	resp, err := http.DefaultClient.Do(httpReq) //nolint:noctx // context is propagated via the caller's ctx in Execute
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
-	if err != nil {
-		return nil, err
-	}
-	return &HTTPResponse{StatusCode: resp.StatusCode, Body: body}, nil
 }
 
 // AppEngineLogger adapts an external logger to the engine's Logger interface.
