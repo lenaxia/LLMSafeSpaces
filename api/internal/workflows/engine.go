@@ -257,7 +257,7 @@ func (r *Reconciler) executeRun(ctx context.Context, logger Logger, run *wf.Work
 		}
 
 		if node.Type == types.NodeTypeCondition {
-			pruneInactiveBranches(&spec, node.ID, branch, nodeOrder, activeNodes)
+			pruneInactiveBranches(&spec, node.ID, branch, activeNodes)
 		}
 	}
 
@@ -584,7 +584,7 @@ func topoSort(spec *wf.Spec) []int {
 	return order
 }
 
-func pruneInactiveBranches(spec *wf.Spec, condNodeID, matchedBranch string, _ []int, active map[int]bool) {
+func pruneInactiveBranches(spec *wf.Spec, condNodeID, matchedBranch string, active map[int]bool) {
 	var matchedTargets, unmatchedTargets []string
 	for _, e := range spec.Edges {
 		if e.Source != condNodeID {
