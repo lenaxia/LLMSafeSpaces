@@ -121,7 +121,7 @@ test.describe("Org admin portal", () => {
 
     await expect(page.getByRole("heading", { name: "E2E Org" })).toBeVisible({ timeout: 8000 });
     // All admin nav items visible to admin.
-    for (const label of ["Overview", "Members", "Credentials", "MCP Servers", "Images", "Workspaces", "Audit", "Billing", "SSO", "Agent Config", "Settings"]) {
+    for (const label of ["Overview", "Members", "Credentials", "MCP Servers", "Image Factory", "Workspaces", "Audit", "Billing", "SSO", "Agent Config", "Settings"]) {
       await expect(page.getByRole("link", { name: label })).toBeVisible();
     }
   });
@@ -267,7 +267,7 @@ test.describe("Org admin portal", () => {
     await expect(page.getByRole("link", { name: "Members" })).not.toBeVisible();
     await expect(page.getByRole("link", { name: "Settings" })).not.toBeVisible();
     await expect(page.getByRole("link", { name: "Credentials" })).not.toBeVisible();
-    await expect(page.getByRole("link", { name: "Images" })).not.toBeVisible();
+    await expect(page.getByRole("link", { name: "Image Factory" })).not.toBeVisible();
     // Non-admin tabs still visible.
     await expect(page.getByRole("link", { name: "Overview" })).toBeVisible();
     await expect(page.getByRole("link", { name: "Workspaces" })).toBeVisible();
