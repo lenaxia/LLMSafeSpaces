@@ -43,6 +43,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sso"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
+	apiwf "github.com/lenaxia/llmsafespaces/api/internal/workflows"
 	agentoc "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"github.com/lenaxia/llmsafespaces/pkg/billing"
@@ -79,6 +80,8 @@ type App struct {
 	healthChecker      *health.Checker           // periodic dependency probe; nil only in degraded test setups
 	pendingOrgCleaner  *handlers.PendingOrgCleaner
 	jwtSessionJanitor  *secrets.JWTSessionJanitor // Epic 56: prunes expired jwt_sessions rows
+	wfReconciler       *apiwf.Reconciler          // Epic 64: workflow run executor
+	wfScheduler        *apiwf.Scheduler           // Epic 64: cron trigger scheduler
 	invitationsHandler *handlers.InvitationsHandler
 	emailService       *emailsvc.Service
 	emailHandler       *handlers.EmailHandler
@@ -298,6 +301,9 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	var userTriggersHandler *handlers.TriggersHandler
 	var orgTriggersHandler *handlers.TriggersHandler
 	var webhookReceiverHandler *handlers.WebhookReceiverHandler
+	var wfReconciler *apiwf.Reconciler
+	var wfScheduler *apiwf.Scheduler
+	var engineLogger *apiwf.AppEngineLogger
 	// mcpPushAdapter is assigned after agentPusher is constructed; used by
 	// all three MCP handler scopes for live reload after bind.
 	var mcpPushAdapter func(ctx context.Context, userID, workspaceID string) error
@@ -503,6 +509,29 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		userTriggersHandler = handlers.NewUserTriggersHandler(wfStore, instanceSettings, providerCredsProv)
 		orgTriggersHandler = handlers.NewOrgTriggersHandler(wfStore, instanceSettings, providerCredsProv)
 		webhookReceiverHandler = handlers.NewWebhookReceiverHandler(wfStore, providerCredsProv, 1<<20)
+
+		// Epic 64: Construct the workflow engine (reconciler + scheduler).
+		// Started as background goroutines in Start() — same pattern as
+		// jwtSessionJanitor. The engine runs in the API server because it
+		// needs PostgreSQL access (FOR UPDATE SKIP LOCKED), K8s API (workspace
+		// activation), and HTTP to workspace pods (agentd dispatch).
+		engineLogger = &apiwf.AppEngineLogger{
+			LogFn: func(msg string, kv ...any) { log.Info(msg, kv...) },
+			ErrFn: func(err error, msg string, kv ...any) { log.Error(msg, err, kv...) },
+		}
+		wfReconciler = &apiwf.Reconciler{
+			Store:        wfStore,
+			AgentdClient: &apiwf.HTTPAgentdExecutor{Port: 4097},
+			Activator: &apiwf.K8sWorkspaceActivator{
+				K8sClient: k8sClient,
+				Namespace: cfg.Kubernetes.Namespace,
+			},
+			Logger: engineLogger,
+		}
+		wfScheduler = &apiwf.Scheduler{
+			Store:  wfStore,
+			Logger: engineLogger,
+		}
 		// Wire pod-IP resolver so reload-secrets can reach in-pod agentd.
 		// Without this the SecretsHandler returns 503 for every reload
 		// request and the SetBindings auto-push silently no-ops; see
@@ -1231,6 +1260,8 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		secretsPool:        secretsPool,
 		pendingOrgCleaner:  pendingOrgCleaner,
 		jwtSessionJanitor:  jwtSessionJanitor,
+		wfReconciler:       wfReconciler,
+		wfScheduler:        wfScheduler,
 		invitationsHandler: invitationsHandler,
 		emailService:       emailService,
 		emailHandler:       emailHandler,
@@ -1279,6 +1310,24 @@ func (a *App) Run() error {
 	if a.jwtSessionJanitor != nil {
 		go a.jwtSessionJanitor.Run(a.ctx)
 		a.logger.Info("jwt_sessions janitor started", "interval", secrets.DefaultJWTSessionJanitorInterval.String())
+	}
+
+	// Epic 64: Start the workflow engine (reconciler + scheduler) as background
+	// goroutines. These run in the API server, not the controller — the API has
+	// the pgxpool, K8s client, and HTTP connectivity to workspace pods. FOR
+	// UPDATE SKIP LOCKED provides multi-replica safety without leader election.
+	if a.wfReconciler != nil {
+		go func() {
+			if err := a.wfReconciler.Start(a.ctx); err != nil {
+				a.logger.Error("workflow reconciler stopped", err)
+			}
+		}()
+		go func() {
+			if err := a.wfScheduler.Start(a.ctx); err != nil {
+				a.logger.Error("workflow scheduler stopped", err)
+			}
+		}()
+		a.logger.Info("workflow engine started (reconciler + scheduler)")
 	}
 
 	// Start instance settings (loads cache from DB).
