@@ -17,6 +17,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	k8stypes "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
@@ -25,6 +28,7 @@ import (
 	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8sapiTypes "k8s.io/apimachinery/pkg/types"
 )
 
 // --- Shared types ---
@@ -120,8 +124,9 @@ func (a *K8sWorkspaceActivator) EnsureActive(ctx context.Context, workspaceID st
 
 		if crd.Status.Phase == k8stypes.WorkspacePhaseSuspended || crd.Status.Phase == k8stypes.WorkspacePhaseFailed {
 			suspendFalse := false
-			crd.Spec.Suspend = &suspendFalse
-			_, err := v1Client.Workspaces(a.Namespace).Update(checkCtx, crd)
+			patchBody := map[string]any{"spec": map[string]any{"suspend": suspendFalse}}
+			patchBytes, _ := json.Marshal(patchBody)
+			_, err := v1Client.Workspaces(a.Namespace).Patch(checkCtx, workspaceID, k8sapiTypes.MergePatchType, patchBytes, metav1.PatchOptions{})
 			if err != nil {
 				return "", fmt.Errorf("failed to activate workspace: %w", err)
 			}
@@ -145,16 +150,9 @@ type Reconciler struct {
 	MaxConcurrent int
 	TickInterval  time.Duration
 
-	cancelMu     mutex
+	cancelMu     sync.Mutex
 	canceledRuns map[string]struct{}
 }
-
-type mutex struct{ mu chan struct{} }
-
-func newMutex() mutex { return mutex{mu: make(chan struct{}, 1)} }
-
-func (m mutex) Lock()   { m.mu <- struct{}{} }
-func (m mutex) Unlock() { <-m.mu }
 
 func (r *Reconciler) Start(ctx context.Context) error {
 	logger := r.Logger
@@ -163,7 +161,7 @@ func (r *Reconciler) Start(ctx context.Context) error {
 	}
 	if r.canceledRuns == nil {
 		r.canceledRuns = make(map[string]struct{})
-		r.cancelMu = newMutex()
+
 	}
 
 	maxConc := r.MaxConcurrent
@@ -365,7 +363,6 @@ type Scheduler struct {
 	Store        SchedulerStore
 	Logger       Logger
 	TickInterval time.Duration
-	BatchLimit   int
 }
 
 func (s *Scheduler) Start(ctx context.Context) error {
@@ -378,10 +375,7 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	if interval <= 0 {
 		interval = 30 * time.Second
 	}
-	limit := s.BatchLimit
-	if limit <= 0 {
-		limit = 50
-	}
+	limit := 50
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -516,7 +510,7 @@ func computeNextFire(trigger *wf.TriggerRow, now time.Time) time.Time {
 		}
 	}
 
-	fields := splitFields(cfg.Expr)
+	fields := strings.Fields(cfg.Expr)
 	if len(fields) != 5 {
 		return now.Add(time.Hour)
 	}
@@ -524,8 +518,9 @@ func computeNextFire(trigger *wf.TriggerRow, now time.Time) time.Time {
 	minuteField := fields[0]
 	hourField := fields[1]
 
-	if hasPrefix(minuteField, "*/") {
-		if n := atoiSafe(minuteField[2:]); n > 0 {
+	if strings.HasPrefix(minuteField, "*/") {
+		n, err := strconv.Atoi(minuteField[2:])
+		if err == nil && n > 0 {
 			return now.Add(time.Duration(n) * time.Minute)
 		}
 	}
@@ -534,8 +529,8 @@ func computeNextFire(trigger *wf.TriggerRow, now time.Time) time.Time {
 		return now.Add(time.Hour)
 	}
 
-	minute := atoiSafe(minuteField)
-	hour := atoiSafe(hourField)
+	minute, _ := strconv.Atoi(minuteField)
+	hour, _ := strconv.Atoi(hourField)
 
 	nowInTz := now.In(loc)
 	next := time.Date(nowInTz.Year(), nowInTz.Month(), nowInTz.Day(), hour, minute, 0, 0, loc)
@@ -552,8 +547,6 @@ func computeNextFire(trigger *wf.TriggerRow, now time.Time) time.Time {
 
 	return next.UTC()
 }
-
-// --- DAG helpers ---
 
 func topoSort(spec *wf.Spec) []int {
 	inDeg := make(map[string]int, len(spec.Nodes))
@@ -646,40 +639,6 @@ func findNodeIndexByID(spec *wf.Spec, id string) (int, bool) {
 		}
 	}
 	return -1, false
-}
-
-// --- string helpers (avoid importing strings/strconv in hot path) ---
-
-func splitFields(s string) []string {
-	var out []string
-	start := 0
-	for i, c := range s {
-		if c == ' ' {
-			if i > start {
-				out = append(out, s[start:i])
-			}
-			start = i + 1
-		}
-	}
-	if start < len(s) {
-		out = append(out, s[start:])
-	}
-	return out
-}
-
-func hasPrefix(s, prefix string) bool {
-	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
-}
-
-func atoiSafe(s string) int {
-	n := 0
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return 0
-		}
-		n = n*10 + int(c-'0')
-	}
-	return n
 }
 
 // --- HTTPAgentExecutor ---

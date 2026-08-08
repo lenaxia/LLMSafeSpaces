@@ -148,7 +148,7 @@ func TestReconciler_HappyPath(t *testing.T) {
 	store.addRun("run-1", "wf-1", "ws-1", linearSpec(), json.RawMessage(`{}`), "")
 
 	rec := &Reconciler{Store: store, AgentdClient: agentd, Activator: &mockActivator{}, Logger: noopLogger{}}
-	rec.cancelMu = newMutex()
+
 	rec.canceledRuns = make(map[string]struct{})
 
 	runEngine(t, rec, store)
@@ -161,7 +161,7 @@ func TestReconciler_WorkspaceUnavailable(t *testing.T) {
 	store := newMockStore()
 	store.addRun("run-2", "wf-1", "ws-bad", linearSpec(), json.RawMessage(`{}`), "")
 	rec := &Reconciler{Store: store, AgentdClient: newMockAgentd(), Activator: &mockActivator{fail: true}, Logger: noopLogger{}}
-	rec.cancelMu = newMutex()
+
 	rec.canceledRuns = make(map[string]struct{})
 	runEngine(t, rec, store)
 	if store.statuses["run-2"] != types.RunStatusFailed {
@@ -175,7 +175,7 @@ func TestReconciler_NodeFailure(t *testing.T) {
 	agentd.errors["start"] = fmt.Errorf("connection refused")
 	store.addRun("run-3", "wf-1", "ws-1", linearSpec(), json.RawMessage(`{}`), "")
 	rec := &Reconciler{Store: store, AgentdClient: agentd, Activator: &mockActivator{}, Logger: noopLogger{}}
-	rec.cancelMu = newMutex()
+
 	rec.canceledRuns = make(map[string]struct{})
 	runEngine(t, rec, store)
 	if store.statuses["run-3"] != types.RunStatusFailed {
@@ -189,7 +189,7 @@ func TestReconciler_TriggerFailureIncrement(t *testing.T) {
 	agentd.errors["start"] = fmt.Errorf("boom")
 	store.addRun("run-4", "wf-1", "ws-1", linearSpec(), json.RawMessage(`{}`), "trig-1")
 	rec := &Reconciler{Store: store, AgentdClient: agentd, Activator: &mockActivator{}, Logger: noopLogger{}}
-	rec.cancelMu = newMutex()
+
 	rec.canceledRuns = make(map[string]struct{})
 	runEngine(t, rec, store)
 	if store.triggerFail["trig-1"] != 1 {
@@ -201,7 +201,7 @@ func TestReconciler_Cancel(t *testing.T) {
 	store := newMockStore()
 	store.addRun("run-5", "wf-1", "ws-1", linearSpec(), json.RawMessage(`{}`), "")
 	rec := &Reconciler{Store: store, AgentdClient: newMockAgentd(), Activator: &mockActivator{}, Logger: noopLogger{}}
-	rec.cancelMu = newMutex()
+
 	rec.canceledRuns = make(map[string]struct{})
 	rec.Cancel("run-5")
 	runEngine(t, rec, store)
@@ -303,3 +303,160 @@ func TestComputeNextFire_TimezoneInvalid(t *testing.T) {
 		t.Errorf("invalid TZ fallback: expected %v, got %v", expected, next)
 	}
 }
+
+// --- Scheduler tests ---
+
+type mockSchedulerStore struct {
+	mu        sync.Mutex
+	triggers  []*wf.TriggerRow
+	workflows map[string]*wf.WorkflowRow
+	fires     []*wf.TriggerFireRow
+	runs      []*wf.WorkflowRunRow
+	disabled  map[string]bool
+	nextFires map[string]time.Time
+}
+
+func newMockSchedulerStore() *mockSchedulerStore {
+	return &mockSchedulerStore{
+		workflows: make(map[string]*wf.WorkflowRow),
+		disabled:  make(map[string]bool),
+		nextFires: make(map[string]time.Time),
+	}
+}
+
+func (m *mockSchedulerStore) ListDueCronTriggers(_ context.Context, _ time.Time, _ int) ([]*wf.TriggerRow, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.triggers, nil
+}
+
+func (m *mockSchedulerStore) GetWorkflow(_ context.Context, _, _, id string) (*wf.WorkflowRow, error) {
+	r, ok := m.workflows[id]
+	if !ok {
+		return nil, fmt.Errorf("not found")
+	}
+	return r, nil
+}
+
+func (m *mockSchedulerStore) CreateWorkflowRunWithFire(_ context.Context, fire *wf.TriggerFireRow, run *wf.WorkflowRunRow) error {
+	m.fires = append(m.fires, fire)
+	m.runs = append(m.runs, run)
+	return nil
+}
+
+func (m *mockSchedulerStore) CreateTriggerFire(_ context.Context, row *wf.TriggerFireRow) error {
+	m.fires = append(m.fires, row)
+	return nil
+}
+
+func (m *mockSchedulerStore) UpdateTriggerFireTimestamps(_ context.Context, triggerID string, _ time.Time, nextFireAt *time.Time) error {
+	if nextFireAt != nil {
+		m.nextFires[triggerID] = *nextFireAt
+	}
+	return nil
+}
+
+func (m *mockSchedulerStore) IncrementTriggerFailures(_ context.Context, _ string) (int, error) {
+	return 0, nil
+}
+
+func (m *mockSchedulerStore) DisableTrigger(_ context.Context, triggerID string) error {
+	m.disabled[triggerID] = true
+	return nil
+}
+
+func makeDueTrigger(id, wfID, wsID string) *wf.TriggerRow {
+	now := time.Now().UTC().Add(-5 * time.Second)
+	return &wf.TriggerRow{
+		ID: id, OwnerType: "user", OwnerID: "u1",
+		Enabled: true, SourceType: types.TriggerSourceCron,
+		SourceConfig:     json.RawMessage(`{"expr":"0 * * * *","tz":"UTC"}`),
+		TargetType:       types.TriggerTargetRunWorkflow,
+		TargetConfig:     json.RawMessage(fmt.Sprintf(`{"workflowId":%q}`, wfID)),
+		AutoDisableAfter: 10, NextFireAt: &now,
+	}
+}
+
+func TestScheduler_FiresDueTrigger(t *testing.T) {
+	store := newMockSchedulerStore()
+	store.workflows["wf-1"] = &wf.WorkflowRow{
+		ID: "wf-1", OwnerType: "user", OwnerID: "u1",
+		SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtr("ws-1"),
+	}
+	store.triggers = []*wf.TriggerRow{makeDueTrigger("trig-1", "wf-1", "ws-1")}
+
+	sched := &Scheduler{Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	if len(store.fires) != 1 || store.fires[0].Status != "fired" {
+		t.Fatalf("expected 1 fired, got %d fires", len(store.fires))
+	}
+	if len(store.runs) != 1 {
+		t.Fatalf("expected 1 run, got %d", len(store.runs))
+	}
+}
+
+func TestScheduler_MissedFireSkipped(t *testing.T) {
+	store := newMockSchedulerStore()
+	store.workflows["wf-1"] = &wf.WorkflowRow{
+		ID: "wf-1", OwnerType: "user", OwnerID: "u1",
+		SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtr("ws-1"),
+	}
+	old := time.Now().UTC().Add(-2 * time.Hour)
+	store.triggers = []*wf.TriggerRow{{
+		ID: "trig-old", OwnerType: "user", OwnerID: "u1",
+		Enabled: true, SourceType: types.TriggerSourceCron,
+		SourceConfig: json.RawMessage(`{"expr":"0 * * * *"}`),
+		TargetType:   types.TriggerTargetRunWorkflow,
+		TargetConfig: json.RawMessage(`{"workflowId":"wf-1"}`),
+		NextFireAt:   &old,
+	}}
+
+	sched := &Scheduler{Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	if len(store.fires) != 1 || store.fires[0].Status != "skipped" {
+		t.Fatalf("expected 1 skipped, got %+v", store.fires)
+	}
+}
+
+func TestScheduler_RunScriptTarget(t *testing.T) {
+	store := newMockSchedulerStore()
+	now := time.Now().UTC().Add(-5 * time.Second)
+	store.triggers = []*wf.TriggerRow{{
+		ID: "trig-script", OwnerType: "user", OwnerID: "u1",
+		Enabled: true, SourceType: types.TriggerSourceCron,
+		SourceConfig: json.RawMessage(`{"expr":"0 * * * *"}`),
+		TargetType:   types.TriggerTargetRunScript,
+		TargetConfig: json.RawMessage(`{"workspaceId":"ws-1","path":"/scripts/backup.sh"}`),
+		NextFireAt:   &now,
+	}}
+
+	sched := &Scheduler{Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	if len(store.fires) != 1 || store.fires[0].Status != "delivered" {
+		t.Fatalf("expected 1 delivered, got %+v", store.fires)
+	}
+}
+
+func TestScheduler_AdvancesNextFireAt(t *testing.T) {
+	store := newMockSchedulerStore()
+	store.workflows["wf-1"] = &wf.WorkflowRow{
+		ID: "wf-1", OwnerType: "user", OwnerID: "u1",
+		SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtr("ws-1"),
+	}
+	store.triggers = []*wf.TriggerRow{makeDueTrigger("trig-1", "wf-1", "ws-1")}
+
+	sched := &Scheduler{Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second}
+	sched.tick(context.Background(), noopLogger{}, 10)
+
+	next, ok := store.nextFires["trig-1"]
+	if !ok {
+		t.Fatal("expected next_fire_at to be set")
+	}
+	if !next.After(time.Now()) {
+		t.Error("next_fire_at should be in the future")
+	}
+}
+func strPtr(s string) *string { return &s }
