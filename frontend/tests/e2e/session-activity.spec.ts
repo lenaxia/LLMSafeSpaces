@@ -237,12 +237,14 @@ test.describe("Epic 37: Session Activity & Unread State UX", () => {
       r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ models: [], currentModel: "" }) }));
 
     await page.goto(`/chat/${WS_B}/${SESS_B1}`);
-    await expect(page.getByText("Alpha")).toBeVisible({ timeout: 10_000 });
+
+    // Target the workspace header button specifically (getByRole, exact) to
+    // avoid a strict-mode violation from "Task Alpha" also matching "Alpha".
+    const alphaHeader = page.getByRole("button", { name: "Alpha", exact: true });
+    await expect(alphaHeader).toBeVisible({ timeout: 10_000 });
 
     // Click the workspace header button (not the session row) to collapse it.
-    // Use getByRole to target the workspace group button specifically, avoiding
-    // strict-mode violation from "Task Alpha" also matching "Alpha".
-    await page.getByRole("button", { name: "Alpha", exact: true }).click();
+    await alphaHeader.click();
 
     // Collapsed Alpha workspace should show the blue spinner (text-blue-500)
     await expect(page.locator(".animate-spin.text-blue-500").first()).toBeVisible({ timeout: 3_000 });
