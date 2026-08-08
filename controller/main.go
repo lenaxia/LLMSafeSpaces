@@ -431,11 +431,7 @@ type workspaceActivator struct {
 
 func (a *workspaceActivator) EnsureActive(ctx context.Context, workspaceID string, timeout time.Duration) (string, error) {
 	var ws v1.Workspace
-	podNamespace := os.Getenv("POD_NAMESPACE")
-	if podNamespace == "" {
-		podNamespace = "llmsafespaces"
-	}
-	nsName := types.NamespacedName{Name: workspaceID, Namespace: podNamespace}
+	nsName := types.NamespacedName{Name: workspaceID, Namespace: resolvePodNamespace()}
 
 	checkCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -470,6 +466,16 @@ func (a *workspaceActivator) EnsureActive(ctx context.Context, workspaceID strin
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// resolvePodNamespace returns the namespace the controller runs in, for looking
+// up Workspace CRDs. Defaults to "llmsafespaces" when POD_NAMESPACE is unset.
+func resolvePodNamespace() string {
+	ns := os.Getenv("POD_NAMESPACE")
+	if ns == "" {
+		return "llmsafespaces"
+	}
+	return ns
+}
 
 // Ensure the types are used (compile-time check).
 var _ wfctrl.WorkspaceActivator = (*workspaceActivator)(nil)
