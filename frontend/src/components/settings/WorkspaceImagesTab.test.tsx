@@ -92,11 +92,10 @@ describe("WorkspaceImagesTab", () => {
     render(<WorkspaceImagesTab />);
     await waitFor(() => { expect(screen.getByText("ffmpeg")).toBeInTheDocument(); });
     fireEvent.click(screen.getByText("ffmpeg"));
+    await waitFor(() => { expect(screen.getByPlaceholderText("e.g. ml-stack")).toBeInTheDocument(); }, { timeout: 3000 });
     fireEvent.change(screen.getByPlaceholderText("e.g. ml-stack"), { target: { value: "t" } });
     fireEvent.click(screen.getByText("Create Personal Image & Build"));
-    // Wait for the promise to settle
     await waitFor(() => { expect(mockCreateConfig).toHaveBeenCalled(); }, { timeout: 3000 });
-    // Config list should still show the pre-existing config
     expect(screen.getByText("ml-stack")).toBeInTheDocument();
   });
 
