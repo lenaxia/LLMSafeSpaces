@@ -345,4 +345,64 @@ describe("LLMSafeSpaces Client", () => {
       await client.sessions.markSeen("ws-1", "sess-1");
     });
   });
+
+  // ─── Epic 64: Workflows + Triggers ─────────────────────────────────────────
+
+  it("lists workflows", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ workflows: [{ id: "wf-1", name: "test" }] }));
+    const result = await client.workflows.list();
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://localhost:8080/api/v1/me/workflows",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(result.workflows).toHaveLength(1);
+  });
+
+  it("creates a workflow", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ id: "wf-new", name: "test-wf", status: "draft" }));
+    const result = await client.workflows.create({ name: "test-wf", specYaml: "{}" });
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://localhost:8080/api/v1/me/workflows",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(result.id).toBe("wf-new");
+  });
+
+  it("runs a workflow", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ id: "run-1", status: "queued" }));
+    const result = await client.workflows.run("wf-1");
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://localhost:8080/api/v1/me/workflows/wf-1/runs",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(result.status).toBe("queued");
+  });
+
+  it("cancels a run", async () => {
+    mockFetch.mockResolvedValueOnce(new Response(null, { status: 200 }));
+    await client.workflows.cancelRun("run-1");
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://localhost:8080/api/v1/me/runs/run-1/cancel",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("lists triggers", async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ triggers: [{ id: "trig-1", name: "cron" }] }));
+    const result = await client.triggers.list();
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://localhost:8080/api/v1/me/triggers",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(result.triggers).toHaveLength(1);
+  });
+
+  it("deletes a trigger", async () => {
+    mockFetch.mockResolvedValueOnce(new Response(null, { status: 200 }));
+    await client.triggers.delete("trig-1");
+    expect(mockFetch).toHaveBeenCalledWith(
+      "http://localhost:8080/api/v1/me/triggers/trig-1",
+      expect.objectContaining({ method: "DELETE" }),
+    );
+  });
 });

@@ -31,6 +31,52 @@ from .types import (
 )
 
 
+class _WorkflowsAPI:
+    def __init__(self, client: "LLMSafeSpaces"):
+        self._c = client
+
+    def list(self) -> list[dict[str, Any]]:
+        return self._c._request("GET", "/me/workflows").get("workflows", [])
+
+    def get(self, workflow_id: str) -> dict[str, Any]:
+        return self._c._request("GET", f"/me/workflows/{workflow_id}")
+
+    def create(self, *, name: str, spec_yaml: str, status: str = "draft") -> dict[str, Any]:
+        return self._c._request("POST", "/me/workflows", json={"name": name, "specYaml": spec_yaml, "status": status})
+
+    def update(self, workflow_id: str, **kwargs: Any) -> dict[str, Any]:
+        return self._c._request("PUT", f"/me/workflows/{workflow_id}", json=kwargs)
+
+    def delete(self, workflow_id: str) -> None:
+        self._c._request("DELETE", f"/me/workflows/{workflow_id}")
+
+    def run(self, workflow_id: str, input: dict[str, Any] | None = None, workspace_id: str = "") -> dict[str, Any]:
+        return self._c._request("POST", f"/me/workflows/{workflow_id}/runs", json={"input": input, "workspaceId": workspace_id})
+
+    def get_run(self, run_id: str) -> dict[str, Any]:
+        return self._c._request("GET", f"/me/runs/{run_id}")
+
+    def cancel_run(self, run_id: str) -> None:
+        self._c._request("POST", f"/me/runs/{run_id}/cancel")
+
+
+class _TriggersAPI:
+    def __init__(self, client: "LLMSafeSpaces"):
+        self._c = client
+
+    def list(self) -> list[dict[str, Any]]:
+        return self._c._request("GET", "/me/triggers").get("triggers", [])
+
+    def create(self, *, name: str, source_type: str, target_type: str, source_config: dict[str, Any], target_config: dict[str, Any]) -> dict[str, Any]:
+        return self._c._request("POST", "/me/triggers", json={"name": name, "sourceType": source_type, "targetType": target_type, "sourceConfig": source_config, "targetConfig": target_config})
+
+    def update(self, trigger_id: str, **kwargs: Any) -> dict[str, Any]:
+        return self._c._request("PUT", f"/me/triggers/{trigger_id}", json=kwargs)
+
+    def delete(self, trigger_id: str) -> None:
+        self._c._request("DELETE", f"/me/triggers/{trigger_id}")
+
+
 class LLMSafeSpaces:
     """Synchronous client for the LLMSafeSpaces API."""
 
@@ -65,6 +111,8 @@ class LLMSafeSpaces:
         self.probe = _ProbeAPI(self)
         self.prompts = _PromptsAPI(self)
         self.agent_roles = _AgentRolesAPI(self)
+        self.workflows = _WorkflowsAPI(self)
+        self.triggers = _TriggersAPI(self)
 
     def close(self) -> None:
         self._client.close()

@@ -499,3 +499,64 @@ def test_admin_provider_credentials_auto_apply_delete():
     client.admin_provider_credentials.delete_auto_apply(
         "cred-1", "user", "u1"
     )
+
+
+# ─── Epic 64: Workflows + Triggers ───────────────────────────────────────────
+
+@respx.mock
+def test_list_workflows():
+    respx.get(f"{BASE}/me/workflows").respond(
+        json={"workflows": [{"id": "wf-1", "name": "test", "status": "active"}]}
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    result = client.workflows.list()
+    assert len(result) == 1
+    assert result[0]["id"] == "wf-1"
+
+
+@respx.mock
+def test_create_workflow():
+    respx.post(f"{BASE}/me/workflows").respond(
+        status_code=201,
+        json={"id": "wf-new", "name": "test-wf", "status": "draft"},
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    wf = client.workflows.create(name="test-wf", spec_yaml="{}", status="draft")
+    assert wf["id"] == "wf-new"
+
+
+@respx.mock
+def test_run_workflow():
+    respx.post(f"{BASE}/me/workflows/wf-1/runs").respond(
+        status_code=202,
+        json={"id": "run-1", "status": "queued"},
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    run = client.workflows.run("wf-1")
+    assert run["id"] == "run-1"
+    assert run["status"] == "queued"
+
+
+@respx.mock
+def test_cancel_run():
+    respx.post(f"{BASE}/me/runs/run-1/cancel").respond(status_code=200)
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    client.workflows.cancel_run("run-1")  # no exception = pass
+
+
+@respx.mock
+def test_list_triggers():
+    respx.get(f"{BASE}/me/triggers").respond(
+        json={"triggers": [{"id": "trig-1", "name": "cron", "enabled": True}]}
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    result = client.triggers.list()
+    assert len(result) == 1
+    assert result[0]["id"] == "trig-1"
+
+
+@respx.mock
+def test_delete_trigger():
+    respx.delete(f"{BASE}/me/triggers/trig-1").respond(status_code=200)
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    client.triggers.delete("trig-1")  # no exception = pass

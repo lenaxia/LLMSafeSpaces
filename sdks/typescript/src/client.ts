@@ -56,6 +56,8 @@ export class LLMSafeSpaces {
   public readonly probe: ProbeAPI;
   public readonly prompts: PromptsAPI;
   public readonly agentRoles: AgentRolesAPI;
+  public readonly workflows: WorkflowsAPI;
+  public readonly triggers: TriggersAPI;
 
   constructor(options: ClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
@@ -78,6 +80,8 @@ export class LLMSafeSpaces {
     this.probe = new ProbeAPI(this);
     this.prompts = new PromptsAPI(this);
     this.agentRoles = new AgentRolesAPI(this);
+    this.workflows = new WorkflowsAPI(this);
+    this.triggers = new TriggersAPI(this);
   }
 
   /** Internal: make an authenticated request. */
@@ -537,5 +541,101 @@ class AgentRolesAPI {
 
   getEffectiveWorkspaceRole(workspaceId: string) {
     return this.client.request<unknown>("GET", `/workspaces/${workspaceId}/effective-agent-role`);
+  }
+}
+
+// ─── Epic 64: Workflows + Triggers ────────────────────────────────────────────
+
+export interface WorkflowResponse {
+  id: string;
+  ownerType: string;
+  name: string;
+  slug: string;
+  description: string;
+  specYaml: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkflowRunResponse {
+  id: string;
+  workflowId: string;
+  status: string;
+  errorCode?: string;
+  input?: unknown;
+  output?: unknown;
+  startedAt?: string;
+  finishedAt?: string;
+  createdAt: string;
+}
+
+export interface TriggerResponse {
+  id: string;
+  name: string;
+  enabled: boolean;
+  sourceType: string;
+  sourceConfig: unknown;
+  targetType: string;
+  targetConfig: unknown;
+  consecutiveFailures: number;
+  autoDisableAfter: number;
+  lastFiredAt?: string;
+  nextFireAt?: string;
+}
+
+class WorkflowsAPI {
+  constructor(private readonly client: LLMSafeSpaces) {}
+
+  list() {
+    return this.client.request<{ workflows: WorkflowResponse[] }>("GET", "/me/workflows");
+  }
+
+  get(id: string) {
+    return this.client.request<WorkflowResponse>("GET", `/me/workflows/${id}`);
+  }
+
+  create(req: { name: string; specYaml: string; status?: string }) {
+    return this.client.request<WorkflowResponse>("POST", "/me/workflows", req);
+  }
+
+  update(id: string, req: { name?: string; status?: string; specYaml?: string }) {
+    return this.client.request<WorkflowResponse>("PUT", `/me/workflows/${id}`, req);
+  }
+
+  delete(id: string) {
+    return this.client.request<void>("DELETE", `/me/workflows/${id}`);
+  }
+
+  run(id: string, input?: unknown, workspaceId?: string) {
+    return this.client.request<WorkflowRunResponse>("POST", `/me/workflows/${id}/runs`, { input, workspaceId });
+  }
+
+  getRun(runId: string) {
+    return this.client.request<WorkflowRunResponse>("GET", `/me/runs/${runId}`);
+  }
+
+  cancelRun(runId: string) {
+    return this.client.request<void>("POST", `/me/runs/${runId}/cancel`);
+  }
+}
+
+class TriggersAPI {
+  constructor(private readonly client: LLMSafeSpaces) {}
+
+  list() {
+    return this.client.request<{ triggers: TriggerResponse[] }>("GET", "/me/triggers");
+  }
+
+  create(req: { name: string; sourceType: string; targetType: string; sourceConfig: unknown; targetConfig: unknown }) {
+    return this.client.request<TriggerResponse>("POST", "/me/triggers", req);
+  }
+
+  update(id: string, req: { enabled?: boolean; autoDisableAfter?: number }) {
+    return this.client.request<TriggerResponse>("PUT", `/me/triggers/${id}`, req);
+  }
+
+  delete(id: string) {
+    return this.client.request<void>("DELETE", `/me/triggers/${id}`);
   }
 }

@@ -290,4 +290,68 @@ class LLMSafeSpacesClientTest {
             server.stop(0);
         }
     }
+
+    // ─── Epic 64: Workflows + Triggers ───────────────────────────────────────
+
+    @Test
+    void workflowsList_returnsList() throws Exception {
+        String json = """
+            {"workflows":[{"id":"wf-1","name":"test","status":"active"}]}""";
+        var server = startMockServer(200, json);
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            var result = client.workflows.list();
+            assertEquals(1, result.size());
+            assertEquals("wf-1", result.get(0).get("id"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void workflowsCreate_returnsWorkflow() throws Exception {
+        String json = """
+            {"id":"wf-new","name":"test-wf","status":"draft"}""";
+        var server = startMockServer(201, json);
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            var result = client.workflows.create("test-wf", "{}", "draft");
+            assertEquals("wf-new", result.get("id"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void workflowsRun_returnsRun() throws Exception {
+        String json = """
+            {"id":"run-1","workflowId":"wf-1","status":"queued"}""";
+        var server = startMockServer(202, json);
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            var result = client.workflows.run("wf-1", null, null);
+            assertEquals("run-1", result.get("id"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void triggersList_returnsList() throws Exception {
+        String json = """
+            {"triggers":[{"id":"trig-1","name":"cron","enabled":true}]}""";
+        var server = startMockServer(200, json);
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            var result = client.triggers.list();
+            assertEquals(1, result.size());
+            assertEquals("trig-1", result.get(0).get("id"));
+        } finally {
+            server.stop(0);
+        }
+    }
 }
