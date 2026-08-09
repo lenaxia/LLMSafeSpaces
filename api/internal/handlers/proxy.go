@@ -90,6 +90,12 @@ type ProxyHandler struct {
 
 	queueSvc interfaces.MessageQueueService
 
+	// v2SessionQueueEnabled switches the enqueue/abort paths from the
+	// external Redis queue (V1 prompt_async + destructive abort) to
+	// opencode's V2 session API (delivery:"queue" + non-destructive
+	// interrupt). Feature flag for Epic 63; default false.
+	v2SessionQueueEnabled bool
+
 	// sweepInterval overrides the default queueSweepInterval for testing.
 	// Zero means use the default (30s). Set via SetSweepInterval before Start().
 	sweepInterval time.Duration

@@ -139,6 +139,12 @@ func (h *ProxyHandler) SetMessageQueueService(svc interfaces.MessageQueueService
 	h.queueSvc = svc
 }
 
+// SetV2SessionQueueEnabled switches the enqueue/abort paths to opencode's
+// V2 session API (Epic 63). Must be called before Start().
+func (h *ProxyHandler) SetV2SessionQueueEnabled(enabled bool) {
+	h.v2SessionQueueEnabled = enabled
+}
+
 // SetSweepInterval overrides the periodic queue-sweep interval (default 30s).
 // Primarily for tests that need the goroutine to fire quickly. Must be called
 // before Start().

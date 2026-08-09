@@ -203,6 +203,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		wsSvc.SetSessionIndex(sessionIndexSvc)
 	}
 	proxyHandler.SetSessionIndex(sessionIndexSvc)
+	proxyHandler.SetV2SessionQueueEnabled(cfg.SessionQueue.V2Enabled)
 
 	if cacheSvc, ok := svc.Cache.(*cache.Service); ok {
 		queueSvc := msgqueue.NewWithClient(cacheSvc.GetClient())
