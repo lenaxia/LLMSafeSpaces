@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	k8stypes "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	pkgk8s "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
@@ -306,7 +307,7 @@ func (r *Reconciler) executeNode(ctx context.Context, logger Logger, run *wf.Wor
 
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		nodeRunID := fmt.Sprintf("%s-%s-%d", run.ID, node.ID, attempt)
+		nodeRunID := uuid.New().String()
 		_ = r.Store.CreateNodeRun(ctx, &wf.WorkflowNodeRunRow{
 			ID: nodeRunID, WorkflowRunID: run.ID,
 			NodeID: node.ID, NodeType: node.Type,
@@ -452,7 +453,7 @@ func (s *Scheduler) tick(ctx context.Context, logger Logger, limit int) {
 func (s *Scheduler) fireTrigger(ctx context.Context, logger Logger, trigger *wf.TriggerRow, now time.Time, tickInterval time.Duration) {
 	if trigger.NextFireAt != nil && now.Sub(*trigger.NextFireAt) > tickInterval {
 		_ = s.Store.CreateTriggerFire(ctx, &wf.TriggerFireRow{
-			ID:        fmt.Sprintf("fire-missed-%s-%d", trigger.ID, now.Unix()),
+			ID:        uuid.New().String(),
 			TriggerID: trigger.ID, SourceType: "cron",
 			ActionType: "routine", Status: "skipped",
 			FiredAt: *trigger.NextFireAt, CompletedAt: &now,
@@ -491,8 +492,8 @@ func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger Logger, trigg
 
 	inputForRun := json.RawMessage(envelopeJSON)
 
-	fireID := fmt.Sprintf("fire-%s-%d", trigger.ID, now.Unix())
-	runID := fmt.Sprintf("run-%s-%d", trigger.ID, now.Unix())
+	fireID := uuid.New().String()
+	runID := uuid.New().String()
 
 	workspaceID := ""
 	if wfRow.TargetWorkspaceID != nil {
@@ -513,7 +514,7 @@ func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger Logger, trigg
 	err = s.Store.CreateWorkflowRunWithFire(ctx, fire, run)
 	if err != nil {
 		_ = s.Store.CreateTriggerFire(ctx, &wf.TriggerFireRow{
-			ID: fireID + "-skipped", TriggerID: trigger.ID, SourceType: "cron",
+			ID: uuid.New().String(), TriggerID: trigger.ID, SourceType: "cron",
 			InputEnvelope: envelopeJSON, ActionType: "run_workflow",
 			ActionResult: json.RawMessage(`{"reason":"already_running"}`),
 			Status:       "skipped", FiredAt: now, CompletedAt: &now,
@@ -529,7 +530,7 @@ func (s *Scheduler) fireRoutineTarget(ctx context.Context, logger Logger, trigge
 		return
 	}
 
-	fireID := fmt.Sprintf("fire-%s-%d", trigger.ID, now.Unix())
+	fireID := uuid.New().String()
 
 	fire := &wf.TriggerFireRow{
 		ID: fireID, TriggerID: trigger.ID, SourceType: trigger.SourceType,

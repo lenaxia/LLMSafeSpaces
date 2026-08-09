@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
 )
@@ -1024,4 +1025,214 @@ func TestExecuteRoutine_AutoDisable_AfterConsecutiveFailures(t *testing.T) {
 	if !store.disabled["trig-auto"] {
 		t.Error("expected trigger to be auto-disabled after 2 consecutive failures")
 	}
+}
+
+// uuidEnforcingSchedulerStore wraps mockSchedulerStore and rejects any fire/run
+// ID that does not parse as a UUID. The real trigger_fires.id and
+// workflow_runs.id columns are `uuid NOT NULL` (migration 000016:209,327); a
+// non-UUID string like "fire-<triggerID>-<unix>" causes SQLSTATE 22P02 at
+// insert time. The unwrapped mock accepted any string and so masked the bug.
+//
+// This is the regression guard: if any future change reintroduces a
+// human-readable ID for fire/run rows, this store rejects it and the test
+// fails immediately at unit-test speed — no real Postgres required.
+type uuidEnforcingSchedulerStore struct {
+	*mockSchedulerStore
+	t *testing.T
+	// failNextCreateWorkflowRun, when true, makes the next CreateWorkflowRunWithFire
+	// call return wf.ErrConcurrentRun AFTER validating the IDs — simulating the
+	// single-in-flight unique violation so the engine's skip-path (engine.go:517)
+	// is exercised. Without this the changed UUID-emitting branch is unguarded.
+	failNextCreateWorkflowRun bool
+}
+
+func (m *uuidEnforcingSchedulerStore) mustParseUUID(id, origin string) {
+	m.t.Helper()
+	if _, err := uuid.Parse(id); err != nil {
+		m.t.Fatalf("regression: %s id %q is not a valid UUID (trigger_fires.id / workflow_runs.id are uuid NOT NULL): %v", origin, id, err)
+	}
+}
+
+func (m *uuidEnforcingSchedulerStore) CreateTriggerFire(ctx context.Context, row *wf.TriggerFireRow) error {
+	m.mustParseUUID(row.ID, "trigger_fire")
+	return m.mockSchedulerStore.CreateTriggerFire(ctx, row)
+}
+
+func (m *uuidEnforcingSchedulerStore) CreateWorkflowRunWithFire(ctx context.Context, fire *wf.TriggerFireRow, run *wf.WorkflowRunRow) error {
+	m.mustParseUUID(fire.ID, "workflow_run fire")
+	m.mustParseUUID(run.ID, "workflow_run run")
+	if m.failNextCreateWorkflowRun {
+		m.failNextCreateWorkflowRun = false
+		return wf.ErrConcurrentRun
+	}
+	return m.mockSchedulerStore.CreateWorkflowRunWithFire(ctx, fire, run)
+}
+
+// TestScheduler_FireAndRunIDs_AreUUIDs is the regression test for the
+// "Test1we" production bug: the cron scheduler built fire/run IDs as
+// fmt.Sprintf("fire-%s-%d", triggerID, unix) which Postgres rejected with
+// SQLSTATE 22P02 because trigger_fires.id is `uuid NOT NULL`. Every cron tick
+// silently dropped the fire row, advanced last_fired_at, and produced zero
+// agent invocations. Cover all three scheduler paths that generate IDs:
+//   - workflow-target fires (fireID + runID)
+//   - routine-target fires (fireID)
+//   - missed-fire skip rows
+//
+// uuidEnforcingReconcilerStore wraps mockStore (reconciler's store) and rejects
+// any node-run ID that does not parse as a UUID. workflow_node_runs.id is
+// `uuid NOT NULL` (migration 000016:290); a non-UUID id causes SQLSTATE 22P02
+// at insert time, swallowed silently by the reconciler's `_ =`.
+type uuidEnforcingReconcilerStore struct {
+	*mockStore
+	t *testing.T
+}
+
+func (m *uuidEnforcingReconcilerStore) mustParseUUID(id, origin string) {
+	m.t.Helper()
+	if _, err := uuid.Parse(id); err != nil {
+		m.t.Fatalf("regression: %s id %q is not a valid UUID (workflow_node_runs.id is uuid NOT NULL): %v", origin, id, err)
+	}
+}
+
+func (m *uuidEnforcingReconcilerStore) CreateNodeRun(ctx context.Context, row *wf.WorkflowNodeRunRow) error {
+	m.mustParseUUID(row.ID, "node_run")
+	return m.mockStore.CreateNodeRun(ctx, row)
+}
+
+// TestReconciler_NodeRunID_IsUUID is the regression test for the second
+// instance of the "Test1we" bug class: the reconciler built node-run IDs as
+// fmt.Sprintf("%s-%s-%d", runID, nodeID, attempt), which PG rejects because
+// workflow_node_runs.id is `uuid NOT NULL`. Every node execution silently
+// dropped its audit row. Same file, same bug class, same execution flow as
+// the scheduler fire/run IDs fixed above.
+func TestReconciler_NodeRunID_IsUUID(t *testing.T) {
+	store := &uuidEnforcingReconcilerStore{mockStore: newMockStore(), t: t}
+	store.addRun(uuid.New().String(), uuid.New().String(), "ws-1",
+		linearSpec(), json.RawMessage(`{}`), "")
+
+	agentd := newMockAgentd()
+	agentd.outputs["start"] = json.RawMessage(`{"ok":true}`)
+	agentd.outputs["end"] = json.RawMessage(`{"ok":true}`)
+
+	rec := &Reconciler{
+		Store: store, AgentdClient: agentd, Activator: &mockActivator{},
+		Logger: noopLogger{},
+	}
+
+	claimed, err := store.ClaimQueuedRuns(context.Background(), 10)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("setup: expected 1 claimed run, got %d (err=%v)", len(claimed), err)
+	}
+	rec.executeRun(context.Background(), noopLogger{}, claimed[0])
+
+	if len(store.nodeRuns) != 2 {
+		t.Fatalf("expected 2 node runs, got %d", len(store.nodeRuns))
+	}
+}
+
+func TestScheduler_FireAndRunIDs_AreUUIDs(t *testing.T) {
+	t.Run("workflow_target", func(t *testing.T) {
+		store := &uuidEnforcingSchedulerStore{mockSchedulerStore: newMockSchedulerStore(), t: t}
+		store.workflows["wf-uuid"] = &wf.WorkflowRow{
+			ID: "wf-uuid", OwnerType: "user", OwnerID: "u1",
+			SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtr("ws-1"),
+		}
+		store.triggers = []*wf.TriggerRow{makeDueTrigger("trig-wf-uuid", "wf-uuid", "ws-1")}
+
+		sched := &Scheduler{Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second}
+		sched.tick(context.Background(), noopLogger{}, 10)
+
+		if len(store.fires) != 1 || store.fires[0].Status != "fired" {
+			t.Fatalf("expected 1 fired fire, got %+v", store.fires)
+		}
+		if len(store.runs) != 1 {
+			t.Fatalf("expected 1 run, got %d", len(store.runs))
+		}
+	})
+
+	t.Run("routine_target", func(t *testing.T) {
+		store := &uuidEnforcingSchedulerStore{mockSchedulerStore: newMockSchedulerStore(), t: t}
+		now := time.Now().UTC().Add(-5 * time.Second)
+		store.triggers = []*wf.TriggerRow{{
+			ID: "trig-rt-uuid", OwnerType: "user", OwnerID: "u1",
+			Enabled: true, SourceType: types.TriggerSourceCron,
+			SourceConfig: json.RawMessage(`{"expr":"0 * * * *"}`),
+			WorkspaceID:  strPtr("ws-1"),
+			Prompt:       "test",
+			CaptureMode:  types.CaptureErrorsOnly,
+			NextFireAt:   &now,
+		}}
+
+		sched := &Scheduler{
+			Store: store, Activator: &mockActivator{}, AgentdClient: newMockAgentd(),
+			Logger: noopLogger{}, TickInterval: 30 * time.Second,
+		}
+		sched.tick(context.Background(), noopLogger{}, 10)
+
+		if len(store.fires) != 1 {
+			t.Fatalf("expected 1 fire, got %d", len(store.fires))
+		}
+	})
+
+	t.Run("missed_fire_skipped", func(t *testing.T) {
+		store := &uuidEnforcingSchedulerStore{mockSchedulerStore: newMockSchedulerStore(), t: t}
+		store.workflows["wf-miss"] = &wf.WorkflowRow{
+			ID: "wf-miss", OwnerType: "user", OwnerID: "u1",
+			SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtr("ws-1"),
+		}
+		old := time.Now().UTC().Add(-2 * time.Hour)
+		store.triggers = []*wf.TriggerRow{{
+			ID: "trig-miss", OwnerType: "user", OwnerID: "u1",
+			Enabled: true, SourceType: types.TriggerSourceCron,
+			SourceConfig: json.RawMessage(`{"expr":"0 * * * *"}`),
+			WorkflowID:   strPtr("wf-miss"),
+			NextFireAt:   &old,
+		}}
+
+		sched := &Scheduler{Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second}
+		sched.tick(context.Background(), noopLogger{}, 10)
+
+		if len(store.fires) != 1 || store.fires[0].Status != "skipped" {
+			t.Fatalf("expected 1 skipped fire, got %+v", store.fires)
+		}
+	})
+
+	// already_running_skipped guards the changed UUID-emitting branch at
+	// engine.go:517: when CreateWorkflowRunWithFire returns ErrConcurrentRun
+	// (single-in-flight unique violation), the engine falls back to creating a
+	// skipped TriggerFire row. The base mock always returns nil, so without
+	// injecting ErrConcurrentRun this branch is never reached and a future
+	// regression to a non-UUID skipped-fire ID would pass undetected.
+	t.Run("already_running_skipped", func(t *testing.T) {
+		store := &uuidEnforcingSchedulerStore{
+			mockSchedulerStore:        newMockSchedulerStore(),
+			t:                         t,
+			failNextCreateWorkflowRun: true,
+		}
+		store.workflows["wf-already"] = &wf.WorkflowRow{
+			ID: "wf-already", OwnerType: "user", OwnerID: "u1",
+			SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtr("ws-1"),
+		}
+		now := time.Now().UTC().Add(-5 * time.Second)
+		store.triggers = []*wf.TriggerRow{{
+			ID: "trig-already", OwnerType: "user", OwnerID: "u1",
+			Enabled: true, SourceType: types.TriggerSourceCron,
+			SourceConfig: json.RawMessage(`{"expr":"0 * * * *"}`),
+			WorkflowID:   strPtr("wf-already"),
+			NextFireAt:   &now,
+		}}
+
+		sched := &Scheduler{Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second}
+		sched.tick(context.Background(), noopLogger{}, 10)
+
+		skipped := 0
+		for _, f := range store.fires {
+			if f.Status == "skipped" {
+				skipped++
+			}
+		}
+		if skipped != 1 {
+			t.Fatalf("expected 1 skipped fire from ErrConcurrentRun path, got %d (total fires=%d)", skipped, len(store.fires))
+		}
+	})
 }
