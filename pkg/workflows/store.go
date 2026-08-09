@@ -730,13 +730,36 @@ func (s *Store) GetLastRoutineResult(ctx context.Context, triggerID string) (jso
 	var result json.RawMessage
 	err := s.pool.QueryRow(ctx, `
 		SELECT result FROM trigger_fires
-		WHERE trigger_id = $1 AND status = 'fired' AND result IS NOT NULL
+		WHERE trigger_id = $1 AND status = 'delivered' AND result IS NOT NULL
 		ORDER BY fired_at DESC LIMIT 1
 	`, triggerID).Scan(&result)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	return result, err
+}
+
+// GetRecentRoutineResults returns the N most recent successful routine results.
+// Used for memory_max_runs > 1.
+func (s *Store) GetRecentRoutineResults(ctx context.Context, triggerID string, limit int) ([]json.RawMessage, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT result FROM trigger_fires
+		WHERE trigger_id = $1 AND status = 'delivered' AND result IS NOT NULL
+		ORDER BY fired_at DESC LIMIT $2
+	`, triggerID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []json.RawMessage
+	for rows.Next() {
+		var r json.RawMessage
+		if err := rows.Scan(&r); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // --- Workflow node runs (per-node state) ------------------------------------

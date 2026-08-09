@@ -67,6 +67,7 @@ type SchedulerStore interface {
 	CreateTriggerFire(ctx context.Context, row *wf.TriggerFireRow) error
 	UpdateTriggerFireResult(ctx context.Context, fireID string, result json.RawMessage, status string) error
 	GetLastRoutineResult(ctx context.Context, triggerID string) (json.RawMessage, error)
+	GetRecentRoutineResults(ctx context.Context, triggerID string, limit int) ([]json.RawMessage, error)
 	UpdateTriggerFireTimestamps(ctx context.Context, triggerID string, lastFiredAt time.Time, nextFireAt *time.Time) error
 	IncrementTriggerFailures(ctx context.Context, triggerID string) (int, error)
 	ResetTriggerFailures(ctx context.Context, triggerID string) error
@@ -568,8 +569,22 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 
 	prompt := trigger.Prompt
 	if trigger.MemoryMode == types.MemoryLastResult {
-		if prevResult, err := s.Store.GetLastRoutineResult(ctx, trigger.ID); err == nil && len(prevResult) > 0 {
-			prompt = strings.ReplaceAll(prompt, "{{.prevResult}}", string(prevResult))
+		maxRuns := trigger.MemoryMaxRuns
+		if maxRuns <= 0 {
+			maxRuns = 1
+		}
+		if maxRuns == 1 {
+			if prevResult, err := s.Store.GetLastRoutineResult(ctx, trigger.ID); err == nil && len(prevResult) > 0 {
+				prompt = strings.ReplaceAll(prompt, "{{.prevResult}}", string(prevResult))
+			}
+		} else {
+			if results, err := s.Store.GetRecentRoutineResults(ctx, trigger.ID, maxRuns); err == nil && len(results) > 0 {
+				combined := make([]string, len(results))
+				for i, r := range results {
+					combined[i] = string(r)
+				}
+				prompt = strings.ReplaceAll(prompt, "{{.prevResult}}", strings.Join(combined, "\n---\n"))
+			}
 		}
 	}
 
@@ -585,6 +600,9 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 			resultData = errMsg
 			resultStatus = "failed"
 			_ = s.Store.UpdateTriggerFireResult(ctx, fireID, resultData, resultStatus)
+			if n, _ := s.Store.IncrementTriggerFailures(ctx, trigger.ID); n >= trigger.AutoDisableAfter {
+				_ = s.Store.DisableTrigger(ctx, trigger.ID)
+			}
 			return
 		}
 		if scriptResp.Output != nil {
@@ -611,6 +629,14 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		resultStatus = "delivered"
 		if trigger.CaptureMode == types.CaptureFull {
 			resultData = agentResp.Output
+		}
+		if trigger.PreserveSession == types.PreserveOnFailure {
+			deleteReq := &NodeExecRequest{
+				NodeID:   "routine-agent",
+				NodeType: "agent",
+				Spec:     json.RawMessage(`{"action":"delete_session"}`),
+			}
+			_, _ = s.AgentdClient.Execute(ctx, podIP, deleteReq)
 		}
 	}
 

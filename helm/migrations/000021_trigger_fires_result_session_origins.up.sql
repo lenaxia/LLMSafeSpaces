@@ -1,4 +1,5 @@
--- Epic 64 redesign: trigger_fires result column + session_origins table.
+-- Epic 64 redesign: trigger_fires result column.
+-- session_origins table deferred until implementation exists.
 
 BEGIN;
 
@@ -14,19 +15,5 @@ DO $$ BEGIN
         CHECK (action_type IN ('run_workflow', 'routine', 'webhook'));
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
-
--- Session origin tracking (bridge until unified sessions)
-CREATE TABLE IF NOT EXISTS session_origins (
-    session_id   text PRIMARY KEY,
-    workspace_id uuid NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
-    origin       text NOT NULL DEFAULT 'manual',
-    trigger_id   uuid REFERENCES triggers(id) ON DELETE SET NULL,
-    fire_id      uuid,
-    title        text,
-    created_at   timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE INDEX IF NOT EXISTS idx_session_origins_workspace
-    ON session_origins (workspace_id, created_at DESC);
 
 COMMIT;

@@ -189,6 +189,23 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "either workflowId or workspaceId is required"})
 		return
 	}
+	if req.WorkflowID != "" && req.WorkspaceID != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot set both workflowId and workspaceId"})
+		return
+	}
+
+	effectiveMemoryMode := req.MemoryMode
+	if effectiveMemoryMode == "" {
+		effectiveMemoryMode = types.MemoryNone
+	}
+	effectiveCaptureMode := req.CaptureMode
+	if effectiveCaptureMode == "" {
+		effectiveCaptureMode = types.CaptureErrorsOnly
+	}
+	if effectiveMemoryMode == types.MemoryLastResult && effectiveCaptureMode != types.CaptureFull {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "memoryMode 'last_result' requires captureMode 'full'"})
+		return
+	}
 
 	enabled := true
 	if req.Enabled != nil {

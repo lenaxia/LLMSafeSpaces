@@ -4,8 +4,6 @@ ALTER TABLE trigger_fires DROP CONSTRAINT IF EXISTS trigger_fires_action_type_ch
 ALTER TABLE trigger_fires DROP COLUMN IF EXISTS result;
 ALTER TABLE trigger_fires DROP COLUMN IF EXISTS result_captured_at;
 
-DROP TABLE IF EXISTS session_origins;
-
 -- Restore original action_type constraint
 DO $$ BEGIN
     ALTER TABLE trigger_fires ADD CONSTRAINT trigger_fires_action_type_check

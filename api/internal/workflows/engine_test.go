@@ -102,6 +102,10 @@ func (m *mockStore) GetLastRoutineResult(_ context.Context, _ string) (json.RawM
 	return nil, nil
 }
 
+func (m *mockStore) GetRecentRoutineResults(_ context.Context, _ string, _ int) ([]json.RawMessage, error) {
+	return nil, nil
+}
+
 func (m *mockStore) UpdateTriggerFireResult(_ context.Context, _ string, _ json.RawMessage, _ string) error {
 	return nil
 }
@@ -421,20 +425,24 @@ func TestComputeNextFire_TimezoneInvalid(t *testing.T) {
 // --- Scheduler tests ---
 
 type mockSchedulerStore struct {
-	mu        sync.Mutex
-	triggers  []*wf.TriggerRow
-	workflows map[string]*wf.WorkflowRow
-	fires     []*wf.TriggerFireRow
-	runs      []*wf.WorkflowRunRow
-	disabled  map[string]bool
-	nextFires map[string]time.Time
+	mu          sync.Mutex
+	triggers    []*wf.TriggerRow
+	workflows   map[string]*wf.WorkflowRow
+	fires       []*wf.TriggerFireRow
+	runs        []*wf.WorkflowRunRow
+	disabled    map[string]bool
+	nextFires   map[string]time.Time
+	statuses    map[string]string
+	triggerFail map[string]int
 }
 
 func newMockSchedulerStore() *mockSchedulerStore {
 	return &mockSchedulerStore{
-		workflows: make(map[string]*wf.WorkflowRow),
-		disabled:  make(map[string]bool),
-		nextFires: make(map[string]time.Time),
+		workflows:   make(map[string]*wf.WorkflowRow),
+		disabled:    make(map[string]bool),
+		nextFires:   make(map[string]time.Time),
+		statuses:    make(map[string]string),
+		triggerFail: make(map[string]int),
 	}
 }
 
@@ -465,13 +473,21 @@ func (m *mockSchedulerStore) GetWorkflow(_ context.Context, _, _, id string) (*w
 	return r, nil
 }
 
-func (m *mockSchedulerStore) UpdateTriggerFireResult(_ context.Context, fireID string, _ json.RawMessage, _ string) error {
+func (m *mockSchedulerStore) UpdateTriggerFireResult(_ context.Context, fireID string, _ json.RawMessage, status string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.statuses == nil {
+		m.statuses = make(map[string]string)
+	}
+	m.statuses[fireID] = status
 	return nil
 }
 
 func (m *mockSchedulerStore) GetLastRoutineResult(_ context.Context, _ string) (json.RawMessage, error) {
+	return nil, nil
+}
+
+func (m *mockSchedulerStore) GetRecentRoutineResults(_ context.Context, _ string, _ int) ([]json.RawMessage, error) {
 	return nil, nil
 }
 
@@ -497,8 +513,11 @@ func (m *mockSchedulerStore) UpdateTriggerFireTimestamps(_ context.Context, trig
 	return nil
 }
 
-func (m *mockSchedulerStore) IncrementTriggerFailures(_ context.Context, _ string) (int, error) {
-	return 0, nil
+func (m *mockSchedulerStore) IncrementTriggerFailures(_ context.Context, triggerID string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.triggerFail[triggerID]++
+	return m.triggerFail[triggerID], nil
 }
 
 func (m *mockSchedulerStore) DisableTrigger(_ context.Context, triggerID string) error {
@@ -820,5 +839,111 @@ func TestReconciler_InterfaceBasedArchitecture(t *testing.T) {
 
 	if store.statuses["run-arch"] != types.RunStatusSucceeded {
 		t.Errorf("engine must work via interfaces only: expected succeeded, got %s", store.statuses["run-arch"])
+	}
+}
+
+// --- Routine executor tests ---
+
+func TestExecuteRoutine_SuccessDelivered(t *testing.T) {
+	store := newMockSchedulerStore()
+	agentd := newMockAgentd()
+	agentd.outputs["routine-agent"] = json.RawMessage(`{"response":"ok"}`)
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{ID: "trig-r1", WorkspaceID: &wsID, Prompt: "test", CaptureMode: types.CaptureFull, PreserveSession: types.PreserveNever}
+	fire := &wf.TriggerFireRow{ID: "fire-1", TriggerID: "trig-r1", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: noopLogger{}}
+	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+	if store.statuses["fire-1"] != "delivered" {
+		t.Errorf("expected delivered, got %s", store.statuses["fire-1"])
+	}
+}
+
+func TestExecuteRoutine_AgentError_FailedAndIncrements(t *testing.T) {
+	store := newMockSchedulerStore()
+	agentd := newMockAgentd()
+	agentd.errCodes["routine-agent"] = "agent_not_found"
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{ID: "trig-r2", WorkspaceID: &wsID, Prompt: "test", CaptureMode: types.CaptureFull}
+	fire := &wf.TriggerFireRow{ID: "fire-2", TriggerID: "trig-r2", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: noopLogger{}}
+	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+	if store.statuses["fire-2"] != "failed" {
+		t.Errorf("expected failed, got %s", store.statuses["fire-2"])
+	}
+	if store.triggerFail["trig-r2"] != 1 {
+		t.Errorf("expected failures=1, got %d", store.triggerFail["trig-r2"])
+	}
+}
+
+func TestExecuteRoutine_ScriptFailure_IncrementsFailures(t *testing.T) {
+	store := newMockSchedulerStore()
+	agentd := newMockAgentd()
+	agentd.errors["routine-script"] = fmt.Errorf("script crashed")
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{ID: "trig-r3", WorkspaceID: &wsID, Prompt: "test", ScriptPath: "/scripts/run.sh", CaptureMode: types.CaptureFull}
+	fire := &wf.TriggerFireRow{ID: "fire-3", TriggerID: "trig-r3", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: noopLogger{}}
+	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+	if store.statuses["fire-3"] != "failed" {
+		t.Errorf("expected failed, got %s", store.statuses["fire-3"])
+	}
+	if store.triggerFail["trig-r3"] != 1 {
+		t.Errorf("expected failures=1, got %d", store.triggerFail["trig-r3"])
+	}
+}
+
+func TestExecuteRoutine_ActivationFailure_IncrementsFailures(t *testing.T) {
+	store := newMockSchedulerStore()
+	wsID := "ws-dead"
+	trigger := &wf.TriggerRow{ID: "trig-r4", WorkspaceID: &wsID, Prompt: "test", CaptureMode: types.CaptureFull}
+	fire := &wf.TriggerFireRow{ID: "fire-4", TriggerID: "trig-r4", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &mockActivator{fail: true}, AgentdClient: newMockAgentd(), Logger: noopLogger{}}
+	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+	if store.statuses["fire-4"] != "failed" {
+		t.Errorf("expected failed, got %s", store.statuses["fire-4"])
+	}
+	if store.triggerFail["trig-r4"] != 1 {
+		t.Errorf("expected failures=1, got %d", store.triggerFail["trig-r4"])
+	}
+}
+
+func TestExecuteRoutine_CaptureErrorsOnly_NoResultOnSuccess(t *testing.T) {
+	store := newMockSchedulerStore()
+	agentd := newMockAgentd()
+	agentd.outputs["routine-agent"] = json.RawMessage(`{"response":"ok"}`)
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{ID: "trig-r5", WorkspaceID: &wsID, Prompt: "test", CaptureMode: types.CaptureErrorsOnly}
+	fire := &wf.TriggerFireRow{ID: "fire-5", TriggerID: "trig-r5", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: noopLogger{}}
+	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+	if store.statuses["fire-5"] != "delivered" {
+		t.Errorf("expected delivered, got %s", store.statuses["fire-5"])
+	}
+}
+
+func TestBuildRoutineAgentSpec_PreserveNever(t *testing.T) {
+	spec := buildRoutineAgentSpec(&wf.TriggerRow{PreserveSession: types.PreserveNever}, "test")
+	var parsed map[string]any
+	_ = json.Unmarshal(spec, &parsed)
+	if parsed["session"] != "ephemeral" {
+		t.Errorf("expected ephemeral, got %v", parsed["session"])
+	}
+}
+
+func TestBuildRoutineAgentSpec_PreserveAlways(t *testing.T) {
+	spec := buildRoutineAgentSpec(&wf.TriggerRow{PreserveSession: types.PreserveAlways}, "test")
+	var parsed map[string]any
+	_ = json.Unmarshal(spec, &parsed)
+	if parsed["session"] != "new" {
+		t.Errorf("expected new, got %v", parsed["session"])
+	}
+}
+
+func TestBuildRoutineAgentSpec_PreserveOnFailure(t *testing.T) {
+	spec := buildRoutineAgentSpec(&wf.TriggerRow{PreserveSession: types.PreserveOnFailure}, "test")
+	var parsed map[string]any
+	_ = json.Unmarshal(spec, &parsed)
+	if parsed["session"] != "new" {
+		t.Errorf("expected new, got %v", parsed["session"])
 	}
 }
