@@ -130,13 +130,13 @@ export function TriggersPage() {
         {selected ? (
           <>
             <button
-              onClick={() => navigate("/triggers")}
+              onClick={() => navigate("/triggers", { replace: true })}
               className="flex items-center gap-1 border-b border-border px-3 py-2 text-sm text-muted-foreground hover:bg-accent md:hidden"
             >
               <ArrowLeft className="h-4 w-4" /> Triggers
             </button>
-          <TriggerEditor
-            trigger={selected}
+            <TriggerEditor
+              trigger={selected}
             workflows={workflows || []}
             onUpdate={async (updates) => {
               await triggerApi.update(selected.id, updates);

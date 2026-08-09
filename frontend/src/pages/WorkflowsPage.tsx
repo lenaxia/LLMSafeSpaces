@@ -116,7 +116,7 @@ export function WorkflowsPage() {
         {selected ? (
           <>
             <button
-              onClick={() => navigate("/workflows")}
+              onClick={() => navigate("/workflows", { replace: true })}
               className="flex items-center gap-1 border-b border-border px-3 py-2 text-sm text-muted-foreground hover:bg-accent md:hidden"
             >
               <ArrowLeft className="h-4 w-4" /> Workflows
