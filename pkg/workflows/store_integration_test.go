@@ -160,8 +160,7 @@ func (s *StoreIntegrationSuite) TestTriggerCRUD() {
 		Name: "nightly-backup", Enabled: true,
 		SourceType:       "cron",
 		SourceConfig:     json.RawMessage(`{"expr":"0 2 * * *","tz":"UTC"}`),
-		TargetType:       "run_workflow",
-		TargetConfig:     json.RawMessage(`{"workflowId":"wf_1"}`),
+		WorkflowID:       strPtr("wf_1"),
 		AutoDisableAfter: 10,
 		NextFireAt:       &now,
 		CreatedAt:        now, UpdatedAt: now,
@@ -210,7 +209,7 @@ func (s *StoreIntegrationSuite) TestWebhookCreateAndGet() {
 		ID: triggerID, OwnerType: "user", OwnerID: "u1",
 		Name: "github-hook", Enabled: true,
 		SourceType: "webhook", SourceConfig: json.RawMessage(`{}`),
-		TargetType: "run_workflow", TargetConfig: json.RawMessage(`{}`),
+		WorkflowID:       strPtr("wf_1"),
 		AutoDisableAfter: 10, CreatedAt: now, UpdatedAt: now,
 	}))
 
@@ -251,8 +250,7 @@ func (s *StoreIntegrationSuite) TestWebhookDeliveryDedup() {
 	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
 		ID: triggerID, OwnerType: "user", OwnerID: "u1",
 		Name: "wh-for-dedup", Enabled: true, SourceType: "webhook",
-		SourceConfig: json.RawMessage(`{}`), TargetType: "run_workflow",
-		TargetConfig: json.RawMessage(`{}`), AutoDisableAfter: 10,
+		SourceConfig: json.RawMessage(`{}`), WorkflowID: strPtr("wf_1"), AutoDisableAfter: 10,
 		CreatedAt: now, UpdatedAt: now,
 	}))
 	hookID := uuid.New().String()
@@ -417,8 +415,7 @@ func (s *StoreIntegrationSuite) TestTriggerCircuitBreaker() {
 	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
 		ID: triggerID, OwnerType: "user", OwnerID: "u1",
 		Name: "cron-trigger", Enabled: true, SourceType: "cron",
-		SourceConfig: json.RawMessage(`{}`), TargetType: "run_workflow",
-		TargetConfig: json.RawMessage(`{}`), AutoDisableAfter: 3,
+		SourceConfig: json.RawMessage(`{}`), WorkflowID: strPtr("wf_1"), AutoDisableAfter: 3,
 		CreatedAt: now, UpdatedAt: now,
 	}))
 
@@ -457,8 +454,7 @@ func (s *StoreIntegrationSuite) TestListDueCronTriggers() {
 	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
 		ID: dueID, OwnerType: "user", OwnerID: "u1",
 		Name: "due", Enabled: true, SourceType: "cron",
-		SourceConfig: json.RawMessage(`{}`), TargetType: "run_workflow",
-		TargetConfig: json.RawMessage(`{}`), AutoDisableAfter: 10,
+		SourceConfig: json.RawMessage(`{}`), WorkflowID: strPtr("wf_1"), AutoDisableAfter: 10,
 		NextFireAt: &past, CreatedAt: now, UpdatedAt: now,
 	}))
 
@@ -467,8 +463,7 @@ func (s *StoreIntegrationSuite) TestListDueCronTriggers() {
 	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
 		ID: notDueID, OwnerType: "user", OwnerID: "u1",
 		Name: "not-due", Enabled: true, SourceType: "cron",
-		SourceConfig: json.RawMessage(`{}`), TargetType: "run_workflow",
-		TargetConfig: json.RawMessage(`{}`), AutoDisableAfter: 10,
+		SourceConfig: json.RawMessage(`{}`), WorkflowID: strPtr("wf_1"), AutoDisableAfter: 10,
 		NextFireAt: &future, CreatedAt: now, UpdatedAt: now,
 	}))
 
@@ -477,8 +472,7 @@ func (s *StoreIntegrationSuite) TestListDueCronTriggers() {
 	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
 		ID: disabledID, OwnerType: "user", OwnerID: "u1",
 		Name: "disabled", Enabled: false, SourceType: "cron",
-		SourceConfig: json.RawMessage(`{}`), TargetType: "run_workflow",
-		TargetConfig: json.RawMessage(`{}`), AutoDisableAfter: 10,
+		SourceConfig: json.RawMessage(`{}`), WorkflowID: strPtr("wf_1"), AutoDisableAfter: 10,
 		NextFireAt: &past, CreatedAt: now, UpdatedAt: now,
 	}))
 
@@ -505,8 +499,7 @@ func (s *StoreIntegrationSuite) TestCreateWorkflowRunWithFire() {
 	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
 		ID: triggerID, OwnerType: "user", OwnerID: "u1",
 		Name: "wh", Enabled: true, SourceType: "webhook",
-		SourceConfig: json.RawMessage(`{}`), TargetType: "run_workflow",
-		TargetConfig: json.RawMessage(`{}`), AutoDisableAfter: 10,
+		SourceConfig: json.RawMessage(`{}`), WorkflowID: strPtr("wf_1"), AutoDisableAfter: 10,
 		CreatedAt: now, UpdatedAt: now,
 	}))
 
