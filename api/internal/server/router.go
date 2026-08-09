@@ -446,6 +446,18 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 		eventsGroup.GET("/events", proxyHandler.StreamUserEvents)
 	}
 
+	// Active runs + session origins — on idGroup so they inherit WorkspaceAccessMiddleware.
+	if cfg.UserWorkflowsHandler != nil {
+		idGroup.GET("/runs/active", func(c *gin.Context) {
+			c.Params = append(c.Params, gin.Param{Key: "workspaceId", Value: c.Param("id")})
+			cfg.UserWorkflowsHandler.ListActiveRunsByWorkspace(c)
+		})
+		idGroup.GET("/session-origins", func(c *gin.Context) {
+			c.Params = append(c.Params, gin.Param{Key: "workspaceId", Value: c.Param("id")})
+			cfg.UserWorkflowsHandler.ListSessionOrigins(c)
+		})
+	}
+
 	// Terminal proxy routes (WebSocket terminal to sandbox pod)
 	if cfg.TerminalHandler != nil {
 		// Ticket endpoint — on idGroup so WorkspaceAccessMiddleware runs first.
@@ -1418,6 +1430,7 @@ func registerProxyRoutes(idGroup *gin.RouterGroup, proxyHandler *handlers.ProxyH
 	idGroup.POST("/sessions/:sessionId/message", proxyHandler.SendMessage)
 	idGroup.POST("/sessions/:sessionId/prompt", proxyHandler.SendPromptAsync)
 	idGroup.POST("/sessions/:sessionId/queue", proxyHandler.EnqueueMessage)
+
 	idGroup.GET("/sessions/:sessionId/queue", proxyHandler.ListQueue)
 	idGroup.DELETE("/sessions/:sessionId/queue/:messageId", proxyHandler.DeleteQueueMessage)
 	idGroup.GET("/sessions/:sessionId/message", proxyHandler.GetHistory)
@@ -1709,14 +1722,6 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 		runs.GET("/:runId", cfg.UserWorkflowsHandler.GetRun)
 		runs.GET("/:runId/nodes", cfg.UserWorkflowsHandler.GetRunNodes)
 		runs.POST("/:runId/cancel", cfg.UserWorkflowsHandler.CancelRun)
-	}
-
-	// Active runs by workspace + session origins — on the authenticated workspace group.
-	if cfg.UserWorkflowsHandler != nil {
-		wsGroup := router.Group("/api/v1/workspaces")
-		wsGroup.Use(services.GetAuth().AuthMiddleware())
-		wsGroup.GET("/:workspaceId/runs/active", cfg.UserWorkflowsHandler.ListActiveRunsByWorkspace)
-		wsGroup.GET("/:workspaceId/session-origins", cfg.UserWorkflowsHandler.ListSessionOrigins)
 	}
 
 	// Webhook receiver — public route, no JWT (signature IS the credential).

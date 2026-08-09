@@ -158,10 +158,6 @@ func (m *mockWorkflowStore) ListSessionOrigins(_ context.Context, _ string) ([]*
 	return nil, nil
 }
 
-func (m *mockWorkflowStore) CheckWorkspaceOwnership(_ context.Context, _, _ string) bool {
-	return true
-}
-
 // mockQuotaChecker implements workflowQuotaChecker.
 type mockQuotaChecker struct {
 	values map[string]int
