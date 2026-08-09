@@ -159,8 +159,7 @@ func (m *mockActivator) EnsureActive(_ context.Context, _ string, _ time.Duratio
 }
 
 type mockActivatorNotFound struct {
-	notFoundOnce bool
-	succeeded    bool
+	succeeded bool
 }
 
 func (m *mockActivatorNotFound) EnsureActive(_ context.Context, workspaceID string, _ time.Duration) (string, error) {

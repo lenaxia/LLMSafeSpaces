@@ -531,7 +531,7 @@ func (s *Scheduler) fireRoutineTarget(ctx context.Context, logger Logger, trigge
 	}
 
 	var resultData json.RawMessage
-	resultStatus := "fired"
+	var resultStatus string
 
 	podIP, err := s.Activator.EnsureActive(ctx, workspaceID, 120*time.Second)
 	if err != nil {

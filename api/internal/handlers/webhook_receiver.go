@@ -164,9 +164,10 @@ func (h *WebhookReceiverHandler) HandleWebhook(c *gin.Context) {
 
 	// 5. Idempotency dedup.
 	dedupKey := ""
-	if hook.IdempotencyMode == types.WebhookIdempotencyHeader {
+	switch hook.IdempotencyMode {
+	case types.WebhookIdempotencyHeader:
 		dedupKey = extractDedupKey(c, hook)
-	} else if hook.IdempotencyMode == types.WebhookIdempotencyHash {
+	case types.WebhookIdempotencyHash:
 		tsHeader := c.GetHeader("X-Hub-Signature-Timestamp")
 		dedupKey = computeHashDedupKey(rawBody, tsHeader)
 	}
@@ -326,7 +327,7 @@ func extractDedupKey(c *gin.Context, hook *wf.WebhookRow) string {
 func computeHashDedupKey(body []byte, tsHeader string) string {
 	ts := int64(0)
 	if tsHeader != "" {
-		fmt.Sscanf(tsHeader, "%d", &ts)
+		_, _ = fmt.Sscanf(tsHeader, "%d", &ts)
 	}
 	window := ts
 	if window == 0 {
