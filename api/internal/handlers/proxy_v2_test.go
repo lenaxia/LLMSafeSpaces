@@ -11,11 +11,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/msgqueue"
 	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 )
 
@@ -134,6 +137,31 @@ func TestEnqueueV2_FlagOff_FallsThroughToV1(t *testing.T) {
 		"flag off → V1 path → 503 (no queueSvc)")
 }
 
+func TestEnqueueV2_SessionNotFound404(t *testing.T) {
+	// Server returns 404 → enqueueV2 must map ErrV2SessionNotFound → 404.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, pass, ok := r.BasicAuth()
+		if !ok || user != "opencode" || pass != "test-pw" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"type":"SessionNotFound","message":"session does not exist"}}`))
+	}))
+	defer srv.Close()
+
+	router, _ := newV2TestHandler(t, srv)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/ws-1/sessions/bogus/queue",
+		strings.NewReader(`{"text":"hello"}`))
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNotFound, w.Code,
+		"V2 enqueue must map ErrV2SessionNotFound → 404")
+}
+
 // --- SendPromptAsync V2 ---
 
 func TestSendPromptAsyncV2_Bypasses409Guard(t *testing.T) {
@@ -183,22 +211,48 @@ func TestAbortV2_Success(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, w.Code)
 }
 
-func TestAbortV2_NoQueueMutation(t *testing.T) {
-	// Under V2, abort does NOT touch Redis. queueSvc is nil (no
-	// SetMessageQueueService). If V2 path is taken, InterruptV2 runs (204)
-	// and we return. If V1 path were taken, proxyToWorkspace would run,
-	// then queueSvc.PeekAll → nil pointer panic. No panic + 204 = V2 path.
+func TestAbortV2_QueueSurvivesAbort(t *testing.T) {
+	// The defining difference from V1: under V2, queued messages SURVIVE
+	// an abort. V1's AbortSession clears the Redis queue (PeekAll+Clear)
+	// and emits "dismissed" for each. V2's InterruptV2 does neither.
+	//
+	// This test sets up a real Redis-backed queue with messages, aborts
+	// via V2, and asserts the queue is untouched — proving the V2 path
+	// was taken AND that it is non-destructive (F8).
 	srv := startV2TestServer(t, "test-pw")
 	defer srv.Close()
 
-	router, _ := newV2TestHandler(t, srv)
+	router, handler := newV2TestHandler(t, srv)
 
+	// Set up a real Redis-backed queue with 2 messages.
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+	redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer redisClient.Close()
+	queueSvc := msgqueue.NewWithClient(redisClient)
+	handler.SetMessageQueueService(queueSvc)
+
+	// Enqueue 2 messages into the Redis queue.
+	_, err = queueSvc.Enqueue(context.Background(), "ws-1", "ses-1", "msg-a")
+	require.NoError(t, err)
+	_, err = queueSvc.Enqueue(context.Background(), "ws-1", "ses-1", "msg-b")
+	require.NoError(t, err)
+
+	// Verify they're there.
+	n, _ := queueSvc.Len(context.Background(), "ws-1", "ses-1")
+	require.Equal(t, int64(2), n, "precondition: 2 messages queued")
+
+	// Abort via V2 (routes through gin → AbortSession → abortV2 → InterruptV2).
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/ws-1/sessions/ses-1/abort", nil)
+	router.ServeHTTP(w, req)
 
-	assert.NotPanics(t, func() {
-		router.ServeHTTP(w, req)
-	})
-	assert.Equal(t, http.StatusNoContent, w.Code,
-		"V2 abort must succeed without touching queueSvc (nil)")
+	assert.Equal(t, http.StatusNoContent, w.Code)
+
+	// THE ASSERTION: the queue must still have 2 messages. V1 would have
+	// cleared it. V2 is non-destructive (F8).
+	n, _ = queueSvc.Len(context.Background(), "ws-1", "ses-1")
+	assert.Equal(t, int64(2), n,
+		"V2 abort is non-destructive: queued messages must survive (F8)")
 }
