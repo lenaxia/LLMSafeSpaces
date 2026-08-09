@@ -17,8 +17,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-
-	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
 
 // readAgentConfig parses agent-config.json into a generic map for
@@ -371,25 +369,25 @@ func TestApplyRelayConfigPreBoot_AuthJSONWriteFails(t *testing.T) {
 // MCP server) from the pre-boot relay path. The original hardcoded
 // newAgentConfigWriter always loaded all three.
 //
-// This test seeds the bootstrap source files (agentd.AdminPromptPath,
-// agentd.AllowedDirsPath) and asserts all three sources appear in the
-// rendered config. It fails against the buggy code and passes once the
-// constructor options are passed.
-//
-// Requires /sandbox-runtime to be writable (true in CI and dev; in prod
-// the bootstrap subcommand writes these files before materialize runs).
+// This test seeds the bootstrap source files (via the adminPromptTestPath
+// / allowedDirsTestPath overrides, since /sandbox-runtime isn't writable
+// in CI) and asserts all three sources appear in the rendered config. It
+// fails against the buggy code and passes once the constructor options
+// are passed.
 func TestApplyRelayConfigPreBoot_AppliesAllSourcesFromBootstrapFiles(t *testing.T) {
 	withFreeModelsAtTmp(t, mustCatalogBytes(t, "free-model"))
 
-	// Seed the bootstrap source files that the writer loads via
-	// WithAdminPromptPath and WithAllowedDirsPath.
-	require.NoError(t, os.MkdirAll("/sandbox-runtime", 0o755))
+	// Redirect the bootstrap source paths to temp files.
+	bootstrapDir := t.TempDir()
+	promptPath := filepath.Join(bootstrapDir, "admin-prompt.md")
+	dirsPath := filepath.Join(bootstrapDir, "allowed-dirs.json")
 	const adminPromptBody = "You are a canary coding assistant. Token: canary_admin_prompt_123"
-	require.NoError(t, os.WriteFile(agentd.AdminPromptPath, []byte(adminPromptBody), 0o600))
-	require.NoError(t, os.WriteFile(agentd.AllowedDirsPath, []byte(`["/tmp/*","/opt/cache/*"]`), 0o600))
+	require.NoError(t, os.WriteFile(promptPath, []byte(adminPromptBody), 0o600))
+	require.NoError(t, os.WriteFile(dirsPath, []byte(`["/tmp/*","/opt/cache/*"]`), 0o600))
+	origPrompt, origDirs := adminPromptTestPath, allowedDirsTestPath
+	adminPromptTestPath, allowedDirsTestPath = promptPath, dirsPath
 	t.Cleanup(func() {
-		_ = os.Remove(agentd.AdminPromptPath)
-		_ = os.Remove(agentd.AllowedDirsPath)
+		adminPromptTestPath, allowedDirsTestPath = origPrompt, origDirs
 	})
 
 	dir := t.TempDir()
@@ -412,7 +410,7 @@ func TestApplyRelayConfigPreBoot_AppliesAllSourcesFromBootstrapFiles(t *testing.
 	require.True(t, ok, "agent.build must be present")
 	assert.Equal(t, adminPromptBody, build["prompt"],
 		"agent.build.prompt must contain the admin prompt body — "+
-			"the pre-boot relay writer must load it from agentd.AdminPromptPath")
+			"the pre-boot relay writer must load it from the admin-prompt source")
 
 	// 2. Allowed external directories must be present as allow-rules.
 	mode, ok := cfg["mode"].(map[string]any)

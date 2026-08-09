@@ -80,6 +80,34 @@ const freeModelsFilePath = "/sandbox-cfg/free-models.json"
 // unexported package var.
 var freeModelsTestPath string
 
+// adminPromptTestPath / allowedDirsTestPath, when non-empty, override
+// the agentd.AdminPromptPath / agentd.AllowedDirsPath constants used
+// when constructing the pre-boot relay ConfigWriter. Tests use these
+// because /sandbox-runtime is not writable in CI. Production never sets
+// them; agentd.AdminPromptPath / agentd.AllowedDirsPath stand.
+var (
+	adminPromptTestPath string
+	allowedDirsTestPath string
+)
+
+// effectiveAdminPromptPath returns the admin-prompt source path,
+// honoring the test override.
+func effectiveAdminPromptPath() string {
+	if adminPromptTestPath != "" {
+		return adminPromptTestPath
+	}
+	return agentd.AdminPromptPath
+}
+
+// effectiveAllowedDirsPath returns the allowed-dirs source path,
+// honoring the test override.
+func effectiveAllowedDirsPath() string {
+	if allowedDirsTestPath != "" {
+		return allowedDirsTestPath
+	}
+	return agentd.AllowedDirsPath
+}
+
 // effectiveFreeModelsPath returns the path to read the catalog from,
 // honoring the test override.
 func effectiveFreeModelsPath() string {
@@ -237,8 +265,8 @@ func applyRelayConfigPreBoot(relayURL, authJSONPath, agentConfigPath string, log
 	// (FlushProviders/applyMCPServersToConfig/applyWorkspaceConfig write
 	// only {$schema, provider, model, mcp} — not the agent/mode blocks).
 	writer := opencode.NewConfigWriter(agentConfigPath,
-		opencode.WithAdminPromptPath(agentd.AdminPromptPath),
-		opencode.WithAllowedDirsPath(agentd.AllowedDirsPath),
+		opencode.WithAdminPromptPath(effectiveAdminPromptPath()),
+		opencode.WithAllowedDirsPath(effectiveAllowedDirsPath()),
 		opencode.WithPreMarshalHook(injectAgentdMCPServer),
 	)
 	writer.SetRelay(relayURL, models)
