@@ -73,8 +73,38 @@ func NewOrgWorkflowsHandler(store workflowStore, quota workflowQuotaChecker) *Wo
 // SetAudit wires the audit logger (deferred injection — may be nil at construction).
 func (h *WorkflowsHandler) SetAudit(a workflowAuditLogger) { h.audit = a }
 
-// GetStore returns the underlying workflow store (for session origin queries).
-func (h *WorkflowsHandler) GetStore() workflowStore { return h.store }
+// ListSessionOrigins returns session origin mappings for a workspace.
+func (h *WorkflowsHandler) ListSessionOrigins(c *gin.Context) {
+	workspaceID := c.Param("workspaceId")
+	if workspaceID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "workspaceId required"})
+		return
+	}
+	origins, err := h.store.ListSessionOrigins(c.Request.Context(), workspaceID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list origins"})
+		return
+	}
+	type originResponse struct {
+		SessionID   string `json:"sessionId"`
+		WorkspaceID string `json:"workspaceId,omitempty"`
+		Origin      string `json:"origin"`
+		TriggerID   string `json:"triggerId,omitempty"`
+		Title       string `json:"title,omitempty"`
+	}
+	out := make([]originResponse, 0, len(origins))
+	for _, o := range origins {
+		resp := originResponse{
+			SessionID: o.SessionID, WorkspaceID: o.WorkspaceID,
+			Origin: o.Origin, Title: o.Title,
+		}
+		if o.TriggerID != nil {
+			resp.TriggerID = *o.TriggerID
+		}
+		out = append(out, resp)
+	}
+	c.JSON(http.StatusOK, gin.H{"origins": out})
+}
 
 // --- User (personal) endpoints ---
 

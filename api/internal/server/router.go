@@ -1711,44 +1711,12 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 		runs.POST("/:runId/cancel", cfg.UserWorkflowsHandler.CancelRun)
 	}
 
-	// Active runs by workspace (for run-active-on-workspace indicator).
+	// Active runs by workspace + session origins — on the authenticated workspace group.
 	if cfg.UserWorkflowsHandler != nil {
-		router.Group("/api/v1/workspaces").GET("/:workspaceId/runs/active", func(c *gin.Context) {
-			cfg.UserWorkflowsHandler.ListActiveRunsByWorkspace(c)
-		})
-	}
-
-	// Session origins (for sidebar origin icon enrichment).
-	if cfg.UserWorkflowsHandler != nil {
-		router.Group("/api/v1/workspaces").GET("/:workspaceId/session-origins", func(c *gin.Context) {
-			workspaceID := c.Param("workspaceId")
-			wfStore := cfg.UserWorkflowsHandler.GetStore()
-			if wfStore == nil {
-				c.JSON(http.StatusOK, gin.H{"origins": []any{}})
-				return
-			}
-			origins, err := wfStore.ListSessionOrigins(c.Request.Context(), workspaceID)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list origins"})
-				return
-			}
-			out := make([]map[string]any, 0, len(origins))
-			for _, o := range origins {
-				item := map[string]any{
-					"sessionId":   o.SessionID,
-					"workspaceId": o.WorkspaceID,
-					"origin":      o.Origin,
-				}
-				if o.Title != "" {
-					item["title"] = o.Title
-				}
-				if o.TriggerID != nil {
-					item["triggerId"] = *o.TriggerID
-				}
-				out = append(out, item)
-			}
-			c.JSON(http.StatusOK, gin.H{"origins": out})
-		})
+		wsGroup := router.Group("/api/v1/workspaces")
+		wsGroup.Use(services.GetAuth().AuthMiddleware())
+		wsGroup.GET("/:workspaceId/runs/active", cfg.UserWorkflowsHandler.ListActiveRunsByWorkspace)
+		wsGroup.GET("/:workspaceId/session-origins", cfg.UserWorkflowsHandler.ListSessionOrigins)
 	}
 
 	// Webhook receiver — public route, no JWT (signature IS the credential).

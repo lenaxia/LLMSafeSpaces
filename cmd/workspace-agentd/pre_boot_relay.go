@@ -65,7 +65,6 @@ import (
 	"go.uber.org/zap"
 
 	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
-	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
 
 // freeModelsFilePath is where the credential-setup init container
@@ -79,34 +78,6 @@ const freeModelsFilePath = "/sandbox-cfg/free-models.json"
 // the production hot path branch-free at the cost of a single
 // unexported package var.
 var freeModelsTestPath string
-
-// adminPromptTestPath / allowedDirsTestPath, when non-empty, override
-// the agentd.AdminPromptPath / agentd.AllowedDirsPath constants used
-// when constructing the pre-boot relay ConfigWriter. Tests use these
-// because /sandbox-runtime is not writable in CI. Production never sets
-// them; agentd.AdminPromptPath / agentd.AllowedDirsPath stand.
-var (
-	adminPromptTestPath string
-	allowedDirsTestPath string
-)
-
-// effectiveAdminPromptPath returns the admin-prompt source path,
-// honoring the test override.
-func effectiveAdminPromptPath() string {
-	if adminPromptTestPath != "" {
-		return adminPromptTestPath
-	}
-	return agentd.AdminPromptPath
-}
-
-// effectiveAllowedDirsPath returns the allowed-dirs source path,
-// honoring the test override.
-func effectiveAllowedDirsPath() string {
-	if allowedDirsTestPath != "" {
-		return allowedDirsTestPath
-	}
-	return agentd.AllowedDirsPath
-}
 
 // effectiveFreeModelsPath returns the path to read the catalog from,
 // honoring the test override.
@@ -252,23 +223,10 @@ func applyRelayConfigPreBoot(relayURL, authJSONPath, agentConfigPath string, log
 	// materialize subcommand has already written providers + model
 	// to this path; loadExisting captures both as initial sources.
 	// SetRelay + Rebuild then merges the relay block in.
-	//
-	// The three options mirror main.go: applyRelayConfigPreBoot runs as
-	// part of the materialize subcommand, BEFORE agentd's main writer
-	// exists. The bootstrap subcommand has written adminPrompt to
-	// agentd.AdminPromptPath and allowedDirs to agentd.AllowedDirsPath
-	// (separate tmpfs files), and the built-in admin MCP server must be
-	// injected. Without these options, the pre-boot relay Rebuild would
-	// produce a config missing the admin system prompt, allowed external
-	// directories, and the llmsafespaces MCP server — degrading the agent
-	// until the first credential reload. Verified via write-path trace
-	// (FlushProviders/applyMCPServersToConfig/applyWorkspaceConfig write
-	// only {$schema, provider, model, mcp} — not the agent/mode blocks).
-	writer := opencode.NewConfigWriter(agentConfigPath,
-		opencode.WithAdminPromptPath(effectiveAdminPromptPath()),
-		opencode.WithAllowedDirsPath(effectiveAllowedDirsPath()),
-		opencode.WithPreMarshalHook(injectAgentdMCPServer),
-	)
+	// No admin-prompt/allowed-dirs options here: materialize already
+	// rendered them into the file, and loadExisting preserves the
+	// agent/mode blocks across rebuild.
+	writer := opencode.NewConfigWriter(agentConfigPath)
 	writer.SetRelay(relayURL, models)
 	if err := writer.Rebuild(); err != nil {
 		return "error_config_write", fmt.Errorf("rebuild agent-config: %w", err)

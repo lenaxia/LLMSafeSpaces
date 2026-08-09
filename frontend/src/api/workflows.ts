@@ -91,6 +91,14 @@ export interface WebhookCreateResult {
   webhookSecret?: string;
 }
 
+export interface SessionOrigin {
+  sessionId: string;
+  workspaceId?: string;
+  origin: string;
+  triggerId?: string;
+  title?: string;
+}
+
 export const workflowApi = {
   list: () => api.get<{ workflows?: Workflow[] }>('/me/workflows').then(r => r.workflows || []),
   get: (id: string) => api.get<Workflow>(`/me/workflows/${id}`),
@@ -146,6 +154,13 @@ export const triggerApi = {
     api.get<{ fires?: TriggerFire[] }>(`/me/triggers/${id}/fires`).then((r) => r.fires || []),
   rotateSecret: (id: string) =>
     api.post<{ webhookSecret: string; webhookUrl: string }>(`/me/triggers/${id}/rotate-secret`),
+};
+
+export const workspaceWorkflowApi = {
+  activeRuns: (workspaceId: string) =>
+    api.get<{ runs?: WorkflowRun[] }>(`/workspaces/${workspaceId}/runs/active`).then(r => r.runs || []),
+  sessionOrigins: (workspaceId: string) =>
+    api.get<{ origins?: SessionOrigin[] }>(`/workspaces/${workspaceId}/session-origins`).then(r => r.origins || []),
 };
 
 export const runApi = {
