@@ -852,7 +852,7 @@ func (s *Store) UpdateTriggerFireTimestamps(ctx context.Context, triggerID strin
 // ordered by next_fire_at ASC. Used by the scheduler goroutine (US-64.9).
 func (s *Store) ListDueCronTriggers(ctx context.Context, now time.Time, limit int) ([]*TriggerRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, owner_type, owner_id, name, description, enabled, source_type, source_config, target_type, target_config, consecutive_failures, auto_disable_after, last_fired_at, next_fire_at, created_at, updated_at
+		SELECT `+triggerSelectColumns+`
 		FROM triggers
 		WHERE source_type = 'cron' AND enabled = true AND next_fire_at IS NOT NULL AND next_fire_at <= $1
 		ORDER BY next_fire_at ASC
@@ -863,6 +863,24 @@ func (s *Store) ListDueCronTriggers(ctx context.Context, now time.Time, limit in
 	}
 	defer rows.Close()
 	return scanTriggerRows(rows)
+}
+
+// ListPendingRoutineFires returns fire rows with action_type='routine' and
+// status='fired' that have not yet been processed (no result). Used by the
+// scheduler to pick up webhook-triggered routines on its next tick.
+func (s *Store) ListPendingRoutineFires(ctx context.Context, limit int) ([]*TriggerFireRow, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, trigger_id, source_type, input_envelope, action_type, action_result, status, fired_at, completed_at
+		FROM trigger_fires
+		WHERE action_type = 'routine' AND status = 'fired' AND result IS NULL
+		ORDER BY fired_at ASC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanTriggerFireRows(rows)
 }
 
 // --- Scanner helpers --------------------------------------------------------

@@ -444,6 +444,19 @@ func (m *mockSchedulerStore) ListDueCronTriggers(_ context.Context, _ time.Time,
 	return m.triggers, nil
 }
 
+func (m *mockSchedulerStore) ListPendingRoutineFires(_ context.Context, _ int) ([]*wf.TriggerFireRow, error) {
+	return nil, nil
+}
+
+func (m *mockSchedulerStore) GetTriggerByID(_ context.Context, triggerID string) (*wf.TriggerRow, error) {
+	for _, t := range m.triggers {
+		if t.ID == triggerID {
+			return t, nil
+		}
+	}
+	return nil, fmt.Errorf("not found")
+}
+
 func (m *mockSchedulerStore) GetWorkflow(_ context.Context, _, _, id string) (*wf.WorkflowRow, error) {
 	r, ok := m.workflows[id]
 	if !ok {

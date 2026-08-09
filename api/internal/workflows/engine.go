@@ -60,6 +60,8 @@ type ReconcilerStore interface {
 
 type SchedulerStore interface {
 	ListDueCronTriggers(ctx context.Context, now time.Time, limit int) ([]*wf.TriggerRow, error)
+	ListPendingRoutineFires(ctx context.Context, limit int) ([]*wf.TriggerFireRow, error)
+	GetTriggerByID(ctx context.Context, triggerID string) (*wf.TriggerRow, error)
 	GetWorkflow(ctx context.Context, ownerType, ownerID, workflowID string) (*wf.WorkflowRow, error)
 	CreateWorkflowRunWithFire(ctx context.Context, fire *wf.TriggerFireRow, run *wf.WorkflowRunRow) error
 	CreateTriggerFire(ctx context.Context, row *wf.TriggerFireRow) error
@@ -435,6 +437,15 @@ func (s *Scheduler) tick(ctx context.Context, logger Logger, limit int) {
 	for _, trigger := range triggers {
 		s.fireTrigger(ctx, logger, trigger, now, tickInterval)
 	}
+
+	pendingFires, err := s.Store.ListPendingRoutineFires(ctx, limit)
+	if err != nil {
+		logger.Error(err, "scheduler: failed to list pending routine fires")
+		return
+	}
+	for _, fire := range pendingFires {
+		s.processPendingRoutineFire(ctx, logger, fire)
+	}
 }
 
 func (s *Scheduler) fireTrigger(ctx context.Context, logger Logger, trigger *wf.TriggerRow, now time.Time, tickInterval time.Duration) {
@@ -516,7 +527,6 @@ func (s *Scheduler) fireRoutineTarget(ctx context.Context, logger Logger, trigge
 		logger.Error(fmt.Errorf("routine trigger has no workspace"), "trigger has no workspace_id", "triggerId", trigger.ID)
 		return
 	}
-	workspaceID := *trigger.WorkspaceID
 
 	fireID := fmt.Sprintf("fire-%s-%d", trigger.ID, now.Unix())
 
@@ -528,6 +538,17 @@ func (s *Scheduler) fireRoutineTarget(ctx context.Context, logger Logger, trigge
 	if err := s.Store.CreateTriggerFire(ctx, fire); err != nil {
 		logger.Error(err, "routine: failed to create fire row", "triggerId", trigger.ID)
 		return
+	}
+
+	s.executeRoutine(ctx, logger, trigger, fire)
+}
+
+func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *wf.TriggerRow, fire *wf.TriggerFireRow) {
+	workspaceID := *trigger.WorkspaceID
+	fireID := fire.ID
+	envelopeJSON := fire.InputEnvelope
+	if envelopeJSON == nil {
+		envelopeJSON = json.RawMessage(`{}`)
 	}
 
 	var resultData json.RawMessage
@@ -552,7 +573,6 @@ func (s *Scheduler) fireRoutineTarget(ctx context.Context, logger Logger, trigge
 		}
 	}
 
-	var scriptResultStr string
 	if trigger.ScriptPath != "" {
 		scriptReq := &NodeExecRequest{
 			NodeID: "routine-script", NodeType: "script",
@@ -568,8 +588,7 @@ func (s *Scheduler) fireRoutineTarget(ctx context.Context, logger Logger, trigge
 			return
 		}
 		if scriptResp.Output != nil {
-			scriptResultStr = string(scriptResp.Output)
-			prompt = strings.ReplaceAll(prompt, "{{.scriptResult}}", scriptResultStr)
+			prompt = strings.ReplaceAll(prompt, "{{.scriptResult}}", string(scriptResp.Output))
 		}
 	}
 	prompt = strings.ReplaceAll(prompt, "{{.input}}", string(envelopeJSON))
@@ -589,7 +608,7 @@ func (s *Scheduler) fireRoutineTarget(ctx context.Context, logger Logger, trigge
 		resultData = errMsg
 		resultStatus = "failed"
 	} else {
-		resultStatus = "fired"
+		resultStatus = "delivered"
 		if trigger.CaptureMode == types.CaptureFull {
 			resultData = agentResp.Output
 		}
@@ -605,7 +624,7 @@ func (s *Scheduler) fireRoutineTarget(ctx context.Context, logger Logger, trigge
 		_ = s.Store.ResetTriggerFailures(ctx, trigger.ID)
 	}
 
-	logger.Info("routine fired", "triggerId", trigger.ID, "fireId", fireID, "status", resultStatus)
+	logger.Info("routine executed", "triggerId", trigger.ID, "fireId", fireID, "status", resultStatus)
 }
 
 func buildRoutineScriptSpec(trigger *wf.TriggerRow) json.RawMessage {
@@ -637,14 +656,32 @@ def handler(input):
 
 func buildRoutineAgentSpec(trigger *wf.TriggerRow, prompt string) json.RawMessage {
 	spec := map[string]any{
-		"prompt":  prompt,
-		"session": "ephemeral",
+		"prompt": prompt,
+	}
+	if trigger.PreserveSession == types.PreserveAlways || trigger.PreserveSession == types.PreserveOnFailure {
+		spec["session"] = "new"
+	} else {
+		spec["session"] = "ephemeral"
 	}
 	if trigger.Agent != "" {
 		spec["agent"] = trigger.Agent
 	}
 	out, _ := json.Marshal(spec)
 	return out
+}
+
+func (s *Scheduler) processPendingRoutineFire(ctx context.Context, logger Logger, fire *wf.TriggerFireRow) {
+	trigger, err := s.Store.GetTriggerByID(ctx, fire.TriggerID)
+	if err != nil {
+		logger.Error(err, "routine: failed to get trigger for pending fire", "fireId", fire.ID)
+		return
+	}
+	if trigger.WorkspaceID == nil || *trigger.WorkspaceID == "" {
+		logger.Error(fmt.Errorf("no workspace"), "routine: trigger has no workspace", "triggerId", trigger.ID)
+		return
+	}
+
+	s.executeRoutine(ctx, logger, trigger, fire)
 }
 
 func computeNextFire(trigger *wf.TriggerRow, now time.Time) time.Time {
