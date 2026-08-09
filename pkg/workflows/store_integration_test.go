@@ -626,3 +626,51 @@ func (s *StoreIntegrationSuite) TestListPendingRoutineFires() {
 	s.Require().NoError(err)
 	s.Empty(fires, "delivered fire should not be pending")
 }
+
+// TestTriggerFiresUUIDColumn_RejectsNonUUIDIDs is the integration regression
+// for the "Test1we" production bug: the cron scheduler previously generated
+// fire IDs as fmt.Sprintf("fire-%s-%d", triggerID, unix), which Postgres
+// rejected with SQLSTATE 22P02 because trigger_fires.id is `uuid NOT NULL`.
+// Every cron tick silently dropped the fire row, the trigger appeared to fire
+// (last_fired_at advanced) but no agent invocation ever ran.
+//
+// This test pins the schema-side invariant: the column rejects the old shape
+// and accepts a real UUID. The unit test in api/internal/workflows
+// (TestScheduler_FireAndRunIDs_AreUUIDs) covers the scheduler side.
+func (s *StoreIntegrationSuite) TestTriggerFiresUUIDColumn_RejectsNonUUIDIDs() {
+	ctx := context.Background()
+	triggerID := uuid.New().String()
+	now := time.Now().UTC()
+
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO triggers (id, owner_type, owner_id, name, enabled, source_type, source_config,
+			memory_mode, capture_mode, preserve_session, auto_disable_after, created_at, updated_at)
+		VALUES ($1, 'user', 'test-user', 'test-uuid-regress', true, 'cron', '{}'::jsonb,
+			'none', 'full', 'never', 10, $2, $3)
+	`, triggerID, now, now)
+	s.Require().NoError(err)
+
+	// Old buggy shape — what the scheduler used to produce.
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO trigger_fires (id, trigger_id, source_type, action_type, status, fired_at)
+		VALUES ($1, $2, 'cron', 'routine', 'fired', $3)
+	`, "fire-"+triggerID+"-1786260973", triggerID, now)
+	s.Require().Error(err, "non-UUID id must be rejected by trigger_fires.id uuid column")
+
+	pgErr, ok := err.(interface{ SQLState() string })
+	s.Require().True(ok, "error should be a PG error with SQLState")
+	s.Equal("22P02", pgErr.SQLState(), "expected invalid_text_representation (22P02)")
+
+	// New correct shape — what the scheduler produces after the fix.
+	fireID := uuid.New().String()
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO trigger_fires (id, trigger_id, source_type, action_type, status, fired_at)
+		VALUES ($1, $2, 'cron', 'routine', 'fired', $3)
+	`, fireID, triggerID, now)
+	s.Require().NoError(err, "UUID id must be accepted")
+
+	fires, err := s.store.ListTriggerFires(ctx, triggerID, 10, 0)
+	s.Require().NoError(err)
+	s.Len(fires, 1)
+	s.Equal(fireID, fires[0].ID)
+}
