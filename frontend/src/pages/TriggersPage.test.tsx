@@ -31,7 +31,8 @@ vi.mock("../api/workflows", () => ({
 const CRON_TRIGGER: Trigger = {
   id: "trig-1", name: "nightly-cron", enabled: true,
   sourceType: "cron", sourceConfig: { expr: "0 2 * * *" },
-  targetType: "run_workflow", targetConfig: { workflowId: "wf-1" },
+  workspaceId: "ws-1", prompt: "Run nightly backup",
+  memoryMode: "none", captureMode: "errors_only", preserveSession: "never",
   consecutiveFailures: 0, autoDisableAfter: 10,
   nextFireAt: "2026-08-08T02:00:00Z",
   createdAt: "2026-08-01T00:00:00Z", updatedAt: "2026-08-01T00:00:00Z",
@@ -40,7 +41,8 @@ const CRON_TRIGGER: Trigger = {
 const WEBHOOK_TRIGGER: Trigger = {
   id: "trig-2", name: "github-hook", enabled: false,
   sourceType: "webhook", sourceConfig: {},
-  targetType: "run_workflow", targetConfig: { workflowId: "wf-2" },
+  workspaceId: "ws-2", prompt: "Analyze GitHub issue",
+  memoryMode: "none", captureMode: "errors_only", preserveSession: "never",
   consecutiveFailures: 3, autoDisableAfter: 10,
   createdAt: "2026-08-01T00:00:00Z", updatedAt: "2026-08-01T00:00:00Z",
 };

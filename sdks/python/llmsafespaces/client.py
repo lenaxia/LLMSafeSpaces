@@ -67,8 +67,49 @@ class _TriggersAPI:
     def list(self) -> list[dict[str, Any]]:
         return self._c._request("GET", "/me/triggers").get("triggers", [])
 
-    def create(self, *, name: str, source_type: str, target_type: str, source_config: dict[str, Any], target_config: dict[str, Any]) -> dict[str, Any]:
-        return self._c._request("POST", "/me/triggers", json={"name": name, "sourceType": source_type, "targetType": target_type, "sourceConfig": source_config, "targetConfig": target_config})
+    def create(
+        self,
+        *,
+        name: str,
+        source_type: str,
+        source_config: dict[str, Any],
+        workspace_id: str = "",
+        workflow_id: str = "",
+        prompt: str = "",
+        agent: str = "",
+        script_path: str = "",
+        script_args: list[str] | None = None,
+        script_env: dict[str, Any] | None = None,
+        memory_mode: str = "",
+        capture_mode: str = "",
+        preserve_session: str = "",
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {
+            "name": name,
+            "sourceType": source_type,
+            "sourceConfig": source_config,
+        }
+        if workspace_id:
+            body["workspaceId"] = workspace_id
+        if workflow_id:
+            body["workflowId"] = workflow_id
+        if prompt:
+            body["prompt"] = prompt
+        if agent:
+            body["agent"] = agent
+        if script_path:
+            body["scriptPath"] = script_path
+        if script_args is not None:
+            body["scriptArgs"] = script_args
+        if script_env is not None:
+            body["scriptEnv"] = script_env
+        if memory_mode:
+            body["memoryMode"] = memory_mode
+        if capture_mode:
+            body["captureMode"] = capture_mode
+        if preserve_session:
+            body["preserveSession"] = preserve_session
+        return self._c._request("POST", "/me/triggers", json=body)
 
     def update(self, trigger_id: str, **kwargs: Any) -> dict[str, Any]:
         return self._c._request("PUT", f"/me/triggers/{trigger_id}", json=kwargs)

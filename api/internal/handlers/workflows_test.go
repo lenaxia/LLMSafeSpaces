@@ -533,7 +533,7 @@ func TestWorkflowUpdate_OnMissingWorkspace(t *testing.T) {
 		ID: "wf-up", OwnerType: "user", OwnerID: "test-user",
 		Name: "test", Slug: "test", Status: "draft",
 		OnMissingWorkspace: "abort",
-		SpecYAML: "{}", SpecJSON: json.RawMessage(`{}`),
+		SpecYAML:           "{}", SpecJSON: json.RawMessage(`{}`),
 	}
 	quota := &mockQuotaChecker{values: map[string]int{}}
 	r := setupWorkflowRouter(t, store, quota)
@@ -553,7 +553,7 @@ func TestWorkflowUpdate_OnMissingWorkspace_Invalid(t *testing.T) {
 		ID: "wf-bad", OwnerType: "user", OwnerID: "test-user",
 		Name: "test", Slug: "test", Status: "draft",
 		OnMissingWorkspace: "abort",
-		SpecYAML: "{}", SpecJSON: json.RawMessage(`{}`),
+		SpecYAML:           "{}", SpecJSON: json.RawMessage(`{}`),
 	}
 	quota := &mockQuotaChecker{values: map[string]int{}}
 	r := setupWorkflowRouter(t, store, quota)

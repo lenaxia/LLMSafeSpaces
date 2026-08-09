@@ -534,8 +534,13 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			Logger: engineLogger,
 		}
 		wfScheduler = &apiwf.Scheduler{
-			Store:  wfStore,
-			Logger: engineLogger,
+			Store: wfStore,
+			Activator: &apiwf.K8sWorkspaceActivator{
+				K8sClient: k8sClient,
+				Namespace: cfg.Kubernetes.Namespace,
+			},
+			AgentdClient: &apiwf.HTTPAgentExecutor{Port: 4097},
+			Logger:       engineLogger,
 		}
 		// Wire pod-IP resolver so reload-secrets can reach in-pod agentd.
 		// Without this the SecretsHandler returns 503 for every reload

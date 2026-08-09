@@ -60,12 +60,17 @@ type ReconcilerStore interface {
 
 type SchedulerStore interface {
 	ListDueCronTriggers(ctx context.Context, now time.Time, limit int) ([]*wf.TriggerRow, error)
+	ListPendingRoutineFires(ctx context.Context, limit int) ([]*wf.TriggerFireRow, error)
+	GetTriggerByID(ctx context.Context, triggerID string) (*wf.TriggerRow, error)
 	GetWorkflow(ctx context.Context, ownerType, ownerID, workflowID string) (*wf.WorkflowRow, error)
-	GetOrCreateScriptWorkflow(ctx context.Context, trigger *wf.TriggerRow, specJSON json.RawMessage, workspaceID string) (*wf.WorkflowRow, error)
 	CreateWorkflowRunWithFire(ctx context.Context, fire *wf.TriggerFireRow, run *wf.WorkflowRunRow) error
 	CreateTriggerFire(ctx context.Context, row *wf.TriggerFireRow) error
+	UpdateTriggerFireResult(ctx context.Context, fireID string, result json.RawMessage, status string) error
+	GetLastRoutineResult(ctx context.Context, triggerID string) (json.RawMessage, error)
+	GetRecentRoutineResults(ctx context.Context, triggerID string, limit int) ([]json.RawMessage, error)
 	UpdateTriggerFireTimestamps(ctx context.Context, triggerID string, lastFiredAt time.Time, nextFireAt *time.Time) error
 	IncrementTriggerFailures(ctx context.Context, triggerID string) (int, error)
+	ResetTriggerFailures(ctx context.Context, triggerID string) error
 	DisableTrigger(ctx context.Context, triggerID string) error
 }
 
@@ -387,6 +392,8 @@ func (r *Reconciler) clearCanceled(runID string) {
 
 type Scheduler struct {
 	Store        SchedulerStore
+	Activator    WorkspaceActivator
+	AgentdClient AgentdExecutor
 	Logger       Logger
 	TickInterval time.Duration
 }
@@ -431,6 +438,15 @@ func (s *Scheduler) tick(ctx context.Context, logger Logger, limit int) {
 	for _, trigger := range triggers {
 		s.fireTrigger(ctx, logger, trigger, now, tickInterval)
 	}
+
+	pendingFires, err := s.Store.ListPendingRoutineFires(ctx, limit)
+	if err != nil {
+		logger.Error(err, "scheduler: failed to list pending routine fires")
+		return
+	}
+	for _, fire := range pendingFires {
+		s.processPendingRoutineFire(ctx, logger, fire)
+	}
 }
 
 func (s *Scheduler) fireTrigger(ctx context.Context, logger Logger, trigger *wf.TriggerRow, now time.Time, tickInterval time.Duration) {
@@ -438,7 +454,7 @@ func (s *Scheduler) fireTrigger(ctx context.Context, logger Logger, trigger *wf.
 		_ = s.Store.CreateTriggerFire(ctx, &wf.TriggerFireRow{
 			ID:        fmt.Sprintf("fire-missed-%s-%d", trigger.ID, now.Unix()),
 			TriggerID: trigger.ID, SourceType: "cron",
-			ActionType: trigger.TargetType, Status: "skipped",
+			ActionType: "routine", Status: "skipped",
 			FiredAt: *trigger.NextFireAt, CompletedAt: &now,
 		})
 		nextFire := computeNextFire(trigger, now)
@@ -452,17 +468,10 @@ func (s *Scheduler) fireTrigger(ctx context.Context, logger Logger, trigger *wf.
 	}
 	envelopeJSON, _ := json.Marshal(envelope)
 
-	if trigger.TargetType == types.TriggerTargetRunWorkflow {
+	if trigger.WorkflowID != nil && *trigger.WorkflowID != "" {
 		s.fireWorkflowTarget(ctx, logger, trigger, envelopeJSON, now)
-	} else if trigger.TargetType == types.TriggerTargetRunScript {
-		s.fireScriptTarget(ctx, logger, trigger, envelopeJSON, now)
 	} else {
-		_ = s.Store.CreateTriggerFire(ctx, &wf.TriggerFireRow{
-			ID:        fmt.Sprintf("fire-%s-%d", trigger.ID, now.Unix()),
-			TriggerID: trigger.ID, SourceType: "cron",
-			InputEnvelope: envelopeJSON, ActionType: trigger.TargetType,
-			Status: "delivered", FiredAt: now, CompletedAt: &now,
-		})
+		s.fireRoutineTarget(ctx, logger, trigger, envelopeJSON, now)
 	}
 
 	nextFire := computeNextFire(trigger, now)
@@ -470,21 +479,17 @@ func (s *Scheduler) fireTrigger(ctx context.Context, logger Logger, trigger *wf.
 }
 
 func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger Logger, trigger *wf.TriggerRow, envelopeJSON []byte, now time.Time) {
-	var targetCfg types.RunWorkflowTargetConfig
-	_ = json.Unmarshal(trigger.TargetConfig, &targetCfg)
-	if targetCfg.WorkflowID == "" {
+	if trigger.WorkflowID == nil || *trigger.WorkflowID == "" {
 		return
 	}
+	workflowID := *trigger.WorkflowID
 
-	wfRow, err := s.Store.GetWorkflow(ctx, trigger.OwnerType, trigger.OwnerID, targetCfg.WorkflowID)
+	wfRow, err := s.Store.GetWorkflow(ctx, trigger.OwnerType, trigger.OwnerID, workflowID)
 	if err != nil {
 		return
 	}
 
 	inputForRun := json.RawMessage(envelopeJSON)
-	if len(targetCfg.InputTemplate) > 0 {
-		inputForRun, _ = json.Marshal(targetCfg.InputTemplate)
-	}
 
 	fireID := fmt.Sprintf("fire-%s-%d", trigger.ID, now.Unix())
 	runID := fmt.Sprintf("run-%s-%d", trigger.ID, now.Unix())
@@ -500,7 +505,7 @@ func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger Logger, trigg
 		Status: "fired", FiredAt: now,
 	}
 	run := &wf.WorkflowRunRow{
-		ID: runID, WorkflowID: targetCfg.WorkflowID, SpecSnapshot: wfRow.SpecJSON,
+		ID: runID, WorkflowID: workflowID, SpecSnapshot: wfRow.SpecJSON,
 		Input: inputForRun, Status: "queued", TriggerID: &trigger.ID,
 		WorkspaceID: workspaceID, CreatedAt: now, UpdatedAt: now,
 	}
@@ -518,45 +523,187 @@ func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger Logger, trigg
 	logger.Info("scheduler: fired cron trigger", "triggerId", trigger.ID, "runId", runID)
 }
 
-func (s *Scheduler) fireScriptTarget(ctx context.Context, logger Logger, trigger *wf.TriggerRow, envelopeJSON []byte, now time.Time) {
-	var targetCfg types.RunScriptTargetConfig
-	_ = json.Unmarshal(trigger.TargetConfig, &targetCfg)
-	if targetCfg.WorkspaceID == "" {
-		return
-	}
-
-	specJSON := BuildRunScriptSpec(&targetCfg)
-	wfRow, err := s.Store.GetOrCreateScriptWorkflow(ctx, trigger, specJSON, targetCfg.WorkspaceID)
-	if err != nil {
-		logger.Error(err, "scheduler: failed to get-or-create script workflow", "triggerId", trigger.ID)
+func (s *Scheduler) fireRoutineTarget(ctx context.Context, logger Logger, trigger *wf.TriggerRow, envelopeJSON []byte, now time.Time) {
+	if trigger.WorkspaceID == nil || *trigger.WorkspaceID == "" {
+		logger.Error(fmt.Errorf("routine trigger has no workspace"), "trigger has no workspace_id", "triggerId", trigger.ID)
 		return
 	}
 
 	fireID := fmt.Sprintf("fire-%s-%d", trigger.ID, now.Unix())
-	runID := fmt.Sprintf("run-%s-%d", trigger.ID, now.Unix())
 
 	fire := &wf.TriggerFireRow{
-		ID: fireID, TriggerID: trigger.ID, SourceType: "cron",
-		InputEnvelope: envelopeJSON, ActionType: "run_script",
+		ID: fireID, TriggerID: trigger.ID, SourceType: trigger.SourceType,
+		InputEnvelope: envelopeJSON, ActionType: "routine",
 		Status: "fired", FiredAt: now,
 	}
-	run := &wf.WorkflowRunRow{
-		ID: runID, WorkflowID: wfRow.ID, SpecSnapshot: specJSON,
-		Input: envelopeJSON, Status: "queued", TriggerID: &trigger.ID,
-		WorkspaceID: targetCfg.WorkspaceID, CreatedAt: now, UpdatedAt: now,
-	}
-
-	err = s.Store.CreateWorkflowRunWithFire(ctx, fire, run)
-	if err != nil {
-		_ = s.Store.CreateTriggerFire(ctx, &wf.TriggerFireRow{
-			ID: fireID + "-skipped", TriggerID: trigger.ID, SourceType: "cron",
-			InputEnvelope: envelopeJSON, ActionType: "run_script",
-			ActionResult: json.RawMessage(`{"reason":"already_running"}`),
-			Status:       "skipped", FiredAt: now, CompletedAt: &now,
-		})
+	if err := s.Store.CreateTriggerFire(ctx, fire); err != nil {
+		logger.Error(err, "routine: failed to create fire row", "triggerId", trigger.ID)
 		return
 	}
-	logger.Info("scheduler: fired run_script trigger", "triggerId", trigger.ID, "runId", runID)
+
+	s.executeRoutine(ctx, logger, trigger, fire)
+}
+
+func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *wf.TriggerRow, fire *wf.TriggerFireRow) {
+	workspaceID := *trigger.WorkspaceID
+	fireID := fire.ID
+	envelopeJSON := fire.InputEnvelope
+	if envelopeJSON == nil {
+		envelopeJSON = json.RawMessage(`{}`)
+	}
+
+	var resultData json.RawMessage
+	var resultStatus string
+
+	podIP, err := s.Activator.EnsureActive(ctx, workspaceID, 120*time.Second)
+	if err != nil {
+		errMsg, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("workspace activation failed: %v", err)})
+		resultData = errMsg
+		resultStatus = "failed"
+		_ = s.Store.UpdateTriggerFireResult(ctx, fireID, resultData, resultStatus)
+		if n, _ := s.Store.IncrementTriggerFailures(ctx, trigger.ID); n >= trigger.AutoDisableAfter {
+			_ = s.Store.DisableTrigger(ctx, trigger.ID)
+		}
+		return
+	}
+
+	prompt := trigger.Prompt
+	if trigger.MemoryMode == types.MemoryLastResult {
+		maxRuns := trigger.MemoryMaxRuns
+		if maxRuns <= 0 {
+			maxRuns = 1
+		}
+		if maxRuns == 1 {
+			if prevResult, err := s.Store.GetLastRoutineResult(ctx, trigger.ID); err == nil && len(prevResult) > 0 {
+				prompt = strings.ReplaceAll(prompt, "{{.prevResult}}", string(prevResult))
+			}
+		} else {
+			if results, err := s.Store.GetRecentRoutineResults(ctx, trigger.ID, maxRuns); err == nil && len(results) > 0 {
+				combined := make([]string, len(results))
+				for i, r := range results {
+					combined[i] = string(r)
+				}
+				prompt = strings.ReplaceAll(prompt, "{{.prevResult}}", strings.Join(combined, "\n---\n"))
+			}
+		}
+	}
+
+	if trigger.ScriptPath != "" {
+		scriptReq := &NodeExecRequest{
+			NodeID: "routine-script", NodeType: "script",
+			Spec: buildRoutineScriptSpec(trigger), Input: envelopeJSON,
+			Timeout: "5m",
+		}
+		scriptResp, err := s.AgentdClient.Execute(ctx, podIP, scriptReq)
+		if err != nil {
+			errMsg, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("script failed: %v", err)})
+			resultData = errMsg
+			resultStatus = "failed"
+			_ = s.Store.UpdateTriggerFireResult(ctx, fireID, resultData, resultStatus)
+			if n, _ := s.Store.IncrementTriggerFailures(ctx, trigger.ID); n >= trigger.AutoDisableAfter {
+				_ = s.Store.DisableTrigger(ctx, trigger.ID)
+			}
+			return
+		}
+		if scriptResp.Output != nil {
+			prompt = strings.ReplaceAll(prompt, "{{.scriptResult}}", string(scriptResp.Output))
+		}
+	}
+	prompt = strings.ReplaceAll(prompt, "{{.input}}", string(envelopeJSON))
+
+	agentReq := &NodeExecRequest{
+		NodeID: "routine-agent", NodeType: "agent",
+		Spec: buildRoutineAgentSpec(trigger, prompt), Input: envelopeJSON,
+		Timeout: "10m",
+	}
+	agentResp, err := s.AgentdClient.Execute(ctx, podIP, agentReq)
+	if err != nil {
+		errMsg, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("agent call failed: %v", err)})
+		resultData = errMsg
+		resultStatus = "failed"
+	} else if agentResp.ErrorCode != "" {
+		errMsg, _ := json.Marshal(map[string]string{"error": agentResp.Detail, "code": agentResp.ErrorCode})
+		resultData = errMsg
+		resultStatus = "failed"
+	} else {
+		resultStatus = "delivered"
+		if trigger.CaptureMode == types.CaptureFull {
+			resultData = agentResp.Output
+		}
+	}
+
+	_ = s.Store.UpdateTriggerFireResult(ctx, fireID, resultData, resultStatus)
+
+	if resultStatus == "failed" {
+		if n, _ := s.Store.IncrementTriggerFailures(ctx, trigger.ID); n >= trigger.AutoDisableAfter {
+			_ = s.Store.DisableTrigger(ctx, trigger.ID)
+		}
+	} else {
+		_ = s.Store.ResetTriggerFailures(ctx, trigger.ID)
+	}
+
+	logger.Info("routine executed", "triggerId", trigger.ID, "fireId", fireID, "status", resultStatus)
+}
+
+func buildRoutineScriptSpec(trigger *wf.TriggerRow) json.RawMessage {
+	envMap := map[string]string{}
+	if len(trigger.ScriptEnv) > 0 {
+		_ = json.Unmarshal(trigger.ScriptEnv, &envMap)
+	}
+	envLines := ""
+	for k, v := range envMap {
+		envLines += fmt.Sprintf("    os.environ[%q] = %q\n", k, v)
+	}
+	argsStr := ""
+	for _, a := range trigger.ScriptArgs {
+		argsStr += fmt.Sprintf("%q, ", a)
+	}
+	handler := fmt.Sprintf(`import subprocess, json, os
+%s
+def handler(input):
+    result = subprocess.run([%q, %s], capture_output=True, text=True, timeout=300)
+    return {"exitCode": result.returncode, "stdout": result.stdout, "stderr": result.stderr}
+`, envLines, trigger.ScriptPath, argsStr)
+	spec := map[string]any{
+		"language": "python",
+		"handler":  handler,
+	}
+	out, _ := json.Marshal(spec)
+	return out
+}
+
+func buildRoutineAgentSpec(trigger *wf.TriggerRow, prompt string) json.RawMessage {
+	spec := map[string]any{
+		"prompt": prompt,
+	}
+	if trigger.PreserveSession == types.PreserveAlways || trigger.PreserveSession == types.PreserveOnFailure {
+		spec["session"] = "new"
+	} else {
+		spec["session"] = "ephemeral"
+	}
+	if trigger.Agent != "" {
+		spec["agent"] = trigger.Agent
+	}
+	out, _ := json.Marshal(spec)
+	return out
+}
+
+func (s *Scheduler) processPendingRoutineFire(ctx context.Context, logger Logger, fire *wf.TriggerFireRow) {
+	trigger, err := s.Store.GetTriggerByID(ctx, fire.TriggerID)
+	if err != nil {
+		logger.Error(err, "routine: failed to get trigger for pending fire", "fireId", fire.ID)
+		errMsg, _ := json.Marshal(map[string]string{"error": "trigger not found"})
+		_ = s.Store.UpdateTriggerFireResult(ctx, fire.ID, errMsg, "failed")
+		return
+	}
+	if trigger.WorkspaceID == nil || *trigger.WorkspaceID == "" {
+		logger.Error(fmt.Errorf("no workspace"), "routine: trigger has no workspace", "triggerId", trigger.ID)
+		errMsg, _ := json.Marshal(map[string]string{"error": "trigger has no workspace_id"})
+		_ = s.Store.UpdateTriggerFireResult(ctx, fire.ID, errMsg, "failed")
+		return
+	}
+
+	s.executeRoutine(ctx, logger, trigger, fire)
 }
 
 func computeNextFire(trigger *wf.TriggerRow, now time.Time) time.Time {
@@ -769,66 +916,4 @@ func (l *AppEngineLogger) Error(err error, msg string, kv ...any) {
 	if l.ErrFn != nil {
 		l.ErrFn(err, msg, kv...)
 	}
-}
-
-// BuildRunScriptSpec generates a 2-node DAG (script → agent) from a run_script
-// trigger's target config. The script node executes path+args+env; its output
-// feeds the agent node which renders the prompt template with the script result.
-// If Prompt is empty, only the script node is emitted (no agent follow-up).
-func BuildRunScriptSpec(cfg *types.RunScriptTargetConfig) json.RawMessage {
-	handler := fmt.Sprintf(`import subprocess, json
-def handler(input):
-    result = subprocess.run(
-        [%q] + %v,
-        capture_output=True, text=True, timeout=300
-    )
-    return {
-        "exitCode": result.returncode,
-        "stdout": result.stdout,
-        "stderr": result.stderr,
-    }`, cfg.Path, goQuoteSlice(cfg.Args))
-
-	spec := map[string]any{
-		"nodes": []map[string]any{
-			{
-				"id":   "run-script",
-				"type": "script",
-				"data": map[string]any{
-					"language": "python",
-					"handler":  handler,
-				},
-				"maxAttempts": 1,
-				"timeout":     "5m",
-			},
-		},
-		"edges": []map[string]any{},
-	}
-
-	if cfg.Prompt != "" {
-		spec["nodes"] = append(spec["nodes"].([]map[string]any), map[string]any{
-			"id":   "agent-prompt",
-			"type": "agent",
-			"data": map[string]any{
-				"prompt":  cfg.Prompt,
-				"session": "ephemeral",
-			},
-			"maxAttempts": 1,
-			"timeout":     "10m",
-		})
-		spec["edges"] = append(spec["edges"].([]map[string]any), map[string]any{
-			"source": "run-script",
-			"target": "agent-prompt",
-		})
-	}
-
-	out, _ := json.Marshal(spec)
-	return out
-}
-
-func goQuoteSlice(s []string) string {
-	parts := make([]string, len(s))
-	for i, v := range s {
-		parts[i] = fmt.Sprintf("%q", v)
-	}
-	return "[" + strings.Join(parts, ", ") + "]"
 }

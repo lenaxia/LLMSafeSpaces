@@ -65,6 +65,34 @@ func (m *mockTriggerStore) UpdateTrigger(_ context.Context, ownerType, ownerID, 
 	if upd.Description != nil {
 		r.Description = *upd.Description
 	}
+	if upd.Prompt != nil {
+		r.Prompt = *upd.Prompt
+	}
+	if upd.WorkspaceID != nil {
+		wsID := *upd.WorkspaceID
+		if wsID == "" {
+			r.WorkspaceID = nil
+		} else {
+			r.WorkspaceID = &wsID
+		}
+	}
+	if upd.WorkflowID != nil {
+		wfID := *upd.WorkflowID
+		if wfID == "" {
+			r.WorkflowID = nil
+		} else {
+			r.WorkflowID = &wfID
+		}
+	}
+	if upd.MemoryMode != nil {
+		r.MemoryMode = *upd.MemoryMode
+	}
+	if upd.CaptureMode != nil {
+		r.CaptureMode = *upd.CaptureMode
+	}
+	if upd.PreserveSession != nil {
+		r.PreserveSession = *upd.PreserveSession
+	}
 	return r, nil
 }
 
@@ -164,8 +192,7 @@ func TestTriggerCreate_Cron(t *testing.T) {
 		"name":         "nightly-backup",
 		"sourceType":   "cron",
 		"sourceConfig": map[string]any{"expr": "0 2 * * *", "tz": "UTC"},
-		"targetType":   "run_workflow",
-		"targetConfig": map[string]any{"workflowId": "wf_123"},
+		"workflowId":   "wf_123",
 	})
 	require.Equal(t, 201, w.Code)
 
@@ -186,8 +213,7 @@ func TestTriggerCreate_Webhook(t *testing.T) {
 		"name":         "github-hook",
 		"sourceType":   "webhook",
 		"sourceConfig": map[string]any{},
-		"targetType":   "run_workflow",
-		"targetConfig": map[string]any{"workflowId": "wf_123"},
+		"workflowId":   "wf_123",
 	})
 	require.Equal(t, 201, w.Code)
 
@@ -213,7 +239,7 @@ func TestTriggerCreate_InvalidSourceType(t *testing.T) {
 	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
 		"name":       "test",
 		"sourceType": "manual",
-		"targetType": "run_workflow",
+		"workflowId": "wf_123",
 	})
 	assert.Equal(t, 400, w.Code)
 }
@@ -228,8 +254,8 @@ func TestTriggerCreate_CronMissingExpr(t *testing.T) {
 		"name":         "bad-cron",
 		"sourceType":   "cron",
 		"sourceConfig": map[string]any{"tz": "UTC"},
-		"targetType":   "run_workflow",
-		"targetConfig": map[string]any{},
+		"workspaceId":  "ws-1",
+		"prompt":       "test",
 	})
 	assert.Equal(t, 400, w.Code)
 }
@@ -243,7 +269,7 @@ func TestTriggerGet_Success(t *testing.T) {
 	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
 		"name": "test", "sourceType": "cron",
 		"sourceConfig": map[string]any{"expr": "0 * * * *"},
-		"targetType":   "run_workflow", "targetConfig": map[string]any{},
+		"workspaceId":  "ws-1", "prompt": "test routine",
 	})
 	require.Equal(t, 201, w.Code)
 
@@ -274,7 +300,7 @@ func TestTriggerUpdate_EnableDisable(t *testing.T) {
 	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
 		"name": "test", "sourceType": "cron",
 		"sourceConfig": map[string]any{"expr": "0 * * * *"},
-		"targetType":   "run_workflow", "targetConfig": map[string]any{},
+		"workspaceId":  "ws-1", "prompt": "test routine",
 	})
 	require.Equal(t, 201, w.Code)
 
@@ -302,7 +328,7 @@ func TestTriggerUpdate_InvalidAutoDisable(t *testing.T) {
 	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
 		"name": "test", "sourceType": "cron",
 		"sourceConfig": map[string]any{"expr": "0 * * * *"},
-		"targetType":   "run_workflow", "targetConfig": map[string]any{},
+		"workspaceId":  "ws-1", "prompt": "test routine",
 	})
 	require.Equal(t, 201, w.Code)
 
@@ -326,7 +352,7 @@ func TestTriggerDelete_Success(t *testing.T) {
 	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
 		"name": "test", "sourceType": "cron",
 		"sourceConfig": map[string]any{"expr": "0 * * * *"},
-		"targetType":   "run_workflow", "targetConfig": map[string]any{},
+		"workspaceId":  "ws-1", "prompt": "test routine",
 	})
 	require.Equal(t, 201, w.Code)
 
@@ -361,7 +387,7 @@ func TestTriggerList(t *testing.T) {
 		doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
 			"name": name, "sourceType": "cron",
 			"sourceConfig": map[string]any{"expr": "0 * * * *"},
-			"targetType":   "run_workflow", "targetConfig": map[string]any{},
+			"workspaceId":  "ws-1", "prompt": "test routine",
 		})
 	}
 
@@ -384,7 +410,7 @@ func TestTriggerCreate_StoreError(t *testing.T) {
 	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
 		"name": "test", "sourceType": "cron",
 		"sourceConfig": map[string]any{"expr": "0 * * * *"},
-		"targetType":   "run_workflow", "targetConfig": map[string]any{},
+		"workspaceId":  "ws-1", "prompt": "test routine",
 	})
 	assert.Equal(t, 500, w.Code)
 }
@@ -406,7 +432,7 @@ func TestTriggerCreate_QuotaExceeded(t *testing.T) {
 	body := map[string]any{
 		"name": "t1", "sourceType": "cron",
 		"sourceConfig": map[string]any{"expr": "0 * * * *"},
-		"targetType":   "run_workflow", "targetConfig": map[string]any{},
+		"workspaceId":  "ws-1", "prompt": "test routine",
 	}
 
 	// First succeeds (count 0 < 1).
@@ -417,7 +443,7 @@ func TestTriggerCreate_QuotaExceeded(t *testing.T) {
 	w2 := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
 		"name": "t2", "sourceType": "cron",
 		"sourceConfig": map[string]any{"expr": "0 * * * *"},
-		"targetType":   "run_workflow", "targetConfig": map[string]any{},
+		"workspaceId":  "ws-1", "prompt": "test routine",
 	})
 	assert.Equal(t, 409, w2.Code)
 }
@@ -431,7 +457,7 @@ func TestTriggerCreate_CronNextFireAt(t *testing.T) {
 	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
 		"name": "cron-test", "sourceType": "cron",
 		"sourceConfig": map[string]any{"expr": "0 2 * * *", "tz": "UTC"},
-		"targetType":   "run_workflow", "targetConfig": map[string]any{},
+		"workspaceId":  "ws-1", "prompt": "test routine",
 	})
 	require.Equal(t, 201, w.Code)
 
@@ -449,7 +475,7 @@ func TestTriggerUpdate_AutoDisableAfter(t *testing.T) {
 	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
 		"name": "test", "sourceType": "cron",
 		"sourceConfig": map[string]any{"expr": "0 * * * *"},
-		"targetType":   "run_workflow", "targetConfig": map[string]any{},
+		"workspaceId":  "ws-1", "prompt": "test routine",
 	})
 	require.Equal(t, 201, w.Code)
 
@@ -476,7 +502,7 @@ func TestTriggerCreate_NilEncryptorForWebhook(t *testing.T) {
 	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
 		"name": "wh-no-encrypt", "sourceType": "webhook",
 		"sourceConfig": map[string]any{},
-		"targetType":   "run_workflow", "targetConfig": map[string]any{},
+		"workspaceId":  "ws-1", "prompt": "test routine",
 	})
 	assert.Equal(t, 500, w.Code)
 
@@ -500,7 +526,7 @@ func TestTriggerCreate_WebhookEncryptFailure_Cleanup(t *testing.T) {
 	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
 		"name": "wh-encrypt-fail", "sourceType": "webhook",
 		"sourceConfig": map[string]any{},
-		"targetType":   "run_workflow", "targetConfig": map[string]any{},
+		"workspaceId":  "ws-1", "prompt": "test routine",
 	})
 	assert.Equal(t, 500, w.Code)
 
@@ -527,7 +553,7 @@ func TestTriggerCreate_WebhookStoreFailure_Cleanup(t *testing.T) {
 	w := doTriggerRequest(t, r, "POST", "/api/v1/me/triggers", map[string]any{
 		"name": "wh-store-fail", "sourceType": "webhook",
 		"sourceConfig": map[string]any{},
-		"targetType":   "run_workflow", "targetConfig": map[string]any{},
+		"workspaceId":  "ws-1", "prompt": "test routine",
 	})
 	assert.Equal(t, 500, w.Code)
 

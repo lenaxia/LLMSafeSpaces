@@ -87,15 +87,41 @@ func TestValidTriggerSourceType(t *testing.T) {
 	}
 }
 
-func TestValidTriggerTargetType(t *testing.T) {
-	for _, s := range []string{TriggerTargetRunWorkflow, TriggerTargetRunScript} {
-		if !ValidTriggerTargetType(s) {
-			t.Errorf("expected %q valid", s)
+func TestValidMemoryMode(t *testing.T) {
+	for _, m := range []string{MemoryNone, MemoryLastResult} {
+		if !ValidMemoryMode(m) {
+			t.Errorf("expected %q valid", m)
 		}
 	}
-	for _, s := range []string{"", "reply_session", "new_session"} {
-		if ValidTriggerTargetType(s) {
-			t.Errorf("expected %q invalid (session actions are agent nodes — D5)", s)
+	for _, m := range []string{"", "session_chain", "all"} {
+		if ValidMemoryMode(m) {
+			t.Errorf("expected %q invalid", m)
+		}
+	}
+}
+
+func TestValidCaptureMode(t *testing.T) {
+	for _, c := range []string{CaptureErrorsOnly, CaptureFull} {
+		if !ValidCaptureMode(c) {
+			t.Errorf("expected %q valid", c)
+		}
+	}
+	for _, c := range []string{"", "transcript", "errors"} {
+		if ValidCaptureMode(c) {
+			t.Errorf("expected %q invalid", c)
+		}
+	}
+}
+
+func TestValidPreserveSession(t *testing.T) {
+	for _, p := range []string{PreserveNever, PreserveAlways, PreserveOnFailure} {
+		if !ValidPreserveSession(p) {
+			t.Errorf("expected %q valid", p)
+		}
+	}
+	for _, p := range []string{"", "sometimes", "on_success"} {
+		if ValidPreserveSession(p) {
+			t.Errorf("expected %q invalid", p)
 		}
 	}
 }
@@ -268,8 +294,10 @@ func TestTriggerResponse_JSONRoundTrip(t *testing.T) {
 		Enabled:      true,
 		SourceType:   TriggerSourceCron,
 		SourceConfig: json.RawMessage(`{"expr":"0 2 * * *","tz":"UTC"}`),
-		TargetType:   TriggerTargetRunScript,
-		TargetConfig: json.RawMessage(`{"workspaceId":"ws_1","path":"/scripts/backup.sh"}`),
+		WorkspaceID:  "ws_1",
+		Prompt:       "Run the nightly backup and summarize results.",
+		MemoryMode:   MemoryLastResult,
+		CaptureMode:  CaptureFull,
 	}
 	b, err := json.Marshal(resp)
 	if err != nil {
@@ -281,6 +309,12 @@ func TestTriggerResponse_JSONRoundTrip(t *testing.T) {
 	}
 	if decoded["sourceType"] != "cron" {
 		t.Errorf("sourceType: %v", decoded["sourceType"])
+	}
+	if decoded["prompt"] != "Run the nightly backup and summarize results." {
+		t.Errorf("prompt: %v", decoded["prompt"])
+	}
+	if decoded["memoryMode"] != "last_result" {
+		t.Errorf("memoryMode: %v", decoded["memoryMode"])
 	}
 }
 
@@ -303,22 +337,5 @@ func TestTypedSourceConfigs(t *testing.T) {
 	json.Unmarshal(b, &decoded)
 	if decoded["expr"] != "0 2 * * *" {
 		t.Errorf("cron expr: %v", decoded["expr"])
-	}
-
-	hook := WebhookSourceConfig{WebhookID: "hk_abc"}
-	b, _ = json.Marshal(hook)
-	json.Unmarshal(b, &decoded)
-	if decoded["webhookId"] != "hk_abc" {
-		t.Errorf("webhook id: %v", decoded["webhookId"])
-	}
-
-	wf := RunWorkflowTargetConfig{
-		WorkflowID:    "wf_1",
-		InputTemplate: map[string]string{"x": "{{.body.x}}"},
-	}
-	b, _ = json.Marshal(wf)
-	json.Unmarshal(b, &decoded)
-	if decoded["workflowId"] != "wf_1" {
-		t.Errorf("wf id: %v", decoded["workflowId"])
 	}
 }

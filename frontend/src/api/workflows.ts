@@ -54,8 +54,17 @@ export interface Trigger {
   enabled: boolean;
   sourceType: string;
   sourceConfig: any;
-  targetType: string;
-  targetConfig: any;
+  workspaceId?: string;
+  workflowId?: string;
+  prompt?: string;
+  agent?: string;
+  scriptPath?: string;
+  scriptArgs?: string[];
+  scriptEnv?: any;
+  memoryMode?: string;
+  memoryMaxRuns?: number;
+  captureMode?: string;
+  preserveSession?: string;
   consecutiveFailures: number;
   autoDisableAfter: number;
   lastFiredAt?: string;
@@ -106,9 +115,17 @@ export const triggerApi = {
   create: (data: {
     name: string;
     sourceType: string;
-    targetType: string;
     sourceConfig: unknown;
-    targetConfig: unknown;
+    workspaceId?: string;
+    workflowId?: string;
+    prompt?: string;
+    agent?: string;
+    scriptPath?: string;
+    scriptArgs?: string[];
+    scriptEnv?: unknown;
+    memoryMode?: string;
+    captureMode?: string;
+    preserveSession?: string;
     description?: string;
     enabled?: boolean;
     autoDisableAfter?: number;
@@ -118,7 +135,11 @@ export const triggerApi = {
   }) => api.post<WebhookCreateResult>('/me/triggers', data),
   update: (id: string, data: Partial<{
     name: string; description?: string; enabled: boolean; autoDisableAfter: number;
-    sourceConfig: unknown; targetType: string; targetConfig: unknown;
+    sourceConfig: unknown;
+    workspaceId?: string; workflowId?: string;
+    prompt?: string; agent?: string;
+    scriptPath?: string; scriptArgs?: string[]; scriptEnv?: unknown;
+    memoryMode?: string; captureMode?: string; preserveSession?: string;
   }>) => api.put<Trigger>(`/me/triggers/${id}`, data),
   delete: (id: string) => api.delete(`/me/triggers/${id}`),
   fires: (id: string) =>

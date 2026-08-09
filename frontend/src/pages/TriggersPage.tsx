@@ -154,14 +154,18 @@ function TriggerCreateForm({ workflows, onSave, onCancel }: {
 }) {
   const [name, setName] = useState("");
   const [sourceType, setSourceType] = useState<"cron" | "webhook">("cron");
-  const [targetType, setTargetType] = useState<"run_workflow" | "run_script">("run_workflow");
-  const [targetWorkflowId, setTargetWorkflowId] = useState("");
+  const [mode, setMode] = useState<"workflow" | "routine">("routine");
 
-  const [scriptWorkspaceId, setScriptWorkspaceId] = useState("");
+  const [workflowId, setWorkflowId] = useState("");
+  const [workspaceId, setWorkspaceId] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const [agentProfile, setAgentProfile] = useState("");
   const [scriptPath, setScriptPath] = useState("");
   const [scriptArgs, setScriptArgs] = useState("");
   const [scriptEnv, setScriptEnv] = useState("");
-  const [scriptPrompt, setScriptPrompt] = useState("");
+  const [memoryMode, setMemoryMode] = useState("none");
+  const [captureMode, setCaptureMode] = useState("errors_only");
+  const [preserveSession, setPreserveSession] = useState("never");
 
   const { data: workspaces } = useQuery({
     queryKey: ["workspaces"],
@@ -186,32 +190,35 @@ function TriggerCreateForm({ workflows, onSave, onCancel }: {
     : { expr: "", tz: "UTC" };
 
   const handleCreate = async () => {
-    let targetConfig: any;
-    if (targetType === "run_workflow") {
-      targetConfig = { workflowId: targetWorkflowId };
-    } else {
-      const env: Record<string, string> = {};
-      if (scriptEnv.trim()) {
-        scriptEnv.split("\n").forEach((line) => {
-          const idx = line.indexOf("=");
-          if (idx > 0) env[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
-        });
-      }
-      targetConfig = {
-        workspaceId: scriptWorkspaceId,
-        path: scriptPath,
-        args: scriptArgs.trim() ? scriptArgs.split(/\s+/) : [],
-        env,
-        prompt: scriptPrompt || undefined,
-      };
-    }
     const data: any = {
       name,
       sourceType,
-      targetType,
       sourceConfig: sourceType === "cron" ? cronConfig : {},
-      targetConfig,
+      memoryMode,
+      captureMode,
+      preserveSession,
     };
+
+    if (mode === "workflow") {
+      data.workflowId = workflowId;
+    } else {
+      data.workspaceId = workspaceId;
+      data.prompt = prompt;
+      if (agentProfile) data.agent = agentProfile;
+      if (scriptPath) {
+        data.scriptPath = scriptPath;
+        data.scriptArgs = scriptArgs.trim() ? scriptArgs.split(/\s+/) : [];
+        if (scriptEnv.trim()) {
+          const env: Record<string, string> = {};
+          scriptEnv.split("\n").forEach((line) => {
+            const idx = line.indexOf("=");
+            if (idx > 0) env[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+          });
+          data.scriptEnv = env;
+        }
+      }
+    }
+
     if (sourceType === "webhook" && webhookAllowedIps.trim()) {
       data.webhookAllowedIps = webhookAllowedIps.split(",").map((s) => s.trim()).filter(Boolean);
     }
@@ -237,9 +244,7 @@ function TriggerCreateForm({ workflows, onSave, onCancel }: {
         <div className="flex items-center gap-2 text-sm font-semibold text-yellow-500">
           <AlertTriangle className="h-4 w-4" /> Save Your Webhook Secret
         </div>
-        <p className="text-xs text-muted-foreground">
-          This secret is shown only once. Store it securely — you'll need it to configure the sender's HMAC signing.
-        </p>
+        <p className="text-xs text-muted-foreground">This secret is shown only once. Store it securely.</p>
         <div className="space-y-2">
           <div>
             <label className="text-xs text-muted-foreground">Webhook URL</label>
@@ -261,70 +266,41 @@ function TriggerCreateForm({ workflows, onSave, onCancel }: {
             {copied && <span className="text-xs text-green-500">Copied!</span>}
           </div>
           <div>
-            <label className="text-xs text-muted-foreground">HMAC Secret (X-Hub-Signature-256)</label>
+            <label className="text-xs text-muted-foreground">HMAC Secret</label>
             <div className="flex gap-1">
               <code className="flex-1 rounded border border-border p-2 text-xs font-mono break-all">
                 {showSecret ? createdSecret : "••••••••••••••••••••••••"}
               </code>
-              <button
-                onClick={() => setShowSecret(!showSecret)}
-                className="rounded border border-border p-2 hover:bg-accent"
-              >
+              <button onClick={() => setShowSecret(!showSecret)} className="rounded border border-border p-2 hover:bg-accent">
                 {showSecret ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
               </button>
-              <button
-                onClick={() => navigator.clipboard.writeText(createdSecret)}
-                className="rounded border border-border p-2 hover:bg-accent"
-              >
+              <button onClick={() => navigator.clipboard.writeText(createdSecret)} className="rounded border border-border p-2 hover:bg-accent">
                 <Copy className="h-3.5 w-3.5" />
               </button>
             </div>
           </div>
         </div>
-        <div className="rounded border border-border bg-muted p-2 text-xs text-muted-foreground">
-          <p className="font-semibold mb-1">Signing example (Python):</p>
-          <pre className="font-mono overflow-x-auto">{`import hmac, hashlib
-sig = hmac.new(
-    secret.encode(),
-    body.encode(),
-    hashlib.sha256
-).hexdigest()
-headers = {"X-Hub-Signature-256": f"sha256={sig}"}`}</pre>
-        </div>
-        <button
-          onClick={onCancel}
-          className="w-full rounded bg-primary py-2 text-sm text-primary-foreground"
-        >
-          Done
-        </button>
+        <button onClick={onCancel} className="w-full rounded bg-primary py-2 text-sm text-primary-foreground">Done</button>
       </div>
     );
   }
 
+  const canCreate = name && (
+    mode === "workflow" ? workflowId :
+    workspaceId && (prompt || scriptPath)
+  );
+
   return (
     <div className="m-2 rounded-md border border-border p-3 space-y-3">
-      <input
-        className="w-full rounded border border-border px-2 py-1 text-sm bg-background"
-        placeholder="Trigger name"
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-      />
+      <input className="w-full rounded border border-border px-2 py-1 text-sm bg-background" placeholder="Trigger name" value={name} onChange={(e) => setName(e.target.value)} />
 
       <div>
         <label className="mb-1 block text-xs text-muted-foreground">Trigger Type</label>
         <div className="flex gap-2">
-          <button
-            onClick={() => setSourceType("cron")}
-            className={cn("flex-1 rounded border px-2 py-1.5 text-sm flex items-center justify-center gap-1",
-              sourceType === "cron" ? "border-primary bg-primary/10" : "border-border")}
-          >
+          <button onClick={() => setSourceType("cron")} className={cn("flex-1 rounded border px-2 py-1.5 text-sm flex items-center justify-center gap-1", sourceType === "cron" ? "border-primary bg-primary/10" : "border-border")}>
             <Clock className="h-3.5 w-3.5" /> Schedule
           </button>
-          <button
-            onClick={() => setSourceType("webhook")}
-            className={cn("flex-1 rounded border px-2 py-1.5 text-sm flex items-center justify-center gap-1",
-              sourceType === "webhook" ? "border-primary bg-primary/10" : "border-border")}
-          >
+          <button onClick={() => setSourceType("webhook")} className={cn("flex-1 rounded border px-2 py-1.5 text-sm flex items-center justify-center gap-1", sourceType === "webhook" ? "border-primary bg-primary/10" : "border-border")}>
             <LinkIcon className="h-3.5 w-3.5" /> Webhook
           </button>
         </div>
@@ -333,153 +309,117 @@ headers = {"X-Hub-Signature-256": f"sha256={sig}"}`}</pre>
       {sourceType === "cron" && (
         <div className="space-y-2">
           {rawMode ? (
-            <input
-              className="w-full rounded border border-border px-2 py-1 text-sm font-mono bg-background"
-              placeholder="Cron expression (e.g. */15 * * * *)"
-              value={rawExpr}
-              onChange={(e) => setRawExpr(e.target.value)}
-            />
+            <input className="w-full rounded border border-border px-2 py-1 text-sm font-mono bg-background" placeholder="Cron expression" value={rawExpr} onChange={(e) => setRawExpr(e.target.value)} />
           ) : (
             <CronBuilder friendly={friendly} onChange={setFriendly} />
           )}
-          <button
-            onClick={() => setRawMode(!rawMode)}
-            className="text-xs text-blue-500 hover:underline"
-          >
-            {rawMode ? "← Switch to friendly mode" : "Switch to raw cron expression →"}
+          <button onClick={() => setRawMode(!rawMode)} className="text-xs text-blue-500 hover:underline">
+            {rawMode ? "← Friendly mode" : "Raw cron →"}
           </button>
-          {rawMode && (
-            <p className="text-xs text-yellow-500">
-              Note: raw mode supports */N, hourly, and daily patterns. Ranges/lists in the hour field are not yet supported.
-            </p>
-          )}
-          <div className="rounded bg-muted p-2 text-xs text-muted-foreground">
-            <span className="font-medium">Schedule:</span> {describeCron(cronToFriendly(cronConfig))}
-          </div>
+          <div className="rounded bg-muted p-2 text-xs text-muted-foreground">Schedule: {describeCron(cronToFriendly(cronConfig))}</div>
         </div>
       )}
 
       {sourceType === "webhook" && (
         <div className="space-y-2">
           <div>
-            <label className="mb-1 block text-xs text-muted-foreground">IP Allowlist (optional, one CIDR per line)</label>
-            <input
-              className="w-full rounded border border-border px-2 py-1 text-sm font-mono bg-background"
-              placeholder="10.0.0.0/8, 192.168.1.0/24"
-              value={webhookAllowedIps}
-              onChange={(e) => setWebhookAllowedIps(e.target.value)}
-            />
+            <label className="mb-1 block text-xs text-muted-foreground">IP Allowlist (optional)</label>
+            <input className="w-full rounded border border-border px-2 py-1 text-sm font-mono bg-background" placeholder="10.0.0.0/8" value={webhookAllowedIps} onChange={(e) => setWebhookAllowedIps(e.target.value)} />
           </div>
           <div>
-            <label className="mb-1 block text-xs text-muted-foreground">Idempotency Mode</label>
-            <select
-              className="w-full rounded border border-border px-2 py-1 text-sm bg-background"
-              value={webhookIdempotencyMode}
-              onChange={(e) => setWebhookIdempotencyMode(e.target.value)}
-            >
-              <option value="header">Header (X-Request-ID) — recommended</option>
+            <label className="mb-1 block text-xs text-muted-foreground">Idempotency</label>
+            <select className="w-full rounded border border-border px-2 py-1 text-sm bg-background" value={webhookIdempotencyMode} onChange={(e) => setWebhookIdempotencyMode(e.target.value)}>
+              <option value="header">Header (X-Request-ID)</option>
               <option value="hash">Hash (body + timestamp)</option>
               <option value="disabled">Disabled</option>
             </select>
           </div>
-          <p className="text-xs text-muted-foreground">
-            The webhook URL and HMAC secret will be generated after creation.
-          </p>
         </div>
       )}
 
       <div>
-        <label className="mb-1 block text-xs text-muted-foreground">Target Type</label>
-        <select
-          className="w-full rounded border border-border px-2 py-1 text-sm bg-background"
-          value={targetType}
-          onChange={(e) => setTargetType(e.target.value as "run_workflow" | "run_script")}
-        >
-          <option value="run_workflow">Run a Workflow</option>
-          <option value="run_script">Run a Script</option>
-        </select>
+        <label className="mb-1 block text-xs text-muted-foreground">Target</label>
+        <div className="flex gap-2">
+          <button onClick={() => setMode("routine")} className={cn("flex-1 rounded border px-2 py-1.5 text-sm", mode === "routine" ? "border-primary bg-primary/10" : "border-border")}>
+            Agent Routine
+          </button>
+          <button onClick={() => setMode("workflow")} className={cn("flex-1 rounded border px-2 py-1.5 text-sm", mode === "workflow" ? "border-primary bg-primary/10" : "border-border")}>
+            DAG Workflow
+          </button>
+        </div>
       </div>
 
-      {targetType === "run_workflow" ? (
+      {mode === "workflow" ? (
         <div>
-          <label className="mb-1 block text-xs text-muted-foreground">Target Workflow</label>
-          <select
-            className="w-full rounded border border-border px-2 py-1 text-sm bg-background"
-            value={targetWorkflowId}
-            onChange={(e) => setTargetWorkflowId(e.target.value)}
-          >
+          <label className="mb-1 block text-xs text-muted-foreground">Workflow</label>
+          <select className="w-full rounded border border-border px-2 py-1 text-sm bg-background" value={workflowId} onChange={(e) => setWorkflowId(e.target.value)}>
             <option value="">Select a workflow...</option>
-            {workflows.map((wf) => (
-              <option key={wf.id} value={wf.id}>{wf.name}</option>
-            ))}
+            {workflows.map((wf) => (<option key={wf.id} value={wf.id}>{wf.name}</option>))}
           </select>
         </div>
       ) : (
         <div className="space-y-2">
           <div>
             <label className="mb-1 block text-xs text-muted-foreground">Workspace</label>
-            <select
-              className="w-full rounded border border-border px-2 py-1 text-sm bg-background"
-              value={scriptWorkspaceId}
-              onChange={(e) => setScriptWorkspaceId(e.target.value)}
-            >
-              <option value="">Select a workspace...</option>
-              {(workspaces?.items || []).map((ws) => (
-                <option key={ws.id} value={ws.id}>{ws.name} ({ws.phase})</option>
-              ))}
+            <select className="w-full rounded border border-border px-2 py-1 text-sm bg-background" value={workspaceId} onChange={(e) => setWorkspaceId(e.target.value)}>
+              <option value="">Select workspace...</option>
+              {(workspaces?.items || []).map((ws) => (<option key={ws.id} value={ws.id}>{ws.name} ({ws.phase})</option>))}
             </select>
           </div>
           <div>
-            <label className="mb-1 block text-xs text-muted-foreground">Script Path</label>
-            <input
-              className="w-full rounded border border-border px-2 py-1 font-mono text-sm bg-background"
-              placeholder="/workspace/scripts/backup.sh"
-              value={scriptPath}
-              onChange={(e) => setScriptPath(e.target.value)}
-            />
+            <label className="mb-1 block text-xs text-muted-foreground">Prompt (text/template)</label>
+            <textarea className="w-full rounded border border-border px-2 py-1 text-xs bg-background h-20 resize-y" spellCheck={false} value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder={"Check for new action items.\n\nPrevious result:\n{{.prevResult}}"} />
           </div>
           <div>
-            <label className="mb-1 block text-xs text-muted-foreground">Arguments (space-separated)</label>
-            <input
-              className="w-full rounded border border-border px-2 py-1 font-mono text-sm bg-background"
-              placeholder="--force --output /tmp/result"
-              value={scriptArgs}
-              onChange={(e) => setScriptArgs(e.target.value)}
-            />
+            <label className="mb-1 block text-xs text-muted-foreground">Agent Profile (optional)</label>
+            <input className="w-full rounded border border-border px-2 py-1 text-sm bg-background" value={agentProfile} onChange={(e) => setAgentProfile(e.target.value)} placeholder="default" />
           </div>
           <div>
-            <label className="mb-1 block text-xs text-muted-foreground">Environment Variables (KEY=value, one per line)</label>
-            <textarea
-              className="w-full rounded border border-border px-2 py-1 font-mono text-xs bg-background h-16 resize-y"
-              placeholder={"S3_BUCKET=my-bucket\nAWS_REGION=us-east-1"}
-              value={scriptEnv}
-              onChange={(e) => setScriptEnv(e.target.value)}
-            />
+            <label className="mb-1 block text-xs text-muted-foreground">Script Path (optional — runs before agent)</label>
+            <input className="w-full rounded border border-border px-2 py-1 font-mono text-sm bg-background" placeholder="/workspace/scripts/fetch.sh" value={scriptPath} onChange={(e) => setScriptPath(e.target.value)} />
           </div>
-          <div>
-            <label className="mb-1 block text-xs text-muted-foreground">Agent Prompt (text/template — sent after script runs)</label>
-            <textarea
-              className="w-full rounded border border-border px-2 py-1 text-xs bg-background h-20 resize-y"
-              placeholder={"The script completed with exit code {{.input.exitCode}}.\n\nOutput:\n{{.input.stdout}}\n\nAnalyze the results."}
-              value={scriptPrompt}
-              onChange={(e) => setScriptPrompt(e.target.value)}
-            />
-            <p className="text-[10px] text-muted-foreground">If set, the workspace agent receives this prompt with the script output. If empty, only the script runs.</p>
+          {scriptPath && (
+            <>
+              <div>
+                <label className="mb-1 block text-xs text-muted-foreground">Script Args</label>
+                <input className="w-full rounded border border-border px-2 py-1 font-mono text-sm bg-background" value={scriptArgs} onChange={(e) => setScriptArgs(e.target.value)} />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-muted-foreground">Script Env (KEY=value per line)</label>
+                <textarea className="w-full rounded border border-border px-2 py-1 font-mono text-xs bg-background h-12 resize-y" value={scriptEnv} onChange={(e) => setScriptEnv(e.target.value)} />
+              </div>
+            </>
+          )}
+          <div className="grid grid-cols-3 gap-2">
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">Memory</label>
+              <select className="w-full rounded border border-border px-2 py-1 text-xs bg-background" value={memoryMode} onChange={(e) => setMemoryMode(e.target.value)}>
+                <option value="none">None</option>
+                <option value="last_result">Last result</option>
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">Capture</label>
+              <select className="w-full rounded border border-border px-2 py-1 text-xs bg-background" value={captureMode} onChange={(e) => setCaptureMode(e.target.value)}>
+                <option value="errors_only">Errors only</option>
+                <option value="full">Full result</option>
+              </select>
+            </div>
+            <div>
+              <label className="mb-1 block text-xs text-muted-foreground">Session</label>
+              <select className="w-full rounded border border-border px-2 py-1 text-xs bg-background" value={preserveSession} onChange={(e) => setPreserveSession(e.target.value)}>
+                <option value="never">Delete after</option>
+                <option value="on_failure">Keep on failure</option>
+                <option value="always">Always keep</option>
+              </select>
+            </div>
           </div>
         </div>
       )}
 
       <div className="flex gap-2">
-        <button
-          className="flex-1 rounded bg-primary px-2 py-1 text-sm text-primary-foreground disabled:opacity-50"
-          disabled={!name || (targetType === "run_workflow" ? !targetWorkflowId : !scriptWorkspaceId || !scriptPath)}
-          onClick={handleCreate}
-        >
-          Create
-        </button>
-        <button className="rounded border border-border px-2 py-1 text-sm" onClick={onCancel}>
-          Cancel
-        </button>
+        <button className="flex-1 rounded bg-primary px-2 py-1 text-sm text-primary-foreground disabled:opacity-50" disabled={!canCreate} onClick={handleCreate}>Create</button>
+        <button className="rounded border border-border px-2 py-1 text-sm" onClick={onCancel}>Cancel</button>
       </div>
     </div>
   );
@@ -577,13 +517,12 @@ function TriggerEditor({ trigger, workflows, onUpdate, onDelete, onRunWorkflow }
   const [friendly, setFriendly] = useState<FriendlyCron>(() => cronToFriendly(trigger.sourceConfig || {}));
   const [rawMode, setRawMode] = useState(false);
   const [rawExpr, setRawExpr] = useState(trigger.sourceConfig?.expr || "0 * * * *");
-  const [selectedWorkflowId, setSelectedWorkflowId] = useState(trigger.targetConfig?.workflowId || "");
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState(trigger.workflowId || "");
   const [templateStr, setTemplateStr] = useState(() => {
-    const tmpl = trigger.targetConfig?.inputTemplate;
-    return tmpl ? JSON.stringify(tmpl, null, 2) : "";
+    return "";
   });
 
-  const targetWorkflowId = trigger.targetConfig?.workflowId || "";
+  const targetWorkflowId = trigger.workflowId || "";
   const targetWorkflow = workflows.find((w) => w.id === targetWorkflowId);
   const isAutoDisabled = trigger.consecutiveFailures >= trigger.autoDisableAfter && !trigger.enabled;
   const isCron = trigger.sourceType === "cron";
@@ -598,19 +537,12 @@ function TriggerEditor({ trigger, workflows, onUpdate, onDelete, onRunWorkflow }
   };
 
   const handleSaveTarget = () => {
-    onUpdate({ targetConfig: { workflowId: selectedWorkflowId } });
+    onUpdate({ workflowId: selectedWorkflowId });
     setEditingTarget(false);
   };
 
-  const handleSaveTemplate = () => {
-    let parsed: Record<string, string> | undefined;
-    try {
-      parsed = templateStr.trim() ? JSON.parse(templateStr) : undefined;
-    } catch {
-      alert("Invalid JSON for input template");
-      return;
-    }
-    onUpdate({ targetConfig: { ...trigger.targetConfig, inputTemplate: parsed } });
+  const handleSavePrompt = () => {
+    onUpdate({ prompt });
     setEditingTemplate(false);
   };
 
@@ -779,19 +711,17 @@ function TriggerEditor({ trigger, workflows, onUpdate, onDelete, onRunWorkflow }
           ) : (
             <div className="flex gap-2">
               <button onClick={() => setEditingTemplate(false)} className="text-xs text-muted-foreground hover:underline">Cancel</button>
-              <button onClick={handleSaveTemplate} className="text-xs text-blue-500 hover:underline">Save</button>
+              <button onClick={handleSavePrompt} className="text-xs text-blue-500 hover:underline">Save</button>
             </div>
           )}
         </div>
         {!editingTemplate ? (
-          trigger.targetConfig?.inputTemplate ? (
+          trigger.prompt ? (
             <pre className="overflow-x-auto rounded bg-muted p-2 text-xs font-mono">
-              {JSON.stringify(trigger.targetConfig.inputTemplate, null, 2)}
+              {trigger.prompt}
             </pre>
           ) : (
-            <p className="text-xs text-muted-foreground">
-              No template — full webhook envelope passed as input. Add a template to extract specific fields (e.g. <code>{"{{.body.issue.number}}"}</code>).
-            </p>
+            <p className="text-xs text-muted-foreground">No prompt set.</p>
           )
         ) : (
           <>

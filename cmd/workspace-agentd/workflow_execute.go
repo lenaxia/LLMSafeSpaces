@@ -274,6 +274,12 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 		}
 	}
 
+	sessionMode := data.Session
+	if sessionMode == "" {
+		sessionMode = "ephemeral"
+	}
+
+	createdEphemeral := false
 	sessionID := data.SessionID
 	if sessionID == "" {
 		sessionID = createOpencodeSession(ctx, password)
@@ -281,6 +287,7 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 			writeWorkflowError(w, http.StatusOK, "session_not_found", "failed to create ephemeral session")
 			return
 		}
+		createdEphemeral = true
 	}
 
 	body := fmt.Sprintf(`{"agentID":%q,"parts":[{"type":"text","text":%q}]}`, data.Agent, prompt)
@@ -345,6 +352,8 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 		"response":   strings.Join(texts, "\n"),
 		"session_id": sessionID,
 		"tokens":     msgResp.Info.Tokens,
+		"prompt":     prompt,
+		"parts":      msgResp.Parts,
 	}
 
 	if data.EnforceStructuredOutput && len(data.OutputSchema) > 0 {
@@ -354,6 +363,12 @@ func execAgentNode(ctx context.Context, password string, w http.ResponseWriter, 
 			return
 		}
 		result["response"] = parsed
+	}
+
+	if createdEphemeral && sessionMode == "ephemeral" {
+		deleteOpencodeSession(ctx, password, sessionID)
+		result["session_id"] = ""
+		result["session_deleted"] = true
 	}
 
 	writeWorkflowSuccess(w, result)
@@ -425,4 +440,15 @@ func createOpencodeSession(ctx context.Context, password string) string {
 		return ""
 	}
 	return s.ID
+}
+
+func deleteOpencodeSession(ctx context.Context, password, sessionID string) {
+	req, _ := http.NewRequestWithContext(ctx, "DELETE",
+		fmt.Sprintf("http://127.0.0.1:%d/session/%s", agentd.AgentPort, sessionID), nil)
+	req.SetBasicAuth(agentd.AuthUsername, password)
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return
+	}
+	_ = resp.Body.Close()
 }

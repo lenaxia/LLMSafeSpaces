@@ -23,11 +23,26 @@ public class TriggersService {
         return List.of();
     }
 
-    public Map<String, Object> create(String name, String sourceType, String targetType,
-                                       Object sourceConfig, Object targetConfig) {
-        return c.request("POST", "/me/triggers",
-                Map.of("name", name, "sourceType", sourceType, "targetType", targetType,
-                       "sourceConfig", sourceConfig, "targetConfig", targetConfig),
+    public Map<String, Object> create(String name, String sourceType, Object sourceConfig,
+                                       String workspaceId, String workflowId, String prompt,
+                                       String agent, String scriptPath, List<String> scriptArgs,
+                                       Object scriptEnv, String memoryMode, String captureMode,
+                                       String preserveSession) {
+        Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("name", name);
+        body.put("sourceType", sourceType);
+        body.put("sourceConfig", sourceConfig);
+        if (workspaceId != null && !workspaceId.isEmpty()) body.put("workspaceId", workspaceId);
+        if (workflowId != null && !workflowId.isEmpty()) body.put("workflowId", workflowId);
+        if (prompt != null && !prompt.isEmpty()) body.put("prompt", prompt);
+        if (agent != null && !agent.isEmpty()) body.put("agent", agent);
+        if (scriptPath != null && !scriptPath.isEmpty()) body.put("scriptPath", scriptPath);
+        if (scriptArgs != null) body.put("scriptArgs", scriptArgs);
+        if (scriptEnv != null) body.put("scriptEnv", scriptEnv);
+        if (memoryMode != null && !memoryMode.isEmpty()) body.put("memoryMode", memoryMode);
+        if (captureMode != null && !captureMode.isEmpty()) body.put("captureMode", captureMode);
+        if (preserveSession != null && !preserveSession.isEmpty()) body.put("preserveSession", preserveSession);
+        return c.request("POST", "/me/triggers", body,
                 new TypeToken<Map<String, Object>>(){}.getType());
     }
 

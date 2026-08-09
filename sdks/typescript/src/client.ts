@@ -576,8 +576,16 @@ export interface TriggerResponse {
   enabled: boolean;
   sourceType: string;
   sourceConfig: unknown;
-  targetType: string;
-  targetConfig: unknown;
+  workspaceId?: string;
+  workflowId?: string;
+  prompt?: string;
+  agent?: string;
+  scriptPath?: string;
+  scriptArgs?: string[];
+  scriptEnv?: unknown;
+  memoryMode?: string;
+  captureMode?: string;
+  preserveSession?: string;
   consecutiveFailures: number;
   autoDisableAfter: number;
   lastFiredAt?: string;
@@ -627,7 +635,21 @@ class TriggersAPI {
     return this.client.request<{ triggers: TriggerResponse[] }>("GET", "/me/triggers");
   }
 
-  create(req: { name: string; sourceType: string; targetType: string; sourceConfig: unknown; targetConfig: unknown }) {
+  create(req: {
+    name: string;
+    sourceType: string;
+    sourceConfig: unknown;
+    workspaceId?: string;
+    workflowId?: string;
+    prompt?: string;
+    agent?: string;
+    scriptPath?: string;
+    scriptArgs?: string[];
+    scriptEnv?: unknown;
+    memoryMode?: string;
+    captureMode?: string;
+    preserveSession?: string;
+  }) {
     return this.client.request<TriggerResponse>("POST", "/me/triggers", req);
   }
 

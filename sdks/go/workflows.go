@@ -62,8 +62,16 @@ type Trigger struct {
 	Enabled             bool            `json:"enabled"`
 	SourceType          string          `json:"sourceType"`
 	SourceConfig        json.RawMessage `json:"sourceConfig"`
-	TargetType          string          `json:"targetType"`
-	TargetConfig        json.RawMessage `json:"targetConfig"`
+	WorkspaceID         string          `json:"workspaceId,omitempty"`
+	WorkflowID          string          `json:"workflowId,omitempty"`
+	Prompt              string          `json:"prompt,omitempty"`
+	Agent               string          `json:"agent,omitempty"`
+	ScriptPath          string          `json:"scriptPath,omitempty"`
+	ScriptArgs          []string        `json:"scriptArgs,omitempty"`
+	ScriptEnv           json.RawMessage `json:"scriptEnv,omitempty"`
+	MemoryMode          string          `json:"memoryMode,omitempty"`
+	CaptureMode         string          `json:"captureMode,omitempty"`
+	PreserveSession     string          `json:"preserveSession,omitempty"`
 	ConsecutiveFailures int             `json:"consecutiveFailures"`
 	AutoDisableAfter    int             `json:"autoDisableAfter"`
 	LastFiredAt         *time.Time      `json:"lastFiredAt,omitempty"`
@@ -72,11 +80,19 @@ type Trigger struct {
 
 // CreateTriggerReq is the body for creating a trigger.
 type CreateTriggerReq struct {
-	Name         string          `json:"name"`
-	SourceType   string          `json:"sourceType"`
-	TargetType   string          `json:"targetType"`
-	SourceConfig json.RawMessage `json:"sourceConfig"`
-	TargetConfig json.RawMessage `json:"targetConfig"`
+	Name            string          `json:"name"`
+	SourceType      string          `json:"sourceType"`
+	SourceConfig    json.RawMessage `json:"sourceConfig"`
+	WorkspaceID     string          `json:"workspaceId,omitempty"`
+	WorkflowID      string          `json:"workflowId,omitempty"`
+	Prompt          string          `json:"prompt,omitempty"`
+	Agent           string          `json:"agent,omitempty"`
+	ScriptPath      string          `json:"scriptPath,omitempty"`
+	ScriptArgs      []string        `json:"scriptArgs,omitempty"`
+	ScriptEnv       json.RawMessage `json:"scriptEnv,omitempty"`
+	MemoryMode      string          `json:"memoryMode,omitempty"`
+	CaptureMode     string          `json:"captureMode,omitempty"`
+	PreserveSession string          `json:"preserveSession,omitempty"`
 }
 
 // UpdateTriggerReq is the body for partially updating a trigger.

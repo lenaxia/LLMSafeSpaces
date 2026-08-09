@@ -236,7 +236,7 @@ func (h *WorkflowsHandler) createWithAudit(c *gin.Context, ownerType, ownerID, a
 		SpecYAML: req.SpecYAML, SpecJSON: specJSON,
 		InputSchema: req.InputSchema, TargetWorkspaceID: targetWS,
 		OnMissingWorkspace: onMissing,
-		Status: status, Defaults: req.Defaults,
+		Status:             status, Defaults: req.Defaults,
 		CreatedAt: now, UpdatedAt: now,
 	}
 
@@ -420,18 +420,18 @@ func (h *WorkflowsHandler) logCreate(c *gin.Context, ownerType, ownerID, actorID
 
 func workflowRowToResponse(r *wf.WorkflowRow) types.WorkflowResponse {
 	resp := types.WorkflowResponse{
-		ID:          r.ID,
-		OwnerType:   r.OwnerType,
-		Name:        r.Name,
-		Slug:        r.Slug,
-		Description: r.Description,
-		SpecYAML:    r.SpecYAML,
-		InputSchema: r.InputSchema,
+		ID:                 r.ID,
+		OwnerType:          r.OwnerType,
+		Name:               r.Name,
+		Slug:               r.Slug,
+		Description:        r.Description,
+		SpecYAML:           r.SpecYAML,
+		InputSchema:        r.InputSchema,
 		OnMissingWorkspace: r.OnMissingWorkspace,
-		Status:      r.Status,
-		Defaults:    r.Defaults,
-		CreatedAt:   r.CreatedAt,
-		UpdatedAt:   r.UpdatedAt,
+		Status:             r.Status,
+		Defaults:           r.Defaults,
+		CreatedAt:          r.CreatedAt,
+		UpdatedAt:          r.UpdatedAt,
 	}
 	if r.OwnerID != "" && r.OwnerID != "_platform" {
 		resp.OwnerID = r.OwnerID
