@@ -123,22 +123,27 @@ func (m *mockStore) addRun(id, workflowID, workspaceID string, spec json.RawMess
 }
 
 type mockAgentd struct {
-	outputs  map[string]json.RawMessage
-	branches map[string]string
-	errors   map[string]error
-	errCodes map[string]string
+	outputs   map[string]json.RawMessage
+	branches  map[string]string
+	errors    map[string]error
+	errCodes  map[string]string
+	sentSpecs map[string]json.RawMessage
 }
 
 func newMockAgentd() *mockAgentd {
 	return &mockAgentd{
-		outputs:  make(map[string]json.RawMessage),
-		branches: make(map[string]string),
-		errors:   make(map[string]error),
-		errCodes: make(map[string]string),
+		outputs:   make(map[string]json.RawMessage),
+		branches:  make(map[string]string),
+		errors:    make(map[string]error),
+		errCodes:  make(map[string]string),
+		sentSpecs: make(map[string]json.RawMessage),
 	}
 }
 
 func (m *mockAgentd) Execute(_ context.Context, _ string, req *NodeExecRequest) (*NodeExecResponse, error) {
+	if m.sentSpecs != nil {
+		m.sentSpecs[req.NodeID] = req.Spec
+	}
 	if err, ok := m.errors[req.NodeID]; ok {
 		return nil, err
 	}
@@ -970,6 +975,17 @@ func TestExecuteRoutine_MemoryLastResult_InjectsPrevResult(t *testing.T) {
 
 	if store.statuses["fire-mem"] != "delivered" {
 		t.Errorf("expected delivered, got %s", store.statuses["fire-mem"])
+	}
+
+	sentSpec := agentd.sentSpecs["routine-agent"]
+	var parsed map[string]any
+	_ = json.Unmarshal(sentSpec, &parsed)
+	renderedPrompt, _ := parsed["prompt"].(string)
+	if !strings.Contains(renderedPrompt, "check email") {
+		t.Errorf("expected prevResult injected into prompt, got: %s", renderedPrompt)
+	}
+	if strings.Contains(renderedPrompt, "{{.prevResult}}") {
+		t.Errorf("expected {{.prevResult}} to be replaced, got: %s", renderedPrompt)
 	}
 }
 

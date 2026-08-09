@@ -547,3 +547,47 @@ func (s *StoreIntegrationSuite) TestCreateWorkflowRunWithFire() {
 	assert.Len(s.T(), fires, 1, "rejected fire should NOT have written an orphan row")
 	assert.Equal(s.T(), fireID, fires[0].ID)
 }
+
+func (s *StoreIntegrationSuite) TestGetLastRoutineResult() {
+	ctx := context.Background()
+	triggerID := uuid.New().String()
+
+	now := time.Now().UTC()
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO triggers (id, owner_type, owner_id, name, enabled, source_type, source_config, memory_mode, capture_mode, preserve_session, auto_disable_after, created_at, updated_at)
+		VALUES ($1, 'user', 'test-user', 'test-routine', true, 'cron', '{}'::jsonb, 'last_result', 'full', 'never', 10, $2, $3)
+	`, triggerID, now, now)
+	s.Require().NoError(err)
+
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO trigger_fires (id, trigger_id, source_type, action_type, status, fired_at, result)
+		VALUES ($1, $2, 'cron', 'routine', 'delivered', $3, '{"summary":"previous run result"}'::jsonb)
+	`, uuid.New().String(), triggerID, now.Add(-1*time.Hour))
+	s.Require().NoError(err)
+
+	result, err := s.store.GetLastRoutineResult(ctx, triggerID)
+	s.Require().NoError(err)
+	s.Require().NotNil(result)
+	s.Contains(string(result), "previous run result")
+}
+
+func (s *StoreIntegrationSuite) TestGetLastRoutineResult_EmptyOnNoDelivered() {
+	ctx := context.Background()
+	triggerID := uuid.New().String()
+	now := time.Now().UTC()
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO triggers (id, owner_type, owner_id, name, enabled, source_type, source_config, memory_mode, capture_mode, preserve_session, auto_disable_after, created_at, updated_at)
+		VALUES ($1, 'user', 'test-user', 'test-routine2', true, 'cron', '{}'::jsonb, 'last_result', 'full', 'never', 10, $2, $3)
+	`, triggerID, now, now)
+	s.Require().NoError(err)
+
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO trigger_fires (id, trigger_id, source_type, action_type, status, fired_at)
+		VALUES ($1, $2, 'cron', 'routine', 'fired', $3)
+	`, uuid.New().String(), triggerID, now)
+	s.Require().NoError(err)
+
+	result, err := s.store.GetLastRoutineResult(ctx, triggerID)
+	s.Require().NoError(err)
+	s.Nil(result, "should return nil for non-delivered fires")
+}
