@@ -163,7 +163,7 @@ func (s *StoreIntegrationSuite) TestTriggerCRUD() {
 		Name: "nightly-backup", Enabled: true,
 		SourceType:       "cron",
 		SourceConfig:     json.RawMessage(`{"expr":"0 2 * * *","tz":"UTC"}`),
-		WorkflowID:       strPtr("wf_1"),
+		WorkflowID:       strPtr(uuid.New().String()),
 		AutoDisableAfter: 10,
 		NextFireAt:       &now,
 		CreatedAt:        now, UpdatedAt: now,
@@ -212,7 +212,7 @@ func (s *StoreIntegrationSuite) TestWebhookCreateAndGet() {
 		ID: triggerID, OwnerType: "user", OwnerID: "u1",
 		Name: "github-hook", Enabled: true,
 		SourceType: "webhook", SourceConfig: json.RawMessage(`{}`),
-		WorkflowID:       strPtr("wf_1"),
+		WorkflowID:       strPtr(uuid.New().String()),
 		AutoDisableAfter: 10, CreatedAt: now, UpdatedAt: now,
 	}))
 
@@ -253,7 +253,7 @@ func (s *StoreIntegrationSuite) TestWebhookDeliveryDedup() {
 	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
 		ID: triggerID, OwnerType: "user", OwnerID: "u1",
 		Name: "wh-for-dedup", Enabled: true, SourceType: "webhook",
-		SourceConfig: json.RawMessage(`{}`), WorkflowID: strPtr("wf_1"), AutoDisableAfter: 10,
+		SourceConfig: json.RawMessage(`{}`), WorkflowID: strPtr(uuid.New().String()), AutoDisableAfter: 10,
 		CreatedAt: now, UpdatedAt: now,
 	}))
 	hookID := uuid.New().String()
@@ -418,7 +418,7 @@ func (s *StoreIntegrationSuite) TestTriggerCircuitBreaker() {
 	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
 		ID: triggerID, OwnerType: "user", OwnerID: "u1",
 		Name: "cron-trigger", Enabled: true, SourceType: "cron",
-		SourceConfig: json.RawMessage(`{}`), WorkflowID: strPtr("wf_1"), AutoDisableAfter: 3,
+		SourceConfig: json.RawMessage(`{}`), WorkflowID: strPtr(uuid.New().String()), AutoDisableAfter: 3,
 		CreatedAt: now, UpdatedAt: now,
 	}))
 
@@ -457,7 +457,7 @@ func (s *StoreIntegrationSuite) TestListDueCronTriggers() {
 	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
 		ID: dueID, OwnerType: "user", OwnerID: "u1",
 		Name: "due", Enabled: true, SourceType: "cron",
-		SourceConfig: json.RawMessage(`{}`), WorkflowID: strPtr("wf_1"), AutoDisableAfter: 10,
+		SourceConfig: json.RawMessage(`{}`), WorkflowID: strPtr(uuid.New().String()), AutoDisableAfter: 10,
 		NextFireAt: &past, CreatedAt: now, UpdatedAt: now,
 	}))
 
@@ -466,7 +466,7 @@ func (s *StoreIntegrationSuite) TestListDueCronTriggers() {
 	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
 		ID: notDueID, OwnerType: "user", OwnerID: "u1",
 		Name: "not-due", Enabled: true, SourceType: "cron",
-		SourceConfig: json.RawMessage(`{}`), WorkflowID: strPtr("wf_1"), AutoDisableAfter: 10,
+		SourceConfig: json.RawMessage(`{}`), WorkflowID: strPtr(uuid.New().String()), AutoDisableAfter: 10,
 		NextFireAt: &future, CreatedAt: now, UpdatedAt: now,
 	}))
 
@@ -475,7 +475,7 @@ func (s *StoreIntegrationSuite) TestListDueCronTriggers() {
 	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
 		ID: disabledID, OwnerType: "user", OwnerID: "u1",
 		Name: "disabled", Enabled: false, SourceType: "cron",
-		SourceConfig: json.RawMessage(`{}`), WorkflowID: strPtr("wf_1"), AutoDisableAfter: 10,
+		SourceConfig: json.RawMessage(`{}`), WorkflowID: strPtr(uuid.New().String()), AutoDisableAfter: 10,
 		NextFireAt: &past, CreatedAt: now, UpdatedAt: now,
 	}))
 
@@ -502,7 +502,7 @@ func (s *StoreIntegrationSuite) TestCreateWorkflowRunWithFire() {
 	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
 		ID: triggerID, OwnerType: "user", OwnerID: "u1",
 		Name: "wh", Enabled: true, SourceType: "webhook",
-		SourceConfig: json.RawMessage(`{}`), WorkflowID: strPtr("wf_1"), AutoDisableAfter: 10,
+		SourceConfig: json.RawMessage(`{}`), WorkflowID: strPtr(uuid.New().String()), AutoDisableAfter: 10,
 		CreatedAt: now, UpdatedAt: now,
 	}))
 
@@ -604,8 +604,8 @@ func (s *StoreIntegrationSuite) TestListPendingRoutineFires() {
 		INSERT INTO triggers (id, owner_type, owner_id, name, enabled, source_type, source_config,
 			workspace_id, prompt, memory_mode, capture_mode, preserve_session, auto_disable_after, created_at, updated_at)
 		VALUES ($1, 'user', 'test-user', 'test-pending', true, 'cron', '{}'::jsonb,
-			'ws-1', 'test prompt', 'none', 'full', 'never', 10, $2, $3)
-	`, triggerID, now, now)
+			$4, 'test prompt', 'none', 'full', 'never', 10, $2, $3)
+	`, triggerID, now, now, uuid.New().String())
 	s.Require().NoError(err)
 
 	fireID := uuid.New().String()

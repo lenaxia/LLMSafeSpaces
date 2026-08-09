@@ -205,7 +205,7 @@ type TriggerUpdate struct {
 func (s *Store) CreateWorkflow(ctx context.Context, row *WorkflowRow) error {
 	_, err := s.pool.Exec(ctx, `
 		INSERT INTO workflows (id, owner_type, owner_id, name, slug, description, spec_yaml, spec_json, input_schema, target_workspace_id, on_missing_workspace, status, defaults, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, COALESCE($6, ''), $7, $8, $9, $10, COALESCE($11, 'abort'), COALESCE($12, 'draft'), COALESCE($13, '{}'::jsonb), $14, $15)
+		VALUES ($1, $2, $3, $4, $5, COALESCE($6, ''), $7, $8, $9, $10, COALESCE(NULLIF($11, ''), 'abort'), COALESCE(NULLIF($12, ''), 'draft'), COALESCE($13, '{}'::jsonb), $14, $15)
 	`, row.ID, row.OwnerType, row.OwnerID, row.Name, row.Slug, row.Description,
 		row.SpecYAML, row.SpecJSON, nullableJSON(row.InputSchema), nullableStrPtr(row.TargetWorkspaceID),
 		row.OnMissingWorkspace, row.Status, nullableJSON(row.Defaults), row.CreatedAt, row.UpdatedAt)
