@@ -146,8 +146,8 @@ func (a *K8sWorkspaceActivator) EnsureActive(ctx context.Context, workspaceID st
 			// check (phase_active.go: time.Since(lastActivity) > idleTimeout)
 			// runs on the very next reconcile after the workspace reaches
 			// Active; without this refresh, a stale lastActivity causes
-			// immediate re-suspend (the "Test1we" bug). Mirrors the API
-			// service's ActivateWorkspace (workspace_service.go:1675).
+			// immediate re-suspend. Mirrors the API service's
+			// ActivateWorkspace (workspace_service.go).
 			patchBody := map[string]any{
 				"spec": map[string]any{"suspend": suspendFalse},
 				"metadata": map[string]any{

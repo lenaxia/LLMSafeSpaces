@@ -684,11 +684,11 @@ func TestK8sWorkspaceActivator_PatchRefreshesLastActivity(t *testing.T) {
 		Run(func(args mock.Arguments) {
 			data := args.Get(3).([]byte)
 			t.Logf("patch body: %s", string(data))
-			parsed := map[string]any{}
-			if err := json.Unmarshal(data, &parsed); err != nil {
+			bodyMap := map[string]any{}
+			if err := json.Unmarshal(data, &bodyMap); err != nil {
 				t.Fatalf("patch body is not valid JSON: %v (body=%s)", err, string(data))
 			}
-			meta, ok := parsed["metadata"].(map[string]any)
+			meta, ok := bodyMap["metadata"].(map[string]any)
 			if !ok {
 				t.Fatalf("regression: patch body missing metadata key (body=%s). "+
 					"EnsureActive must refresh last-activity-at to prevent the "+
@@ -705,11 +705,11 @@ func TestK8sWorkspaceActivator_PatchRefreshesLastActivity(t *testing.T) {
 					"EnsureActive must refresh last-activity-at.", k8stypes.AnnotationLastActivityAt, string(data))
 			}
 			// Timestamp must be recent (within the last minute), not the stale value.
-			parsed_, err := time.Parse(time.RFC3339, ts)
+			parsed, err := time.Parse(time.RFC3339, ts)
 			if err != nil {
 				t.Fatalf("last-activity-at %q is not RFC3339: %v", ts, err)
 			}
-			if age := time.Since(parsed_); age > time.Minute {
+			if age := time.Since(parsed); age > time.Minute {
 				t.Fatalf("regression: last-activity-at %q is stale (age=%s); must be ~now", ts, age)
 			}
 			// Must differ from the stale value.
