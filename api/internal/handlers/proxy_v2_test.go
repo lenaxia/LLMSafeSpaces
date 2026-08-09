@@ -4,8 +4,8 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,62 +13,21 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
-	k8sfake "k8s.io/client-go/kubernetes/fake"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
-	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
-	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
+	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 )
 
-// setupV2TestEnv creates a ProxyHandler with the V2 flag enabled, backed by
-// a mock k8s client that returns a workspace CRD pointing at the given
-// podIP. The cached password is pre-seeded so getPassword does not hit K8s
-// Secrets.
-func setupV2TestEnv(t *testing.T, podIP string) (*ProxyHandler, func()) {
+// startV2TestServer starts an httptest.Server on a DYNAMIC port that routes
+// by path: /prompt → 200 with admission body, /interrupt → 204. Enforces
+// Basic auth. Dynamic port eliminates the port 4096 contention that caused
+// non-deterministic CI failures.
+func startV2TestServer(t *testing.T, password string) *httptest.Server {
 	t.Helper()
-	gin.SetMode(gin.TestMode)
-
-	k8sMock := k8smocks.NewMockKubernetesClient()
-	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
-	wsMock := k8smocks.NewMockWorkspaceInterface()
-	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil).Maybe()
-	llmMock.On("Workspaces", "default").Return(wsMock).Maybe()
-	ws := makeWorkspaceCRDWithStatus("ws-1", podIP, string(v1.WorkspacePhaseActive), "ws-1")
-	wsMock.On("Get", mock.Anything, mock.Anything, mock.Anything).Return(ws, nil).Maybe()
-	fakeClientset := k8sfake.NewSimpleClientset()
-	k8sMock.On("Clientset").Return(fakeClientset).Maybe()
-
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{}, nil)
-	require.NoError(t, err)
-	handler.SetV2SessionQueueEnabled(true)
-	handler.SetCachedPasswordForTest("ws-1", "test-pw")
-	handler.userBroker = eventbroker.NewUserEventBroker()
-
-	return handler, func() {}
-}
-
-// TestV2HandlerPaths exercises all three V2 handler paths (enqueue,
-// sendPromptAsync, abort) against a single shared httptest server on port
-// 4096. Consolidating into one test function eliminates port-4096 contention
-// between tests — the -race detector exposed cross-test interference where
-// one test's srv.Close() would block for 5s while the next test's request
-// hit the stale server.
-//
-// Tests that don't need a live server (validation, flag-gating,
-// unreachable-pod) run as standalone tests below — they don't touch port 4096.
-func TestV2HandlerPaths(t *testing.T) {
-	// Single server for the entire test. Routes by PATH (not mutable state)
-	// to eliminate the race between the test goroutine setting response
-	// params and the server goroutine reading them.
-	listener, err := net.Listen("tcp", "127.0.0.1:4096")
-	if err != nil {
-		t.Skipf("port 4096 not available: %v", err)
-	}
-	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
-		if !ok || user != "opencode" || pass != "test-pw" {
+		if !ok || user != "opencode" || pass != password {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -80,129 +39,166 @@ func TestV2HandlerPaths(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/interrupt"):
 			w.WriteHeader(http.StatusNoContent)
 		default:
-			w.WriteHeader(http.StatusOK)
+			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
-	srv.Listener = listener
-	srv.Start()
-	defer srv.Close()
-
-	t.Run("Enqueue_Success", func(t *testing.T) {
-		handler, cleanup := setupV2TestEnv(t, "127.0.0.1")
-		defer cleanup()
-		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-		c.Request = httptest.NewRequest("POST", "/queue",
-			strings.NewReader(`{"text":"hello v2"}`))
-		c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses-1"}}
-		handler.EnqueueMessage(c)
-		assert.Equal(t, http.StatusAccepted, w.Code)
-		var resp map[string]string
-		require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
-		assert.Equal(t, "msg_v2_1", resp["messageID"])
-	})
-
-	t.Run("SendPromptAsync_Bypasses409Guard", func(t *testing.T) {
-		handler, cleanup := setupV2TestEnv(t, "127.0.0.1")
-		defer cleanup()
-		handler.SetActiveSessionsForTest("ws-1", []string{"ses-1"})
-		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-		c.Request = httptest.NewRequest("POST", "/prompt_async",
-			strings.NewReader(`{"parts":[{"type":"text","text":"busy-send"}]}`))
-		c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses-1"}}
-		handler.SendPromptAsync(c)
-		assert.Equal(t, http.StatusAccepted, w.Code, "V2 must bypass the 409 guard")
-		var resp map[string]string
-		require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
-		assert.Equal(t, "msg_v2_1", resp["messageID"])
-	})
-
-	t.Run("Abort_FlagOn_CallsV2NotV1", func(t *testing.T) {
-		// Under V2, abort does NOT touch Redis. queueSvc is nil. If V2
-		// path is taken, the handler returns without touching queueSvc.
-		// If V1 path were taken, it would call proxyToWorkspace which
-		// makes a real HTTP call (and would fail/error on nil queueSvc
-		// post-abort). With flag ON, queueSvc=nil + no server = the
-		// handler must take the V2 path and fail with a CLIENT ERROR
-		// (can't reach pod), NOT a nil-pointer panic from V1's
-		// PeekAll+Clear.
-		//
-		// We don't need a live server here — we're testing that the V2
-		// path is SELECTED (not V1). If V2 were not selected, the V1
-		// path would call h.proxyToWorkspace which forwards to the pod,
-		// fail (no pod), and then try PeekAll on nil queueSvc → panic.
-		// No panic = V2 path was taken.
-		handler, cleanup := setupV2TestEnv(t, "192.0.2.1") // unreachable pod
-		defer cleanup()
-		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-		c.Request = httptest.NewRequest("POST", "/abort", nil)
-		c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses-1"}}
-		handler.AbortSession(c)
-		// V2 path: InterruptV2 fails (unreachable pod) → 500.
-		// V1 path would panic (nil queueSvc PeekAll).
-		// 500 (not panic) = V2 path was taken.
-		assert.Equal(t, http.StatusInternalServerError, w.Code,
-			"V2 path must be taken (500 from unreachable pod), not V1 (panic on nil queueSvc)")
-	})
 }
 
-// --- Tests that don't need a live server (no port 4096) ---
+// newV2TestHandler creates a ProxyHandler with V2 flag on, backed by the
+// given test server. The v2ClientFactory is injected so V2 methods talk to
+// the test server's dynamic port, not port 4096. Routes are registered on a
+// real gin router so gin's response lifecycle (WriteHeaderNow flush) runs
+// correctly — calling handler methods directly with gin.CreateTestContext
+// skips the flush, causing bare c.Status(204) to never reach the recorder.
+func newV2TestHandler(t *testing.T, srv *httptest.Server) (*gin.Engine, *ProxyHandler) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
 
-func TestEnqueueV2_FlagOn_EmptyText(t *testing.T) {
-	handler, cleanup := setupV2TestEnv(t, "127.0.0.1")
-	defer cleanup()
+	k8sMock := newMockK8sWithWorkspace(t, "ws-1", "127.0.0.1")
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{}, nil)
+	require.NoError(t, err)
+	handler.SetV2SessionQueueEnabled(true)
+	handler.SetCachedPasswordForTest("ws-1", "test-pw")
+	handler.userBroker = eventbroker.NewUserEventBroker()
+	handler.SetV2ClientFactory(func(ctx context.Context, workspaceID string) (V2SessionClient, error) {
+		return opencode.NewClient(srv.URL, "test-pw", nil), nil
+	})
+
+	router := gin.New()
+	router.POST("/:id/sessions/:sessionId/queue", handler.EnqueueMessage)
+	router.POST("/:id/sessions/:sessionId/prompt_async", handler.SendPromptAsync)
+	router.POST("/:id/sessions/:sessionId/abort", handler.AbortSession)
+	return router, handler
+}
+
+// --- EnqueueMessage V2 ---
+
+func TestEnqueueV2_Success(t *testing.T) {
+	srv := startV2TestServer(t, "test-pw")
+	defer srv.Close()
+
+	router, _ := newV2TestHandler(t, srv)
 
 	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest("POST", "/queue",
-		strings.NewReader(`{"text":""}`))
-	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses-1"}}
+	req := httptest.NewRequest("POST", "/ws-1/sessions/ses-1/queue",
+		strings.NewReader(`{"text":"hello v2"}`))
+	router.ServeHTTP(w, req)
 
-	handler.EnqueueMessage(c)
+	assert.Equal(t, http.StatusAccepted, w.Code)
+	var resp map[string]string
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	assert.Equal(t, "msg_v2_1", resp["messageID"])
+}
+
+func TestEnqueueV2_EmptyText(t *testing.T) {
+	srv := startV2TestServer(t, "test-pw")
+	defer srv.Close()
+
+	router, _ := newV2TestHandler(t, srv)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/ws-1/sessions/ses-1/queue",
+		strings.NewReader(`{"text":""}`))
+	router.ServeHTTP(w, req)
+
 	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
-func TestEnqueueV2_FlagOn_UnreachablePod(t *testing.T) {
-	handler, cleanup := setupV2TestEnv(t, "192.0.2.1")
-	defer cleanup()
+func TestEnqueueV2_ServerError(t *testing.T) {
+	srv := startV2TestServer(t, "test-pw")
+	srv.Close() // dead server → connection refused
+
+	router, _ := newV2TestHandler(t, srv)
 
 	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest("POST", "/queue",
+	req := httptest.NewRequest("POST", "/ws-1/sessions/ses-1/queue",
 		strings.NewReader(`{"text":"hello"}`))
-	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses-1"}}
+	router.ServeHTTP(w, req)
 
-	handler.EnqueueMessage(c)
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
-func TestEnqueueV2_FlagOff_UsesLegacyRedis(t *testing.T) {
-	handler, cleanup := setupV2TestEnv(t, "192.0.2.1")
-	defer cleanup()
-	handler.SetV2SessionQueueEnabled(false)
+func TestEnqueueV2_FlagOff_FallsThroughToV1(t *testing.T) {
+	srv := startV2TestServer(t, "test-pw")
+	defer srv.Close()
+
+	router, handler := newV2TestHandler(t, srv)
+	handler.SetV2SessionQueueEnabled(false) // flag OFF
 
 	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest("POST", "/queue",
+	req := httptest.NewRequest("POST", "/ws-1/sessions/ses-1/queue",
 		strings.NewReader(`{"text":"hello"}`))
-	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses-1"}}
+	router.ServeHTTP(w, req)
 
-	handler.EnqueueMessage(c)
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code,
+		"flag off → V1 path → 503 (no queueSvc)")
 }
 
-func TestSendPromptAsyncV2_FlagOn_InvalidBody(t *testing.T) {
-	handler, cleanup := setupV2TestEnv(t, "127.0.0.1")
-	defer cleanup()
+// --- SendPromptAsync V2 ---
+
+func TestSendPromptAsyncV2_Bypasses409Guard(t *testing.T) {
+	srv := startV2TestServer(t, "test-pw")
+	defer srv.Close()
+
+	router, handler := newV2TestHandler(t, srv)
+	handler.SetActiveSessionsForTest("ws-1", []string{"ses-1"})
 
 	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest("POST", "/prompt_async",
-		strings.NewReader(`not json`))
-	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses-1"}}
+	req := httptest.NewRequest("POST", "/ws-1/sessions/ses-1/prompt_async",
+		strings.NewReader(`{"parts":[{"type":"text","text":"busy-send"}]}`))
+	router.ServeHTTP(w, req)
 
-	handler.SendPromptAsync(c)
+	assert.Equal(t, http.StatusAccepted, w.Code, "V2 must bypass the 409 guard")
+	var resp map[string]string
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
+	assert.Equal(t, "msg_v2_1", resp["messageID"])
+}
+
+func TestSendPromptAsyncV2_InvalidBody(t *testing.T) {
+	srv := startV2TestServer(t, "test-pw")
+	defer srv.Close()
+
+	router, _ := newV2TestHandler(t, srv)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/ws-1/sessions/ses-1/prompt_async",
+		strings.NewReader(`not json`))
+	router.ServeHTTP(w, req)
+
 	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+// --- AbortSession V2 ---
+
+func TestAbortV2_Success(t *testing.T) {
+	srv := startV2TestServer(t, "test-pw")
+	defer srv.Close()
+
+	router, _ := newV2TestHandler(t, srv)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/ws-1/sessions/ses-1/abort", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNoContent, w.Code)
+}
+
+func TestAbortV2_NoQueueMutation(t *testing.T) {
+	// Under V2, abort does NOT touch Redis. queueSvc is nil (no
+	// SetMessageQueueService). If V2 path is taken, InterruptV2 runs (204)
+	// and we return. If V1 path were taken, proxyToWorkspace would run,
+	// then queueSvc.PeekAll → nil pointer panic. No panic + 204 = V2 path.
+	srv := startV2TestServer(t, "test-pw")
+	defer srv.Close()
+
+	router, _ := newV2TestHandler(t, srv)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/ws-1/sessions/ses-1/abort", nil)
+
+	assert.NotPanics(t, func() {
+		router.ServeHTTP(w, req)
+	})
+	assert.Equal(t, http.StatusNoContent, w.Code,
+		"V2 abort must succeed without touching queueSvc (nil)")
 }
