@@ -1718,6 +1718,39 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 		})
 	}
 
+	// Session origins (for sidebar origin icon enrichment).
+	if cfg.UserWorkflowsHandler != nil {
+		router.Group("/api/v1/workspaces").GET("/:workspaceId/session-origins", func(c *gin.Context) {
+			workspaceID := c.Param("workspaceId")
+			wfStore := cfg.UserWorkflowsHandler.GetStore()
+			if wfStore == nil {
+				c.JSON(http.StatusOK, gin.H{"origins": []any{}})
+				return
+			}
+			origins, err := wfStore.ListSessionOrigins(c.Request.Context(), workspaceID)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list origins"})
+				return
+			}
+			out := make([]map[string]any, 0, len(origins))
+			for _, o := range origins {
+				item := map[string]any{
+					"sessionId":   o.SessionID,
+					"workspaceId": o.WorkspaceID,
+					"origin":      o.Origin,
+				}
+				if o.Title != "" {
+					item["title"] = o.Title
+				}
+				if o.TriggerID != nil {
+					item["triggerId"] = *o.TriggerID
+				}
+				out = append(out, item)
+			}
+			c.JSON(http.StatusOK, gin.H{"origins": out})
+		})
+	}
+
 	// Webhook receiver — public route, no JWT (signature IS the credential).
 	if cfg.WebhookReceiverHandler != nil {
 		router.POST("/api/v1/hooks/:webhookId", cfg.WebhookReceiverHandler.HandleWebhook)

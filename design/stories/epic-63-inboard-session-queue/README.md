@@ -47,11 +47,11 @@ opencode's V2 session infrastructure (`packages/core/src/session/`) already solv
 | F12 | The opencode V2 SDK client generation lives at `packages/sdk/js/src/v2/gen/`; a Go equivalent would be hand-written against the documented `/api/session/...` contract (no Go SDK is generated today) | `packages/sdk/js/src/v2/gen/sdk.gen.ts`; `sdks/go/services.go` currently targets the V1 llmsafespaces API, not opencode's V2 API |
 | F13 | **V2 events DO reach the proxy's existing SSE subscription.** The V1 `/event` route is bridged from V2 via `EventV2Bridge.Service` (`packages/opencode/src/server/routes/instance/httpapi/handlers/event.ts:91`) → `events.listen` → `GlobalBus` → SSE. V2 `PromptAdmitted`/`Prompted` appear on `/event` with their base type strings. | `handlers/event.ts:32-40`; `event-v2-bridge.ts` emits to `GlobalBus` |
 | F14 | **V2 event wire type strings** (load-bearing for US-63.5): `session.next.prompt.admitted` (admitted, `promoted_seq` null) and `session.next.prompted` (promoted). Durable events also carry a versioned type on the `sync` channel, but the primary `/event` stream uses the base string. | `packages/schema/src/session-event.ts:86-99` |
-| F15 | **`resume` is NOT exposed in the V2 HTTP API.** Endpoint enumeration yields: `list, create, active, get, switchAgent, switchModel, prompt, compact, wait, revert.{stage,clear,commit}, context, history, events, interrupt, message`. No `resume`. `session.wait` is a stub returning `OperationUnavailableError`. | `packages/protocol/src/groups/session.ts`; `packages/core/src/session.ts:421-424` (`wait` returns OperationUnavailableError) |
+| F15 | **`resume` is exposed as a `prompt` payload field, not a standalone endpoint.** Endpoint enumeration yields: `list, create, active, get, switchAgent, switchModel, prompt (with `resume?: boolean`), compact, wait, revert.{stage,clear,commit}, context, history, events, interrupt, message`. No standalone `/resume`. BUT `prompt` accepts `resume: boolean` (default `true`); when `resume !== false`, the handler calls `execution.wake()` which drains all pending `SessionInput` rows for that session. `session.wait` is a stub returning `OperationUnavailableError`. **Correction (2026-08-09, code-verified against opencode HEAD): the original F15 said "resume is NOT exposed" — that was wrong. Any prompt call drains the queue by default. This shrinks US-63.9 from 3 days to ~2 hours and removes the upstream-PR risk.** | `packages/protocol/src/groups/session.ts:205-223` (prompt payload with `resume`); `packages/core/src/session.ts:382` (`if (input.resume !== false) yield* execution.wake(admitted.sessionID)`); `packages/server/src/handlers/session.ts:149` (handler forwards `resume`) |
 | F16 | **Nothing auto-drains queued input on pod restart.** `runner.run` is triggered only by `execution.wake` (on a new prompt) or `execution.resume`. opencode's startup has no scan for sessions with pending `SessionInput` rows. Durable rows survive in SQLite but strand until the next prompt arrives. | `packages/core/src/session/runner/llm.ts:383-406` (the only `run` entry); no startup hook found via grep |
 | F17 | **V2 `prompt` can return 409 `PromptConflictError`** if a caller-supplied `id` collides with an existing durable row; it can also 404 if the session doesn't exist (V1 `prompt_async` auto-creates, V2 does not). The proxy must omit `id` and operate only on existing sessions. | `packages/core/src/session.ts:380-381` (conflict); `:363` (`result.get` dies if not found) |
 
-> **Stress-test note (2026-08-02):** F15-F16 are the epic's largest residual risk and motivated US-63.9 (stranded-input recovery) and US-63.10 (fresh-load queue visibility). F13-F14 de-risk US-63.5. F17 corrects US-63.2's `id` handling.
+> **Stress-test note (2026-08-02, updated 2026-08-09):** F15 was corrected — `resume` is available via the prompt payload (default `true`), so any prompt drains pending input. F16 (no startup auto-drain) remains the only residual risk, but it is now narrow: a restarted pod with pending inputs where the user never sends again. The proxy can wake such sessions with a no-op prompt on boot (US-63.9, now ~2 hours). The "stranded-input" class is no longer the epic's largest risk. F13-F14 de-risk US-63.5. F17 corrects US-63.2's `id` handling.
 
 ---
 
@@ -136,10 +136,10 @@ US-63.1 (Verification spike: V2 endpoints work) ──────────�
 | [US-63.6](US-63.6-frontend-queue-from-events.md) | Frontend: derive queue state from events; remove drain-on-idle | High | M (3 days) | US-63.5 |
 | [US-63.7](US-63.7-delete-legacy-queue.md) | Delete legacy: `msgqueue`, `drainQueuedMessage`, message-id hack, 409-requeue, stranded-queue sweep | Normal | S (1 day) | US-63.3, US-63.4, US-63.6 |
 | [US-63.8](US-63.8-sdk-coordination.md) | SDK coordination: align Epic 62 US-62.6 queue methods with V2 model | Normal | S (1 day) | US-63.3 |
-| [US-63.9](US-63.9-stranded-input-recovery.md) | Stranded-input recovery: expose/use a resume trigger so queued input drains after pod restart (upstream `resume` endpoint OR proxy-side wake) | **Critical** | M (3 days; includes upstream PR if chosen) | US-63.3 |
+| [US-63.9](US-63.9-stranded-input-recovery.md) | Stranded-input recovery: wake sessions with pending inputs after pod restart. **No upstream PR needed** — `prompt` with `resume` (default true) already drains; proxy sends a no-op wake on boot if it detects pending inputs. | **Reduced** | XS (~2 hours) | US-63.3 |
 | [US-63.10](US-63.10-fresh-load-queue-visibility.md) | Fresh-load queue visibility: keep a list endpoint or accept the gap (no V2 list endpoint in 1.18.10) | High | S (1 day) | US-63.5 |
 
-**Total estimated effort:** ~21 days (one engineer) or ~3 weeks (two engineers parallelized). No upstream PR cycle for the core migration; US-63.9 may add a small upstream `resume` exposure PR.
+**Total estimated effort:** ~18 days (one engineer) or ~2.5 weeks (two engineers parallelized). No upstream PR cycle — F15 correction (2026-08-09) confirmed `resume` is already available via the prompt payload.
 
 ---
 
@@ -149,15 +149,15 @@ US-63.1 (Verification spike: V2 endpoints work) ──────────�
 Week 1:  US-63.1 (spike — settles all risk including F15-F17 in a day)
          US-63.2 (V2 client; omits id)  [starts as soon as spike confirms]
 Week 2:  US-63.3 (enqueue) + US-63.4 (abort) + US-63.5 (SSE bridge)  [parallel; all need 63.2]
-         US-63.9 (stranded-input recovery — START EARLY; has the only real upstream PR)  [needs 63.1]
          US-63.10 (fresh-load visibility decision)  [needs 63.5]
 Week 3:  US-63.6 (frontend)  [needs 63.5, 63.10]
          US-63.8 (SDK coordination)  [needs 63.3]
+         US-63.9 (no-op wake on boot — now trivial)  [needs 63.3]
 Week 4:  US-63.7 (legacy deletion)  [HARD GATE: needs 63.3, 63.4, 63.6, 63.9, 63.10]
          Feature flag removed; cutover complete
 ```
 
-US-63.9 should start in week 2 (not week 4) because (a) it carries the epic's only real upstream dependency if Option A is chosen, and (b) US-63.7 cannot delete the stranded-queue sweep until it lands. Starting it late blocks the deletion and extends the epic by a week.
+US-63.9 no longer carries upstream-PR risk (F15 correction: `resume` is available via prompt). It is now a small proxy-side wake-on-boot guard, started in week 3.
 
 ---
 
@@ -182,7 +182,7 @@ US-63.9 should start in week 2 (not week 4) because (a) it carries the epic's on
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| **Stranded queued input after pod restart** — deleting the stranded-queue sweep (US-63.7) without a replacement leaves durable `SessionInput` rows undrained until the next user prompt | **High** (F15-F16: no `resume` HTTP endpoint, no startup auto-drain) | **High** (silent data stuck; user must know to type something) | US-63.9 ships a replacement drain trigger (preferred: upstream `resume` endpoint) **before** US-63.7 deletes the sweep. US-63.7 is hard-gated on US-63.9. |
+| **Stranded queued input after pod restart** — deleting the stranded-queue sweep (US-63.7) without a replacement leaves durable `SessionInput` rows undrained until the next user prompt | **Reduced** (F15 correction 2026-08-09: `prompt` with `resume` default-true already drains via `execution.wake`; only gap is a restarted pod where the user never sends again) | **Medium** (narrow: user must explicitly return; inputs survive in SQLite) | US-63.9 sends a no-op wake on boot for sessions with pending inputs (~2 hours; no upstream PR). US-63.7 remains hard-gated on US-63.9. |
 | **Fresh-load queue invisibility** — deriving pills from SSE events leaves a user who loads a session with pre-existing queued messages blind to them | **High** (no V2 list endpoint in 1.18.10) | Medium (UX gap for multi-session users) | US-63.10 picks a mitigation (proxy-side shadow marker recommended) before US-63.7 deletes `GET /queue`. |
 | **V2 endpoint behavior differs from the V1 path in an untested way** (e.g., prompt returns different status, interrupt semantics differ from abort) | Low (F4: the TUI exercises prompt daily; F8: interrupt is unit-tested in opencode's suite) | Medium | US-63.1 spike settles this in a day against a real kind workspace. Acceptance criteria include e2e: enqueue-while-busy, enqueue-while-idle, abort-while-queued, abort-while-processing, **OOM-restart-drain**. |
 | **V2 event taxonomy differs from V1** — the SSE event names/shapes change, breaking the frontend | Medium | Medium | US-63.5 translates V2 events (wire types `session.next.prompt.admitted` / `session.next.prompted`, F14) to the existing `queue.update` taxonomy at the proxy boundary. **Verified**: V2 events reach the proxy's existing `/event` subscription (F13). |

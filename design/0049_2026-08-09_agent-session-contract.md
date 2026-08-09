@@ -226,9 +226,10 @@ The contract is right-sized, but the discipline is what keeps it that way:
 ## 8. Sequencing
 
 ```
-US-65.1  AgentConfigWriter seam (C1)           ~1 week
+US-65.1  AgentConfigWriter seam (C1)           ~1 week    ← start now; independent
+Epic 63  V2 session API adoption                ~2.5 weeks ← de-risks V2; deletes Redis queue
 US-65.2  pkg/session contract types             ~3 days
-US-65.3  opencode adapter implementing contract ~2 weeks
+US-65.3  opencode adapter implementing contract ~2 weeks  ← gated on Epic 63 (wraps V2 client)
 US-65.4  Migrate proxy handlers to Adapter      ~1 week
 US-65.5  Delete deprecated proxy hacks          ~3 days
 US-65.6  Repolint import-rule enforcement       ~1 day
@@ -236,7 +237,7 @@ US-65.7  MCP tool surface (unified resolution)  ~3 days
 US-65.8  Frontend migration to contract         ~2 weeks (parallel, can lag)
 ```
 
-Five weeks of focused work to get off the hacks. No second adapter until funded. No operations types until a UX needs them.
+US-65.1 is unblocked and worth doing immediately. Epic 63 must land before US-65.3 because the opencode adapter wraps the V2 client that 63 builds; building the adapter before 63 means building on unverified V2 behavior (Rule 7 — state assumptions, then validate). Five weeks of focused contract work after 63 lands.
 
 ---
 

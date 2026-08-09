@@ -39,6 +39,7 @@ type workflowStore interface {
 	ListWorkflowRuns(ctx context.Context, workflowID string, limit, offset int) ([]*wf.WorkflowRunRow, error)
 	ListNodeRuns(ctx context.Context, workflowRunID string) ([]*wf.WorkflowNodeRunRow, error)
 	ListWorkflowRunsByWorkspace(ctx context.Context, workspaceID string) ([]*wf.WorkflowRunRow, error)
+	ListSessionOrigins(ctx context.Context, workspaceID string) ([]*wf.SessionOriginRow, error)
 }
 
 // workflowQuotaChecker reads instance settings for quota enforcement.
@@ -71,6 +72,9 @@ func NewOrgWorkflowsHandler(store workflowStore, quota workflowQuotaChecker) *Wo
 
 // SetAudit wires the audit logger (deferred injection — may be nil at construction).
 func (h *WorkflowsHandler) SetAudit(a workflowAuditLogger) { h.audit = a }
+
+// GetStore returns the underlying workflow store (for session origin queries).
+func (h *WorkflowsHandler) GetStore() workflowStore { return h.store }
 
 // --- User (personal) endpoints ---
 

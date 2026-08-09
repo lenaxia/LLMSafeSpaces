@@ -154,6 +154,10 @@ func (m *mockWorkflowStore) ListWorkflowRunsByWorkspace(_ context.Context, _ str
 	return nil, nil
 }
 
+func (m *mockWorkflowStore) ListSessionOrigins(_ context.Context, _ string) ([]*wf.SessionOriginRow, error) {
+	return nil, nil
+}
+
 // mockQuotaChecker implements workflowQuotaChecker.
 type mockQuotaChecker struct {
 	values map[string]int

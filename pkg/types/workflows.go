@@ -53,7 +53,7 @@ const (
 const (
 	PreserveNever     = "never"      // delete session after capturing result
 	PreserveAlways    = "always"     // keep session (shows in sidebar with origin)
-	PreserveOnFailure = "on_failure" // keep session (preserved on both success and failure until agentd supports post-success deletion)
+	PreserveOnFailure = "on_failure" // delete on success (via DELETE /v1/workflow/session/delete), keep on failure
 )
 
 // SessionOrigin indicates what created a session (for sidebar display).
