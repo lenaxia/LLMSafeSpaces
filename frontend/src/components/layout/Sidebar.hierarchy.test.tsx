@@ -39,6 +39,13 @@ vi.mock("../../api/workspaces", () => ({
   },
 }));
 
+vi.mock("../../api/workflows", () => ({
+  workspaceWorkflowApi: {
+    activeRuns: vi.fn().mockResolvedValue([]),
+    sessionOrigins: vi.fn().mockResolvedValue([]),
+  },
+}));
+
 import { workspacesApi } from "../../api/workspaces";
 
 describe("Sidebar — session hierarchy", () => {
