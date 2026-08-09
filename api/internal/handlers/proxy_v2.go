@@ -164,8 +164,12 @@ func (h *ProxyHandler) bridgeV2Admitted(workspaceID, rawData string) {
 	if props.Properties.Delivery != "queue" {
 		return
 	}
+	// US-63.5: synthesize queue.update/enqueued from the V2 admission event.
+	// Do NOT call v2Pending.add here — enqueueV2 already tracked the session
+	// when it sent the prompt. Adding here would double-count (enqueue adds
+	// + event adds = 2 per message). The event is the SSE signal, not the
+	// tracking signal.
 	h.publishQueueEvent(workspaceID, props.Properties.SessionID, "enqueued", props.Properties.MessageID, "")
-	h.v2Pending.add(workspaceID, props.Properties.SessionID)
 }
 
 func (h *ProxyHandler) bridgeV2Prompted(workspaceID, rawData string) {

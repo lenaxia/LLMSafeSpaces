@@ -303,8 +303,8 @@ drainAdmitted:
 	data, _ := json.Marshal(queueEvent.Data)
 	assert.Contains(t, string(data), "enqueued")
 	assert.Contains(t, string(data), "msg_abc")
-	assert.True(t, handler.v2Pending.has("ws-1", "ses-1"),
-		"PromptAdmitted must track session for US-63.9")
+	// Note: v2Pending tracking is done in enqueueV2, not in bridgeV2Admitted
+	// (would double-count). The SSE bridge only synthesizes the event.
 }
 
 func TestV2SSEBridge_PromptedToSent(t *testing.T) {
@@ -533,18 +533,13 @@ func TestV2StrandedRecovery_WakeSendsNewlineWithDeliveryQueue(t *testing.T) {
 }
 
 func TestV2StrandedRecovery_IntegrationWithReconcile(t *testing.T) {
-	// Integration test: reconcileSessionState (the sole call site of
-	// wakeStrandedV2Sessions) must fire the wake for tracked idle sessions.
-	// This exercises the full wiring path: reconcile → wake → V2 client.
+	// Real integration test through reconcileSessionState — the sole call
+	// site that makes US-63.9 functional. Uses the existing test pattern
+	// from proxy_queue_drain_miss_test.go: routingTransport routes the
+	// statusz query to the test server; v2ClientFactory routes V2 calls.
 	var wakeCount int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user, pass, ok := r.BasicAuth()
-		if !ok || user != "opencode" || pass != "test-pw" {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
 		if r.URL.Path == "/v1/statusz" {
-			// Return one idle session.
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"sessions":[{"id":"ses-stranded","status":"idle"}]}`))
 			return
@@ -560,32 +555,58 @@ func TestV2StrandedRecovery_IntegrationWithReconcile(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	router, handler := newV2TestHandler(t, srv)
-
-	// Override the factory to point at the test server's dynamic port.
-	// (newV2TestHandler already does this, but we need the pod IP to
-	// resolve for reconcileSessionState's statusz query too.)
+	srvAddr := srv.Listener.Addr().String()
+	httpClient := &http.Client{
+		Transport: &routingTransport{eventHost: srvAddr, promptHost: srvAddr},
+		Timeout:   5 * time.Second,
+	}
+	k8sMock := newMockK8sWithWorkspace(t, "ws-1", srvAddr)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient, nil)
+	require.NoError(t, err)
+	handler.SetV2SessionQueueEnabled(true)
+	handler.SetCachedPasswordForTest("ws-1", "test-pw")
+	handler.userBroker = eventbroker.NewUserEventBroker()
 	handler.SetV2ClientFactory(func(ctx context.Context, workspaceID string) (V2SessionClient, error) {
 		return opencode.NewClient(srv.URL, "test-pw", nil), nil
 	})
 
-	// Simulate a stranded session.
+	// Simulate a stranded session: mark it as having pending V2 input.
 	handler.v2Pending.add("ws-1", "ses-stranded")
 
-	// Call reconcileSessionState directly. It queries statusz, finds the
-	// idle session, then calls wakeStrandedV2Sessions.
-	// The pod IP/password are derived from statusz URL; we pass the test
-	// server's host:port directly.
-	// reconcileSessionState uses h.httpClient (no timeout) for statusz,
-	// so we need a short-timeout client. But the method constructs its own
-	// URL from podIP + agentd.AgentdAdminPort (4098). We can't easily
-	// override that port. Instead, call wakeStrandedV2Sessions directly
-	// — it's the V2-specific path that reconcileSessionState delegates to.
-	handler.wakeStrandedV2Sessions(context.Background(), "ws-1")
+	// Call the REAL reconcileSessionState — the full wiring path.
+	handler.reconcileSessionState("ws-1", srvAddr, "test-pw")
 
-	_ = router
 	assert.Equal(t, int32(1), atomic.LoadInt32(&wakeCount),
-		"reconcile path must wake stranded session with pending V2 input")
+		"reconcileSessionState must wake stranded session with pending V2 input")
+}
+
+func TestV2Lifecycle_NoDoubleCounting(t *testing.T) {
+	// Combined lifecycle: enqueue (tracks) → V2 PromptAdmitted (SSE only,
+	// does NOT re-track) → V2 Prompted (untracks). Count must be 0 at end.
+	// This catches the double-counting bug the reviewer flagged: if
+	// bridgeV2Admitted also called v2Pending.add, the count would be 2
+	// after enqueue+admit and 1 after prompted — permanently stuck.
+	srv := startV2TestServer(t, "test-pw")
+	defer srv.Close()
+	_, handler := newV2TestHandler(t, srv)
+
+	// Step 1: enqueueV2 tracks the session (count = 1).
+	handler.v2Pending.add("ws-1", "ses-1")
+	assert.True(t, handler.v2Pending.has("ws-1", "ses-1"))
+
+	// Step 2: V2 PromptAdmitted event fires (SSE bridge synthesizes
+	// enqueued, but does NOT re-track).
+	handler.onRawEvent("ws-1", "session.next.prompt.admitted",
+		`{"id":"e1","type":"session.next.prompt.admitted","properties":{"messageID":"msg_x","sessionID":"ses-1","delivery":"queue"}}`)
+	assert.True(t, handler.v2Pending.has("ws-1", "ses-1"),
+		"after admit: session must still be tracked (count=1, not 2)")
+
+	// Step 3: V2 Prompted event fires (SSE bridge synthesizes sent,
+	// untracks).
+	handler.onRawEvent("ws-1", "session.next.prompted",
+		`{"id":"e2","type":"session.next.prompted","properties":{"messageID":"msg_x","sessionID":"ses-1","delivery":"queue"}}`)
+	assert.False(t, handler.v2Pending.has("ws-1", "ses-1"),
+		"after prompted: session must be untracked (count=0)")
 }
 
 func TestV2StrandedRecovery_WakeErrorDoesNotPanic(t *testing.T) {
