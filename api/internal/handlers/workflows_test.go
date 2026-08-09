@@ -168,6 +168,7 @@ func TestWorkflowListSessionOrigins(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/", nil)
 	c.Params = gin.Params{{Key: "id", Value: "ws_1"}}
 	h.ListSessionOrigins(c)
 
@@ -189,6 +190,7 @@ func TestWorkflowListActiveRunsByWorkspace(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/", nil)
 	c.Params = gin.Params{{Key: "id", Value: "ws_1"}}
 	h.ListActiveRunsByWorkspace(c)
 
@@ -208,6 +210,7 @@ func TestWorkflowListSessionOrigins_MissingWorkspaceID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/", nil)
 	h.ListSessionOrigins(c)
 
 	assert.Equal(t, http.StatusBadRequest, w.Code)
