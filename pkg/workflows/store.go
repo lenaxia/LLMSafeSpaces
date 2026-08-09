@@ -656,6 +656,20 @@ func (s *Store) ListWorkflowRuns(ctx context.Context, workflowID string, limit, 
 	return scanWorkflowRunRows(rows)
 }
 
+// ListWorkflowRunsByWorkspace returns non-terminal runs for a workspace.
+func (s *Store) ListWorkflowRunsByWorkspace(ctx context.Context, workspaceID string) ([]*WorkflowRunRow, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, workflow_id, spec_snapshot, input, output, status, error_code, error, trigger_id, trigger_fire_id, workspace_id, started_at, finished_at, created_at, updated_at
+		FROM workflow_runs WHERE workspace_id = $1 AND status IN ('queued','running')
+		ORDER BY created_at DESC
+	`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanWorkflowRunRows(rows)
+}
+
 // UpdateWorkflowRunStatus sets status + terminal fields. On a terminal
 // transition (succeeded/failed/canceled/timed_out), finished_at is set.
 // error_code + error are nullable (null on success).
@@ -1088,4 +1102,48 @@ func isUniqueViolation(err error) bool {
 		return pgErr.SQLState() == "23505"
 	}
 	return false
+}
+
+// --- Session origins ---
+
+type SessionOriginRow struct {
+	SessionID   string
+	WorkspaceID string
+	Origin      string
+	TriggerID   *string
+	FireID      *string
+	Title       string
+	CreatedAt   time.Time
+}
+
+func (s *Store) RecordSessionOrigin(ctx context.Context, row *SessionOriginRow) error {
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO session_origins (session_id, workspace_id, origin, trigger_id, fire_id, title, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (session_id) DO UPDATE SET origin = $3, trigger_id = $4, fire_id = $5, title = $6
+	`, row.SessionID, row.WorkspaceID, row.Origin,
+		nullableStrPtr(row.TriggerID), nullableStrPtr(row.FireID),
+		row.Title, row.CreatedAt)
+	return err
+}
+
+func (s *Store) ListSessionOrigins(ctx context.Context, workspaceID string) ([]*SessionOriginRow, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT session_id, workspace_id, origin, trigger_id, fire_id, title, created_at
+		FROM session_origins WHERE workspace_id = $1
+		ORDER BY created_at DESC
+	`, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*SessionOriginRow
+	for rows.Next() {
+		var r SessionOriginRow
+		if err := rows.Scan(&r.SessionID, &r.WorkspaceID, &r.Origin, &r.TriggerID, &r.FireID, &r.Title, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, &r)
+	}
+	return out, rows.Err()
 }

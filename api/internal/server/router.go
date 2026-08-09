@@ -1711,6 +1711,13 @@ func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cf
 		runs.POST("/:runId/cancel", cfg.UserWorkflowsHandler.CancelRun)
 	}
 
+	// Active runs by workspace (for run-active-on-workspace indicator).
+	if cfg.UserWorkflowsHandler != nil {
+		router.Group("/api/v1/workspaces").GET("/:workspaceId/runs/active", func(c *gin.Context) {
+			cfg.UserWorkflowsHandler.ListActiveRunsByWorkspace(c)
+		})
+	}
+
 	// Webhook receiver — public route, no JWT (signature IS the credential).
 	if cfg.WebhookReceiverHandler != nil {
 		router.POST("/api/v1/hooks/:webhookId", cfg.WebhookReceiverHandler.HandleWebhook)

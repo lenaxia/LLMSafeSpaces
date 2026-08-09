@@ -363,8 +363,9 @@ func TestComputeNextFire_Hourly(t *testing.T) {
 	trigger := &wf.TriggerRow{SourceConfig: json.RawMessage(`{"expr":"0 * * * *"}`)}
 	now := time.Date(2026, 8, 7, 12, 30, 0, 0, time.UTC)
 	next := computeNextFire(trigger, now)
-	if !next.Equal(now.Add(time.Hour)) {
-		t.Errorf("hourly: expected %v, got %v", now.Add(time.Hour), next)
+	expected := time.Date(2026, 8, 7, 13, 0, 0, 0, time.UTC)
+	if !next.Equal(expected) {
+		t.Errorf("hourly: expected %v (next hour boundary), got %v", expected, next)
 	}
 }
 

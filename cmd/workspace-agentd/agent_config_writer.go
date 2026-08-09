@@ -493,6 +493,8 @@ func (w *AgentConfigWriter) rebuild() error {
 		cfg["mcp"] = mcpJSON
 	}
 
+	injectAgentdMCPServer(cfg)
+
 	output, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("agent-config writer: marshal config: %w", err)

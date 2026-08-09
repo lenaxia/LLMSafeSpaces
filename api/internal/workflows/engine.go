@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,6 +25,7 @@ import (
 	pkgk8s "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
+	"github.com/robfig/cron/v3"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	k8sapiTypes "k8s.io/apimachinery/pkg/types"
@@ -630,6 +630,19 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		if trigger.CaptureMode == types.CaptureFull {
 			resultData = agentResp.Output
 		}
+		if trigger.PreserveSession == types.PreserveOnFailure {
+			var agentOutput map[string]any
+			if json.Unmarshal(agentResp.Output, &agentOutput) == nil {
+				if sessionID, ok := agentOutput["session_id"].(string); ok && sessionID != "" {
+					deleteReq, _ := http.NewRequestWithContext(ctx, "DELETE",
+						fmt.Sprintf("http://%s:%d/v1/workflow/session/delete?sessionId=%s", podIP, agentdExecPort(), sessionID), nil)
+					deleteResp, err := httpClient().Do(deleteReq)
+					if err == nil {
+						_ = deleteResp.Body.Close()
+					}
+				}
+			}
+		}
 	}
 
 	_ = s.Store.UpdateTriggerFireResult(ctx, fireID, resultData, resultStatus)
@@ -688,6 +701,12 @@ func buildRoutineAgentSpec(trigger *wf.TriggerRow, prompt string) json.RawMessag
 	return out
 }
 
+func agentdExecPort() int { return 4097 }
+
+func httpClient() *http.Client {
+	return &http.Client{Timeout: 10 * time.Second}
+}
+
 func (s *Scheduler) processPendingRoutineFire(ctx context.Context, logger Logger, fire *wf.TriggerFireRow) {
 	trigger, err := s.Store.GetTriggerByID(ctx, fire.TriggerID)
 	if err != nil {
@@ -709,7 +728,6 @@ func (s *Scheduler) processPendingRoutineFire(ctx context.Context, logger Logger
 func computeNextFire(trigger *wf.TriggerRow, now time.Time) time.Time {
 	var cfg types.CronSourceConfig
 	_ = json.Unmarshal(trigger.SourceConfig, &cfg)
-
 	if cfg.Expr == "" {
 		return now.Add(time.Hour)
 	}
@@ -721,42 +739,12 @@ func computeNextFire(trigger *wf.TriggerRow, now time.Time) time.Time {
 		}
 	}
 
-	fields := strings.Fields(cfg.Expr)
-	if len(fields) != 5 {
+	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+	sched, err := parser.Parse(cfg.Expr)
+	if err != nil {
 		return now.Add(time.Hour)
 	}
-
-	minuteField := fields[0]
-	hourField := fields[1]
-
-	if strings.HasPrefix(minuteField, "*/") {
-		n, err := strconv.Atoi(minuteField[2:])
-		if err == nil && n > 0 {
-			return now.Add(time.Duration(n) * time.Minute)
-		}
-	}
-
-	if minuteField == "0" && hourField == "*" {
-		return now.Add(time.Hour)
-	}
-
-	minute, _ := strconv.Atoi(minuteField)
-	hour, _ := strconv.Atoi(hourField)
-
-	nowInTz := now.In(loc)
-	next := time.Date(nowInTz.Year(), nowInTz.Month(), nowInTz.Day(), hour, minute, 0, 0, loc)
-	if next.Before(nowInTz) || next.Equal(nowInTz) {
-		next = next.Add(24 * time.Hour)
-	}
-
-	dowField := fields[4]
-	if dowField == "1-5" {
-		for next.Weekday() == time.Sunday || next.Weekday() == time.Saturday {
-			next = next.Add(24 * time.Hour)
-		}
-	}
-
-	return next.UTC()
+	return sched.Next(now.In(loc)).UTC()
 }
 
 func topoSort(spec *wf.Spec) []int {

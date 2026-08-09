@@ -14,6 +14,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ses v1.35.2
 	github.com/coreos/go-oidc/v3 v3.19.0
 	github.com/expr-lang/expr v1.17.8
+	github.com/fxamacker/cbor/v2 v2.9.2
 	github.com/gin-gonic/gin v1.10.0
 	github.com/go-logr/logr v1.4.3
 	github.com/go-playground/validator/v10 v10.25.0
@@ -30,6 +31,7 @@ require (
 	github.com/mark3labs/mcp-go v0.54.0
 	github.com/prometheus/client_golang v1.21.1
 	github.com/prometheus/client_model v0.6.1
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
 	github.com/spf13/viper v1.20.0
 	github.com/stretchr/testify v1.11.1
@@ -85,7 +87,6 @@ require (
 	github.com/evanphx/json-patch/v5 v5.9.11 // indirect
 	github.com/felixge/httpsnoop v1.0.4 // indirect
 	github.com/fsnotify/fsnotify v1.8.0 // indirect
-	github.com/fxamacker/cbor/v2 v2.9.2 // indirect
 	github.com/gabriel-vasile/mimetype v1.4.8 // indirect
 	github.com/gin-contrib/sse v0.1.0 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
