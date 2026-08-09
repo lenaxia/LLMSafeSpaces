@@ -630,14 +630,6 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		if trigger.CaptureMode == types.CaptureFull {
 			resultData = agentResp.Output
 		}
-		if trigger.PreserveSession == types.PreserveOnFailure {
-			deleteReq := &NodeExecRequest{
-				NodeID:   "routine-agent",
-				NodeType: "agent",
-				Spec:     json.RawMessage(`{"action":"delete_session"}`),
-			}
-			_, _ = s.AgentdClient.Execute(ctx, podIP, deleteReq)
-		}
 	}
 
 	_ = s.Store.UpdateTriggerFireResult(ctx, fireID, resultData, resultStatus)
@@ -700,10 +692,14 @@ func (s *Scheduler) processPendingRoutineFire(ctx context.Context, logger Logger
 	trigger, err := s.Store.GetTriggerByID(ctx, fire.TriggerID)
 	if err != nil {
 		logger.Error(err, "routine: failed to get trigger for pending fire", "fireId", fire.ID)
+		errMsg, _ := json.Marshal(map[string]string{"error": "trigger not found"})
+		_ = s.Store.UpdateTriggerFireResult(ctx, fire.ID, errMsg, "failed")
 		return
 	}
 	if trigger.WorkspaceID == nil || *trigger.WorkspaceID == "" {
 		logger.Error(fmt.Errorf("no workspace"), "routine: trigger has no workspace", "triggerId", trigger.ID)
+		errMsg, _ := json.Marshal(map[string]string{"error": "trigger has no workspace_id"})
+		_ = s.Store.UpdateTriggerFireResult(ctx, fire.ID, errMsg, "failed")
 		return
 	}
 

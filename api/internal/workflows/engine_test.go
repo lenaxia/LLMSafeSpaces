@@ -425,15 +425,16 @@ func TestComputeNextFire_TimezoneInvalid(t *testing.T) {
 // --- Scheduler tests ---
 
 type mockSchedulerStore struct {
-	mu          sync.Mutex
-	triggers    []*wf.TriggerRow
-	workflows   map[string]*wf.WorkflowRow
-	fires       []*wf.TriggerFireRow
-	runs        []*wf.WorkflowRunRow
-	disabled    map[string]bool
-	nextFires   map[string]time.Time
-	statuses    map[string]string
-	triggerFail map[string]int
+	mu                sync.Mutex
+	triggers          []*wf.TriggerRow
+	workflows         map[string]*wf.WorkflowRow
+	fires             []*wf.TriggerFireRow
+	runs              []*wf.WorkflowRunRow
+	disabled          map[string]bool
+	nextFires         map[string]time.Time
+	statuses          map[string]string
+	triggerFail       map[string]int
+	lastRoutineResult json.RawMessage
 }
 
 func newMockSchedulerStore() *mockSchedulerStore {
@@ -484,7 +485,7 @@ func (m *mockSchedulerStore) UpdateTriggerFireResult(_ context.Context, fireID s
 }
 
 func (m *mockSchedulerStore) GetLastRoutineResult(_ context.Context, _ string) (json.RawMessage, error) {
-	return nil, nil
+	return m.lastRoutineResult, nil
 }
 
 func (m *mockSchedulerStore) GetRecentRoutineResults(_ context.Context, _ string, _ int) ([]json.RawMessage, error) {
@@ -945,5 +946,65 @@ func TestBuildRoutineAgentSpec_PreserveOnFailure(t *testing.T) {
 	_ = json.Unmarshal(spec, &parsed)
 	if parsed["session"] != "new" {
 		t.Errorf("expected new, got %v", parsed["session"])
+	}
+}
+
+func TestExecuteRoutine_MemoryLastResult_InjectsPrevResult(t *testing.T) {
+	store := newMockSchedulerStore()
+	store.lastRoutineResult = json.RawMessage(`{"action":"check email"}`)
+
+	agentd := newMockAgentd()
+	agentd.outputs["routine-agent"] = json.RawMessage(`{"response":"done"}`)
+
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{
+		ID: "trig-mem", WorkspaceID: &wsID,
+		Prompt:     "Previous: {{.prevResult}}",
+		MemoryMode: types.MemoryLastResult, MemoryMaxRuns: 1,
+		CaptureMode: types.CaptureFull,
+	}
+	fire := &wf.TriggerFireRow{ID: "fire-mem", TriggerID: "trig-mem", InputEnvelope: json.RawMessage(`{}`)}
+
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: noopLogger{}}
+	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+
+	if store.statuses["fire-mem"] != "delivered" {
+		t.Errorf("expected delivered, got %s", store.statuses["fire-mem"])
+	}
+}
+
+func TestProcessPendingRoutineFire_TriggerNotFound_MarksFailed(t *testing.T) {
+	store := newMockSchedulerStore()
+
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: newMockAgentd(), Logger: noopLogger{}}
+	fire := &wf.TriggerFireRow{ID: "fire-orphan", TriggerID: "nonexistent", InputEnvelope: json.RawMessage(`{}`)}
+	sched.processPendingRoutineFire(context.Background(), noopLogger{}, fire)
+
+	if store.statuses["fire-orphan"] != "failed" {
+		t.Errorf("expected failed for orphaned fire, got %s", store.statuses["fire-orphan"])
+	}
+}
+
+func TestExecuteRoutine_AutoDisable_AfterConsecutiveFailures(t *testing.T) {
+	store := newMockSchedulerStore()
+
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{
+		ID: "trig-auto", WorkspaceID: &wsID, Prompt: "test",
+		CaptureMode: types.CaptureFull, AutoDisableAfter: 2,
+	}
+
+	sched := &Scheduler{Store: store, Activator: &mockActivator{fail: true}, AgentdClient: newMockAgentd(), Logger: noopLogger{}}
+
+	for i := 0; i < 2; i++ {
+		fire := &wf.TriggerFireRow{
+			ID: fmt.Sprintf("fire-auto-%d", i), TriggerID: "trig-auto",
+			InputEnvelope: json.RawMessage(`{}`),
+		}
+		sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+	}
+
+	if !store.disabled["trig-auto"] {
+		t.Error("expected trigger to be auto-disabled after 2 consecutive failures")
 	}
 }
