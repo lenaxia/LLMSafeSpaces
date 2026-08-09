@@ -77,6 +77,37 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 		return
 	}
 	wid := c.Param("id")
+
+	// V2 path (Epic 63): extract text from the V1 parts body and send via
+	// PromptV2 with delivery:"queue". Bypasses the 409 guard, the queue-len
+	// check, and redirectPromptToQueue — opencode admits atomically.
+	if h.v2SessionQueueEnabled {
+		const maxPromptBodyBytes = 100_000 + 1024
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPromptBodyBytes)
+		bodyBytes, err := io.ReadAll(c.Request.Body)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read request body"})
+			return
+		}
+		_ = c.Request.Body.Close()
+		text, perr := extractPromptText(bodyBytes)
+		if perr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": perr.Error()})
+			return
+		}
+		if len(text) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "text must not be empty"})
+			return
+		}
+		if len(text) > 100_000 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "text exceeds 100KB limit"})
+			return
+		}
+		if h.enqueueV2(c, wid, sid, text) {
+			return
+		}
+	}
+
 	if h.isSessionActive(c.Request.Context(), wid, sid) {
 		c.Header("Retry-After", "1")
 		c.JSON(http.StatusConflict, gin.H{
@@ -630,6 +661,13 @@ func (h *ProxyHandler) AbortSession(c *gin.Context) {
 	}
 	wid := c.Param("id")
 
+	// V2 path (Epic 63): non-destructive interrupt. Queued messages survive
+	// and drain on the next execution.wake (F8). No Redis queue mutation,
+	// no dismissed SSE, no flushAndAbortAfterIdle.
+	if h.abortV2(c, wid, sid) {
+		return
+	}
+
 	// Proxy the abort to opencode first. Only if that succeeds do we take
 	// ownership of queued messages — this avoids clearing the queue when the
 	// abort itself fails (network error, workspace not active, etc.).
@@ -929,6 +967,12 @@ func (h *ProxyHandler) EnqueueMessage(c *gin.Context) {
 	}
 	if len(req.Text) > 100_000 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "text exceeds 100KB limit"})
+		return
+	}
+
+	// V2 path (Epic 63): send via PromptV2 with delivery:"queue". The Redis
+	// write path is unreachable under the flag.
+	if h.enqueueV2(c, wid, sid, req.Text) {
 		return
 	}
 

@@ -90,6 +90,19 @@ type ProxyHandler struct {
 
 	queueSvc interfaces.MessageQueueService
 
+	// v2SessionQueueEnabled switches the enqueue/abort paths from the
+	// external Redis queue (V1 prompt_async + destructive abort) to
+	// opencode's V2 session API (delivery:"queue" + non-destructive
+	// interrupt). Feature flag for Epic 63; default false.
+	v2SessionQueueEnabled bool
+
+	// v2ClientFactory overrides V2 client construction. nil in production
+	// (v2Client resolves pod IP + password and builds the default client).
+	// Tests inject a factory pointing at a dynamic-port httptest.Server,
+	// eliminating the port 4096 dependency that caused non-deterministic
+	// CI failures.
+	v2ClientFactory V2ClientFactory
+
 	// sweepInterval overrides the default queueSweepInterval for testing.
 	// Zero means use the default (30s). Set via SetSweepInterval before Start().
 	sweepInterval time.Duration
