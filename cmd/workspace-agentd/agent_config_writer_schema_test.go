@@ -313,9 +313,9 @@ func TestAgentConfigWriter_Rebuild_MatchesOpencodeSchema_MCPServers(t *testing.T
 	}
 }
 
-// TestAgentConfigWriter_Rebuild_NoMCPSectionWhenEmpty asserts that a
-// workspace with zero MCP servers produces NO mcp key — byte-equivalent
-// to pre-Epic-53 output (regression guard for the relay subsystem).
+// TestAgentConfigWriter_Rebuild_BuiltInMCPPresent asserts that the built-in
+// llmsafespaces MCP server is always injected, even when no user MCP servers
+// are staged. This is the Epic 64 in-workspace tools injection point.
 func TestAgentConfigWriter_Rebuild_NoMCPSectionWhenEmpty(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent-config.json")
@@ -329,6 +329,10 @@ func TestAgentConfigWriter_Rebuild_NoMCPSectionWhenEmpty(t *testing.T) {
 	require.NoError(t, err)
 	var cfg map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(data, &cfg))
-	_, hasMCP := cfg["mcp"]
-	assert.False(t, hasMCP, "mcp section must NOT be present when no servers are staged")
+	mcpRaw, hasMCP := cfg["mcp"]
+	assert.True(t, hasMCP, "mcp section must be present (built-in llmsafespaces server)")
+	var mcpMap map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(mcpRaw, &mcpMap))
+	_, hasBuiltin := mcpMap["llmsafespaces"]
+	assert.True(t, hasBuiltin, "built-in llmsafespaces MCP server must be present")
 }

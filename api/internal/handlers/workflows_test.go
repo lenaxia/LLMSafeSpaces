@@ -150,6 +150,10 @@ func (m *mockWorkflowStore) ListNodeRuns(_ context.Context, _ string) ([]*wf.Wor
 	return nil, nil
 }
 
+func (m *mockWorkflowStore) ListWorkflowRunsByWorkspace(_ context.Context, _ string) ([]*wf.WorkflowRunRow, error) {
+	return nil, nil
+}
+
 // mockQuotaChecker implements workflowQuotaChecker.
 type mockQuotaChecker struct {
 	values map[string]int

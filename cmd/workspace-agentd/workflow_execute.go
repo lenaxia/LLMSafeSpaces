@@ -13,6 +13,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -122,6 +123,26 @@ func workflowCancelHandler() http.HandlerFunc {
 		registry.cancelNode(nodeID)
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+func workflowDeleteSessionHandler(password string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Basic "+basicAuth(password) {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		sessionID := r.URL.Query().Get("sessionId")
+		if sessionID == "" {
+			writeWorkflowError(w, http.StatusBadRequest, "missing_session_id", "sessionId query parameter required")
+			return
+		}
+		deleteOpencodeSession(r.Context(), password, sessionID)
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func basicAuth(password string) string {
+	return base64.StdEncoding.EncodeToString([]byte(agentd.AuthUsername + ":" + password))
 }
 
 func execScriptNode(ctx context.Context, w http.ResponseWriter, req *workflowExecuteRequest) {
@@ -443,10 +464,10 @@ func createOpencodeSession(ctx context.Context, password string) string {
 }
 
 func deleteOpencodeSession(ctx context.Context, password, sessionID string) {
-	req, _ := http.NewRequestWithContext(ctx, "DELETE",
+	req, _ := http.NewRequestWithContext(ctx, "DELETE", //nolint:gosec // G704: local-only, sessionID from opencode
 		fmt.Sprintf("http://127.0.0.1:%d/session/%s", agentd.AgentPort, sessionID), nil)
 	req.SetBasicAuth(agentd.AuthUsername, password)
-	resp, err := (&http.Client{}).Do(req)
+	resp, err := (&http.Client{}).Do(req) //nolint:gosec // G704: local-only
 	if err != nil {
 		return
 	}

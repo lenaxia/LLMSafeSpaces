@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-09
+
+### Added — Remaining Epic 64 items
+
+- **agentd built-in MCP server** — serves `session_list` and `session_read`
+  tools via MCP JSON-RPC protocol at `/v1/mcp`. Injected as a "remote" MCP
+  entry in agent-config.json so the in-workspace opencode agent discovers
+  it natively. Tools call opencode's local API — no platform credentials
+  needed. Enables the agent to read previous session history for
+  cross-run continuity (Flow 3 roll-forward).
+
+- **`PreserveOnFailure` session deletion** — the engine now calls
+  `DELETE /v1/workflow/session/delete` on agentd when a routine succeeds
+  with `preserveSession: "on_failure"`. The session is preserved on
+  failure (for investigation) and deleted on success (clean workspace).
+  New agentd endpoint: `DELETE /v1/workflow/session/delete?sessionId=X`.
+
+- **Full cron expression support** — replaced the hand-rolled 4-pattern
+  parser with `github.com/robfig/cron/v3`. All standard cron expressions
+  now work: `30 9,14 * * *`, `0 0 * * 0`, `*/15 8-18 * * 1-5`, etc.
+
+- **Session origin tracking** — migration 000022 adds `session_origins`
+  table linking opencode sessions to their creating trigger/workflow.
+  Store methods: `RecordSessionOrigin`, `ListSessionOrigins`. (API
+  enrichment + frontend icon rendering: next step.)
+
+- **Active runs by workspace** — `GET /api/v1/workspaces/:id/runs/active`
+  returns non-terminal runs for a workspace. For the run-active-on-
+  workspace indicator.
+
+- **`ListPendingRoutineFires`** integration test — verifies the SQL-level
+  webhook-routine flow (fire created → pending → processed → delivered).
+
+- **`GetLastRoutineResult`** integration tests — verifies the memory query
+  returns results from 'delivered' fires (not 'fired').
+
+- **Design docs** — `ENGINE-MIGRATION-DESIGN.md` (API→controller migration
+  plan, 3-5 day estimate) and `SESSION-OWNERSHIP-DESIGN.md` (unified
+  session ownership, 2-3 week estimate).
+
+### Fixed
+
+- **`computeNextFire_Hourly` test corrected** — the old parser was wrong
+  (`0 * * * *` at 12:30 returned 13:30 instead of 13:00). robfix/cron
+  gives the correct result.
+
 ## [0.10.0] - 2026-08-09
 
 ### Changed — Breaking: Triggers as Routines

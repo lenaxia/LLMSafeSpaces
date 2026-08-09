@@ -38,6 +38,7 @@ type workflowStore interface {
 	UpdateWorkflowRunStatus(ctx context.Context, runID, status string, errorCode *string, errMsg json.RawMessage, output json.RawMessage) error
 	ListWorkflowRuns(ctx context.Context, workflowID string, limit, offset int) ([]*wf.WorkflowRunRow, error)
 	ListNodeRuns(ctx context.Context, workflowRunID string) ([]*wf.WorkflowNodeRunRow, error)
+	ListWorkflowRunsByWorkspace(ctx context.Context, workspaceID string) ([]*wf.WorkflowRunRow, error)
 }
 
 // workflowQuotaChecker reads instance settings for quota enforcement.
@@ -590,14 +591,32 @@ func (h *WorkflowsHandler) CancelRun(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "run is already in terminal state: " + run.Status})
 		return
 	}
-	// Mark as canceled. The reconciler will observe the status change at the
-	// next node boundary and stop execution.
 	ec := types.RunErrorCodeCanceled
 	if err := h.store.UpdateWorkflowRunStatus(c.Request.Context(), runID, types.RunStatusCanceled, &ec, nil, nil); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to cancel run"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"canceled": true})
+}
+
+// ListActiveRunsByWorkspace returns non-terminal runs for a workspace.
+// GET /api/v1/workspaces/:workspaceId/runs/active
+func (h *WorkflowsHandler) ListActiveRunsByWorkspace(c *gin.Context) {
+	workspaceID := c.Param("workspaceId")
+	if workspaceID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "workspaceId required"})
+		return
+	}
+	runs, err := h.store.ListWorkflowRunsByWorkspace(c.Request.Context(), workspaceID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list active runs"})
+		return
+	}
+	out := make([]types.WorkflowRunResponse, 0, len(runs))
+	for _, r := range runs {
+		out = append(out, workflowRunRowToResponse(r))
+	}
+	c.JSON(http.StatusOK, gin.H{"runs": out})
 }
 
 // UserListRuns lists runs for a user-scope workflow.

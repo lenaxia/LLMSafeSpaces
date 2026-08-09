@@ -591,3 +591,38 @@ func (s *StoreIntegrationSuite) TestGetLastRoutineResult_EmptyOnNoDelivered() {
 	s.Require().NoError(err)
 	s.Nil(result, "should return nil for non-delivered fires")
 }
+
+func (s *StoreIntegrationSuite) TestListPendingRoutineFires() {
+	ctx := context.Background()
+	triggerID := uuid.New().String()
+	now := time.Now().UTC()
+
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO triggers (id, owner_type, owner_id, name, enabled, source_type, source_config,
+			workspace_id, prompt, memory_mode, capture_mode, preserve_session, auto_disable_after, created_at, updated_at)
+		VALUES ($1, 'user', 'test-user', 'test-pending', true, 'cron', '{}'::jsonb,
+			'ws-1', 'test prompt', 'none', 'full', 'never', 10, $2, $3)
+	`, triggerID, now, now)
+	s.Require().NoError(err)
+
+	fireID := uuid.New().String()
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO trigger_fires (id, trigger_id, source_type, action_type, status, fired_at)
+		VALUES ($1, $2, 'cron', 'routine', 'fired', $3)
+	`, fireID, triggerID, now)
+	s.Require().NoError(err)
+
+	fires, err := s.store.ListPendingRoutineFires(ctx, 10)
+	s.Require().NoError(err)
+	s.Require().Len(fires, 1)
+	s.Equal(fireID, fires[0].ID)
+
+	_, err = s.pool.Exec(ctx, `
+		UPDATE trigger_fires SET status = 'delivered', result = '{"ok":true}'::jsonb WHERE id = $1
+	`, fireID)
+	s.Require().NoError(err)
+
+	fires, err = s.store.ListPendingRoutineFires(ctx, 10)
+	s.Require().NoError(err)
+	s.Empty(fires, "delivered fire should not be pending")
+}
