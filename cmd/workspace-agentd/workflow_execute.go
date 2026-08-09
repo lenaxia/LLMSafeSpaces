@@ -463,11 +463,11 @@ func createOpencodeSession(ctx context.Context, password string) string {
 	return s.ID
 }
 
-func deleteOpencodeSession(ctx context.Context, password, sessionID string) { //nolint:gosec // G704: sessionID from opencode response, not user input
-	req, _ := http.NewRequestWithContext(ctx, "DELETE",
+func deleteOpencodeSession(ctx context.Context, password, sessionID string) {
+	req, _ := http.NewRequestWithContext(ctx, "DELETE", //nolint:gosec // G704: local-only, sessionID from opencode
 		fmt.Sprintf("http://127.0.0.1:%d/session/%s", agentd.AgentPort, sessionID), nil)
 	req.SetBasicAuth(agentd.AuthUsername, password)
-	resp, err := (&http.Client{}).Do(req)
+	resp, err := (&http.Client{}).Do(req) //nolint:gosec // G704: local-only
 	if err != nil {
 		return
 	}
