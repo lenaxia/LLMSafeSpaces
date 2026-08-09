@@ -6,6 +6,7 @@ package repolint
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -168,6 +169,5 @@ func TestKnownLeaksStillMatchReality(t *testing.T) {
 }
 
 func isTestFile(path string) bool {
-	const suffix = "_test.go"
-	return len(path) >= len(suffix) && path[len(path)-len(suffix):] == suffix
+	return strings.HasSuffix(path, "_test.go")
 }

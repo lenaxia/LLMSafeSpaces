@@ -63,7 +63,7 @@ Wrote tests first (Rule 0), confirmed red (types undefined), then implemented:
 | F2 | `Event.Status` was `*Status` while every other optional string-typed field used plain type + `omitempty` | Real inconsistency | **Fixed** → plain `Status` + `omitempty` (consistent with `Message` fields; pointers reserved for structs where `omitempty` can't omit a zero value). |
 | F3 | Package doc named "opencode" | Real (strict invariant) | **Fixed** → genericized to "agent-specific". |
 | F4 | `TestCustomPartRequiresKind` had inverted logic (asserted absence of an always-emitted field) | Real test bug | **Fixed** → asserts `kind` is always present on the wire (required schema field). |
-| F5 | Design says "9 streaming event types" but lists 10 | Real doc inconsistency | Resolved → implemented all 10 (explicit list authoritative over headline number); pinned by test; **flagged to user (Open Item A)**. |
+| F5 | US-65.2 story spec said "9 types" but design 0049 §4.5 list had 10 | Story spec vs design doc mismatch | Resolved → implemented all 10 (the design doc's explicit list is authoritative); pinned by test; **flagged to user (Open Item A)**. |
 | F6 | Story lists `ErrorPart` in part.go, conflicts with "5 part types forever" | Real ambiguity | Resolved → errors flow via the `error` Event with an `Error` payload; NOT a `PartType`; **flagged to user (Open Item B)**. |
 | F7 | Story lists `TextPart`/`ReasoningPart`/`FileChangePart`; I inlined Text/Reasoning and used `FileDiff` | Faithfulness choice | Single-field wrappers violate Rule 4 (over-engineering) and worsen the JSON shape (`{"text":{"text":...}}`); `FileDiff` is semantically accurate. **Flagged to user (Open Item C)**. |
 | F8 | `Cost.CostUSD` is `float64` (precision) | Acceptable | Cost is display-only, never billing (§4.1 rule 5); if billing depended on it a decimal type would be required. Tested values round-trip exactly. |
@@ -75,7 +75,7 @@ Phase 2 returned zero unresolved real findings in US-65.2 scope (F1 is deferred 
 
 ## Open Items — RESOLVED (user adjudication, 2026-08-09)
 
-**A. Event count: 10 (confirmed).** The design's "9" headline was an arithmetic error; the explicit list was correct (10 items). **Verdict: keep all 10.** Updated design 0049 §4.5 and the US-65.2 story listing from "9" to "10". The test `TestEventTypeCountMatchesExplicitList` pins the count at 10.
+**A. Event count: 10 (confirmed).** The US-65.2 story spec said "9 types" but design 0049 §4.5's explicit list had 10 items. **Verdict: keep all 10.** The design doc was already correct on `origin/main`; updated the US-65.2 story listing to say "10". The test `TestEventTypeCountMatchesExplicitList` pins the count at 10.
 
 **B. `ErrorPart` is not a part (confirmed).** Errors are transient events (an LLM call failed, a tool errored), not content blocks in a message. **Verdict: no 6th part type.** Errors flow via the `error` Event payload (`Error{Code, Message}`). A completed assistant message may carry an optional turn-level `Error` field (it failed). `ToolState.Error` (a tool call that errored) stays — that's tool state, not a part type. The `ErrorPart` removal applies only to top-level parts. Removed `ErrorPart` from the US-65.2 story listing in the epic README.
 
@@ -123,7 +123,7 @@ US-65.2 is complete — all three open items adjudicated and resolved, docs alig
 - `pkg/session/message_test.go`
 - `pkg/session/event_test.go`
 - `pkg/session/contract_test.go`
-- `worklogs/0704_2026-08-09_us-65-2-session-contract-types.md`
+- `worklogs/NNNN_2026-08-09_us-65-2-session-contract-types.md`
 
 **Modified (docs):**
 - `design/stories/epic-65-agent-session-contract/README.md` (Depends On correction + Epic 29 note)

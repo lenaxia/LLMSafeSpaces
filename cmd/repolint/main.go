@@ -346,7 +346,7 @@ func runAgentImport(root string) int {
 		return 1
 	}
 	fmt.Printf("ok    agent-import boundary (%d known leak(s) tolerated pending US-65.4)\n",
-		len(repolint.KnownLeakCount()))
+		len(repolint.KnownLeaks()))
 	return 0
 }
 

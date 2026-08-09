@@ -58,11 +58,11 @@ var agentImportKnownLeaks = map[string]string{
 	"controller/internal/controller/controller.go":         "US-65.6-followup — init() side-effect opencode.Register(); needs explicit boot wiring in controller main",
 }
 
-// KnownLeakCount returns the current size of agentImportKnownLeaks. The
-// success message in cmd/repolint uses this to surface how much tech debt
-// the boundary is tolerating, so the number is visible while it is non-zero
-// and the rule visibly tightens when the last leak retires.
-func KnownLeakCount() map[string]string {
+// KnownLeaks returns a defensive copy of the current agentImportKnownLeaks
+// map. The success message in cmd/repolint uses len() on this to surface how
+// much tech debt the boundary is tolerating, so the number is visible while
+// it is non-zero and the rule visibly tightens when the last leak retires.
+func KnownLeaks() map[string]string {
 	out := make(map[string]string, len(agentImportKnownLeaks))
 	for k, v := range agentImportKnownLeaks {
 		out[k] = v
