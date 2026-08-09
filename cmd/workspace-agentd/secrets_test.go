@@ -446,7 +446,7 @@ func TestReloadSecretsHandler_LLMProvider_CallsOpenCodeClient(t *testing.T) {
 }
 
 // TestReloadSecretsHandler_WriterRebuildFailure_Returns500 verifies
-// that if the AgentConfigWriter.rebuild() fails (e.g. disk full after
+// that if the ConfigWriter.Rebuild() fails (e.g. disk full after
 // reset() deleted the old config), the handler returns 500 and does NOT
 // restart opencode with a missing config file.
 //

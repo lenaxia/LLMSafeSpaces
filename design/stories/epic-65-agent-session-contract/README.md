@@ -3,7 +3,7 @@
 **Status:** Definition (not yet in implementation)
 **Created:** 2026-08-09
 **Priority:** High — eliminates the single largest source of hacks and jury-rigs in the codebase; unblocks mobile-first-class UX and multi-agent viability
-**Depends On:** Epic 29 (AgentClient abstraction — existing `pkg/agent/opencode/` seam), Epic 30 (Unified Credential Model — `FormatProviderConfig` stays), **Epic 63 (V2 session API adoption — de-risks opencode's V2 surface that the adapter wraps; lands the V2 client the opencode adapter reuses)**
+**Depends On:** Epic 29 (AgentClient abstraction — existing `pkg/agent/opencode/` seam), Epic 30 (Unified Credential Model — `FormatProviderConfig` stays)
 **Authoritative for:** How the platform integrates any coding agent. The contract that web, mobile, SDK, and MCP all consume; the adapter seam that contains all agent-specific knowledge.
 
 **Design document:** [`design/0049_2026-08-09_agent-session-contract.md`](../../0049_2026-08-09_agent-session-contract.md)
@@ -131,8 +131,6 @@ Every new opencode quirk becomes a platform hack. Every eventual agent swap beco
 
 **Goal:** Translate opencode's HTTP API and event stream to/from `pkg/session` types.
 
-**Relationship to Epic 63:** Epic 63 adopts opencode's V2 session API (`/api/session/:sid/prompt` with `delivery`, `/api/session/:sid/interrupt`) and deletes the external Redis queue. US-65.3's opencode adapter **wraps the V2 client 63 already built** rather than rewriting prompt/abort logic. US-65.3 should not start until 63 lands, so it proceeds on validated V2 behavior rather than the unverified claims in 63's findings table.
-
 **Files:**
 - Modified: `pkg/agent/opencode/adapter.go` (new, replaces `agent_client.go` + folds `dialect.go`) — implements `pkg/agent.Adapter`.
 - Modified: `pkg/agent/opencode/format.go` — stays (behind `FormatProviderConfig`).
@@ -250,4 +248,4 @@ US-65.2 (pkg/session types) ──┬── US-65.3 (opencode adapter) ──┐
                                                        (independent)──┘
 ```
 
-US-65.1 (AgentConfigWriter) is independent and can start immediately. US-65.2 is the foundation for the rest. **US-65.3 (opencode adapter) is gated on Epic 63 landing** — it wraps the V2 client 63 builds; doing it before 63 means building on unverified V2 behavior. US-65.8 (frontend) can lag the backend and proceed in parallel once the OpenAPI spec is regenerated.
+US-65.1 (AgentConfigWriter) is independent and can start immediately. US-65.2 is the foundation for the rest. US-65.8 (frontend) can lag the backend and proceed in parallel once the OpenAPI spec is regenerated.

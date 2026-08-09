@@ -65,9 +65,6 @@ var relayInjectorOutcomes = promauto.NewCounterVec(prometheus.CounterOpts{
 	Help: "Phase-2 relay injector outcomes per agentd pod boot.",
 }, []string{"outcome"})
 
-// RelayModel is re-exported from pkg/agent/opencode — the relay injector
-// discovers free models and hands them to ConfigWriter.SetRelay.
-
 // shouldSkipRelay reads auth.json at authPath and returns (true, reason) if
 // relay injection should be skipped because the user has a personal opencode
 // API key. Returns (false, "") if relay should proceed.
