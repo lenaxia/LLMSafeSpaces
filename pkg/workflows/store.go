@@ -1147,3 +1147,14 @@ func (s *Store) ListSessionOrigins(ctx context.Context, workspaceID string) ([]*
 	}
 	return out, rows.Err()
 }
+
+// CheckWorkspaceOwnership verifies that the workspace belongs to the user.
+func (s *Store) CheckWorkspaceOwnership(ctx context.Context, workspaceID, userID string) bool {
+	var ownerID string
+	err := s.pool.QueryRow(ctx,
+		`SELECT user_id FROM workspace_metadata WHERE id = $1`, workspaceID).Scan(&ownerID)
+	if err != nil {
+		return false
+	}
+	return ownerID == userID
+}

@@ -40,6 +40,7 @@ type workflowStore interface {
 	ListNodeRuns(ctx context.Context, workflowRunID string) ([]*wf.WorkflowNodeRunRow, error)
 	ListWorkflowRunsByWorkspace(ctx context.Context, workspaceID string) ([]*wf.WorkflowRunRow, error)
 	ListSessionOrigins(ctx context.Context, workspaceID string) ([]*wf.SessionOriginRow, error)
+	CheckWorkspaceOwnership(ctx context.Context, workspaceID, userID string) bool
 }
 
 // workflowQuotaChecker reads instance settings for quota enforcement.
@@ -78,6 +79,11 @@ func (h *WorkflowsHandler) ListSessionOrigins(c *gin.Context) {
 	workspaceID := c.Param("workspaceId")
 	if workspaceID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "workspaceId required"})
+		return
+	}
+	userID := c.GetString("userID")
+	if !h.store.CheckWorkspaceOwnership(c.Request.Context(), workspaceID, userID) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
 		return
 	}
 	origins, err := h.store.ListSessionOrigins(c.Request.Context(), workspaceID)
@@ -639,6 +645,11 @@ func (h *WorkflowsHandler) ListActiveRunsByWorkspace(c *gin.Context) {
 	workspaceID := c.Param("workspaceId")
 	if workspaceID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "workspaceId required"})
+		return
+	}
+	userID := c.GetString("userID")
+	if !h.store.CheckWorkspaceOwnership(c.Request.Context(), workspaceID, userID) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})
 		return
 	}
 	runs, err := h.store.ListWorkflowRunsByWorkspace(c.Request.Context(), workspaceID)
