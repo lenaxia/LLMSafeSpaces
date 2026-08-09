@@ -340,15 +340,32 @@ req "V2 prompt C (to generate SSE events)" \
     -d "$(pb "reply with: ack3")" >/dev/null
 wait "${SSE_PID}" 2>/dev/null || true
 
-# Extract the event-type strings observed (line looks like: event: <type>).
-EVENT_TYPES="$(grep -E '^event:' "${SSE_FILE}" | sort -u | sed 's/^event: */  - /' || echo '  (none observed)')"
-EVENT_COUNT="$(grep -cE '^event:' "${SSE_FILE}" || echo 0)"
+# Extract the event-type strings observed. opencode 1.18.10 emits SSE as
+# `data: {"id":...,"type":"<type>","properties":{...}}` lines — the type is
+# INSIDE the JSON payload, not on a separate `event:` line. (The original
+# harness grepped for `^event:` which matches the other SSE wire format and
+# found nothing here; fixed to parse the data-line JSON via jq.)
+EVENT_COUNT="$(grep -cE '^data:' "${SSE_FILE}" 2>/dev/null || echo 0)"
+EVENT_TYPES="$(grep '^data:' "${SSE_FILE}" 2>/dev/null \
+    | sed 's/^data: //' \
+    | jq -r '.type // empty' 2>/dev/null \
+    | sort -u | sed 's/^/  - /' 2>/dev/null || echo '  (none observed)')"
+SSE_HAS_V2=0
+if echo "${EVENT_TYPES}" | grep -qE 'session.next.prompt.admitted|session.next.prompted'; then
+    SSE_HAS_V2=1
+fi
+if [[ "${SSE_HAS_V2}" == "1" ]]; then
+    SSE_VERDICT="PASS — the V2 admission/promotion events predicted by F13/F14 ARE present on the proxy's existing /event stream. US-63.5 can bridge these directly."
+else
+    SSE_VERDICT="FAIL — the F14 strings did NOT appear; US-63.5 must bridge from a different event source. (Recorded type strings above are what 1.18.10 actually emits.)"
+fi
 report "SSE event capture" \
-    "Observed ${EVENT_COUNT} event(s) in 10s. Event type strings:
+    "Observed ${EVENT_COUNT} event(s) on /event. Event type strings (unique):
 ${EVENT_TYPES}
 
-PASS if the list includes V2 admission/promotion types (per F14: \`session.next.prompt.admitted\`, \`session.next.prompted\`).
-FAIL if those strings do NOT appear — US-63.5 must bridge from a different event source. Record the actual strings."
+${SSE_VERDICT}
+
+Per F14 the load-bearing strings are \`session.next.prompt.admitted\` (admitted, promoted_seq null) and \`session.next.prompted\` (promoted/run). A full turn lifecycle is also visible: \`session.next.step.started\` → \`session.next.text.started\` → \`session.next.text.delta\` → \`session.next.text.ended\` → \`session.next.step.ended\`. See raw SSE capture below for sample payloads."
 
 # Save raw SSE for the report appendices.
 {
