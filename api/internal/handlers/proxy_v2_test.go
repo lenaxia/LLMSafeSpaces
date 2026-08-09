@@ -9,7 +9,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
@@ -19,6 +21,7 @@ import (
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/msgqueue"
+	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 )
 
@@ -80,7 +83,7 @@ func TestEnqueueV2_Success(t *testing.T) {
 	srv := startV2TestServer(t, "test-pw")
 	defer srv.Close()
 
-	router, _ := newV2TestHandler(t, srv)
+	router, handler := newV2TestHandler(t, srv)
 
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest("POST", "/ws-1/sessions/ses-1/queue",
@@ -91,6 +94,11 @@ func TestEnqueueV2_Success(t *testing.T) {
 	var resp map[string]string
 	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
 	assert.Equal(t, "msg_v2_1", resp["messageID"])
+
+	// US-63.5: enqueueV2 no longer emits enqueued SSE itself — it's derived
+	// from the V2 PromptAdmitted event. The session IS tracked for US-63.9.
+	assert.True(t, handler.v2Pending.has("ws-1", "ses-1"),
+		"enqueueV2 must track the session for US-63.9 stranded-input recovery")
 }
 
 func TestEnqueueV2_EmptyText(t *testing.T) {
@@ -256,3 +264,215 @@ func TestAbortV2_QueueSurvivesAbort(t *testing.T) {
 	assert.Equal(t, int64(2), n,
 		"V2 abort is non-destructive: queued messages must survive (F8)")
 }
+
+// ---------------------------------------------------------------------------
+// US-63.5: SSE Event Bridge tests
+// ---------------------------------------------------------------------------
+
+func TestV2SSEBridge_AdmittedToEnqueued(t *testing.T) {
+	srv := startV2TestServer(t, "test-pw")
+	defer srv.Close()
+	_, handler := newV2TestHandler(t, srv)
+
+	// Subscribe to the broker to capture events.
+	sub, err := handler.userBroker.SubscribeWorkspace("ws-1")
+	require.NoError(t, err)
+	defer handler.userBroker.UnsubscribeWorkspace("ws-1", sub)
+
+	admittedEvent := `{"id":"evt_1","type":"session.next.prompt.admitted","properties":{"messageID":"msg_abc","sessionID":"ses-1","timestamp":"2026-08-09T16:11:17.289Z","prompt":{"text":"hi"},"delivery":"queue"}}`
+	handler.onRawEvent("ws-1", "session.next.prompt.admitted", admittedEvent)
+
+	// onRawEvent fires opencode.event (raw relay) THEN queue.update (V2 bridge).
+	// Drain until we find the queue.update.
+	var queueEvent *apitypes.WorkspaceSSEEvent
+drainAdmitted:
+	for {
+		select {
+		case e := <-sub.Ch:
+			if e.Type == "queue.update" {
+				queueEvent = &e
+				break drainAdmitted
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timeout: no queue.update event received")
+		}
+	}
+	require.NotNil(t, queueEvent)
+	data, _ := json.Marshal(queueEvent.Data)
+	assert.Contains(t, string(data), "enqueued")
+	assert.Contains(t, string(data), "msg_abc")
+	assert.True(t, handler.v2Pending.has("ws-1", "ses-1"),
+		"PromptAdmitted must track session for US-63.9")
+}
+
+func TestV2SSEBridge_PromptedToSent(t *testing.T) {
+	srv := startV2TestServer(t, "test-pw")
+	defer srv.Close()
+	_, handler := newV2TestHandler(t, srv)
+
+	sub, err := handler.userBroker.SubscribeWorkspace("ws-1")
+	require.NoError(t, err)
+	defer handler.userBroker.UnsubscribeWorkspace("ws-1", sub)
+
+	handler.onRawEvent("ws-1", "session.next.prompt.admitted",
+		`{"id":"e1","type":"session.next.prompt.admitted","properties":{"messageID":"msg_x","sessionID":"ses-1","delivery":"queue"}}`)
+	handler.onRawEvent("ws-1", "session.next.prompted",
+		`{"id":"e2","type":"session.next.prompted","properties":{"messageID":"msg_x","sessionID":"ses-1","delivery":"queue"}}`)
+
+	var types []string
+drainLoop:
+	for {
+		select {
+		case e := <-sub.Ch:
+			if e.Type == "queue.update" {
+				data, _ := json.Marshal(e.Data)
+				types = append(types, string(data))
+			}
+		case <-time.After(200 * time.Millisecond):
+			break drainLoop
+		}
+	}
+
+	require.Len(t, types, 2, "should see enqueued + sent")
+	assert.Contains(t, types[0], "enqueued")
+	assert.Contains(t, types[1], "sent")
+	assert.False(t, handler.v2Pending.has("ws-1", "ses-1"),
+		"Prompted must clear session from pending tracking (drained)")
+}
+
+func TestV2SSEBridge_IgnoresSteerDelivery(t *testing.T) {
+	srv := startV2TestServer(t, "test-pw")
+	defer srv.Close()
+	_, handler := newV2TestHandler(t, srv)
+
+	sub, err := handler.userBroker.SubscribeWorkspace("ws-1")
+	require.NoError(t, err)
+	defer handler.userBroker.UnsubscribeWorkspace("ws-1", sub)
+
+	handler.onRawEvent("ws-1", "session.next.prompt.admitted",
+		`{"id":"e1","type":"session.next.prompt.admitted","properties":{"messageID":"msg_s","sessionID":"ses-1","delivery":"steer"}}`)
+
+	// opencode.event relay fires, but no queue.update.
+drainSteer:
+	for {
+		select {
+		case e := <-sub.Ch:
+			if e.Type == "queue.update" {
+				t.Fatalf("steer delivery must not synthesize queue.update: %+v", e)
+			}
+		case <-time.After(100 * time.Millisecond):
+			break drainSteer
+		}
+	}
+	assert.False(t, handler.v2Pending.has("ws-1", "ses-1"),
+		"steer delivery must not be tracked for US-63.9")
+}
+
+func TestV2SSEBridge_FlagOff_NoBridge(t *testing.T) {
+	srv := startV2TestServer(t, "test-pw")
+	defer srv.Close()
+	_, handler := newV2TestHandler(t, srv)
+	handler.SetV2SessionQueueEnabled(false)
+
+	sub, err := handler.userBroker.SubscribeWorkspace("ws-1")
+	require.NoError(t, err)
+	defer handler.userBroker.UnsubscribeWorkspace("ws-1", sub)
+
+	handler.onRawEvent("ws-1", "session.next.prompt.admitted",
+		`{"id":"e1","type":"session.next.prompt.admitted","properties":{"messageID":"msg_x","sessionID":"ses-1","delivery":"queue"}}`)
+
+drainFlagOff:
+	for {
+		select {
+		case e := <-sub.Ch:
+			if e.Type == "queue.update" {
+				t.Fatal("flag off: V2 SSE bridge must not run")
+			}
+		case <-time.After(100 * time.Millisecond):
+			break drainFlagOff
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// US-63.9: Stranded-Input Recovery tests
+// ---------------------------------------------------------------------------
+
+func TestV2PendingSessions_TrackAndClear(t *testing.T) {
+	v := newV2PendingSessions()
+
+	v.add("ws-1", "ses-a")
+	v.add("ws-1", "ses-b")
+	assert.True(t, v.has("ws-1", "ses-a"))
+	assert.True(t, v.has("ws-1", "ses-b"))
+	assert.False(t, v.has("ws-1", "ses-c"))
+
+	sessions := v.sessionsForWorkspace("ws-1")
+	assert.Len(t, sessions, 2)
+
+	v.remove("ws-1", "ses-a")
+	assert.False(t, v.has("ws-1", "ses-a"))
+	assert.True(t, v.has("ws-1", "ses-b"))
+
+	v.remove("ws-1", "ses-b")
+	assert.Empty(t, v.sessionsForWorkspace("ws-1"))
+}
+
+func TestV2StrandedRecovery_WakesIdleSession(t *testing.T) {
+	// The server tracks wake calls (PromptV2 with delivery:queue for "\n").
+	var wakeCount int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, pass, ok := r.BasicAuth()
+		if !ok || user != "opencode" || pass != "test-pw" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/prompt") {
+			atomic.AddInt32(&wakeCount, 1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":{"admittedSeq":99,"id":"msg_wake","sessionID":"ses-stranded"}}`))
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	router, handler := newV2TestHandler(t, srv)
+
+	// Simulate a stranded session: mark it as having pending V2 input.
+	handler.v2Pending.add("ws-1", "ses-stranded")
+
+	// Trigger the wake directly.
+	handler.wakeStrandedV2Sessions(context.Background(), "ws-1")
+
+	_ = router
+	assert.Equal(t, int32(1), atomic.LoadInt32(&wakeCount),
+		"stranded session must receive exactly one wake prompt")
+
+	// The wake itself doesn't clear the tracking — the Prompted event does.
+	// But the wake was sent.
+}
+
+func TestV2StrandedRecovery_NoWakeForUntrackedSession(t *testing.T) {
+	var wakeCount int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/prompt") {
+			atomic.AddInt32(&wakeCount, 1)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	router, handler := newV2TestHandler(t, srv)
+
+	// No sessions tracked — nothing to wake.
+	handler.wakeStrandedV2Sessions(context.Background(), "ws-1")
+
+	_ = router
+	assert.Equal(t, int32(0), atomic.LoadInt32(&wakeCount),
+		"untracked sessions must not receive wake prompts")
+}
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
