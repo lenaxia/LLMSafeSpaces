@@ -17,6 +17,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
 
 // readAgentConfig parses agent-config.json into a generic map for
@@ -358,4 +360,82 @@ func TestApplyRelayConfigPreBoot_AuthJSONWriteFails(t *testing.T) {
 	cfgBytes, _ := os.ReadFile(cfgPath)
 	assert.Contains(t, string(cfgBytes), "opencode-relay",
 		"agent-config.json must contain the relay block — only auth.json failed")
+}
+
+// TestApplyRelayConfigPreBoot_AppliesAllSourcesFromBootstrapFiles is a
+// regression test for a behavioral regression introduced during the
+// US-65.1 containment move: applyRelayConfigPreBoot constructed its
+// ConfigWriter WITHOUT the WithAdminPromptPath / WithAllowedDirsPath /
+// WithPreMarshalHook options, silently dropping three config sources
+// (admin system prompt, allowed external directories, built-in admin
+// MCP server) from the pre-boot relay path. The original hardcoded
+// newAgentConfigWriter always loaded all three.
+//
+// This test seeds the bootstrap source files (agentd.AdminPromptPath,
+// agentd.AllowedDirsPath) and asserts all three sources appear in the
+// rendered config. It fails against the buggy code and passes once the
+// constructor options are passed.
+//
+// Requires /sandbox-runtime to be writable (true in CI and dev; in prod
+// the bootstrap subcommand writes these files before materialize runs).
+func TestApplyRelayConfigPreBoot_AppliesAllSourcesFromBootstrapFiles(t *testing.T) {
+	withFreeModelsAtTmp(t, mustCatalogBytes(t, "free-model"))
+
+	// Seed the bootstrap source files that the writer loads via
+	// WithAdminPromptPath and WithAllowedDirsPath.
+	require.NoError(t, os.MkdirAll("/sandbox-runtime", 0o755))
+	const adminPromptBody = "You are a canary coding assistant. Token: canary_admin_prompt_123"
+	require.NoError(t, os.WriteFile(agentd.AdminPromptPath, []byte(adminPromptBody), 0o600))
+	require.NoError(t, os.WriteFile(agentd.AllowedDirsPath, []byte(`["/tmp/*","/opt/cache/*"]`), 0o600))
+	t.Cleanup(func() {
+		_ = os.Remove(agentd.AdminPromptPath)
+		_ = os.Remove(agentd.AllowedDirsPath)
+	})
+
+	dir := t.TempDir()
+	authPath := filepath.Join(dir, "auth.json")
+	require.NoError(t, os.WriteFile(authPath,
+		[]byte(`{"opencode":{"type":"api","key":"public"}}`), 0o600))
+	cfgPath := filepath.Join(dir, "agent-config.json")
+	require.NoError(t, os.WriteFile(cfgPath, []byte(`{}`), 0o600))
+
+	outcome, err := applyRelayConfigPreBoot("https://relay.test/secret", authPath, cfgPath, nil)
+	require.NoError(t, err)
+	require.Equal(t, "applied", outcome)
+
+	cfg := readAgentConfig(t, cfgPath)
+
+	// 1. Admin system prompt must be present at agent.build.prompt.
+	agent, ok := cfg["agent"].(map[string]any)
+	require.True(t, ok, "agent block must be present (admin prompt source loaded)")
+	build, ok := agent["build"].(map[string]any)
+	require.True(t, ok, "agent.build must be present")
+	assert.Equal(t, adminPromptBody, build["prompt"],
+		"agent.build.prompt must contain the admin prompt body — "+
+			"the pre-boot relay writer must load it from agentd.AdminPromptPath")
+
+	// 2. Allowed external directories must be present as allow-rules.
+	mode, ok := cfg["mode"].(map[string]any)
+	require.True(t, ok, "mode block must be present (allowed-dirs source loaded)")
+	perms, ok := mode["permissions"].(map[string]any)
+	require.True(t, ok, "mode.permissions must be present")
+	extDir, ok := perms["external_directory"].(map[string]any)
+	require.True(t, ok, "mode.permissions.external_directory must be a map of allow-rules")
+	assert.Equal(t, "allow", extDir["/tmp/*"],
+		"/tmp/* from allowed-dirs file must be an allow-rule")
+	assert.Equal(t, "allow", extDir["/opt/cache/*"],
+		"/opt/cache/* from allowed-dirs file must be an allow-rule")
+
+	// 3. Built-in admin MCP server must be injected by the pre-marshal hook.
+	mcp, ok := cfg["mcp"].(map[string]any)
+	require.True(t, ok, "mcp section must be present (pre-marshal hook ran)")
+	_, hasBuiltin := mcp["llmsafespaces"]
+	assert.True(t, hasBuiltin,
+		"mcp.llmsafespaces must be present — the pre-boot writer must call "+
+			"injectAgentdMCPServer via the preMarshalHook option")
+
+	// Sanity: relay block still applied (the primary job of this path).
+	provider, _ := cfg["provider"].(map[string]any)
+	_, hasRelay := provider["opencode-relay"]
+	assert.True(t, hasRelay, "relay provider must still be applied alongside all sources")
 }

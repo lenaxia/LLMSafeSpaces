@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-09
 **Session:** US-65.1 containment extraction — relocate opencode config rendering from agentd's package main into pkg/agent/opencode/, the existing agent-integration seam.
-**Status:** Complete
+**Status:** Complete (revision 2 — corrected pre_boot_relay options per review)
 
 ---
 
@@ -56,6 +56,8 @@ Discovery during study: US-46.10 already shipped the single-writer consolidation
 3. **No new interface.** The original US-65.1 design proposed an `AgentConfigWriter interface` with `Apply(input) → restartRequired`. The code study proved US-46.10 already delivered the single-writer consolidation. Building an interface now (Rule 12: one consumer, no recurring pain in the writer seam) would be the speculative-abstraction tax. This PR is pure containment — moving concrete code behind a boundary, no abstraction.
 
 4. **Schema helper stays test-only.** Exporting `AssertMatchesOpencodeSchema` from the opencode package would make `github.com/santhosh-tekuri/jsonschema/v6` a production dependency. Kept the helper in test files; agentd's integration tests get their own thin helper that references the shared testdata via relative path.
+
+5. **CORRECTION (review feedback, 2026-08-09): pre_boot_relay.go MUST pass all three constructor options.** Initial submission constructed the pre-boot writer with no options and justified it with the assumption "materialize already rendered adminPrompt/allowedDirs; loadExisting preserves them." This was factually incorrect (Rule 7 violation — unvalidated assumption). A write-path trace through `runMaterializeCommand` confirmed: `FlushProviders`, `applyMCPServersToConfig`, and `applyWorkspaceConfig` write only `{$schema, provider, model, mcp}` — none write the `agent` or `mode` blocks. The original `newAgentConfigWriter` hardcoded `agentd.AdminPromptPath`, `agentd.AllowedDirsPath`, and called `injectAgentdMCPServer` unconditionally inside `rebuild()`. The fix passes the same three options as `main.go`. A regression test (`TestApplyRelayConfigPreBoot_AppliesAllSourcesFromBootstrapFiles`) now seeds the bootstrap source files and asserts all three sources appear in the rendered config.
 
 ---
 

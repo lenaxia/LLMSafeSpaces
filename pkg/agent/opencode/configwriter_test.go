@@ -5,7 +5,6 @@ package opencode
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -928,9 +927,6 @@ func TestConfigWriter_Rebuild_NoMCPSectionWhenNoHookAndNoServers(t *testing.T) {
 	_, hasMCP := cfg["mcp"]
 	assert.False(t, hasMCP, "no mcp section when no hook and no servers")
 }
-
-// fmt is imported for future test formatting; keep the import used.
-var _ = fmt.Sprintf
 
 // ---------------------------------------------------------------------------
 // loadExisting relay-detection (Phase D flag flip — moved from agentd).
