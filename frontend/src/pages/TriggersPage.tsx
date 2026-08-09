@@ -8,7 +8,7 @@ import { Spinner } from "../components/ui/Spinner";
 import { cn } from "../lib/utils";
 import {
   Plus, Clock, Link as LinkIcon, Copy, Eye, EyeOff, AlertTriangle,
-  Shield, Activity,
+  Shield, Activity, ArrowLeft,
 } from "lucide-react";
 import {
   type FriendlyCron, type CronFrequency, friendlyToCron, cronToFriendly,
@@ -49,7 +49,11 @@ export function TriggersPage() {
 
   return (
     <div className="flex h-full overflow-hidden">
-      <div className="w-72 shrink-0 border-r border-border overflow-y-auto scrollbar-thin">
+      {/* List pane — full width on mobile when no selection, hidden when detail open on mobile */}
+      <div className={cn(
+        "w-full md:w-72 shrink-0 border-r border-border overflow-y-auto scrollbar-thin",
+        selected && "hidden md:block",
+      )}>
         <div className="flex items-center justify-between p-3 border-b border-border">
           <h2 className="text-sm font-semibold">Triggers</h2>
           <button
@@ -118,10 +122,21 @@ export function TriggersPage() {
         </div>
       </div>
 
-      <div className="flex-1 overflow-auto">
+      {/* Detail pane — full width on mobile, hidden when no selection on desktop empty state */}
+      <div className={cn(
+        "flex-1 overflow-auto",
+        !selected && !showCreate && "hidden md:block",
+      )}>
         {selected ? (
-          <TriggerEditor
-            trigger={selected}
+          <>
+            <button
+              onClick={() => navigate("/triggers", { replace: true })}
+              className="flex items-center gap-1 border-b border-border px-3 py-2 text-sm text-muted-foreground hover:bg-accent md:hidden"
+            >
+              <ArrowLeft className="h-4 w-4" /> Triggers
+            </button>
+            <TriggerEditor
+              trigger={selected}
             workflows={workflows || []}
             onUpdate={async (updates) => {
               await triggerApi.update(selected.id, updates);
@@ -137,6 +152,7 @@ export function TriggersPage() {
               navigate(`/workflows/${wfId}/runs/${run.id}`);
             }}
           />
+          </>
         ) : (
           <div className="flex h-full items-center justify-center text-muted-foreground">
             <p className="text-sm">Select a trigger from the list, or create a new one.</p>

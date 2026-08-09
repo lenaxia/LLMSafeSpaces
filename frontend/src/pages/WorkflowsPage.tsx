@@ -6,7 +6,7 @@ import { WorkflowEditor } from "../components/workflows/WorkflowEditor";
 import { Badge } from "../components/ui/Badge";
 import { Spinner } from "../components/ui/Spinner";
 import { cn } from "../lib/utils";
-import { Plus, History } from "lucide-react";
+import { Plus, History, ArrowLeft } from "lucide-react";
 
 export function WorkflowsPage() {
   const { workflowId } = useParams();
@@ -46,7 +46,11 @@ export function WorkflowsPage() {
 
   return (
     <div className="flex h-full overflow-hidden">
-      <div className="w-72 shrink-0 border-r border-border overflow-y-auto scrollbar-thin">
+      {/* List pane — full width on mobile when no selection, hidden when detail open on mobile */}
+      <div className={cn(
+        "w-full md:w-72 shrink-0 border-r border-border overflow-y-auto scrollbar-thin",
+        selected && "hidden md:block",
+      )}>
         <div className="flex items-center justify-between p-3 border-b border-border">
           <h2 className="text-sm font-semibold">Workflows</h2>
           <button
@@ -104,9 +108,19 @@ export function WorkflowsPage() {
         </div>
       </div>
 
-      <div className="flex flex-1 flex-col overflow-hidden">
+      {/* Detail pane — full width on mobile, hidden when no selection on desktop empty state */}
+      <div className={cn(
+        "flex flex-1 flex-col overflow-hidden",
+        !selected && !showCreate && "hidden md:flex",
+      )}>
         {selected ? (
           <>
+            <button
+              onClick={() => navigate("/workflows", { replace: true })}
+              className="flex items-center gap-1 border-b border-border px-3 py-2 text-sm text-muted-foreground hover:bg-accent md:hidden"
+            >
+              <ArrowLeft className="h-4 w-4" /> Workflows
+            </button>
             <div className="flex-1 overflow-hidden">
               <WorkflowEditor
                 mode="edit"
