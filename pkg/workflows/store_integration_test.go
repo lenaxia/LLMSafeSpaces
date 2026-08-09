@@ -630,13 +630,14 @@ func (s *StoreIntegrationSuite) TestListPendingRoutineFires() {
 // TestTriggerFiresUUIDColumn_RejectsNonUUIDIDs is the integration regression
 // for the "Test1we" production bug: the cron scheduler previously generated
 // fire IDs as fmt.Sprintf("fire-%s-%d", triggerID, unix), which Postgres
-// rejected with SQLSTATE 22P02 because trigger_fires.id is `uuid NOT NULL`.
-// Every cron tick silently dropped the fire row, the trigger appeared to fire
-// (last_fired_at advanced) but no agent invocation ever ran.
+// rejected with SQLSTATE 22P02 because trigger_fires.id is `uuid NOT NULL`
+// (migration 000016:327). Every cron tick silently dropped the fire row, the
+// trigger looked fired (last_fired_at advanced) but no agent invocation ran.
 //
 // This test pins the schema-side invariant: the column rejects the old shape
-// and accepts a real UUID. The unit test in api/internal/workflows
-// (TestScheduler_FireAndRunIDs_AreUUIDs) covers the scheduler side.
+// and accepts a real UUID. The unit tests in api/internal/workflows
+// (TestScheduler_FireAndRunIDs_AreUUIDs, TestReconciler_NodeRunID_IsUUID)
+// cover the engine side.
 func (s *StoreIntegrationSuite) TestTriggerFiresUUIDColumn_RejectsNonUUIDIDs() {
 	ctx := context.Background()
 	triggerID := uuid.New().String()

@@ -307,7 +307,7 @@ func (r *Reconciler) executeNode(ctx context.Context, logger Logger, run *wf.Wor
 
 	var lastErr error
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		nodeRunID := fmt.Sprintf("%s-%s-%d", run.ID, node.ID, attempt)
+		nodeRunID := uuid.New().String()
 		_ = r.Store.CreateNodeRun(ctx, &wf.WorkflowNodeRunRow{
 			ID: nodeRunID, WorkflowRunID: run.ID,
 			NodeID: node.ID, NodeType: node.Type,

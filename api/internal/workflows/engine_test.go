@@ -1048,15 +1048,15 @@ func (m *uuidEnforcingSchedulerStore) mustParseUUID(id, origin string) {
 	}
 }
 
-func (m *uuidEnforcingSchedulerStore) CreateTriggerFire(_ context.Context, row *wf.TriggerFireRow) error {
+func (m *uuidEnforcingSchedulerStore) CreateTriggerFire(ctx context.Context, row *wf.TriggerFireRow) error {
 	m.mustParseUUID(row.ID, "trigger_fire")
-	return m.mockSchedulerStore.CreateTriggerFire(context.Background(), row)
+	return m.mockSchedulerStore.CreateTriggerFire(ctx, row)
 }
 
-func (m *uuidEnforcingSchedulerStore) CreateWorkflowRunWithFire(_ context.Context, fire *wf.TriggerFireRow, run *wf.WorkflowRunRow) error {
+func (m *uuidEnforcingSchedulerStore) CreateWorkflowRunWithFire(ctx context.Context, fire *wf.TriggerFireRow, run *wf.WorkflowRunRow) error {
 	m.mustParseUUID(fire.ID, "workflow_run fire")
 	m.mustParseUUID(run.ID, "workflow_run run")
-	return m.mockSchedulerStore.CreateWorkflowRunWithFire(context.Background(), fire, run)
+	return m.mockSchedulerStore.CreateWorkflowRunWithFire(ctx, fire, run)
 }
 
 // TestScheduler_FireAndRunIDs_AreUUIDs is the regression test for the
@@ -1068,6 +1068,59 @@ func (m *uuidEnforcingSchedulerStore) CreateWorkflowRunWithFire(_ context.Contex
 //   - workflow-target fires (fireID + runID)
 //   - routine-target fires (fireID)
 //   - missed-fire skip rows
+//
+// uuidEnforcingReconcilerStore wraps mockStore (reconciler's store) and rejects
+// any node-run ID that does not parse as a UUID. workflow_node_runs.id is
+// `uuid NOT NULL` (migration 000016:290); a non-UUID id causes SQLSTATE 22P02
+// at insert time, swallowed silently by the reconciler's `_ =`.
+type uuidEnforcingReconcilerStore struct {
+	*mockStore
+	t *testing.T
+}
+
+func (m *uuidEnforcingReconcilerStore) mustParseUUID(id, origin string) {
+	m.t.Helper()
+	if _, err := uuid.Parse(id); err != nil {
+		m.t.Fatalf("regression: %s id %q is not a valid UUID (workflow_node_runs.id is uuid NOT NULL): %v", origin, id, err)
+	}
+}
+
+func (m *uuidEnforcingReconcilerStore) CreateNodeRun(ctx context.Context, row *wf.WorkflowNodeRunRow) error {
+	m.mustParseUUID(row.ID, "node_run")
+	return m.mockStore.CreateNodeRun(ctx, row)
+}
+
+// TestReconciler_NodeRunID_IsUUID is the regression test for the second
+// instance of the "Test1we" bug class: the reconciler built node-run IDs as
+// fmt.Sprintf("%s-%s-%d", runID, nodeID, attempt), which PG rejects because
+// workflow_node_runs.id is `uuid NOT NULL`. Every node execution silently
+// dropped its audit row. Same file, same bug class, same execution flow as
+// the scheduler fire/run IDs fixed above.
+func TestReconciler_NodeRunID_IsUUID(t *testing.T) {
+	store := &uuidEnforcingReconcilerStore{mockStore: newMockStore(), t: t}
+	store.addRun(uuid.New().String(), uuid.New().String(), "ws-1",
+		linearSpec(), json.RawMessage(`{}`), "")
+
+	agentd := newMockAgentd()
+	agentd.outputs["start"] = json.RawMessage(`{"ok":true}`)
+	agentd.outputs["end"] = json.RawMessage(`{"ok":true}`)
+
+	rec := &Reconciler{
+		Store: store, AgentdClient: agentd, Activator: &mockActivator{},
+		Logger: noopLogger{},
+	}
+
+	claimed, err := store.ClaimQueuedRuns(context.Background(), 10)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("setup: expected 1 claimed run, got %d (err=%v)", len(claimed), err)
+	}
+	rec.executeRun(context.Background(), noopLogger{}, claimed[0])
+
+	if len(store.nodeRuns) != 2 {
+		t.Fatalf("expected 2 node runs, got %d", len(store.nodeRuns))
+	}
+}
+
 func TestScheduler_FireAndRunIDs_AreUUIDs(t *testing.T) {
 	t.Run("workflow_target", func(t *testing.T) {
 		store := &uuidEnforcingSchedulerStore{mockSchedulerStore: newMockSchedulerStore(), t: t}
