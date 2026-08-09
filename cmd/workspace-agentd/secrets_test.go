@@ -33,7 +33,6 @@ import (
 
 	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd/secrets"
-	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -447,7 +446,7 @@ func TestReloadSecretsHandler_LLMProvider_CallsOpenCodeClient(t *testing.T) {
 }
 
 // TestReloadSecretsHandler_WriterRebuildFailure_Returns500 verifies
-// that if the ConfigWriter.Rebuild() fails (e.g. disk full after
+// that if the AgentConfigWriter.rebuild() fails (e.g. disk full after
 // reset() deleted the old config), the handler returns 500 and does NOT
 // restart opencode with a missing config file.
 //
