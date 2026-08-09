@@ -142,7 +142,20 @@ func (a *K8sWorkspaceActivator) EnsureActive(ctx context.Context, workspaceID st
 
 		if crd.Status.Phase == k8stypes.WorkspacePhaseSuspended || crd.Status.Phase == k8stypes.WorkspacePhaseFailed {
 			suspendFalse := false
-			patchBody := map[string]any{"spec": map[string]any{"suspend": suspendFalse}}
+			// Refresh last-activity-at on activation. The controller's idle
+			// check (phase_active.go: time.Since(lastActivity) > idleTimeout)
+			// runs on the very next reconcile after the workspace reaches
+			// Active; without this refresh, a stale lastActivity causes
+			// immediate re-suspend. Mirrors the API service's
+			// ActivateWorkspace (workspace_service.go).
+			patchBody := map[string]any{
+				"spec": map[string]any{"suspend": suspendFalse},
+				"metadata": map[string]any{
+					"annotations": map[string]any{
+						k8stypes.AnnotationLastActivityAt: time.Now().UTC().Format(time.RFC3339),
+					},
+				},
+			}
 			patchBytes, _ := json.Marshal(patchBody)
 			_, err := v1Client.Workspaces(a.Namespace).Patch(checkCtx, workspaceID, k8sapiTypes.MergePatchType, patchBytes, metav1.PatchOptions{})
 			if err != nil {

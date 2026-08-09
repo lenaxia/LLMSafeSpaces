@@ -16,8 +16,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	mockkubernetes "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
+	k8stypes "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
+	"github.com/stretchr/testify/mock"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // --- Mock types ---
@@ -645,6 +649,81 @@ func TestK8sWorkspaceActivator_EmptyNamespace(t *testing.T) {
 	if err == nil {
 		t.Error("expected error with empty namespace")
 	}
+}
+
+// TestK8sWorkspaceActivator_PatchRefreshesLastActivity is the regression test
+// for the "Test1we" production bug: workflow/trigger-driven activations left
+// the workspace's `last-activity-at` annotation stale, so the controller's
+// idle-timeout check (phase_active.go:235 — `time.Since(lastActivity) >
+// idleTimeoutSeconds`) immediately re-suspended the workspace on the next
+// reconcile. The API service's ActivateWorkspace (workspace_service.go:1675)
+// refreshes the annotation; the workflow engine's K8sWorkspaceActivator did
+// not — an asymmetry between the two activation paths.
+//
+// This test pins the contract: when EnsureActive patches spec.suspend=false
+// on a Suspended/Failed workspace, the patch body MUST also include the
+// `llmsafespaces.dev/last-activity-at` annotation set to a current timestamp.
+func TestK8sWorkspaceActivator_PatchRefreshesLastActivity(t *testing.T) {
+	wsFake := mockkubernetes.NewMockWorkspaceInterface()
+	v1Fake := mockkubernetes.NewMockLLMSafespacesV1Interface()
+	k8sFake := mockkubernetes.NewMockKubernetesClient()
+
+	k8sFake.On("LlmsafespacesV1").Return(v1Fake, nil)
+	v1Fake.On("Workspaces", "test-ns").Return(wsFake)
+
+	// First Get: Suspended workspace with stale lastActivity (the bug condition).
+	suspended := &k8stypes.Workspace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "ws-stale",
+			Annotations: map[string]string{k8stypes.AnnotationLastActivityAt: "2026-08-02T18:53:10Z"},
+		},
+		Status: k8stypes.WorkspaceStatus{Phase: k8stypes.WorkspacePhaseSuspended},
+	}
+	wsFake.On("Get", mock.Anything, "ws-stale", mock.Anything).Return(suspended, nil)
+	wsFake.On("Patch", mock.Anything, "ws-stale", mock.Anything, mock.Anything, mock.Anything).
+		Run(func(args mock.Arguments) {
+			data := args.Get(3).([]byte)
+			t.Logf("patch body: %s", string(data))
+			bodyMap := map[string]any{}
+			if err := json.Unmarshal(data, &bodyMap); err != nil {
+				t.Fatalf("patch body is not valid JSON: %v (body=%s)", err, string(data))
+			}
+			meta, ok := bodyMap["metadata"].(map[string]any)
+			if !ok {
+				t.Fatalf("regression: patch body missing metadata key (body=%s). "+
+					"EnsureActive must refresh last-activity-at to prevent the "+
+					"controller idle-timeout from immediately re-suspending the workspace.", string(data))
+			}
+			annotations, ok := meta["annotations"].(map[string]any)
+			if !ok {
+				t.Fatalf("regression: patch body metadata missing annotations (body=%s). "+
+					"EnsureActive must refresh last-activity-at.", string(data))
+			}
+			ts, ok := annotations[k8stypes.AnnotationLastActivityAt].(string)
+			if !ok || ts == "" {
+				t.Fatalf("regression: patch body missing %s annotation (body=%s). "+
+					"EnsureActive must refresh last-activity-at.", k8stypes.AnnotationLastActivityAt, string(data))
+			}
+			// Timestamp must be recent (within the last minute), not the stale value.
+			parsed, err := time.Parse(time.RFC3339, ts)
+			if err != nil {
+				t.Fatalf("last-activity-at %q is not RFC3339: %v", ts, err)
+			}
+			if age := time.Since(parsed); age > time.Minute {
+				t.Fatalf("regression: last-activity-at %q is stale (age=%s); must be ~now", ts, age)
+			}
+			// Must differ from the stale value.
+			if ts == "2026-08-02T18:53:10Z" {
+				t.Fatalf("regression: last-activity-at unchanged from stale value")
+			}
+		}).Return(suspended, nil)
+
+	a := &K8sWorkspaceActivator{K8sClient: k8sFake, Namespace: "test-ns"}
+	// Short timeout — we only care that the Patch is called with the right body.
+	// EnsureActive will time out waiting for Active, which is fine for this assertion.
+	_, _ = a.EnsureActive(context.Background(), "ws-stale", 100*time.Millisecond)
+
+	wsFake.AssertNumberOfCalls(t, "Patch", 1)
 }
 
 // --- HTTPAgentExecutor tests ---
