@@ -439,7 +439,6 @@ func TestV2PendingSessions_ReferenceCountedMultiInput(t *testing.T) {
 }
 
 func TestV2StrandedRecovery_WakesIdleSession(t *testing.T) {
-	// The server tracks wake calls (PromptV2 with delivery:queue for "\n").
 	var wakeCount int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, pass, ok := r.BasicAuth()
@@ -457,20 +456,13 @@ func TestV2StrandedRecovery_WakesIdleSession(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	router, handler := newV2TestHandler(t, srv)
-
-	// Simulate a stranded session: mark it as having pending V2 input.
+	_, handler := newV2TestHandler(t, srv)
 	handler.v2Pending.add("ws-1", "ses-stranded")
 
-	// Trigger the wake directly.
 	handler.wakeStrandedV2Sessions(context.Background(), "ws-1")
 
-	_ = router
 	assert.Equal(t, int32(1), atomic.LoadInt32(&wakeCount),
 		"stranded session must receive exactly one wake prompt")
-
-	// The wake itself doesn't clear the tracking — the Prompted event does.
-	// But the wake was sent.
 }
 
 func TestV2StrandedRecovery_NoWakeForUntrackedSession(t *testing.T) {
@@ -483,12 +475,9 @@ func TestV2StrandedRecovery_NoWakeForUntrackedSession(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	router, handler := newV2TestHandler(t, srv)
-
-	// No sessions tracked — nothing to wake.
+	_, handler := newV2TestHandler(t, srv)
 	handler.wakeStrandedV2Sessions(context.Background(), "ws-1")
 
-	_ = router
 	assert.Equal(t, int32(0), atomic.LoadInt32(&wakeCount),
 		"untracked sessions must not receive wake prompts")
 }
@@ -516,12 +505,11 @@ func TestV2StrandedRecovery_WakeSendsNewlineWithDeliveryQueue(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	router, handler := newV2TestHandler(t, srv)
+	_, handler := newV2TestHandler(t, srv)
 	handler.v2Pending.add("ws-1", "ses-1")
 
 	handler.wakeStrandedV2Sessions(context.Background(), "ws-1")
 
-	_ = router
 	require.NotEmpty(t, bodyBytes, "wake prompt must send a body")
 	var body struct {
 		Prompt   struct{ Text string } `json:"prompt"`
@@ -615,7 +603,7 @@ func TestV2StrandedRecovery_WakeErrorDoesNotPanic(t *testing.T) {
 	srv := startV2TestServer(t, "test-pw")
 	defer srv.Close()
 
-	router, handler := newV2TestHandler(t, srv)
+	_, handler := newV2TestHandler(t, srv)
 
 	// Override factory to return an error for the first session,
 	// succeed for the second.
@@ -635,9 +623,38 @@ func TestV2StrandedRecovery_WakeErrorDoesNotPanic(t *testing.T) {
 		handler.wakeStrandedV2Sessions(context.Background(), "ws-1")
 	})
 
-	_ = router
 	assert.Equal(t, int32(2), atomic.LoadInt32(&callCount),
 		"both sessions must be attempted despite the first failing")
+}
+
+func TestV2StrandedRecovery_PromptV2FailureContinuesToNextSession(t *testing.T) {
+	// Distinct from the construction-failure test: here the client
+	// constructs successfully but PromptV2 itself fails (e.g. pod
+	// restarted between construction and the HTTP call). The wake
+	// loop must continue to the next session.
+	var promptCalls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, pass, ok := r.BasicAuth()
+		if !ok || user != "opencode" || pass != "test-pw" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		atomic.AddInt32(&promptCalls, 1)
+		// Always return 500 — PromptV2 fails, but the loop should continue.
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	_, handler := newV2TestHandler(t, srv)
+	handler.v2Pending.add("ws-1", "ses-a")
+	handler.v2Pending.add("ws-1", "ses-b")
+
+	assert.NotPanics(t, func() {
+		handler.wakeStrandedV2Sessions(context.Background(), "ws-1")
+	})
+
+	assert.Equal(t, int32(2), atomic.LoadInt32(&promptCalls),
+		"both sessions must be attempted despite PromptV2 returning 500")
 }
 
 // ---------------------------------------------------------------------------
