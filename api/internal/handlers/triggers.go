@@ -329,7 +329,7 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID string) {
 	upd := &wf.TriggerUpdate{
 		Name: req.Name, Description: req.Description, Enabled: req.Enabled,
 		SourceConfig: req.SourceConfig,
-		WorkspaceID: req.WorkspaceID, WorkflowID: req.WorkflowID,
+		WorkspaceID:  req.WorkspaceID, WorkflowID: req.WorkflowID,
 		Prompt: req.Prompt, Agent: req.Agent,
 		ScriptPath: req.ScriptPath, ScriptArgs: req.ScriptArgs, ScriptEnv: req.ScriptEnv,
 		MemoryMode: req.MemoryMode, MemoryMaxRuns: req.MemoryMaxRuns,

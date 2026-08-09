@@ -22,13 +22,13 @@ import (
 // --- Mock types ---
 
 type mockStore struct {
-	mu           sync.Mutex
-	claimed      []*wf.WorkflowRunRow
-	statuses     map[string]string
-	nodeRuns     []*wf.WorkflowNodeRunRow
-	triggerFail  map[string]int
-	runUpdates   map[string]int
-	wfPolicies   map[string]string
+	mu            sync.Mutex
+	claimed       []*wf.WorkflowRunRow
+	statuses      map[string]string
+	nodeRuns      []*wf.WorkflowNodeRunRow
+	triggerFail   map[string]int
+	runUpdates    map[string]int
+	wfPolicies    map[string]string
 	runWorkspaces map[string]string
 }
 
@@ -553,12 +553,12 @@ func TestScheduler_RoutineTrigger(t *testing.T) {
 	store.triggers = []*wf.TriggerRow{{
 		ID: "trig-routine", OwnerType: "user", OwnerID: "u1",
 		Enabled: true, SourceType: types.TriggerSourceCron,
-		SourceConfig:  json.RawMessage(`{"expr":"0 * * * *"}`),
-		WorkspaceID:   strPtr("ws-1"),
-		Prompt:        "Summarize what changed since last run.",
-		MemoryMode:    types.MemoryNone,
-		CaptureMode:   types.CaptureFull,
-		NextFireAt:    &now,
+		SourceConfig: json.RawMessage(`{"expr":"0 * * * *"}`),
+		WorkspaceID:  strPtr("ws-1"),
+		Prompt:       "Summarize what changed since last run.",
+		MemoryMode:   types.MemoryNone,
+		CaptureMode:  types.CaptureFull,
+		NextFireAt:   &now,
 	}}
 
 	activator := &mockActivator{}

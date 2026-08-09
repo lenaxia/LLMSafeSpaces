@@ -278,35 +278,35 @@ func ValidRunErrorCode(c string) bool {
 // spec_yaml is the author's input; spec_json is the parsed DAG (denormalized for execution).
 // target_workspace_id is nullable (null = caller picks at run time).
 type WorkflowResponse struct {
-	ID                  string          `json:"id"`
-	OwnerType           string          `json:"ownerType"`
-	OwnerID             string          `json:"ownerId,omitempty"`
-	Name                string          `json:"name"`
-	Slug                string          `json:"slug"`
-	Description         string          `json:"description,omitempty"`
-	SpecYAML            string          `json:"specYaml"`
-	InputSchema         json.RawMessage `json:"inputSchema,omitempty"`
-	TargetWorkspaceID   string          `json:"targetWorkspaceId,omitempty"`
-	OnMissingWorkspace  string          `json:"onMissingWorkspace,omitempty"`
-	Status              string          `json:"status"`
-	Defaults            json.RawMessage `json:"defaults,omitempty"`
-	CreatedAt           time.Time       `json:"createdAt"`
-	UpdatedAt           time.Time       `json:"updatedAt"`
+	ID                 string          `json:"id"`
+	OwnerType          string          `json:"ownerType"`
+	OwnerID            string          `json:"ownerId,omitempty"`
+	Name               string          `json:"name"`
+	Slug               string          `json:"slug"`
+	Description        string          `json:"description,omitempty"`
+	SpecYAML           string          `json:"specYaml"`
+	InputSchema        json.RawMessage `json:"inputSchema,omitempty"`
+	TargetWorkspaceID  string          `json:"targetWorkspaceId,omitempty"`
+	OnMissingWorkspace string          `json:"onMissingWorkspace,omitempty"`
+	Status             string          `json:"status"`
+	Defaults           json.RawMessage `json:"defaults,omitempty"`
+	CreatedAt          time.Time       `json:"createdAt"`
+	UpdatedAt          time.Time       `json:"updatedAt"`
 }
 
 // CreateWorkflowRequest is the body for POST .../workflows.
 // The server computes slug from name if not provided; spec_yaml is validated + parsed
 // into spec_json by the DAG validator (US-64.4).
 type CreateWorkflowRequest struct {
-	Name                string          `json:"name" binding:"required"`
-	Slug                string          `json:"slug,omitempty"`
-	Description         string          `json:"description,omitempty"`
-	SpecYAML            string          `json:"specYaml" binding:"required"`
-	InputSchema         json.RawMessage `json:"inputSchema,omitempty"`
-	TargetWorkspaceID   string          `json:"targetWorkspaceId,omitempty"`
-	OnMissingWorkspace  string          `json:"onMissingWorkspace,omitempty"`
-	Status              string          `json:"status,omitempty"`
-	Defaults            json.RawMessage `json:"defaults,omitempty"`
+	Name               string          `json:"name" binding:"required"`
+	Slug               string          `json:"slug,omitempty"`
+	Description        string          `json:"description,omitempty"`
+	SpecYAML           string          `json:"specYaml" binding:"required"`
+	InputSchema        json.RawMessage `json:"inputSchema,omitempty"`
+	TargetWorkspaceID  string          `json:"targetWorkspaceId,omitempty"`
+	OnMissingWorkspace string          `json:"onMissingWorkspace,omitempty"`
+	Status             string          `json:"status,omitempty"`
+	Defaults           json.RawMessage `json:"defaults,omitempty"`
 }
 
 // UpdateWorkflowRequest supports partial update. Pointer fields: nil = "keep existing".

@@ -534,7 +534,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			Logger: engineLogger,
 		}
 		wfScheduler = &apiwf.Scheduler{
-			Store:        wfStore,
+			Store: wfStore,
 			Activator: &apiwf.K8sWorkspaceActivator{
 				K8sClient: k8sClient,
 				Namespace: cfg.Kubernetes.Namespace,

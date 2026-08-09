@@ -127,7 +127,7 @@ func TestWebhookReceiver_ValidSignature(t *testing.T) {
 	store.triggers[triggerID] = &wf.TriggerRow{
 		ID: triggerID, OwnerType: "user", OwnerID: "u1",
 		Enabled: true, SourceType: "webhook",
-		WorkflowID:   strPtrWF("wf-1"),
+		WorkflowID: strPtrWF("wf-1"),
 	}
 	store.workflows["wf-1"] = &wf.WorkflowRow{
 		ID: "wf-1", OwnerType: "user", OwnerID: "u1",

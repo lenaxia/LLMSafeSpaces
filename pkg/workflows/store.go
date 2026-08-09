@@ -180,22 +180,22 @@ type WorkflowUpdate struct {
 // fields: nil means "keep existing". source_type is NOT in this struct — it's
 // immutable after create (the source defines the trigger's identity).
 type TriggerUpdate struct {
-	Name              *string
-	Description       *string
-	Enabled           *bool
-	SourceConfig      json.RawMessage
-	WorkspaceID       *string
-	WorkflowID        *string
-	Prompt            *string
-	Agent             *string
-	ScriptPath        *string
-	ScriptArgs        []string
-	ScriptEnv         json.RawMessage
-	MemoryMode        *string
-	MemoryMaxRuns     *int
-	CaptureMode       *string
-	PreserveSession   *string
-	AutoDisableAfter  *int
+	Name             *string
+	Description      *string
+	Enabled          *bool
+	SourceConfig     json.RawMessage
+	WorkspaceID      *string
+	WorkflowID       *string
+	Prompt           *string
+	Agent            *string
+	ScriptPath       *string
+	ScriptArgs       []string
+	ScriptEnv        json.RawMessage
+	MemoryMode       *string
+	MemoryMaxRuns    *int
+	CaptureMode      *string
+	PreserveSession  *string
+	AutoDisableAfter *int
 }
 
 // --- Workflow CRUD ----------------------------------------------------------
