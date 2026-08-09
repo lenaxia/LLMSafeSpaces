@@ -43,7 +43,7 @@ Every new opencode quirk becomes a platform hack. Every eventual agent swap beco
 
 ### In scope
 
-- **`pkg/session/` contract package** — `Session`, `Message`, `Part` (5-type union), `Event` (9 types), `InputRequest`, `SendOpts` (with `Admission` mode for steering), `Cost`, `ModelRef`/`ModelInfo`, `Capability` flags. ~150 lines of types. Validated against opencode, pi, oh-my-pi, claude-code, aider, strands (all 6 fit).
+- **`pkg/session/` contract package** — `Session`, `Message`, `Part` (5-type union), `Event` (10 types), `InputRequest`, `SendOpts` (with `Admission` mode for steering), `Cost`, `ModelRef`/`ModelInfo`, `Capability` flags. ~150 lines of types. Validated against opencode, pi, oh-my-pi, claude-code, aider, strands (all 6 fit).
 - **`pkg/agent.Adapter` interface** — folds the existing `Dialect` + `AgentRuntime` into one seam (~18 methods). Existing `Dialect` path/classification methods become private to the opencode adapter.
 - **`AgentConfigWriter` seam (C1)** — `Apply(AgentConfigInput) (restartRequired bool, err error)`. The opencode implementation owns deep-merge, `OPENCODE_CONFIG`, `disabled_providers`, and the always-restart return value.
 - **opencode adapter** — implements `Adapter` against the existing opencode HTTP API. Translates opencode parts → platform parts, opencode events → platform events, opencode questions/permissions → unified `InputRequest`.
@@ -118,7 +118,7 @@ Every new opencode quirk becomes a platform hack. Every eventual agent swap beco
 - New: `pkg/session/session.go` — `Session`, `Status`, `ModelRef`, `Cost`, `TimeRange`, `Capability`.
 - New: `pkg/session/message.go` — `Message`, `MessageType`, `UserMessage`, `AssistantMessage`, `ShellMessage`, `AgentSwitchMessage`, `ModelSwitchMessage`, `CompactionMessage`, `SystemMessage`.
 - New: `pkg/session/part.go` — `Part`, `PartType` (5 types), `TextPart`, `ReasoningPart`, `ToolPart`, `ToolState`, `ToolStatus`, `FileChangePart`, `FileDiff`, `CustomPart`, `ErrorPart`.
-- New: `pkg/session/event.go` — `Event`, `EventType` (9 types), `InputRequest`, `InputKind`, `InputOption`, `SendOpts`, `Admission`.
+- New: `pkg/session/event.go` — `Event`, `EventType` (10 types), `InputRequest`, `InputKind`, `InputOption`, `SendOpts`, `Admission`.
 - New: `pkg/session/session_test.go` — JSON round-trip tests for every type; verify optional fields omit cleanly.
 
 **Done when:**

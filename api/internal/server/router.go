@@ -447,16 +447,7 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 	}
 
 	// Active runs + session origins — on idGroup so they inherit WorkspaceAccessMiddleware.
-	if cfg.UserWorkflowsHandler != nil {
-		idGroup.GET("/runs/active", func(c *gin.Context) {
-			c.Params = append(c.Params, gin.Param{Key: "workspaceId", Value: c.Param("id")})
-			cfg.UserWorkflowsHandler.ListActiveRunsByWorkspace(c)
-		})
-		idGroup.GET("/session-origins", func(c *gin.Context) {
-			c.Params = append(c.Params, gin.Param{Key: "workspaceId", Value: c.Param("id")})
-			cfg.UserWorkflowsHandler.ListSessionOrigins(c)
-		})
-	}
+	registerWorkspaceWorkflowRoutes(idGroup, cfg)
 
 	// Terminal proxy routes (WebSocket terminal to sandbox pod)
 	if cfg.TerminalHandler != nil {
@@ -1663,6 +1654,22 @@ func registerMCPRoutes(router *gin.Engine, services interfaces.Services, cfg Rou
 }
 
 // registerWorkflowRoutes registers all Epic 64 workflow/trigger/run routes.
+// registerWorkspaceWorkflowRoutes adds workspace-scoped workflow endpoints
+// to the idGroup, inheriting WorkspaceAccessMiddleware.
+func registerWorkspaceWorkflowRoutes(idGroup *gin.RouterGroup, cfg RouterConfig) {
+	if cfg.UserWorkflowsHandler == nil {
+		return
+	}
+	idGroup.GET("/runs/active", func(c *gin.Context) {
+		c.Params = append(c.Params, gin.Param{Key: "workspaceId", Value: c.Param("id")})
+		cfg.UserWorkflowsHandler.ListActiveRunsByWorkspace(c)
+	})
+	idGroup.GET("/session-origins", func(c *gin.Context) {
+		c.Params = append(c.Params, gin.Param{Key: "workspaceId", Value: c.Param("id")})
+		cfg.UserWorkflowsHandler.ListSessionOrigins(c)
+	})
+}
+
 func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cfg RouterConfig) {
 	// User-scope workflow routes.
 	if cfg.UserWorkflowsHandler != nil {
