@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-08-09
+
+### Fixed
+
+- **Mobile-responsive drill-down navigation** — workflows and triggers pages
+  now show one pane at a time on mobile (list → tap → detail with back button).
+  Desktop layout unchanged.
+- **Trigger editor routine parity** — full editing support for routine-mode
+  triggers (prompt, memory, capture, preserve session).
+- **Cron fire/run IDs must be UUIDs** — cron trigger fires were generating
+  non-UUID string IDs, causing silent DB insert failures. All IDs now use
+  `uuid.New().String()`.
+
 ## [0.12.0] - 2026-08-09
 
 ### Fixed — Completing items 1-7
