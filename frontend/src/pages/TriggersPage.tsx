@@ -512,18 +512,34 @@ function TriggerEditor({ trigger, workflows, onUpdate, onDelete, onRunWorkflow }
   const [copied, setCopied] = useState(false);
   const [editingSchedule, setEditingSchedule] = useState(false);
   const [editingTarget, setEditingTarget] = useState(false);
-  const [editingTemplate, setEditingTemplate] = useState(false);
 
   const [friendly, setFriendly] = useState<FriendlyCron>(() => cronToFriendly(trigger.sourceConfig || {}));
   const [rawMode, setRawMode] = useState(false);
   const [rawExpr, setRawExpr] = useState(trigger.sourceConfig?.expr || "0 * * * *");
+
+  const isRoutine = !trigger.workflowId && !!trigger.workspaceId;
+
   const [selectedWorkflowId, setSelectedWorkflowId] = useState(trigger.workflowId || "");
-  const [templateStr, setTemplateStr] = useState(() => {
-    return "";
-  });
+  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState(trigger.workspaceId || "");
+  const [promptStr, setPromptStr] = useState(trigger.prompt || "");
+  const [agentProfile, setAgentProfile] = useState(trigger.agent || "");
+  const [scriptPath, setScriptPath] = useState(trigger.scriptPath || "");
+  const [scriptArgs, setScriptArgs] = useState((trigger.scriptArgs || []).join(" "));
+  const [scriptEnv, setScriptEnv] = useState(
+    Object.entries(trigger.scriptEnv || {}).map(([k, v]) => `${k}=${v}`).join("\n"),
+  );
+  const [memoryMode, setMemoryMode] = useState(trigger.memoryMode || "none");
+  const [captureMode, setCaptureMode] = useState(trigger.captureMode || "errors_only");
+  const [preserveSession, setPreserveSession] = useState(trigger.preserveSession || "never");
+
+  const { data: workspaces } = useQuery({
+    queryKey: ["workspaces"],
+    queryFn: () => workspacesApi.list(),
+  }) as { data: { items?: { id: string; name: string; phase: string }[] } | undefined };
 
   const targetWorkflowId = trigger.workflowId || "";
   const targetWorkflow = workflows.find((w) => w.id === targetWorkflowId);
+  const targetWorkspace = (workspaces?.items || []).find((ws) => ws.id === trigger.workspaceId);
   const isAutoDisabled = trigger.consecutiveFailures >= trigger.autoDisableAfter && !trigger.enabled;
   const isCron = trigger.sourceType === "cron";
 
@@ -537,13 +553,32 @@ function TriggerEditor({ trigger, workflows, onUpdate, onDelete, onRunWorkflow }
   };
 
   const handleSaveTarget = () => {
-    onUpdate({ workflowId: selectedWorkflowId });
+    if (isRoutine) {
+      const updates: Record<string, unknown> = {
+        workspaceId: selectedWorkspaceId,
+        prompt: promptStr,
+        memoryMode,
+        captureMode,
+        preserveSession,
+      };
+      if (agentProfile) updates.agent = agentProfile;
+      if (scriptPath) {
+        updates.scriptPath = scriptPath;
+        updates.scriptArgs = scriptArgs.trim() ? scriptArgs.split(/\s+/) : [];
+        if (scriptEnv.trim()) {
+          const env: Record<string, string> = {};
+          scriptEnv.split("\n").forEach((line) => {
+            const idx = line.indexOf("=");
+            if (idx > 0) env[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+          });
+          updates.scriptEnv = env;
+        }
+      }
+      onUpdate(updates);
+    } else {
+      onUpdate({ workflowId: selectedWorkflowId });
+    }
     setEditingTarget(false);
-  };
-
-  const handleSavePrompt = () => {
-    onUpdate({ prompt });
-    setEditingTemplate(false);
   };
 
   return (
@@ -659,12 +694,18 @@ function TriggerEditor({ trigger, workflows, onUpdate, onDelete, onRunWorkflow }
         </div>
       )}
 
-      {/* Target workflow section */}
+      {/* Target section — mode-aware */}
       <div className="rounded-lg border border-border p-4 space-y-2">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold">Target Workflow</h3>
+          <h3 className="text-sm font-semibold">
+            {isRoutine ? "Target Workspace" : "Target Workflow"}
+          </h3>
           {!editingTarget ? (
-            <button onClick={() => { setSelectedWorkflowId(targetWorkflowId); setEditingTarget(true); }} className="text-xs text-blue-500 hover:underline">Edit</button>
+            <button onClick={() => {
+              if (isRoutine) setSelectedWorkspaceId(trigger.workspaceId || "");
+              else setSelectedWorkflowId(targetWorkflowId);
+              setEditingTarget(true);
+            }} className="text-xs text-blue-500 hover:underline">Edit</button>
           ) : (
             <div className="flex gap-2">
               <button onClick={() => setEditingTarget(false)} className="text-xs text-muted-foreground hover:underline">Cancel</button>
@@ -672,70 +713,152 @@ function TriggerEditor({ trigger, workflows, onUpdate, onDelete, onRunWorkflow }
             </div>
           )}
         </div>
-        {!editingTarget ? (
-          <div className="flex items-center gap-2 text-sm">
-            {targetWorkflow ? (
-              <>
-                <span className="font-medium">{targetWorkflow.name}</span>
-                <button
-                  onClick={() => onRunWorkflow(targetWorkflowId)}
-                  className="rounded border border-border px-2 py-0.5 text-xs hover:bg-accent"
-                >
-                  Run now →
-                </button>
-              </>
-            ) : (
-              <span className="text-muted-foreground">No workflow set</span>
-            )}
-          </div>
-        ) : (
-          <select
-            className="w-full rounded border border-border px-2 py-1 text-sm bg-background"
-            value={selectedWorkflowId}
-            onChange={(e) => setSelectedWorkflowId(e.target.value)}
-          >
-            <option value="">Select workflow...</option>
-            {workflows.map((wf) => (
-              <option key={wf.id} value={wf.id}>{wf.name}</option>
-            ))}
-          </select>
-        )}
-      </div>
 
-      {/* Input template section */}
-      <div className="rounded-lg border border-border p-4 space-y-2">
-        <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold">Input Template</h3>
-          {!editingTemplate ? (
-            <button onClick={() => setEditingTemplate(true)} className="text-xs text-blue-500 hover:underline">Edit</button>
-          ) : (
-            <div className="flex gap-2">
-              <button onClick={() => setEditingTemplate(false)} className="text-xs text-muted-foreground hover:underline">Cancel</button>
-              <button onClick={handleSavePrompt} className="text-xs text-blue-500 hover:underline">Save</button>
+        {isRoutine ? (
+          !editingTarget ? (
+            <div className="space-y-2 text-sm">
+              <div className="flex items-center gap-2">
+                <span className="font-medium">{targetWorkspace?.name || trigger.workspaceId}</span>
+                {targetWorkspace && (
+                  <span className="text-xs text-muted-foreground">({targetWorkspace.phase})</span>
+                )}
+              </div>
+              {trigger.prompt && (
+                <pre className="overflow-x-auto rounded bg-muted p-2 text-xs font-mono whitespace-pre-wrap">
+                  {trigger.prompt}
+                </pre>
+              )}
+              <div className="flex flex-wrap gap-3 text-xs text-muted-foreground">
+                {trigger.agent && <span>Agent: {trigger.agent}</span>}
+                <span>Memory: {trigger.memoryMode}</span>
+                <span>Capture: {trigger.captureMode}</span>
+                <span>Session: {trigger.preserveSession}</span>
+              </div>
+              {trigger.scriptPath && (
+                <div className="text-xs text-muted-foreground">
+                  Script: <code>{trigger.scriptPath}</code>
+                  {(trigger.scriptArgs || []).length > 0 && ` ${trigger.scriptArgs!.join(" ")}`}
+                </div>
+              )}
             </div>
-          )}
-        </div>
-        {!editingTemplate ? (
-          trigger.prompt ? (
-            <pre className="overflow-x-auto rounded bg-muted p-2 text-xs font-mono">
-              {trigger.prompt}
-            </pre>
           ) : (
-            <p className="text-xs text-muted-foreground">No prompt set.</p>
+            <div className="space-y-3">
+              <div>
+                <label className="mb-1 block text-xs text-muted-foreground">Workspace</label>
+                <select
+                  className="w-full rounded border border-border px-2 py-1 text-sm bg-background"
+                  value={selectedWorkspaceId}
+                  onChange={(e) => setSelectedWorkspaceId(e.target.value)}
+                >
+                  <option value="">Select workspace...</option>
+                  {(workspaces?.items || []).map((ws) => (
+                    <option key={ws.id} value={ws.id}>{ws.name} ({ws.phase})</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-muted-foreground">Prompt (text/template — supports {"{{.prevResult}}"}, {"{{.input}}"})</label>
+                <textarea
+                  className="h-24 w-full rounded border border-border p-2 font-mono text-xs bg-background resize-y"
+                  spellCheck={false}
+                  value={promptStr}
+                  onChange={(e) => setPromptStr(e.target.value)}
+                  placeholder={"Check for new action items.\n\nPrevious result:\n{{.prevResult}}"}
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-muted-foreground">Agent Profile (optional)</label>
+                <input
+                  className="w-full rounded border border-border px-2 py-1 text-sm bg-background"
+                  value={agentProfile}
+                  onChange={(e) => setAgentProfile(e.target.value)}
+                  placeholder="default"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-xs text-muted-foreground">Script Path (optional — runs before agent)</label>
+                <input
+                  className="w-full rounded border border-border px-2 py-1 font-mono text-sm bg-background"
+                  placeholder="/workspace/scripts/fetch.sh"
+                  value={scriptPath}
+                  onChange={(e) => setScriptPath(e.target.value)}
+                />
+              </div>
+              {scriptPath && (
+                <>
+                  <div>
+                    <label className="mb-1 block text-xs text-muted-foreground">Script Args</label>
+                    <input
+                      className="w-full rounded border border-border px-2 py-1 font-mono text-sm bg-background"
+                      value={scriptArgs}
+                      onChange={(e) => setScriptArgs(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs text-muted-foreground">Script Env (KEY=value per line)</label>
+                    <textarea
+                      className="w-full rounded border border-border px-2 py-1 font-mono text-xs bg-background h-12 resize-y"
+                      value={scriptEnv}
+                      onChange={(e) => setScriptEnv(e.target.value)}
+                    />
+                  </div>
+                </>
+              )}
+              <div className="grid grid-cols-3 gap-2">
+                <div>
+                  <label className="mb-1 block text-xs text-muted-foreground">Memory</label>
+                  <select className="w-full rounded border border-border px-2 py-1 text-xs bg-background" value={memoryMode} onChange={(e) => setMemoryMode(e.target.value)}>
+                    <option value="none">None</option>
+                    <option value="last_result">Last result</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-muted-foreground">Capture</label>
+                  <select className="w-full rounded border border-border px-2 py-1 text-xs bg-background" value={captureMode} onChange={(e) => setCaptureMode(e.target.value)}>
+                    <option value="errors_only">Errors only</option>
+                    <option value="full">Full result</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs text-muted-foreground">Session</label>
+                  <select className="w-full rounded border border-border px-2 py-1 text-xs bg-background" value={preserveSession} onChange={(e) => setPreserveSession(e.target.value)}>
+                    <option value="never">Delete after</option>
+                    <option value="on_failure">Keep on failure</option>
+                    <option value="always">Always keep</option>
+                  </select>
+                </div>
+              </div>
+            </div>
           )
         ) : (
-          <>
-            <textarea
-              className="h-32 w-full rounded border border-border p-2 font-mono text-xs bg-background"
-              spellCheck={false}
-              value={templateStr}
-              onChange={(e) => setTemplateStr(e.target.value)}
-              placeholder={'{"repo": "{{.body.repository.full_name}}", "issue": "{{.body.issue.number}}"}'}
-            />
-            <p className="text-xs text-muted-foreground">
-              Use <code>{"{{.body.field}}"}</code> to extract from webhook payload. Leave empty to pass full envelope.
-            </p>
-          </>
+          !editingTarget ? (
+            <div className="flex items-center gap-2 text-sm">
+              {targetWorkflow ? (
+                <>
+                  <span className="font-medium">{targetWorkflow.name}</span>
+                  <button
+                    onClick={() => onRunWorkflow(targetWorkflowId)}
+                    className="rounded border border-border px-2 py-0.5 text-xs hover:bg-accent"
+                  >
+                    Run now →
+                  </button>
+                </>
+              ) : (
+                <span className="text-muted-foreground">No workflow set</span>
+              )}
+            </div>
+          ) : (
+            <select
+              className="w-full rounded border border-border px-2 py-1 text-sm bg-background"
+              value={selectedWorkflowId}
+              onChange={(e) => setSelectedWorkflowId(e.target.value)}
+            >
+              <option value="">Select workflow...</option>
+              {workflows.map((wf) => (
+                <option key={wf.id} value={wf.id}>{wf.name}</option>
+              ))}
+            </select>
+          )
         )}
       </div>
 
