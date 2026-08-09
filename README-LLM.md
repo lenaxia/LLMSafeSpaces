@@ -2,8 +2,8 @@
 
 > **Repository:** `github.com/lenaxia/llmsafespaces`
 
-**Version:** 1.23
-**Last Updated:** 2026-08-02
+**Version:** 1.24
+**Last Updated:** 2026-08-09
 **Project Status:** Active Development
 
 ---
@@ -50,9 +50,10 @@
 
 **Optional deployable binaries** (feature-gated, only when the self-hosted relay fleet is enabled): `cmd/relay-router` (in-cluster traffic distributor) and `cmd/relay-proxy` (token-gated reverse proxy run on each relay VM). See [Inference Relay Fleet](#inference-relay-fleet).
 
-**Authoritative design document:**
+**Authoritative design documents:**
 
-- [`design/0021_2026-05-21_evolution-v2.md`](design/0021_2026-05-21_evolution-v2.md) — System architecture. This is the single source of truth for architecture decisions.
+- [`design/0021_2026-05-21_evolution-v2.md`](design/0021_2026-05-21_evolution-v2.md) — System architecture. The single source of truth for architecture decisions.
+- [`design/0049_2026-08-09_agent-session-contract.md`](design/0049_2026-08-09_agent-session-contract.md) — Agent integration / session contract. Authoritative for how the platform integrates any coding agent (refines §7 of evolution-v2). Epic: [65](design/stories/epic-65-agent-session-contract/README.md).
 
 **Historical design docs (reference only — archived under `design/archive/v1/`):**
 
@@ -183,6 +184,7 @@ Key documents by area:
 | Area | Document |
 |------|----------|
 | **Architecture** | `design/0021_2026-05-21_evolution-v2.md` (authoritative) |
+| **Agent integration / session contract** | `design/0049_2026-08-09_agent-session-contract.md` (authoritative for agent integration layer — refines §7 of evolution-v2) |
 | Implementation stories | `design/stories/` |
 | Security model | `design/0027_2026-05-24_security-policy-v21.md`, `design/0021 §9` |
 | Inference relay fleet | `design/stories/epic-42-multi-cloud-inference-relay/README.md` |
@@ -364,6 +366,42 @@ llmsafespaces/
 │   └─────────────────────┘  └─────────────────┘                              │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Agent Session Contract (Epic 65 — in definition)
+
+The platform is decoupling from opencode via a **platform-owned session contract** (`pkg/session/`, to be created) behind a single **adapter seam** (`pkg/agent.Adapter`). This is the single most important architectural change in progress. Full design: [`design/0049_2026-08-09_agent-session-contract.md`](design/0049_2026-08-09_agent-session-contract.md). Epic: [65](design/stories/epic-65-agent-session-contract/README.md).
+
+**Three first-class surfaces consume one contract:**
+
+| Surface | Caller | Model |
+|---|---|---|
+| Interactive | Web + mobile (structured chat, both first-class) | Streaming, real-time |
+| Programmatic | API / SDK / MCP (agent-as-caller) | Request-response, pollable |
+| Control-plane | Admin / operator / CI / terminal PTY | Synchronous CRUD |
+
+**The contract (5 part types, forever — validated against opencode, pi, aider, claude-code, strands, eino):**
+
+- `Text` — prose, system messages, compaction notices
+- `Reasoning` — model thinking (rendered collapsed)
+- `Tool` — every tool call (bash, edit, read, grep, todowrite, task, plan_enter, webfetch — all of them, discriminated by `Name`). Tools are extensible; part types are not.
+- `FileChange` — structured unified-diff for a file
+- `Custom` — pressure-relief valve for extension-defined semantics (required `Kind` discriminator)
+
+**Discipline rules (enforced by review + repolint):**
+
+1. 5 part types forever. No `PartTodo`, `PartEdit`, `PartSearch` — all tools are `ToolPart`.
+2. No agent identifier leaks (`ses_`/`msg_` IDs, `patch` part, `opencode-relay` naming stay in `pkg/agent/opencode/`).
+3. Agent-specific operations (rewind, fork, stash) are capability-gated pass-through, not contract types.
+4. Cost/usage fields are display-only. Billing is cgroup-based.
+5. Diff text is authoritative (`Patch string`), not hunk structs.
+
+**The AgentConfigWriter seam (US-65.1):** opencode's config-merge quirks (no hot reload, `OPENCODE_CONFIG` always-wins, `disabled_providers` relay injection) move behind `Apply(AgentConfigInput) (restartRequired bool, err error)`. Platform code reacts to `restartRequired` without knowing why.
+
+**What this replaces:** the patch-part stripping (`?verbose`), opencode-shape history parsing, inline question/permission translation, and the relay-config fragilities documented in [Relay Config Subsystem](#relay-config-subsystem). When the contract lands, those hacks are deleted.
+
+**When working on agent-integration code, ask:** *"Does this line need to know the agent is opencode?"* If yes, it belongs in `pkg/agent/opencode/`, not in a handler, service, or controller. See [Rule 12](#12-containment-before-abstraction-external-dependency-coupling).
+
+---
 
 ### Custom Resource Definitions
 

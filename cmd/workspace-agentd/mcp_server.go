@@ -178,8 +178,9 @@ func writeMCPError(w http.ResponseWriter, id any, code int, msg string) {
 
 func injectAgentdMCPServer(cfg map[string]json.RawMessage) {
 	mcpEntry := map[string]any{
-		"type": "remote",
-		"url":  fmt.Sprintf("http://127.0.0.1:%d/v1/mcp", agentd.AgentdAdminPort),
+		"enabled": true,
+		"type":    "remote",
+		"url":     fmt.Sprintf("http://127.0.0.1:%d/v1/mcp", agentd.AgentdAdminPort),
 	}
 	entryJSON, _ := json.Marshal(mcpEntry)
 
@@ -192,5 +193,7 @@ func injectAgentdMCPServer(cfg map[string]json.RawMessage) {
 			return
 		}
 	}
-	cfg["mcp"] = entryJSON
+	mcpMap := map[string]json.RawMessage{"llmsafespaces": entryJSON}
+	merged, _ := json.Marshal(mcpMap)
+	cfg["mcp"] = merged
 }
