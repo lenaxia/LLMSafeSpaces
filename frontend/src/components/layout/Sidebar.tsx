@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useLocation } from "react-router-dom";
 import { workspacesApi } from "../../api/workspaces";
+import { workspaceWorkflowApi } from "../../api/workflows";
 import { orgsApi } from "../../api/orgs";
 import { ApiClientError } from "../../api/client";
 import { useAuth } from "../../providers/AuthProvider";
@@ -530,6 +531,14 @@ function WorkspaceSessionList({
     queryKey: ["sessions", workspaceId],
     queryFn: async () => {
       const result = await workspacesApi.getSessions(workspaceId);
+      const origins = await workspaceWorkflowApi.sessionOrigins(workspaceId);
+      if (origins.length > 0) {
+        const originMap = new Map(origins.map((o) => [o.sessionId, o.origin]));
+        return result.map((s) => ({
+          ...s,
+          origin: originMap.get(s.id) || s.origin,
+        }));
+      }
       return result;
     },
     enabled: !!workspaceId,
@@ -873,6 +882,18 @@ function SessionTreeRow({
             <MessageSquare className="h-3.5 w-3.5 flex-shrink-0" />
           )}
           <span className={cn("flex-1 truncate", (showPulse || rowStatus === "pending_input") && "animate-unread-pulse")}>{title}</span>
+          {s.origin && s.origin !== "manual" && (
+            <span
+              className="flex-shrink-0 rounded px-1 text-[9px] font-medium uppercase"
+              style={{
+                color: s.origin === "routine" ? "#8b5cf6" : s.origin === "workflow" ? "#3b82f6" : "#6b7280",
+                backgroundColor: s.origin === "routine" ? "#8b5cf620" : s.origin === "workflow" ? "#3b82f620" : "#6b728020",
+              }}
+              title={`Origin: ${s.origin}`}
+            >
+              {s.origin}
+            </span>
+          )}
           {contextUsed != null && (
             <span
               className="flex-shrink-0 text-[10px] tabular-nums text-muted-foreground/50"

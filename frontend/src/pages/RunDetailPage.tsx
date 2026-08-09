@@ -108,6 +108,11 @@ export function RunDetailPage() {
         </div>
 
         <div className="mt-2 flex gap-4 text-xs text-muted-foreground">
+          {runData.createdAt && runData.startedAt && (
+            <span className="text-yellow-500">
+              Wake-up: {Math.round((new Date(runData.startedAt).getTime() - new Date(runData.createdAt).getTime()) / 1000)}s
+            </span>
+          )}
           {runData.startedAt && (
             <span>Started: {new Date(runData.startedAt).toLocaleString()}</span>
           )}

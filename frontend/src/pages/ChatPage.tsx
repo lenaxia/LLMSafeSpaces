@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { workspacesApi } from "../api/workspaces";
 import { ApiClientError } from "../api/client";
+import { workspaceWorkflowApi } from "../api/workflows";
 import { useWorkspaceStatus } from "../hooks/useWorkspaces";
 import { useMessageHistory } from "../hooks/useMessageHistory";
 import { ChatHistoryErrorBanner } from "../components/chat/ChatHistoryErrorBanner";
@@ -74,6 +75,13 @@ export function ChatPage() {
   }, [sessionId]);
 
   const { data: status } = useWorkspaceStatus(workspaceId);
+
+  const { data: activeRuns } = useQuery({
+    queryKey: ["workspace-active-runs", workspaceId],
+    queryFn: () => workspaceWorkflowApi.activeRuns(workspaceId!),
+    enabled: !!workspaceId,
+    refetchInterval: 10000,
+  });
 
   const { data: workspaceName } = useQuery({
     queryKey: ["workspaces"],
@@ -907,11 +915,19 @@ export function ChatPage() {
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center justify-between border-b border-border px-4 py-2">
-        <h2 className="text-sm font-semibold truncate">
-          <span className="text-muted-foreground">{workspaceName}</span>
-          <span className="text-muted-foreground/50 mx-1">/</span>
-          <span>{sessionDisplayName}</span>
-        </h2>
+        <div className="flex items-center gap-2 min-w-0">
+          <h2 className="text-sm font-semibold truncate">
+            <span className="text-muted-foreground">{workspaceName}</span>
+            <span className="text-muted-foreground/50 mx-1">/</span>
+            <span>{sessionDisplayName}</span>
+          </h2>
+          {activeRuns && activeRuns.length > 0 && (
+            <span className="flex items-center gap-1 rounded-md border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 text-xs text-blue-500 shrink-0">
+              <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
+              {activeRuns.length} active run{activeRuns.length > 1 ? "s" : ""}
+            </span>
+          )}
+        </div>
         <div className="flex items-center gap-2">
           {isReady && workspaceId && (
             <>

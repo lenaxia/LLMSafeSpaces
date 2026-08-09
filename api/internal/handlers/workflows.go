@@ -39,6 +39,7 @@ type workflowStore interface {
 	ListWorkflowRuns(ctx context.Context, workflowID string, limit, offset int) ([]*wf.WorkflowRunRow, error)
 	ListNodeRuns(ctx context.Context, workflowRunID string) ([]*wf.WorkflowNodeRunRow, error)
 	ListWorkflowRunsByWorkspace(ctx context.Context, workspaceID string) ([]*wf.WorkflowRunRow, error)
+	ListSessionOrigins(ctx context.Context, workspaceID string) ([]*wf.SessionOriginRow, error)
 }
 
 // workflowQuotaChecker reads instance settings for quota enforcement.
@@ -71,6 +72,42 @@ func NewOrgWorkflowsHandler(store workflowStore, quota workflowQuotaChecker) *Wo
 
 // SetAudit wires the audit logger (deferred injection — may be nil at construction).
 func (h *WorkflowsHandler) SetAudit(a workflowAuditLogger) { h.audit = a }
+
+// ListSessionOrigins returns session origin mappings for a workspace.
+func (h *WorkflowsHandler) ListSessionOrigins(c *gin.Context) {
+	workspaceID := c.Param("id")
+	if workspaceID == "" {
+		workspaceID = c.Param("workspaceId")
+	}
+	if workspaceID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "workspaceId required"})
+		return
+	}
+	origins, err := h.store.ListSessionOrigins(c.Request.Context(), workspaceID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list origins"})
+		return
+	}
+	type originResponse struct {
+		SessionID   string `json:"sessionId"`
+		WorkspaceID string `json:"workspaceId,omitempty"`
+		Origin      string `json:"origin"`
+		TriggerID   string `json:"triggerId,omitempty"`
+		Title       string `json:"title,omitempty"`
+	}
+	out := make([]originResponse, 0, len(origins))
+	for _, o := range origins {
+		resp := originResponse{
+			SessionID: o.SessionID, WorkspaceID: o.WorkspaceID,
+			Origin: o.Origin, Title: o.Title,
+		}
+		if o.TriggerID != nil {
+			resp.TriggerID = *o.TriggerID
+		}
+		out = append(out, resp)
+	}
+	c.JSON(http.StatusOK, gin.H{"origins": out})
+}
 
 // --- User (personal) endpoints ---
 
@@ -602,7 +639,10 @@ func (h *WorkflowsHandler) CancelRun(c *gin.Context) {
 // ListActiveRunsByWorkspace returns non-terminal runs for a workspace.
 // GET /api/v1/workspaces/:workspaceId/runs/active
 func (h *WorkflowsHandler) ListActiveRunsByWorkspace(c *gin.Context) {
-	workspaceID := c.Param("workspaceId")
+	workspaceID := c.Param("id")
+	if workspaceID == "" {
+		workspaceID = c.Param("workspaceId")
+	}
 	if workspaceID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "workspaceId required"})
 		return

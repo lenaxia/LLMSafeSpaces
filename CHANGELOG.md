@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-08-09
+
+### Fixed — Completing items 1-7
+
+- **PreserveOnFailure type comment corrected** — now accurately describes
+  the engine calling `DELETE /v1/workflow/session/delete` on success.
+- **Session origin API endpoint** — `GET /workspaces/:id/session-origins`
+  returns origin mappings for sidebar enrichment. `SessionListItem.Origin`
+  field added to the session list response type.
+- **agentd MCP server tests** — 10 tests covering initialize, tools/list,
+  tools/call (unknown tool, missing args), injection (empty + existing MCP).
+- **Active runs indicator on chat page** — shows a pulsing badge with count
+  of in-flight workflow runs when the workspace has active runs.
+- **Wake-up latency in run detail** — shows the time between run creation
+  and run start (wake-up cost) as a yellow indicator.
+- **Integration tests run in normal CI** — removed `//go:build integration`
+  tag from `store_integration_test.go`. Tests compile in every CI run
+  (catching SQL drift) and skip gracefully when PG is unavailable.
+
 ## [0.11.0] - 2026-08-09
 
 ### Added — Remaining Epic 64 items

@@ -1,7 +1,10 @@
 // Copyright (C) 2026 Michael Kao
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-//go:build integration
+// Integration tests for the workflows store. Skips gracefully when
+// TEST_DATABASE_URL is unreachable, so it's safe to run in normal CI
+// (the test compiles — catching SQL drift — but skips without a live PG).
+// Set TEST_DATABASE_URL to a real PG to run the full suite.
 
 package workflows
 

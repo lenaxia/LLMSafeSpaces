@@ -154,7 +154,7 @@ The authoritative Go types live in `pkg/session/` (created by US-65.2). The shap
 - **`Session`** — ID, WorkspaceID, ParentID, Title, AgentID, Model, Status, Cost (display), TimeRange, Summary, Archived. No `Revert`/`Stashed`/`Tags` (pass-through).
 - **`Message`** — discriminated by `Type`: user, assistant, shell, agent_switch, model_switch, compaction, system. Agent/model switches are transcript entries (not side-band config) so the timeline is coherent after a switch — matches opencode's schema.
 - **`Part`** — the 5-type union (4.3).
-- **`Event`** — 9 streaming event types: session.status, session.updated, message.start, message.end, part.start, part.delta, part.end, input.request, input.resolved, error.
+- **`Event`** — 10 streaming event types: session.status, session.updated, message.start, message.end, part.start, part.delta, part.end, input.request, input.resolved, error.
 - **`InputRequest`** — unified question + permission (both are "agent needs a human").
 - **`SendOpts`** — Model override + Admission mode.
 - **`Cost`** / **`Usage`** — display-only token/cost fields.

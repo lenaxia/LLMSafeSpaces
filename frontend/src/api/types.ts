@@ -76,6 +76,8 @@ export interface SessionListItem {
   hasUnread: boolean;
   /** Prompt tokens from the last LLM step for this session. undefined = no step completed yet. */
   contextUsed?: number;
+  /** Session origin: manual | routine | workflow | api (from session_origins enrichment). */
+  origin?: string;
 }
 
 /**

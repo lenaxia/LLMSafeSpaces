@@ -154,6 +154,68 @@ func (m *mockWorkflowStore) ListWorkflowRunsByWorkspace(_ context.Context, _ str
 	return nil, nil
 }
 
+func (m *mockWorkflowStore) ListSessionOrigins(_ context.Context, _ string) ([]*wf.SessionOriginRow, error) {
+	return []*wf.SessionOriginRow{
+		{SessionID: "ses_1", WorkspaceID: "ws_1", Origin: "routine", Title: "Nightly check"},
+	}, nil
+}
+
+func TestWorkflowListSessionOrigins(t *testing.T) {
+	store := newMockWorkflowStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	h := NewUserWorkflowsHandler(store, quota)
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/", nil)
+	c.Params = gin.Params{{Key: "id", Value: "ws_1"}}
+	h.ListSessionOrigins(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	origins := resp["origins"].([]any)
+	require.Len(t, origins, 1)
+	first := origins[0].(map[string]any)
+	assert.Equal(t, "ses_1", first["sessionId"])
+	assert.Equal(t, "routine", first["origin"])
+}
+
+func TestWorkflowListActiveRunsByWorkspace(t *testing.T) {
+	store := newMockWorkflowStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	h := NewUserWorkflowsHandler(store, quota)
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/", nil)
+	c.Params = gin.Params{{Key: "id", Value: "ws_1"}}
+	h.ListActiveRunsByWorkspace(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	runs, ok := resp["runs"].([]any)
+	assert.True(t, ok)
+	assert.Empty(t, runs)
+}
+
+func TestWorkflowListSessionOrigins_MissingWorkspaceID(t *testing.T) {
+	store := newMockWorkflowStore()
+	quota := &mockQuotaChecker{values: map[string]int{}}
+	h := NewUserWorkflowsHandler(store, quota)
+
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("GET", "/", nil)
+	h.ListSessionOrigins(c)
+
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
 // mockQuotaChecker implements workflowQuotaChecker.
 type mockQuotaChecker struct {
 	values map[string]int

@@ -68,6 +68,7 @@ type SessionListItem struct {
 	LastSeenAt    *time.Time `json:"lastSeenAt,omitempty"`
 	HasUnread     bool       `json:"hasUnread"`
 	ContextUsed   *int64     `json:"contextUsed,omitempty"`
+	Origin        string     `json:"origin,omitempty"` // manual | routine | workflow | api
 }
 
 // ActiveSessionsResponse is returned by GET /workspaces/:id/sessions/active.
