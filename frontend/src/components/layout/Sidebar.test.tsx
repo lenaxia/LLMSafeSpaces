@@ -62,6 +62,13 @@ vi.mock("../../api/workspaces", () => ({
   },
 }));
 
+vi.mock("../../api/workflows", () => ({
+  workspaceWorkflowApi: {
+    activeRuns: vi.fn().mockResolvedValue([]),
+    sessionOrigins: vi.fn().mockResolvedValue([]),
+  },
+}));
+
 vi.mock("../../api/orgs", () => ({
   orgsApi: {
     list: vi.fn().mockResolvedValue([]),

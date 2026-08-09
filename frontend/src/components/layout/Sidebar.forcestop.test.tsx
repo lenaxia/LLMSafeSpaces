@@ -38,6 +38,13 @@ vi.mock("../../api/workspaces", () => ({
   },
 }));
 
+vi.mock("../../api/workflows", () => ({
+  workspaceWorkflowApi: {
+    activeRuns: vi.fn().mockResolvedValue([]),
+    sessionOrigins: vi.fn().mockResolvedValue([]),
+  },
+}));
+
 import { workspacesApi } from "../../api/workspaces";
 
 function renderSidebar(initialPath = "/chat/ws-1") {
