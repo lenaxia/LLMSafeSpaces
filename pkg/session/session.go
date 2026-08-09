@@ -83,7 +83,7 @@ type ModelInfo struct {
 	MaxOutput     int64  `json:"maxOutput,omitempty"`
 }
 
-// Capability advertises an optional agent behaviour. Clients render or hide
+// Capability advertises an optional agent behavior. Clients render or hide
 // affordances based on the set an adapter reports (design 0049 §4.2/§4.6).
 // Agent-specific operations (rewind/fork/stash) are pass-through until a
 // second adapter validates a typed result shape.

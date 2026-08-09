@@ -102,8 +102,7 @@ func TestPromptV2_Success(t *testing.T) {
 		t.Fatalf("prompt.text missing or wrong: %s", ts.lastBody)
 	}
 	// Verify delivery.
-	d, _ := body["delivery"]
-	if strings.Trim(string(d), `"`) != "queue" {
+	if d := body["delivery"]; strings.Trim(string(d), `"`) != "queue" {
 		t.Fatalf("delivery = %s, want queue", d)
 	}
 
@@ -126,8 +125,7 @@ func TestPromptV2_DeliverySteer(t *testing.T) {
 	}
 	var body map[string]json.RawMessage
 	_ = json.Unmarshal(ts.lastBody, &body)
-	d, _ := body["delivery"]
-	if strings.Trim(string(d), `"`) != "steer" {
+	if d := body["delivery"]; strings.Trim(string(d), `"`) != "steer" {
 		t.Fatalf("delivery = %s, want steer", d)
 	}
 }

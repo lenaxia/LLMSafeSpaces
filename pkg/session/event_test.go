@@ -10,10 +10,9 @@ import (
 )
 
 func TestEventTypeCountMatchesExplicitList(t *testing.T) {
-	// Design 0049 §4.5 lists these EventType values explicitly. The design's
-	// headline says "9 streaming event types" but the enumerated list contains
-	// 10 entries. This test pins the count to the EXPLICIT LIST (10), which is
-	// authoritative over the headline number. See US-65.2 notes / open item.
+	// Design 0049 §4.5 lists these EventType values explicitly. The explicit
+	// list is authoritative. This test pins the count at 10; adding or
+	// removing an EventType is a contract change requiring a design-doc update.
 	all := []EventType{
 		EventSessionStatus, EventSessionUpdated,
 		EventMessageStart, EventMessageEnd,
