@@ -427,7 +427,7 @@ func (s *StoreIntegrationSuite) TestTriggerCircuitBreaker() {
 	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
 		ID: triggerID, OwnerType: "user", OwnerID: "u1",
 		Name: "cron-trigger", Enabled: true, SourceType: "cron",
-		SourceConfig: json.RawMessage(`{}`), WorkflowID: strPtr(uuid.New().String()), AutoDisableAfter: 3,
+		SourceConfig: json.RawMessage(`{}`), WorkflowID: nil, AutoDisableAfter: 3,
 		CreatedAt: now, UpdatedAt: now,
 	}))
 
@@ -466,7 +466,7 @@ func (s *StoreIntegrationSuite) TestListDueCronTriggers() {
 	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
 		ID: dueID, OwnerType: "user", OwnerID: "u1",
 		Name: "due", Enabled: true, SourceType: "cron",
-		SourceConfig: json.RawMessage(`{}`), WorkflowID: strPtr(uuid.New().String()), AutoDisableAfter: 10,
+		SourceConfig: json.RawMessage(`{}`), WorkflowID: nil, AutoDisableAfter: 10,
 		NextFireAt: &past, CreatedAt: now, UpdatedAt: now,
 	}))
 
@@ -475,7 +475,7 @@ func (s *StoreIntegrationSuite) TestListDueCronTriggers() {
 	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
 		ID: notDueID, OwnerType: "user", OwnerID: "u1",
 		Name: "not-due", Enabled: true, SourceType: "cron",
-		SourceConfig: json.RawMessage(`{}`), WorkflowID: strPtr(uuid.New().String()), AutoDisableAfter: 10,
+		SourceConfig: json.RawMessage(`{}`), WorkflowID: nil, AutoDisableAfter: 10,
 		NextFireAt: &future, CreatedAt: now, UpdatedAt: now,
 	}))
 
@@ -484,7 +484,7 @@ func (s *StoreIntegrationSuite) TestListDueCronTriggers() {
 	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
 		ID: disabledID, OwnerType: "user", OwnerID: "u1",
 		Name: "disabled", Enabled: false, SourceType: "cron",
-		SourceConfig: json.RawMessage(`{}`), WorkflowID: strPtr(uuid.New().String()), AutoDisableAfter: 10,
+		SourceConfig: json.RawMessage(`{}`), WorkflowID: nil, AutoDisableAfter: 10,
 		NextFireAt: &past, CreatedAt: now, UpdatedAt: now,
 	}))
 
