@@ -75,7 +75,10 @@ func (h *WorkflowsHandler) SetAudit(a workflowAuditLogger) { h.audit = a }
 
 // ListSessionOrigins returns session origin mappings for a workspace.
 func (h *WorkflowsHandler) ListSessionOrigins(c *gin.Context) {
-	workspaceID := c.Param("workspaceId")
+	workspaceID := c.Param("id")
+	if workspaceID == "" {
+		workspaceID = c.Param("workspaceId")
+	}
 	if workspaceID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "workspaceId required"})
 		return
@@ -636,7 +639,10 @@ func (h *WorkflowsHandler) CancelRun(c *gin.Context) {
 // ListActiveRunsByWorkspace returns non-terminal runs for a workspace.
 // GET /api/v1/workspaces/:workspaceId/runs/active
 func (h *WorkflowsHandler) ListActiveRunsByWorkspace(c *gin.Context) {
-	workspaceID := c.Param("workspaceId")
+	workspaceID := c.Param("id")
+	if workspaceID == "" {
+		workspaceID = c.Param("workspaceId")
+	}
 	if workspaceID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "workspaceId required"})
 		return

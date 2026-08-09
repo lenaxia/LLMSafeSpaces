@@ -1655,19 +1655,14 @@ func registerMCPRoutes(router *gin.Engine, services interfaces.Services, cfg Rou
 
 // registerWorkflowRoutes registers all Epic 64 workflow/trigger/run routes.
 // registerWorkspaceWorkflowRoutes adds workspace-scoped workflow endpoints
-// to the idGroup, inheriting WorkspaceAccessMiddleware.
+// to the idGroup, inheriting WorkspaceAccessMiddleware. Handlers read
+// c.Param("id") (the canonical workspace ID param).
 func registerWorkspaceWorkflowRoutes(idGroup *gin.RouterGroup, cfg RouterConfig) {
 	if cfg.UserWorkflowsHandler == nil {
 		return
 	}
-	idGroup.GET("/runs/active", func(c *gin.Context) {
-		c.Params = append(c.Params, gin.Param{Key: "workspaceId", Value: c.Param("id")})
-		cfg.UserWorkflowsHandler.ListActiveRunsByWorkspace(c)
-	})
-	idGroup.GET("/session-origins", func(c *gin.Context) {
-		c.Params = append(c.Params, gin.Param{Key: "workspaceId", Value: c.Param("id")})
-		cfg.UserWorkflowsHandler.ListSessionOrigins(c)
-	})
+	idGroup.GET("/runs/active", cfg.UserWorkflowsHandler.ListActiveRunsByWorkspace)
+	idGroup.GET("/session-origins", cfg.UserWorkflowsHandler.ListSessionOrigins)
 }
 
 func registerWorkflowRoutes(router *gin.Engine, services interfaces.Services, cfg RouterConfig) {

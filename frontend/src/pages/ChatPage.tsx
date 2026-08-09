@@ -2,7 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { workspacesApi } from "../api/workspaces";
-import { ApiClientError, api } from "../api/client";
+import { ApiClientError } from "../api/client";
+import { workspaceWorkflowApi } from "../api/workflows";
 import { useWorkspaceStatus } from "../hooks/useWorkspaces";
 import { useMessageHistory } from "../hooks/useMessageHistory";
 import { ChatHistoryErrorBanner } from "../components/chat/ChatHistoryErrorBanner";
@@ -77,10 +78,10 @@ export function ChatPage() {
 
   const { data: activeRuns } = useQuery({
     queryKey: ["workspace-active-runs", workspaceId],
-    queryFn: () => api.get<{ runs?: any[] }>(`/workspaces/${workspaceId}/runs/active`),
+    queryFn: () => workspaceWorkflowApi.activeRuns(workspaceId!),
     enabled: !!workspaceId,
     refetchInterval: 10000,
-  }) as { data: { runs?: { id: string; status: string; workflowId: string }[] } | undefined };
+  });
 
   const { data: workspaceName } = useQuery({
     queryKey: ["workspaces"],
@@ -920,10 +921,10 @@ export function ChatPage() {
             <span className="text-muted-foreground/50 mx-1">/</span>
             <span>{sessionDisplayName}</span>
           </h2>
-          {activeRuns && activeRuns.runs && activeRuns.runs.length > 0 && (
+          {activeRuns && activeRuns.length > 0 && (
             <span className="flex items-center gap-1 rounded-md border border-blue-500/30 bg-blue-500/10 px-2 py-0.5 text-xs text-blue-500 shrink-0">
               <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
-              {activeRuns.runs.length} active run{activeRuns.runs.length > 1 ? "s" : ""}
+              {activeRuns.length} active run{activeRuns.length > 1 ? "s" : ""}
             </span>
           )}
         </div>
