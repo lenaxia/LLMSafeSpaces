@@ -5,6 +5,8 @@
 **Priority:** Medium (quality/maintainability — no user-facing behavior change)
 **Depends on:** Epic 27a (credential reload foundation — shipped)
 
+> **Scope correction (2026-08-09, Epic 65):** US-29.1's goal — "extract `AgentClient` interface for all opencode HTTP calls" — is **superseded by Epic 65** (Agent Session Contract). Epic 65's `Adapter` interface (US-65.3, `design/0049` §4.6) folds the existing `AgentRuntime` + `Dialect` + the would-be `AgentClient` into a single platform-owned seam, and US-65.5 deletes the proxy hacks US-29.1 was meant to consolidate. **Do not build `AgentClient` — it is throwaway work that US-65.3 rewrites.** The remaining stories (US-29.2–29.8: handler split, auth-enforcing mocks, Basic-auth contract test, constructor injection) are orthogonal maintainability cleanup and stay in this epic, independent of Epic 65.
+
 ---
 
 ## Problem Statement

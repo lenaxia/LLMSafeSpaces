@@ -95,6 +95,7 @@ func main() {
 	failures += runChartDrift(root)
 	failures += runCRDDrift(root)
 	failures += runGinSetMode(root)
+	failures += runAgentImport(root)
 	if *clusterDrift {
 		failures += runClusterDrift(root)
 	}
@@ -322,6 +323,30 @@ func runGinSetMode(root string) int {
 		return 1
 	}
 	fmt.Println("ok    gin.SetMode only from init/TestMain (no parallel writes)")
+	return 0
+}
+
+// runAgentImport enforces the Epic 65 adapter-seam boundary: the opencode
+// agent implementation package may only be imported by the construction
+// layer (api/internal/app, cmd/*) and the in-pod agentd binary. Every other
+// package must import pkg/agent (interface) + pkg/session (contract). A
+// small dated knownLeaks list tolerates existing C2 coupling until US-65.4
+// (proxy migration) lands; the rule fails on any NEW leak.
+//
+// See design/0049 §4.6 and Epic 65 US-65.6.
+func runAgentImport(root string) int {
+	rep, err := repolint.AgentImportCheck(root)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL  agent-import boundary: %v\n", err)
+		return 1
+	}
+	if !rep.OK() {
+		fmt.Fprintf(os.Stderr, "FAIL  agent-import boundary (%s):\n%s",
+			repolint.AgentImportForbiddenPath, rep.String())
+		return 1
+	}
+	fmt.Printf("ok    agent-import boundary (%d known leak(s) tolerated pending US-65.4)\n",
+		len(repolint.KnownLeakCount()))
 	return 0
 }
 

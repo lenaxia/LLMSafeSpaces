@@ -3,7 +3,9 @@
 **Status:** Definition (not yet in implementation)
 **Created:** 2026-08-09
 **Priority:** High — eliminates the single largest source of hacks and jury-rigs in the codebase; unblocks mobile-first-class UX and multi-agent viability
-**Depends On:** Epic 29 (AgentClient abstraction — existing `pkg/agent/opencode/` seam), Epic 30 (Unified Credential Model — `FormatProviderConfig` stays)
+**Depends On:** The existing `pkg/agent/opencode/` seam (`AgentRuntime` + `Dialect`, folded into `Adapter` by US-65.3), Epic 30 (Unified Credential Model — `FormatProviderConfig` stays).
+
+> **Note on Epic 29:** Epic 29's interface-extraction goal (US-29.1 `AgentClient`) is superseded by this epic — `Adapter` (US-65.3, design 0049 §4.6) is a strict superset that folds `AgentRuntime` + `Dialect` + `AgentClient` into one seam. The seam Epic 65 depends on already exists today (`pkg/agent/agent.go:31`, `pkg/agent/dialect.go:10`, `pkg/agent/opencode/`); Epic 29 need not ship first. Only Epic 29's handler-decomposition stories (US-29.2–29.8) remain, and they are orthogonal cleanup, not a prerequisite.
 **Authoritative for:** How the platform integrates any coding agent. The contract that web, mobile, SDK, and MCP all consume; the adapter seam that contains all agent-specific knowledge.
 
 **Design document:** [`design/0049_2026-08-09_agent-session-contract.md`](../../0049_2026-08-09_agent-session-contract.md)
@@ -117,13 +119,16 @@ Every new opencode quirk becomes a platform hack. Every eventual agent swap beco
 **Files:**
 - New: `pkg/session/session.go` — `Session`, `Status`, `ModelRef`, `Cost`, `TimeRange`, `Capability`.
 - New: `pkg/session/message.go` — `Message`, `MessageType`, `UserMessage`, `AssistantMessage`, `ShellMessage`, `AgentSwitchMessage`, `ModelSwitchMessage`, `CompactionMessage`, `SystemMessage`.
-- New: `pkg/session/part.go` — `Part`, `PartType` (5 types), `TextPart`, `ReasoningPart`, `ToolPart`, `ToolState`, `ToolStatus`, `FileChangePart`, `FileDiff`, `CustomPart`, `ErrorPart`.
-- New: `pkg/session/event.go` — `Event`, `EventType` (10 types), `InputRequest`, `InputKind`, `InputOption`, `SendOpts`, `Admission`.
+- New: `pkg/session/part.go` — `Part`, `PartType` (5 types), `ToolPart`, `ToolState`, `ToolStatus`, `FileDiff` (payload of the `FileChange` part), `CustomPart`. (`Text`/`Reasoning` are inlined string fields on `Part`; no single-field wrapper structs. `ErrorPart` is deliberately excluded — errors are transient events, not content blocks; see design 0049 §4.1 rule 1.)
+- New: `pkg/session/event.go` — `Event`, `EventType` (10 types), `InputRequest`, `InputKind`, `InputOption`, `SendOpts`, `Admission`, `Error` (payload of the `error` Event and optional turn-level error on `AssistantMessage`).
 - New: `pkg/session/session_test.go` — JSON round-trip tests for every type; verify optional fields omit cleanly.
 
 **Done when:**
-- All types compile, round-trip through JSON, and contain zero opencode-specific identifiers.
-- `PartType` has exactly 5 constants; a test enforces the count.
+- All types compile, round-trip through JSON, and contain zero agent-specific identifiers.
+- `PartType` has exactly 5 constants (`Text`, `Reasoning`, `Tool`, `FileChange`, `Custom`); a test enforces the count. No `ErrorPart` — errors flow via the `error` Event payload (`Error{Code, Message}`) and optionally as a turn-level `Error` on `AssistantMessage`; `ToolState.Error` carries tool-call errors (tool state, not a part type).
+- `EventType` has exactly 10 constants; a test enforces the count.
+- `Text`/`Reasoning` are inlined string fields on `Part` (no single-field wrapper structs). The file-change payload type is `FileDiff`; the part field is named `FileChange` (type `*FileDiff`) — describes what the part *is*, not the data shape inside it.
+- Type↔payload consistency validation is deferred to the adapter (`Part.Validate()`/`Message.Validate()` in US-65.3), not enforced in this types package.
 
 ---
 
