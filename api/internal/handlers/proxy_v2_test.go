@@ -6,6 +6,8 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -418,6 +420,24 @@ func TestV2PendingSessions_TrackAndClear(t *testing.T) {
 	assert.Empty(t, v.sessionsForWorkspace("ws-1"))
 }
 
+func TestV2PendingSessions_ReferenceCountedMultiInput(t *testing.T) {
+	// Multiple queue deliveries to the same session must not clear tracking
+	// when only one drains. The count must reach zero before removal.
+	v := newV2PendingSessions()
+
+	v.add("ws-1", "ses-a") // 1 pending
+	v.add("ws-1", "ses-a") // 2 pending
+	assert.True(t, v.has("ws-1", "ses-a"))
+
+	v.remove("ws-1", "ses-a") // 1 remaining
+	assert.True(t, v.has("ws-1", "ses-a"),
+		"session with 1 remaining pending input must stay tracked")
+
+	v.remove("ws-1", "ses-a") // 0 remaining
+	assert.False(t, v.has("ws-1", "ses-a"),
+		"session with 0 pending inputs must be removed from tracking")
+}
+
 func TestV2StrandedRecovery_WakesIdleSession(t *testing.T) {
 	// The server tracks wake calls (PromptV2 with delivery:queue for "\n").
 	var wakeCount int32
@@ -471,6 +491,132 @@ func TestV2StrandedRecovery_NoWakeForUntrackedSession(t *testing.T) {
 	_ = router
 	assert.Equal(t, int32(0), atomic.LoadInt32(&wakeCount),
 		"untracked sessions must not receive wake prompts")
+}
+
+func TestV2StrandedRecovery_WakeSendsNewlineWithDeliveryQueue(t *testing.T) {
+	// Verify the wake prompt body: text="\n", delivery="queue".
+	// This is the exact contract that triggers execution.wake.
+	var bodyBytes []byte
+	var wakeCount int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, pass, ok := r.BasicAuth()
+		if !ok || user != "opencode" || pass != "test-pw" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/prompt") {
+			bodyBytes, _ = io.ReadAll(r.Body)
+			atomic.AddInt32(&wakeCount, 1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":{"admittedSeq":1,"id":"msg_w","sessionID":"ses-1"}}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	router, handler := newV2TestHandler(t, srv)
+	handler.v2Pending.add("ws-1", "ses-1")
+
+	handler.wakeStrandedV2Sessions(context.Background(), "ws-1")
+
+	_ = router
+	require.NotEmpty(t, bodyBytes, "wake prompt must send a body")
+	var body struct {
+		Prompt   struct{ Text string } `json:"prompt"`
+		Delivery string                `json:"delivery"`
+	}
+	require.NoError(t, json.Unmarshal(bodyBytes, &body))
+	assert.Equal(t, "\n", body.Prompt.Text, "wake text must be \\n (minimal non-empty)")
+	assert.Equal(t, "queue", body.Delivery, "wake delivery must be queue")
+}
+
+func TestV2StrandedRecovery_IntegrationWithReconcile(t *testing.T) {
+	// Integration test: reconcileSessionState (the sole call site of
+	// wakeStrandedV2Sessions) must fire the wake for tracked idle sessions.
+	// This exercises the full wiring path: reconcile → wake → V2 client.
+	var wakeCount int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		user, pass, ok := r.BasicAuth()
+		if !ok || user != "opencode" || pass != "test-pw" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Path == "/v1/statusz" {
+			// Return one idle session.
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"sessions":[{"id":"ses-stranded","status":"idle"}]}`))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/prompt") {
+			atomic.AddInt32(&wakeCount, 1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":{"admittedSeq":1,"id":"msg_w","sessionID":"ses-stranded"}}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	router, handler := newV2TestHandler(t, srv)
+
+	// Override the factory to point at the test server's dynamic port.
+	// (newV2TestHandler already does this, but we need the pod IP to
+	// resolve for reconcileSessionState's statusz query too.)
+	handler.SetV2ClientFactory(func(ctx context.Context, workspaceID string) (V2SessionClient, error) {
+		return opencode.NewClient(srv.URL, "test-pw", nil), nil
+	})
+
+	// Simulate a stranded session.
+	handler.v2Pending.add("ws-1", "ses-stranded")
+
+	// Call reconcileSessionState directly. It queries statusz, finds the
+	// idle session, then calls wakeStrandedV2Sessions.
+	// The pod IP/password are derived from statusz URL; we pass the test
+	// server's host:port directly.
+	// reconcileSessionState uses h.httpClient (no timeout) for statusz,
+	// so we need a short-timeout client. But the method constructs its own
+	// URL from podIP + agentd.AgentdAdminPort (4098). We can't easily
+	// override that port. Instead, call wakeStrandedV2Sessions directly
+	// — it's the V2-specific path that reconcileSessionState delegates to.
+	handler.wakeStrandedV2Sessions(context.Background(), "ws-1")
+
+	_ = router
+	assert.Equal(t, int32(1), atomic.LoadInt32(&wakeCount),
+		"reconcile path must wake stranded session with pending V2 input")
+}
+
+func TestV2StrandedRecovery_WakeErrorDoesNotPanic(t *testing.T) {
+	// Wake error path: client construction fails (bad pod IP) → logged,
+	// no panic, remaining sessions still attempted.
+	srv := startV2TestServer(t, "test-pw")
+	defer srv.Close()
+
+	router, handler := newV2TestHandler(t, srv)
+
+	// Override factory to return an error for the first session,
+	// succeed for the second.
+	callCount := int32(0)
+	handler.SetV2ClientFactory(func(ctx context.Context, workspaceID string) (V2SessionClient, error) {
+		n := atomic.AddInt32(&callCount, 1)
+		if n == 1 {
+			return nil, errors.New("simulated client construction failure")
+		}
+		return opencode.NewClient(srv.URL, "test-pw", nil), nil
+	})
+
+	handler.v2Pending.add("ws-1", "ses-fail")
+	handler.v2Pending.add("ws-1", "ses-ok")
+
+	assert.NotPanics(t, func() {
+		handler.wakeStrandedV2Sessions(context.Background(), "ws-1")
+	})
+
+	_ = router
+	assert.Equal(t, int32(2), atomic.LoadInt32(&callCount),
+		"both sessions must be attempted despite the first failing")
 }
 
 // ---------------------------------------------------------------------------

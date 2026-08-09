@@ -13,7 +13,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
@@ -79,33 +78,36 @@ const (
 // v2PendingSessions tracks sessions that received a delivery:"queue" prompt
 // whose input has NOT yet been promoted (drained) by opencode. Used by
 // US-63.9 (stranded-input recovery) to identify sessions needing a wake
-// after pod restart. Entries are added in enqueueV2 (on successful
-// admission) and removed when the V2 Prompted event fires (input promoted).
-// Per-replica; sufficient for the SSE-reconnect case (same replica handles
-// the workspace's event stream across reconnects).
+// after pod restart. Entries are reference-counted: enqueueV2 and
+// bridgeV2Admitted increment; bridgeV2Prompted decrements. A session is
+// removed from tracking only when its count reaches zero (all pending
+// inputs drained). Per-replica; sufficient for the SSE-reconnect case.
 type v2PendingSessions struct {
 	mu   sync.Mutex
-	data map[string]map[string]bool // workspaceID → sessionID → true
+	data map[string]map[string]int // workspaceID → sessionID → pending count
 }
 
 func newV2PendingSessions() *v2PendingSessions {
-	return &v2PendingSessions{data: make(map[string]map[string]bool)}
+	return &v2PendingSessions{data: make(map[string]map[string]int)}
 }
 
 func (v *v2PendingSessions) add(workspaceID, sessionID string) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.data[workspaceID] == nil {
-		v.data[workspaceID] = make(map[string]bool)
+		v.data[workspaceID] = make(map[string]int)
 	}
-	v.data[workspaceID][sessionID] = true
+	v.data[workspaceID][sessionID]++
 }
 
 func (v *v2PendingSessions) remove(workspaceID, sessionID string) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if ws, ok := v.data[workspaceID]; ok {
-		delete(ws, sessionID)
+		ws[sessionID]--
+		if ws[sessionID] <= 0 {
+			delete(ws, sessionID)
+		}
 		if len(ws) == 0 {
 			delete(v.data, workspaceID)
 		}
@@ -115,7 +117,7 @@ func (v *v2PendingSessions) remove(workspaceID, sessionID string) {
 func (v *v2PendingSessions) has(workspaceID, sessionID string) bool {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	return v.data[workspaceID] != nil && v.data[workspaceID][sessionID]
+	return v.data[workspaceID] != nil && v.data[workspaceID][sessionID] > 0
 }
 
 func (v *v2PendingSessions) sessionsForWorkspace(workspaceID string) []string {
@@ -297,6 +299,3 @@ func (h *ProxyHandler) abortV2(c *gin.Context, wid, sid string) bool {
 	c.Status(http.StatusNoContent)
 	return true
 }
-
-// silence unused import warning if apitypes is only used indirectly
-var _ apitypes.WorkspaceSSEEvent
