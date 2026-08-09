@@ -28,7 +28,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
-	"github.com/lenaxia/llmsafespaces/api/internal/workflows"
 	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
 )
 
@@ -37,7 +36,6 @@ type webhookReceiverStore interface {
 	GetWebhook(ctx context.Context, webhookID string) (*wf.WebhookRow, error)
 	GetTriggerByID(ctx context.Context, triggerID string) (*wf.TriggerRow, error)
 	GetWorkflow(ctx context.Context, ownerType, ownerID, workflowID string) (*wf.WorkflowRow, error)
-	GetOrCreateScriptWorkflow(ctx context.Context, trigger *wf.TriggerRow, specJSON json.RawMessage, workspaceID string) (*wf.WorkflowRow, error)
 	RecordWebhookDelivery(ctx context.Context, webhookID, dedupKey string) error
 	CreateWorkflowRunWithFire(ctx context.Context, fire *wf.TriggerFireRow, run *wf.WorkflowRunRow) error
 	CreateTriggerFire(ctx context.Context, row *wf.TriggerFireRow) error
@@ -208,24 +206,14 @@ func (h *WebhookReceiverHandler) HandleWebhook(c *gin.Context) {
 	fireID := uuid.New().String()
 	now := time.Now().UTC()
 
-	// If single-in-flight rejects, write a skipped fire row + return 409.
-	var inputForRun json.RawMessage
-	if trigger.TargetType == types.TriggerTargetRunWorkflow {
-		targetCfg := parseTargetConfig(trigger.TargetConfig)
-		workflowID, _ := targetCfg["workflowId"].(string)
-		if workflowID == "" {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "trigger target missing workflowId"})
-			return
-		}
-
+	// Workflow mode: trigger has workflow_id set → create a workflow run.
+	if trigger.WorkflowID != nil && *trigger.WorkflowID != "" {
+		workflowID := *trigger.WorkflowID
 		wfRow, err := h.store.GetWorkflow(c.Request.Context(), trigger.OwnerType, trigger.OwnerID, workflowID)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "target workflow not found"})
 			return
 		}
-
-		// Render input template from the envelope.
-		inputForRun = renderInputTemplate(targetCfg, envelopeJSON)
 
 		fire := &wf.TriggerFireRow{
 			ID: fireID, TriggerID: trigger.ID, SourceType: "webhook",
@@ -233,11 +221,16 @@ func (h *WebhookReceiverHandler) HandleWebhook(c *gin.Context) {
 			Status: "fired", FiredAt: now,
 		}
 
+		workspaceID := ""
+		if wfRow.TargetWorkspaceID != nil {
+			workspaceID = *wfRow.TargetWorkspaceID
+		}
+
 		run := &wf.WorkflowRunRow{
 			ID: uuid.New().String(), WorkflowID: workflowID,
-			SpecSnapshot: wfRow.SpecJSON, Input: inputForRun,
+			SpecSnapshot: wfRow.SpecJSON, Input: envelopeJSON,
 			Status: "queued", TriggerID: &trigger.ID,
-			WorkspaceID: resolveWorkspaceID(wfRow, trigger),
+			WorkspaceID: workspaceID,
 			CreatedAt:   now, UpdatedAt: now,
 		}
 
@@ -262,53 +255,27 @@ func (h *WebhookReceiverHandler) HandleWebhook(c *gin.Context) {
 		return
 	}
 
-	// run_script target: build a 2-node spec (script → agent), create a
-	// shadow workflow row, and fire a real run against it.
-	var scriptCfg types.RunScriptTargetConfig
-	_ = json.Unmarshal(trigger.TargetConfig, &scriptCfg)
-	if scriptCfg.WorkspaceID == "" {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "run_script target missing workspaceId"})
+	// Routine mode: trigger has no workflow_id → fire + record. The scheduler
+	// picks it up on the next tick if cron, or for webhooks the routine executes
+	// asynchronously via the scheduler's routine path. For webhook triggers,
+	// we create the fire row and return immediately — the scheduler processes it.
+	if trigger.WorkspaceID == nil || *trigger.WorkspaceID == "" {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "routine trigger missing workspaceId"})
 		return
 	}
 
-	specJSON := workflows.BuildRunScriptSpec(&scriptCfg)
-	scriptWF, err := h.store.GetOrCreateScriptWorkflow(c.Request.Context(), trigger, specJSON, scriptCfg.WorkspaceID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create script workflow"})
-		return
-	}
-
-	scriptFire := &wf.TriggerFireRow{
+	routineFire := &wf.TriggerFireRow{
 		ID: fireID, TriggerID: trigger.ID, SourceType: "webhook",
-		InputEnvelope: envelopeJSON, ActionType: "run_script",
+		InputEnvelope: envelopeJSON, ActionType: "routine",
 		Status: "fired", FiredAt: now,
 	}
-	scriptRun := &wf.WorkflowRunRow{
-		ID: uuid.New().String(), WorkflowID: scriptWF.ID,
-		SpecSnapshot: specJSON, Input: envelopeJSON,
-		Status: "queued", TriggerID: &trigger.ID,
-		WorkspaceID: scriptCfg.WorkspaceID,
-		CreatedAt: now, UpdatedAt: now,
-	}
 
-	err = h.store.CreateWorkflowRunWithFire(c.Request.Context(), scriptFire, scriptRun)
-	if err != nil {
-		if errors.Is(err, wf.ErrConcurrentRun) {
-			_ = h.store.CreateTriggerFire(c.Request.Context(), &wf.TriggerFireRow{
-				ID: uuid.New().String(), TriggerID: trigger.ID, SourceType: "webhook",
-				InputEnvelope: envelopeJSON, ActionType: "run_script",
-				ActionResult: json.RawMessage(`{"reason":"already_running"}`),
-				Status:       "skipped", FiredAt: now, CompletedAt: &now,
-			})
-			c.Header("Retry-After", webhookRetryAfter)
-			c.JSON(http.StatusConflict, gin.H{"error": "already_running"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create script run"})
+	if err := h.store.CreateTriggerFire(c.Request.Context(), routineFire); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create routine fire"})
 		return
 	}
 
-	c.JSON(http.StatusAccepted, gin.H{"status": "fired", "runId": scriptRun.ID})
+	c.JSON(http.StatusAccepted, gin.H{"status": "fired", "fireId": fireID})
 }
 
 // --- helpers ---
@@ -385,68 +352,4 @@ func ipInAllowlist(ipStr string, allowed []string) bool {
 		}
 	}
 	return false
-}
-
-func parseTargetConfig(raw json.RawMessage) map[string]any {
-	var m map[string]any
-	_ = json.Unmarshal(raw, &m)
-	return m
-}
-
-func renderInputTemplate(targetCfg map[string]any, envelope []byte) json.RawMessage {
-	tmpl, _ := targetCfg["inputTemplate"].(map[string]any)
-	if len(tmpl) == 0 {
-		return envelope // pass envelope directly if no template
-	}
-	var envelopeData map[string]any
-	_ = json.Unmarshal(envelope, &envelopeData)
-	rendered := make(map[string]any)
-	for k, v := range tmpl {
-		if strVal, ok := v.(string); ok {
-			rendered[k] = interpolateTemplate(strVal, envelopeData)
-		} else {
-			rendered[k] = v
-		}
-	}
-	out, _ := json.Marshal(rendered)
-	return out
-}
-
-func interpolateTemplate(tmpl string, data map[string]any) string {
-	result := tmpl
-	for path, val := range flattenPaths(data, "") {
-		placeholder := "{{." + path + "}}"
-		result = strings.ReplaceAll(result, placeholder, fmt.Sprintf("%v", val))
-	}
-	return result
-}
-
-func flattenPaths(data map[string]any, prefix string) map[string]any {
-	out := make(map[string]any)
-	for k, v := range data {
-		key := k
-		if prefix != "" {
-			key = prefix + "." + k
-		}
-		if nested, ok := v.(map[string]any); ok {
-			for nk, nv := range flattenPaths(nested, key) {
-				out[nk] = nv
-			}
-		} else {
-			out[key] = v
-		}
-	}
-	return out
-}
-
-func resolveWorkspaceID(wfRow *wf.WorkflowRow, trigger *wf.TriggerRow) string {
-	if wfRow.TargetWorkspaceID != nil && *wfRow.TargetWorkspaceID != "" {
-		return *wfRow.TargetWorkspaceID
-	}
-	if targetCfg := parseTargetConfig(trigger.TargetConfig); targetCfg != nil {
-		if wsID, ok := targetCfg["workspaceId"].(string); ok {
-			return wsID
-		}
-	}
-	return ""
 }

@@ -82,7 +82,7 @@ type APIClient interface {
 
 	// Trigger management (Epic 64)
 	ListTriggers(ctx context.Context) (json.RawMessage, error)
-	CreateTrigger(ctx context.Context, name, sourceType, targetType, sourceConfig, targetConfig string) (json.RawMessage, error)
+	CreateTrigger(ctx context.Context, name, sourceType, sourceConfig, workspaceID, workflowID, prompt, memoryMode, captureMode, preserveSession string) (json.RawMessage, error)
 	UpdateTrigger(ctx context.Context, triggerID, enabled string) (json.RawMessage, error)
 	DeleteTrigger(ctx context.Context, triggerID string) error
 }
@@ -652,10 +652,27 @@ func (c *HTTPClient) ListTriggers(ctx context.Context) (json.RawMessage, error) 
 	return c.doRaw(ctx, http.MethodGet, "/api/v1/me/triggers", nil)
 }
 
-func (c *HTTPClient) CreateTrigger(ctx context.Context, name, sourceType, targetType, sourceConfig, targetConfig string) (json.RawMessage, error) {
-	body := map[string]string{
-		"name": name, "sourceType": sourceType, "targetType": targetType,
-		"sourceConfig": sourceConfig, "targetConfig": targetConfig,
+func (c *HTTPClient) CreateTrigger(ctx context.Context, name, sourceType, sourceConfig, workspaceID, workflowID, prompt, memoryMode, captureMode, preserveSession string) (json.RawMessage, error) {
+	body := map[string]any{
+		"name": name, "sourceType": sourceType, "sourceConfig": json.RawMessage(sourceConfig),
+	}
+	if workspaceID != "" {
+		body["workspaceId"] = workspaceID
+	}
+	if workflowID != "" {
+		body["workflowId"] = workflowID
+	}
+	if prompt != "" {
+		body["prompt"] = prompt
+	}
+	if memoryMode != "" {
+		body["memoryMode"] = memoryMode
+	}
+	if captureMode != "" {
+		body["captureMode"] = captureMode
+	}
+	if preserveSession != "" {
+		body["preserveSession"] = preserveSession
 	}
 	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/triggers", body)
 }

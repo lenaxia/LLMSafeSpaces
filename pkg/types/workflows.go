@@ -24,26 +24,44 @@ const (
 	WorkflowOwnerOrg  = "org"
 )
 
-// TriggerSourceType enumerates trigger source types (design D5: 'manual' is NOT a source type;
-// manual runs go through POST /workflows/:id/runs with trigger_id = null).
+// TriggerSourceType enumerates trigger sources.
 const (
 	TriggerSourceCron    = "cron"
 	TriggerSourceWebhook = "webhook"
 )
 
 // OnMissingWorkspace controls behavior when a workflow's target workspace
-// is gone or never existed at run time. 'abort' fails the run fast (default).
-// 'create' provisions a new workspace for the workflow owner, pins it as the
-// workflow's target_workspace_id, and proceeds once it reaches Active.
+// is gone or never existed at run time.
 const (
 	OnMissingAbort  = "abort"
 	OnMissingCreate = "create"
 )
 
-// TriggerTargetType enumerates what a trigger fires.
+// MemoryMode controls cross-run state injection for routine triggers.
 const (
-	TriggerTargetRunWorkflow = "run_workflow"
-	TriggerTargetRunScript   = "run_script"
+	MemoryNone       = "none"        // every run independent
+	MemoryLastResult = "last_result" // inject previous successful result as {{.prevResult}}
+)
+
+// CaptureMode controls what gets stored in trigger_fires.result after a routine run.
+const (
+	CaptureErrorsOnly = "errors_only" // only store on failure
+	CaptureFull       = "full"        // always store the result
+)
+
+// PreserveSession controls whether the opencode session survives after a routine run.
+const (
+	PreserveNever     = "never"      // delete session after capturing result
+	PreserveAlways    = "always"     // keep session (shows in sidebar with origin)
+	PreserveOnFailure = "on_failure" // delete on success, keep on error
+)
+
+// SessionOrigin indicates what created a session (for sidebar display).
+const (
+	SessionOriginManual   = "manual"
+	SessionOriginRoutine  = "routine"
+	SessionOriginWorkflow = "workflow"
+	SessionOriginAPI      = "api"
 )
 
 // NodeType enumerates the four v1 node types (design Node Type Specifications).
@@ -166,10 +184,28 @@ func ValidOnMissingWorkspace(m string) bool {
 	return false
 }
 
-// ValidTriggerTargetType reports whether t is a supported trigger target type.
-func ValidTriggerTargetType(t string) bool {
-	switch t {
-	case TriggerTargetRunWorkflow, TriggerTargetRunScript:
+// ValidMemoryMode reports whether m is a supported routine memory mode.
+func ValidMemoryMode(m string) bool {
+	switch m {
+	case MemoryNone, MemoryLastResult:
+		return true
+	}
+	return false
+}
+
+// ValidCaptureMode reports whether c is a supported routine capture mode.
+func ValidCaptureMode(c string) bool {
+	switch c {
+	case CaptureErrorsOnly, CaptureFull:
+		return true
+	}
+	return false
+}
+
+// ValidPreserveSession reports whether p is a supported session preservation policy.
+func ValidPreserveSession(p string) bool {
+	switch p {
+	case PreserveNever, PreserveAlways, PreserveOnFailure:
 		return true
 	}
 	return false
@@ -290,8 +326,6 @@ type UpdateWorkflowRequest struct {
 }
 
 // TriggerResponse is the API response shape for a trigger.
-// source_config and target_config are typed JSON blobs (validated by the handler).
-// next_fire_at is computed by the scheduler for cron triggers.
 type TriggerResponse struct {
 	ID                  string          `json:"id"`
 	OwnerType           string          `json:"ownerType"`
@@ -301,8 +335,17 @@ type TriggerResponse struct {
 	Enabled             bool            `json:"enabled"`
 	SourceType          string          `json:"sourceType"`
 	SourceConfig        json.RawMessage `json:"sourceConfig"`
-	TargetType          string          `json:"targetType"`
-	TargetConfig        json.RawMessage `json:"targetConfig"`
+	WorkspaceID         string          `json:"workspaceId,omitempty"`
+	WorkflowID          string          `json:"workflowId,omitempty"`
+	Prompt              string          `json:"prompt,omitempty"`
+	Agent               string          `json:"agent,omitempty"`
+	ScriptPath          string          `json:"scriptPath,omitempty"`
+	ScriptArgs          []string        `json:"scriptArgs,omitempty"`
+	ScriptEnv           json.RawMessage `json:"scriptEnv,omitempty"`
+	MemoryMode          string          `json:"memoryMode,omitempty"`
+	MemoryMaxRuns       int             `json:"memoryMaxRuns,omitempty"`
+	CaptureMode         string          `json:"captureMode,omitempty"`
+	PreserveSession     string          `json:"preserveSession,omitempty"`
 	ConsecutiveFailures int             `json:"consecutiveFailures"`
 	AutoDisableAfter    int             `json:"autoDisableAfter"`
 	LastFiredAt         *time.Time      `json:"lastFiredAt,omitempty"`
@@ -312,33 +355,50 @@ type TriggerResponse struct {
 }
 
 // CreateTriggerRequest is the body for POST .../triggers.
-// For webhook sources, an accompanying webhooks row (with secret_cipher) is created
-// in the same transaction. auto_disable_after defaults to 10 if unset.
+// For webhook sources, an accompanying webhooks row (with secret_cipher) is created.
+// If workflow_id is set → fires a DAG. Otherwise → routine (agent turn in workspace).
 type CreateTriggerRequest struct {
 	Name             string          `json:"name" binding:"required"`
 	Description      string          `json:"description,omitempty"`
 	Enabled          *bool           `json:"enabled,omitempty"`
 	SourceType       string          `json:"sourceType" binding:"required"`
 	SourceConfig     json.RawMessage `json:"sourceConfig" binding:"required"`
-	TargetType       string          `json:"targetType" binding:"required"`
-	TargetConfig     json.RawMessage `json:"targetConfig" binding:"required"`
+	WorkspaceID      string          `json:"workspaceId,omitempty"`
+	WorkflowID       string          `json:"workflowId,omitempty"`
+	Prompt           string          `json:"prompt,omitempty"`
+	Agent            string          `json:"agent,omitempty"`
+	ScriptPath       string          `json:"scriptPath,omitempty"`
+	ScriptArgs       []string        `json:"scriptArgs,omitempty"`
+	ScriptEnv        json.RawMessage `json:"scriptEnv,omitempty"`
+	MemoryMode       string          `json:"memoryMode,omitempty"`
+	MemoryMaxRuns    *int            `json:"memoryMaxRuns,omitempty"`
+	CaptureMode      string          `json:"captureMode,omitempty"`
+	PreserveSession  string          `json:"preserveSession,omitempty"`
 	AutoDisableAfter *int            `json:"autoDisableAfter,omitempty"`
-	// Webhook-specific fields (required when sourceType == 'webhook'):
+	// Webhook-specific (required when sourceType == 'webhook'):
 	WebhookAllowedIPs        []string `json:"webhookAllowedIps,omitempty"`
 	WebhookIdempotencyMode   string   `json:"webhookIdempotencyMode,omitempty"`
 	WebhookIdempotencyHeader string   `json:"webhookIdempotencyHeader,omitempty"`
 }
 
-// UpdateTriggerRequest supports partial update. Pointer fields: nil = "keep existing".
-// source_type is NOT mutable after create (the source defines the trigger's identity).
-// auto_disable_after must be >= 1 (validated at handler).
+// UpdateTriggerRequest supports partial update. Pointer fields: nil = keep existing.
+// source_type is NOT mutable after create (defines the trigger's identity).
 type UpdateTriggerRequest struct {
 	Name             *string         `json:"name,omitempty"`
 	Description      *string         `json:"description,omitempty"`
 	Enabled          *bool           `json:"enabled,omitempty"`
 	SourceConfig     json.RawMessage `json:"sourceConfig,omitempty"`
-	TargetType       *string         `json:"targetType,omitempty"`
-	TargetConfig     json.RawMessage `json:"targetConfig,omitempty"`
+	WorkspaceID      *string         `json:"workspaceId,omitempty"`
+	WorkflowID       *string         `json:"workflowId,omitempty"`
+	Prompt           *string         `json:"prompt,omitempty"`
+	Agent            *string         `json:"agent,omitempty"`
+	ScriptPath       *string         `json:"scriptPath,omitempty"`
+	ScriptArgs       []string        `json:"scriptArgs,omitempty"`
+	ScriptEnv        json.RawMessage `json:"scriptEnv,omitempty"`
+	MemoryMode       *string         `json:"memoryMode,omitempty"`
+	MemoryMaxRuns    *int            `json:"memoryMaxRuns,omitempty"`
+	CaptureMode      *string         `json:"captureMode,omitempty"`
+	PreserveSession  *string         `json:"preserveSession,omitempty"`
 	AutoDisableAfter *int            `json:"autoDisableAfter,omitempty"`
 }
 
@@ -403,32 +463,7 @@ type TriggerFireResponse struct {
 }
 
 // CronSourceConfig is the typed shape of triggers.source_config for cron sources.
-// expr is a cron expression (validated by the handler); tz is an IANA timezone name.
 type CronSourceConfig struct {
 	Expr string `json:"expr"`
 	TZ   string `json:"tz,omitempty"`
-}
-
-// WebhookSourceConfig is the typed shape of triggers.source_config for webhook sources.
-// WebhookID references the webhooks row carrying the HMAC secret + IP allowlist.
-type WebhookSourceConfig struct {
-	WebhookID string `json:"webhookId"`
-}
-
-// RunWorkflowTargetConfig is the typed shape of triggers.target_config for run_workflow.
-// input_template is a text/template map rendered against the trigger envelope at fire time.
-type RunWorkflowTargetConfig struct {
-	WorkflowID    string            `json:"workflowId"`
-	InputTemplate map[string]string `json:"inputTemplate,omitempty"`
-}
-
-// RunScriptTargetConfig is the typed shape of triggers.target_config for run_script.
-// Prompt is a text/template rendered with {{.input}} where input is the script's
-// stdout/output. If empty, only the script runs (no agent prompt).
-type RunScriptTargetConfig struct {
-	WorkspaceID string            `json:"workspaceId"`
-	Path        string            `json:"path"`
-	Args        []string          `json:"args,omitempty"`
-	Env         map[string]string `json:"env,omitempty"`
-	Prompt      string            `json:"prompt,omitempty"`
 }

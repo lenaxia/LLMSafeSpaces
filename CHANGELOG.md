@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-09
+
+### Changed — Breaking: Triggers as Routines
+
+This release redesigns the trigger model. Triggers are no longer limited
+to firing DAG workflows or scripts — they directly embody agent routines
+(scheduled agent turns with memory, capture, and session lifecycle).
+
+**Breaking changes:**
+- `target_type` and `target_config` columns dropped from `triggers` table
+  (migration 000020). Replaced with explicit routine fields: `workspace_id`,
+  `prompt`, `agent`, `script_path/args/env`, `memory_mode`, `capture_mode`,
+  `preserve_session`, `workflow_id`.
+- Trigger API: `POST /me/triggers` no longer accepts `targetType` or
+  `targetConfig`. Use `workflowId` for DAG mode, or `workspaceId + prompt`
+  for routine mode.
+- `run_script` target type eliminated. Use a routine trigger with
+  `scriptPath` + `prompt` instead.
+- Synthetic workflow rows for `run_script` triggers eliminated.
+  `BuildRunScriptSpec` and `GetOrCreateScriptWorkflow` deleted.
+- SDK trigger create/update signatures changed (all 4 SDKs).
+- MCP `trigger_create` tool signature changed.
+
+### Added — Routine execution
+
+- **Routine executor** in the scheduler: activates workspace, renders prompt
+  with `{{.prevResult}}` memory, executes optional script, sends prompt to
+  opencode agent, captures result per capture policy, deletes or preserves
+  session per preserve policy.
+- **Memory modes**: `none` (every run independent) or `last_result` (injects
+  previous successful result into prompt template). Enables roll-forward
+  state for hourly/daily routines without requiring session continuity.
+- **Capture modes**: `errors_only` (default — only stores on failure) or
+  `full` (always stores the agent response).
+- **Session preservation**: `never` (delete after capture), `always` (keep
+  session in sidebar), `on_failure` (keep only on error).
+- **Migration 000020**: trigger routine fields + backfill from old
+  target_type/target_config.
+- **Migration 000021**: `trigger_fires.result` column for memory +
+  observability. `session_origins` table for session origin tracking.
+- **Scheduler dependencies**: scheduler now holds `WorkspaceActivator` and
+  `AgentdExecutor` for routine execution.
+- **Frontend**: trigger create form rebuilt with routine/workflow mode
+  toggle, workspace picker, prompt editor, memory/capture/preserve controls.
+- **Design doc**: `design/stories/epic-64-triggers-workflows/ROUTINES-REDESIGN.md`.
+
+### Fixed
+
+- **`run_script` now actually executes.** Previously it just logged
+  "delivered" and did nothing. Replaced entirely by the routine executor.
+- **Ephemeral session deletion** in agentd `execAgentNode`: sessions marked
+  ephemeral are now deleted after response capture (`DELETE /session/:id`).
+- **Full transcript capture** in agentd `execAgentNode`: all parts (text +
+  tool-use) are captured, not just concatenated text.
+
 ## [0.9.1] - 2026-08-08
 
 ### Added — Epic 64: Triggers & Workflows UX v2

@@ -157,8 +157,36 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid source type"})
 		return
 	}
-	if !types.ValidTriggerTargetType(req.TargetType) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid target type"})
+
+	memoryMode := req.MemoryMode
+	if memoryMode == "" {
+		memoryMode = types.MemoryNone
+	}
+	if !types.ValidMemoryMode(memoryMode) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid memoryMode"})
+		return
+	}
+
+	captureMode := req.CaptureMode
+	if captureMode == "" {
+		captureMode = types.CaptureErrorsOnly
+	}
+	if !types.ValidCaptureMode(captureMode) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid captureMode"})
+		return
+	}
+
+	preserveSession := req.PreserveSession
+	if preserveSession == "" {
+		preserveSession = types.PreserveNever
+	}
+	if !types.ValidPreserveSession(preserveSession) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid preserveSession"})
+		return
+	}
+
+	if req.WorkflowID == "" && req.WorkspaceID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "either workflowId or workspaceId is required"})
 		return
 	}
 
@@ -172,14 +200,32 @@ func (h *TriggersHandler) create(c *gin.Context, ownerType, ownerID string) {
 		autoDisable = *req.AutoDisableAfter
 	}
 
+	memoryMaxRuns := 1
+	if req.MemoryMaxRuns != nil {
+		memoryMaxRuns = *req.MemoryMaxRuns
+	}
+
 	now := time.Now().UTC()
 	triggerID := uuid.New().String()
+
+	var wsID *string
+	if req.WorkspaceID != "" {
+		wsID = &req.WorkspaceID
+	}
+	var wfID *string
+	if req.WorkflowID != "" {
+		wfID = &req.WorkflowID
+	}
 
 	row := &wf.TriggerRow{
 		ID: triggerID, OwnerType: ownerType, OwnerID: ownerID,
 		Name: req.Name, Description: req.Description, Enabled: enabled,
 		SourceType: req.SourceType, SourceConfig: req.SourceConfig,
-		TargetType: req.TargetType, TargetConfig: req.TargetConfig,
+		WorkspaceID: wsID, WorkflowID: wfID,
+		Prompt: req.Prompt, Agent: req.Agent,
+		ScriptPath: req.ScriptPath, ScriptArgs: req.ScriptArgs, ScriptEnv: req.ScriptEnv,
+		MemoryMode: memoryMode, MemoryMaxRuns: memoryMaxRuns,
+		CaptureMode: captureMode, PreserveSession: preserveSession,
 		AutoDisableAfter: autoDisable,
 		CreatedAt:        now, UpdatedAt: now,
 	}
@@ -282,12 +328,25 @@ func (h *TriggersHandler) update(c *gin.Context, ownerType, ownerID string) {
 
 	upd := &wf.TriggerUpdate{
 		Name: req.Name, Description: req.Description, Enabled: req.Enabled,
-		SourceConfig: req.SourceConfig, TargetType: req.TargetType, TargetConfig: req.TargetConfig,
+		SourceConfig: req.SourceConfig,
+		WorkspaceID: req.WorkspaceID, WorkflowID: req.WorkflowID,
+		Prompt: req.Prompt, Agent: req.Agent,
+		ScriptPath: req.ScriptPath, ScriptArgs: req.ScriptArgs, ScriptEnv: req.ScriptEnv,
+		MemoryMode: req.MemoryMode, MemoryMaxRuns: req.MemoryMaxRuns,
+		CaptureMode: req.CaptureMode, PreserveSession: req.PreserveSession,
 		AutoDisableAfter: req.AutoDisableAfter,
 	}
 
-	if req.TargetType != nil && !types.ValidTriggerTargetType(*req.TargetType) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid target type"})
+	if req.MemoryMode != nil && !types.ValidMemoryMode(*req.MemoryMode) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid memoryMode"})
+		return
+	}
+	if req.CaptureMode != nil && !types.ValidCaptureMode(*req.CaptureMode) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid captureMode"})
+		return
+	}
+	if req.PreserveSession != nil && !types.ValidPreserveSession(*req.PreserveSession) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid preserveSession"})
 		return
 	}
 	if req.AutoDisableAfter != nil && *req.AutoDisableAfter < 1 {
@@ -370,13 +429,22 @@ func triggerRowToResponse(r *wf.TriggerRow) types.TriggerResponse {
 	resp := types.TriggerResponse{
 		ID: r.ID, OwnerType: r.OwnerType, Name: r.Name, Description: r.Description,
 		Enabled: r.Enabled, SourceType: r.SourceType, SourceConfig: r.SourceConfig,
-		TargetType: r.TargetType, TargetConfig: r.TargetConfig,
+		Prompt: r.Prompt, Agent: r.Agent,
+		ScriptPath: r.ScriptPath, ScriptArgs: r.ScriptArgs, ScriptEnv: r.ScriptEnv,
+		MemoryMode: r.MemoryMode, MemoryMaxRuns: r.MemoryMaxRuns,
+		CaptureMode: r.CaptureMode, PreserveSession: r.PreserveSession,
 		ConsecutiveFailures: r.ConsecutiveFailures, AutoDisableAfter: r.AutoDisableAfter,
 		LastFiredAt: r.LastFiredAt, NextFireAt: r.NextFireAt,
 		CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt,
 	}
 	if r.OwnerID != "" && r.OwnerID != "_platform" {
 		resp.OwnerID = r.OwnerID
+	}
+	if r.WorkspaceID != nil {
+		resp.WorkspaceID = *r.WorkspaceID
+	}
+	if r.WorkflowID != nil {
+		resp.WorkflowID = *r.WorkflowID
 	}
 	return resp
 }

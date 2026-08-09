@@ -160,8 +160,8 @@ func (m *MockAPIClient) ListTriggers(ctx context.Context) (json.RawMessage, erro
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
-func (m *MockAPIClient) CreateTrigger(ctx context.Context, name, sourceType, targetType, sourceConfig, targetConfig string) (json.RawMessage, error) {
-	args := m.Called(ctx, name, sourceType, targetType, sourceConfig, targetConfig)
+func (m *MockAPIClient) CreateTrigger(ctx context.Context, name, sourceType, sourceConfig, workspaceID, workflowID, prompt, memoryMode, captureMode, preserveSession string) (json.RawMessage, error) {
+	args := m.Called(ctx, name, sourceType, sourceConfig, workspaceID, workflowID, prompt, memoryMode, captureMode, preserveSession)
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 

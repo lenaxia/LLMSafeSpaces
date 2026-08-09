@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -79,8 +78,17 @@ type TriggerRow struct {
 	Enabled             bool
 	SourceType          string
 	SourceConfig        json.RawMessage
-	TargetType          string
-	TargetConfig        json.RawMessage
+	WorkspaceID         *string
+	WorkflowID          *string
+	Prompt              string
+	Agent               string
+	ScriptPath          string
+	ScriptArgs          []string
+	ScriptEnv           json.RawMessage
+	MemoryMode          string
+	MemoryMaxRuns       int
+	CaptureMode         string
+	PreserveSession     string
 	ConsecutiveFailures int
 	AutoDisableAfter    int
 	LastFiredAt         *time.Time
@@ -172,13 +180,22 @@ type WorkflowUpdate struct {
 // fields: nil means "keep existing". source_type is NOT in this struct — it's
 // immutable after create (the source defines the trigger's identity).
 type TriggerUpdate struct {
-	Name             *string
-	Description      *string
-	Enabled          *bool
-	SourceConfig     json.RawMessage
-	TargetType       *string
-	TargetConfig     json.RawMessage
-	AutoDisableAfter *int
+	Name              *string
+	Description       *string
+	Enabled           *bool
+	SourceConfig      json.RawMessage
+	WorkspaceID       *string
+	WorkflowID        *string
+	Prompt            *string
+	Agent             *string
+	ScriptPath        *string
+	ScriptArgs        []string
+	ScriptEnv         json.RawMessage
+	MemoryMode        *string
+	MemoryMaxRuns     *int
+	CaptureMode       *string
+	PreserveSession   *string
+	AutoDisableAfter  *int
 }
 
 // --- Workflow CRUD ----------------------------------------------------------
@@ -312,12 +329,26 @@ func (s *Store) CountWorkflowsByOwner(ctx context.Context, ownerType, ownerID st
 // CreateTrigger inserts a row into triggers. The caller supplies a pre-generated
 // UUID. For webhook triggers, an accompanying webhooks row is created via
 // CreateWebhook in the same transaction by the handler (US-64.5).
+const triggerSelectColumns = `id, owner_type, owner_id, name, description, enabled, source_type, source_config,
+	workspace_id, workflow_id, prompt, agent, script_path, script_args, script_env,
+	memory_mode, memory_max_runs, capture_mode, preserve_session,
+	consecutive_failures, auto_disable_after, last_fired_at, next_fire_at, created_at, updated_at`
+
 func (s *Store) CreateTrigger(ctx context.Context, row *TriggerRow) error {
 	_, err := s.pool.Exec(ctx, `
-		INSERT INTO triggers (id, owner_type, owner_id, name, description, enabled, source_type, source_config, target_type, target_config, consecutive_failures, auto_disable_after, last_fired_at, next_fire_at, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, COALESCE($5, ''), COALESCE($6, true), $7, COALESCE($8, '{}'::jsonb), $9, COALESCE($10, '{}'::jsonb), COALESCE($11, 0), COALESCE($12, 10), $13, $14, $15, $16)
+		INSERT INTO triggers (id, owner_type, owner_id, name, description, enabled, source_type, source_config,
+			workspace_id, workflow_id, prompt, agent, script_path, script_args, script_env,
+			memory_mode, memory_max_runs, capture_mode, preserve_session,
+			consecutive_failures, auto_disable_after, last_fired_at, next_fire_at, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, COALESCE($5, ''), COALESCE($6, true), $7, COALESCE($8, '{}'::jsonb),
+			$9, $10, COALESCE($11, ''), COALESCE($12, ''), COALESCE($13, ''), COALESCE($14, ARRAY[]::text[]), COALESCE($15, '{}'::jsonb),
+			COALESCE($16, 'none'), COALESCE($17, 1), COALESCE($18, 'errors_only'), COALESCE($19, 'never'),
+			COALESCE($20, 0), COALESCE($21, 10), $22, $23, $24, $25)
 	`, row.ID, row.OwnerType, row.OwnerID, row.Name, row.Description, row.Enabled,
-		row.SourceType, nullableJSON(row.SourceConfig), row.TargetType, nullableJSON(row.TargetConfig),
+		row.SourceType, nullableJSON(row.SourceConfig),
+		nullableStrPtr(row.WorkspaceID), nullableStrPtr(row.WorkflowID),
+		row.Prompt, row.Agent, row.ScriptPath, toNullableStringArray(row.ScriptArgs), nullableJSON(row.ScriptEnv),
+		row.MemoryMode, row.MemoryMaxRuns, row.CaptureMode, row.PreserveSession,
 		row.ConsecutiveFailures, row.AutoDisableAfter, row.LastFiredAt, row.NextFireAt,
 		row.CreatedAt, row.UpdatedAt)
 	return err
@@ -327,7 +358,7 @@ func (s *Store) CreateTrigger(ctx context.Context, row *TriggerRow) error {
 // or ErrNotFound.
 func (s *Store) GetTrigger(ctx context.Context, ownerType, ownerID, triggerID string) (*TriggerRow, error) {
 	row := s.pool.QueryRow(ctx, `
-		SELECT id, owner_type, owner_id, name, description, enabled, source_type, source_config, target_type, target_config, consecutive_failures, auto_disable_after, last_fired_at, next_fire_at, created_at, updated_at
+		SELECT `+triggerSelectColumns+`
 		FROM triggers WHERE id = $1 AND owner_type = $2 AND owner_id = $3
 	`, triggerID, ownerType, ownerID)
 	r, err := scanTriggerRow(row)
@@ -337,11 +368,9 @@ func (s *Store) GetTrigger(ctx context.Context, ownerType, ownerID, triggerID st
 	return r, err
 }
 
-// GetTriggerByID returns a trigger by its UUID without owner scoping. Used by
-// the webhook receiver where the trigger_id is authoritative (unguessable UUID).
 func (s *Store) GetTriggerByID(ctx context.Context, triggerID string) (*TriggerRow, error) {
 	row := s.pool.QueryRow(ctx, `
-		SELECT id, owner_type, owner_id, name, description, enabled, source_type, source_config, target_type, target_config, consecutive_failures, auto_disable_after, last_fired_at, next_fire_at, created_at, updated_at
+		SELECT `+triggerSelectColumns+`
 		FROM triggers WHERE id = $1
 	`, triggerID)
 	r, err := scanTriggerRow(row)
@@ -351,10 +380,9 @@ func (s *Store) GetTriggerByID(ctx context.Context, triggerID string) (*TriggerR
 	return r, err
 }
 
-// ListTriggers returns all triggers owned by (ownerType, ownerID), ordered by created_at ASC.
 func (s *Store) ListTriggers(ctx context.Context, ownerType, ownerID string) ([]*TriggerRow, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, owner_type, owner_id, name, description, enabled, source_type, source_config, target_type, target_config, consecutive_failures, auto_disable_after, last_fired_at, next_fire_at, created_at, updated_at
+		SELECT `+triggerSelectColumns+`
 		FROM triggers WHERE owner_type = $1 AND owner_id = $2
 		ORDER BY created_at ASC
 	`, ownerType, ownerID)
@@ -376,19 +404,35 @@ func (s *Store) UpdateTrigger(ctx context.Context, ownerType, ownerID, triggerID
 		    description = COALESCE($5, description),
 		    enabled = COALESCE($6, enabled),
 		    source_config = CASE WHEN $7::jsonb IS NOT NULL THEN $7 ELSE source_config END,
-		    target_type = COALESCE($8, target_type),
-		    target_config = CASE WHEN $9::jsonb IS NOT NULL THEN $9 ELSE target_config END,
-		    auto_disable_after = COALESCE($10, auto_disable_after)
+		    workspace_id = CASE WHEN $8::text IS NULL THEN workspace_id ELSE NULLIF($8, '')::uuid END,
+		    workflow_id = CASE WHEN $9::text IS NULL THEN workflow_id ELSE NULLIF($9, '')::uuid END,
+		    prompt = COALESCE($10, prompt),
+		    agent = COALESCE($11, agent),
+		    script_path = COALESCE($12, script_path),
+		    script_args = CASE WHEN $13::text[] IS NULL THEN script_args ELSE $13 END,
+		    script_env = CASE WHEN $14::jsonb IS NOT NULL THEN $14 ELSE script_env END,
+		    memory_mode = COALESCE($15, memory_mode),
+		    memory_max_runs = COALESCE($16, memory_max_runs),
+		    capture_mode = COALESCE($17, capture_mode),
+		    preserve_session = COALESCE($18, preserve_session),
+		    auto_disable_after = COALESCE($19, auto_disable_after)
 		WHERE id = $1 AND owner_type = $2 AND owner_id = $3
-		RETURNING id, owner_type, owner_id, name, description, enabled, source_type, source_config, target_type, target_config, consecutive_failures, auto_disable_after, last_fired_at, next_fire_at, created_at, updated_at
+		RETURNING `+triggerSelectColumns+`
 	`,
 		triggerID, ownerType, ownerID,
 		upd.Name, upd.Description, upd.Enabled,
-		nullableJSON(upd.SourceConfig), upd.TargetType, nullableJSON(upd.TargetConfig),
+		nullableJSON(upd.SourceConfig),
+		nullableStrPtr(upd.WorkspaceID), nullableStrPtr(upd.WorkflowID),
+		upd.Prompt, upd.Agent, upd.ScriptPath,
+		toNullableStringArray(upd.ScriptArgs), nullableJSON(upd.ScriptEnv),
+		upd.MemoryMode, upd.MemoryMaxRuns, upd.CaptureMode, upd.PreserveSession,
 		upd.AutoDisableAfter,
 	).Scan(
 		&row.ID, &row.OwnerType, &row.OwnerID, &row.Name, &row.Description, &row.Enabled,
-		&row.SourceType, &row.SourceConfig, &row.TargetType, &row.TargetConfig,
+		&row.SourceType, &row.SourceConfig,
+		&row.WorkspaceID, &row.WorkflowID, &row.Prompt, &row.Agent,
+		&row.ScriptPath, &row.ScriptArgs, &row.ScriptEnv,
+		&row.MemoryMode, &row.MemoryMaxRuns, &row.CaptureMode, &row.PreserveSession,
 		&row.ConsecutiveFailures, &row.AutoDisableAfter, &row.LastFiredAt, &row.NextFireAt,
 		&row.CreatedAt, &row.UpdatedAt,
 	)
@@ -657,8 +701,7 @@ func (s *Store) GetWorkflowPolicy(ctx context.Context, workflowID string) (onMis
 	return
 }
 
-// UpdateRunWorkspace updates the workspace_id on a workflow run. Used by the
-// engine when on_missing_workspace='create' provisions a new workspace.
+// UpdateRunWorkspace updates the workspace_id on a workflow run.
 func (s *Store) UpdateRunWorkspace(ctx context.Context, runID, workspaceID string) error {
 	_, err := s.pool.Exec(ctx, `
 		UPDATE workflow_runs SET workspace_id = $2, updated_at = now() WHERE id = $1
@@ -666,60 +709,34 @@ func (s *Store) UpdateRunWorkspace(ctx context.Context, runID, workspaceID strin
 	return err
 }
 
-// GetOrCreateScriptWorkflow finds or creates a hidden workflow row for a
-// run_script trigger. The workflow carries the synthetic 2-node spec (script → agent)
-// derived from the trigger's target_config. One shadow workflow per trigger.
-func (s *Store) GetOrCreateScriptWorkflow(ctx context.Context, trigger *TriggerRow, specJSON json.RawMessage, workspaceID string) (*WorkflowRow, error) {
-	name := "script:" + trigger.Name
-	slug := "script-" + trigger.Name
+// UpdateTriggerFireResult sets the result + final status on a trigger fire row.
+// Used by the routine executor after agent execution completes.
+func (s *Store) UpdateTriggerFireResult(ctx context.Context, fireID string, result json.RawMessage, status string) error {
+	hasResult := result != nil
+	_, err := s.pool.Exec(ctx, `
+		UPDATE trigger_fires
+		SET status = $2,
+		    result = CASE WHEN $3::boolean THEN $4 ELSE result END,
+		    result_captured_at = CASE WHEN $3::boolean THEN now() ELSE result_captured_at END,
+		    completed_at = COALESCE(completed_at, now())
+		WHERE id = $1
+	`, fireID, status, hasResult, nullableJSON(result))
+	return err
+}
 
-	existing, err := s.GetWorkflow(ctx, trigger.OwnerType, trigger.OwnerID, "")
-	_ = existing
-	_ = err
-
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, owner_type, owner_id, name, slug, description, spec_yaml, spec_json, input_schema, target_workspace_id, on_missing_workspace, status, defaults, created_at, updated_at
-		FROM workflows WHERE owner_type = $1 AND owner_id = $2 AND slug = $3
-	`, trigger.OwnerType, trigger.OwnerID, slug)
-	if err == nil {
-		existingRows, scanErr := scanWorkflowRows(rows)
-		if scanErr == nil && len(existingRows) > 0 {
-			_, _ = s.pool.Exec(ctx, `
-				UPDATE workflows SET spec_json = $2, target_workspace_id = $3, updated_at = now()
-				WHERE id = $1
-			`, existingRows[0].ID, specJSON, workspaceID)
-			existingRows[0].SpecJSON = specJSON
-			if workspaceID != "" {
-				existingRows[0].TargetWorkspaceID = &workspaceID
-			}
-			return existingRows[0], nil
-		}
+// GetLastRoutineResult returns the result from the most recent successful
+// routine fire for a trigger. Used for memory_mode: last_result.
+func (s *Store) GetLastRoutineResult(ctx context.Context, triggerID string) (json.RawMessage, error) {
+	var result json.RawMessage
+	err := s.pool.QueryRow(ctx, `
+		SELECT result FROM trigger_fires
+		WHERE trigger_id = $1 AND status = 'fired' AND result IS NOT NULL
+		ORDER BY fired_at DESC LIMIT 1
+	`, triggerID).Scan(&result)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
 	}
-
-	now := time.Now().UTC()
-	row := &WorkflowRow{
-		ID: uuid.NewString(), OwnerType: trigger.OwnerType, OwnerID: trigger.OwnerID,
-		Name: name, Slug: slug, Description: "Auto-generated for run_script trigger",
-		SpecYAML: "{}", SpecJSON: specJSON,
-		Status: "active", OnMissingWorkspace: "abort",
-		CreatedAt: now, UpdatedAt: now,
-	}
-	if workspaceID != "" {
-		row.TargetWorkspaceID = &workspaceID
-	}
-
-	_, err = s.pool.Exec(ctx, `
-		INSERT INTO workflows (id, owner_type, owner_id, name, slug, description, spec_yaml, spec_json, input_schema, target_workspace_id, on_missing_workspace, status, defaults, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, COALESCE($6, ''), $7, $8, $9, $10, COALESCE($11, 'abort'), COALESCE($12, 'active'), COALESCE($13, '{}'::jsonb), $14, $15)
-		ON CONFLICT (owner_type, owner_id, slug) DO UPDATE SET spec_json = $8, target_workspace_id = $10, updated_at = $15
-		RETURNING id
-	`, row.ID, row.OwnerType, row.OwnerID, row.Name, row.Slug, row.Description,
-		row.SpecYAML, row.SpecJSON, nullableJSON(row.InputSchema), nullableStrPtr(row.TargetWorkspaceID),
-		row.OnMissingWorkspace, row.Status, nullableJSON(row.Defaults), row.CreatedAt, row.UpdatedAt)
-	if err != nil {
-		return nil, err
-	}
-	return row, nil
+	return result, err
 }
 
 // --- Workflow node runs (per-node state) ------------------------------------
@@ -879,7 +896,10 @@ func scanTriggerRow(row pgx.Row) (*TriggerRow, error) {
 	var r TriggerRow
 	err := row.Scan(
 		&r.ID, &r.OwnerType, &r.OwnerID, &r.Name, &r.Description, &r.Enabled,
-		&r.SourceType, &r.SourceConfig, &r.TargetType, &r.TargetConfig,
+		&r.SourceType, &r.SourceConfig,
+		&r.WorkspaceID, &r.WorkflowID, &r.Prompt, &r.Agent,
+		&r.ScriptPath, &r.ScriptArgs, &r.ScriptEnv,
+		&r.MemoryMode, &r.MemoryMaxRuns, &r.CaptureMode, &r.PreserveSession,
 		&r.ConsecutiveFailures, &r.AutoDisableAfter, &r.LastFiredAt, &r.NextFireAt,
 		&r.CreatedAt, &r.UpdatedAt,
 	)

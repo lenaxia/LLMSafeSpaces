@@ -98,12 +98,12 @@ func (m *mockStore) UpdateRunWorkspace(_ context.Context, runID, workspaceID str
 	return nil
 }
 
-func (m *mockStore) GetOrCreateScriptWorkflow(_ context.Context, trigger *wf.TriggerRow, specJSON json.RawMessage, workspaceID string) (*wf.WorkflowRow, error) {
-	return &wf.WorkflowRow{
-		ID: "wf-script-" + trigger.ID, OwnerType: trigger.OwnerType, OwnerID: trigger.OwnerID,
-		Name: "script:" + trigger.Name, Slug: "script-" + trigger.Name,
-		SpecJSON: specJSON, Status: "active",
-	}, nil
+func (m *mockStore) GetLastRoutineResult(_ context.Context, _ string) (json.RawMessage, error) {
+	return nil, nil
+}
+
+func (m *mockStore) UpdateTriggerFireResult(_ context.Context, _ string, _ json.RawMessage, _ string) error {
+	return nil
 }
 
 func (m *mockStore) addRun(id, workflowID, workspaceID string, spec json.RawMessage, input json.RawMessage, triggerID string) *wf.WorkflowRunRow {
@@ -453,10 +453,18 @@ func (m *mockSchedulerStore) GetWorkflow(_ context.Context, _, _, id string) (*w
 	return r, nil
 }
 
-func (m *mockSchedulerStore) GetOrCreateScriptWorkflow(_ context.Context, trigger *wf.TriggerRow, specJSON json.RawMessage, workspaceID string) (*wf.WorkflowRow, error) {
-	return &wf.WorkflowRow{
-		ID: "wf-script-" + trigger.ID, SpecJSON: specJSON, Status: "active",
-	}, nil
+func (m *mockSchedulerStore) UpdateTriggerFireResult(_ context.Context, fireID string, _ json.RawMessage, _ string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return nil
+}
+
+func (m *mockSchedulerStore) GetLastRoutineResult(_ context.Context, _ string) (json.RawMessage, error) {
+	return nil, nil
+}
+
+func (m *mockSchedulerStore) ResetTriggerFailures(_ context.Context, _ string) error {
+	return nil
 }
 
 func (m *mockSchedulerStore) CreateWorkflowRunWithFire(_ context.Context, fire *wf.TriggerFireRow, run *wf.WorkflowRunRow) error {
@@ -492,8 +500,7 @@ func makeDueTrigger(id, wfID, wsID string) *wf.TriggerRow {
 		ID: id, OwnerType: "user", OwnerID: "u1",
 		Enabled: true, SourceType: types.TriggerSourceCron,
 		SourceConfig:     json.RawMessage(`{"expr":"0 * * * *","tz":"UTC"}`),
-		TargetType:       types.TriggerTargetRunWorkflow,
-		TargetConfig:     json.RawMessage(fmt.Sprintf(`{"workflowId":%q}`, wfID)),
+		WorkflowID:       strPtr(wfID),
 		AutoDisableAfter: 10, NextFireAt: &now,
 	}
 }
@@ -528,8 +535,7 @@ func TestScheduler_MissedFireSkipped(t *testing.T) {
 		ID: "trig-old", OwnerType: "user", OwnerID: "u1",
 		Enabled: true, SourceType: types.TriggerSourceCron,
 		SourceConfig: json.RawMessage(`{"expr":"0 * * * *"}`),
-		TargetType:   types.TriggerTargetRunWorkflow,
-		TargetConfig: json.RawMessage(`{"workflowId":"wf-1"}`),
+		WorkflowID:   strPtr("wf-1"),
 		NextFireAt:   &old,
 	}}
 
@@ -541,29 +547,32 @@ func TestScheduler_MissedFireSkipped(t *testing.T) {
 	}
 }
 
-func TestScheduler_RunScriptTarget(t *testing.T) {
+func TestScheduler_RoutineTrigger(t *testing.T) {
 	store := newMockSchedulerStore()
 	now := time.Now().UTC().Add(-5 * time.Second)
 	store.triggers = []*wf.TriggerRow{{
-		ID: "trig-script", OwnerType: "user", OwnerID: "u1",
+		ID: "trig-routine", OwnerType: "user", OwnerID: "u1",
 		Enabled: true, SourceType: types.TriggerSourceCron,
-		SourceConfig: json.RawMessage(`{"expr":"0 * * * *"}`),
-		TargetType:   types.TriggerTargetRunScript,
-		TargetConfig: json.RawMessage(`{"workspaceId":"ws-1","path":"/scripts/backup.sh"}`),
-		NextFireAt:   &now,
+		SourceConfig:  json.RawMessage(`{"expr":"0 * * * *"}`),
+		WorkspaceID:   strPtr("ws-1"),
+		Prompt:        "Summarize what changed since last run.",
+		MemoryMode:    types.MemoryNone,
+		CaptureMode:   types.CaptureFull,
+		NextFireAt:    &now,
 	}}
 
-	sched := &Scheduler{Store: store, Logger: noopLogger{}, TickInterval: 30 * time.Second}
+	activator := &mockActivator{}
+	agentd := newMockAgentd()
+	agentd.outputs["routine-agent"] = json.RawMessage(`{"response":"nothing changed"}`)
+
+	sched := &Scheduler{
+		Store: store, Activator: activator, AgentdClient: agentd,
+		Logger: noopLogger{}, TickInterval: 30 * time.Second,
+	}
 	sched.tick(context.Background(), noopLogger{}, 10)
 
-	if len(store.fires) != 1 || store.fires[0].Status != "fired" {
-		t.Fatalf("expected 1 fired, got %+v", store.fires)
-	}
-	if len(store.runs) != 1 {
-		t.Fatalf("expected 1 run created, got %d", len(store.runs))
-	}
-	if store.runs[0].WorkspaceID != "ws-1" {
-		t.Errorf("expected run on ws-1, got %s", store.runs[0].WorkspaceID)
+	if len(store.fires) != 1 {
+		t.Fatalf("expected 1 fire, got %d", len(store.fires))
 	}
 }
 

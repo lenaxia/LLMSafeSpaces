@@ -66,12 +66,16 @@ var triggerListTool = mcp.NewTool("trigger_list",
 )
 
 var triggerCreateTool = mcp.NewTool("trigger_create",
-	mcp.WithDescription("Create a new trigger"),
+	mcp.WithDescription("Create a new trigger. For routine mode (no workflow_id), provide workspace_id + prompt. For workflow mode, provide workflow_id."),
 	mcp.WithString("name", mcp.Required(), mcp.Description("Trigger name")),
 	mcp.WithString("source_type", mcp.Required(), mcp.Description("Source type: cron or webhook")),
-	mcp.WithString("target_type", mcp.Required(), mcp.Description("Target type: run_workflow or run_script")),
-	mcp.WithString("source_config", mcp.Required(), mcp.Description("Source config (JSON)")),
-	mcp.WithString("target_config", mcp.Required(), mcp.Description("Target config (JSON)")),
+	mcp.WithString("source_config", mcp.Required(), mcp.Description("Source config (JSON: {expr,tz} for cron, {} for webhook)")),
+	mcp.WithString("workspace_id", mcp.Description("Target workspace (routine mode)")),
+	mcp.WithString("workflow_id", mcp.Description("Target workflow (workflow mode)")),
+	mcp.WithString("prompt", mcp.Description("Agent prompt template (routine mode)")),
+	mcp.WithString("memory_mode", mcp.Description("Memory mode: none or last_result")),
+	mcp.WithString("capture_mode", mcp.Description("Capture mode: errors_only or full")),
+	mcp.WithString("preserve_session", mcp.Description("Session preservation: never, always, on_failure")),
 )
 
 var triggerUpdateTool = mcp.NewTool("trigger_update",
@@ -198,13 +202,17 @@ func (h *handlers) triggerCreate(ctx context.Context, req mcp.CallToolRequest) (
 	args := req.GetArguments()
 	name, _ := args["name"].(string)
 	sourceType, _ := args["source_type"].(string)
-	targetType, _ := args["target_type"].(string)
 	sourceConfig, _ := args["source_config"].(string)
-	targetConfig, _ := args["target_config"].(string)
-	if name == "" || sourceType == "" || targetType == "" {
-		return mcp.NewToolResultError("name, source_type, and target_type are required"), nil
+	if name == "" || sourceType == "" {
+		return mcp.NewToolResultError("name and source_type are required"), nil
 	}
-	resp, err := h.client.CreateTrigger(ctx, name, sourceType, targetType, sourceConfig, targetConfig)
+	workspaceID, _ := args["workspace_id"].(string)
+	workflowID, _ := args["workflow_id"].(string)
+	prompt, _ := args["prompt"].(string)
+	memoryMode, _ := args["memory_mode"].(string)
+	captureMode, _ := args["capture_mode"].(string)
+	preserveSession, _ := args["preserve_session"].(string)
+	resp, err := h.client.CreateTrigger(ctx, name, sourceType, sourceConfig, workspaceID, workflowID, prompt, memoryMode, captureMode, preserveSession)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to create trigger: %v", err)), nil
 	}

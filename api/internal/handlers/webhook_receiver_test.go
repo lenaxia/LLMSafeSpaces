@@ -69,12 +69,6 @@ func (m *mockWebhookReceiverStore) GetWorkflow(_ context.Context, _, _, id strin
 	return r, nil
 }
 
-func (m *mockWebhookReceiverStore) GetOrCreateScriptWorkflow(_ context.Context, trigger *wf.TriggerRow, specJSON json.RawMessage, workspaceID string) (*wf.WorkflowRow, error) {
-	return &wf.WorkflowRow{
-		ID: "wf-script-" + trigger.ID, SpecJSON: specJSON, Status: "active",
-	}, nil
-}
-
 func (m *mockWebhookReceiverStore) RecordWebhookDelivery(_ context.Context, webhookID, dedupKey string) error {
 	key := webhookID + ":" + dedupKey
 	if m.delivered[key] {
@@ -133,8 +127,7 @@ func TestWebhookReceiver_ValidSignature(t *testing.T) {
 	store.triggers[triggerID] = &wf.TriggerRow{
 		ID: triggerID, OwnerType: "user", OwnerID: "u1",
 		Enabled: true, SourceType: "webhook",
-		TargetType:   "run_workflow",
-		TargetConfig: json.RawMessage(`{"workflowId":"wf-1"}`),
+		WorkflowID:   strPtrWF("wf-1"),
 	}
 	store.workflows["wf-1"] = &wf.WorkflowRow{
 		ID: "wf-1", OwnerType: "user", OwnerID: "u1",
@@ -164,7 +157,7 @@ func TestWebhookReceiver_MissingSignature(t *testing.T) {
 	store.triggers["trig-1"] = &wf.TriggerRow{
 		ID: "trig-1", OwnerType: "user", OwnerID: "u1",
 		Enabled: true, SourceType: "webhook",
-		TargetType: "run_workflow", TargetConfig: json.RawMessage(`{}`),
+		WorkflowID: strPtrWF("wf-1"),
 	}
 
 	r := setupWebhookRouter(t, store, &mockDecryptor{secret: "s"})
@@ -185,7 +178,7 @@ func TestWebhookReceiver_InvalidSignature(t *testing.T) {
 	store.triggers["trig-1"] = &wf.TriggerRow{
 		ID: "trig-1", OwnerType: "user", OwnerID: "u1",
 		Enabled: true, SourceType: "webhook",
-		TargetType: "run_workflow", TargetConfig: json.RawMessage(`{}`),
+		WorkflowID: strPtrWF("wf-1"),
 	}
 
 	r := setupWebhookRouter(t, store, &mockDecryptor{secret: "real-secret"})
@@ -210,7 +203,7 @@ func TestWebhookReceiver_Dedup(t *testing.T) {
 	store.triggers["t1"] = &wf.TriggerRow{
 		ID: "t1", OwnerType: "user", OwnerID: "u1",
 		Enabled: true, SourceType: "webhook",
-		TargetType: "run_workflow", TargetConfig: json.RawMessage(`{"workflowId":"wf-1"}`),
+		WorkflowID: strPtrWF("wf-1"),
 	}
 	store.workflows["wf-1"] = &wf.WorkflowRow{
 		ID: "wf-1", SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtrWF("ws-1"),
@@ -262,7 +255,7 @@ func TestWebhookReceiver_ConcurrentRun(t *testing.T) {
 	store.triggers["t1"] = &wf.TriggerRow{
 		ID: "t1", OwnerType: "user", OwnerID: "u1",
 		Enabled: true, SourceType: "webhook",
-		TargetType: "run_workflow", TargetConfig: json.RawMessage(`{"workflowId":"wf-1"}`),
+		WorkflowID: strPtrWF("wf-1"),
 	}
 	store.workflows["wf-1"] = &wf.WorkflowRow{
 		ID: "wf-1", SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtrWF("ws-1"),
@@ -307,17 +300,6 @@ func TestCheckTimestampSkew(t *testing.T) {
 	assert.False(t, checkTimestampSkew("not-a-number"))
 }
 
-func TestInterpolateTemplate(t *testing.T) {
-	data := map[string]any{
-		"body": map[string]any{
-			"repository": map[string]any{"full_name": "octocat/repo"},
-			"issue":      map[string]any{"number": float64(42)},
-		},
-	}
-	result := interpolateTemplate("{{.body.repository.full_name}} #{{.body.issue.number}}", data)
-	assert.Equal(t, "octocat/repo #42", result)
-}
-
 func strPtrWF(s string) *string { return &s }
 
 // --- Rate limiting tests ---
@@ -352,7 +334,7 @@ func TestWebhookReceiver_RateLimited(t *testing.T) {
 	store.triggers["t-rl"] = &wf.TriggerRow{
 		ID: "t-rl", OwnerType: "user", OwnerID: "u1",
 		Enabled: true, SourceType: "webhook",
-		TargetType: "run_workflow", TargetConfig: json.RawMessage(`{}`),
+		WorkflowID: strPtrWF("wf-1"),
 	}
 
 	rc := &mockRateChecker{allow: false}
@@ -380,7 +362,7 @@ func TestWebhookReceiver_RateLimitAllows(t *testing.T) {
 	store.triggers["t-ok"] = &wf.TriggerRow{
 		ID: "t-ok", OwnerType: "user", OwnerID: "u1",
 		Enabled: true, SourceType: "webhook",
-		TargetType: "run_workflow", TargetConfig: json.RawMessage(`{"workflowId":"wf-1"}`),
+		WorkflowID: strPtrWF("wf-1"),
 	}
 	store.workflows["wf-1"] = &wf.WorkflowRow{
 		ID: "wf-1", SpecJSON: json.RawMessage(`{}`), TargetWorkspaceID: strPtrWF("ws-1"),
