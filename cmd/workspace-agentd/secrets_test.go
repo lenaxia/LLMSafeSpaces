@@ -31,8 +31,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/lenaxia/llmsafespaces/pkg/agentd/secrets"
 	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
+	"github.com/lenaxia/llmsafespaces/pkg/agentd/secrets"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
