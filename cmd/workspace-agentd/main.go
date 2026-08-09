@@ -18,6 +18,7 @@ import (
 
 	"go.uber.org/zap"
 
+	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
 
@@ -93,7 +94,11 @@ func main() {
 
 	startedAt := time.Now()
 	agentConfigPath := envOrDefault("LLMSAFESPACES_AGENT_CONFIG_PATH", agentd.AgentConfigPath)
-	agentConfigWriter := newAgentConfigWriter(agentConfigPath)
+	agentConfigWriter := opencode.NewConfigWriter(agentConfigPath,
+		opencode.WithAdminPromptPath(agentd.AdminPromptPath),
+		opencode.WithAllowedDirsPath(agentd.AllowedDirsPath),
+		opencode.WithPreMarshalHook(injectAgentdMCPServer),
+	)
 	deps := serverDeps{
 		client:            client,
 		cache:             &providerCache{},

@@ -698,11 +698,9 @@ type reloadSecretsDeps struct {
 	// restart decision no longer probes /session when the tracker is empty.
 	Lister sessionLister
 
-	// AgentConfigWriter is the single writer of agent-config.json. The
-	// reload handler calls SetProviders + Rebuild after formatting the
-	// staged credentials, replacing the old FlushProviders + manual relay
-	// re-merge sequence. Required.
-	AgentConfigWriter *AgentConfigWriter
+	// ConfigWriter is the single writer of agent-config.json. The
+	// opencode config-shape knowledge lives in pkg/agent/opencode/.
+	AgentConfigWriter *opencode.ConfigWriter
 
 	// RestartReasonMarkerPath overrides where the restart-reason marker is
 	// written. Empty falls back to the package const RestartReasonMarkerPath
@@ -793,7 +791,7 @@ func reloadSecretsHandler(cfg materializeConfig, deps reloadSecretsDeps) http.Ha
 		reloadHTTPClient := &http.Client{Timeout: 15 * time.Second}
 		m.EnrichProviders(enrichProviderModels(reqCtx, cfg.enricherCacheDir, reloadHTTPClient))
 
-		// Format staged llm-provider secrets and update the AgentConfigWriter.
+		// Format staged llm-provider secrets and update the ConfigWriter.
 		// The writer is the sole writer of agent-config.json — it merges the
 		// new providers with any existing model and relay config, then writes
 		// atomically (temp + rename). This eliminates the four-writer race
@@ -807,9 +805,9 @@ func reloadSecretsHandler(cfg materializeConfig, deps reloadSecretsDeps) http.Ha
 			return
 		}
 		if formatted != nil && deps.AgentConfigWriter != nil {
-			if err := deps.AgentConfigWriter.setProviders(formatted); err != nil {
+			if err := deps.AgentConfigWriter.SetProviders(formatted); err != nil {
 				reloadMu.Unlock()
-				log.Error("reload-secrets: setProviders failed", zap.Error(err))
+				log.Error("reload-secrets: SetProviders failed", zap.Error(err))
 				w.WriteHeader(http.StatusInternalServerError)
 				_ = json.NewEncoder(w).Encode(map[string]string{"error": "set providers: " + err.Error()})
 				return
@@ -819,9 +817,9 @@ func reloadSecretsHandler(cfg materializeConfig, deps reloadSecretsDeps) http.Ha
 			// the "mcp" section of agent-config.json.
 			stagedMCP := m.StagedMCPServers()
 			if len(stagedMCP) > 0 {
-				entries := make([]mcpServerEntry, len(stagedMCP))
+				entries := make([]opencode.MCPServerEntry, len(stagedMCP))
 				for i, s := range stagedMCP {
-					entries[i] = mcpServerEntry{
+					entries[i] = opencode.MCPServerEntry{
 						Name: s.Name, Transport: s.Transport, URL: s.URL,
 						Command: s.Command, Args: s.Args, TimeoutMs: s.TimeoutMs,
 						Env: s.Env, Headers: s.Headers,
@@ -831,7 +829,7 @@ func reloadSecretsHandler(cfg materializeConfig, deps reloadSecretsDeps) http.Ha
 			} else {
 				deps.AgentConfigWriter.SetMCPServers(nil)
 			}
-			if rbErr := deps.AgentConfigWriter.rebuild(); rbErr != nil {
+			if rbErr := deps.AgentConfigWriter.Rebuild(); rbErr != nil {
 				// C1 regression fix: reset() already deleted agent-config.json.
 				// If rebuild fails (e.g. disk full), the file is ABSENT. Restarting
 				// opencode now would boot with no provider config — silent credential

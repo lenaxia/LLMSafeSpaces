@@ -63,6 +63,8 @@ import (
 	"path/filepath"
 
 	"go.uber.org/zap"
+
+	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 )
 
 // freeModelsFilePath is where the credential-setup init container
@@ -132,7 +134,7 @@ type relayModelFromFile struct {
 //   - (nil, false, err) on JSON decode failure. The init container's
 //     copy is a straight cp, so a parse error means the controller
 //     wrote bad bytes — that's a real bug worth surfacing.
-func readFreeModelsFile(path string) ([]relayModel, bool, error) {
+func readFreeModelsFile(path string) ([]opencode.RelayModel, bool, error) {
 	f, err := os.Open(path) //nolint:gosec // G304: path is a constant
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -149,9 +151,9 @@ func readFreeModelsFile(path string) ([]relayModel, bool, error) {
 		return nil, false, fmt.Errorf("decode %s: %w", path, err)
 	}
 
-	out := make([]relayModel, 0, len(catalog.Models))
+	out := make([]opencode.RelayModel, 0, len(catalog.Models))
 	for _, m := range catalog.Models {
-		out = append(out, relayModel(m))
+		out = append(out, opencode.RelayModel(m))
 	}
 	return out, true, nil
 }
@@ -221,9 +223,12 @@ func applyRelayConfigPreBoot(relayURL, authJSONPath, agentConfigPath string, log
 	// materialize subcommand has already written providers + model
 	// to this path; loadExisting captures both as initial sources.
 	// SetRelay + Rebuild then merges the relay block in.
-	writer := newAgentConfigWriter(agentConfigPath)
-	writer.setRelay(relayURL, models)
-	if err := writer.rebuild(); err != nil {
+	// No admin-prompt/allowed-dirs options here: materialize already
+	// rendered them into the file, and loadExisting preserves the
+	// agent/mode blocks across rebuild.
+	writer := opencode.NewConfigWriter(agentConfigPath)
+	writer.SetRelay(relayURL, models)
+	if err := writer.Rebuild(); err != nil {
 		return "error_config_write", fmt.Errorf("rebuild agent-config: %w", err)
 	}
 

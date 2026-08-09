@@ -34,6 +34,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 )
 
@@ -235,7 +236,7 @@ func runReloadE2E(t *testing.T, bindings []reloadBinding, wireAdmin, wireOrg boo
 	require.NotEmpty(t, secretsJSON, "InjectSecrets must return non-empty JSON for non-empty bindings")
 
 	// Real reloadSecretsHandler: materialize → enrich → flush → writer rebuild.
-	writer := newAgentConfigWriter(agentCfgPath)
+	writer := opencode.NewConfigWriter(agentCfgPath)
 	deps := reloadSecretsDeps{AgentConfigWriter: writer}
 	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", bytes.NewReader(secretsJSON))
 	rec := httptest.NewRecorder()
@@ -346,7 +347,7 @@ func TestE2E_ReloadSecrets_EmptyBindings_Returns200(t *testing.T) {
 		gitCredsPath:    filepath.Join(dir, ".git-credentials"),
 		home:            dir,
 	}
-	writer := newAgentConfigWriter(agentCfgPath)
+	writer := opencode.NewConfigWriter(agentCfgPath)
 	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", bytes.NewReader(secretsJSON))
 	rec := httptest.NewRecorder()
 	reloadSecretsHandler(cfg, reloadSecretsDeps{AgentConfigWriter: writer})(rec, req)
@@ -361,6 +362,6 @@ func TestE2E_ReloadSecrets_BadJSON_Returns400(t *testing.T) {
 	cfg := materializeConfig{agentConfigPath: filepath.Join(dir, "agent-config.json")}
 	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader("not json"))
 	rec := httptest.NewRecorder()
-	reloadSecretsHandler(cfg, reloadSecretsDeps{AgentConfigWriter: newAgentConfigWriter(cfg.agentConfigPath)})(rec, req)
+	reloadSecretsHandler(cfg, reloadSecretsDeps{AgentConfigWriter: opencode.NewConfigWriter(cfg.agentConfigPath)})(rec, req)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
