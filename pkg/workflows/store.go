@@ -342,7 +342,7 @@ func (s *Store) CreateTrigger(ctx context.Context, row *TriggerRow) error {
 			consecutive_failures, auto_disable_after, last_fired_at, next_fire_at, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, COALESCE($5, ''), COALESCE($6, true), $7, COALESCE($8, '{}'::jsonb),
 			$9, $10, COALESCE($11, ''), COALESCE($12, ''), COALESCE($13, ''), COALESCE($14, ARRAY[]::text[]), COALESCE($15, '{}'::jsonb),
-			COALESCE($16, 'none'), COALESCE($17, 1), COALESCE($18, 'errors_only'), COALESCE($19, 'never'),
+			COALESCE(NULLIF($16, ''), 'none'), COALESCE(NULLIF($17, 0), 1), COALESCE(NULLIF($18, ''), 'errors_only'), COALESCE(NULLIF($19, ''), 'never'),
 			COALESCE($20, 0), COALESCE($21, 10), $22, $23, $24, $25)
 	`, row.ID, row.OwnerType, row.OwnerID, row.Name, row.Description, row.Enabled,
 		row.SourceType, nullableJSON(row.SourceConfig),
