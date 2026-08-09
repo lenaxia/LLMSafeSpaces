@@ -1,34 +1,29 @@
 // Copyright (C) 2026 Michael Kao
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-package main
+// Package opencode owns the opencode agent runtime integration. This file
+// implements the SINGLE writer of opencode's agent-config.json.
+//
+// Containment (Epic 65 / Rule 12): every byte of opencode config-shape
+// knowledge — the $schema URL, the "provider" map, the "opencode-relay"
+// relay block, "disabled_providers", the "agent.build.prompt" deep-merge,
+// the "mode.permissions.external_directory" merge, the "mcp" section —
+// lives here, behind the pkg/agent/opencode/ seam. Platform code
+// (cmd/workspace-agentd) constructs a ConfigWriter via NewConfigWriter
+// and calls the exported setters; it does not know what the rendered
+// JSON looks like.
+//
+// Before US-46.10, four independent code paths wrote agent-config.json
+// with no coordination. AgentConfigWriter (now ConfigWriter) eliminated
+// that fragility by being the sole writer: it holds independent sources
+// and Rebuild merges them into a complete config written atomically via
+// temp-file + os.Rename. This file was relocated from
+// cmd/workspace-agentd/agent_config_writer.go (package main) to here so
+// the opencode config knowledge is importable, independently testable,
+// and behind the existing boundary. LLMSafeSpaces#486's schema-validation
+// harness travels with it (configwriter_schema_test.go).
 
-// agent_config_writer.go implements the SINGLE writer of agent-config.json.
-//
-// Before US-46.10, four independent code paths wrote agent-config.json:
-//   1. FlushProviders (boot + reload) — provider credentials only
-//   2. applyWorkspaceConfig (boot subcommand) — adds model key
-//   3. startRelayInjector (~T+7s) — merges relay provider + disabled_providers
-//   4. reloadSecretsHandler re-merge — restores relay after FlushProviders clobbers it
-//
-// None coordinated atomically. The design relied on strict boot ordering,
-// reloadMu serialization, and opencode not hot-reloading the file. This was
-// fragile — a future change that reorders the boot sequence or adds a new
-// write path could reintroduce relay clobbering.
-//
-// The AgentConfigWriter eliminates this fragility by being the sole writer.
-// It holds three sources — providers, model, relay — and Rebuild() merges
-// them into a complete config written atomically via temp-file + os.Rename.
-//
-// Boot initialization: NewAgentConfigWriter reads the existing file (written
-// by the materialize subcommand) and captures the provider map and model as
-// initial sources. This lets the relay injector merge into them without
-// re-deriving provider credentials.
-//
-// The materialize subcommand still writes the file directly (it is a separate
-// process before agentd starts). But once agentd is running, ALL writes go
-// through the writer. See README-LLM.md "Relay Config Subsystem" for the
-// full write-sequence documentation.
+package opencode
 
 import (
 	"encoding/json"
@@ -37,45 +32,101 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	dsecrets "github.com/lenaxia/llmsafespaces/pkg/agentd/secrets"
 )
+
+// RelayModel is one free-tier model discovered from opencode's /provider
+// endpoint by the relay injector. The writer renders it into the
+// opencode-relay provider block's "models" map.
+type RelayModel struct {
+	ID           string
+	Name         string
+	ContextLimit int
+	OutputLimit  int
+}
+
+// MCPServerEntry is one staged MCP server, carrying the fields needed to
+// render its opencode config entry (local or remote shape per the contract).
+type MCPServerEntry struct {
+	Name      string
+	Transport string // http, sse, or stdio
+	URL       string
+	Command   string
+	Args      []string
+	TimeoutMs int
+	Env       map[string]string
+	Headers   map[string]string
+}
 
 // relaySource holds the relay URL and free model list that the relay
 // injector discovered from opencode's /provider endpoint.
 type relaySource struct {
 	url    string
-	models []relayModel
+	models []RelayModel
 }
 
-// AgentConfigWriter is the single writer of agent-config.json within the
+// ConfigWriterOption configures a ConfigWriter at construction.
+type ConfigWriterOption func(*ConfigWriter)
+
+// WithAdminPromptPath sets the path to the admin-configured system prompt
+// file (written by the agentd bootstrap subcommand). The writer reads it
+// once at construction. Empty (the default) means no admin-prompt source.
+func WithAdminPromptPath(p string) ConfigWriterOption {
+	return func(w *ConfigWriter) { w.adminPromptPath = p }
+}
+
+// WithAllowedDirsPath sets the path to the instance's
+// allowedExternalDirectories JSON array (written by the bootstrap
+// subcommand). The writer reads it once at construction. Empty (the
+// default) means no external-directory allow-rules are injected.
+func WithAllowedDirsPath(p string) ConfigWriterOption {
+	return func(w *ConfigWriter) { w.allowedDirsPath = p }
+}
+
+// WithPreMarshalHook registers a function invoked on the rendered config
+// map immediately before final marshal. agentd uses this to inject its
+// built-in admin MCP server (the "llmsafespaces" entry pointing at
+// agentd's own admin port) without this package needing to know that
+// port. nil (the default) means no hook.
+func WithPreMarshalHook(fn func(map[string]json.RawMessage)) ConfigWriterOption {
+	return func(w *ConfigWriter) { w.preMarshalHook = fn }
+}
+
+// ConfigWriter is the single writer of agent-config.json within the
 // agentd process. All config changes (provider credentials, model
-// selection, relay injection) go through SetProviders/SetModel/SetRelay
-// followed by Rebuild.
+// selection, relay injection, MCP servers) go through SetProviders /
+// SetModel / SetRelay / SetMCPServers followed by Rebuild.
 //
-// Thread-safe: all methods acquire mu. Rebuild serializes the
+// Thread-safe: all mutating methods acquire mu. Rebuild serializes the
 // read-merge-write cycle so concurrent reloads and relay injection
 // cannot interleave.
-type AgentConfigWriter struct {
+type ConfigWriter struct {
 	mu              sync.Mutex
 	path            string
 	providerRaw     json.RawMessage  // raw "provider" map JSON from FormatOpenCodeConfig; nil = no providers
 	model           string           // fully-qualified "providerID/modelID" form; "" = no model
 	relay           *relaySource     // nil = relay not yet injected / skipped
-	mcpServers      []mcpServerEntry // staged MCP servers from applyMCPServer; nil = none
-	adminPrompt     string           // admin-configured system prompt from agentd.AdminPromptPath; "" = none
+	mcpServers      []MCPServerEntry // staged MCP servers from SetMCPServers; nil = none
+	adminPrompt     string           // admin-configured system prompt; "" = none
 	agentRaw        json.RawMessage  // existing "agent" config from loadExisting, preserved across rebuilds
 	modeRaw         json.RawMessage  // existing "mode" config from loadExisting, preserved across rebuilds
-	allowedDirs     []string         // glob patterns from AllowedDirsPath, merged as external_directory allow-rules
-	allowedDirsPath string           // path to the allowed-dirs JSON file; defaults to agentd.AllowedDirsPath
+	allowedDirs     []string         // glob patterns, merged as external_directory allow-rules
+	adminPromptPath string           // path to admin-prompt file; "" = skip
+	allowedDirsPath string           // path to allowed-dirs JSON; "" = skip
+	preMarshalHook  func(map[string]json.RawMessage)
 }
 
-// newAgentConfigWriter creates the writer and initializes its sources
-// from the existing agent-config.json file (written by the materialize
-// subcommand at boot). If the file is absent or corrupt, sources start
-// empty and the first Rebuild() creates a fresh file.
-func newAgentConfigWriter(path string) *AgentConfigWriter {
-	w := &AgentConfigWriter{path: path, allowedDirsPath: agentd.AllowedDirsPath}
+// NewConfigWriter creates the writer and initializes its sources from
+// the existing agent-config.json file (written by the materialize
+// subcommand at boot), the admin-prompt file, and the allowed-dirs file.
+// Options set the paths; absent options mean the corresponding source is
+// skipped. If agent-config.json is absent or corrupt, sources start
+// empty and the first Rebuild creates a fresh file.
+func NewConfigWriter(path string, opts ...ConfigWriterOption) *ConfigWriter {
+	w := &ConfigWriter{path: path}
+	for _, opt := range opts {
+		opt(w)
+	}
 	w.loadExisting()
 	w.loadAdminPrompt()
 	w.loadAllowedDirs()
@@ -86,7 +137,7 @@ func newAgentConfigWriter(path string) *AgentConfigWriter {
 // provider map and model as sources. Called once at construction.
 // Silent on error — a missing or corrupt file means the writer starts
 // empty, which is correct for zero-credential users.
-func (w *AgentConfigWriter) loadExisting() {
+func (w *ConfigWriter) loadExisting() {
 	data, err := os.ReadFile(w.path)
 	if err != nil || len(data) == 0 {
 		return
@@ -113,7 +164,7 @@ func (w *AgentConfigWriter) loadExisting() {
 	// fetch+kill+restart cycle redundantly, defeating the entire
 	// point of Phase C.
 	//
-	// We extract just enough info to satisfy hasRelay() — the actual
+	// We extract just enough info to satisfy HasRelay() — the actual
 	// relay config is already on disk, so we don't need to round-trip
 	// the full URL or model list back into the writer's source. A
 	// sentinel non-nil relaySource is sufficient, but we populate
@@ -129,12 +180,15 @@ func (w *AgentConfigWriter) loadExisting() {
 	}
 }
 
-// loadAdminPrompt reads the admin-configured system prompt written by the
-// bootstrap subcommand to agentd.AdminPromptPath. Loaded once at init;
-// persists across all rebuilds. Changes take effect on next pod boot
-// (design decision: no hot-reload).
-func (w *AgentConfigWriter) loadAdminPrompt() {
-	data, err := os.ReadFile(agentd.AdminPromptPath)
+// loadAdminPrompt reads the admin-configured system prompt file (path
+// set via WithAdminPromptPath). Loaded once at init; persists across all
+// rebuilds. Changes take effect on next pod boot (design decision: no
+// hot-reload).
+func (w *ConfigWriter) loadAdminPrompt() {
+	if w.adminPromptPath == "" {
+		return
+	}
+	data, err := os.ReadFile(w.adminPromptPath)
 	if err != nil || len(data) == 0 {
 		return
 	}
@@ -142,23 +196,21 @@ func (w *AgentConfigWriter) loadAdminPrompt() {
 }
 
 // setAllowedDirsPath overrides the allowed-dirs file path. Test seam so
-// tests can point at a t.TempDir() file instead of the production tmpfs
-// path. The constructor already calls loadAllowedDirs() with the default
-// path (agentd.AllowedDirsPath); calling this after construction + calling
-// loadAllowedDirs() again re-reads from the new path. The second call
-// appends to the slice (not replaces) — tests rely on the first call being
-// a no-op (the production path doesn't exist in a test environment).
-func (w *AgentConfigWriter) setAllowedDirsPath(p string) {
+// tests can point at a t.TempDir() file instead of a production path.
+// The constructor already called loadAllowedDirs() with the option path
+// (or no path); calling this after construction + calling loadAllowedDirs()
+// again re-reads from the new path.
+func (w *ConfigWriter) setAllowedDirsPath(p string) {
 	w.allowedDirsPath = p
 }
 
 // loadAllowedDirs reads the instance's allowedExternalDirectories setting
 // (written by the bootstrap subcommand as a JSON array of glob patterns)
 // and stores the patterns as the external_directory allow-rule source.
-// Called once at construction. Silent on error — a missing or corrupt file
-// means no allow-rules are injected, which is correct (agents prompt as
-// before). Patterns are de-duplicated to keep the rendered config clean.
-func (w *AgentConfigWriter) loadAllowedDirs() {
+// Silent on error — a missing or corrupt file means no allow-rules are
+// injected, which is correct (agents prompt as before). Patterns are
+// de-duplicated to keep the rendered config clean.
+func (w *ConfigWriter) loadAllowedDirs() {
 	if w.allowedDirsPath == "" {
 		return
 	}
@@ -191,7 +243,7 @@ func (w *AgentConfigWriter) loadAllowedDirs() {
 //
 // Returns a populated *relaySource on success, or a sentinel
 // non-nil source with empty fields if extraction fails — the
-// non-nil-ness is what matters for hasRelay().
+// non-nil-ness is what matters for HasRelay().
 func parseRelayFromExisting(relayRaw json.RawMessage) *relaySource {
 	var entry struct {
 		Options struct {
@@ -208,13 +260,13 @@ func parseRelayFromExisting(relayRaw json.RawMessage) *relaySource {
 	src := &relaySource{}
 	if err := json.Unmarshal(relayRaw, &entry); err != nil {
 		// Block exists but isn't parseable — still set non-nil
-		// sentinel so hasRelay() reports true. Rebuild() will
+		// sentinel so HasRelay() reports true. Rebuild() will
 		// regenerate the block from defaults if anyone calls it.
 		return src
 	}
 	src.url = entry.Options.BaseURL
 	for id, m := range entry.Models {
-		src.models = append(src.models, relayModel{
+		src.models = append(src.models, RelayModel{
 			ID:           id,
 			Name:         m.Name,
 			ContextLimit: m.Limit.Context,
@@ -224,13 +276,13 @@ func parseRelayFromExisting(relayRaw json.RawMessage) *relaySource {
 	return src
 }
 
-// setProviders updates the provider source from a FormatOpenCodeConfig
+// SetProviders updates the provider source from a FormatOpenCodeConfig
 // result. The formatted bytes contain the complete opencode config shape
 // ({ $schema, provider: {...} }); this method extracts just the provider
 // map. The model from the formatter is NOT captured — the model source
-// is owned by applyWorkspaceConfig (set at boot via loadExisting) and
-// must survive credential reloads.
-func (w *AgentConfigWriter) setProviders(formattedConfig []byte) error {
+// is owned by SetModel (set at boot via loadExisting) and must survive
+// credential reloads.
+func (w *ConfigWriter) SetProviders(formattedConfig []byte) error {
 	var cfg struct {
 		Provider json.RawMessage `json:"provider"`
 	}
@@ -243,68 +295,58 @@ func (w *AgentConfigWriter) setProviders(formattedConfig []byte) error {
 	return nil
 }
 
-// setModel updates the model source. Called by applyWorkspaceConfig
+// SetModel updates the model source. Called by applyWorkspaceConfig
 // at boot (via the materialize subcommand) to set the default model
 // from workspace-config.json.
-func (w *AgentConfigWriter) setModel(model string) {
+func (w *ConfigWriter) SetModel(model string) {
 	w.mu.Lock()
 	w.model = model
 	w.mu.Unlock()
 }
 
-// setRelay updates the relay source after the relay injector successfully
+// SetRelay updates the relay source after the relay injector successfully
 // discovers the free model list. The writer stores the URL and models;
-// Rebuild() merges them into the provider map.
-func (w *AgentConfigWriter) setRelay(url string, models []relayModel) {
+// Rebuild merges them into the provider map.
+func (w *ConfigWriter) SetRelay(url string, models []RelayModel) {
 	w.mu.Lock()
 	w.relay = &relaySource{url: url, models: models}
 	w.mu.Unlock()
 }
 
-// mcpServerEntry is one staged MCP server, carrying the fields needed to
-// render its opencode config entry (local or remote shape per the contract).
-type mcpServerEntry struct {
-	Name      string
-	Transport string // http, sse, or stdio
-	URL       string
-	Command   string
-	Args      []string
-	TimeoutMs int
-	Env       map[string]string
-	Headers   map[string]string
-}
-
-// SetMCPServers replaces the MCP server source and rebuilds. Called after
-// materialize stages MCP server entries from secrets.json. Each server
-// renders as one entry in the opencode "mcp" top-level config section.
-func (w *AgentConfigWriter) SetMCPServers(servers []mcpServerEntry) {
+// SetMCPServers replaces the MCP server source. Called after materialize
+// stages MCP server entries from secrets.json. Each server renders as one
+// entry in the opencode "mcp" top-level config section.
+func (w *ConfigWriter) SetMCPServers(servers []MCPServerEntry) {
 	w.mu.Lock()
 	w.mcpServers = servers
 	w.mu.Unlock()
 }
 
-// hasRelay returns true if the relay injector has successfully injected
-// relay config. Used by the readyz handler for the RelayInjected signal
-// (replaces the old getActiveRelayModels() != nil check).
-func (w *AgentConfigWriter) hasRelay() bool {
+// HasRelay returns true if the relay injector has successfully injected
+// relay config. Used by the readyz handler for the RelayInjected signal.
+func (w *ConfigWriter) HasRelay() bool {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.relay != nil
 }
 
-// rebuild merges all sources (providers, model, relay) and writes the
-// complete agent-config.json atomically via temp-file + os.Rename.
+// Rebuild merges all sources (providers, model, relay, MCP, admin prompt,
+// allowed dirs) and writes the complete agent-config.json atomically via
+// temp-file + os.Rename.
 //
 // Merge semantics:
 //   - $schema is always set to "https://opencode.ai/config.json"
-//   - provider map = existing providers (from setProviders or loadExisting)
+//   - provider map = existing providers (from SetProviders or loadExisting)
 //   - opencode-relay (if relay is set). No existing provider is removed.
-//   - model = the model source (from setModel or loadExisting)
+//   - model = the model source (from SetModel or loadExisting)
 //   - disabled_providers = ["opencode"] (only if relay is set)
+//   - agent.build.prompt = admin prompt (deep-merged into existing build agent)
+//   - mode.permissions.external_directory = allowed-dirs glob allow-rules
+//   - mcp = staged MCP servers + pre-marshal hook additions
 //
 // The temp-file + rename pattern ensures readers never see a partially
 // written file. os.Rename is atomic on POSIX filesystems (same mount).
-func (w *AgentConfigWriter) rebuild() error {
+func (w *ConfigWriter) Rebuild() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -357,8 +399,6 @@ func (w *AgentConfigWriter) rebuild() error {
 	// is `agent` (singular) and the AgentConfig field is `prompt`, not
 	// `system`. Every non-empty adminPrompt made opencode reject the
 	// config with ConfigInvalidError → all session endpoints 500'd.
-	// Enforced by TestAgentConfigWriter_Rebuild_MatchesOpencodeSchema
-	// (validates rebuild output against opencode's actual JSON schema).
 	if w.adminPrompt != "" || len(w.agentRaw) > 0 {
 		agent := make(map[string]json.RawMessage)
 		if len(w.agentRaw) > 0 {
@@ -472,7 +512,7 @@ func (w *AgentConfigWriter) rebuild() error {
 	if len(w.mcpServers) > 0 {
 		mcp := make(map[string]json.RawMessage, len(w.mcpServers))
 		for _, srv := range w.mcpServers {
-			// Convert mcpServerEntry → StagedMCPServer → shared renderer.
+			// Convert MCPServerEntry → StagedMCPServer → shared renderer.
 			// This is the single render path shared with the materialize subcommand.
 			staged := dsecrets.StagedMCPServer{
 				Name: srv.Name, Transport: srv.Transport, URL: srv.URL,
@@ -493,7 +533,13 @@ func (w *AgentConfigWriter) rebuild() error {
 		cfg["mcp"] = mcpJSON
 	}
 
-	injectAgentdMCPServer(cfg)
+	// preMarshalHook lets the caller (agentd) inject entries that this
+	// package must not know about — e.g. the built-in admin MCP server
+	// pointing at agentd's own port. The hook runs after all internal
+	// sources are merged and before final marshal.
+	if w.preMarshalHook != nil {
+		w.preMarshalHook(cfg)
+	}
 
 	output, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
@@ -540,9 +586,7 @@ func atomicRenameWrite(path string, data []byte, perm os.FileMode) error {
 }
 
 // buildRelayProviderEntry builds the JSON for the opencode-relay provider
-// entry that gets merged into the provider map. This is the same logic
-// that buildRelayConfig used inline — extracted so the writer can call it
-// during Rebuild without reading the existing file.
+// entry that gets merged into the provider map.
 //
 // The relay entry shape:
 //
@@ -552,7 +596,7 @@ func atomicRenameWrite(path string, data []byte, perm os.FileMode) error {
 //	  "options": {"baseURL": "<relayURL>", "apiKey": "public"},
 //	  "models": {"<id>": {"name": "...", "limit": {"context": ..., "output": ...}}}
 //	}
-func buildRelayProviderEntry(relayURL string, models []relayModel) (json.RawMessage, error) {
+func buildRelayProviderEntry(relayURL string, models []RelayModel) (json.RawMessage, error) {
 	type modelLimit struct {
 		Context int `json:"context,omitempty"`
 		Output  int `json:"output,omitempty"`

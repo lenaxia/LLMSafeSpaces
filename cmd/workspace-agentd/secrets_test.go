@@ -31,6 +31,7 @@ import (
 	"sync"
 	"testing"
 
+	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd/secrets"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
@@ -425,7 +426,7 @@ func TestReloadSecretsHandler_LLMProvider_CallsOpenCodeClient(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 
-	reloadSecretsHandler(cfg, reloadSecretsDeps{AgentConfigWriter: newAgentConfigWriter(agentCfg)})(rec, req)
+	reloadSecretsHandler(cfg, reloadSecretsDeps{AgentConfigWriter: opencode.NewConfigWriter(agentCfg)})(rec, req)
 
 	// Handler should succeed (materializer and flush work in-process)
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -445,7 +446,7 @@ func TestReloadSecretsHandler_LLMProvider_CallsOpenCodeClient(t *testing.T) {
 }
 
 // TestReloadSecretsHandler_WriterRebuildFailure_Returns500 verifies
-// that if the AgentConfigWriter.rebuild() fails (e.g. disk full after
+// that if the ConfigWriter.Rebuild() fails (e.g. disk full after
 // reset() deleted the old config), the handler returns 500 and does NOT
 // restart opencode with a missing config file.
 //
@@ -472,7 +473,7 @@ func TestReloadSecretsHandler_WriterRebuildFailure_Returns500(t *testing.T) {
 	// The handler must return 500 (not 200) because reset() already deleted
 	// the config and opencode must not restart with no config on disk.
 	unwritableDir := filepath.Join(dir, "nodir", "subdir")
-	badWriter := newAgentConfigWriter(filepath.Join(unwritableDir, "agent-config.json"))
+	badWriter := opencode.NewConfigWriter(filepath.Join(unwritableDir, "agent-config.json"))
 
 	reloadSecretsHandler(cfg, reloadSecretsDeps{AgentConfigWriter: badWriter})(rec, req)
 
@@ -506,7 +507,7 @@ func TestReloadSecretsHandler_MixedBatch_LLMAndEnv(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 
-	reloadSecretsHandler(cfg, reloadSecretsDeps{AgentConfigWriter: newAgentConfigWriter(agentCfg)})(rec, req)
+	reloadSecretsHandler(cfg, reloadSecretsDeps{AgentConfigWriter: opencode.NewConfigWriter(agentCfg)})(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
 
@@ -584,8 +585,8 @@ func TestReloadSecretsHandler_PreservesRelayViaWriter(t *testing.T) {
 	}
 
 	// Create writer and pre-set relay config as if the injector already ran.
-	writer := newAgentConfigWriter(agentCfg)
-	writer.setRelay("https://relay.example.test/path", []relayModel{
+	writer := opencode.NewConfigWriter(agentCfg)
+	writer.SetRelay("https://relay.example.test/path", []opencode.RelayModel{
 		{ID: "big-pickle", Name: "Big Pickle", ContextLimit: 131072, OutputLimit: 16384},
 	})
 
@@ -635,7 +636,7 @@ func TestReloadSecretsHandler_NoRelay_NoDisabledProviders(t *testing.T) {
 		home:             dir,
 	}
 
-	writer := newAgentConfigWriter(agentCfg) // no relay set
+	writer := opencode.NewConfigWriter(agentCfg) // no relay set
 
 	body := `[{"type":"llm-provider","name":"openai","plaintext":"{\"kind\":\"openai\",\"slug\":\"openai\",\"apiKey\":\"sk-personal\"}"}]`
 	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(body))

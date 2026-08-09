@@ -45,6 +45,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.uber.org/zap"
+
+	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 )
 
 // relayURLHost returns only the scheme+host of a relay URL so it can be
@@ -62,14 +64,6 @@ var relayInjectorOutcomes = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "llmsafespaces_relay_injector_total",
 	Help: "Phase-2 relay injector outcomes per agentd pod boot.",
 }, []string{"outcome"})
-
-// relayModel is the minimal model info needed to build the custom provider config.
-type relayModel struct {
-	ID           string
-	Name         string
-	ContextLimit int
-	OutputLimit  int
-}
 
 // shouldSkipRelay reads auth.json at authPath and returns (true, reason) if
 // relay injection should be skipped because the user has a personal opencode
@@ -117,7 +111,7 @@ func shouldSkipRelay(authJSONPath string) (bool, string) {
 // all[] contains every provider from models.dev regardless of auth;
 // connected[] is the subset we actually have credentials for.
 // We must use connected[] to distinguish accessible models from catalog noise.
-func fetchFreeModels(ctx context.Context, baseURL, password string) ([]relayModel, error) {
+func fetchFreeModels(ctx context.Context, baseURL, password string) ([]opencode.RelayModel, error) {
 	url := baseURL + "/provider"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil) //nolint:gosec // G107: internal pod URL
 	if err != nil {
@@ -171,7 +165,7 @@ func fetchFreeModels(ctx context.Context, baseURL, password string) ([]relayMode
 		return nil, nil
 	}
 
-	var free []relayModel
+	var free []opencode.RelayModel
 	for _, p := range providerResp.All {
 		if p.ID != "opencode" {
 			continue
@@ -184,7 +178,7 @@ func fetchFreeModels(ctx context.Context, baseURL, password string) ([]relayMode
 			if id == "" {
 				id = modelKey // /provider uses the map key as the model ID
 			}
-			free = append(free, relayModel{
+			free = append(free, opencode.RelayModel{
 				ID:           id,
 				Name:         m.Name,
 				ContextLimit: m.Limit.Context,
@@ -236,10 +230,10 @@ type relayInjectorConfig struct {
 	AgentConfigPath string
 	// AuthJSONPath is the path to opencode's auth.json.
 	AuthJSONPath string
-	// AgentConfigWriter is the single writer of agent-config.json. The
-	// injector calls SetRelay + Rebuild to merge the relay provider block
-	// into the existing config. Required when RelayURL is set.
-	AgentConfigWriter *AgentConfigWriter
+	// ConfigWriter is the single writer of agent-config.json. The
+	// opencode config-shape knowledge lives in pkg/agent/opencode/; this
+	// module discovers free models and hands them to the writer.
+	AgentConfigWriter *opencode.ConfigWriter
 	// KillOpenCode is called to trigger opencode process restart after config
 	// is written. The supervisor restarts opencode, which reads the new config.
 	KillOpenCode func()
@@ -260,7 +254,7 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 	// 2026-06-23 cold-start optimization (item #1a, Phase D):
 	// short-circuit if the materialize subcommand has already
 	// pre-injected the relay block via the cluster-wide free-models
-	// ConfigMap. AgentConfigWriter.hasRelay() is true when
+	// ConfigMap. ConfigWriter.HasRelay() is true when
 	// loadExisting found a populated `provider.opencode-relay`
 	// block at agentd startup (i.e. Phases A+B+C all succeeded).
 	//
@@ -272,7 +266,7 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 	// disabled, etc.), hasRelay() is false and we fall through to
 	// the legacy path, preserving correctness on every cluster
 	// regardless of whether the optimization is wired up.
-	if cfg.AgentConfigWriter != nil && cfg.AgentConfigWriter.hasRelay() {
+	if cfg.AgentConfigWriter != nil && cfg.AgentConfigWriter.HasRelay() {
 		log.Info("relay injector: pre-boot relay already applied; skipping in-pod injection")
 		relayInjectorOutcomes.WithLabelValues("skipped_pre_boot_applied").Inc()
 		return
@@ -311,7 +305,7 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 			return
 		}
 		if cfg.AgentConfigWriter == nil {
-			lg.Warn("relay injector: AgentConfigWriter is nil, skipping relay injection")
+			lg.Warn("relay injector: ConfigWriter is nil, skipping relay injection")
 			return
 		}
 
@@ -321,7 +315,7 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 		// provider catalog is fully initialized (~16s after startup). Without
 		// the retry, a 0-model response permanently skips relay injection for
 		// the pod's lifetime, leaving free-tier users with no working models.
-		var models []relayModel
+		var models []opencode.RelayModel
 		fetchDeadline := time.Now().Add(30 * time.Second)
 		for {
 			var fetchErr error
@@ -347,11 +341,11 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 		}
 		lg.Info("relay injector: fetched free models", zap.Int("count", len(models)))
 
-		// Build and write the relay config via the single AgentConfigWriter.
+		// Build and write the relay config via the single ConfigWriter.
 		// The writer merges the relay provider block into the existing
 		// config (providers + model) and writes atomically (temp + rename).
-		cfg.AgentConfigWriter.setRelay(cfg.RelayURL, models)
-		if err := cfg.AgentConfigWriter.rebuild(); err != nil {
+		cfg.AgentConfigWriter.SetRelay(cfg.RelayURL, models)
+		if err := cfg.AgentConfigWriter.Rebuild(); err != nil {
 			lg.Warn("relay injector: failed to write agent config", zap.Error(err))
 			relayInjectorOutcomes.WithLabelValues("config_write_failed").Inc()
 			return
@@ -370,7 +364,7 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 		lg.Info("relay injector: updated auth.json with opencode-relay entry")
 
 		// Kill opencode — the supervisor restarts it and reads the new config.
-		// The relay state is already stored in the AgentConfigWriter (set above
+		// The relay state is already stored in the ConfigWriter (set above
 		// via SetRelay), so reloadSecretsHandler's Rebuild() will preserve it.
 		cfg.KillOpenCode()
 		relayInjectorOutcomes.WithLabelValues("success").Inc()

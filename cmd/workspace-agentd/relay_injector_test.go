@@ -22,6 +22,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 )
 
 // --- shouldSkipRelay tests ---
@@ -160,7 +162,7 @@ func TestStartRelayInjector_SkipsWhenPersonalKey(t *testing.T) {
 		[]byte(`{"opencode":{"type":"api","key":"sk-personal-abc123"}}`), 0o600))
 
 	killed := false
-	writer := newAgentConfigWriter(filepath.Join(dir, "agent-config.json"))
+	writer := opencode.NewConfigWriter(filepath.Join(dir, "agent-config.json"))
 	startRelayInjector(context.Background(), relayInjectorConfig{
 		RelayURL:          "https://relay.example.test/path",
 		AuthJSONPath:      authPath,
@@ -170,7 +172,7 @@ func TestStartRelayInjector_SkipsWhenPersonalKey(t *testing.T) {
 	})
 	time.Sleep(100 * time.Millisecond)
 	assert.False(t, killed, "KillOpenCode must not be called when user has personal key")
-	assert.False(t, writer.hasRelay(), "writer must not have relay when skipped")
+	assert.False(t, writer.HasRelay(), "writer must not have relay when skipped")
 }
 
 // TestStartRelayInjector_WritesConfigAndKills verifies the full injection path:
@@ -196,7 +198,7 @@ func TestStartRelayInjector_WritesConfigAndKills(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	writer := newAgentConfigWriter(cfgPath)
+	writer := opencode.NewConfigWriter(cfgPath)
 	killed := make(chan struct{}, 1)
 	startRelayInjector(context.Background(), relayInjectorConfig{
 		RelayURL:          "https://relay.example.test/path",
@@ -217,7 +219,7 @@ func TestStartRelayInjector_WritesConfigAndKills(t *testing.T) {
 	}
 
 	// Verify writer has relay state
-	assert.True(t, writer.hasRelay(), "writer must have relay after injection")
+	assert.True(t, writer.HasRelay(), "writer must have relay after injection")
 
 	// Verify config file was written by the writer
 	data, err := os.ReadFile(cfgPath)
@@ -283,7 +285,7 @@ func TestStartRelayInjector_RetriesWhenZeroModels(t *testing.T) {
 	require.NoError(t, os.WriteFile(authPath,
 		[]byte(`{"opencode":{"type":"api","key":"public"}}`), 0o600))
 
-	writer := newAgentConfigWriter(agentConfigPath)
+	writer := opencode.NewConfigWriter(agentConfigPath)
 	killed := make(chan struct{})
 
 	cfg := relayInjectorConfig{
@@ -305,7 +307,7 @@ func TestStartRelayInjector_RetriesWhenZeroModels(t *testing.T) {
 		t.Fatal("relay injector did not retry after 0-model response within 30s")
 	}
 
-	assert.True(t, writer.hasRelay(), "writer must have relay after successful retry")
+	assert.True(t, writer.HasRelay(), "writer must have relay after successful retry")
 	assert.Equal(t, 2, callCount, "expected exactly 2 /provider calls (initial + retry)")
 }
 
@@ -318,7 +320,7 @@ func TestStartRelayInjector_DoesNotSetRelayWhenSkipped(t *testing.T) {
 	require.NoError(t, os.WriteFile(authPath,
 		[]byte(`{"opencode":{"type":"api","key":"sk-personal-key"}}`), 0o600))
 
-	writer := newAgentConfigWriter(filepath.Join(dir, "agent-config.json"))
+	writer := opencode.NewConfigWriter(filepath.Join(dir, "agent-config.json"))
 	killed := false
 	startRelayInjector(context.Background(), relayInjectorConfig{
 		RelayURL:          "https://relay.example.test/path",
@@ -330,7 +332,7 @@ func TestStartRelayInjector_DoesNotSetRelayWhenSkipped(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 
 	assert.False(t, killed)
-	assert.False(t, writer.hasRelay(),
+	assert.False(t, writer.HasRelay(),
 		"writer must not have relay when injection is skipped for personal key")
 }
 
@@ -390,8 +392,8 @@ func TestStartRelayInjector_SkipsWhenPreBootApplied(t *testing.T) {
 		"disabled_providers": ["opencode"]
 	}`), 0o600))
 
-	writer := newAgentConfigWriter(cfgPath)
-	require.True(t, writer.hasRelay(),
+	writer := opencode.NewConfigWriter(cfgPath)
+	require.True(t, writer.HasRelay(),
 		"writer must observe pre-injected relay block via loadExisting — "+
 			"this is what enables the Phase D short-circuit")
 
@@ -413,79 +415,4 @@ func TestStartRelayInjector_SkipsWhenPreBootApplied(t *testing.T) {
 		"HealthCheck must not be called — the goroutine must short-circuit before starting")
 	assert.False(t, killed,
 		"KillOpenCode must not be called — opencode is already booting with the right config")
-}
-
-// TestLoadExisting_DetectsPreInjectedRelay covers the Phase D flag
-// flip in agent_config_writer.go: a provider.opencode-relay entry
-// in the on-disk file at agentd startup must populate w.relay so
-// hasRelay() reports true.
-func TestLoadExisting_DetectsPreInjectedRelay(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "agent-config.json")
-	require.NoError(t, os.WriteFile(cfgPath, []byte(`{
-		"provider": {
-			"openai": {"options": {"apiKey": "sk-test"}},
-			"opencode-relay": {
-				"options": {"baseURL": "https://relay.example/secret", "apiKey": "public"},
-				"models": {
-					"m1": {"name": "Model 1", "limit": {"context": 1000, "output": 500}},
-					"m2": {"name": "Model 2", "limit": {"context": 2000, "output": 1000}}
-				}
-			}
-		},
-		"model": "openai/gpt-4"
-	}`), 0o600))
-
-	w := newAgentConfigWriter(cfgPath)
-
-	require.True(t, w.hasRelay(),
-		"a pre-injected opencode-relay entry must trigger hasRelay()=true")
-
-	// The URL and models extracted should match what was on disk.
-	require.NotNil(t, w.relay)
-	assert.Equal(t, "https://relay.example/secret", w.relay.url)
-	assert.Len(t, w.relay.models, 2)
-}
-
-// TestLoadExisting_NoRelayBlock_HasRelayFalse is the negative case:
-// a config without provider.opencode-relay must leave hasRelay()=false
-// so the in-pod injector still runs (legacy fallback path).
-func TestLoadExisting_NoRelayBlock_HasRelayFalse(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "agent-config.json")
-	require.NoError(t, os.WriteFile(cfgPath, []byte(`{
-		"provider": {"openai": {"options": {"apiKey": "sk-test"}}},
-		"model": "openai/gpt-4"
-	}`), 0o600))
-
-	w := newAgentConfigWriter(cfgPath)
-	assert.False(t, w.hasRelay(),
-		"config with no opencode-relay block must leave hasRelay()=false — "+
-			"this is what makes the legacy in-pod injection path still run when Phase C didn't apply")
-}
-
-// TestLoadExisting_MalformedRelayBlock_StillSetsRelay verifies the
-// safety net: even an unparseable opencode-relay block produces a
-// non-nil w.relay (sentinel) so hasRelay() doesn't lie.
-//
-// Rationale: if the relay block exists but we can't parse it, the
-// safest behavior is to assume it's there (pessimistic from
-// hasRelay()'s perspective) and let the writer's Rebuild regenerate
-// it from defaults if anyone calls it. Worst case: in-pod injection
-// is skipped redundantly and the user gets a dud relay until next
-// reload — but we don't double-inject, which would race the file
-// write.
-func TestLoadExisting_MalformedRelayBlock_StillSetsRelay(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "agent-config.json")
-	require.NoError(t, os.WriteFile(cfgPath, []byte(`{
-		"provider": {
-			"opencode-relay": "this should be an object not a string"
-		}
-	}`), 0o600))
-
-	w := newAgentConfigWriter(cfgPath)
-	assert.True(t, w.hasRelay(),
-		"unparseable but PRESENT opencode-relay block must still trigger hasRelay()=true — "+
-			"non-nil sentinel prevents redundant in-pod injection")
 }

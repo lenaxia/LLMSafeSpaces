@@ -15,6 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 
+	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
 
@@ -32,7 +33,7 @@ type serverDeps struct {
 	proc              *managedProcess
 	password          string
 	startedAt         time.Time
-	agentConfigWriter *AgentConfigWriter
+	agentConfigWriter *opencode.ConfigWriter
 }
 
 // buildStatuszHandler returns the /v1/statusz HTTP handler, parameterised on
@@ -136,7 +137,7 @@ func buildReadyzHandler(deps serverDeps) http.Handler {
 			// RelayInjected: true once the relay injector successfully completed.
 			// Included in readyz (not statusz) because readyz is cache-based and
 			// lightweight, making it safe to call on every ListModels cache miss.
-			RelayInjected: deps.agentConfigWriter != nil && deps.agentConfigWriter.hasRelay(),
+			RelayInjected: deps.agentConfigWriter != nil && deps.agentConfigWriter.HasRelay(),
 		})
 
 		// S18.10: Record readyz_first_200 gate on first 200 response.
