@@ -123,7 +123,7 @@ US-65.2 is complete — all three open items adjudicated and resolved, docs alig
 - `pkg/session/message_test.go`
 - `pkg/session/event_test.go`
 - `pkg/session/contract_test.go`
-- `worklogs/NNNN_2026-08-09_us-65-2-session-contract-types.md`
+- `worklogs/0708_2026-08-09_us-65-2-session-contract-types.md`
 
 **Modified (docs):**
 - `design/stories/epic-65-agent-session-contract/README.md` (Depends On correction + Epic 29 note)
