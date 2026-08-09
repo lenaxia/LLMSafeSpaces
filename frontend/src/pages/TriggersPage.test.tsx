@@ -60,6 +60,19 @@ const WORKFLOW_TRIGGER: Trigger = {
   createdAt: "2026-08-01T00:00:00Z", updatedAt: "2026-08-01T00:00:00Z",
 };
 
+const ROUTINE_WITH_SCRIPT: Trigger = {
+  id: "trig-4", name: "script-routine", enabled: true,
+  sourceType: "cron", sourceConfig: { expr: "0 * * * *" },
+  workspaceId: "ws-1", prompt: "Process data",
+  agent: "custom-agent",
+  scriptPath: "/scripts/fetch.sh",
+  scriptArgs: ["--flag", "value"],
+  scriptEnv: { FOO: "bar", BAZ: "qux" },
+  memoryMode: "last_result", captureMode: "full", preserveSession: "always",
+  consecutiveFailures: 0, autoDisableAfter: 10,
+  createdAt: "2026-08-01T00:00:00Z", updatedAt: "2026-08-01T00:00:00Z",
+};
+
 const WORKSPACES = {
   items: [
     { id: "ws-1", name: "alpha-workspace", phase: "Active" },
@@ -223,5 +236,51 @@ describe("TriggersPage", () => {
       expect(screen.getByText(/Capture:/)).toBeInTheDocument();
       expect(screen.getByText(/Session:/)).toBeInTheDocument();
     });
+  });
+
+  it("sends agent + script fields including parsed env when saving", async () => {
+    mockList.mockResolvedValue([ROUTINE_WITH_SCRIPT]);
+    mockUpdate.mockResolvedValue({});
+    renderPage("/triggers/trig-4");
+    await waitFor(() => {
+      expect(screen.getByText("Target Workspace")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByText("Edit"));
+    await waitFor(() => {
+      expect(screen.getByText("Save")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByText("Save"));
+    await waitFor(() => {
+      expect(mockUpdate).toHaveBeenCalledWith("trig-4", expect.objectContaining({
+        workspaceId: "ws-1",
+        prompt: "Process data",
+        agent: "custom-agent",
+        scriptPath: "/scripts/fetch.sh",
+        scriptArgs: ["--flag", "value"],
+        scriptEnv: { FOO: "bar", BAZ: "qux" },
+        memoryMode: "last_result",
+        captureMode: "full",
+        preserveSession: "always",
+      }));
+    });
+  });
+
+  it("discards edits when cancel clicked without calling onUpdate", async () => {
+    mockList.mockResolvedValue([CRON_TRIGGER]);
+    mockUpdate.mockResolvedValue({});
+    renderPage("/triggers/trig-1");
+    await waitFor(() => {
+      expect(screen.getByText("Target Workspace")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByText("Edit"));
+    await waitFor(() => {
+      expect(screen.getByText("Cancel")).toBeInTheDocument();
+    });
+    const updateCountBefore = mockUpdate.mock.calls.length;
+    fireEvent.click(screen.getByText("Cancel"));
+    await waitFor(() => {
+      expect(screen.getByText("Edit")).toBeInTheDocument();
+    });
+    expect(mockUpdate.mock.calls.length).toBe(updateCountBefore);
   });
 });
