@@ -51,13 +51,13 @@ type SessionStatusItem struct {
 // SessionListItem is sidebar metadata for a session (NOT message bodies).
 //
 // ParentID, when non-empty, is the session_id of the user-visible parent
-// session — typically populated for opencode subagent (subtask) sessions
-// spawned via the `task` tool. The sidebar nests children under their
-// parent for navigation. NULL/empty means the session is top-level.
+// session. Populated for subagent/subtask sessions spawned by the agent
+// during a turn. The sidebar nests children under their parent for
+// navigation. NULL/empty means the session is top-level.
 //
 // ContextUsed, when non-nil, is the prompt token count from the last
-// session.next.step.ended SSE event persisted by the API proxy. nil means
-// no LLM step has completed yet for this session (distinguishable from 0).
+// completed step event persisted by the API proxy. nil means no LLM
+// step has completed yet for this session (distinguishable from 0).
 type SessionListItem struct {
 	ID            string     `json:"id"`
 	Title         string     `json:"title,omitempty"`
