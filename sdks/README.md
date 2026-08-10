@@ -91,7 +91,7 @@ The session message queue has two modes:
   non-destructive). `RetryCount` is vestigial.
 
 **For SDK consumers who need reliable queue visibility under V2:**
-subscribe to the workspace SSE stream (`GET /workspaces/{id}/events`) and
+subscribe to the workspace SSE stream (`GET /workspaces/{id}/session-events`) and
 track `queue.update` events (`enqueued` = message admitted, `sent` =
 message promoted/running). This is the authoritative source.
 

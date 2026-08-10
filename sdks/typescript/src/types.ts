@@ -194,8 +194,13 @@ export interface UpdateProviderCredentialRequest {
   modelOutputLimits?: Record<string, number>;
 }
 
-// --- Queued message (US-62.6) ---
-
+/**
+ * A message waiting in the session queue.
+ *
+ * Under the V2 session-queue model (Epic 63), this is a best-effort shadow
+ * derived from SSE events. `retry_count` is vestigial (V2 has no retry —
+ * opencode handles durability internally).
+ */
 export interface QueuedMessage {
   id: string;
   text: string;
