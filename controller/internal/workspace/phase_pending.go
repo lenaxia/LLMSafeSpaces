@@ -26,6 +26,17 @@ func (r *WorkspaceReconciler) handlePending(ctx context.Context, workspace *v1.W
 		}
 	}
 
+	// Issue #699: honor Spec.Suspend=true in Pending. Less urgent than
+	// Creating (typically no pod yet, so no mkfs loop), but the per-
+	// workspace escape hatch should be uniform across all pre-Suspended
+	// phases. Goes after the finalizer (so cleanup runs on delete) but
+	// before PVC/pod creation (so we don't allocate resources we're
+	// about to park).
+	if workspace.Spec.Suspend != nil && *workspace.Spec.Suspend {
+		logger.Info("Spec.Suspend=true in Pending; transitioning to Suspended")
+		return r.suspendFromPreActive(ctx, workspace)
+	}
+
 	// Ensure PVC.
 	pvcName := fmt.Sprintf("workspace-%s", workspace.Name)
 	existingPVC := &corev1.PersistentVolumeClaim{}

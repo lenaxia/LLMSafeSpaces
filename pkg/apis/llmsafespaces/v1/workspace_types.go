@@ -186,8 +186,16 @@ type WorkspaceSpec struct {
 	//             use this to make resume decisions. This is the state of
 	//             workspaces created before the migration, and the state after
 	//             the controller has consumed a suspend/resume request.
-	//   - true  : API requests suspension. handleActive transitions to Suspending,
-	//             then clears the flag.
+	//   - true  : API (or operator) requests suspension. The controller honors
+	//             this from any pre-Suspended running-ish phase:
+	//               Active    → Suspending → Suspended (drains the agent)
+	//               Creating  → Suspended directly (no agent to drain; deletes
+	//                            any stuck pod, retains PVC)
+	//               Pending   → Suspended directly (no pod/PVC yet)
+	//             then clears the flag. The Creating/Pending paths give
+	//             operators a per-workspace escape hatch for stuck startup
+	//             (issue #699) — previously the field was silently ignored
+	//             outside Active, leaving no per-workspace halt.
 	//   - false : API requests resume from Suspended. handleSuspended transitions
 	//             to Resuming, then clears the flag.
 	//

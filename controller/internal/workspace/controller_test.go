@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -272,6 +273,211 @@ func TestReconcile_Creating_NoPod_NoPwSecret_SelfHealsCreatesSecret(t *testing.T
 
 // --- Active Phase Tests ---
 
+// makeFailedMountPod builds a pod shaped like the prod incident in issue
+// #699: scheduled, but kubelet cannot mount its volumes (FailedMount).
+// The pod has 2 init + 1 main container status entries — all in pure
+// Waiting state, none ever Started. The previous FN3b predicate required
+// zero status entries and missed this shape entirely, leaving the pod
+// stuck indefinitely while kubelet retried NodeStageVolume (and CSI
+// retried mkfs on the PVC — the data-loss amplifier).
+func makeFailedMountPod(name, namespace string, age time.Duration) *corev1.Pod {
+	waiting := corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "PodInitializing"}}
+	created := metav1.NewTime(time.Now().Add(-age))
+	return &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              name,
+			Namespace:         namespace,
+			CreationTimestamp: created,
+		},
+		Status: corev1.PodStatus{
+			Phase: corev1.PodPending,
+			Conditions: []corev1.PodCondition{
+				{Type: corev1.PodScheduled, Status: corev1.ConditionTrue},
+			},
+			InitContainerStatuses: []corev1.ContainerStatus{
+				{Name: "workspace-dirs", State: waiting},
+				{Name: "credential-setup", State: waiting},
+			},
+			ContainerStatuses: []corev1.ContainerStatus{
+				{Name: "workspace", State: waiting},
+			},
+		},
+	}
+}
+
+// TestReconcile_Creating_PodStuck_FailedMountShape_EntersRecovery is the
+// regression test for issue #699 Defect 2. A pod with non-zero container
+// status entries (2 init + 1 main, all pure Waiting) must be recognized
+// as stuck after stuckScheduledPendingTimeout and enter Infrastructure
+// recovery. Under the previous FN3b predicate (zero status entries
+// required) this pod hung indefinitely.
+//
+// Reproduces the prod shape exactly: pod 5c25e2ef-...-57d20880 on
+// 2026-08-09, stuck for 4+ minutes while CSI retried mkfs.ext4.
+func TestReconcile_Creating_PodStuck_FailedMountShape_EntersRecovery(t *testing.T) {
+	ws := makeWorkspace("ws-failedmount", "default", v1.WorkspacePhaseCreating)
+	ws.Status.PVCName = "workspace-ws-failedmount"
+	expectedPodName := podName("ws-failedmount", string(ws.UID))
+	// Age the pod past stuckScheduledPendingTimeout (10min).
+	pod := makeFailedMountPod(expectedPodName, "default", stuckScheduledPendingTimeout+time.Minute)
+	r := reconcilerFor(t, ws, pod)
+
+	_, err := r.Reconcile(context.Background(), reqFor("ws-failedmount", "default"))
+	require.NoError(t, err)
+
+	// Pod must be deleted (detaches volume, halts CSI mkfs retries).
+	err = r.Get(context.Background(),
+		types.NamespacedName{Name: expectedPodName, Namespace: "default"}, &corev1.Pod{})
+	assert.True(t, errors.IsNotFound(err),
+		"stuck FailedMount pod must be deleted to detach the volume and halt CSI retries")
+
+	// Workspace enters recovery with Infrastructure classification.
+	updated := &v1.Workspace{}
+	require.NoError(t, r.Get(context.Background(),
+		types.NamespacedName{Name: "ws-failedmount", Namespace: "default"}, updated))
+	assert.Equal(t, v1.WorkspacePhaseCreating, updated.Status.Phase,
+		"enterRecovery keeps phase=Creating (re-creation deferred by backoff)")
+	assert.Equal(t, string(FailureClassInfrastructure), updated.Status.LastFailureClass,
+		"FailedMount is an infrastructure failure, not a process failure")
+	assert.Greater(t, updated.Status.ConsecutiveFailures, int32(0))
+}
+
+// TestReconcile_Creating_PodStuck_FailedMountShape_BelowTimeout_NoRecovery
+// is the false-positive guard: a pod younger than
+// stuckScheduledPendingTimeout must NOT enter recovery even if it has the
+// FailedMount status shape. Startup is slow-but-normal in some clusters.
+func TestReconcile_Creating_PodStuck_FailedMountShape_BelowTimeout_NoRecovery(t *testing.T) {
+	ws := makeWorkspace("ws-fm-young", "default", v1.WorkspacePhaseCreating)
+	ws.Status.PVCName = "workspace-ws-fm-young"
+	expectedPodName := podName("ws-fm-young", string(ws.UID))
+	pod := makeFailedMountPod(expectedPodName, "default", 30*time.Second) // well under 10min
+	r := reconcilerFor(t, ws, pod)
+
+	_, err := r.Reconcile(context.Background(), reqFor("ws-fm-young", "default"))
+	require.NoError(t, err)
+
+	updated := &v1.Workspace{}
+	require.NoError(t, r.Get(context.Background(),
+		types.NamespacedName{Name: "ws-fm-young", Namespace: "default"}, updated))
+	assert.Equal(t, int32(0), updated.Status.ConsecutiveFailures,
+		"pod under the stuck timeout must not enter recovery")
+	assert.Empty(t, updated.Status.LastFailureClass)
+}
+
+// TestReconcile_Creating_PodStuck_FailedMountShape_RunningContainer_NoRecovery
+// is the misclassification guard: if ANY container has ever been Running
+// or Terminated, the pod has made progress (volumes mounted, process ran)
+// and must NOT be classified as stuck even if currently back in Waiting.
+// Catches the case where init container 1 succeeded, container 2 is in
+// CrashLoopBackOff — that is a Process failure, not an infrastructure
+// stuck-volume-mount, and the existing CrashLoop path handles it.
+func TestReconcile_Creating_PodStuck_FailedMountShape_RunningContainer_NoRecovery(t *testing.T) {
+	ws := makeWorkspace("ws-fm-progress", "default", v1.WorkspacePhaseCreating)
+	ws.Status.PVCName = "workspace-ws-fm-progress"
+	expectedPodName := podName("ws-fm-progress", string(ws.UID))
+	pod := makeFailedMountPod(expectedPodName, "default", stuckScheduledPendingTimeout+time.Minute)
+	// Overwrite: first init container RAN (Completed), proving volumes mounted.
+	pod.Status.InitContainerStatuses[0].State = corev1.ContainerState{
+		Terminated: &corev1.ContainerStateTerminated{Reason: "Completed"},
+	}
+	r := reconcilerFor(t, ws, pod)
+
+	_, err := r.Reconcile(context.Background(), reqFor("ws-fm-progress", "default"))
+	require.NoError(t, err)
+
+	updated := &v1.Workspace{}
+	require.NoError(t, r.Get(context.Background(),
+		types.NamespacedName{Name: "ws-fm-progress", Namespace: "default"}, updated))
+	assert.Equal(t, int32(0), updated.Status.ConsecutiveFailures,
+		"pod with a Completed init container has made progress; not stuck-FailedMount")
+}
+
+// --- Suspend escape hatch for non-Active phases (issue #699 Defect 1) ---
+
+// TestReconcile_Creating_SpecSuspendTrue_TransitionsToSuspended verifies
+// that spec.suspend=true on a Creating-phase workspace halts pod creation
+// and parks the workspace in Suspended with the PVC intact. This gives
+// operators a per-workspace escape hatch for stuck-Creating workspaces
+// without requiring cluster-wide controller scale-to-0.
+//
+// Regression for the 2026-08-09 prod incident: spec.suspend=true was
+// silently ignored in Creating, leaving the operator no per-workspace
+// halt and forcing mkfs to keep retrying against the PVC.
+func TestReconcile_Creating_SpecSuspendTrue_TransitionsToSuspended(t *testing.T) {
+	ws := makeWorkspace("ws-susp-create", "default", v1.WorkspacePhaseCreating)
+	ws.Status.PVCName = "workspace-ws-susp-create"
+	suspendTrue := true
+	ws.Spec.Suspend = &suspendTrue
+	pvc := makeBoundPVC("workspace-ws-susp-create", "default", ws.UID)
+	r := reconcilerFor(t, ws, pvc)
+
+	_, err := r.Reconcile(context.Background(), reqFor("ws-susp-create", "default"))
+	require.NoError(t, err)
+
+	got := &v1.Workspace{}
+	require.NoError(t, r.Get(context.Background(),
+		types.NamespacedName{Name: "ws-susp-create", Namespace: "default"}, got))
+	assert.Equal(t, v1.WorkspacePhaseSuspended, got.Status.Phase,
+		"spec.suspend=true on Creating must transition to Suspended")
+	assert.Nil(t, got.Spec.Suspend,
+		"spec.suspend must be cleared to nil after the controller acts on it")
+	assert.NotNil(t, got.Status.SuspendedAt, "SuspendedAt must be set")
+
+	// PVC must be untouched — the whole point is preserving user data.
+	pvcCheck := &corev1.PersistentVolumeClaim{}
+	require.NoError(t, r.Get(context.Background(),
+		types.NamespacedName{Name: "workspace-ws-susp-create", Namespace: "default"}, pvcCheck))
+	assert.Equal(t, corev1.ClaimBound, pvcCheck.Status.Phase, "PVC must remain Bound")
+}
+
+// TestReconcile_Creating_SpecSuspendTrue_DeletesExistingPod verifies
+// that suspend in Creating halts an already-running (or stuck) pod,
+// detaching the volume and stopping CSI retries. This is the
+// data-loss-prevention half of the escape hatch.
+func TestReconcile_Creating_SpecSuspendTrue_DeletesExistingPod(t *testing.T) {
+	ws := makeWorkspace("ws-susp-pod", "default", v1.WorkspacePhaseCreating)
+	ws.Status.PVCName = "workspace-ws-susp-pod"
+	suspendTrue := true
+	ws.Spec.Suspend = &suspendTrue
+	expectedPodName := podName("ws-susp-pod", string(ws.UID))
+	pod := makeFailedMountPod(expectedPodName, "default", 1*time.Minute)
+	pvc := makeBoundPVC("workspace-ws-susp-pod", "default", ws.UID)
+	r := reconcilerFor(t, ws, pvc, pod)
+
+	_, err := r.Reconcile(context.Background(), reqFor("ws-susp-pod", "default"))
+	require.NoError(t, err)
+
+	err = r.Get(context.Background(),
+		types.NamespacedName{Name: expectedPodName, Namespace: "default"}, &corev1.Pod{})
+	assert.True(t, errors.IsNotFound(err),
+		"suspend in Creating must delete any existing pod to halt CSI mkfs retries")
+}
+
+// TestReconcile_Pending_SpecSuspendTrue_TransitionsToSuspended verifies
+// the escape hatch also covers the Pending phase (pre-PVC-bind). Less
+// urgent than Creating (no pod yet, so no mkfs loop), but the
+// per-workspace halt should be uniform across all pre-Suspended phases.
+func TestReconcile_Pending_SpecSuspendTrue_TransitionsToSuspended(t *testing.T) {
+	ws := makeWorkspace("ws-susp-pend", "default", v1.WorkspacePhasePending)
+	suspendTrue := true
+	ws.Spec.Suspend = &suspendTrue
+	// No PVC, no pod — pure Pending.
+	r := reconcilerFor(t, ws)
+
+	_, err := r.Reconcile(context.Background(), reqFor("ws-susp-pend", "default"))
+	require.NoError(t, err)
+
+	got := &v1.Workspace{}
+	require.NoError(t, r.Get(context.Background(),
+		types.NamespacedName{Name: "ws-susp-pend", Namespace: "default"}, got))
+	assert.Equal(t, v1.WorkspacePhaseSuspended, got.Status.Phase,
+		"spec.suspend=true on Pending must transition to Suspended")
+	assert.Nil(t, got.Spec.Suspend,
+		"spec.suspend must be cleared to nil after the controller acts on it")
+}
+
+// TestReconcile_Active_PodRunning_RequeuesAfter30s verifies an Active workspace
+// with a running pod requeues on the standard active interval.
 func TestReconcile_Active_PodRunning_RequeuesAfter30s(t *testing.T) {
 	ws := makeWorkspace("ws-active", "default", v1.WorkspacePhaseActive)
 	ws.Status.PodIP = "10.0.0.1"

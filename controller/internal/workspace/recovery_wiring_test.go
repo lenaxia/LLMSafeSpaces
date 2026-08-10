@@ -279,6 +279,13 @@ func TestHandleCreating_ScheduledPendingWithInit_NoRecovery(t *testing.T) {
 	ws := makeWorkspace("ws-init-progress", "default", v1.WorkspacePhaseCreating)
 	ws.UID = "ws-init-progress-uid"
 
+	// Pod has made real progress: the init container RAN and Completed
+	// (proving volumes mounted successfully), and the main container is
+	// now starting. This is NOT a stuck-FailedMount pod — it is a
+	// legitimately in-progress startup, and must not enter recovery.
+	// (Pre-issue-#699 this test used a Waiting init container, which
+	// incorrectly counted as "progress" under the old zero-status
+	// predicate. The fixture now matches the test's stated intent.)
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              podName("ws-init-progress", string(ws.UID)),
@@ -292,6 +299,11 @@ func TestHandleCreating_ScheduledPendingWithInit_NoRecovery(t *testing.T) {
 			},
 			InitContainerStatuses: []corev1.ContainerStatus{
 				{Name: "workspace-dirs", State: corev1.ContainerState{
+					Terminated: &corev1.ContainerStateTerminated{Reason: "Completed"},
+				}},
+			},
+			ContainerStatuses: []corev1.ContainerStatus{
+				{Name: "workspace", State: corev1.ContainerState{
 					Waiting: &corev1.ContainerStateWaiting{Reason: "PodInitializing"},
 				}},
 			},
@@ -311,7 +323,7 @@ func TestHandleCreating_ScheduledPendingWithInit_NoRecovery(t *testing.T) {
 	updated := &v1.Workspace{}
 	require.NoError(t, fc.Get(context.Background(), types.NamespacedName{Name: "ws-init-progress", Namespace: "default"}, updated))
 	assert.Equal(t, int32(0), updated.Status.ConsecutiveFailures,
-		"pod with init containers running must NOT enter stuck-pending recovery")
+		"pod with a Completed init container has made progress; must NOT enter stuck-pending recovery")
 }
 
 func TestHandleCreating_ScheduledPendingUnderTimeout_NoRecovery(t *testing.T) {
