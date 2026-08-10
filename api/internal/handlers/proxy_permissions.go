@@ -43,6 +43,20 @@ func (h *ProxyHandler) autoApprovePermission(workspaceID, requestID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// Adapter path (US-65.4): adapter.Resolve handles the permission
+	// reply translation internally — no raw HTTP, no hardcoded body.
+	if h.adapter != nil {
+		if err := h.adapter.Resolve(ctx, "", workspaceID, requestID, "always"); err != nil {
+			h.logger.Warn("Auto-approve permission failed via adapter", "error", err,
+				"workspaceID", workspaceID, "requestID", requestID)
+			return
+		}
+		h.logger.Info("Auto-approved permission",
+			"workspaceID", workspaceID, "requestID", requestID)
+		return
+	}
+
+	// Legacy path.
 	v1Client, v1Err := h.k8sClient.LlmsafespacesV1()
 	workspace, err := func() (*v1.Workspace, error) {
 		if v1Err != nil {
