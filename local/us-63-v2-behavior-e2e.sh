@@ -43,6 +43,14 @@ PORTFWD_PORT="${PORTFWD_PORT:-18080}"
 API_KEY="${API_KEY:-lsp_e2etestkey1234567890abcdef}"
 LLM_MODEL="${LLM_MODEL:-${LLM_DEFAULT_MODEL:-default}}"
 
+# EXTRA_CURL_HEADERS: extra curl header args for clusters whose API enforces
+# HTTPS behind the port-forward (security.go SSLRedirect 301s /api/* to
+# https). For such clusters, run with EXTRA_CURL_HEADERS='-H X-Forwarded-Proto:
+# https' so the secure middleware treats the request as already-TLS. kind
+# deployments (RequireHTTPS=false) leave this empty.
+# shellcheck disable=SC2206
+EXTRA_CURL_HEADERS=( ${EXTRA_CURL_HEADERS:-} )
+
 kc() { kubectl --context "${CTX}" -n "${NS}" "$@"; }
 
 command -v kubectl >/dev/null || die "kubectl not on PATH"
@@ -74,15 +82,18 @@ fi
 # -----------------------------------------------------------------------------
 
 # Create a session and echo the session ID.
+#
+# FIX: the real route is POST /sessions/new (router.go:1276), NOT POST
+# /sessions — the latter 404s. The response key is "sessionId", not "id".
 create_session() {
     local resp
     resp=$(curl -sfm 15 -X POST \
-        -H "Authorization: Bearer ${API_KEY}" \
+        -H "Authorization: Bearer ${API_KEY}" "${EXTRA_CURL_HEADERS[@]}" \
         -H "Content-Type: application/json" \
         -d '{}' \
-        "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WORKSPACE_NAME}/sessions" \
+        "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WORKSPACE_NAME}/sessions/new" \
         2>/dev/null || echo '{}')
-    echo "$resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('id') or d.get('info',{}).get('id') or '')" 2>/dev/null || echo ""
+    echo "$resp" | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('sessionId') or d.get('id') or d.get('info',{}).get('id') or '')" 2>/dev/null || echo ""
 }
 
 # Send a message (blocking until the turn completes).
@@ -91,7 +102,7 @@ send_message() {
     local body
     body=$(python3 -c "import json;print(json.dumps({'model':{'providerID':'litellm','modelID':'${LLM_MODEL}'},'parts':[{'type':'text','text':'''${text}'''}]}))")
     curl -sfm 180 -X POST \
-        -H "Authorization: Bearer ${API_KEY}" \
+        -H "Authorization: Bearer ${API_KEY}" "${EXTRA_CURL_HEADERS[@]}" \
         -H "Content-Type: application/json" \
         -d "$body" \
         "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WORKSPACE_NAME}/sessions/${sid}/message" \
@@ -99,21 +110,28 @@ send_message() {
 }
 
 # Enqueue a message (non-blocking; V2 path via /queue endpoint).
+#
+# FIX: drop curl's -f here. With -f, an HTTP 5xx (e.g. a transient cold-start
+# 500 right after the V2-flag rollout) makes curl exit non-zero AND still emit
+# the http_code via -w; the trailing `|| echo "000"` then appends "000",
+# producing a garbled code like "500000". Using -s (no -f) lets curl exit 0 on
+# HTTP errors so -w yields the true code; the `|| echo "000"` only fires on
+# connection failures (exit 7).
 enqueue_message() {
     local sid="$1" text="$2"
-    curl -sfm 15 -X POST \
-        -H "Authorization: Bearer ${API_KEY}" \
+    curl -sm 15 -X POST \
+        -H "Authorization: Bearer ${API_KEY}" "${EXTRA_CURL_HEADERS[@]}" \
         -H "Content-Type: application/json" \
         -d "{\"text\":\"${text}\"}" \
         "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WORKSPACE_NAME}/sessions/${sid}/queue" \
         -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000"
 }
 
-# Abort a session (V2 path → interrupt).
+# Abort a session (V2 path → interrupt). Same -f fix as enqueue_message.
 abort_session() {
     local sid="$1"
-    curl -sfm 15 -X POST \
-        -H "Authorization: Bearer ${API_KEY}" \
+    curl -sm 15 -X POST \
+        -H "Authorization: Bearer ${API_KEY}" "${EXTRA_CURL_HEADERS[@]}" \
         "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WORKSPACE_NAME}/sessions/${sid}/abort" \
         -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000"
 }
@@ -122,18 +140,29 @@ abort_session() {
 get_history() {
     local sid="$1"
     curl -sfm 15 \
-        -H "Authorization: Bearer ${API_KEY}" \
+        -H "Authorization: Bearer ${API_KEY}" "${EXTRA_CURL_HEADERS[@]}" \
         "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WORKSPACE_NAME}/sessions/${sid}/message" \
         2>/dev/null || echo '[]'
 }
 
-# Check whether a specific text marker appears in the session history.
+# Check whether a specific text marker was ECHOED by the assistant in history.
+#
+# FIX: the previous version substring-matched the marker anywhere in history.
+# That is a false positive: the user's own queued message ("reply with
+# exactly: <MARKER>") is itself stored in history, so a substring match always
+# succeeds the moment the message is enqueued — making US-63.3/63.4/63.9 appear
+# to PASS before the assistant has produced any reply. opencode 1.18.10 returns
+# message role as null in this view (not "assistant"), so we cannot key on
+# role. Instead we require a part whose stripped text equals the marker exactly
+# — the assistant echoes the bare token, the user prompt does not ("reply with
+# exactly: …"). Marker strings must therefore be bare tokens (no spaces).
 history_contains() {
     local sid="$1" marker="$2"
     local hist
     hist=$(get_history "$sid")
-    echo "$hist" | python3 -c "
-import json,sys
+    MARKER="$marker" echo "$hist" | python3 -c "
+import json, os, sys
+marker = os.environ['MARKER']
 try:
     d = json.load(sys.stdin)
 except:
@@ -144,7 +173,7 @@ if not isinstance(msgs, list):
 for m in msgs:
     parts = m.get('parts', []) if isinstance(m, dict) else []
     for p in parts:
-        if isinstance(p, dict) and '${marker}' in p.get('text', ''):
+        if isinstance(p, dict) and p.get('text', '').strip() == marker:
             print('YES'); sys.exit()
 print('NO')
 " 2>/dev/null || echo "NO"
@@ -272,7 +301,11 @@ POD_NAME=$(kc get pod -l "llmsafespaces.dev/workspace=${WORKSPACE_NAME}" \
 ok "pod: ${POD_NAME}"
 
 log "  killing opencode (simulating OOM)"
-kc exec "${POD_NAME}" -c main -- sh -c 'pkill -9 -f "opencode serve" || pkill -9 -f opencode || true' \
+# The workspace pod's runtime container name is deployment-specific (observed
+# as both "main" and "workspace"). Resolve it from the pod spec rather than
+# hard-coding, then exec into it. Falls back to kubectl's default container.
+RUNTIME_C=$(kc get pod "${POD_NAME}" -o jsonpath='{.spec.containers[0].name}' 2>/dev/null || true)
+kc exec "${POD_NAME}" ${RUNTIME_C:+-c "${RUNTIME_C}"} -- sh -c 'pkill -9 -f "opencode serve" || pkill -9 -f opencode || true' \
     >/dev/null 2>&1 || warn "kill command returned non-zero"
 
 # Wait for opencode to restart (health check).
