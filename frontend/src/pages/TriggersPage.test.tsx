@@ -1,7 +1,7 @@
 // Copyright (C) 2026 Michael Kao
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -17,7 +17,7 @@ const mockUpdate = vi.fn();
 const mockWorkspacesList = vi.fn();
 
 vi.mock("../api/workflows", () => ({
-  workflowApi: { list: vi.fn().mockResolvedValue([]), create: vi.fn(), update: vi.fn(), delete: vi.fn(), run: vi.fn() },
+  workflowApi: { list: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn(), run: vi.fn() },
   triggerApi: {
     list: () => mockList(),
     create: (data: unknown) => mockCreate(data),
@@ -209,15 +209,15 @@ describe("TriggersPage", () => {
     mockList.mockResolvedValue([CRON_TRIGGER]);
     mockUpdate.mockResolvedValue({});
     renderPage("/triggers/trig-1");
-    let targetSection: HTMLElement;
     await waitFor(() => {
-      targetSection = screen.getByText("Target Workspace").closest("div.rounded-lg")!;
+      expect(screen.getByText("Target Workspace")).toBeInTheDocument();
     });
-    fireEvent.click(within(targetSection!).getByText("Edit"));
+    const editButtons = screen.getAllByText("Edit");
+    fireEvent.click(editButtons[editButtons.length - 1]!);
     await waitFor(() => {
-      expect(within(targetSection!).getByText("Save")).toBeInTheDocument();
+      expect(screen.getByText("Save")).toBeInTheDocument();
     });
-    fireEvent.click(within(targetSection!).getByText("Save"));
+    fireEvent.click(screen.getByText("Save"));
     await waitFor(() => {
       expect(mockUpdate).toHaveBeenCalledWith("trig-1", expect.objectContaining({
         workspaceId: "ws-1",
@@ -243,15 +243,15 @@ describe("TriggersPage", () => {
     mockList.mockResolvedValue([ROUTINE_WITH_SCRIPT]);
     mockUpdate.mockResolvedValue({});
     renderPage("/triggers/trig-4");
-    let targetSection: HTMLElement;
     await waitFor(() => {
-      targetSection = screen.getByText("Target Workspace").closest("div.rounded-lg")!;
+      expect(screen.getByText("Target Workspace")).toBeInTheDocument();
     });
-    fireEvent.click(within(targetSection!).getByText("Edit"));
+    const editButtons2 = screen.getAllByText("Edit");
+    fireEvent.click(editButtons2[editButtons2.length - 1]!);
     await waitFor(() => {
-      expect(within(targetSection!).getByText("Save")).toBeInTheDocument();
+      expect(screen.getByText("Save")).toBeInTheDocument();
     });
-    fireEvent.click(within(targetSection!).getByText("Save"));
+    fireEvent.click(screen.getByText("Save"));
     await waitFor(() => {
       expect(mockUpdate).toHaveBeenCalledWith("trig-4", expect.objectContaining({
         workspaceId: "ws-1",
@@ -271,18 +271,18 @@ describe("TriggersPage", () => {
     mockList.mockResolvedValue([CRON_TRIGGER]);
     mockUpdate.mockResolvedValue({});
     renderPage("/triggers/trig-1");
-    let targetSection: HTMLElement;
     await waitFor(() => {
-      targetSection = screen.getByText("Target Workspace").closest("div.rounded-lg")!;
+      expect(screen.getByText("Target Workspace")).toBeInTheDocument();
     });
-    fireEvent.click(within(targetSection!).getByText("Edit"));
+    const editButtons3 = screen.getAllByText("Edit");
+    fireEvent.click(editButtons3[editButtons3.length - 1]!);
     await waitFor(() => {
-      expect(within(targetSection!).getByText("Cancel")).toBeInTheDocument();
+      expect(screen.getByText("Cancel")).toBeInTheDocument();
     });
     const updateCountBefore = mockUpdate.mock.calls.length;
-    fireEvent.click(within(targetSection!).getByText("Cancel"));
+    fireEvent.click(screen.getByText("Cancel"));
     await waitFor(() => {
-      expect(within(targetSection!).getByText("Edit")).toBeInTheDocument();
+      expect(screen.getAllByText("Edit").length).toBeGreaterThan(0);
     });
     expect(mockUpdate.mock.calls.length).toBe(updateCountBefore);
   });

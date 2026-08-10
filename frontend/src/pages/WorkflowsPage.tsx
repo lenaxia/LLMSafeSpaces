@@ -49,7 +49,7 @@ export function WorkflowsPage() {
       {/* List pane — full width on mobile when no selection, hidden when detail open on mobile */}
       <div className={cn(
         "w-full md:w-72 shrink-0 border-r border-border overflow-y-auto scrollbar-thin",
-        selected && "hidden md:block",
+        (selected || showCreate) && "hidden md:block",
       )}>
         <div className="flex items-center justify-between p-3 border-b border-border">
           <h2 className="text-sm font-semibold">Workflows</h2>
@@ -61,25 +61,6 @@ export function WorkflowsPage() {
             <Plus className="h-4 w-4" />
           </button>
         </div>
-
-        {showCreate && (
-          <WorkflowEditor
-            mode="create"
-            onSave={async (name, spec, status, opts) => {
-              const created = await workflowApi.create({
-                name, specYaml: spec, status,
-                targetWorkspaceId: opts?.targetWorkspaceId,
-                onMissingWorkspace: opts?.onMissingWorkspace,
-                inputSchema: opts?.inputSchema as any,
-                defaults: opts?.defaults as any,
-              }) as Workflow;
-              setShowCreate(false);
-              queryClient.invalidateQueries({ queryKey: ["workflows"] });
-              navigate(`/workflows/${created.id}`);
-            }}
-            onCancel={() => setShowCreate(false)}
-          />
-        )}
 
         <div className="flex flex-col gap-0.5 p-1">
           {(workflows ?? []).map((wf) => (
@@ -108,12 +89,39 @@ export function WorkflowsPage() {
         </div>
       </div>
 
-      {/* Detail pane — full width on mobile, hidden when no selection on desktop empty state */}
+      {/* Detail pane — full width on mobile, hidden when nothing to show */}
       <div className={cn(
         "flex flex-1 flex-col overflow-hidden",
         !selected && !showCreate && "hidden md:flex",
       )}>
-        {selected ? (
+        {showCreate ? (
+          <>
+            <button
+              onClick={() => { setShowCreate(false); navigate("/workflows", { replace: true }); }}
+              className="flex items-center gap-1 border-b border-border px-3 py-2 text-sm text-muted-foreground hover:bg-accent md:hidden"
+            >
+              <ArrowLeft className="h-4 w-4" /> Workflows
+            </button>
+            <div className="flex-1 overflow-hidden">
+              <WorkflowEditor
+                mode="create"
+                onSave={async (name, spec, status, opts) => {
+                  const created = await workflowApi.create({
+                    name, specYaml: spec, status,
+                    targetWorkspaceId: opts?.targetWorkspaceId,
+                    onMissingWorkspace: opts?.onMissingWorkspace,
+                    inputSchema: opts?.inputSchema as any,
+                    defaults: opts?.defaults as any,
+                  }) as Workflow;
+                  setShowCreate(false);
+                  queryClient.invalidateQueries({ queryKey: ["workflows"] });
+                  navigate(`/workflows/${created.id}`);
+                }}
+                onCancel={() => setShowCreate(false)}
+              />
+            </div>
+          </>
+        ) : selected ? (
           <>
             <button
               onClick={() => navigate("/workflows", { replace: true })}

@@ -52,7 +52,7 @@ export function TriggersPage() {
       {/* List pane — full width on mobile when no selection, hidden when detail open on mobile */}
       <div className={cn(
         "w-full md:w-72 shrink-0 border-r border-border overflow-y-auto scrollbar-thin",
-        selected && "hidden md:block",
+        (selected || showCreate) && "hidden md:block",
       )}>
         <div className="flex items-center justify-between p-3 border-b border-border">
           <h2 className="text-sm font-semibold">Triggers</h2>
@@ -64,18 +64,6 @@ export function TriggersPage() {
             <Plus className="h-4 w-4" />
           </button>
         </div>
-
-        {showCreate && (
-          <TriggerCreateForm
-            workflows={workflows || []}
-            onSave={async (data) => {
-              await triggerApi.create(data);
-              setShowCreate(false);
-              queryClient.invalidateQueries({ queryKey: ["triggers"] });
-            }}
-            onCancel={() => setShowCreate(false)}
-          />
-        )}
 
         <div className="flex flex-col gap-0.5 p-1">
           {(triggers ?? []).map((trig) => (
@@ -127,7 +115,25 @@ export function TriggersPage() {
         "flex-1 overflow-auto",
         !selected && !showCreate && "hidden md:block",
       )}>
-        {selected ? (
+        {showCreate ? (
+          <>
+            <button
+              onClick={() => { setShowCreate(false); navigate("/triggers", { replace: true }); }}
+              className="flex items-center gap-1 border-b border-border px-3 py-2 text-sm text-muted-foreground hover:bg-accent md:hidden"
+            >
+              <ArrowLeft className="h-4 w-4" /> Triggers
+            </button>
+            <TriggerCreateForm
+              workflows={workflows || []}
+              onSave={async (data) => {
+                await triggerApi.create(data);
+                setShowCreate(false);
+                queryClient.invalidateQueries({ queryKey: ["triggers"] });
+              }}
+              onCancel={() => setShowCreate(false)}
+            />
+          </>
+        ) : selected ? (
           <>
             <button
               onClick={() => navigate("/triggers", { replace: true })}
