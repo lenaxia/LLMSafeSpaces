@@ -212,6 +212,10 @@ type UserSettings struct {
 }
 
 // QueuedMessage is a message waiting in the session queue.
+//
+// Under the V2 session-queue model (Epic 63), this is a best-effort
+// shadow derived from SSE events. RetryCount is vestigial (V2 has no
+// retry — opencode handles durability internally).
 type QueuedMessage struct {
 	ID          string `json:"id"`
 	Text        string `json:"text"`

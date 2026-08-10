@@ -41,6 +41,13 @@ public class SessionsService {
         return resp != null && resp.has("messageID") ? resp.get("messageID").getAsString() : null;
     }
 
+    /**
+     * @deprecated Under the V2 session-queue model (Epic 63), abort is
+     * non-destructive and queued messages survive. This removes from the
+     * best-effort shadow only; it does not revoke the durable input.
+     * Removed in next major version.
+     */
+    @Deprecated
     public void dismissQueued(String workspaceId, String sessionId, String messageId) {
         c.requestVoid("DELETE",
                 "/workspaces/" + workspaceId + "/sessions/" + sessionId + "/queue/" + messageId, null);

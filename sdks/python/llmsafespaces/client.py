@@ -389,6 +389,14 @@ class _SessionsAPI:
         return resp["messageID"]
 
     def list_queue(self, workspace_id: str, session_id: str) -> list[dict[str, Any]]:
+        """List queued messages for a session.
+
+        .. deprecated:: V2 session-queue model (Epic 63)
+            The queue is inboard in opencode. This endpoint returns a
+            best-effort shadow derived from SSE events. Subscribe to the
+            workspace SSE stream and track ``queue.update`` events instead.
+            Removed in next major version.
+        """
         resp = self._c._request(
             "GET",
             f"/workspaces/{workspace_id}/sessions/{session_id}/queue",
@@ -396,6 +404,13 @@ class _SessionsAPI:
         return resp.get("messages", [])
 
     def dismiss_queued(self, workspace_id: str, session_id: str, message_id: str) -> None:
+        """Remove a queued message.
+
+        .. deprecated:: V2 session-queue model (Epic 63)
+            Abort is non-destructive and queued messages survive. This
+            removes from the best-effort shadow only; it does not revoke
+            the durable input in opencode. Removed in next major version.
+        """
         self._c._request(
             "DELETE",
             f"/workspaces/{workspace_id}/sessions/{session_id}/queue/{message_id}",
