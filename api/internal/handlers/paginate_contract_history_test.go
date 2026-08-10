@@ -76,4 +76,4 @@ func makeTestMessages(n int) []session.Message {
 }
 
 // Ensure the test compiles correctly with the session package.
-var _ = session.MessageUser
+var _ session.MessageType = session.MessageUser
