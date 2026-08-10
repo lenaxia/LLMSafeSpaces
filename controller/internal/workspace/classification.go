@@ -119,3 +119,44 @@ func observePod(pod *corev1.Pod) PodObservation {
 	}
 	return obs
 }
+
+// containerHasEverStarted reports whether a single container status
+// represents a container that the kubelet has ever launched. A container
+// that has ever run has non-nil State.Running or State.Terminated, or a
+// non-nil LastTerminationState (it ran, crashed, and is now Waiting). A
+// container that the kubelet has never reached — typically because volume
+// mounting failed — has only State.Waiting and nil LastTerminationState.
+func containerHasEverStarted(cs corev1.ContainerStatus) bool {
+	if cs.State.Running != nil || cs.State.Terminated != nil {
+		return true
+	}
+	if cs.LastTerminationState.Running != nil ||
+		cs.LastTerminationState.Terminated != nil {
+		return true
+	}
+	return false
+}
+
+// noContainerHasEverStarted reports whether every init and main container
+// on the pod has never been launched by the kubelet. This is the reliable
+// signal that kubelet cannot make progress on the pod — the canonical
+// case is a FailedMount event where volume mounting blocks all container
+// creation. The pod still has non-zero container status entries (each in
+// pure Waiting state), which is why a naive "len(status)==0" check misses
+// it. See issue #699.
+func noContainerHasEverStarted(pod *corev1.Pod) bool {
+	if pod == nil {
+		return false
+	}
+	for i := range pod.Status.InitContainerStatuses {
+		if containerHasEverStarted(pod.Status.InitContainerStatuses[i]) {
+			return false
+		}
+	}
+	for i := range pod.Status.ContainerStatuses {
+		if containerHasEverStarted(pod.Status.ContainerStatuses[i]) {
+			return false
+		}
+	}
+	return true
+}

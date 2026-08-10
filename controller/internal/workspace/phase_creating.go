@@ -31,6 +31,16 @@ func (r *WorkspaceReconciler) handleCreating(ctx context.Context, workspace *v1.
 	uid := string(workspace.UID)
 	name := podName(workspace.Name, uid)
 
+	// Issue #699: honor Spec.Suspend=true in Creating. Gives operators a
+	// per-workspace escape hatch for stuck-Creating workspaces — deletes
+	// any existing pod (halting CSI volume retries), parks in Suspended
+	// with the PVC retained. Processed before any other logic so the
+	// halt is immediate.
+	if workspace.Spec.Suspend != nil && *workspace.Spec.Suspend {
+		logger.Info("Spec.Suspend=true in Creating; transitioning to Suspended")
+		return r.suspendFromPreActive(ctx, workspace)
+	}
+
 	// F19: restartGeneration bump bypasses backoff — user wants immediate retry.
 	restartGenBumped := false
 	if workspace.Spec.RestartGeneration > workspace.Status.ObservedRestartGeneration {
@@ -202,18 +212,20 @@ func (r *WorkspaceReconciler) handleCreating(ctx context.Context, workspace *v1.
 			return r.enterRecovery(ctx, workspace, FailureClassInfrastructure)
 		}
 
-		// FN3b: Scheduled but stuck — kubelet never created any containers.
-		// Catches node-level volume-mount deadlocks (stale CSI mounts, dead
-		// CSI plugins, kubelet volume queue saturation) that block container
-		// creation without making the pod Unschedulable. The pod is bound to
-		// a node but the kubelet cannot mount its volumes, so no init or main
-		// containers ever appear in the status.
+		// FN3b: Scheduled but stuck — kubelet never made progress on any
+		// container. Catches node-level volume-mount deadlocks (stale CSI
+		// mounts, dead CSI plugins, kubelet volume queue saturation,
+		// FailedMount on an I/O-erroring CSI device) that block container
+		// creation. The signal is "no init or main container has ever been
+		// launched by the kubelet" — reliably detectable via container
+		// state. A FailedMount pod has non-zero container status entries
+		// (each in pure Waiting), which a naive "len(status)==0" check
+		// misses; see issue #699 for the prod incident that motivated this.
 		if obs.Scheduled &&
-			len(existingPod.Status.ContainerStatuses) == 0 &&
-			len(existingPod.Status.InitContainerStatuses) == 0 &&
+			noContainerHasEverStarted(existingPod) &&
 			!existingPod.CreationTimestamp.IsZero() &&
 			time.Since(existingPod.CreationTimestamp.Time) > stuckScheduledPendingTimeout {
-			logger.Info("Pod scheduled but stuck in Pending with no containers; entering recovery",
+			logger.Info("Pod scheduled but no container has ever started; entering recovery",
 				"pod", existingPod.Name,
 				"age", time.Since(existingPod.CreationTimestamp.Time).Round(time.Second))
 			r.deletePodByName(ctx, existingPod.Name, existingPod.Namespace)
