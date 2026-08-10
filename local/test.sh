@@ -255,7 +255,7 @@ API_KEY="lsp_e2etestkey1234567890abcdef"
 
 # Insert (or refresh) the user + api_key in postgres. ON CONFLICT keeps the
 # script idempotent across re-runs.
-PGPOD=$(kc -n "${NS}" get pod -l app.kubernetes.io/name=postgres -o jsonpath='{.items[0].metadata.name}')
+PGPOD=$(kc -n "${NS}" get pod -l app=postgres -o jsonpath='{.items[0].metadata.name}')
 [[ -n "${PGPOD}" ]] || die "postgres pod not found"
 
 # Read the postgres password from the credentials Secret (created by

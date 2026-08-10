@@ -198,7 +198,7 @@ else
     log "  waiting for Postgres rollout (up to 3m)"
     kubectl --context "kind-${CLUSTER_NAME}" -n "${NS}" rollout status deployment/postgres --timeout=180s
     log "  waiting for Redis rollout (up to 3m)"
-    kubectl --context "kind-${CLUSTER_NAME}" -n "${NS}" rollout status deployment/redis-master --timeout=180s
+    kubectl --context "kind-${CLUSTER_NAME}" -n "${NS}" rollout status deployment/valkey --timeout=180s
     ok "data services ready"
 fi
 
