@@ -288,10 +288,6 @@ func (h *ProxyHandler) GetHistory(c *gin.Context) {
 	if h.adapter != nil {
 		msgs, err := h.adapter.GetHistory(c.Request.Context(), "", wid, sid)
 		if err != nil {
-			if strings.Contains(err.Error(), "no_running_pod") {
-				c.JSON(http.StatusNotFound, gin.H{"error": "workspace pod not running"})
-				return
-			}
 			h.logger.Error("GetHistory: adapter failed", err, "sessionID", sid)
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to fetch history"})
 			return

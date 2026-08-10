@@ -5,7 +5,7 @@ import type { Message, SendMessageRequest } from "./types";
 // when the Adapter is wired (US-65.4). Mirrors pkg/session.Message.
 interface ContractMessage {
   id: string;
-  type: string; // "user" | "assistant" | "shell" | "agent_switch" | ...
+  type: string;
   createdAt?: string;
   parts?: Array<{
     type: string;
@@ -13,11 +13,12 @@ interface ContractMessage {
     reasoning?: string;
     tool?: {
       name?: string;
+      callId?: string;
+      input?: unknown;
+      output?: unknown;
       state?: {
         status?: string;
-        title?: string;
-        input?: unknown;
-        output?: string;
+        error?: string;
       };
     };
     fileChange?: {
@@ -44,13 +45,12 @@ export function transformHistory(raw: ContractMessage[]): Message[] {
       }).map((p) => {
         if (p.type === "tool" && p.tool) {
           const toolName = p.tool.name ?? "";
-          const title = p.tool.state?.title ?? "";
           return {
             type: "tool_use" as const,
-            text: title ? `${toolName}: ${title}` : toolName,
+            text: toolName,
             toolState: p.tool.state?.status ?? "",
-            input: p.tool.state?.input,
-            toolOutput: p.tool.state?.output,
+            input: p.tool.input,
+            toolOutput: typeof p.tool.output === "string" ? p.tool.output : undefined,
           };
         }
         if (p.type === "reasoning") {

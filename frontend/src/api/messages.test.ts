@@ -94,7 +94,9 @@ describe("transformHistory", () => {
           type: "tool",
           tool: {
             name: "bash",
-            state: { status: "completed", title: "ls -la", output: "file.go" },
+            input: { command: "ls -la" },
+            output: "file.go",
+            state: { status: "completed" },
           },
         }],
       },
@@ -102,8 +104,10 @@ describe("transformHistory", () => {
     const result = transformHistory(raw);
     expect(result).toHaveLength(1);
     expect(result[0]!.parts[0]!.type).toBe("tool_use");
-    expect(result[0]!.parts[0]!.text).toBe("bash: ls -la");
+    expect(result[0]!.parts[0]!.text).toBe("bash");
     expect(result[0]!.parts[0]!.toolState).toBe("completed");
+    expect(result[0]!.parts[0]!.input).toEqual({ command: "ls -la" });
+    expect(result[0]!.parts[0]!.toolOutput).toBe("file.go");
   });
 
   it("handles file_change parts", () => {
