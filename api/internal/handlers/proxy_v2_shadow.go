@@ -47,8 +47,17 @@ func shadowKey(workspaceID, sessionID string) string {
 	return fmt.Sprintf("v2queue:%s:%s", workspaceID, sessionID)
 }
 
+// v2ShadowTTL bounds how long a phantom pill can persist if the Prompted
+// event is lost (SSE disconnect, replica crash). After this duration the
+// Redis key expires automatically, and the next PromptAdmitted re-seeds
+// if the message is still genuinely pending. Set generously — real turns
+// can take minutes; the TTL only catches orphaned entries.
+const v2ShadowTTL = 10 * time.Minute
+
 // Add records a pending V2 queue message. Called from the SSE bridge when
-// a PromptAdmitted event with delivery:"queue" fires.
+// a PromptAdmitted event with delivery:"queue" fires. Sets a TTL so lost
+// Prompted events (SSE disconnect, replica crash) don't leave permanent
+// phantom pills — the key self-expires.
 func (s *V2QueueShadow) Add(ctx context.Context, workspaceID, sessionID, messageID, text string) {
 	if s == nil {
 		return
@@ -58,7 +67,11 @@ func (s *V2QueueShadow) Add(ctx context.Context, workspaceID, sessionID, message
 	if err != nil {
 		return
 	}
-	_ = s.client.HSet(ctx, shadowKey(workspaceID, sessionID), messageID, data).Err()
+	key := shadowKey(workspaceID, sessionID)
+	pipe := s.client.TxPipeline()
+	pipe.HSet(ctx, key, messageID, data)
+	pipe.Expire(ctx, key, v2ShadowTTL)
+	_, _ = pipe.Exec(ctx)
 }
 
 // Remove clears a message from the shadow. Called when Prompted fires

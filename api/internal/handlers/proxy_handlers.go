@@ -942,6 +942,20 @@ type enqueueRequest struct {
 	Text string `json:"text" binding:"required"`
 }
 
+// queuedMessageResponse is the typed JSON shape for a queue list entry.
+// Matches msgqueue.QueuedMessage's wire shape so the frontend is unchanged.
+type queuedMessageResponse struct {
+	ID          string `json:"id"`
+	Text        string `json:"text"`
+	SessionID   string `json:"session_id"`
+	WorkspaceID string `json:"workspace_id"`
+	EnqueuedAt  string `json:"enqueued_at"`
+}
+
+type queueListResponse struct {
+	Messages []queuedMessageResponse `json:"messages"`
+}
+
 func (h *ProxyHandler) EnqueueMessage(c *gin.Context) {
 	sid := c.Param("sessionId")
 	if err := validateSessionID(sid); err != nil {
@@ -1024,17 +1038,17 @@ func (h *ProxyHandler) ListQueue(c *gin.Context) {
 	// on PromptAdmitted events and cleared on Prompted events.
 	if h.v2SessionQueueEnabled && h.v2Shadow != nil {
 		entries := h.v2Shadow.List(c.Request.Context(), wid, sid)
-		result := make([]gin.H, 0, len(entries))
+		result := make([]queuedMessageResponse, 0, len(entries))
 		for _, e := range entries {
-			result = append(result, gin.H{
-				"id":           e.ID,
-				"text":         e.Text,
-				"session_id":   sid,
-				"workspace_id": wid,
-				"enqueued_at":  time.Unix(e.EnqueuedAt, 0).UTC().Format(time.RFC3339),
+			result = append(result, queuedMessageResponse{
+				ID:          e.ID,
+				Text:        e.Text,
+				SessionID:   sid,
+				WorkspaceID: wid,
+				EnqueuedAt:  time.Unix(e.EnqueuedAt, 0).UTC().Format(time.RFC3339),
 			})
 		}
-		c.JSON(http.StatusOK, gin.H{"messages": result})
+		c.JSON(http.StatusOK, queueListResponse{Messages: result})
 		return
 	}
 
@@ -1063,6 +1077,15 @@ func (h *ProxyHandler) DeleteQueueMessage(c *gin.Context) {
 	msgID := c.Param("messageId")
 	if msgID == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "messageId required"})
+		return
+	}
+
+	if h.v2SessionQueueEnabled && h.v2Shadow != nil {
+		// US-63.10: under V2, remove from the shadow marker. Dismissed
+		// messages must not reappear on fresh load.
+		h.v2Shadow.Remove(c.Request.Context(), wid, sid, msgID)
+		h.publishQueueEvent(wid, sid, "dismissed", msgID, "")
+		c.Status(http.StatusNoContent)
 		return
 	}
 

@@ -98,6 +98,103 @@ func TestV2QueueShadow_CrossSessionIsolation(t *testing.T) {
 	assert.Empty(t, shadow.List(ctx, "ws-1", "ses-c"))
 }
 
+func TestV2QueueShadow_LostPromptedSelfHealsViaTTL(t *testing.T) {
+	// If the Prompted event is lost (SSE disconnect, replica crash), the
+	// phantom pill must not persist forever. The TTL on the Redis key
+	// ensures it expires. This test verifies the TTL is set.
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+
+	shadow := NewV2QueueShadow(client)
+	ctx := context.Background()
+
+	shadow.Add(ctx, "ws-1", "ses-1", "msg_phantom", "ghost")
+	assert.Len(t, shadow.List(ctx, "ws-1", "ses-1"), 1)
+
+	// Fast-forward miniredis past the TTL.
+	mr.FastForward(v2ShadowTTL + time.Second)
+
+	assert.Empty(t, shadow.List(ctx, "ws-1", "ses-1"),
+		"TTL must expire phantom pills from lost Prompted events")
+}
+
+func TestV2QueueShadow_MalformedHashDataIgnored(t *testing.T) {
+	// Corrupted hash data (not valid v2ShadowEntry JSON) must be silently
+	// skipped by List — not cause a panic or error.
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+
+	shadow := NewV2QueueShadow(client)
+	ctx := context.Background()
+
+	// Seed a valid entry + a corrupted one directly via Redis.
+	shadow.Add(ctx, "ws-1", "ses-1", "msg_good", "hello")
+	_ = client.HSet(ctx, shadowKey("ws-1", "ses-1"), "msg_bad", "not-valid-json{").Err()
+
+	entries := shadow.List(ctx, "ws-1", "ses-1")
+	assert.Len(t, entries, 1, "malformed entry must be silently skipped")
+	assert.Equal(t, "msg_good", entries[0].ID)
+}
+
+func TestV2QueueShadow_RedisDownGracefulDegradation(t *testing.T) {
+	// If Redis is unreachable, all methods must return zero-values, not panic.
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	mr.Close() // kill Redis
+
+	shadow := NewV2QueueShadow(client)
+	ctx := context.Background()
+
+	assert.NotPanics(t, func() {
+		shadow.Add(ctx, "ws", "ses", "msg", "text")
+		shadow.Remove(ctx, "ws", "ses", "msg")
+		_ = shadow.List(ctx, "ws", "ses")
+		shadow.ClearAll(ctx, "ws", "ses")
+	})
+	assert.Empty(t, shadow.List(ctx, "ws", "ses"),
+		"Redis down → List returns empty (graceful degradation)")
+}
+
+func TestDeleteQueueMessageV2_RemovesFromShadow(t *testing.T) {
+	// US-63.10: DeleteQueueMessage under V2 must clear the shadow so
+	// dismissed messages don't reappear on fresh load.
+	mr, err := miniredis.Run()
+	require.NoError(t, err)
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+
+	gin.SetMode(gin.TestMode)
+	k8sMock := newMockK8sWithWorkspace(t, "ws-1", "127.0.0.1")
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{}, nil)
+	require.NoError(t, err)
+	handler.SetV2SessionQueueEnabled(true)
+	handler.SetV2QueueShadow(NewV2QueueShadow(client))
+
+	handler.v2Shadow.Add(context.Background(), "ws-1", "ses-1", "msg_del", "bye")
+
+	router := gin.New()
+	router.DELETE("/:id/sessions/:sessionId/queue/:messageId", handler.DeleteQueueMessage)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("DELETE", "/ws-1/sessions/ses-1/queue/msg_del", nil)
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusNoContent, w.Code)
+	assert.Empty(t, handler.v2Shadow.List(context.Background(), "ws-1", "ses-1"),
+		"dismissed message must be removed from shadow")
+}
+
 func TestListQueueV2_ShadowReturnsPills(t *testing.T) {
 	mr, err := miniredis.Run()
 	require.NoError(t, err)
