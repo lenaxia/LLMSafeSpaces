@@ -73,7 +73,7 @@ const PAGE_LIMIT = 50;
 
 export const messagesApi = {
   getHistory: async (workspaceId: string, sessionId: string): Promise<Message[]> => {
-    const raw = await api.get<OpenCodeMessage[]>(
+    const raw = await api.get<ContractMessage[]>(
       `/workspaces/${workspaceId}/sessions/${sessionId}/message`,
     );
     return transformHistory(raw);
@@ -86,7 +86,7 @@ export const messagesApi = {
     const params = new URLSearchParams();
     params.set("limit", String(PAGE_LIMIT));
     if (opts?.before) params.set("before", opts.before);
-    const { data, headers } = await getRaw<OpenCodeMessage[]>(
+    const { data, headers } = await getRaw<ContractMessage[]>(
       `/workspaces/${workspaceId}/sessions/${sessionId}/message?${params.toString()}`,
     );
     return {
