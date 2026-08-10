@@ -60,7 +60,7 @@ type ReconcilerStore interface {
 // --- SchedulerStore interface ---
 
 type SchedulerStore interface {
-	ListDueCronTriggers(ctx context.Context, now time.Time, limit int) ([]*wf.TriggerRow, error)
+	ClaimDueCronTriggers(ctx context.Context, now time.Time, limit int, nextFireFn func(*wf.TriggerRow) time.Time) ([]*wf.TriggerRow, error)
 	ListPendingRoutineFires(ctx context.Context, limit int) ([]*wf.TriggerFireRow, error)
 	GetTriggerByID(ctx context.Context, triggerID string) (*wf.TriggerRow, error)
 	GetWorkflow(ctx context.Context, ownerType, ownerID, workflowID string) (*wf.WorkflowRow, error)
@@ -69,7 +69,6 @@ type SchedulerStore interface {
 	UpdateTriggerFireResult(ctx context.Context, fireID string, result json.RawMessage, status string) error
 	GetLastRoutineResult(ctx context.Context, triggerID string) (json.RawMessage, error)
 	GetRecentRoutineResults(ctx context.Context, triggerID string, limit int) ([]json.RawMessage, error)
-	UpdateTriggerFireTimestamps(ctx context.Context, triggerID string, lastFiredAt time.Time, nextFireAt *time.Time) error
 	IncrementTriggerFailures(ctx context.Context, triggerID string) (int, error)
 	ResetTriggerFailures(ctx context.Context, triggerID string) error
 	DisableTrigger(ctx context.Context, triggerID string) error
@@ -440,9 +439,11 @@ func (s *Scheduler) Start(ctx context.Context) error {
 
 func (s *Scheduler) tick(ctx context.Context, logger Logger, limit int) {
 	now := time.Now().UTC()
-	triggers, err := s.Store.ListDueCronTriggers(ctx, now, limit)
+	triggers, err := s.Store.ClaimDueCronTriggers(ctx, now, limit, func(t *wf.TriggerRow) time.Time {
+		return computeNextFire(t, now)
+	})
 	if err != nil {
-		logger.Error(err, "scheduler: failed to list due cron triggers")
+		logger.Error(err, "scheduler: failed to claim due cron triggers")
 		return
 	}
 	tickInterval := s.TickInterval
@@ -471,8 +472,6 @@ func (s *Scheduler) fireTrigger(ctx context.Context, logger Logger, trigger *wf.
 			ActionType: "routine", Status: "skipped",
 			FiredAt: *trigger.NextFireAt, CompletedAt: &now,
 		})
-		nextFire := computeNextFire(trigger, now)
-		_ = s.Store.UpdateTriggerFireTimestamps(ctx, trigger.ID, now, &nextFire)
 		return
 	}
 
@@ -487,9 +486,6 @@ func (s *Scheduler) fireTrigger(ctx context.Context, logger Logger, trigger *wf.
 	} else {
 		s.fireRoutineTarget(ctx, logger, trigger, envelopeJSON, now)
 	}
-
-	nextFire := computeNextFire(trigger, now)
-	_ = s.Store.UpdateTriggerFireTimestamps(ctx, trigger.ID, now, &nextFire)
 }
 
 func (s *Scheduler) fireWorkflowTarget(ctx context.Context, logger Logger, trigger *wf.TriggerRow, envelopeJSON []byte, now time.Time) {

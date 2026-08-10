@@ -403,6 +403,10 @@ func (s *Store) UpdateTrigger(ctx context.Context, ownerType, ownerID, triggerID
 		SET name = COALESCE($4, name),
 		    description = COALESCE($5, description),
 		    enabled = COALESCE($6, enabled),
+		    consecutive_failures = CASE
+		        WHEN COALESCE($6, enabled) = true AND enabled = false THEN 0
+		        ELSE consecutive_failures
+		    END,
 		    source_config = CASE WHEN $7::jsonb IS NOT NULL THEN $7 ELSE source_config END,
 		    workspace_id = CASE WHEN $8::text IS NULL THEN workspace_id ELSE NULLIF($8, '')::uuid END,
 		    workflow_id = CASE WHEN $9::text IS NULL THEN workflow_id ELSE NULLIF($9, '')::uuid END,
@@ -876,30 +880,53 @@ func (s *Store) DisableTrigger(ctx context.Context, triggerID string) error {
 	return err
 }
 
-// UpdateTriggerFireTimestamps sets last_fired_at + advances next_fire_at for
-// cron triggers after a fire. nextFireAt may be nil to clear it.
-func (s *Store) UpdateTriggerFireTimestamps(ctx context.Context, triggerID string, lastFiredAt time.Time, nextFireAt *time.Time) error {
-	_, err := s.pool.Exec(ctx, `
-		UPDATE triggers SET last_fired_at = $2, next_fire_at = $3, updated_at = now() WHERE id = $1
-	`, triggerID, lastFiredAt, nextFireAt)
-	return err
-}
+// ClaimDueCronTriggers atomically claims due cron triggers and advances each
+// trigger's last_fired_at and next_fire_at within the same transaction. This
+// prevents sibling API replicas from claiming the same trigger concurrently:
+// FOR UPDATE SKIP LOCKED ensures that if replica A locks a row, replica B's
+// SELECT skips it rather than blocking.
+//
+// nextFireFn computes the next fire time for each claimed trigger from its
+// cron expression (cron parsing lives in the engine layer, not the store).
+// The returned triggers are in their pre-advance state so the caller can use
+// the original next_fire_at for the missed-tick skip check.
+func (s *Store) ClaimDueCronTriggers(ctx context.Context, now time.Time, limit int, nextFireFn func(*TriggerRow) time.Time) ([]*TriggerRow, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
 
-// ListDueCronTriggers returns enabled cron triggers whose next_fire_at <= now,
-// ordered by next_fire_at ASC. Used by the scheduler goroutine (US-64.9).
-func (s *Store) ListDueCronTriggers(ctx context.Context, now time.Time, limit int) ([]*TriggerRow, error) {
-	rows, err := s.pool.Query(ctx, `
+	rows, err := tx.Query(ctx, `
 		SELECT `+triggerSelectColumns+`
 		FROM triggers
 		WHERE source_type = 'cron' AND enabled = true AND next_fire_at IS NOT NULL AND next_fire_at <= $1
 		ORDER BY next_fire_at ASC
 		LIMIT $2
+		FOR UPDATE SKIP LOCKED
 	`, now, limit)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	return scanTriggerRows(rows)
+	triggers, err := scanTriggerRows(rows)
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, t := range triggers {
+		next := nextFireFn(t)
+		if _, err := tx.Exec(ctx, `
+			UPDATE triggers SET last_fired_at = $2, next_fire_at = $3, updated_at = now() WHERE id = $1
+		`, t.ID, now, next); err != nil {
+			return nil, fmt.Errorf("advance trigger %s: %w", t.ID, err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit tx: %w", err)
+	}
+	return triggers, nil
 }
 
 // ListPendingRoutineFires returns fire rows with action_type='routine' and

@@ -458,9 +458,14 @@ func newMockSchedulerStore() *mockSchedulerStore {
 	}
 }
 
-func (m *mockSchedulerStore) ListDueCronTriggers(_ context.Context, _ time.Time, _ int) ([]*wf.TriggerRow, error) {
+func (m *mockSchedulerStore) ClaimDueCronTriggers(_ context.Context, _ time.Time, _ int, nextFireFn func(*wf.TriggerRow) time.Time) ([]*wf.TriggerRow, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for _, t := range m.triggers {
+		if nextFireFn != nil {
+			m.nextFires[t.ID] = nextFireFn(t)
+		}
+	}
 	return m.triggers, nil
 }
 
@@ -515,13 +520,6 @@ func (m *mockSchedulerStore) CreateWorkflowRunWithFire(_ context.Context, fire *
 
 func (m *mockSchedulerStore) CreateTriggerFire(_ context.Context, row *wf.TriggerFireRow) error {
 	m.fires = append(m.fires, row)
-	return nil
-}
-
-func (m *mockSchedulerStore) UpdateTriggerFireTimestamps(_ context.Context, triggerID string, _ time.Time, nextFireAt *time.Time) error {
-	if nextFireAt != nil {
-		m.nextFires[triggerID] = *nextFireAt
-	}
 	return nil
 }
 
