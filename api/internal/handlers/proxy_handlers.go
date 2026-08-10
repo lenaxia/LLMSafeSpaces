@@ -24,6 +24,7 @@ import (
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
+	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
 
 func (h *ProxyHandler) CreateSession(c *gin.Context) {
@@ -271,25 +272,44 @@ func (h *ProxyHandler) GetHistory(c *gin.Context) {
 		return
 	}
 
-	// Parse + validate pagination params before touching the cluster — a
-	// malformed ?limit shouldn't waste a connection slot or a k8s API call.
+	// Parse + validate pagination params before touching the cluster.
 	limit, err := parseHistoryLimit(c.Query("limit"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	before := c.Query("before")
+	wid := c.Param("id")
 
-	// Fetch upstream history. We need the FULL body (opencode doesn't
-	// paginate), so go through fetchUpstreamHistory rather than the
-	// streaming proxyToWorkspace path.
+	// Adapter path (US-65.4): typed session.Message[] from the Adapter,
+	// contract-shaped JSON to the client. The Adapter translator already
+	// drops step-start/step-finish and collects patch file paths, so the
+	// response is clean contract data — no opencode-specific shapes.
+	if h.adapter != nil {
+		msgs, err := h.adapter.GetHistory(c.Request.Context(), "", wid, sid)
+		if err != nil {
+			if strings.Contains(err.Error(), "no_running_pod") {
+				c.JSON(http.StatusNotFound, gin.H{"error": "workspace pod not running"})
+				return
+			}
+			h.logger.Error("GetHistory: adapter failed", err, "sessionID", sid)
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to fetch history"})
+			return
+		}
+		page, nextCursor := paginateContractHistory(msgs, limit, before)
+		if nextCursor != "" {
+			c.Header("X-Next-Cursor", nextCursor)
+		}
+		c.JSON(http.StatusOK, page)
+		return
+	}
+
+	// Legacy path: fetch raw opencode bytes + inline parse + paginate.
 	body, status, fetchErr := h.fetchUpstreamHistory(c, sid)
 	if fetchErr != nil {
-		// fetchUpstreamHistory has already written the error response.
 		return
 	}
 	if status >= 400 {
-		// Pass the upstream status through; do NOT mask as 200 empty page.
 		c.Data(status, "application/json", body)
 		return
 	}
@@ -585,6 +605,41 @@ func paginateOpencodeHistory(body []byte, limit int, before string) ([]byte, str
 		nextCursor = pageEntries[0].id
 	}
 	return pageBytes, nextCursor, nil
+}
+
+// paginateContractHistory applies the same cursor-based pagination as
+// paginateOpencodeHistory but on typed session.Message values from the
+// Adapter. Simpler because the Adapter translator already dropped
+// non-displayable messages (step-start/step-finish) and filtered parts.
+// Returns the page + next cursor (empty if no older messages remain).
+func paginateContractHistory(msgs []session.Message, limit int, before string) ([]session.Message, string) {
+	// Determine the inclusive end (exclusive of the cursor itself).
+	endExclusive := len(msgs)
+	if before != "" {
+		idx := -1
+		for i, m := range msgs {
+			if m.ID == before {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			return []session.Message{}, ""
+		}
+		endExclusive = idx
+	}
+
+	start := endExclusive - limit
+	if start < 0 {
+		start = 0
+	}
+	page := msgs[start:endExclusive]
+
+	nextCursor := ""
+	if start > 0 && len(page) > 0 {
+		nextCursor = page[0].ID
+	}
+	return page, nextCursor
 }
 
 // messageIsDisplayable returns the message id and true iff the message

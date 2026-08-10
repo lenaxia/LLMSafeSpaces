@@ -1,56 +1,65 @@
 import { api, getRaw } from "./client";
 import type { Message, SendMessageRequest } from "./types";
 
-interface OpenCodeMessage {
-  info?: {
-    role?: string;
-    id?: string;
-    time?: { created?: number; completed?: number };
-    modelID?: string;
-    providerID?: string;
-  };
-  id?: string;
-  role?: string;
+// ContractMessage is the wire shape from the API's GetHistory endpoint
+// when the Adapter is wired (US-65.4). Mirrors pkg/session.Message.
+interface ContractMessage {
+  id: string;
+  type: string; // "user" | "assistant" | "shell" | "agent_switch" | ...
+  createdAt?: string;
   parts?: Array<{
     type: string;
     text?: string;
+    reasoning?: string;
+    tool?: {
+      name?: string;
+      state?: {
+        status?: string;
+        title?: string;
+        input?: unknown;
+        output?: string;
+      };
+    };
+    fileChange?: {
+      path?: string;
+      patch?: string;
+      status?: string;
+    };
   }>;
+  model?: { id?: string; provider?: string };
 }
 
-export function transformHistory(raw: OpenCodeMessage[]): Message[] {
+export function transformHistory(raw: ContractMessage[]): Message[] {
   return raw
-    .filter((m) => {
-      const role = m.info?.role ?? m.role;
-      return role === "user" || role === "assistant";
-    })
+    .filter((m) => m.type === "user" || m.type === "assistant")
     .map((m) => ({
-      id: m.info?.id ?? m.id ?? `msg-${Math.random()}`,
-      role: (m.info?.role ?? m.role) as "user" | "assistant",
+      id: m.id,
+      role: m.type as "user" | "assistant",
       parts: (m.parts ?? []).filter((p) => {
         if (p.type === "tool") return true;
-        if (!p.text) return false;
-        return p.type === "text" || p.type === "thinking" || p.type === "reasoning";
+        if (p.type === "text" && p.text) return true;
+        if (p.type === "reasoning" && p.reasoning) return true;
+        if (p.type === "file_change") return true;
+        return false;
       }).map((p) => {
-        if (p.type === "tool") {
-          const part = p as Record<string, unknown>;
-          const state = part.state as Record<string, unknown> | undefined;
-          const toolName = (part.tool as string) || "";
-          const title = (state?.title as string) || "";
-          const toolState = (state?.status as string) || "";
+        if (p.type === "tool" && p.tool) {
+          const toolName = p.tool.name ?? "";
+          const title = p.tool.state?.title ?? "";
           return {
             type: "tool_use" as const,
             text: title ? `${toolName}: ${title}` : toolName,
-            toolState,
-            input: state?.input,
-            toolOutput: (state?.output as string) || undefined,
+            toolState: p.tool.state?.status ?? "",
+            input: p.tool.state?.input,
+            toolOutput: p.tool.state?.output,
           };
+        }
+        if (p.type === "reasoning") {
+          return { type: "reasoning", text: p.reasoning ?? "" };
         }
         return p;
       }),
-      createdAt: m.info?.time?.created
-        ? new Date(m.info.time.created).toISOString()
-        : undefined,
-      modelID: m.info?.modelID ?? undefined,
+      createdAt: m.createdAt,
+      modelID: m.model?.id ?? undefined,
     }))
     .filter((m) => m.parts.length > 0);
 }
