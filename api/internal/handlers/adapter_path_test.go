@@ -5,10 +5,15 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -291,3 +296,99 @@ var _ agent.Adapter = (*mockAdapter)(nil)
 
 // Keep sync import alive.
 var _ = sync.Mutex{}
+
+// --- GetHistory adapter path (handler-level integration) ---
+
+func TestGetHistory_AdapterPath_ReturnsContractJSON(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{
+		getHistoryFn: func(_ context.Context, _, _, _ string) ([]session.Message, error) {
+			return []session.Message{
+				{
+					ID:        "msg_1",
+					Type:      session.MessageUser,
+					CreatedAt: time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC),
+					Parts: []session.Part{
+						{Type: session.PartText, Text: "hello"},
+					},
+				},
+				{
+					ID:   "msg_2",
+					Type: session.MessageAssistant,
+					Parts: []session.Part{
+						{Type: session.PartText, Text: "hi there"},
+					},
+					Model: &session.ModelRef{ID: "gpt-4o", Provider: "openai"},
+				},
+			}, nil
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodGet, "/?limit=50", nil)
+
+	h.GetHistory(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var msgs []session.Message
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &msgs))
+	require.Len(t, msgs, 2)
+	assert.Equal(t, "msg_1", msgs[0].ID)
+	assert.Equal(t, session.MessageUser, msgs[0].Type)
+	assert.Equal(t, "hello", msgs[0].Parts[0].Text)
+	assert.Equal(t, "msg_2", msgs[1].ID)
+	assert.Equal(t, session.MessageAssistant, msgs[1].Type)
+	require.NotNil(t, msgs[1].Model)
+	assert.Equal(t, "gpt-4o", msgs[1].Model.ID)
+}
+
+func TestGetHistory_AdapterPath_Error_Returns502(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{
+		getHistoryFn: func(_ context.Context, _, _, _ string) ([]session.Message, error) {
+			return nil, fmt.Errorf("pod unreachable")
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodGet, "/?limit=50", nil)
+
+	h.GetHistory(c)
+
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+}
+
+func TestGetHistory_AdapterPath_EmptyResult_ReturnsEmptyArray(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{
+		getHistoryFn: func(_ context.Context, _, _, _ string) ([]session.Message, error) {
+			return []session.Message{}, nil
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodGet, "/?limit=50", nil)
+
+	h.GetHistory(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var msgs []session.Message
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &msgs))
+	assert.Empty(t, msgs)
+}
