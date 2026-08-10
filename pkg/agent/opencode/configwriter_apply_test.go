@@ -395,3 +395,64 @@ func TestApply_ExistingSettersStillWork(t *testing.T) {
 	assert.Contains(t, cfg.Provider, "opencode-relay", "relay from Apply must be added")
 	assert.Equal(t, "openai/gpt-4o", cfg.Model, "model from SetModel must survive")
 }
+
+// --- Apply error paths (review follow-up on PR #713) -----------------------
+//
+// The reviewer flagged two unit-level error paths as missing:
+//   - malformed provider JSON → setProvidersLocked failure
+//   - write failure → rebuildLocked failure
+//
+// Both are simple error-propagation paths but pinning them guards
+// against a future regression that silently swallows the error.
+
+func TestApply_MalformedProviderJSON_ReturnsErrorNoRestart(t *testing.T) {
+	// setProvidersLocked unmarshals the formatted bytes; malformed JSON
+	// must surface as a wrapped error and restartRequired must be
+	// false (Apply failed, no restart should fire).
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-config.json")
+	w := newTestWriter(t, path)
+
+	restart, err := w.Apply(agent.AgentConfigInput{
+		Providers: &agent.AgentProvidersChange{
+			Formatted: []byte(`not valid json`),
+		},
+	})
+	require.Error(t, err)
+	assert.False(t, restart, "failed Apply must not signal restart")
+	assert.Contains(t, err.Error(), "set providers", "error must be wrapped with context")
+	assert.Contains(t, err.Error(), "parse formatted providers", "root cause must be visible")
+
+	// Writer state must be unchanged — failed Apply must not corrupt
+	// the existing provider source.
+	assert.Nil(t, w.providerRaw, "failed setProvidersLocked must not have mutated providerRaw")
+}
+
+func TestApply_WriteFailure_ReturnsErrorNoRestart(t *testing.T) {
+	// rebuildLocked writes via atomicRenameWrite to w.path. Pointing
+	// the writer at a path inside a read-only directory makes the
+	// rename fail. The error must surface wrapped and restartRequired
+	// must be false.
+	readonlyDir := t.TempDir()
+	// Create a subdirectory and remove its write bit so file creation
+	// inside it fails.
+	targetDir := filepath.Join(readonlyDir, "noread")
+	require.NoError(t, os.Mkdir(targetDir, 0o555)) // r-x for all, no w
+
+	// Skip on roots — chmod bits are ignored when running as root.
+	if os.Geteuid() == 0 {
+		t.Skip("running as root — chmod bits ineffective, cannot test write failure")
+	}
+
+	path := filepath.Join(targetDir, "agent-config.json")
+	w := newTestWriter(t, path)
+
+	restart, err := w.Apply(agent.AgentConfigInput{
+		Providers: &agent.AgentProvidersChange{
+			Formatted: []byte(`{"provider":{"openai":{"options":{"apiKey":"sk-test"}}}}`),
+		},
+	})
+	require.Error(t, err)
+	assert.False(t, restart, "failed Apply must not signal restart")
+	assert.Contains(t, err.Error(), "rebuild", "error must be wrapped with rebuild context")
+}

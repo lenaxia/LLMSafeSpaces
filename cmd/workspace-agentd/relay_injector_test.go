@@ -239,6 +239,67 @@ func TestStartRelayInjector_WritesConfigAndKills(t *testing.T) {
 	assert.Equal(t, "public", auth["opencode-relay"]["key"])
 }
 
+// TestStartRelayInjector_ConfigWriteFailure_DoesNotKill verifies the
+// config_write_failed outcome path (relay_injector.go ~line 379-382):
+// when Apply returns an error, the relay injector must log the error
+// and RETURN without calling KillOpenCode. Killing opencode after a
+// failed config write would boot it with the previous (relay-less)
+// config — defeating the injection attempt.
+//
+// Review follow-up on PR #713: the reviewer flagged this outcome path
+// as untested. Triggered by pointing the writer at an unwritable path.
+func TestStartRelayInjector_ConfigWriteFailure_DoesNotKill(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root — chmod bits ineffective, cannot test write failure")
+	}
+
+	readonlyDir := t.TempDir()
+	targetDir := filepath.Join(readonlyDir, "noread")
+	require.NoError(t, os.Mkdir(targetDir, 0o555)) // r-x for all, no w
+
+	cfgPath := filepath.Join(targetDir, "agent-config.json")
+	authPath := filepath.Join(readonlyDir, "auth.json")
+	require.NoError(t, os.WriteFile(authPath,
+		[]byte(`{"opencode":{"type":"api","key":"public"}}`), 0o600))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"connected": ["opencode"],
+			"all": [
+				{"id":"opencode","models":{
+					"free-model": {"id":"free-model","name":"Free Model","cost":{"input":0,"output":0},"limit":{"context":100000,"output":10000}}
+				}}
+			]
+		}`))
+	}))
+	defer srv.Close()
+
+	writer := opencode.NewConfigWriter(cfgPath)
+	killed := make(chan struct{}, 1)
+	startRelayInjector(context.Background(), relayInjectorConfig{
+		RelayURL:          "https://relay.example.test/path",
+		OpenCodeBaseURL:   srv.URL,
+		OpenCodePassword:  "testpw",
+		AgentConfigPath:   cfgPath,
+		AuthJSONPath:      authPath,
+		AgentConfigWriter: writer,
+		HealthCheck:       func() bool { return true },
+		KillOpenCode:      func() { close(killed) },
+	})
+
+	// The injector must NOT call KillOpenCode when Apply fails. Give
+	// it the same 2s window as the success-path test to be sure.
+	select {
+	case <-killed:
+		t.Fatal("KillOpenCode called after Apply failed — would restart opencode with stale config")
+	case <-time.After(2 * time.Second):
+		// Expected: no kill.
+	}
+
+	assert.False(t, writer.HasRelay(), "writer must not report relay set when Apply failed")
+}
+
 // TestStartRelayInjector_RetriesWhenZeroModels verifies the race-condition fix:
 // when the first /provider call returns opencode connected but no free models
 // (catalog not yet fully initialized), the relay injector retries rather than

@@ -626,9 +626,28 @@ func (w *ConfigWriter) Apply(in agent.AgentConfigInput) (bool, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
+	// Capture prior source state so we can roll back if rebuildLocked
+	// fails. A failed Apply must leave the writer's in-memory state
+	// unchanged — otherwise HasRelay() would return true after a
+	// failed relay Apply, breaking the readyz + relay-injector
+	// short-circuits that gate on it. The on-disk file is unchanged
+	// (rebuildLocked's atomic rename either fully succeeds or never
+	// replaces the target); only in-memory state needs the rollback.
+	prevProviderRaw := w.providerRaw
+	prevModel := w.model
+	prevRelay := w.relay
+	prevMCPServers := w.mcpServers
+	rollback := func() {
+		w.providerRaw = prevProviderRaw
+		w.model = prevModel
+		w.relay = prevRelay
+		w.mcpServers = prevMCPServers
+	}
+
 	if in.Providers != nil {
 		if len(in.Providers.Formatted) > 0 {
 			if err := w.setProvidersLocked(in.Providers.Formatted); err != nil {
+				rollback()
 				return false, fmt.Errorf("agent-config writer Apply: set providers: %w", err)
 			}
 		} else {
@@ -667,6 +686,7 @@ func (w *ConfigWriter) Apply(in agent.AgentConfigInput) (bool, error) {
 	}
 
 	if err := w.rebuildLocked(); err != nil {
+		rollback()
 		return false, fmt.Errorf("agent-config writer Apply: rebuild: %w", err)
 	}
 
