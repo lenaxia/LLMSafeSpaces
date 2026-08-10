@@ -32,6 +32,7 @@ import (
 	"path/filepath"
 	"sync"
 
+	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	dsecrets "github.com/lenaxia/llmsafespaces/pkg/agentd/secrets"
 )
 
@@ -346,9 +347,19 @@ func (w *ConfigWriter) HasRelay() bool {
 //
 // The temp-file + rename pattern ensures readers never see a partially
 // written file. os.Rename is atomic on POSIX filesystems (same mount).
+//
+// Thread-safety: Rebuild acquires w.mu for the whole read-merge-write
+// cycle so concurrent Rebuild/SetX calls cannot interleave.
 func (w *ConfigWriter) Rebuild() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	return w.rebuildLocked()
+}
+
+// rebuildLocked is Rebuild without the lock acquire. Caller must hold w.mu.
+// Used by Apply to merge multiple source updates into a single atomic
+// read-merge-write cycle (Rule 11 F1: Apply atomicity contract).
+func (w *ConfigWriter) rebuildLocked() error {
 
 	cfg := make(map[string]json.RawMessage)
 
@@ -583,6 +594,138 @@ func atomicRenameWrite(path string, data []byte, perm os.FileMode) error {
 		return fmt.Errorf("rename temp to target: %w", err)
 	}
 	return nil
+}
+
+// Apply implements agent.AgentConfigWriter. It is the seam platform code
+// uses after construction; it never calls the SetX methods directly.
+//
+// Each non-nil field on in updates one source on the writer. A nil field
+// leaves the writer's existing state for that source unchanged. A non-nil
+// pointer to a zero-value struct clears the source (where meaningful).
+//
+// After merging the input, Apply calls rebuildLocked to render and write
+// the full config atomically. Returns (true, nil) on success — opencode
+// does not hot-reload its config file, so every successful Apply requires
+// the process to be restarted for the change to take effect. A future
+// agent that hot-reloads returns false from its Apply; platform code
+// branches on the bool and skips the restart.
+//
+// Thread-safety: Apply holds w.mu across the entire merge + write cycle
+// so concurrent Apply / Rebuild / SetX calls serialize. Two concurrent
+// Apply calls cannot interleave such that one caller's update is lost
+// (Rule 11 F1: atomicity is part of the Apply contract, not just the
+// write step).
+//
+// The opencode-specific rendering (deep-merge semantics, $schema URL,
+// disabled_providers, the opencode-relay provider block, the agent.build
+// prompt merge, the mode.permissions.external_directory merge, the mcp
+// section) is owned by this method and rebuildLocked — none of it leaks
+// through the agent.AgentConfigInput type. Platform code calls Apply and
+// reacts to restartRequired; it does not know WHY a restart is needed.
+func (w *ConfigWriter) Apply(in agent.AgentConfigInput) (bool, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if in.Providers != nil {
+		if len(in.Providers.Formatted) > 0 {
+			if err := w.setProvidersLocked(in.Providers.Formatted); err != nil {
+				return false, fmt.Errorf("agent-config writer Apply: set providers: %w", err)
+			}
+		} else {
+			// Clear: a non-nil pointer with empty Formatted bytes
+			// drops the provider source entirely.
+			w.providerRaw = nil
+		}
+	}
+
+	if in.Model != nil {
+		// Empty string = clear (matches Apply semantics elsewhere).
+		w.model = string(*in.Model)
+	}
+
+	if in.Relay != nil {
+		if in.Relay.URL != "" {
+			w.relay = &relaySource{
+				url:    in.Relay.URL,
+				models: relayModelsFromAgent(in.Relay.Models),
+			}
+		} else {
+			// Clear: a non-nil pointer with empty URL drops the relay
+			// source. Distinct from nil = leave unchanged.
+			w.relay = nil
+		}
+	}
+
+	if in.MCPServers != nil {
+		if len(in.MCPServers.Servers) > 0 {
+			w.mcpServers = mcpServersFromAgent(in.MCPServers.Servers)
+		} else {
+			// Clear: a non-nil pointer with empty Servers drops the
+			// MCP source.
+			w.mcpServers = nil
+		}
+	}
+
+	if err := w.rebuildLocked(); err != nil {
+		return false, fmt.Errorf("agent-config writer Apply: rebuild: %w", err)
+	}
+
+	return true, nil
+}
+
+// setProvidersLocked is SetProviders without the lock acquire. Caller
+// must hold w.mu. Used by Apply to keep the merge+write atomic.
+func (w *ConfigWriter) setProvidersLocked(formattedConfig []byte) error {
+	var cfg struct {
+		Provider json.RawMessage `json:"provider"`
+	}
+	if err := json.Unmarshal(formattedConfig, &cfg); err != nil {
+		return fmt.Errorf("parse formatted providers: %w", err)
+	}
+	w.providerRaw = cfg.Provider
+	return nil
+}
+
+// relayModelsFromAgent converts the agent-layer RelayModel slice to the
+// opencode-layer type. The two are structurally identical; the conversion
+// exists so the agent.AgentConfigWriter seam does not export the
+// opencode-specific type.
+func relayModelsFromAgent(in []agent.RelayModel) []RelayModel {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]RelayModel, len(in))
+	for i, m := range in {
+		out[i] = RelayModel{
+			ID:           m.ID,
+			Name:         m.Name,
+			ContextLimit: m.ContextLimit,
+			OutputLimit:  m.OutputLimit,
+		}
+	}
+	return out
+}
+
+// mcpServersFromAgent converts the agent-layer MCPServerEntry slice to
+// the opencode-layer type. Same rationale as relayModelsFromAgent.
+func mcpServersFromAgent(in []agent.MCPServerEntry) []MCPServerEntry {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]MCPServerEntry, len(in))
+	for i, s := range in {
+		out[i] = MCPServerEntry{
+			Name:      s.Name,
+			Transport: s.Transport,
+			URL:       s.URL,
+			Command:   s.Command,
+			Args:      s.Args,
+			TimeoutMs: s.TimeoutMs,
+			Env:       s.Env,
+			Headers:   s.Headers,
+		}
+	}
+	return out
 }
 
 // buildRelayProviderEntry builds the JSON for the opencode-relay provider

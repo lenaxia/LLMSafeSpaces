@@ -46,8 +46,28 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"go.uber.org/zap"
 
+	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 )
+
+// relayModelsToAgent converts the opencode-layer RelayModel slice to
+// the agent-layer type used by the AgentConfigWriter seam. The two are
+// structurally identical; the conversion keeps the seam type-clean.
+func relayModelsToAgent(in []opencode.RelayModel) []agent.RelayModel {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]agent.RelayModel, len(in))
+	for i, m := range in {
+		out[i] = agent.RelayModel{
+			ID:           m.ID,
+			Name:         m.Name,
+			ContextLimit: m.ContextLimit,
+			OutputLimit:  m.OutputLimit,
+		}
+	}
+	return out
+}
 
 // relayURLHost returns only the scheme+host of a relay URL so it can be
 // safely logged without exposing any path-segment token
@@ -230,10 +250,12 @@ type relayInjectorConfig struct {
 	AgentConfigPath string
 	// AuthJSONPath is the path to opencode's auth.json.
 	AuthJSONPath string
-	// ConfigWriter is the single writer of agent-config.json. The
-	// opencode config-shape knowledge lives in pkg/agent/opencode/; this
-	// module discovers free models and hands them to the writer.
-	AgentConfigWriter *opencode.ConfigWriter
+	// AgentConfigWriter is the seam platform code holds after
+	// construction. It only knows the agent.AgentConfigWriter
+	// interface — never the concrete opencode type. The opencode
+	// adapter (pkg/agent/opencode/) owns every detail of the
+	// underlying agent's config-merge semantics.
+	AgentConfigWriter agent.AgentConfigWriter
 	// KillOpenCode is called to trigger opencode process restart after config
 	// is written. The supervisor restarts opencode, which reads the new config.
 	KillOpenCode func()
@@ -341,13 +363,31 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 		}
 		lg.Info("relay injector: fetched free models", zap.Int("count", len(models)))
 
-		// Build and write the relay config via the single ConfigWriter.
-		// The writer merges the relay provider block into the existing
-		// config (providers + model) and writes atomically (temp + rename).
-		cfg.AgentConfigWriter.SetRelay(cfg.RelayURL, models)
-		if err := cfg.AgentConfigWriter.Rebuild(); err != nil {
+		// Build and write the relay config via the AgentConfigWriter
+		// seam. Apply merges the relay provider block into the
+		// existing config (providers + model) and writes atomically
+		// (temp + rename). The opencode adapter owns the deep-merge
+		// semantics, the opencode-relay provider block shape, and the
+		// disabled_providers entry — none of those leak through the
+		// agent.AgentConfigWriter interface.
+		restartRequired, err := cfg.AgentConfigWriter.Apply(agent.AgentConfigInput{
+			Relay: &agent.RelayState{
+				URL:    cfg.RelayURL,
+				Models: relayModelsToAgent(models),
+			},
+		})
+		if err != nil {
 			lg.Warn("relay injector: failed to write agent config", zap.Error(err))
 			relayInjectorOutcomes.WithLabelValues("config_write_failed").Inc()
+			return
+		}
+		// restartRequired is always true for the opencode adapter
+		// (no hot reload). The branch documents the seam contract —
+		// a future agent that hot-reloads returns false and the
+		// kill+restart is correctly skipped.
+		if !restartRequired {
+			lg.Info("relay injector: agent reports no restart required; skipping kill")
+			relayInjectorOutcomes.WithLabelValues("success_no_restart").Inc()
 			return
 		}
 		lg.Info("relay injector: wrote relay config",

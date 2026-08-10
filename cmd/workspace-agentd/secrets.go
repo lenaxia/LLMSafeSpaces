@@ -40,6 +40,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd/secrets"
@@ -698,9 +699,10 @@ type reloadSecretsDeps struct {
 	// restart decision no longer probes /session when the tracker is empty.
 	Lister sessionLister
 
-	// ConfigWriter is the single writer of agent-config.json. The
-	// opencode config-shape knowledge lives in pkg/agent/opencode/.
-	AgentConfigWriter *opencode.ConfigWriter
+	// AgentConfigWriter is the seam platform code holds after
+	// construction. It only knows the agent.AgentConfigWriter
+	// interface — never the concrete opencode type.
+	AgentConfigWriter agent.AgentConfigWriter
 
 	// RestartReasonMarkerPath overrides where the restart-reason marker is
 	// written. Empty falls back to the package const RestartReasonMarkerPath
@@ -805,40 +807,46 @@ func reloadSecretsHandler(cfg materializeConfig, deps reloadSecretsDeps) http.Ha
 			return
 		}
 		if formatted != nil && deps.AgentConfigWriter != nil {
-			if err := deps.AgentConfigWriter.SetProviders(formatted); err != nil {
-				reloadMu.Unlock()
-				log.Error("reload-secrets: SetProviders failed", zap.Error(err))
-				w.WriteHeader(http.StatusInternalServerError)
-				_ = json.NewEncoder(w).Encode(map[string]string{"error": "set providers: " + err.Error()})
-				return
+			// Build a single partial-update input carrying the
+			// sources this caller owns (providers + MCP servers).
+			// The AgentConfigWriter merges these onto the model and
+			// relay sources already on the writer (set at boot by
+			// applyWorkspaceConfig and by the relay injector
+			// respectively). Each non-nil field updates one source;
+			// the writer's state for the others is preserved.
+			input := agent.AgentConfigInput{
+				Providers: &agent.AgentProvidersChange{Formatted: formatted},
 			}
-			// Stage MCP servers (US-53.8): convert materializer's staged
-			// entries to writer entries, then rebuild merges them into
-			// the "mcp" section of agent-config.json.
+
+			// Stage MCP servers (US-53.8): convert materializer's
+			// staged entries to the agent-layer type, then Apply
+			// merges them into the "mcp" section of
+			// agent-config.json via the opencode adapter.
 			stagedMCP := m.StagedMCPServers()
 			if len(stagedMCP) > 0 {
-				entries := make([]opencode.MCPServerEntry, len(stagedMCP))
+				entries := make([]agent.MCPServerEntry, len(stagedMCP))
 				for i, s := range stagedMCP {
-					entries[i] = opencode.MCPServerEntry{
+					entries[i] = agent.MCPServerEntry{
 						Name: s.Name, Transport: s.Transport, URL: s.URL,
 						Command: s.Command, Args: s.Args, TimeoutMs: s.TimeoutMs,
 						Env: s.Env, Headers: s.Headers,
 					}
 				}
-				deps.AgentConfigWriter.SetMCPServers(entries)
+				input.MCPServers = &agent.MCPServerChange{Servers: entries}
 			} else {
-				deps.AgentConfigWriter.SetMCPServers(nil)
+				input.MCPServers = &agent.MCPServerChange{}
 			}
-			if rbErr := deps.AgentConfigWriter.Rebuild(); rbErr != nil {
+
+			if _, err := deps.AgentConfigWriter.Apply(input); err != nil {
 				// C1 regression fix: reset() already deleted agent-config.json.
-				// If rebuild fails (e.g. disk full), the file is ABSENT. Restarting
+				// If Apply fails (e.g. disk full), the file is ABSENT. Restarting
 				// opencode now would boot with no provider config — silent credential
 				// loss. Abort with 500 (matching the old FlushProviders failure path)
 				// so the running opencode keeps its in-memory config.
 				reloadMu.Unlock()
-				log.Error("reload-secrets: agent-config writer rebuild failed", zap.Error(rbErr))
+				log.Error("reload-secrets: agent-config writer Apply failed", zap.Error(err))
 				w.WriteHeader(http.StatusInternalServerError)
-				_ = json.NewEncoder(w).Encode(map[string]string{"error": "agent-config rebuild: " + rbErr.Error()})
+				_ = json.NewEncoder(w).Encode(map[string]string{"error": "agent-config apply: " + err.Error()})
 				return
 			}
 		}

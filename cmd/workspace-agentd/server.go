@@ -15,7 +15,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/zap"
 
-	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
+	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
 
@@ -33,7 +33,7 @@ type serverDeps struct {
 	proc              *managedProcess
 	password          string
 	startedAt         time.Time
-	agentConfigWriter *opencode.ConfigWriter
+	agentConfigWriter agent.AgentConfigWriter
 }
 
 // buildStatuszHandler returns the /v1/statusz HTTP handler, parameterised on
