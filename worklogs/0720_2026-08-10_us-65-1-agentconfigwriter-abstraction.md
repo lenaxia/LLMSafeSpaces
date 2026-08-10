@@ -157,7 +157,7 @@ US-65.1 is complete (containment from worklog 0700 + abstraction from this workl
 - `pkg/agent/agentconfig.go`
 - `pkg/agent/agentconfig_test.go`
 - `pkg/agent/opencode/configwriter_apply_test.go`
-- `worklogs/NNNN_2026-08-10_us-65-1-agentconfigwriter-abstraction.md`
+- `worklogs/0720_2026-08-10_us-65-1-agentconfigwriter-abstraction.md`
 
 **Modified:**
 - `pkg/agent/opencode/configwriter.go` (Apply method + rebuildLocked/setProvidersLocked extraction)
