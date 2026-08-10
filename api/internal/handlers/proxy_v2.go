@@ -5,9 +5,11 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 
@@ -38,8 +40,7 @@ func (h *ProxyHandler) SetV2ClientFactory(f V2ClientFactory) {
 }
 
 // v2Client resolves the workspace's pod and constructs (or returns the
-// injected) V2SessionClient. Uses the same pod-IP + password resolution as
-// every other opencode call (getPodIPAndPassword).
+// injected) V2SessionClient.
 //
 // This file is a known leak in the agent-import boundary (repolint
 // agentImportKnownLeaks) — it imports pkg/agent/opencode/ to call the
@@ -54,18 +55,195 @@ func (h *ProxyHandler) v2Client(ctx context.Context, workspaceID string) (V2Sess
 		return nil, err
 	}
 	baseURL := fmt.Sprintf("http://%s:%d", podIP, agentd.AgentPort)
-	// Do NOT inject h.httpClient — it has no timeout (shared with streaming
-	// SSE proxying). V2 calls are fast request-response (POST prompt → 200,
-	// POST interrupt → 204); the opencode.NewClient default (10s timeout)
-	// is the right fit.
 	return opencode.NewClient(baseURL, password, nil), nil
 }
 
+// ---------------------------------------------------------------------------
+// US-63.5: SSE Event Bridge — V2 events → queue.update
+// ---------------------------------------------------------------------------
+
+// Spike-verified V2 event wire types (worklog NNNN_us-63.1-v2-spike, F14):
+//
+//	session.next.prompt.admitted → queue.update/enqueued
+//	session.next.prompted        → queue.update/sent
+//
+// Both carry properties.{messageID, sessionID, delivery}. Only
+// delivery:"queue" inputs are bridged — delivery:"steer" inputs are
+// mid-turn injections, not queue entries the frontend tracks as pills.
+const (
+	v2EventPromptAdmitted = "session.next.prompt.admitted"
+	v2EventPrompted       = "session.next.prompted"
+)
+
+// v2PendingSessions tracks sessions that received a delivery:"queue" prompt
+// whose input has NOT yet been promoted (drained) by opencode. Used by
+// US-63.9 (stranded-input recovery) to identify sessions needing a wake
+// after pod restart. Entries are reference-counted: enqueueV2 and
+// bridgeV2Admitted increment; bridgeV2Prompted decrements. A session is
+// removed from tracking only when its count reaches zero (all pending
+// inputs drained). Per-replica; sufficient for the SSE-reconnect case.
+type v2PendingSessions struct {
+	mu   sync.Mutex
+	data map[string]map[string]int // workspaceID → sessionID → pending count
+}
+
+func newV2PendingSessions() *v2PendingSessions {
+	return &v2PendingSessions{data: make(map[string]map[string]int)}
+}
+
+func (v *v2PendingSessions) add(workspaceID, sessionID string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.data[workspaceID] == nil {
+		v.data[workspaceID] = make(map[string]int)
+	}
+	v.data[workspaceID][sessionID]++
+}
+
+func (v *v2PendingSessions) remove(workspaceID, sessionID string) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if ws, ok := v.data[workspaceID]; ok {
+		ws[sessionID]--
+		if ws[sessionID] <= 0 {
+			delete(ws, sessionID)
+		}
+		if len(ws) == 0 {
+			delete(v.data, workspaceID)
+		}
+	}
+}
+
+func (v *v2PendingSessions) has(workspaceID, sessionID string) bool {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return v.data[workspaceID] != nil && v.data[workspaceID][sessionID] > 0
+}
+
+func (v *v2PendingSessions) sessionsForWorkspace(workspaceID string) []string {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	ws, ok := v.data[workspaceID]
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(ws))
+	for sid := range ws {
+		out = append(out, sid)
+	}
+	return out
+}
+
+// onV2RawEvent is called from onRawEvent when v2SessionQueueEnabled is on.
+// It detects V2 PromptAdmitted/Prompted events and synthesizes the
+// queue.update SSE events the frontend expects, and manages the
+// pending-sessions tracking for US-63.9.
+//
+// rawData is the raw JSON envelope: {"id":"...","type":"...","properties":{...}}.
+func (h *ProxyHandler) onV2RawEvent(workspaceID, eventType, rawData string) {
+	switch eventType {
+	case v2EventPromptAdmitted:
+		h.bridgeV2Admitted(workspaceID, rawData)
+	case v2EventPrompted:
+		h.bridgeV2Prompted(workspaceID, rawData)
+	}
+}
+
+func (h *ProxyHandler) bridgeV2Admitted(workspaceID, rawData string) {
+	var props struct {
+		Properties struct {
+			MessageID string `json:"messageID"`
+			SessionID string `json:"sessionID"`
+			Delivery  string `json:"delivery"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(rawData), &props); err != nil {
+		h.logger.Debug("V2 SSE bridge: failed to parse admitted event", "error", err, "workspaceID", workspaceID)
+		return
+	}
+	if props.Properties.Delivery != "queue" {
+		return
+	}
+	// US-63.5: synthesize queue.update/enqueued from the V2 admission event.
+	// Do NOT call v2Pending.add here — enqueueV2 already tracked the session
+	// when it sent the prompt. Adding here would double-count (enqueue adds
+	// + event adds = 2 per message). The event is the SSE signal, not the
+	// tracking signal.
+	h.publishQueueEvent(workspaceID, props.Properties.SessionID, "enqueued", props.Properties.MessageID, "")
+}
+
+func (h *ProxyHandler) bridgeV2Prompted(workspaceID, rawData string) {
+	var props struct {
+		Properties struct {
+			MessageID string `json:"messageID"`
+			SessionID string `json:"sessionID"`
+			Delivery  string `json:"delivery"`
+		} `json:"properties"`
+	}
+	if err := json.Unmarshal([]byte(rawData), &props); err != nil {
+		h.logger.Debug("V2 SSE bridge: failed to parse prompted event", "error", err, "workspaceID", workspaceID)
+		return
+	}
+	if props.Properties.Delivery != "queue" {
+		return
+	}
+	h.publishQueueEvent(workspaceID, props.Properties.SessionID, "sent", props.Properties.MessageID, "")
+	h.v2Pending.remove(workspaceID, props.Properties.SessionID)
+}
+
+// ---------------------------------------------------------------------------
+// US-63.9: Stranded-Input Recovery — wake on reconnect
+// ---------------------------------------------------------------------------
+
+// wakeStrandedV2Sessions sends a minimal delivery:"queue" prompt to each
+// idle session that has pending V2 input. This triggers opencode's
+// execution.wake → runner.run, which drains the durable SessionInput rows
+// that survived the restart in SQLite.
+//
+// The wake prompt creates one extra turn per session. This is the accepted
+// trade-off of Option B (proxy-side wake): it pollutes the session with one
+// no-op turn, but unblocks all stranded queued input. The clean solution
+// (Option A: upstream resume endpoint) would not create a turn; it is a
+// follow-up if/when opencode exposes POST /api/session/:sid/resume.
+//
+// Called from reconcileSessionState after the idle-session sweep.
+func (h *ProxyHandler) wakeStrandedV2Sessions(ctx context.Context, workspaceID string) {
+	if !h.v2SessionQueueEnabled {
+		return
+	}
+	sessions := h.v2Pending.sessionsForWorkspace(workspaceID)
+	for _, sid := range sessions {
+		h.logger.Info("V2 stranded-input recovery: waking idle session with pending queue",
+			"workspaceID", workspaceID, "sessionID", sid)
+		client, err := h.v2Client(ctx, workspaceID)
+		if err != nil {
+			h.logger.Warn("V2 stranded-input recovery: failed to construct client",
+				"error", err, "workspaceID", workspaceID, "sessionID", sid)
+			continue
+		}
+		// A single newline triggers execution.wake → runner.run → drains
+		// ALL pending rows. Non-empty (passes F18 validation). Minimal
+		// history pollution — one turn the LLM processes as a blank.
+		if _, err := client.PromptV2(ctx, sid, "\n", opencode.V2DeliveryQueue); err != nil {
+			h.logger.Warn("V2 stranded-input recovery: wake prompt failed",
+				"error", err, "workspaceID", workspaceID, "sessionID", sid)
+			continue
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// US-63.3: Enqueue path (delivery:queue)
+// ---------------------------------------------------------------------------
+
 // enqueueV2 sends a prompt to opencode's V2 session API with
-// delivery:"queue". Emits the same queue.update/enqueued SSE as the V1
-// Redis path so the frontend behavior is unchanged (US-63.5 may later
-// derive the event from V2's PromptAdmitted; for now the proxy emits it
-// on success).
+// delivery:"queue".
+//
+// Under US-63.5: the queue.update/enqueued SSE event is NO LONGER emitted
+// here — it is derived from the V2 PromptAdmitted event in onV2RawEvent.
+// This eliminates the race where enqueued fires before opencode has
+// actually admitted the input. The response still returns the messageID
+// synchronously for callers that need it.
 //
 // Returns true if the V2 path handled the request (caller should return
 // from the gin handler). Returns false if the V2 path was not taken
@@ -90,10 +268,16 @@ func (h *ProxyHandler) enqueueV2(c *gin.Context, wid, sid, text string) bool {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enqueue message"})
 		return true
 	}
-	h.publishQueueEvent(wid, sid, "enqueued", resp.ID, "")
+	// US-63.5: do NOT emit enqueued here — onV2RawEvent derives it from the
+	// V2 PromptAdmitted event. Track for US-63.9 stranded-input recovery.
+	h.v2Pending.add(wid, sid)
 	c.JSON(http.StatusAccepted, gin.H{"messageID": resp.ID})
 	return true
 }
+
+// ---------------------------------------------------------------------------
+// US-63.4: Abort path (non-destructive interrupt)
+// ---------------------------------------------------------------------------
 
 // abortV2 sends a non-destructive interrupt to opencode's V2 session API.
 // The queued messages survive and drain on the next execution.wake (F8).

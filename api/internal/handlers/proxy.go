@@ -103,6 +103,11 @@ type ProxyHandler struct {
 	// CI failures.
 	v2ClientFactory V2ClientFactory
 
+	// v2Pending tracks sessions with undrained V2 queue-delivered input.
+	// Used by US-63.9 (stranded-input recovery) to identify sessions
+	// needing a wake after pod restart. Initialized in NewProxyHandler.
+	v2Pending *v2PendingSessions
+
 	// sweepInterval overrides the default queueSweepInterval for testing.
 	// Zero means use the default (30s). Set via SetSweepInterval before Start().
 	sweepInterval time.Duration
@@ -157,6 +162,7 @@ func NewProxyHandler(
 		stateStore:    wsstate.NewInMemoryStore(),
 		connCount:     make(map[string]int),
 		requestBuffer: newRequestBuffer(defaultBufferMaxSize, defaultBufferTimeout, defaultBufferPollInterval, logger),
+		v2Pending:     newV2PendingSessions(),
 	}, nil
 }
 

@@ -203,6 +203,12 @@ func (h *ProxyHandler) onRawEvent(workspaceID, eventType, rawData string) {
 		h.persistContextFromEvent(workspaceID, rawData)
 	}
 
+	// US-63.5: when V2 session queue is enabled, bridge V2 admission/
+	// promotion events to queue.update SSE for frontend compatibility.
+	if h.v2SessionQueueEnabled {
+		h.onV2RawEvent(workspaceID, eventType, rawData)
+	}
+
 	if h.dialect != nil {
 		h.emitNormalizedInputEvent(workspaceID, eventType, rawData)
 	}
@@ -703,6 +709,13 @@ func (h *ProxyHandler) reconcileSessionState(workspaceID, podIP, password string
 			go h.drainQueuedMessage(workspaceID, sess.ID)
 		}
 	}
+
+	// US-63.9: under V2, wake idle sessions with pending queue-delivered
+	// input that stranded during a pod restart. This replaces the Redis-
+	// queue drain above (which is a no-op under V2 — the queue is in
+	// opencode's SQLite, not Redis). The wake triggers execution.wake →
+	// runner.run → drains durable SessionInput rows.
+	h.wakeStrandedV2Sessions(ctx, workspaceID)
 }
 
 const queueSweepInterval = 30 * time.Second
