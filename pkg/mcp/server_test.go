@@ -680,3 +680,116 @@ func TestSessionPermissionReply_InvalidReply(t *testing.T) {
 	assert.True(t, result.IsError)
 	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "'once', 'always', or 'reject'")
 }
+
+// ===== run_resolve (US-65.7) =====
+
+func TestRunResolve_QuestionReply(t *testing.T) {
+	h, mockClient := newTestHandlers()
+	ctx := context.Background()
+
+	mockClient.On("QuestionReply", ctx, "ws-123", "que_abc", [][]string{{"yes"}}).Return(nil)
+
+	result, err := h.runResolve(ctx, makeReq("run_resolve", map[string]any{
+		"workspace_id": "ws-123",
+		"request_id":   "que_abc",
+		"reply":        `[["yes"]]`,
+	}))
+
+	require.NoError(t, err)
+	assert.False(t, result.IsError)
+	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "answered")
+	mockClient.AssertExpectations(t)
+}
+
+func TestRunResolve_QuestionReject(t *testing.T) {
+	h, mockClient := newTestHandlers()
+	ctx := context.Background()
+
+	mockClient.On("QuestionReject", ctx, "ws-123", "que_abc").Return(nil)
+
+	result, err := h.runResolve(ctx, makeReq("run_resolve", map[string]any{
+		"workspace_id": "ws-123",
+		"request_id":   "que_abc",
+		"reply":        "reject",
+	}))
+
+	require.NoError(t, err)
+	assert.False(t, result.IsError)
+	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "rejected")
+	mockClient.AssertExpectations(t)
+}
+
+func TestRunResolve_PermissionAllow(t *testing.T) {
+	h, mockClient := newTestHandlers()
+	ctx := context.Background()
+
+	mockClient.On("PermissionReply", ctx, "ws-123", "per_abc", "always", "").Return(nil)
+
+	result, err := h.runResolve(ctx, makeReq("run_resolve", map[string]any{
+		"workspace_id": "ws-123",
+		"request_id":   "per_abc",
+		"reply":        "always",
+	}))
+
+	require.NoError(t, err)
+	assert.False(t, result.IsError)
+	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "always")
+	mockClient.AssertExpectations(t)
+}
+
+func TestRunResolve_PermissionReject(t *testing.T) {
+	h, mockClient := newTestHandlers()
+	ctx := context.Background()
+
+	mockClient.On("PermissionReply", ctx, "ws-123", "per_abc", "reject", "").Return(nil)
+
+	result, err := h.runResolve(ctx, makeReq("run_resolve", map[string]any{
+		"workspace_id": "ws-123",
+		"request_id":   "per_abc",
+		"reply":        "reject",
+	}))
+
+	require.NoError(t, err)
+	assert.False(t, result.IsError)
+	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "reject")
+	mockClient.AssertExpectations(t)
+}
+
+func TestRunResolve_InvalidRequestIDPrefix(t *testing.T) {
+	h, _ := newTestHandlers()
+
+	result, err := h.runResolve(context.Background(), makeReq("run_resolve", map[string]any{
+		"workspace_id": "ws-123",
+		"request_id":   "unknown_abc",
+		"reply":        "whatever",
+	}))
+
+	require.NoError(t, err)
+	assert.True(t, result.IsError)
+	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "must start with 'que_'")
+}
+
+func TestRunResolve_MissingArgs(t *testing.T) {
+	h, _ := newTestHandlers()
+
+	result, err := h.runResolve(context.Background(), makeReq("run_resolve", map[string]any{
+		"workspace_id": "ws-123",
+	}))
+
+	require.NoError(t, err)
+	assert.True(t, result.IsError)
+}
+
+func TestRunResolve_QuestionInvalidJSON(t *testing.T) {
+	h, _ := newTestHandlers()
+
+	result, err := h.runResolve(context.Background(), makeReq("run_resolve", map[string]any{
+		"workspace_id": "ws-123",
+		"request_id":   "que_abc",
+		"reply":        "not-json",
+	}))
+
+	require.NoError(t, err)
+	assert.True(t, result.IsError)
+	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "JSON array")
+}

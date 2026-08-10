@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -35,6 +36,7 @@ func NewServer(client APIClient, defaultTimeout time.Duration) *server.MCPServer
 		server.ServerTool{Tool: sessionQuestionReplyTool, Handler: h.sessionQuestionReply},
 		server.ServerTool{Tool: sessionQuestionRejectTool, Handler: h.sessionQuestionReject},
 		server.ServerTool{Tool: sessionPermissionReplyTool, Handler: h.sessionPermissionReply},
+		server.ServerTool{Tool: runResolveTool, Handler: h.runResolve},
 		server.ServerTool{Tool: credentialCreateTool, Handler: h.credentialCreate},
 		server.ServerTool{Tool: credentialListTool, Handler: h.credentialList},
 		server.ServerTool{Tool: credentialDeleteTool, Handler: h.credentialDelete},
@@ -82,7 +84,12 @@ var sessionCreateTool = mcp.NewTool("session_create",
 )
 
 var sessionMessageTool = mcp.NewTool("session_message",
-	mcp.WithDescription("Send a message to an agent session and get a response"),
+	mcp.WithDescription("Send a message to an agent session and get a response. "+
+		"This is a synchronous wrapper: it calls Send and waits for the assistant to complete. "+
+		"For long-running tasks, use session_message to start the task, then poll session_history "+
+		"to check for the completed response — the sync wait may time out on complex tasks. "+
+		"If the agent asks a question or requests permission, the response will indicate a pending "+
+		"input request; use run_resolve to answer it."),
 	mcp.WithString("workspace_id", mcp.Required(), mcp.Description("Workspace ID")),
 	mcp.WithString("session_id", mcp.Required(), mcp.Description("Session ID")),
 	mcp.WithString("message", mcp.Required(), mcp.Description("The message/prompt to send")),
@@ -256,6 +263,22 @@ var sessionPermissionReplyTool = mcp.NewTool("session_permission_reply",
 	mcp.WithString("message", mcp.Description("Optional message to send with the reply")),
 )
 
+// run_resolve (US-65.7): unified tool for resolving any pending input
+// request (question or permission). Collapses session_question_reply,
+// session_question_reject, and session_permission_reply into one tool
+// that matches the Adapter's unified InputRequest contract.
+var runResolveTool = mcp.NewTool("run_resolve",
+	mcp.WithDescription("Resolve a pending input request (question or permission) from the agent. "+
+		"Use this when the agent asks a question or requests permission during a session. "+
+		"The request_id determines the type: 'que_*' IDs are questions, 'per_*' IDs are permissions."),
+	mcp.WithString("workspace_id", mcp.Required(), mcp.Description("Workspace ID")),
+	mcp.WithString("request_id", mcp.Required(), mcp.Description("Request ID ('que_*' for questions, 'per_*' for permissions)")),
+	mcp.WithString("reply", mcp.Required(), mcp.Description(
+		"For questions: JSON array of answers, e.g. [[\"option1\"]]. "+
+			"For permissions: 'once', 'always', or 'reject'.")),
+	mcp.WithString("message", mcp.Description("Optional message to send with the reply")),
+)
+
 // --- Question & Permission handlers ---
 
 func (h *handlers) sessionQuestionReply(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -312,6 +335,56 @@ func (h *handlers) sessionPermissionReply(ctx context.Context, req mcp.CallToolR
 		return mcp.NewToolResultError(fmt.Sprintf("failed to reply to permission request: %v", err)), nil
 	}
 	return mcp.NewToolResultText(fmt.Sprintf("Permission %s", reply)), nil
+}
+
+// runResolve (US-65.7): unified handler that routes to question or
+// permission resolution based on the request_id prefix. 'que_' →
+// question reply/reject, 'per_' → permission reply. This collapses
+// the three separate tools (session_question_reply, session_question_reject,
+// session_permission_reply) into one matching the Adapter's unified
+// InputRequest contract.
+func (h *handlers) runResolve(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	args := req.GetArguments()
+	workspaceID := strArg(args, "workspace_id")
+	requestID := strArg(args, "request_id")
+	reply := strArg(args, "reply")
+
+	if workspaceID == "" || requestID == "" || reply == "" {
+		return mcp.NewToolResultError("workspace_id, request_id, and reply are required"), nil
+	}
+
+	msg := strArg(args, "message")
+
+	switch {
+	case strings.HasPrefix(requestID, "que_"):
+		if reply == "reject" {
+			if err := h.client.QuestionReject(ctx, workspaceID, requestID); err != nil {
+				return mcp.NewToolResultError(fmt.Sprintf("failed to reject question: %v", err)), nil
+			}
+			return mcp.NewToolResultText("Question rejected"), nil
+		}
+		var answers [][]string
+		if err := json.Unmarshal([]byte(reply), &answers); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("for questions, reply must be a JSON array of string arrays (e.g. [[\"answer\"]]) or 'reject': %v", err)), nil
+		}
+		if err := h.client.QuestionReply(ctx, workspaceID, requestID, answers); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("failed to reply to question: %v", err)), nil
+		}
+		return mcp.NewToolResultText("Question answered"), nil
+
+	case strings.HasPrefix(requestID, "per_"):
+		validReplies := map[string]bool{"once": true, "always": true, "reject": true}
+		if !validReplies[reply] {
+			return mcp.NewToolResultError("for permissions, reply must be 'once', 'always', or 'reject'"), nil
+		}
+		if err := h.client.PermissionReply(ctx, workspaceID, requestID, reply, msg); err != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("failed to reply to permission request: %v", err)), nil
+		}
+		return mcp.NewToolResultText(fmt.Sprintf("Permission %s", reply)), nil
+
+	default:
+		return mcp.NewToolResultError("request_id must start with 'que_' (question) or 'per_' (permission)"), nil
+	}
 }
 
 // validCredentialKinds is the set of SDK-class values advertised on the
