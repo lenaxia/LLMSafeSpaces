@@ -92,14 +92,21 @@ func TestChainedWiring_WatcherToSecretautopush(t *testing.T) {
 	fakeWatch.Add(ws)
 
 	// Poll for the pusher to receive its call. The chain is fully async
-	// (watch goroutine → secretautopush.Service.run goroutine). Wait on
-	// lastCtx being populated — the actual value the assertions below
-	// dereference — rather than the calls counter (a proxy that was
-	// publishable before the ctx store completed, causing a CI flake).
+	// (watch goroutine → secretautopush.Service.run goroutine).
+	//
+	// Poll on BOTH lastCtx!=nil AND calls>=1. Go's atomic operations are
+	// sequentially consistent — observing a later operation implies
+	// visibility of all earlier ones, but NOT vice versa. Polling on both
+	// conditions makes the wait robust against ANY single reorder of the
+	// store sequence in Push: regardless of whether calls or lastCtx is
+	// stored last, the poll only returns when both are published. This
+	// closes the original flake (calls published before lastCtx) and the
+	// mirror race (lastCtx published before calls) permanently.
+	//
 	// 5s timeout is generous for the two-goroutine chain under CI load;
 	// the codebase default of 2s is calibrated for single-goroutine hops.
 	assert.Eventually(t, func() bool {
-		return pusher.lastCtx.Load() != nil
+		return pusher.lastCtx.Load() != nil && pusher.calls.Load() >= 1
 	}, 5*time.Second, 10*time.Millisecond,
 		"pusher MUST have been called through the full chain "+
 			"(watcher event → callback → filter → DEK fetch → push)")
@@ -150,14 +157,11 @@ type chainedFakePusher struct {
 }
 
 func (f *chainedFakePusher) Push(ctx context.Context, userID, workspaceID string) error {
-	// Store all fields BEFORE incrementing the call counter. The test's
-	// polling loop waits on calls>=1 as the publication signal; if the
-	// counter is incremented first, there is a window where calls==1 but
-	// lastCtx is still nil — exactly the race that caused the CI flake
-	// (require.NotNil at the lastCtx assertion failed intermittently).
-	// Atomic operations in Go provide sequential consistency, so any
-	// reader that observes calls>=1 is guaranteed to observe all prior
-	// stores.
+	// Store all fields BEFORE incrementing the call counter. Go's atomic
+	// operations are sequentially consistent, so any reader that observes
+	// calls>=1 is guaranteed to observe all prior stores. The test polls
+	// on both lastCtx!=nil AND calls>=1, making the wait robust against
+	// any single reorder of this sequence.
 	f.sawUserID.Store(userID)
 	f.sawWorkspaceID.Store(workspaceID)
 	f.lastCtx.Store(ctx)
