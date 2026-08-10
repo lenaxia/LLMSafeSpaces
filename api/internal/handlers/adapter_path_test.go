@@ -392,3 +392,194 @@ func TestGetHistory_AdapterPath_EmptyResult_ReturnsEmptyArray(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &msgs))
 	assert.Empty(t, msgs)
 }
+
+// --- Session CRUD adapter paths ---
+
+func TestCreateSession_AdapterPath_ReturnsContractJSON(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{
+		createSessionFn: func(_ context.Context, _, _, _ string) (*session.Session, error) {
+			return &session.Session{ID: "ses_new", Title: "New Session", Status: session.StatusIdle}, nil
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	h.CreateSession(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var s session.Session
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &s))
+	assert.Equal(t, "ses_new", s.ID)
+	assert.Equal(t, "New Session", s.Title)
+}
+
+func TestListSessions_AdapterPath_ReturnsContractArray(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{
+		listSessionsFn: func(_ context.Context, _, _ string) ([]session.Session, error) {
+			return []session.Session{
+				{ID: "ses_1", Title: "First", Status: session.StatusIdle},
+				{ID: "ses_2", Title: "Second", Status: session.StatusBusy},
+			}, nil
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}}
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+	h.ListSessions(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var sessions []session.Session
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &sessions))
+	require.Len(t, sessions, 2)
+	assert.Equal(t, "ses_1", sessions[0].ID)
+	assert.Equal(t, session.StatusBusy, sessions[1].Status)
+}
+
+func TestGetSession_AdapterPath_ReturnsContractJSON(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{
+		getSessionFn: func(_ context.Context, _, _, _ string) (*session.Session, error) {
+			return &session.Session{ID: "ses_1", Title: "My Session", Status: session.StatusIdle}, nil
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+
+	h.GetSession(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var s session.Session
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &s))
+	assert.Equal(t, "ses_1", s.ID)
+	assert.Equal(t, "My Session", s.Title)
+}
+
+func TestRenameSessionInAgent_AdapterPath_DelegatesToAdapter(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	called := false
+	h.adapter = &mockAdapter{
+		renameSessionFn: func(_ context.Context, _, _, sid, title string) error {
+			called = true
+			assert.Equal(t, "ses_1", sid)
+			assert.Equal(t, "New Title", title)
+			return nil
+		},
+	}
+
+	err := h.RenameSessionInAgent(context.Background(), "ws-1", "ses_1", "New Title")
+	require.NoError(t, err)
+	assert.True(t, called)
+}
+
+func TestRenameSessionInAgent_AdapterPath_Error(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{
+		renameSessionFn: func(_ context.Context, _, _, _, _ string) error {
+			return fmt.Errorf("pod unreachable")
+		},
+	}
+
+	err := h.RenameSessionInAgent(context.Background(), "ws-1", "ses_1", "x")
+	require.Error(t, err)
+}
+
+// --- Error paths for session CRUD adapter ---
+
+func TestCreateSession_AdapterPath_Error_Returns502(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{
+		createSessionFn: func(_ context.Context, _, _, _ string) (*session.Session, error) {
+			return nil, fmt.Errorf("pod unreachable")
+		},
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	h.CreateSession(c)
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+}
+
+func TestListSessions_AdapterPath_Error_Returns502(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{
+		listSessionsFn: func(_ context.Context, _, _ string) ([]session.Session, error) {
+			return nil, fmt.Errorf("timeout")
+		},
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}}
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	h.ListSessions(c)
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+}
+
+func TestGetSession_AdapterPath_Error_Returns502(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{
+		getSessionFn: func(_ context.Context, _, _, _ string) (*session.Session, error) {
+			return nil, fmt.Errorf("pod unreachable")
+		},
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	h.GetSession(c)
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+}
+
+func TestListSessions_AdapterPath_EmptyResult_ReturnsEmptyArray(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{
+		listSessionsFn: func(_ context.Context, _, _ string) ([]session.Session, error) {
+			return []session.Session{}, nil
+		},
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}}
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	h.ListSessions(c)
+	require.Equal(t, http.StatusOK, w.Code)
+	var sessions []session.Session
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &sessions))
+	assert.Empty(t, sessions)
+}
+
+func TestGetSession_AdapterPath_NilResult_ReturnsNullJSON(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{
+		getSessionFn: func(_ context.Context, _, _, _ string) (*session.Session, error) {
+			return nil, nil
+		},
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	h.GetSession(c)
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "null", w.Body.String())
+}

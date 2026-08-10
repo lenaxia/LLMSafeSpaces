@@ -16,7 +16,9 @@ import (
 // rather than silently returning zero values.
 type mockAdapter struct {
 	getSessionFn        func(ctx context.Context, userID, workspaceID, sessionID string) (*session.Session, error)
+	createSessionFn     func(ctx context.Context, userID, workspaceID, title string) (*session.Session, error)
 	listSessionsFn      func(ctx context.Context, userID, workspaceID string) ([]session.Session, error)
+	renameSessionFn     func(ctx context.Context, userID, workspaceID, sessionID, title string) error
 	listPendingFn       func(ctx context.Context, userID, workspaceID, sessionID string) ([]session.InputRequest, error)
 	resolveFn           func(ctx context.Context, userID, workspaceID, requestID, reply string) error
 	getHistoryFn        func(ctx context.Context, userID, workspaceID, sessionID string) ([]session.Message, error)
@@ -24,7 +26,10 @@ type mockAdapter struct {
 	validateCredsFn     func(rawConfig []byte) (*agent.CredentialCheckResult, error)
 }
 
-func (m *mockAdapter) CreateSession(_ context.Context, _, _, _ string) (*session.Session, error) {
+func (m *mockAdapter) CreateSession(ctx context.Context, uid, wid, title string) (*session.Session, error) {
+	if m.createSessionFn != nil {
+		return m.createSessionFn(ctx, uid, wid, title)
+	}
 	panic("mockAdapter.CreateSession not configured")
 }
 func (m *mockAdapter) GetSession(ctx context.Context, uid, wid, sid string) (*session.Session, error) {
@@ -39,7 +44,10 @@ func (m *mockAdapter) ListSessions(ctx context.Context, uid, wid string) ([]sess
 	}
 	panic("mockAdapter.ListSessions not configured")
 }
-func (m *mockAdapter) RenameSession(_ context.Context, _, _, _, _ string) error {
+func (m *mockAdapter) RenameSession(ctx context.Context, uid, wid, sid, title string) error {
+	if m.renameSessionFn != nil {
+		return m.renameSessionFn(ctx, uid, wid, sid, title)
+	}
 	panic("mockAdapter.RenameSession not configured")
 }
 func (m *mockAdapter) DeleteSession(_ context.Context, _, _, _ string) error {
