@@ -72,6 +72,7 @@ type SchedulerStore interface {
 	IncrementTriggerFailures(ctx context.Context, triggerID string) (int, error)
 	ResetTriggerFailures(ctx context.Context, triggerID string) error
 	DisableTrigger(ctx context.Context, triggerID string) error
+	RecordSessionOrigin(ctx context.Context, row *wf.SessionOriginRow) error
 }
 
 // --- AgentdExecutor interface ---
@@ -640,18 +641,44 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		if trigger.CaptureMode == types.CaptureFull {
 			resultData = agentResp.Output
 		}
-		if trigger.PreserveSession == types.PreserveOnFailure {
-			var agentOutput map[string]any
-			if json.Unmarshal(agentResp.Output, &agentOutput) == nil {
-				if sessionID, ok := agentOutput["session_id"].(string); ok && sessionID != "" {
-					deleteReq, _ := http.NewRequestWithContext(ctx, "DELETE",
-						fmt.Sprintf("http://%s:%d/v1/workflow/session/delete?sessionId=%s", podIP, agentdExecPort(), sessionID), nil)
-					deleteResp, err := httpClient().Do(deleteReq)
-					if err == nil {
-						_ = deleteResp.Body.Close()
-					}
-				}
+
+		// Extract session_id from agent output. agentd always includes
+		// session_id in the result; for PreserveNever it's set to "" by
+		// agentd after deleting the ephemeral session.
+		var sessionID string
+		var agentOutput map[string]any
+		if json.Unmarshal(agentResp.Output, &agentOutput) == nil {
+			if id, ok := agentOutput["session_id"].(string); ok {
+				sessionID = id
 			}
+		}
+
+		// PreserveOnFailure: delete session on success.
+		sessionDeleted := false
+		if trigger.PreserveSession == types.PreserveOnFailure && sessionID != "" {
+			deleteReq, _ := http.NewRequestWithContext(ctx, "DELETE",
+				fmt.Sprintf("http://%s:%d/v1/workflow/session/delete?sessionId=%s", podIP, agentdExecPort(), sessionID), nil)
+			deleteResp, err := httpClient().Do(deleteReq)
+			if err == nil {
+				_ = deleteResp.Body.Close()
+			}
+			sessionDeleted = true
+		}
+
+		// Record session origin so the sidebar can show the "routine"
+		// badge and link the session back to its trigger. Only record
+		// when the session still exists (not deleted by PreserveOnFailure
+		// success or PreserveNever ephemeral cleanup).
+		if sessionID != "" && !sessionDeleted {
+			_ = s.Store.RecordSessionOrigin(ctx, &wf.SessionOriginRow{
+				SessionID:   sessionID,
+				WorkspaceID: workspaceID,
+				Origin:      types.SessionOriginRoutine,
+				TriggerID:   &trigger.ID,
+				FireID:      &fireID,
+				Title:       trigger.Name,
+				CreatedAt:   time.Now().UTC(),
+			})
 		}
 	}
 
