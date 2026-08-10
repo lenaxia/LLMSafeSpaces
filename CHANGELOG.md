@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-08-10
+
+### Added
+
+- **Session contract + V2 session queue (#695)** — platform-owned session
+  contract (US-65.2/65.6) and V2 session queue (US-63.1→63.4). Decouples
+  the platform from opencode via a typed session model behind a single
+  adapter seam.
+- **SSE bridge + stranded-input recovery (#698)** — US-63.5 SSE bridge
+  for reliable streaming and US-63.9 stranded-input recovery for sessions
+  interrupted during queue drain.
+
+### Fixed
+
+- **Trigger concurrent-fire race (#700)** — `ListDueCronTriggers` used a
+  plain SELECT with no row locking; every API replica's scheduler tick
+  fired the same due trigger concurrently, inflating the failure counter
+  past `auto_disable_after`. Replaced with `ClaimDueCronTriggers` using
+  `FOR UPDATE SKIP LOCKED` + atomic timestamp advance.
+- **Trigger counter not reset on re-enable (#700)** — `UpdateTrigger`
+  now resets `consecutive_failures` to 0 on the `enabled=false→true`
+  transition via a CASE clause. Previously a trigger disabled at 15
+  failures would immediately re-disable on the first failed fire after
+  re-enable.
+- **Workspace re-suspend during activation (#696)** — `K8sWorkspaceActivator`
+  now refreshes `last-activity-at` when patching `spec.suspend=false`,
+  preventing the controller's idle-timeout check from immediately
+  re-suspending the workspace on the next reconcile.
+- **Stuck-Creating escape hatch + FailedMount auto-recovery (#702)** —
+  `spec.suspend=true` now honored in Pending + Creating phases (not just
+  Active). FN3b recovery guard predicate fixed: `noContainerHasEverStarted`
+  checks the actual kubelet-progress signal instead of `len(status)==0`,
+  which missed FailedMount pods with non-zero Waiting status entries.
+- **Trigger editor routine parity (#694)** — routine triggers now have
+  full editing controls (workspace, prompt, agent, script, memory/capture/
+  session settings) in the trigger editor UI.
+- **Mobile-responsive drill-down navigation (#693)** — workflows + triggers
+  drill-down pages are now mobile-responsive.
+
 ## [0.12.0] - 2026-08-09
 
 ### Fixed — Completing items 1-7
