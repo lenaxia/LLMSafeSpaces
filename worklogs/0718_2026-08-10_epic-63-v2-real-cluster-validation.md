@@ -210,4 +210,4 @@ claimed or validated in this pass.
 - `local/us-63-v2-behavior-e2e.sh` — fixed session-create route + response key,
   echo-aware marker detection, clean HTTP codes, runtime container resolution,
   opt-in `EXTRA_CURL_HEADERS` for HTTPS-enforcing clusters.
-- `worklogs/NNNN_2026-08-10_epic-63-v2-real-cluster-validation.md` — this entry.
+- `worklogs/0718_2026-08-10_epic-63-v2-real-cluster-validation.md` — this entry.
