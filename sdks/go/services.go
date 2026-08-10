@@ -188,6 +188,14 @@ func (s *SessionsService) Enqueue(ctx context.Context, workspaceID, sessionID, t
 	return resp.MessageID, err
 }
 
+// ListQueue returns messages currently queued for the session.
+//
+// Deprecated: Under the V2 session-queue model (Epic 63), the queue is
+// inboard in opencode and this endpoint returns a best-effort shadow
+// derived from SSE events. Fields like RetryCount are vestigial. SDK
+// consumers who need queue visibility should subscribe to the workspace
+// SSE stream and track queue.update events. This method will be removed
+// in the next major version.
 func (s *SessionsService) ListQueue(ctx context.Context, workspaceID, sessionID string) ([]QueuedMessage, error) {
 	var resp struct {
 		Messages []QueuedMessage `json:"messages"`
@@ -196,6 +204,13 @@ func (s *SessionsService) ListQueue(ctx context.Context, workspaceID, sessionID 
 	return resp.Messages, err
 }
 
+// DismissQueued removes a queued message.
+//
+// Deprecated: Under the V2 session-queue model (Epic 63), abort is
+// non-destructive and queued messages survive. Dismiss removes the
+// message from the best-effort shadow only; it does not revoke the
+// durable input in opencode. This method will be removed in the next
+// major version.
 func (s *SessionsService) DismissQueued(ctx context.Context, workspaceID, sessionID, messageID string) error {
 	return s.c.do(ctx, "DELETE", fmt.Sprintf("/workspaces/%s/sessions/%s/queue/%s", workspaceID, sessionID, messageID), nil, nil)
 }

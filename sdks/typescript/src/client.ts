@@ -272,9 +272,21 @@ class SessionsAPI {
   enqueue(workspaceId: string, sessionId: string, text: string) {
     return this.client.request<{ messageID: string }>("POST", `/workspaces/${workspaceId}/sessions/${sessionId}/queue`, { text });
   }
+  /**
+   * @deprecated Under the V2 session-queue model (Epic 63), the queue is
+   * inboard in opencode and this endpoint returns a best-effort shadow
+   * derived from SSE events. Subscribe to the workspace SSE stream and
+   * track `queue.update` events instead. Removed in next major.
+   */
   listQueue(workspaceId: string, sessionId: string) {
     return this.client.request<{ messages: QueuedMessage[] }>("GET", `/workspaces/${workspaceId}/sessions/${sessionId}/queue`);
   }
+  /**
+   * @deprecated Under the V2 session-queue model (Epic 63), abort is
+   * non-destructive and queued messages survive. This removes from the
+   * best-effort shadow only; it does not revoke the durable input.
+   * Removed in next major.
+   */
   dismissQueued(workspaceId: string, sessionId: string, messageId: string) {
     return this.client.request<void>("DELETE", `/workspaces/${workspaceId}/sessions/${sessionId}/queue/${messageId}`);
   }

@@ -77,3 +77,23 @@ make generate-java
 2. **Hand-written spec** — no swag annotations exist in the codebase; `swag init` produces empty output
 3. **REST-only in v1** — SSE/WebSocket streaming not modeled in SDK types (use native libraries)
 4. **Proxy responses loosely typed** — opencode response format may change; marked with `x-opencode-proxy`
+
+## Session Queue (Epic 63)
+
+The session message queue has two modes:
+
+- **Legacy (V1)**: external Redis-backed queue. `listQueue`, `dismissQueued`,
+  and `QueuedMessage.RetryCount` are fully functional.
+- **V2 (inboard)**: the queue lives inside opencode's durable SQLite.
+  `enqueue` works identically. `listQueue` returns a best-effort shadow
+  derived from SSE events (may be incomplete). `dismissQueued` removes from
+  the shadow only — it does NOT revoke the durable input (abort is
+  non-destructive). `RetryCount` is vestigial.
+
+**For SDK consumers who need reliable queue visibility under V2:**
+subscribe to the workspace SSE stream (`GET /workspaces/{id}/events`) and
+track `queue.update` events (`enqueued` = message admitted, `sent` =
+message promoted/running). This is the authoritative source.
+
+`listQueue` and `dismissQueued` are deprecated and will be removed in the
+next major SDK version.
