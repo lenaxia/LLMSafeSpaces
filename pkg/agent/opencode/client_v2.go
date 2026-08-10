@@ -42,7 +42,7 @@ var (
 
 // v2PromptRequest is the body for POST /api/session/:sid/prompt.
 //
-// F18 (spike-verified): opencode 1.18.10 requires {prompt:{text:"..."}}, NOT
+// F18: opencode 1.18.10 requires {prompt:{text:"..."}}, NOT
 // {prompt:{parts:[...]}} — the parts-based shape from the Epic 65 contract
 // is newer than 1.18.10 and returns 400 InvalidRequestError. When opencode
 // is bumped to a version that accepts parts, this struct must change and a
@@ -52,6 +52,12 @@ var (
 // id via SessionMessage.ID.create(); a caller-supplied id risks
 // PromptConflictError (409) on collision — the same class of bug as the V1
 // message-id hack, avoided by simply not sending one.
+//
+// NOTE: the previous "spike-verified" wording on F18 was overstated — the
+// spike verified the request body shape but never the response shape, which
+// caused the V2PromptResponse.timeCreated decode bug (#707). Treat any
+// future change here as requiring a schema-pinned test against real
+// opencode output, not a doc-only assertion.
 type v2PromptRequest struct {
 	Prompt   v2PromptBody `json:"prompt"`
 	Delivery V2Delivery   `json:"delivery"`
@@ -65,13 +71,15 @@ type v2PromptBody struct {
 }
 
 // V2PromptResponse is the data payload returned by a successful
-// POST /api/session/:sid/prompt. The spike confirmed HTTP 200 with
-// {data:{admittedSeq, id, sessionID, prompt, delivery, timeCreated}}.
+// POST /api/session/:sid/prompt. Only the fields consumed by the platform
+// are decoded; opencode returns additional fields (prompt, delivery,
+// timeCreated) that are intentionally not typed here. Adding a typed field
+// requires a schema test pinning the real opencode output shape — see #707
+// for what happens when that discipline slips.
 type V2PromptResponse struct {
 	AdmittedSeq int    `json:"admittedSeq"`
 	ID          string `json:"id"`
 	SessionID   string `json:"sessionID"`
-	TimeCreated string `json:"timeCreated,omitempty"`
 }
 
 // PromptV2 sends a prompt to an opencode V2 session endpoint with the given
