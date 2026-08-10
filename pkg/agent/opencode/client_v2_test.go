@@ -52,7 +52,10 @@ func TestPromptV2_Success(t *testing.T) {
 	pw := "testpw"
 	ts := newV2TestServer(t, pw)
 	ts.respStatus = http.StatusOK
-	ts.respBody = `{"data":{"admittedSeq":3,"id":"msg_abc","sessionID":"ses_123","prompt":{"text":"hi"},"delivery":"queue","timeCreated":"2026-08-09T12:00:00Z"}}`
+	// Real opencode 1.18.10 response shape: timeCreated is a NUMBER (epoch
+	// millis), not a string. The previous test used an ISO-8601 string and
+	// masked the V2PromptResponse.timeCreated decode bug (#707).
+	ts.respBody = `{"data":{"admittedSeq":3,"id":"msg_abc","sessionID":"ses_123","prompt":{"text":"hi"},"delivery":"queue","timeCreated":1723204800000}}`
 
 	c := NewClient(ts.server.URL, pw, nil)
 
@@ -109,6 +112,35 @@ func TestPromptV2_Success(t *testing.T) {
 	// F17: verify NO id field on the request (caller must not supply one).
 	if _, hasID := body["id"]; hasID {
 		t.Fatalf("F17: body must NOT contain caller-supplied id (PromptConflictError risk); got %s", ts.lastBody)
+	}
+}
+
+// TestPromptV2_RealShapeTimeCreatedAsNumber pins the regression for #707:
+// opencode 1.18.10 returns timeCreated as an epoch-millis NUMBER. Any
+// future change that re-introduces a typed V2PromptResponse.TimeCreated
+// field as a string MUST fail here — the previous "spike-verified" claim
+// was never validated against real opencode output and shipped a latent
+// decode-failure 500 that only surfaced when LLMSAFESPACES_V2_SESSION_QUEUE
+// was enabled in v0.13.0.
+//
+// This test exists specifically to prevent that failure mode from
+// recurring: it asserts the response DECODES successfully when
+// timeCreated is a number, which it will only do as long as the struct
+// either omits the field or types it as a number-compatible type.
+func TestPromptV2_RealShapeTimeCreatedAsNumber(t *testing.T) {
+	pw := "pw"
+	ts := newV2TestServer(t, pw)
+	ts.respStatus = http.StatusOK
+	// Verbatim shape observed from opencode 1.18.10 in production (issue #707).
+	ts.respBody = `{"data":{"admittedSeq":7,"id":"msg_015cbf1c","sessionID":"ses_015cbf1c","prompt":{"text":"."},"delivery":"queue","timeCreated":1786316936471}}`
+
+	c := NewClient(ts.server.URL, pw, nil)
+	resp, err := c.PromptV2(context.Background(), "ses_015cbf1c", ".", V2DeliveryQueue)
+	if err != nil {
+		t.Fatalf("decode must succeed with timeCreated as number (#707 regression): %v", err)
+	}
+	if resp.ID != "msg_015cbf1c" {
+		t.Fatalf("ID = %q, want msg_015cbf1c", resp.ID)
 	}
 }
 
