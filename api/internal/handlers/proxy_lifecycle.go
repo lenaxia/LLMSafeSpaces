@@ -152,6 +152,15 @@ func (h *ProxyHandler) SetV2QueueShadow(s *V2QueueShadow) {
 	h.v2Shadow = s
 }
 
+// SetV2PendingTracker overrides the V2 pending-session tracker. Used by
+// app.go to swap the in-memory tracker for a Redis-backed one when a Redis
+// client is available (multi-replica support). Must be called before Start().
+func (h *ProxyHandler) SetV2PendingTracker(t v2PendingTracker) {
+	if t != nil {
+		h.v2Pending = t
+	}
+}
+
 // SetSweepInterval overrides the periodic queue-sweep interval (default 30s).
 // Primarily for tests that need the goroutine to fire quickly. Must be called
 // before Start().

@@ -209,6 +209,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		queueSvc := msgqueue.NewWithClient(cacheSvc.GetClient())
 		proxyHandler.SetMessageQueueService(queueSvc)
 		proxyHandler.SetV2QueueShadow(handlers.NewV2QueueShadow(cacheSvc.GetClient()))
+		proxyHandler.SetV2PendingTracker(handlers.NewV2PendingTracker(cacheSvc.GetClient()))
 
 		// US-45.2..US-45.8: swap the in-memory state store for a Redis-backed
 		// one so multi-replica deployments share all per-workspace state

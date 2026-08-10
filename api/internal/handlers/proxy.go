@@ -105,8 +105,10 @@ type ProxyHandler struct {
 
 	// v2Pending tracks sessions with undrained V2 queue-delivered input.
 	// Used by US-63.9 (stranded-input recovery) to identify sessions
-	// needing a wake after pod restart. Initialized in NewProxyHandler.
-	v2Pending *v2PendingSessions
+	// needing a wake after pod restart. Initialized in NewProxyHandler
+	// (in-memory); app.go swaps in Redis-backed when a client is available
+	// so multi-replica deployments share the pending set.
+	v2Pending v2PendingTracker
 
 	// v2Shadow is a Redis-backed view-cache of pending V2 queue messages
 	// per session for fresh-load pill visibility (US-63.10). nil when no
