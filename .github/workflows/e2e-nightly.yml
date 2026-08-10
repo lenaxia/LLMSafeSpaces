@@ -43,9 +43,14 @@ jobs:
           docker build --network host -f controller/Dockerfile -t llmsafespaces/controller:$IMAGE_TAG .
           docker build --network host -f runtimes/base/Dockerfile -t llmsafespaces/runtime-base:$IMAGE_TAG .
 
+          # Retag runtime-base with the ghcr.io/lenaxia/ prefix so the
+          # RuntimeEnvironment validating webhook's image allow-list accepts
+          # it (the webhook requires ghcr.io/lenaxia/ prefixed images).
+          docker tag llmsafespaces/runtime-base:$IMAGE_TAG ghcr.io/lenaxia/llmsafespaces/runtime-base:$IMAGE_TAG
+
           kind load docker-image llmsafespaces/api:$IMAGE_TAG --name $CLUSTER_NAME
           kind load docker-image llmsafespaces/controller:$IMAGE_TAG --name $CLUSTER_NAME
-          kind load docker-image llmsafespaces/runtime-base:$IMAGE_TAG --name $CLUSTER_NAME
+          kind load docker-image ghcr.io/lenaxia/llmsafespaces/runtime-base:$IMAGE_TAG --name $CLUSTER_NAME
 
       - name: Install cert-manager
         run: |
@@ -204,7 +209,7 @@ jobs:
           CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
           CTX: kind-${{ env.CLUSTER_NAME }}
           NS: ${{ env.NS }}
-          RUNTIME_IMAGE_REF: llmsafespaces/runtime-base:ci
+          RUNTIME_IMAGE_REF: ghcr.io/lenaxia/llmsafespaces/runtime-base:ci
           LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           LLM_MODEL: ${{ secrets.LLM_MODEL }}
