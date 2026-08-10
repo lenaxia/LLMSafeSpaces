@@ -191,3 +191,53 @@ func (h *ProxyHandler) state() wsstate.Store {
 	}
 	return h.stateStore
 }
+
+// --- Adapter resolver bridges (US-65.4 infrastructure) ---
+//
+// ProxyHandler already resolves pod IPs and passwords for its legacy
+// proxyToWorkspace path. These thin wrappers expose that infrastructure
+// as plain Go function/interface types so app.go can construct the
+// Agent Adapter without duplicating the K8s + Secret lookup logic.
+//
+// Returns generic types (not opencode.PasswordResolver / PodIPResolver)
+// to avoid importing pkg/agent/opencode from api/internal/handlers/,
+// which would violate the agent-import boundary (US-65.6). app.go is
+// in the allowed construction layer (api/internal/app/) and performs
+// the type assertion to the opencode-specific resolver interfaces.
+
+// AdapterPasswordResolver returns a function that resolves workspace
+// passwords via ProxyHandler's existing getPassword method.
+func (h *ProxyHandler) AdapterPasswordResolver() func(ctx context.Context, workspaceID string) (string, error) {
+	return h.getPassword
+}
+
+// AdapterPodIPResolver returns an interface that resolves workspace pod
+// IPs from the K8s CRD status. The userID parameter is accepted per the
+// Adapter's interface contract but not used — the K8s workspace lookup
+// is namespace-scoped, not user-scoped.
+func (h *ProxyHandler) AdapterPodIPResolver() AdapterPodIPResolver {
+	return &proxyPodIPResolver{h: h}
+}
+
+// AdapterPodIPResolver is the agent-generic pod IP resolver interface.
+// app.go casts to opencode.PodIPResolver when constructing the Adapter.
+type AdapterPodIPResolver interface {
+	GetWorkspacePodIP(ctx context.Context, userID, workspaceID string) (string, error)
+}
+
+type proxyPodIPResolver struct{ h *ProxyHandler }
+
+func (r *proxyPodIPResolver) GetWorkspacePodIP(ctx context.Context, _, workspaceID string) (string, error) {
+	v1Client, err := r.h.k8sClient.LlmsafespacesV1()
+	if err != nil {
+		return "", fmt.Errorf("get K8s client: %w", err)
+	}
+	ws, err := v1Client.Workspaces(r.h.namespace).Get(ctx, workspaceID, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("get workspace %s: %w", workspaceID, err)
+	}
+	if ws.Status.Phase != phaseActive || ws.Status.PodIP == "" {
+		return "", nil
+	}
+	return ws.Status.PodIP, nil
+}

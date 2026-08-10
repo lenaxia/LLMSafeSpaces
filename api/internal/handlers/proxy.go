@@ -134,6 +134,15 @@ type ProxyHandler struct {
 	// stopCh is closed by Stop() to signal background goroutines
 	// (e.g. the stranded-queue sweep) to shut down.
 	stopCh chan struct{}
+
+	// adapter is the US-65.3 Agent Adapter seam. nil means the handler
+	// uses the legacy dialect + proxyToWorkspace path (every handler
+	// today). US-65.4 migrates handlers one-by-one to call adapter
+	// methods instead; each migration checks `if h.adapter != nil` and
+	// takes the new path, falling back to the legacy path when nil.
+	// Set via SetAdapter before Start(). Once all handlers migrate,
+	// the dialect field retires and this becomes required.
+	adapter agent.Adapter
 }
 
 func NewProxyHandler(
@@ -172,6 +181,18 @@ func NewProxyHandler(
 		requestBuffer: newRequestBuffer(defaultBufferMaxSize, defaultBufferTimeout, defaultBufferPollInterval, logger),
 		v2Pending:     newV2PendingSessions(),
 	}, nil
+}
+
+// SetAdapter wires the US-65.3 Agent Adapter. Once set, handlers that
+// have been migrated check `h.adapter != nil` and take the Adapter path;
+// unmigrated handlers continue through the legacy dialect path. Set
+// before Start(); nil leaves the handler in legacy mode (today's
+// behavior).
+func (h *ProxyHandler) SetAdapter(a agent.Adapter) {
+	if a == nil {
+		return
+	}
+	h.adapter = a
 }
 
 // SetStateStore overrides the per-workspace state store. By default the
