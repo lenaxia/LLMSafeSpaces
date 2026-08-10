@@ -198,7 +198,7 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 	// container mounts them. Without this, kubelet fails the pod with
 	// "subPath not found" on a fresh PVC. Runs as the same non-root UID as
 	// the main container; writes only to the PVC root.
-	initContainers = append(initContainers, buildWorkspaceDirsInit(runtimeImage))
+	initContainers = append(initContainers, buildWorkspaceDirsInit(runtimeImage, workspace.Name))
 
 	// Epic 42 / 26: inject relay baseURL so agentd can configure the opencode
 	// provider to route free-tier inference through the self-hosted relay fleet
@@ -619,13 +619,31 @@ install -m 0600 /mnt/secrets/password/password /sandbox-cfg/password
 // the three PVC subPath directories (workspace/, home/, tmp/) at the PVC root
 // before any other init or the main container attempts to mount them.
 // Without this, kubelet fails the pod with "subPath not found" on a fresh PVC.
-func buildWorkspaceDirsInit(runtimeImage string) corev1.Container {
+//
+// Epic 65 / US-65.3: also initializes /workspace as a git repo so
+// pkg/agent/opencode/filediff.Producer can produce FileChange parts
+// via `git diff HEAD`. Idempotent: `git init` is a no-op on an
+// existing repo, so pod restarts and resumed workspaces both work.
+// The git config lines set a deterministic identity so future
+// per-turn commits succeed without inheriting host config — CI pods
+// often lack user.email and would fail commits. The identity uses
+// the workspace name for traceability in `git log` when an operator
+// inspects the PVC.
+func buildWorkspaceDirsInit(runtimeImage, workspaceName string) corev1.Container {
 	trueVal := true
 	falseVal := false
+	gitInitScript := fmt.Sprintf(
+		"mkdir -p /pvc/workspace /pvc/home /pvc/tmp && "+
+			"cd /pvc/workspace && "+
+			"git init -b main && "+
+			"git config user.email 'workspace-%s@llmsafespaces.local' && "+
+			"git config user.name 'workspace-%s'",
+		workspaceName, workspaceName,
+	)
 	return corev1.Container{
 		Name:    "workspace-dirs",
 		Image:   runtimeImage,
-		Command: []string{"/bin/sh", "-c", "mkdir -p /pvc/workspace /pvc/home /pvc/tmp"},
+		Command: []string{"/bin/sh", "-c", gitInitScript},
 		VolumeMounts: []corev1.VolumeMount{
 			// Mount PVC root (no subPath) so we can create the subdirectories.
 			{Name: "workspace", MountPath: "/pvc"},
