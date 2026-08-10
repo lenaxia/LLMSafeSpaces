@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-08-10
+
+### Fixed
+
+- **Session origin recording for routine triggers (#706)** — the
+  `session_origins` table, `RecordSessionOrigin` store method, and sidebar
+  badge UI were built during Epic 64 but never wired into the engine.
+  `executeRoutine` now calls `RecordSessionOrigin` after success, so
+  routine-created sessions show the purple "routine" badge in the sidebar
+  and link back to their trigger. Session deletion for `PreserveOnFailure`
+  now only suppresses origin recording when the DELETE actually succeeds.
+- **Create forms moved to detail pane (#705)** — trigger and workflow
+  create forms now open in the detail pane instead of a modal, matching
+  the edit flow.
+
+## [0.13.0] - 2026-08-10
+
+### Added
+
+- **Session contract + V2 session queue (#695)** — platform-owned session
+  contract (US-65.2/65.6) and V2 session queue (US-63.1→63.4). Decouples
+  the platform from opencode via a typed session model behind a single
+  adapter seam.
+- **SSE bridge + stranded-input recovery (#698)** — US-63.5 SSE bridge
+  for reliable streaming and US-63.9 stranded-input recovery for sessions
+  interrupted during queue drain.
+- **Fresh-load queue visibility (#701)** — Redis-backed shadow marker for
+  V2 queue pills on fresh page load.
+
+### Fixed
+
+- **Trigger concurrent-fire race (#700)** — `ListDueCronTriggers` used a
+  plain SELECT with no row locking; every API replica's scheduler tick
+  fired the same due trigger concurrently, inflating the failure counter
+  past `auto_disable_after`. Replaced with `ClaimDueCronTriggers` using
+  `FOR UPDATE SKIP LOCKED` + atomic timestamp advance.
+- **Trigger counter not reset on re-enable (#700)** — `UpdateTrigger`
+  now resets `consecutive_failures` to 0 on the `enabled=false→true`
+  transition via a CASE clause.
+- **Workspace re-suspend during activation (#696)** — `K8sWorkspaceActivator`
+  now refreshes `last-activity-at` when patching `spec.suspend=false`.
+- **Stuck-Creating escape hatch + FailedMount auto-recovery (#702)** —
+  `spec.suspend=true` now honored in Pending + Creating phases.
+
 ## [0.12.1] - 2026-08-09
 
 ### Fixed
