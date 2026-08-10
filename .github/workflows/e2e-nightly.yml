@@ -102,6 +102,7 @@ jobs:
             --set externalSecret.create=true \
             --set "externalSecret.postgresPassword=e2e-pg-pw-2026" \
             --set "externalSecret.redisPassword=e2e-redis-pw-2026" \
+            --set rbac.scope=cluster \
             --set api.config.logging.development=true \
             --wait --timeout 5m
 
