@@ -9,9 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
 
 	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
@@ -82,6 +85,19 @@ const (
 // bridgeV2Admitted increment; bridgeV2Prompted decrements. A session is
 // removed from tracking only when its count reaches zero (all pending
 // inputs drained). Per-replica; sufficient for the SSE-reconnect case.
+// v2PendingTracker tracks sessions with undrained V2 queue-delivered input.
+// Used by US-63.9 (stranded-input recovery) to identify sessions needing a
+// wake after pod restart. Redis-backed in production (cross-replica shared);
+// in-memory in tests without Redis.
+type v2PendingTracker interface {
+	add(workspaceID, sessionID string)
+	remove(workspaceID, sessionID string)
+	has(workspaceID, sessionID string) bool
+	sessionsForWorkspace(workspaceID string) []string
+}
+
+// --- in-memory implementation (tests, single-replica fallback) ---
+
 type v2PendingSessions struct {
 	mu   sync.Mutex
 	data map[string]map[string]int // workspaceID → sessionID → pending count
@@ -130,6 +146,93 @@ func (v *v2PendingSessions) sessionsForWorkspace(workspaceID string) []string {
 	out := make([]string, 0, len(ws))
 	for sid := range ws {
 		out = append(out, sid)
+	}
+	return out
+}
+
+// --- Redis-backed implementation (production, multi-replica) ---
+
+// v2PendingRedis tracks pending V2 sessions in Redis so all replicas share
+// the same view. A Redis hash per workspace stores sessionID → pending count.
+// HINCRBY increments/decrements atomically; sessions reaching zero are
+// removed. A TTL on the hash key prevents unbounded growth from lost events.
+type v2PendingRedis struct {
+	client *redis.Client
+}
+
+const v2PendingTTL = 10 * time.Minute
+
+func newV2PendingRedis(client *redis.Client) *v2PendingRedis {
+	if client == nil {
+		return nil
+	}
+	return &v2PendingRedis{client: client}
+}
+
+// NewV2PendingTracker creates a Redis-backed pending-session tracker for
+// multi-replica V2 stranded-input recovery. Returns nil if client is nil
+// (caller keeps the in-memory default).
+func NewV2PendingTracker(client *redis.Client) v2PendingTracker {
+	return newV2PendingRedis(client)
+}
+
+func v2PendingKey(workspaceID string) string {
+	return fmt.Sprintf("v2pending:%s", workspaceID)
+}
+
+func (v *v2PendingRedis) add(workspaceID, sessionID string) {
+	if v == nil {
+		return
+	}
+	ctx := context.Background()
+	key := v2PendingKey(workspaceID)
+	pipe := v.client.TxPipeline()
+	pipe.HIncrBy(ctx, key, sessionID, 1)
+	pipe.Expire(ctx, key, v2PendingTTL)
+	_, _ = pipe.Exec(ctx)
+}
+
+func (v *v2PendingRedis) remove(workspaceID, sessionID string) {
+	if v == nil {
+		return
+	}
+	ctx := context.Background()
+	key := v2PendingKey(workspaceID)
+	newVal, err := v.client.HIncrBy(ctx, key, sessionID, -1).Result()
+	if err != nil {
+		return
+	}
+	if newVal <= 0 {
+		v.client.HDel(ctx, key, sessionID)
+	}
+}
+
+func (v *v2PendingRedis) has(workspaceID, sessionID string) bool {
+	if v == nil {
+		return false
+	}
+	ctx := context.Background()
+	val, err := v.client.HGet(ctx, v2PendingKey(workspaceID), sessionID).Int()
+	if err != nil {
+		return false
+	}
+	return val > 0
+}
+
+func (v *v2PendingRedis) sessionsForWorkspace(workspaceID string) []string {
+	if v == nil {
+		return nil
+	}
+	ctx := context.Background()
+	raw, err := v.client.HGetAll(ctx, v2PendingKey(workspaceID)).Result()
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for sid, val := range raw {
+		if n, err := strconv.Atoi(val); err == nil && n > 0 {
+			out = append(out, sid)
+		}
 	}
 	return out
 }
