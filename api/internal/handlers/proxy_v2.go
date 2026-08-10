@@ -173,7 +173,11 @@ func newV2PendingRedis(client *redis.Client) *v2PendingRedis {
 // multi-replica V2 stranded-input recovery. Returns nil if client is nil
 // (caller keeps the in-memory default).
 func NewV2PendingTracker(client *redis.Client) v2PendingTracker {
-	return newV2PendingRedis(client)
+	t := newV2PendingRedis(client)
+	if t == nil {
+		return nil
+	}
+	return t
 }
 
 func v2PendingKey(workspaceID string) string {
@@ -197,13 +201,16 @@ func (v *v2PendingRedis) remove(workspaceID, sessionID string) {
 		return
 	}
 	ctx := context.Background()
-	key := v2PendingKey(workspaceID)
-	newVal, err := v.client.HIncrBy(ctx, key, sessionID, -1).Result()
+	// Decrement the reference count. Do NOT HDel even when count reaches
+	// zero — a concurrent add between HINCRBY -1 and HDel would be
+	// clobbered (TOCTOU race), reproducing the stranded-input bug.
+	// Readers (has, sessionsForWorkspace) filter count > 0; negative counts
+	// are invisible. The TTL sweeps the hash key eventually.
+	_, err := v.client.HIncrBy(ctx, v2PendingKey(workspaceID), sessionID, -1).Result()
 	if err != nil {
+		// Best-effort: Redis errors don't block the request path. The
+		// TTL sweeps stale entries; the next add re-increments.
 		return
-	}
-	if newVal <= 0 {
-		v.client.HDel(ctx, key, sessionID)
 	}
 }
 
