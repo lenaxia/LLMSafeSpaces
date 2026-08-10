@@ -39,7 +39,7 @@ Routes marked **[gated]** are feature-gated behind handler nil-checks in `router
 
 | Area | What's missing | Affected SDKs | Story |
 |---|---|---|---|
-| **Session queue** (`router.go:1286-1288`) | `POST/GET /sessions/{sid}/queue`, `DELETE /sessions/{sid}/queue/{mid}` — enqueue, list, dismiss | All 4 | US-62.6 |
+| **Session queue** (`router.go:1286-1288`) | `POST /sessions/{sid}/queue` (enqueue — fully supported under V2), `GET /sessions/{sid}/queue` (list — **deprecated** under V2, best-effort shadow), `DELETE /sessions/{sid}/queue/{mid}` (dismiss — **deprecated** under V2, shadow-only) | All 4 | US-62.6 (coordination: US-63.8) |
 | **Session metadata** (`router.go:1253`) | `PUT /sessions/{sid}/seen` — mark session seen | All 4 | US-62.6 |
 | **Session delete** (`router.go:1292`) | `DELETE /sessions/{sid}` | Python, TypeScript, Java | US-62.2 / US-62.4 / US-62.5 |
 | **Agent reload** **[gated]** (`router.go:1132-1133`) | `POST /agent/reload` — explicit agent reload (no pod restart). Gated on `cfg.AgentReloadHandler != nil`. | All 4 | US-62.7 |

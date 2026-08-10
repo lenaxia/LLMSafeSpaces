@@ -51,7 +51,7 @@ Endpoints marked with `x-opencode-proxy: true` return responses from the upstrea
 
 ### SSE endpoint
 
-`GET /workspaces/{id}/events` is a Server-Sent Events stream. OpenAPI cannot fully model SSE. This endpoint is documented for reference but is **not usable by generated SDK clients**. Use language-specific SSE libraries instead:
+`GET /workspaces/{id}/session-events` is a Server-Sent Events stream. OpenAPI cannot fully model SSE. This endpoint is documented for reference but is **not usable by generated SDK clients**. Use language-specific SSE libraries instead:
 
 - **Browser**: `EventSource` API
 - **Python**: `httpx-sse`
