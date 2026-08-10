@@ -523,23 +523,19 @@ else
     PROMPT_SESSION_ID=""
 fi
 
-# In V1, suspend is a Workspace-level operation, not a Sandbox-level one.
-# Suspending the workspace deletes all of its sandbox pods (the controller's
-# handleSuspending routine) and updates dependent Sandbox CRDs to phase
-# Suspended. PVCs and Sandbox CRDs are retained.
-#
-# kubectl drives the transition by status-patching phase=Suspending on the
-# Workspace, which is exactly what the API service does via
-# Workspace.UpdateStatus. This requires the status subresource, which the
-# Workspace CRD declares.
-log "Test 7/9 — Workspace suspend deletes sandbox pod, then resume"
+# Suspend/resume is driven by Spec.Suspend (the API service sets this; the
+# controller is the sole writer of Status.Phase). Setting spec.suspend=true
+# while Active triggers handleActive → Suspending → Suspended (pod deleted,
+# PVC retained). Setting spec.suspend=false while Suspended triggers
+# handleSuspended → Resuming → Active (pod re-created).
+log "Test 7/9 — Workspace suspend deletes pod, then resume"
 
 PRE_POD=$(kc -n "${NS}" get workspace "${WORKSPACE_NAME}" -o jsonpath='{.status.podName}')
-[[ -n "${PRE_POD}" ]] || die "sandbox.status.podName missing before suspend"
+[[ -n "${PRE_POD}" ]] || die "workspace.status.podName missing before suspend"
 
 kc -n "${NS}" patch workspace "${WORKSPACE_NAME}" \
-    --subresource=status --type=merge \
-    -p '{"status":{"phase":"Suspending"}}' >/dev/null
+    --type=merge \
+    -p '{"spec":{"suspend":true}}' >/dev/null
 
 log "  waiting up to 60s for Workspace phase=Suspended"
 for i in $(seq 1 20); do
@@ -556,40 +552,37 @@ for i in $(seq 1 20); do
     sleep 3
 done
 
-# The sandbox pod should now be gone (the workspace suspend handler deletes
-# it). The Sandbox CRD itself remains, with phase Suspended.
-log "  waiting up to 90s for sandbox pod ${PRE_POD} to be deleted"
+# The workspace pod should now be gone (the suspend handler deletes it).
+log "  waiting up to 90s for workspace pod ${PRE_POD} to be deleted"
 for i in $(seq 1 30); do
     if ! kc -n "${NS}" get pod "${PRE_POD}" >/dev/null 2>&1; then
-        ok "Sandbox pod deleted after ~$((i*3))s"
+        ok "Workspace pod deleted after ~$((i*3))s"
         break
     fi
     if (( i == 30 )); then
-        warn "Sandbox pod ${PRE_POD} still present after suspend"
+        warn "Workspace pod ${PRE_POD} still present after suspend"
         die "Pod deletion timeout"
     fi
     sleep 3
 done
 
-SB_PHASE=$(kc -n "${NS}" get workspace "${WORKSPACE_NAME}" -o jsonpath='{.status.phase}')
-[[ "${SB_PHASE}" == "Suspended" ]] || warn "sandbox phase is ${SB_PHASE} (expected Suspended) — workspace suspend handler may not be patching dependent sandboxes; not failing the test"
-
-# Resume: status-patch the workspace back to Active. The workspace controller
-# does not currently auto-recreate sandbox pods on resume (that's an API-driven
-# action in V1), so we just verify the workspace phase comes back.
+# Resume: set spec.suspend=false. The controller transitions Suspended →
+# Resuming → Creating → Active (pod re-created, opencode boots). This takes
+# ~20-25s (same as initial workspace creation).
 kc -n "${NS}" patch workspace "${WORKSPACE_NAME}" \
-    --subresource=status --type=merge \
-    -p '{"status":{"phase":"Active"}}' >/dev/null
+    --type=merge \
+    -p '{"spec":{"suspend":false}}' >/dev/null
 
-log "  verifying workspace returns to Active (within 15s)"
-for i in $(seq 1 5); do
+log "  waiting up to 120s for Workspace phase=Active (resume re-creates pod)"
+for i in $(seq 1 40); do
     PHASE=$(kc -n "${NS}" get workspace "${WORKSPACE_NAME}" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
     if [[ "${PHASE}" == "Active" ]]; then
         ok "Workspace back to Active after ~$((i*3))s"
         break
     fi
-    if (( i == 5 )); then
+    if (( i == 40 )); then
         warn "Workspace did not return to Active. Current phase=${PHASE}"
+        kc -n "${NS}" describe workspace "${WORKSPACE_NAME}" || true
         die "Workspace resume timeout"
     fi
     sleep 3
