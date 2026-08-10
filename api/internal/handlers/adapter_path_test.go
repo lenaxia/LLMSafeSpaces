@@ -658,8 +658,37 @@ func TestAbortSession_AdapterPath_ReturnsOK(t *testing.T) {
 	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
 
 	h.AbortSession(c)
-	require.Equal(t, http.StatusOK, w.Code)
+	c.Writer.WriteHeaderNow()
+	assert.Equal(t, http.StatusNoContent, w.Code)
 	assert.True(t, called)
+}
+
+func TestSendMessage_AdapterPath_EmptyText_Returns400(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"parts":[{"type":"text","text":""}]}`))
+	h.SendMessage(c)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestSendMessage_AdapterPath_InvalidJSON_Returns400(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`not json`))
+	h.SendMessage(c)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
 }
 
 func TestAbortSession_AdapterPath_Error_Returns502(t *testing.T) {

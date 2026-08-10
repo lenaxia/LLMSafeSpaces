@@ -72,6 +72,14 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
 		}
+		if len(text) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "text must not be empty"})
+			return
+		}
+		if len(text) > 100_000 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "text exceeds 100KB limit"})
+			return
+		}
 		msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{})
 		if err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to send message"})
@@ -779,14 +787,13 @@ func (h *ProxyHandler) AbortSession(c *gin.Context) {
 	wid := c.Param("id")
 
 	// Adapter path (US-65.4): non-destructive abort via adapter.Abort.
-	// The adapter calls opencode's V2 interrupt internally. When the
-	// adapter is wired, V2 is the only path (no legacy queue cleanup).
+	// Returns 204 to match the V2 interrupt response shape.
 	if h.adapter != nil {
 		if err := h.adapter.Abort(c.Request.Context(), "", wid, sid); err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to abort session"})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"aborted": true})
+		c.Status(http.StatusNoContent)
 		return
 	}
 
