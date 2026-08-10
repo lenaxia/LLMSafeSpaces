@@ -108,6 +108,12 @@ type ProxyHandler struct {
 	// needing a wake after pod restart. Initialized in NewProxyHandler.
 	v2Pending *v2PendingSessions
 
+	// v2Shadow is a Redis-backed view-cache of pending V2 queue messages
+	// per session for fresh-load pill visibility (US-63.10). nil when no
+	// Redis client is available (shadow disabled; ListQueue returns empty
+	// under V2). Set via SetV2QueueShadow before Start().
+	v2Shadow *V2QueueShadow
+
 	// sweepInterval overrides the default queueSweepInterval for testing.
 	// Zero means use the default (30s). Set via SetSweepInterval before Start().
 	sweepInterval time.Duration
