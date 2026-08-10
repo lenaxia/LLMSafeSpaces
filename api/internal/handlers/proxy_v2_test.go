@@ -43,7 +43,11 @@ func startV2TestServer(t *testing.T, password string) *httptest.Server {
 		case strings.HasSuffix(r.URL.Path, "/prompt"):
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte(`{"data":{"admittedSeq":1,"id":"msg_v2_1","sessionID":"ses-1"}}`))
+			// Defense-in-depth (#707): include the real opencode 1.18.10
+			// timeCreated-as-number shape in the canned body so any future
+			// re-introduction of a typed V2PromptResponse.TimeCreated field
+			// fails at the integration layer too, not just at the unit layer.
+			_, _ = w.Write([]byte(`{"data":{"admittedSeq":1,"id":"msg_v2_1","sessionID":"ses-1","timeCreated":1786316936471}}`))
 		case strings.HasSuffix(r.URL.Path, "/interrupt"):
 			w.WriteHeader(http.StatusNoContent)
 		default:
