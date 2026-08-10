@@ -155,6 +155,9 @@ func (h *ProxyHandler) bridgeV2Admitted(workspaceID, rawData string) {
 			MessageID string `json:"messageID"`
 			SessionID string `json:"sessionID"`
 			Delivery  string `json:"delivery"`
+			Prompt    struct {
+				Text string `json:"text"`
+			} `json:"prompt"`
 		} `json:"properties"`
 	}
 	if err := json.Unmarshal([]byte(rawData), &props); err != nil {
@@ -165,11 +168,10 @@ func (h *ProxyHandler) bridgeV2Admitted(workspaceID, rawData string) {
 		return
 	}
 	// US-63.5: synthesize queue.update/enqueued from the V2 admission event.
-	// Do NOT call v2Pending.add here — enqueueV2 already tracked the session
-	// when it sent the prompt. Adding here would double-count (enqueue adds
-	// + event adds = 2 per message). The event is the SSE signal, not the
-	// tracking signal.
 	h.publishQueueEvent(workspaceID, props.Properties.SessionID, "enqueued", props.Properties.MessageID, "")
+	// US-63.10: write to Redis shadow for fresh-load pill visibility.
+	h.v2Shadow.Add(context.Background(), workspaceID, props.Properties.SessionID,
+		props.Properties.MessageID, props.Properties.Prompt.Text)
 }
 
 func (h *ProxyHandler) bridgeV2Prompted(workspaceID, rawData string) {
@@ -189,6 +191,8 @@ func (h *ProxyHandler) bridgeV2Prompted(workspaceID, rawData string) {
 	}
 	h.publishQueueEvent(workspaceID, props.Properties.SessionID, "sent", props.Properties.MessageID, "")
 	h.v2Pending.remove(workspaceID, props.Properties.SessionID)
+	// US-63.10: clear from Redis shadow (message was promoted/drained).
+	h.v2Shadow.Remove(context.Background(), workspaceID, props.Properties.SessionID, props.Properties.MessageID)
 }
 
 // ---------------------------------------------------------------------------

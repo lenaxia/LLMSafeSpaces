@@ -1019,6 +1019,25 @@ func (h *ProxyHandler) ListQueue(c *gin.Context) {
 	}
 	wid := c.Param("id")
 
+	// US-63.10: under V2, read from the Redis-backed shadow marker instead
+	// of the deleted msgqueue. The shadow is populated by the SSE bridge
+	// on PromptAdmitted events and cleared on Prompted events.
+	if h.v2SessionQueueEnabled && h.v2Shadow != nil {
+		entries := h.v2Shadow.List(c.Request.Context(), wid, sid)
+		result := make([]gin.H, 0, len(entries))
+		for _, e := range entries {
+			result = append(result, gin.H{
+				"id":           e.ID,
+				"text":         e.Text,
+				"session_id":   sid,
+				"workspace_id": wid,
+				"enqueued_at":  time.Unix(e.EnqueuedAt, 0).UTC().Format(time.RFC3339),
+			})
+		}
+		c.JSON(http.StatusOK, gin.H{"messages": result})
+		return
+	}
+
 	if h.queueSvc == nil {
 		c.JSON(http.StatusOK, gin.H{"messages": []msgqueue.QueuedMessage{}})
 		return

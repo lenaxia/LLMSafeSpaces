@@ -145,6 +145,13 @@ func (h *ProxyHandler) SetV2SessionQueueEnabled(enabled bool) {
 	h.v2SessionQueueEnabled = enabled
 }
 
+// SetV2QueueShadow injects the Redis-backed shadow marker for V2 queue
+// visibility (US-63.10). Must be called before Start(). Pass nil to
+// disable the shadow (ListQueue returns empty under V2).
+func (h *ProxyHandler) SetV2QueueShadow(s *V2QueueShadow) {
+	h.v2Shadow = s
+}
+
 // SetSweepInterval overrides the periodic queue-sweep interval (default 30s).
 // Primarily for tests that need the goroutine to fire quickly. Must be called
 // before Start().
