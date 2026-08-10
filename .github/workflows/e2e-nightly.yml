@@ -57,10 +57,11 @@ jobs:
         # The Postgres/Valkey manifests reference llmsafespaces-credentials
         # for their passwords. The chart normally creates this Secret as a
         # pre-install hook — but Postgres must start BEFORE the chart (the
-        # API needs Postgres to pass readiness). Create the Secret first
-        # with known non-insecure passwords, then pass the same passwords
-        # to helm install so the chart does not rotate them.
+        # API needs Postgres to pass readiness). Create the namespace +
+        # Secret first with known non-insecure passwords, then pass the
+        # same passwords to helm install so the chart does not rotate them.
         run: |
+          kubectl create namespace $NS --dry-run=client -o yaml | kubectl apply -f -
           kubectl -n $NS create secret generic llmsafespaces-credentials \
               --from-literal=postgres-password=e2e-pg-pw-2026 \
               --from-literal=redis-password=e2e-redis-pw-2026 \
