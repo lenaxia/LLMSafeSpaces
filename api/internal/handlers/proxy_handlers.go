@@ -460,7 +460,7 @@ func (h *ProxyHandler) doHistoryRequest(ctx context.Context, podIP, workspaceID,
 	if reqErr != nil {
 		return nil, 0, fmt.Errorf("build upstream history request: %w", reqErr)
 	}
-	req.SetBasicAuth("opencode", password)
+	req.SetBasicAuth(agentd.AuthUsername, password)
 	req.Header.Set("X-Forwarded-For", clientIP)
 
 	resp, doErr := h.httpClient.Do(req)

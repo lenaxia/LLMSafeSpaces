@@ -192,6 +192,26 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	}
 	proxyHandler.SetRequestBufferConfig(cfg.Proxy.RequestBufferSizePerWorkspace, time.Duration(cfg.Proxy.RequestBufferTimeoutSeconds)*time.Second)
 
+	// US-65.4: construct the Agent Adapter and wire it into ProxyHandler.
+	// Today no handler uses it (h.adapter is nil-checked per handler);
+	// US-65.4's incremental migration flips each handler from the legacy
+	// dialect + proxyToWorkspace path to the Adapter path. The Adapter
+	// resolves pod IP + password via the ProxyHandler's existing
+	// infrastructure bridges (no duplicated K8s/Secret logic).
+	//
+	// The resolvers returned by ProxyHandler are generic Go types
+	// (func + interface) to avoid importing pkg/agent/opencode from
+	// api/internal/handlers/. agentoc.PasswordResolver is a func type
+	// (explicit conversion); agentoc.PodIPResolver is an interface that
+	// handlers.WorkspacePodIPResolver satisfies structurally (same
+	// method signature, no explicit cast needed — Go structural typing).
+	agentAdapter := agentoc.NewAdapter(
+		agentoc.PasswordResolver(proxyHandler.AdapterPasswordResolver()),
+		proxyHandler.AdapterPodIPResolver(),
+		log.ZapLogger(),
+	)
+	proxyHandler.SetAdapter(agentAdapter)
+
 	// Resolve subagent (subtask) sessions back to their root user-visible
 	// session, so permission/question events from child sessions bubble up
 	// to the chat view of the active parent session.

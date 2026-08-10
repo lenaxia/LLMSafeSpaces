@@ -12,6 +12,8 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
 
 // sessionParentEntry is a single cached parent lookup for a session.
@@ -144,7 +146,7 @@ func (h *ProxyHandler) fetchSessionParent(ctx context.Context, workspaceID, sess
 	if err != nil {
 		return "", err
 	}
-	req.SetBasicAuth("opencode", password)
+	req.SetBasicAuth(agentd.AuthUsername, password)
 
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
