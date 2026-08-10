@@ -432,12 +432,22 @@ func TestAdapter_AuthenticatesEveryRequest(t *testing.T) {
 
 func TestAdapter_ListPending_UnifiesQuestionsAndPermissions(t *testing.T) {
 	srv := newFakeOpencode(t)
+	// Full question shape matching what dialect.ParseQuestionRequest expects
+	// (from the question.asked event shape — see dialect.go ocQuestionEvent).
 	srv.register("GET", "/question", `[
-		{"id":"que_1","sessionID":"ses_1"},
-		{"id":"que_2","sessionID":"ses_1"}
+		{
+			"id":"que_1","sessionID":"ses_1",
+			"questions":[{"question":"Which option?","header":"Choose","options":[{"label":"A","description":"first"},{"label":"B","description":"second"}],"multiple":false,"custom":true}],
+			"tool":{"messageID":"msg_1","callID":"call_1"}
+		},
+		{
+			"id":"que_2","sessionID":"ses_1",
+			"questions":[{"question":"Another?","header":"Header2","options":[]}]
+		}
 	]`, 0)
+	// Full permission shape matching dialect.ParsePermissionRequest.
 	srv.register("GET", "/permission", `[
-		{"id":"per_1","sessionID":"ses_1","permission":"shell"}
+		{"id":"per_1","sessionID":"ses_1","permission":"shell","patterns":["bash"],"always":["/workspace"]}
 	]`, 0)
 
 	a := newTestAdapter(t, srv.Server)
@@ -451,6 +461,36 @@ func TestAdapter_ListPending_UnifiesQuestionsAndPermissions(t *testing.T) {
 	}
 	assert.Equal(t, 2, counts[session.InputQuestion])
 	assert.Equal(t, 1, counts[session.InputPermission])
+
+	// Verify full content survived the parse (PR #717 review critical
+	// bug: stub parser discarded everything except id+sessionID).
+	var q1 *session.InputRequest
+	for i := range reqs {
+		if reqs[i].ID == "que_1" {
+			q1 = &reqs[i]
+		}
+	}
+	require.NotNil(t, q1, "que_1 must be present")
+	assert.Equal(t, "Which option?", q1.Question, "question text must survive parse")
+	assert.Equal(t, "Choose", q1.Header)
+	assert.True(t, q1.Custom)
+	require.Len(t, q1.Options, 2)
+	assert.Equal(t, "A", q1.Options[0].Label)
+	assert.Equal(t, "first", q1.Options[0].Description)
+	require.NotNil(t, q1.Tool, "tool ref must survive parse")
+	assert.Equal(t, "msg_1", q1.Tool.MessageID)
+	assert.Equal(t, "call_1", q1.Tool.CallID)
+
+	var p1 *session.InputRequest
+	for i := range reqs {
+		if reqs[i].ID == "per_1" {
+			p1 = &reqs[i]
+		}
+	}
+	require.NotNil(t, p1, "per_1 must be present")
+	assert.Equal(t, "shell", p1.Permission)
+	assert.Contains(t, p1.Patterns, "bash")
+	assert.Contains(t, p1.Always, "/workspace")
 }
 
 // --- Resolve (PR #714 review follow-up: was untested) ---
