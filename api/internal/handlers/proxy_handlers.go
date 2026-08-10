@@ -28,10 +28,30 @@ import (
 )
 
 func (h *ProxyHandler) CreateSession(c *gin.Context) {
+	if h.adapter != nil {
+		wid := c.Param("id")
+		s, err := h.adapter.CreateSession(c.Request.Context(), "", wid, "")
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create session"})
+			return
+		}
+		c.JSON(http.StatusOK, s)
+		return
+	}
 	h.proxyToWorkspace(c, "/session", false, "")
 }
 
 func (h *ProxyHandler) ListSessions(c *gin.Context) {
+	if h.adapter != nil {
+		wid := c.Param("id")
+		sessions, err := h.adapter.ListSessions(c.Request.Context(), "", wid)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to list sessions"})
+			return
+		}
+		c.JSON(http.StatusOK, sessions)
+		return
+	}
 	h.proxyToWorkspace(c, "/session", false, "")
 }
 
@@ -701,6 +721,16 @@ func (h *ProxyHandler) GetSession(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid sessionId: " + err.Error()})
 		return
 	}
+	if h.adapter != nil {
+		wid := c.Param("id")
+		s, err := h.adapter.GetSession(c.Request.Context(), "", wid, sid)
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to get session"})
+			return
+		}
+		c.JSON(http.StatusOK, s)
+		return
+	}
 	h.proxyToWorkspace(c, "/session/"+sid, false, sid)
 }
 
@@ -903,6 +933,12 @@ func (h *ProxyHandler) RenameSessionInAgent(ctx context.Context, workspaceID, se
 		return fmt.Errorf("invalid sessionId: %w", err)
 	}
 
+	// Adapter path (US-65.4).
+	if h.adapter != nil {
+		return h.adapter.RenameSession(ctx, "", workspaceID, sessionID, title)
+	}
+
+	// Legacy path.
 	v1Client, err := h.k8sClient.LlmsafespacesV1()
 	if err != nil {
 		return fmt.Errorf("initialize LLMSafespacesV1 client: %w", err)
