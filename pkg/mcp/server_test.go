@@ -793,3 +793,74 @@ func TestRunResolve_QuestionInvalidJSON(t *testing.T) {
 	assert.True(t, result.IsError)
 	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "JSON array")
 }
+
+func TestRunResolve_QuestionReplyError(t *testing.T) {
+	h, mockClient := newTestHandlers()
+	ctx := context.Background()
+
+	mockClient.On("QuestionReply", ctx, "ws-123", "que_abc", [][]string{{"yes"}}).
+		Return(fmt.Errorf("agent pod unreachable"))
+
+	result, err := h.runResolve(ctx, makeReq("run_resolve", map[string]any{
+		"workspace_id": "ws-123",
+		"request_id":   "que_abc",
+		"reply":        `[["yes"]]`,
+	}))
+
+	require.NoError(t, err)
+	assert.True(t, result.IsError)
+	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "failed to reply to question")
+	mockClient.AssertExpectations(t)
+}
+
+func TestRunResolve_QuestionRejectError(t *testing.T) {
+	h, mockClient := newTestHandlers()
+	ctx := context.Background()
+
+	mockClient.On("QuestionReject", ctx, "ws-123", "que_abc").
+		Return(fmt.Errorf("network error"))
+
+	result, err := h.runResolve(ctx, makeReq("run_resolve", map[string]any{
+		"workspace_id": "ws-123",
+		"request_id":   "que_abc",
+		"reply":        "reject",
+	}))
+
+	require.NoError(t, err)
+	assert.True(t, result.IsError)
+	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "failed to reject question")
+	mockClient.AssertExpectations(t)
+}
+
+func TestRunResolve_PermissionReplyError(t *testing.T) {
+	h, mockClient := newTestHandlers()
+	ctx := context.Background()
+
+	mockClient.On("PermissionReply", ctx, "ws-123", "per_abc", "once", "").
+		Return(fmt.Errorf("timeout"))
+
+	result, err := h.runResolve(ctx, makeReq("run_resolve", map[string]any{
+		"workspace_id": "ws-123",
+		"request_id":   "per_abc",
+		"reply":        "once",
+	}))
+
+	require.NoError(t, err)
+	assert.True(t, result.IsError)
+	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "failed to reply to permission")
+	mockClient.AssertExpectations(t)
+}
+
+func TestRunResolve_PermissionInvalidReply(t *testing.T) {
+	h, _ := newTestHandlers()
+
+	result, err := h.runResolve(context.Background(), makeReq("run_resolve", map[string]any{
+		"workspace_id": "ws-123",
+		"request_id":   "per_abc",
+		"reply":        "maybe",
+	}))
+
+	require.NoError(t, err)
+	assert.True(t, result.IsError)
+	assert.Contains(t, result.Content[0].(mcp.TextContent).Text, "'once', 'always', or 'reject'")
+}

@@ -71,6 +71,7 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 	assert.True(t, toolNames["session_question_reply"])
 	assert.True(t, toolNames["session_question_reject"])
 	assert.True(t, toolNames["session_permission_reply"])
+	assert.True(t, toolNames["run_resolve"])
 
 	// 2. workspace_create
 	result, err := mcpClient.CallTool(ctx, mcp.CallToolRequest{
