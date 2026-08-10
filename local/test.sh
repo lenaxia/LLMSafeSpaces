@@ -783,29 +783,13 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# Test 12: Retry from Failed (fix #5)
-# Force the workspace to Failed by exhausting transient retries, then retry.
-# This test is destructive — only run if LLM creds are available (so we can
-# verify the workspace actually works after retry).
+# Test 12: (removed) — the /retry endpoint was removed when Sandbox CRD was
+# unified into Workspace. Recovery from Failed is now declarative via
+# /restart (bumps spec.restartGeneration), already exercised by Test 10.
 # -----------------------------------------------------------------------------
-log "Test 12 — Retry from Failed (fix #5)"
-
-# We'll test the API response shape even without forcing a real failure.
-RETRY_CODE=$(curl -s -o /tmp/llmsafespaces-retry.json -w "%{http_code}" \
-    -X POST \
-    -H "Authorization: Bearer ${API_KEY}" \
-    "http://127.0.0.1:${PORTFWD_PORT}/api/v1/workspaces/${WORKSPACE_NAME}/retry")
-if [[ "${RETRY_CODE}" == "409" ]]; then
-    ok "POST /retry correctly returns 409 when workspace is not Failed"
-elif [[ "${RETRY_CODE}" == "202" ]]; then
-    ok "POST /retry returned 202 (workspace was Failed; retry initiated)"
-else
-    warn "POST /retry returned ${RETRY_CODE} (expected 409 for non-Failed workspace)"
-fi
 
 log "Test 13/13 — cleanup"
-kc -n "${NS}" delete workspace "${WORKSPACE_NAME}" --wait=false >/dev/null
-kc -n "${NS}" delete workspace "${WORKSPACE_NAME}" --wait=false >/dev/null
+kc -n "${NS}" delete workspace "${WORKSPACE_NAME}" --ignore-not-found --wait=false >/dev/null 2>&1 || true
 ok "delete requested"
 
 cat <<EOF
