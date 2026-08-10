@@ -53,6 +53,20 @@ jobs:
           kubectl -n cert-manager rollout status deployment/cert-manager --timeout=180s
           kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout=180s
 
+      - name: Create credentials Secret (before Postgres)
+        # The Postgres/Valkey manifests reference llmsafespaces-credentials
+        # for their passwords. The chart normally creates this Secret as a
+        # pre-install hook — but Postgres must start BEFORE the chart (the
+        # API needs Postgres to pass readiness). Create the namespace +
+        # Secret first with known non-insecure passwords, then pass the
+        # same passwords to helm install so the chart does not rotate them.
+        run: |
+          kubectl create namespace $NS --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n $NS create secret generic llmsafespaces-credentials \
+              --from-literal=postgres-password=e2e-pg-pw-2026 \
+              --from-literal=redis-password=e2e-redis-pw-2026 \
+              --dry-run=client -o yaml | kubectl apply -f -
+
       - name: Deploy Postgres + Redis
         run: |
           kubectl apply -f local/postgres-redis.yaml
@@ -81,7 +95,8 @@ jobs:
             --set redis.host=redis-master \
             --set redis.port=6379 \
             --set externalSecret.create=true \
-            --set "externalSecret.postgresPassword=changeme" \
+            --set "externalSecret.postgresPassword=e2e-pg-pw-2026" \
+            --set "externalSecret.redisPassword=e2e-redis-pw-2026" \
             --set api.config.logging.development=true \
             --wait --timeout 5m
 

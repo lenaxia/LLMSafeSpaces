@@ -177,11 +177,28 @@ if [[ "${SKIP_DEPS:-0}" == "1" ]]; then
     warn "SKIP_DEPS=1 — assuming Postgres/Redis already installed"
 else
     log "Phase 5/6 — Postgres + Redis"
+
+    # The Postgres/Valkey manifests reference the llmsafespaces-credentials
+    # Secret for their passwords. The chart creates this Secret as a
+    # pre-install hook — but Postgres must start BEFORE the chart. Create
+    # the namespace + Secret first with known non-insecure passwords, then
+    # pass the same passwords to helm install so the chart does not rotate
+    # them.
+    kubectl --context "kind-${CLUSTER_NAME}" create namespace "${NS}" \
+        --dry-run=client -o yaml 2>/dev/null | \
+        kubectl --context "kind-${CLUSTER_NAME}" apply -f -
+    kubectl --context "kind-${CLUSTER_NAME}" -n "${NS}" create secret \
+        generic llmsafespaces-credentials \
+        --from-literal=postgres-password=dev-pg-pw-2026 \
+        --from-literal=redis-password=dev-redis-pw-2026 \
+        --dry-run=client -o yaml 2>/dev/null | \
+        kubectl --context "kind-${CLUSTER_NAME}" apply -f -
+
     kubectl --context "kind-${CLUSTER_NAME}" apply -f "${SCRIPT_DIR}/postgres-redis.yaml"
     log "  waiting for Postgres rollout (up to 3m)"
     kubectl --context "kind-${CLUSTER_NAME}" -n "${NS}" rollout status deployment/postgres --timeout=180s
     log "  waiting for Redis rollout (up to 3m)"
-    kubectl --context "kind-${CLUSTER_NAME}" -n "${NS}" rollout status deployment/redis-master --timeout=180s
+    kubectl --context "kind-${CLUSTER_NAME}" -n "${NS}" rollout status deployment/valkey --timeout=180s
     ok "data services ready"
 fi
 
@@ -205,7 +222,8 @@ helm --kube-context "kind-${CLUSTER_NAME}" upgrade --install "${RELEASE_NAME}" \
     --set "redis.host=redis-master" \
     --set "redis.port=6379" \
     --set "externalSecret.create=true" \
-    --set "externalSecret.postgresPassword=changeme" \
+    --set "externalSecret.postgresPassword=dev-pg-pw-2026" \
+    --set "externalSecret.redisPassword=dev-redis-pw-2026" \
     --set "api.config.logging.development=true" \
     --wait --timeout 5m
 
