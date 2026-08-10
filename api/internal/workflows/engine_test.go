@@ -446,6 +446,7 @@ type mockSchedulerStore struct {
 	statuses          map[string]string
 	triggerFail       map[string]int
 	lastRoutineResult json.RawMessage
+	sessionOrigins    map[string]*wf.SessionOriginRow
 }
 
 func newMockSchedulerStore() *mockSchedulerStore {
@@ -532,6 +533,16 @@ func (m *mockSchedulerStore) IncrementTriggerFailures(_ context.Context, trigger
 
 func (m *mockSchedulerStore) DisableTrigger(_ context.Context, triggerID string) error {
 	m.disabled[triggerID] = true
+	return nil
+}
+
+func (m *mockSchedulerStore) RecordSessionOrigin(_ context.Context, row *wf.SessionOriginRow) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.sessionOrigins == nil {
+		m.sessionOrigins = make(map[string]*wf.SessionOriginRow)
+	}
+	m.sessionOrigins[row.SessionID] = row
 	return nil
 }
 
@@ -932,7 +943,7 @@ func TestReconciler_InterfaceBasedArchitecture(t *testing.T) {
 func TestExecuteRoutine_SuccessDelivered(t *testing.T) {
 	store := newMockSchedulerStore()
 	agentd := newMockAgentd()
-	agentd.outputs["routine-agent"] = json.RawMessage(`{"response":"ok"}`)
+	agentd.outputs["routine-agent"] = json.RawMessage(`{"response":"ok","session_id":""}`)
 	wsID := "ws-1"
 	trigger := &wf.TriggerRow{ID: "trig-r1", WorkspaceID: &wsID, Prompt: "test", CaptureMode: types.CaptureFull, PreserveSession: types.PreserveNever}
 	fire := &wf.TriggerFireRow{ID: "fire-1", TriggerID: "trig-r1", InputEnvelope: json.RawMessage(`{}`)}
@@ -940,6 +951,74 @@ func TestExecuteRoutine_SuccessDelivered(t *testing.T) {
 	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
 	if store.statuses["fire-1"] != "delivered" {
 		t.Errorf("expected delivered, got %s", store.statuses["fire-1"])
+	}
+}
+
+func TestExecuteRoutine_PreserveAlways_RecordsSessionOrigin(t *testing.T) {
+	store := newMockSchedulerStore()
+	agentd := newMockAgentd()
+	agentd.outputs["routine-agent"] = json.RawMessage(`{"response":"ok","session_id":"ses_abc123"}`)
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{ID: "trig-orig1", Name: "Weather Bot", WorkspaceID: &wsID, Prompt: "test", CaptureMode: types.CaptureFull, PreserveSession: types.PreserveAlways}
+	fire := &wf.TriggerFireRow{ID: "fire-orig1", TriggerID: "trig-orig1", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: noopLogger{}}
+	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+
+	if store.statuses["fire-orig1"] != "delivered" {
+		t.Fatalf("expected delivered, got %s", store.statuses["fire-orig1"])
+	}
+	origin, ok := store.sessionOrigins["ses_abc123"]
+	if !ok {
+		t.Fatal("expected session origin to be recorded for PreserveAlways")
+	}
+	if origin.Origin != types.SessionOriginRoutine {
+		t.Errorf("expected origin 'routine', got '%s'", origin.Origin)
+	}
+	if origin.TriggerID == nil || *origin.TriggerID != "trig-orig1" {
+		t.Errorf("expected triggerId 'trig-orig1', got %v", origin.TriggerID)
+	}
+	if origin.FireID == nil || *origin.FireID != "fire-orig1" {
+		t.Errorf("expected fireId 'fire-orig1', got %v", origin.FireID)
+	}
+	if origin.Title != "Weather Bot" {
+		t.Errorf("expected title 'Weather Bot', got '%s'", origin.Title)
+	}
+}
+
+func TestExecuteRoutine_PreserveNever_DoesNotRecordOrigin(t *testing.T) {
+	store := newMockSchedulerStore()
+	agentd := newMockAgentd()
+	// agentd sets session_id="" for PreserveNever after deleting the ephemeral session
+	agentd.outputs["routine-agent"] = json.RawMessage(`{"response":"ok","session_id":""}`)
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{ID: "trig-orig2", WorkspaceID: &wsID, Prompt: "test", CaptureMode: types.CaptureFull, PreserveSession: types.PreserveNever}
+	fire := &wf.TriggerFireRow{ID: "fire-orig2", TriggerID: "trig-orig2", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: noopLogger{}}
+	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+
+	if len(store.sessionOrigins) != 0 {
+		t.Errorf("expected no session origins for PreserveNever, got %d", len(store.sessionOrigins))
+	}
+}
+
+func TestExecuteRoutine_PreserveOnFailure_DeleteFails_RecordsOrigin(t *testing.T) {
+	store := newMockSchedulerStore()
+	agentd := newMockAgentd()
+	agentd.outputs["routine-agent"] = json.RawMessage(`{"response":"ok","session_id":"ses_def456"}`)
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{ID: "trig-orig3", WorkspaceID: &wsID, Prompt: "test", CaptureMode: types.CaptureFull, PreserveSession: types.PreserveOnFailure}
+	fire := &wf.TriggerFireRow{ID: "fire-orig3", TriggerID: "trig-orig3", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: noopLogger{}}
+	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+
+	if store.statuses["fire-orig3"] != "delivered" {
+		t.Fatalf("expected delivered, got %s", store.statuses["fire-orig3"])
+	}
+	// DELETE endpoint unreachable (mockActivator returns 10.0.0.1) → session
+	// still exists → origin IS recorded as a fallback. This documents the
+	// robustness fix: sessionDeleted only flips when DELETE succeeds.
+	if len(store.sessionOrigins) != 1 {
+		t.Errorf("expected 1 session origin when DELETE fails (session still exists), got %d", len(store.sessionOrigins))
 	}
 }
 
