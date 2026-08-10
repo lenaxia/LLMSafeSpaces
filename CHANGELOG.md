@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-08-10
+
+### Fixed
+
+- **Create forms render in detail pane** — the workflow and trigger create
+  forms were rendering inside the narrow list pane (288px) instead of the
+  detail pane. Now they render full-width in the detail pane on both desktop
+  and mobile.
+
 ## [0.12.1] - 2026-08-09
 
 ### Fixed
