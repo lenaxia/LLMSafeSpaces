@@ -93,13 +93,23 @@ func TestChainedWiring_WatcherToSecretautopush(t *testing.T) {
 
 	// Poll for the pusher to receive its call. The chain is fully async
 	// (watch goroutine → secretautopush.Service.run goroutine).
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if pusher.calls.Load() >= 1 {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+	//
+	// Poll on BOTH lastCtx!=nil AND calls>=1. Go's atomic operations are
+	// sequentially consistent — observing a later operation implies
+	// visibility of all earlier ones, but NOT vice versa. Polling on both
+	// conditions makes the wait robust against ANY single reorder of the
+	// store sequence in Push: regardless of whether calls or lastCtx is
+	// stored last, the poll only returns when both are published. This
+	// closes the original flake (calls published before lastCtx) and the
+	// mirror race (lastCtx published before calls) permanently.
+	//
+	// 5s timeout is generous for the two-goroutine chain under CI load;
+	// the codebase default of 2s is calibrated for single-goroutine hops.
+	assert.Eventually(t, func() bool {
+		return pusher.lastCtx.Load() != nil && pusher.calls.Load() >= 1
+	}, 5*time.Second, 10*time.Millisecond,
+		"pusher MUST have been called through the full chain "+
+			"(watcher event → callback → filter → DEK fetch → push)")
 	require.EqualValues(t, 1, pusher.calls.Load(),
 		"pusher MUST have been called exactly once through the full chain "+
 			"(watcher event → callback → filter → DEK fetch → push)")
@@ -147,10 +157,15 @@ type chainedFakePusher struct {
 }
 
 func (f *chainedFakePusher) Push(ctx context.Context, userID, workspaceID string) error {
-	f.calls.Add(1)
+	// Store all fields BEFORE incrementing the call counter. Go's atomic
+	// operations are sequentially consistent, so any reader that observes
+	// calls>=1 is guaranteed to observe all prior stores. The test polls
+	// on both lastCtx!=nil AND calls>=1, making the wait robust against
+	// any single reorder of this sequence.
 	f.sawUserID.Store(userID)
 	f.sawWorkspaceID.Store(workspaceID)
 	f.lastCtx.Store(ctx)
+	f.calls.Add(1)
 	return nil
 }
 
