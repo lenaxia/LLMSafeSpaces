@@ -1001,7 +1001,7 @@ func TestExecuteRoutine_PreserveNever_DoesNotRecordOrigin(t *testing.T) {
 	}
 }
 
-func TestExecuteRoutine_PreserveOnFailure_SuccessDeletesAndSkipsOrigin(t *testing.T) {
+func TestExecuteRoutine_PreserveOnFailure_DeleteFails_RecordsOrigin(t *testing.T) {
 	store := newMockSchedulerStore()
 	agentd := newMockAgentd()
 	agentd.outputs["routine-agent"] = json.RawMessage(`{"response":"ok","session_id":"ses_def456"}`)
@@ -1014,9 +1014,11 @@ func TestExecuteRoutine_PreserveOnFailure_SuccessDeletesAndSkipsOrigin(t *testin
 	if store.statuses["fire-orig3"] != "delivered" {
 		t.Fatalf("expected delivered, got %s", store.statuses["fire-orig3"])
 	}
-	// PreserveOnFailure deletes session on success → origin must NOT be recorded
-	if len(store.sessionOrigins) != 0 {
-		t.Errorf("expected no session origins after on_failure success delete, got %d", len(store.sessionOrigins))
+	// DELETE endpoint unreachable (mockActivator returns 10.0.0.1) → session
+	// still exists → origin IS recorded as a fallback. This documents the
+	// robustness fix: sessionDeleted only flips when DELETE succeeds.
+	if len(store.sessionOrigins) != 1 {
+		t.Errorf("expected 1 session origin when DELETE fails (session still exists), got %d", len(store.sessionOrigins))
 	}
 }
 

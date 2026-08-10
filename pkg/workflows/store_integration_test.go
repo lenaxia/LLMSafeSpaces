@@ -49,7 +49,7 @@ func TestStoreIntegrationSuite(t *testing.T) {
 func (s *StoreIntegrationSuite) SetupTest() {
 	ctx := context.Background()
 	_, err := s.pool.Exec(ctx, `
-		TRUNCATE TABLE trigger_fires, workflow_node_runs, workflow_runs, webhook_deliveries, webhooks, triggers, workflows
+		TRUNCATE TABLE session_origins, trigger_fires, workflow_node_runs, workflow_runs, webhook_deliveries, webhooks, triggers, workflows
 		CASCADE
 	`)
 	s.Require().NoError(err)
@@ -932,4 +932,137 @@ func (s *StoreIntegrationSuite) TestTriggerFiresUUIDColumn_RejectsNonUUIDIDs() {
 	s.Require().NoError(err)
 	s.Len(fires, 1)
 	s.Equal(fireID, fires[0].ID)
+}
+
+// --- Session origins --------------------------------------------------------
+
+// TestRecordSessionOrigin_Insert verifies the basic insert path: a session
+// origin row is created with the correct linkage to trigger + fire + workspace.
+func (s *StoreIntegrationSuite) TestRecordSessionOrigin_Insert() {
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	wsID := s.newWorkspaceID()
+
+	triggerID := uuid.New().String()
+	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
+		ID: triggerID, OwnerType: "user", OwnerID: "u1",
+		Name: "Routine Bot", Enabled: true, SourceType: "cron",
+		SourceConfig: json.RawMessage(`{}`), AutoDisableAfter: 10,
+		CreatedAt: now, UpdatedAt: now,
+	}))
+	fireID := uuid.New().String()
+	require.NoError(s.T(), s.store.CreateTriggerFire(ctx, &TriggerFireRow{
+		ID: fireID, TriggerID: triggerID, SourceType: "cron",
+		ActionType: "routine", Status: "fired", FiredAt: now,
+	}))
+
+	err := s.store.RecordSessionOrigin(ctx, &SessionOriginRow{
+		SessionID:   "ses_test_001",
+		WorkspaceID: wsID,
+		Origin:      "routine",
+		TriggerID:   &triggerID,
+		FireID:      &fireID,
+		Title:       "Routine Bot",
+		CreatedAt:   now,
+	})
+	require.NoError(s.T(), err)
+
+	origins, err := s.store.ListSessionOrigins(ctx, wsID)
+	require.NoError(s.T(), err)
+	require.Len(s.T(), origins, 1)
+	assert.Equal(s.T(), "ses_test_001", origins[0].SessionID)
+	assert.Equal(s.T(), "routine", origins[0].Origin)
+	assert.Equal(s.T(), triggerID, *origins[0].TriggerID)
+	assert.Equal(s.T(), fireID, *origins[0].FireID)
+	assert.Equal(s.T(), "Routine Bot", origins[0].Title)
+}
+
+// TestRecordSessionOrigin_Upsert verifies that re-recording the same
+// session_id updates the row (ON CONFLICT DO UPDATE) rather than failing.
+// This matters because a session could be touched by multiple fires
+// (e.g. PreserveAlways with a resumption scenario).
+func (s *StoreIntegrationSuite) TestRecordSessionOrigin_Upsert() {
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	wsID := s.newWorkspaceID()
+
+	triggerID := uuid.New().String()
+	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
+		ID: triggerID, OwnerType: "user", OwnerID: "u1",
+		Name: "Bot v1", Enabled: true, SourceType: "cron",
+		SourceConfig: json.RawMessage(`{}`), AutoDisableAfter: 10,
+		CreatedAt: now, UpdatedAt: now,
+	}))
+
+	// First insert
+	err := s.store.RecordSessionOrigin(ctx, &SessionOriginRow{
+		SessionID: "ses_upsert_001", WorkspaceID: wsID, Origin: "routine",
+		TriggerID: &triggerID, Title: "First", CreatedAt: now,
+	})
+	require.NoError(s.T(), err)
+
+	// Upsert — same session_id, different title + trigger
+	triggerID2 := uuid.New().String()
+	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
+		ID: triggerID2, OwnerType: "user", OwnerID: "u1",
+		Name: "Bot v2", Enabled: true, SourceType: "cron",
+		SourceConfig: json.RawMessage(`{}`), AutoDisableAfter: 10,
+		CreatedAt: now, UpdatedAt: now,
+	}))
+	err = s.store.RecordSessionOrigin(ctx, &SessionOriginRow{
+		SessionID: "ses_upsert_001", WorkspaceID: wsID, Origin: "routine",
+		TriggerID: &triggerID2, Title: "Second", CreatedAt: now,
+	})
+	require.NoError(s.T(), err, "upsert must not fail on duplicate session_id")
+
+	origins, err := s.store.ListSessionOrigins(ctx, wsID)
+	require.NoError(s.T(), err)
+	require.Len(s.T(), origins, 1, "upsert must produce one row, not two")
+	assert.Equal(s.T(), "Second", origins[0].Title, "title must be updated")
+	assert.Equal(s.T(), triggerID2, *origins[0].TriggerID, "trigger_id must be updated")
+}
+
+// TestRecordSessionOrigin_WorkspaceFK verifies that recording an origin
+// for a non-existent workspace_id fails via FK constraint.
+func (s *StoreIntegrationSuite) TestRecordSessionOrigin_WorkspaceFK() {
+	ctx := context.Background()
+	fakeWSID := uuid.New().String() // never inserted
+	err := s.store.RecordSessionOrigin(ctx, &SessionOriginRow{
+		SessionID: "ses_fk_test", WorkspaceID: fakeWSID,
+		Origin: "routine", CreatedAt: time.Now().UTC(),
+	})
+	require.Error(s.T(), err, "FK constraint must reject non-existent workspace_id")
+}
+
+// TestRecordSessionOrigin_TriggerFK verifies that trigger_id references
+// the triggers table (SET NULL on delete per migration 022).
+func (s *StoreIntegrationSuite) TestRecordSessionOrigin_TriggerFK() {
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	wsID := s.newWorkspaceID()
+	triggerID := uuid.New().String()
+	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
+		ID: triggerID, OwnerType: "user", OwnerID: "u1",
+		Name: "Doomed Trigger", Enabled: true, SourceType: "cron",
+		SourceConfig: json.RawMessage(`{}`), AutoDisableAfter: 10,
+		CreatedAt: now, UpdatedAt: now,
+	}))
+
+	err := s.store.RecordSessionOrigin(ctx, &SessionOriginRow{
+		SessionID: "ses_trigger_fk", WorkspaceID: wsID, Origin: "routine",
+		TriggerID: &triggerID, CreatedAt: now,
+	})
+	require.NoError(s.T(), err)
+
+	// Deleting the trigger should SET NULL on the origin row, not cascade.
+	_, err = s.pool.Exec(ctx, "DELETE FROM triggers WHERE id = $1", triggerID)
+	require.NoError(s.T(), err)
+
+	origins, err := s.store.ListSessionOrigins(ctx, wsID)
+	require.NoError(s.T(), err)
+	require.Len(s.T(), origins, 1)
+	require.Nil(s.T(), origins[0].TriggerID, "trigger_id must be SET NULL after trigger deleted")
 }

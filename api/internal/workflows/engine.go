@@ -659,10 +659,14 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 			deleteReq, _ := http.NewRequestWithContext(ctx, "DELETE",
 				fmt.Sprintf("http://%s:%d/v1/workflow/session/delete?sessionId=%s", podIP, agentdExecPort(), sessionID), nil)
 			deleteResp, err := httpClient().Do(deleteReq)
-			if err == nil {
+			if err != nil {
+				logger.Error(err, "routine: failed to delete session for PreserveOnFailure", "sessionId", sessionID, "triggerId", trigger.ID)
+			} else {
 				_ = deleteResp.Body.Close()
+				if deleteResp.StatusCode < 400 {
+					sessionDeleted = true
+				}
 			}
-			sessionDeleted = true
 		}
 
 		// Record session origin so the sidebar can show the "routine"
@@ -670,7 +674,7 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		// when the session still exists (not deleted by PreserveOnFailure
 		// success or PreserveNever ephemeral cleanup).
 		if sessionID != "" && !sessionDeleted {
-			_ = s.Store.RecordSessionOrigin(ctx, &wf.SessionOriginRow{
+			if err := s.Store.RecordSessionOrigin(ctx, &wf.SessionOriginRow{
 				SessionID:   sessionID,
 				WorkspaceID: workspaceID,
 				Origin:      types.SessionOriginRoutine,
@@ -678,7 +682,9 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 				FireID:      &fireID,
 				Title:       trigger.Name,
 				CreatedAt:   time.Now().UTC(),
-			})
+			}); err != nil {
+				logger.Error(err, "routine: failed to record session origin", "sessionId", sessionID, "triggerId", trigger.ID)
+			}
 		}
 	}
 
