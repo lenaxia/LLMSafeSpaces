@@ -258,7 +258,14 @@ API_KEY="lsp_e2etestkey1234567890abcdef"
 PGPOD=$(kc -n "${NS}" get pod -l app.kubernetes.io/name=postgres -o jsonpath='{.items[0].metadata.name}')
 [[ -n "${PGPOD}" ]] || die "postgres pod not found"
 
-kc -n "${NS}" exec "${PGPOD}" -- env PGPASSWORD=changeme \
+# Read the postgres password from the credentials Secret (created by
+# bootstrap.sh or the nightly workflow). Falls back to changeme for
+# backward compat with clusters that still use the old default.
+PG_PWD="${PG_PWD:-$(kubectl --context "${CTX}" -n "${NS}" get secret \
+    llmsafespaces-credentials -o jsonpath='{.data.postgres-password}' 2>/dev/null \
+    | base64 -d 2>/dev/null || echo changeme)}"
+
+kc -n "${NS}" exec "${PGPOD}" -- env PGPASSWORD="${PG_PWD}" \
     psql -U llmsafespaces -d llmsafespaces -v ON_ERROR_STOP=1 -c "
 INSERT INTO users (id, username, email, password_hash, role)
 VALUES ('${USER_ID}', '${USER_ID}', '${USER_ID}@example.test', 'unused-by-api-key-auth', 'user')
