@@ -484,3 +484,102 @@ func TestRenameSessionInAgent_AdapterPath_DelegatesToAdapter(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, called)
 }
+
+func TestRenameSessionInAgent_AdapterPath_Error(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{
+		renameSessionFn: func(_ context.Context, _, _, _, _ string) error {
+			return fmt.Errorf("pod unreachable")
+		},
+	}
+
+	err := h.RenameSessionInAgent(context.Background(), "ws-1", "ses_1", "x")
+	require.Error(t, err)
+}
+
+// --- Error paths for session CRUD adapter ---
+
+func TestCreateSession_AdapterPath_Error_Returns502(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{
+		createSessionFn: func(_ context.Context, _, _, _ string) (*session.Session, error) {
+			return nil, fmt.Errorf("pod unreachable")
+		},
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}}
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	h.CreateSession(c)
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+}
+
+func TestListSessions_AdapterPath_Error_Returns502(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{
+		listSessionsFn: func(_ context.Context, _, _ string) ([]session.Session, error) {
+			return nil, fmt.Errorf("timeout")
+		},
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}}
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	h.ListSessions(c)
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+}
+
+func TestGetSession_AdapterPath_Error_Returns502(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{
+		getSessionFn: func(_ context.Context, _, _, _ string) (*session.Session, error) {
+			return nil, fmt.Errorf("pod unreachable")
+		},
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	h.GetSession(c)
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+}
+
+func TestListSessions_AdapterPath_EmptyResult_ReturnsEmptyArray(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{
+		listSessionsFn: func(_ context.Context, _, _ string) ([]session.Session, error) {
+			return []session.Session{}, nil
+		},
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}}
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	h.ListSessions(c)
+	require.Equal(t, http.StatusOK, w.Code)
+	var sessions []session.Session
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &sessions))
+	assert.Empty(t, sessions)
+}
+
+func TestGetSession_AdapterPath_NilResult_ReturnsNullJSON(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{
+		getSessionFn: func(_ context.Context, _, _, _ string) (*session.Session, error) {
+			return nil, nil
+		},
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+	h.GetSession(c)
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "null", w.Body.String())
+}
