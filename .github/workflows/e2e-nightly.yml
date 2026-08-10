@@ -195,6 +195,23 @@ jobs:
           LLM_MODEL: ${{ secrets.LLM_MODEL }}
         run: bash local/test.sh
 
+      - name: Run V2 session-queue behavioral e2e (US-63.3/63.4/63.9)
+        # Hard-assert behavioral properties that unit tests cannot cover:
+        #   US-63.3: enqueue while busy → runs after current turn
+        #   US-63.4: abort mid-turn → queued messages survive and run
+        #   US-63.9: kill opencode → restart → stranded input drains
+        # Requires LLM credentials (for real turns) and the workspace
+        # created by local/test.sh above. Skipped if no LLM creds.
+        if: ${{ env.LLM_API_KEY != '' }}
+        env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          CTX: kind-${{ env.CLUSTER_NAME }}
+          NS: ${{ env.NS }}
+          PORTFWD_PORT: 18080
+          WORKSPACE_NAME: e2e-workspace
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
+        run: bash local/us-63-v2-behavior-e2e.sh
+
       - name: Run startup latency benchmarks (S18.10)
         # Benchmarks require LLM credentials so workspaces can reach Active.
         # Conservative CI thresholds catch gross regressions (e.g. re-adding
