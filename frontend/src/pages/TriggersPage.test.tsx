@@ -213,7 +213,7 @@ describe("TriggersPage", () => {
       expect(screen.getByText("Target Workspace")).toBeInTheDocument();
     });
     const editButtons = screen.getAllByText("Edit");
-    fireEvent.click(editButtons[editButtons.length - 1]);
+    fireEvent.click(editButtons[editButtons.length - 1]!);
     await waitFor(() => {
       expect(screen.getByText("Save")).toBeInTheDocument();
     });
@@ -247,7 +247,7 @@ describe("TriggersPage", () => {
       expect(screen.getByText("Target Workspace")).toBeInTheDocument();
     });
     const editButtons2 = screen.getAllByText("Edit");
-    fireEvent.click(editButtons2[editButtons2.length - 1]);
+    fireEvent.click(editButtons2[editButtons2.length - 1]!);
     await waitFor(() => {
       expect(screen.getByText("Save")).toBeInTheDocument();
     });
@@ -275,7 +275,7 @@ describe("TriggersPage", () => {
       expect(screen.getByText("Target Workspace")).toBeInTheDocument();
     });
     const editButtons3 = screen.getAllByText("Edit");
-    fireEvent.click(editButtons3[editButtons3.length - 1]);
+    fireEvent.click(editButtons3[editButtons3.length - 1]!);
     await waitFor(() => {
       expect(screen.getByText("Cancel")).toBeInTheDocument();
     });
