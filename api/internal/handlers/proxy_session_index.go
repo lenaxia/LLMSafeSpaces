@@ -25,6 +25,17 @@ func (h *ProxyHandler) fetchAndPersistTitle(workspaceID, sessionID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// Adapter path (US-65.4): typed session.Session, no raw HTTP.
+	if h.adapter != nil {
+		s, err := h.adapter.GetSession(ctx, "", workspaceID, sessionID)
+		if err != nil || s == nil {
+			return
+		}
+		h.persistSessionMeta(ctx, workspaceID, sessionID, s.Title, s.ParentID)
+		return
+	}
+
+	// Legacy path.
 	v1Client, err := h.k8sClient.LlmsafespacesV1()
 	if err != nil {
 		return
@@ -59,13 +70,20 @@ func (h *ProxyHandler) fetchAndPersistTitle(workspaceID, sessionID string) {
 		return
 	}
 
-	if session.Title != "" {
-		if err := h.sessionIndex.UpsertTitle(ctx, workspaceID, sessionID, session.Title); err != nil {
+	h.persistSessionMeta(ctx, workspaceID, sessionID, session.Title, session.ParentID)
+}
+
+// persistSessionMeta writes the title and parentID to the session index.
+// Shared between the Adapter path (typed session.Session) and the legacy
+// path (inline JSON parse) so both produce identical side effects.
+func (h *ProxyHandler) persistSessionMeta(ctx context.Context, workspaceID, sessionID, title, parentID string) {
+	if title != "" {
+		if err := h.sessionIndex.UpsertTitle(ctx, workspaceID, sessionID, title); err != nil {
 			h.logger.Error("Failed to persist session title", err, "workspaceID", workspaceID, "sessionID", sessionID)
 		}
 	}
-	if session.ParentID != "" {
-		if err := h.sessionIndex.UpsertParent(ctx, workspaceID, sessionID, session.ParentID); err != nil {
+	if parentID != "" {
+		if err := h.sessionIndex.UpsertParent(ctx, workspaceID, sessionID, parentID); err != nil {
 			h.logger.Error("Failed to persist session parent", err, "workspaceID", workspaceID, "sessionID", sessionID)
 		}
 	}
@@ -95,6 +113,32 @@ func (h *ProxyHandler) runParentBackfill(workspaceID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
+	// Adapter path (US-65.4): typed []session.Session, no raw HTTP.
+	if h.adapter != nil {
+		sessions, err := h.adapter.ListSessions(ctx, "", workspaceID)
+		if err != nil {
+			h.logger.Debug("Backfill: adapter ListSessions failed", "workspaceID", workspaceID, "error", err)
+			h.state().DeleteParentBackfilled(ctx, workspaceID)
+			return
+		}
+		written := 0
+		for _, s := range sessions {
+			if s.ID == "" || s.ParentID == "" {
+				continue
+			}
+			if err := h.sessionIndex.UpsertParent(ctx, workspaceID, s.ID, s.ParentID); err != nil {
+				h.logger.Debug("Backfill: upsert parent failed", "workspaceID", workspaceID, "sessionID", s.ID, "error", err)
+				continue
+			}
+			written++
+		}
+		if written > 0 {
+			h.logger.Info("Backfilled session parents", "workspaceID", workspaceID, "count", written)
+		}
+		return
+	}
+
+	// Legacy path.
 	v1Client, v1Err := h.k8sClient.LlmsafespacesV1()
 	workspace, err := func() (*v1.Workspace, error) {
 		if v1Err != nil {

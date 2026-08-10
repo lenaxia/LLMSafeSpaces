@@ -440,47 +440,92 @@ func (a *Adapter) ListPending(ctx context.Context, userID, workspaceID, sessionI
 }
 
 // parsePendingQuestions reads /question response body and converts
-// each entry to an InputRequest with Kind=InputQuestion.
+// each entry to an InputRequest with Kind=InputQuestion. Uses the
+// Dialect's ParseQuestionRequest to parse the full question shape
+// (text, header, options, multiple, custom, tool) — NOT just id +
+// sessionID. The previous stub parser (PR #717 review critical bug)
+// discarded all content fields, producing blank question events in
+// the SSE snapshot path.
 func (a *Adapter) parsePendingQuestions(resp *http.Response) []session.InputRequest {
 	raw, _ := readBody(resp, 1<<20)
-	var items []struct {
-		ID        string `json:"id"`
-		SessionID string `json:"sessionID"`
-	}
+	var items []json.RawMessage
 	if json.Unmarshal(raw, &items) != nil {
 		return nil
 	}
+	d := &Dialect{}
 	out := make([]session.InputRequest, 0, len(items))
-	for _, it := range items {
-		out = append(out, session.InputRequest{
-			ID:        it.ID,
-			SessionID: it.SessionID,
+	for _, item := range items {
+		req, err := d.ParseQuestionRequest("question.asked", item)
+		if err != nil || req == nil {
+			continue
+		}
+		ir := session.InputRequest{
+			ID:        req.ID,
+			SessionID: req.SessionID,
 			Kind:      session.InputQuestion,
-		})
+		}
+		// Flatten the first QuestionInfo into the InputRequest's
+		// top-level fields. opencode's question.asked event carries
+		// one QuestionsInfo per event in practice; the InputRequest
+		// shape is the unified single-question representation.
+		if len(req.Questions) > 0 {
+			q := req.Questions[0]
+			ir.Question = q.Question
+			ir.Header = q.Header
+			ir.Multiple = q.Multiple
+			ir.Custom = q.Custom
+			for _, o := range q.Options {
+				ir.Options = append(ir.Options, session.InputOption{
+					Label:       o.Label,
+					Description: o.Description,
+				})
+			}
+		}
+		if req.Tool != nil {
+			ir.Tool = &session.ToolRef{
+				MessageID: req.Tool.MessageID,
+				CallID:    req.Tool.CallID,
+			}
+		}
+		out = append(out, ir)
 	}
 	return out
 }
 
 // parsePendingPermissions reads /permission response body and converts
-// each entry to an InputRequest with Kind=InputPermission.
+// each entry to an InputRequest with Kind=InputPermission. Uses the
+// Dialect's ParsePermissionRequest to parse the full permission shape
+// (permission, patterns, metadata, always, tool) — NOT just id +
+// sessionID + permission. The previous stub parser discarded patterns,
+// always, and tool, producing incomplete permission events.
 func (a *Adapter) parsePendingPermissions(resp *http.Response) []session.InputRequest {
 	raw, _ := readBody(resp, 1<<20)
-	var items []struct {
-		ID         string `json:"id"`
-		SessionID  string `json:"sessionID"`
-		Permission string `json:"permission"`
-	}
+	var items []json.RawMessage
 	if json.Unmarshal(raw, &items) != nil {
 		return nil
 	}
+	d := &Dialect{}
 	out := make([]session.InputRequest, 0, len(items))
-	for _, it := range items {
-		out = append(out, session.InputRequest{
-			ID:         it.ID,
-			SessionID:  it.SessionID,
+	for _, item := range items {
+		req, err := d.ParsePermissionRequest("permission.asked", item)
+		if err != nil || req == nil {
+			continue
+		}
+		ir := session.InputRequest{
+			ID:         req.ID,
+			SessionID:  req.SessionID,
 			Kind:       session.InputPermission,
-			Permission: it.Permission,
-		})
+			Permission: req.Permission,
+			Patterns:   req.Patterns,
+			Always:     req.Always,
+		}
+		if req.Tool != nil {
+			ir.Tool = &session.ToolRef{
+				MessageID: req.Tool.MessageID,
+				CallID:    req.Tool.CallID,
+			}
+		}
+		out = append(out, ir)
 	}
 	return out
 }

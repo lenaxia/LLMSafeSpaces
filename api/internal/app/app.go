@@ -193,11 +193,10 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	proxyHandler.SetRequestBufferConfig(cfg.Proxy.RequestBufferSizePerWorkspace, time.Duration(cfg.Proxy.RequestBufferTimeoutSeconds)*time.Second)
 
 	// US-65.4: construct the Agent Adapter and wire it into ProxyHandler.
-	// Today no handler uses it (h.adapter is nil-checked per handler);
-	// US-65.4's incremental migration flips each handler from the legacy
-	// dialect + proxyToWorkspace path to the Adapter path. The Adapter
-	// resolves pod IP + password via the ProxyHandler's existing
-	// infrastructure bridges (no duplicated K8s/Secret logic).
+	// Batch-1 handlers (session_parents, session_index, proxy_permissions,
+	// proxy_input's emitPendingInputRequests) check h.adapter != nil and
+	// use the Adapter path. Remaining handlers use the legacy dialect path.
+	// US-65.4 batches 2+ will migrate the client-facing proxy handlers.
 	//
 	// The resolvers returned by ProxyHandler are generic Go types
 	// (func + interface) to avoid importing pkg/agent/opencode from

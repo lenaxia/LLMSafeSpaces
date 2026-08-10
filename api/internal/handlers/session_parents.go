@@ -119,11 +119,30 @@ func (c *sessionParentCache) invalidate(workspaceID string) {
 // fetchSessionParent fetches a single session's parentID from the workspace
 // pod. Used as the default fetcher for sessionParentCache; intentionally
 // not a method so the cache can be unit-tested with a fake fetcher.
+//
+// US-65.4: when the Adapter is wired, this delegates to
+// adapter.GetSession which returns a typed session.Session with
+// ParentID — no inline JSON parse, no raw HTTP, no hardcoded auth/port.
+// The legacy path (raw HTTP + dialect.SessionGetPath) is retained for
+// backward compatibility until all callers verify the Adapter path.
 func (h *ProxyHandler) fetchSessionParent(ctx context.Context, workspaceID, sessionID string) (string, error) {
 	if err := validateSessionID(sessionID); err != nil {
 		return "", fmt.Errorf("invalid sessionID: %w", err)
 	}
 
+	// Adapter path (US-65.4).
+	if h.adapter != nil {
+		s, err := h.adapter.GetSession(ctx, "", workspaceID, sessionID)
+		if err != nil {
+			return "", fmt.Errorf("adapter GetSession: %w", err)
+		}
+		if s == nil {
+			return "", nil
+		}
+		return s.ParentID, nil
+	}
+
+	// Legacy path (pre-US-65.4).
 	v1Client, err := h.k8sClient.LlmsafespacesV1()
 	if err != nil {
 		return "", fmt.Errorf("initialize LLMSafespacesV1 client: %w", err)
