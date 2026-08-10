@@ -137,7 +137,7 @@ spec:
   storage:
     size: 1Gi
     accessMode: ReadWriteOnce
-  defaultRuntime: python:3.11
+  runtime: python:3.11
 EOF
 ok "Workspace ${WORKSPACE_NAME} created"
 
