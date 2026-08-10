@@ -114,6 +114,7 @@ describe("WorkspaceImagesTab", () => {
 
     // Select extension + type name
     fireEvent.click(screen.getByText("ffmpeg"));
+    await waitFor(() => { expect(screen.getByPlaceholderText("e.g. ml-stack")).toBeInTheDocument(); }, { timeout: 3000 });
     fireEvent.change(screen.getByPlaceholderText("e.g. ml-stack"), { target: { value: "success-cfg" } });
     fireEvent.click(screen.getByText("Create Personal Image & Build"));
 
