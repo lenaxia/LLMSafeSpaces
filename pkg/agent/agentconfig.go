@@ -83,16 +83,14 @@ type AgentConfigWriter interface {
 //     callers already understand.
 //   - The zero value of the input struct is a valid no-op Apply.
 type AgentConfigInput struct {
-	// Providers updates the LLM provider map. The Formatted bytes are
-	// the agent-specific provider JSON (the agent's formatter is the
-	// only thing that knows the shape). Raw is the typed provider
-	// slice carried alongside for callers (e.g. future agents) that
-	// need it; opencode's writer ignores Raw. Either may be nil
-	// independently of the other — opencode's SetProviders takes only
-	// Formatted.
+	// Providers updates the LLM provider map. Formatted is the
+	// agent-rendered provider JSON — the agent's formatter is the
+	// only thing that knows the shape (e.g. opencode's
+	// {"provider": {...}} struct). The writer passes the bytes
+	// through verbatim.
 	//
-	// Mutually exclusive semantics with leaving it nil: a non-nil
-	// pointer with nil Formatted bytes clears the provider source.
+	// A non-nil pointer with nil/empty Formatted bytes clears the
+	// provider source.
 	Providers *AgentProvidersChange
 
 	// Model updates the default model selection. Empty string
@@ -115,11 +113,6 @@ type AgentProvidersChange struct {
 	// this is the output of FormatOpenCodeConfig — a struct
 	// {"provider": {...}} containing the agent's exact provider map.
 	Formatted []byte
-
-	// Raw is the typed provider data slice. Carried for future agents
-	// that consume the typed form directly; opencode's writer ignores
-	// it. May be nil.
-	Raw []LLMProviderData
 }
 
 // ModelSelection is the fully-qualified "providerID/modelID" string

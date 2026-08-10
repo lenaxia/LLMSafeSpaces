@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -300,6 +301,14 @@ func TestApply_ConcurrentCallsSerialize(t *testing.T) {
 // The atomicity contract makes the outcome deterministic: each Apply
 // either fully applies its input or fails; the final state is exactly
 // the inputs of the last-completing Apply, merged onto prior state.
+//
+// Assertion strength (PR #713 review follow-up): a pure `json.Valid`
+// check is too weak — every individual rebuildLocked() write is itself
+// atomic (temp-file + rename) and would produce valid JSON even if the
+// source-update interleaved. To truly pin atomicity, the test must also
+// verify the final file contains BOTH a provider entry (from an even
+// goroutine) AND a relay entry (from an odd goroutine) — proving no
+// source group was silently dropped by interleaving.
 func TestApply_AtomicAcrossSources(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent-config.json")
@@ -316,9 +325,7 @@ func TestApply_AtomicAcrossSources(t *testing.T) {
 			// relay. The two source groups are disjoint — if Apply
 			// is atomic, the final file must contain BOTH a provider
 			// from the last even goroutine AND a relay from the last
-			// odd goroutine. If Apply is NOT atomic, the last
-			// Rebuild's view depends on the lock-release ordering
-			// and one source can be stale.
+			// odd goroutine.
 			if n%2 == 0 {
 				in.Providers = &agent.AgentProvidersChange{
 					Formatted: []byte(`{"provider":{"p` + string(rune('A'+n%26)) + `":{"options":{"apiKey":"k"}}}}`),
@@ -336,7 +343,35 @@ func TestApply_AtomicAcrossSources(t *testing.T) {
 
 	written, err := os.ReadFile(path)
 	require.NoError(t, err)
-	assert.True(t, json.Valid(written), "file must be valid JSON — Apply must serialize, not interleave half-merged states")
+	require.True(t, json.Valid(written), "file must be valid JSON — Apply must serialize, not interleave half-merged states")
+
+	// Strong assertion: BOTH source groups must be present. If Apply
+	// were not atomic, the last writer would persist its source and
+	// (potentially) a stale version of the other source — but under
+	// the F1 interleaving scenario, one source group could be dropped
+	// entirely. Asserting both are present closes that gap.
+	var cfg struct {
+		Provider          map[string]json.RawMessage `json:"provider"`
+		DisabledProviders []string                   `json:"disabled_providers"`
+	}
+	require.NoError(t, json.Unmarshal(written, &cfg), "final config must parse")
+
+	require.NotEmpty(t, cfg.Provider, "provider source must be present (one even goroutine wrote it)")
+	hasProviderEntry := false
+	for k := range cfg.Provider {
+		if strings.HasPrefix(k, "p") {
+			hasProviderEntry = true
+			break
+		}
+	}
+	require.True(t, hasProviderEntry,
+		"at least one p* provider must be present — proves even-goroutine Apply succeeded atomically")
+
+	_, hasRelay := cfg.Provider["opencode-relay"]
+	require.True(t, hasRelay,
+		"opencode-relay must be present — proves odd-goroutine Apply succeeded atomically and was not dropped by interleaving")
+	require.Contains(t, cfg.DisabledProviders, "opencode",
+		"disabled_providers must contain opencode — set by every relay Apply, proving relay source survived")
 }
 
 func TestApply_AtomicWrite(t *testing.T) {

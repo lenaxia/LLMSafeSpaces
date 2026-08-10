@@ -93,12 +93,9 @@ func TestAgentConfigInput_PartialUpdates(t *testing.T) {
 	// Each caller constructs an AgentConfigInput that fills in only
 	// the source it knows about. The writer merges the input onto
 	// its existing state.
-	providers := []LLMProviderData{{Kind: "openai", Slug: "openai", APIKey: "sk-test"}}
-
 	t.Run("providers only", func(t *testing.T) {
 		in := AgentConfigInput{Providers: &AgentProvidersChange{
 			Formatted: []byte(`{"provider":{"openai":{"options":{"apiKey":"sk-test"}}}}`),
-			Raw:       providers,
 		}}
 		if in.Providers == nil {
 			t.Fatal("Providers must be set")
