@@ -552,7 +552,7 @@ func (h *ProxyHandler) sendQueuedToOpencode(ctx context.Context, workspaceID, se
 	if err != nil {
 		return fmt.Errorf("creating request: %w", err)
 	}
-	req.SetBasicAuth("opencode", password)
+	req.SetBasicAuth(agentd.AuthUsername, password)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := h.httpClient.Do(req)

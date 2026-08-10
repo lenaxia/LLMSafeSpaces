@@ -17,6 +17,7 @@ import (
 
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
+	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
 
 var (
@@ -166,12 +167,12 @@ func (h *ProxyHandler) emitPendingInputRequests(ctx context.Context, workspaceID
 
 // fetchFromPod makes a GET request to the workspace pod.
 func (h *ProxyHandler) fetchFromPod(ctx context.Context, podIP, password, path string) ([]byte, error) {
-	url := "http://" + podIP + ":" + "4096" + path
+	url := fmt.Sprintf("http://%s:%d%s", podIP, opencodePort, path)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.SetBasicAuth("opencode", password)
+	req.SetBasicAuth(agentd.AuthUsername, password)
 
 	resp, err := h.httpClient.Do(req)
 	if err != nil {

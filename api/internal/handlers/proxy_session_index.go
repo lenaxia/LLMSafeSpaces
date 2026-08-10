@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
+	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 )
 
@@ -42,7 +43,7 @@ func (h *ProxyHandler) fetchAndPersistTitle(workspaceID, sessionID string) {
 	if err != nil {
 		return
 	}
-	req.SetBasicAuth("opencode", password)
+	req.SetBasicAuth(agentd.AuthUsername, password)
 
 	resp, err := h.httpClient.Do(req)
 	if err != nil || resp.StatusCode != http.StatusOK {
@@ -117,7 +118,7 @@ func (h *ProxyHandler) runParentBackfill(workspaceID string) {
 	if err != nil {
 		return
 	}
-	req.SetBasicAuth("opencode", password)
+	req.SetBasicAuth(agentd.AuthUsername, password)
 
 	resp, err := h.httpClient.Do(req)
 	if err != nil {

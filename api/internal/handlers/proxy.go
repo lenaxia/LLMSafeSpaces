@@ -528,7 +528,7 @@ func (h *ProxyHandler) doProxy(c *gin.Context, podIP, targetPath, password strin
 	// not with the tenant pod, and must not reach untrusted agent code.
 	// Authorization is set below via SetBasicAuth; X-Forwarded-For after that.
 	copyRequestHeaders(c.Request.Header, req.Header)
-	req.SetBasicAuth("opencode", password)
+	req.SetBasicAuth(agentd.AuthUsername, password)
 	req.Header.Set("X-Forwarded-For", c.ClientIP())
 
 	resp, err := h.httpClient.Do(req)
