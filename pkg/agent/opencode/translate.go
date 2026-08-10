@@ -419,46 +419,57 @@ func translateStatus(s string) session.Status {
 }
 
 // ParseHistoryWire is the testable boundary: bytes in, contract out.
-// Used by Adapter.GetHistory after the HTTP round-trip. exported for
-// the package's own test consumers (adapter_test.go).
-func ParseHistoryWire(body []byte, workspaceID string) ([]session.Message, error) {
+// Used by Adapter.GetHistory after the HTTP round-trip. Returns the
+// translated messages AND a parallel slice of changed-file path lists
+// (one entry per message; nil for messages with no patch part). The
+// caller uses the changed-files to produce FileChange parts via
+// filediff.Producer.
+//
+// Exported for the package's own test consumers (translate_test.go,
+// adapter_test.go).
+func ParseHistoryWire(body []byte, workspaceID string) (msgs []session.Message, changedFilesPerMsg [][]string, err error) {
 	var raw []ocMessage
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, fmt.Errorf("opencode history: parse message array: %w", err)
+	if err = json.Unmarshal(body, &raw); err != nil {
+		return nil, nil, fmt.Errorf("opencode history: parse message array: %w", err)
 	}
-	out := make([]session.Message, 0, len(raw))
+	msgs = make([]session.Message, 0, len(raw))
+	changedFilesPerMsg = make([][]string, 0, len(raw))
 	for _, m := range raw {
-		sm, _ := translateMessage(m)
-		// Fill CreatedAt if opencode did not provide Time but the
-		// session list ordering depends on it. The wire shape usually
-		// includes time.startedAt; if absent we leave it zero and
-		// the caller can fall back to list order.
-		out = append(out, sm)
+		sm, files := translateMessage(m)
+		msgs = append(msgs, sm)
+		changedFilesPerMsg = append(changedFilesPerMsg, files)
 	}
-	return out, nil
+	return msgs, changedFilesPerMsg, nil
 }
 
 // ParseSessionListWire is the testable boundary for GET /session.
+//
+// opencode 1.18.10 returns a bare array; some earlier versions wrap
+// in {data: [...]}. We try the wrapped format first (parse succeeds →
+// use it, including when Data is empty); fall back to the bare array
+// only when the wrapped parse fails (body was not an object).
 func ParseSessionListWire(body []byte, workspaceID string) ([]session.Session, error) {
-	var raw struct {
+	var wrapped struct {
 		Data []ocSession `json:"data"`
 	}
-	// opencode 1.18.10 returns a bare array; some earlier versions
-	// wrap in {data: [...]}. Try both shapes — the bare array first
-	// (more common in observed responses).
-	if err := json.Unmarshal(body, &raw); err != nil || len(raw.Data) == 0 {
-		var bare []ocSession
-		if err := json.Unmarshal(body, &bare); err != nil {
-			return nil, fmt.Errorf("opencode session list: parse: %w", err)
-		}
-		out := make([]session.Session, 0, len(bare))
-		for _, s := range bare {
+	// Wrapped-format parse succeeded → use it. len(Data)==0 is a
+	// valid wrapped response (zero sessions), distinct from "the body
+	// was not wrapped". The previous logic conflated these two and
+	// returned an error on {"data": []} (PR #714 review C2).
+	if err := json.Unmarshal(body, &wrapped); err == nil {
+		out := make([]session.Session, 0, len(wrapped.Data))
+		for _, s := range wrapped.Data {
 			out = append(out, translateSession(s, workspaceID))
 		}
 		return out, nil
 	}
-	out := make([]session.Session, 0, len(raw.Data))
-	for _, s := range raw.Data {
+	// Wrapped parse failed → try bare array.
+	var bare []ocSession
+	if err := json.Unmarshal(body, &bare); err != nil {
+		return nil, fmt.Errorf("opencode session list: parse: %w", err)
+	}
+	out := make([]session.Session, 0, len(bare))
+	for _, s := range bare {
 		out = append(out, translateSession(s, workspaceID))
 	}
 	return out, nil

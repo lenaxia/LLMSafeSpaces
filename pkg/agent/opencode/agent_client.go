@@ -122,20 +122,41 @@ func NewWorkspaceClient(pw PasswordResolver, ip PodIPResolver, logger *zap.Logge
 
 // resolve returns a low-level Client configured for the workspace's pod.
 // The shared httpClient is injected so connections are pooled across calls.
+//
+// Shared between WorkspaceClient (the legacy AgentClient implementation)
+// and Adapter (the US-65.3 seam). Both go through this function so
+// resolution logic — pod IP lookup, password lookup, baseURL
+// construction — has one source of truth (PR #714 review R3).
 func (w *WorkspaceClient) resolve(ctx context.Context, userID, workspaceID string) (*Client, error) {
-	podIP, err := w.podIPResolver.GetWorkspacePodIP(ctx, userID, workspaceID)
+	return resolveWorkspaceClient(ctx, w.podIPResolver, w.passwordResolver, w.agentPort, w.httpClient, w.logger, userID, workspaceID)
+}
+
+// resolveWorkspaceClient is the shared resolution helper used by both
+// WorkspaceClient.resolve and Adapter.resolve. Returns a *Client
+// configured for the workspace's pod + password, or an error wrapping
+// ErrNoRunningPod when the pod IP is empty.
+func resolveWorkspaceClient(
+	ctx context.Context,
+	ipResolver PodIPResolver,
+	pwResolver PasswordResolver,
+	agentPort int,
+	httpClient *http.Client,
+	logger *zap.Logger,
+	userID, workspaceID string,
+) (*Client, error) {
+	podIP, err := ipResolver.GetWorkspacePodIP(ctx, userID, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("resolve pod IP for workspace %s: %w", workspaceID, err)
 	}
 	if podIP == "" {
 		return nil, fmt.Errorf("workspace %s: %w", workspaceID, ErrNoRunningPod)
 	}
-	password, err := w.passwordResolver(ctx, workspaceID)
+	password, err := pwResolver(ctx, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("resolve password for workspace %s: %w", workspaceID, err)
 	}
-	baseURL := fmt.Sprintf("http://%s:%d", podIP, w.agentPort)
-	return NewClient(baseURL, password, w.logger, WithHTTPClient(w.httpClient)), nil
+	baseURL := fmt.Sprintf("http://%s:%d", podIP, agentPort)
+	return NewClient(baseURL, password, logger, WithHTTPClient(httpClient)), nil
 }
 
 func (w *WorkspaceClient) ListModels(ctx context.Context, userID, workspaceID string) ([]byte, error) {

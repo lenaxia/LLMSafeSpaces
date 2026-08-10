@@ -290,20 +290,25 @@ func TestParseHistoryWire_RealShape(t *testing.T) {
 		}
 	]`)
 
-	msgs, err := ParseHistoryWire(body, "ws-1")
+	msgs, changedFiles, err := ParseHistoryWire(body, "ws-1")
 	require.NoError(t, err)
 	require.Len(t, msgs, 2)
+	require.Len(t, changedFiles, 2, "changedFilesPerMsg parallels msgs")
 
 	assert.Equal(t, session.MessageUser, msgs[0].Type)
 	assert.Equal(t, "msg_0", msgs[0].ID)
 	require.Len(t, msgs[0].Parts, 1, "patch part must NOT survive into the contract shape")
+	require.Len(t, changedFiles[0], 1)
+	assert.Contains(t, changedFiles[0], "/workspace/x")
 
 	assert.Equal(t, session.MessageAssistant, msgs[1].Type)
 	assert.Equal(t, "msg_1", msgs[1].ID)
+	require.Len(t, changedFiles[1], 1)
+	assert.Contains(t, changedFiles[1], "/workspace/y")
 }
 
 func TestParseHistoryWire_MalformedJSON(t *testing.T) {
-	_, err := ParseHistoryWire([]byte(`not json`), "ws-1")
+	_, _, err := ParseHistoryWire([]byte(`not json`), "ws-1")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parse message array")
 }

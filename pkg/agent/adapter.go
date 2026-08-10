@@ -11,30 +11,31 @@ import (
 
 // Adapter is the single seam between platform code (proxy handlers,
 // MCP server, services) and one agent runtime. It folds the existing
-// AgentRuntime + Dialect + AgentClient + AgentConfigWriter interfaces
-// into one surface and adds the session/messaging methods the proxy
-// migrates to under US-65.4.
+// AgentRuntime + Dialect + AgentClient interface shapes into one
+// surface and adds the session/messaging methods the proxy migrates
+// to under US-65.4.
 //
 // Per design 0049 §4.6, the full Adapter has ~18 methods. This file
-// defines the interface shape; the opencode implementation lands in
-// pkg/agent/opencode/adapter.go (US-65.3 follow-up). Platform code
-// holds an Adapter (interface) and never imports an implementation.
+// defines the interface shape; the opencode implementation lives in
+// pkg/agent/opencode/adapter.go. Platform code holds an Adapter
+// (interface) and never imports an implementation.
 //
-// Composition: AgentConfigWriter (US-65.1) is embedded because its
-// two methods (Apply, HasRelay) are conceptually part of Adapter. The
-// other three existing interfaces (AgentRuntime, Dialect, AgentClient)
-// are NOT embedded — they carry agent-specific shapes (opencode path
-// strings, map[string]any config patches, []byte raw model lists) that
-// Adapter's purpose is to eliminate. Their methods become private to
-// the opencode adapter; platform code calls the platform-shaped
-// methods below.
+// AgentConfigWriter is NOT embedded here. The two seams run in
+// different processes: AgentConfigWriter is held by agentd (the
+// in-pod supervisor that writes agent-config.json); Adapter is held
+// by the API server (proxy handlers that translate HTTP calls). The
+// API pod has no filesystem access to the workspace PVC and cannot
+// write agent config. Composing the two into one interface would
+// force every Adapter implementation to provide panic-stubs for
+// Apply/HasRelay — code that lies about its capabilities. design 0049
+// §4.6's "folds AgentConfigWriter" described the long-term intent
+// (one unified seam per agent); the as-built architecture has two
+// seams because the two processes have different capabilities.
 //
 // Rule 12 (containment before abstraction): pass-through operations
 // (Rewind, Fork) are NOT included until a second adapter validates
 // their shape or a forcing UX need lands one.
 type Adapter interface {
-	AgentConfigWriter
-
 	// --- Sessions (design 0049 §4.6) ---
 	//
 	// Platform-shaped session.Session values; the adapter keeps the

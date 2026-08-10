@@ -18,8 +18,6 @@ import (
 // Adapter interface is usable as documented.
 type fakeAdapter struct{}
 
-func (f *fakeAdapter) Apply(_ AgentConfigInput) (bool, error) { return true, nil }
-func (f *fakeAdapter) HasRelay() bool                         { return false }
 func (f *fakeAdapter) CreateSession(_ context.Context, _, _, _ string) (*session.Session, error) {
 	return &session.Session{}, nil
 }
@@ -79,14 +77,4 @@ func TestAdapter_InterfaceShape(t *testing.T) {
 	if _, err := a.Send(ctx, "u", "w", "s", "hi", session.SendOpts{}); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
-}
-
-func TestAdapter_FoldsAgentConfigWriter(t *testing.T) {
-	// Adapter embeds AgentConfigWriter so platform code that needs
-	// ONLY the config seam (e.g. agentd's reloadSecretsHandler) can
-	// hold the narrower interface. This test pins the embed — if
-	// AgentConfigWriter is removed from Adapter's embed list, this
-	// assignment fails to compile.
-	a := &fakeAdapter{}
-	var _ AgentConfigWriter = a
 }

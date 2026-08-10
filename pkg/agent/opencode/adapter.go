@@ -15,9 +15,16 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode/filediff"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
-	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
+
+// Compile-time assertion: *Adapter satisfies agent.Adapter.
+// AgentConfigWriter is NOT part of Adapter (see agent.Adapter doc:
+// the two seams run in different processes — agentd owns the config
+// writer, the API server owns the Adapter). US-65.4's proxy wiring
+// holds an agent.Adapter; agentd's reload path holds an
+// agent.AgentConfigWriter. The two never meet in one type.
+var _ agent.Adapter = (*Adapter)(nil)
 
 // Adapter implements agent.Adapter for the opencode runtime.
 //
@@ -31,12 +38,16 @@ import (
 // The translator never sees an HTTP response — it gets bytes — so
 // it is independently testable.
 //
-// Design 0049 §4.6: 16 new methods plus the embedded
-// AgentConfigWriter (2 methods). The ConfigWriter is owned by the
-// agentd in-pod process, NOT by the API-side Adapter — the API-side
-// code never writes agent-config.json. For API-side construction,
-// pass nil to WithConfigWriter; the adapter panics on Apply/HasRelay
-// (those methods are only valid in the agentd process).
+// Design 0049 §4.6: 16 methods. AgentConfigWriter is intentionally
+// NOT implemented here — see the agent.Adapter doc comment for why
+// (the two seams run in different processes with different
+// filesystem capabilities).
+//
+// Credential methods (FormatProviderConfig, ValidateCredentials)
+// delegate to the existing OpenCodeAgent (agent.AgentRuntime) to
+// avoid behavior divergence. R3 from PR #714 review: duplication
+// between Adapter and OpenCodeAgent was a maintenance hazard;
+// delegation keeps one source of truth.
 type Adapter struct {
 	pw      PasswordResolver
 	ip      PodIPResolver
@@ -44,6 +55,7 @@ type Adapter struct {
 	logger  *zap.Logger
 	port    int
 	differ  *filediff.Producer // nil on the API side; set by agentd-side construction
+	runtime *OpenCodeAgent     // delegates Type/ValidateCredentials/FormatProviderConfig
 }
 
 // AdapterOption configures an Adapter at construction.
@@ -91,6 +103,7 @@ func NewAdapter(pw PasswordResolver, ip PodIPResolver, logger *zap.Logger, opts 
 		httpCli: newTunedHTTPClient(),
 		logger:  logger,
 		port:    agentd.AgentPort,
+		runtime: &OpenCodeAgent{},
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -99,36 +112,13 @@ func NewAdapter(pw PasswordResolver, ip PodIPResolver, logger *zap.Logger, opts 
 }
 
 // resolve returns a low-level Client configured for the workspace's
-// pod. Mirrors WorkspaceClient.resolve — kept separate so the
-// Adapter's call sites don't all pay the per-call cost of the
-// WorkspaceClient wrapper layer.
+// pod. Delegates to the shared resolveWorkspaceClient helper so the
+// resolution logic (pod IP lookup, password lookup, baseURL
+// construction) has one source of truth across WorkspaceClient and
+// Adapter (PR #714 review R3: avoid two maintenance paths).
 func (a *Adapter) resolve(ctx context.Context, userID, workspaceID string) (*Client, error) {
-	podIP, err := a.ip.GetWorkspacePodIP(ctx, userID, workspaceID)
-	if err != nil {
-		return nil, fmt.Errorf("resolve pod IP for workspace %s: %w", workspaceID, err)
-	}
-	if podIP == "" {
-		return nil, fmt.Errorf("workspace %s: %w", workspaceID, ErrNoRunningPod)
-	}
-	password, err := a.pw(ctx, workspaceID)
-	if err != nil {
-		return nil, fmt.Errorf("resolve password for workspace %s: %w", workspaceID, err)
-	}
-	baseURL := fmt.Sprintf("http://%s:%d", podIP, a.port)
-	return NewClient(baseURL, password, a.logger, WithHTTPClient(a.httpCli)), nil
+	return resolveWorkspaceClient(ctx, a.ip, a.pw, a.port, a.httpCli, a.logger, userID, workspaceID)
 }
-
-// Compile-time assertion that *Adapter satisfies agent.Adapter.
-// Excludes AgentConfigWriter methods (Apply/HasRelay) which are
-// in-pod-only; the API-side Adapter does not implement them. The
-// agentd-side construction can satisfy the full AgentConfigWriter
-// by embedding the ConfigWriter — that lands when agentd migrates
-// to holding an Adapter (US-65.4 follow-up).
-//
-// For now, *Adapter implements every Adapter method EXCEPT
-// AgentConfigWriter's. The interface assertion is against the
-// non-config subset; a separate type assertion in agentd's wiring
-// layer composes the two.
 
 // --- Sessions ---
 
@@ -320,20 +310,18 @@ func (a *Adapter) GetHistory(ctx context.Context, userID, workspaceID, sessionID
 	if err != nil {
 		return nil, fmt.Errorf("GET /session/%s/message: read body: %w", sessionID, err)
 	}
-	msgs, err := ParseHistoryWire(raw, workspaceID)
+	msgs, changedFilesPerMsg, err := ParseHistoryWire(raw, workspaceID)
 	if err != nil {
 		return nil, err
 	}
 	// Produce FileChange parts for any message whose patch part
 	// collected file paths. Skipped when no differ is wired.
 	if a.differ != nil {
-		var rawMsgs []ocMessage
-		_ = json.Unmarshal(raw, &rawMsgs) // already validated above
 		for i := range msgs {
-			if i >= len(rawMsgs) {
+			if i >= len(changedFilesPerMsg) {
 				break
 			}
-			_, files := translateMessage(rawMsgs[i])
+			files := changedFilesPerMsg[i]
 			if len(files) > 0 {
 				msgs[i].Parts = append(msgs[i].Parts, a.fileChangeParts(ctx, files)...)
 			}
@@ -400,6 +388,12 @@ func (a *Adapter) ListPending(ctx context.Context, userID, workspaceID, sessionI
 	// endpoints (V1) and unifies them into InputRequest values.
 	// Implemented here because it is a synchronous poll, not a
 	// stream — the same shape the proxy's pending-input UI calls.
+	//
+	// Error handling: transport errors and 5xx responses are logged
+	// at warn (not silently swallowed) so a connectivity failure
+	// does not mask as "no pending input". 4xx responses other than
+	// 404 are also logged. 404 is treated as "endpoint not implemented
+	// in this opencode version" and silently returns empty.
 	c, err := a.resolve(ctx, userID, workspaceID)
 	if err != nil {
 		return nil, err
@@ -408,49 +402,87 @@ func (a *Adapter) ListPending(ctx context.Context, userID, workspaceID, sessionI
 	var out []session.InputRequest
 
 	qResp, qErr := a.doGet(ctx, c, d.QuestionListPath())
-	if qErr == nil {
+	if qErr != nil {
+		a.logger.Warn("adapter ListPending: GET /question transport error",
+			zap.Error(qErr), zap.String("workspaceID", workspaceID), zap.String("sessionID", sessionID))
+	} else {
 		defer qResp.Body.Close() //nolint:errcheck // best-effort drain
-		if qResp.StatusCode < 400 {
-			raw, _ := readBody(qResp, 1<<20)
-			var items []struct {
-				ID        string `json:"id"`
-				SessionID string `json:"sessionID"`
-			}
-			if json.Unmarshal(raw, &items) == nil {
-				for _, it := range items {
-					out = append(out, session.InputRequest{
-						ID:        it.ID,
-						SessionID: it.SessionID,
-						Kind:      session.InputQuestion,
-					})
-				}
-			}
+		switch {
+		case qResp.StatusCode >= 500:
+			a.logger.Warn("adapter ListPending: GET /question returned server error",
+				zap.Int("status", qResp.StatusCode))
+		case qResp.StatusCode >= 400 && qResp.StatusCode != http.StatusNotFound:
+			a.logger.Warn("adapter ListPending: GET /question returned client error",
+				zap.Int("status", qResp.StatusCode))
+		case qResp.StatusCode < 400:
+			out = append(out, a.parsePendingQuestions(qResp)...)
 		}
 	}
 
 	pResp, pErr := a.doGet(ctx, c, d.PermissionListPath())
-	if pErr == nil {
+	if pErr != nil {
+		a.logger.Warn("adapter ListPending: GET /permission transport error",
+			zap.Error(pErr), zap.String("workspaceID", workspaceID), zap.String("sessionID", sessionID))
+	} else {
 		defer pResp.Body.Close() //nolint:errcheck // best-effort drain
-		if pResp.StatusCode < 400 {
-			raw, _ := readBody(pResp, 1<<20)
-			var items []struct {
-				ID         string `json:"id"`
-				SessionID  string `json:"sessionID"`
-				Permission string `json:"permission"`
-			}
-			if json.Unmarshal(raw, &items) == nil {
-				for _, it := range items {
-					out = append(out, session.InputRequest{
-						ID:         it.ID,
-						SessionID:  it.SessionID,
-						Kind:       session.InputPermission,
-						Permission: it.Permission,
-					})
-				}
-			}
+		switch {
+		case pResp.StatusCode >= 500:
+			a.logger.Warn("adapter ListPending: GET /permission returned server error",
+				zap.Int("status", pResp.StatusCode))
+		case pResp.StatusCode >= 400 && pResp.StatusCode != http.StatusNotFound:
+			a.logger.Warn("adapter ListPending: GET /permission returned client error",
+				zap.Int("status", pResp.StatusCode))
+		case pResp.StatusCode < 400:
+			out = append(out, a.parsePendingPermissions(pResp)...)
 		}
 	}
 	return out, nil
+}
+
+// parsePendingQuestions reads /question response body and converts
+// each entry to an InputRequest with Kind=InputQuestion.
+func (a *Adapter) parsePendingQuestions(resp *http.Response) []session.InputRequest {
+	raw, _ := readBody(resp, 1<<20)
+	var items []struct {
+		ID        string `json:"id"`
+		SessionID string `json:"sessionID"`
+	}
+	if json.Unmarshal(raw, &items) != nil {
+		return nil
+	}
+	out := make([]session.InputRequest, 0, len(items))
+	for _, it := range items {
+		out = append(out, session.InputRequest{
+			ID:        it.ID,
+			SessionID: it.SessionID,
+			Kind:      session.InputQuestion,
+		})
+	}
+	return out
+}
+
+// parsePendingPermissions reads /permission response body and converts
+// each entry to an InputRequest with Kind=InputPermission.
+func (a *Adapter) parsePendingPermissions(resp *http.Response) []session.InputRequest {
+	raw, _ := readBody(resp, 1<<20)
+	var items []struct {
+		ID         string `json:"id"`
+		SessionID  string `json:"sessionID"`
+		Permission string `json:"permission"`
+	}
+	if json.Unmarshal(raw, &items) != nil {
+		return nil
+	}
+	out := make([]session.InputRequest, 0, len(items))
+	for _, it := range items {
+		out = append(out, session.InputRequest{
+			ID:         it.ID,
+			SessionID:  it.SessionID,
+			Kind:       session.InputPermission,
+			Permission: it.Permission,
+		})
+	}
+	return out
 }
 
 func (a *Adapter) Resolve(ctx context.Context, userID, workspaceID, requestID, reply string) error {
@@ -526,48 +558,19 @@ func (a *Adapter) Capabilities() []session.Capability {
 }
 
 // --- Credentials (folded from AgentRuntime) ---
+//
+// These delegate to the existing OpenCodeAgent rather than
+// re-implementing. R3 from PR #714 review: the previous duplication
+// created two maintenance paths and a behavior divergence
+// (ValidateCredentials checked the `provider` key specifically vs.
+// OpenCodeAgent's any-key check). Delegation keeps one source of
+// truth; the agent.AgentRuntime implementation stays authoritative
+// for credential validation and formatting.
 
 func (a *Adapter) FormatProviderConfig(providers []agent.LLMProviderData) ([]byte, error) {
-	// Delegate to the existing opencode-specific formatter. The
-	// formatter consumes pkg/secrets.LLMProviderData which is the
-	// same type as agent.LLMProviderData (re-exported; see
-	// pkg/agent/agent.go).
-	sec := make([]secrets.LLMProviderData, len(providers))
-	for i, p := range providers {
-		sec[i] = secrets.LLMProviderData{
-			Kind: p.Kind, Slug: p.Slug, APIKey: p.APIKey, BaseURL: p.BaseURL,
-			Default: p.Default, SmallModel: p.SmallModel,
-		}
-		for _, m := range p.Models {
-			sec[i].Models = append(sec[i].Models, secrets.LLMModelConfig{
-				ID: m.ID, Label: m.Label,
-				ContextLimit: m.ContextLimit, OutputLimit: m.OutputLimit,
-			})
-		}
-	}
-	return FormatOpenCodeConfig(sec)
+	return a.runtime.FormatProviderConfig(providers)
 }
 
 func (a *Adapter) ValidateCredentials(rawConfig []byte) (*agent.CredentialCheckResult, error) {
-	var cfg struct {
-		Provider map[string]json.RawMessage `json:"provider"`
-	}
-	if err := json.Unmarshal(rawConfig, &cfg); err != nil {
-		return &agent.CredentialCheckResult{
-			State:   agent.CredentialStateInvalid,
-			Agent:   agent.AgentTypeOpenCode,
-			Message: "malformed provider config: " + err.Error(),
-		}, nil
-	}
-	if len(cfg.Provider) == 0 {
-		return &agent.CredentialCheckResult{
-			State:   agent.CredentialStateMissing,
-			Agent:   agent.AgentTypeOpenCode,
-			Message: "no providers configured",
-		}, nil
-	}
-	return &agent.CredentialCheckResult{
-		State: agent.CredentialStatePresent,
-		Agent: agent.AgentTypeOpenCode,
-	}, nil
+	return a.runtime.ValidateCredentials(rawConfig)
 }

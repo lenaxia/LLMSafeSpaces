@@ -8,6 +8,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -16,6 +19,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 
+	"github.com/lenaxia/llmsafespaces/pkg/agent"
+	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode/filediff"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
 
@@ -446,4 +451,232 @@ func TestAdapter_ListPending_UnifiesQuestionsAndPermissions(t *testing.T) {
 	}
 	assert.Equal(t, 2, counts[session.InputQuestion])
 	assert.Equal(t, 1, counts[session.InputPermission])
+}
+
+// --- Resolve (PR #714 review follow-up: was untested) ---
+
+func TestAdapter_Resolve_QuestionReply_HappyPath(t *testing.T) {
+	srv := newFakeOpencode(t)
+	srv.register("POST", "/question/que_1/reply", `{}`, 0)
+
+	a := newTestAdapter(t, srv.Server)
+	err := a.Resolve(context.Background(), "u-1", "ws-1", "que_1", "option-a")
+	require.NoError(t, err)
+	require.Contains(t, srv.requests, "POST /question/que_1/reply")
+	require.NotContains(t, srv.requests, "POST /permission",
+		"question reply succeeded → must NOT fall through to permission")
+}
+
+func TestAdapter_Resolve_FallsBackToPermissionOn404(t *testing.T) {
+	// When /question/:id/reply returns 404, the adapter must try
+	// /permission/:id/reply. This is the core complexity of Resolve.
+	srv := newFakeOpencode(t)
+	srv.register("POST", "/question/que_1/reply", `not found`, http.StatusNotFound)
+	srv.register("POST", "/permission/que_1/reply", `{}`, 0)
+
+	a := newTestAdapter(t, srv.Server)
+	err := a.Resolve(context.Background(), "u-1", "ws-1", "que_1", "allow")
+	require.NoError(t, err)
+	require.Contains(t, srv.requests, "POST /permission/que_1/reply",
+		"404 on question → must fall through to permission reply")
+}
+
+func TestAdapter_Resolve_QuestionReply5xx_ReturnsError(t *testing.T) {
+	// A 5xx on question-reply must surface as an error (not fall
+	// through to permission — that would mask a server failure).
+	srv := newFakeOpencode(t)
+	srv.register("POST", "/question/que_1/reply", `internal`, http.StatusInternalServerError)
+
+	a := newTestAdapter(t, srv.Server)
+	err := a.Resolve(context.Background(), "u-1", "ws-1", "que_1", "x")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "500")
+	require.NotContains(t, srv.requests, "POST /permission",
+		"5xx on question must NOT fall through to permission")
+}
+
+// --- FormatProviderConfig (PR #714 review follow-up: was untested) ---
+
+func TestAdapter_FormatProviderConfig_ProducesValidConfig(t *testing.T) {
+	a := NewAdapter(
+		func(_ context.Context, _ string) (string, error) { return "", nil },
+		&staticPodIPResolver{ip: ""},
+		zap.NewNop(),
+	)
+	out, err := a.FormatProviderConfig([]agent.LLMProviderData{
+		{Kind: "openai", Slug: "openai", APIKey: "sk-test"},
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, out)
+
+	var cfg map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(out, &cfg))
+	require.Contains(t, cfg, "provider", "formatted config must have provider map")
+
+	var providers map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(cfg["provider"], &providers))
+	require.Contains(t, providers, "openai")
+}
+
+// --- ValidateCredentials (PR #714 review follow-up: was untested) ---
+
+func TestAdapter_ValidateCredentials_AllStates(t *testing.T) {
+	a := NewAdapter(
+		func(_ context.Context, _ string) (string, error) { return "", nil },
+		&staticPodIPResolver{ip: ""},
+		zap.NewNop(),
+	)
+	cases := []struct {
+		name      string
+		input     []byte
+		wantState agent.CredentialState
+	}{
+		{"empty bytes", []byte(``), agent.CredentialStateMissing},
+		{"empty object", []byte(`{}`), agent.CredentialStateMissing},
+		{"present provider", []byte(`{"provider":{"openai":{}}}`), agent.CredentialStatePresent},
+		{"invalid json", []byte(`not json`), agent.CredentialStateInvalid},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			res, err := a.ValidateCredentials(c.input)
+			require.NoError(t, err)
+			require.NotNil(t, res)
+			assert.Equal(t, c.wantState, res.State)
+			assert.Equal(t, agent.AgentTypeOpenCode, res.Agent)
+		})
+	}
+}
+
+// --- FileChange production via WithFileDiffProducer (PR #714 review follow-up) ---
+
+func TestAdapter_Send_WithFileDiffProducer_ProducesFileChangeParts(t *testing.T) {
+	// The reviewer flagged that the FileChange production path through
+	// the Adapter was untested. This test wires a real filediff.Producer
+	// against a temp git repo, sends a message with a patch part, and
+	// verifies the response carries PartFileChange parts with the
+	// correct ChangeStatus detection.
+	dir := t.TempDir()
+	runGitAdapterHelper(t, dir, "init", "-b", "main")
+	runGitAdapterHelper(t, dir, "config", "user.email", "test@example.com")
+	runGitAdapterHelper(t, dir, "config", "user.name", "Test")
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package foo\n"), 0o644))
+	runGitAdapterHelper(t, dir, "add", "foo.go")
+	runGitAdapterHelper(t, dir, "commit", "-m", "baseline")
+	// Modify the file so diff has something to report.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "foo.go"), []byte("package foo // modified\n"), 0o644))
+
+	producer, err := filediff.NewProducer(dir)
+	require.NoError(t, err)
+
+	srv := newFakeOpencode(t)
+	srv.register("POST", "/session/ses_1/message", `{
+		"info":{"role":"assistant","id":"msg_1","sessionID":"ses_1"},
+		"parts":[
+			{"type":"text","id":"p1","text":"made changes"},
+			{"type":"patch","files":["foo.go"]}
+		]
+	}`, 0)
+
+	a := newTestAdapter(t, srv.Server)
+	// Override with the wired producer.
+	a.differ = producer
+
+	msg, err := a.Send(context.Background(), "u-1", "ws-1", "ses_1", "edit foo.go", session.SendOpts{})
+	require.NoError(t, err)
+	require.NotNil(t, msg)
+
+	// Find the FileChange part.
+	var fc *session.FileDiff
+	for i := range msg.Parts {
+		if msg.Parts[i].Type == session.PartFileChange {
+			fc = msg.Parts[i].FileChange
+			break
+		}
+	}
+	require.NotNil(t, fc, "Send with differ wired must produce a FileChange part")
+	assert.Equal(t, "foo.go", fc.Path)
+	assert.Equal(t, session.ChangeModified, fc.Status,
+		"modified existing file → ChangeStatus must be ChangeModified")
+	assert.Contains(t, fc.Patch, "package foo")
+	assert.Contains(t, fc.Patch, "-package foo")
+	assert.Contains(t, fc.Patch, "+package foo // modified")
+}
+
+// runGitAdapterHelper is a local git-invocation helper for the
+// FileChange integration test. Lives here (not in filediff/) because
+// it's only needed for adapter_test.go's cross-package integration.
+func runGitAdapterHelper(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v in %s: %v\n%s", args, dir, err, out)
+	}
+}
+
+// --- Send error path (PR #714 review follow-up) ---
+
+func TestAdapter_Send_5xx_ReturnsErrorWithStatus(t *testing.T) {
+	srv := newFakeOpencode(t)
+	srv.register("POST", "/session/ses_1/message", `{"error":"internal"}`, http.StatusInternalServerError)
+
+	a := newTestAdapter(t, srv.Server)
+	_, err := a.Send(context.Background(), "u-1", "ws-1", "ses_1", "hi", session.SendOpts{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "500")
+	assert.Contains(t, err.Error(), "internal")
+}
+
+// --- SendAsync error paths (PR #714 review follow-up) ---
+
+func TestAdapter_SendAsync_404_NotFound(t *testing.T) {
+	srv := newFakeOpencode(t)
+	srv.register("POST", "/api/session/ses_missing/prompt", `not found`, http.StatusNotFound)
+
+	a := newTestAdapter(t, srv.Server)
+	_, err := a.SendAsync(context.Background(), "u-1", "ws-1", "ses_missing", "hi", session.SendOpts{})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrV2SessionNotFound,
+		"404 from V2 prompt must surface as ErrV2SessionNotFound so callers can distinguish missing-session from transient errors")
+}
+
+func TestAdapter_SendAsync_409_Conflict(t *testing.T) {
+	srv := newFakeOpencode(t)
+	srv.register("POST", "/api/session/ses_1/prompt", `conflict`, http.StatusConflict)
+
+	a := newTestAdapter(t, srv.Server)
+	_, err := a.SendAsync(context.Background(), "u-1", "ws-1", "ses_1", "hi", session.SendOpts{})
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrV2PromptConflict,
+		"409 from V2 prompt must surface as ErrV2PromptConflict so callers can retry or surface to user")
+}
+
+// --- ParseSessionListWire empty wrapped (PR #714 review C2 regression) ---
+
+func TestParseSessionListWire_EmptyWrapped_ReturnsEmptyNotError(t *testing.T) {
+	// C2 regression: {"data": []} is a valid wrapped response with
+	// zero sessions. The previous logic fell through to the bare-array
+	// parse, which failed because the body is an object, not an array.
+	body := []byte(`{"data":[]}`)
+	sessions, err := ParseSessionListWire(body, "ws-1")
+	require.NoError(t, err)
+	assert.Empty(t, sessions, "empty wrapped response must return empty slice, not error")
+}
+
+// --- ListPending error path (PR #714 review R1 follow-up) ---
+
+func TestAdapter_ListPending_ServerError_ReturnsEmptyNoPanic(t *testing.T) {
+	// When both /question and /permission return 5xx, ListPending
+	// must NOT panic and must return an empty slice. The errors are
+	// logged at warn so they surface in operator dashboards without
+	// failing the user-facing call.
+	srv := newFakeOpencode(t)
+	srv.register("GET", "/question", `internal`, http.StatusInternalServerError)
+	srv.register("GET", "/permission", `internal`, http.StatusInternalServerError)
+
+	a := newTestAdapter(t, srv.Server)
+	reqs, err := a.ListPending(context.Background(), "u-1", "ws-1", "ses_1")
+	require.NoError(t, err, "5xx must not fail the call — surfaces as empty pending")
+	assert.Empty(t, reqs)
 }
