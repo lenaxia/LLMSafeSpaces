@@ -11,6 +11,7 @@ package workflows
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -453,9 +454,116 @@ func (s *StoreIntegrationSuite) TestTriggerCircuitBreaker() {
 	assert.Equal(s.T(), 0, got.ConsecutiveFailures)
 }
 
+// TestUpdateTrigger_ReEnableResetsFailures verifies that re-enabling a
+// disabled trigger resets consecutive_failures to 0. Without this, a trigger
+// disabled at 15 failures would immediately re-disable on the first failed
+// fire after re-enable (15 >= auto_disable_after). The CASE clause in
+// UpdateTrigger detects enabled=false→true and resets.
+func (s *StoreIntegrationSuite) TestUpdateTrigger_ReEnableResetsFailures() {
+	ctx := context.Background()
+	triggerID := uuid.New().String()
+	now := time.Now()
+
+	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
+		ID: triggerID, OwnerType: "user", OwnerID: "u1",
+		Name: "disabled-trigger", Enabled: true, SourceType: "cron",
+		SourceConfig: json.RawMessage(`{}`), WorkflowID: nil, AutoDisableAfter: 10,
+		CreatedAt: now, UpdatedAt: now,
+	}))
+
+	// Accumulate failures and disable.
+	for i := 0; i < 15; i++ {
+		_, err := s.store.IncrementTriggerFailures(ctx, triggerID)
+		require.NoError(s.T(), err)
+	}
+	require.NoError(s.T(), s.store.DisableTrigger(ctx, triggerID))
+
+	got, err := s.store.GetTrigger(ctx, "user", "u1", triggerID)
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), 15, got.ConsecutiveFailures)
+	assert.False(s.T(), got.Enabled)
+
+	// Re-enable — must reset consecutive_failures to 0.
+	enabledTrue := true
+	updated, err := s.store.UpdateTrigger(ctx, "user", "u1", triggerID, &TriggerUpdate{
+		Enabled: &enabledTrue,
+	})
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), 0, updated.ConsecutiveFailures,
+		"re-enabling must reset consecutive_failures")
+	assert.True(s.T(), updated.Enabled)
+
+	// Verify persisted.
+	got2, err := s.store.GetTrigger(ctx, "user", "u1", triggerID)
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), 0, got2.ConsecutiveFailures)
+	assert.True(s.T(), got2.Enabled)
+}
+
+// TestUpdateTrigger_EnableStaysTrue_DoesNotReset verifies that updating an
+// already-enabled trigger does NOT reset the failure counter. The CASE clause
+// only fires on the enabled=false→true transition.
+func (s *StoreIntegrationSuite) TestUpdateTrigger_EnableStaysTrue_DoesNotReset() {
+	ctx := context.Background()
+	triggerID := uuid.New().String()
+	now := time.Now()
+
+	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
+		ID: triggerID, OwnerType: "user", OwnerID: "u1",
+		Name: "active-trigger", Enabled: true, SourceType: "cron",
+		SourceConfig: json.RawMessage(`{}`), WorkflowID: nil, AutoDisableAfter: 10,
+		CreatedAt: now, UpdatedAt: now,
+	}))
+
+	// Accumulate some failures (but don't disable).
+	for i := 0; i < 5; i++ {
+		_, err := s.store.IncrementTriggerFailures(ctx, triggerID)
+		require.NoError(s.T(), err)
+	}
+
+	// Update an unrelated field while enabled stays true.
+	newName := "renamed"
+	updated, err := s.store.UpdateTrigger(ctx, "user", "u1", triggerID, &TriggerUpdate{
+		Name: &newName,
+	})
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), 5, updated.ConsecutiveFailures,
+		"failures must NOT reset when enabled stays true")
+}
+
+// TestUpdateTrigger_DisableViaUpdate_PreservesFailures verifies that explicitly
+// disabling via UpdateTrigger (Enabled=&false) does NOT reset the counter.
+// The CASE clause only resets on the false->true transition, never on true->false.
+func (s *StoreIntegrationSuite) TestUpdateTrigger_DisableViaUpdate_PreservesFailures() {
+	ctx := context.Background()
+	triggerID := uuid.New().String()
+	now := time.Now()
+
+	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
+		ID: triggerID, OwnerType: "user", OwnerID: "u1",
+		Name: "disable-via-update", Enabled: true, SourceType: "cron",
+		SourceConfig: json.RawMessage(`{}`), WorkflowID: nil, AutoDisableAfter: 10,
+		CreatedAt: now, UpdatedAt: now,
+	}))
+
+	for i := 0; i < 7; i++ {
+		_, err := s.store.IncrementTriggerFailures(ctx, triggerID)
+		require.NoError(s.T(), err)
+	}
+
+	disabledFalse := false
+	updated, err := s.store.UpdateTrigger(ctx, "user", "u1", triggerID, &TriggerUpdate{
+		Enabled: &disabledFalse,
+	})
+	require.NoError(s.T(), err)
+	assert.False(s.T(), updated.Enabled)
+	assert.Equal(s.T(), 7, updated.ConsecutiveFailures,
+		"failures must NOT reset on explicit disable via UpdateTrigger")
+}
+
 // --- Due cron triggers -----------------------------------------------------
 
-func (s *StoreIntegrationSuite) TestListDueCronTriggers() {
+func (s *StoreIntegrationSuite) TestClaimDueCronTriggers() {
 	ctx := context.Background()
 	now := time.Now()
 	past := now.Add(-5 * time.Minute)
@@ -488,10 +596,147 @@ func (s *StoreIntegrationSuite) TestListDueCronTriggers() {
 		NextFireAt: &past, CreatedAt: now, UpdatedAt: now,
 	}))
 
-	due, err := s.store.ListDueCronTriggers(ctx, now, 10)
+	claimedNextFire := now.Add(15 * time.Minute)
+	due, err := s.store.ClaimDueCronTriggers(ctx, now, 10, func(t *TriggerRow) time.Time {
+		return claimedNextFire
+	})
 	require.NoError(s.T(), err)
-	require.Len(s.T(), due, 1, "only the enabled due trigger should be returned")
+	require.Len(s.T(), due, 1, "only the enabled due trigger should be claimed")
 	assert.Equal(s.T(), dueID, due[0].ID)
+
+	// Claim must have advanced last_fired_at + next_fire_at atomically.
+	got, err := s.store.GetTrigger(ctx, "user", "u1", dueID)
+	require.NoError(s.T(), err)
+	require.NotNil(s.T(), got.LastFiredAt)
+	require.NotNil(s.T(), got.NextFireAt)
+	assert.WithinDuration(s.T(), now, *got.LastFiredAt, time.Second,
+		"last_fired_at should be ~now")
+	assert.WithinDuration(s.T(), claimedNextFire, *got.NextFireAt, time.Second,
+		"next_fire_at should be advanced to the claimed value")
+
+	// Second claim should return nothing — the trigger is no longer due.
+	due2, err := s.store.ClaimDueCronTriggers(ctx, now, 10, func(t *TriggerRow) time.Time {
+		return claimedNextFire
+	})
+	require.NoError(s.T(), err)
+	assert.Empty(s.T(), due2, "trigger should not be re-claimed after advance")
+}
+
+// TestClaimDueCronTriggers_SkipLocked verifies that concurrent transactions
+// do not claim the same trigger row. This is the regression test for the
+// 15/10 circuit-breaker overshoot: with N API replicas, each scheduler tick
+// SELECTed the same due trigger and fired concurrently, inflating the failure
+// counter past auto_disable_after before any replica observed the disable.
+func (s *StoreIntegrationSuite) TestClaimDueCronTriggers_SkipLocked() {
+	ctx := context.Background()
+	now := time.Now()
+	past := now.Add(-5 * time.Minute)
+
+	triggerID := uuid.New().String()
+	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
+		ID: triggerID, OwnerType: "user", OwnerID: "u1",
+		Name: "concurrent", Enabled: true, SourceType: "cron",
+		SourceConfig: json.RawMessage(`{}`), WorkflowID: nil, AutoDisableAfter: 10,
+		NextFireAt: &past, CreatedAt: now, UpdatedAt: now,
+	}))
+
+	// Open two transactions concurrently (simulating two API replicas).
+	tx1, err := s.pool.Begin(ctx)
+	require.NoError(s.T(), err)
+	defer func() { _ = tx1.Rollback(ctx) }()
+
+	// tx1 claims the trigger.
+	row := tx1.QueryRow(ctx, `
+		SELECT `+triggerSelectColumns+`
+		FROM triggers
+		WHERE source_type = 'cron' AND enabled = true AND next_fire_at <= $1
+		FOR UPDATE SKIP LOCKED
+		LIMIT 1
+	`, now)
+	claimed, err := scanTriggerRow(row)
+	require.NoError(s.T(), err)
+	assert.Equal(s.T(), triggerID, claimed.ID)
+
+	// tx2 should get zero rows — the row is locked by tx1.
+	tx2, err := s.pool.Begin(ctx)
+	require.NoError(s.T(), err)
+	defer func() { _ = tx2.Rollback(ctx) }()
+
+	rows, err := tx2.Query(ctx, `
+		SELECT id FROM triggers
+		WHERE source_type = 'cron' AND enabled = true AND next_fire_at <= $1
+		FOR UPDATE SKIP LOCKED
+		LIMIT 1
+	`, now)
+	require.NoError(s.T(), err)
+	count := 0
+	for rows.Next() {
+		count++
+	}
+	rows.Close()
+	assert.Equal(s.T(), 0, count, "concurrent tx must not claim the locked trigger")
+}
+
+// TestClaimDueCronTriggers_ConcurrentMethodCalls verifies that two concurrent
+// calls to the actual ClaimDueCronTriggers method return disjoint results.
+// Unlike the SkipLocked test (which uses raw SQL to validate the FOR UPDATE
+// SKIP LOCKED invariant), this test guards the implementation directly: if
+// someone removed FOR UPDATE SKIP LOCKED from ClaimDueCronTriggers, this test
+// would fail because both goroutines would claim all triggers.
+func (s *StoreIntegrationSuite) TestClaimDueCronTriggers_ConcurrentMethodCalls() {
+	ctx := context.Background()
+	now := time.Now()
+	past := now.Add(-5 * time.Minute)
+
+	// Create multiple due triggers so there's contention.
+	triggerIDs := make([]string, 4)
+	for i := range triggerIDs {
+		triggerIDs[i] = uuid.New().String()
+		require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
+			ID: triggerIDs[i], OwnerType: "user", OwnerID: "u1",
+			Name: fmt.Sprintf("concurrent-method-%d", i), Enabled: true, SourceType: "cron",
+			SourceConfig: json.RawMessage(`{}`), WorkflowID: nil, AutoDisableAfter: 10,
+			NextFireAt: &past, CreatedAt: now, UpdatedAt: now,
+		}))
+	}
+
+	type claimResult struct {
+		ids []string
+		err error
+	}
+	resultCh := make(chan claimResult, 2)
+
+	// Two goroutines claiming concurrently (simulating two API replicas).
+	for i := 0; i < 2; i++ {
+		go func() {
+			claimed, err := s.store.ClaimDueCronTriggers(ctx, now, 10, func(t *TriggerRow) time.Time {
+				return now.Add(15 * time.Minute)
+			})
+			ids := make([]string, len(claimed))
+			for j, t := range claimed {
+				ids[j] = t.ID
+			}
+			resultCh <- claimResult{ids: ids, err: err}
+		}()
+	}
+
+	results := make([]claimResult, 2)
+	for i := range results {
+		results[i] = <-resultCh
+		require.NoError(s.T(), results[i].err)
+	}
+
+	// Every trigger must be claimed exactly once across both goroutines.
+	allClaimed := append(results[0].ids, results[1].ids...)
+	assert.Len(s.T(), allClaimed, 4, "all 4 triggers should be claimed across both goroutines")
+
+	seen := make(map[string]int)
+	for _, id := range allClaimed {
+		seen[id]++
+	}
+	for id, count := range seen {
+		assert.Equal(s.T(), 1, count, "trigger %s claimed %d times (must be exactly 1)", id, count)
+	}
 }
 
 // --- Atomic fire-row + run-create ------------------------------------------
