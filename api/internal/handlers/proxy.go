@@ -187,10 +187,15 @@ func NewProxyHandler(
 // have been migrated check `h.adapter != nil` and take the Adapter path;
 // unmigrated handlers continue through the legacy dialect path. Set
 // before Start(); nil leaves the handler in legacy mode (today's
-// behavior).
+// behavior). Panics if called after Start() — same invariant as
+// SetStateStore, preventing a data race on the interface field once
+// handler goroutines begin reading h.adapter.
 func (h *ProxyHandler) SetAdapter(a agent.Adapter) {
 	if a == nil {
 		return
+	}
+	if h.started {
+		panic("SetAdapter called after Start — request goroutines may already be reading h.adapter")
 	}
 	h.adapter = a
 }

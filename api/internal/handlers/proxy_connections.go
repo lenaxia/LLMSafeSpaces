@@ -215,13 +215,15 @@ func (h *ProxyHandler) AdapterPasswordResolver() func(ctx context.Context, works
 // IPs from the K8s CRD status. The userID parameter is accepted per the
 // Adapter's interface contract but not used — the K8s workspace lookup
 // is namespace-scoped, not user-scoped.
-func (h *ProxyHandler) AdapterPodIPResolver() AdapterPodIPResolver {
+func (h *ProxyHandler) AdapterPodIPResolver() WorkspacePodIPResolver {
 	return &proxyPodIPResolver{h: h}
 }
 
-// AdapterPodIPResolver is the agent-generic pod IP resolver interface.
-// app.go casts to opencode.PodIPResolver when constructing the Adapter.
-type AdapterPodIPResolver interface {
+// WorkspacePodIPResolver is the agent-generic pod IP resolver interface.
+// app.go constructs the opencode Adapter with this value; Go's
+// structural typing satisfies opencode.PodIPResolver (same method set)
+// without an explicit cast.
+type WorkspacePodIPResolver interface {
 	GetWorkspacePodIP(ctx context.Context, userID, workspaceID string) (string, error)
 }
 

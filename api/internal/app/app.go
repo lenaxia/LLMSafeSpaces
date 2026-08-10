@@ -201,9 +201,10 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	//
 	// The resolvers returned by ProxyHandler are generic Go types
 	// (func + interface) to avoid importing pkg/agent/opencode from
-	// api/internal/handlers/. opencode.PasswordResolver is a func type
-	// (implicit cast); opencode.PodIPResolver is an interface satisfied
-	// structurally by handlers.AdapterPodIPResolver.
+	// api/internal/handlers/. agentoc.PasswordResolver is a func type
+	// (explicit conversion); agentoc.PodIPResolver is an interface that
+	// handlers.WorkspacePodIPResolver satisfies structurally (same
+	// method signature, no explicit cast needed — Go structural typing).
 	agentAdapter := agentoc.NewAdapter(
 		agentoc.PasswordResolver(proxyHandler.AdapterPasswordResolver()),
 		proxyHandler.AdapterPodIPResolver(),
