@@ -11,6 +11,7 @@ package workflows
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -530,6 +531,36 @@ func (s *StoreIntegrationSuite) TestUpdateTrigger_EnableStaysTrue_DoesNotReset()
 		"failures must NOT reset when enabled stays true")
 }
 
+// TestUpdateTrigger_DisableViaUpdate_PreservesFailures verifies that explicitly
+// disabling via UpdateTrigger (Enabled=&false) does NOT reset the counter.
+// The CASE clause only resets on the false->true transition, never on true->false.
+func (s *StoreIntegrationSuite) TestUpdateTrigger_DisableViaUpdate_PreservesFailures() {
+	ctx := context.Background()
+	triggerID := uuid.New().String()
+	now := time.Now()
+
+	require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
+		ID: triggerID, OwnerType: "user", OwnerID: "u1",
+		Name: "disable-via-update", Enabled: true, SourceType: "cron",
+		SourceConfig: json.RawMessage(`{}`), WorkflowID: nil, AutoDisableAfter: 10,
+		CreatedAt: now, UpdatedAt: now,
+	}))
+
+	for i := 0; i < 7; i++ {
+		_, err := s.store.IncrementTriggerFailures(ctx, triggerID)
+		require.NoError(s.T(), err)
+	}
+
+	disabledFalse := false
+	updated, err := s.store.UpdateTrigger(ctx, "user", "u1", triggerID, &TriggerUpdate{
+		Enabled: &disabledFalse,
+	})
+	require.NoError(s.T(), err)
+	assert.False(s.T(), updated.Enabled)
+	assert.Equal(s.T(), 7, updated.ConsecutiveFailures,
+		"failures must NOT reset on explicit disable via UpdateTrigger")
+}
+
 // --- Due cron triggers -----------------------------------------------------
 
 func (s *StoreIntegrationSuite) TestClaimDueCronTriggers() {
@@ -644,6 +675,68 @@ func (s *StoreIntegrationSuite) TestClaimDueCronTriggers_SkipLocked() {
 	}
 	rows.Close()
 	assert.Equal(s.T(), 0, count, "concurrent tx must not claim the locked trigger")
+}
+
+// TestClaimDueCronTriggers_ConcurrentMethodCalls verifies that two concurrent
+// calls to the actual ClaimDueCronTriggers method return disjoint results.
+// Unlike the SkipLocked test (which uses raw SQL to validate the FOR UPDATE
+// SKIP LOCKED invariant), this test guards the implementation directly: if
+// someone removed FOR UPDATE SKIP LOCKED from ClaimDueCronTriggers, this test
+// would fail because both goroutines would claim all triggers.
+func (s *StoreIntegrationSuite) TestClaimDueCronTriggers_ConcurrentMethodCalls() {
+	ctx := context.Background()
+	now := time.Now()
+	past := now.Add(-5 * time.Minute)
+
+	// Create multiple due triggers so there's contention.
+	triggerIDs := make([]string, 4)
+	for i := range triggerIDs {
+		triggerIDs[i] = uuid.New().String()
+		require.NoError(s.T(), s.store.CreateTrigger(ctx, &TriggerRow{
+			ID: triggerIDs[i], OwnerType: "user", OwnerID: "u1",
+			Name: fmt.Sprintf("concurrent-method-%d", i), Enabled: true, SourceType: "cron",
+			SourceConfig: json.RawMessage(`{}`), WorkflowID: nil, AutoDisableAfter: 10,
+			NextFireAt: &past, CreatedAt: now, UpdatedAt: now,
+		}))
+	}
+
+	type claimResult struct {
+		ids []string
+		err error
+	}
+	resultCh := make(chan claimResult, 2)
+
+	// Two goroutines claiming concurrently (simulating two API replicas).
+	for i := 0; i < 2; i++ {
+		go func() {
+			claimed, err := s.store.ClaimDueCronTriggers(ctx, now, 10, func(t *TriggerRow) time.Time {
+				return now.Add(15 * time.Minute)
+			})
+			ids := make([]string, len(claimed))
+			for j, t := range claimed {
+				ids[j] = t.ID
+			}
+			resultCh <- claimResult{ids: ids, err: err}
+		}()
+	}
+
+	results := make([]claimResult, 2)
+	for i := range results {
+		results[i] = <-resultCh
+		require.NoError(s.T(), results[i].err)
+	}
+
+	// Every trigger must be claimed exactly once across both goroutines.
+	allClaimed := append(results[0].ids, results[1].ids...)
+	assert.Len(s.T(), allClaimed, 4, "all 4 triggers should be claimed across both goroutines")
+
+	seen := make(map[string]int)
+	for _, id := range allClaimed {
+		seen[id]++
+	}
+	for id, count := range seen {
+		assert.Equal(s.T(), 1, count, "trigger %s claimed %d times (must be exactly 1)", id, count)
+	}
 }
 
 // --- Atomic fire-row + run-create ------------------------------------------
