@@ -64,6 +64,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
@@ -251,14 +252,14 @@ func applyRelayConfigPreBoot(relayURL, authJSONPath, agentConfigPath string, log
 	// Build the writer over the existing agent-config.json. The
 	// materialize subcommand has already written providers + model
 	// to this path; loadExisting captures both as initial sources.
-	// SetRelay + Rebuild then merges the relay block in.
+	// Apply then merges the relay block in.
 	//
 	// The three options mirror main.go: applyRelayConfigPreBoot runs as
 	// part of the materialize subcommand, BEFORE agentd's main writer
 	// exists. The bootstrap subcommand has written adminPrompt to
 	// agentd.AdminPromptPath and allowedDirs to agentd.AllowedDirsPath
 	// (separate tmpfs files), and the built-in admin MCP server must be
-	// injected. Without these options, the pre-boot relay Rebuild would
+	// injected. Without these options, the pre-boot relay Apply would
 	// produce a config missing the admin system prompt, allowed external
 	// directories, and the llmsafespaces MCP server — degrading the agent
 	// until the first credential reload. Verified via write-path trace
@@ -269,8 +270,12 @@ func applyRelayConfigPreBoot(relayURL, authJSONPath, agentConfigPath string, log
 		opencode.WithAllowedDirsPath(effectiveAllowedDirsPath()),
 		opencode.WithPreMarshalHook(injectAgentdMCPServer),
 	)
-	writer.SetRelay(relayURL, models)
-	if err := writer.Rebuild(); err != nil {
+	if _, err := writer.Apply(agent.AgentConfigInput{
+		Relay: &agent.RelayState{
+			URL:    relayURL,
+			Models: relayModelsToAgent(models),
+		},
+	}); err != nil {
 		return "error_config_write", fmt.Errorf("rebuild agent-config: %w", err)
 	}
 
