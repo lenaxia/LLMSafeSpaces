@@ -134,4 +134,4 @@ US-65.3 is complete (Stream explicitly deferred to US-65.4 — documented scope)
 - `pkg/agent/opencode/translate_test.go`
 - `pkg/agent/opencode/filediff/filediff.go`
 - `pkg/agent/opencode/filediff/filediff_test.go`
-- `worklogs/NNNN_2026-08-10_us-65-3-opencode-adapter.md` (this file)
+- `worklogs/0721_2026-08-10_us-65-3-opencode-adapter.md` (this file)
