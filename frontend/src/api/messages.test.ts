@@ -2,29 +2,28 @@ import { describe, expect, it } from "vitest";
 import { transformHistory } from "./messages";
 
 describe("transformHistory", () => {
-  it("extracts createdAt from info.time.created (epoch millis)", () => {
-    const epochMillis = 1717948800123;
+  it("extracts createdAt from contract message (ISO string)", () => {
+    const iso = "2026-08-10T12:00:00.000Z";
     const raw = [
       {
-        info: { role: "user", id: "msg_1", time: { created: epochMillis } },
+        id: "msg_1",
+        type: "user",
+        createdAt: iso,
         parts: [{ type: "text", text: "hello" }],
       },
     ];
     const result = transformHistory(raw);
     expect(result).toHaveLength(1);
-    expect(result[0]!.createdAt).toEqual(new Date(epochMillis).toISOString());
+    expect(result[0]!.createdAt).toEqual(iso);
   });
 
-  it("extracts modelID from info.modelID on assistant messages", () => {
+  it("extracts modelID from model.id on assistant messages", () => {
     const raw = [
       {
-        info: {
-          role: "assistant",
-          id: "msg_2",
-          time: { created: 1717948800123 },
-          modelID: "gpt-4o",
-          providerID: "openai",
-        },
+        id: "msg_2",
+        type: "assistant",
+        createdAt: "2026-08-10T12:00:00.000Z",
+        model: { id: "gpt-4o", provider: "openai" },
         parts: [{ type: "text", text: "hi there" }],
       },
     ];
@@ -36,7 +35,9 @@ describe("transformHistory", () => {
   it("omits modelID on user messages", () => {
     const raw = [
       {
-        info: { role: "user", id: "msg_1", time: { created: 1717948800123 } },
+        id: "msg_1",
+        type: "user",
+        createdAt: "2026-08-10T12:00:00.000Z",
         parts: [{ type: "text", text: "hello" }],
       },
     ];
@@ -44,10 +45,11 @@ describe("transformHistory", () => {
     expect(result[0]!.modelID).toBeUndefined();
   });
 
-  it("omits createdAt when info.time.created is absent", () => {
+  it("omits createdAt when absent", () => {
     const raw = [
       {
-        info: { role: "user", id: "msg_1" },
+        id: "msg_1",
+        type: "user",
         parts: [{ type: "text", text: "hello" }],
       },
     ];
@@ -55,10 +57,12 @@ describe("transformHistory", () => {
     expect(result[0]!.createdAt).toBeUndefined();
   });
 
-  it("omits modelID when info.modelID is absent", () => {
+  it("omits modelID when model is absent", () => {
     const raw = [
       {
-        info: { role: "assistant", id: "msg_2", time: { created: 1717948800123 } },
+        id: "msg_2",
+        type: "assistant",
+        createdAt: "2026-08-10T12:00:00.000Z",
         parts: [{ type: "text", text: "response" }],
       },
     ];
@@ -66,52 +70,109 @@ describe("transformHistory", () => {
     expect(result[0]!.modelID).toBeUndefined();
   });
 
-  it("extracts both createdAt and modelID on assistant messages with full metadata", () => {
-    const epochMillis = 1717948800123;
+  it("handles reasoning parts", () => {
     const raw = [
       {
-        info: {
-          role: "assistant",
-          id: "msg_3",
-          time: { created: epochMillis, completed: epochMillis + 5000 },
-          modelID: "claude-3.5-sonnet",
-          providerID: "anthropic",
-        },
-        parts: [{ type: "text", text: "world" }],
+        id: "msg_1",
+        type: "assistant",
+        createdAt: "2026-08-10T12:00:00.000Z",
+        model: { id: "claude-3.5-sonnet" },
+        parts: [{ type: "reasoning", reasoning: "step by step" }],
       },
     ];
     const result = transformHistory(raw);
-    expect(result[0]!.createdAt).toEqual(new Date(epochMillis).toISOString());
-    expect(result[0]!.modelID).toBe("claude-3.5-sonnet");
+    expect(result).toHaveLength(1);
+    expect(result[0]!.parts[0]).toEqual({ type: "reasoning", text: "step by step" });
   });
 
-  it("handles multiple messages with mixed metadata presence", () => {
+  it("handles tool parts from contract shape", () => {
     const raw = [
       {
-        info: { role: "user", id: "msg_1", time: { created: 1000 } },
+        id: "msg_1",
+        type: "assistant",
+        parts: [{
+          type: "tool",
+          tool: {
+            name: "bash",
+            input: { command: "ls -la" },
+            output: "file.go",
+            state: { status: "completed" },
+          },
+        }],
+      },
+    ];
+    const result = transformHistory(raw);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.parts[0]!.type).toBe("tool_use");
+    expect(result[0]!.parts[0]!.text).toBe("bash");
+    expect(result[0]!.parts[0]!.toolState).toBe("completed");
+    expect(result[0]!.parts[0]!.input).toEqual({ command: "ls -la" });
+    expect(result[0]!.parts[0]!.toolOutput).toBe("file.go");
+  });
+
+  it("handles file_change parts", () => {
+    const raw = [
+      {
+        id: "msg_1",
+        type: "assistant",
+        parts: [{
+          type: "file_change",
+          fileChange: { path: "foo.go", patch: "diff", status: "modified" },
+        }],
+      },
+    ];
+    const result = transformHistory(raw);
+    expect(result).toHaveLength(1);
+    expect(result[0]!.parts[0]!.type).toBe("file_change");
+  });
+
+  it("handles multiple messages with mixed metadata", () => {
+    const raw = [
+      {
+        id: "msg_1",
+        type: "user",
+        createdAt: "2026-08-10T12:00:00.000Z",
         parts: [{ type: "text", text: "hi" }],
       },
       {
-        info: {
-          role: "assistant",
-          id: "msg_2",
-          time: { created: 2000 },
-          modelID: "gpt-4o",
-        },
+        id: "msg_2",
+        type: "assistant",
+        createdAt: "2026-08-10T12:00:05.000Z",
+        model: { id: "gpt-4o" },
         parts: [{ type: "text", text: "hello" }],
       },
       {
-        info: { role: "user", id: "msg_3" },
+        id: "msg_3",
+        type: "user",
         parts: [{ type: "text", text: "bye" }],
       },
     ];
     const result = transformHistory(raw);
     expect(result).toHaveLength(3);
-    expect(result[0]!.createdAt).toEqual(new Date(1000).toISOString());
+    expect(result[0]!.createdAt).toBe("2026-08-10T12:00:00.000Z");
     expect(result[0]!.modelID).toBeUndefined();
-    expect(result[1]!.createdAt).toEqual(new Date(2000).toISOString());
+    expect(result[1]!.createdAt).toBe("2026-08-10T12:00:05.000Z");
     expect(result[1]!.modelID).toBe("gpt-4o");
     expect(result[2]!.createdAt).toBeUndefined();
     expect(result[2]!.modelID).toBeUndefined();
+  });
+
+  it("filters out messages with no displayable parts", () => {
+    const raw = [
+      {
+        id: "msg_1",
+        type: "assistant",
+        parts: [{ type: "file_change", fileChange: {} }], // has parts but... wait, file_change IS displayable
+      },
+      {
+        id: "msg_2",
+        type: "assistant",
+        parts: [], // empty parts
+      },
+    ];
+    const result = transformHistory(raw);
+    // msg_1 has file_change part (displayable), msg_2 has no parts (filtered)
+    expect(result).toHaveLength(1);
+    expect(result[0]!.id).toBe("msg_1");
   });
 });

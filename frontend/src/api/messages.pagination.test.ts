@@ -2,7 +2,7 @@
 // server contract documented in api/internal/handlers/proxy_history_pagination_test.go.
 // The frontend depends on:
 //   1. Request shape: GET /workspaces/{ws}/sessions/{sid}/message?limit=N[&before=ID]
-//   2. Response shape: array of OpenCodeMessage objects, oldest-first
+//   2. Response shape: array of contract Message objects (pkg/session.Message), oldest-first
 //   3. Header `X-Next-Cursor` is read into nextCursor; absence => no more pages
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -62,8 +62,8 @@ describe("messagesApi.getHistoryPage — pagination wire contract", () => {
 
   it("reads X-Next-Cursor header into nextCursor", async () => {
     const upstream = [
-      { info: { role: "user", id: "msg_0034", time: { created: 1 } }, parts: [{ type: "text", text: "x" }] },
-      { info: { role: "assistant", id: "msg_0035", time: { created: 2 } }, parts: [{ type: "text", text: "y" }] },
+      { id: "msg_0034", type: "user", createdAt: "2026-01-01T00:00:00.001Z", parts: [{ type: "text", text: "x" }] },
+      { id: "msg_0035", type: "assistant", createdAt: "2026-01-01T00:00:00.002Z", parts: [{ type: "text", text: "y" }] },
     ];
     global.fetch = vi.fn().mockResolvedValue(
       new Response(JSON.stringify(upstream), {

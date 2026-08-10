@@ -19,6 +19,7 @@ type mockAdapter struct {
 	listSessionsFn      func(ctx context.Context, userID, workspaceID string) ([]session.Session, error)
 	listPendingFn       func(ctx context.Context, userID, workspaceID, sessionID string) ([]session.InputRequest, error)
 	resolveFn           func(ctx context.Context, userID, workspaceID, requestID, reply string) error
+	getHistoryFn        func(ctx context.Context, userID, workspaceID, sessionID string) ([]session.Message, error)
 	formatProviderCfgFn func(providers []agent.LLMProviderData) ([]byte, error)
 	validateCredsFn     func(rawConfig []byte) (*agent.CredentialCheckResult, error)
 }
@@ -53,7 +54,10 @@ func (m *mockAdapter) SendAsync(_ context.Context, _, _, _, _ string, _ session.
 func (m *mockAdapter) Abort(_ context.Context, _, _, _ string) error {
 	panic("mockAdapter.Abort not configured")
 }
-func (m *mockAdapter) GetHistory(_ context.Context, _, _, _ string) ([]session.Message, error) {
+func (m *mockAdapter) GetHistory(ctx context.Context, uid, wid, sid string) ([]session.Message, error) {
+	if m.getHistoryFn != nil {
+		return m.getHistoryFn(ctx, uid, wid, sid)
+	}
 	panic("mockAdapter.GetHistory not configured")
 }
 func (m *mockAdapter) Stream(_ context.Context, _, _, _ string) (<-chan session.Event, error) {
