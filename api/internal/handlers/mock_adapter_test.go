@@ -19,6 +19,8 @@ type mockAdapter struct {
 	createSessionFn     func(ctx context.Context, userID, workspaceID, title string) (*session.Session, error)
 	listSessionsFn      func(ctx context.Context, userID, workspaceID string) ([]session.Session, error)
 	renameSessionFn     func(ctx context.Context, userID, workspaceID, sessionID, title string) error
+	sendFn              func(ctx context.Context, userID, workspaceID, sessionID, text string, opts session.SendOpts) (*session.Message, error)
+	abortFn             func(ctx context.Context, userID, workspaceID, sessionID string) error
 	listPendingFn       func(ctx context.Context, userID, workspaceID, sessionID string) ([]session.InputRequest, error)
 	resolveFn           func(ctx context.Context, userID, workspaceID, requestID, reply string) error
 	getHistoryFn        func(ctx context.Context, userID, workspaceID, sessionID string) ([]session.Message, error)
@@ -53,13 +55,19 @@ func (m *mockAdapter) RenameSession(ctx context.Context, uid, wid, sid, title st
 func (m *mockAdapter) DeleteSession(_ context.Context, _, _, _ string) error {
 	panic("mockAdapter.DeleteSession not configured")
 }
-func (m *mockAdapter) Send(_ context.Context, _, _, _, _ string, _ session.SendOpts) (*session.Message, error) {
+func (m *mockAdapter) Send(ctx context.Context, uid, wid, sid, text string, opts session.SendOpts) (*session.Message, error) {
+	if m.sendFn != nil {
+		return m.sendFn(ctx, uid, wid, sid, text, opts)
+	}
 	panic("mockAdapter.Send not configured")
 }
 func (m *mockAdapter) SendAsync(_ context.Context, _, _, _, _ string, _ session.SendOpts) (string, error) {
 	panic("mockAdapter.SendAsync not configured")
 }
-func (m *mockAdapter) Abort(_ context.Context, _, _, _ string) error {
+func (m *mockAdapter) Abort(ctx context.Context, uid, wid, sid string) error {
+	if m.abortFn != nil {
+		return m.abortFn(ctx, uid, wid, sid)
+	}
 	panic("mockAdapter.Abort not configured")
 }
 func (m *mockAdapter) GetHistory(ctx context.Context, uid, wid, sid string) ([]session.Message, error) {
