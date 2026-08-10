@@ -229,7 +229,7 @@ jobs:
           CTX: kind-${{ env.CLUSTER_NAME }}
           NS: ${{ env.NS }}
           PORTFWD_PORT: 18080
-          WORKSPACE_NAME: e2e-workspace
+          WORKSPACE_NAME: e2e00000-0000-0000-0000-000000000001
           LLM_MODEL: ${{ secrets.LLM_MODEL }}
         run: bash local/us-63-v2-behavior-e2e.sh
 

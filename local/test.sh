@@ -34,8 +34,13 @@ die()  { printf '%s ✗%s %s\n' "${RED}${BOLD}" "${RESET}" "$*" >&2; exit 1; }
 CLUSTER_NAME="${CLUSTER_NAME:-llmsafespaces}"
 CTX="${CTX:-kind-${CLUSTER_NAME}}"
 NS="${NS:-llmsafespaces}"
-WORKSPACE_NAME="e2e-workspace"
-WORKSPACE_NAME="e2e-workspace"
+# The workspace CRD name MUST be a UUID: the API's workspace lookup casts the
+# name to Postgres uuid type (workspaces.id is uuid), and the platform's
+# design uses uuid.New() as the CRD name on every API-created workspace
+# (workspace_service.go:407). Using a human-readable name here causes
+# 'invalid input syntax for type uuid' 500s on every API call that touches
+# the workspace.
+WORKSPACE_NAME="${WORKSPACE_NAME:-e2e00000-0000-0000-0000-000000000001}"
 USER_ID="e2e-user"
 PORTFWD_PORT="${PORTFWD_PORT:-18080}"
 
@@ -274,8 +279,15 @@ ON CONFLICT (id) DO NOTHING;
 INSERT INTO api_keys (id, user_id, key, name, active)
 VALUES ('${USER_ID}-key', '${USER_ID}', '${API_KEY}', 'e2e-test-key', true)
 ON CONFLICT (id) DO UPDATE SET key=EXCLUDED.key, active=true;
+
+-- The workspace was created via kubectl (Test 4/5), bypassing the API.
+-- The API's session handler looks up workspaces.id (uuid) by the CRD name,
+-- so we must seed the metadata row with the same UUID used as the CRD name.
+INSERT INTO workspaces (id, name, user_id, namespace, runtime, storage_size)
+VALUES ('${WORKSPACE_NAME}', 'e2e-workspace', '${USER_ID}', '${NS}', 'python:3.11', '1Gi')
+ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, user_id=EXCLUDED.user_id;
 " >/dev/null
-ok "user ${USER_ID} + API key seeded in postgres"
+ok "user ${USER_ID} + API key + workspace metadata seeded in postgres"
 
 # CreateSession via the LLMSafeSpaces API. The API uses port_forward'd 18080.
 # (PF_PID was started in Test 1 and remains alive.)
