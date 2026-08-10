@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -57,6 +58,44 @@ func TestProxyPodIPResolver_EmptyPodIP_ReturnsEmptyIP(t *testing.T) {
 	ip, err := resolver.GetWorkspacePodIP(context.Background(), "user-1", "ws-1")
 	require.NoError(t, err)
 	assert.Empty(t, ip)
+}
+
+func TestProxyPodIPResolver_K8sClientError_ReturnsWrappedError(t *testing.T) {
+	// When LlmsafespacesV1() returns an error, the resolver must
+	// surface it wrapped with "get K8s client" context.
+	k8sMock := k8smocks.NewMockKubernetesClient()
+	k8sMock.On("LlmsafespacesV1").Return(nil, fmt.Errorf("client unavailable"))
+
+	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
+	require.NoError(t, err)
+
+	resolver := h.AdapterPodIPResolver()
+	_, err = resolver.GetWorkspacePodIP(context.Background(), "user-1", "ws-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get K8s client")
+	assert.Contains(t, err.Error(), "client unavailable", "wrapped error must preserve the root cause")
+}
+
+func TestProxyPodIPResolver_WorkspaceGetError_ReturnsWrappedError(t *testing.T) {
+	// When the workspace Get returns an error, the resolver must
+	// surface it wrapped with "get workspace" context.
+	k8sMock := k8smocks.NewMockKubernetesClient()
+	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
+	wsMock := k8smocks.NewMockWorkspaceInterface()
+
+	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
+	llmMock.On("Workspaces", "default").Return(wsMock)
+	wsMock.On("Get", context.Background(), "ws-1", metav1.GetOptions{}).
+		Return((*v1.Workspace)(nil), fmt.Errorf("not found"))
+
+	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
+	require.NoError(t, err)
+
+	resolver := h.AdapterPodIPResolver()
+	_, err = resolver.GetWorkspacePodIP(context.Background(), "user-1", "ws-1")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "get workspace")
+	assert.Contains(t, err.Error(), "not found", "wrapped error must preserve the root cause")
 }
 
 func TestAdapterPasswordResolver_DelegatesToGetPassword(t *testing.T) {
