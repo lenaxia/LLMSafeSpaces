@@ -475,13 +475,14 @@ func TestStreamEvents_OnRawEvent_UnparsableJSONData(t *testing.T) {
 
 	handler.onRawEvent("ws-1", "session.status", "not-json-at-all")
 
+	// With the early-return fix (US-65.5), unparsable events are dropped
+	// entirely — no opencode.event with nil Data is forwarded. The channel
+	// should have no events.
 	select {
 	case evt := <-sub.Ch:
-		assert.Equal(t, "opencode.event", evt.Type)
-		assert.Equal(t, "session.status", evt.EventType)
-		assert.Nil(t, evt.Data)
-	case <-time.After(time.Second):
-		t.Fatal("expected opencode.event even with unparsable data")
+		t.Fatalf("expected no event for unparsable data, got: %+v", evt)
+	case <-time.After(100 * time.Millisecond):
+		// Expected: no event forwarded.
 	}
 }
 
