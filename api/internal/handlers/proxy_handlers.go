@@ -137,31 +137,45 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 	}
 	wid := c.Param("id")
 
-	// V2 path (Epic 63): extract text from the V1 parts body and send via
-	// PromptV2 with delivery:"queue". Bypasses the 409 guard, the queue-len
-	// check, and redirectPromptToQueue — opencode admits atomically.
-	if h.v2SessionQueueEnabled {
-		const maxPromptBodyBytes = 100_000 + 1024
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPromptBodyBytes)
-		bodyBytes, err := io.ReadAll(c.Request.Body)
+	const maxPromptBodyBytes = 100_000 + 1024
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPromptBodyBytes)
+	bodyBytes, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read request body"})
+		return
+	}
+	_ = c.Request.Body.Close()
+	text, perr := extractPromptText(bodyBytes)
+	if perr != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": perr.Error()})
+		return
+	}
+	if len(text) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "text must not be empty"})
+		return
+	}
+	if len(text) > 100_000 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "text exceeds 100KB limit"})
+		return
+	}
+
+	// Adapter path (US-65.4): SendAsync uses V2 prompt with delivery:queue
+	// internally. No direct opencode import.
+	if h.adapter != nil && h.v2SessionQueueEnabled {
+		msgID, err := h.adapter.SendAsync(c.Request.Context(), "", wid, sid, text, session.SendOpts{Admission: session.AdmissionQueue})
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read request body"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enqueue message"})
 			return
 		}
-		_ = c.Request.Body.Close()
-		text, perr := extractPromptText(bodyBytes)
-		if perr != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": perr.Error()})
-			return
+		if h.v2Pending != nil {
+			h.v2Pending.add(wid, sid)
 		}
-		if len(text) == 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "text must not be empty"})
-			return
-		}
-		if len(text) > 100_000 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "text exceeds 100KB limit"})
-			return
-		}
+		c.JSON(http.StatusAccepted, gin.H{"messageID": msgID})
+		return
+	}
+
+	// Legacy V2 path: direct opencode client import (Epic 63).
+	if h.v2SessionQueueEnabled {
 		if h.enqueueV2(c, wid, sid, text) {
 			return
 		}

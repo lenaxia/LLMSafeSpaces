@@ -1,5 +1,5 @@
 import { ApiClientError } from "../../api/client";
-import { extractOpencodeMessage, extractOpencodeRef } from "../../api/opencodeRef";
+import { extractAgentErrorMessage, extractAgentErrorRef } from "../../api/agentErrorRef";
 
 interface ChatHistoryErrorBannerProps {
   error: unknown;
@@ -19,7 +19,7 @@ interface ChatHistoryErrorBannerProps {
  *     wire it here so the user can self-service the transient case
  *     (pod-restart, rate-limit, etc.) without a page reload.
  *   - Opencode ref — pulled from the API error body via
- *     extractOpencodeRef, shown in a `<details>` block. Not front-and-
+ *     extractAgentErrorRef, shown in a `<details>` block. Not front-and-
  *     center (users don't need it) but discoverable for operators
  *     debugging their own or a support-ticketed session.
  *   - Visual language reused from the sibling chatError + streamTimedOut
@@ -32,7 +32,7 @@ interface ChatHistoryErrorBannerProps {
  * copies the ref → greps opencode logs by that ref → stack trace.
  *
  * Message extraction hierarchy (verified against production shapes):
- *   1. `extractOpencodeMessage(body)` — nested-or-flat opencode `message`.
+ *   1. `extractAgentErrorMessage(body)` — nested-or-flat opencode `message`.
  *      Handles both the raw envelope (#486 GET-history shape,
  *      `body.data.message`) and the allowlisted shape (POST-prompt path,
  *      where the backend promotes `message` to top level).
@@ -54,7 +54,7 @@ export function ChatHistoryErrorBanner({
   onRetry,
 }: ChatHistoryErrorBannerProps) {
   const status = error instanceof ApiClientError ? error.status : undefined;
-  const ref = error instanceof ApiClientError ? extractOpencodeRef(error.body) : undefined;
+  const ref = error instanceof ApiClientError ? extractAgentErrorRef(error.body) : undefined;
 
   let message: string = "Unknown error";
   if (error instanceof ApiClientError) {
@@ -67,7 +67,7 @@ export function ChatHistoryErrorBanner({
     // `!== "undefined"` clause is defense-in-depth against subclasses
     // that stringify undefined.
     message =
-      extractOpencodeMessage(error.body) ??
+      extractAgentErrorMessage(error.body) ??
       (typeof error.body?.error === "string" && error.body.error.length > 0
         ? error.body.error
         : error.message && error.message !== "undefined"

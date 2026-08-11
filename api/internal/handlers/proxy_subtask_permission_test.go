@@ -65,7 +65,7 @@ func TestSubtaskPermission_BubblesToRootSession(t *testing.T) {
 	})
 	env.handler.onRawEvent("ws-1", "permission.asked", envelope)
 
-	recvWithTimeout(t, sub, "opencode.event")
+	recvWithTimeout(t, sub, "agent.event")
 	evt := recvWithTimeout(t, sub, "agent.permission")
 
 	req, ok := evt.Data.(*agent.PermissionRequest)
@@ -91,7 +91,7 @@ func TestSubtaskPermission_ResolutionDisabled_RootEqualsSelf(t *testing.T) {
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	env.handler.onRawEvent("ws-1", "permission.asked", envelope)
 
-	recvWithTimeout(t, sub, "opencode.event")
+	recvWithTimeout(t, sub, "agent.event")
 	evt := recvWithTimeout(t, sub, "agent.permission")
 	req := evt.Data.(*agent.PermissionRequest)
 	assert.Equal(t, "ses_x", req.SessionID)
@@ -130,7 +130,7 @@ func TestSubtaskPermission_TopLevelSession_RootEqualsSelf(t *testing.T) {
 	})
 	env.handler.onRawEvent("ws-1", "permission.asked", envelope)
 
-	recvWithTimeout(t, sub, "opencode.event")
+	recvWithTimeout(t, sub, "agent.event")
 	evt := recvWithTimeout(t, sub, "agent.permission")
 	req := evt.Data.(*agent.PermissionRequest)
 	assert.Equal(t, "ses_top", req.SessionID)
@@ -176,7 +176,7 @@ func TestSubtaskQuestion_BubblesToRootSession(t *testing.T) {
 	})
 	env.handler.onRawEvent("ws-1", "question.asked", envelope)
 
-	recvWithTimeout(t, sub, "opencode.event")
+	recvWithTimeout(t, sub, "agent.event")
 	evt := recvWithTimeout(t, sub, "agent.question")
 	req := evt.Data.(*agent.QuestionRequest)
 	assert.Equal(t, "que_subtask", req.ID)
@@ -210,7 +210,7 @@ func TestSubtaskPermission_FetcherFails_FallsBackToSelf(t *testing.T) {
 	})
 	env.handler.onRawEvent("ws-1", "permission.asked", envelope)
 
-	recvWithTimeout(t, sub, "opencode.event")
+	recvWithTimeout(t, sub, "agent.event")
 	evt := recvWithTimeout(t, sub, "agent.permission")
 	req := evt.Data.(*agent.PermissionRequest)
 	assert.Equal(t, "ses_unreachable", req.SessionID)
@@ -285,7 +285,7 @@ func TestE2E_SubtaskPermission_BubblesThroughSSE(t *testing.T) {
 	reader := bufio.NewReader(body)
 
 	rawEvt := readNextSSEDataLine(t, reader)
-	assert.Equal(t, "opencode.event", rawEvt["type"], "first SSE line should be the raw opencode passthrough")
+	assert.Equal(t, "agent.event", rawEvt["type"], "first SSE line should be the raw opencode passthrough")
 
 	normEvt := readNextSSEDataLine(t, reader)
 	assert.Equal(t, "agent.permission", normEvt["type"])

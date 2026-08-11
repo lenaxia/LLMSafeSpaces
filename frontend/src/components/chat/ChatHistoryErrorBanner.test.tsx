@@ -51,7 +51,7 @@ describe("ChatHistoryErrorBanner", () => {
     // body.error=undefined leaves err.message = "" (empty string —
     // the Error constructor treats `undefined` as absent). The banner
     // must skip past empty err.message (via the truthy `&&` guard) and
-    // fall back to opencode's data.message via extractOpencodeMessage.
+    // fall back to opencode's data.message via extractAgentErrorMessage.
     // Regression test at line ~137 pins this end-to-end.
     const body = {
       name: "UnknownError",
@@ -79,7 +79,7 @@ describe("ChatHistoryErrorBanner", () => {
     // After EnrichChatErrorBody's allowlist, `message`, `ref`, `_tag`
     // etc. sit at the top level. body.error is still absent — the
     // allowlist does not synthesize it. Banner reads message via
-    // extractOpencodeMessage, not body.error.
+    // extractAgentErrorMessage, not body.error.
     const body = {
       _tag: "SomeOpencodeError",
       message: "big-pickle rate-limited",

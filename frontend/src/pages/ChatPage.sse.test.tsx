@@ -138,7 +138,7 @@ function getStreamParts(): Array<{ type: string; text: string }> {
 
 function makePartUpdatedEvent(sessionID: string, partType: string, text: string): WorkspaceStreamEvent {
   return {
-    type: "opencode.event",
+    type: "agent.event",
     event_type: "message.part.updated",
     data: {
       type: "message.part.updated",
@@ -149,7 +149,7 @@ function makePartUpdatedEvent(sessionID: string, partType: string, text: string)
 
 function makePartDeltaEvent(sessionID: string, field: string, delta: string): WorkspaceStreamEvent {
   return {
-    type: "opencode.event",
+    type: "agent.event",
     event_type: "message.part.delta",
     data: {
       type: "message.part.delta",
@@ -160,7 +160,7 @@ function makePartDeltaEvent(sessionID: string, field: string, delta: string): Wo
 
 function makePartUpdatedEventSnakeCase(session_id: string, text: string): WorkspaceStreamEvent {
   return {
-    type: "opencode.event",
+    type: "agent.event",
     event_type: "message.part.updated",
     data: {
       type: "message.part.updated",
@@ -361,7 +361,7 @@ describe("ChatPage SSE event handler", () => {
     });
   });
 
-  describe("opencode.event with message.part.updated", () => {
+  describe("agent.event with message.part.updated", () => {
     it("text part with matching session creates a text entry", async () => {
       renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
@@ -405,7 +405,7 @@ describe("ChatPage SSE event handler", () => {
     });
   });
 
-  describe("opencode.event with message.part.delta", () => {
+  describe("agent.event with message.part.delta", () => {
     it("accumulates text deltas incrementally", async () => {
       renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
@@ -438,11 +438,11 @@ describe("ChatPage SSE event handler", () => {
     });
   });
 
-  describe("opencode.event edge cases", () => {
+  describe("agent.event edge cases", () => {
     it("ignores event with missing payload", async () => {
       renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
-      sendSSEEvent({ type: "opencode.event", event_type: "message.part.updated", data: { wrong: "structure" } } as unknown as WorkspaceStreamEvent);
+      sendSSEEvent({ type: "agent.event", event_type: "message.part.updated", data: { wrong: "structure" } } as unknown as WorkspaceStreamEvent);
       await waitFor(() => {
         expect(getStreamParts()).toHaveLength(0);
       });
@@ -451,7 +451,7 @@ describe("ChatPage SSE event handler", () => {
     it("ignores event with missing properties", async () => {
       renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
-      sendSSEEvent({ type: "opencode.event", event_type: "message.part.updated", data: { payload: { type: "message.part.updated" } } } as unknown as WorkspaceStreamEvent);
+      sendSSEEvent({ type: "agent.event", event_type: "message.part.updated", data: { payload: { type: "message.part.updated" } } } as unknown as WorkspaceStreamEvent);
       await waitFor(() => {
         expect(getStreamParts()).toHaveLength(0);
       });
@@ -460,7 +460,7 @@ describe("ChatPage SSE event handler", () => {
     it("ignores event with null data", async () => {
       renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
-      sendSSEEvent({ type: "opencode.event", event_type: "message.part.updated", data: null } as unknown as WorkspaceStreamEvent);
+      sendSSEEvent({ type: "agent.event", event_type: "message.part.updated", data: null } as unknown as WorkspaceStreamEvent);
       await waitFor(() => {
         expect(getStreamParts()).toHaveLength(0);
       });
@@ -472,7 +472,7 @@ describe("ChatPage SSE event handler", () => {
       renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
       sendSSEEvent({
-        type: "opencode.event",
+        type: "agent.event",
         event_type: "message.part.updated",
         data: {
           directory: "ws-1",
@@ -493,7 +493,7 @@ describe("ChatPage SSE event handler", () => {
       // Activate text routing first
       sendSSEEvent(makePartUpdatedEvent("sess-1", "text", ""));
       sendSSEEvent({
-        type: "opencode.event",
+        type: "agent.event",
         event_type: "message.part.delta",
         data: {
           directory: "ws-1",
@@ -615,7 +615,7 @@ describe("ChatPage SSE event handler", () => {
       renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
       sendSSEEvent({
-        type: "opencode.event",
+        type: "agent.event",
         event_type: "message.part.updated",
         data: {
           type: "message.part.updated",
@@ -631,7 +631,7 @@ describe("ChatPage SSE event handler", () => {
       renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
       sendSSEEvent({
-        type: "opencode.event",
+        type: "agent.event",
         event_type: "message.part.updated",
         data: {
           type: "message.part.updated",
@@ -652,7 +652,7 @@ describe("ChatPage SSE event handler", () => {
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
 
       sendSSEEvent({
-        type: "opencode.event",
+        type: "agent.event",
         event_type: "message.part.updated",
         data: {
           type: "message.part.updated",
@@ -982,7 +982,7 @@ describe("ChatPage SSE event handler", () => {
     expect(invalidateSpy).not.toHaveBeenCalled();
   });
 
-  it("opencode.event without sessionId in URL is ignored", async () => {
+  it("agent.event without sessionId in URL is ignored", async () => {
     const qc = makeQueryClient();
     renderChat(qc, "/chat/ws-1");
     await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
@@ -998,7 +998,7 @@ describe("ChatPage SSE event handler", () => {
   describe("session.error lifecycle", () => {
     function makeSessionErrorEvent(sessionID: string, errName: string, errMessage: string): WorkspaceStreamEvent {
       return {
-        type: "opencode.event",
+        type: "agent.event",
         event_type: "session.error",
         data: {
           type: "session.error",
@@ -1288,7 +1288,7 @@ describe("ChatPage SSE event handler", () => {
   describe("session.error name mapping", () => {
     function makeSessionError(name: string, data?: Record<string, unknown>): WorkspaceStreamEvent {
       return {
-        type: "opencode.event",
+        type: "agent.event",
         event_type: "session.error",
         data: {
           type: "session.error",
@@ -1400,13 +1400,13 @@ describe("ChatPage SSE event handler", () => {
   });
 
   // ─────────────────────────────────────────────────────────────────────────
-  // session.status=retry via opencode.event
+  // session.status=retry via agent.event
   // ─────────────────────────────────────────────────────────────────────────
 
-  describe("session.status=retry via opencode.event", () => {
+  describe("session.status=retry via agent.event", () => {
     function makeRetryEvent(sessionID: string, attempt: number, message: string, nextOffsetMs = 5000): WorkspaceStreamEvent {
       return {
-        type: "opencode.event",
+        type: "agent.event",
         event_type: "session.status",
         data: {
           type: "session.status",
@@ -1558,7 +1558,7 @@ describe("ChatPage SSE event handler", () => {
       renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
       sendSSEEvent({
-        type: "opencode.event",
+        type: "agent.event",
         event_type: "message.part.updated",
         data: {
           type: "message.part.updated",
@@ -1580,7 +1580,7 @@ describe("ChatPage SSE event handler", () => {
       renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
       sendSSEEvent({
-        type: "opencode.event",
+        type: "agent.event",
         event_type: "message.part.updated",
         data: {
           type: "message.part.updated",
@@ -1611,7 +1611,7 @@ describe("ChatPage SSE event handler", () => {
 
       // First assistant message: text + tool call
       sendSSEEvent({
-        type: "opencode.event",
+        type: "agent.event",
         event_type: "message.part.updated",
         data: {
           type: "message.part.updated",
@@ -1622,7 +1622,7 @@ describe("ChatPage SSE event handler", () => {
         },
       } as unknown as WorkspaceStreamEvent);
       sendSSEEvent({
-        type: "opencode.event",
+        type: "agent.event",
         event_type: "message.part.updated",
         data: {
           type: "message.part.updated",
@@ -1641,7 +1641,7 @@ describe("ChatPage SSE event handler", () => {
       } as unknown as WorkspaceStreamEvent);
       // Second assistant message: text + tool call
       sendSSEEvent({
-        type: "opencode.event",
+        type: "agent.event",
         event_type: "message.part.updated",
         data: {
           type: "message.part.updated",
@@ -1652,7 +1652,7 @@ describe("ChatPage SSE event handler", () => {
         },
       } as unknown as WorkspaceStreamEvent);
       sendSSEEvent({
-        type: "opencode.event",
+        type: "agent.event",
         event_type: "message.part.updated",
         data: {
           type: "message.part.updated",
@@ -1682,7 +1682,7 @@ describe("ChatPage SSE event handler", () => {
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
       // Snapshot with empty text opens the text part; deltas accumulate onto it.
       sendSSEEvent({
-        type: "opencode.event",
+        type: "agent.event",
         event_type: "message.part.updated",
         data: {
           type: "message.part.updated",

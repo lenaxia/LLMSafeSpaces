@@ -92,7 +92,7 @@ export interface ActiveSessionsResponse {
 }
 
 // Shape returned by the opencode agent GET /session/:id (proxied through)
-export interface OpenCodeSession {
+export interface AgentSession {
   id: string;
   title?: string;
   parentID?: string;
@@ -216,8 +216,8 @@ export interface SessionStatusEvent {
   status: "idle" | "busy";
 }
 
-export interface OpenCodeEvent {
-  type: "opencode.event";
+export interface AgentEvent {
+  type: "agent.event";
   event_type: string;
   data: unknown;
 }
@@ -302,7 +302,7 @@ export interface AgentDiedEvent {
 export type WorkspaceStreamEvent =
   | WorkspacePhaseEvent
   | SessionStatusEvent
-  | OpenCodeEvent
+  | AgentEvent
   | AgentQuestionEvent
   | AgentQuestionResolvedEvent
   | AgentPermissionEvent

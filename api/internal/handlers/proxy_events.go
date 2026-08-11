@@ -185,7 +185,7 @@ func (h *ProxyHandler) onRawEvent(workspaceID, eventType, rawData string) {
 
 	if h.userBroker != nil {
 		h.publishWorkspaceEvent(workspaceID, apitypes.WorkspaceSSEEvent{
-			Type:      "opencode.event",
+			Type:      "agent.event",
 			EventType: eventType,
 			Data:      parsed,
 		})

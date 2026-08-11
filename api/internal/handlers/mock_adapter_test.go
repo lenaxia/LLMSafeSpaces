@@ -21,6 +21,7 @@ type mockAdapter struct {
 	renameSessionFn     func(ctx context.Context, userID, workspaceID, sessionID, title string) error
 	deleteSessionFn     func(ctx context.Context, userID, workspaceID, sessionID string) error
 	sendFn              func(ctx context.Context, userID, workspaceID, sessionID, text string, opts session.SendOpts) (*session.Message, error)
+	sendAsyncFn         func(ctx context.Context, userID, workspaceID, sessionID, text string, opts session.SendOpts) (string, error)
 	abortFn             func(ctx context.Context, userID, workspaceID, sessionID string) error
 	listPendingFn       func(ctx context.Context, userID, workspaceID, sessionID string) ([]session.InputRequest, error)
 	resolveFn           func(ctx context.Context, userID, workspaceID, requestID, reply string) error
@@ -65,7 +66,10 @@ func (m *mockAdapter) Send(ctx context.Context, uid, wid, sid, text string, opts
 	}
 	panic("mockAdapter.Send not configured")
 }
-func (m *mockAdapter) SendAsync(_ context.Context, _, _, _, _ string, _ session.SendOpts) (string, error) {
+func (m *mockAdapter) SendAsync(ctx context.Context, uid, wid, sid, text string, opts session.SendOpts) (string, error) {
+	if m.sendAsyncFn != nil {
+		return m.sendAsyncFn(ctx, uid, wid, sid, text, opts)
+	}
 	panic("mockAdapter.SendAsync not configured")
 }
 func (m *mockAdapter) Abort(ctx context.Context, uid, wid, sid string) error {
