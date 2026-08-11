@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -151,6 +152,62 @@ func TestE2E_Adapter_SendMessage_FullPipeline(t *testing.T) {
 	assert.Equal(t, session.MessageAssistant, msg.Type)
 	require.Len(t, msg.Parts, 1)
 	assert.Equal(t, "I received your message", msg.Parts[0].Text)
+}
+
+func TestE2E_Adapter_SendMessage_Error_IncludesCredentialHint(t *testing.T) {
+	// When adapter.Send fails AND credentials are stale, the error
+	// response must include the needsRefresh hint (same as legacy path).
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(backend.Close)
+
+	env := newE2EEnv(t, backend)
+
+	// Wire agentStateChecker that reports stale credentials.
+	env.handler.agentStateChecker = stubAgentStateChecker{
+		changedAt: time.Now().Add(-5 * time.Minute),
+	}
+
+	body := strings.NewReader(`{"parts":[{"type":"text","text":"hi"}]}`)
+	w := env.do(http.MethodPost, "/api/v1/workspaces/ws-1/sessions/ses_1/message", body)
+
+	require.Equal(t, http.StatusBadGateway, w.Code)
+
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, true, resp["agentNeedsRefresh"],
+		"enrichment must add agentNeedsRefresh when credentials are stale")
+	assert.NotEmpty(t, resp["credentialsPendingSince"],
+		"enrichment must include timestamp when credentials are stale")
+}
+
+func TestE2E_Adapter_GetHistory_Backend500_Returns502(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(backend.Close)
+
+	env := newE2EEnv(t, backend)
+	w := env.do(http.MethodGet, "/api/v1/workspaces/ws-1/sessions/ses_1/message?limit=50", nil)
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+}
+
+func TestE2E_Adapter_AbortSession_FullPipeline(t *testing.T) {
+	abortCalled := false
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/interrupt") {
+			abortCalled = true
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(backend.Close)
+
+	env := newE2EEnv(t, backend)
+	env.do(http.MethodPost, "/api/v1/workspaces/ws-1/sessions/ses_1/abort", nil)
+	assert.True(t, abortCalled, "adapter must call the interrupt endpoint")
 }
 
 // --- E2E test environment ---
