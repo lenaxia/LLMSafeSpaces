@@ -632,6 +632,12 @@ jobs:
           LLMSAFESPACES_URL: http://localhost:8080
         run: go run ./scenarios/s-env-vars/
 
+      - name: Wait for login rate-limit bucket refill (mid-Go)
+        # The first 12 Go canaries each call jwtLogin, consuming the
+        # /auth/login burst of 10 (+~2 refilled during execution). Without
+        # this wait, S-CRED-CRUD and later login-bearing scenarios hit 429.
+        run: sleep 65
+
       - name: Go canary — S-CRED-CRUD
         env:
           LLMSAFESPACES_URL: http://localhost:8080
@@ -695,6 +701,9 @@ jobs:
         working-directory: sdks/python
         run: pip install -e ".[dev]" httpx -q
 
+      - name: Wait for login rate-limit bucket refill (pre-Python)
+        run: sleep 65
+
       - name: Python canaries — all ci:fast scenarios
         working-directory: ${{ github.workspace }}
         env:
@@ -717,6 +726,9 @@ jobs:
         run: |
           npm ci
           npx tsup src/index.ts --format esm,cjs --dts
+
+      - name: Wait for login rate-limit bucket refill (pre-TypeScript)
+        run: sleep 65
 
       - name: TypeScript canaries — all ci:fast scenarios
         working-directory: ${{ github.workspace }}

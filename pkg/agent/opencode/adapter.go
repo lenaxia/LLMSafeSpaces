@@ -313,9 +313,17 @@ func (a *Adapter) GetHistory(ctx context.Context, userID, workspaceID, sessionID
 	if err != nil {
 		return nil, fmt.Errorf("GET /session/%s/message: read body: %w", sessionID, err)
 	}
-	msgs, changedFilesPerMsg, err := ParseHistoryWire(raw, workspaceID)
+	msgs, changedFilesPerMsg, downgraded, err := ParseHistoryWire(raw, workspaceID)
 	if err != nil {
 		return nil, err
+	}
+	if downgraded > 0 {
+		a.logger.Warn("opencode history: some messages could not be decoded and were downgraded to system notices",
+			zap.Int("downgraded", downgraded),
+			zap.Int("total", len(msgs)),
+			zap.String("workspaceID", workspaceID),
+			zap.String("sessionID", sessionID),
+		)
 	}
 	// Produce FileChange parts for any message whose patch part
 	// collected file paths. Skipped when no differ is wired.

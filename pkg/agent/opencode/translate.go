@@ -26,6 +26,7 @@
 package opencode
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -92,6 +93,15 @@ type ocTime struct {
 // ocPart is one entry in opencode's parts array. Type discriminates.
 // Unknown types (step-start, step-finish, patch, custom extensions)
 // are passed through as-is and the translator decides what to keep.
+//
+// opencode changed the tool-part wire shape between 1.15.x and 1.18.10:
+//   - 1.15.x (legacy nested): "tool": {"name": ..., "callID": ..., ...}
+//   - 1.18.10 (flat string):  "tool": "bash" (bare name string) with
+//     callID/state/input/output hoisted to the part level.
+//
+// UnmarshalJSON normalizes both shapes into the canonical ocTool so
+// translateTool and the downstream session.ToolPart contract stay
+// unchanged (issue #730).
 type ocPart struct {
 	Type string `json:"type"`
 
@@ -104,7 +114,7 @@ type ocPart struct {
 	Text      string `json:"text,omitempty"`
 	Reasoning string `json:"reasoning,omitempty"`
 
-	// tool:
+	// tool (populated by UnmarshalJSON from either wire shape):
 	Tool *ocTool `json:"tool,omitempty"`
 
 	// patch (file paths only — diff text comes from filediff):
@@ -112,6 +122,105 @@ type ocPart struct {
 
 	// Custom pass-through:
 	Custom *session.CustomPart `json:"custom,omitempty"`
+}
+
+// UnmarshalJSON normalizes the two opencode tool-part wire shapes into
+// the canonical ocPart.Tool. Non-tool parts decode identically to the
+// default. For tool parts:
+//
+//   - Flat string (1.18.10+): {"type":"tool","tool":"bash","callID":"...",
+//     "state":{"status":"...","input":{...},"output":"...","time":{...}}}
+//     → Tool.Name = "bash", Tool.CallID = part-level callID,
+//     Tool.Input/Output from state, Tool.State.{StartedAt,CompletedAt}
+//     from state.time.{start,end} (epoch-millis).
+//
+//   - Legacy nested (≤1.15.x): {"type":"tool","tool":{"name":"bash",
+//     "callID":"...","input":{...},"state":{"status":"...",
+//     "startedAt":"...","completedAt":"..."}}}
+//     → decoded directly into ocTool.
+func (p *ocPart) UnmarshalJSON(data []byte) error {
+	// Intermediate: same fields as ocPart but Tool is raw so we can
+	// inspect its JSON kind before committing to a decode path. The
+	// extra fields (CallID, State) are the flat-shape hoisted fields.
+	var intermediate struct {
+		Type      string              `json:"type"`
+		ID        string              `json:"id,omitempty"`
+		SessionID string              `json:"sessionID,omitempty"`
+		MessageID string              `json:"messageID,omitempty"`
+		Text      string              `json:"text,omitempty"`
+		Reasoning string              `json:"reasoning,omitempty"`
+		Tool      json.RawMessage     `json:"tool,omitempty"`
+		Files     []string            `json:"files,omitempty"`
+		Custom    *session.CustomPart `json:"custom,omitempty"`
+		CallID    string              `json:"callID,omitempty"`
+		State     json.RawMessage     `json:"state,omitempty"`
+	}
+	if err := json.Unmarshal(data, &intermediate); err != nil {
+		return err
+	}
+
+	p.Type = intermediate.Type
+	p.ID = intermediate.ID
+	p.SessionID = intermediate.SessionID
+	p.MessageID = intermediate.MessageID
+	p.Text = intermediate.Text
+	p.Reasoning = intermediate.Reasoning
+	p.Files = intermediate.Files
+	p.Custom = intermediate.Custom
+
+	if len(intermediate.Tool) == 0 {
+		return nil
+	}
+
+	trimmed := bytes.TrimSpace(intermediate.Tool)
+	if bytes.HasPrefix(trimmed, []byte("\"")) {
+		// Flat string shape (opencode 1.18.10+): "tool":"<name>".
+		var toolName string
+		if err := json.Unmarshal(intermediate.Tool, &toolName); err != nil {
+			return fmt.Errorf("decode flat tool name: %w", err)
+		}
+		tool := &ocTool{
+			Name:   toolName,
+			CallID: intermediate.CallID,
+		}
+		if len(intermediate.State) > 0 {
+			var fs ocFlatToolState
+			if err := json.Unmarshal(intermediate.State, &fs); err != nil {
+				return fmt.Errorf("decode flat tool state: %w", err)
+			}
+			tool.Input = fs.Input
+			tool.Output = fs.Output
+			tool.State = &ocToolState{
+				Status: fs.Status,
+				Error:  fs.Error,
+			}
+			if fs.Time != nil {
+				if fs.Time.Start > 0 {
+					t := time.UnixMilli(fs.Time.Start)
+					tool.State.StartedAt = &t
+				}
+				if fs.Time.End > 0 {
+					t := time.UnixMilli(fs.Time.End)
+					tool.State.CompletedAt = &t
+				}
+			}
+		}
+		p.Tool = tool
+		return nil
+	}
+
+	// "tool": null → leave nil (don't produce &ocTool{}).
+	if bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+
+	// Legacy nested-object shape (opencode ≤1.15.x): "tool":{...}.
+	var nested ocTool
+	if err := json.Unmarshal(intermediate.Tool, &nested); err != nil {
+		return fmt.Errorf("decode nested tool object: %w", err)
+	}
+	p.Tool = &nested
+	return nil
 }
 
 type ocTool struct {
@@ -127,6 +236,30 @@ type ocToolState struct {
 	Error       string     `json:"error,omitempty"`
 	StartedAt   *time.Time `json:"startedAt,omitempty"`
 	CompletedAt *time.Time `json:"completedAt,omitempty"`
+}
+
+// ocFlatToolState is the state object on a flat-shape (1.18.10+) tool
+// part. Compared to the legacy ocToolState, input/output live INSIDE
+// state (not on the tool object), and times are epoch-millis numbers
+// under state.time.{start,end} (not ISO-8601 strings).
+type ocFlatToolState struct {
+	Status string          `json:"status,omitempty"`
+	Error  string          `json:"error,omitempty"`
+	Input  json.RawMessage `json:"input,omitempty"`
+	Output json.RawMessage `json:"output,omitempty"`
+	// Metadata and Title are captured for completeness (they appear on
+	// the 1.18.10 wire shape) but are NOT propagated to the platform's
+	// session.ToolPart — the contract has no field for them.
+	Metadata json.RawMessage `json:"metadata,omitempty"`
+	Title    string          `json:"title,omitempty"`
+	Time     *ocFlatToolTime `json:"time,omitempty"`
+}
+
+// ocFlatToolTime carries the epoch-millis start/end of a flat-shape
+// tool call (opencode 1.18.10+).
+type ocFlatToolTime struct {
+	Start int64 `json:"start,omitempty"`
+	End   int64 `json:"end,omitempty"`
 }
 
 // translateMessage converts one opencode wire message to a platform
@@ -230,10 +363,16 @@ func translateMessage(m ocMessage) (session.Message, []string) {
 				Reasoning: p.Reasoning,
 			})
 		case "tool":
+			tp := translateTool(p.Tool)
+			if tp == nil {
+				// "tool": null or a tool part with no tool object —
+				// skip it rather than emitting an empty PartTool.
+				continue
+			}
 			parts = append(parts, session.Part{
 				Type: session.PartTool,
 				ID:   p.ID,
-				Tool: translateTool(p.Tool),
+				Tool: tp,
 			})
 		case "custom":
 			if p.Custom != nil && p.Custom.Kind != "" {
@@ -427,19 +566,53 @@ func translateStatus(s string) session.Status {
 //
 // Exported for the package's own test consumers (translate_test.go,
 // adapter_test.go).
-func ParseHistoryWire(body []byte, workspaceID string) (msgs []session.Message, changedFilesPerMsg [][]string, err error) {
-	var raw []ocMessage
-	if err = json.Unmarshal(body, &raw); err != nil {
-		return nil, nil, fmt.Errorf("opencode history: parse message array: %w", err)
+//
+// Resilience (issue #730, README §12 containment): the body is decoded
+// in two stages. Stage 1 splits the top-level JSON array into raw
+// messages — this only fails if the body is not a JSON array at all (a
+// genuine error, surfaced to the caller). Stage 2 decodes each message
+// independently; a message that fails to decode (e.g. a future opencode
+// wire-shape change in one part) is downgraded to a session.MessageSystem
+// notice rather than failing the entire history. This ensures one bad
+// upstream shape never Sev1s the history surface again.
+//
+// The returned `downgraded` count is the number of messages that were
+// degraded to system notices. Callers (Adapter.GetHistory) log it so
+// operators have a signal when wire-shape drift is happening (Rule 3:
+// no swallowed errors).
+func ParseHistoryWire(body []byte, workspaceID string) (msgs []session.Message, changedFilesPerMsg [][]string, downgraded int, err error) {
+	// Stage 1: split into raw messages. Cannot fail on part-shape drift
+	// because it does not descend into parts. Only fails if the body is
+	// not a JSON array at all.
+	var rawMessages []json.RawMessage
+	if err = json.Unmarshal(body, &rawMessages); err != nil {
+		return nil, nil, 0, fmt.Errorf("opencode history: parse message array: %w", err)
 	}
-	msgs = make([]session.Message, 0, len(raw))
-	changedFilesPerMsg = make([][]string, 0, len(raw))
-	for _, m := range raw {
+
+	// Stage 2: decode each message independently. A decode failure
+	// (part-shape drift from a future opencode version change) degrades
+	// that single message to a system notice; the rest translate
+	// normally.
+	msgs = make([]session.Message, 0, len(rawMessages))
+	changedFilesPerMsg = make([][]string, 0, len(rawMessages))
+	for i, rawMsg := range rawMessages {
+		var m ocMessage
+		if dErr := json.Unmarshal(rawMsg, &m); dErr != nil {
+			downgraded++
+			msgs = append(msgs, session.SystemMessage(
+				fmt.Sprintf("decode-failed-msg-%d", i),
+				"This message could not be decoded (the agent history shape may have changed). "+
+					"Other messages in this conversation are unaffected.",
+				time.Time{},
+			))
+			changedFilesPerMsg = append(changedFilesPerMsg, nil)
+			continue
+		}
 		sm, files := translateMessage(m)
 		msgs = append(msgs, sm)
 		changedFilesPerMsg = append(changedFilesPerMsg, files)
 	}
-	return msgs, changedFilesPerMsg, nil
+	return msgs, changedFilesPerMsg, downgraded, nil
 }
 
 // ParseSessionListWire is the testable boundary for GET /session.

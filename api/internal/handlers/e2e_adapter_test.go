@@ -193,6 +193,83 @@ func TestE2E_Adapter_GetHistory_Backend500_Returns502(t *testing.T) {
 	assert.Equal(t, http.StatusBadGateway, w.Code)
 }
 
+// TestE2E_Adapter_GetHistory_FlatToolShape_Returns200 pins the exact
+// production code path that 502'd in issue #730: a flat-string tool
+// part (opencode 1.18.10 wire shape) from the backend must surface as
+// a correct session.ToolPart in the JSON API response.
+func TestE2E_Adapter_GetHistory_FlatToolShape_Returns200(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[
+			{
+				"info": {"role":"assistant","id":"msg_flat"},
+				"parts": [
+					{"type":"tool","callID":"call_e2e_1","tool":"bash","state":{"status":"completed","input":{"command":"echo hi"},"output":"hi\n","time":{"start":1786374885930,"end":1786374894033}}}
+				]
+			}
+		]`))
+	}))
+	t.Cleanup(backend.Close)
+
+	env := newE2EEnv(t, backend)
+	w := env.do(http.MethodGet, "/api/v1/workspaces/ws-1/sessions/ses_1/message?limit=50", nil)
+
+	require.Equal(t, http.StatusOK, w.Code, "flat-string tool shape must NOT 502 (issue #730)")
+
+	var msgs []session.Message
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &msgs))
+	require.Len(t, msgs, 1)
+	require.Len(t, msgs[0].Parts, 1)
+	assert.Equal(t, session.PartTool, msgs[0].Parts[0].Type)
+	require.NotNil(t, msgs[0].Parts[0].Tool)
+	assert.Equal(t, "bash", msgs[0].Parts[0].Tool.Name)
+	assert.Equal(t, "call_e2e_1", msgs[0].Parts[0].Tool.CallID)
+	assert.Equal(t, session.ToolStatusCompleted, msgs[0].Parts[0].Tool.State.Status)
+}
+
+// TestE2E_Adapter_GetHistory_MalformedMessage_Returns200WithSystemNotice
+// pins the Fix 2 decode-resilience path through the handler: one
+// undecodable message downgrades to a system notice (200, not 502),
+// while well-formed messages survive.
+func TestE2E_Adapter_GetHistory_MalformedMessage_Returns200WithSystemNotice(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[
+			{
+				"info": {"role":"assistant","id":"msg_good"},
+				"parts": [{"type":"text","text":"before"}]
+			},
+			{
+				"info": {"role":"assistant","id":"msg_bad"},
+				"parts": [{"type":"tool","tool":42}]
+			},
+			{
+				"info": {"role":"assistant","id":"msg_good2"},
+				"parts": [{"type":"text","text":"after"}]
+			}
+		]`))
+	}))
+	t.Cleanup(backend.Close)
+
+	env := newE2EEnv(t, backend)
+	w := env.do(http.MethodGet, "/api/v1/workspaces/ws-1/sessions/ses_1/message?limit=50", nil)
+
+	require.Equal(t, http.StatusOK, w.Code, "one malformed message must NOT 502 the whole history (Fix 2)")
+
+	var msgs []session.Message
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &msgs))
+	require.Len(t, msgs, 3, "all three messages must be present (bad one downgraded)")
+
+	// Good messages survive.
+	assert.Equal(t, "msg_good", msgs[0].ID)
+	assert.Equal(t, "msg_good2", msgs[2].ID)
+
+	// Bad message downgraded to system notice.
+	assert.Equal(t, session.MessageSystem, msgs[1].Type, "undecodable message must be downgraded")
+	assert.NotEmpty(t, msgs[1].Text, "downgrade notice must carry explanatory text")
+	assert.NotContains(t, msgs[1].Text, "42", "raw malformed bytes must not leak")
+}
+
 func TestE2E_Adapter_AbortSession_FullPipeline(t *testing.T) {
 	abortCalled := false
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

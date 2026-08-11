@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useOutletContext } from "react-router-dom";
 import { imageFactoryApi, type Catalog, type Config, type Extension } from "../../api/imageFactory";
 import type { OrgResponse } from "../../api/orgs";
@@ -28,6 +28,12 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
   const [expandedConfig, setExpandedConfig] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+
+  // Track whether the default base has been auto-selected on first load.
+  // Using a ref (not state) avoids re-creating the `load` callback when
+  // baseName changes, which would trigger a spurious re-fetch loop:
+  // load → setBaseName → load recreated → useEffect → load → setLoading(true).
+  const defaultBaseSetRef = useRef(false);
 
   // Determine which configs are editable based on scope. For user scope,
   // only member configs are editable. For org scope, only org configs.
@@ -85,19 +91,20 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
       ]);
       setCatalog(cat);
       setConfigs(cfgs);
-      if (cat.bases.length > 0 && !baseName) {
+      if (cat.bases.length > 0 && !defaultBaseSetRef.current) {
         const def = cat.bases.find((b) => b.isDefault) ?? cat.bases[0];
         if (def) {
           setBaseName(def.name);
           setBaseVersion(def.version);
         }
+        defaultBaseSetRef.current = true;
       }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to load image factory data");
     } finally {
       setLoading(false);
     }
-  }, [baseName]);
+  }, []);
 
   useEffect(() => { void load(); }, [load]);
 

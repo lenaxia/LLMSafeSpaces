@@ -34,7 +34,7 @@ import type {
 const DEFAULT_TIMEOUT = 120_000;
 
 export class LLMSafeSpaces {
-  private readonly baseUrl: string;
+  readonly baseUrl: string;
   private readonly timeout: number;
   private readonly fetchFn: FetchFn;
   private token: string | undefined;
