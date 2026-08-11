@@ -258,8 +258,8 @@ func TestNormalizedEvents_QuestionAsked(t *testing.T) {
 	})
 	handler.onRawEvent("ws-1", "question.asked", envelope)
 
-	evt1 := recvWithTimeout(t, sub, "opencode.event")
-	assert.Equal(t, "opencode.event", evt1.Type)
+	evt1 := recvWithTimeout(t, sub, "agent.event")
+	assert.Equal(t, "agent.event", evt1.Type)
 	assert.Equal(t, "question.asked", evt1.EventType)
 
 	evt2 := recvWithTimeout(t, sub, "agent.question")
@@ -285,8 +285,8 @@ func TestNormalizedEvents_QuestionResolved(t *testing.T) {
 	})
 	handler.onRawEvent("ws-1", "question.replied", envelope)
 
-	evt1 := recvWithTimeout(t, sub, "opencode.event")
-	assert.Equal(t, "opencode.event", evt1.Type)
+	evt1 := recvWithTimeout(t, sub, "agent.event")
+	assert.Equal(t, "agent.event", evt1.Type)
 
 	evt2 := recvWithTimeout(t, sub, "agent.question.resolved")
 	assert.Equal(t, "agent.question.resolved", evt2.Type)
@@ -309,7 +309,7 @@ func TestNormalizedEvents_QuestionRejected(t *testing.T) {
 	})
 	handler.onRawEvent("ws-1", "question.rejected", envelope)
 
-	recvWithTimeout(t, sub, "opencode.event")
+	recvWithTimeout(t, sub, "agent.event")
 	evt2 := recvWithTimeout(t, sub, "agent.question.resolved")
 	assert.Equal(t, "agent.question.resolved", evt2.Type)
 }
@@ -341,7 +341,7 @@ func TestNormalizedEvents_PermissionAsked(t *testing.T) {
 	})
 	handler.onRawEvent("ws-1", "permission.asked", envelope)
 
-	recvWithTimeout(t, sub, "opencode.event")
+	recvWithTimeout(t, sub, "agent.event")
 	evt2 := recvWithTimeout(t, sub, "agent.permission")
 	assert.Equal(t, "agent.permission", evt2.Type)
 	data, _ := json.Marshal(evt2.Data)
@@ -364,7 +364,7 @@ func TestNormalizedEvents_PermissionResolved(t *testing.T) {
 	})
 	handler.onRawEvent("ws-1", "permission.replied", envelope)
 
-	recvWithTimeout(t, sub, "opencode.event")
+	recvWithTimeout(t, sub, "agent.event")
 	evt2 := recvWithTimeout(t, sub, "agent.permission.resolved")
 	assert.Equal(t, "agent.permission.resolved", evt2.Type)
 	data := evt2.Data.(map[string]string)
@@ -383,8 +383,8 @@ func TestNormalizedEvents_RawEventAlwaysPublished(t *testing.T) {
 	envelope := makeEnvelope("session.diff", map[string]interface{}{"some": "data"})
 	handler.onRawEvent("ws-1", "session.diff", envelope)
 
-	evt := recvWithTimeout(t, sub, "opencode.event")
-	assert.Equal(t, "opencode.event", evt.Type)
+	evt := recvWithTimeout(t, sub, "agent.event")
+	assert.Equal(t, "agent.event", evt.Type)
 	assert.Equal(t, "session.diff", evt.EventType)
 
 	select {
@@ -405,8 +405,8 @@ func TestNormalizedEvents_ParseError_NoNormalizedEvent(t *testing.T) {
 	envelope := makeEnvelope("question.asked", map[string]interface{}{"invalid": true})
 	handler.onRawEvent("ws-1", "question.asked", envelope)
 
-	evt := recvWithTimeout(t, sub, "opencode.event")
-	assert.Equal(t, "opencode.event", evt.Type)
+	evt := recvWithTimeout(t, sub, "agent.event")
+	assert.Equal(t, "agent.event", evt.Type)
 
 	select {
 	case <-sub.Ch:
@@ -505,7 +505,7 @@ func TestNormalizedEvents_E2E_PermissionAsked_ViaProcessEvent(t *testing.T) {
 	tracker.ProcessEvent("ws-1", envelope)
 
 	evt1 := recvWithTimeout(t, sub, "opencode.event (permission.asked)")
-	assert.Equal(t, "opencode.event", evt1.Type)
+	assert.Equal(t, "agent.event", evt1.Type)
 	assert.Equal(t, "permission.asked", evt1.EventType)
 
 	evt2 := recvWithTimeout(t, sub, "agent.permission")
@@ -533,7 +533,7 @@ func TestNormalizedEvents_E2E_QuestionAsked_ViaProcessEvent(t *testing.T) {
 	tracker.ProcessEvent("ws-1", envelope)
 
 	evt1 := recvWithTimeout(t, sub, "opencode.event (question.asked)")
-	assert.Equal(t, "opencode.event", evt1.Type)
+	assert.Equal(t, "agent.event", evt1.Type)
 	assert.Equal(t, "question.asked", evt1.EventType)
 
 	evt2 := recvWithTimeout(t, sub, "agent.question")
@@ -683,7 +683,7 @@ func TestNormalizedEvents_QuestionAsked_DualPublish(t *testing.T) {
 	handler.onRawEvent("ws-1", "question.asked", envelope)
 
 	// Workspace stream
-	recvWithTimeout(t, wsSub, "opencode.event")
+	recvWithTimeout(t, wsSub, "agent.event")
 	wsEvt := recvWithTimeout(t, wsSub, "agent.question")
 	assert.Equal(t, "agent.question", wsEvt.Type)
 	assert.Equal(t, "ses_dual", wsEvt.SessionID)
@@ -790,7 +790,7 @@ func TestNormalizedEvents_UnknownOwner_SkipsUserStream(t *testing.T) {
 	handler.onRawEvent("ws-1", "question.asked", envelope)
 
 	// Workspace stream still receives
-	recvWithTimeout(t, wsSub, "opencode.event")
+	recvWithTimeout(t, wsSub, "agent.event")
 	wsEvt := recvWithTimeout(t, wsSub, "agent.question")
 	assert.Equal(t, "agent.question", wsEvt.Type)
 
@@ -844,7 +844,7 @@ func TestNormalizedEvents_AutoApprove_NeitherStream(t *testing.T) {
 	handler.onRawEvent("ws-1", "permission.asked", envelope)
 
 	// opencode.event fires (raw), but agent.permission should NOT
-	recvWithTimeout(t, wsSub, "opencode.event")
+	recvWithTimeout(t, wsSub, "agent.event")
 
 	// Neither workspace nor user stream should receive agent.permission
 	select {

@@ -92,7 +92,7 @@ export interface ActiveSessionsResponse {
 }
 
 // Shape returned by the opencode agent GET /session/:id (proxied through)
-export interface OpenCodeSession {
+export interface AgentSession {
   id: string;
   title?: string;
   parentID?: string;
@@ -212,12 +212,12 @@ export interface SessionStatusEvent {
   session_id: string;
   // The proxy synthesizes string "idle" | "busy" for this field.
   // The full retry shape (attempt, message, next, action) is NOT carried here —
-  // it travels inside an opencode.event wrapper with event_type="session.status".
+  // it travels inside an agent.event wrapper with event_type="session.status".
   status: "idle" | "busy";
 }
 
-export interface OpenCodeEvent {
-  type: "opencode.event";
+export interface AgentEvent {
+  type: "agent.event";
   event_type: string;
   data: unknown;
 }
@@ -302,7 +302,7 @@ export interface AgentDiedEvent {
 export type WorkspaceStreamEvent =
   | WorkspacePhaseEvent
   | SessionStatusEvent
-  | OpenCodeEvent
+  | AgentEvent
   | AgentQuestionEvent
   | AgentQuestionResolvedEvent
   | AgentPermissionEvent

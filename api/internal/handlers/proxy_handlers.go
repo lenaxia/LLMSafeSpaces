@@ -137,9 +137,9 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 	}
 	wid := c.Param("id")
 
-	// V2 path (Epic 63): extract text from the V1 parts body and send via
-	// PromptV2 with delivery:"queue". Bypasses the 409 guard, the queue-len
-	// check, and redirectPromptToQueue — opencode admits atomically.
+	// Adapter + V2 paths read the body early (they need the text to
+	// call SendAsync/PromptV2). The legacy V1 path reads the body itself
+	// via proxyToWorkspace, so we must NOT consume it here when V2 is off.
 	if h.v2SessionQueueEnabled {
 		const maxPromptBodyBytes = 100_000 + 1024
 		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPromptBodyBytes)
@@ -162,6 +162,27 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "text exceeds 100KB limit"})
 			return
 		}
+
+		// Adapter path (US-65.4): SendAsync uses V2 prompt internally.
+		if h.adapter != nil {
+			msgID, err := h.adapter.SendAsync(c.Request.Context(), "", wid, sid, text, session.SendOpts{Admission: session.AdmissionQueue})
+			if err != nil {
+				h.logger.Error("V2 enqueue: adapter SendAsync failed", err, "workspaceID", wid, "sessionID", sid)
+				if strings.Contains(err.Error(), "not found") {
+					c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+					return
+				}
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enqueue message"})
+				return
+			}
+			if h.v2Pending != nil {
+				h.v2Pending.add(wid, sid)
+			}
+			c.JSON(http.StatusAccepted, gin.H{"messageID": msgID})
+			return
+		}
+
+		// Legacy V2 path.
 		if h.enqueueV2(c, wid, sid, text) {
 			return
 		}

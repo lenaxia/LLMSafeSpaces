@@ -4,7 +4,7 @@ import type {
   SessionListItem,
   WorkspaceListResponse,
   WorkspaceStatus,
-  OpenCodeSession,
+  AgentSession,
 } from "./types";
 
 export interface EnsureSessionResponse {
@@ -55,7 +55,7 @@ export const workspacesApi = {
     api.post<{ restartGeneration: number }>(`/workspaces/${id}/refresh-compute`),
   getSessions: (id: string) => api.get<SessionListItem[]>(`/workspaces/${id}/sessions`),
   getSession: (workspaceId: string, sessionId: string) =>
-    api.get<OpenCodeSession>(`/workspaces/${workspaceId}/sessions/${sessionId}`),
+    api.get<AgentSession>(`/workspaces/${workspaceId}/sessions/${sessionId}`),
   renameSession: (workspaceId: string, sessionId: string, title: string) =>
     api.put<void>(`/workspaces/${workspaceId}/sessions/${sessionId}/title`, { title }),
   markSessionSeen: (workspaceId: string, sessionId: string) =>

@@ -394,7 +394,7 @@ func TestStreamEvents_OnRawEvent_PublishesOpenCodeEvent(t *testing.T) {
 
 	select {
 	case evt := <-sub.Ch:
-		assert.Equal(t, "opencode.event", evt.Type)
+		assert.Equal(t, "agent.event", evt.Type)
 		assert.Equal(t, "message.part.updated", evt.EventType)
 		require.NotNil(t, evt.Data)
 		dataMap, ok := evt.Data.(map[string]interface{})
@@ -436,7 +436,7 @@ func TestStreamEvents_OnRawEvent_PublishesAllEventTypes(t *testing.T) {
 
 		select {
 		case evt := <-sub.Ch:
-			assert.Equal(t, "opencode.event", evt.Type)
+			assert.Equal(t, "agent.event", evt.Type)
 			assert.Equal(t, e.eventType, evt.EventType)
 		case <-time.After(time.Second):
 			t.Fatalf("expected opencode.event for type %s", e.eventType)
@@ -507,7 +507,7 @@ func TestStreamEvents_OnRawEvent_PreservesNestedStructure(t *testing.T) {
 
 	select {
 	case evt := <-sub.Ch:
-		assert.Equal(t, "opencode.event", evt.Type)
+		assert.Equal(t, "agent.event", evt.Type)
 		require.NotNil(t, evt.Data)
 
 		dataMap, ok := evt.Data.(map[string]interface{})
@@ -549,7 +549,7 @@ func TestStreamEvents_OpenCodeEventDeliveredToSSEClient(t *testing.T) {
 	}, time.Second, 5*time.Millisecond)
 
 	broker.PublishToWorkspace("ws-1", apitypes.WorkspaceSSEEvent{
-		Type:      "opencode.event",
+		Type:      "agent.event",
 		EventType: "message.part.updated",
 		Data: map[string]interface{}{
 			"directory": "ws-1",
@@ -561,7 +561,7 @@ func TestStreamEvents_OpenCodeEventDeliveredToSSEClient(t *testing.T) {
 	})
 
 	evt := readNextSSEDataLine(t, bufio.NewReader(body))
-	assert.Equal(t, "opencode.event", evt["type"])
+	assert.Equal(t, "agent.event", evt["type"])
 	assert.Equal(t, "message.part.updated", evt["event_type"])
 	require.Contains(t, evt, "data")
 }
@@ -588,7 +588,7 @@ func TestStreamEvents_OnRawEvent_DifferentWorkspaceIsolation(t *testing.T) {
 
 	select {
 	case evt := <-sub1.Ch:
-		assert.Equal(t, "opencode.event", evt.Type)
+		assert.Equal(t, "agent.event", evt.Type)
 	case <-time.After(time.Second):
 		t.Fatal("ws-1 subscriber should receive opencode.event")
 	}

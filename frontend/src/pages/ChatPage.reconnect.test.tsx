@@ -185,7 +185,7 @@ function makeSessionStatusEvent(sessionId: string, status: "idle" | "busy"): Ses
 
 function makePartUpdatedWithId(sessionId: string, partId: string, text: string): WorkspaceStreamEvent {
   return {
-    type: "opencode.event",
+    type: "agent.event",
     event_type: "message.part.updated",
     data: {
       type: "message.part.updated",
@@ -199,7 +199,7 @@ function makePartUpdatedWithId(sessionId: string, partId: string, text: string):
 
 function makePartDeltaWithId(sessionId: string, partId: string, delta: string): WorkspaceStreamEvent {
   return {
-    type: "opencode.event",
+    type: "agent.event",
     event_type: "message.part.delta",
     data: {
       type: "message.part.delta",
@@ -559,7 +559,7 @@ describe("US-15.4: Boundary Detection", () => {
     // In normal (non-reconnect) mode, events should process normally
     // Send a text part event — should render (no gate active)
     sendSSEEvent({
-      type: "opencode.event",
+      type: "agent.event",
       event_type: "message.part.updated",
       data: {
         type: "message.part.updated",
@@ -661,7 +661,7 @@ describe("US-15.5: Idle Reconciliation", () => {
     // Now send a new event with part id "p1" (same as history) — after reconcile,
     // reconnect mode is off, so events with no part.id should still process normally
     sendSSEEvent({
-      type: "opencode.event",
+      type: "agent.event",
       event_type: "message.part.updated",
       data: {
         type: "message.part.updated",

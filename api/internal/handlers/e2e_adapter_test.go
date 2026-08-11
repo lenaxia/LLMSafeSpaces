@@ -261,6 +261,7 @@ func newE2EEnv(t *testing.T, backend *httptest.Server) *e2eEnv {
 		proxy.POST("/sessions", handler.CreateSession)
 		proxy.GET("/sessions", handler.ListSessions)
 		proxy.POST("/sessions/:sessionId/message", handler.SendMessage)
+		proxy.POST("/sessions/:sessionId/prompt", handler.SendPromptAsync)
 		proxy.GET("/sessions/:sessionId/message", handler.GetHistory)
 		proxy.GET("/sessions/:sessionId", handler.GetSession)
 		proxy.POST("/sessions/:sessionId/abort", handler.AbortSession)

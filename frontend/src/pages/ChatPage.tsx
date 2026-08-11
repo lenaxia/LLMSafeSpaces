@@ -27,7 +27,7 @@ import { Spinner } from "../components/ui/Spinner";
 import { KebabMenu } from "../components/ui/KebabMenu";
 import type { KebabMenuItem } from "../components/ui/KebabMenu";
 import { sessionsApi } from "../api/sessions";
-import type { Message, SessionListItem, WorkspaceStreamEvent, OpenCodeEvent, QuestionRequest, PermissionRequest } from "../api/types";
+import type { Message, SessionListItem, WorkspaceStreamEvent, AgentEvent, QuestionRequest, PermissionRequest } from "../api/types";
 import { QuestionPrompt } from "../components/chat/QuestionPrompt";
 import { PermissionPrompt } from "../components/chat/PermissionPrompt";
 import { useClearPendingUnread, useAddPendingQuestion, useAddPendingPermission, useRemovePendingAction, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, useIsSessionBusy } from "../providers/SessionActivityProvider";
@@ -439,7 +439,7 @@ export function ChatPage() {
   const currentThinkingIdxRef = useRef<number>(-1);
   const currentTextIdxRef = useRef<number>(-1);
 
-  const parseStreamEvent = useCallback((event: OpenCodeEvent, currentSessionId: string) => {
+  const parseStreamEvent = useCallback((event: AgentEvent, currentSessionId: string) => {
     let payload = event.data as Record<string, unknown> | undefined;
     if (!payload) return;
 
@@ -640,8 +640,8 @@ export function ChatPage() {
       } else if (qe.event === "dismissed" && qe.messageID) {
         queue.removeById(qe.messageID);
       }
-    } else if (event.type === "opencode.event" && workspaceId) {
-      const oe = event as OpenCodeEvent;
+    } else if (event.type === "agent.event" && workspaceId) {
+      const oe = event as AgentEvent;
       // Handle session.updated — update sidebar title in real-time
       if (oe.event_type === "session.updated") {
         const payload = oe.data as Record<string, unknown> | undefined;
@@ -655,7 +655,7 @@ export function ChatPage() {
           });
         }
       }
-      // Handle session.status inside opencode.event — this is where the full
+      // Handle session.status inside agent.event — this is where the full
       // retry payload lives. The proxy also synthesizes a string "busy" event
       // on the session.status channel for retry, but the rich retry fields
       // (attempt, message, next, action) only travel through this path.
