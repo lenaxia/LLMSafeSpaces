@@ -638,12 +638,9 @@ func ParseHistoryStream(r io.Reader, workspaceID string) (msgs []session.Message
 
 	// Read closing bracket. If the body was truncated mid-stream,
 	// dec.Token() returns an error (io.EOF or unexpected EOF). We
-	// return what was decoded so far rather than failing the entire
-	// request — the frontend gets partial history instead of a 502.
-	_, err = dec.Token()
-	if err != nil {
-		return msgs, changedFilesPerMsg, downgraded, nil
-	}
+	// return what was decoded so far regardless — the frontend gets
+	// partial history instead of a 502.
+	_, _ = dec.Token()
 	return msgs, changedFilesPerMsg, downgraded, nil
 }
 
