@@ -168,9 +168,8 @@ func (t *Tracker) StopWatching(workspaceID string) {
 		delete(t.subscriptions, workspaceID)
 	}
 
-	t.tokensMu.Lock()
-	defer t.tokensMu.Unlock()
 	prefix := workspaceID + ":"
+	t.tokensMu.Lock()
 	for k := range t.sessionTokenSeen {
 		if strings.HasPrefix(k, prefix) {
 			delete(t.sessionTokenSeen, k)
@@ -181,11 +180,15 @@ func (t *Tracker) StopWatching(workspaceID string) {
 			delete(t.sessionCostSeen, k)
 		}
 	}
+	t.tokensMu.Unlock()
+
+	t.startTimeMu.Lock()
 	for k := range t.sessionStartTime {
 		if strings.HasPrefix(k, prefix) {
 			delete(t.sessionStartTime, k)
 		}
 	}
+	t.startTimeMu.Unlock()
 }
 
 func (t *Tracker) Stop() {
