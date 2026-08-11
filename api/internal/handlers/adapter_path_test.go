@@ -710,6 +710,56 @@ func TestAbortSession_AdapterPath_Error_Returns502(t *testing.T) {
 	assert.Equal(t, http.StatusBadGateway, w.Code)
 }
 
+func TestSendPromptAsync_AdapterPath_ReturnsMessageID(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.v2SessionQueueEnabled = true
+	called := false
+	h.adapter = &mockAdapter{
+		sendAsyncFn: func(_ context.Context, _, _, _, text string, opts session.SendOpts) (string, error) {
+			called = true
+			assert.Equal(t, "hello async", text)
+			assert.Equal(t, session.AdmissionQueue, opts.Admission)
+			return "msg_async_1", nil
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"parts":[{"type":"text","text":"hello async"}]}`))
+
+	h.SendPromptAsync(c)
+	require.True(t, called, "adapter.SendAsync must be called")
+	require.Equal(t, http.StatusAccepted, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "msg_async_1", resp["messageID"])
+}
+
+func TestSendPromptAsync_AdapterPath_Error_Returns500(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.v2SessionQueueEnabled = true
+	h.adapter = &mockAdapter{
+		sendAsyncFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (string, error) {
+			return "", fmt.Errorf("pod unreachable")
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"parts":[{"type":"text","text":"hi"}]}`))
+
+	h.SendPromptAsync(c)
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+}
+
 // --- DeleteSession adapter path ---
 
 func TestDeleteSession_AdapterPath_Returns204(t *testing.T) {

@@ -655,7 +655,7 @@ export function ChatPage() {
           });
         }
       }
-      // Handle session.status inside opencode.event — this is where the full
+      // Handle session.status inside agent.event — this is where the full
       // retry payload lives. The proxy also synthesizes a string "busy" event
       // on the session.status channel for retry, but the rich retry fields
       // (attempt, message, next, action) only travel through this path.
