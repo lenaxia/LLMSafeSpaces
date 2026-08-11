@@ -16,12 +16,15 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
+	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // US-65.4 handler-level adapter path tests. PR #717 review requested
@@ -281,8 +284,23 @@ func (t *trackingSessionIndex) UpsertParent(ctx context.Context, wid, sid, pid s
 
 func newProxyHandlerForAdapterTest(t *testing.T) *ProxyHandler {
 	t.Helper()
+	k8sMock := k8smocks.NewMockKubernetesClient()
+	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
+	wsMock := k8smocks.NewMockWorkspaceInterface()
+
+	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
+	llmMock.On("Workspaces", "default").Return(wsMock)
+	wsMock.On("Get", mock.Anything, mock.Anything, mock.Anything).Return(&v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "default"},
+		Status: v1.WorkspaceStatus{
+			Phase:   v1.WorkspacePhaseActive,
+			PodIP:   "10.0.0.1",
+			PodName: "test-pod",
+		},
+	}, nil)
+
 	h, err := NewProxyHandler(
-		k8smocks.NewMockKubernetesClient(),
+		k8sMock,
 		&testLogger{},
 		"default",
 		nil,

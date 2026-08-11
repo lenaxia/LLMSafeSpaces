@@ -29,8 +29,15 @@ import (
 func (h *ProxyHandler) CreateSession(c *gin.Context) {
 	if h.adapter != nil {
 		wid := c.Param("id")
+		_, ok := h.resolveWorkspaceForAdapter(c, wid)
+		if !ok {
+			return
+		}
+		defer h.releaseConnection(wid)
+
 		s, err := h.adapter.CreateSession(c.Request.Context(), "", wid, "")
 		if err != nil {
+			h.logger.Error("CreateSession: adapter failed", err, "workspaceID", wid)
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create session"})
 			return
 		}
@@ -43,8 +50,15 @@ func (h *ProxyHandler) CreateSession(c *gin.Context) {
 func (h *ProxyHandler) ListSessions(c *gin.Context) {
 	if h.adapter != nil {
 		wid := c.Param("id")
+		_, ok := h.resolveWorkspaceForAdapter(c, wid)
+		if !ok {
+			return
+		}
+		defer h.releaseConnection(wid)
+
 		sessions, err := h.adapter.ListSessions(c.Request.Context(), "", wid)
 		if err != nil {
+			h.logger.Error("ListSessions: adapter failed", err, "workspaceID", wid)
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to list sessions"})
 			return
 		}
@@ -79,8 +93,29 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "text exceeds 100KB limit"})
 			return
 		}
+
+		workspace, ok := h.resolveWorkspaceForAdapter(c, wid)
+		if !ok {
+			return
+		}
+		defer h.releaseConnection(wid)
+
+		if !h.checkAdapterSessionLimit(c, workspace, wid, sid) {
+			return
+		}
+		if !h.checkAdapterQuota(c, workspace) {
+			if sid != "" {
+				h.removeActiveSession(c.Request.Context(), wid, sid)
+			}
+			return
+		}
+		h.adapterEnsureSSEWatch(wid)
+
 		msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{})
 		if err != nil {
+			if sid != "" {
+				h.removeActiveSession(c.Request.Context(), wid, sid)
+			}
 			errBody := []byte(`{"error":"failed to send message"}`)
 			if h.agentStateChecker != nil {
 				changedAt, checkerErr := h.agentStateChecker.GetLastCredentialChangedAt(c.Request.Context(), wid)
@@ -91,6 +126,7 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 			c.Data(http.StatusBadGateway, "application/json", errBody)
 			return
 		}
+		h.postAdapterSuccess(c, workspace, wid, sid, true)
 		c.JSON(http.StatusOK, msg)
 		if h.sessionIndex != nil {
 			go h.fetchAndPersistTitle(wid, sid)
@@ -162,8 +198,28 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 
 	// Adapter path (US-65.4): SendAsync uses V2 prompt internally.
 	if h.adapter != nil {
+		workspace, ok := h.resolveWorkspaceForAdapter(c, wid)
+		if !ok {
+			return
+		}
+		defer h.releaseConnection(wid)
+
+		if !h.checkAdapterSessionLimit(c, workspace, wid, sid) {
+			return
+		}
+		if !h.checkAdapterQuota(c, workspace) {
+			if sid != "" {
+				h.removeActiveSession(c.Request.Context(), wid, sid)
+			}
+			return
+		}
+		h.adapterEnsureSSEWatch(wid)
+
 		msgID, err := h.adapter.SendAsync(c.Request.Context(), "", wid, sid, text, session.SendOpts{Admission: session.AdmissionQueue})
 		if err != nil {
+			if sid != "" {
+				h.removeActiveSession(c.Request.Context(), wid, sid)
+			}
 			h.logger.Error("V2 enqueue: adapter SendAsync failed", err, "workspaceID", wid, "sessionID", sid)
 			if strings.Contains(err.Error(), "not found") {
 				c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
@@ -172,6 +228,7 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enqueue message"})
 			return
 		}
+		h.postAdapterSuccess(c, workspace, wid, sid, true)
 		if h.v2Pending != nil {
 			h.v2Pending.add(wid, sid)
 		}
@@ -279,6 +336,12 @@ func (h *ProxyHandler) GetHistory(c *gin.Context) {
 	// drops step-start/step-finish and collects patch file paths, so the
 	// response is clean contract data — no opencode-specific shapes.
 	if h.adapter != nil {
+		_, ok := h.resolveWorkspaceForAdapter(c, wid)
+		if !ok {
+			return
+		}
+		defer h.releaseConnection(wid)
+
 		msgs, err := h.adapter.GetHistory(c.Request.Context(), "", wid, sid)
 		if err != nil {
 			h.logger.Error("GetHistory: adapter failed", err, "sessionID", sid)
@@ -696,8 +759,15 @@ func (h *ProxyHandler) GetSession(c *gin.Context) {
 	}
 	if h.adapter != nil {
 		wid := c.Param("id")
+		_, ok := h.resolveWorkspaceForAdapter(c, wid)
+		if !ok {
+			return
+		}
+		defer h.releaseConnection(wid)
+
 		s, err := h.adapter.GetSession(c.Request.Context(), "", wid, sid)
 		if err != nil {
+			h.logger.Error("GetSession: adapter failed", err, "workspaceID", wid, "sessionID", sid)
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to get session"})
 			return
 		}

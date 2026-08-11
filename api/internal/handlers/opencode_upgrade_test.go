@@ -248,7 +248,7 @@ func TestPersistContextFromEvent_HappyPath(t *testing.T) {
 	event := `{"type":"session.next.step.ended","properties":{"sessionID":"ses_abc","tokens":{"input":800,"output":400,"reasoning":100,"cache":{"read":200,"write":50}}}}`
 
 	mock := newMockSessionIndex()
-	h := &ProxyHandler{sessionIndex: mock}
+	h := &ProxyHandler{sessionIndex: mock, logger: &testLogger{}}
 	h.persistContextFromEvent("ws-1", event)
 
 	v := mock.contextUsed["ws-1/ses_abc"]
@@ -257,11 +257,10 @@ func TestPersistContextFromEvent_HappyPath(t *testing.T) {
 }
 
 func TestPersistContextFromEvent_ZeroTokens(t *testing.T) {
-	// Provider returns all-zero usage — still persisted so 0 is distinguishable from nil
 	event := `{"type":"session.next.step.ended","properties":{"sessionID":"ses_xyz","tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}}}`
 
 	mock := newMockSessionIndex()
-	h := &ProxyHandler{sessionIndex: mock}
+	h := &ProxyHandler{sessionIndex: mock, logger: &testLogger{}}
 	h.persistContextFromEvent("ws-1", event)
 
 	v := mock.contextUsed["ws-1/ses_xyz"]
@@ -270,11 +269,10 @@ func TestPersistContextFromEvent_ZeroTokens(t *testing.T) {
 }
 
 func TestPersistContextFromEvent_MissingTokens_NoWrite(t *testing.T) {
-	// No tokens field — should be silently ignored
 	event := `{"type":"session.next.step.ended","properties":{"sessionID":"ses_abc"}}`
 
 	mock := newMockSessionIndex()
-	h := &ProxyHandler{sessionIndex: mock}
+	h := &ProxyHandler{sessionIndex: mock, logger: &testLogger{}}
 	h.persistContextFromEvent("ws-1", event)
 
 	assert.Nil(t, mock.contextUsed["ws-1/ses_abc"], "missing tokens must not write")
@@ -284,7 +282,7 @@ func TestPersistContextFromEvent_EmptySessionID_NoWrite(t *testing.T) {
 	event := `{"type":"session.next.step.ended","properties":{"sessionID":"","tokens":{"input":100,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}}}`
 
 	mock := newMockSessionIndex()
-	h := &ProxyHandler{sessionIndex: mock}
+	h := &ProxyHandler{sessionIndex: mock, logger: &testLogger{}}
 	h.persistContextFromEvent("ws-1", event)
 
 	assert.Empty(t, mock.contextUsed, "empty sessionID must not write")
@@ -292,7 +290,7 @@ func TestPersistContextFromEvent_EmptySessionID_NoWrite(t *testing.T) {
 
 func TestPersistContextFromEvent_MalformedJSON_NoWrite(t *testing.T) {
 	mock := newMockSessionIndex()
-	h := &ProxyHandler{sessionIndex: mock}
+	h := &ProxyHandler{sessionIndex: mock, logger: &testLogger{}}
 	h.persistContextFromEvent("ws-1", "not json at all")
 
 	assert.Empty(t, mock.contextUsed, "malformed JSON must not write")
@@ -311,7 +309,7 @@ func TestOnRawEvent_StepEnded_CallsPersistContext(t *testing.T) {
 	event := `{"type":"session.next.step.ended","properties":{"sessionID":"ses_abc","tokens":{"input":500,"output":200,"reasoning":0,"cache":{"read":100,"write":25}}}}`
 
 	mock := newMockSessionIndex()
-	h := &ProxyHandler{sessionIndex: mock}
+	h := &ProxyHandler{sessionIndex: mock, logger: &testLogger{}}
 	// broker is nil — onRawEvent must handle nil broker gracefully
 	h.onRawEvent("ws-1", "session.next.step.ended", event)
 

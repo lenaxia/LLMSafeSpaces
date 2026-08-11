@@ -184,6 +184,8 @@ func (h *ProxyHandler) onRawEvent(workspaceID, eventType, rawData string) {
 	}
 
 	if eventType == "session.next.step.ended" {
+		h.logger.Debug("onRawEvent: dispatching to persistContextFromEvent",
+			"workspaceID", workspaceID, "eventType", eventType)
 		h.persistContextFromEvent(workspaceID, rawData)
 	}
 
@@ -356,10 +358,19 @@ func (h *ProxyHandler) persistContextFromEvent(workspaceID, rawData string) {
 			} `json:"tokens"`
 		} `json:"properties"`
 	}
-	if json.Unmarshal([]byte(rawData), &evt) != nil {
+	if err := json.Unmarshal([]byte(rawData), &evt); err != nil {
+		h.logger.Warn("persistContextFromEvent: failed to parse step.ended event",
+			"error", err, "workspaceID", workspaceID)
 		return
 	}
-	if evt.Properties.SessionID == "" || evt.Properties.Tokens == nil {
+	if evt.Properties.SessionID == "" {
+		h.logger.Warn("persistContextFromEvent: step.ended event missing sessionID",
+			"workspaceID", workspaceID)
+		return
+	}
+	if evt.Properties.Tokens == nil {
+		h.logger.Warn("persistContextFromEvent: step.ended event missing tokens — opencode wire shape may have changed",
+			"workspaceID", workspaceID, "sessionID", evt.Properties.SessionID)
 		return
 	}
 	if h.isSessionDeleted(workspaceID, evt.Properties.SessionID) {
