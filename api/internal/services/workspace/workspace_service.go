@@ -1747,7 +1747,72 @@ func (s *Service) ListWorkspaceSessions(ctx context.Context, userID, workspaceID
 	if s.sessionIndex == nil {
 		return []types.SessionListItem{}, nil
 	}
-	return s.sessionIndex.ListByWorkspace(ctx, workspaceID)
+	sessions, err := s.sessionIndex.ListByWorkspace(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	sessions = s.backfillContextUsed(ctx, workspaceID, sessions)
+	return sessions, nil
+}
+
+// backfillContextUsed enriches sessions that have NULL context_used in
+// the DB with values from the workspace CRD status (which carries fresh
+// per-session ContextUsed from agentd's statusz, reported every ~60s by
+// the controller).
+//
+// The session_index DB is populated by live SSE events
+// (persistContextFromEvent on session.next.step.ended). When the API
+// pod restarts (deploy, crash), the SSE tracker reconnects but events
+// during the downtime are missed — leaving context_used NULL for any
+// session whose last LLM step completed before the reconnection.
+//
+// This merge heals those gaps at read time. It only fetches the CRD
+// when at least one session has NULL context_used, and persists the
+// backfilled values to the DB so subsequent calls skip the CRD fetch
+// entirely (self-healing).
+func (s *Service) backfillContextUsed(ctx context.Context, workspaceID string, sessions []types.SessionListItem) []types.SessionListItem {
+	needsBackfill := false
+	for i := range sessions {
+		if sessions[i].ContextUsed == nil {
+			needsBackfill = true
+			break
+		}
+	}
+	if !needsBackfill {
+		return sessions
+	}
+
+	wsClient, err := s.workspaceCRDClient()
+	if err != nil {
+		return sessions
+	}
+	crd, err := wsClient.Get(ctx, workspaceID, metav1.GetOptions{})
+	if err != nil {
+		return sessions
+	}
+
+	ctxBySession := make(map[string]int64, len(crd.Status.Sessions))
+	for _, ses := range crd.Status.Sessions {
+		if ses.ContextUsed > 0 {
+			ctxBySession[ses.ID] = ses.ContextUsed
+		}
+	}
+
+	for i := range sessions {
+		if sessions[i].ContextUsed == nil {
+			if v, ok := ctxBySession[sessions[i].ID]; ok {
+				val := v
+				sessions[i].ContextUsed = &val
+				if s.sessionIndex != nil {
+					if uErr := s.sessionIndex.UpsertContextUsed(ctx, workspaceID, sessions[i].ID, v); uErr != nil {
+						s.logger.Warn("backfillContextUsed: failed to persist backfilled value",
+							"error", uErr, "workspaceID", workspaceID, "sessionID", sessions[i].ID)
+					}
+				}
+			}
+		}
+	}
+	return sessions
 }
 
 func (s *Service) MarkSessionSeen(ctx context.Context, userID, workspaceID, sessionID string) error {

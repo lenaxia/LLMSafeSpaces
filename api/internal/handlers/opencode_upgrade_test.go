@@ -270,11 +270,10 @@ func TestPersistContextFromEvent_ZeroTokens(t *testing.T) {
 }
 
 func TestPersistContextFromEvent_MissingTokens_NoWrite(t *testing.T) {
-	// No tokens field — should be silently ignored
 	event := `{"type":"session.next.step.ended","properties":{"sessionID":"ses_abc"}}`
 
 	mock := newMockSessionIndex()
-	h := &ProxyHandler{sessionIndex: mock}
+	h := &ProxyHandler{sessionIndex: mock, logger: &testLogger{}}
 	h.persistContextFromEvent("ws-1", event)
 
 	assert.Nil(t, mock.contextUsed["ws-1/ses_abc"], "missing tokens must not write")
@@ -284,7 +283,7 @@ func TestPersistContextFromEvent_EmptySessionID_NoWrite(t *testing.T) {
 	event := `{"type":"session.next.step.ended","properties":{"sessionID":"","tokens":{"input":100,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}}}`
 
 	mock := newMockSessionIndex()
-	h := &ProxyHandler{sessionIndex: mock}
+	h := &ProxyHandler{sessionIndex: mock, logger: &testLogger{}}
 	h.persistContextFromEvent("ws-1", event)
 
 	assert.Empty(t, mock.contextUsed, "empty sessionID must not write")
@@ -292,7 +291,7 @@ func TestPersistContextFromEvent_EmptySessionID_NoWrite(t *testing.T) {
 
 func TestPersistContextFromEvent_MalformedJSON_NoWrite(t *testing.T) {
 	mock := newMockSessionIndex()
-	h := &ProxyHandler{sessionIndex: mock}
+	h := &ProxyHandler{sessionIndex: mock, logger: &testLogger{}}
 	h.persistContextFromEvent("ws-1", "not json at all")
 
 	assert.Empty(t, mock.contextUsed, "malformed JSON must not write")
