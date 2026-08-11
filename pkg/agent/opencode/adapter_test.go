@@ -250,6 +250,49 @@ func TestAdapter_GetHistory_ReturnsContractShape(t *testing.T) {
 	assert.Equal(t, session.MessageAssistant, msgs[1].Type)
 }
 
+// TestAdapter_GetHistory_FlatToolShape_ReturnsContractShape is an
+// integration test that sends a flat-string tool part (opencode 1.18.10
+// wire shape) through the Adapter's real HTTP round-trip and verifies
+// a correct session.ToolPart in the output. Pins the production code
+// path that 502'd in issue #730.
+func TestAdapter_GetHistory_FlatToolShape_ReturnsContractShape(t *testing.T) {
+	srv := newFakeOpencode(t)
+	srv.register("GET", "/session/ses_1/message", `[
+		{
+			"info":{"role":"user","id":"msg_0"},
+			"parts":[{"type":"text","text":"run ls"}]
+		},
+		{
+			"info":{"role":"assistant","id":"msg_1"},
+			"parts":[
+				{"type":"text","text":"running it"},
+				{"type":"tool","callID":"call_flat_1","tool":"bash","state":{"status":"completed","input":{"command":"ls"},"output":"file.go\n","time":{"start":1786374885930,"end":1786374894033}}}
+			]
+		}
+	]`, 0)
+
+	a := newTestAdapter(t, srv.Server)
+	msgs, err := a.GetHistory(context.Background(), "u-1", "ws-1", "ses_1")
+	require.NoError(t, err)
+	require.Len(t, msgs, 2)
+
+	assistant := msgs[1]
+	require.Equal(t, session.MessageAssistant, assistant.Type)
+
+	var tp *session.ToolPart
+	for _, p := range assistant.Parts {
+		if p.Type == session.PartTool {
+			tp = p.Tool
+		}
+	}
+	require.NotNil(t, tp, "flat-string tool part must survive the HTTP round-trip")
+	assert.Equal(t, "bash", tp.Name)
+	assert.Equal(t, "call_flat_1", tp.CallID)
+	assert.Equal(t, session.ToolStatusCompleted, tp.State.Status)
+	require.NotNil(t, tp.State.StartedAt)
+	assert.Equal(t, int64(1786374885930), tp.State.StartedAt.UnixMilli())
+}
+
 func TestAdapter_SendAsync_UsesV2PromptEndpoint(t *testing.T) {
 	srv := newFakeOpencode(t)
 	srv.register("POST", "/api/session/ses_1/prompt", `{"data":{

@@ -209,6 +209,11 @@ func (p *ocPart) UnmarshalJSON(data []byte) error {
 		return nil
 	}
 
+	// "tool": null → leave nil (don't produce &ocTool{}).
+	if bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+
 	// Legacy nested-object shape (opencode ≤1.15.x): "tool":{...}.
 	var nested ocTool
 	if err := json.Unmarshal(intermediate.Tool, &nested); err != nil {
@@ -238,10 +243,13 @@ type ocToolState struct {
 // state (not on the tool object), and times are epoch-millis numbers
 // under state.time.{start,end} (not ISO-8601 strings).
 type ocFlatToolState struct {
-	Status   string          `json:"status,omitempty"`
-	Error    string          `json:"error,omitempty"`
-	Input    json.RawMessage `json:"input,omitempty"`
-	Output   json.RawMessage `json:"output,omitempty"`
+	Status string          `json:"status,omitempty"`
+	Error  string          `json:"error,omitempty"`
+	Input  json.RawMessage `json:"input,omitempty"`
+	Output json.RawMessage `json:"output,omitempty"`
+	// Metadata and Title are captured for completeness (they appear on
+	// the 1.18.10 wire shape) but are NOT propagated to the platform's
+	// session.ToolPart — the contract has no field for them.
 	Metadata json.RawMessage `json:"metadata,omitempty"`
 	Title    string          `json:"title,omitempty"`
 	Time     *ocFlatToolTime `json:"time,omitempty"`
@@ -355,10 +363,16 @@ func translateMessage(m ocMessage) (session.Message, []string) {
 				Reasoning: p.Reasoning,
 			})
 		case "tool":
+			tp := translateTool(p.Tool)
+			if tp == nil {
+				// "tool": null or a tool part with no tool object —
+				// skip it rather than emitting an empty PartTool.
+				continue
+			}
 			parts = append(parts, session.Part{
 				Type: session.PartTool,
 				ID:   p.ID,
-				Tool: translateTool(p.Tool),
+				Tool: tp,
 			})
 		case "custom":
 			if p.Custom != nil && p.Custom.Kind != "" {
@@ -561,13 +575,18 @@ func translateStatus(s string) session.Status {
 // wire-shape change in one part) is downgraded to a session.MessageSystem
 // notice rather than failing the entire history. This ensures one bad
 // upstream shape never Sev1s the history surface again.
-func ParseHistoryWire(body []byte, workspaceID string) (msgs []session.Message, changedFilesPerMsg [][]string, err error) {
+//
+// The returned `downgraded` count is the number of messages that were
+// degraded to system notices. Callers (Adapter.GetHistory) log it so
+// operators have a signal when wire-shape drift is happening (Rule 3:
+// no swallowed errors).
+func ParseHistoryWire(body []byte, workspaceID string) (msgs []session.Message, changedFilesPerMsg [][]string, downgraded int, err error) {
 	// Stage 1: split into raw messages. Cannot fail on part-shape drift
 	// because it does not descend into parts. Only fails if the body is
 	// not a JSON array at all.
 	var rawMessages []json.RawMessage
 	if err = json.Unmarshal(body, &rawMessages); err != nil {
-		return nil, nil, fmt.Errorf("opencode history: parse message array: %w", err)
+		return nil, nil, 0, fmt.Errorf("opencode history: parse message array: %w", err)
 	}
 
 	// Stage 2: decode each message independently. A decode failure
@@ -579,6 +598,7 @@ func ParseHistoryWire(body []byte, workspaceID string) (msgs []session.Message, 
 	for i, rawMsg := range rawMessages {
 		var m ocMessage
 		if dErr := json.Unmarshal(rawMsg, &m); dErr != nil {
+			downgraded++
 			msgs = append(msgs, session.SystemMessage(
 				fmt.Sprintf("decode-failed-msg-%d", i),
 				"This message could not be decoded (the agent history shape may have changed). "+
@@ -592,7 +612,7 @@ func ParseHistoryWire(body []byte, workspaceID string) (msgs []session.Message, 
 		msgs = append(msgs, sm)
 		changedFilesPerMsg = append(changedFilesPerMsg, files)
 	}
-	return msgs, changedFilesPerMsg, nil
+	return msgs, changedFilesPerMsg, downgraded, nil
 }
 
 // ParseSessionListWire is the testable boundary for GET /session.

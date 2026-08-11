@@ -261,6 +261,25 @@ func TestTranslateTool_Nil(t *testing.T) {
 	assert.Nil(t, translateTool(nil))
 }
 
+// TestParseHistoryWire_ToolNull_ProducesNoToolPart covers the C1 edge
+// case from the #731 review: a "tool": null field must NOT produce an
+// empty &ocTool{} — it should leave Tool nil so the translator skips
+// the tool part entirely.
+func TestParseHistoryWire_ToolNull_ProducesNoToolPart(t *testing.T) {
+	body := []byte(`[{
+		"info": {"role": "assistant", "id": "msg_null"},
+		"parts": [
+			{"type": "tool", "tool": null}
+		]
+	}]`)
+	msgs, _, _, err := ParseHistoryWire(body, "ws-null")
+	require.NoError(t, err)
+	require.Len(t, msgs, 1)
+	for _, p := range msgs[0].Parts {
+		assert.NotEqual(t, session.PartTool, p.Type, "\"tool\":null must not produce a tool part")
+	}
+}
+
 func TestTranslateTool_NoState(t *testing.T) {
 	tp := translateTool(&ocTool{Name: "bash"})
 	require.NotNil(t, tp)
@@ -292,7 +311,7 @@ func TestParseHistoryWire_RealShape(t *testing.T) {
 		}
 	]`)
 
-	msgs, changedFiles, err := ParseHistoryWire(body, "ws-1")
+	msgs, changedFiles, _, err := ParseHistoryWire(body, "ws-1")
 	require.NoError(t, err)
 	require.Len(t, msgs, 2)
 	require.Len(t, changedFiles, 2, "changedFilesPerMsg parallels msgs")
@@ -310,7 +329,7 @@ func TestParseHistoryWire_RealShape(t *testing.T) {
 }
 
 func TestParseHistoryWire_MalformedJSON(t *testing.T) {
-	_, _, err := ParseHistoryWire([]byte(`not json`), "ws-1")
+	_, _, _, err := ParseHistoryWire([]byte(`not json`), "ws-1")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "parse message array")
 }
@@ -445,7 +464,7 @@ func mustLoadFixture(t *testing.T, name string) []byte {
 func TestParseHistoryWire_RealShape1_18_10_FlatTool(t *testing.T) {
 	body := mustLoadFixture(t, "history_1_18_10_flat_tool.json")
 
-	msgs, _, err := ParseHistoryWire(body, "ws-1")
+	msgs, _, _, err := ParseHistoryWire(body, "ws-1")
 	require.NoError(t, err, "flat-string tool shape must decode without error")
 	require.Len(t, msgs, 2, "user message + assistant message")
 
@@ -500,7 +519,7 @@ func TestParseHistoryWire_RealShape1_18_10_FlatTool(t *testing.T) {
 func TestParseHistoryWire_LegacyNestedTool_StillWorks(t *testing.T) {
 	body := mustLoadFixture(t, "history_1_15_12_nested_tool.json")
 
-	msgs, _, err := ParseHistoryWire(body, "ws-1")
+	msgs, _, _, err := ParseHistoryWire(body, "ws-1")
 	require.NoError(t, err)
 	require.Len(t, msgs, 2)
 
@@ -560,7 +579,7 @@ func TestParseHistoryWire_MixedShapesInOneHistory(t *testing.T) {
 	body, err := json.Marshal(mixed)
 	require.NoError(t, err)
 
-	msgs, _, err := ParseHistoryWire(body, "ws-mixed")
+	msgs, _, _, err := ParseHistoryWire(body, "ws-mixed")
 	require.NoError(t, err, "mixed shapes must both decode")
 	require.Len(t, msgs, 4, "all four messages must survive")
 
@@ -612,7 +631,7 @@ func TestParseHistoryWire_OneMalformedPart_DoesNot502(t *testing.T) {
 		}
 	]`)
 
-	msgs, _, err := ParseHistoryWire(body, "ws-resilience")
+	msgs, _, _, err := ParseHistoryWire(body, "ws-resilience")
 	require.NoError(t, err, "one malformed message must NOT fail the whole history")
 	require.Len(t, msgs, 3, "all three messages must be present (bad one downgraded, not dropped)")
 
@@ -660,7 +679,7 @@ func TestParseHistoryWire_TotallyGarbage_StillErrors(t *testing.T) {
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, _, err := ParseHistoryWire(body, "ws-1")
+			_, _, _, err := ParseHistoryWire(body, "ws-1")
 			require.Error(t, err, "genuinely malformed body must still error")
 			assert.Contains(t, err.Error(), "parse message array",
 				"error must carry the established wrap prefix")
@@ -684,7 +703,7 @@ func TestParseHistoryWire_AllObservedToolNames_1_18_10(t *testing.T) {
 					{"type": "tool", "callID": "call_%s", "tool": "%s", "state": {"status": "completed", "input": {}, "output": "", "time": {"start": 1786374885930, "end": 1786374894033}}}
 				]
 			}]`, name, name, name))
-			msgs, _, err := ParseHistoryWire(body, "ws-names")
+			msgs, _, _, err := ParseHistoryWire(body, "ws-names")
 			require.NoError(t, err, "tool name %q must decode in the flat shape", name)
 			require.Len(t, msgs, 1)
 			var tp *session.ToolPart
