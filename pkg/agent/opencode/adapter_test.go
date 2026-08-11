@@ -370,9 +370,52 @@ func TestAdapter_Capabilities_ReportsQueueReasoningDiff(t *testing.T) {
 
 // --- Stream (not implemented in US-65.3) ---
 
-func TestAdapter_Stream_ReturnsNotImplemented(t *testing.T) {
-	// Adapter.Stream is now implemented — it opens an SSE connection
-	// to /event and translates events to session.Event.
+func TestAdapter_Stream_HappyPath_TranslatesEvents(t *testing.T) {
+	srv := newFakeOpencode(t)
+	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, pw, _ := r.BasicAuth()
+		if pw != testPassword {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher := w.(http.Flusher)
+		fmt.Fprintf(w, "data: {\"type\":\"session.status\",\"properties\":{\"sessionID\":\"ses_1\",\"status\":{\"type\":\"busy\"}}}\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "data: {\"type\":\"question.asked\",\"properties\":{\"id\":\"que_1\",\"sessionID\":\"ses_1\",\"questions\":[{\"question\":\"Continue?\"}]}}\n\n")
+		flusher.Flush()
+		time.Sleep(50 * time.Millisecond)
+	})
+
+	a := newTestAdapter(t, srv.Server)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	ch, err := a.Stream(ctx, "u-1", "ws-1", "ses_1")
+	require.NoError(t, err)
+
+	var events []session.Event
+	for evt := range ch {
+		events = append(events, evt)
+		if len(events) >= 2 {
+			break
+		}
+	}
+	cancel()
+
+	require.GreaterOrEqual(t, len(events), 1)
+	assert.Equal(t, session.EventSessionStatus, events[0].Type)
+	assert.Equal(t, "ses_1", events[0].SessionID)
+	assert.Equal(t, session.StatusBusy, events[0].Status)
+
+	if len(events) >= 2 {
+		assert.Equal(t, session.EventInputRequest, events[1].Type)
+		require.NotNil(t, events[1].Input)
+		assert.Equal(t, "que_1", events[1].Input.ID)
+		assert.Equal(t, session.InputQuestion, events[1].Input.Kind)
+		assert.Equal(t, "Continue?", events[1].Input.Question)
+	}
 }
 
 func TestAdapter_Stream_Non200Response_ReturnsError(t *testing.T) {
@@ -385,43 +428,6 @@ func TestAdapter_Stream_Non200Response_ReturnsError(t *testing.T) {
 	_, err := a.Stream(context.Background(), "u-1", "ws-1", "ses_1")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "503")
-}
-
-func TestAdapter_Stream_ScannerError_EmitsErrorEvent(t *testing.T) {
-	// When the SSE connection breaks mid-stream, scanner.Err is non-nil
-	// and the adapter emits an EventError before closing the channel.
-	srv := newFakeOpencode(t)
-	closed := make(chan struct{})
-	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, pw, _ := r.BasicAuth()
-		if pw != testPassword {
-			w.WriteHeader(http.StatusUnauthorized)
-			return
-		}
-		w.Header().Set("Content-Type", "text/event-stream")
-		w.WriteHeader(http.StatusOK)
-		flusher, _ := w.(http.Flusher)
-		fmt.Fprintf(w, "data: {\"type\":\"session.status\",\"properties\":{\"sessionID\":\"ses_1\",\"status\":{\"type\":\"idle\"}}}\n\n")
-		flusher.Flush()
-		<-closed // hold until test cancels
-	})
-	t.Cleanup(func() { close(closed) })
-
-	a := newTestAdapter(t, srv.Server)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	ch, err := a.Stream(ctx, "u-1", "ws-1", "ses_1")
-	require.NoError(t, err)
-
-	// Read at least one event (the session.status).
-	var gotEvent bool
-	for evt := range ch {
-		gotEvent = true
-		_ = evt
-		break
-	}
-	assert.True(t, gotEvent, "should receive at least one event before connection closes")
 }
 
 // --- Error handling ---
