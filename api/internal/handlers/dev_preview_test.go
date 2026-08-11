@@ -465,10 +465,6 @@ func TestDevPreviewHandler_G34_CallerCookieNotForwarded(t *testing.T) {
 		t.Errorf("G34 violation: caller Referer forwarded to pod: %q", referer)
 	}
 
-	// The allowlisted headers SHOULD be forwarded.
-	if ct := capturedHeaders.Get("Content-Type"); ct != "" {
-		// Content-Type is on the allowlist; fine if present
-	}
 	// Authorization should be Basic auth (injected), NOT the caller's Bearer token.
 	if auth := capturedHeaders.Get("Authorization"); strings.HasPrefix(auth, "Bearer") {
 		t.Errorf("G34 violation: caller Bearer token forwarded instead of Basic auth: %q", auth)
