@@ -345,7 +345,8 @@ func translateMessage(m ocMessage) (session.Message, []string) {
 		sm.Cost = translateCost(*m.Cost)
 	}
 	if m.Info.Time != nil && m.Info.Time.Created > 0 {
-		sm.CreatedAt = time.UnixMilli(m.Info.Time.Created).UTC()
+		t := time.UnixMilli(m.Info.Time.Created).UTC()
+		sm.CreatedAt = &t
 	}
 	if m.Error != nil {
 		sm.Error = m.Error

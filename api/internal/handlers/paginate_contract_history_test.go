@@ -5,7 +5,6 @@ package handlers
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 
@@ -69,7 +68,7 @@ func makeTestMessages(n int) []session.Message {
 		out[i] = session.Message{
 			ID:        "msg_" + string(rune('0'+i)),
 			Type:      session.MessageUser,
-			CreatedAt: time.Now(),
+			CreatedAt: nil,
 		}
 	}
 	return out
