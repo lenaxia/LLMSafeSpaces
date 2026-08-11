@@ -19,6 +19,7 @@ type mockAdapter struct {
 	createSessionFn     func(ctx context.Context, userID, workspaceID, title string) (*session.Session, error)
 	listSessionsFn      func(ctx context.Context, userID, workspaceID string) ([]session.Session, error)
 	renameSessionFn     func(ctx context.Context, userID, workspaceID, sessionID, title string) error
+	deleteSessionFn     func(ctx context.Context, userID, workspaceID, sessionID string) error
 	sendFn              func(ctx context.Context, userID, workspaceID, sessionID, text string, opts session.SendOpts) (*session.Message, error)
 	abortFn             func(ctx context.Context, userID, workspaceID, sessionID string) error
 	listPendingFn       func(ctx context.Context, userID, workspaceID, sessionID string) ([]session.InputRequest, error)
@@ -52,7 +53,10 @@ func (m *mockAdapter) RenameSession(ctx context.Context, uid, wid, sid, title st
 	}
 	panic("mockAdapter.RenameSession not configured")
 }
-func (m *mockAdapter) DeleteSession(_ context.Context, _, _, _ string) error {
+func (m *mockAdapter) DeleteSession(ctx context.Context, uid, wid, sid string) error {
+	if m.deleteSessionFn != nil {
+		return m.deleteSessionFn(ctx, uid, wid, sid)
+	}
 	panic("mockAdapter.DeleteSession not configured")
 }
 func (m *mockAdapter) Send(ctx context.Context, uid, wid, sid, text string, opts session.SendOpts) (*session.Message, error) {

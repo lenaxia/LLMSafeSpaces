@@ -930,31 +930,33 @@ func (h *ProxyHandler) DeleteSession(c *gin.Context) {
 		return
 	}
 	workspaceID := c.Param("id")
-	h.proxyToWorkspace(c, "/session/"+sid, false, sid)
 
-	if c.Writer.Status() >= 400 {
-		return
+	// Adapter path (US-65.4): delegate to adapter, then run the same
+	// post-delete side effects (tombstone, session index cleanup, SSE
+	// tombstone publish) that the legacy path runs.
+	if h.adapter != nil {
+		if err := h.adapter.DeleteSession(c.Request.Context(), "", workspaceID, sid); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to delete session"})
+			return
+		}
+		c.Status(http.StatusNoContent)
+	} else {
+		h.proxyToWorkspace(c, "/session/"+sid, false, sid)
+		if c.Writer.Status() >= 400 {
+			return
+		}
 	}
 
-	// Detached ctx (not c.Request.Context()): the tombstone suppresses late
-	// SSE events arriving after deletion, so it MUST be written even if the
-	// client disconnects mid-request. Matches the sibling session-index
-	// delete below (which uses context.Background() for the same reason).
-	h.state().MarkSessionDeleted(context.Background(), workspaceID, sid) //nolint:contextcheck // G118: tombstone must survive client disconnect
+	// Post-delete side effects run in both adapter and legacy paths.
+	h.state().MarkSessionDeleted(context.Background(), workspaceID, sid) //nolint:contextcheck // tombstone must survive client disconnect
 
 	if h.sessionIndex != nil {
-		// Use context.Background() so a client disconnect after the agent
-		// has already deleted the session doesn't leave the index in an
-		// inconsistent state (agent deleted, index still has it).
 		if err := h.sessionIndex.DeleteSession(context.Background(), workspaceID, sid); err != nil { //nolint:contextcheck
 			h.logger.Error("failed to delete session from index", err, "workspaceID", workspaceID, "sessionID", sid)
 		}
 	}
 
 	go func() {
-		// Background ctx (not c.Request.Context()): this outlives the request
-		// (fire-and-forget, must survive client disconnect) and capturing c
-		// here would race with gin reusing the Context on the next ServeHTTP.
 		h.removeActiveSession(context.Background(), workspaceID, sid)
 		if h.sessionParents != nil {
 			h.sessionParents.invalidate(workspaceID)
