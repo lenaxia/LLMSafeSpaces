@@ -184,6 +184,8 @@ func (h *ProxyHandler) onRawEvent(workspaceID, eventType, rawData string) {
 	}
 
 	if eventType == "session.next.step.ended" {
+		h.logger.Debug("onRawEvent: dispatching to persistContextFromEvent",
+			"workspaceID", workspaceID, "eventType", eventType)
 		h.persistContextFromEvent(workspaceID, rawData)
 	}
 

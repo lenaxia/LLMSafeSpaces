@@ -90,6 +90,31 @@ type ocTime struct {
 	CompletedAt *time.Time `json:"completedAt,omitempty"`
 }
 
+func (t *ocTime) UnmarshalJSON(data []byte) error {
+	var legacy struct {
+		StartedAt   time.Time  `json:"startedAt"`
+		CompletedAt *time.Time `json:"completedAt,omitempty"`
+	}
+	if err := json.Unmarshal(data, &legacy); err == nil && !legacy.StartedAt.IsZero() {
+		t.StartedAt = legacy.StartedAt
+		t.CompletedAt = legacy.CompletedAt
+		return nil
+	}
+	var modern struct {
+		Created int64  `json:"created"`
+		Updated *int64 `json:"updated,omitempty"`
+	}
+	if err := json.Unmarshal(data, &modern); err != nil {
+		return fmt.Errorf("ocTime: expected {startedAt,completedAt} or {created,updated}: %w", err)
+	}
+	t.StartedAt = time.UnixMilli(modern.Created)
+	if modern.Updated != nil {
+		u := time.UnixMilli(*modern.Updated)
+		t.CompletedAt = &u
+	}
+	return nil
+}
+
 // ocPart is one entry in opencode's parts array. Type discriminates.
 // Unknown types (step-start, step-finish, patch, custom extensions)
 // are passed through as-is and the translator decides what to keep.
@@ -490,18 +515,34 @@ func translateCost(c ocCost) *session.Cost {
 
 // ocSession is the wire shape opencode returns for GET /session and
 // GET /session/:id. Fields not consumed by the platform are ignored.
+//
+// Version drift (1.15.12 → 1.18.10):
+//   - Summary: 1.15.12 string; 1.18.10 {additions,deletions,files} object.
+//   - Cost: 1.15.12 structured object; 1.18.10 bare number.
+//   - Tokens: 1.18.10 adds top-level structured tokens object.
+//   - Time: 1.15.12 startedAt/completedAt; 1.18.10 created/updated (handled in ocTime.UnmarshalJSON).
 type ocSession struct {
-	ID        string      `json:"id"`
-	Title     string      `json:"title,omitempty"`
-	Model     *ocModelRef `json:"model,omitempty"`
-	Time      *ocTime     `json:"time,omitempty"`
-	Cost      *ocCost     `json:"cost,omitempty"`
-	Status    ocStatus    `json:"status"`
-	IsSubtask bool        `json:"isSubtask,omitempty"`
-	Summary   string      `json:"summary,omitempty"`
-	ParentID  string      `json:"parentID,omitempty"`
-	// Archived is absent in opencode 1.18.10; left for forward-compat.
-	Archived bool `json:"archived,omitempty"`
+	ID        string          `json:"id"`
+	Title     string          `json:"title,omitempty"`
+	Model     *ocModelRef     `json:"model,omitempty"`
+	Time      *ocTime         `json:"time,omitempty"`
+	Cost      json.RawMessage `json:"cost,omitempty"`
+	Tokens    *ocTokens       `json:"tokens,omitempty"`
+	Status    ocStatus        `json:"status"`
+	IsSubtask bool            `json:"isSubtask,omitempty"`
+	Summary   json.RawMessage `json:"summary,omitempty"`
+	ParentID  string          `json:"parentID,omitempty"`
+	Archived  bool            `json:"archived,omitempty"`
+}
+
+type ocTokens struct {
+	Input     int64 `json:"input"`
+	Output    int64 `json:"output"`
+	Reasoning int64 `json:"reasoning"`
+	Cache     struct {
+		Read  int64 `json:"read"`
+		Write int64 `json:"write"`
+	} `json:"cache"`
 }
 
 type ocStatus struct {
@@ -511,13 +552,23 @@ type ocStatus struct {
 // translateSession converts one opencode session record to the
 // platform session.Session shape.
 func translateSession(s ocSession, workspaceID string) session.Session {
+	summaryStr := ""
+	if len(s.Summary) > 0 {
+		var strVal string
+		if json.Unmarshal(s.Summary, &strVal) == nil {
+			summaryStr = strVal
+		} else {
+			summaryStr = string(s.Summary)
+		}
+	}
+
 	out := session.Session{
 		ID:          s.ID,
 		WorkspaceID: workspaceID,
 		ParentID:    s.ParentID,
 		Title:       s.Title,
 		Status:      translateStatus(s.Status.Type),
-		Summary:     s.Summary,
+		Summary:     summaryStr,
 		Archived:    s.Archived,
 	}
 	if s.Model != nil {
@@ -529,10 +580,47 @@ func translateSession(s ocSession, workspaceID string) session.Session {
 			CompletedAt: s.Time.CompletedAt,
 		}
 	}
-	if s.Cost != nil {
-		out.Cost = translateCost(*s.Cost)
-	}
+	out.Cost = translateSessionCost(s.Cost, s.Tokens)
 	return out
+}
+
+func translateSessionCost(rawCost json.RawMessage, tokens *ocTokens) *session.Cost {
+	var c session.Cost
+	haveData := false
+
+	if tokens != nil {
+		c.InputTokens = tokens.Input
+		c.OutputTokens = tokens.Output
+		c.ReasoningTokens = tokens.Reasoning
+		c.CacheReadTokens = tokens.Cache.Read
+		c.CacheWriteTokens = tokens.Cache.Write
+		c.TotalTokens = tokens.Input + tokens.Output + tokens.Reasoning +
+			tokens.Cache.Read + tokens.Cache.Write
+		haveData = true
+	}
+
+	if len(rawCost) > 0 {
+		var legacy ocCost
+		if json.Unmarshal(rawCost, &legacy) == nil && legacy != (ocCost{}) {
+			if legacy.InputTokens != 0 && c.InputTokens == 0 {
+				c.InputTokens = legacy.InputTokens
+				haveData = true
+			}
+			if legacy.TotalTokens != 0 && c.TotalTokens == 0 {
+				c.TotalTokens = legacy.TotalTokens
+				haveData = true
+			}
+			c.CostUSD = legacy.CostUSD
+			if legacy.CostUSD != 0 {
+				haveData = true
+			}
+		}
+	}
+
+	if !haveData {
+		return nil
+	}
+	return &c
 }
 
 // translateStatus maps opencode session-status types to the platform

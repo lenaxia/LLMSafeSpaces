@@ -37,6 +37,7 @@ func (h *ProxyHandler) CreateSession(c *gin.Context) {
 
 		s, err := h.adapter.CreateSession(c.Request.Context(), "", wid, "")
 		if err != nil {
+			h.logger.Error("CreateSession: adapter failed", err, "workspaceID", wid)
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create session"})
 			return
 		}
@@ -57,6 +58,7 @@ func (h *ProxyHandler) ListSessions(c *gin.Context) {
 
 		sessions, err := h.adapter.ListSessions(c.Request.Context(), "", wid)
 		if err != nil {
+			h.logger.Error("ListSessions: adapter failed", err, "workspaceID", wid)
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to list sessions"})
 			return
 		}
@@ -765,6 +767,7 @@ func (h *ProxyHandler) GetSession(c *gin.Context) {
 
 		s, err := h.adapter.GetSession(c.Request.Context(), "", wid, sid)
 		if err != nil {
+			h.logger.Error("GetSession: adapter failed", err, "workspaceID", wid, "sessionID", sid)
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to get session"})
 			return
 		}
