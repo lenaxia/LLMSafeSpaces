@@ -15,18 +15,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func setupAdapterReadyWorkspace(env *testEnv, wsID string) {
-	env.wsMock.On("Get", mock.Anything, wsID, mock.Anything).Return(&v1.Workspace{
-		ObjectMeta: metav1.ObjectMeta{Name: wsID, Namespace: "default"},
-		Status: v1.WorkspaceStatus{
-			Phase:   v1.WorkspacePhaseActive,
-			PodIP:   "10.0.0.1",
-			PodName: "test-pod",
-		},
-	}, nil)
-	env.setupPasswordWithT(&testing.T{}, wsID, "test-password")
-}
-
 // TestAdapterPath_GetHistory_WorkspaceNotReady_Returns503 verifies
 // that the adapter path now checks workspace readiness before calling
 // the adapter, returning 503 + Retry-After when the workspace is not
