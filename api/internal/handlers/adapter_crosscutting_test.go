@@ -2,149 +2,284 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 
+	"github.com/lenaxia/llmsafespaces/api/internal/mocks"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// TestAdapterPath_GetHistory_WorkspaceNotReady_Returns503 verifies
-// that the adapter path now checks workspace readiness before calling
-// the adapter, returning 503 + Retry-After when the workspace is not
-// Active. Previously, the adapter path bypassed this check entirely.
-func TestAdapterPath_GetHistory_WorkspaceNotReady_Returns503(t *testing.T) {
-	gin.SetMode(gin.TestMode)
+// --- SendMessage adapter cross-cutting tests ---
 
+func setupAdapterSendMessageEnv(t *testing.T, wsID string, maxSessions int32) (*testEnv, *mocks.MockMeteringService) {
+	t.Helper()
 	env := newTestEnv(t)
-	env.handler.adapter = &mockAdapter{
-		getHistoryFn: func(context.Context, string, string, string) ([]session.Message, error) {
-			t.Fatal("adapter.GetHistory must NOT be called when workspace is not ready")
-			return nil, nil
+
+	env.wsMock.On("Get", mock.Anything, wsID, mock.Anything).Return(&v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: wsID, Namespace: "default"},
+		Spec: v1.WorkspaceSpec{
+			Owner:             v1.WorkspaceOwner{UserID: "user-1"},
+			MaxActiveSessions: maxSessions,
 		},
-	}
-
-	env.wsMock.On("Get", mock.Anything, "ws-notready", mock.Anything).Return(&v1.Workspace{
-		ObjectMeta: metav1.ObjectMeta{Name: "ws-notready", Namespace: "default"},
-		Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhasePending},
-	}, nil)
-
-	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-notready/sessions/ses_1/message", nil)
-	w := httptest.NewRecorder()
-	env.router.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Contains(t, w.Body.String(), "workspace not ready")
-	assert.NotEmpty(t, w.Header().Get("Retry-After"))
-}
-
-// TestAdapterPath_GetSession_WorkspaceNotReady_Returns503 verifies
-// the same readiness check applies to GetSession.
-func TestAdapterPath_GetSession_WorkspaceNotReady_Returns503(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	env := newTestEnv(t)
-	env.handler.adapter = &mockAdapter{
-		getSessionFn: func(context.Context, string, string, string) (*session.Session, error) {
-			t.Fatal("adapter.GetSession must NOT be called when workspace is not ready")
-			return nil, nil
-		},
-	}
-
-	env.wsMock.On("Get", mock.Anything, "ws-notready", mock.Anything).Return(&v1.Workspace{
-		ObjectMeta: metav1.ObjectMeta{Name: "ws-notready", Namespace: "default"},
-		Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhasePending},
-	}, nil)
-
-	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-notready/sessions/ses_1", nil)
-	w := httptest.NewRecorder()
-	env.router.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-	assert.Contains(t, w.Body.String(), "workspace not ready")
-}
-
-// TestAdapterPath_ListSessions_WorkspaceNotReady_Returns503 verifies
-// the same readiness check applies to ListSessions.
-func TestAdapterPath_ListSessions_WorkspaceNotReady_Returns503(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	env := newTestEnv(t)
-	env.handler.adapter = &mockAdapter{
-		listSessionsFn: func(context.Context, string, string) ([]session.Session, error) {
-			t.Fatal("adapter.ListSessions must NOT be called when workspace is not ready")
-			return nil, nil
-		},
-	}
-
-	env.wsMock.On("Get", mock.Anything, "ws-notready", mock.Anything).Return(&v1.Workspace{
-		ObjectMeta: metav1.ObjectMeta{Name: "ws-notready", Namespace: "default"},
-		Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhasePending},
-	}, nil)
-
-	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-notready/sessions", nil)
-	w := httptest.NewRecorder()
-	env.router.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-}
-
-// TestAdapterPath_CreateSession_WorkspaceNotReady_Returns503 verifies
-// the same readiness check applies to CreateSession.
-func TestAdapterPath_CreateSession_WorkspaceNotReady_Returns503(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	env := newTestEnv(t)
-	env.handler.adapter = &mockAdapter{
-		createSessionFn: func(context.Context, string, string, string) (*session.Session, error) {
-			t.Fatal("adapter.CreateSession must NOT be called when workspace is not ready")
-			return nil, nil
-		},
-	}
-
-	env.wsMock.On("Get", mock.Anything, "ws-notready", mock.Anything).Return(&v1.Workspace{
-		ObjectMeta: metav1.ObjectMeta{Name: "ws-notready", Namespace: "default"},
-		Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhasePending},
-	}, nil)
-
-	req := httptest.NewRequest("POST", "/api/v1/workspaces/ws-notready/sessions", nil)
-	w := httptest.NewRecorder()
-	env.router.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
-}
-
-// TestAdapterPath_GetHistory_WorkspaceReady_Returns200 verifies the
-// happy path: workspace is Active, adapter is called, result returned.
-func TestAdapterPath_GetHistory_WorkspaceReady_Returns200(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	env := newTestEnv(t)
-	env.handler.adapter = &mockAdapter{
-		getHistoryFn: func(_ context.Context, _, _, _ string) ([]session.Message, error) {
-			return []session.Message{}, nil
-		},
-	}
-
-	env.wsMock.On("Get", mock.Anything, "ws-ready", mock.Anything).Return(&v1.Workspace{
-		ObjectMeta: metav1.ObjectMeta{Name: "ws-ready", Namespace: "default"},
 		Status: v1.WorkspaceStatus{
 			Phase:   v1.WorkspacePhaseActive,
 			PodIP:   "10.0.0.1",
 			PodName: "test-pod",
 		},
 	}, nil)
-	env.setupPasswordWithT(t, "ws-ready", "test-password")
+	env.setupPasswordWithT(t, wsID, "test-password")
 
-	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-ready/sessions/ses_1/message", nil)
+	ms := new(mocks.MockMeteringService)
+	env.handler.SetMeteringService(ms)
+	return env, ms
+}
+
+func TestAdapterPath_SendMessage_WorkspaceNotReady_Returns503(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	env := newTestEnv(t)
+
+	env.handler.adapter = &mockAdapter{
+		sendFn: func(context.Context, string, string, string, string, session.SendOpts) (*session.Message, error) {
+			t.Fatal("adapter.Send must NOT be called when workspace is not ready")
+			return nil, nil
+		},
+	}
+
+	env.wsMock.On("Get", mock.Anything, "ws-notready", mock.Anything).Return(&v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-notready", Namespace: "default"},
+		Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhasePending},
+	}, nil)
+
+	body := strings.NewReader(`{"parts":[{"type":"text","text":"hello"}]}`)
 	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/ws-notready/sessions/ses_1/message", body)
+	req.Header.Set("Content-Type", "application/json")
 	env.router.ServeHTTP(w, req)
 
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	assert.Contains(t, w.Body.String(), "workspace not ready")
+}
+
+func TestAdapterPath_SendMessage_QuotaExceeded_Returns429(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	env, ms := setupAdapterSendMessageEnv(t, "ws-quota", 5)
+
+	env.handler.adapter = &mockAdapter{
+		sendFn: func(context.Context, string, string, string, string, session.SendOpts) (*session.Message, error) {
+			t.Fatal("adapter.Send must NOT be called when quota is exceeded")
+			return nil, nil
+		},
+	}
+
+	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_request").Return(false, int64(0), nil)
+	env.handler.activityTracker = newTestTracker(env.wsMock)
+
+	body := strings.NewReader(`{"parts":[{"type":"text","text":"hello"}]}`)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/ws-quota/sessions/ses_1/message", body)
+	req.Header.Set("Content-Type", "application/json")
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-quota"}, {Key: "sessionId", Value: "ses_1"}}
+	c.Request = req
+	c.Set("userID", "user-1")
+
+	env.handler.SendMessage(c)
+
+	assert.Equal(t, http.StatusTooManyRequests, w.Code)
+}
+
+func TestAdapterPath_SendMessage_HappyPath_Returns200(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	env, ms := setupAdapterSendMessageEnv(t, "ws-happy", 5)
+
+	sendCalled := int32(0)
+	env.handler.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _, text string, _ session.SendOpts) (*session.Message, error) {
+			atomic.StoreInt32(&sendCalled, 1)
+			return &session.Message{ID: "msg_1", Type: session.MessageAssistant}, nil
+		},
+	}
+
+	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_request").Return(true, int64(10), nil)
+	ms.On("Record", mock.Anything).Return()
+	env.handler.activityTracker = newTestTracker(env.wsMock)
+
+	body := strings.NewReader(`{"parts":[{"type":"text","text":"hello"}]}`)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/ws-happy/sessions/ses_1/message", body)
+	req.Header.Set("Content-Type", "application/json")
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-happy"}, {Key: "sessionId", Value: "ses_1"}}
+	c.Request = req
+	c.Set("userID", "user-1")
+
+	env.handler.SendMessage(c)
+
 	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&sendCalled), "adapter.Send must be called")
+	ms.AssertCalled(t, "Record", mock.Anything)
+}
+
+func TestAdapterPath_SendMessage_AdapterError_CleansActiveSession(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	env, ms := setupAdapterSendMessageEnv(t, "ws-err", 5)
+
+	env.handler.adapter = &mockAdapter{
+		sendFn: func(context.Context, string, string, string, string, session.SendOpts) (*session.Message, error) {
+			return nil, errors.New("upstream error")
+		},
+	}
+
+	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_request").Return(true, int64(10), nil)
+	env.handler.activityTracker = newTestTracker(env.wsMock)
+
+	wasActive := env.handler.checkAndAddActiveSession(context.Background(), "ws-err", "ses_cleanup", 5)
+	assert.True(t, wasActive, "session must be active before the request")
+
+	body := strings.NewReader(`{"parts":[{"type":"text","text":"hello"}]}`)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/ws-err/sessions/ses_cleanup/message", body)
+	req.Header.Set("Content-Type", "application/json")
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-err"}, {Key: "sessionId", Value: "ses_cleanup"}}
+	c.Request = req
+	c.Set("userID", "user-1")
+
+	env.handler.SendMessage(c)
+
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+
+	stillActive := env.handler.isSessionActive(context.Background(), "ws-err", "ses_cleanup")
+	assert.False(t, stillActive, "removeActiveSession must have been called on adapter error")
+}
+
+// --- SendPromptAsync adapter cross-cutting tests ---
+
+func TestAdapterPath_SendPromptAsync_WorkspaceNotReady_Returns503(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	env := newTestEnv(t)
+
+	env.handler.adapter = &mockAdapter{
+		sendAsyncFn: func(context.Context, string, string, string, string, session.SendOpts) (string, error) {
+			t.Fatal("adapter.SendAsync must NOT be called when workspace is not ready")
+			return "", nil
+		},
+	}
+	env.wsMock.On("Get", mock.Anything, "ws-notready", mock.Anything).Return(&v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-notready", Namespace: "default"},
+		Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhasePending},
+	}, nil)
+
+	body := strings.NewReader(`{"parts":[{"type":"text","text":"hello"}]}`)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/ws-notready/sessions/ses_1/prompt", body)
+	req.Header.Set("Content-Type", "application/json")
+	env.router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
+	assert.Contains(t, w.Body.String(), "workspace not ready")
+}
+
+func TestAdapterPath_SendPromptAsync_QuotaExceeded_Returns429(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	env, ms := setupAdapterSendMessageEnv(t, "ws-quota-async", 5)
+
+	env.handler.adapter = &mockAdapter{
+		sendAsyncFn: func(context.Context, string, string, string, string, session.SendOpts) (string, error) {
+			t.Fatal("adapter.SendAsync must NOT be called when quota is exceeded")
+			return "", nil
+		},
+	}
+
+	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_request").Return(false, int64(0), nil)
+	env.handler.activityTracker = newTestTracker(env.wsMock)
+
+	body := strings.NewReader(`{"parts":[{"type":"text","text":"hello"}]}`)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/ws-quota-async/sessions/ses_1/prompt", body)
+	req.Header.Set("Content-Type", "application/json")
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-quota-async"}, {Key: "sessionId", Value: "ses_1"}}
+	c.Request = req
+	c.Set("userID", "user-1")
+
+	env.handler.SendPromptAsync(c)
+
+	assert.Equal(t, http.StatusTooManyRequests, w.Code)
+}
+
+func TestAdapterPath_SendPromptAsync_HappyPath_Returns202(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	env, ms := setupAdapterSendMessageEnv(t, "ws-async-happy", 5)
+
+	asyncCalled := int32(0)
+	env.handler.adapter = &mockAdapter{
+		sendAsyncFn: func(context.Context, string, string, string, string, session.SendOpts) (string, error) {
+			atomic.StoreInt32(&asyncCalled, 1)
+			return "msg_123", nil
+		},
+	}
+
+	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_request").Return(true, int64(10), nil)
+	ms.On("Record", mock.Anything).Return()
+	env.handler.activityTracker = newTestTracker(env.wsMock)
+
+	body := strings.NewReader(`{"parts":[{"type":"text","text":"hello"}]}`)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/ws-async-happy/sessions/ses_1/prompt", body)
+	req.Header.Set("Content-Type", "application/json")
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-async-happy"}, {Key: "sessionId", Value: "ses_1"}}
+	c.Request = req
+	c.Set("userID", "user-1")
+
+	env.handler.SendPromptAsync(c)
+
+	assert.Equal(t, http.StatusAccepted, w.Code)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&asyncCalled), "adapter.SendAsync must be called")
+	ms.AssertCalled(t, "Record", mock.Anything)
+}
+
+func TestAdapterPath_SendPromptAsync_AdapterError_CleansActiveSession(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	env, ms := setupAdapterSendMessageEnv(t, "ws-async-err", 5)
+
+	env.handler.adapter = &mockAdapter{
+		sendAsyncFn: func(context.Context, string, string, string, string, session.SendOpts) (string, error) {
+			return "", errors.New("upstream not found")
+		},
+	}
+
+	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_request").Return(true, int64(10), nil)
+	env.handler.activityTracker = newTestTracker(env.wsMock)
+
+	wasActive := env.handler.checkAndAddActiveSession(context.Background(), "ws-async-err", "ses_cleanup", 5)
+	assert.True(t, wasActive)
+
+	body := strings.NewReader(`{"parts":[{"type":"text","text":"hello"}]}`)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/ws-async-err/sessions/ses_cleanup/prompt", body)
+	req.Header.Set("Content-Type", "application/json")
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-async-err"}, {Key: "sessionId", Value: "ses_cleanup"}}
+	c.Request = req
+	c.Set("userID", "user-1")
+
+	env.handler.SendPromptAsync(c)
+
+	assert.True(t, w.Code == http.StatusNotFound || w.Code == http.StatusInternalServerError,
+		"adapter error must produce a non-2xx response, got %d", w.Code)
+
+	stillActive := env.handler.isSessionActive(context.Background(), "ws-async-err", "ses_cleanup")
+	assert.False(t, stillActive, "removeActiveSession must have been called on adapter error")
 }

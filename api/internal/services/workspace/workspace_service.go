@@ -1784,10 +1784,14 @@ func (s *Service) backfillContextUsed(ctx context.Context, workspaceID string, s
 
 	wsClient, err := s.workspaceCRDClient()
 	if err != nil {
+		s.logger.Warn("backfillContextUsed: failed to init workspace client",
+			"error", err, "workspaceID", workspaceID)
 		return sessions
 	}
 	crd, err := wsClient.Get(ctx, workspaceID, metav1.GetOptions{})
 	if err != nil {
+		s.logger.Warn("backfillContextUsed: failed to fetch workspace CRD",
+			"error", err, "workspaceID", workspaceID)
 		return sessions
 	}
 
@@ -1803,11 +1807,9 @@ func (s *Service) backfillContextUsed(ctx context.Context, workspaceID string, s
 			if v, ok := ctxBySession[sessions[i].ID]; ok {
 				val := v
 				sessions[i].ContextUsed = &val
-				if s.sessionIndex != nil {
-					if uErr := s.sessionIndex.UpsertContextUsed(ctx, workspaceID, sessions[i].ID, v); uErr != nil {
-						s.logger.Warn("backfillContextUsed: failed to persist backfilled value",
-							"error", uErr, "workspaceID", workspaceID, "sessionID", sessions[i].ID)
-					}
+				if uErr := s.sessionIndex.UpsertContextUsed(ctx, workspaceID, sessions[i].ID, v); uErr != nil {
+					s.logger.Warn("backfillContextUsed: failed to persist backfilled value",
+						"error", uErr, "workspaceID", workspaceID, "sessionID", sessions[i].ID)
 				}
 			}
 		}
