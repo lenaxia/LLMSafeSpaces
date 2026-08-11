@@ -367,21 +367,16 @@ func (a *Adapter) fileChangeParts(ctx context.Context, files []string) []session
 	return parts
 }
 
-// --- Streaming / Input ---
+// Stream subscribes to the workspace's /event SSE endpoint, translates
+// each event to session.Event, and sends on the returned channel. The
+// channel closes when the context is canceled or the upstream closes
+// the connection. Unknown event types are dropped (not sent on the
+// channel). Errors during translation are also dropped silently — the
+// channel consumer should watch for ctx.Done() for connection-level
+// termination.
 //
-// Stream and ListPending require parsing the SSE event stream from
-// /event (V1 bridged from V2) and translating each event. The
-// existing proxy_events.go has this logic inline; US-65.4 migrates
-// it behind the adapter. For US-65.3's first cut, Stream returns
-// "not implemented" — the full implementation lands when US-65.4
-// does the proxy migration.
-//
-// This is honest scope management: the design doc's "Done when"
-// lists "real opencode session round-trips through the contract" —
-// that needs Send + GetHistory + ListSessions (synchronous paths),
-// which ARE implemented here. Stream is a streaming concern that
-// belongs with the proxy rewrite (US-65.4), not this story.
-
+// Thread-safety: each Stream call opens its own HTTP connection. Safe
+// for concurrent use across workspaces.
 func (a *Adapter) Stream(ctx context.Context, userID, workspaceID, sessionID string) (<-chan session.Event, error) {
 	c, err := a.resolve(ctx, userID, workspaceID)
 	if err != nil {
@@ -426,9 +421,9 @@ func (a *Adapter) Stream(ctx context.Context, userID, workspaceID, sessionID str
 				continue // not a data line
 			}
 
-			evt, err := translateSSEEvent(data)
-			if err != nil {
-				continue // malformed event, skip
+			evt, ok := translateSSEEvent(data)
+			if !ok {
+				continue
 			}
 			select {
 			case ch <- evt:
@@ -448,17 +443,22 @@ func (a *Adapter) Stream(ctx context.Context, userID, workspaceID, sessionID str
 //
 // The type maps to session.EventType; properties carry the payload
 // (sessionID, messageID, parts, status, etc).
-func translateSSEEvent(data []byte) (session.Event, error) {
+func translateSSEEvent(data []byte) (session.Event, bool) {
 	var raw struct {
 		Type       string          `json:"type"`
 		Properties json.RawMessage `json:"properties"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
-		return session.Event{}, fmt.Errorf("parse SSE event: %w", err)
+		return session.Event{}, false
+	}
+
+	translatedType := translateEventType(raw.Type)
+	if translatedType == "" {
+		return session.Event{}, false // unknown event type, drop
 	}
 
 	evt := session.Event{
-		Type:      translateEventType(raw.Type),
+		Type:      translatedType,
 		Timestamp: time.Now().UTC(),
 	}
 
@@ -466,12 +466,16 @@ func translateSSEEvent(data []byte) (session.Event, error) {
 	var props struct {
 		SessionID string          `json:"sessionID"`
 		MessageID string          `json:"messageID"`
-		Status    json.RawMessage `json:"status"`
+		PartID    string          `json:"partID"`
 		Text      string          `json:"text"`
+		Status    json.RawMessage `json:"status"`
+		Error     json.RawMessage `json:"error"`
 	}
 	_ = json.Unmarshal(raw.Properties, &props)
 	evt.SessionID = props.SessionID
 	evt.MessageID = props.MessageID
+	evt.PartID = props.PartID
+	evt.Delta = props.Text
 
 	// session.status: extract status.type.
 	if len(props.Status) > 0 {
@@ -480,6 +484,22 @@ func translateSSEEvent(data []byte) (session.Event, error) {
 		}
 		if json.Unmarshal(props.Status, &st) == nil {
 			evt.Status = translateStatus(st.Type)
+		}
+	}
+
+	// session.error: error can be a string or an object.
+	if len(props.Error) > 0 {
+		// Try string first (observed in stream_events_test.go).
+		var errStr string
+		if json.Unmarshal(props.Error, &errStr) == nil {
+			evt.Error = &session.Error{Message: errStr}
+		} else {
+			var errObj struct {
+				Message string `json:"message"`
+			}
+			if json.Unmarshal(props.Error, &errObj) == nil {
+				evt.Error = &session.Error{Message: errObj.Message}
+			}
 		}
 	}
 
@@ -519,19 +539,7 @@ func translateSSEEvent(data []byte) (session.Event, error) {
 		}
 	}
 
-	// Error events.
-	if raw.Type == "session.error" {
-		var errInfo struct {
-			Error struct {
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if json.Unmarshal(raw.Properties, &errInfo) == nil {
-			evt.Error = &session.Error{Message: errInfo.Error.Message}
-		}
-	}
-
-	return evt, nil
+	return evt, true
 }
 
 // translateEventType maps opencode SSE event types to session.Event
