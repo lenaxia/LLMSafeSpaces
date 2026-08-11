@@ -228,6 +228,10 @@ func (h *AgentReloadHandler) Reload(c *gin.Context) {
 			respondWithAPIError(c, apierrors.NewInternalError("get_opencode_password_failed", err))
 			return
 		}
+		if h.statusCheckerFactory == nil {
+			h.logger.Warn("Drain mode requested but statusCheckerFactory not wired; skipping drain")
+			return
+		}
 		statusChecker := h.statusCheckerFactory(
 			fmt.Sprintf("%s:%d", podIP, agentd.AgentPort),
 			pw,
@@ -513,6 +517,10 @@ func (h *BulkReloadHandler) reloadOne(ctx context.Context, userID, workspaceID s
 		pw, err := h.getPassword.WorkspacePassword(ctx, workspaceID)
 		if err != nil {
 			return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "get_password_failed", "message": err.Error()}}
+		}
+		if h.statusCheckerFactory == nil {
+			h.logger.Warn("Drain mode requested but statusCheckerFactory not wired; skipping drain")
+			return map[string]any{"workspaceId": workspaceID, "skip_reason": "status_checker_factory_not_wired"}
 		}
 		statusChecker := h.statusCheckerFactory(fmt.Sprintf("%s:%d", podIP, agentd.AgentPort), pw)
 		if err := WaitUntilIdle(ctx, workspaceID, h.sseTracker, statusChecker, drainTimeout); err != nil {
