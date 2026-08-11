@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.3] - 2026-08-11
+
+### Fixed
+
+- **Per-session context usage broken after API pod restarts (#739, #741)** —
+  `session_index.context_used` stayed NULL for sessions whose last LLM step
+  completed during an API pod restart. The SSE tracker reconnects but does
+  not replay missed events. `ListWorkspaceSessions` now backfills NULL
+  values from the workspace CRD status (which carries fresh per-session
+  values from agentd) and persists them to the DB (self-healing). Also adds
+  warn logs to `persistContextFromEvent`'s previously-silent no-op paths.
+
+- **Epic 65 adapter cross-cutting regressions (#740, #741)** — every
+  `if h.adapter != nil` handler branch bypassed `proxyToWorkspaceWithErrBody`,
+  skipping workspace-readiness checks, connection limits, session limits,
+  metering, quota enforcement, and activity tracking. Extracted 5
+  cross-cutting helpers (`resolveWorkspaceForAdapter`,
+  `checkAdapterSessionLimit`, `checkAdapterQuota`, `postAdapterSuccess`,
+  `adapterEnsureSSEWatch`) and wired them into SendMessage, SendPromptAsync,
+  GetHistory, GetSession, ListSessions, and CreateSession.
+
+- **ParseSessionWire/ParseSessionListWire deterministic 502 on opencode
+  1.18.10 (Finding O, #741)** — `ocSession.Summary` was typed as `string`
+  but 1.18.10 returns an object; `ocSession.Cost` was `*ocCost` but 1.18.10
+  returns a bare number; `ocTime` used `startedAt`/`completedAt` but 1.18.10
+  uses `created`/`updated` (epoch ms). All three fixed with `json.RawMessage`
+  and custom unmarshalers. Added `ocTokens` struct to extract session-level
+  token data.
+
+- **Read-path adapter error paths swallowed errors with no logging (Finding
+  N, #741)** — CreateSession, ListSessions, GetSession now log via
+  `h.logger.Error` before returning 502, matching the existing GetHistory
+  pattern.
+
+- **opencode 1.18.10 wire-shape drift: providerID, Agent, Status (#743,
+  #748)** — (1) `ocModelRef.Provider` used JSON key `"provider"` but 1.18.10
+  sends `"providerID"` — provider silently dropped for every session.
+  Fixed with custom `UnmarshalJSON` accepting both keys. (2) `ocSession`
+  had no `Agent` field — `session.AgentID` always empty. Added field +
+  mapping. (3) `ocSession.Status` was a required value type — latent 502
+  if opencode sends status as a bare string. Changed to `json.RawMessage`
+  with polymorphic decoder.
+
+- **V2 session-queue bridge: spurious wake + TTL leak + nil-guard (#744,
+  #748)** — (1) `wakeStrandedV2Sessions` had no busy-session guard,
+  creating concurrent turns on SSE reconnect. Now skips non-idle sessions.
+  (2) In-memory `v2PendingSessions` had no TTL — lost events left entries
+  forever. Added `lastAdded` timestamp + prune-on-read matching Redis's
+  10-min TTL. (3) Legacy `enqueueV2` path lacked nil-guard on `v2Pending`.
+
+- **Epoch-millis timestamp parsing in translator (#735)** — message
+  timestamps from opencode were parsed incorrectly, causing incorrect
+  message ordering in the frontend.
+
+- **Dec 31 timestamps — `CreatedAt` JSON tag missing omitempty (#736)** —
+  `session.Message.CreatedAt` serialized as `"0001-01-01T00:00:00Z"` when
+  unset, causing frontend to show epoch-zero timestamps.
+
+- **Nightly e2e: RBAC scope + Workspace CRD schema + session routes (#742)** —
+  fixed e2e test infrastructure for controller RBAC, CRD schema validation,
+  and session route mapping.
+
 ## [0.14.2] - 2026-08-11
 
 ### Changed
