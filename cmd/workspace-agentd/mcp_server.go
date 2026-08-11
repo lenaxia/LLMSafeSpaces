@@ -170,7 +170,10 @@ func mcpSessionList(ctx context.Context, password string) (string, error) {
 		return "", fmt.Errorf("failed to list sessions: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("opencode returned status %d for session list", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	return string(body), nil
 }
 
@@ -183,7 +186,10 @@ func mcpSessionRead(ctx context.Context, password, sessionID string, limit int) 
 		return "", fmt.Errorf("failed to read session: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("opencode returned status %d for session read", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	return string(body), nil
 }
 

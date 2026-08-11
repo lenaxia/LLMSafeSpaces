@@ -61,7 +61,11 @@ func (s *Service) RecordMessage(workspaceID, sessionID, title string, at time.Ti
 	select {
 	case s.queue <- recordEvent{workspaceID: workspaceID, sessionID: sessionID, title: title, at: at}:
 	default:
-		// Channel full — drop oldest by reading one and pushing new
+		if s.logger != nil {
+			s.logger.Warn("session_index: channel full, dropping oldest event",
+				"workspaceID", workspaceID, "sessionID", sessionID,
+				"queueSize", len(s.queue))
+		}
 		select {
 		case <-s.queue:
 		default:

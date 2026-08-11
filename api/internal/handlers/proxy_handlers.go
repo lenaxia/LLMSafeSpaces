@@ -215,24 +215,33 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 		}
 		h.adapterEnsureSSEWatch(wid)
 
-		msgID, err := h.adapter.SendAsync(c.Request.Context(), "", wid, sid, text, session.SendOpts{Admission: session.AdmissionQueue})
+		// Use synchronous Send (V1 POST /session/:id/message) instead
+		// of V2 queue (POST /api/session/:id/prompt delivery:queue).
+		// The V2 queue is admitted but never drained on opencode 1.18.10
+		// — the SSE event taxonomy that the bridge depends on has
+		// drifted (see #755, #739). The synchronous path works correctly
+		// on all versions. The frontend receives the assistant response
+		// via SSE events regardless of which send path is used.
+		msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{})
 		if err != nil {
 			if sid != "" {
 				h.removeActiveSession(c.Request.Context(), wid, sid)
 			}
-			h.logger.Error("V2 enqueue: adapter SendAsync failed", err, "workspaceID", wid, "sessionID", sid)
-			if strings.Contains(err.Error(), "not found") {
-				c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
-				return
+			errBody := []byte(`{"error":"failed to send message"}`)
+			if h.agentStateChecker != nil {
+				changedAt, checkerErr := h.agentStateChecker.GetLastCredentialChangedAt(c.Request.Context(), wid)
+				if checkerErr == nil && !changedAt.IsZero() {
+					errBody = EnrichChatErrorBody(errBody, true, changedAt, wid)
+				}
 			}
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enqueue message"})
+			c.Data(http.StatusBadGateway, "application/json", errBody)
 			return
 		}
 		h.postAdapterSuccess(c, workspace, wid, sid, true)
-		if h.v2Pending != nil {
-			h.v2Pending.add(wid, sid)
+		if h.sessionIndex != nil {
+			go h.fetchAndPersistTitle(wid, sid)
 		}
-		c.JSON(http.StatusAccepted, gin.H{"messageID": msgID})
+		c.JSON(http.StatusOK, msg)
 		return
 	}
 

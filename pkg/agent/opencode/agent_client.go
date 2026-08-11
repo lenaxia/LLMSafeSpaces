@@ -70,7 +70,11 @@ func WithWorkspaceHTTPClient(hc *http.Client) WorkspaceClientOption {
 // connections warm simultaneously.
 func newTunedHTTPClient() *http.Client {
 	return &http.Client{
-		Timeout: 10 * time.Second,
+		// No hard client-level timeout — the caller's context deadline
+		// is the correct per-request boundary. A fixed client.Timeout
+		// covers the entire exchange including body read, which breaks
+		// sync Send (blocks on LLM completion, typically 10-120s) and
+		// GetHistory on large sessions (#746).
 		Transport: &http.Transport{
 			MaxIdleConns:        500,
 			MaxIdleConnsPerHost: 10,

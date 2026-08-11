@@ -218,15 +218,15 @@ func TestAdapterPath_SendPromptAsync_QuotaExceeded_Returns429(t *testing.T) {
 	assert.Equal(t, http.StatusTooManyRequests, w.Code)
 }
 
-func TestAdapterPath_SendPromptAsync_HappyPath_Returns202(t *testing.T) {
+func TestAdapterPath_SendPromptAsync_HappyPath_Returns200(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	env, ms := setupAdapterSendMessageEnv(t, "ws-async-happy", 5)
 
-	asyncCalled := int32(0)
+	sendCalled := int32(0)
 	env.handler.adapter = &mockAdapter{
-		sendAsyncFn: func(context.Context, string, string, string, string, session.SendOpts) (string, error) {
-			atomic.StoreInt32(&asyncCalled, 1)
-			return "msg_123", nil
+		sendFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (*session.Message, error) {
+			atomic.StoreInt32(&sendCalled, 1)
+			return &session.Message{ID: "msg_123", Type: session.MessageAssistant}, nil
 		},
 	}
 
@@ -245,8 +245,8 @@ func TestAdapterPath_SendPromptAsync_HappyPath_Returns202(t *testing.T) {
 
 	env.handler.SendPromptAsync(c)
 
-	assert.Equal(t, http.StatusAccepted, w.Code)
-	assert.Equal(t, int32(1), atomic.LoadInt32(&asyncCalled), "adapter.SendAsync must be called")
+	assert.Equal(t, http.StatusOK, w.Code, "SendPromptAsync now uses synchronous Send (#755)")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&sendCalled), "adapter.Send must be called")
 	ms.AssertCalled(t, "Record", mock.Anything)
 }
 
@@ -255,8 +255,8 @@ func TestAdapterPath_SendPromptAsync_AdapterError_CleansActiveSession(t *testing
 	env, ms := setupAdapterSendMessageEnv(t, "ws-async-err", 5)
 
 	env.handler.adapter = &mockAdapter{
-		sendAsyncFn: func(context.Context, string, string, string, string, session.SendOpts) (string, error) {
-			return "", errors.New("upstream not found")
+		sendFn: func(context.Context, string, string, string, string, session.SendOpts) (*session.Message, error) {
+			return nil, errors.New("upstream not found")
 		},
 	}
 
@@ -277,8 +277,8 @@ func TestAdapterPath_SendPromptAsync_AdapterError_CleansActiveSession(t *testing
 
 	env.handler.SendPromptAsync(c)
 
-	assert.True(t, w.Code == http.StatusNotFound || w.Code == http.StatusInternalServerError,
-		"adapter error must produce a non-2xx response, got %d", w.Code)
+	assert.Equal(t, http.StatusBadGateway, w.Code,
+		"adapter Send error must produce 502")
 
 	stillActive := env.handler.isSessionActive(context.Background(), "ws-async-err", "ses_cleanup")
 	assert.False(t, stillActive, "removeActiveSession must have been called on adapter error")

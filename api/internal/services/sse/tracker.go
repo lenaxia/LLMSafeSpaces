@@ -167,6 +167,25 @@ func (t *Tracker) StopWatching(workspaceID string) {
 		cancel()
 		delete(t.subscriptions, workspaceID)
 	}
+
+	t.tokensMu.Lock()
+	defer t.tokensMu.Unlock()
+	prefix := workspaceID + ":"
+	for k := range t.sessionTokenSeen {
+		if strings.HasPrefix(k, prefix) {
+			delete(t.sessionTokenSeen, k)
+		}
+	}
+	for k := range t.sessionCostSeen {
+		if strings.HasPrefix(k, prefix) {
+			delete(t.sessionCostSeen, k)
+		}
+	}
+	for k := range t.sessionStartTime {
+		if strings.HasPrefix(k, prefix) {
+			delete(t.sessionStartTime, k)
+		}
+	}
 }
 
 func (t *Tracker) Stop() {
@@ -436,17 +455,36 @@ func (t *Tracker) handleSessionUpdated(workspaceID string, props []byte) {
 			Model struct {
 				ID         string `json:"id"`
 				ProviderID string `json:"providerID"`
+				Provider   string `json:"provider"`
 			} `json:"model"`
 			Tokens struct {
 				Input  int64 `json:"input"`
 				Output int64 `json:"output"`
 			} `json:"tokens"`
-			Cost float64 `json:"cost"`
+			Cost json.RawMessage `json:"cost"`
 		} `json:"info"`
 	}
-	if json.Unmarshal(props, &p) != nil || p.Info.ID == "" || p.Info.Tokens.Output == 0 || p.Info.Model.ID == "" {
+	if err := json.Unmarshal(props, &p); err != nil {
+		t.Logger.Debug("handleSessionUpdated: failed to parse event", "error", err)
 		return
 	}
+	if p.Info.ID == "" || p.Info.Tokens.Output == 0 || p.Info.Model.ID == "" {
+		return
+	}
+
+	providerID := p.Info.Model.ProviderID
+	if providerID == "" {
+		providerID = p.Info.Model.Provider
+	}
+
+	costVal := 0.0
+	if len(p.Info.Cost) > 0 {
+		var costFloat float64
+		if json.Unmarshal(p.Info.Cost, &costFloat) == nil {
+			costVal = costFloat
+		}
+	}
+
 	key := workspaceID + ":" + p.Info.ID
 	t.tokensMu.Lock()
 	prevOutput := t.sessionTokenSeen[key]
@@ -456,7 +494,7 @@ func (t *Tracker) handleSessionUpdated(workspaceID string, props []byte) {
 	}
 	prevCost := t.sessionCostSeen[key]
 	t.sessionTokenSeen[key] = p.Info.Tokens.Output
-	t.sessionCostSeen[key] = p.Info.Cost
+	t.sessionCostSeen[key] = costVal
 	t.tokensMu.Unlock()
 
 	outputDelta := p.Info.Tokens.Output - prevOutput
@@ -464,9 +502,9 @@ func (t *Tracker) handleSessionUpdated(workspaceID string, props []byte) {
 	if prevOutput > 0 {
 		inputTokens = 0
 	}
-	costDelta := p.Info.Cost - prevCost
+	costDelta := costVal - prevCost
 	if costDelta < 0 {
 		costDelta = 0
 	}
-	t.onInference(workspaceID, p.Info.Model.ID, p.Info.Model.ProviderID, inputTokens, outputDelta, costDelta)
+	t.onInference(workspaceID, p.Info.Model.ID, providerID, inputTokens, outputDelta, costDelta)
 }

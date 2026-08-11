@@ -805,11 +805,14 @@ func (a *Adapter) Capabilities() []session.Capability {
 	// emission, and diff (via filediff when wired). Steer is supported
 	// by the V2 API but not yet exposed by the platform; rewind/fork/
 	// stash are not implemented upstream.
-	return []session.Capability{
+	caps := []session.Capability{
 		session.CapQueue,
 		session.CapReasoning,
-		session.CapDiff,
 	}
+	if a.differ != nil {
+		caps = append(caps, session.CapDiff)
+	}
+	return caps
 }
 
 // --- Credentials (folded from AgentRuntime) ---
