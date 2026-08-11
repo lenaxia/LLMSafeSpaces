@@ -82,7 +82,14 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 		}
 		msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{})
 		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to send message"})
+			errBody := []byte(`{"error":"failed to send message"}`)
+			if h.agentStateChecker != nil {
+				changedAt, checkerErr := h.agentStateChecker.GetLastCredentialChangedAt(c.Request.Context(), wid)
+				if checkerErr == nil && !changedAt.IsZero() {
+					errBody = EnrichChatErrorBody(errBody, true, changedAt, wid)
+				}
+			}
+			c.Data(http.StatusBadGateway, "application/json", errBody)
 			return
 		}
 		c.JSON(http.StatusOK, msg)
