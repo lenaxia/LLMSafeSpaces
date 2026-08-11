@@ -4,11 +4,14 @@
 package opencode
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 
@@ -364,23 +367,222 @@ func (a *Adapter) fileChangeParts(ctx context.Context, files []string) []session
 	return parts
 }
 
-// --- Streaming / Input ---
+// Stream subscribes to the workspace's /event SSE endpoint, translates
+// each event to session.Event, and sends on the returned channel. The
+// channel closes when the context is canceled or the upstream closes
+// the connection. Unknown event types are dropped (not sent on the
+// channel). Scanner errors (connection breakage) are emitted as
+// session.EventError events before the channel closes.
 //
-// Stream and ListPending require parsing the SSE event stream from
-// /event (V1 bridged from V2) and translating each event. The
-// existing proxy_events.go has this logic inline; US-65.4 migrates
-// it behind the adapter. For US-65.3's first cut, Stream returns
-// "not implemented" — the full implementation lands when US-65.4
-// does the proxy migration.
-//
-// This is honest scope management: the design doc's "Done when"
-// lists "real opencode session round-trips through the contract" —
-// that needs Send + GetHistory + ListSessions (synchronous paths),
-// which ARE implemented here. Stream is a streaming concern that
-// belongs with the proxy rewrite (US-65.4), not this story.
-
+// Thread-safety: each Stream call opens its own HTTP connection. Safe
+// for concurrent use across workspaces.
 func (a *Adapter) Stream(ctx context.Context, userID, workspaceID, sessionID string) (<-chan session.Event, error) {
-	return nil, fmt.Errorf("opencode Adapter.Stream: not implemented — lands in US-65.4 (proxy migration) with the SSE bridge")
+	c, err := a.resolve(ctx, userID, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Open SSE connection to /event.
+	url := fmt.Sprintf("%s/event", c.baseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build /event request: %w", err)
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	req.SetBasicAuth(agentd.AuthUsername, c.password)
+
+	resp, err := c.httpClient.Do(req) //nolint:bodyclose // Body is closed by the goroutine via defer; closing here would break the stream
+	if err != nil {
+		return nil, fmt.Errorf("connect to /event: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close() //nolint:errcheck,bodyclose // error path, best-effort close
+		return nil, fmt.Errorf("/event returned %d", resp.StatusCode)
+	}
+
+	ch := make(chan session.Event, 32)
+	go func() {
+		defer resp.Body.Close() //nolint:errcheck
+		defer close(ch)
+
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			if ctx.Err() != nil {
+				return
+			}
+			line := scanner.Bytes()
+			if len(line) == 0 || line[0] != 'd' {
+				continue // skip non-data lines (event:, id:, blank)
+			}
+			data := bytes.TrimPrefix(line, []byte("data: "))
+			if len(data) == len(line) {
+				continue // not a data line
+			}
+
+			evt, ok := translateSSEEvent(data)
+			if !ok {
+				continue
+			}
+			select {
+			case ch <- evt:
+			case <-ctx.Done():
+				return
+			}
+		}
+		if err := scanner.Err(); err != nil && ctx.Err() == nil {
+			select {
+			case ch <- session.Event{Type: session.EventError, Error: &session.Error{Message: err.Error()}}:
+			case <-ctx.Done():
+			}
+		}
+	}()
+
+	return ch, nil
+}
+
+// translateSSEEvent converts one opencode SSE event payload (the JSON
+// after "data: ") to a session.Event. The wire shape is:
+//
+//	{"id":"...","type":"<event-type>","properties":{...}}
+//
+// The type maps to session.EventType; properties carry the payload
+// (sessionID, messageID, parts, status, etc).
+func translateSSEEvent(data []byte) (session.Event, bool) {
+	var raw struct {
+		Type       string          `json:"type"`
+		Properties json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return session.Event{}, false
+	}
+
+	translatedType := translateEventType(raw.Type)
+	if translatedType == "" {
+		return session.Event{}, false // unknown event type, drop
+	}
+
+	evt := session.Event{
+		Type:      translatedType,
+		Timestamp: time.Now().UTC(),
+	}
+
+	// Extract common fields from properties.
+	var props struct {
+		SessionID string          `json:"sessionID"`
+		MessageID string          `json:"messageID"`
+		PartID    string          `json:"partID"`
+		Text      string          `json:"text"`
+		Status    json.RawMessage `json:"status"`
+		Error     json.RawMessage `json:"error"`
+	}
+	_ = json.Unmarshal(raw.Properties, &props)
+	evt.SessionID = props.SessionID
+	evt.MessageID = props.MessageID
+	evt.PartID = props.PartID
+	evt.Delta = props.Text
+
+	// session.status: extract status.type.
+	if len(props.Status) > 0 {
+		var st struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(props.Status, &st) == nil {
+			evt.Status = translateStatus(st.Type)
+		}
+	}
+
+	// session.error: error can be a string or an object.
+	if len(props.Error) > 0 {
+		// Try string first (observed in stream_events_test.go).
+		var errStr string
+		if json.Unmarshal(props.Error, &errStr) == nil {
+			evt.Error = &session.Error{Message: errStr}
+		} else {
+			var errObj struct {
+				Message string `json:"message"`
+			}
+			if json.Unmarshal(props.Error, &errObj) == nil {
+				evt.Error = &session.Error{Message: errObj.Message}
+			}
+		}
+	}
+
+	// Parse input events via Dialect.
+	d := &Dialect{}
+	if d.IsQuestionAsked(raw.Type) {
+		req, err := d.ParseQuestionRequest(raw.Type, raw.Properties)
+		if err == nil && req != nil {
+			evt.Input = &session.InputRequest{
+				ID:        req.ID,
+				SessionID: req.SessionID,
+				Kind:      session.InputQuestion,
+			}
+			if len(req.Questions) > 0 {
+				evt.Input.Question = req.Questions[0].Question
+				evt.Input.Header = req.Questions[0].Header
+				evt.Input.Multiple = req.Questions[0].Multiple
+				evt.Input.Custom = req.Questions[0].Custom
+				for _, o := range req.Questions[0].Options {
+					evt.Input.Options = append(evt.Input.Options, session.InputOption{
+						Label: o.Label, Description: o.Description,
+					})
+				}
+			}
+		}
+	} else if d.IsPermissionAsked(raw.Type) {
+		req, err := d.ParsePermissionRequest(raw.Type, raw.Properties)
+		if err == nil && req != nil {
+			evt.Input = &session.InputRequest{
+				ID:         req.ID,
+				SessionID:  req.SessionID,
+				Kind:       session.InputPermission,
+				Permission: req.Permission,
+				Patterns:   req.Patterns,
+				Always:     req.Always,
+			}
+		}
+	}
+
+	return evt, true
+}
+
+// translateEventType maps opencode SSE event types to session.Event
+// types. Unknown types map to the empty string (the event is dropped
+// by the caller).
+func translateEventType(t string) session.EventType {
+	switch t {
+	case "session.status":
+		return session.EventSessionStatus
+	case "session.updated":
+		return session.EventSessionUpdated
+	case "message.part.delta":
+		return session.EventPartDelta
+	case "session.next.prompt.admitted":
+		return session.EventMessageStart // admission = message lifecycle start
+	case "session.next.prompted":
+		return session.EventSessionStatus // promotion triggers a status check
+	case "step.started":
+		return session.EventPartStart
+	case "step.ended":
+		return session.EventPartEnd
+	case "text.started":
+		return session.EventPartStart
+	case "text.ended":
+		return session.EventPartEnd
+	case "question.asked":
+		return session.EventInputRequest
+	case "question.replied", "question.rejected":
+		return session.EventInputResolved
+	case "permission.asked":
+		return session.EventInputRequest
+	case "permission.replied":
+		return session.EventInputResolved
+	case "session.error":
+		return session.EventError
+	default:
+		return ""
+	}
 }
 
 func (a *Adapter) ListPending(ctx context.Context, userID, workspaceID, sessionID string) ([]session.InputRequest, error) {

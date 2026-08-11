@@ -88,8 +88,9 @@ type Adapter interface {
 	// Stream subscribes to the session's event stream, translating
 	// agent-specific events to session.Event values. The channel
 	// closes when the context is canceled or the agent ends the
-	// stream. Errors during translation are emitted as session.EventError
-	// events, not returned across the channel as Go errors.
+	// stream. Unknown/malformed events are dropped silently.
+	// Connection-level errors (scanner failure) are emitted as
+	// session.EventError events before the channel closes.
 	Stream(ctx context.Context, userID, workspaceID, sessionID string) (<-chan session.Event, error)
 
 	// ListPending returns the currently-blocking InputRequests on a
