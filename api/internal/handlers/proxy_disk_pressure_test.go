@@ -372,7 +372,14 @@ func captureBackend(captured *[]byte) http.HandlerFunc {
 		*captured = body
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(opencodeMessageBody))
+		w.Write([]byte(`{
+  "info": {"role":"assistant","id":"msg_1","sessionID":"ses_1"},
+  "parts": [
+    {"type":"step-start","id":"p1","sessionID":"ses_1","messageID":"msg_1"},
+    {"type":"text","text":"Hello!","id":"p2","sessionID":"ses_1","messageID":"msg_1"},
+    {"type":"step-finish","id":"p3","sessionID":"ses_1","messageID":"msg_1"}
+  ]
+}`))
 	}
 }
 
