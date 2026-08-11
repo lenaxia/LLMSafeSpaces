@@ -7,6 +7,79 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-08-11
+
+### Fixed
+
+- **Session history 502 on opencode 1.18.10 — flat-string tool shape (#730,
+  #731)** — the 0.14.0 GetHistory typed parser declared `ocPart.tool` as a
+  JSON object (`*ocTool`) but opencode 1.18.10 emits `"tool"` as a bare
+  string (the tool name) with `callID`/`state`/`input`/`output` hoisted to
+  the part level. Every `GET /api/v1/workspaces/{wid}/sessions/{sid}/message`
+  returned **502 Bad Gateway** for any session containing a tool call —
+  effectively every session in every workspace within minutes of creation
+  (Sev1 outage, ~24 min, mitigated by rolling the API back to 0.13.1).
+
+  **Root cause:** silent opencode wire-shape assumption drift (README §7).
+  The parser was "validated from opencode 1.15.12 binary"; production pods
+  run **1.18.10**. The Epic 65 translator tests built `ocPart` values with
+  the legacy nested-object shape, so every test passed while production
+  502'd. Same failure class as #707 and #486.
+
+  **Fix 1 (parser):** a custom `UnmarshalJSON` on `ocPart` normalizes both
+  wire shapes — flat-string (1.18.10+: `tool:"bash"` + part-level
+  `callID`/`state.time.{start,end}`) and legacy nested (≤1.15.x) — into the
+  canonical `ocTool`. The `session.ToolPart` contract is unchanged.
+
+  **Fix 2 (resilience, README §12 containment):** `ParseHistoryWire` now
+  decodes in two stages — `[]json.RawMessage` first (only fails on non-array
+  bodies), then per-message. A future opencode schema change in one part
+  degrades that single message to a `session.MessageSystem` notice instead
+  of 502-ing the whole history. Operators get a signal via the adapter WARN
+  log (`downgraded` count + session/workspace context).
+
+  **Regression tests (TDD, golden fixtures as schema pins):**
+  `testdata/history_1_18_10_flat_tool.json` (verbatim captured payload) and
+  `testdata/history_1_15_12_nested_tool.json` guard both shapes. Six tests
+  cover the verbatim shape, legacy non-regression, mixed shapes in one
+  history, one-malformed-part no longer killing the page, totally-garbage
+  still erroring, and all 9 tool names observed in production. Plus adapter
+  integration and two handler e2e tests.
+
+- **WorkspaceImagesTab re-fetch loop (#731)** — `load` had `baseName` in
+  its `useCallback` deps but `load` itself sets `baseName` on first run,
+  creating a re-fetch loop (`load → setBaseName → load recreated → useEffect
+  → load → setLoading(true)`). The component flickered back to the spinner
+  after initial load, racing the scope-routing test. Fixed with a `useRef`
+  guard so `load` has a stable identity and `useEffect` fires once.
+
+- **Playwright e2e mock shape drift (#731)** — after Epic 65 the GetHistory
+  endpoint returns the contract shape (`type`/`createdAt`/`parts`), not
+  opencode's raw shape (`info.role`/`time.created`). The e2e mock helpers
+  in `composer.spec.ts` and `session-activity.spec.ts` were never updated,
+  so `transformHistory` filtered out every message and 7 Playwright tests
+  failed on main. Updated mocks to emit contract shape.
+
+- **TypeScript SDK — `baseUrl` visibility (TS2341, #731)** —
+  `WorkspacesAPI.devPreviewUrl()` accesses `this.client.baseUrl`, but
+  `baseUrl` was declared `private`. The SDK Contract Tests CI job was
+  masked by the failing frontend-test dependency; fixing the frontend
+  unblocked it and exposed the bug. Changed to `readonly` (package-visible).
+
+- **SDK canary `expectedSchemaVersion` drift (8/4 → 10, #731)** —
+  `pkg/settings/schema.go` bumped `SchemaVersion` to 10 but the Go/TS/Python
+  SDK canary tests expected 8/4 respectively. The schema-version assertion is
+  a SCHEMA DRIFT DETECTOR by design — it caught the gap. Aligned all three
+  SDK canaries with the current version.
+
+- **SDK canary login rate-limit exhaustion (#731)** — the `/auth/login`
+  endpoint has a per-route rate limit of 10/min (burst 10). Each SDK canary
+  suite calls `jwtLogin` per scenario, exhausting the bucket and causing
+  spurious 429 failures in cred-crud and other login-bearing scenarios. The
+  Go section already had a `sleep 65` before S-RATE-LIMIT; added matching
+  waits before the Python and TypeScript sections and a mid-Go wait before
+  S-CRED-CRUD.
+
 ## [0.14.0] - 2026-08-11
 
 ### Added
@@ -1449,7 +1522,8 @@ Network hardening sweep + KMS-backed master KEK foundation + Go security bump.
 
 ## [0.1.0] - 2026-07-04
 
-[Unreleased]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.14.1...HEAD
+[0.14.1]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.14.0...v0.14.1
 [0.5.1]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.5...v0.5.0
 [0.4.5]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.4...v0.4.5
