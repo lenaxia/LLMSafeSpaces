@@ -137,45 +137,47 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 	}
 	wid := c.Param("id")
 
-	const maxPromptBodyBytes = 100_000 + 1024
-	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPromptBodyBytes)
-	bodyBytes, err := io.ReadAll(c.Request.Body)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read request body"})
-		return
-	}
-	_ = c.Request.Body.Close()
-	text, perr := extractPromptText(bodyBytes)
-	if perr != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": perr.Error()})
-		return
-	}
-	if len(text) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "text must not be empty"})
-		return
-	}
-	if len(text) > 100_000 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "text exceeds 100KB limit"})
-		return
-	}
-
-	// Adapter path (US-65.4): SendAsync uses V2 prompt with delivery:queue
-	// internally. No direct opencode import.
-	if h.adapter != nil && h.v2SessionQueueEnabled {
-		msgID, err := h.adapter.SendAsync(c.Request.Context(), "", wid, sid, text, session.SendOpts{Admission: session.AdmissionQueue})
+	// Adapter + V2 paths read the body early (they need the text to
+	// call SendAsync/PromptV2). The legacy V1 path reads the body itself
+	// via proxyToWorkspace, so we must NOT consume it here when V2 is off.
+	if h.v2SessionQueueEnabled {
+		const maxPromptBodyBytes = 100_000 + 1024
+		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPromptBodyBytes)
+		bodyBytes, err := io.ReadAll(c.Request.Body)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enqueue message"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read request body"})
 			return
 		}
-		if h.v2Pending != nil {
-			h.v2Pending.add(wid, sid)
+		_ = c.Request.Body.Close()
+		text, perr := extractPromptText(bodyBytes)
+		if perr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": perr.Error()})
+			return
 		}
-		c.JSON(http.StatusAccepted, gin.H{"messageID": msgID})
-		return
-	}
+		if len(text) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "text must not be empty"})
+			return
+		}
+		if len(text) > 100_000 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "text exceeds 100KB limit"})
+			return
+		}
 
-	// Legacy V2 path: direct opencode client import (Epic 63).
-	if h.v2SessionQueueEnabled {
+		// Adapter path (US-65.4): SendAsync uses V2 prompt internally.
+		if h.adapter != nil {
+			msgID, err := h.adapter.SendAsync(c.Request.Context(), "", wid, sid, text, session.SendOpts{Admission: session.AdmissionQueue})
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enqueue message"})
+				return
+			}
+			if h.v2Pending != nil {
+				h.v2Pending.add(wid, sid)
+			}
+			c.JSON(http.StatusAccepted, gin.H{"messageID": msgID})
+			return
+		}
+
+		// Legacy V2 path.
 		if h.enqueueV2(c, wid, sid, text) {
 			return
 		}
