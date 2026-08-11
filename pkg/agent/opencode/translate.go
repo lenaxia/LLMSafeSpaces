@@ -39,10 +39,13 @@ import (
 // POST /session/:id/message). Info carries role + IDs; Parts is the
 // ordered content list.
 type ocMessage struct {
-	Info  ocInfo         `json:"info"`
-	Parts []ocPart       `json:"parts"`
-	Model *ocModelRef    `json:"model,omitempty"`
-	Cost  *ocCost        `json:"cost,omitempty"`
+	Info  ocInfo      `json:"info"`
+	Parts []ocPart    `json:"parts"`
+	Model *ocModelRef `json:"model,omitempty"`
+	Cost  *ocCost     `json:"cost,omitempty"`
+	// ocTime is retained for session-level Time fields that use the
+	// {startedAt, completedAt} shape. Message timestamps are parsed
+	// from ocInfo.Time.Created (epoch millis).
 	Time  *ocTime        `json:"time,omitempty"`
 	Error *session.Error `json:"error,omitempty"`
 }
@@ -98,14 +101,8 @@ type ocCost struct {
 }
 
 type ocTime struct {
-	// opencode sends epoch milliseconds under the key "created" (not
-	// "startedAt"). The translator converts to time.Time so the contract
-	// carries ISO 8601 strings.
-	Created     int64      `json:"created"`
+	StartedAt   time.Time  `json:"startedAt"`
 	CompletedAt *time.Time `json:"completedAt,omitempty"`
-
-	// StartedAt is parsed from Created for internal use; not on the wire.
-	StartedAt time.Time `json:"-"`
 }
 
 // ocPart is one entry in opencode's parts array. Type discriminates.

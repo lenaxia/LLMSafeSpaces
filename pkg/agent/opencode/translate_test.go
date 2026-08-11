@@ -243,18 +243,25 @@ func TestTranslateMessage_ErrorPropagated(t *testing.T) {
 }
 
 func TestTranslateMessage_CostAndTime(t *testing.T) {
-	started := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
-	startedMillis := started.UnixMilli()
-	m := ocMessage{
-		Info: ocInfo{
-			Role: "assistant",
-			ID:   "msg_t",
-			Time: &ocInfoTime{Created: startedMillis},
+	// Regression test: timestamp must be parsed from info.time.created
+	// (epoch millis) — NOT from a top-level time field. Pre-fix the
+	// translator read from the wrong JSON hierarchy, producing zero
+	// timestamps that broke frontend message ordering.
+	raw := []byte(`{
+		"info": {
+			"role": "assistant",
+			"id": "msg_t",
+			"time": {"created": 1723291200000}
 		},
-		Cost: &ocCost{InputTokens: 100, OutputTokens: 50, CostUSD: 0.001},
-	}
+		"cost": {"input": 100, "output": 50, "cost": 0.001}
+	}`)
+	var m ocMessage
+	require.NoError(t, json.Unmarshal(raw, &m))
 	sm, _ := translateMessage(m)
-	assert.Equal(t, started, sm.CreatedAt)
+
+	expected := time.UnixMilli(1723291200000).UTC()
+	assert.Equal(t, expected, sm.CreatedAt,
+		"createdAt must be parsed from info.time.created epoch millis")
 	require.NotNil(t, sm.Cost)
 	assert.Equal(t, int64(100), sm.Cost.InputTokens)
 	assert.Equal(t, 0.001, sm.Cost.CostUSD)
