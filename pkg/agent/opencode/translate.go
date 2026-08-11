@@ -86,8 +86,14 @@ type ocCost struct {
 }
 
 type ocTime struct {
-	StartedAt   time.Time  `json:"startedAt"`
+	// opencode sends epoch milliseconds under the key "created" (not
+	// "startedAt"). The translator converts to time.Time so the contract
+	// carries ISO 8601 strings.
+	Created     int64      `json:"created"`
 	CompletedAt *time.Time `json:"completedAt,omitempty"`
+
+	// StartedAt is parsed from Created for internal use; not on the wire.
+	StartedAt time.Time `json:"-"`
 }
 
 // ocPart is one entry in opencode's parts array. Type discriminates.
@@ -331,10 +337,9 @@ func translateMessage(m ocMessage) (session.Message, []string) {
 		sm.Cost = translateCost(*m.Cost)
 	}
 	if m.Time != nil {
-		// Use the wire-provided StartedAt if non-zero; otherwise leave
-		// CreatedAt zero (caller may fill from Info).
-		if !m.Time.StartedAt.IsZero() {
-			sm.CreatedAt = m.Time.StartedAt
+		// Convert opencode's epoch-millis "created" field to time.Time.
+		if m.Time.Created > 0 {
+			sm.CreatedAt = time.UnixMilli(m.Time.Created).UTC()
 		}
 	}
 	if m.Error != nil {
