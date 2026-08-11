@@ -371,9 +371,8 @@ func (a *Adapter) fileChangeParts(ctx context.Context, files []string) []session
 // each event to session.Event, and sends on the returned channel. The
 // channel closes when the context is canceled or the upstream closes
 // the connection. Unknown event types are dropped (not sent on the
-// channel). Errors during translation are also dropped silently — the
-// channel consumer should watch for ctx.Done() for connection-level
-// termination.
+// channel). Scanner errors (connection breakage) are emitted as
+// session.EventError events before the channel closes.
 //
 // Thread-safety: each Stream call opens its own HTTP connection. Safe
 // for concurrent use across workspaces.
@@ -429,6 +428,12 @@ func (a *Adapter) Stream(ctx context.Context, userID, workspaceID, sessionID str
 			case ch <- evt:
 			case <-ctx.Done():
 				return
+			}
+		}
+		if err := scanner.Err(); err != nil && ctx.Err() == nil {
+			select {
+			case ch <- session.Event{Type: session.EventError, Error: &session.Error{Message: err.Error()}}:
+			case <-ctx.Done():
 			}
 		}
 	}()
