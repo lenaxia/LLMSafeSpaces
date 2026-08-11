@@ -245,10 +245,12 @@ func TestTranslateMessage_ErrorPropagated(t *testing.T) {
 func TestTranslateMessage_CostAndTime(t *testing.T) {
 	started := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	startedMillis := started.UnixMilli()
-	ended := started.Add(5 * time.Second)
 	m := ocMessage{
-		Info: ocInfo{Role: "assistant", ID: "msg_t"},
-		Time: &ocTime{Created: startedMillis, CompletedAt: &ended},
+		Info: ocInfo{
+			Role: "assistant",
+			ID:   "msg_t",
+			Time: &ocInfoTime{Created: startedMillis},
+		},
 		Cost: &ocCost{InputTokens: 100, OutputTokens: 50, CostUSD: 0.001},
 	}
 	sm, _ := translateMessage(m)

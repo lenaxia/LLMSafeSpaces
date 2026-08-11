@@ -68,6 +68,18 @@ type ocInfo struct {
 	// model_switch:
 	FromModel *ocModelRef `json:"fromModel,omitempty"`
 	ToModel   *ocModelRef `json:"toModel,omitempty"`
+
+	// opencode sends the timestamp at info.time.created as epoch
+	// milliseconds. This is the authoritative creation timestamp used
+	// by the frontend for message ordering.
+	Time *ocInfoTime `json:"time,omitempty"`
+}
+
+// ocInfoTime is the time block nested inside info. opencode sends
+// epoch milliseconds under "created" and optionally "completed".
+type ocInfoTime struct {
+	Created   int64  `json:"created"`
+	Completed *int64 `json:"completed,omitempty"`
 }
 
 type ocModelRef struct {
@@ -336,11 +348,8 @@ func translateMessage(m ocMessage) (session.Message, []string) {
 	if m.Cost != nil {
 		sm.Cost = translateCost(*m.Cost)
 	}
-	if m.Time != nil {
-		// Convert opencode's epoch-millis "created" field to time.Time.
-		if m.Time.Created > 0 {
-			sm.CreatedAt = time.UnixMilli(m.Time.Created).UTC()
-		}
+	if m.Info.Time != nil && m.Info.Time.Created > 0 {
+		sm.CreatedAt = time.UnixMilli(m.Info.Time.Created).UTC()
 	}
 	if m.Error != nil {
 		sm.Error = m.Error
