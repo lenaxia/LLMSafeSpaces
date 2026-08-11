@@ -92,7 +92,7 @@ func CompactionMessage(id, text string, createdAt time.Time) Message {
 }
 
 func SystemMessage(id, text string, createdAt *time.Time) Message {
-	m := newMessage(id, MessageSystem, time.Time{})
+	m := Message{ID: id, Type: MessageSystem}
 	if createdAt != nil {
 		m.CreatedAt = createdAt
 	}

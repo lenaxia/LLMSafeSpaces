@@ -579,14 +579,13 @@ func translateStatus(s string) session.Status {
 // Exported for the package's own test consumers (translate_test.go,
 // adapter_test.go).
 //
-// Resilience (issue #730, README §12 containment): the body is decoded
-// in two stages. Stage 1 splits the top-level JSON array into raw
-// messages — this only fails if the body is not a JSON array at all (a
-// genuine error, surfaced to the caller). Stage 2 decodes each message
-// independently; a message that fails to decode (e.g. a future opencode
-// wire-shape change in one part) is downgraded to a session.MessageSystem
-// notice rather than failing the entire history. This ensures one bad
-// upstream shape never Sev1s the history surface again.
+// Resilience (issues #730, #737): delegates to ParseHistoryStream which
+// uses a streaming json.Decoder — no body-size cap, no buffering of the
+// full array. Each message is decoded independently; a message that
+// fails to decode (e.g. a future opencode wire-shape change in one part)
+// is downgraded to a session.MessageSystem notice rather than failing
+// the entire history. If the body is truncated mid-stream, the messages
+// decoded so far are returned with no error (graceful partial result).
 //
 // The returned `downgraded` count is the number of messages that were
 // degraded to system notices. Callers (Adapter.GetHistory) log it so
@@ -637,15 +636,13 @@ func ParseHistoryStream(r io.Reader, workspaceID string) (msgs []session.Message
 		changedFilesPerMsg = append(changedFilesPerMsg, files)
 	}
 
-	// Read closing bracket.
+	// Read closing bracket. If the body was truncated mid-stream,
+	// dec.Token() returns an error (io.EOF or unexpected EOF). We
+	// return what was decoded so far rather than failing the entire
+	// request — the frontend gets partial history instead of a 502.
 	_, err = dec.Token()
 	if err != nil {
-		// Best-effort: return what we decoded so far rather than failing.
-		// The body was truncated mid-stream; we got as many messages as
-		// were complete.
-		if err == io.EOF {
-			return msgs, changedFilesPerMsg, downgraded, nil
-		}
+		return msgs, changedFilesPerMsg, downgraded, nil
 	}
 	return msgs, changedFilesPerMsg, downgraded, nil
 }
