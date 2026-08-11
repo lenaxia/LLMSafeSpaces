@@ -39,10 +39,13 @@ import (
 // POST /session/:id/message). Info carries role + IDs; Parts is the
 // ordered content list.
 type ocMessage struct {
-	Info  ocInfo         `json:"info"`
-	Parts []ocPart       `json:"parts"`
-	Model *ocModelRef    `json:"model,omitempty"`
-	Cost  *ocCost        `json:"cost,omitempty"`
+	Info  ocInfo      `json:"info"`
+	Parts []ocPart    `json:"parts"`
+	Model *ocModelRef `json:"model,omitempty"`
+	Cost  *ocCost     `json:"cost,omitempty"`
+	// ocTime is retained for session-level Time fields that use the
+	// {startedAt, completedAt} shape. Message timestamps are parsed
+	// from ocInfo.Time.Created (epoch millis).
 	Time  *ocTime        `json:"time,omitempty"`
 	Error *session.Error `json:"error,omitempty"`
 }
@@ -68,6 +71,18 @@ type ocInfo struct {
 	// model_switch:
 	FromModel *ocModelRef `json:"fromModel,omitempty"`
 	ToModel   *ocModelRef `json:"toModel,omitempty"`
+
+	// opencode sends the timestamp at info.time.created as epoch
+	// milliseconds. This is the authoritative creation timestamp used
+	// by the frontend for message ordering.
+	Time *ocInfoTime `json:"time,omitempty"`
+}
+
+// ocInfoTime is the time block nested inside info. opencode sends
+// epoch milliseconds under "created" and optionally "completed".
+type ocInfoTime struct {
+	Created   int64  `json:"created"`
+	Completed *int64 `json:"completed,omitempty"`
 }
 
 type ocModelRef struct {
@@ -330,12 +345,8 @@ func translateMessage(m ocMessage) (session.Message, []string) {
 	if m.Cost != nil {
 		sm.Cost = translateCost(*m.Cost)
 	}
-	if m.Time != nil {
-		// Use the wire-provided StartedAt if non-zero; otherwise leave
-		// CreatedAt zero (caller may fill from Info).
-		if !m.Time.StartedAt.IsZero() {
-			sm.CreatedAt = m.Time.StartedAt
-		}
+	if m.Info.Time != nil && m.Info.Time.Created > 0 {
+		sm.CreatedAt = time.UnixMilli(m.Info.Time.Created).UTC()
 	}
 	if m.Error != nil {
 		sm.Error = m.Error
