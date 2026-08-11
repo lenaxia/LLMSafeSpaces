@@ -174,20 +174,16 @@ func (h *ProxyHandler) onSessionActive(workspaceID, sessionID string) {
 }
 
 func (h *ProxyHandler) onRawEvent(workspaceID, eventType, rawData string) {
-	// C3 (worklog 371): refresh the active-session TTL on every SSE event.
-	// A multi-hour agentic turn emits session.status=busy once at turn
-	// start and no further session.status events until completion; without
-	// this touch, the 30-minute activeSess TTL expires mid-turn and a
-	// concurrent POST is admitted, corrupting opencode's SQLite session
-	// history. EXPIRE on a non-existent key is a no-op, so this is safe to
-	// call unconditionally. For InMemoryStore it is a no-op (no TTL).
 	h.state().TouchActiveSessions(context.Background(), workspaceID)
 
+	// Parse the raw event once; all consumers below share the parsed form.
+	var parsed interface{}
+	if err := json.Unmarshal([]byte(rawData), &parsed); err != nil {
+		h.logger.Debug("Failed to parse event for relay", "error", err, "eventType", eventType)
+		return
+	}
+
 	if h.userBroker != nil {
-		var parsed interface{}
-		if err := json.Unmarshal([]byte(rawData), &parsed); err != nil {
-			h.logger.Debug("Failed to parse opencode event for relay", "error", err, "eventType", eventType)
-		}
 		h.publishWorkspaceEvent(workspaceID, apitypes.WorkspaceSSEEvent{
 			Type:      "opencode.event",
 			EventType: eventType,
@@ -203,8 +199,6 @@ func (h *ProxyHandler) onRawEvent(workspaceID, eventType, rawData string) {
 		h.persistContextFromEvent(workspaceID, rawData)
 	}
 
-	// US-63.5: when V2 session queue is enabled, bridge V2 admission/
-	// promotion events to queue.update SSE for frontend compatibility.
 	if h.v2SessionQueueEnabled {
 		h.onV2RawEvent(workspaceID, eventType, rawData)
 	}
