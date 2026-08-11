@@ -760,6 +760,31 @@ func TestSendPromptAsync_AdapterPath_Error_Returns500(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
+// E2E integration: adapter SendAsync through the full handler stack to a
+// mock opencode backend serving the V2 prompt endpoint.
+func TestE2E_Adapter_SendPromptAsync_FullPipeline(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/api/session/") && strings.Contains(r.URL.Path, "/prompt") {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"data":{"admittedSeq":1,"id":"msg_v2_1","sessionID":"ses_1"}}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(backend.Close)
+
+	env := newE2EEnv(t, backend)
+	env.handler.v2SessionQueueEnabled = true
+
+	body := strings.NewReader(`{"parts":[{"type":"text","text":"async hello"}]}`)
+	w := env.do(http.MethodPost, "/api/v1/workspaces/ws-1/sessions/ses_1/prompt", body)
+
+	require.Equal(t, http.StatusAccepted, w.Code)
+	var resp map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "msg_v2_1", resp["messageID"])
+}
+
 // --- DeleteSession adapter path ---
 
 func TestDeleteSession_AdapterPath_Returns204(t *testing.T) {
