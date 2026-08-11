@@ -25,16 +25,20 @@ func TestRouter_DevPreviewRouteRegistered(t *testing.T) {
 	log, _ := apilogger.New(false, "error", "json")
 
 	auth := &imocks.MockAuthMiddlewareService{}
+	met := &imocks.MockMetricsService{}
+	ws := &imocks.MockWorkspaceService{}
+
+	met.On("RecordRequest", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	ws.On("ResolveWorkspace", mock.Anything, mock.Anything).
+		Return(&types.WorkspaceMetadata{ID: "ws-1", UserID: "test-user"}, nil).Maybe()
+	ws.On("CheckOwnership", mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
 	auth.On("AuthMiddleware").Return(gin.HandlerFunc(func(c *gin.Context) {
-		c.Set("userID", "user-1")
+		c.Set("userID", "test-user")
 		c.Next()
 	})).Maybe()
-	auth.On("GetUserID", mock.Anything).Return("user-1").Maybe()
+	auth.On("GetUserID", mock.Anything).Return("test-user").Maybe()
 
-	met := &imocks.MockMetricsService{}
-	met.On("RecordRequest", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
-
-	svc := &authMockServices{auth: auth, metrics: met}
+	svc := &mockServices{auth: auth, metrics: met, workspace: ws}
 
 	dpHandler := handlers.NewDevPreviewHandler(
 		nil, nil, "llmsafespaces", nil, handlers.DevPreviewConfig{Enabled: true},
@@ -45,10 +49,11 @@ func TestRouter_DevPreviewRouteRegistered(t *testing.T) {
 		DevPreviewHandler: dpHandler,
 	})
 
-	// The route should be registered and reachable. Without a real workspace
-	// getter the handler will nil-deref or 500, but the point is the route
-	// resolves (not a gin 404 for the path itself).
+	// The route should be registered and reachable. The handler will
+	// return 503 (kill-switch is on but no workspace getter), proving
+	// the route resolved (not a gin 404 for the path itself).
 	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/dev-preview/5173/", nil)
+	req.Header.Set("Authorization", "Bearer testtoken")
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 

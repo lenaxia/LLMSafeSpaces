@@ -144,6 +144,11 @@ func (h *DevPreviewHandler) HandleDevPreview(c *gin.Context) {
 		return
 	}
 
+	if h.wsGetter == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "dev preview not available"})
+		return
+	}
+
 	workspace, err := h.wsGetter.GetWorkspace(c.Request.Context(), workspaceID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "workspace not found"})

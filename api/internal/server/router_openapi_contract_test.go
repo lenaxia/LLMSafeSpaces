@@ -302,6 +302,11 @@ var specOnlyAllowlist = map[route]bool{
 	{method: "POST", path: "/api/v1/auth/verify-email"}:                                                 true,
 	{method: "POST", path: "/api/v1/auth/verify-email/resend"}:                                          true,
 	{method: "POST", path: "/api/v1/auth/unlock-dek"}:                                                   true,
+	// Epic 66: dev-preview proxy. The router registers this as a catch-all
+	// wildcard (/dev-preview/*portPath) to capture port + sub-path in one
+	// param. OpenAPI documents it as /dev-preview/{port} — the path shapes
+	// don't match in the contract test's literal comparison.
+	{method: "GET", path: "/api/v1/workspaces/:id/dev-preview/:port"}: true,
 }
 
 // implOnlyAllowlist: routes registered by the router but not in
