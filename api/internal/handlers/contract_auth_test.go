@@ -185,16 +185,14 @@ func TestContract_ProxyRoutesSendBasicAuth(t *testing.T) {
 		desc           string
 		reachesBackend bool // false = route short-circuits before proxying in this test setup
 	}{
-		// These 5 routes reach the backend with the minimal test fixture:
+		// These 4 routes reach the backend with the minimal test fixture:
 		{"POST", "/api/v1/workspaces/ws-contract/sessions/ses_x/message", `{"content":"hi"}`, "SendMessage", true},
 		{"GET", "/api/v1/workspaces/ws-contract/sessions/ses_x/message", "", "GetHistory", true},
 		{"GET", "/api/v1/workspaces/ws-contract/sessions/ses_x", "", "GetSession", true},
-		{"POST", "/api/v1/workspaces/ws-contract/sessions/ses_x/abort", "", "AbortSession", true},
 		{"DELETE", "/api/v1/workspaces/ws-contract/sessions/ses_x", "", "DeleteSession", true},
 		// These routes short-circuit before proxying (no session/queue/question/permission
 		// exists in the test fixture, so the handler returns early without hitting opencode).
 		// The aggregate assertion below still catches them if a future change makes them proxy.
-		{"POST", "/api/v1/workspaces/ws-contract/sessions/ses_x/prompt", `{"prompt":"hi"}`, "SendPromptAsync", false},
 		{"POST", "/api/v1/workspaces/ws-contract/sessions/ses_x/queue", `{"content":"hi"}`, "EnqueueMessage", false},
 		{"GET", "/api/v1/workspaces/ws-contract/sessions/ses_x/queue", "", "ListQueue", false},
 		{"GET", "/api/v1/workspaces/ws-contract/question", "", "ListQuestions", false},

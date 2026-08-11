@@ -1,6 +1,6 @@
 # Epic 63: Inboard Session Queue — Adopt opencode V2 Session API
 
-**Status:** Planning
+**Status:** Complete — all 10 stories shipped. US-63.7 deleted the legacy queue (2026-08-11).
 **Created:** 2026-08-02
 **Priority:** High
 **Depends On:** Epic 41 (delivered the current Redis-backed queue whose complexity this epic eliminates), Epic 29 (AgentClient abstraction in `pkg/agent/opencode/`)

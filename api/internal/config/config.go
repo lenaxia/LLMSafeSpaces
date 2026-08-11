@@ -276,18 +276,6 @@ type Config struct {
 	Terminal struct {
 		AllowedOrigins []string `mapstructure:"allowedOrigins"`
 	} `mapstructure:"terminal"`
-
-	// SessionQueue holds the V2 session-queue feature flag (Epic 63).
-	// When V2Enabled is true, the proxy uses opencode's V2 session API
-	// (POST /api/session/:sid/prompt with delivery:"queue") instead of the
-	// external Redis-backed queue. Default false; the V1 path stays until
-	// US-63.3–63.7 complete the migration and the flag is removed.
-	//
-	// Wired via: values.yaml `sessionQueue.v2Enabled` → API ConfigMap →
-	// this field. Override: env LLMSAFESPACES_V2_SESSION_QUEUE=true.
-	SessionQueue struct {
-		V2Enabled bool `mapstructure:"v2Enabled"`
-	} `mapstructure:"sessionQueue"`
 }
 
 // KMSConfig holds cloud KMS provider configuration for the master KEK
@@ -480,10 +468,6 @@ func applyImageFactoryEnvOverrides(config *Config) {
 	}
 	if v := os.Getenv("LLMSAFESPACES_SECURITY_SKIPMASTERKEYWARNING"); v == "true" {
 		config.Security.SkipMasterKeyWarning = true
-	}
-
-	if v := os.Getenv("LLMSAFESPACES_V2_SESSION_QUEUE"); v == "true" {
-		config.SessionQueue.V2Enabled = true
 	}
 
 	if v := os.Getenv("LLMSAFESPACES_RATELIMITING_ENABLED"); v == "true" {

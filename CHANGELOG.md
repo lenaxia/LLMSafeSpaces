@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Session queue is now inboard/durable (US-63.7)** — the external Redis-
+  backed message queue (`api/internal/services/msgqueue/`) and its incident-
+  scarred workarounds (message-id hack, 409-requeue, destructive abort,
+  stranded-queue sweep) have been deleted. The proxy now uses opencode's V2
+  session API exclusively (`delivery:"queue"` prompt + non-destructive
+  `interrupt`). The `LLMSAFESPACE_V2_SESSION_QUEUE` feature flag is removed;
+  V2 is the only path.
+  - **Abort is non-destructive:** queued messages survive an abort and drain
+    on the next turn.
+  - **Dismiss/revoke is removed:** the V2 API has no revoke on admitted-but-
+    unpromoted rows. `DELETE /sessions/:sid/queue/:messageId` now removes
+    from the shadow marker only (best-effort).
+  - **`ForceAbortSession`** (Epic 44 admin escape hatch) is retained.
+
 ## [0.14.1] - 2026-08-11
 
 ### Fixed
