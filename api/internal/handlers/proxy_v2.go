@@ -96,29 +96,41 @@ type v2PendingTracker interface {
 
 type v2PendingSessions struct {
 	mu   sync.Mutex
-	data map[string]map[string]int // workspaceID → sessionID → pending count
+	data map[string]map[string]v2PendingEntry // workspaceID → sessionID → entry
+}
+
+type v2PendingEntry struct {
+	count     int
+	lastAdded time.Time
 }
 
 func newV2PendingSessions() *v2PendingSessions {
-	return &v2PendingSessions{data: make(map[string]map[string]int)}
+	return &v2PendingSessions{data: make(map[string]map[string]v2PendingEntry)}
 }
 
 func (v *v2PendingSessions) add(workspaceID, sessionID string) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	if v.data[workspaceID] == nil {
-		v.data[workspaceID] = make(map[string]int)
+		v.data[workspaceID] = make(map[string]v2PendingEntry)
 	}
-	v.data[workspaceID][sessionID]++
+	e := v.data[workspaceID][sessionID]
+	e.count++
+	e.lastAdded = time.Now()
+	v.data[workspaceID][sessionID] = e
 }
 
 func (v *v2PendingSessions) remove(workspaceID, sessionID string) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	v.pruneLocked()
 	if ws, ok := v.data[workspaceID]; ok {
-		ws[sessionID]--
-		if ws[sessionID] <= 0 {
+		e := ws[sessionID]
+		e.count--
+		if e.count <= 0 {
 			delete(ws, sessionID)
+		} else {
+			ws[sessionID] = e
 		}
 		if len(ws) == 0 {
 			delete(v.data, workspaceID)
@@ -129,21 +141,42 @@ func (v *v2PendingSessions) remove(workspaceID, sessionID string) {
 func (v *v2PendingSessions) has(workspaceID, sessionID string) bool {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	return v.data[workspaceID] != nil && v.data[workspaceID][sessionID] > 0
+	v.pruneLocked()
+	ws, ok := v.data[workspaceID]
+	return ok && ws[sessionID].count > 0
 }
 
 func (v *v2PendingSessions) sessionsForWorkspace(workspaceID string) []string {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	v.pruneLocked()
 	ws, ok := v.data[workspaceID]
 	if !ok {
 		return nil
 	}
 	out := make([]string, 0, len(ws))
-	for sid := range ws {
-		out = append(out, sid)
+	for sid, e := range ws {
+		if e.count > 0 {
+			out = append(out, sid)
+		}
 	}
 	return out
+}
+
+// pruneLocked removes entries older than v2PendingTTL. Must be called
+// with mu held. Matches the Redis implementation's TTL behavior (#744 F2).
+func (v *v2PendingSessions) pruneLocked() {
+	cutoff := time.Now().Add(-v2PendingTTL)
+	for wsID, ws := range v.data {
+		for sid, e := range ws {
+			if e.lastAdded.Before(cutoff) {
+				delete(ws, sid)
+			}
+		}
+		if len(ws) == 0 {
+			delete(v.data, wsID)
+		}
+	}
 }
 
 // --- Redis-backed implementation (production, multi-replica) ---
@@ -316,9 +349,14 @@ func (h *ProxyHandler) bridgeV2Prompted(workspaceID, rawData string) {
 // follow-up if/when opencode exposes POST /api/session/:sid/resume.
 //
 // Called from reconcileSessionState after the idle-session sweep.
-func (h *ProxyHandler) wakeStrandedV2Sessions(ctx context.Context, workspaceID string) {
+func (h *ProxyHandler) wakeStrandedV2Sessions(ctx context.Context, workspaceID string, busySessions map[string]bool) {
 	sessions := h.v2Pending.sessionsForWorkspace(workspaceID)
 	for _, sid := range sessions {
+		if busySessions[sid] {
+			h.logger.Debug("V2 stranded-input recovery: skipping busy session",
+				"workspaceID", workspaceID, "sessionID", sid)
+			continue
+		}
 		h.logger.Info("V2 stranded-input recovery: waking idle session with pending queue",
 			"workspaceID", workspaceID, "sessionID", sid)
 		client, err := h.v2Client(ctx, workspaceID)
@@ -369,7 +407,9 @@ func (h *ProxyHandler) enqueueV2(c *gin.Context, wid, sid, text string) {
 	}
 	// US-63.5: do NOT emit enqueued here — onV2RawEvent derives it from the
 	// V2 PromptAdmitted event. Track for US-63.9 stranded-input recovery.
-	h.v2Pending.add(wid, sid)
+	if h.v2Pending != nil {
+		h.v2Pending.add(wid, sid)
+	}
 	c.JSON(http.StatusAccepted, gin.H{"messageID": resp.ID})
 }
 

@@ -371,7 +371,7 @@ func TestV2StrandedRecovery_WakesIdleSession(t *testing.T) {
 	_, handler := newV2TestHandler(t, srv)
 	handler.v2Pending.add("ws-1", "ses-stranded")
 
-	handler.wakeStrandedV2Sessions(context.Background(), "ws-1")
+	handler.wakeStrandedV2Sessions(context.Background(), "ws-1", nil)
 
 	assert.Equal(t, int32(1), atomic.LoadInt32(&wakeCount),
 		"stranded session must receive exactly one wake prompt")
@@ -388,7 +388,7 @@ func TestV2StrandedRecovery_NoWakeForUntrackedSession(t *testing.T) {
 	defer srv.Close()
 
 	_, handler := newV2TestHandler(t, srv)
-	handler.wakeStrandedV2Sessions(context.Background(), "ws-1")
+	handler.wakeStrandedV2Sessions(context.Background(), "ws-1", nil)
 
 	assert.Equal(t, int32(0), atomic.LoadInt32(&wakeCount),
 		"untracked sessions must not receive wake prompts")
@@ -420,7 +420,7 @@ func TestV2StrandedRecovery_WakeSendsNewlineWithDeliveryQueue(t *testing.T) {
 	_, handler := newV2TestHandler(t, srv)
 	handler.v2Pending.add("ws-1", "ses-1")
 
-	handler.wakeStrandedV2Sessions(context.Background(), "ws-1")
+	handler.wakeStrandedV2Sessions(context.Background(), "ws-1", nil)
 
 	require.NotEmpty(t, bodyBytes, "wake prompt must send a body")
 	var body struct {
@@ -531,7 +531,7 @@ func TestV2StrandedRecovery_WakeErrorDoesNotPanic(t *testing.T) {
 	handler.v2Pending.add("ws-1", "ses-ok")
 
 	assert.NotPanics(t, func() {
-		handler.wakeStrandedV2Sessions(context.Background(), "ws-1")
+		handler.wakeStrandedV2Sessions(context.Background(), "ws-1", nil)
 	})
 
 	assert.Equal(t, int32(2), atomic.LoadInt32(&callCount),
@@ -561,7 +561,7 @@ func TestV2StrandedRecovery_PromptV2FailureContinuesToNextSession(t *testing.T) 
 	handler.v2Pending.add("ws-1", "ses-b")
 
 	assert.NotPanics(t, func() {
-		handler.wakeStrandedV2Sessions(context.Background(), "ws-1")
+		handler.wakeStrandedV2Sessions(context.Background(), "ws-1", nil)
 	})
 
 	assert.Equal(t, int32(2), atomic.LoadInt32(&promptCalls),

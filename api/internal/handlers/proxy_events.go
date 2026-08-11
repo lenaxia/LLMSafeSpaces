@@ -496,8 +496,17 @@ func (h *ProxyHandler) reconcileSessionState(workspaceID, podIP, password string
 		}
 	}
 
+	// Build the busy-session set for wakeStrandedV2Sessions so it can
+	// skip sessions that are mid-turn (prevents concurrent turns — #744 F1).
+	busySessions := make(map[string]bool, len(statusz.Sessions))
+	for _, sess := range statusz.Sessions {
+		if sess.Status != "idle" {
+			busySessions[sess.ID] = true
+		}
+	}
+
 	// US-63.9: wake idle sessions with pending queue-delivered input
 	// that stranded during a pod restart. The wake triggers
 	// execution.wake → runner.run → drains durable SessionInput rows.
-	h.wakeStrandedV2Sessions(ctx, workspaceID)
+	h.wakeStrandedV2Sessions(ctx, workspaceID, busySessions)
 }

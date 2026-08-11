@@ -90,6 +90,27 @@ type ocModelRef struct {
 	Provider string `json:"provider,omitempty"`
 }
 
+// UnmarshalJSON handles both the legacy "provider" key (1.15.x) and the
+// "providerID" key (1.18.10+). Without this, Go's decoder silently drops
+// the provider for 1.18.10 sessions (#743 Finding 1).
+func (m *ocModelRef) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		ID         string `json:"id"`
+		Provider   string `json:"provider,omitempty"`
+		ProviderID string `json:"providerID,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	m.ID = raw.ID
+	if raw.Provider != "" {
+		m.Provider = raw.Provider
+	} else {
+		m.Provider = raw.ProviderID
+	}
+	return nil
+}
+
 type ocCost struct {
 	InputTokens      int64   `json:"input,omitempty"`
 	OutputTokens     int64   `json:"output,omitempty"`
@@ -535,11 +556,12 @@ func translateCost(c ocCost) *session.Cost {
 type ocSession struct {
 	ID        string          `json:"id"`
 	Title     string          `json:"title,omitempty"`
+	Agent     string          `json:"agent,omitempty"`
 	Model     *ocModelRef     `json:"model,omitempty"`
 	Time      *ocTime         `json:"time,omitempty"`
 	Cost      json.RawMessage `json:"cost,omitempty"`
 	Tokens    *ocTokens       `json:"tokens,omitempty"`
-	Status    ocStatus        `json:"status"`
+	Status    json.RawMessage `json:"status,omitempty"`
 	IsSubtask bool            `json:"isSubtask,omitempty"`
 	Summary   json.RawMessage `json:"summary,omitempty"`
 	ParentID  string          `json:"parentID,omitempty"`
@@ -578,7 +600,8 @@ func translateSession(s ocSession, workspaceID string) session.Session {
 		WorkspaceID: workspaceID,
 		ParentID:    s.ParentID,
 		Title:       s.Title,
-		Status:      translateStatus(s.Status.Type),
+		AgentID:     s.Agent,
+		Status:      translateSessionStatus(s.Status),
 		Summary:     summaryStr,
 		Archived:    s.Archived,
 	}
@@ -654,6 +677,24 @@ func translateStatus(s string) session.Status {
 	default:
 		return session.StatusUnknown
 	}
+}
+
+// translateSessionStatus extracts the status string from a raw JSON
+// status field, handling three shapes: object ({"type":"idle"}, 1.15.x),
+// bare string ("idle", possible future), and absent/empty (#743 F3).
+func translateSessionStatus(raw json.RawMessage) session.Status {
+	if len(raw) == 0 {
+		return session.StatusUnknown
+	}
+	var obj ocStatus
+	if json.Unmarshal(raw, &obj) == nil && obj.Type != "" {
+		return translateStatus(obj.Type)
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return translateStatus(s)
+	}
+	return session.StatusUnknown
 }
 
 // ParseHistoryWire is the testable boundary: bytes in, contract out.
