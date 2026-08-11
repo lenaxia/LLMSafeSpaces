@@ -7,80 +7,46 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 
+	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
 
-// V2Delivery selects how opencode's V2 session runner admits a prompt.
-//
-// "queue" — the prompt is admitted to the durable SessionInput table and
-// promoted when the session would otherwise go idle (F2, F8). This is the
-// default for the inboard-session-queue epic (US-63.3).
-//
-// "steer" — the prompt is injected at the next safe boundary without
-// aborting in-flight tools (F-spike). Deferred to a follow-up epic; the V2
-// API supports it but US-63.3 defaults to "queue".
-type V2Delivery string
+// V2Delivery is re-exported from pkg/agent (the canonical location).
+// Callers should use agent.V2Delivery; this alias exists for backward
+// compatibility.
+type V2Delivery = agent.V2Delivery
 
+// Re-export V2 delivery constants.
 const (
-	V2DeliveryQueue V2Delivery = "queue"
-	V2DeliverySteer V2Delivery = "steer"
+	V2DeliveryQueue = agent.V2DeliveryQueue
+	V2DeliverySteer = agent.V2DeliverySteer
 )
 
 // V2 prompt/interrupt error sentinels. These are distinct from the V1
-// errors in agent_client.go because the V2 API has different failure modes
-// (PromptConflictError on caller-supplied id, SessionNotFound on unknown
-// session). Callers branch on these to decide retry vs. surface-to-user.
+// V2 prompt/interrupt error sentinels re-exported from pkg/agent
+// (the canonical location). Callers branch on these to decide retry vs.
+// surface-to-user.
 var (
-	ErrV2PromptConflict  = errors.New("opencode V2: prompt conflict (id collision)")
-	ErrV2SessionNotFound = errors.New("opencode V2: session not found")
+	ErrV2PromptConflict  = agent.ErrV2PromptConflict
+	ErrV2SessionNotFound = agent.ErrV2SessionNotFound
 )
-
-// v2PromptRequest is the body for POST /api/session/:sid/prompt.
-//
-// F18: opencode 1.18.10 requires {prompt:{text:"..."}}, NOT
-// {prompt:{parts:[...]}} — the parts-based shape from the Epic 65 contract
-// is newer than 1.18.10 and returns 400 InvalidRequestError. When opencode
-// is bumped to a version that accepts parts, this struct must change and a
-// schema test must pin the new shape (US-63.2 acceptance criterion).
-//
-// F17: the id field is intentionally OMITTED. opencode generates the message
-// id via SessionMessage.ID.create(); a caller-supplied id risks
-// PromptConflictError (409) on collision — the same class of bug as the V1
-// message-id hack, avoided by simply not sending one.
-//
-// NOTE: the previous "spike-verified" wording on F18 was overstated — the
-// spike verified the request body shape but never the response shape, which
-// caused the V2PromptResponse.timeCreated decode bug (#707). Treat any
-// future change here as requiring a schema-pinned test against real
-// opencode output, not a doc-only assertion.
-type v2PromptRequest struct {
-	Prompt   v2PromptBody `json:"prompt"`
-	Delivery V2Delivery   `json:"delivery"`
-	// Resume is intentionally omitted: F15 confirmed no resume endpoint or
-	// parameter exists on 1.18.10. If a future opencode version adds it,
-	// add it here with a spike-verified schema pin.
-}
 
 type v2PromptBody struct {
 	Text string `json:"text"`
 }
 
-// V2PromptResponse is the data payload returned by a successful
-// POST /api/session/:sid/prompt. Only the fields consumed by the platform
-// are decoded; opencode returns additional fields (prompt, delivery,
-// timeCreated) that are intentionally not typed here. Adding a typed field
-// requires a schema test pinning the real opencode output shape — see #707
-// for what happens when that discipline slips.
-type V2PromptResponse struct {
-	AdmittedSeq int    `json:"admittedSeq"`
-	ID          string `json:"id"`
-	SessionID   string `json:"sessionID"`
+// v2PromptRequest is the body for POST /api/session/:sid/prompt.
+type v2PromptRequest struct {
+	Prompt   v2PromptBody `json:"prompt"`
+	Delivery V2Delivery   `json:"delivery"`
 }
+
+// V2PromptResponse is re-exported from pkg/agent.
+type V2PromptResponse = agent.V2PromptResponse
 
 // PromptV2 sends a prompt to an opencode V2 session endpoint with the given
 // delivery mode. It POSTs to /api/session/:sid/prompt using the same Basic

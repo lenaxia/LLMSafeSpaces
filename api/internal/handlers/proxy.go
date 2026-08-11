@@ -103,6 +103,11 @@ type ProxyHandler struct {
 	// CI failures.
 	v2ClientFactory V2ClientFactory
 
+	// v2ClientConcreteFactory builds a V2SessionClient from a baseURL +
+	// password. Set during wiring (app.go) with opencode.NewClient; this
+	// file does not import pkg/agent/opencode.
+	v2ClientConcreteFactory func(baseURL, password string) (agent.V2SessionClient, error)
+
 	// v2Pending tracks sessions with undrained V2 queue-delivered input.
 	// Used by US-63.9 (stranded-input recovery) to identify sessions
 	// needing a wake after pod restart. Initialized in NewProxyHandler

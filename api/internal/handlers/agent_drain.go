@@ -10,8 +10,14 @@ import (
 	"time"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
-	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 )
+
+// SessionStatusChecker returns the current status map for all sessions
+// on a workspace. *opencode.Client satisfies this; the interface decouples
+// agent_drain.go from the concrete opencode import.
+type SessionStatusChecker interface {
+	GetSessionStatuses(ctx context.Context) (map[string]string, error)
+}
 
 // ErrDrainTimeout is returned by WaitUntilIdle when the deadline elapses
 // before all sessions become idle.
@@ -29,7 +35,7 @@ func WaitUntilIdle(
 	ctx context.Context,
 	workspaceID string,
 	tracker *sse.Tracker,
-	opencodeClient *opencode.Client,
+	statusChecker SessionStatusChecker,
 	timeout time.Duration,
 ) error {
 	drainCtx, cancel := context.WithTimeout(ctx, timeout)
@@ -58,8 +64,8 @@ func WaitUntilIdle(
 	)
 	defer unsub()
 
-	// Authoritative snapshot from opencode.
-	statuses, err := opencodeClient.GetSessionStatuses(drainCtx)
+	// Authoritative snapshot from the agent.
+	statuses, err := statusChecker.GetSessionStatuses(drainCtx)
 	if err != nil {
 		return fmt.Errorf("WaitUntilIdle: snapshot: %w", err)
 	}

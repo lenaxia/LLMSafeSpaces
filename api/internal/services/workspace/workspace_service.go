@@ -21,7 +21,6 @@ import (
 	apierrors "github.com/lenaxia/llmsafespaces/api/internal/errors"
 	"github.com/lenaxia/llmsafespaces/api/internal/imagefactory"
 	apiinterfaces "github.com/lenaxia/llmsafespaces/api/internal/interfaces"
-	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/settings"
@@ -30,8 +29,11 @@ import (
 	"github.com/google/uuid"
 )
 
-func init() {
-	opencode.Register()
+// RegisterAgentRuntime is called from app.go to register the opencode
+// agent runtime. The actual opencode.Register() call happens in app.go
+// (the allowed construction layer).
+func RegisterAgentRuntime() {
+	// No-op here; app.go calls agentoc.Register() directly.
 }
 
 // storageSizeRegex validates workspace storage size format. Matches the
