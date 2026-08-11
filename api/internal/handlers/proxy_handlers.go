@@ -167,6 +167,11 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 		if h.adapter != nil {
 			msgID, err := h.adapter.SendAsync(c.Request.Context(), "", wid, sid, text, session.SendOpts{Admission: session.AdmissionQueue})
 			if err != nil {
+				h.logger.Error("V2 enqueue: adapter SendAsync failed", err, "workspaceID", wid, "sessionID", sid)
+				if strings.Contains(err.Error(), "not found") {
+					c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
+					return
+				}
 				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enqueue message"})
 				return
 			}

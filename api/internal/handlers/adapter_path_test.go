@@ -760,6 +760,27 @@ func TestSendPromptAsync_AdapterPath_Error_Returns500(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
+func TestSendPromptAsync_AdapterPath_SessionNotFound_Returns404(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.v2SessionQueueEnabled = true
+	h.adapter = &mockAdapter{
+		sendAsyncFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (string, error) {
+			return "", fmt.Errorf("opencode V2: session not found: ses_missing")
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_missing"},
+	}
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"parts":[{"type":"text","text":"hi"}]}`))
+
+	h.SendPromptAsync(c)
+	assert.Equal(t, http.StatusNotFound, w.Code, "session-not-found error must map to 404")
+}
+
 // E2E integration: adapter SendAsync through the full handler stack to a
 // mock opencode backend serving the V2 prompt endpoint.
 func TestE2E_Adapter_SendPromptAsync_FullPipeline(t *testing.T) {
