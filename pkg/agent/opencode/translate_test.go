@@ -260,7 +260,8 @@ func TestTranslateMessage_CostAndTime(t *testing.T) {
 	sm, _ := translateMessage(m)
 
 	expected := time.UnixMilli(1723291200000).UTC()
-	assert.Equal(t, expected, sm.CreatedAt,
+	require.NotNil(t, sm.CreatedAt, "createdAt must be non-nil when info.time.created is present")
+	assert.Equal(t, expected, *sm.CreatedAt,
 		"createdAt must be parsed from info.time.created epoch millis")
 	require.NotNil(t, sm.Cost)
 	assert.Equal(t, int64(100), sm.Cost.InputTokens)

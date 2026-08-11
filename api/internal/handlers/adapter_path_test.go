@@ -292,6 +292,8 @@ func newProxyHandlerForAdapterTest(t *testing.T) *ProxyHandler {
 	return h
 }
 
+func ptrTime(t time.Time) *time.Time { return &t }
+
 // Ensure mockAdapter satisfies agent.Adapter at compile time.
 var _ agent.Adapter = (*mockAdapter)(nil)
 
@@ -308,7 +310,7 @@ func TestGetHistory_AdapterPath_ReturnsContractJSON(t *testing.T) {
 				{
 					ID:        "msg_1",
 					Type:      session.MessageUser,
-					CreatedAt: time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC),
+					CreatedAt: ptrTime(time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)),
 					Parts: []session.Part{
 						{Type: session.PartText, Text: "hello"},
 					},
