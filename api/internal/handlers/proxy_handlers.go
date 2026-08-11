@@ -63,6 +63,37 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 	}
 	wid := c.Param("id")
 
+	// Adapter path (US-65.4): adapter.Send returns a typed
+	// session.Message with contract-shaped parts. The response is
+	// contract JSON, not raw opencode bytes.
+	if h.adapter != nil {
+		text, err := extractMessageText(c)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if len(text) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "text must not be empty"})
+			return
+		}
+		if len(text) > 100_000 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "text exceeds 100KB limit"})
+			return
+		}
+		msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{})
+		if err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to send message"})
+			return
+		}
+		c.JSON(http.StatusOK, msg)
+		if h.sessionIndex != nil {
+			go h.fetchAndPersistTitle(wid, sid)
+		}
+		return
+	}
+
+	// Legacy path: proxy raw bytes to opencode with error enrichment.
+
 	// US-27b.5: wire chat-error enrichment. The closure captures wid + the
 	// agent-state checker so doProxy can rewrite the response body on 4xx
 	// with agentNeedsRefresh / hint fields. On 2xx the closure is never
@@ -221,6 +252,19 @@ func (h *ProxyHandler) redirectPromptToQueue(c *gin.Context, wid, sid string) {
 	}
 
 	c.JSON(http.StatusAccepted, gin.H{"messageID": msgID})
+}
+
+// extractMessageText reads the request body and extracts the
+// concatenated text from opencode's {parts:[{type:"text",text:"..."}]}
+// shape. Caps at 100KB to match the SendPromptAsync body limit.
+func extractMessageText(c *gin.Context) (string, error) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 100_000+1024)
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read request body: %w", err)
+	}
+	_ = c.Request.Body.Close()
+	return extractPromptText(body)
 }
 
 // extractPromptText parses a prompt_async body and returns the
@@ -741,6 +785,17 @@ func (h *ProxyHandler) AbortSession(c *gin.Context) {
 		return
 	}
 	wid := c.Param("id")
+
+	// Adapter path (US-65.4): non-destructive abort via adapter.Abort.
+	// Returns 204 to match the V2 interrupt response shape.
+	if h.adapter != nil {
+		if err := h.adapter.Abort(c.Request.Context(), "", wid, sid); err != nil {
+			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to abort session"})
+			return
+		}
+		c.Status(http.StatusNoContent)
+		return
+	}
 
 	// V2 path (Epic 63): non-destructive interrupt. Queued messages survive
 	// and drain on the next execution.wake (F8). No Redis queue mutation,

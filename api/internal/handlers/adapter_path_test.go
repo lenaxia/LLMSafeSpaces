@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -582,4 +583,129 @@ func TestGetSession_AdapterPath_NilResult_ReturnsNullJSON(t *testing.T) {
 	h.GetSession(c)
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, "null", w.Body.String())
+}
+
+// --- SendMessage adapter path ---
+
+func TestSendMessage_AdapterPath_ReturnsContractMessage(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _, text string, _ session.SendOpts) (*session.Message, error) {
+			assert.Equal(t, "hello world", text)
+			return &session.Message{
+				ID:   "msg_1",
+				Type: session.MessageAssistant,
+				Parts: []session.Part{
+					{Type: session.PartText, Text: "Hi!"},
+				},
+			}, nil
+		},
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	body := strings.NewReader(`{"parts":[{"type":"text","text":"hello world"}]}`)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", body)
+
+	h.SendMessage(c)
+	require.Equal(t, http.StatusOK, w.Code)
+	var msg session.Message
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &msg))
+	assert.Equal(t, "msg_1", msg.ID)
+	assert.Equal(t, session.MessageAssistant, msg.Type)
+}
+
+func TestSendMessage_AdapterPath_Error_Returns502(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (*session.Message, error) {
+			return nil, fmt.Errorf("pod unreachable")
+		},
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"parts":[{"type":"text","text":"hi"}]}`))
+
+	h.SendMessage(c)
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+}
+
+// --- AbortSession adapter path ---
+
+func TestAbortSession_AdapterPath_ReturnsOK(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	called := false
+	h.adapter = &mockAdapter{
+		abortFn: func(_ context.Context, _, _, sid string) error {
+			called = true
+			assert.Equal(t, "ses_1", sid)
+			return nil
+		},
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	h.AbortSession(c)
+	c.Writer.WriteHeaderNow()
+	assert.Equal(t, http.StatusNoContent, w.Code)
+	assert.True(t, called)
+}
+
+func TestSendMessage_AdapterPath_EmptyText_Returns400(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"parts":[{"type":"text","text":""}]}`))
+	h.SendMessage(c)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestSendMessage_AdapterPath_InvalidJSON_Returns400(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`not json`))
+	h.SendMessage(c)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+}
+
+func TestAbortSession_AdapterPath_Error_Returns502(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{
+		abortFn: func(_ context.Context, _, _, _ string) error {
+			return fmt.Errorf("pod unreachable")
+		},
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+	h.AbortSession(c)
+	assert.Equal(t, http.StatusBadGateway, w.Code)
 }
