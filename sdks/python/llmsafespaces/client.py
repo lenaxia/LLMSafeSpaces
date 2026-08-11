@@ -316,6 +316,19 @@ class _WorkspacesAPI:
     def delete_env(self, workspace_id: str, var_name: str) -> None:
         self._c._request("DELETE", f"/workspaces/{workspace_id}/env/{var_name}")
 
+    def set_dev_preview(self, workspace_id: str, enabled: bool) -> None:
+        """Toggle the dev-preview tunnel (Epic 66)."""
+        self._c._request("PUT", f"/workspaces/{workspace_id}/dev-preview", json={"enabled": enabled})
+
+    def dev_preview_url(self, workspace_id: str, port: int, path: str = "/") -> str:
+        """Return the URL to open the dev-preview proxy in a browser.
+
+        The URL is authenticated via session cookie; no token in the URL.
+        The dev server must be running on ``port`` inside the workspace.
+        """
+        p = path if path.startswith("/") else f"/{path}"
+        return f"{self._c._base_url}/api/v1/workspaces/{workspace_id}/dev-preview/{port}{p}"
+
 
 class _SessionsAPI:
     def __init__(self, client: LLMSafeSpaces):

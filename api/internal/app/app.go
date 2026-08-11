@@ -996,6 +996,34 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		cfg.Terminal.AllowedOrigins,
 	)
 
+	// Epic 66: Dev Preview handler (authenticated HTTP/WS tunnel to dev servers).
+	// The ProxyHandler implements WorkspacePasswordProvider, so the dev-preview
+	// handler shares the existing password cache via that interface (OQ3 in the
+	// epic — resolved: inject ProxyHandler as the password provider).
+	var devPreviewHandler *handlers.DevPreviewHandler
+	if proxyHandler != nil {
+		dpEnabled, _ := instanceSettings.GetBool(ctx, settings.KeyDevPreviewEnabled.Name())
+		dpMaxBytes, _ := instanceSettings.GetInt(ctx, settings.KeyDevPreviewMaxResponseBytes.Name())
+		dpMaxConns, _ := instanceSettings.GetInt(ctx, settings.KeyDevPreviewMaxConnsPerWorkspace.Name())
+		if dpMaxBytes <= 0 {
+			dpMaxBytes = 52428800
+		}
+		if dpMaxConns <= 0 {
+			dpMaxConns = 50
+		}
+		devPreviewHandler = handlers.NewDevPreviewHandler(
+			&k8sWorkspaceGetterAdapter{client: k8sClient, namespace: cfg.Kubernetes.Namespace},
+			proxyHandler,
+			cfg.Kubernetes.Namespace,
+			log,
+			handlers.DevPreviewConfig{
+				Enabled:              dpEnabled,
+				MaxResponseBytes:     int64(dpMaxBytes),
+				MaxConnsPerWorkspace: dpMaxConns,
+			},
+		)
+	}
+
 	// Epic 27a: Agent reload handler.
 	var agentReloadHandler *handlers.AgentReloadHandler
 	var bulkReloadHandler *handlers.BulkReloadHandler
@@ -1229,6 +1257,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		OrgsHandler:                     orgsHandler,
 		OrgCredentialsHandler:           orgCredsHandler,
 		TerminalHandler:                 terminalHandler,
+		DevPreviewHandler:               devPreviewHandler,
 		AgentReloadHandler:              agentReloadHandler,
 		BulkReloadHandler:               bulkReloadHandler,
 		UsageHandler:                    usageHandler,

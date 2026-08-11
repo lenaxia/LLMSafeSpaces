@@ -53,6 +53,13 @@ type WorkspaceNetworkAccess struct {
 	Egress []WorkspaceEgressRule `json:"egress,omitempty"`
 	// +kubebuilder:default=false
 	Ingress bool `json:"ingress,omitempty"`
+	// DevPreview enables the authenticated HTTP/WS tunnel for viewing in-workspace
+	// dev servers (Vite, Next, etc.) from a browser (Epic 66). Off by default;
+	// the API handler reads this on the request path and refuses traffic when
+	// false. No NetworkPolicy change is involved — the tunnel reuses the existing
+	// API→pod:4097 allowance.
+	// +kubebuilder:default=false
+	DevPreview bool `json:"devPreview,omitempty"`
 }
 
 // WorkspaceEgressRule defines an egress domain rule.

@@ -281,7 +281,9 @@ func TestWorkspace_DeepCopy(t *testing.T) {
 				{Runtime: "python:3.11", Requirements: []string{"numpy"}},
 			},
 			NetworkAccess: &WorkspaceNetworkAccess{
-				Egress: []WorkspaceEgressRule{{Domain: "pypi.org"}},
+				Ingress:    true,
+				DevPreview: true,
+				Egress:     []WorkspaceEgressRule{{Domain: "pypi.org"}},
 			},
 		},
 		Status: WorkspaceStatus{
@@ -299,6 +301,9 @@ func TestWorkspace_DeepCopy(t *testing.T) {
 
 	copy.Spec.NetworkAccess.Egress[0].Domain = "modified"
 	assert.Equal(t, "pypi.org", original.Spec.NetworkAccess.Egress[0].Domain)
+
+	assert.True(t, copy.Spec.NetworkAccess.Ingress, "Ingress should round-trip through deepcopy")
+	assert.True(t, copy.Spec.NetworkAccess.DevPreview, "DevPreview should round-trip through deepcopy")
 
 	copy.Status.Conditions[0].Status = "False"
 	assert.Equal(t, "True", original.Status.Conditions[0].Status)

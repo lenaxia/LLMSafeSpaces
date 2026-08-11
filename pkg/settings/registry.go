@@ -75,6 +75,13 @@ var (
 	KeyTriggersWebhookRateLimitPerSec  = register(Key{"triggers.webhookRateLimitPerSec", "triggers", 10})
 )
 
+// Dev Preview settings (Epic 66)
+var (
+	KeyDevPreviewEnabled              = register(Key{"devPreview.enabled", "devPreview", true})
+	KeyDevPreviewMaxResponseBytes     = register(Key{"devPreview.maxResponseBytes", "devPreview", 52428800})
+	KeyDevPreviewMaxConnsPerWorkspace = register(Key{"devPreview.maxConnsPerWorkspace", "devPreview", 50})
+)
+
 // Rate limiting settings
 var (
 	KeyRateLimitingEnabled       = register(Key{"rateLimiting.enabled", "rateLimiting", false})

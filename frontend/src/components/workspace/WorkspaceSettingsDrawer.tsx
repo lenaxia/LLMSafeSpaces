@@ -1,5 +1,5 @@
 import * as Dialog from "@radix-ui/react-dialog";
-import { X, Lock } from "lucide-react";
+import { X, Lock, ExternalLink } from "lucide-react";
 import { useState, useEffect } from "react";
 import type { WorkspaceListItem } from "../../api/types";
 import { secretsApi, type SecretResponse } from "../../api/secrets";
@@ -29,15 +29,19 @@ export function WorkspaceSettingsDrawer({ workspace, open, onOpenChange }: Props
   const [bindingsChanged, setBindingsChanged] = useState(false);
   const [customPrompt, setCustomPrompt] = useState("");
   const [promptLocked, setPromptLocked] = useState(false);
+  const [devPreview, setDevPreview] = useState(false);
+  const [previewPort, setPreviewPort] = useState("5173");
 
   useEffect(() => {
     if (!open) return;
     Promise.all([
       secretsApi.list(),
-      api.get<{ bindings: { secretId: string }[] }>(`/workspaces/${workspace.id}/bindings`),
-    ]).then(([secretsRes, bindingsRes]) => {
+      api.get<{ bindings: { secretId: string }[]; devPreviewEnabled?: boolean }>(`/workspaces/${workspace.id}/bindings`).catch(() => ({ bindings: [], devPreviewEnabled: undefined })),
+      api.get<{ devPreviewEnabled?: boolean }>(`/workspaces/${workspace.id}`).catch(() => ({ devPreviewEnabled: undefined })),
+    ]).then(([secretsRes, bindingsRes, wsRes]) => {
       setAllSecrets(secretsRes.secrets || []);
       setBoundIds(new Set((bindingsRes.bindings || []).map((b) => b.secretId)));
+      setDevPreview(!!(wsRes as { devPreviewEnabled?: boolean }).devPreviewEnabled);
     }).catch(() => {});
 
     const orgId = workspace.orgId;
@@ -45,10 +49,6 @@ export function WorkspaceSettingsDrawer({ workspace, open, onOpenChange }: Props
       promptsApi.getOrg(orgId).then((data) => {
         setPromptLocked(!data.allowUserPrompt);
       }).catch(() => {
-        // Fail closed: if we cannot determine the org's
-        // allow_user_prompt policy, lock the textarea. Better UX than
-        // letting the user type a prompt that the backend will then 403
-        // on save with a confusing generic "Save failed" toast.
         setPromptLocked(true);
       });
     }
@@ -67,6 +67,7 @@ export function WorkspaceSettingsDrawer({ workspace, open, onOpenChange }: Props
       if (!promptLocked) {
         await api.put(`/workspaces/${workspace.id}/prompt`, { prompt: customPrompt });
       }
+      await api.put(`/workspaces/${workspace.id}/dev-preview`, { enabled: devPreview });
       onOpenChange(false);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Save failed");
@@ -163,6 +164,49 @@ export function WorkspaceSettingsDrawer({ workspace, open, onOpenChange }: Props
                 </div>
               </div>
             )}
+
+            {/* Dev Preview (Epic 66) */}
+            <div className="border-t border-border pt-4">
+              <label className="text-sm font-medium">Dev Preview</label>
+              <p className="text-xs text-muted-foreground mb-3">
+                Tunnel HTTP/WebSocket from your browser to a dev server (Vite, Next, etc.) running in this workspace.
+              </p>
+              <label className="flex items-center gap-2 rounded px-2 py-1 hover:bg-accent/50 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={devPreview}
+                  onChange={(e) => setDevPreview(e.target.checked)}
+                  className="rounded border-border"
+                />
+                <span className="text-sm">Enable dev preview tunnel</span>
+              </label>
+              {devPreview && workspace.phase === "Active" && (
+                <div className="mt-3 flex items-center gap-2">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    placeholder="5173"
+                    value={previewPort}
+                    onChange={(e) => setPreviewPort(e.target.value.replace(/[^0-9]/g, ""))}
+                    className="w-20 rounded-md border border-border bg-background px-2 py-1 text-sm"
+                  />
+                  <a
+                    href={`/api/v1/workspaces/${workspace.id}/dev-preview/${previewPort || "5173"}/`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent"
+                  >
+                    <ExternalLink className="h-3 w-3" />
+                    Open preview
+                  </a>
+                </div>
+              )}
+              {devPreview && workspace.phase !== "Active" && (
+                <p className="text-xs text-muted-foreground mt-2">
+                  Workspace must be Active to open the preview.
+                </p>
+              )}
+            </div>
           </div>
 
           {error && <p className="text-xs text-destructive mt-4">{error}</p>}

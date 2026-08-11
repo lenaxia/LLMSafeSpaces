@@ -229,6 +229,18 @@ class WorkspacesAPI {
   deleteEnv(id: string, varName: string) {
     return this.client.request<void>("DELETE", `/workspaces/${id}/env/${varName}`);
   }
+  setDevPreview(id: string, enabled: boolean) {
+    return this.client.request<void>("PUT", `/workspaces/${id}/dev-preview`, { enabled });
+  }
+  /**
+   * Returns the URL to open the dev-preview proxy in a browser.
+   * The URL is authenticated via session cookie; no token in the URL.
+   * The dev server must be running on `port` inside the workspace.
+   */
+  devPreviewUrl(id: string, port: number, path = "/"): string {
+    const p = path.startsWith("/") ? path : `/${path}`;
+    return `${this.client.baseUrl}/api/v1/workspaces/${id}/dev-preview/${port}${p}`;
+  }
 }
 
 class SessionsAPI {

@@ -23,6 +23,8 @@ type Workspace struct {
 	UpdatedAt               time.Time         `json:"updatedAt"`
 	AgentNeedsRefresh       bool              `json:"agentNeedsRefresh"`
 	CredentialsPendingSince *time.Time        `json:"credentialsPendingSince,omitempty"`
+	// DevPreviewEnabled reflects spec.networkAccess.devPreview (Epic 66).
+	DevPreviewEnabled bool `json:"devPreviewEnabled,omitempty"`
 }
 
 // CreateWorkspaceRequest is the request body for creating a workspace.

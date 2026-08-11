@@ -53,6 +53,7 @@ export interface WorkspaceListItem {
   maxActiveSessions?: number;
   agentNeedsRefresh?: boolean;
   credentialsPendingSince?: string;
+  devPreviewEnabled?: boolean;
 }
 
 export interface WorkspaceListResponse {
