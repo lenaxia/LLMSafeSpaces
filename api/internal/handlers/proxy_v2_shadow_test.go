@@ -178,7 +178,6 @@ func TestDeleteQueueMessageV2_RemovesFromShadow(t *testing.T) {
 	k8sMock := newMockK8sWithWorkspace(t, "ws-1", "127.0.0.1")
 	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{}, nil)
 	require.NoError(t, err)
-	handler.SetV2SessionQueueEnabled(true)
 	handler.SetV2QueueShadow(NewV2QueueShadow(client))
 
 	handler.v2Shadow.Add(context.Background(), "ws-1", "ses-1", "msg_del", "bye")
@@ -207,7 +206,6 @@ func TestListQueueV2_ShadowReturnsPills(t *testing.T) {
 	k8sMock := newMockK8sWithWorkspace(t, "ws-1", "127.0.0.1")
 	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{}, nil)
 	require.NoError(t, err)
-	handler.SetV2SessionQueueEnabled(true)
 	handler.SetV2QueueShadow(NewV2QueueShadow(client))
 
 	// Seed two messages in the shadow.

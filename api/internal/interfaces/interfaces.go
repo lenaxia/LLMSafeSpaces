@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/msgqueue"
 	k8sinterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
@@ -170,19 +169,6 @@ type SessionIndexService interface {
 	UpdateLastSeen(ctx context.Context, workspaceID, sessionID string) error
 	Start() error
 	Stop() error
-}
-
-type MessageQueueService interface {
-	Enqueue(ctx context.Context, workspaceID, sessionID, text string) (string, error)
-	Dequeue(ctx context.Context, workspaceID, sessionID string) (*msgqueue.QueuedMessage, error)
-	Requeue(ctx context.Context, workspaceID, sessionID string, msg msgqueue.QueuedMessage) error
-	PeekAll(ctx context.Context, workspaceID, sessionID string) ([]msgqueue.QueuedMessage, error)
-	PeekAllGlobal(ctx context.Context) ([]msgqueue.QueuedMessage, error)
-	Len(ctx context.Context, workspaceID, sessionID string) (int64, error)
-	Remove(ctx context.Context, workspaceID, sessionID, messageID string) error
-	Clear(ctx context.Context, workspaceID, sessionID string) error
-	ClearWorkspace(ctx context.Context, workspaceID string) error
-	PeekAllWorkspace(ctx context.Context, workspaceID string) ([]msgqueue.QueuedMessage, error)
 }
 
 type MeteringService interface {

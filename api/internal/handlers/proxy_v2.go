@@ -240,10 +240,9 @@ func (v *v2PendingRedis) sessionsForWorkspace(workspaceID string) []string {
 	return out
 }
 
-// onV2RawEvent is called from onRawEvent when v2SessionQueueEnabled is on.
-// It detects V2 PromptAdmitted/Prompted events and synthesizes the
-// queue.update SSE events the frontend expects, and manages the
-// pending-sessions tracking for US-63.9.
+// onV2RawEvent is called from onRawEvent to detect V2 PromptAdmitted/Prompted
+// events and synthesize the queue.update SSE events the frontend expects, and
+// manage the pending-sessions tracking for US-63.9.
 //
 // rawData is the raw JSON envelope: {"id":"...","type":"...","properties":{...}}.
 func (h *ProxyHandler) onV2RawEvent(workspaceID, eventType, rawData string) {
@@ -318,9 +317,6 @@ func (h *ProxyHandler) bridgeV2Prompted(workspaceID, rawData string) {
 //
 // Called from reconcileSessionState after the idle-session sweep.
 func (h *ProxyHandler) wakeStrandedV2Sessions(ctx context.Context, workspaceID string) {
-	if !h.v2SessionQueueEnabled {
-		return
-	}
 	sessions := h.v2Pending.sessionsForWorkspace(workspaceID)
 	for _, sid := range sessions {
 		h.logger.Info("V2 stranded-input recovery: waking idle session with pending queue",
@@ -354,35 +350,27 @@ func (h *ProxyHandler) wakeStrandedV2Sessions(ctx context.Context, workspaceID s
 // This eliminates the race where enqueued fires before opencode has
 // actually admitted the input. The response still returns the messageID
 // synchronously for callers that need it.
-//
-// Returns true if the V2 path handled the request (caller should return
-// from the gin handler). Returns false if the V2 path was not taken
-// (flag off) so the caller falls through to the legacy V1 path.
-func (h *ProxyHandler) enqueueV2(c *gin.Context, wid, sid, text string) bool {
-	if !h.v2SessionQueueEnabled {
-		return false
-	}
+func (h *ProxyHandler) enqueueV2(c *gin.Context, wid, sid, text string) {
 	client, err := h.v2Client(c.Request.Context(), wid)
 	if err != nil {
 		h.logger.Error("V2 enqueue: failed to construct client", err, "workspaceID", wid, "sessionID", sid)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to reach workspace"})
-		return true
+		return
 	}
 	resp, err := client.PromptV2(c.Request.Context(), sid, text, agent.V2DeliveryQueue)
 	if err != nil {
 		if agent.IsSessionNotFound(err) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
-			return true
+			return
 		}
 		h.logger.Error("V2 enqueue: PromptV2 failed", err, "workspaceID", wid, "sessionID", sid)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enqueue message"})
-		return true
+		return
 	}
 	// US-63.5: do NOT emit enqueued here — onV2RawEvent derives it from the
 	// V2 PromptAdmitted event. Track for US-63.9 stranded-input recovery.
 	h.v2Pending.add(wid, sid)
 	c.JSON(http.StatusAccepted, gin.H{"messageID": resp.ID})
-	return true
 }
 
 // ---------------------------------------------------------------------------
@@ -391,25 +379,17 @@ func (h *ProxyHandler) enqueueV2(c *gin.Context, wid, sid, text string) bool {
 
 // abortV2 sends a non-destructive interrupt to opencode's V2 session API.
 // The queued messages survive and drain on the next execution.wake (F8).
-// No Redis queue mutation, no dismissed SSE, no flushAndAbortAfterIdle.
-//
-// Returns true if the V2 path handled the request. Returns false if the
-// V2 path was not taken (flag off).
-func (h *ProxyHandler) abortV2(c *gin.Context, wid, sid string) bool {
-	if !h.v2SessionQueueEnabled {
-		return false
-	}
+func (h *ProxyHandler) abortV2(c *gin.Context, wid, sid string) {
 	client, err := h.v2Client(c.Request.Context(), wid)
 	if err != nil {
 		h.logger.Error("V2 abort: failed to construct client", err, "workspaceID", wid, "sessionID", sid)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to reach workspace"})
-		return true
+		return
 	}
 	if err := client.InterruptV2(c.Request.Context(), sid); err != nil {
 		h.logger.Error("V2 abort: InterruptV2 failed", err, "workspaceID", wid, "sessionID", sid)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to abort session"})
-		return true
+		return
 	}
 	c.Status(http.StatusNoContent)
-	return true
 }

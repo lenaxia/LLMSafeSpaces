@@ -88,14 +88,6 @@ type ProxyHandler struct {
 	// SetWorkspaceUpdateCallback before Start().
 	workspaceUpdateCb workspace.WorkspaceUpdateCallback
 
-	queueSvc interfaces.MessageQueueService
-
-	// v2SessionQueueEnabled switches the enqueue/abort paths from the
-	// external Redis queue (V1 prompt_async + destructive abort) to
-	// opencode's V2 session API (delivery:"queue" + non-destructive
-	// interrupt). Feature flag for Epic 63; default false.
-	v2SessionQueueEnabled bool
-
 	// v2ClientFactory overrides V2 client construction. nil in production
 	// (v2Client resolves pod IP + password and builds the default client).
 	// Tests inject a factory pointing at a dynamic-port httptest.Server,
@@ -120,10 +112,6 @@ type ProxyHandler struct {
 	// Redis client is available (shadow disabled; ListQueue returns empty
 	// under V2). Set via SetV2QueueShadow before Start().
 	v2Shadow *V2QueueShadow
-
-	// sweepInterval overrides the default queueSweepInterval for testing.
-	// Zero means use the default (30s). Set via SetSweepInterval before Start().
-	sweepInterval time.Duration
 
 	// requestBuffer parks POST /message requests during an opencode restart
 	// (connection-refused window) so users do not see 503s. See US-44.10.
@@ -346,7 +334,7 @@ func (h *ProxyHandler) proxyToWorkspaceWithErrBody(
 	}
 
 	// Disk-pressure injection: when the workspace disk is >=90% full,
-	// prepend a notice part to LLM-bound requests (message / prompt_async)
+	// prepend a notice part to LLM-bound requests (POST /message)
 	// so the agent nudges the user to free up space; >=95% escalates to
 	// safe-cleanup guidance (build artifacts + caches only, logs last).
 	// The ratio comes from the Workspace CRD status (controller-mirrored
@@ -508,7 +496,7 @@ func (h *ProxyHandler) proxyToWorkspaceWithErrBody(
 const chatErrorBufferCap = 64 * 1024
 
 // doProxy sends the request to the sandbox and writes the response back to
-// the client. Streaming endpoints (events, prompt_async) are streamed
+// the client. Streaming endpoints (events) are streamed
 // directly to the client with flushed writes.
 //
 // When onErrorBody is non-nil and the upstream returns status >= 400, the

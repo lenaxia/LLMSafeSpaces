@@ -712,7 +712,6 @@ func TestAbortSession_AdapterPath_Error_Returns502(t *testing.T) {
 
 func TestSendPromptAsync_AdapterPath_ReturnsMessageID(t *testing.T) {
 	h := newProxyHandlerForAdapterTest(t)
-	h.v2SessionQueueEnabled = true
 	called := false
 	h.adapter = &mockAdapter{
 		sendAsyncFn: func(_ context.Context, _, _, _, text string, opts session.SendOpts) (string, error) {
@@ -741,7 +740,6 @@ func TestSendPromptAsync_AdapterPath_ReturnsMessageID(t *testing.T) {
 
 func TestSendPromptAsync_AdapterPath_Error_Returns500(t *testing.T) {
 	h := newProxyHandlerForAdapterTest(t)
-	h.v2SessionQueueEnabled = true
 	h.adapter = &mockAdapter{
 		sendAsyncFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (string, error) {
 			return "", fmt.Errorf("pod unreachable")
@@ -762,7 +760,6 @@ func TestSendPromptAsync_AdapterPath_Error_Returns500(t *testing.T) {
 
 func TestSendPromptAsync_AdapterPath_SessionNotFound_Returns404(t *testing.T) {
 	h := newProxyHandlerForAdapterTest(t)
-	h.v2SessionQueueEnabled = true
 	h.adapter = &mockAdapter{
 		sendAsyncFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (string, error) {
 			return "", fmt.Errorf("opencode V2: session not found: ses_missing")
@@ -795,7 +792,6 @@ func TestE2E_Adapter_SendPromptAsync_FullPipeline(t *testing.T) {
 	t.Cleanup(backend.Close)
 
 	env := newE2EEnv(t, backend)
-	env.handler.v2SessionQueueEnabled = true
 
 	body := strings.NewReader(`{"parts":[{"type":"text","text":"async hello"}]}`)
 	w := env.do(http.MethodPost, "/api/v1/workspaces/ws-1/sessions/ses_1/prompt", body)

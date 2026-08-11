@@ -65,11 +65,6 @@ func (h *ProxyHandler) Start() error {
 		// SSE subscriptions for already-Active workspaces are established
 		// by the watcher's seedResourceVersion(), which calls onPhaseChange
 		// for each Active workspace it discovers. No post-Start loop needed.
-
-		// Start the stranded-queue sweep last — after all other setup has
-		// succeeded. This avoids leaking the goroutine if watcher.Start()
-		// fails and the caller doesn't invoke Stop().
-		go h.startQueueSweep(h.stopCh)
 	})
 	return startErr
 }
@@ -135,16 +130,6 @@ func (h *ProxyHandler) SetMeteringService(svc interfaces.MeteringService) {
 	h.meteringSvc = svc
 }
 
-func (h *ProxyHandler) SetMessageQueueService(svc interfaces.MessageQueueService) {
-	h.queueSvc = svc
-}
-
-// SetV2SessionQueueEnabled switches the enqueue/abort paths to opencode's
-// V2 session API (Epic 63). Must be called before Start().
-func (h *ProxyHandler) SetV2SessionQueueEnabled(enabled bool) {
-	h.v2SessionQueueEnabled = enabled
-}
-
 // SetV2QueueShadow injects the Redis-backed shadow marker for V2 queue
 // visibility (US-63.10). Must be called before Start(). Pass nil to
 // disable the shadow (ListQueue returns empty under V2).
@@ -159,17 +144,6 @@ func (h *ProxyHandler) SetV2PendingTracker(t v2PendingTracker) {
 	if t != nil {
 		h.v2Pending = t
 	}
-}
-
-// SetSweepInterval overrides the periodic queue-sweep interval (default 30s).
-// Primarily for tests that need the goroutine to fire quickly. Must be called
-// before Start().
-func (h *ProxyHandler) SetSweepInterval(d time.Duration) {
-	h.sweepInterval = d
-}
-
-func (h *ProxyHandler) GetMessageQueueService() interfaces.MessageQueueService {
-	return h.queueSvc
 }
 
 func (h *ProxyHandler) GetBroker() BrokerPublisher {

@@ -140,7 +140,3 @@ data:
         - {{ . | quote }}
         {{- end }}
     {{- end }}
-    {{- if .Values.sessionQueue.v2Enabled }}
-    sessionQueue:
-      v2Enabled: true
-    {{- end }}

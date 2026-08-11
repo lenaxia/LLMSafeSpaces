@@ -33,7 +33,6 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/health"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/metering"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/metrics"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/msgqueue"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/passkey"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/policy"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/prompt"
@@ -233,11 +232,8 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		wsSvc.SetSessionIndex(sessionIndexSvc)
 	}
 	proxyHandler.SetSessionIndex(sessionIndexSvc)
-	proxyHandler.SetV2SessionQueueEnabled(cfg.SessionQueue.V2Enabled)
 
 	if cacheSvc, ok := svc.Cache.(*cache.Service); ok {
-		queueSvc := msgqueue.NewWithClient(cacheSvc.GetClient())
-		proxyHandler.SetMessageQueueService(queueSvc)
 		proxyHandler.SetV2QueueShadow(handlers.NewV2QueueShadow(cacheSvc.GetClient()))
 		proxyHandler.SetV2PendingTracker(handlers.NewV2PendingTracker(cacheSvc.GetClient()))
 
@@ -1441,13 +1437,6 @@ func (a *App) Run() error {
 			a.agentReloadHandler.SetSSETracker(tracker)
 			if a.bulkReloadHandler != nil {
 				a.bulkReloadHandler.SetSSETracker(tracker)
-			}
-		}
-		// Wire queue clearer and broker so dispose clears pending queue messages.
-		if qs := a.proxyHandler.GetMessageQueueService(); qs != nil {
-			a.agentReloadHandler.SetQueueClearer(qs)
-			if a.bulkReloadHandler != nil {
-				a.bulkReloadHandler.SetQueueClearer(qs)
 			}
 		}
 		if b := a.proxyHandler.GetBroker(); b != nil {

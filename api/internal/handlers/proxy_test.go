@@ -540,30 +540,6 @@ func TestProxy_CreateSessionBypassesLimit(t *testing.T) {
 	assert.Equal(t, http.StatusOK, w.Code, "create session should bypass limit")
 }
 
-func TestProxy_AbortBypassesLimit(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.setupWorkspaceWithT(t, "ws-1", 0)
-
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/s1/abort", nil)
-	assert.Equal(t, http.StatusOK, w.Code, "abort should bypass limit")
-}
-
-func TestProxy_PromptAsyncEnforcesLimit(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.setupWorkspaceWithT(t, "ws-1", 1)
-
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w1 := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/s1/prompt", strings.NewReader(`{"prompt":"hi"}`))
-	assert.Equal(t, http.StatusOK, w1.Code)
-
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w2 := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/s2/prompt", strings.NewReader(`{"prompt":"hi"}`))
-	assert.Equal(t, http.StatusTooManyRequests, w2.Code, "prompt_async should enforce session limit")
-}
-
 func TestProxy_ConnectionCeiling(t *testing.T) {
 	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(100 * time.Millisecond)
@@ -614,13 +590,14 @@ func TestProxy_EndpointMapping(t *testing.T) {
 		{"create session", "POST", "/api/v1/workspaces/ws-1/sessions", "/session"},
 		{"list sessions", "GET", "/api/v1/workspaces/ws-1/sessions", "/session"},
 		{"send message", "POST", "/api/v1/workspaces/ws-1/sessions/s1/message", "/session/s1/message"},
-		{"prompt async", "POST", "/api/v1/workspaces/ws-1/sessions/s1/prompt", "/session/s1/prompt_async"},
 		{"get history", "GET", "/api/v1/workspaces/ws-1/sessions/s1/message", "/session/s1/message"},
 		{"get session", "GET", "/api/v1/workspaces/ws-1/sessions/s1", "/session/s1"},
-		{"abort", "POST", "/api/v1/workspaces/ws-1/sessions/s1/abort", "/session/s1/abort"},
 		{"delete session", "DELETE", "/api/v1/workspaces/ws-1/sessions/s1", "/session/s1"},
 		// NOTE: "events" is intentionally omitted — StreamEvents is broker-based
 		// and does not proxy to the pod; it is covered by stream_events_test.go.
+		// NOTE: "prompt async" and "abort" are intentionally omitted — these are
+		// served by the V2 path (adapter/V2SessionClient) and do not proxy to
+		// opencode's /session/<id>/prompt_async or /session/<id>/abort.
 	}
 
 	for _, tt := range tests {
@@ -672,16 +649,15 @@ func TestProxy_E2E_FullFlow(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 				_, _ = w.Write([]byte(`[]`))
 			}
-		case "/session/sess-1/prompt_async":
-			w.WriteHeader(http.StatusNoContent)
-		case "/session/sess-1/abort":
-			w.WriteHeader(http.StatusAccepted)
 		case "/session/sess-1":
 			if r.Method == "DELETE" {
 				w.WriteHeader(http.StatusOK)
 				json.NewEncoder(w).Encode(map[string]bool{"deleted": true})
 			}
 			// NOTE: /event is intentionally omitted — StreamEvents no longer proxies to the pod.
+			// NOTE: /session/<id>/prompt_async and /session/<id>/abort are intentionally
+			// omitted — these are served by the V2 path (adapter/V2SessionClient) and
+			// do not proxy to opencode in this test fixture.
 		}
 	})
 	env.setupPasswordWithT(t, "ws-1", "test-password")
@@ -702,16 +678,8 @@ func TestProxy_E2E_FullFlow(t *testing.T) {
 	env.handler.removeActiveSession(context.Background(), "ws-1", "sess-1")
 
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w = env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/sess-1/prompt", strings.NewReader(`{"prompt":"do something"}`))
-	assert.Equal(t, http.StatusNoContent, w.Code)
-
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	w = env.doRequestWithT(t, "GET", "/api/v1/workspaces/ws-1/sessions/sess-1/message", nil)
 	assert.Equal(t, http.StatusOK, w.Code)
-
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	w = env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/sess-1/abort", nil)
-	assert.Equal(t, http.StatusAccepted, w.Code)
 
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	w = env.doRequestWithT(t, "DELETE", "/api/v1/workspaces/ws-1/sessions/sess-1", nil)
@@ -721,9 +689,7 @@ func TestProxy_E2E_FullFlow(t *testing.T) {
 		"POST /session",
 		"GET /session",
 		"POST /session/sess-1/message",
-		"POST /session/sess-1/prompt_async",
 		"GET /session/sess-1/message",
-		"POST /session/sess-1/abort",
 		"DELETE /session/sess-1",
 	}
 	assert.Equal(t, expected, requests)
@@ -2392,38 +2358,6 @@ func TestProxy_OnSessionIdle_FetchAndPersistTitleWithoutWsConfig(t *testing.T) {
 		assert.Equal(t, "Test Session", si.titleUpserts[0].title)
 	}
 	si.mu.Unlock()
-}
-
-func TestProxy_SendPromptAsync_Returns409WhenSessionActive(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.setupWorkspaceWithT(t, "ws-1", 5)
-
-	env.handler.SetActiveSessionsForTest("ws-1", []string{"s1"})
-
-	body := strings.NewReader(`{"parts":[{"type":"text","text":"hello"}]}`)
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/s1/prompt", body)
-
-	assert.Equal(t, http.StatusConflict, w.Code)
-	assert.Equal(t, "1", w.Header().Get("Retry-After"))
-
-	var resp map[string]interface{}
-	require.NoError(t, json.NewDecoder(w.Body).Decode(&resp))
-	assert.Equal(t, "session is busy; retry after idle", resp["error"])
-	assert.Equal(t, float64(1), resp["retryAfter"])
-}
-
-func TestProxy_SendPromptAsync_ProceedsWhenSessionNotActive(t *testing.T) {
-	env := newTestEnv(t)
-	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-	env.setupWorkspaceWithT(t, "ws-1", 5)
-
-	body := strings.NewReader(`{"parts":[{"type":"text","text":"hello"}]}`)
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/s1/prompt", body)
-
-	assert.Equal(t, http.StatusOK, w.Code)
 }
 
 func TestProxy_IsSessionActive_ReturnsFalseForUnknownWorkspace(t *testing.T) {

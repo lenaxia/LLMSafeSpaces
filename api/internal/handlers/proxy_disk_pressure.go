@@ -4,15 +4,12 @@
 package handlers
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"math"
 	"os"
 	"strconv"
 	"strings"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // Disk-pressure injection (feature: LLM disk-space nudges).
@@ -191,7 +188,10 @@ func injectDiskPressureNotice(body []byte, ratio float64) []byte {
 		}
 	}
 
-	noticePart, _ := json.Marshal(promptPart{Type: "text", Text: diskPressureNotice(level, ratio)})
+	noticePart, _ := json.Marshal(struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}{Type: "text", Text: diskPressureNotice(level, ratio)})
 	parts := make([]json.RawMessage, 0, len(existing)+1)
 	parts = append(parts, noticePart)
 	parts = append(parts, existing...)
@@ -210,29 +210,8 @@ func injectDiskPressureNotice(body []byte, ratio float64) []byte {
 }
 
 // isLLMPromptPath reports whether a proxy target path carries a user
-// prompt that reaches the LLM (message send + prompt_async). Other
-// paths (question/permission replies, session CRUD, abort, etc.) do not
-// warrant a disk-pressure notice.
+// prompt that reaches the LLM. Only /message remains post-US-63.7 (V2
+// prompts go through enqueueV2 → client.PromptV2, not proxyToWorkspace).
 func isLLMPromptPath(targetPath string) bool {
-	return strings.HasSuffix(targetPath, "/message") || strings.HasSuffix(targetPath, "/prompt_async")
-}
-
-// workspaceDiskRatio returns the workspace's disk usage ratio
-// (used/total) from the Workspace CRD status — the same fields the
-// controller mirrors from agentd /v1/statusz on its deep-status poll
-// (~60s) and that the frontend renders as a disk-usage %. Returns 0 on
-// any read error (fail-open: no injection).
-func (h *ProxyHandler) workspaceDiskRatio(ctx context.Context, workspaceID string) float64 {
-	if h.k8sClient == nil {
-		return 0
-	}
-	v1Client, err := h.k8sClient.LlmsafespacesV1()
-	if err != nil {
-		return 0
-	}
-	ws, err := v1Client.Workspaces(h.namespace).Get(ctx, workspaceID, metav1.GetOptions{})
-	if err != nil {
-		return 0
-	}
-	return diskPressureRatio(ws.Status.DiskUsedBytes, ws.Status.DiskTotalBytes)
+	return strings.HasSuffix(targetPath, "/message")
 }

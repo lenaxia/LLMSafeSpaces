@@ -17,11 +17,12 @@ import (
 // PromptAdmitted events; cleared on Prompted events; read by ListQueue
 // for fresh-load visibility (US-63.10).
 //
-// This is NOT the deleted msgqueue.Service. It holds only {messageID,
-// text, enqueuedAt} tuples derived from opencode's own events as a
-// view-cache. opencode's SQLite is the authoritative source; the shadow
-// is best-effort and may diverge on edge cases (replica crash mid-event).
-// Cross-replica: Redis-backed so any replica can serve GET /queue.
+// This is NOT the deleted Redis-backed message-queue service. It holds
+// only {messageID, text, enqueuedAt} tuples derived from opencode's own
+// events as a view-cache. opencode's SQLite is the authoritative source;
+// the shadow is best-effort and may diverge on edge cases (replica crash
+// mid-event). Cross-replica: Redis-backed so any replica can serve
+// GET /queue.
 type V2QueueShadow struct {
 	client *redis.Client
 }
