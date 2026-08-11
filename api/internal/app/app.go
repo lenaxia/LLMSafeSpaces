@@ -44,6 +44,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
 	apiwf "github.com/lenaxia/llmsafespaces/api/internal/workflows"
+	pkgagent "github.com/lenaxia/llmsafespaces/pkg/agent"
 	agentoc "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"github.com/lenaxia/llmsafespaces/pkg/billing"
@@ -179,6 +180,10 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		return nil, fmt.Errorf("failed to create Kubernetes client: %w", err)
 	}
 
+	// US-65.6-followup: register the agent runtime explicitly instead of
+	// relying on init() side-effects.
+	agentoc.Register()
+
 	svc, err := services.New(cfg, log, k8sClient)
 	if err != nil {
 		cancel()
@@ -210,6 +215,12 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		log.ZapLogger(),
 	)
 	proxyHandler.SetAdapter(agentAdapter)
+
+	// Wire the V2 client concrete factory (US-65.6: removes opencode import
+	// from proxy_v2.go; the factory is the only allowed opencode import site).
+	proxyHandler.SetV2ClientConcreteFactory(func(baseURL, password string) (pkgagent.V2SessionClient, error) {
+		return agentoc.NewClient(baseURL, password, log.ZapLogger()), nil
+	})
 
 	// Resolve subagent (subtask) sessions back to their root user-visible
 	// session, so permission/question events from child sessions bubble up
@@ -1060,6 +1071,14 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		pwGetter := proxyHandler.GetPasswordGetter()
 		agentReloadHandler.SetPasswordGetter(pwGetter)
 		bulkReloadHandler.SetPasswordGetter(pwGetter)
+		// US-65.6: wire the status checker factory so agent_reload.go
+		// doesn't import pkg/agent/opencode.
+		agentReloadHandler.SetStatusCheckerFactory(func(podIP, password string) handlers.SessionStatusChecker {
+			return agentoc.NewClient("http://"+podIP, password, log.ZapLogger())
+		})
+		bulkReloadHandler.SetStatusCheckerFactory(func(podIP, password string) handlers.SessionStatusChecker {
+			return agentoc.NewClient("http://"+podIP, password, log.ZapLogger())
+		})
 		// US-29.5: construct ModelsHandler with AgentClient now that
 		// the password getter is available.
 		if modelsHandler != nil {

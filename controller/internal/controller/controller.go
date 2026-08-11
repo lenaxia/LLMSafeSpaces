@@ -11,11 +11,14 @@ import (
 
 	"github.com/lenaxia/llmsafespaces/controller/internal/relay"
 	"github.com/lenaxia/llmsafespaces/controller/internal/workspace"
-	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
+	// opencode import removed; registration happens in controller main.
 )
 
-func init() {
-	opencode.Register()
+// RegisterAgentRuntime is called from controller main to register the
+// opencode agent runtime. The actual opencode.Register() call happens in
+// the controller main package (the allowed construction layer).
+func RegisterAgentRuntime() {
+	// No-op; controller main calls opencode.Register() directly.
 }
 
 // orgStatusCacheTTL is the freshness window for the controller's in-memory

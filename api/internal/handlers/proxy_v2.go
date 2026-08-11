@@ -6,7 +6,6 @@ package handlers
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -16,39 +15,31 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
 
-	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
+	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
 
-// V2SessionClient is the subset of opencode.Client methods the proxy's V2
-// session-queue paths use. *opencode.Client satisfies this structurally.
+// V2SessionClient is re-exported from pkg/agent (the canonical location).
 // Defined as an interface so tests inject a client targeting a dynamic-port
-// httptest.Server instead of the hardcoded port 4096 — which is shared with
-// other tests in this package and causes non-deterministic port contention.
-type V2SessionClient interface {
-	PromptV2(ctx context.Context, sessionID, text string, delivery opencode.V2Delivery) (*opencode.V2PromptResponse, error)
-	InterruptV2(ctx context.Context, sessionID string) error
-}
+// httptest.Server instead of the hardcoded port 4096.
+type V2SessionClient = agent.V2SessionClient
 
 // V2ClientFactory builds a V2SessionClient for the given workspace.
-// Tests override via SetV2ClientFactory to point at a dynamic-port server.
-type V2ClientFactory func(ctx context.Context, workspaceID string) (V2SessionClient, error)
+type V2ClientFactory = agent.V2ClientFactory
 
 // SetV2ClientFactory overrides V2 client construction. Used by tests to
-// inject a client targeting a dynamic-port httptest.Server, eliminating the
-// port 4096 dependency that caused non-deterministic failures under the race
-// detector. Must be called before any request hits the V2 path.
+// inject a client targeting a dynamic-port httptest.Server.
 func (h *ProxyHandler) SetV2ClientFactory(f V2ClientFactory) {
 	h.v2ClientFactory = f
 }
 
-// v2Client resolves the workspace's pod and constructs (or returns the
-// injected) V2SessionClient.
-//
-// This file is a known leak in the agent-import boundary (repolint
-// agentImportKnownLeaks) — it imports pkg/agent/opencode/ to call the
-// concrete V2 client. Retires when US-65.4 migrates the proxy handlers to
-// the agent.Adapter interface.
+// SetV2ClientConcreteFactory sets the factory that builds a V2SessionClient
+// from a baseURL + password. app.go wires this with opencode.NewClient so
+// this file does not import the opencode package.
+func (h *ProxyHandler) SetV2ClientConcreteFactory(f func(baseURL, password string) (agent.V2SessionClient, error)) {
+	h.v2ClientConcreteFactory = f
+}
+
 func (h *ProxyHandler) v2Client(ctx context.Context, workspaceID string) (V2SessionClient, error) {
 	if h.v2ClientFactory != nil {
 		return h.v2ClientFactory(ctx, workspaceID)
@@ -58,7 +49,12 @@ func (h *ProxyHandler) v2Client(ctx context.Context, workspaceID string) (V2Sess
 		return nil, err
 	}
 	baseURL := fmt.Sprintf("http://%s:%d", podIP, agentd.AgentPort)
-	return opencode.NewClient(baseURL, password, nil), nil
+	// Use a factory set during wiring (app.go) — this file must not
+	// import pkg/agent/opencode.
+	if h.v2ClientConcreteFactory != nil {
+		return h.v2ClientConcreteFactory(baseURL, password)
+	}
+	return nil, fmt.Errorf("V2 client factory not configured")
 }
 
 // ---------------------------------------------------------------------------
@@ -338,7 +334,7 @@ func (h *ProxyHandler) wakeStrandedV2Sessions(ctx context.Context, workspaceID s
 		// A single newline triggers execution.wake → runner.run → drains
 		// ALL pending rows. Non-empty (passes F18 validation). Minimal
 		// history pollution — one turn the LLM processes as a blank.
-		if _, err := client.PromptV2(ctx, sid, "\n", opencode.V2DeliveryQueue); err != nil {
+		if _, err := client.PromptV2(ctx, sid, "\n", agent.V2DeliveryQueue); err != nil {
 			h.logger.Warn("V2 stranded-input recovery: wake prompt failed",
 				"error", err, "workspaceID", workspaceID, "sessionID", sid)
 			continue
@@ -372,9 +368,9 @@ func (h *ProxyHandler) enqueueV2(c *gin.Context, wid, sid, text string) bool {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to reach workspace"})
 		return true
 	}
-	resp, err := client.PromptV2(c.Request.Context(), sid, text, opencode.V2DeliveryQueue)
+	resp, err := client.PromptV2(c.Request.Context(), sid, text, agent.V2DeliveryQueue)
 	if err != nil {
-		if errors.Is(err, opencode.ErrV2SessionNotFound) {
+		if agent.IsSessionNotFound(err) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "session not found"})
 			return true
 		}
