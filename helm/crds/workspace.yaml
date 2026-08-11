@@ -73,6 +73,9 @@ spec:
                     ingress:
                       type: boolean
                       default: false
+                    devPreview:
+                      type: boolean
+                      default: false
                 autoSuspend:
                   type: object
                   default: {}

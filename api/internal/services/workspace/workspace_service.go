@@ -550,6 +550,9 @@ func (s *Service) GetWorkspace(ctx context.Context, userID, workspaceID string) 
 	if crd != nil {
 		ws.Phase = string(crd.Status.Phase)
 		ws.PVCName = crd.Status.PVCName
+		if crd.Spec.NetworkAccess != nil {
+			ws.DevPreviewEnabled = crd.Spec.NetworkAccess.DevPreview
+		}
 	}
 
 	return ws, nil
@@ -1761,6 +1764,31 @@ func (s *Service) RenameWorkspace(ctx context.Context, userID, workspaceID, name
 		return err
 	}
 	return s.dbService.UpdateWorkspace(ctx, workspaceID, types.WorkspaceUpdates{Name: &name})
+}
+
+// SetDevPreview toggles spec.networkAccess.devPreview on the workspace CRD
+// (Epic 66). The opt-in flag is read by the dev-preview handler on every
+// request; no pod restart is needed.
+func (s *Service) SetDevPreview(ctx context.Context, userID, workspaceID string, enabled bool) error {
+	if err := s.verifyOwner(ctx, userID, workspaceID); err != nil {
+		return err
+	}
+	wsClient, err := s.workspaceCRDClient()
+	if err != nil {
+		return apierrors.NewInternalError("workspace_client_failed", err)
+	}
+	crd, err := wsClient.Get(ctx, workspaceID, metav1.GetOptions{})
+	if err != nil {
+		return apierrors.NewInternalError("workspace_get_failed", err)
+	}
+	if crd.Spec.NetworkAccess == nil {
+		crd.Spec.NetworkAccess = &v1.WorkspaceNetworkAccess{}
+	}
+	crd.Spec.NetworkAccess.DevPreview = enabled
+	if _, err := wsClient.Update(ctx, crd); err != nil {
+		return apierrors.NewInternalError("workspace_update_failed", err)
+	}
+	return nil
 }
 
 // RenameSession updates the title of a session in the session index.

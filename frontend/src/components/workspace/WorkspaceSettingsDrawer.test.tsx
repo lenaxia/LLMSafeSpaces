@@ -13,6 +13,7 @@ vi.mock("../../api/client", () => ({
   api: {
     get: vi.fn(),
     put: vi.fn(),
+    patch: vi.fn(),
   },
 }));
 
@@ -44,6 +45,7 @@ describe("WorkspaceSettingsDrawer", () => {
     vi.clearAllMocks();
     (api.get as ReturnType<typeof vi.fn>).mockResolvedValue({ bindings: [] });
     (api.put as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    (api.patch as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
   });
 
   it("renders when open", () => {
@@ -119,6 +121,49 @@ describe("WorkspaceSettingsDrawer", () => {
     await waitFor(() => {
       expect(onOpenChange).toHaveBeenCalledWith(false);
     });
+  });
+
+  it("sends devPreview toggle state on save", async () => {
+    render(
+      <WorkspaceSettingsDrawer
+        workspace={mockWorkspace}
+        open={true}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("Dev Preview")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText("Enable dev preview tunnel"));
+    fireEvent.click(screen.getByText("Save"));
+
+    await waitFor(() => {
+      expect(api.put).toHaveBeenCalledWith(`/workspaces/ws-1/dev-preview`, {
+        enabled: true,
+      });
+    });
+  });
+
+  it("shows open-preview link when dev preview is enabled and workspace is Active", async () => {
+    (api.get as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
+      if (path.includes("/prompt")) return Promise.resolve({ prompt: "" });
+      if (path.includes("/bindings")) return Promise.resolve({ bindings: [] });
+      if (path === `/workspaces/ws-1`) return Promise.resolve({ devPreviewEnabled: true });
+      return Promise.resolve({});
+    });
+    render(
+      <WorkspaceSettingsDrawer
+        workspace={mockWorkspace}
+        open={true}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("Open preview")).toBeInTheDocument());
+    expect(screen.getByText("Open preview").closest("a")).toHaveAttribute(
+      "href",
+      expect.stringContaining(`/api/v1/workspaces/ws-1/dev-preview/5173/`),
+    );
   });
 
   it("disables save button while saving", async () => {

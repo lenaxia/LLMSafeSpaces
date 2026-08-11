@@ -113,6 +113,7 @@ func TestInjectAgentdMCPServer_EmptyConfig(t *testing.T) {
 	assert.Equal(t, true, entry["enabled"])
 	assert.Equal(t, "remote", entry["type"])
 	assert.Contains(t, entry["url"].(string), "/v1/mcp")
+	assert.Contains(t, entry["url"].(string), ":4097", "MCP server must be injected on the user mux port (4097), not admin (4098)")
 }
 
 func TestInjectAgentdMCPServer_ExistingMCP(t *testing.T) {
@@ -142,6 +143,84 @@ func TestCallMCPTool_UnknownTool(t *testing.T) {
 func TestCallMCPTool_SessionRead_MissingID(t *testing.T) {
 	_, err := callMCPTool(context.Background(), "password", "session_read", map[string]any{})
 	assert.Error(t, err)
+}
+
+func TestCallMCPTool_DevPreviewURL_HappyPath(t *testing.T) {
+	t.Setenv("WORKSPACE_ID", "ws-abc-123")
+	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
+
+	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
+		"port": float64(5173),
+	})
+	require.NoError(t, err)
+	assert.Contains(t, result, "https://platform.example.com/api/v1/workspaces/ws-abc-123/dev-preview/5173/")
+	assert.Contains(t, result, "Dev preview must be enabled")
+	assert.Contains(t, result, "Workspace Settings")
+}
+
+func TestCallMCPTool_DevPreviewURL_WithPath(t *testing.T) {
+	t.Setenv("WORKSPACE_ID", "ws-abc-123")
+	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
+
+	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
+		"port": float64(3000),
+		"path": "/dashboard",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, result, "/dev-preview/3000/dashboard")
+	assert.Contains(t, result, "Dev preview must be enabled")
+}
+
+func TestCallMCPTool_DevPreviewURL_PathWithoutSlash(t *testing.T) {
+	t.Setenv("WORKSPACE_ID", "ws-abc-123")
+	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
+
+	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
+		"port": float64(5173),
+		"path": "about",
+	})
+	require.NoError(t, err)
+	assert.Contains(t, result, "/dev-preview/5173/about")
+}
+
+func TestCallMCPTool_DevPreviewURL_MissingPort(t *testing.T) {
+	_, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{})
+	assert.Error(t, err)
+}
+
+func TestCallMCPTool_DevPreviewURL_PortOutOfRange(t *testing.T) {
+	for _, port := range []float64{0, -1, 65536} {
+		_, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
+			"port": port,
+		})
+		assert.Error(t, err, "port %v should be rejected", port)
+	}
+}
+
+func TestMCPHandler_ToolsList_IncludesDevPreviewURL(t2 *testing.T) {
+	req := mcpRequest{JSONRPC: "2.0", ID: 2, Method: "tools/list"}
+	body, _ := json.Marshal(req)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/v1/mcp", newBodyReader(body))
+	mcpHandler("test-password")(w, r)
+
+	var resp mcpResponse
+	require.NoError(t2, json.Unmarshal(w.Body.Bytes(), &resp))
+	result := resp.Result.(map[string]any)
+	tools := result["tools"].([]any)
+
+	var found bool
+	for _, tool := range tools {
+		t := tool.(map[string]any)
+		if t["name"] == "dev_preview_url" {
+			found = true
+			props := t["inputSchema"].(map[string]any)["properties"].(map[string]any)
+			_, hasPort := props["port"]
+			assert.True(t2, hasPort, "dev_preview_url should have a port parameter")
+		}
+	}
+	assert.True(t2, found, "dev_preview_url tool should be in the tools list")
 }
 
 func newBodyReader(b []byte) *bytes.Reader {

@@ -270,6 +270,69 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/dev-preview:
+    put:
+      tags: [workspaces]
+      summary: Toggle the dev-preview tunnel (Epic 66)
+      description: Enables or disables the authenticated HTTP/WS tunnel for viewing in-workspace dev servers.
+      operationId: setDevPreview
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled:
+                  type: boolean
+                  description: Whether to enable dev preview.
+      responses:
+        "204":
+          description: Dev preview setting updated
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/dev-preview/{port}:
+    get:
+      tags: [workspaces]
+      summary: Dev preview proxy (Epic 66)
+      description: >
+        Proxied HTTP/WS tunnel to a dev server running on localhost inside the workspace pod.
+        Returns the dev server's response (HTML, JS, WebSocket HMR) — not JSON.
+        Requires dev preview to be enabled (PUT /workspaces/{id}/dev-preview).
+        Authenticated to the workspace owner only via session cookie or Bearer header.
+      operationId: devPreviewProxy
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - name: port
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1024
+            maximum: 65535
+          description: The localhost port the dev server is listening on.
+        - name: path
+          in: path
+          required: false
+          schema:
+            type: string
+          description: The path on the dev server (defaults to /).
+      responses:
+        "200":
+          description: The proxied dev server response (content type varies).
+        "400":
+          description: Invalid or denied port.
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          description: Dev preview not enabled, workspace not active, or globally disabled.
   /workspaces/{id}/status:
     get:
       tags: [workspaces]
@@ -3077,6 +3140,10 @@ components:
         updatedAt:
           type: string
           format: date-time
+        devPreviewEnabled:
+          type: boolean
+          description: Whether the authenticated HTTP/WS dev-preview tunnel is enabled (Epic 66).
+          default: false
     CreateWorkspaceRequest:
       type: object
       properties:
@@ -3124,6 +3191,10 @@ components:
         updatedAt:
           type: string
           format: date-time
+        devPreviewEnabled:
+          type: boolean
+          description: Whether the authenticated HTTP/WS dev-preview tunnel is enabled (Epic 66).
+          default: false
     PaginationMetadata:
       type: object
       properties:

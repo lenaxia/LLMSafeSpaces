@@ -248,6 +248,11 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	userMux.HandleFunc("/v1/workflow/session/delete", workflowDeleteSessionHandler(deps.password))
 	userMux.HandleFunc("/v1/mcp", mcpHandler(deps.password))
 
+	// Epic 66: Dev Preview — authenticated HTTP/WS tunnel to localhost dev
+	// servers. The API server proxies to this endpoint, which forwards to
+	// localhost:<port>. Port denylist + Host rewrite per PREVIEW-CONTRACT.md.
+	userMux.HandleFunc("/v1/dev-preview/", devPreviewHandler(deps.password))
+
 	// Start admin server (health probes) on dedicated port.
 	adminSrv = &http.Server{
 		Addr:              agentd.AgentdAdminAddr,

@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 )
 
 // WorkspacesService handles workspace operations.
@@ -97,6 +99,24 @@ func (s *WorkspacesService) GetEnv(ctx context.Context, id string) (map[string]a
 
 func (s *WorkspacesService) DeleteEnv(ctx context.Context, id, varName string) error {
 	return s.c.do(ctx, "DELETE", "/workspaces/"+id+"/env/"+varName, nil, nil)
+}
+
+// SetDevPreview toggles the authenticated dev-preview tunnel (Epic 66).
+func (s *WorkspacesService) SetDevPreview(ctx context.Context, id string, enabled bool) error {
+	return s.c.do(ctx, "PUT", "/workspaces/"+id+"/dev-preview", map[string]bool{"enabled": enabled}, nil)
+}
+
+// DevPreviewURL returns the URL to open the dev-preview proxy in a browser.
+// The URL is authenticated via session cookie; no token in the URL.
+// The dev server must be running on `port` inside the workspace.
+func (s *WorkspacesService) DevPreviewURL(id string, port int, path string) string {
+	if path == "" {
+		path = "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return s.c.baseURL + "/api/v1/workspaces/" + id + "/dev-preview/" + strconv.Itoa(port) + path
 }
 
 func (s *WorkspacesService) GetModels(ctx context.Context, id string) (*ModelListResponse, error) {

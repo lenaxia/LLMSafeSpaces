@@ -289,6 +289,23 @@ func TestCreateWorkspace_DefaultNetworkAccess_Applied(t *testing.T) {
 	f.ws.AssertExpectations(t)
 }
 
+// === Epic 66: DevPreview field defaults + pass-through ===
+
+func TestCreateWorkspace_DevPreview_DefaultsFalse(t *testing.T) {
+	f := newDefaultsFixture(t, nil)
+	ctx := context.Background()
+
+	f.ws.On("Create", mock.Anything, mock.MatchedBy(func(ws *v1.Workspace) bool {
+		return ws.Spec.NetworkAccess == nil || !ws.Spec.NetworkAccess.DevPreview
+	})).Return(crdWorkspace("ws-1", "default", "user1", "1Gi"), nil)
+	f.db.On("CreateWorkspace", ctx, mock.Anything).Return(nil)
+
+	req := types.CreateWorkspaceRequest{Name: "test", StorageSize: "1Gi", Runtime: "base"}
+	_, err := f.svc.CreateWorkspace(ctx, "user1", req)
+	assert.NoError(t, err)
+	f.ws.AssertExpectations(t)
+}
+
 // === Unhappy paths: settings service errors ===
 
 func TestCreateWorkspace_SettingsError_GracefulDegradation(t *testing.T) {

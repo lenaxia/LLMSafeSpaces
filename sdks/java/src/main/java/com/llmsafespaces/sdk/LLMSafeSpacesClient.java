@@ -68,6 +68,10 @@ public class LLMSafeSpacesClient {
         return new Builder(baseUrl);
     }
 
+    public String getBaseUrl() {
+        return baseUrl;
+    }
+
     @SuppressWarnings("unchecked")
     public <T> T request(String method, String path, Object body, Class<T> type) {
         return requestWithRetry(method, path, body, (Type) type, false);

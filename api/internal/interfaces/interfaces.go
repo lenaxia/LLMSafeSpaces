@@ -154,6 +154,7 @@ type WorkspaceService interface {
 	RenameSession(ctx context.Context, userID, workspaceID, sessionID, title string) error
 	MarkSessionSeen(ctx context.Context, userID, workspaceID, sessionID string) error
 	RenameWorkspace(ctx context.Context, userID, workspaceID, name string) error
+	SetDevPreview(ctx context.Context, userID, workspaceID string, enabled bool) error
 	Start() error
 	Stop() error
 }

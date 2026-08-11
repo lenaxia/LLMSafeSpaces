@@ -122,6 +122,10 @@ type RouterConfig struct {
 	// TerminalHandler is the handler for WebSocket terminal proxy (optional)
 	TerminalHandler *handlers.TerminalHandler
 
+	// DevPreviewHandler is the handler for the authenticated HTTP/WS tunnel
+	// to in-workspace dev servers (Epic 66, optional). nil when disabled.
+	DevPreviewHandler *handlers.DevPreviewHandler
+
 	// AgentReloadHandler handles POST /api/v1/workspaces/:id/agent/reload (optional)
 	AgentReloadHandler *handlers.AgentReloadHandler
 
@@ -458,6 +462,12 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 		// Ticket-based auth is by design (design 0041 edge case 3); the ticket was
 		// issued after middleware verification, so it inherits the ownership check.
 		router.GET("/api/v1/workspaces/:id/terminal", cfg.TerminalHandler.HandleTerminal)
+	}
+
+	// Dev preview routes (Epic 66 — authenticated HTTP/WS tunnel to dev servers).
+	// On idGroup so WorkspaceAccessMiddleware + AuthMiddleware run first.
+	if cfg.DevPreviewHandler != nil {
+		idGroup.GET("/dev-preview/*portPath", cfg.DevPreviewHandler.HandleDevPreview)
 	}
 
 	// Settings routes (admin + user)
@@ -1122,6 +1132,28 @@ func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, serv
 			return
 		}
 		if err := wsSvc.RenameWorkspace(c.Request.Context(), userID, c.Param("id"), body.Name); err != nil {
+			respondWithError(c, err)
+			return
+		}
+		c.Status(http.StatusNoContent)
+	})
+
+	// Epic 66: Dev Preview toggle. Dedicated endpoint rather than a general
+	// PATCH because the only mutable networkAccess field in v1 is devPreview.
+	idGroup.PUT("/dev-preview", func(c *gin.Context) {
+		userID := authSvc.GetUserID(c)
+		if userID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
+			return
+		}
+		var body struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
+			return
+		}
+		if err := wsSvc.SetDevPreview(c.Request.Context(), userID, c.Param("id"), body.Enabled); err != nil {
 			respondWithError(c, err)
 			return
 		}

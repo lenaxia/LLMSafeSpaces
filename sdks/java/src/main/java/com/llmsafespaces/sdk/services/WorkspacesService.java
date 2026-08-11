@@ -51,4 +51,18 @@ public class WorkspacesService {
     public List<Workspace> list() {
         return c.request("GET", "/workspaces", null, new TypeToken<List<Workspace>>(){}.getType());
     }
+
+    public void setDevPreview(String id, boolean enabled) {
+        c.requestVoid("PUT", "/workspaces/" + id + "/dev-preview", Map.of("enabled", enabled));
+    }
+
+    public String devPreviewUrl(String id, int port, String path) {
+        if (path == null || path.isEmpty()) {
+            path = "/";
+        }
+        if (!path.startsWith("/")) {
+            path = "/" + path;
+        }
+        return c.getBaseUrl() + "/api/v1/workspaces/" + id + "/dev-preview/" + port + path;
+    }
 }

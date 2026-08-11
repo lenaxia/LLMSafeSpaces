@@ -113,6 +113,10 @@ func (m *MockWorkspaceService) RenameWorkspace(ctx context.Context, userID, work
 	return m.Called(ctx, userID, workspaceID, name).Error(0)
 }
 
+func (m *MockWorkspaceService) SetDevPreview(ctx context.Context, userID, workspaceID string, enabled bool) error {
+	return m.Called(ctx, userID, workspaceID, enabled).Error(0)
+}
+
 func (m *MockWorkspaceService) EnsureSession(ctx context.Context, userID, workspaceID string) (*types.EnsureSessionResponse, error) {
 	args := m.Called(ctx, userID, workspaceID)
 	if args.Get(0) == nil {

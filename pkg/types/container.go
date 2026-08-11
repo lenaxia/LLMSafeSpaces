@@ -24,6 +24,10 @@ type NetworkAccess struct {
 
 	// Allow ingress traffic to sandbox
 	Ingress bool `json:"ingress,omitempty"`
+
+	// DevPreview enables the authenticated HTTP/WS tunnel for viewing
+	// in-workspace dev servers (Vite, Next, etc.) from a browser (Epic 66).
+	DevPreview bool `json:"devPreview,omitempty"`
 }
 
 // EgressRule defines an egress rule

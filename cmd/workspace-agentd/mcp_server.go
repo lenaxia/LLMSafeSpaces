@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"strings"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
@@ -81,6 +83,18 @@ func mcpHandler(password string) http.HandlerFunc {
 							"required": []string{"session_id"},
 						},
 					},
+					{
+						Name:        "dev_preview_url",
+						Description: "Construct the authenticated dev-preview URL for viewing a web app running in this workspace. The user must have dev preview enabled in workspace settings. Returns a URL the user can open in their browser to see the dev server output (with HMR support). No API call is made — the URL is deterministic.",
+						InputSchema: map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"port": map[string]any{"type": "integer", "description": "The localhost port the dev server is listening on (e.g. 5173 for Vite, 3000 for Next)"},
+								"path": map[string]any{"type": "string", "description": "Optional path on the dev server (defaults to /)"},
+							},
+							"required": []string{"port"},
+						},
+					},
 				},
 			})
 
@@ -129,6 +143,19 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 			limit = int(l)
 		}
 		return mcpSessionRead(ctx, password, sessionID, limit)
+	case "dev_preview_url":
+		port, ok := toInt(args["port"])
+		if !ok || port < 1 || port > 65535 {
+			return "", fmt.Errorf("port is required and must be between 1 and 65535")
+		}
+		path := "/"
+		if p, ok := args["path"].(string); ok && p != "" {
+			if !strings.HasPrefix(p, "/") {
+				p = "/" + p
+			}
+			path = p
+		}
+		return mcpDevPreviewURL(port, path), nil
 	default:
 		return "", fmt.Errorf("unknown tool: %s", name)
 	}
@@ -160,6 +187,27 @@ func mcpSessionRead(ctx context.Context, password, sessionID string, limit int) 
 	return string(body), nil
 }
 
+func mcpDevPreviewURL(port int, path string) string {
+	workspaceID := os.Getenv("WORKSPACE_ID")
+	apiURL := os.Getenv("LLMSAFESPACE_API_URL")
+	url := fmt.Sprintf("%s/api/v1/workspaces/%s/dev-preview/%d%s", apiURL, workspaceID, port, path)
+	return fmt.Sprintf("%s\n\nDev preview must be enabled for this URL to work. If the user gets a 503 error, they need to enable it first via Workspace Settings (gear icon) → Dev Preview → Enable.", url)
+}
+
+func toInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int(n), true
+	case int:
+		return n, true
+	case json.Number:
+		i, err := n.Int64()
+		return int(i), err == nil
+	default:
+		return 0, false
+	}
+}
+
 func writeMCPResult(w http.ResponseWriter, id any, result any) {
 	_ = json.NewEncoder(w).Encode(mcpResponse{
 		JSONRPC: "2.0",
@@ -180,7 +228,7 @@ func injectAgentdMCPServer(cfg map[string]json.RawMessage) {
 	mcpEntry := map[string]any{
 		"enabled": true,
 		"type":    "remote",
-		"url":     fmt.Sprintf("http://127.0.0.1:%d/v1/mcp", agentd.AgentdAdminPort),
+		"url":     fmt.Sprintf("http://127.0.0.1:%d/v1/mcp", agentd.AgentdPort),
 	}
 	entryJSON, _ := json.Marshal(mcpEntry)
 
