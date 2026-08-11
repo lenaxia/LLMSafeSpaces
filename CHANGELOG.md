@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-08-11
+
+### Added
+
+- **Workspace dev preview — authenticated HTTP/WS tunnel to in-workspace dev
+  servers (#725)** — users can now view web applications (Vite, Next.js,
+  webpack-dev-server, Playwright, ad-hoc HTTP servers) running inside their
+  workspace pod from a browser, with full hot-module-replacement (HMR)
+  support. The tunnel is authenticated to the workspace owner only (via the
+  existing `lsp_session` cookie or Bearer header) and reuses the existing
+  API→pod:4097 NetworkPolicy allowance — zero new ingress rules, no
+  per-workspace Service or Ingress objects, no publicly shareable URL.
+
+  **Architecture:** browser → API (`AuthMiddleware` +
+  `WorkspaceAccessMiddleware`) → `DevPreviewHandler`
+  (`httputil.ReverseProxy`, G34 header allowlist, response size cap,
+  connection cap) → agentd:4097 (`devPreviewHandler`, port denylist, Host
+  rewrite for CVE-2025-30208) → `localhost:<port>`.
+
+  **Opt-in:** toggle via `PUT /workspaces/:id/dev-preview` or the workspace
+  settings drawer. Operator kill-switch via `devPreview.enabled` instance
+  setting. Configurable response size cap (default 50 MiB) and per-workspace
+  connection cap (default 50).
+
+  **MCP tool:** the in-workspace agent can call `dev_preview_url` to
+  construct a preview link for the user, with enable instructions included.
+  Fixed a pre-existing bug where the MCP server was injected on the wrong
+  port (4098 admin → 4097 user mux), which had prevented all in-workspace
+  MCP tools from being reachable.
+
+  **SDKs:** `setDevPreview` + `devPreviewUrl` helpers in all four SDKs
+  (TypeScript, Python, Go, Java). OpenAPI spec updated with both routes.
+
+  **Security:** G34 header allowlist applied (caller Cookie/Origin/Referer
+  stripped before forwarding to pod). Agentd strips Basic auth before
+  forwarding to the dev server. Port denylist (4096/4097/4098 + privileged
+  ports <1024) enforced at both API and agentd layers.
+
+### Fixed
+
+- **MCP injection port mismatch (pre-existing)** —
+  `injectAgentdMCPServer` injected the MCP server URL as
+  `http://127.0.0.1:4098/v1/mcp` (admin port), but `mcpHandler` is
+  registered on the user mux (4097). Fixed to `AgentdPort` (4097). This
+  had prevented `session_list`, `session_read`, and the new
+  `dev_preview_url` tools from being reachable by the in-workspace
+  opencode agent.
+
 ## [0.13.1] - 2026-08-10
 
 ### Fixed
