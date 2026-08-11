@@ -716,11 +716,16 @@ func (h *ProxyHandler) AbortSession(c *gin.Context) {
 	wid := c.Param("id")
 
 	// Adapter path (US-65.4): non-destructive abort via adapter.Abort.
-	// Returns 204 to match the V2 interrupt response shape.
+	// The V2 interrupt preserves queued input server-side; no queue
+	// cleanup needed (msgqueue was deleted in US-63.7).
 	if h.adapter != nil {
 		if err := h.adapter.Abort(c.Request.Context(), "", wid, sid); err != nil {
+			h.logger.Error("AbortSession: adapter abort failed", err, "workspaceID", wid, "sessionID", sid)
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to abort session"})
 			return
+		}
+		if h.v2Pending != nil {
+			h.v2Pending.remove(wid, sid)
 		}
 		c.Status(http.StatusNoContent)
 		return

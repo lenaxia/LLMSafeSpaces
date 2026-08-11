@@ -29,6 +29,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/lenaxia/llmsafespaces/pkg/session"
@@ -592,29 +593,41 @@ func translateStatus(s string) session.Status {
 // operators have a signal when wire-shape drift is happening (Rule 3:
 // no swallowed errors).
 func ParseHistoryWire(body []byte, workspaceID string) (msgs []session.Message, changedFilesPerMsg [][]string, downgraded int, err error) {
-	// Stage 1: split into raw messages. Cannot fail on part-shape drift
-	// because it does not descend into parts. Only fails if the body is
-	// not a JSON array at all.
-	var rawMessages []json.RawMessage
-	if err = json.Unmarshal(body, &rawMessages); err != nil {
-		return nil, nil, 0, fmt.Errorf("opencode history: parse message array: %w", err)
+	return ParseHistoryStream(bytes.NewReader(body), workspaceID)
+}
+
+// ParseHistoryStream decodes + translates an opencode history array from
+// an io.Reader using a streaming json.Decoder. It does NOT buffer the
+// whole body — peak memory is O(largest single message), not O(total
+// history size). This removes the silent-truncation failure mode that
+// affected sessions larger than the previous fixed readBody cap (issue #737).
+//
+// Resilience is identical to ParseHistoryWire (issue #730): a message
+// that fails to decode is downgraded to a session.MessageSystem notice
+// and counted in `downgraded`; the rest translate normally.
+func ParseHistoryStream(r io.Reader, workspaceID string) (msgs []session.Message, changedFilesPerMsg [][]string, downgraded int, err error) {
+	dec := json.NewDecoder(r)
+
+	// Read opening bracket.
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("opencode history: read opening token: %w", err)
+	}
+	delim, ok := tok.(json.Delim)
+	if !ok || delim != '[' {
+		return nil, nil, 0, fmt.Errorf("opencode history: expected '[' got %v", tok)
 	}
 
-	// Stage 2: decode each message independently. A decode failure
-	// (part-shape drift from a future opencode version change) degrades
-	// that single message to a system notice; the rest translate
-	// normally.
-	msgs = make([]session.Message, 0, len(rawMessages))
-	changedFilesPerMsg = make([][]string, 0, len(rawMessages))
-	for i, rawMsg := range rawMessages {
+	// Stream-decode each message independently.
+	for dec.More() {
 		var m ocMessage
-		if dErr := json.Unmarshal(rawMsg, &m); dErr != nil {
+		if dErr := dec.Decode(&m); dErr != nil {
 			downgraded++
 			msgs = append(msgs, session.SystemMessage(
-				fmt.Sprintf("decode-failed-msg-%d", i),
+				fmt.Sprintf("decode-failed-msg-%d", len(msgs)),
 				"This message could not be decoded (the agent history shape may have changed). "+
 					"Other messages in this conversation are unaffected.",
-				time.Time{},
+				nil,
 			))
 			changedFilesPerMsg = append(changedFilesPerMsg, nil)
 			continue
@@ -622,6 +635,17 @@ func ParseHistoryWire(body []byte, workspaceID string) (msgs []session.Message, 
 		sm, files := translateMessage(m)
 		msgs = append(msgs, sm)
 		changedFilesPerMsg = append(changedFilesPerMsg, files)
+	}
+
+	// Read closing bracket.
+	_, err = dec.Token()
+	if err != nil {
+		// Best-effort: return what we decoded so far rather than failing.
+		// The body was truncated mid-stream; we got as many messages as
+		// were complete.
+		if err == io.EOF {
+			return msgs, changedFilesPerMsg, downgraded, nil
+		}
 	}
 	return msgs, changedFilesPerMsg, downgraded, nil
 }

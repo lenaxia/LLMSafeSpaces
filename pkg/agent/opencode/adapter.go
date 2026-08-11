@@ -309,11 +309,10 @@ func (a *Adapter) GetHistory(ctx context.Context, userID, workspaceID, sessionID
 	if resp.StatusCode >= 400 {
 		return nil, a.httpError("GET /session/"+sessionID+"/message", resp)
 	}
-	raw, err := readBody(resp, 16<<20)
-	if err != nil {
-		return nil, fmt.Errorf("GET /session/%s/message: read body: %w", sessionID, err)
-	}
-	msgs, changedFilesPerMsg, downgraded, err := ParseHistoryWire(raw, workspaceID)
+	// Stream-decode the history body instead of buffering it. This
+	// avoids the silent-truncation failure mode when the upstream body
+	// exceeds the readBody cap (issue #737: sessions >16 MiB).
+	msgs, changedFilesPerMsg, downgraded, err := ParseHistoryStream(resp.Body, workspaceID)
 	if err != nil {
 		return nil, err
 	}
