@@ -224,6 +224,7 @@ helm --kube-context "kind-${CLUSTER_NAME}" upgrade --install "${RELEASE_NAME}" \
     --set "externalSecret.create=true" \
     --set "externalSecret.postgresPassword=dev-pg-pw-2026" \
     --set "externalSecret.redisPassword=dev-redis-pw-2026" \
+    --set "rbac.scope=cluster" \
     --set "api.config.logging.development=true" \
     --wait --timeout 5m
 
