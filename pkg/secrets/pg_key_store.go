@@ -25,9 +25,11 @@ func NewPgKeyStore(pool *pgxpool.Pool) *PgKeyStore {
 func (s *PgKeyStore) GetUserKey(ctx context.Context, userID string) (*UserKeyRecord, error) {
 	// users.dek_source is JOINed so the caller (KeyService unlock/provisioning
 	// paths) knows which unwrap method to use without a second round-trip.
+	// The column is NOT NULL DEFAULT 'server_kek' post-migration 000014; the
+	// COALESCE never fires today but keeps the query defensive.
 	row := s.pool.QueryRow(ctx,
 		`SELECT k.user_id, k.key_version, k.wrapped_dek, k.wrapped_dek_recovery, k.salt, k.recovery_salt, k.created_at, k.rotated_at,
-		        COALESCE(u.dek_source, 'password')
+		        COALESCE(u.dek_source, 'server_kek')
 		 FROM user_keys k
 		 JOIN users u ON u.id = k.user_id
 		 WHERE k.user_id = $1`, userID)
@@ -44,21 +46,18 @@ func (s *PgKeyStore) GetUserKey(ctx context.Context, userID string) (*UserKeyRec
 }
 
 // CreateUserKey stores a user's key material. On conflict (the user
-// already has a row — e.g. password reset reinitializing a fresh DEK
-// for a user who already has key material), the row is overwritten.
-// This is required because user_keys.user_id is the PRIMARY KEY and a
-// plain INSERT would fail with unique_violation for any user who has
-// ever created a secret, which is the only case where reinit matters.
+// already has a row), the row is overwritten — user_keys.user_id is the
+// PRIMARY KEY and a plain INSERT would fail with unique_violation.
 // Overwriting with a freshly-generated DEK (see InitializeUserKeysServerKEK)
 // is exactly the desired reset behavior: the prior wraps and anything
 // encrypted under the prior DEK become permanently undecryptable.
 //
-// When record.DEKSource == "server_kek" (Epic 58 SSO provisioning /
-// Epic 59 passkey provisioning), the users.dek_source flag is flipped
-// to 'server_kek' in the SAME transaction as the user_keys insert. The
-// atomicity is load-bearing: if the two writes split, a later GetUserKey
-// JOIN could return a record whose dek_source disagrees with the actual
-// wrap, making the next unlock pick the wrong unwrap method and fail.
+// When record.DEKSource == "server_kek" (SSO provisioning, Epic 58) or
+// "passkey" (passkey-only login, Epic 59), the users.dek_source flag is
+// flipped in the SAME transaction as the user_keys insert. The atomicity
+// is load-bearing: if the two writes split, a later GetUserKey JOIN could
+// return a record whose dek_source disagrees with the actual wrap, making
+// the next unlock pick the wrong unwrap method and fail.
 func (s *PgKeyStore) CreateUserKey(ctx context.Context, record *UserKeyRecord) error {
 	const insertStmt = `INSERT INTO user_keys (user_id, key_version, wrapped_dek, wrapped_dek_recovery, salt, recovery_salt, created_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -114,62 +113,6 @@ func (s *PgKeyStore) UpdateWrappedDEK(ctx context.Context, userID string, wrappe
 	}
 	if _, err := s.pool.Exec(ctx, sqlStmt, wrappedDEK, salt, keyVersion, userID); err != nil {
 		return fmt.Errorf("update wrapped_dek: %w", err)
-	}
-	return nil
-}
-
-// UpdateWrappedDEKRecovery updates the recovery-key wrap. Like
-// UpdateWrappedDEK, the implementation honors an active *pgx.Tx
-// threaded through the context (via withTx) so future callers that
-// want to bundle a recovery-key rotation into the same atomic unit as
-// the password-key rotation can do so. No current caller does, but
-// the parity with UpdateWrappedDEK closes a latent footgun.
-func (s *PgKeyStore) UpdateWrappedDEKRecovery(ctx context.Context, userID string, wrappedDEKRecovery []byte, recoverySalt []byte) error {
-	const sqlStmt = `UPDATE user_keys SET wrapped_dek_recovery = $1, recovery_salt = $2 WHERE user_id = $3`
-	if tx := txFromContext(ctx); tx != nil {
-		if _, err := tx.Exec(ctx, sqlStmt, wrappedDEKRecovery, recoverySalt, userID); err != nil {
-			return fmt.Errorf("update wrapped_dek_recovery (tx): %w", err)
-		}
-		return nil
-	}
-	if _, err := s.pool.Exec(ctx, sqlStmt, wrappedDEKRecovery, recoverySalt, userID); err != nil {
-		return fmt.Errorf("update wrapped_dek_recovery: %w", err)
-	}
-	return nil
-}
-
-// UpdateWrappedDEKAndSource atomically re-wraps the DEK AND flips
-// users.dek_source in a single transaction. Used by the provisioning path
-// when a server_kek-tier user sets their first password (opt-up to the stronger
-// legacy tier). Like the other update methods, an active *pgx.Tx threaded
-// through the context is honored; otherwise a fresh transaction is owned here.
-func (s *PgKeyStore) UpdateWrappedDEKAndSource(ctx context.Context, userID string, wrappedDEK, salt []byte, keyVersion int, dekSource string) error {
-	const (
-		updateKeys = `UPDATE user_keys SET wrapped_dek = $1, salt = $2, key_version = $3, rotated_at = NOW() WHERE user_id = $4`
-		updateUser = `UPDATE users SET dek_source = $2 WHERE id = $1`
-	)
-	if tx := txFromContext(ctx); tx != nil {
-		if _, err := tx.Exec(ctx, updateKeys, wrappedDEK, salt, keyVersion, userID); err != nil {
-			return fmt.Errorf("update wrapped_dek (tx): %w", err)
-		}
-		if _, err := tx.Exec(ctx, updateUser, userID, dekSource); err != nil {
-			return fmt.Errorf("set dek_source (tx): %w", err)
-		}
-		return nil
-	}
-	tx, err := s.pool.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("begin dek-source transition tx: %w", err)
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck
-	if _, err := tx.Exec(ctx, updateKeys, wrappedDEK, salt, keyVersion, userID); err != nil {
-		return fmt.Errorf("update wrapped_dek: %w", err)
-	}
-	if _, err := tx.Exec(ctx, updateUser, userID, dekSource); err != nil {
-		return fmt.Errorf("set dek_source: %w", err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("commit dek-source transition: %w", err)
 	}
 	return nil
 }

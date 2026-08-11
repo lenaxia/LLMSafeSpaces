@@ -239,7 +239,6 @@ func TestIntegration_AuditCompleteness(t *testing.T) {
 	}
 }
 
-// TestIntegration_RecoveryKeyFullFlow tests the complete recovery scenario
 func TestIntegration_SecretTypeSpecificMetadata(t *testing.T) {
 	svc, _, sessionID := setupSecretService(t)
 	ctx := context.Background()

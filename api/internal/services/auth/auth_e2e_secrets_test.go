@@ -317,24 +317,6 @@ func (m *memKeyStore) UpdateWrappedDEK(_ context.Context, id string, dek, salt [
 	}
 	return nil
 }
-func (m *memKeyStore) UpdateWrappedDEKAndSource(_ context.Context, id string, dek, salt []byte, v int, source string) error {
-	r := m.records[id]
-	if r != nil {
-		r.WrappedDEK = dek
-		r.Salt = salt
-		r.KeyVersion = v
-		r.DEKSource = source
-	}
-	return nil
-}
-func (m *memKeyStore) UpdateWrappedDEKRecovery(_ context.Context, id string, dek, salt []byte) error {
-	r := m.records[id]
-	if r != nil {
-		r.WrappedDEKRecovery = dek
-		r.RecoverySalt = salt
-	}
-	return nil
-}
 
 type memDEKCache struct {
 	store map[string][]byte
