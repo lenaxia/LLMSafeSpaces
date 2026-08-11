@@ -70,8 +70,6 @@ type WorkspaceListItem struct {
 	// the Workspace Settings drawer's "Custom Instructions" Lock UI.
 	// Mirrors WorkspaceMetadata.OrgID.
 	OrgID *string `json:"orgId,omitempty"`
-	// DevPreviewEnabled reflects spec.networkAccess.devPreview (Epic 66).
-	DevPreviewEnabled bool `json:"devPreviewEnabled,omitempty"`
 }
 
 // WorkspaceStatusResult carries the status fields read from the Workspace CRD.

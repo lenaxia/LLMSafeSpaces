@@ -85,6 +85,9 @@ func devPreviewHandler(password string) http.HandlerFunc {
 						r.Out.URL.Path = "/"
 					}
 				}
+				// Strip the agentd Basic auth credential — the dev server
+				// has no use for it and shouldn't see it.
+				r.Out.Header.Del("Authorization")
 			},
 			ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 				http.Error(w, "dev server unreachable on port "+strconv.Itoa(port), http.StatusBadGateway)

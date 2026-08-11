@@ -227,3 +227,37 @@ func TestDevPreview_WebSocketUpgrade(t *testing.T) {
 		t.Errorf("expected 101 Switching Protocols, got %d", resp.StatusCode)
 	}
 }
+
+// TestDevPreview_AuthorizationStripped verifies the agentd Basic auth
+// credential is NOT forwarded to the localhost dev server. The dev server
+// has no use for the workspace password.
+func TestDevPreview_AuthorizationStripped(t *testing.T) {
+	var capturedAuth string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	port := backendPort(t, backend.URL)
+
+	handler := devPreviewHandler("test-pass")
+	ts := httptest.NewServer(handler)
+	defer ts.Close()
+
+	req, _ := http.NewRequest("GET", ts.URL+"/v1/dev-preview/"+port+"/", nil)
+	req.Header.Set("Authorization", "Basic "+basicAuth("test-pass"))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	if capturedAuth != "" {
+		t.Errorf("agentd Basic auth credential was forwarded to dev server: %q", capturedAuth)
+	}
+}

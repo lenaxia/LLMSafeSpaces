@@ -15,7 +15,12 @@ package handlers
 // The handler enforces: opt-in (spec.networkAccess.devPreview), port
 // denylist, per-workspace connection cap, response size cap, and
 // operator kill-switch. It injects Basic auth for the agentd call.
-// Stale-IP retry reuses the shared helper (proxy_helpers.go).
+//
+// G34: only an allowlist of client headers is forwarded to the pod
+// (Content-Type, Accept, X-Request-ID). The caller's Cookie, Origin,
+// Referer, and Authorization are stripped — they describe the caller's
+// relationship with the API server, not with the tenant pod. Same
+// invariant as proxy.go's doProxy (proxy_helpers.go:copyRequestHeaders).
 
 import (
 	"context"
@@ -203,7 +208,15 @@ func (h *DevPreviewHandler) proxyToAgentd(c *gin.Context, workspace *v1.Workspac
 				r.Out.URL.RawQuery = r.In.URL.RawQuery
 			}
 			r.Out.Host = "localhost:" + portStr
+
+			// G34: strip all caller headers, then re-add only the allowlist.
+			// The caller's Cookie (contains JWT), Origin, Referer describe
+			// their relationship with the API server, not with the tenant
+			// pod, and must not reach untrusted code inside the pod.
+			r.Out.Header = http.Header{}
+			copyRequestHeaders(r.In.Header, r.Out.Header)
 			r.Out.Header.Set("Authorization", basicAuth)
+			r.Out.Header.Set("X-Forwarded-For", r.In.RemoteAddr)
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			// Pre-reject oversized declared Content-Length (A6 — both

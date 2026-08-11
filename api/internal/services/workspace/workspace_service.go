@@ -1786,6 +1786,9 @@ func (s *Service) SetDevPreview(ctx context.Context, userID, workspaceID string,
 	}
 	crd.Spec.NetworkAccess.DevPreview = enabled
 	if _, err := wsClient.Update(ctx, crd); err != nil {
+		if k8serrors.IsConflict(err) {
+			return apierrors.NewConflictError("workspace", workspaceID, err)
+		}
 		return apierrors.NewInternalError("workspace_update_failed", err)
 	}
 	return nil

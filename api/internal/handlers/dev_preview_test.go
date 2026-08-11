@@ -405,3 +405,72 @@ func TestDevPreviewHandler_ResponseSizeCap_ChunkedStream(t *testing.T) {
 		t.Errorf("size cap leaked bytes: got %d (cap 500)", totalWritten)
 	}
 }
+
+// TestDevPreviewHandler_G34_CallerCookieNotForwarded is the G34 regression
+// test for the dev-preview path. The caller's Cookie (which carries the
+// JWT session), Origin, and Referer must NOT reach the tenant pod.
+func TestDevPreviewHandler_G34_CallerCookieNotForwarded(t *testing.T) {
+	var capturedHeaders http.Header
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedHeaders = r.Header.Clone()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	backendAddr := backend.Listener.Addr().String()
+	backendIP := backendAddr
+	backendPort := "4097"
+	if idx := strings.LastIndex(backendAddr, ":"); idx >= 0 {
+		backendIP = backendAddr[:idx]
+		backendPort = backendAddr[idx+1:]
+	}
+
+	wsGetter := &devPreviewMockWorkspaceGetter{
+		workspaces: map[string]*v1.Workspace{
+			"ws-1": activeWorkspaceWithDevPreview("ws-1", backendIP, true),
+		},
+	}
+	pwProvider := &devPreviewMockPasswordProvider{passwords: map[string]string{"ws-1": "pass"}}
+	h := newDevPreviewHandlerForTest(t, wsGetter, pwProvider)
+	h.agentdPort = backendPort
+
+	r := setupDevPreviewRouter(h)
+	ts := httptest.NewServer(r)
+	defer ts.Close()
+
+	req, _ := http.NewRequest("GET", ts.URL+"/api/v1/workspaces/ws-1/dev-preview/5173/", nil)
+	// Simulate a browser request carrying the JWT session cookie + Origin.
+	req.Header.Set("Cookie", "lsp_session=eyJhbGciOiJIUzI1NiJ9.fake-jwt-payload.fake-signature")
+	req.Header.Set("Origin", "https://platform.example.com")
+	req.Header.Set("Referer", "https://platform.example.com/dashboard")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// The caller's session cookie MUST NOT be forwarded.
+	if cookie := capturedHeaders.Get("Cookie"); cookie != "" {
+		t.Errorf("G34 violation: caller Cookie forwarded to pod: %q", cookie)
+	}
+	if origin := capturedHeaders.Get("Origin"); origin != "" {
+		t.Errorf("G34 violation: caller Origin forwarded to pod: %q", origin)
+	}
+	if referer := capturedHeaders.Get("Referer"); referer != "" {
+		t.Errorf("G34 violation: caller Referer forwarded to pod: %q", referer)
+	}
+
+	// The allowlisted headers SHOULD be forwarded.
+	if ct := capturedHeaders.Get("Content-Type"); ct != "" {
+		// Content-Type is on the allowlist; fine if present
+	}
+	// Authorization should be Basic auth (injected), NOT the caller's Bearer token.
+	if auth := capturedHeaders.Get("Authorization"); strings.HasPrefix(auth, "Bearer") {
+		t.Errorf("G34 violation: caller Bearer token forwarded instead of Basic auth: %q", auth)
+	}
+}

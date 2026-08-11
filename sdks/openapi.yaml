@@ -3191,10 +3191,6 @@ components:
         updatedAt:
           type: string
           format: date-time
-        devPreviewEnabled:
-          type: boolean
-          description: Whether the authenticated HTTP/WS dev-preview tunnel is enabled (Epic 66).
-          default: false
     PaginationMetadata:
       type: object
       properties:
