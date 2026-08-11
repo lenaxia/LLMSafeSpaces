@@ -517,7 +517,7 @@ ReloadSecretsCachePath = "/sandbox-runtime/last-reload-secrets.json"  ← persis
 
 Note: `/tmp` is a PVC subPath (`subPath: tmp`). US-35.7 moved `agent-config.json` and `secrets-env` off `/tmp` to `/sandbox-runtime` (tmpfs/RAM). `admin-prompt.md` (PR #416 / fix #483) followed — both for at-rest data isolation and because the `credential-setup` init container's `/tmp` is read-only (ReadOnlyRootFilesystem with no writable emptyDir mounted). `$HOME`-relative credential paths (`.ssh`, `.secrets`, `.git-credentials`, `auth.json`) are symlinks created by the init container pointing into `/sandbox-runtime/rt/*`. On pod death, tmpfs is wiped — the PVC retains only dangling symlinks, no plaintext bytes.
 
-**opencode config loading order** (validated from opencode 1.15.12 binary):
+**opencode config loading order** (validated from opencode 1.15.12 binary; config-loading shape is stable across versions — the history message-part shape is NOT and is pinned by golden fixtures in `pkg/agent/opencode/testdata/`, see issue #730):
 
 opencode merges config files via recursive deep-merge, last writer wins:
 1. Global XDG config: `~/.config/opencode/opencode.jsonc`
