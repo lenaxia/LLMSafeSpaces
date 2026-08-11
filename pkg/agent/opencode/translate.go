@@ -300,7 +300,6 @@ func translateMessage(m ocMessage) (session.Message, []string) {
 	sm := session.Message{
 		ID:        m.Info.ID,
 		SessionID: m.Info.SessionID,
-		CreatedAt: time.Time{},
 	}
 
 	switch m.Info.Role {

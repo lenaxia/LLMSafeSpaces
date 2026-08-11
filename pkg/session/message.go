@@ -28,7 +28,7 @@ type Message struct {
 	ID        string      `json:"id"`
 	SessionID string      `json:"sessionId,omitempty"`
 	Type      MessageType `json:"type"`
-	CreatedAt time.Time   `json:"createdAt"`
+	CreatedAt time.Time   `json:"createdAt,omitempty"`
 
 	Parts []Part    `json:"parts,omitempty"`
 	Model *ModelRef `json:"model,omitempty"`
