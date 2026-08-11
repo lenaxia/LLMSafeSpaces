@@ -709,3 +709,50 @@ func TestAbortSession_AdapterPath_Error_Returns502(t *testing.T) {
 	h.AbortSession(c)
 	assert.Equal(t, http.StatusBadGateway, w.Code)
 }
+
+// --- DeleteSession adapter path ---
+
+func TestDeleteSession_AdapterPath_Returns204(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	called := false
+	h.adapter = &mockAdapter{
+		deleteSessionFn: func(_ context.Context, _, _, sid string) error {
+			called = true
+			assert.Equal(t, "ses_1", sid)
+			return nil
+		},
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodDelete, "/", nil)
+
+	h.DeleteSession(c)
+	c.Writer.WriteHeaderNow()
+	assert.Equal(t, http.StatusNoContent, w.Code)
+	assert.True(t, called)
+	assert.True(t, h.state().IsSessionDeleted(context.Background(), "ws-1", "ses_1"),
+		"tombstone must be written even on adapter path")
+}
+
+func TestDeleteSession_AdapterPath_Error_Returns502(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{
+		deleteSessionFn: func(_ context.Context, _, _, _ string) error {
+			return fmt.Errorf("pod unreachable")
+		},
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodDelete, "/", nil)
+
+	h.DeleteSession(c)
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+}
