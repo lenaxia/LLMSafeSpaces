@@ -159,6 +159,16 @@ func (t *Tracker) EnsureWatching(workspaceID string) {
 	go t.subscribe(ctx, workspaceID)
 }
 
+// IsWatching returns true if the tracker has an active SSE subscription
+// for the given workspace. Used by tests to verify that read-path
+// handlers trigger SSE watch (#755 stuck-busy regression).
+func (t *Tracker) IsWatching(workspaceID string) bool {
+	t.subMu.Lock()
+	defer t.subMu.Unlock()
+	_, exists := t.subscriptions[workspaceID]
+	return exists
+}
+
 func (t *Tracker) StopWatching(workspaceID string) {
 	t.subMu.Lock()
 	defer t.subMu.Unlock()

@@ -55,6 +55,7 @@ func (h *ProxyHandler) ListSessions(c *gin.Context) {
 			return
 		}
 		defer h.releaseConnection(wid)
+		h.adapterEnsureSSEWatch(wid)
 
 		sessions, err := h.adapter.ListSessions(c.Request.Context(), "", wid)
 		if err != nil {
@@ -353,6 +354,7 @@ func (h *ProxyHandler) GetHistory(c *gin.Context) {
 			return
 		}
 		defer h.releaseConnection(wid)
+		h.adapterEnsureSSEWatch(wid)
 
 		msgs, err := h.adapter.GetHistory(c.Request.Context(), "", wid, sid)
 		if err != nil {
@@ -776,6 +778,7 @@ func (h *ProxyHandler) GetSession(c *gin.Context) {
 			return
 		}
 		defer h.releaseConnection(wid)
+		h.adapterEnsureSSEWatch(wid)
 
 		s, err := h.adapter.GetSession(c.Request.Context(), "", wid, sid)
 		if err != nil {
