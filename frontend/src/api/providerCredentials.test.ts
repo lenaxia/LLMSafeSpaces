@@ -19,7 +19,7 @@ beforeEach(() => {
 
 describe("adminProviderCredentialsApi.deleteAutoApply", () => {
   it("sends sentinel '_' for 'all' target type (no targetId in rule)", async () => {
-    mockFetch.mockResolvedValueOnce({ ok: true, status: 204, json: () => Promise.resolve(null) });
+    mockFetch.mockResolvedValueOnce({ ok: true, status: 204, json: () => Promise.resolve(null), text: () => Promise.resolve("null") });
 
     await adminProviderCredentialsApi.deleteAutoApply("cred-1", "all", undefined);
 
@@ -30,7 +30,7 @@ describe("adminProviderCredentialsApi.deleteAutoApply", () => {
   });
 
   it("passes provided targetId through for 'user' target type", async () => {
-    mockFetch.mockResolvedValueOnce({ ok: true, status: 204, json: () => Promise.resolve(null) });
+    mockFetch.mockResolvedValueOnce({ ok: true, status: 204, json: () => Promise.resolve(null), text: () => Promise.resolve("null") });
 
     await adminProviderCredentialsApi.deleteAutoApply("cred-1", "user", "user-xyz");
 
@@ -41,7 +41,7 @@ describe("adminProviderCredentialsApi.deleteAutoApply", () => {
   });
 
   it("sends sentinel '_' for 'org' type with no targetId", async () => {
-    mockFetch.mockResolvedValueOnce({ ok: true, status: 204, json: () => Promise.resolve(null) });
+    mockFetch.mockResolvedValueOnce({ ok: true, status: 204, json: () => Promise.resolve(null), text: () => Promise.resolve("null") });
 
     await adminProviderCredentialsApi.deleteAutoApply("cred-1", "org", undefined);
 
@@ -59,7 +59,7 @@ describe("userProviderCredentialsApi.listBindings", () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       status: 200,
-      json: () => Promise.resolve({ workspaceIds: ["ws-1", "ws-2"], bindings: [{ workspaceId: "ws-1", sourceType: "explicit" }, { workspaceId: "ws-2", sourceType: "auto" }] }),
+      json: () => Promise.resolve({ workspaceIds: ["ws-1", "ws-2"], bindings: [{ workspaceId: "ws-1", sourceType: "explicit" }, { workspaceId: "ws-2", sourceType: "auto" }] }), text: () => Promise.resolve(JSON.stringify({ workspaceIds: ["ws-1", "ws-2"], bindings: [{ workspaceId: "ws-1", sourceType: "explicit" }, { workspaceId: "ws-2", sourceType: "auto" }] })),
     });
 
     const result = await userProviderCredentialsApi.listBindings("cred-abc");
@@ -75,7 +75,7 @@ describe("userProviderCredentialsApi.listBindings", () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       status: 200,
-      json: () => Promise.resolve({ workspaceIds: [] }),
+      json: () => Promise.resolve({ workspaceIds: [] }), text: () => Promise.resolve(JSON.stringify({ workspaceIds: [] })),
     });
 
     const result = await userProviderCredentialsApi.listBindings("cred-abc");

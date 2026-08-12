@@ -16,7 +16,7 @@ describe("env", () => {
 
   it("loadEnv fetches and caches env.json", async () => {
     const mockFetch = vi.fn().mockResolvedValue({
-      json: () => Promise.resolve({ apiBaseUrl: "http://custom:8080/api/v1" }),
+      json: () => Promise.resolve({ apiBaseUrl: "http://custom:8080/api/v1" }), text: () => Promise.resolve(JSON.stringify({ apiBaseUrl: "http://custom:8080/api/v1" })),
     });
     vi.stubGlobal("fetch", mockFetch);
 
