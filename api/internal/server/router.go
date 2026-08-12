@@ -441,10 +441,11 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 				return
 			}
 			workspaceID := c.Param("id")
-			// Get active sessions keyed by workspace ID directly.
-			active := proxyHandler.GetActiveSessions(c.Request.Context(), workspaceID)
-			if active == nil {
-				active = []string{}
+			// Ground-truth active sessions from statusz (#792 Pattern 1).
+			activeSet := proxyHandler.GetAuthoritativeActiveSessions(c.Request.Context(), workspaceID)
+			active := make([]string, 0, len(activeSet))
+			for id := range activeSet {
+				active = append(active, id)
 			}
 			c.JSON(http.StatusOK, types.ActiveSessionsResponse{
 				Active:    active,
