@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.2] - 2026-08-12
+
+### Fixed
+
+- **Frontend crash on empty response bodies (#782)** — the frontend
+  `client.ts` unconditionally called `res.json()` for any non-204 success.
+  A 202/200 with empty body (e.g., the old prompt endpoint behavior)
+  threw "Unexpected end of JSON input". Now reads `text()` first and
+  returns `undefined` for empty bodies, matching the TypeScript SDK's
+  defensive pattern.
+
+- **Stale sessions accumulate in agentd tracker (#792 Pattern 2 S8)** —
+  the `sessionStatusTracker` never pruned sessions from its in-memory
+  maps during the 30s `fillGaps` cycle. Deleted sessions stayed forever,
+  causing phantom busy counts and incorrect restart gating. The cycle
+  now calls `prune(activeIDs)` at the top of each run.
+
 ## [0.15.1] - 2026-08-12
 
 ### Fixed
