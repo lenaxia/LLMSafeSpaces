@@ -1296,14 +1296,14 @@ func registerWorkspaceRoutes(rg *gin.RouterGroup, idGroup *gin.RouterGroup, serv
 		// Skipped when proxyHandler is nil (router built without proxy).
 		if proxyHandler != nil {
 			proxyHandler.BackfillSessionParents(c.Request.Context(), workspaceID)
-			activeIDs := proxyHandler.GetActiveSessions(c.Request.Context(), workspaceID)
-			if len(activeIDs) > 0 {
-				activeSet := make(map[string]struct{}, len(activeIDs))
-				for _, id := range activeIDs {
-					activeSet[id] = struct{}{}
-				}
+			// Ground-truth session status (#792 Pattern 1): query
+			// /v1/statusz for authoritative busy/idle instead of the
+			// in-memory activeSess map, which goes stale when SSE
+			// events are missed (the stuck-busy bug).
+			activeSet := proxyHandler.GetAuthoritativeActiveSessions(c.Request.Context(), workspaceID)
+			if len(activeSet) > 0 {
 				for i := range sessions {
-					if _, ok := activeSet[sessions[i].ID]; ok {
+					if activeSet[sessions[i].ID] {
 						sessions[i].Status = "active"
 					}
 				}

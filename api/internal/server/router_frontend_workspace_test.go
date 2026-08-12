@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -21,7 +22,9 @@ import (
 	apilogger "github.com/lenaxia/llmsafespaces/api/internal/logger"
 	imocks "github.com/lenaxia/llmsafespaces/api/internal/mocks"
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
+	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // --- POST /api/v1/workspaces/:id/activate ---
@@ -359,6 +362,9 @@ func newRouterFixtureWithProxy(t *testing.T) (*gin.Engine, *mockServices, *handl
 	auth.On("GetUserID", mock.Anything).Return("test-user")
 
 	k8sMock := k8smocks.NewMockKubernetesClient()
+	// GetAuthoritativeActiveSessions calls LlmsafespacesV1 — return nil
+	// so it falls back to the in-memory activeSess map in tests.
+	k8sMock.On("LlmsafespacesV1").Return(nil, nil).Maybe()
 	proxyHandler, err := handlers.NewProxyHandler(k8sMock, log, "default", nil, nil)
 	require.NoError(t, err)
 
@@ -411,6 +417,106 @@ func TestListWorkspaceSessions_AllIdleWhenNoProxyHandler(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &items))
 	require.Len(t, items, 1)
 	assert.Equal(t, "idle", items[0].Status)
+}
+
+// TestListWorkspaceSessions_StatuszGroundTruth_StaleActiveShowsIdle is
+// the endpoint-level regression test for #792 Pattern 1. It exercises
+// the full GET /sessions path through the production router, with a
+// real statusz server reporting ground-truth idle status.
+//
+// The test seeds a stale in-memory activeSess entry, then sends a real
+// GET /sessions request. The router calls GetAuthoritativeActiveSessions
+// which queries the statusz server, sees the session is idle, and
+// reconciles. The response must show "idle", not "active".
+//
+// This test would FAIL against the old code (GetActiveSessions in-memory
+// read) because the stale entry would make the session appear active.
+func TestListWorkspaceSessions_StatuszGroundTruth_StaleActiveShowsIdle(t *testing.T) {
+	// statusz server that reports the session as idle
+	statuszSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/statusz" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"sessions":[{"id":"sess-stuck","status":"idle"}]}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer statuszSrv.Close()
+
+	log, err := apilogger.New(false, "error", "json")
+	require.NoError(t, err)
+
+	auth := &imocks.MockAuthMiddlewareService{}
+	met := &imocks.MockMetricsService{}
+	ws := &imocks.MockWorkspaceService{}
+
+	met.On("RecordRequest", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	met.On("IncrementActiveConnections", mock.Anything, mock.Anything).Maybe()
+	met.On("DecrementActiveConnections", mock.Anything, mock.Anything).Maybe()
+	ws.On("ResolveWorkspace", mock.Anything, mock.Anything).
+		Return(&types.WorkspaceMetadata{ID: "ws-1", UserID: "test-user"}, nil).Maybe()
+	ws.On("CheckOwnership", mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+	auth.On("AuthMiddleware").Return(gin.HandlerFunc(func(c *gin.Context) {
+		c.Set("userID", "test-user")
+		c.Next()
+	}))
+	auth.On("GetUserID", mock.Anything).Return("test-user")
+
+	// Build K8s mock chain: LlmsafespacesV1 → Workspaces → Get returns Active workspace
+	k8sMock := k8smocks.NewMockKubernetesClient()
+	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
+	wsInterface := k8smocks.NewMockWorkspaceInterface()
+	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil).Maybe()
+	llmMock.On("Workspaces", "default").Return(wsInterface)
+	wsInterface.On("Get", mock.Anything, "ws-1", mock.Anything).Return(&v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "default"},
+		Status: v1.WorkspaceStatus{
+			Phase: v1.WorkspacePhaseActive,
+			PodIP: "10.0.0.1",
+		},
+	}, nil).Maybe()
+
+	// Custom httpClient that routes to our statusz test server
+	httpClient := &http.Client{
+		Transport: &statuszRewriteTransport{target: statuszSrv.URL},
+	}
+	proxyHandler, err := handlers.NewProxyHandler(k8sMock, log, "default", httpClient, nil)
+	require.NoError(t, err)
+	proxyHandler.SetCachedPasswordForTest("ws-1", "test-pw")
+
+	// Seed stale in-memory active session
+	proxyHandler.SetActiveSessionsForTest("ws-1", []string{"sess-stuck"})
+
+	ws.On("ListWorkspaceSessions", mock.Anything, "test-user", "ws-1").Return(
+		[]types.SessionListItem{
+			{ID: "sess-stuck", Title: "Stuck chat", MessageCount: 5, Status: "idle"},
+		}, nil)
+
+	svc := &mockServices{auth: auth, metrics: met, workspace: ws}
+	router := NewRouter(svc, log, proxyHandler, RouterConfig{Debug: false})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/ws-1/sessions", nil)
+	req.Header.Set("Authorization", "Bearer token")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	assert.Equal(t, http.StatusOK, rec.Code)
+	var items []types.SessionListItem
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &items))
+	require.Len(t, items, 1)
+	assert.Equal(t, "idle", items[0].Status,
+		"stale-active session must show as idle — ground truth from statusz wins over in-memory map")
+}
+
+// statuszRewriteTransport routes all HTTP requests to a fixed target,
+// used to redirect handler-initiated statusz calls to a test server.
+type statuszRewriteTransport struct{ target string }
+
+func (t *statuszRewriteTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	cloned := req.Clone(req.Context())
+	cloned.URL.Scheme = "http"
+	cloned.URL.Host = strings.TrimPrefix(t.target, "http://")
+	return http.DefaultTransport.RoundTrip(cloned)
 }
 
 func TestListWorkspaceSessions_EmptyWorkspace_NoCrash(t *testing.T) {
