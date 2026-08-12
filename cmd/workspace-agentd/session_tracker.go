@@ -189,6 +189,29 @@ func isTimeoutError(err error) bool {
 	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
 
+// reconcileStatuses queries opencode's /v1/statusz for authoritative
+// session statuses after an SSE reconnect (#753 F1). If the SSE stream
+// dropped after a session transitioned to busy, the tracker retains
+// stale "idle" — this method corrects it by reading ground truth.
+func (t *sessionStatusTracker) reconcileStatuses(ctx context.Context, client *OpenCodeClient) {
+	sessions, err := client.fetchSessionStatuses(ctx)
+	if err != nil {
+		log.Debug("reconcileStatuses: failed to fetch authoritative statuses", zap.Error(err))
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, s := range sessions {
+		if s.Status == "idle" {
+			t.statuses[s.ID] = "idle"
+		} else {
+			t.statuses[s.ID] = "busy"
+		}
+	}
+	log.Debug("reconcileStatuses: reconciled session statuses",
+		zap.Int("count", len(sessions)))
+}
+
 // sseConnectionTimeout is the maximum lifetime of a single SSE connection.
 // After this duration, the connection is closed and reconnected to prevent
 // goroutine leaks from half-open sockets.

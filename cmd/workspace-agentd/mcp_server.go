@@ -7,10 +7,20 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
+
+var sessionIDPattern = regexp.MustCompile(`^[a-zA-Z0-9._-]+$`)
+
+func isValidSessionID(s string) bool {
+	if s == "" || len(s) > 128 || strings.Contains(s, "..") {
+		return false
+	}
+	return sessionIDPattern.MatchString(s)
+}
 
 type mcpRequest struct {
 	JSONRPC string          `json:"jsonrpc"`
@@ -178,6 +188,12 @@ func mcpSessionList(ctx context.Context, password string) (string, error) {
 }
 
 func mcpSessionRead(ctx context.Context, password, sessionID string, limit int) (string, error) {
+	if !isValidSessionID(sessionID) {
+		return "", fmt.Errorf("invalid session ID")
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
 	url := fmt.Sprintf("%s/session/%s/message?limit=%d", getAgentAddr(), sessionID, limit)
 	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
 	req.SetBasicAuth(agentd.AuthUsername, password)

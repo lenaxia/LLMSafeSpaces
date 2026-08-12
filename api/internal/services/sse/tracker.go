@@ -77,6 +77,8 @@ type Tracker struct {
 	sessionMetrics   SessionMetricsRecorder
 	subscriptions    map[string]context.CancelFunc
 	subMu            sync.Mutex
+	goroutineWg      map[string]*sync.WaitGroup
+	wgMu             sync.Mutex
 	passwordGetter   interfaces.WorkspacePasswordProvider
 	podIPResolver    func(workspaceID string) string
 	drainMu          sync.Mutex
@@ -103,6 +105,7 @@ func NewTracker(
 		sessionTokenSeen: make(map[string]int64),
 		sessionCostSeen:  make(map[string]float64),
 		sessionStartTime: make(map[string]time.Time),
+		goroutineWg:      make(map[string]*sync.WaitGroup),
 	}
 }
 
@@ -152,11 +155,20 @@ func (t *Tracker) EnsureWatching(workspaceID string) {
 		return
 	}
 
+	t.wgMu.Lock()
+	wg := &sync.WaitGroup{}
+	t.goroutineWg[workspaceID] = wg
+	t.wgMu.Unlock()
+
 	//nolint:gosec // G118 false positive; cancel stored in subscriptions map
 	ctx, cancel := context.WithCancel(context.Background())
 	t.subscriptions[workspaceID] = cancel
 
-	go t.subscribe(ctx, workspaceID)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		t.subscribe(ctx, workspaceID)
+	}()
 }
 
 // IsWatching returns true if the tracker has an active SSE subscription
@@ -171,11 +183,18 @@ func (t *Tracker) IsWatching(workspaceID string) bool {
 
 func (t *Tracker) StopWatching(workspaceID string) {
 	t.subMu.Lock()
-	defer t.subMu.Unlock()
-
 	if cancel, exists := t.subscriptions[workspaceID]; exists {
 		cancel()
 		delete(t.subscriptions, workspaceID)
+	}
+	t.subMu.Unlock()
+
+	t.wgMu.Lock()
+	wg := t.goroutineWg[workspaceID]
+	delete(t.goroutineWg, workspaceID)
+	t.wgMu.Unlock()
+	if wg != nil {
+		wg.Wait()
 	}
 
 	prefix := workspaceID + ":"

@@ -178,6 +178,14 @@ func trackerHasBusyOrUnknown(tracker *sessionStatusTracker) bool {
 //
 // maxDefer <= 0 falls back to defaultMaxDefer. pollInterval <= 0 falls back
 // to restartIdleCheckInterval.
+// deferredRestartMu serializes deferred-restart goroutines to prevent
+// cascading restarts when N credential changes arrive while sessions
+// are busy (#753 F3). Each new deferral cancels the previous one.
+var (
+	deferredRestartMu  sync.Mutex
+	deferredRestartCtx context.CancelFunc
+)
+
 func makeSessionAwareRestartDecision(
 	ctx context.Context,
 	proc restartableProcess,
@@ -273,6 +281,18 @@ func makeSessionAwareRestartDecision(
 			}
 		}
 	}
+
+	// Cancel any previous deferred-restart goroutine before spawning a
+	// new one (#753 F3). Without this, N credential changes spawn N
+	// independent goroutines that all fire proc.restart() when sessions
+	// go idle — cascading restarts.
+	deferredRestartMu.Lock()
+	if deferredRestartCtx != nil {
+		deferredRestartCtx()
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	deferredRestartCtx = cancel
+	deferredRestartMu.Unlock()
 
 	if bgWg != nil {
 		bgWg.Add(1)
@@ -583,8 +603,15 @@ func applyWorkspaceConfig(agentConfigPath, secretsPath string) {
 		cfg["$schema"] = schemaJSON
 	}
 
-	merged, _ := json.MarshalIndent(cfg, "", "  ")
-	_ = os.WriteFile(agentConfigPath, merged, 0o600)
+	merged, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		log.Error("applyWorkspaceConfig: failed to marshal config", zap.Error(err))
+		return
+	}
+	if err := os.WriteFile(agentConfigPath, merged, 0o600); err != nil {
+		log.Error("applyWorkspaceConfig: failed to write agent config — opencode may boot with stale config",
+			zap.String("path", agentConfigPath), zap.Error(err))
+	}
 }
 
 // applyMCPServersToConfig reads the current agent-config.json (written by
@@ -618,8 +645,15 @@ func applyMCPServersToConfig(agentConfigPath string, servers []secrets.StagedMCP
 		cfg["$schema"] = schemaJSON
 	}
 
-	merged, _ := json.MarshalIndent(cfg, "", "  ")
-	_ = os.WriteFile(agentConfigPath, merged, 0o600)
+	merged, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		log.Error("applyMCPServersToConfig: failed to marshal config", zap.Error(err))
+		return
+	}
+	if err := os.WriteFile(agentConfigPath, merged, 0o600); err != nil {
+		log.Error("applyMCPServersToConfig: failed to write agent config — opencode may boot with stale config",
+			zap.String("path", agentConfigPath), zap.Error(err))
+	}
 }
 
 // returns "providerID/modelID" when the flat modelID is found in any provider's

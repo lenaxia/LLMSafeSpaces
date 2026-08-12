@@ -79,6 +79,43 @@ func (c *OpenCodeClient) ConfiguredProviderCount(ctx context.Context) (int, erro
 	return len(result.Providers), nil
 }
 
+// sessionStatusEntry is a lightweight session status pair used by the
+// tracker's reconcile-on-reconnect logic.
+type sessionStatusEntry struct {
+	ID     string
+	Status string
+}
+
+// fetchSessionStatuses queries opencode's /v1/statusz for authoritative
+// per-session busy/idle statuses. Used by the session tracker after SSE
+// reconnect to heal stale-idle entries (#753 F1).
+func (c *OpenCodeClient) fetchSessionStatuses(ctx context.Context) ([]sessionStatusEntry, error) {
+	statusCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	resp, err := c.doRequest(statusCtx, "/v1/statusz")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	var statusz struct {
+		Sessions []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"sessions"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&statusz); err != nil {
+		return nil, err
+	}
+	result := make([]sessionStatusEntry, 0, len(statusz.Sessions))
+	for _, s := range statusz.Sessions {
+		if s.ID != "" {
+			result = append(result, sessionStatusEntry{ID: s.ID, Status: s.Status})
+		}
+	}
+	return result, nil
+}
+
 // ModelContextLimit queries /config/providers for the context window limit of a given model.
 // Returns 0 if the model or limit cannot be found.
 func (c *OpenCodeClient) ModelContextLimit(ctx context.Context, modelID, providerID string) int64 {
@@ -99,6 +136,7 @@ func (c *OpenCodeClient) ModelContextLimit(ctx context.Context, modelID, provide
 		} `json:"providers"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		log.Debug("ModelContextLimit: failed to decode /config/providers", zap.Error(err))
 		return 0
 	}
 	for _, p := range result.Providers {
@@ -115,6 +153,8 @@ func (c *OpenCodeClient) ModelContextLimit(ctx context.Context, modelID, provide
 			}
 		}
 	}
+	log.Debug("ModelContextLimit: model not found or context limit is zero",
+		zap.String("modelID", modelID), zap.String("providerID", providerID))
 	return 0
 }
 

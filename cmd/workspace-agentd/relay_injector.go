@@ -343,8 +343,22 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 			var fetchErr error
 			models, fetchErr = fetchFreeModels(ctx, cfg.OpenCodeBaseURL, cfg.OpenCodePassword)
 			if fetchErr != nil {
-				lg.Warn("relay injector: failed to fetch free models, skipping", zap.Error(fetchErr))
-				return
+				// Retry on transient errors (unexpected EOF during opencode
+				// boot, connection refused). Previously returned permanently
+				// (#747 F4) — free-tier users lost model access for the
+				// pod's lifetime.
+				if time.Now().After(fetchDeadline) {
+					lg.Warn("relay injector: failed to fetch free models after 30s, skipping relay config", zap.Error(fetchErr))
+					relayInjectorOutcomes.WithLabelValues("fetch_error").Inc()
+					return
+				}
+				lg.Info("relay injector: transient fetch error, retrying in 5s", zap.Error(fetchErr))
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(5 * time.Second):
+				}
+				continue
 			}
 			if len(models) > 0 {
 				break

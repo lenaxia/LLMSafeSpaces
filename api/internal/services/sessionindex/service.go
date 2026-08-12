@@ -8,10 +8,24 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	"github.com/lenaxia/llmsafespaces/api/internal/logger"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
+
+var sessionIndexDroppedTotal = prometheus.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "session_index_dropped_total",
+		Help: "Total number of session_index events dropped due to full channel.",
+	},
+	[]string{"workspace_id"},
+)
+
+func init() {
+	prometheus.MustRegister(sessionIndexDroppedTotal)
+}
 
 // Service manages the session_index table with non-blocking writes.
 type Service struct {
@@ -61,6 +75,7 @@ func (s *Service) RecordMessage(workspaceID, sessionID, title string, at time.Ti
 	select {
 	case s.queue <- recordEvent{workspaceID: workspaceID, sessionID: sessionID, title: title, at: at}:
 	default:
+		sessionIndexDroppedTotal.WithLabelValues(workspaceID).Inc()
 		if s.logger != nil {
 			s.logger.Warn("session_index: channel full, dropping oldest event",
 				"workspaceID", workspaceID, "sessionID", sessionID,
