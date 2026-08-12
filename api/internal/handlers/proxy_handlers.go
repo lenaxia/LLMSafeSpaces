@@ -196,7 +196,10 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 		return
 	}
 
-	// Adapter path (US-65.4): SendAsync uses V2 prompt internally.
+	// Adapter path: uses synchronous adapter.Send (V1 POST /session/:id/message).
+	// Previously used V2 queue (delivery:"queue") which is never drained on
+	// opencode 1.18.10 — messages vanished (#755). The frontend receives the
+	// assistant response via SSE events regardless of send path.
 	if h.adapter != nil {
 		workspace, ok := h.resolveWorkspaceForAdapter(c, wid)
 		if !ok {

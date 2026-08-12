@@ -163,7 +163,7 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 
 func mcpSessionList(ctx context.Context, password string) (string, error) {
 	req, _ := http.NewRequestWithContext(ctx, "GET",
-		fmt.Sprintf("http://127.0.0.1:%d/session", agentd.AgentPort), nil)
+		fmt.Sprintf("%s/session", getAgentAddr()), nil)
 	req.SetBasicAuth(agentd.AuthUsername, password)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -178,7 +178,7 @@ func mcpSessionList(ctx context.Context, password string) (string, error) {
 }
 
 func mcpSessionRead(ctx context.Context, password, sessionID string, limit int) (string, error) {
-	url := fmt.Sprintf("http://127.0.0.1:%d/session/%s/message?limit=%d", agentd.AgentPort, sessionID, limit)
+	url := fmt.Sprintf("%s/session/%s/message?limit=%d", getAgentAddr(), sessionID, limit)
 	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
 	req.SetBasicAuth(agentd.AuthUsername, password)
 	resp, err := http.DefaultClient.Do(req)

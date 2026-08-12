@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 
@@ -225,4 +226,73 @@ func TestMCPHandler_ToolsList_IncludesDevPreviewURL(t2 *testing.T) {
 
 func newBodyReader(b []byte) *bytes.Reader {
 	return bytes.NewReader(b)
+}
+
+// --- #749 regression tests ---
+
+// TestMCPSessionList_RejectsNon200 verifies that mcpSessionList returns
+// an error when opencode returns a non-200 status (#749).
+func TestMCPSessionList_RejectsNon200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error":"internal"}`))
+	}))
+	defer srv.Close()
+
+	old := agentAddrAtomic.Load().(string)
+	agentAddrAtomic.Store(srv.URL)
+	defer agentAddrAtomic.Store(old)
+
+	_, err := mcpSessionList(context.Background(), "test-pw")
+	assert.Error(t, err, "non-200 status must return error")
+}
+
+// TestMCPSessionRead_RejectsNon200 verifies that mcpSessionRead returns
+// an error when opencode returns a non-200 status (#749).
+func TestMCPSessionRead_RejectsNon200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+
+	old := agentAddrAtomic.Load().(string)
+	agentAddrAtomic.Store(srv.URL)
+	defer agentAddrAtomic.Store(old)
+
+	_, err := mcpSessionRead(context.Background(), "test-pw", "ses_1", 50)
+	assert.Error(t, err, "non-200 status must return error")
+}
+
+// TestMCPSessionList_HappyPath verifies a 200 response returns the body.
+func TestMCPSessionList_HappyPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`[{"id":"ses_1"}]`))
+	}))
+	defer srv.Close()
+
+	old := agentAddrAtomic.Load().(string)
+	agentAddrAtomic.Store(srv.URL)
+	defer agentAddrAtomic.Store(old)
+
+	body, err := mcpSessionList(context.Background(), "test-pw")
+	assert.NoError(t, err)
+	assert.Contains(t, body, "ses_1")
+}
+
+// TestMCPSessionRead_HappyPath verifies a 200 response returns the body.
+func TestMCPSessionRead_HappyPath(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`[{"id":"msg_1"}]`))
+	}))
+	defer srv.Close()
+
+	old := agentAddrAtomic.Load().(string)
+	agentAddrAtomic.Store(srv.URL)
+	defer agentAddrAtomic.Store(old)
+
+	body, err := mcpSessionRead(context.Background(), "test-pw", "ses_1", 50)
+	assert.NoError(t, err)
+	assert.Contains(t, body, "msg_1")
 }
