@@ -779,6 +779,35 @@ func TestAdapter_Send_5xx_ReturnsErrorWithStatus(t *testing.T) {
 	assert.Contains(t, err.Error(), "internal")
 }
 
+// TestAdapter_Send_LargeResponseOver4MB_NoTruncation is the regression
+// test for the Send response cap fix. The previous code used
+// readBody(resp, 4<<20) which silently truncated any assistant turn
+// with verbose tool output (>4 MB). This test feeds a >5 MB response
+// body (a valid assistant message with a very large text part) and
+// asserts it decodes without error and the text is intact.
+//
+// Reverting to readBody(resp, 4<<20)+json.Unmarshal would truncate the
+// body at 4 MB, the JSON parse would fail with "unexpected end of JSON
+// input", and Send would return an error — failing this test.
+func TestAdapter_Send_LargeResponseOver4MB_NoTruncation(t *testing.T) {
+	// Build a valid opencode message with >5 MB of text content.
+	// 5 MB > the old 4 MB cap but well under the new 64 MB cap.
+	largeText := strings.Repeat("x", 5<<20)
+	body := `{"info":{"role":"assistant","id":"msg_big"},"parts":[{"type":"text","text":"` +
+		largeText + `"}]}`
+
+	srv := newFakeOpencode(t)
+	srv.register("POST", "/session/ses_1/message", body, 0)
+
+	a := newTestAdapter(t, srv.Server)
+	msg, err := a.Send(context.Background(), "u-1", "ws-1", "ses_1", "hi", session.SendOpts{})
+	require.NoError(t, err, "Send must not fail on response bodies >4 MB")
+	require.NotNil(t, msg)
+	assert.Equal(t, "msg_big", msg.ID)
+	require.Len(t, msg.Parts, 1)
+	assert.Equal(t, 5<<20, len(msg.Parts[0].Text), "full text must survive (not truncated at the old 4 MB cap)")
+}
+
 // --- SendAsync error paths (PR #714 review follow-up) ---
 
 func TestAdapter_SendAsync_404_NotFound(t *testing.T) {

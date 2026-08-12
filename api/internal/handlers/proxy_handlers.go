@@ -803,10 +803,12 @@ func (h *ProxyHandler) AbortSession(c *gin.Context) {
 	}
 	wid := c.Param("id")
 
-	// Adapter path (US-65.4): non-destructive abort via adapter.Abort.
-	// The V2 interrupt preserves queued input server-side; we clear
-	// pending tracking so US-63.9 stranded-input recovery doesn't
-	// re-wake a session the user explicitly aborted.
+	// Adapter path (US-65.4): abort via adapter.Abort. The V1
+	// POST /session/:id/abort (the only interrupt endpoint on opencode
+	// 1.18.10+) destructively stops the in-flight turn — queued input
+	// is not preserved, unlike the old V2 interrupt which was removed
+	// in 1.18.10. We clear pending tracking so US-63.9 stranded-input
+	// recovery doesn't re-wake a session the user explicitly aborted.
 	if h.adapter != nil {
 		if err := h.adapter.Abort(c.Request.Context(), "", wid, sid); err != nil {
 			h.logger.Error("AbortSession: adapter abort failed", err, "workspaceID", wid, "sessionID", sid)
