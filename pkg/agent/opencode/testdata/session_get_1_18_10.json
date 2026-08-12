@@ -27,6 +27,9 @@
     "variant": "default"
   },
   "version": "1.18.10",
+  "status": {
+    "type": "idle"
+  },
   "time": {
     "created": 1786341121377,
     "updated": 1786467698103

@@ -104,6 +104,27 @@ func TestContract_HistoryNestedTool_1_15_12(t *testing.T) {
 	require.NoError(t, err, "nested tool history fixture must parse without error")
 	assert.Equal(t, 0, downgraded, "no messages should be downgraded")
 	require.NotEmpty(t, msgs, "fixture must have at least 1 message")
+
+	// Find the tool part in the assistant message and verify real extraction.
+	var toolPart *session.Part
+	for i := range msgs {
+		for j := range msgs[i].Parts {
+			if msgs[i].Parts[j].Type == "tool" {
+				toolPart = &msgs[i].Parts[j]
+				break
+			}
+		}
+		if toolPart != nil {
+			break
+		}
+	}
+	require.NotNil(t, toolPart, "must find at least one tool part")
+	require.NotNil(t, toolPart.Tool, "Tool must be populated from nested object")
+	assert.Equal(t, "bash", toolPart.Tool.Name, "tool name must be extracted from nested 'tool.name'")
+	assert.Equal(t, "call_legacy_1", toolPart.Tool.CallID, "callID must be extracted from nested 'tool.callID'")
+	require.NotNil(t, toolPart.Tool.State, "tool state must be extracted from nested 'tool.state'")
+	assert.Equal(t, "completed", string(toolPart.Tool.State.Status),
+		"status must be extracted from nested 'tool.state.status'")
 }
 
 func TestContract_SessionGet_1_18_10_AllFields(t *testing.T) {
@@ -121,6 +142,8 @@ func TestContract_SessionGet_1_18_10_AllFields(t *testing.T) {
 	assert.Greater(t, s.Cost.InputTokens, int64(0), "input tokens must be > 0")
 	assert.Greater(t, s.Cost.OutputTokens, int64(0), "output tokens must be > 0")
 	assert.NotEmpty(t, s.Status, "status must be extracted")
+	assert.Equal(t, session.StatusIdle, s.Status,
+		"status must be 'idle' extracted from the fixture's status.type field")
 }
 
 func TestContract_SessionList_1_18_10_AllFields(t *testing.T) {
@@ -131,6 +154,8 @@ func TestContract_SessionList_1_18_10_AllFields(t *testing.T) {
 
 	for _, s := range sessions {
 		assert.NotEmpty(t, s.ID, "every session must have an ID")
-		assert.NotEmpty(t, s.Status, "every session must have a status")
+		assert.NotEmpty(t, s.Status, "every session must have a status extracted")
+		assert.Contains(t, []session.Status{session.StatusIdle, session.StatusBusy}, s.Status,
+			"status must be a valid known variant, not the 'unknown' default")
 	}
 }

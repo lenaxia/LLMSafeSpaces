@@ -17,6 +17,9 @@
     },
     "title": "Test",
     "version": "1.18.10",
+    "status": {
+      "type": "idle"
+    },
     "time": {
       "created": 1786469008371,
       "updated": 1786469008371
@@ -51,6 +54,9 @@
       "variant": "default"
     },
     "version": "1.18.10",
+    "status": {
+      "type": "busy"
+    },
     "time": {
       "created": 1786341089339,
       "updated": 1786467698103
