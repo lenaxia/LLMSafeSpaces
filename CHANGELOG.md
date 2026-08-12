@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-08-12
+
+### Summary
+
+First production-ready release since v0.13.1. Bundles all v0.14.x hotfixes
+(Epic 65 adapter migration fallout) plus the stuck-busy ground-truth fix.
+Production was intentionally held at v0.13.1 through v0.14.x; this release
+is the culmination of the full investigation, root-cause analysis, and fix
+verification marathon documented in worklog 0744.
+
+The minor version bump (0.14 → 0.15) is justified by the breaking
+`SendPromptAsync` response change (202 → 200 with full assistant message
+body) and the switch from V2 queue to V1 synchronous send.
+
+### Fixed
+
+- **Sessions stuck "busy" forever (#792, #795)** — the in-memory
+  `activeSess` map retained stale "active" entries when the SSE stream
+  dropped or the API pod restarted mid-turn, making sessions appear
+  stuck busy indefinitely. `GetAuthoritativeActiveSessions` now queries
+  the workspace pod's `/v1/statusz` for ground-truth busy/idle status
+  and self-heals stale entries on every session-list request.
+
+- **Dev-preview URL used relative origin (#793, #797)** — dev-preview
+  links now use the absolute API origin instead of a relative path that
+  broke when the frontend was served from a different host.
+
+### Changed
+
+- **`SendPromptAsync` now returns 200 with the assistant message body**
+  (#755) — previously returned 202 (accepted) via V2 queue, which is
+  admitted but never drained on opencode 1.18.10. Now uses synchronous
+  V1 `POST /session/:id/message` and returns the completed assistant
+  message as JSON.
+
+### Testing
+
+- **E2e regression coverage closed for three hotfix gaps (#800)** —
+  worklog 0744's audit found that three of the four Epic 65 symptom
+  fixes were marked "Code path verified" (non-evidence per Rule 0).
+  Added three integration tests that exercise the full gin → handler →
+  adapter → HTTP path and are verified to FAIL when the corresponding
+  fix is reverted:
+  - `TestE2E_Adapter_GetHistory_LargeBodyOver16MiB_No502` (#737)
+  - `TestE2E_Adapter_SendPromptAsync_UsesV1SendNotV2Queue` (#755)
+  - `TestE2E_Adapter_GetHistory_EmptySession_ReturnsArrayNotNull`
+
+### Included from v0.14.x (previously unreleased to production)
+
+All fixes from v0.14.3 through v0.14.6 are included. See the individual
+changelog entries below for details. Key user-facing fixes:
+
+- Messages disappear on send (#755) — V1 synchronous send
+- GetHistory 502 on large sessions (#737) — streaming decoder
+- Null history crash on new sessions — nil→[] guard
+- Sessions stuck busy after LLM finishes — SSE watch on read paths
+- opencode 1.18.10 wire-shape drift (#740, #743, #744, #748) — providerID,
+  Agent, Status, flat tool parts, summary object, cost tokens
+- SSE tracker billing drift + memory leak (#751)
+- Secrets rotation restart mid-turn (#753)
+- Reasoning content silently dropped (#750)
+
 ## [0.14.6] - 2026-08-12
 
 ### Fixed
