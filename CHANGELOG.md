@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.6] - 2026-08-12
+
+### Fixed
+
+- **GetHistory returns `null` for empty sessions — frontend crash** — when
+  opencode returns no messages (new session), the adapter returned a nil
+  slice which Go serializes as `null`. The frontend called `.filter()` on
+  the response, crashing with "Cannot read properties of null". Fixed to
+  return `[]`.
+
 ## [0.14.5] - 2026-08-12
 
 ### Fixed
