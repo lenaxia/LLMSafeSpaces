@@ -13,7 +13,7 @@ describe("API client — auth error handling", () => {
       ok: false,
       status: 401,
       statusText: "Unauthorized",
-      json: () => Promise.resolve({ error: "token expired" }),
+      json: () => Promise.resolve({ error: "token expired" }), text: () => Promise.resolve(JSON.stringify({ error: "token expired" })),
     });
 
     try {
@@ -31,7 +31,7 @@ describe("API client — auth error handling", () => {
       ok: false,
       status: 403,
       statusText: "Forbidden",
-      json: () => Promise.resolve({ error: "not your resource" }),
+      json: () => Promise.resolve({ error: "not your resource" }), text: () => Promise.resolve(JSON.stringify({ error: "not your resource" })),
     });
 
     try {
@@ -47,7 +47,7 @@ describe("API client — auth error handling", () => {
       ok: false,
       status: 429,
       statusText: "Too Many Requests",
-      json: () => Promise.resolve({ error: "rate limited", retryAfter: 10 }),
+      json: () => Promise.resolve({ error: "rate limited", retryAfter: 10 }), text: () => Promise.resolve(JSON.stringify({ error: "rate limited", retryAfter: 10 })),
     });
 
     try {
@@ -83,7 +83,7 @@ describe("API client — auth error handling", () => {
   });
 
   it("credentials: include is always set (cookie auth)", async () => {
-    mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}) });
+    mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}), text: () => Promise.resolve(JSON.stringify({})) });
     await api.get("/test");
     expect(mockFetch).toHaveBeenCalledWith(
       expect.any(String),
