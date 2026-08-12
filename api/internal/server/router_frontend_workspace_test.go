@@ -359,6 +359,9 @@ func newRouterFixtureWithProxy(t *testing.T) (*gin.Engine, *mockServices, *handl
 	auth.On("GetUserID", mock.Anything).Return("test-user")
 
 	k8sMock := k8smocks.NewMockKubernetesClient()
+	// GetAuthoritativeActiveSessions calls LlmsafespacesV1 — return nil
+	// so it falls back to the in-memory activeSess map in tests.
+	k8sMock.On("LlmsafespacesV1").Return(nil, nil).Maybe()
 	proxyHandler, err := handlers.NewProxyHandler(k8sMock, log, "default", nil, nil)
 	require.NoError(t, err)
 
