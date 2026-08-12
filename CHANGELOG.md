@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.4] - 2026-08-12
+
+### Fixed
+
+- **Messages disappear on send — Sev1 (#755, #757)** — `SendPromptAsync` always routed through V2 queue (`delivery:"queue"`) which is admitted but never drained on opencode 1.18.10. Every message from every workspace vanished. Switched to synchronous `adapter.Send` (V1 `POST /session/:id/message`) which works on all versions.
+
+- **GetHistory 502 on large sessions — streaming decoder (#737, #738)** — the 16 MiB `readBody` cap truncated history bodies >16 MiB (94 MB sessions), causing JSON parse failure → 502. Replaced with streaming `json.Decoder` that has no body-size cap and returns partial results on truncation.
+
+- **Reasoning content silently dropped (#750, #757)** — `translate.go` read `p.Reasoning` but opencode 1.18.10 puts reasoning text in `p.Text`. Added fallback.
+
+- **Adapter 10s HTTP timeout broke sync Send (#746, #757)** — the hard `http.Client.Timeout: 10s` covered the entire exchange including body read. Removed; context deadline is the correct boundary.
+
+- **CapDiff falsely advertised (#745, #757)** — `Capabilities()` unconditionally returned `CapDiff` even though filediff is never wired. Made conditional on `a.differ != nil`.
+
+- **SSE tracker billing drift + memory leak (#751, #757)** — `handleSessionUpdated` parsed cost as `float64` (breaks on object shape), provider key only accepted `providerID` not legacy `provider`, and per-session billing maps never cleaned up on `StopWatching`. Fixed all three + data race on `sessionStartTime` mutex.
+
+- **Secrets rotation restart mid-turn (#753, #757)** — agentd session tracker only stored `busy`/`idle`, treating `retry`/`error`/`compacting` as neither (stale idle). Restart decision then fired mid-turn. Fixed to treat all non-idle statuses as busy.
+
+- **agentd parser drift (#747, #757)** — `fetchSessionPromptTokens` had silent zero-return paths with no logging and unbounded body read. Added debug logs + 16 MB `io.LimitReader` cap.
+
+- **MCP server OOM risk (#749, #757)** — `mcpSessionList`/`mcpSessionRead` used unbounded `io.ReadAll` with no status check. Added 4 MB/16 MB caps + status-code validation. Fixed MCP functions to use `getAgentAddr()` for testability.
+
+- **session_index channel drop (#754, #757)** — `RecordMessage` silently dropped events when channel full. Added nil-guarded warn log.
+
+- **opencode 1.18.10 wire-shape drift (#743, #748)** — `providerID` dropped (custom UnmarshalJSON), `Agent` field missing, `Status` latent 502 (polymorphic decoder).
+
+- **V2 bridge: spurious wake + TTL leak + nil-guard (#744, #748)** — busy-session guard in `wakeStrandedV2Sessions`, TTL pruning in `v2PendingSessions`, symmetric nil-guard.
+
+- **ParseSessionWire/ParseSessionListWire 502 on 1.18.10 (#740, #741)** — `Summary` string→object, `Cost` object→bare number, `Time` field name drift. All fixed with `json.RawMessage` + custom unmarshalers.
+
+- **Context usage backfill from CRD (#739, #741)** — `context_used` NULL after API pod restarts. Backfill from CRD status + observability.
+
+- **Adapter cross-cutting regressions (#740, #741)** — all adapter handler paths now enforce workspace readiness, connection limits, session limits, metering, quota, activity tracking.
+
 ## [0.14.3] - 2026-08-11
 
 ### Fixed
