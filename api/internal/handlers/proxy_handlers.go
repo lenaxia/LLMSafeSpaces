@@ -363,6 +363,9 @@ func (h *ProxyHandler) GetHistory(c *gin.Context) {
 			return
 		}
 		page, nextCursor := paginateContractHistory(msgs, limit, before)
+		if page == nil {
+			page = []session.Message{}
+		}
 		if nextCursor != "" {
 			c.Header("X-Next-Cursor", nextCursor)
 		}
