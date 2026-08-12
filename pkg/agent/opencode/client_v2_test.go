@@ -285,3 +285,56 @@ func TestInterruptV2_AuthHeaderSent(t *testing.T) {
 		t.Fatalf("Basic auth = %q/%q, want opencode/%s", user, pass, pw)
 	}
 }
+
+// --- Client.Abort (V1 /abort) tests ---
+// The following tests mirror the InterruptV2 coverage: success, server
+// error, and auth-header assertion. Client.Abort hits POST /session/:id/abort
+// which is the only interrupt endpoint on opencode 1.18.10+.
+
+func TestClient_Abort_Success200(t *testing.T) {
+	pw := "pw"
+	ts := newV2TestServer(t, pw)
+	ts.respStatus = http.StatusOK
+	ts.respBody = ""
+
+	c := NewClient(ts.server.URL, pw, nil)
+	err := c.Abort(context.Background(), "ses_123")
+	if err != nil {
+		t.Fatalf("Abort: %v", err)
+	}
+	if ts.lastReq.URL.Path != "/session/ses_123/abort" {
+		t.Fatalf("path = %q, want /session/ses_123/abort", ts.lastReq.URL.Path)
+	}
+	if ts.lastReq.Method != http.MethodPost {
+		t.Fatalf("method = %q, want POST", ts.lastReq.Method)
+	}
+}
+
+func TestClient_Abort_ServerError(t *testing.T) {
+	pw := "pw"
+	ts := newV2TestServer(t, pw)
+	ts.respStatus = http.StatusInternalServerError
+
+	c := NewClient(ts.server.URL, pw, nil)
+	err := c.Abort(context.Background(), "ses_1")
+	if err == nil {
+		t.Fatal("expected error on 500")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Fatalf("error must contain status code 500, got: %v", err)
+	}
+}
+
+func TestClient_Abort_AuthHeaderSent(t *testing.T) {
+	pw := "secret"
+	ts := newV2TestServer(t, pw)
+	ts.respStatus = http.StatusOK
+
+	c := NewClient(ts.server.URL, pw, nil)
+	_ = c.Abort(context.Background(), "s")
+
+	user, pass, _ := ts.lastReq.BasicAuth()
+	if user != "opencode" || pass != pw {
+		t.Fatalf("Basic auth = %q/%q, want opencode/%s", user, pass, pw)
+	}
+}

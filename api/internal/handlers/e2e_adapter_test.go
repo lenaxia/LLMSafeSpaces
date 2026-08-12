@@ -370,22 +370,44 @@ func TestE2E_Adapter_GetHistory_EmptySession_ReturnsArrayNotNull(t *testing.T) {
 		"empty adapter history must serialize as JSON array '[]', not 'null' (frontend .filter crash)")
 }
 
-// TestE2E_Adapter_AbortSession_FullPipeline pins the interrupt path.
-func TestE2E_Adapter_AbortSession_FullPipeline(t *testing.T) {
-	abortCalled := false
+// TestE2E_Adapter_AbortSession_UsesV1AbortNotV2Interrupt is the regression
+// test for the V2 interrupt removal in opencode 1.18.10. The entire v2/
+// route group was deleted from opencode 1.18.10 — the V2 interrupt
+// endpoint (POST /api/session/:id/interrupt) returns 204 from a catch-all
+// stub but does nothing. AbortSession must use the V1 /abort endpoint
+// (POST /session/:id/abort) which actually stops the in-flight turn.
+//
+// Verified live on opencode 1.18.10: V2 interrupt returned 204 but a
+// long V1 turn kept running; V1 /abort returned 200 and the session
+// transitioned to idle within 3s.
+//
+// This test asserts:
+//  1. V1 /abort endpoint is hit exactly once.
+//  2. V2 /interrupt endpoint is NEVER hit.
+//
+// A revert to InterruptV2 would fail both assertions.
+func TestE2E_Adapter_AbortSession_UsesV1AbortNotV2Interrupt(t *testing.T) {
+	var v1AbortHits, v2InterruptHits int
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/interrupt") {
-			abortCalled = true
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/abort"):
+			v1AbortHits++
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/interrupt"):
+			v2InterruptHits++
 			w.WriteHeader(http.StatusNoContent)
-			return
+		default:
+			w.WriteHeader(http.StatusNotFound)
 		}
-		w.WriteHeader(http.StatusNotFound)
 	}))
 	t.Cleanup(backend.Close)
 
 	env := newE2EEnv(t, backend)
-	env.do(http.MethodPost, "/api/v1/workspaces/ws-1/sessions/ses_1/abort", nil)
-	assert.True(t, abortCalled, "adapter must call the interrupt endpoint")
+	w := env.do(http.MethodPost, "/api/v1/workspaces/ws-1/sessions/ses_1/abort", nil)
+
+	assert.Equal(t, http.StatusNoContent, w.Code, "AbortSession must return 204")
+	assert.Equal(t, 1, v1AbortHits, "V1 POST /session/:id/abort must be called exactly once")
+	assert.Equal(t, 0, v2InterruptHits, "V2 POST /api/session/:id/interrupt must NEVER be called (endpoint removed in 1.18.10)")
 }
 
 // --- E2E test environment ---

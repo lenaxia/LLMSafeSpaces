@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -152,4 +154,60 @@ func TestGetAuthoritativeActiveSessions_StatuszError_ReturnsEmpty(t *testing.T) 
 
 	assert.Empty(t, activeSet,
 		"statusz error must not claim any sessions active")
+}
+
+// TestGetAuthoritativeActiveSessions_LargeStatuszOver16KB is the
+// regression test for the statusz decode cap fix. The previous code
+// used io.LimitReader(resp.Body, 16*1024) — each session entry in
+// statusz is ~300 bytes, so a workspace with ~55 sessions exceeds the
+// cap. The decode silently failed and GetAuthoritativeActiveSessions
+// returned an empty set, breaking the stuck-busy self-heal for heavy
+// users.
+//
+// This test generates a statusz body with 100 sessions (>16 KB, ~30 KB
+// total) where one session is busy. It asserts the busy session is
+// detected. Reverting to 16*1024 would truncate the JSON, the decode
+// would fail, and the busy session would NOT be in the set.
+func TestGetAuthoritativeActiveSessions_LargeStatuszOver16KB(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// Build a statusz body with 100 idle sessions + 1 busy session.
+	// Total size will be >16 KB, well over the old cap.
+	var sb strings.Builder
+	sb.WriteString(`{"sessions":[`)
+	for i := 0; i < 100; i++ {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		// Each entry is ~80 bytes of JSON; 100 entries with padding.
+		// Add padding via a long title to push total over 16 KB.
+		sb.WriteString(`{"id":"ses_idle_`)
+		fmt.Fprintf(&sb, "%03d", i)
+		sb.WriteString(`","status":"idle","title":"`)
+		sb.WriteString(strings.Repeat("p", 200))
+		sb.WriteString(`"}`)
+	}
+	// The busy session we actually care about detecting.
+	sb.WriteString(`,{"id":"ses_busy_target","status":"busy","title":"`)
+	sb.WriteString(strings.Repeat("p", 200))
+	sb.WriteString(`"}]}`)
+
+	body := sb.String()
+	require.Greater(t, len(body), 16*1024,
+		"test statusz body must exceed the old 16 KB cap (got %d bytes)", len(body))
+
+	env, srv := newStatuszTestEnv(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/statusz" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(body))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	defer srv.Close()
+
+	activeSet := env.handler.GetAuthoritativeActiveSessions(context.Background(), "ws-1")
+
+	assert.True(t, activeSet["ses_busy_target"],
+		"busy session must be detected even when statusz body >16 KB (got %d bytes)", len(body))
 }
