@@ -182,7 +182,7 @@ func TestGetAuthoritativeActiveSessions_LargeStatuszOver16KB(t *testing.T) {
 		// Each entry is ~80 bytes of JSON; 100 entries with padding.
 		// Add padding via a long title to push total over 16 KB.
 		sb.WriteString(`{"id":"ses_idle_`)
-		sb.WriteString(fmt.Sprintf("%03d", i))
+		fmt.Fprintf(&sb, "%03d", i)
 		sb.WriteString(`","status":"idle","title":"`)
 		sb.WriteString(strings.Repeat("p", 200))
 		sb.WriteString(`"}`)
