@@ -4,7 +4,6 @@
 package sse
 
 import (
-	"encoding/json"
 	"sync"
 	"testing"
 	"time"
@@ -106,17 +105,4 @@ func TestSSETracker_Inference_MalformedEvent_NoPanic(t *testing.T) {
 	assert.NotPanics(t, func() {
 		tracker.processEvent("ws-1", raw)
 	})
-}
-
-// --- helpers ---
-
-func makeSessionUpdatedEventJSON(sessionID string, info map[string]interface{}) string {
-	data, _ := json.Marshal(map[string]interface{}{
-		"type": "session.updated",
-		"properties": map[string]interface{}{
-			"sessionID": sessionID,
-			"info":      info,
-		},
-	})
-	return string(data)
 }
