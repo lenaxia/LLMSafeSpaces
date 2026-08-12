@@ -13,7 +13,7 @@ describe("api client", () => {
   });
 
   it("makes GET request with credentials include", async () => {
-    mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({ data: "ok" }) });
+    mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({ data: "ok" }), text: () => Promise.resolve(JSON.stringify({ data: "ok" })) });
     await api.get("/test");
     expect(mockFetch).toHaveBeenCalledWith(
       "/api/v1/test",
@@ -22,7 +22,7 @@ describe("api client", () => {
   });
 
   it("makes POST request with JSON body", async () => {
-    mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}) });
+    mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}), text: () => Promise.resolve("{}") });
     await api.post("/test", { key: "value" });
     expect(mockFetch).toHaveBeenCalledWith(
       "/api/v1/test",
@@ -34,7 +34,7 @@ describe("api client", () => {
   });
 
   it("PUT serializes falsy bodies (false/0/\"\") instead of dropping them", async () => {
-    mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}) });
+    mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}), text: () => Promise.resolve("{}") });
     await api.put("/p", false);
     expect(mockFetch).toHaveBeenCalledWith(
       "/api/v1/p",
@@ -48,7 +48,7 @@ describe("api client", () => {
   });
 
   it("POST serializes falsy bodies (false/0) instead of dropping them", async () => {
-    mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}) });
+    mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}), text: () => Promise.resolve("{}") });
     await api.post("/p", false);
     expect(mockFetch).toHaveBeenCalledWith(
       "/api/v1/p",
@@ -62,7 +62,7 @@ describe("api client", () => {
   });
 
   it("PUT with no body argument sends undefined body", async () => {
-    mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}) });
+    mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}), text: () => Promise.resolve("{}") });
     await api.put("/p");
     expect(mockFetch).toHaveBeenCalledWith(
       "/api/v1/p",
@@ -71,7 +71,7 @@ describe("api client", () => {
   });
 
   it("makes DELETE request", async () => {
-    mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}) });
+    mockFetch.mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}), text: () => Promise.resolve("{}") });
     await api.delete("/test/1");
     expect(mockFetch).toHaveBeenCalledWith(
       "/api/v1/test/1",
@@ -80,9 +80,32 @@ describe("api client", () => {
   });
 
   it("returns undefined for 204 responses", async () => {
-    mockFetch.mockResolvedValue({ ok: true, status: 204 });
+    mockFetch.mockResolvedValue({ ok: true, status: 204, text: () => Promise.resolve("") });
     const result = await api.post("/test");
     expect(result).toBeUndefined();
+  });
+
+  it("returns undefined for 202 with empty body (#782)", async () => {
+    // Regression: the old code did unconditional res.json() which throws
+    // "Unexpected end of JSON input" on a 202 Accepted with no body.
+    mockFetch.mockResolvedValue({ ok: true, status: 202, text: () => Promise.resolve("") });
+    const result = await api.post("/workspaces/ws-1/sessions/ses-1/prompt", {});
+    expect(result).toBeUndefined();
+  });
+
+  it("returns undefined for 200 with empty body when typed as void", async () => {
+    // The prompt endpoint returns 200 with a body now, but if it ever
+    // returns 200 with no body (e.g., a future change), we must not throw.
+    mockFetch.mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve("") });
+    const result = await api.post<void>("/test");
+    expect(result).toBeUndefined();
+  });
+
+  it("parses JSON body on 200 with content (current prompt behavior)", async () => {
+    const body = { id: "msg_1", type: "assistant", parts: [{ type: "text", text: "hello" }] };
+    mockFetch.mockResolvedValue({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(body)) });
+    const result = await api.post("/test");
+    expect(result).toEqual(body);
   });
 
   it("throws ApiClientError on non-ok response", async () => {

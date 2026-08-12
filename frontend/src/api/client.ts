@@ -59,7 +59,13 @@ async function request<T>(
   }
 
   if (res.status === 204) return undefined as T;
-  return res.json();
+  // Guard against empty bodies on success statuses that are typed as
+  // void (e.g., the prompt endpoint historically returned 202 with no
+  // body). Without this, res.json() throws "Unexpected end of JSON
+  // input". Matches the defensive pattern in sdks/typescript/src/client.ts.
+  const text = await res.text();
+  if (text === "") return undefined as T;
+  return JSON.parse(text) as T;
 }
 
 export const api = {
@@ -92,7 +98,9 @@ export async function getRaw<T>(path: string): Promise<{ data: T; headers: Heade
   }
 
   if (res.status === 204) return { data: undefined as T, headers: res.headers };
-  return { data: await res.json(), headers: res.headers };
+  const text = await res.text();
+  if (text === "") return { data: undefined as T, headers: res.headers };
+  return { data: JSON.parse(text) as T, headers: res.headers };
 }
 
 /**
