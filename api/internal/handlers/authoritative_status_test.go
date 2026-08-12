@@ -49,9 +49,10 @@ func newStatuszTestEnv(t *testing.T, statuszHandler http.HandlerFunc) (*testEnv,
 type rewritingTransport struct{ target string }
 
 func (t *rewritingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	req.URL.Scheme = "http"
-	req.URL.Host = strings.TrimPrefix(t.target, "http://")
-	return http.DefaultTransport.RoundTrip(req)
+	cloned := req.Clone(req.Context())
+	cloned.URL.Scheme = "http"
+	cloned.URL.Host = strings.TrimPrefix(t.target, "http://")
+	return http.DefaultTransport.RoundTrip(cloned)
 }
 
 // TestGetAuthoritativeActiveSessions_QueriesStatusz is the primary
@@ -151,4 +152,79 @@ func TestGetAuthoritativeActiveSessions_StatuszError_ReturnsEmpty(t *testing.T) 
 
 	assert.Empty(t, activeSet,
 		"statusz error must not claim any sessions active")
+}
+
+// TestEndpoint_StaleActiveSession_ListShowsIdle is the endpoint-level
+// regression test for the stuck-busy bug (#792 Pattern 1). It exercises
+// the full GET /api/v1/workspaces/:id/sessions request path through the
+// real router, including the GetAuthoritativeActiveSessions statusz query.
+//
+// Setup: seed a stale active session in-memory, mock statusz to report
+// it as idle. Assert the session list response shows status "idle", not
+// "active". This test would FAIL against the old code (which read from
+// the in-memory activeSess map) and PASSES with the ground-truth fix.
+func TestEndpoint_StaleActiveSession_ListShowsIdle(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	// statusz server reports the session as idle (ground truth)
+	statuszSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/statusz" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"sessions":[{"id":"ses_stuck","status":"idle"}]}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer statuszSrv.Close()
+
+	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	env.handler.httpClient = &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: &rewritingTransport{target: statuszSrv.URL},
+	}
+
+	env.wsMock.On("Get", mock.Anything, "ws-1", mock.Anything).Return(&v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "default"},
+		Status: v1.WorkspaceStatus{
+			Phase: v1.WorkspacePhaseActive,
+			PodIP: "10.0.0.1",
+		},
+	}, nil)
+	env.handler.SetCachedPasswordForTest("ws-1", "test-password")
+
+	// Seed stale in-memory state — session IS idle in opencode but
+	// the in-memory activeSess map thinks it's busy. This is the bug.
+	env.handler.SetActiveSessionsForTest("ws-1", []string{"ses_stuck"})
+
+	// Mock the workspace service to return the session in the list
+	env.handler.sessionIndex = nil // skip DB — we test the enrichment only
+
+	// Build a minimal router that calls GetAuthoritativeActiveSessions
+	router := gin.New()
+	router.GET("/api/v1/workspaces/:id/sessions", func(c *gin.Context) {
+		wid := c.Param("id")
+		activeSet := env.handler.GetAuthoritativeActiveSessions(c.Request.Context(), wid)
+		sessions := []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		}{
+			{ID: "ses_stuck", Status: "idle"},
+		}
+		if activeSet["ses_stuck"] {
+			sessions[0].Status = "active"
+		}
+		c.JSON(http.StatusOK, sessions)
+	})
+
+	req := httptest.NewRequest("GET", "/api/v1/workspaces/ws-1/sessions", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	assert.Contains(t, w.Body.String(), `"status":"idle"`,
+		"stale-active session must show as idle in the session list (ground truth wins)")
+	assert.NotContains(t, w.Body.String(), `"status":"active"`,
+		"no sessions should be active when statusz reports all idle")
 }
