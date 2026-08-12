@@ -193,8 +193,8 @@ func TestEndpoint_StaleActiveSession_ListShowsIdle(t *testing.T) {
 	env.wsMock.On("Get", mock.Anything, "ws-1", mock.Anything).Return(&v1.Workspace{
 		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "default"},
 		Status: v1.WorkspaceStatus{
-			Phase:  v1.WorkspacePhaseActive,
-			PodIP:  "10.0.0.1",
+			Phase: v1.WorkspacePhaseActive,
+			PodIP: "10.0.0.1",
 		},
 	}, nil)
 	env.handler.SetCachedPasswordForTest("ws-1", "test-password")
