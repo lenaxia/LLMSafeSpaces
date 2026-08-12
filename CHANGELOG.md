@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.5] - 2026-08-12
+
+### Fixed
+
+- **Sessions stuck "busy" after LLM finishes (#755)** — adapter read
+  paths (GetHistory, GetSession, ListSessions) never called
+  `adapterEnsureSSEWatch`, so opening a busy session without sending a
+  message never started the SSE tracker. The `session.status=idle`
+  event was never received and the session appeared stuck busy forever.
+  Fixed by adding SSE watch to all three read-path handlers.
+
 ## [0.14.4] - 2026-08-12
 
 ### Fixed
@@ -1652,3 +1663,4 @@ Network hardening sweep + KMS-backed master KEK foundation + Go security bump.
 [0.2.1]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/lenaxia/LLMSafeSpaces/releases/tag/v0.1.0
+## Placeholder
