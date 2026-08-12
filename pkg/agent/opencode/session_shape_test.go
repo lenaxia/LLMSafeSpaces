@@ -4,12 +4,15 @@
 package opencode
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
 
 func loadFixture(t *testing.T, name string) []byte {
@@ -61,4 +64,85 @@ func TestParseSessionWire_SummaryAbsent(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, s)
 	assert.Equal(t, "ses_nosummary", s.ID)
+}
+
+// --- Contract tests against golden fixtures ---
+//
+// These tests lock down the wire-shape contract between opencode 1.18.10
+// and our translate layer. If opencode changes any field name, type, or
+// shape, these tests break with a clear fixture-vs-code diff rather than
+// a mysterious 502 in production.
+
+func TestContract_HistoryFlatTool_1_18_10(t *testing.T) {
+	body := loadFixture(t, "history_1_18_10_flat_tool.json")
+	msgs, changedFiles, downgraded, err := ParseHistoryStream(bytes.NewReader(body), "ws-contract")
+	require.NoError(t, err, "flat tool history fixture must parse without error")
+	assert.Equal(t, 0, downgraded, "no messages should be downgraded")
+	require.Len(t, msgs, 2, "fixture has 2 messages (user + assistant with tool)")
+
+	// The assistant message (second) has the flat tool part.
+	msg := msgs[1]
+	require.NotEmpty(t, msg.Parts, "assistant message must have parts")
+	// Find the tool part.
+	var toolPart *session.Part
+	for i := range msg.Parts {
+		if msg.Parts[i].Type == "tool" {
+			toolPart = &msg.Parts[i]
+			break
+		}
+	}
+	require.NotNil(t, toolPart, "must find at least one tool part")
+	assert.NotEmpty(t, toolPart.Tool.Name, "tool name must be extracted from flat 'tool' string field")
+	assert.NotEmpty(t, toolPart.Tool.CallID, "callID must be extracted")
+	require.NotNil(t, toolPart.Tool.State, "tool state must be populated")
+	assert.Contains(t, []string{"completed", "running", "pending", "error"}, string(toolPart.Tool.State.Status),
+		"status must be a valid ToolState variant")
+	_ = changedFiles
+}
+
+func TestContract_HistoryNestedTool_1_15_12(t *testing.T) {
+	body := loadFixture(t, "history_1_15_12_nested_tool.json")
+	msgs, _, downgraded, err := ParseHistoryStream(bytes.NewReader(body), "ws-contract")
+	require.NoError(t, err, "nested tool history fixture must parse without error")
+	assert.Equal(t, 0, downgraded, "no messages should be downgraded")
+	require.NotEmpty(t, msgs, "fixture must have at least 1 message")
+}
+
+func TestContract_SessionGet_1_18_10_AllFields(t *testing.T) {
+	body := loadFixture(t, "session_get_1_18_10.json")
+	s, err := ParseSessionWire(body, "ws-contract")
+	require.NoError(t, err)
+	require.NotNil(t, s)
+
+	// Core identity
+	assert.NotEmpty(t, s.ID)
+	assert.NotEmpty(t, s.Title)
+
+	// Model with providerID (1.18.10 shape)
+	require.NotNil(t, s.Model, "model must be extracted")
+	assert.NotEmpty(t, s.Model.Provider, "provider must be extracted (1.18.10 wire shape)")
+	assert.NotEmpty(t, s.Model.ID, "model ID must be extracted")
+
+	// Cost/tokens (1.18.10 shape: nested object)
+	require.NotNil(t, s.Cost, "cost/tokens must be extracted from tokens object")
+	assert.Greater(t, s.Cost.InputTokens, int64(0), "input tokens must be > 0")
+	assert.Greater(t, s.Cost.OutputTokens, int64(0), "output tokens must be > 0")
+
+	// Status (1.18.10 shape: polymorphic)
+	assert.NotEmpty(t, s.Status, "status must be extracted")
+
+	// Summary (1.18.10 shape: object with additions/deletions/files, not a string)
+	// Summary is optional — just assert it doesn't crash if present.
+}
+
+func TestContract_SessionList_1_18_10_AllFields(t *testing.T) {
+	body := loadFixture(t, "session_list_1_18_10.json")
+	sessions, err := ParseSessionListWire(body, "ws-contract")
+	require.NoError(t, err)
+	require.GreaterOrEqual(t, len(sessions), 2, "fixture must have at least 2 sessions")
+
+	for _, s := range sessions {
+		assert.NotEmpty(t, s.ID, "every session must have an ID")
+		assert.NotEmpty(t, s.Status, "every session must have a status")
+	}
 }
