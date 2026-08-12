@@ -325,7 +325,19 @@ func runFill(ctx context.Context, client *OpenCodeClient, tracker *sessionStatus
 	iterCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
-	for _, s := range sessions() {
+	activeSessions := sessions()
+
+	// Pattern 2 Fix S8: prune stale session entries every fill cycle.
+	// Without this, sessions that were deleted from opencode (but not
+	// cleared from the tracker) stay in statuses/promptTokens forever,
+	// causing phantom busy counts and incorrect restart gating.
+	activeIDs := make([]string, 0, len(activeSessions))
+	for _, s := range activeSessions {
+		activeIDs = append(activeIDs, s.ID)
+	}
+	tracker.prune(activeIDs)
+
+	for _, s := range activeSessions {
 		if tracker.hasPromptTokens(s.ID) {
 			continue
 		}
