@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-08-12
+
+### Fixed
+
+- **AbortSession silently broken on opencode 1.18.10 (SEV1)** — the V2
+  interrupt endpoint (`POST /api/session/:id/interrupt`) was removed in
+  opencode 1.18.10 (the entire `v2/` route group was deleted). On 1.18.10
+  the V2 path returns 204 from a catch-all stub but does nothing —
+  clicking "Stop" had no effect. Switched to V1 `POST /session/:id/abort`
+  which actually stops the in-flight turn.
+
+- **V1 Send response truncated at 4 MB** — same class of silent-
+  truncation as #737. A single assistant turn with verbose tool output
+  (>4 MB) would truncate, the JSON parse would fail, and the user's
+  message would appear to vanish even though the LLM completed.
+  Raised to 64 MB.
+
+- **statusz 16 KB decode cap too small** — a workspace with 55+ sessions
+  produces a statusz body >16 KB. The decode silently failed and the
+  stuck-busy self-heal stopped working for heavy users. Raised to 1 MB.
+
+### Root cause
+
+The entire `v2/` route group directory was deleted from opencode 1.18.10
+(`packages/opencode/src/server/routes/instance/httpapi/groups/v2/`).
+Both V2 endpoints (`/api/session/:id/prompt` and `/api/session/:id/interrupt`)
+are gone — they return 200/204 from a catch-all stub but execute nothing.
+Confirmed via source diff of anomalyco/opencode v1.15.12 vs v1.18.10.
+
 ## [0.15.0] - 2026-08-12
 
 ### Summary
