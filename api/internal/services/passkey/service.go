@@ -494,12 +494,22 @@ func (s *Service) ConsumeRecoveryCode(ctx context.Context, email, code string) (
 		return "", fmt.Errorf("lookup user: %w", err)
 	}
 	if user == nil {
+		// Timing equalization: run a dummy bcrypt comparison so the
+		// user-not-found path takes the same time as a valid user
+		// with a wrong code (#763).
+		_ = bcrypt.CompareHashAndPassword([]byte(dummyBcryptHash), []byte(code))
 		return "", ErrUserNotFound
 	}
 
 	codes, err := s.store.ListAvailableRecoveryCodes(ctx, user.ID)
 	if err != nil {
 		return "", fmt.Errorf("list recovery codes: %w", err)
+	}
+	if len(codes) == 0 {
+		// Timing equalization: same dummy burn when user exists but
+		// has no available codes (#763).
+		_ = bcrypt.CompareHashAndPassword([]byte(dummyBcryptHash), []byte(code))
+		return "", ErrRecoveryCodeNotFound
 	}
 	for _, rc := range codes {
 		if bcrypt.CompareHashAndPassword([]byte(rc.CodeHash), []byte(code)) == nil {
@@ -511,6 +521,10 @@ func (s *Service) ConsumeRecoveryCode(ctx context.Context, email, code string) (
 	}
 	return "", ErrRecoveryCodeNotFound
 }
+
+// dummyBcryptHash is a pre-computed bcrypt hash used for timing
+// equalization on error paths. The plaintext is random and unknown.
+const dummyBcryptHash = "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy"
 
 // --- internal helpers ---
 

@@ -58,6 +58,11 @@ type RouterConfig struct {
 	// Debug enables debug mode
 	Debug bool
 
+	// TrustedProxies is the list of trusted proxy IP ranges/CIDRs.
+	// If nil, trusts nobody (X-Forwarded-For is ignored). This
+	// prevents IP-spoofing attacks on lockout and rate-limiting (#757).
+	TrustedProxies []string
+
 	// LoggingConfig is the configuration for the logging middleware
 	LoggingConfig middleware.LoggingConfig
 
@@ -326,6 +331,18 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 
 	// Create router
 	router := gin.New()
+
+	// Restrict which proxy IPs can set X-Forwarded-For. Without this,
+	// gin trusts all IPs (0.0.0.0/0) and c.ClientIP() honors
+	// attacker-controlled headers, bypassing IP-based lockout and
+	// rate-limiting (#757).
+	trustedProxies := cfg.TrustedProxies
+	if trustedProxies == nil {
+		trustedProxies = []string{} // trust nobody by default
+	}
+	if err := router.SetTrustedProxies(trustedProxies); err != nil {
+		logger.Error("Failed to set trusted proxies", err)
+	}
 
 	// Add middleware in the correct order
 	router.Use(middleware.RecoveryMiddleware(logger))
@@ -798,6 +815,7 @@ func sanitizeBindError(err error) string {
 // cookieDomain is the Domain attribute (empty = host-only; set when wildcard
 // subdomain routing is enabled so the cookie is visible across subdomains).
 func setSessionCookie(c *gin.Context, token string, maxAge int, cookieName, cookieDomain string) {
+	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie(cookieName, token, maxAge, "/", cookieDomain, true, true)
 }
 

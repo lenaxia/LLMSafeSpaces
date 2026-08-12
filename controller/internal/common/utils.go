@@ -93,7 +93,12 @@ func IsPodReady(pod *corev1.Pod) bool {
 func GenerateRandomString(length int) string {
 	b := make([]byte, (length+1)/2)
 	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("%d", time.Now().UnixNano())
+		// crypto/rand failure means the system entropy pool is
+		// exhausted or /dev/urandom is unreadable. This is a fatal
+		// condition — falling back to a timestamp would produce a
+		// predictable credential (the workspace-agent password).
+		// Panic rather than silently degrade security.
+		panic(fmt.Errorf("crypto/rand.Read failed: %w", err))
 	}
 	return hex.EncodeToString(b)[:length]
 }
