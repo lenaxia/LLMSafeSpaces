@@ -161,6 +161,14 @@ func (t *sessionStatusTracker) subscribe(ctx context.Context, client *OpenCodeCl
 		if err != nil && ctx.Err() == nil {
 			log.Debug("SSE stream ended", zap.Error(err))
 		}
+		// Reconcile authoritative session statuses after every reconnect
+		// to heal stale-idle entries (#753 F1). If the SSE stream dropped
+		// after a session went busy, opencode does not re-emit the busy
+		// event — the tracker would retain stale "idle", causing a
+		// credential push to restart mid-turn.
+		if ctx.Err() == nil {
+			t.reconcileStatuses(ctx, client)
+		}
 		// If the parent context is done, exit
 		if ctx.Err() != nil {
 			return
