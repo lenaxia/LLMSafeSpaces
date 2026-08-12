@@ -178,6 +178,7 @@ func (m *mockCache) Set(context.Context, string, string, time.Duration) error { 
 func (m *mockCache) SetNX(context.Context, string, string, time.Duration) (bool, error) {
 	return true, nil
 }
+func (m *mockCache) Incr(context.Context, string, time.Duration) (int64, error)          { return 1, nil }
 func (m *mockCache) Delete(context.Context, string) error                                { return nil }
 func (m *mockCache) DeleteByPrefix(context.Context, string) error                        { return nil }
 func (m *mockCache) GetObject(context.Context, string, interface{}) error                { return nil }

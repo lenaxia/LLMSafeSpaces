@@ -58,6 +58,11 @@ type RouterConfig struct {
 	// Debug enables debug mode
 	Debug bool
 
+	// TrustedProxies is the list of trusted proxy IP ranges/CIDRs.
+	// If nil, trusts nobody (X-Forwarded-For is ignored). This
+	// prevents IP-spoofing attacks on lockout and rate-limiting (#757).
+	TrustedProxies []string
+
 	// LoggingConfig is the configuration for the logging middleware
 	LoggingConfig middleware.LoggingConfig
 
@@ -308,6 +313,19 @@ func DefaultRouterConfig() RouterConfig {
 	}
 }
 
+// configureTrustedProxies restricts which proxy IPs can set
+// X-Forwarded-For. Without this, gin trusts all IPs (0.0.0.0/0) and
+// c.ClientIP() honors attacker-controlled headers, bypassing IP-based
+// lockout and rate-limiting (#757).
+func configureTrustedProxies(router *gin.Engine, trustedProxies []string, logger *apilogger.Logger) {
+	if trustedProxies == nil {
+		trustedProxies = []string{} // trust nobody by default
+	}
+	if err := router.SetTrustedProxies(trustedProxies); err != nil {
+		logger.Error("Failed to set trusted proxies", err)
+	}
+}
+
 // NewRouter creates a new Gin router with all routes configured.
 // proxyHandler may be nil — proxy routes are not registered in that case.
 func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHandler *handlers.ProxyHandler, config ...RouterConfig) *gin.Engine {
@@ -324,10 +342,9 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 		gin.SetMode(gin.ReleaseMode)
 	}
 
-	// Create router
 	router := gin.New()
+	configureTrustedProxies(router, cfg.TrustedProxies, logger)
 
-	// Add middleware in the correct order
 	router.Use(middleware.RecoveryMiddleware(logger))
 	router.Use(middleware.TracingMiddleware(logger, cfg.TracingConfig))
 	router.Use(middleware.SecurityMiddleware(logger, cfg.SecurityConfig))
@@ -720,6 +737,12 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 	// Liveness probe — always returns 200 if the process is responding.
 	// Use this for Kubernetes livenessProbe. Includes the build version so
 	// operators can verify which version is running via a simple curl.
+	registerHealthRoutes(router, services, logger)
+
+	return router
+}
+
+func registerHealthRoutes(router *gin.Engine, services interfaces.Services, logger *apilogger.Logger) {
 	livenessHandler := func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"status":  "ok",
@@ -727,33 +750,19 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 		})
 	}
 	router.GET("/livez", livenessHandler)
-
-	// Legacy alias retained for backwards compatibility with deployments
-	// that already point at /health. Equivalent to /livez.
 	router.GET("/health", livenessHandler)
 
-	// Readiness probe — verifies that all upstream dependencies (Postgres,
-	// Redis) are reachable. Returns 503 if any dependency is down. Use this
-	// for Kubernetes readinessProbe so the pod is removed from Service
-	// endpoints when its dependencies are unavailable.
 	router.GET("/readyz", func(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
 		defer cancel()
 
-		// F1.1.1 (Epic 17): pre-fix the failure list contained the
-		// raw `err.Error()` from the driver, which can include the
-		// connection string, hostname, port, and sometimes the
-		// password depending on the driver. We now log the detailed
-		// error server-side and return only a generic component
-		// status to the client.
 		var failures []string
 
 		db := services.GetDatabase()
 		if db == nil {
 			failures = append(failures, "database: not configured")
 		} else if err := db.Ping(ctx); err != nil {
-			logger.Warn("/readyz: database ping failed",
-				"error", err.Error())
+			logger.Warn("/readyz: database ping failed", "error", err.Error())
 			failures = append(failures, "database: unreachable")
 		}
 
@@ -761,8 +770,7 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 		if cache == nil {
 			failures = append(failures, "cache: not configured")
 		} else if err := cache.Ping(ctx); err != nil {
-			logger.Warn("/readyz: cache ping failed",
-				"error", err.Error())
+			logger.Warn("/readyz: cache ping failed", "error", err.Error())
 			failures = append(failures, "cache: unreachable")
 		}
 
@@ -776,8 +784,6 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 
 		c.JSON(http.StatusOK, gin.H{"status": "ready"})
 	})
-
-	return router
 }
 
 const (
@@ -798,6 +804,7 @@ func sanitizeBindError(err error) string {
 // cookieDomain is the Domain attribute (empty = host-only; set when wildcard
 // subdomain routing is enabled so the cookie is visible across subdomains).
 func setSessionCookie(c *gin.Context, token string, maxAge int, cookieName, cookieDomain string) {
+	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie(cookieName, token, maxAge, "/", cookieDomain, true, true)
 }
 

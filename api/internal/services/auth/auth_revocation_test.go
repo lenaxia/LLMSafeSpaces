@@ -19,6 +19,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -90,6 +91,22 @@ func (c *memCache) SetNX(_ context.Context, key, value string, expiration time.D
 	}
 	c.data[key] = memCacheEntry{value: value, expiresAt: exp}
 	return true, nil
+}
+
+func (c *memCache) Incr(_ context.Context, key string, expiration time.Duration) (int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	v := 0
+	if entry, ok := c.data[key]; ok {
+		fmt.Sscanf(entry.value, "%d", &v)
+	}
+	v++
+	exp := time.Time{}
+	if expiration > 0 {
+		exp = time.Now().Add(expiration)
+	}
+	c.data[key] = memCacheEntry{value: fmt.Sprintf("%d", v), expiresAt: exp}
+	return int64(v), nil
 }
 
 func (c *memCache) Delete(_ context.Context, key string) error {

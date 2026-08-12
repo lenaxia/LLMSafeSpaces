@@ -1277,16 +1277,10 @@ func (s *Service) recordFailedAttempt(ctx context.Context, email string) {
 	}
 	clientIP := clientIPFromContext(ctx)
 	lk := lockoutKey(email, clientIP)
-	countStr, _ := s.cacheService.Get(ctx, lk)
-	count := 0
-	if countStr != "" {
-		_, _ = fmt.Sscanf(countStr, "%d", &count)
-	}
-	count++
 	if duration == 0 {
 		duration = 15 * time.Minute
 	}
-	if err := s.cacheService.Set(ctx, lk, fmt.Sprintf("%d", count), duration); err != nil {
+	if _, err := s.cacheService.Incr(ctx, lk, duration); err != nil {
 		s.logger.Error("Failed to record lockout attempt", err, "email", email)
 	}
 }

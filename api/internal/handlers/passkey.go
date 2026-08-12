@@ -99,6 +99,7 @@ func (h *PasskeyHandler) setCookie(c *gin.Context, token string) {
 	if maxAge <= 0 {
 		maxAge = 86400
 	}
+	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie(h.cookieName, token, maxAge, "/", h.cookieDomain, true, true)
 }
 

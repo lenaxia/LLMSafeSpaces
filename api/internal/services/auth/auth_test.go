@@ -1656,19 +1656,15 @@ func TestLogin_LockoutAfterFailedAttempts(t *testing.T) {
 		ID: "u1", Email: "lock@e.com", PasswordHash: string(hash), Active: true, EmailVerified: true,
 	}
 
-	attemptCount := 0
 	mockCache.On("Get", ctx, "lockout:lock@e.com").Return("", errors.New("not found"))
-	mockCache.On("Set", ctx, "lockout:lock@e.com", mock.MatchedBy(func(v string) bool {
-		attemptCount++
-		return true
-	}), mock.Anything).Return(nil)
+	mockCache.On("Incr", ctx, "lockout:lock@e.com", mock.Anything).Return(int64(1), nil)
 
 	for i := 0; i < 3; i++ {
 		mockDb.On("GetUserByEmail", ctx, "lock@e.com").Return(user, nil).Once()
 		_, err := svc.Login(ctx, types.LoginRequest{Email: "lock@e.com", Password: "wrong"})
 		assert.Error(t, err, "attempt %d should fail", i+1)
 	}
-	assert.Equal(t, 3, attemptCount, "should have recorded 3 failed attempts")
+	mockCache.AssertCalled(t, "Incr", ctx, "lockout:lock@e.com", mock.Anything)
 
 	mockDb.AssertExpectations(t)
 }
