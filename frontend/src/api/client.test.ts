@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { api, ApiClientError, streamRequest } from "./client";
+import { api, ApiClientError, getRaw, streamRequest } from "./client";
 
 describe("api client", () => {
   const mockFetch = vi.fn();
@@ -270,5 +270,53 @@ describe("api client", () => {
       value: originalLocation,
       writable: true,
     });
+  });
+
+  // --- getRaw tests ---
+
+  it("getRaw returns data and headers for JSON body", async () => {
+    const headers = new Headers({ "x-custom": "yes" });
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers,
+      text: () => Promise.resolve(JSON.stringify({ key: "val" })),
+    });
+    const result = await getRaw<{ key: string }>("/data");
+    expect(result.data).toEqual({ key: "val" });
+    expect(result.headers.get("x-custom")).toBe("yes");
+  });
+
+  it("getRaw returns undefined data for 204", async () => {
+    const headers = new Headers();
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 204,
+      headers,
+      text: () => Promise.resolve(""),
+    });
+    const result = await getRaw("/no-content");
+    expect(result.data).toBeUndefined();
+  });
+
+  it("getRaw returns undefined data for 200 with empty body (#782)", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      text: () => Promise.resolve(""),
+    });
+    const result = await getRaw("/empty");
+    expect(result.data).toBeUndefined();
+  });
+
+  it("getRaw throws ApiClientError on non-ok", async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 404,
+      statusText: "Not Found",
+      json: () => Promise.resolve({ error: "not found" }),
+    });
+    await expect(getRaw("/missing")).rejects.toThrow(ApiClientError);
   });
 });
