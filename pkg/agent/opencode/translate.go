@@ -414,10 +414,14 @@ func translateMessage(m ocMessage) (session.Message, []string) {
 				Text: p.Text,
 			})
 		case "reasoning":
+			r := p.Reasoning
+			if r == "" {
+				r = p.Text
+			}
 			parts = append(parts, session.Part{
 				Type:      session.PartReasoning,
 				ID:        p.ID,
-				Reasoning: p.Reasoning,
+				Reasoning: r,
 			})
 		case "tool":
 			tp := translateTool(p.Tool)

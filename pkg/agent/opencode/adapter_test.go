@@ -408,7 +408,18 @@ func TestAdapter_Capabilities_ReportsQueueReasoningDiff(t *testing.T) {
 	caps := a.Capabilities()
 	assert.Contains(t, caps, session.CapQueue)
 	assert.Contains(t, caps, session.CapReasoning)
-	assert.Contains(t, caps, session.CapDiff)
+	assert.NotContains(t, caps, session.CapDiff, "CapDiff must not be advertised when differ is nil (#745)")
+}
+
+func TestAdapter_Capabilities_WithDiffer_ReportsCapDiff(t *testing.T) {
+	a := NewAdapter(
+		func(_ context.Context, _ string) (string, error) { return "", nil },
+		&staticPodIPResolver{ip: ""},
+		zap.NewNop(),
+		WithFileDiffProducer(&filediff.Producer{}),
+	)
+	caps := a.Capabilities()
+	assert.Contains(t, caps, session.CapDiff, "CapDiff must be advertised when differ is wired")
 }
 
 // --- Stream (not implemented in US-65.3) ---

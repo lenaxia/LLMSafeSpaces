@@ -278,8 +278,11 @@ func (t *sessionStatusTracker) handleSessionStatus(props json.RawMessage) {
 	if json.Unmarshal(props, &p) != nil || p.SessionID == "" {
 		return
 	}
-	if p.Status.Type == "busy" || p.Status.Type == "idle" {
-		t.set(p.SessionID, p.Status.Type)
+	switch p.Status.Type {
+	case "idle":
+		t.set(p.SessionID, "idle")
+	case "busy", "retry", "error", "compacting":
+		t.set(p.SessionID, "busy")
 	}
 }
 
