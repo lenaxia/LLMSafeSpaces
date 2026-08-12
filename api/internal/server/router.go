@@ -737,6 +737,12 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 	// Liveness probe — always returns 200 if the process is responding.
 	// Use this for Kubernetes livenessProbe. Includes the build version so
 	// operators can verify which version is running via a simple curl.
+	registerHealthRoutes(router, services, logger)
+
+	return router
+}
+
+func registerHealthRoutes(router *gin.Engine, services interfaces.Services, logger *apilogger.Logger) {
 	livenessHandler := func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"status":  "ok",
@@ -744,33 +750,19 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 		})
 	}
 	router.GET("/livez", livenessHandler)
-
-	// Legacy alias retained for backwards compatibility with deployments
-	// that already point at /health. Equivalent to /livez.
 	router.GET("/health", livenessHandler)
 
-	// Readiness probe — verifies that all upstream dependencies (Postgres,
-	// Redis) are reachable. Returns 503 if any dependency is down. Use this
-	// for Kubernetes readinessProbe so the pod is removed from Service
-	// endpoints when its dependencies are unavailable.
 	router.GET("/readyz", func(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
 		defer cancel()
 
-		// F1.1.1 (Epic 17): pre-fix the failure list contained the
-		// raw `err.Error()` from the driver, which can include the
-		// connection string, hostname, port, and sometimes the
-		// password depending on the driver. We now log the detailed
-		// error server-side and return only a generic component
-		// status to the client.
 		var failures []string
 
 		db := services.GetDatabase()
 		if db == nil {
 			failures = append(failures, "database: not configured")
 		} else if err := db.Ping(ctx); err != nil {
-			logger.Warn("/readyz: database ping failed",
-				"error", err.Error())
+			logger.Warn("/readyz: database ping failed", "error", err.Error())
 			failures = append(failures, "database: unreachable")
 		}
 
@@ -778,8 +770,7 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 		if cache == nil {
 			failures = append(failures, "cache: not configured")
 		} else if err := cache.Ping(ctx); err != nil {
-			logger.Warn("/readyz: cache ping failed",
-				"error", err.Error())
+			logger.Warn("/readyz: cache ping failed", "error", err.Error())
 			failures = append(failures, "cache: unreachable")
 		}
 
@@ -793,8 +784,6 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 
 		c.JSON(http.StatusOK, gin.H{"status": "ready"})
 	})
-
-	return router
 }
 
 const (
