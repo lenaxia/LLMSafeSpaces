@@ -313,6 +313,19 @@ func DefaultRouterConfig() RouterConfig {
 	}
 }
 
+// configureTrustedProxies restricts which proxy IPs can set
+// X-Forwarded-For. Without this, gin trusts all IPs (0.0.0.0/0) and
+// c.ClientIP() honors attacker-controlled headers, bypassing IP-based
+// lockout and rate-limiting (#757).
+func configureTrustedProxies(router *gin.Engine, trustedProxies []string, logger *apilogger.Logger) {
+	if trustedProxies == nil {
+		trustedProxies = []string{} // trust nobody by default
+	}
+	if err := router.SetTrustedProxies(trustedProxies); err != nil {
+		logger.Error("Failed to set trusted proxies", err)
+	}
+}
+
 // NewRouter creates a new Gin router with all routes configured.
 // proxyHandler may be nil — proxy routes are not registered in that case.
 func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHandler *handlers.ProxyHandler, config ...RouterConfig) *gin.Engine {
@@ -331,18 +344,7 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 
 	// Create router
 	router := gin.New()
-
-	// Restrict which proxy IPs can set X-Forwarded-For. Without this,
-	// gin trusts all IPs (0.0.0.0/0) and c.ClientIP() honors
-	// attacker-controlled headers, bypassing IP-based lockout and
-	// rate-limiting (#757).
-	trustedProxies := cfg.TrustedProxies
-	if trustedProxies == nil {
-		trustedProxies = []string{} // trust nobody by default
-	}
-	if err := router.SetTrustedProxies(trustedProxies); err != nil {
-		logger.Error("Failed to set trusted proxies", err)
-	}
+	configureTrustedProxies(router, cfg.TrustedProxies, logger)
 
 	// Add middleware in the correct order
 	router.Use(middleware.RecoveryMiddleware(logger))
