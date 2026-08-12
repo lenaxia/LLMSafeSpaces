@@ -42,7 +42,7 @@ func TestMessageRoundTripAllTypes(t *testing.T) {
 		{"agent_switch", AgentSwitchMessage("m4", "opencode", "pi", now)},
 		{"model_switch", ModelSwitchMessage("m5", &ModelRef{ID: "old"}, &ModelRef{ID: "gpt-5", Provider: "openai"}, now)},
 		{"compaction", CompactionMessage("m6", "context compacted", now)},
-		{"system", SystemMessage("m7", "session resumed", now)},
+		{"system", SystemMessage("m7", "session resumed", &now)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -63,7 +63,7 @@ func TestMessageConstructorSetsDiscriminator(t *testing.T) {
 		MessageAgentSwitch: AgentSwitchMessage("id", "a", "b", now),
 		MessageModelSwitch: ModelSwitchMessage("id", nil, nil, now),
 		MessageCompaction:  CompactionMessage("id", "x", now),
-		MessageSystem:      SystemMessage("id", "x", now),
+		MessageSystem:      SystemMessage("id", "x", &now),
 	}
 	for wantType, msg := range disc {
 		if msg.Type != wantType {

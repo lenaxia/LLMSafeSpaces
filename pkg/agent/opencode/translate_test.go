@@ -342,7 +342,7 @@ func TestParseHistoryWire_RealShape(t *testing.T) {
 func TestParseHistoryWire_MalformedJSON(t *testing.T) {
 	_, _, _, err := ParseHistoryWire([]byte(`not json`), "ws-1")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parse message array")
+	assert.Contains(t, err.Error(), "opencode history:")
 }
 
 func TestParseSessionListWire_BareArray(t *testing.T) {
@@ -692,7 +692,7 @@ func TestParseHistoryWire_TotallyGarbage_StillErrors(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			_, _, _, err := ParseHistoryWire(body, "ws-1")
 			require.Error(t, err, "genuinely malformed body must still error")
-			assert.Contains(t, err.Error(), "parse message array",
+			assert.Contains(t, err.Error(), "opencode history:",
 				"error must carry the established wrap prefix")
 		})
 	}

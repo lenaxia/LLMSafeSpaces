@@ -431,5 +431,8 @@ func (h *ProxyHandler) abortV2(c *gin.Context, wid, sid string) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to abort session"})
 		return
 	}
+	if h.v2Pending != nil {
+		h.v2Pending.remove(wid, sid)
+	}
 	c.Status(http.StatusNoContent)
 }

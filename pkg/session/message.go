@@ -91,8 +91,11 @@ func CompactionMessage(id, text string, createdAt time.Time) Message {
 	return m
 }
 
-func SystemMessage(id, text string, createdAt time.Time) Message {
-	m := newMessage(id, MessageSystem, createdAt)
+func SystemMessage(id, text string, createdAt *time.Time) Message {
+	m := Message{ID: id, Type: MessageSystem}
+	if createdAt != nil {
+		m.CreatedAt = createdAt
+	}
 	m.Text = text
 	return m
 }
