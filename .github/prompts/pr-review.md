@@ -81,7 +81,9 @@ acceptance criterion in the issue(s), state whether the diff addresses it, citin
 file:line. List any finding that is NOT addressed. Be adversarial: assume the fix is
 incomplete until proven otherwise. Do not trust the commit message or the PR description —
 verify against the actual code changes." Incorporate the skeptical reviewer's findings into
-your review. If the skeptical reviewer identifies unaddressed findings, REQUEST CHANGES.
+your review. If the skeptical reviewer identifies unaddressed findings, REQUEST CHANGES. If
+sub-agent spawning is unavailable, perform the adversarial pass yourself by re-reading each
+issue assuming the fix is incomplete.
 
 ROBUSTNESS
 - Identify specific points in the design or implementation that are weak, fragile, or prone
@@ -140,9 +142,6 @@ missing/thin:]
 [List only meaningful, impactful missing tests that would catch real bugs or regressions —
 or "None identified"]
 
-### Robustness
-[List only validated weaknesses confirmed to be real and reachable — or ✓ No concerns]
-
 ### Issue Closure Verification
 [If the PR cites no issues as closed/resolved, state "N/A — no issues cited". Otherwise:]
 For each cited issue:
@@ -152,6 +151,9 @@ For each cited issue:
   - [ ... ]
   - Skeptical reviewer verdict: [AGREES / DISAGREES — <details>]
 If any issue is PARTIALLY ADDRESSED or NOT ADDRESSED, this is a hard REQUEST CHANGES.
+
+### Robustness
+[List only validated weaknesses confirmed to be real and reachable — or ✓ No concerns]
 
 ### Security
 [findings or ✓ No concerns]
