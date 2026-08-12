@@ -319,13 +319,20 @@ func TestAdapter_SendAsync_SteerDelivery(t *testing.T) {
 	// verification would need a custom handler.
 }
 
-func TestAdapter_Abort_UsesV2Interrupt(t *testing.T) {
+func TestAdapter_Abort_UsesV1AbortEndpoint(t *testing.T) {
+	// Abort must use V1 POST /session/:id/abort, not the V2 interrupt
+	// endpoint which was removed in opencode 1.18.10. Register both
+	// endpoints; only V1 /abort should be hit.
 	srv := newFakeOpencode(t)
+	srv.register("POST", "/session/ses_1/abort", ``, http.StatusOK)
 	srv.register("POST", "/api/session/ses_1/interrupt", ``, http.StatusNoContent)
 
 	a := newTestAdapter(t, srv.Server)
 	require.NoError(t, a.Abort(context.Background(), "u-1", "ws-1", "ses_1"))
-	require.Contains(t, srv.requests, "POST /api/session/ses_1/interrupt")
+	require.Contains(t, srv.requests, "POST /session/ses_1/abort",
+		"Abort must use V1 /session/:id/abort (the only interrupt endpoint on opencode 1.18.10+)")
+	require.NotContains(t, srv.requests, "POST /api/session/ses_1/interrupt",
+		"Abort must NOT use V2 /api/session/:id/interrupt (endpoint removed in opencode 1.18.10)")
 }
 
 // --- Models ---

@@ -134,6 +134,36 @@ func (c *Client) DisposeInstance(ctx context.Context) error {
 	return nil
 }
 
+// Abort calls POST /session/:id/abort on opencode. This is the V1 abort
+// path, which is the only interrupt endpoint that exists on opencode
+// 1.18.10+. The V2 endpoint (POST /api/session/:id/interrupt) was removed
+// in 1.18.10 — the v2/ route group was deleted entirely from
+// packages/opencode/src/server/routes/instance/httpapi/groups/v2/.
+// On 1.18.10 the V2 path returns 204 from a catch-all stub but does
+// nothing (verified live: a long V1 turn keeps running after V2
+// interrupt). The V1 /abort path returns 200 and actually stops the
+// in-flight turn (verified live: session transitions to idle).
+func (c *Client) Abort(ctx context.Context, sessionID string) error {
+	url := c.baseURL + "/session/" + sessionID + "/abort"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, http.NoBody)
+	if err != nil {
+		return fmt.Errorf("POST /session/%s/abort: build request: %w", sessionID, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.SetBasicAuth(agentd.AuthUsername, c.password)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("POST /session/%s/abort: %w", sessionID, err)
+	}
+	defer func() { _, _ = io.Copy(io.Discard, resp.Body); _ = resp.Body.Close() }()
+
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("POST /session/%s/abort returned %d", sessionID, resp.StatusCode)
+	}
+	return nil
+}
+
 // StageCredentials writes provider credentials to opencode's auth.json
 // (via PUT /auth/:providerID) but does NOT trigger provider-state refresh.
 // The credentials are "staged" — they exist on disk but opencode's

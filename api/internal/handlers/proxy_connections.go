@@ -167,7 +167,14 @@ func (h *ProxyHandler) GetAuthoritativeActiveSessions(ctx context.Context, works
 	}
 
 	var statusz agentd.StatuszResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 16*1024)).Decode(&statusz); err != nil {
+	// 1 MB cap (was 16 KB). A workspace with many sessions produces a
+	// statusz body well over 16 KB — each session entry is ~300 bytes, so
+	// ~55 sessions exceeds the old cap. When the decode failed,
+	// GetAuthoritativeActiveSessions silently returned an empty set,
+	// causing the stuck-busy self-heal to stop working for heavy users.
+	// 1 MB accommodates ~3,500 sessions while still bounding a malicious
+	// or runaway upstream.
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&statusz); err != nil {
 		h.logger.Debug("GetAuthoritativeActiveSessions: failed to decode statusz",
 			"workspaceID", workspaceID, "error", err)
 		return map[string]bool{}
