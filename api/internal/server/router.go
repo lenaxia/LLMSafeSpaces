@@ -342,11 +342,9 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 		gin.SetMode(gin.ReleaseMode)
 	}
 
-	// Create router
 	router := gin.New()
 	configureTrustedProxies(router, cfg.TrustedProxies, logger)
 
-	// Add middleware in the correct order
 	router.Use(middleware.RecoveryMiddleware(logger))
 	router.Use(middleware.TracingMiddleware(logger, cfg.TracingConfig))
 	router.Use(middleware.SecurityMiddleware(logger, cfg.SecurityConfig))
