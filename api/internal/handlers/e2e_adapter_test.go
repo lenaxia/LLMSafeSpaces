@@ -270,6 +270,107 @@ func TestE2E_Adapter_GetHistory_MalformedMessage_Returns200WithSystemNotice(t *t
 	assert.NotContains(t, msgs[1].Text, "42", "raw malformed bytes must not leak")
 }
 
+// TestE2E_Adapter_GetHistory_LargeBodyOver16MiB_No502 is the integration
+// regression test for #737. The pre-fix code called readBody(resp, 16<<20)
+// inside Adapter.GetHistory, which silently truncated any history body
+// larger than 16 MiB — the subsequent json.Unmarshal hit "unexpected end
+// of JSON input" and the handler returned 502.
+//
+// This test stands up a fake opencode backend that streams a ~17 MiB
+// JSON array, then drives the FULL request path: gin router →
+// ProxyHandler.GetHistory → adapter.GetHistory → real HTTP → streaming
+// json.Decoder → contract JSON response. It must return 200 with all
+// messages intact.
+//
+// A revert to readBody(resp, 16<<20)+json.Unmarshal would truncate the
+// body, the parse would fail, and the handler would return 502 —
+// failing this test at the status-code assertion.
+func TestE2E_Adapter_GetHistory_LargeBodyOver16MiB_No502(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Stream a JSON array of 10 messages, each ~1.7 MiB → ~17 MiB total.
+		const numMessages = 10
+		const textLen = 1700000
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("["))
+		for i := 0; i < numMessages; i++ {
+			if i > 0 {
+				_, _ = w.Write([]byte(","))
+			}
+			// Write the JSON prefix: info + opening of the text part.
+			_, _ = fmt.Fprintf(w, `{"info":{"role":"assistant","id":"msg_%d"},"parts":[{"type":"text","text":"`, i)
+			// Write textLen bytes of filler (no escaping needed — 'x' is literal).
+			chunk := []byte(strings.Repeat("x", 4096))
+			written := 0
+			for written < textLen {
+				n := textLen - written
+				if n > len(chunk) {
+					n = len(chunk)
+				}
+				_, _ = w.Write(chunk[:n])
+				written += n
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+			_, _ = w.Write([]byte(`"}]}`))
+		}
+		_, _ = w.Write([]byte("]"))
+	}))
+	t.Cleanup(backend.Close)
+
+	env := newE2EEnv(t, backend)
+	w := env.do(http.MethodGet, "/api/v1/workspaces/ws-1/sessions/ses_1/message?limit=50", nil)
+
+	require.Equal(t, http.StatusOK, w.Code,
+		"large history body must NOT 502 — streaming decoder must handle >16 MiB (issue #737)")
+
+	var msgs []session.Message
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &msgs), "response must be valid contract JSON")
+	require.Len(t, msgs, 10, "all 10 messages must survive the streaming decode")
+	assert.Equal(t, "msg_0", msgs[0].ID)
+	assert.Equal(t, "msg_9", msgs[9].ID)
+	require.Len(t, msgs[0].Parts, 1)
+	assert.Equal(t, 1700000, len(msgs[0].Parts[0].Text),
+		"first message text must be intact (not truncated at the 16 MiB readBody cap)")
+}
+
+// TestE2E_Adapter_GetHistory_EmptySession_ReturnsArrayNotNull is the
+// integration regression test for the null-history crash. opencode
+// returns "[]" for a session with no messages; ParseHistoryStream
+// returns a nil slice for empty input (named return, nothing appended).
+// paginateContractHistory(nil, ...) also returns nil. Without the
+// explicit nil→[] guard at proxy_handlers.go:366-368, the handler
+// emits "null" — the frontend's .filter() crashes ("Cannot read
+// properties of null").
+//
+// This test wires a REAL Adapter (so the adapter path is taken, not
+// the legacy path), feeds the backend an empty "[]" body, and asserts
+// the wire response is byte-identical to "[]", not "null".
+//
+// Note: TestGetHistory_EmptySession_ReturnsEmptyArrayNotNull (in
+// proxy_history_pagination_test.go) looks like it covers this but
+// does NOT — its harness (newTestEnvWithBackend) leaves h.adapter
+// nil, so the request takes the legacy paginateOpencodeHistory path
+// which is structurally immune. Only THIS test exercises the actual
+// null-guard in the adapter code path.
+func TestE2E_Adapter_GetHistory_EmptySession_ReturnsArrayNotNull(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// opencode returns a bare empty array for empty sessions.
+		_, _ = w.Write([]byte("[]"))
+	}))
+	t.Cleanup(backend.Close)
+
+	env := newE2EEnv(t, backend)
+	w := env.do(http.MethodGet, "/api/v1/workspaces/ws-1/sessions/ses_1/message?limit=50", nil)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "[]", w.Body.String(),
+		"empty adapter history must serialize as JSON array '[]', not 'null' (frontend .filter crash)")
+}
+
+// TestE2E_Adapter_AbortSession_FullPipeline pins the interrupt path.
 func TestE2E_Adapter_AbortSession_FullPipeline(t *testing.T) {
 	abortCalled := false
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

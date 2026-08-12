@@ -794,17 +794,36 @@ func TestSendPromptAsync_AdapterPath_SessionNotFound_Returns404(t *testing.T) {
 	assert.Equal(t, http.StatusBadGateway, w.Code, "session-not-found error maps to 502 via Send path")
 }
 
-// E2E integration: adapter SendAsync through the full handler stack to a
-// mock opencode backend serving the V2 prompt endpoint.
-func TestE2E_Adapter_SendPromptAsync_FullPipeline(t *testing.T) {
+// TestE2E_Adapter_SendPromptAsync_UsesV1SendNotV2Queue is the regression
+// test for #755 (messages disappear). SendPromptAsync must use V1
+// synchronous POST /session/:id/message, NOT the V2 queue endpoint
+// POST /api/session/:id/prompt. On opencode 1.18.10 the V2 queue is
+// admitted but never drained — messages vanish.
+//
+// This test makes three positive assertions that all must hold:
+//  1. The V1 endpoint is hit exactly once.
+//  2. The V2 endpoint is NEVER hit.
+//  3. The HTTP response carries the contract-shaped assistant message
+//     (proving the synchronous Send return value flows back to the client).
+//
+// A revert to adapter.SendAsync (V2) would fail all three: V2 hit >0,
+// V1 hit ==0, and the response body would not contain the assistant
+// message ID returned by the V1 backend.
+func TestE2E_Adapter_SendPromptAsync_UsesV1SendNotV2Queue(t *testing.T) {
+	var v1Hits, v2Hits int
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// SendPromptAsync now uses synchronous Send (V1 POST /session/:id/message, #755)
-		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/session/") && strings.Contains(r.URL.Path, "/message") {
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/message"):
+			v1Hits++
 			w.Header().Set("Content-Type", "application/json")
-			w.Write([]byte(`{"id":"msg_v1_1","info":{"role":"assistant","time":{"created":1786400000000}},"parts":[{"type":"text","text":"hello"}]}`))
-			return
+			w.Write([]byte(`{"info":{"role":"assistant","id":"msg_v1_reply","time":{"created":1786400000000}},"parts":[{"type":"text","text":"V1 reply"}]}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/prompt"):
+			v2Hits++
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"data":{"id":"msg_v2_admit","admittedSeq":1}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
 		}
-		w.WriteHeader(http.StatusNotFound)
 	}))
 	t.Cleanup(backend.Close)
 
@@ -813,7 +832,16 @@ func TestE2E_Adapter_SendPromptAsync_FullPipeline(t *testing.T) {
 	body := strings.NewReader(`{"parts":[{"type":"text","text":"async hello"}]}`)
 	w := env.do(http.MethodPost, "/api/v1/workspaces/ws-1/sessions/ses_1/prompt", body)
 
-	require.Equal(t, http.StatusOK, w.Code, "SendPromptAsync now returns 200 via sync Send (#755)")
+	require.Equal(t, http.StatusOK, w.Code, "SendPromptAsync must return 200 via synchronous Send (#755)")
+	assert.Equal(t, 1, v1Hits, "V1 POST /session/:id/message must be called exactly once")
+	assert.Equal(t, 0, v2Hits, "V2 POST /api/session/:id/prompt must NEVER be called (messages vanish, #755)")
+
+	var msg session.Message
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &msg), "response must be the contract-shaped assistant message")
+	assert.Equal(t, "msg_v1_reply", msg.ID, "response must carry the V1 assistant message ID, not a V2 admit receipt")
+	assert.Equal(t, session.MessageAssistant, msg.Type)
+	require.Len(t, msg.Parts, 1)
+	assert.Equal(t, "V1 reply", msg.Parts[0].Text)
 }
 
 // --- DeleteSession adapter path ---
