@@ -922,6 +922,46 @@ func TestFillGaps_SkipsIfAlreadyRunning(t *testing.T) {
 	assert.Equal(t, 0, callCount, "should not fetch when already running")
 }
 
+// TestFillGaps_PruneStaleSessions verifies that runFill prunes sessions
+// from the tracker that no longer exist in opencode's session list.
+// This is Pattern 2 Fix S8 from #792 — without prune, deleted sessions
+// stay in the tracker forever, causing phantom busy counts and incorrect
+// restart gating.
+func TestFillGaps_PruneStaleSessions(t *testing.T) {
+	tracker := newSessionStatusTracker()
+	// Seed a stale session that doesn't exist in opencode anymore.
+	tracker.set("ses_stale", "busy")
+	tracker.setPromptTokens("ses_stale", 9999)
+
+	// Active sessions from opencode — does NOT include ses_stale.
+	activeSessions := []agentd.SessionInfo{
+		{ID: "ses_active_1"},
+		{ID: "ses_active_2"},
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode([]struct{}{})
+	}))
+	defer server.Close()
+
+	client := &OpenCodeClient{password: "pw", client: &http.Client{Timeout: 5 * time.Second}}
+	origAddr := getAgentAddr()
+	defer func() { setAgentAddr(origAddr) }()
+	setAgentAddr(server.URL)
+
+	state := &fillGapsState{}
+	runFill(context.Background(), client, tracker, func() []agentd.SessionInfo {
+		return activeSessions
+	}, state)
+
+	// Stale session must be pruned. get() returns "idle" for unknown sessions.
+	staleStatus := tracker.get("ses_stale")
+	assert.Equal(t, "idle", staleStatus, "stale session must be pruned (get returns default 'idle')")
+	assert.False(t, tracker.hasPromptTokens("ses_stale"),
+		"stale session must be pruned from promptTokens")
+}
+
 func TestGracefulShutdown(t *testing.T) {
 	srv := &http.Server{
 		Handler:           http.NewServeMux(),
