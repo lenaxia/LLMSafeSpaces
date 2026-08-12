@@ -201,6 +201,31 @@ describe("WorkspaceSettingsDrawer", () => {
     expect(href).toBe(`https://api.safespaces.dev/api/v1/workspaces/ws-1/dev-preview/5173/`);
   });
 
+  it("dev-preview link uses custom port when specified (#793)", async () => {
+    (api.get as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
+      if (path.includes("/prompt")) return Promise.resolve({ prompt: "" });
+      if (path.includes("/bindings")) return Promise.resolve({ bindings: [] });
+      if (path === `/workspaces/ws-1`) return Promise.resolve({ devPreviewEnabled: true });
+      return Promise.resolve({});
+    });
+    render(
+      <WorkspaceSettingsDrawer
+        workspace={mockWorkspace}
+        open={true}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("Open preview")).toBeInTheDocument());
+    const portInput = screen.getByDisplayValue("5173");
+    fireEvent.change(portInput, { target: { value: "3000" } });
+
+    const link = screen.getByText("Open preview").closest("a");
+    expect(link?.getAttribute("href")).toBe(
+      `https://api.safespaces.dev/api/v1/workspaces/ws-1/dev-preview/3000/`,
+    );
+  });
+
   it("disables save button while saving", async () => {
     (secretsApi.list as ReturnType<typeof vi.fn>).mockResolvedValue({
       secrets: [{ id: "s1", name: "key", type: "llm-provider" }],
