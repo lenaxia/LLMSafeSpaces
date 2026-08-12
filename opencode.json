@@ -18,6 +18,13 @@
     }
   },
   "permission": {
+    "*": "allow"
+  }
+}
+      }
+    }
+  },
+  "permission": {
     "*": "allow",
     "bash": {
       "*": "deny",
