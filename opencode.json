@@ -21,20 +21,3 @@
     "*": "allow"
   }
 }
-      }
-    }
-  },
-  "permission": {
-    "*": "allow",
-    "bash": {
-      "*": "deny",
-      "git*": "allow",
-      "gh*": "allow",
-      "mkdir*": "allow",
-      "cat*": "allow",
-      "ls*": "allow",
-      "pwd": "allow",
-      "jq*": "allow"
-    }
-  }
-}
