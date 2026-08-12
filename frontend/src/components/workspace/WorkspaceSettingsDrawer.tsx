@@ -5,6 +5,7 @@ import type { WorkspaceListItem } from "../../api/types";
 import { secretsApi, type SecretResponse } from "../../api/secrets";
 import { api } from "../../api/client";
 import { promptsApi } from "../../api/prompts";
+import { getEnv } from "../../env";
 
 interface Props {
   workspace: WorkspaceListItem;
@@ -191,7 +192,7 @@ export function WorkspaceSettingsDrawer({ workspace, open, onOpenChange }: Props
                     className="w-20 rounded-md border border-border bg-background px-2 py-1 text-sm"
                   />
                   <a
-                    href={`/api/v1/workspaces/${workspace.id}/dev-preview/${previewPort || "5173"}/`}
+                    href={`${getEnv().apiBaseUrl}/workspaces/${workspace.id}/dev-preview/${previewPort || "5173"}/`}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-1 text-xs hover:bg-accent"
