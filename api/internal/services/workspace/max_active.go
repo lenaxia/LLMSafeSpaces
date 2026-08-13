@@ -37,9 +37,10 @@ func (s *Service) enforceMaxActiveWorkspaces(ctx context.Context, userID, target
 		return "", nil
 	}
 
-	// List user's workspaces (DB rows for ordering by UpdatedAt) and fetch
-	// the live phase from CRDs. Phase is owned by the CRD; the DB no longer
-	// caches it.
+	// List user's workspaces (DB rows) and fetch live phase + activity from
+	// CRDs. Phase is owned by the CRD; the DB no longer caches it.
+	// LastActivityAt comes from the CRD annotation written by
+	// ActivityTracker (every 60s on user interaction).
 	result, _, err := s.dbService.ListWorkspaces(ctx, userID, 100, 0)
 	if err != nil {
 		return "", fmt.Errorf("failed to list workspaces for enforcement: %w", err)

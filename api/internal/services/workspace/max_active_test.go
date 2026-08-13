@@ -604,6 +604,64 @@ func TestEnforceMaxActive_EvictsByLastActivityAt_NotUpdatedAt(t *testing.T) {
 	}
 }
 
+// TestEnforceMaxActive_MixedFleet_AnnotatedFallback tests the realistic
+// upgrade scenario: one workspace has the LastActivityAt annotation
+// (post-US-23.3), the other doesn't (pre-US-23.3). The pre-US-23.3
+// workspace must fall back to DB UpdatedAt for its activity signal.
+func TestEnforceMaxActive_MixedFleet_AnnotatedFallback(t *testing.T) {
+	store := &mockSettingsStore{data: make(map[string]json.RawMessage)}
+	raw, _ := json.Marshal(2)
+	store.data["workspace.maxActiveWorkspacesPerUser"] = raw
+
+	instanceSvc := settings.NewInstanceService(store, nil)
+
+	now := time.Now()
+	db := &mockDBForMaxActive{workspaces: []*types.WorkspaceMetadata{
+		// ws-old-annotated: has annotation, last active 4h ago
+		{ID: "ws-old-annotated", UserID: "user-1", UpdatedAt: now.Add(-6 * time.Hour)},
+		// ws-no-annotation: no annotation (pre-US-23.3), UpdatedAt 1h ago (recent background op)
+		{ID: "ws-no-annotation", UserID: "user-1", UpdatedAt: now.Add(-1 * time.Hour)},
+	}}
+
+	k8sMock := &mockK8sForMaxActive{
+		workspaces: map[string]*v1.Workspace{
+			"ws-old-annotated": {
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "ws-old-annotated",
+					Annotations: map[string]string{
+						v1.AnnotationLastActivityAt: now.Add(-4 * time.Hour).Format(time.RFC3339),
+					},
+				},
+				Status: v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive},
+			},
+			"ws-no-annotation": {
+				// No annotations — simulates pre-US-23.3 workspace
+				ObjectMeta: metav1.ObjectMeta{Name: "ws-no-annotation"},
+				Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive},
+			},
+		},
+	}
+
+	svc := &Service{
+		logger:           &testLogger{},
+		instanceSettings: instanceSvc,
+		dbService:        db,
+		k8sClient:        k8sMock,
+		config:           &Config{Namespace: "default"},
+	}
+
+	suspended, err := svc.enforceMaxActiveWorkspaces(context.Background(), "user-1", "ws-target")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// ws-old-annotated has activity 4h ago (from annotation)
+	// ws-no-annotation falls back to UpdatedAt = 1h ago
+	// Stalest = ws-old-annotated (4h > 1h)
+	if suspended != "ws-old-annotated" {
+		t.Errorf("expected ws-old-annotated (4h stale activity) to be suspended over ws-no-annotation (1h UpdatedAt fallback), got %q", suspended)
+	}
+}
+
 func TestParseStorageSize(t *testing.T) {
 	tests := []struct {
 		input string
