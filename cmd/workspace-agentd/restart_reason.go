@@ -31,6 +31,14 @@ const RestartReasonMarkerPath = "/workspace/.opencode-restart-reason"
 // markers are logged at Debug with an attribution caveat instead of Info.
 const restartReasonStaleThreshold = 10 * time.Minute
 
+// Restart reason constants. These are used as metric labels and marker
+// file values, so they must be consistent across all call sites.
+const (
+	// RestartReasonHealthWatchdog is recorded when the health-watchdog
+	// detects opencode is hung and triggers a restart.
+	RestartReasonHealthWatchdog = "health_watchdog"
+)
+
 // restartReason is the on-disk JSON shape of the restart-reason marker.
 // The shape is exactly {reason, timestamp, secretNames} per the US-44.7
 // spec. SecretNames is omitted from the file when empty.

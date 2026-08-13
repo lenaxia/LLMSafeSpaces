@@ -13,6 +13,7 @@ from .errors import (
     NotFoundError,
     RateLimitError,
     ServiceUnavailableError,
+    TimeoutError,
 )
 from .types import (
     APIKey,

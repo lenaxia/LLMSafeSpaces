@@ -72,11 +72,12 @@ type healthWatchdogRestarter interface {
 // goroutine, so no mutex is needed on the fields below. If onFired
 // is ever called from multiple goroutines, add a mutex.
 type healthWatchdog struct {
-	restarts    []time.Time // timestamps of recent restarts (for rate limiting)
-	fired       bool        // latches: fire only once per unhealthy episode
-	totalFired  int         // total watchdog restarts since boot
-	maxRestarts int
-	window      time.Duration
+	restarts     []time.Time // timestamps of recent restarts (for rate limiting)
+	fired        bool        // latches: fire only once per unhealthy episode
+	giveUpLogged bool        // latches: log rate-limit give-up only once per episode
+	totalFired   int         // total watchdog restarts since boot
+	maxRestarts  int
+	window       time.Duration
 }
 
 func newHealthWatchdog() *healthWatchdog {
@@ -122,6 +123,7 @@ func (wd *healthWatchdog) maybeFire(now time.Time) bool {
 // watchdog to fire again on the next unhealthy transition.
 func (wd *healthWatchdog) reset() {
 	wd.fired = false
+	wd.giveUpLogged = false
 }
 
 // refreshIsHealthyLoop runs from agentd boot until ctx is canceled.
@@ -199,11 +201,11 @@ func refreshIsHealthyLoop(ctx context.Context, client *OpenCodeClient, cache *he
 						zap.Int("totalWatchdogRestarts", wd.totalFired),
 						zap.Int("restartsInWindow", len(wd.restarts)),
 					)
-					if err := writeRestartReasonMarker(RestartReasonMarkerPath, "health_watchdog", nil); err != nil {
+					if err := writeRestartReasonMarker(RestartReasonMarkerPath, RestartReasonHealthWatchdog, nil); err != nil {
 						watchdogLogger.Error("failed to write health-watchdog restart-reason marker", zap.Error(err))
 					}
-					logRestartReasonAtWrite("health_watchdog", nil, watchdogLogger.Core())
-					pkgOpsMetrics.RecordRestart(workspaceIDFromEnv(), "health_watchdog")
+					logRestartReasonAtWrite(RestartReasonHealthWatchdog, nil, watchdogLogger.Core())
+					pkgOpsMetrics.RecordRestart(workspaceIDFromEnv(), RestartReasonHealthWatchdog)
 					if restarter != nil {
 						go restarter.restart()
 					}
@@ -211,7 +213,8 @@ func refreshIsHealthyLoop(ctx context.Context, client *OpenCodeClient, cache *he
 					watchdogLogger.Debug("health-watchdog already fired for this episode",
 						zap.Int("consecutiveFailures", snap.ConsecutiveFailures),
 					)
-				} else if len(wd.restarts) >= wd.maxRestarts {
+				} else if len(wd.restarts) >= wd.maxRestarts && !wd.giveUpLogged {
+					wd.giveUpLogged = true
 					watchdogLogger.Warn("health-watchdog rate-limit reached — giving up until window expires",
 						zap.Int("maxRestarts", wd.maxRestarts),
 						zap.Duration("window", wd.window),
