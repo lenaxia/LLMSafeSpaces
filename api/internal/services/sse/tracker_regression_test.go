@@ -120,11 +120,12 @@ func TestSSETracker_StopWatching_CleansStartTimeViaRealDispatch(t *testing.T) {
 	// StopWatching must clean ALL sessionStartTime entries for this workspace.
 	tracker.StopWatching("ws-key-test")
 
+	// Use assert.Empty, not NotContains — a bare session-ID key like
+	// "ses_keytest" wouldn't contain "ws-key-test" and NotContains would
+	// be a false pass on the unfixed (bare-key) code.
 	tracker.startTimeMu.Lock()
-	for k := range tracker.sessionStartTime {
-		assert.NotContains(t, k, "ws-key-test",
-			"sessionStartTime must not contain entries for ws-key-test after StopWatching (key=%q)", k)
-	}
+	assert.Empty(t, tracker.sessionStartTime,
+		"sessionStartTime must be empty after StopWatching (all entries for ws-key-test cleaned)")
 	tracker.startTimeMu.Unlock()
 }
 
