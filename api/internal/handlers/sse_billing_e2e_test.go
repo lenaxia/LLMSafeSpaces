@@ -53,15 +53,16 @@ func TestE2E_SSETracker_InferencePipeline_CostAsObject(t *testing.T) {
 		mu.Unlock()
 	})
 
-	// Send session.updated with cost as an object (1.18.10 wire shape)
-	// and legacy "provider" key (1.15.x wire shape).
+	// Send session.updated with cost as an object (potential 1.18.10 wire shape).
+	// In ocCost, "cost" is CostUSD (dollar amount), not "total" (token count).
+	// Uses legacy "provider" key (1.15.x wire shape).
 	tracker.ProcessEvent("ws-billing", `{
 		"type": "session.updated",
 		"properties": {
 			"sessionID": "ses_billing",
 			"info": {
 				"id": "ses_billing",
-				"cost": {"total": 0.042},
+				"cost": {"cost": 0.042},
 				"tokens": {"input": 5000, "output": 1200},
 				"model": {"id": "glm-5.2", "provider": "thekaocloud"}
 			}
@@ -192,4 +193,11 @@ func TestE2E_PhaseChangeSuspend_CleansBillingMaps(t *testing.T) {
 	// Access the tracker's internal state to verify.
 	require.False(t, tracker.IsWatching("ws-clean"),
 		"tracker must stop watching after suspend phase change")
+
+	// Verify the billing maps are actually cleaned — not just the subscription.
+	// sessionTokenSeen and sessionCostSeen are keyed by "workspaceID:sessionID".
+	tokenSeen, costSeen, startTimeEntries := tracker.GetBillingState("ws-clean")
+	assert.Empty(t, tokenSeen, "sessionTokenSeen must be empty after StopWatching")
+	assert.Empty(t, costSeen, "sessionCostSeen must be empty after StopWatching")
+	assert.Empty(t, startTimeEntries, "sessionStartTime must be empty after StopWatching")
 }

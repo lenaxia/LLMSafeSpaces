@@ -31,6 +31,11 @@ const SessionActivityContext = createContext<SessionActivityContextValue | null>
 
 const NON_ACTIVE_PHASES = new Set(["Suspending", "Suspended", "Terminating", "Terminated", "Failed"]);
 
+const KNOWN_EVENT_TYPES = new Set([
+  "agent.question", "agent.question.resolved", "agent.permission", "agent.permission.resolved",
+  "agent.input.snapshot_complete", "session.status", "agent_died", "workspace.phase",
+]);
+
 // pruneMany returns a copy of m with every key in doomed removed, or m itself
 // if none matched (avoids needless re-renders).
 function pruneMany<V>(m: Map<string, V>, doomed: Set<string>): Map<string, V> {
@@ -441,10 +446,6 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      const KNOWN_EVENT_TYPES = new Set([
-        "agent.question", "agent.question.resolved", "agent.permission", "agent.permission.resolved",
-        "agent.input.snapshot_complete", "session.status", "agent_died", "workspace.phase",
-      ]);
       if (evt.type && !KNOWN_EVENT_TYPES.has(evt.type)) {
         console.debug("[SessionActivityProvider] unhandled SSE event type:", evt.type);
       }

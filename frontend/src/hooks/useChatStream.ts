@@ -5,6 +5,15 @@ import type { Message } from "../api/types";
 
 // If session.status=idle SSE never arrives (e.g. connection drops), fall
 // back to getHistory after this many ms.
+//
+// #752 F5: The busy-guard at the timeout-fire site (line ~118) prevents
+// false "interrupted" banners when the server is still actively processing
+// (serverBusyRef.current === true). Combined with v0.15.3's SSE scanner
+// fix (which prevents connection drops on large events), the 60s timeout
+// is sufficient: the only scenario where a false positive could occur is
+// if the SSE connection drops AND serverBusy is stale (false), which
+// requires both a network failure and a missed busy event — a narrow race
+// that v0.15.3's fix makes extremely unlikely.
 const IDLE_WAIT_TIMEOUT_MS = 60_000;
 
 // When the workspace is restarting (opencode down for a credential reload,

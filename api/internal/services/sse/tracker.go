@@ -187,11 +187,11 @@ func (t *Tracker) StopWatching(workspaceID string) {
 	}
 	wg := t.goroutineWg[workspaceID]
 	delete(t.goroutineWg, workspaceID)
-	t.subMu.Unlock()
 
-	// Wait for the subscribe goroutine to exit before cleaning maps.
-	// Without this, a stale event drained from the HTTP buffer after
-	// cancel() can resurrect cleared state (#751 F3 reconnect race).
+	// Wait for the subscribe goroutine to exit while still holding subMu.
+	// This prevents a concurrent EnsureWatching from starting a new goroutine
+	// that writes to billing maps before cleanup completes. subscribe() never
+	// acquires subMu, so no deadlock risk.
 	if wg != nil {
 		wg.Wait()
 	}
@@ -217,6 +217,8 @@ func (t *Tracker) StopWatching(workspaceID string) {
 		}
 	}
 	t.startTimeMu.Unlock()
+
+	t.subMu.Unlock()
 }
 
 func (t *Tracker) Stop() {
@@ -241,6 +243,38 @@ func (t *Tracker) SubscriptionCount() int {
 	t.subMu.Lock()
 	defer t.subMu.Unlock()
 	return len(t.subscriptions)
+}
+
+// GetBillingState returns entries from the three billing maps that match the
+// given workspace prefix. Used by integration tests to verify cleanup.
+func (t *Tracker) GetBillingState(workspaceID string) (tokens, costs, startTimes map[string]bool) {
+	prefix := workspaceID + ":"
+	tokens = make(map[string]bool)
+	costs = make(map[string]bool)
+	startTimes = make(map[string]bool)
+
+	t.tokensMu.Lock()
+	for k := range t.sessionTokenSeen {
+		if strings.HasPrefix(k, prefix) {
+			tokens[k] = true
+		}
+	}
+	for k := range t.sessionCostSeen {
+		if strings.HasPrefix(k, prefix) {
+			costs[k] = true
+		}
+	}
+	t.tokensMu.Unlock()
+
+	t.startTimeMu.Lock()
+	for k := range t.sessionStartTime {
+		if strings.HasPrefix(k, prefix) {
+			startTimes[k] = true
+		}
+	}
+	t.startTimeMu.Unlock()
+
+	return
 }
 
 func (t *Tracker) SubscribeDrain(
@@ -451,9 +485,10 @@ func (t *Tracker) dispatchProperties(workspaceID, eventType string, props json.R
 	switch p.Status.Type {
 	case "idle":
 		if t.sessionMetrics != nil {
+			timeKey := workspaceID + ":" + p.SessionID
 			t.startTimeMu.Lock()
-			if start, ok := t.sessionStartTime[p.SessionID]; ok {
-				delete(t.sessionStartTime, p.SessionID)
+			if start, ok := t.sessionStartTime[timeKey]; ok {
+				delete(t.sessionStartTime, timeKey)
 				t.startTimeMu.Unlock()
 				t.sessionMetrics.RecordSessionCompleted(workspaceID, time.Since(start).Seconds())
 			} else {
@@ -473,9 +508,10 @@ func (t *Tracker) dispatchProperties(workspaceID, eventType string, props json.R
 			s.onIdle(workspaceID, p.SessionID)
 		}
 	case "busy", "retry":
+		timeKey := workspaceID + ":" + p.SessionID
 		t.startTimeMu.Lock()
-		if _, exists := t.sessionStartTime[p.SessionID]; !exists {
-			t.sessionStartTime[p.SessionID] = time.Now()
+		if _, exists := t.sessionStartTime[timeKey]; !exists {
+			t.sessionStartTime[timeKey] = time.Now()
 		}
 		t.startTimeMu.Unlock()
 		if t.onSessionActive != nil {
@@ -511,7 +547,7 @@ func (t *Tracker) handleSessionUpdated(workspaceID string, props []byte) {
 		} `json:"info"`
 	}
 	if err := json.Unmarshal(props, &p); err != nil {
-		t.Logger.Debug("handleSessionUpdated: failed to parse event", "error", err)
+		t.Logger.Warn("handleSessionUpdated: failed to parse event", "workspaceID", workspaceID, "error", err)
 		return
 	}
 	if p.Info.ID == "" || p.Info.Tokens.Output == 0 || p.Info.Model.ID == "" {
@@ -534,12 +570,15 @@ func (t *Tracker) handleSessionUpdated(workspaceID string, props []byte) {
 		if json.Unmarshal(trimmed, &costFloat) == nil {
 			costVal = costFloat
 		} else {
-			// Try as an object (1.18.10 wire shape): "cost": {"total": 0.042}
+			// Try as an object (potential 1.18.10 wire shape).
+			// In ocCost, "cost" is CostUSD (dollar amount), while
+			// "total" is TotalTokens (int64 count). Extract the
+			// dollar field, not the token count.
 			var costObj struct {
-				Total float64 `json:"total"`
+				Cost float64 `json:"cost"`
 			}
 			if json.Unmarshal(trimmed, &costObj) == nil {
-				costVal = costObj.Total
+				costVal = costObj.Cost
 			} else {
 				t.Logger.Warn("handleSessionUpdated: could not parse cost field",
 					"workspaceID", workspaceID, "raw", string(trimmed))

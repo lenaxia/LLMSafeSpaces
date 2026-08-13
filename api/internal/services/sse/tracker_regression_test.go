@@ -33,7 +33,7 @@ func TestSSETracker_Inference_CostAsObject(t *testing.T) {
 
 	tracker.processEvent("ws-1", makeSessionUpdatedEvent("ses_obj", map[string]interface{}{
 		"id":   "ses_obj",
-		"cost": map[string]interface{}{"total": 0.05},
+		"cost": map[string]interface{}{"cost": 0.05},
 		"tokens": map[string]interface{}{
 			"input": 1000, "output": 500,
 		},
@@ -97,6 +97,34 @@ func TestSSETracker_StopWatching_CleansUpMaps(t *testing.T) {
 
 	tracker.startTimeMu.Lock()
 	assert.NotContains(t, tracker.sessionStartTime, "ws-1:ses_clean", "startTime must be cleaned")
+	tracker.startTimeMu.Unlock()
+}
+
+// TestSSETracker_StopWatching_CleansStartTimeViaRealDispatch verifies that
+// sessionStartTime entries created through the real dispatchProperties path
+// (session.status=busy event → tracker writes composite key) are cleaned by
+// StopWatching. This catches the keying mismatch bug: production code wrote
+// bare session-ID keys while StopWatching used workspaceID: prefix matching.
+func TestSSETracker_StopWatching_CleansStartTimeViaRealDispatch(t *testing.T) {
+	tracker := newTestSSETracker(func(_, _ string) {})
+
+	// Send a busy event through the real dispatch path — this writes to
+	// sessionStartTime using whatever key the code actually uses.
+	tracker.processEvent("ws-key-test", makeSessionStatusEvent("ses_keytest", "busy"))
+
+	// Verify the entry exists.
+	tracker.startTimeMu.Lock()
+	assert.NotEmpty(t, tracker.sessionStartTime, "sessionStartTime must have entries after busy event")
+	tracker.startTimeMu.Unlock()
+
+	// StopWatching must clean ALL sessionStartTime entries for this workspace.
+	tracker.StopWatching("ws-key-test")
+
+	tracker.startTimeMu.Lock()
+	for k := range tracker.sessionStartTime {
+		assert.NotContains(t, k, "ws-key-test",
+			"sessionStartTime must not contain entries for ws-key-test after StopWatching (key=%q)", k)
+	}
 	tracker.startTimeMu.Unlock()
 }
 
