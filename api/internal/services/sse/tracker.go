@@ -325,7 +325,14 @@ func (t *Tracker) connectAndRead(ctx context.Context, workspaceID string) error 
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 64*1024), 64*1024)
+	// 16 MB buffer per line (was 64 KB). Same root cause as the agentd
+	// SSE scanner bug (#805): opencode emits message.part.updated events
+	// that exceed 300KB (patch parts listing thousands of files), and a
+	// large monorepo could produce 10MB+. The old 64 KB cap caused the
+	// scanner to fail silently, dropping the SSE connection and causing
+	// the API-side tracker to miss session.status:idle events — the
+	// stuck-busy bug. 16 MB matches the agentd-side fix.
+	scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
 
 	var eventData strings.Builder
 	var bytesReceived int64
