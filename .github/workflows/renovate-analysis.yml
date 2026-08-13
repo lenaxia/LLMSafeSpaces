@@ -40,6 +40,11 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
       # Skip analysis if the PR was already analyzed and hasn't been updated since
       - name: Check if already analyzed
         id: pre-check
