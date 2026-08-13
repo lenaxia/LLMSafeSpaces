@@ -13,6 +13,7 @@ import type {
   McpTransport,
 } from "../../api/mcpServerTypes";
 import type { SecretResponse } from "../../api/secrets";
+import { safeConfirm } from "../../lib/safeConfirm";
 
 type ApiClient = {
   list: () => Promise<McpServerResponse[]>;
@@ -68,7 +69,7 @@ export function McpServersTab({ scope }: McpServersTabProps) {
   }, [load]);
 
   const handleDelete = async (id: string) => {
-    if (!confirm("Delete this MCP server? Bound workspaces will lose its tools.")) return;
+    if (!safeConfirm("Delete this MCP server? Bound workspaces will lose its tools.")) return;
     try {
       await api.delete(id);
       setServers(servers.filter((s) => s.id !== id));

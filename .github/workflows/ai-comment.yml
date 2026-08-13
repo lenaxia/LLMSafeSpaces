@@ -49,6 +49,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
       # Build the PROMPT that opencode uses as userPrompt.
       # The action appends PR/issue context (title, body, diff, comments) automatically —
       # PROMPT only needs to carry the instruction.

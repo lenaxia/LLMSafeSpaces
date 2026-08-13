@@ -4,6 +4,7 @@ import { imageFactoryApi, type Catalog, type Config, type Extension } from "../.
 import type { OrgResponse } from "../../api/orgs";
 import { Spinner } from "../ui/Spinner";
 import { useToast } from "../../providers/ToastProvider";
+import { safeConfirm } from "../../lib/safeConfirm";
 
 type ImageScope = "user" | "org" | "platform";
 
@@ -57,7 +58,7 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
   const createScopeLabel = scope === "org" ? "Org" : scope === "platform" ? "Platform" : "Personal";
 
   const handleDelete = async (hash: string, name: string) => {
-    if (!confirm(`Delete "${name}"? This cannot be undone.`)) return;
+    if (!safeConfirm(`Delete "${name}"? This cannot be undone.`)) return;
     try {
       await imageFactoryApi.deleteConfig(hash);
       setConfigs(configs.filter((c) => c.hash !== hash));

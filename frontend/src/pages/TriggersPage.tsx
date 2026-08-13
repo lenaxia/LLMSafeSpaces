@@ -6,6 +6,7 @@ import { workspacesApi } from "../api/workspaces";
 import { Badge } from "../components/ui/Badge";
 import { Spinner } from "../components/ui/Spinner";
 import { cn } from "../lib/utils";
+import { safeConfirm } from "../lib/safeConfirm";
 import {
   Plus, Clock, Link as LinkIcon, Copy, Eye, EyeOff, AlertTriangle,
   Shield, Activity, ArrowLeft,
@@ -149,7 +150,7 @@ export function TriggersPage() {
               queryClient.invalidateQueries({ queryKey: ["triggers"] });
             }}
             onDelete={() => {
-              if (confirm(`Delete trigger "${selected.name}"?`)) {
+              if (safeConfirm(`Delete trigger "${selected.name}"?`)) {
                 deleteMutation.mutate(selected.id);
               }
             }}
@@ -948,7 +949,7 @@ function RotateSecretButton({ triggerId }: { triggerId: string }) {
   const [error, setError] = useState<string | null>(null);
 
   const handleRotate = async () => {
-    if (!confirm("Rotate webhook secret? The old secret will stop working immediately.")) return;
+    if (!safeConfirm("Rotate webhook secret? The old secret will stop working immediately.")) return;
     setRotating(true);
     setError(null);
     try {

@@ -7,6 +7,7 @@ import { Badge } from "../components/ui/Badge";
 import { Spinner } from "../components/ui/Spinner";
 import { cn } from "../lib/utils";
 import { Plus, History, ArrowLeft } from "lucide-react";
+import { safeConfirm } from "../lib/safeConfirm";
 
 export function WorkflowsPage() {
   const { workflowId } = useParams();
@@ -144,7 +145,7 @@ export function WorkflowsPage() {
                   queryClient.invalidateQueries({ queryKey: ["workflows"] });
                 }}
                 onDelete={async () => {
-                  if (confirm(`Delete workflow "${selected.name}"?`)) {
+                  if (safeConfirm(`Delete workflow "${selected.name}"?`)) {
                     deleteMutation.mutate(selected.id);
                   }
                 }}

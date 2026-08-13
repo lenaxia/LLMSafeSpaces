@@ -11,6 +11,7 @@ import {
 import { ApiClientError } from "../../api/client";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
+import { safeConfirm } from "../../lib/safeConfirm";
 
 const PAGE_SIZE = 20;
 
@@ -195,7 +196,7 @@ export function OrgSettingsTab() {
   };
 
   const handleSuspend = async (orgId: string) => {
-    if (!confirm("Suspend this organisation? All its workspaces will be suspended.")) return;
+    if (!safeConfirm("Suspend this organisation? All its workspaces will be suspended.")) return;
     setBusyId(orgId);
     try {
       await adminPlatformApi.suspendOrg(orgId);
@@ -220,7 +221,7 @@ export function OrgSettingsTab() {
   };
 
   const handleDelete = async (org: OrgSummary) => {
-    if (!confirm(`Delete "${org.name}"? This cannot be undone.`)) return;
+    if (!safeConfirm(`Delete "${org.name}"? This cannot be undone.`)) return;
     setBusyId(org.id);
     try {
       await orgsApi.delete(org.id);

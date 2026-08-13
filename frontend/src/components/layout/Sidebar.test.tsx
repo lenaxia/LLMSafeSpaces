@@ -276,7 +276,7 @@ describe("Sidebar — session delete", () => {
     expect(workspacesApi.deleteSession).toHaveBeenCalledWith("ws-1", "sess-1");
   });
 
-  it("proceeds with deletion when window.confirm throws (sandboxed iframe)", async () => {
+  it("aborts deletion when window.confirm throws (#775 safeConfirm)", async () => {
     const { qc } = renderSidebar();
 
     qc.setQueryData(["sessions", "ws-1"], [
@@ -295,7 +295,8 @@ describe("Sidebar — session delete", () => {
     const deleteBtn = await screen.findByText("Delete");
     deleteBtn.click();
 
-    expect(workspacesApi.deleteSession).toHaveBeenCalledWith("ws-1", "sess-1");
+    // safeConfirm must fail CLOSED — no deletion when confirm throws
+    expect(workspacesApi.deleteSession).not.toHaveBeenCalled();
   });
 });
 

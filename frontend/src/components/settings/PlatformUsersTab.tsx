@@ -8,6 +8,7 @@ import {
 import { ApiClientError } from "../../api/client";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
+import { safeConfirm } from "../../lib/safeConfirm";
 
 const PAGE_SIZE = 20;
 
@@ -62,7 +63,7 @@ export function PlatformUsersTab() {
     const prompt = user.orgCount > 0
       ? `Suspend ${user.email}? They are in org "${user.orgName ?? user.orgId}".`
       : `Suspend ${user.email}?`;
-    if (!confirm(prompt)) return;
+    if (!safeConfirm(prompt)) return;
     setBusyId(user.id);
     try {
       await adminPlatformApi.suspendUser(user.id);
