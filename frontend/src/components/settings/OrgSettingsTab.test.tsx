@@ -26,6 +26,8 @@ vi.mock("../../providers/AuthProvider", () => ({
   useAuth: () => ({ user: { role: "admin" }, loading: false }),
 }));
 
+import { orgsApi } from "../../api/orgs";
+
 const ORG_ACTIVE: OrgSummary = {
   id: "org-1",
   name: "Acme",
@@ -72,6 +74,7 @@ describe("OrgSettingsTab", () => {
     mockCreate.mockReset();
     mockSuspendOrg.mockReset();
     mockUnsuspendOrg.mockReset();
+    (orgsApi.delete as ReturnType<typeof vi.fn>).mockReset();
   });
 
   it("lists organisations with member + workspace counts", async () => {
@@ -101,8 +104,7 @@ describe("OrgSettingsTab", () => {
     expect(unsuspendButtons).toHaveLength(1);
   });
 
-  it("calls suspendOrg then refreshes on confirm", async () => {
-    window.confirm = vi.fn(() => true);
+  it("calls suspendOrg then refreshes on confirm (#814)", async () => {
     mockListOrgs
       .mockResolvedValueOnce(listResponse([ORG_ACTIVE]))
       .mockResolvedValueOnce(
@@ -113,18 +115,62 @@ describe("OrgSettingsTab", () => {
     renderTab();
     await waitFor(() => expect(screen.getByText("Suspend")).toBeInTheDocument());
     await user.click(screen.getByText("Suspend"));
+
+    // ConfirmDialog opens — wait for dialog title, then click confirm
+    await waitFor(() => {
+      expect(screen.getByText("Suspend organisation?")).toBeInTheDocument();
+    });
+    const dialogBtn = screen.getAllByRole("button", { name: "Suspend" }).pop()!;
+    await user.click(dialogBtn);
+
     await waitFor(() => expect(mockSuspendOrg).toHaveBeenCalledWith("org-1"));
     await waitFor(() => expect(mockListOrgs).toHaveBeenCalledTimes(2));
   });
 
-  it("does not call suspendOrg when the confirm is cancelled", async () => {
-    window.confirm = vi.fn(() => false);
+  it("does not call suspendOrg when the confirm is cancelled (#814)", async () => {
     mockListOrgs.mockResolvedValue(listResponse([ORG_ACTIVE]));
     const user = userEvent.setup();
     renderTab();
     await waitFor(() => expect(screen.getByText("Suspend")).toBeInTheDocument());
     await user.click(screen.getByText("Suspend"));
+
+    // ConfirmDialog opens — click Cancel
+    const cancelBtn = await screen.findByRole("button", { name: "Cancel" });
+    await user.click(cancelBtn);
+
     expect(mockSuspendOrg).not.toHaveBeenCalled();
+  });
+
+  it("calls orgsApi.delete when the confirm dialog is confirmed (#814)", async () => {
+    mockListOrgs
+      .mockResolvedValueOnce(listResponse([ORG_ACTIVE]))
+      .mockResolvedValueOnce(listResponse([]));
+    (orgsApi.delete as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    const user = userEvent.setup();
+    renderTab();
+    await waitFor(() => expect(screen.getByText("Acme")).toBeInTheDocument());
+    await user.click(screen.getByText("Delete"));
+
+    // ConfirmDialog opens — click the dialog's "Delete" button (the last one,
+    // since the table row still shows its own Delete button).
+    await waitFor(() => expect(screen.getByText("Delete organisation?")).toBeInTheDocument());
+    const dialogConfirm = screen.getAllByRole("button", { name: "Delete" }).pop()!;
+    await user.click(dialogConfirm);
+
+    await waitFor(() => expect(orgsApi.delete).toHaveBeenCalledWith("org-1"));
+  });
+
+  it("does not call orgsApi.delete when the confirm is cancelled (#814)", async () => {
+    mockListOrgs.mockResolvedValue(listResponse([ORG_ACTIVE]));
+    const user = userEvent.setup();
+    renderTab();
+    await waitFor(() => expect(screen.getByText("Acme")).toBeInTheDocument());
+    await user.click(screen.getByText("Delete"));
+
+    const cancelBtn = await screen.findByRole("button", { name: "Cancel" });
+    await user.click(cancelBtn);
+
+    expect(orgsApi.delete).not.toHaveBeenCalled();
   });
 
   it("calls unsuspendOrg for a suspended org", async () => {

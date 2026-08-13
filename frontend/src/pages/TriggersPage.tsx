@@ -6,7 +6,7 @@ import { workspacesApi } from "../api/workspaces";
 import { Badge } from "../components/ui/Badge";
 import { Spinner } from "../components/ui/Spinner";
 import { cn } from "../lib/utils";
-import { safeConfirm } from "../lib/safeConfirm";
+import { useConfirmDialog } from "../hooks/useConfirmDialog";
 import {
   Plus, Clock, Link as LinkIcon, Copy, Eye, EyeOff, AlertTriangle,
   Shield, Activity, ArrowLeft,
@@ -21,6 +21,8 @@ export function TriggersPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
+
+  const { confirm: confirmAction, dialog: confirmDialog } = useConfirmDialog();
 
   const { data: triggers, isLoading } = useQuery({
     queryKey: ["triggers"],
@@ -150,9 +152,15 @@ export function TriggersPage() {
               queryClient.invalidateQueries({ queryKey: ["triggers"] });
             }}
             onDelete={() => {
-              if (safeConfirm(`Delete trigger "${selected.name}"?`)) {
-                deleteMutation.mutate(selected.id);
-              }
+              confirmAction({
+                title: "Delete trigger?",
+                description: `Delete trigger "${selected.name}"?`,
+                confirmLabel: "Delete",
+                destructive: true,
+                onConfirm: () => {
+                  deleteMutation.mutate(selected.id);
+                },
+              });
             }}
             onRunWorkflow={async (wfId) => {
               const run = await workflowApi.run(wfId);
@@ -166,6 +174,7 @@ export function TriggersPage() {
           </div>
         )}
       </div>
+      {confirmDialog}
     </div>
   );
 }
@@ -947,19 +956,27 @@ function RotateSecretButton({ triggerId }: { triggerId: string }) {
   const [newSecret, setNewSecret] = useState<string | null>(null);
   const [showSecret, setShowSecret] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { confirm: confirmAction, dialog: confirmDialog } = useConfirmDialog();
 
-  const handleRotate = async () => {
-    if (!safeConfirm("Rotate webhook secret? The old secret will stop working immediately.")) return;
-    setRotating(true);
-    setError(null);
-    try {
-      const result = await triggerApi.rotateSecret(triggerId);
-      setNewSecret(result.webhookSecret);
-    } catch (e: any) {
-      setError(e?.message || "Failed to rotate secret");
-    } finally {
-      setRotating(false);
-    }
+  const handleRotate = () => {
+    confirmAction({
+      title: "Rotate webhook secret?",
+      description: "Rotate webhook secret? The old secret will stop working immediately.",
+      confirmLabel: "Rotate",
+      destructive: true,
+      onConfirm: async () => {
+        setRotating(true);
+        setError(null);
+        try {
+          const result = await triggerApi.rotateSecret(triggerId);
+          setNewSecret(result.webhookSecret);
+        } catch (e: any) {
+          setError(e?.message || "Failed to rotate secret");
+        } finally {
+          setRotating(false);
+        }
+      },
+    });
   };
 
   if (newSecret) {
@@ -995,6 +1012,7 @@ function RotateSecretButton({ triggerId }: { triggerId: string }) {
         {rotating ? "Rotating..." : "Rotate secret"}
       </button>
       {error && <p className="text-xs text-destructive">{error}</p>}
+      {confirmDialog}
     </>
   );
 }

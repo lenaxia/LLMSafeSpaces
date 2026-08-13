@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { screen, render, act } from "@testing-library/react";
+import { screen, render, act, waitFor, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Sidebar } from "./Sidebar";
@@ -210,7 +210,7 @@ describe("Sidebar — session delete", () => {
     vi.clearAllMocks();
   });
 
-  it("calls deleteSession when session kebab delete is confirmed", async () => {
+  it("calls deleteSession when session kebab delete is confirmed (#814)", async () => {
     const { qc } = renderSidebar();
 
     qc.setQueryData(["sessions", "ws-1"], [
@@ -219,8 +219,6 @@ describe("Sidebar — session delete", () => {
 
     await screen.findByText("My session");
 
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-
     const kebabButtons = await screen.findAllByLabelText("Actions");
     const sessionKebab = kebabButtons[kebabButtons.length - 1]!;
     sessionKebab.click();
@@ -228,10 +226,16 @@ describe("Sidebar — session delete", () => {
     const deleteBtn = await screen.findByText("Delete");
     deleteBtn.click();
 
-    expect(workspacesApi.deleteSession).toHaveBeenCalledWith("ws-1", "sess-1");
+    // ConfirmDialog opens — click "Delete" in dialog
+    await waitFor(() => screen.getByRole("button", { name: "Delete" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Delete" }).pop()!);
+
+    await waitFor(() => {
+      expect(workspacesApi.deleteSession).toHaveBeenCalledWith("ws-1", "sess-1");
+    });
   });
 
-  it("does not call deleteSession when confirm is cancelled", async () => {
+  it("does not call deleteSession when confirm is cancelled (#814)", async () => {
     const { qc } = renderSidebar();
 
     qc.setQueryData(["sessions", "ws-1"], [
@@ -240,8 +244,6 @@ describe("Sidebar — session delete", () => {
 
     await screen.findByText("Keep me");
 
-    vi.spyOn(window, "confirm").mockReturnValue(false);
-
     const kebabButtons = await screen.findAllByLabelText("Actions");
     const sessionKebab = kebabButtons[kebabButtons.length - 1]!;
     sessionKebab.click();
@@ -249,10 +251,14 @@ describe("Sidebar — session delete", () => {
     const deleteBtn = await screen.findByText("Delete");
     deleteBtn.click();
 
+    // ConfirmDialog opens — click "Cancel"
+    await waitFor(() => screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
     expect(workspacesApi.deleteSession).not.toHaveBeenCalled();
   });
 
-  it("treats 404 as success on delete", async () => {
+  it("treats 404 as success on delete (#814)", async () => {
     const { qc } = renderSidebar();
 
     const err404 = new ApiClientError(404, { error: "not found" });
@@ -264,8 +270,6 @@ describe("Sidebar — session delete", () => {
 
     await screen.findByText("Will 404");
 
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-
     const kebabButtons = await screen.findAllByLabelText("Actions");
     const sessionKebab = kebabButtons[kebabButtons.length - 1]!;
     sessionKebab.click();
@@ -273,10 +277,16 @@ describe("Sidebar — session delete", () => {
     const deleteBtn = await screen.findByText("Delete");
     deleteBtn.click();
 
-    expect(workspacesApi.deleteSession).toHaveBeenCalledWith("ws-1", "sess-1");
+    // ConfirmDialog opens — click "Delete" in dialog
+    await waitFor(() => screen.getByRole("button", { name: "Delete" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Delete" }).pop()!);
+
+    await waitFor(() => {
+      expect(workspacesApi.deleteSession).toHaveBeenCalledWith("ws-1", "sess-1");
+    });
   });
 
-  it("aborts deletion when window.confirm throws (#775 safeConfirm)", async () => {
+  it("works in sandboxed iframe (ConfirmDialog renders in DOM) (#814)", async () => {
     const { qc } = renderSidebar();
 
     qc.setQueryData(["sessions", "ws-1"], [
@@ -285,8 +295,8 @@ describe("Sidebar — session delete", () => {
 
     await screen.findByText("Keep me");
 
-    // Simulate window.confirm being blocked in a sandboxed iframe
-    vi.spyOn(window, "confirm").mockImplementation(() => { throw new Error("Blocked"); });
+    // window.confirm blocked — ConfirmDialog should still work
+    const confirmSpy = vi.spyOn(window, "confirm").mockImplementation(() => { throw new Error("Blocked"); });
 
     const kebabButtons = await screen.findAllByLabelText("Actions");
     const sessionKebab = kebabButtons[kebabButtons.length - 1]!;
@@ -295,8 +305,54 @@ describe("Sidebar — session delete", () => {
     const deleteBtn = await screen.findByText("Delete");
     deleteBtn.click();
 
-    // safeConfirm must fail CLOSED — no deletion when confirm throws
-    expect(workspacesApi.deleteSession).not.toHaveBeenCalled();
+    // Dialog must render despite window.confirm being blocked
+    await waitFor(() => screen.getByRole("button", { name: "Delete" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Delete" }).pop()!);
+
+    await waitFor(() => {
+      expect(workspacesApi.deleteSession).toHaveBeenCalledWith("ws-1", "sess-1");
+    });
+    confirmSpy.mockRestore();
+  });
+});
+
+describe("Sidebar — workspace delete", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("calls deleteWorkspace when workspace kebab delete is confirmed (#814)", async () => {
+    renderSidebar();
+    await screen.findByText("alpha");
+
+    const kebabButtons = await screen.findAllByLabelText("Actions");
+    kebabButtons[0]!.click();
+
+    (await screen.findByRole("menuitem", { name: "Delete" })).click();
+
+    // ConfirmDialog opens — click "Delete" in dialog
+    await waitFor(() => screen.getByRole("button", { name: "Delete" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => {
+      expect(workspacesApi.deleteWorkspace).toHaveBeenCalledWith("ws-1");
+    });
+  });
+
+  it("does not call deleteWorkspace when the confirm dialog is cancelled (#814)", async () => {
+    renderSidebar();
+    await screen.findByText("alpha");
+
+    const kebabButtons = await screen.findAllByLabelText("Actions");
+    kebabButtons[0]!.click();
+
+    (await screen.findByRole("menuitem", { name: "Delete" })).click();
+
+    // ConfirmDialog opens — click Cancel
+    await waitFor(() => screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(workspacesApi.deleteWorkspace).not.toHaveBeenCalled();
   });
 });
 

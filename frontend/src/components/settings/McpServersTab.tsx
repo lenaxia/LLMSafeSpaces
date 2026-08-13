@@ -13,7 +13,7 @@ import type {
   McpTransport,
 } from "../../api/mcpServerTypes";
 import type { SecretResponse } from "../../api/secrets";
-import { safeConfirm } from "../../lib/safeConfirm";
+import { useConfirmDialog } from "../../hooks/useConfirmDialog";
 
 type ApiClient = {
   list: () => Promise<McpServerResponse[]>;
@@ -40,6 +40,8 @@ export function McpServersTab({ scope }: McpServersTabProps) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showForm, setShowForm] = useState(false);
+
+  const { confirm: confirmAction, dialog: confirmDialog } = useConfirmDialog();
 
   const api: ApiClient = useMemo(
     () => ({
@@ -68,14 +70,21 @@ export function McpServersTab({ scope }: McpServersTabProps) {
     void load();
   }, [load]);
 
-  const handleDelete = async (id: string) => {
-    if (!safeConfirm("Delete this MCP server? Bound workspaces will lose its tools.")) return;
-    try {
-      await api.delete(id);
-      setServers(servers.filter((s) => s.id !== id));
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Delete failed");
-    }
+  const handleDelete = (id: string) => {
+    confirmAction({
+      title: "Delete MCP server?",
+      description: "Delete this MCP server? Bound workspaces will lose its tools.",
+      confirmLabel: "Delete",
+      destructive: true,
+      onConfirm: async () => {
+        try {
+          await api.delete(id);
+          setServers(servers.filter((s) => s.id !== id));
+        } catch (e) {
+          setError(e instanceof Error ? e.message : "Delete failed");
+        }
+      },
+    });
   };
 
   const handleToggle = async (server: McpServerResponse) => {
@@ -163,6 +172,7 @@ export function McpServersTab({ scope }: McpServersTabProps) {
           ))}
         </div>
       )}
+      {confirmDialog}
     </div>
   );
 }

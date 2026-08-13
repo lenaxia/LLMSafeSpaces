@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { workspacesApi } from "../api/workspaces";
-import { safeConfirm } from "../lib/safeConfirm";
+import { useConfirmDialog } from "../hooks/useConfirmDialog";
 import { ApiClientError } from "../api/client";
 import { workspaceWorkflowApi } from "../api/workflows";
 import { useWorkspaceStatus } from "../hooks/useWorkspaces";
@@ -52,6 +52,7 @@ function messageIdentityKey(m: Message): string {
 export function ChatPage() {
   const { workspaceId, sessionId } = useParams();
   const navigate = useNavigate();
+  const { confirm: confirmDelete, dialog: confirmDialog } = useConfirmDialog();
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
   // sessionErrors holds error messages surfaced by session.error SSE events.
   // Kept separate from localMessages so they survive between send and idle.
@@ -893,19 +894,26 @@ export function ChatPage() {
       label: "Delete session",
       onClick: () => {
         if (!workspaceId || !sessionId) return;
-        if (!safeConfirm("Delete this session?")) return;
-        workspacesApi.deleteSession(workspaceId, sessionId)
-          .catch((err: unknown) => {
-            if (err instanceof ApiClientError && err.status === 404) return;
-            throw err;
-          })
-          .then(() => {
-            queryClient.invalidateQueries({ queryKey: ["sessions", workspaceId] });
-            navigate(`/chat/${workspaceId}`);
-          })
-          .catch(() => {
-            try { window.alert("Failed to delete session."); } catch { /* blocked */ }
-          });
+        confirmDelete({
+          title: "Delete this session?",
+          description: "This action cannot be undone.",
+          confirmLabel: "Delete",
+          destructive: true,
+          onConfirm: () => {
+            workspacesApi.deleteSession(workspaceId, sessionId)
+              .catch((err: unknown) => {
+                if (err instanceof ApiClientError && err.status === 404) return;
+                throw err;
+              })
+              .then(() => {
+                queryClient.invalidateQueries({ queryKey: ["sessions", workspaceId] });
+                navigate(`/chat/${workspaceId}`);
+              })
+              .catch(() => {
+                try { window.alert("Failed to delete session."); } catch { /* blocked */ }
+              });
+          },
+        });
       },
       destructive: true,
     },
@@ -1105,6 +1113,7 @@ export function ChatPage() {
           />
         </div>
       )}
+      {confirmDialog}
     </div>
   );
 }

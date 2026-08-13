@@ -4,7 +4,7 @@ import { imageFactoryApi, type Catalog, type Config, type Extension } from "../.
 import type { OrgResponse } from "../../api/orgs";
 import { Spinner } from "../ui/Spinner";
 import { useToast } from "../../providers/ToastProvider";
-import { safeConfirm } from "../../lib/safeConfirm";
+import { useConfirmDialog } from "../../hooks/useConfirmDialog";
 
 type ImageScope = "user" | "org" | "platform";
 
@@ -21,6 +21,7 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { toast } = useToast();
+  const { confirm: confirmAction, dialog: confirmDialog } = useConfirmDialog();
 
   const [name, setName] = useState("");
   const [baseName, setBaseName] = useState("");
@@ -57,16 +58,23 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
   // The scope label for newly created configs (for the section heading).
   const createScopeLabel = scope === "org" ? "Org" : scope === "platform" ? "Platform" : "Personal";
 
-  const handleDelete = async (hash: string, name: string) => {
-    if (!safeConfirm(`Delete "${name}"? This cannot be undone.`)) return;
-    try {
-      await imageFactoryApi.deleteConfig(hash);
-      setConfigs(configs.filter((c) => c.hash !== hash));
-      setExpandedConfig(null);
-      toast("Image config deleted", "success");
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Failed to delete config", "error");
-    }
+  const handleDelete = (hash: string, name: string) => {
+    confirmAction({
+      title: "Delete image?",
+      description: `Delete "${name}"? This cannot be undone.`,
+      confirmLabel: "Delete",
+      destructive: true,
+      onConfirm: async () => {
+        try {
+          await imageFactoryApi.deleteConfig(hash);
+          setConfigs(configs.filter((c) => c.hash !== hash));
+          setExpandedConfig(null);
+          toast("Image config deleted", "success");
+        } catch (e) {
+          toast(e instanceof Error ? e.message : "Failed to delete config", "error");
+        }
+      },
+    });
   };
 
   const handleRename = async (hash: string) => {
@@ -399,6 +407,7 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
       )}
 
       {renderConfigBuilder()}
+      {confirmDialog}
     </div>
   );
 }

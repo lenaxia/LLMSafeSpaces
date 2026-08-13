@@ -6,19 +6,23 @@ import type { OrgResponse } from "../../api/orgs";
 
 const mockOrgList = vi.fn();
 const mockOrgCreate = vi.fn();
+const mockOrgDelete = vi.fn();
 const mockUserCreate = vi.fn();
 const mockUserList = vi.fn();
+const mockUserDelete = vi.fn();
 const mockOutletContext = vi.fn();
 
 vi.mock("../../api/mcpServers", () => ({
-  adminMcpServersApi: { list: vi.fn(), create: vi.fn() },
+  adminMcpServersApi: { list: vi.fn(), create: vi.fn(), delete: vi.fn() },
   orgMcpServersApi: {
     list: (id: string) => mockOrgList(id),
     create: (id: string, req: unknown) => mockOrgCreate(id, req),
+    delete: (id: string) => mockOrgDelete(id),
   },
   userMcpServersApi: {
     list: () => mockUserList(),
     create: (req: unknown) => mockUserCreate(req),
+    delete: (id: string) => mockUserDelete(id),
   },
 }));
 
@@ -110,5 +114,61 @@ describe("McpServersTab org-scope routing", () => {
     fireEvent.click(submitBtn);
     await waitFor(() => expect(mockOrgCreate).toHaveBeenCalledWith("org-1", expect.objectContaining({ name: "test-server" })));
     expect(mockUserCreate).not.toHaveBeenCalled();
+  });
+});
+
+// ─── ConfirmDialog (#814) ────────────────────────────────────────────────────
+
+describe("McpServersTab – ConfirmDialog delete (#814)", () => {
+  const SERVER = {
+    id: "mcp-1",
+    name: "github-tools",
+    transport: "http" as const,
+    url: "https://example.com/mcp",
+    hasSecret: false,
+    enabled: true,
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockOutletContext.mockReturnValue({});
+    mockUserList.mockResolvedValue([SERVER]);
+    mockUserDelete.mockResolvedValue(undefined);
+  });
+
+  function renderUserTab() {
+    return render(
+      <MemoryRouter>
+        <McpServersTab scope="user" />
+      </MemoryRouter>,
+    );
+  }
+
+  it("opens the confirm dialog and deletes the server on confirm", async () => {
+    renderUserTab();
+    await waitFor(() => expect(screen.getByText("github-tools")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    // ConfirmDialog opens — title visible, and a second "Delete" button (the
+    // dialog's confirm) is now present. The last matching button is the dialog's.
+    await waitFor(() => expect(screen.getByText("Delete MCP server?")).toBeInTheDocument());
+    const dialogConfirm = screen.getAllByRole("button", { name: "Delete" }).pop()!;
+    fireEvent.click(dialogConfirm);
+
+    await waitFor(() => expect(mockUserDelete).toHaveBeenCalledWith("mcp-1"));
+  });
+
+  it("does not delete when the dialog is cancelled", async () => {
+    renderUserTab();
+    await waitFor(() => expect(screen.getByText("github-tools")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    const cancelBtn = await screen.findByRole("button", { name: "Cancel" });
+    fireEvent.click(cancelBtn);
+
+    expect(mockUserDelete).not.toHaveBeenCalled();
   });
 });

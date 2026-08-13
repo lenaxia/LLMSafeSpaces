@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useLocation } from "react-router-dom";
 import { workspacesApi } from "../../api/workspaces";
 import { workspaceWorkflowApi } from "../../api/workflows";
-import { safeConfirm } from "../../lib/safeConfirm";
+import { useConfirmDialog } from "../../hooks/useConfirmDialog";
 import { orgsApi } from "../../api/orgs";
 import { ApiClientError } from "../../api/client";
 import { useAuth } from "../../providers/AuthProvider";
@@ -53,6 +53,7 @@ export function Sidebar({ onNavigate }: Props) {
   const location = useLocation();
   const queryClient = useQueryClient();
   const { workspaceId, sessionId } = useParams();
+  const { confirm: confirmAction, dialog: confirmDialog } = useConfirmDialog();
   const [expandedWs, setExpandedWs] = useState<Set<string>>(() =>
     workspaceId ? new Set([workspaceId]) : new Set(),
   );
@@ -222,8 +223,13 @@ export function Sidebar({ onNavigate }: Props) {
               onRenameCancel={() => setRenamingWs(null)}
               onRenameConfirm={(name) => renameWsMutation.mutate({ wsId: ws.id, name })}
               onDelete={() => {
-                if (!safeConfirm(`Delete workspace "${ws.name}"?`)) return;
-                deleteWsMutation.mutate(ws.id);
+                confirmAction({
+                  title: `Delete workspace "${ws.name}"?`,
+                  description: "This action cannot be undone. All sessions and data will be lost.",
+                  confirmLabel: "Delete",
+                  destructive: true,
+                  onConfirm: () => deleteWsMutation.mutate(ws.id),
+                });
               }}
               onSuspend={() => suspendMutation.mutate(ws.id)}
               onResume={() => activateMutation.mutate(ws.id)}
@@ -237,21 +243,28 @@ export function Sidebar({ onNavigate }: Props) {
                   });
               }}
               onDeleteSession={(sid) => {
-                if (!safeConfirm("Delete this session?")) return;
-                workspacesApi.deleteSession(ws.id, sid)
-                  .catch((err: unknown) => {
-                    if (err instanceof ApiClientError && err.status === 404) return;
-                    throw err;
-                  })
-                  .then(() => {
-                    queryClient.invalidateQueries({ queryKey: ["sessions", ws.id] });
-                    if (sid === sessionId) {
-                      navigate(`/chat/${ws.id}`);
-                    }
-                  })
-                  .catch(() => {
-                    try { window.alert("Failed to delete session."); } catch { /* blocked */ }
-                  });
+                confirmAction({
+                  title: "Delete this session?",
+                  description: "This action cannot be undone.",
+                  confirmLabel: "Delete",
+                  destructive: true,
+                  onConfirm: () => {
+                    workspacesApi.deleteSession(ws.id, sid)
+                      .catch((err: unknown) => {
+                        if (err instanceof ApiClientError && err.status === 404) return;
+                        throw err;
+                      })
+                      .then(() => {
+                        queryClient.invalidateQueries({ queryKey: ["sessions", ws.id] });
+                        if (sid === sessionId) {
+                          navigate(`/chat/${ws.id}`);
+                        }
+                      })
+                      .catch(() => {
+                        try { window.alert("Failed to delete session."); } catch { /* blocked */ }
+                      });
+                  },
+                });
               }}
               renamingSession={renamingSession?.wsId === ws.id ? renamingSession : null}
               onRenameSessionCancel={() => setRenamingSession(null)}
@@ -291,6 +304,7 @@ export function Sidebar({ onNavigate }: Props) {
           </div>
         </div>
       </div>
+      {confirmDialog}
     </aside>
   );
 }
