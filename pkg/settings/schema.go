@@ -88,7 +88,7 @@ func InstanceSettings() []SettingDef {
 		{Key: "rateLimiting.strategy", Tier: 2, Type: TypeEnum, Default: "token_bucket", Enum: []string{"token_bucket", "fixed_window", "sliding_window"}, Category: "Rate Limiting", Label: "Strategy", Description: "Rate limiting algorithm"},
 
 		// Workspace
-		{Key: "workspace.defaultImage", Tier: 2, Type: TypeString, Default: "ghcr.io/lenaxia/llmsafespaces/base:latest", Category: "Workspace", Label: "Default Image", Description: "Image for new workspaces"},
+		{Key: "workspace.defaultImage", Tier: 2, Type: TypeString, Default: "base", Category: "Workspace", Label: "Default Image", Description: "RuntimeEnvironment name (e.g. 'base') or full image ref for new workspaces. Using a name resolves to the version-pinned RuntimeEnvironment CR; a full ref is used verbatim."},
 		{Key: "workspace.defaultStorageSize", Tier: 2, Type: TypeString, Default: "15Gi", Pattern: StorageQuantityPattern, Category: "Workspace", Label: "Default Storage", Description: "Default PVC size"},
 		{Key: "workspace.defaultStorageClass", Tier: 2, Type: TypeString, Default: "", Category: "Workspace", Label: "Storage Class", Description: "K8s StorageClass (empty = cluster default)"},
 		{Key: "workspace.maxActiveWorkspacesPerUser", Tier: 2, Type: TypeInt, Default: 10, Min: intPtr(1), Max: intPtr(50), Category: "Workspace", Label: "Max Active Workspaces", Description: "Max running pods per user; oldest auto-suspended"},

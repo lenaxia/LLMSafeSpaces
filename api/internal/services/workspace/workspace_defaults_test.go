@@ -105,6 +105,29 @@ func TestCreateWorkspace_NoSettings_EmptyRuntimeFallsBackToBase(t *testing.T) {
 	req := types.CreateWorkspaceRequest{Name: "test", StorageSize: "1Gi"}
 	_, err := f.svc.CreateWorkspace(ctx, "user1", req)
 	assert.NoError(t, err)
+	f.ws.AssertExpectations(t)
+}
+
+// Regression: when instanceSettings IS wired (production scenario) but
+// has no DB override for workspace.defaultImage, the schema default must
+// resolve to "base" (RuntimeEnvironment name), NOT a floating ":latest"
+// image ref. This ensures the controller resolves via the version-pinned
+// RuntimeEnvironment CR instead of bypassing it.
+func TestCreateWorkspace_SettingsWired_NoOverride_ResolvesToBaseNotLatest(t *testing.T) {
+	f := newDefaultsFixture(t, map[string]any{
+		"workspace.defaultStorageSize": "5Gi", // some unrelated setting
+	})
+	ctx := context.Background()
+
+	f.ws.On("Create", mock.Anything, mock.MatchedBy(func(ws *v1.Workspace) bool {
+		return ws.Spec.Runtime == "base"
+	})).Return(crdWorkspace("ws-1", "default", "user1", "5Gi"), nil)
+	f.db.On("CreateWorkspace", ctx, mock.Anything).Return(nil)
+
+	req := types.CreateWorkspaceRequest{Name: "pinned-test"}
+	_, err := f.svc.CreateWorkspace(ctx, "user1", req)
+	assert.NoError(t, err)
+	f.ws.AssertExpectations(t)
 }
 
 // === US-13.1: workspace.defaultStorageSize ===
