@@ -304,9 +304,12 @@ func TestSSETracker_RealWire_1_18_10_CostAsInt(t *testing.T) {
 		mu.Unlock()
 	})
 
+	// Real 1.18.10 shape: cost is a plain number, model has providerID.
+	// Use non-zero (42) to detect parse regressions — cost=0 is tautological
+	// (0.0 is the default float64 value).
 	tracker.processEvent("ws-1", makeSessionUpdatedEvent("ses_real", map[string]interface{}{
 		"id":   "ses_real",
-		"cost": 0,
+		"cost": 42,
 		"tokens": map[string]interface{}{
 			"input": 4868893, "output": 330410,
 		},
@@ -317,7 +320,7 @@ func TestSSETracker_RealWire_1_18_10_CostAsInt(t *testing.T) {
 
 	mu.Lock()
 	assert.True(t, fired, "must fire on real 1.18.10 wire shape (cost as plain int)")
-	assert.Equal(t, 0.0, costVal, "cost must be 0.0 from real fixture")
+	assert.Equal(t, 42.0, costVal, "cost must be 42.0 from plain int input")
 	mu.Unlock()
 }
 

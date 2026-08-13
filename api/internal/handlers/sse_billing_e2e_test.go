@@ -202,11 +202,11 @@ func TestE2E_PhaseChangeSuspend_CleansBillingMaps(t *testing.T) {
 	assert.Empty(t, startTimeEntries, "sessionStartTime must be empty after StopWatching")
 }
 
-// TestE2E_PhaseChangeActive_StopThenEnsure_Cycle verifies the exact
-// proxy_events.go:96-97 pattern: StopWatching then immediately EnsureWatching
-// on the same workspace (Creating→Active or Resuming→Active transition).
-// The WaitGroup fix ensures the old goroutine exits and billing maps are
-// cleared before the new subscription starts.
+// TestE2E_PhaseChangeActive_StopThenEnsure_Cycle exercises the handler-level
+// Creating→Active transition path (proxy_events.go:93-98). A real subscribe
+// goroutine is started via EnsureWatching, then onPhaseChange calls
+// StopWatching→EnsureWatching. Verifies billing maps are cleared and the
+// WaitGroup drains the old goroutine before the new subscription starts.
 func TestE2E_PhaseChangeActive_StopThenEnsure_Cycle(t *testing.T) {
 	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -221,6 +221,10 @@ func TestE2E_PhaseChangeActive_StopThenEnsure_Cycle(t *testing.T) {
 	tracker.SetPodIPResolver(func(string) string { return "10.0.0.1" })
 	tracker.SetOnInference(func(_, _, _ string, _, _ int64, _ float64) {})
 
+	// Start a real subscription first so StopWatching has a goroutine to drain.
+	tracker.EnsureWatching("ws-cycle")
+
+	// Seed billing state.
 	tracker.ProcessEvent("ws-cycle", `{
 		"type": "session.updated",
 		"properties": {
@@ -237,8 +241,10 @@ func TestE2E_PhaseChangeActive_StopThenEnsure_Cycle(t *testing.T) {
 	tokens, _, _ := tracker.GetBillingState("ws-cycle")
 	require.NotEmpty(t, tokens, "billing state must exist before cycle")
 
-	tracker.StopWatching("ws-cycle")
-	tracker.EnsureWatching("ws-cycle")
+	// Simulate a Creating→Active transition through the handler — this calls
+	// StopWatching (draining the real goroutine via WaitGroup) then EnsureWatching.
+	wsObj := makeWorkspaceCRDWithStatus("ws-cycle", "10.0.0.1", string(v1.WorkspacePhaseActive), "")
+	env.handler.onPhaseChange(wsObj)
 
 	tokens, costs, startTimes := tracker.GetBillingState("ws-cycle")
 	assert.Empty(t, tokens, "old billing state cleared by StopWatching")
