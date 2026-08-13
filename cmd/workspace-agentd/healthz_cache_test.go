@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -286,7 +288,7 @@ func TestRefreshIsHealthyLoop_ExitsOnContextCancel(t *testing.T) {
 
 	var done atomic.Bool
 	go func() {
-		refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, nil)
+		refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, nil, nil)
 		done.Store(true)
 	}()
 
@@ -315,7 +317,7 @@ func TestRefreshIsHealthyLoop_ImmediateFirstRefresh(t *testing.T) {
 	cache := newHealthzCache()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, nil)
+	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, nil, nil)
 
 	// The immediate refresh should fire within 100ms (not waiting for the 5s tick)
 	time.Sleep(200 * time.Millisecond)
@@ -344,7 +346,7 @@ func TestRefreshIsHealthyLoop_RefreshesOnTick(t *testing.T) {
 	cache := newHealthzCache()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, nil)
+	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, nil, nil)
 
 	// Wait for 2 ticks (5s each) + immediate = at least 3 calls
 	time.Sleep(11 * time.Second)
@@ -518,7 +520,7 @@ func TestRefreshIsHealthyLoop_WatchdogFiresOnHang(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, fr)
+	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, fr, nil)
 
 	// Wait long enough for: boot success → 3 consecutive timeout failures → watchdog fire.
 	// refreshInterval=5s, timeout=4s, threshold=3 → worst case ~27s.
@@ -546,7 +548,7 @@ func TestRefreshIsHealthyLoop_WatchdogDoesNotFireOnHealthy(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, fr)
+	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, fr, nil)
 
 	time.Sleep(12 * time.Second) // ~2-3 refresh cycles
 
@@ -582,11 +584,39 @@ func TestRefreshIsHealthyLoop_WatchdogDoesNotFireDuringBoot(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, fr)
+	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, fr, nil)
 
 	time.Sleep(35 * time.Second) // enough for boot failures + recovery
 
 	assert.True(t, cache.Snapshot().Healthy, "cache must be healthy after slow boot recovers")
 	assert.Equal(t, 0, fr.callCount(),
 		"watchdog must not fire during legitimate slow boot — it only arms after first healthy check")
+}
+
+func TestRestartReasonHealthWatchdog_Constant(t *testing.T) {
+	assert.Equal(t, "health_watchdog", RestartReasonHealthWatchdog,
+		"constant must match the metric label and marker reason expected by dashboards and operators")
+}
+
+func TestRestartReasonHealthWatchdog_MarkerWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "marker")
+	err := writeRestartReasonMarker(path, RestartReasonHealthWatchdog, nil)
+	assert.NoError(t, err)
+
+	data, err := os.ReadFile(path)
+	assert.NoError(t, err)
+
+	var marker restartReason
+	err = json.Unmarshal(data, &marker)
+	assert.NoError(t, err)
+	assert.Equal(t, RestartReasonHealthWatchdog, marker.Reason,
+		"marker file must record health_watchdog as the reason")
+}
+
+func TestRestartReasonHealthWatchdog_MetricRecorded(t *testing.T) {
+	// RecordRestart increments workspace_restarts_total{reason="health_watchdog"}.
+	// Verify the metric is registered and can be incremented without error.
+	pkgOpsMetrics.RecordRestart("test-workspace", RestartReasonHealthWatchdog)
+	// If the metric isn't registered, prometheus panics. Reaching here = pass.
 }

@@ -321,6 +321,7 @@ export function ChatPage() {
 
   const [sessionWasInterrupted, setSessionWasInterrupted] = useState(false);
   const [agentDied, setAgentDied] = useState(false);
+  const [agentDiedMessage, setAgentDiedMessage] = useState<string | null>(null);
   const hasAutoAbortedRef = useRef(false);
 
   // Reset reconnect state on session change — MUST be defined before the
@@ -753,6 +754,7 @@ export function ChatPage() {
       removePendingAction(request_id);
     } else if (event.type === "agent_died") {
       setAgentDied(true);
+      if (event.data?.message) setAgentDiedMessage(event.data.message);
     } else {
       console.debug("[ChatPage] unhandled SSE event type:", event.type);
     }
@@ -998,7 +1000,7 @@ export function ChatPage() {
 
       {isReady && agentDied && (
         <div role="alert" className="flex items-center gap-2 border-b border-yellow-200 bg-yellow-50 px-4 py-2 text-xs text-yellow-800 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-200">
-          <span>⚠ The agent stopped responding and is being restarted automatically. Reconnecting…</span>
+          <span>⚠ {agentDiedMessage ?? "The agent stopped responding and is being restarted automatically. Reconnecting…"}</span>
           <button
             className="ml-auto shrink-0 underline hover:no-underline"
             onClick={() => setAgentDied(false)}

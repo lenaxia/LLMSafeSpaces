@@ -305,7 +305,7 @@ export interface QueueUpdateEvent {
 export interface AgentDiedEvent {
   type: "agent_died";
   workspace_id?: string;
-  data: { reason: string };
+  data: { reason: string; message?: string };
 }
 
 /**

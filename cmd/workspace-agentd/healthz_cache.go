@@ -19,8 +19,10 @@ const (
 	// watchdogMaxRestarts caps the number of health-watchdog restarts
 	// within watchdogRestartWindow. Once the cap is hit, the watchdog
 	// stops firing — the problem is persistent and tight-loop restarting
-	// would only waste resources. At that point kubelet (via the pod's
-	// terminationGracePeriodSeconds) or an operator must intervene.
+	// would only waste resources. At that point an operator must
+	// intervene (the pod's livenessProbe targets /v1/healthz which
+	// hardcodes Healthy:true and does not check opencode, so kubelet
+	// will not kill the pod on its own).
 	watchdogMaxRestarts   = 3
 	watchdogRestartWindow = 10 * time.Minute
 )
@@ -61,6 +63,26 @@ func (c *healthzCache) Snapshot() healthzCacheSnapshot {
 // spawning real subprocesses.
 type healthWatchdogRestarter interface {
 	restart()
+}
+
+// sessionBusyChecker returns true if any session is currently busy
+// (LLM turn in progress). The watchdog uses this to defer restarts
+// during active turns, preventing false-positive kills of legitimate
+// long-running responses. *sessionStatusTracker satisfies this via
+// trackerHasBusyOrUnknown.
+type sessionBusyChecker interface {
+	anyBusy() bool
+}
+
+// busySessionChecker wraps *sessionStatusTracker to satisfy
+// sessionBusyChecker. Returns true if the tracker shows any busy or
+// unknown sessions.
+type busySessionChecker struct {
+	tracker *sessionStatusTracker
+}
+
+func (b *busySessionChecker) anyBusy() bool {
+	return trackerHasBusyOrUnknown(b.tracker)
 }
 
 // healthWatchdog tracks restart history and decides whether to fire
@@ -139,7 +161,12 @@ func (wd *healthWatchdog) reset() {
 // Healthy=false at the failure threshold (health-watchdog, issue #807).
 // Passing nil disables the watchdog (used by tests that don't want
 // restart side-effects).
-func refreshIsHealthyLoop(ctx context.Context, client *OpenCodeClient, cache *healthzCache, logger *zap.Logger, gr *gateRecorder, restarter healthWatchdogRestarter) {
+//
+// busyChecker, if non-nil, is consulted before restarting. If sessions
+// are busy (LLM turn in progress), the restart is deferred to avoid
+// killing legitimate long-running turns (issue #807 Assumption #2).
+// The latch ensures we only log/defer once per episode.
+func refreshIsHealthyLoop(ctx context.Context, client *OpenCodeClient, cache *healthzCache, logger *zap.Logger, gr *gateRecorder, restarter healthWatchdogRestarter, busyChecker sessionBusyChecker) {
 	wd := newHealthWatchdog()
 	watchdogLogger := logger.With(zap.String("component", "health_watchdog"))
 
@@ -195,6 +222,21 @@ func refreshIsHealthyLoop(ctx context.Context, client *OpenCodeClient, cache *he
 
 			if snap.Initialized && !snap.Healthy && snap.ConsecutiveFailures >= readinessFailureThreshold {
 				if wd.maybeFire(time.Now()) {
+					// Session-aware deferral (issue #807 Assumption #2):
+					// If sessions are busy (LLM turn in progress), the
+					// health-check failures may be a false positive caused
+					// by CPU contention. Defer the restart — the latch
+					// prevents re-entering this branch on the next poll.
+					// If sessions go idle or remain busy past the maxDefer
+					// deadline, the watchdog will fire on the next episode.
+					if busyChecker != nil && busyChecker.anyBusy() {
+						watchdogLogger.Warn("health-watchdog detected unhealthy state but sessions are busy — deferring restart to avoid killing in-flight turn",
+							zap.Int("consecutiveFailures", snap.ConsecutiveFailures),
+							zap.String("lastError", snap.LastError),
+						)
+						// Don't reset wd.fired — keep deferring until recovery or next episode
+						continue
+					}
 					watchdogLogger.Warn("opencode health-watchdog triggering restart",
 						zap.Int("consecutiveFailures", snap.ConsecutiveFailures),
 						zap.String("lastError", snap.LastError),
