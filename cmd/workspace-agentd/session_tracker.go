@@ -218,7 +218,13 @@ func (t *sessionStatusTracker) connectAndRead(ctx context.Context, client *OpenC
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 64*1024), 64*1024)
+	// 1 MB buffer per line (was 64 KB). SSE events like
+	// message.part.updated carry full message metadata and can exceed
+	// 300 KB on a single line. The old 64 KB cap caused the scanner to
+	// fail silently on large events, dropping the SSE connection. The
+	// agentd tracker then missed the session.status:idle transition and
+	// the session stayed "busy" forever — the stuck-busy bug.
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
 	var eventData strings.Builder
 	for scanner.Scan() {
