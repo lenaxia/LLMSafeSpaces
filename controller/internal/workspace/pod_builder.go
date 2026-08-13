@@ -198,7 +198,7 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 	// container mounts them. Without this, kubelet fails the pod with
 	// "subPath not found" on a fresh PVC. Runs as the same non-root UID as
 	// the main container; writes only to the PVC root.
-	initContainers = append(initContainers, buildWorkspaceDirsInit(runtimeImage, workspace.Name))
+	initContainers = append(initContainers, buildWorkspaceDirsInit(runtimeImage))
 
 	// Epic 42 / 26: inject relay baseURL so agentd can configure the opencode
 	// provider to route free-tier inference through the self-hosted relay fleet
@@ -632,7 +632,7 @@ install -m 0600 /mnt/secrets/password/password /sandbox-cfg/password
 //  2. opencode's native session.diff event already carries full patch text.
 //  3. opencode detects VCS per-project (cloned repos under /workspace/) and
 //     does the right thing natively without a container-level git repo.
-func buildWorkspaceDirsInit(runtimeImage, workspaceName string) corev1.Container {
+func buildWorkspaceDirsInit(runtimeImage string) corev1.Container {
 	trueVal := true
 	falseVal := false
 	dirsScript := "mkdir -p /pvc/workspace /pvc/home /pvc/tmp"
