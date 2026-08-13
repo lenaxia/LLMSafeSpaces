@@ -408,12 +408,15 @@ describe("LLMSafeSpaces Client", () => {
 
   describe("error handling", () => {
     it("throws ServiceUnavailableError on 503 with structured fields", async () => {
-      mockFetch.mockResolvedValueOnce(new Response(JSON.stringify({
+      const mock503 = () => new Response(JSON.stringify({
         error: "workspace connection failed",
         message: "The agent is not responding.",
         reason: "agent_unreachable",
         retryAfter: 10,
-      }), { status: 503, headers: { "Content-Type": "application/json" } }));
+      }), { status: 503, headers: { "Content-Type": "application/json" } });
+
+      mockFetch.mockResolvedValueOnce(mock503());
+      mockFetch.mockResolvedValueOnce(mock503());
 
       await expect(client.workspaces.list()).rejects.toThrow(ServiceUnavailableError);
       try {
