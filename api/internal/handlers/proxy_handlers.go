@@ -521,7 +521,10 @@ func (h *ProxyHandler) fetchUpstreamHistory(c *gin.Context, sessionID string) ([
 			// buffered retry — buffering is reserved for writes.
 			c.JSON(http.StatusServiceUnavailable, gin.H{
 				"error":      "workspace connection failed",
+				"code":       "service_unavailable",
+				"reason":     "agent_unreachable",
 				"retryAfter": retryAfterSec,
+				"message":    "Chat history is temporarily unavailable — the agent is restarting or recovering. Please try again in a moment.",
 			})
 			return nil, 0, doErr
 		}

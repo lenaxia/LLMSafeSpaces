@@ -342,6 +342,6 @@ func startBackgroundLoops(bgCtx context.Context, bgWg *sync.WaitGroup, deps serv
 	bgWg.Add(1)
 	go func() {
 		defer bgWg.Done()
-		refreshIsHealthyLoop(bgCtx, deps.client, deps.healthCache, log, deps.gr)
+		refreshIsHealthyLoop(bgCtx, deps.client, deps.healthCache, log, deps.gr, deps.proc)
 	}()
 }

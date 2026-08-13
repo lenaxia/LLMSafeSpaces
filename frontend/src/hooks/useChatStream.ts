@@ -141,6 +141,16 @@ export function useChatStream(workspaceId: string | undefined, sessionId: string
         if (err instanceof ApiClientError && err.status === 429) {
           const retryAfter = Number(err.body.retryAfter ?? 60);
           setAtCapRetryAfter(isNaN(retryAfter) ? 60 : retryAfter);
+        } else if (err instanceof ApiClientError && err.status === 503) {
+          // Surface the API's structured message for service-unavailable
+          // errors (agent unreachable, restarting, etc.) instead of the
+          // raw "workspace connection failed" string.
+          const apiMessage = err.body?.message;
+          setError(
+            typeof apiMessage === "string" && apiMessage.length > 0
+              ? apiMessage
+              : "The agent is not responding. Please try again in a moment.",
+          );
         } else {
           const message = err instanceof Error ? err.message : "Failed to send message";
           setError(message);

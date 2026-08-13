@@ -620,30 +620,26 @@ install -m 0600 /mnt/secrets/password/password /sandbox-cfg/password
 // before any other init or the main container attempts to mount them.
 // Without this, kubelet fails the pod with "subPath not found" on a fresh PVC.
 //
-// Epic 65 / US-65.3: also initializes /workspace as a git repo so
-// pkg/agent/opencode/filediff.Producer can produce FileChange parts
-// via `git diff HEAD`. Idempotent: `git init` is a no-op on an
-// existing repo, so pod restarts and resumed workspaces both work.
-// The git config lines set a deterministic identity so future
-// per-turn commits succeed without inheriting host config — CI pods
-// often lack user.email and would fail commits. The identity uses
-// the workspace name for traceability in `git log` when an operator
-// inspects the PVC.
+// NOTE: This previously ran `git init /workspace` (PR #715 / US-65.3) to
+// enable pkg/agent/opencode/filediff.Producer. That was the root cause of
+// the snapshot bloat spiral (worklog 0746): making /workspace a git repo
+// triggers opencode's snapshot system, which has no self-exclusion and
+// recursively stages its own object database (inside .local/), causing
+// exponential growth, CPU starvation, and "Load failed" for users.
+// The git init was removed because:
+//  1. filediff.Producer diffs against HEAD — but no commits were ever made,
+//     so it produced noise, not signal.
+//  2. opencode's native session.diff event already carries full patch text.
+//  3. opencode detects VCS per-project (cloned repos under /workspace/) and
+//     does the right thing natively without a container-level git repo.
 func buildWorkspaceDirsInit(runtimeImage, workspaceName string) corev1.Container {
 	trueVal := true
 	falseVal := false
-	gitInitScript := fmt.Sprintf(
-		"mkdir -p /pvc/workspace /pvc/home /pvc/tmp && "+
-			"cd /pvc/workspace && "+
-			"git init -b main && "+
-			"git config user.email 'workspace-%s@llmsafespaces.local' && "+
-			"git config user.name 'workspace-%s'",
-		workspaceName, workspaceName,
-	)
+	dirsScript := "mkdir -p /pvc/workspace /pvc/home /pvc/tmp"
 	return corev1.Container{
 		Name:    "workspace-dirs",
 		Image:   runtimeImage,
-		Command: []string{"/bin/sh", "-c", gitInitScript},
+		Command: []string{"/bin/sh", "-c", dirsScript},
 		VolumeMounts: []corev1.VolumeMount{
 			// Mount PVC root (no subPath) so we can create the subdirectories.
 			{Name: "workspace", MountPath: "/pvc"},

@@ -50,6 +50,13 @@ const (
 
 	// ErrorTypeBadRequest represents bad request errors
 	ErrorTypeBadRequest ErrorType = "bad_request"
+
+	// ErrorTypeServiceUnavailable represents a temporary outage where
+	// the workspace exists but cannot service requests (opencode hung,
+	// restarting, or not yet booted). Maps to HTTP 503. Carries a
+	// "reason" detail so the frontend can show a meaningful message
+	// instead of "Load failed".
+	ErrorTypeServiceUnavailable ErrorType = "service_unavailable"
 )
 
 // APIError represents an API error
@@ -91,6 +98,8 @@ func (e *APIError) StatusCode() int {
 		return http.StatusTooManyRequests
 	case ErrorTypeBadRequest:
 		return http.StatusBadRequest
+	case ErrorTypeServiceUnavailable:
+		return http.StatusServiceUnavailable
 	default:
 		return http.StatusInternalServerError
 	}
@@ -196,6 +205,25 @@ func NewNotImplementedError(code string, message string, err error) *APIError {
 		Code:    code,
 		Message: message,
 		Err:     err,
+	}
+}
+
+// NewServiceUnavailableError creates a 503 error for a workspace that
+// exists but cannot service requests. reason should be one of:
+// "not_ready" (booting), "agent_unreachable" (hung/crashed),
+// "agent_restarting" (watchdog or credential reload in progress).
+// retryAfterSec is the suggested retry interval (also sent as the
+// HTTP Retry-After header by the error handler).
+func NewServiceUnavailableError(reason, message string, retryAfterSec int, err error) *APIError {
+	return &APIError{
+		Type:    ErrorTypeServiceUnavailable,
+		Code:    "service_unavailable",
+		Message: message,
+		Details: map[string]interface{}{
+			"reason":     reason,
+			"retryAfter": retryAfterSec,
+		},
+		Err: err,
 	}
 }
 
