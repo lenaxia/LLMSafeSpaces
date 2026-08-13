@@ -208,7 +208,6 @@ func NewNotImplementedError(code string, message string, err error) *APIError {
 	}
 }
 
-
 // IsWorkspaceNotFoundError checks if the error is a WorkspaceNotFoundError
 func IsWorkspaceNotFoundError(err error) bool {
 	if apiErr, ok := err.(*APIError); ok {
