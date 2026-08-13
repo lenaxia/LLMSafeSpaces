@@ -1508,12 +1508,12 @@ describe("ChatPage SSE event handler", () => {
       renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
 
-      expect(screen.queryByText(/Agent is restarting/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/The agent stopped responding and is being restarted automatically/i)).not.toBeInTheDocument();
 
       sendSSEEvent(makeAgentDiedEvent("ws-1"));
 
       await waitFor(() => {
-        const banner = screen.getByText(/Agent is restarting/i);
+        const banner = screen.getByText(/The agent stopped responding and is being restarted automatically/i);
         expect(banner).toBeInTheDocument();
         expect(banner.closest("[role='alert']")).not.toBeNull();
       });
@@ -1526,12 +1526,12 @@ describe("ChatPage SSE event handler", () => {
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
 
       sendSSEEvent(makeAgentDiedEvent("ws-1"));
-      await waitFor(() => expect(screen.getByText(/Agent is restarting/i)).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText(/The agent stopped responding and is being restarted automatically/i)).toBeInTheDocument());
 
       await user.click(screen.getByRole("button", { name: "Dismiss" }));
 
       await waitFor(() => {
-        expect(screen.queryByText(/Agent is restarting/i)).not.toBeInTheDocument();
+        expect(screen.queryByText(/The agent stopped responding and is being restarted automatically/i)).not.toBeInTheDocument();
       });
     });
 
@@ -1541,14 +1541,14 @@ describe("ChatPage SSE event handler", () => {
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
 
       sendSSEEvent(makeAgentDiedEvent("ws-1"));
-      await waitFor(() => expect(screen.getByText(/Agent is restarting/i)).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText(/The agent stopped responding and is being restarted automatically/i)).toBeInTheDocument());
 
       await act(async () => {
         navigateRef.current?.("/chat/ws-1/sess-2");
       });
 
       await waitFor(() => {
-        expect(screen.queryByText(/Agent is restarting/i)).not.toBeInTheDocument();
+        expect(screen.queryByText(/The agent stopped responding and is being restarted automatically/i)).not.toBeInTheDocument();
       });
     });
   });
