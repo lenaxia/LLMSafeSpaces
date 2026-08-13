@@ -4,6 +4,7 @@ import { secretsApi, type SecretResponse } from "../../api/secrets";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
 import { Tooltip } from "../ui/Tooltip";
+import { safeConfirm } from "../../lib/safeConfirm";
 
 const SECRET_TYPES = [
   { value: "llm-provider", label: "LLM Providers", icon: "🤖", metaFields: ["provider", "apiKey"] },
@@ -93,7 +94,7 @@ export function SecretsTab() {
   }, [revealedValue]);
 
   const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`Delete secret "${name}"? This cannot be undone.`)) return;
+    if (!safeConfirm(`Delete secret "${name}"? This cannot be undone.`)) return;
     try {
       await secretsApi.delete(id);
       setSecrets((s) => s.filter((x) => x.id !== id));

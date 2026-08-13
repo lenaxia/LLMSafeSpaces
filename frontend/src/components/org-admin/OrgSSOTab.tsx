@@ -4,6 +4,7 @@ import { type OrgResponse } from "../../api/orgs";
 import { ssoApi, type OrgSSOConfig, type OrgRole } from "../../api/sso";
 import { Button } from "../ui/Button";
 import { Spinner } from "../ui/Spinner";
+import { safeConfirm } from "../../lib/safeConfirm";
 
 interface SSOContext {
   org: OrgResponse;
@@ -114,7 +115,7 @@ export function OrgSSOTab() {
   };
 
   const handleDelete = async () => {
-    if (!confirm("Remove SSO configuration? Members will no longer be able to sign in via SSO.")) {
+    if (!safeConfirm("Remove SSO configuration? Members will no longer be able to sign in via SSO.")) {
       return;
     }
     setSaving(true);
@@ -301,7 +302,7 @@ function DomainVerification({
   };
 
   const handleRotate = async () => {
-    if (!confirm("Rotate the verification token? Existing DNS records must be updated to match.")) {
+    if (!safeConfirm("Rotate the verification token? Existing DNS records must be updated to match.")) {
       return;
     }
     setVerifying("token");

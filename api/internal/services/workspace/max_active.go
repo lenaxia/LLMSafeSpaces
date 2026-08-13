@@ -7,12 +7,12 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"time"
 
 	apierrors "github.com/lenaxia/llmsafespaces/api/internal/errors"
 
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/settings"
-	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 // SetInstanceSettings injects the instance settings service for enforcement.
@@ -45,7 +45,7 @@ func (s *Service) enforceMaxActiveWorkspaces(ctx context.Context, userID, target
 		return "", fmt.Errorf("failed to list workspaces for enforcement: %w", err)
 	}
 
-	phaseByID := s.fetchUserWorkspacePhases(ctx, userID)
+	phaseByID := s.fetchUserWorkspaceStates(ctx, userID)
 
 	// activeCount counts every phase that consumes capacity (Active,
 	// Creating, Resuming) for the cap check. evictable lists only the
@@ -56,19 +56,31 @@ func (s *Service) enforceMaxActiveWorkspaces(ctx context.Context, userID, target
 	// because they DO consume slots; we just can't free those slots
 	// via auto-suspend, only by waiting for them to reach Active or by
 	// the user explicitly deleting them.
+	type evictCandidate struct {
+		ID           string
+		LastActivity time.Time
+	}
 	var activeCount int
-	var evictable []*types.WorkspaceMetadata
+	var evictable []evictCandidate
 	for _, ws := range result {
 		if ws.ID == targetWorkspaceID {
 			continue
 		}
-		phase := v1.WorkspacePhase(phaseByID[ws.ID])
-		if !isActivePhase(phase) {
+		st := phaseByID[ws.ID]
+		if !isActivePhase(st.Phase) {
 			continue
 		}
 		activeCount++
-		if phase == v1.WorkspacePhaseActive {
-			evictable = append(evictable, ws)
+		if st.Phase == v1.WorkspacePhaseActive {
+			// Use LastActivityAt from the CRD annotation (authoritative,
+			// written by ActivityTracker on user interaction). Fall back
+			// to DB UpdatedAt for pre-US-23.3 workspaces without the
+			// annotation.
+			activity := st.LastActivityAt
+			if activity.IsZero() {
+				activity = ws.UpdatedAt
+			}
+			evictable = append(evictable, evictCandidate{ID: ws.ID, LastActivity: activity})
 		}
 	}
 
@@ -88,11 +100,11 @@ func (s *Service) enforceMaxActiveWorkspaces(ctx context.Context, userID, target
 		)
 	}
 
-	// Sort by last activity (oldest first) for stalest selection
+	// Sort by last user activity (oldest first) for stalest selection.
+	// Uses LastActivityAt (CRD annotation, written by ActivityTracker)
+	// not DB UpdatedAt (bumped by background ops unrelated to user).
 	sort.Slice(evictable, func(i, j int) bool {
-		ti := evictable[i].UpdatedAt
-		tj := evictable[j].UpdatedAt
-		return ti.Before(tj)
+		return evictable[i].LastActivity.Before(evictable[j].LastActivity)
 	})
 
 	// Suspend the stalest evictable workspace

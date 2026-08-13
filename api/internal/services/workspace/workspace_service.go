@@ -618,6 +618,32 @@ func (s *Service) ListWorkspaces(ctx context.Context, userID string, opts types.
 // callers degrade gracefully (empty phase is propagated to the API response).
 // A nil map is safe to read from in Go.
 func (s *Service) fetchUserWorkspacePhases(ctx context.Context, userID string) map[string]string {
+	states := s.fetchUserWorkspaceStates(ctx, userID)
+	if states == nil {
+		return nil
+	}
+	out := make(map[string]string, len(states))
+	for id, st := range states {
+		out[id] = string(st.Phase)
+	}
+	return out
+}
+
+// workspaceState holds the fields extracted from a CRD that callers need.
+// fetchUserWorkspaceStates returns this so callers can access phase and
+// LastActivityAt from a single K8s API call.
+type workspaceState struct {
+	Phase          v1.WorkspacePhase
+	LastActivityAt time.Time // zero if no annotation or pre-US-23.3 workspace
+}
+
+// fetchUserWorkspaceStates lists CRDs for a user and returns id -> state
+// (phase + last activity). The activity timestamp comes from the
+// llmsafespaces.dev/last-activity-at annotation written by ActivityTracker
+// (every 60s on user interaction) and on Resume. This is the authoritative
+// activity signal — more accurate than the DB UpdatedAt column, which is
+// bumped by background operations unrelated to user activity.
+func (s *Service) fetchUserWorkspaceStates(ctx context.Context, userID string) map[string]workspaceState {
 	if s.k8sClient == nil || userID == "" {
 		return nil
 	}
@@ -635,10 +661,14 @@ func (s *Service) fetchUserWorkspacePhases(ctx context.Context, userID string) m
 			"userID", userID, "error", err.Error())
 		return nil
 	}
-	out := make(map[string]string, len(list.Items))
+	out := make(map[string]workspaceState, len(list.Items))
 	for i := range list.Items {
 		w := &list.Items[i]
-		out[w.Name] = string(w.Status.Phase)
+		st := workspaceState{Phase: w.Status.Phase}
+		if t := v1.GetLastActivityAt(w); t != nil {
+			st.LastActivityAt = t.Time
+		}
+		out[w.Name] = st
 	}
 	return out
 }

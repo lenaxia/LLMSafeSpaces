@@ -22,6 +22,7 @@ Rules:
 | opencode (g28) | G28 — reclassify as Accepted (architecture changed in Epic 35) + invariant test | `design/stories/epic-17-security-review/THREAT-MODEL.md`, `pkg/secrets/secret_service_test.go` | In Progress | 2026-07-11 |
 | opencode (g36) | G36 — workspace secrets cleanup on deletion | `controller/internal/workspace/phase_terminating.go`, `controller/internal/workspace/phase_terminating_test.go` | In Progress | 2026-07-11 |
 | opencode (g25) | G25 — secret value field logged unredacted | `api/internal/middleware/logging.go`, `api/internal/middleware/tests/logging_test.go`, `api/internal/server/router.go` | In Progress | 2026-07-11 |
+| opencode (#770/#775) | Evict by LastActivityAt + safeConfirm fail-closed | `api/internal/services/workspace/max_active.go`, `api/internal/services/workspace/workspace_service.go`, `frontend/src/lib/safeConfirm.ts`, `frontend/src/pages/ChatPage.tsx`, `frontend/src/components/layout/Sidebar.tsx`, + 8 other frontend files | In Progress | 2026-08-13 |
 
 
 ---

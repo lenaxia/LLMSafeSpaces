@@ -402,7 +402,7 @@ describe("ChatPage — session delete", () => {
     expect(workspacesApi.deleteSession).toHaveBeenCalledWith("ws-1", "sess-1");
   });
 
-  it("proceeds with deletion when window.confirm throws (sandboxed iframe)", async () => {
+  it("aborts deletion when window.confirm throws (#775 safeConfirm)", async () => {
     (workspacesApi.deleteSession as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
 
     renderChatPage("/chat/ws-1/sess-1");
@@ -416,7 +416,8 @@ describe("ChatPage — session delete", () => {
     const deleteBtn = await screen.findByText("Delete session");
     await userEvent.click(deleteBtn);
 
-    expect(workspacesApi.deleteSession).toHaveBeenCalledWith("ws-1", "sess-1");
+    // safeConfirm must fail CLOSED — no deletion when confirm throws
+    expect(workspacesApi.deleteSession).not.toHaveBeenCalled();
   });
 
   it("header kebab Force Stop calls abortSession with correct IDs", async () => {

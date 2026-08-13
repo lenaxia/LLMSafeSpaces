@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useParams, useLocation } from "react-router-dom";
 import { workspacesApi } from "../../api/workspaces";
 import { workspaceWorkflowApi } from "../../api/workflows";
+import { safeConfirm } from "../../lib/safeConfirm";
 import { orgsApi } from "../../api/orgs";
 import { ApiClientError } from "../../api/client";
 import { useAuth } from "../../providers/AuthProvider";
@@ -221,11 +222,7 @@ export function Sidebar({ onNavigate }: Props) {
               onRenameCancel={() => setRenamingWs(null)}
               onRenameConfirm={(name) => renameWsMutation.mutate({ wsId: ws.id, name })}
               onDelete={() => {
-                try {
-                  if (!window.confirm(`Delete workspace "${ws.name}"?`)) return;
-                } catch {
-                  // confirm() blocked — proceed with deletion
-                }
+                if (!safeConfirm(`Delete workspace "${ws.name}"?`)) return;
                 deleteWsMutation.mutate(ws.id);
               }}
               onSuspend={() => suspendMutation.mutate(ws.id)}
@@ -240,13 +237,7 @@ export function Sidebar({ onNavigate }: Props) {
                   });
               }}
               onDeleteSession={(sid) => {
-                // wrap confirm() in try/catch — sandboxed iframes, CSP, or
-                // suppressed dialogs can throw and silently swallow the click.
-                try {
-                  if (!window.confirm("Delete this session?")) return;
-                } catch {
-                  // confirm() blocked — proceed with deletion
-                }
+                if (!safeConfirm("Delete this session?")) return;
                 workspacesApi.deleteSession(ws.id, sid)
                   .catch((err: unknown) => {
                     if (err instanceof ApiClientError && err.status === 404) return;

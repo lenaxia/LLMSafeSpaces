@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { workspacesApi } from "../api/workspaces";
+import { safeConfirm } from "../lib/safeConfirm";
 import { ApiClientError } from "../api/client";
 import { workspaceWorkflowApi } from "../api/workflows";
 import { useWorkspaceStatus } from "../hooks/useWorkspaces";
@@ -892,11 +893,7 @@ export function ChatPage() {
       label: "Delete session",
       onClick: () => {
         if (!workspaceId || !sessionId) return;
-        try {
-          if (!window.confirm("Delete this session?")) return;
-        } catch {
-          // confirm() blocked — proceed with deletion
-        }
+        if (!safeConfirm("Delete this session?")) return;
         workspacesApi.deleteSession(workspaceId, sessionId)
           .catch((err: unknown) => {
             if (err instanceof ApiClientError && err.status === 404) return;
