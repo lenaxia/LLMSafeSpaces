@@ -33,6 +33,7 @@ vi.mock("../../api/secrets", () => ({
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     }),
+    delete: vi.fn().mockResolvedValue(undefined),
     getSecretBindings: vi.fn().mockResolvedValue({ workspaces: [] }),
   },
 }));
@@ -252,5 +253,58 @@ describe("SecretsTab – legacy api-key type rendering", () => {
     // Standard types should be present
     expect(options.some((o) => o.toLowerCase().includes("llm provider"))).toBe(true);
     expect(options.some((o) => o.toLowerCase().includes("ssh key"))).toBe(true);
+  });
+});
+
+// ─── ConfirmDialog (#814) ────────────────────────────────────────────────────
+
+describe("SecretsTab – ConfirmDialog delete (#814)", () => {
+  const listMock = secretsApiModule.secretsApi.list as ReturnType<typeof vi.fn>;
+  const deleteMock = secretsApiModule.secretsApi.delete as ReturnType<typeof vi.fn>;
+
+  const SECRET = {
+    id: "sec-env-1",
+    name: "DATABASE_URL",
+    type: "env-secret",
+    metadata: { var_name: "DATABASE_URL" },
+    globalDefault: false,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  } as const;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    listMock.mockResolvedValue({ secrets: [SECRET] });
+    (secretsApiModule.secretsApi.getSecretBindings as ReturnType<typeof vi.fn>).mockResolvedValue({ workspaces: [] });
+    deleteMock.mockResolvedValue(undefined);
+  });
+
+  it("opens the confirm dialog and deletes the secret on confirm", async () => {
+    const user = userEvent.setup();
+    render(<SecretsTab />);
+    await waitFor(() => expect(screen.queryByText("Loading secrets...")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("DATABASE_URL")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+
+    // ConfirmDialog opens — title visible, and a second "Delete" button (the
+    // dialog's confirm) is now present. The last matching button is the dialog's.
+    await waitFor(() => expect(screen.getByText("Delete secret?")).toBeInTheDocument());
+    const dialogConfirm = screen.getAllByRole("button", { name: "Delete" }).pop()!;
+    await user.click(dialogConfirm);
+
+    await waitFor(() => expect(deleteMock).toHaveBeenCalledWith("sec-env-1"));
+  });
+
+  it("does not delete when the dialog is cancelled", async () => {
+    const user = userEvent.setup();
+    render(<SecretsTab />);
+    await waitFor(() => expect(screen.getByText("DATABASE_URL")).toBeInTheDocument());
+
+    await user.click(screen.getByRole("button", { name: "Delete" }));
+    const cancelBtn = await screen.findByRole("button", { name: "Cancel" });
+    await user.click(cancelBtn);
+
+    expect(deleteMock).not.toHaveBeenCalled();
   });
 });

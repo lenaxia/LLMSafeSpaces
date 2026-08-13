@@ -287,3 +287,41 @@ describe("TriggersPage", () => {
     expect(mockUpdate.mock.calls.length).toBe(updateCountBefore);
   });
 });
+
+// ─── ConfirmDialog (#814) ────────────────────────────────────────────────────
+
+describe("TriggersPage — ConfirmDialog delete (#814)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockWorkspacesList.mockResolvedValue(WORKSPACES);
+    mockList.mockResolvedValue([CRON_TRIGGER]);
+    mockDelete.mockResolvedValue(undefined);
+  });
+
+  it("opens the confirm dialog and deletes the trigger on confirm", async () => {
+    renderPage("/triggers/trig-1");
+    await waitFor(() => expect(screen.getByText("Circuit Breaker")).toBeInTheDocument());
+
+    // Trigger editor's Delete button opens the confirm dialog.
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    // ConfirmDialog opens — title visible, and a second "Delete" button (the
+    // dialog's confirm) is now present. The last matching button is the dialog's.
+    await waitFor(() => expect(screen.getByText("Delete trigger?")).toBeInTheDocument());
+    const dialogConfirm = screen.getAllByRole("button", { name: "Delete" }).pop()!;
+    fireEvent.click(dialogConfirm);
+
+    await waitFor(() => expect(mockDelete).toHaveBeenCalledWith("trig-1"));
+  });
+
+  it("does not delete when the dialog is cancelled", async () => {
+    renderPage("/triggers/trig-1");
+    await waitFor(() => expect(screen.getByText("Circuit Breaker")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    const cancelBtn = await screen.findByRole("button", { name: "Cancel" });
+    fireEvent.click(cancelBtn);
+
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+});
