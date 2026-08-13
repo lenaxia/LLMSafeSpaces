@@ -518,6 +518,7 @@ mutation:
 
 # release-verify-changelog: confirm CHANGELOG.md has a section for VERSION.
 # Used by release-tag and by CI on tag push.
+# Accepts semver with optional pre-release suffix (e.g. 0.3.0, 0.15.4-rc.1).
 release-verify-changelog:
 	@test -n "$(VERSION)" || { echo "VERSION is required (make release-verify-changelog VERSION=0.3.0)"; exit 1; }
 	@grep -E "^## \[$(VERSION)\] - [0-9]{4}-[0-9]{2}-[0-9]{2}" CHANGELOG.md >/dev/null \
@@ -531,16 +532,17 @@ release-verify-changelog:
 #
 # Usage:
 #   make release-tag VERSION=0.3.0
+#   make release-tag VERSION=0.15.4-rc.1
 #
 # Checks:
-#   - VERSION matches semver (X.Y.Z)
+#   - VERSION matches semver (X.Y.Z with optional -prerelease)
 #   - main is up to date with origin
 #   - CHANGELOG.md has a section for the version
 #   - tag doesn't already exist
 release-tag:
 	@test -n "$(VERSION)" || { echo "VERSION is required (make release-tag VERSION=0.3.0)"; exit 1; }
-	@echo "$(VERSION)" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$$' >/dev/null \
-		|| { echo "FAIL: VERSION must be semver X.Y.Z (no leading 'v')."; exit 1; }
+	@echo "$(VERSION)" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$$' >/dev/null \
+		|| { echo "FAIL: VERSION must be semver X.Y.Z with optional -prerelease (e.g. 0.3.0 or 0.3.0-rc.1)."; exit 1; }
 	@git rev-parse -q --verify "refs/tags/v$(VERSION)" >/dev/null \
 		&& { echo "FAIL: tag v$(VERSION) already exists."; exit 1; } || true
 	@$(MAKE) -s release-verify-changelog VERSION=$(VERSION)
