@@ -176,12 +176,23 @@ func (c *Client) login(ctx context.Context) error {
 
 func parseError(resp *http.Response) error {
 	var errResp struct {
-		Error string `json:"error"`
+		Error      string `json:"error"`
+		Message    string `json:"message"`
+		Reason     string `json:"reason"`
+		RetryAfter int    `json:"retryAfter"`
 	}
 	json.NewDecoder(resp.Body).Decode(&errResp)
-	msg := errResp.Error
+	msg := errResp.Message
+	if msg == "" {
+		msg = errResp.Error
+	}
 	if msg == "" {
 		msg = resp.Status
 	}
-	return &APIError{Status: resp.StatusCode, Message: msg}
+	return &APIError{
+		Status:     resp.StatusCode,
+		Message:    msg,
+		Reason:     errResp.Reason,
+		RetryAfter: errResp.RetryAfter,
+	}
 }

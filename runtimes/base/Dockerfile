@@ -277,7 +277,7 @@ COPY --chmod=755 runtimes/base/tools/smoke-test.sh /usr/local/bin/smoke-test.sh
 RUN mkdir -p /etc/mise \
     && ARCH=$(uname -m) \
     && echo "Building for architecture: $ARCH" \
-    && for tool in python@3.12 node@lts rust@stable go@latest; do \
+    && for tool in python@3.12.13 node@lts rust@stable go@latest; do \
         echo "Installing $tool..." \
         && for attempt in 1 2 3; do \
             MISE_YES=1 MISE_GITHUB_ATTESTATIONS=1 \
@@ -292,7 +292,7 @@ RUN mkdir -p /etc/mise \
         mise install --system "$tool" \
         || echo "WARN: $tool failed on $ARCH, skipping (will be available via mise at runtime)"; \
     done \
-    && printf '[tools]\npython = "3.12"\nnode = "lts"\nrust = "stable"\ngo = "latest"\njava = "lts"\nmaven = "latest"\ngradle = "latest"\n' > /etc/mise/config.toml \
+    && printf '[tools]\npython = "3.12.13"\nnode = "lts"\nrust = "stable"\ngo = "latest"\njava = "lts"\nmaven = "latest"\ngradle = "latest"\n' > /etc/mise/config.toml \
     && mise reshim
 
 RUN /usr/local/bin/smoke-test.sh
