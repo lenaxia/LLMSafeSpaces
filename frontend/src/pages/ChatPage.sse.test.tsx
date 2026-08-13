@@ -1495,11 +1495,11 @@ describe("ChatPage SSE event handler", () => {
   });
 
   describe("agent_died events (US-44.1c)", () => {
-    function makeAgentDiedEvent(workspaceId: string): WorkspaceStreamEvent {
+    function makeAgentDiedEvent(workspaceId: string, message?: string): WorkspaceStreamEvent {
       return {
         type: "agent_died",
         workspace_id: workspaceId,
-        data: { reason: "unknown" },
+        data: { reason: "unknown", ...(message ? { message } : {}) },
       };
     }
 
@@ -1516,6 +1516,19 @@ describe("ChatPage SSE event handler", () => {
         const banner = screen.getByText(/The agent stopped responding and is being restarted automatically/i);
         expect(banner).toBeInTheDocument();
         expect(banner.closest("[role='alert']")).not.toBeNull();
+      });
+    });
+
+    it("renders the agent_died banner with SSE-provided message when present", async () => {
+      (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active" });
+      renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
+      await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
+
+      const customMessage = "Custom agent died message from server";
+      sendSSEEvent(makeAgentDiedEvent("ws-1", customMessage));
+
+      await waitFor(() => {
+        expect(screen.getByText(`⚠ ${customMessage}`)).toBeInTheDocument();
       });
     });
 

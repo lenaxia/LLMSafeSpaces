@@ -25,6 +25,14 @@ const (
 	// will not kill the pod on its own).
 	watchdogMaxRestarts   = 3
 	watchdogRestartWindow = 10 * time.Minute
+
+	// watchdogMaxDeferrals caps how many polls the watchdog will defer
+	// when sessions are busy. At 5s intervals, 60 deferrals = ~5 minutes.
+	// After this, the restart is forced regardless of busy state — if
+	// opencode is truly hung, the busy session state is stale (idle SSE
+	// events will never arrive) and deferring forever would recreate
+	// the exact outage issue #807 exists to fix.
+	watchdogMaxDeferrals = 60
 )
 
 // healthzCacheSnapshot is an immutable point-in-time view of the readiness
@@ -96,8 +104,9 @@ func (b *busySessionChecker) anyBusy() bool {
 type healthWatchdog struct {
 	restarts       []time.Time // timestamps of recent restarts (for rate limiting)
 	fired          bool        // latches: fire only once per unhealthy episode
-	deferredLogged bool        // latches: log session-busy deferral only once per episode
+	deferredLogged bool        // latches: log session-busy deferral (superseded by deferCount)
 	giveUpLogged   bool        // latches: log rate-limit give-up only once per episode
+	deferCount     int         // consecutive deferrals due to busy sessions
 	totalFired     int         // total watchdog restarts since boot
 	maxRestarts    int
 	window         time.Duration
@@ -148,6 +157,7 @@ func (wd *healthWatchdog) reset() {
 	wd.fired = false
 	wd.deferredLogged = false
 	wd.giveUpLogged = false
+	wd.deferCount = 0
 }
 
 // refreshIsHealthyLoop runs from agentd boot until ctx is canceled.
@@ -229,19 +239,31 @@ func refreshIsHealthyLoop(ctx context.Context, client *OpenCodeClient, cache *he
 				// by CPU contention. Defer the restart without consuming
 				// the latch or rate-limit budget. The watchdog re-checks
 				// every poll; when sessions go idle, the restart proceeds.
+				//
 				// If opencode is truly hung, the session tracker's busy
 				// state is stale (it only clears on SSE idle events that
-				// will never arrive), but the rate-limit give-up and
-				// manual operator intervention are the backstop.
+				// will never arrive). To prevent deferral-forever, a
+				// max-defer counter forces the restart after
+				// watchdogMaxDeferrals polls (~5 min). This mirrors the
+				// maxDefer pattern in secrets.go's credential-reload path.
 				if busyChecker != nil && busyChecker.anyBusy() {
-					if !wd.deferredLogged {
-						wd.deferredLogged = true
-						watchdogLogger.Warn("health-watchdog detected unhealthy state but sessions are busy — deferring restart to avoid killing in-flight turn",
-							zap.Int("consecutiveFailures", snap.ConsecutiveFailures),
-							zap.String("lastError", snap.LastError),
-						)
+					wd.deferCount++
+					if wd.deferCount <= watchdogMaxDeferrals {
+						if !wd.deferredLogged || wd.deferCount%6 == 0 {
+							watchdogLogger.Warn("health-watchdog deferring restart — sessions are busy",
+								zap.Int("consecutiveFailures", snap.ConsecutiveFailures),
+								zap.String("lastError", snap.LastError),
+								zap.Int("deferCount", wd.deferCount),
+								zap.Int("maxDefers", watchdogMaxDeferrals),
+							)
+						}
+						continue
 					}
-					continue
+					watchdogLogger.Warn("health-watchdog max-defer exceeded — forcing restart despite busy sessions",
+						zap.Int("deferCount", wd.deferCount),
+						zap.Int("maxDefers", watchdogMaxDeferrals),
+					)
+					// Fall through to maybeFire + restart below.
 				}
 				if wd.maybeFire(time.Now()) {
 					watchdogLogger.Warn("opencode health-watchdog triggering restart",
