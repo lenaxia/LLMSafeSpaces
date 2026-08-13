@@ -4,6 +4,7 @@ import {
   LLMSafeSpacesError,
   NotFoundError,
   RateLimitError,
+  ServiceUnavailableError,
   TimeoutError,
 } from "./errors.js";
 import type {
