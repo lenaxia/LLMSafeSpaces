@@ -752,6 +752,8 @@ export function ChatPage() {
       removePendingAction(request_id);
     } else if (event.type === "agent_died") {
       setAgentDied(true);
+    } else {
+      console.debug("[ChatPage] unhandled SSE event type:", event.type);
     }
   }, [queryClient, workspaceId, sessionId, parseStreamEvent, notifySessionIdle, reconcileOnIdle, queue, addPendingQuestion, addPendingPermission, removePendingAction, clearSessionPendingPrompts, clearStreamTimedOut]);
 

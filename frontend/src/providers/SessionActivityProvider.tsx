@@ -114,7 +114,11 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         seeded.add(wsId);
 
         for (const session of data as Array<{ id: string; status?: string }>) {
-          if (session.status === "active") {
+          // Backend session.Status enum is {unknown, idle, busy, error,
+          // compacting, archived} (pkg/session/session.go). "active" is not
+          // a real status — accept both for backward compat with older API
+          // responses and any cache entries written by the SSE handler.
+          if (session.status === "busy" || session.status === "active") {
             if (!busyDelta) busyDelta = new Map();
             busyDelta.set(session.id, wsId);
           }
@@ -435,6 +439,14 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         } else if (evt.phase === "Active") {
           seededRef.current.delete(wsId);
         }
+      }
+
+      const KNOWN_EVENT_TYPES = new Set([
+        "agent.question", "agent.question.resolved", "agent.permission", "agent.permission.resolved",
+        "agent.input.snapshot_complete", "session.status", "agent_died", "workspace.phase",
+      ]);
+      if (evt.type && !KNOWN_EVENT_TYPES.has(evt.type)) {
+        console.debug("[SessionActivityProvider] unhandled SSE event type:", evt.type);
       }
     },
   });

@@ -5,6 +5,7 @@ package sse
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -77,6 +78,7 @@ type Tracker struct {
 	sessionMetrics   SessionMetricsRecorder
 	subscriptions    map[string]context.CancelFunc
 	subMu            sync.Mutex
+	goroutineWg      map[string]*sync.WaitGroup
 	passwordGetter   interfaces.WorkspacePasswordProvider
 	podIPResolver    func(workspaceID string) string
 	drainMu          sync.Mutex
@@ -100,6 +102,7 @@ func NewTracker(
 		onSessionIdle:    onSessionIdle,
 		idleTimeout:      sseIdleTimeout,
 		subscriptions:    make(map[string]context.CancelFunc),
+		goroutineWg:      make(map[string]*sync.WaitGroup),
 		sessionTokenSeen: make(map[string]int64),
 		sessionCostSeen:  make(map[string]float64),
 		sessionStartTime: make(map[string]time.Time),
@@ -156,7 +159,14 @@ func (t *Tracker) EnsureWatching(workspaceID string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.subscriptions[workspaceID] = cancel
 
-	go t.subscribe(ctx, workspaceID)
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+	t.goroutineWg[workspaceID] = wg
+
+	go func() {
+		defer wg.Done()
+		t.subscribe(ctx, workspaceID)
+	}()
 }
 
 // IsWatching returns true if the tracker has an active SSE subscription
@@ -171,11 +181,19 @@ func (t *Tracker) IsWatching(workspaceID string) bool {
 
 func (t *Tracker) StopWatching(workspaceID string) {
 	t.subMu.Lock()
-	defer t.subMu.Unlock()
-
 	if cancel, exists := t.subscriptions[workspaceID]; exists {
 		cancel()
 		delete(t.subscriptions, workspaceID)
+	}
+	wg := t.goroutineWg[workspaceID]
+	delete(t.goroutineWg, workspaceID)
+	t.subMu.Unlock()
+
+	// Wait for the subscribe goroutine to exit before cleaning maps.
+	// Without this, a stale event drained from the HTTP buffer after
+	// cancel() can resurrect cleared state (#751 F3 reconnect race).
+	if wg != nil {
+		wg.Wait()
 	}
 
 	prefix := workspaceID + ":"
@@ -203,11 +221,19 @@ func (t *Tracker) StopWatching(workspaceID string) {
 
 func (t *Tracker) Stop() {
 	t.subMu.Lock()
-	defer t.subMu.Unlock()
-
 	for id, cancel := range t.subscriptions {
 		cancel()
 		delete(t.subscriptions, id)
+	}
+	wgs := make([]*sync.WaitGroup, 0, len(t.goroutineWg))
+	for id, wg := range t.goroutineWg {
+		wgs = append(wgs, wg)
+		delete(t.goroutineWg, id)
+	}
+	t.subMu.Unlock()
+
+	for _, wg := range wgs {
+		wg.Wait()
 	}
 }
 
@@ -489,6 +515,9 @@ func (t *Tracker) handleSessionUpdated(workspaceID string, props []byte) {
 		return
 	}
 	if p.Info.ID == "" || p.Info.Tokens.Output == 0 || p.Info.Model.ID == "" {
+		t.Logger.Warn("handleSessionUpdated: dropping session.updated with incomplete billing fields",
+			"workspaceID", workspaceID, "sessionID", p.Info.ID,
+			"hasModel", p.Info.Model.ID != "", "outputTokens", p.Info.Tokens.Output)
 		return
 	}
 
@@ -499,9 +528,22 @@ func (t *Tracker) handleSessionUpdated(workspaceID string, props []byte) {
 
 	costVal := 0.0
 	if len(p.Info.Cost) > 0 {
+		trimmed := bytes.TrimSpace(p.Info.Cost)
+		// Try as a plain number first (1.15.x wire shape): "cost": 0.042
 		var costFloat float64
-		if json.Unmarshal(p.Info.Cost, &costFloat) == nil {
+		if json.Unmarshal(trimmed, &costFloat) == nil {
 			costVal = costFloat
+		} else {
+			// Try as an object (1.18.10 wire shape): "cost": {"total": 0.042}
+			var costObj struct {
+				Total float64 `json:"total"`
+			}
+			if json.Unmarshal(trimmed, &costObj) == nil {
+				costVal = costObj.Total
+			} else {
+				t.Logger.Warn("handleSessionUpdated: could not parse cost field",
+					"workspaceID", workspaceID, "raw", string(trimmed))
+			}
 		}
 	}
 

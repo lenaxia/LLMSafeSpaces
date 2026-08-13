@@ -283,6 +283,37 @@ describe("SessionActivityProvider", () => {
     expect(screen.getByTestId("busy").textContent).toBe("yes");
   });
 
+  // #752 F4: Cold-start busy detection. The backend session.Status enum is
+  // {unknown, idle, busy, error, compacting, archived} — there is NO "active"
+  // status (pkg/session/session.go:26-33). The seedBusy path checked only
+  // status === "active", so a session the backend marks "busy" was invisible
+  // on cold start until an SSE event arrived. This test uses the real backend
+  // status value ("busy") and must seed the busy indicator.
+  it("initializes busy state from cached REST data with real backend status:busy (#752 F4)", async () => {
+    function BusyDisplay() {
+      const isBusy = useIsSessionBusy("sess-busy");
+      return <span data-testid="busy">{isBusy ? "yes" : "no"}</span>;
+    }
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    qc.setQueryData(["sessions", "ws-1"], [
+      { id: "sess-busy", title: "Busy", messageCount: 0, status: "busy", hasUnread: false },
+      { id: "sess-idle", title: "Idle", messageCount: 0, status: "idle", hasUnread: false },
+    ]);
+
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter>
+          <SessionActivityProvider>
+            <BusyDisplay />
+          </SessionActivityProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(screen.getByTestId("busy").textContent).toBe("yes");
+  });
+
   // Test 23: Provider initializes pendingUnread from REST session cache on mount.
   it("initializes unread state from cached REST data with hasUnread:true (#23)", async () => {
     function UnreadDisplay() {
@@ -1766,5 +1797,22 @@ describe("agent_died handler", () => {
     const busyIndicators = screen.getAllByTestId("busy");
     expect(busyIndicators[0]!.textContent).toBe("no"); // ws-1 cleared
     expect(busyIndicators[1]!.textContent).toBe("yes"); // ws-2 untouched
+  });
+
+  // #752 F6: unknown SSE event types must not be silently dropped.
+  it("logs unknown event types via console.debug (#752 F6)", () => {
+    const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
+    renderProvider();
+
+    act(() => {
+      capturedOnEvent!({ type: "plugin.added" });
+    });
+
+    const calls = debugSpy.mock.calls.map((c) => String(c[0]));
+    expect(calls.some((msg) => msg.includes("plugin.added") || msg.includes("unhandled")),
+      `expected a debug log mentioning "plugin.added" or "unhandled", got: ${JSON.stringify(calls)}`,
+    ).toBe(true);
+
+    debugSpy.mockRestore();
   });
 });
