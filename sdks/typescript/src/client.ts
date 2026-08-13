@@ -137,6 +137,12 @@ export class LLMSafeSpaces {
           throw new ConflictError(msg);
         case 429:
           throw new RateLimitError(msg);
+        case 503: {
+          const reason = (errBody as { reason?: string }).reason;
+          const retryAfter = (errBody as { retryAfter?: number }).retryAfter;
+          const apiMessage = (errBody as { message?: string }).message ?? msg;
+          throw new ServiceUnavailableError(apiMessage, reason, retryAfter);
+        }
         default:
           throw new LLMSafeSpacesError(msg, res.status);
       }

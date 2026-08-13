@@ -526,7 +526,7 @@ func TestRefreshIsHealthyLoop_WatchdogFiresOnHang(t *testing.T) {
 	time.Sleep(40 * time.Second)
 
 	assert.False(t, cache.Snapshot().Healthy, "cache must be unhealthy after failures")
-	assert.GreaterOrEqual(t, fr.callCount(), 1, "watchdog must have called restart at least once")
+	assert.Equal(t, 1, fr.callCount(), "watchdog must call restart exactly once on the edge, not on subsequent polls (latch)")
 }
 
 func TestRefreshIsHealthyLoop_WatchdogDoesNotFireOnHealthy(t *testing.T) {

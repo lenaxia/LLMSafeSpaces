@@ -208,24 +208,6 @@ func NewNotImplementedError(code string, message string, err error) *APIError {
 	}
 }
 
-// NewServiceUnavailableError creates a 503 error for a workspace that
-// exists but cannot service requests. reason should be one of:
-// "not_ready" (booting), "agent_unreachable" (hung/crashed),
-// "agent_restarting" (watchdog or credential reload in progress).
-// retryAfterSec is the suggested retry interval (also sent as the
-// HTTP Retry-After header by the error handler).
-func NewServiceUnavailableError(reason, message string, retryAfterSec int, err error) *APIError {
-	return &APIError{
-		Type:    ErrorTypeServiceUnavailable,
-		Code:    "service_unavailable",
-		Message: message,
-		Details: map[string]interface{}{
-			"reason":     reason,
-			"retryAfter": retryAfterSec,
-		},
-		Err: err,
-	}
-}
 
 // IsWorkspaceNotFoundError checks if the error is a WorkspaceNotFoundError
 func IsWorkspaceNotFoundError(err error) bool {

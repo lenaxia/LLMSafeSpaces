@@ -211,6 +211,13 @@ func refreshIsHealthyLoop(ctx context.Context, client *OpenCodeClient, cache *he
 					watchdogLogger.Debug("health-watchdog already fired for this episode",
 						zap.Int("consecutiveFailures", snap.ConsecutiveFailures),
 					)
+				} else if len(wd.restarts) >= wd.maxRestarts {
+					watchdogLogger.Warn("health-watchdog rate-limit reached — giving up until window expires",
+						zap.Int("maxRestarts", wd.maxRestarts),
+						zap.Duration("window", wd.window),
+						zap.Int("consecutiveFailures", snap.ConsecutiveFailures),
+						zap.String("lastError", snap.LastError),
+					)
 				}
 			}
 		}

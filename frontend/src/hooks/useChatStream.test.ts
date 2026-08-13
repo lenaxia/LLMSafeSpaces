@@ -209,7 +209,7 @@ describe("useChatStream", () => {
     it("gives up after SEND_MAX_503_RETRIES and surfaces the 503 as an error", async () => {
       // After the bounded retry count the message is dropped with a visible
       // error so the loop cannot spin forever on a wedged workspace.
-      const err503 = new ApiClientError(503, { error: "workspace_restarting", message: "The agent is not responding. Please try again in a moment.", reason: "agent_restarting", retryAfter: 1 });
+      const err503 = new ApiClientError(503, { error: "workspace_restarting", message: "Custom test message — agent is restarting", reason: "agent_restarting", retryAfter: 1 });
       (messagesApi.sendAsync as ReturnType<typeof vi.fn>).mockRejectedValue(err503);
       (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([]);
 
@@ -223,7 +223,7 @@ describe("useChatStream", () => {
       expect(result.current.streaming).toBe(false);
       // The 503 propagates to the outer catch and surfaces as the
       // user-visible error message (the ApiClientError carries body.error).
-      expect(result.current.error).toBe("The agent is not responding. Please try again in a moment.");
+      expect(result.current.error).toBe("Custom test message — agent is restarting");
       expect(onComplete).not.toHaveBeenCalled();
     });
 
