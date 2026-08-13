@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.3] - 2026-08-13
+
+### Fixed
+
+- **Sessions stuck "busy" after message — TRUE root cause (#805, #806)**.
+  The SSE event scanners in both agentd and the API had a 64KB per-line
+  buffer. opencode 1.18.10 emits `message.part.updated` events that
+  exceed 300KB (patch parts listing thousands of changed files; observed
+  370KB in production). When the scanner hit such a line, it failed
+  silently and dropped the SSE connection. The tracker then missed the
+  subsequent `session.status:idle` event and the session stayed "busy"
+  forever. Both scanners raised to 16MB. Regression tests verified to
+  fail on revert.
+
 ## [0.15.2] - 2026-08-12
 
 ### Fixed
