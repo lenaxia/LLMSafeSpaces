@@ -8,7 +8,7 @@ import {
 import { ApiClientError } from "../../api/client";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
-import { safeConfirm } from "../../lib/safeConfirm";
+import { useConfirmDialog } from "../../hooks/useConfirmDialog";
 
 const PAGE_SIZE = 20;
 
@@ -30,6 +30,8 @@ export function PlatformUsersTab() {
   const [offset, setOffset] = useState(0);
   const [total, setTotal] = useState(0);
   const [busyId, setBusyId] = useState<string | null>(null);
+
+  const { confirm: confirmAction, dialog: confirmDialog } = useConfirmDialog();
 
   const fetchUsers = useCallback(async () => {
     setLoading(true);
@@ -59,24 +61,31 @@ export function PlatformUsersTab() {
     setOffset(0);
   };
 
-  const handleSuspend = async (user: UserListEntry) => {
-    const prompt = user.orgCount > 0
+  const handleSuspend = (user: UserListEntry) => {
+    const message = user.orgCount > 0
       ? `Suspend ${user.email}? They are in org "${user.orgName ?? user.orgId}".`
       : `Suspend ${user.email}?`;
-    if (!safeConfirm(prompt)) return;
-    setBusyId(user.id);
-    try {
-      await adminPlatformApi.suspendUser(user.id);
-      await fetchUsers();
-    } catch (e) {
-      if (e instanceof ApiClientError && e.status === 409) {
-        setError(e.body.error || "Cannot suspend the last admin of an organisation.");
-      } else {
-        setError(e instanceof Error ? e.message : "Failed to suspend user");
-      }
-    } finally {
-      setBusyId(null);
-    }
+    confirmAction({
+      title: "Suspend user?",
+      description: message,
+      confirmLabel: "Suspend",
+      destructive: true,
+      onConfirm: async () => {
+        setBusyId(user.id);
+        try {
+          await adminPlatformApi.suspendUser(user.id);
+          await fetchUsers();
+        } catch (e) {
+          if (e instanceof ApiClientError && e.status === 409) {
+            setError(e.body.error || "Cannot suspend the last admin of an organisation.");
+          } else {
+            setError(e instanceof Error ? e.message : "Failed to suspend user");
+          }
+        } finally {
+          setBusyId(null);
+        }
+      },
+    });
   };
 
   const handleUnsuspend = async (user: UserListEntry) => {
@@ -193,6 +202,7 @@ export function PlatformUsersTab() {
           </Button>
         </div>
       )}
+      {confirmDialog}
     </div>
   );
 }

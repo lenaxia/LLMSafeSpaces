@@ -11,7 +11,7 @@ import {
 import { ApiClientError } from "../../api/client";
 import { Badge } from "../ui/Badge";
 import { Button } from "../ui/Button";
-import { safeConfirm } from "../../lib/safeConfirm";
+import { useConfirmDialog } from "../../hooks/useConfirmDialog";
 
 const PAGE_SIZE = 20;
 
@@ -167,6 +167,8 @@ export function OrgSettingsTab() {
   const [total, setTotal] = useState(0);
   const [busyId, setBusyId] = useState<string | null>(null);
 
+  const { confirm: confirmAction, dialog: confirmDialog } = useConfirmDialog();
+
   const fetchOrgs = useCallback(async () => {
     setLoading(true);
     setError("");
@@ -195,17 +197,24 @@ export function OrgSettingsTab() {
     setOffset(0);
   };
 
-  const handleSuspend = async (orgId: string) => {
-    if (!safeConfirm("Suspend this organisation? All its workspaces will be suspended.")) return;
-    setBusyId(orgId);
-    try {
-      await adminPlatformApi.suspendOrg(orgId);
-      await fetchOrgs();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to suspend organisation");
-    } finally {
-      setBusyId(null);
-    }
+  const handleSuspend = (orgId: string) => {
+    confirmAction({
+      title: "Suspend organisation?",
+      description: "Suspend this organisation? All its workspaces will be suspended.",
+      confirmLabel: "Suspend",
+      destructive: true,
+      onConfirm: async () => {
+        setBusyId(orgId);
+        try {
+          await adminPlatformApi.suspendOrg(orgId);
+          await fetchOrgs();
+        } catch (e) {
+          setError(e instanceof Error ? e.message : "Failed to suspend organisation");
+        } finally {
+          setBusyId(null);
+        }
+      },
+    });
   };
 
   const handleUnsuspend = async (orgId: string) => {
@@ -220,17 +229,24 @@ export function OrgSettingsTab() {
     }
   };
 
-  const handleDelete = async (org: OrgSummary) => {
-    if (!safeConfirm(`Delete "${org.name}"? This cannot be undone.`)) return;
-    setBusyId(org.id);
-    try {
-      await orgsApi.delete(org.id);
-      await fetchOrgs();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to delete organisation");
-    } finally {
-      setBusyId(null);
-    }
+  const handleDelete = (org: OrgSummary) => {
+    confirmAction({
+      title: "Delete organisation?",
+      description: `Delete "${org.name}"? This cannot be undone.`,
+      confirmLabel: "Delete",
+      destructive: true,
+      onConfirm: async () => {
+        setBusyId(org.id);
+        try {
+          await orgsApi.delete(org.id);
+          await fetchOrgs();
+        } catch (e) {
+          setError(e instanceof Error ? e.message : "Failed to delete organisation");
+        } finally {
+          setBusyId(null);
+        }
+      },
+    });
   };
 
   const canPrev = offset > 0 && !loading;
@@ -364,6 +380,7 @@ export function OrgSettingsTab() {
           </Button>
         </div>
       )}
+      {confirmDialog}
     </div>
   );
 }

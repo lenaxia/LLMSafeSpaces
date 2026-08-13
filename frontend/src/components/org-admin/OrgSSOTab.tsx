@@ -4,7 +4,7 @@ import { type OrgResponse } from "../../api/orgs";
 import { ssoApi, type OrgSSOConfig, type OrgRole } from "../../api/sso";
 import { Button } from "../ui/Button";
 import { Spinner } from "../ui/Spinner";
-import { safeConfirm } from "../../lib/safeConfirm";
+import { useConfirmDialog } from "../../hooks/useConfirmDialog";
 
 interface SSOContext {
   org: OrgResponse;
@@ -63,6 +63,8 @@ export function OrgSSOTab() {
   const [verificationToken, setVerificationToken] = useState("");
   const [form, setForm] = useState<FormState>(toFormState(null));
 
+  const { confirm: confirmAction, dialog: confirmDialog } = useConfirmDialog();
+
   useEffect(() => {
     if (!isAdmin) {
       setLoading(false);
@@ -114,22 +116,27 @@ export function OrgSSOTab() {
     }
   };
 
-  const handleDelete = async () => {
-    if (!safeConfirm("Remove SSO configuration? Members will no longer be able to sign in via SSO.")) {
-      return;
-    }
-    setSaving(true);
-    setError("");
-    try {
-      await ssoApi.remove(org.id);
-      setForm(toFormState(null));
-      setHasSecret(false);
-      setSaved(true);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to delete SSO config");
-    } finally {
-      setSaving(false);
-    }
+  const handleDelete = () => {
+    confirmAction({
+      title: "Remove SSO?",
+      description: "Remove SSO configuration? Members will no longer be able to sign in via SSO.",
+      confirmLabel: "Remove",
+      destructive: true,
+      onConfirm: async () => {
+        setSaving(true);
+        setError("");
+        try {
+          await ssoApi.remove(org.id);
+          setForm(toFormState(null));
+          setHasSecret(false);
+          setSaved(true);
+        } catch (e) {
+          setError(e instanceof Error ? e.message : "Failed to delete SSO config");
+        } finally {
+          setSaving(false);
+        }
+      },
+    });
   };
 
   if (!isAdmin) {
@@ -254,6 +261,7 @@ export function OrgSSOTab() {
           onTokenRotated={(token) => setVerificationToken(token)}
         />
       )}
+      {confirmDialog}
     </div>
   );
 }
@@ -280,6 +288,7 @@ function DomainVerification({
   const [verifying, setVerifying] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const { confirm: confirmAction, dialog: confirmDialog } = useConfirmDialog();
 
   const handleVerify = async (domain: string) => {
     setVerifying(domain);
@@ -301,21 +310,26 @@ function DomainVerification({
     }
   };
 
-  const handleRotate = async () => {
-    if (!safeConfirm("Rotate the verification token? Existing DNS records must be updated to match.")) {
-      return;
-    }
-    setVerifying("token");
-    setError("");
-    try {
-      const result = await ssoApi.rotateToken(orgId);
-      onTokenRotated(result.verificationToken);
-      setSuccess("Token rotated. Update your DNS TXT records.");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Token rotation failed");
-    } finally {
-      setVerifying(null);
-    }
+  const handleRotate = () => {
+    confirmAction({
+      title: "Rotate verification token?",
+      description: "Rotate the verification token? Existing DNS records must be updated to match.",
+      confirmLabel: "Rotate",
+      destructive: true,
+      onConfirm: async () => {
+        setVerifying("token");
+        setError("");
+        try {
+          const result = await ssoApi.rotateToken(orgId);
+          onTokenRotated(result.verificationToken);
+          setSuccess("Token rotated. Update your DNS TXT records.");
+        } catch (e) {
+          setError(e instanceof Error ? e.message : "Token rotation failed");
+        } finally {
+          setVerifying(null);
+        }
+      },
+    });
   };
 
   const hasToken = verificationToken.length > 0;
@@ -408,6 +422,7 @@ function DomainVerification({
           </p>
         )}
       </div>
+      {confirmDialog}
     </div>
   );
 }

@@ -101,8 +101,7 @@ describe("OrgSettingsTab", () => {
     expect(unsuspendButtons).toHaveLength(1);
   });
 
-  it("calls suspendOrg then refreshes on confirm", async () => {
-    window.confirm = vi.fn(() => true);
+  it("calls suspendOrg then refreshes on confirm (#814)", async () => {
     mockListOrgs
       .mockResolvedValueOnce(listResponse([ORG_ACTIVE]))
       .mockResolvedValueOnce(
@@ -113,17 +112,29 @@ describe("OrgSettingsTab", () => {
     renderTab();
     await waitFor(() => expect(screen.getByText("Suspend")).toBeInTheDocument());
     await user.click(screen.getByText("Suspend"));
+
+    // ConfirmDialog opens — wait for dialog title, then click confirm
+    await waitFor(() => {
+      expect(screen.getByText("Suspend organisation?")).toBeInTheDocument();
+    });
+    const dialogBtn = screen.getAllByRole("button", { name: "Suspend" }).pop()!;
+    await user.click(dialogBtn);
+
     await waitFor(() => expect(mockSuspendOrg).toHaveBeenCalledWith("org-1"));
     await waitFor(() => expect(mockListOrgs).toHaveBeenCalledTimes(2));
   });
 
-  it("does not call suspendOrg when the confirm is cancelled", async () => {
-    window.confirm = vi.fn(() => false);
+  it("does not call suspendOrg when the confirm is cancelled (#814)", async () => {
     mockListOrgs.mockResolvedValue(listResponse([ORG_ACTIVE]));
     const user = userEvent.setup();
     renderTab();
     await waitFor(() => expect(screen.getByText("Suspend")).toBeInTheDocument());
     await user.click(screen.getByText("Suspend"));
+
+    // ConfirmDialog opens — click Cancel
+    const cancelBtn = await screen.findByRole("button", { name: "Cancel" });
+    await user.click(cancelBtn);
+
     expect(mockSuspendOrg).not.toHaveBeenCalled();
   });
 

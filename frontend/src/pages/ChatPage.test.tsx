@@ -354,11 +354,9 @@ describe("ChatPage — session delete", () => {
     (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([]);
   });
 
-  it("calls deleteSession when kebab delete is confirmed", async () => {
+  it("calls deleteSession when kebab delete is confirmed (#814 ConfirmDialog)", async () => {
     renderChatPage("/chat/ws-1/sess-1");
     await waitFor(() => expect(screen.getByLabelText("Actions")).toBeInTheDocument());
-
-    vi.spyOn(window, "confirm").mockReturnValue(true);
 
     const kebab = screen.getByLabelText("Actions");
     await userEvent.click(kebab);
@@ -366,58 +364,76 @@ describe("ChatPage — session delete", () => {
     const deleteBtn = await screen.findByText("Delete session");
     await userEvent.click(deleteBtn);
 
-    expect(workspacesApi.deleteSession).toHaveBeenCalledWith("ws-1", "sess-1");
+    // ConfirmDialog opens — click the "Delete" button in the dialog
+    const dialogConfirm = await screen.findByRole("button", { name: "Delete" });
+    await userEvent.click(dialogConfirm);
+
+    await waitFor(() => {
+      expect(workspacesApi.deleteSession).toHaveBeenCalledWith("ws-1", "sess-1");
+    });
   });
 
-  it("does not call deleteSession when confirm is cancelled", async () => {
+  it("does not call deleteSession when confirm is cancelled (#814)", async () => {
     renderChatPage("/chat/ws-1/sess-1");
     await waitFor(() => expect(screen.getByLabelText("Actions")).toBeInTheDocument());
-
-    vi.spyOn(window, "confirm").mockReturnValue(false);
 
     const kebab = screen.getByLabelText("Actions");
     await userEvent.click(kebab);
 
     const deleteBtn = await screen.findByText("Delete session");
     await userEvent.click(deleteBtn);
+
+    // ConfirmDialog opens — click "Cancel"
+    const cancelBtn = screen.getByRole("button", { name: "Cancel" });
+    await userEvent.click(cancelBtn);
 
     expect(workspacesApi.deleteSession).not.toHaveBeenCalled();
   });
 
-  it("treats 404 as success on delete", async () => {
+  it("treats 404 as success on delete (#814 ConfirmDialog)", async () => {
     const err404 = new ApiClientError(404, { error: "not found" });
     (workspacesApi.deleteSession as ReturnType<typeof vi.fn>).mockRejectedValueOnce(err404);
 
     renderChatPage("/chat/ws-1/sess-1");
     await waitFor(() => expect(screen.getByLabelText("Actions")).toBeInTheDocument());
 
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-
     const kebab = screen.getByLabelText("Actions");
     await userEvent.click(kebab);
 
     const deleteBtn = await screen.findByText("Delete session");
     await userEvent.click(deleteBtn);
 
-    expect(workspacesApi.deleteSession).toHaveBeenCalledWith("ws-1", "sess-1");
+    const dialogConfirm = await screen.findByRole("button", { name: "Delete" });
+    await userEvent.click(dialogConfirm);
+
+    await waitFor(() => {
+      expect(workspacesApi.deleteSession).toHaveBeenCalledWith("ws-1", "sess-1");
+    });
   });
 
-  it("aborts deletion when window.confirm throws (#775 safeConfirm)", async () => {
+  it("works in sandboxed iframe (ConfirmDialog renders in DOM, no window.confirm) (#814)", async () => {
+    // ConfirmDialog uses Radix DOM portal, so window.confirm is never called.
+    // This test verifies the action is available even when window.confirm is blocked.
     (workspacesApi.deleteSession as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    const confirmSpy = vi.spyOn(window, "confirm").mockImplementation(() => { throw new Error("Blocked"); });
 
     renderChatPage("/chat/ws-1/sess-1");
     await waitFor(() => expect(screen.getByLabelText("Actions")).toBeInTheDocument());
 
-    vi.spyOn(window, "confirm").mockImplementation(() => { throw new Error("Blocked"); });
-
     const kebab = screen.getByLabelText("Actions");
     await userEvent.click(kebab);
 
     const deleteBtn = await screen.findByText("Delete session");
     await userEvent.click(deleteBtn);
 
-    // safeConfirm must fail CLOSED — no deletion when confirm throws
-    expect(workspacesApi.deleteSession).not.toHaveBeenCalled();
+    // Dialog must render despite window.confirm being blocked
+    const dialogConfirm = await screen.findByRole("button", { name: "Delete" });
+    await userEvent.click(dialogConfirm);
+
+    await waitFor(() => {
+      expect(workspacesApi.deleteSession).toHaveBeenCalledWith("ws-1", "sess-1");
+    });
+    confirmSpy.mockRestore();
   });
 
   it("header kebab Force Stop calls abortSession with correct IDs", async () => {

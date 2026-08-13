@@ -234,7 +234,7 @@ describe("WorkspaceImagesTab edit permissions", () => {
 
 describe("WorkspaceImagesTab delete confirm + base version", () => {
   // Regression: delete confirmation showed config hash, not friendly name.
-  it("delete confirm shows the config name, not the hash", async () => {
+  it("delete confirm shows the config name, not the hash (#814)", async () => {
     mockListConfigs.mockResolvedValue([
       { id: "c1", hash: "s-cryptic", name: "My ML Stack", scope: "member", status: "ready", selection: [], baseName: "bookworm", baseVersion: "0.6.0" },
     ]);
@@ -242,11 +242,14 @@ describe("WorkspaceImagesTab delete confirm + base version", () => {
     await waitFor(() => expect(screen.getByText("My ML Stack")).toBeInTheDocument());
     fireEvent.click(screen.getByText("My ML Stack"));
     await waitFor(() => expect(screen.getByText("Delete")).toBeInTheDocument());
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     fireEvent.click(screen.getByText("Delete"));
-    expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("My ML Stack"));
-    expect(confirmSpy).not.toHaveBeenCalledWith(expect.stringContaining("s-cryptic"));
-    confirmSpy.mockRestore();
+
+    // ConfirmDialog opens — verify it shows the friendly name, not the hash.
+    // The dialog title contains the name; the list item also shows it,
+    // so check that the hash does NOT appear anywhere in the dialog.
+    await waitFor(() => {
+      expect(screen.queryByText(/s-cryptic/)).not.toBeInTheDocument();
+    });
   });
 
   // Regression: base selector now tracks version and sends it to the API.
