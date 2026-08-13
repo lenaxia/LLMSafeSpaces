@@ -4,7 +4,11 @@
 package sse
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,7 +33,7 @@ func TestSSETracker_Inference_CostAsObject(t *testing.T) {
 
 	tracker.processEvent("ws-1", makeSessionUpdatedEvent("ses_obj", map[string]interface{}{
 		"id":   "ses_obj",
-		"cost": map[string]interface{}{"total": 0.05},
+		"cost": map[string]interface{}{"cost": 0.05},
 		"tokens": map[string]interface{}{
 			"input": 1000, "output": 500,
 		},
@@ -96,6 +100,35 @@ func TestSSETracker_StopWatching_CleansUpMaps(t *testing.T) {
 	tracker.startTimeMu.Unlock()
 }
 
+// TestSSETracker_StopWatching_CleansStartTimeViaRealDispatch verifies that
+// sessionStartTime entries created through the real dispatchProperties path
+// (session.status=busy event → tracker writes composite key) are cleaned by
+// StopWatching. This catches the keying mismatch bug: production code wrote
+// bare session-ID keys while StopWatching used workspaceID: prefix matching.
+func TestSSETracker_StopWatching_CleansStartTimeViaRealDispatch(t *testing.T) {
+	tracker := newTestSSETracker(func(_, _ string) {})
+
+	// Send a busy event through the real dispatch path — this writes to
+	// sessionStartTime using whatever key the code actually uses.
+	tracker.processEvent("ws-key-test", makeSessionStatusEvent("ses_keytest", "busy"))
+
+	// Verify the entry exists.
+	tracker.startTimeMu.Lock()
+	assert.NotEmpty(t, tracker.sessionStartTime, "sessionStartTime must have entries after busy event")
+	tracker.startTimeMu.Unlock()
+
+	// StopWatching must clean ALL sessionStartTime entries for this workspace.
+	tracker.StopWatching("ws-key-test")
+
+	// Use assert.Empty, not NotContains — a bare session-ID key like
+	// "ses_keytest" wouldn't contain "ws-key-test" and NotContains would
+	// be a false pass on the unfixed (bare-key) code.
+	tracker.startTimeMu.Lock()
+	assert.Empty(t, tracker.sessionStartTime,
+		"sessionStartTime must be empty after StopWatching (all entries for ws-key-test cleaned)")
+	tracker.startTimeMu.Unlock()
+}
+
 // --- #751 parse error logging ---
 
 func TestSSETracker_Inference_MalformedEvent_NoPanic(t *testing.T) {
@@ -105,4 +138,150 @@ func TestSSETracker_Inference_MalformedEvent_NoPanic(t *testing.T) {
 	assert.NotPanics(t, func() {
 		tracker.processEvent("ws-1", raw)
 	})
+}
+
+// --- #751 F1c: silent failure paths must log (TDD failing tests first) ---
+
+// newCapturingTracker builds a tracker wired to a capturingLogger so tests
+// can assert on warn output. Returns both.
+func newCapturingTracker() (*Tracker, *capturingLogger) {
+	log := &capturingLogger{}
+	tracker := NewTracker(&http.Client{Timeout: 2 * time.Second}, log, func(_, _ string) {})
+	return tracker, log
+}
+
+// TestSSETracker_Inference_EmptyModelID_LogsWarn verifies that when a
+// session.updated event parses but has an empty model.ID, the tracker
+// emits a warn log instead of silently returning. This is the billing
+// observability gap — without a log, operators cannot detect drift.
+func TestSSETracker_Inference_EmptyModelID_LogsWarn(t *testing.T) {
+	tracker, log := newCapturingTracker()
+	var fired bool
+	tracker.SetOnInference(func(_, _, _ string, _, _ int64, _ float64) { fired = true })
+
+	tracker.processEvent("ws-1", makeSessionUpdatedEvent("ses_nomodel", map[string]interface{}{
+		"id":   "ses_nomodel",
+		"cost": 0.01,
+		"tokens": map[string]interface{}{
+			"input": 1000, "output": 500,
+		},
+		"model": map[string]interface{}{"id": ""},
+	}))
+
+	assert.False(t, fired, "inference must not fire on empty model")
+	warns := log.Warns()
+	assert.NotEmpty(t, warns, "empty model.ID must emit a warn log (currently silent)")
+}
+
+// TestSSETracker_Inference_ZeroOutput_LogsWarn verifies that when a
+// session.updated event has zero output tokens, the tracker emits a
+// warn log instead of silently returning.
+func TestSSETracker_Inference_ZeroOutput_LogsWarn(t *testing.T) {
+	tracker, log := newCapturingTracker()
+	var fired bool
+	tracker.SetOnInference(func(_, _, _ string, _, _ int64, _ float64) { fired = true })
+
+	tracker.processEvent("ws-1", makeSessionUpdatedEvent("ses_nooutput", map[string]interface{}{
+		"id":   "ses_nooutput",
+		"cost": 0.0,
+		"tokens": map[string]interface{}{
+			"input": 1000, "output": 0,
+		},
+		"model": map[string]interface{}{"id": "gpt-4o", "providerID": "openai"},
+	}))
+
+	assert.False(t, fired, "inference must not fire on zero output")
+	warns := log.Warns()
+	assert.NotEmpty(t, warns, "zero output tokens must emit a warn log (currently silent)")
+}
+
+// TestSSETracker_Inference_EmptyID_LogsWarn verifies that when a
+// session.updated event has an empty info.id, the tracker emits a
+// warn log instead of silently returning.
+func TestSSETracker_Inference_EmptyID_LogsWarn(t *testing.T) {
+	tracker, log := newCapturingTracker()
+	var fired bool
+	tracker.SetOnInference(func(_, _, _ string, _, _ int64, _ float64) { fired = true })
+
+	tracker.processEvent("ws-1", makeSessionUpdatedEvent("ses_noid", map[string]interface{}{
+		"id":   "",
+		"cost": 0.01,
+		"tokens": map[string]interface{}{
+			"input": 1000, "output": 500,
+		},
+		"model": map[string]interface{}{"id": "gpt-4o"},
+	}))
+
+	assert.False(t, fired, "inference must not fire on empty session ID")
+	warns := log.Warns()
+	assert.NotEmpty(t, warns, "empty info.id must emit a warn log (currently silent)")
+}
+
+// --- #751 F3: StopWatching must wait for the goroutine to exit (reconnect race) ---
+
+// TestSSETracker_StopWatching_NoEventsAfterReturn verifies that after
+// StopWatching returns, the subscribe goroutine has fully exited and no
+// stale events can fire callbacks. The server sends a burst of 200 events
+// before blocking; without a WaitGroup, buffered events in the HTTP
+// response can still be processed by the scanner after cancel() fires but
+// before the goroutine exits — mutating maps resurrected by stale writes.
+func TestSSETracker_StopWatching_NoEventsAfterReturn(t *testing.T) {
+	var activeCount atomic.Int64
+
+	// Gate: server holds the gate open while sending the burst, then blocks.
+	// This forces the scanner to have buffered events ready when cancel fires.
+	sentBurst := make(chan struct{})
+
+	sseServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		// Send a tight burst of 200 busy events with no delay.
+		for i := 0; i < 200; i++ {
+			fmt.Fprintf(w, "data: %s\n\n", makeSessionStatusEvent("sess-race", "busy"))
+		}
+		flusher.Flush()
+		close(sentBurst)
+
+		// Block until client disconnects.
+		<-r.Context().Done()
+	}))
+	defer sseServer.Close()
+
+	tracker := NewTracker(
+		&http.Client{Transport: &redirectTransport{server: sseServer}},
+		&testLogger{},
+		func(_, _ string) {},
+	)
+	tracker.SetOnSessionActive(func(_, _ string) {
+		activeCount.Add(1)
+	})
+	tracker.SetPasswordGetter(fakePWProvider{pw: "test-pw"})
+	tracker.SetPodIPResolver(func(string) string { return "10.0.0.1" })
+
+	tracker.EnsureWatching("ws-race")
+
+	// Wait for the burst to be sent by the server.
+	select {
+	case <-sentBurst:
+	case <-time.After(5 * time.Second):
+		t.Fatal("server never sent burst")
+	}
+
+	// Give the scanner a moment to buffer some events.
+	time.Sleep(20 * time.Millisecond)
+
+	// StopWatching must block until the goroutine exits. After it returns,
+	// no more onSessionActive callbacks should fire.
+	tracker.StopWatching("ws-race")
+
+	countAtStop := activeCount.Load()
+
+	// Wait to see if a stale goroutine delivers more events.
+	time.Sleep(100 * time.Millisecond)
+
+	assert.Equal(t, countAtStop, activeCount.Load(),
+		"no events should be processed after StopWatching returns (reconnect race — "+
+			"goroutine may still be draining buffered events)")
 }

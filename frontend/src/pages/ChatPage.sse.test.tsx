@@ -1702,4 +1702,24 @@ describe("ChatPage SSE event handler", () => {
       });
     });
   });
+
+  // #752 F6: unknown SSE event types must not be silently dropped — a debug
+  // log makes drift visible (new opencode event types arriving without a
+  // handler branch). Without this, silent drops hide version drift.
+  describe("unknown event type logging (#752 F6)", () => {
+    it("logs unknown event types via console.debug", async () => {
+      const debugSpy = vi.spyOn(console, "debug").mockImplementation(() => {});
+      renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
+      await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
+
+      sendSSEEvent({ type: "server.heartbeat" } as unknown as WorkspaceStreamEvent);
+
+      const calls = debugSpy.mock.calls.map((c) => String(c[0]));
+      expect(calls.some((msg) => msg.includes("server.heartbeat") || msg.includes("unhandled")),
+        `expected a debug log mentioning "server.heartbeat" or "unhandled", got: ${JSON.stringify(calls)}`,
+      ).toBe(true);
+
+      debugSpy.mockRestore();
+    });
+  });
 });
