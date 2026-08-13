@@ -201,3 +201,112 @@ func TestE2E_PhaseChangeSuspend_CleansBillingMaps(t *testing.T) {
 	assert.Empty(t, costSeen, "sessionCostSeen must be empty after StopWatching")
 	assert.Empty(t, startTimeEntries, "sessionStartTime must be empty after StopWatching")
 }
+
+// TestE2E_PhaseChangeActive_StopThenEnsure_Cycle verifies the exact
+// proxy_events.go:96-97 pattern: StopWatching then immediately EnsureWatching
+// on the same workspace (Creating→Active or Resuming→Active transition).
+// The WaitGroup fix ensures the old goroutine exits and billing maps are
+// cleared before the new subscription starts.
+func TestE2E_PhaseChangeActive_StopThenEnsure_Cycle(t *testing.T) {
+	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	env.setupWorkspacePodWithT(t, "ws-cycle", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-cycle")
+	env.setupPasswordWithT(t, "ws-cycle", "test-password")
+	env.setupWorkspaceWithT(t, "ws-cycle", 5)
+
+	tracker := sse.NewTracker(env.handler.httpClient, env.log, func(_, _ string) {})
+	env.handler.sseTracker = tracker
+	tracker.SetPasswordGetter(env.handler)
+	tracker.SetPodIPResolver(func(string) string { return "10.0.0.1" })
+	tracker.SetOnInference(func(_, _, _ string, _, _ int64, _ float64) {})
+
+	tracker.ProcessEvent("ws-cycle", `{
+		"type": "session.updated",
+		"properties": {
+			"sessionID": "ses_cycle",
+			"info": {
+				"id": "ses_cycle",
+				"cost": 0.01,
+				"tokens": {"input": 1000, "output": 500},
+				"model": {"id": "gpt-4o", "providerID": "openai"}
+			}
+		}
+	}`)
+
+	tokens, _, _ := tracker.GetBillingState("ws-cycle")
+	require.NotEmpty(t, tokens, "billing state must exist before cycle")
+
+	tracker.StopWatching("ws-cycle")
+	tracker.EnsureWatching("ws-cycle")
+
+	tokens, costs, startTimes := tracker.GetBillingState("ws-cycle")
+	assert.Empty(t, tokens, "old billing state cleared by StopWatching")
+	assert.Empty(t, costs, "old cost state cleared by StopWatching")
+	assert.Empty(t, startTimes, "old startTime cleared by StopWatching")
+	assert.True(t, tracker.IsWatching("ws-cycle"), "tracker watching after EnsureWatching")
+
+	tracker.StopWatching("ws-cycle")
+}
+
+// TestE2E_SSETracker_RealFixture_1_18_10_SessionUpdated verifies the tracker
+// against a session.updated event built from the REAL opencode 1.18.10
+// session_get fixture (pkg/agent/opencode/testdata/session_get_1_18_10.json).
+// Key: cost is a plain int (0), NOT an object — confirms cost-as-object path
+// is defensive code that doesn't fire with real 1.18.10 data.
+func TestE2E_SSETracker_RealFixture_1_18_10_SessionUpdated(t *testing.T) {
+	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	tracker := sse.NewTracker(env.handler.httpClient, env.log, func(_, _ string) {})
+	env.handler.sseTracker = tracker
+
+	var mu sync.Mutex
+	type inferenceCall struct {
+		modelID      string
+		providerID   string
+		inputTokens  int64
+		outputTokens int64
+	}
+	var calls []inferenceCall
+
+	tracker.SetOnInference(func(_, modelID, providerID string, inputTokens, outputTokens int64, _ float64) {
+		mu.Lock()
+		calls = append(calls, inferenceCall{modelID, providerID, inputTokens, outputTokens})
+		mu.Unlock()
+	})
+
+	tracker.ProcessEvent("ws-real", `{
+		"id": "evt_test",
+		"type": "session.updated",
+		"properties": {
+			"sessionID": "ses_test01KKKKKKKKKKKKKKKKKK",
+			"info": {
+				"id": "ses_test01KKKKKKKKKKKKKKKKKK",
+				"cost": 0,
+				"tokens": {
+					"input": 4868893,
+					"output": 330410,
+					"reasoning": 35310,
+					"cache": {"read": 761649152, "write": 0}
+				},
+				"model": {
+					"id": "glm-5.2",
+					"providerID": "thekaocloud",
+					"variant": "default"
+				}
+			}
+		}
+	}`)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	require.NotEmpty(t, calls, "inference callback must fire on real 1.18.10 wire shape")
+	c := calls[0]
+	assert.Equal(t, "glm-5.2", c.modelID)
+	assert.Equal(t, "thekaocloud", c.providerID)
+	assert.Equal(t, int64(4868893), c.inputTokens)
+	assert.Equal(t, int64(330410), c.outputTokens)
+}
