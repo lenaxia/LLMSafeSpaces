@@ -332,6 +332,7 @@ export function ChatPage() {
     knownLivePartIds.current.clear();
     setSessionWasInterrupted(false);
     setAgentDied(false);
+    setAgentDiedMessage(null);
     // S36.4: Reset compaction state when navigating to a different session
     prevContextUsedRef.current = undefined;
     setCompactionDetected(false);

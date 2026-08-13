@@ -620,3 +620,88 @@ func TestRestartReasonHealthWatchdog_MetricRecorded(t *testing.T) {
 	pkgOpsMetrics.RecordRestart("test-workspace", RestartReasonHealthWatchdog)
 	// If the metric isn't registered, prometheus panics. Reaching here = pass.
 }
+
+// fakeBusyChecker lets tests control whether sessions are busy.
+type fakeBusyChecker struct {
+	busy bool
+}
+
+func (f *fakeBusyChecker) anyBusy() bool { return f.busy }
+
+func TestRefreshIsHealthyLoop_WatchdogDefersWhenSessionsBusy(t *testing.T) {
+	// Simulate: opencode boots healthy, then hangs. Sessions are busy
+	// (LLM turn in progress). The watchdog must NOT fire — it must defer.
+	var callCount atomic.Int32
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := callCount.Add(1)
+		if n == 1 {
+			_ = json.NewEncoder(w).Encode(map[string]any{"healthy": true, "version": "v1.0"})
+		} else {
+			time.Sleep(10 * time.Second)
+		}
+	}))
+	defer mock.Close()
+
+	origAddr := getAgentAddr()
+	defer func() { setAgentAddr(origAddr) }()
+	setAgentAddr(mock.URL)
+
+	client := &OpenCodeClient{password: "test", client: &http.Client{Timeout: readinessRefreshTimeout}}
+	cache := newHealthzCache()
+	fr := &fakeRestarter{}
+	bc := &fakeBusyChecker{busy: true} // sessions are busy
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, fr, bc)
+
+	// Wait long enough for: boot success → 3 consecutive timeout failures →
+	// watchdog would fire but sessions are busy → deferral.
+	time.Sleep(40 * time.Second)
+
+	assert.False(t, cache.Snapshot().Healthy, "cache must be unhealthy")
+	assert.Equal(t, 0, fr.callCount(),
+		"watchdog must NOT fire when sessions are busy — must defer restart")
+}
+
+func TestRefreshIsHealthyLoop_WatchdogFiresAfterSessionsGoIdle(t *testing.T) {
+	// Simulate: opencode boots healthy, then hangs. Sessions start busy,
+	// then go idle. The watchdog must fire AFTER sessions clear.
+	var callCount atomic.Int32
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := callCount.Add(1)
+		if n == 1 {
+			_ = json.NewEncoder(w).Encode(map[string]any{"healthy": true, "version": "v1.0"})
+		} else {
+			time.Sleep(10 * time.Second)
+		}
+	}))
+	defer mock.Close()
+
+	origAddr := getAgentAddr()
+	defer func() { setAgentAddr(origAddr) }()
+	setAgentAddr(mock.URL)
+
+	client := &OpenCodeClient{password: "test", client: &http.Client{Timeout: readinessRefreshTimeout}}
+	cache := newHealthzCache()
+	fr := &fakeRestarter{}
+	bc := &fakeBusyChecker{busy: true} // start busy
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, fr, bc)
+
+	// Wait for boot + failures + deferral (sessions busy).
+	time.Sleep(30 * time.Second)
+	assert.Equal(t, 0, fr.callCount(), "must not fire while sessions busy")
+
+	// Sessions go idle.
+	bc.busy = false
+
+	// Wait for next poll cycle — watchdog should now fire.
+	time.Sleep(15 * time.Second)
+	assert.Equal(t, 1, fr.callCount(),
+		"watchdog must fire after sessions go idle — latch must NOT be consumed by deferral")
+}

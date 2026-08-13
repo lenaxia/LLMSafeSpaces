@@ -94,12 +94,13 @@ func (b *busySessionChecker) anyBusy() bool {
 // goroutine, so no mutex is needed on the fields below. If onFired
 // is ever called from multiple goroutines, add a mutex.
 type healthWatchdog struct {
-	restarts     []time.Time // timestamps of recent restarts (for rate limiting)
-	fired        bool        // latches: fire only once per unhealthy episode
-	giveUpLogged bool        // latches: log rate-limit give-up only once per episode
-	totalFired   int         // total watchdog restarts since boot
-	maxRestarts  int
-	window       time.Duration
+	restarts       []time.Time // timestamps of recent restarts (for rate limiting)
+	fired          bool        // latches: fire only once per unhealthy episode
+	deferredLogged bool        // latches: log session-busy deferral only once per episode
+	giveUpLogged   bool        // latches: log rate-limit give-up only once per episode
+	totalFired     int         // total watchdog restarts since boot
+	maxRestarts    int
+	window         time.Duration
 }
 
 func newHealthWatchdog() *healthWatchdog {
@@ -145,6 +146,7 @@ func (wd *healthWatchdog) maybeFire(now time.Time) bool {
 // watchdog to fire again on the next unhealthy transition.
 func (wd *healthWatchdog) reset() {
 	wd.fired = false
+	wd.deferredLogged = false
 	wd.giveUpLogged = false
 }
 
@@ -221,22 +223,27 @@ func refreshIsHealthyLoop(ctx context.Context, client *OpenCodeClient, cache *he
 			}
 
 			if snap.Initialized && !snap.Healthy && snap.ConsecutiveFailures >= readinessFailureThreshold {
-				if wd.maybeFire(time.Now()) {
-					// Session-aware deferral (issue #807 Assumption #2):
-					// If sessions are busy (LLM turn in progress), the
-					// health-check failures may be a false positive caused
-					// by CPU contention. Defer the restart — the latch
-					// prevents re-entering this branch on the next poll.
-					// If sessions go idle or remain busy past the maxDefer
-					// deadline, the watchdog will fire on the next episode.
-					if busyChecker != nil && busyChecker.anyBusy() {
+				// Session-aware deferral (issue #807 Assumption #2):
+				// If sessions are busy (LLM turn in progress), the
+				// health-check failures may be a false positive caused
+				// by CPU contention. Defer the restart without consuming
+				// the latch or rate-limit budget. The watchdog re-checks
+				// every poll; when sessions go idle, the restart proceeds.
+				// If opencode is truly hung, the session tracker's busy
+				// state is stale (it only clears on SSE idle events that
+				// will never arrive), but the rate-limit give-up and
+				// manual operator intervention are the backstop.
+				if busyChecker != nil && busyChecker.anyBusy() {
+					if !wd.deferredLogged {
+						wd.deferredLogged = true
 						watchdogLogger.Warn("health-watchdog detected unhealthy state but sessions are busy — deferring restart to avoid killing in-flight turn",
 							zap.Int("consecutiveFailures", snap.ConsecutiveFailures),
 							zap.String("lastError", snap.LastError),
 						)
-						// Don't reset wd.fired — keep deferring until recovery or next episode
-						continue
 					}
+					continue
+				}
+				if wd.maybeFire(time.Now()) {
 					watchdogLogger.Warn("opencode health-watchdog triggering restart",
 						zap.Int("consecutiveFailures", snap.ConsecutiveFailures),
 						zap.String("lastError", snap.LastError),
