@@ -42,15 +42,17 @@ func main() {
 
 func runWSQuota(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	limitStr := os.Getenv("LLMSAFESPACES_MAX_WORKSPACES_PER_USER")
-	limit := 10
-	if limitStr != "" {
-		if v, err := strconv.Atoi(limitStr); err == nil {
-			limit = v
-		}
+	if limitStr == "" {
+		// Match the TypeScript canary behavior: skip if the quota env
+		// var is not explicitly set. Creating 10 workspaces against an
+		// unlimited cluster and expecting a 429 is a guaranteed false
+		// failure.
+		run.OK("ws-quota: skipped (LLMSAFESPACES_MAX_WORKSPACES_PER_USER not set)")
+		return
 	}
-
-	if limit == 0 {
-		run.OK("quota disabled")
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil || limit == 0 {
+		run.OK("ws-quota: skipped (LLMSAFESPACES_MAX_WORKSPACES_PER_USER not set or unlimited)")
 		return
 	}
 
@@ -89,7 +91,7 @@ func runWSQuota(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	}
 	run.OK("P1: created up to configured limit")
 
-	_, err := c.Workspaces.Create(ctx, llm.CreateWorkspaceRequest{
+	_, err = c.Workspaces.Create(ctx, llm.CreateWorkspaceRequest{
 		Name:        fmt.Sprintf("canary-quota-over-%d", time.Now().Unix()),
 		Runtime:     "base",
 		StorageSize: "1Gi",
