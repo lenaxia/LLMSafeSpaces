@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.4-rc.1] - 2026-08-13
+
+### Fixed
+
+- **SSE tracker billing silent-zero on incomplete events (#751 F1c)**.
+  `handleSessionUpdated` silently dropped events with empty model ID,
+  zero output tokens, or empty session ID. All failure paths now emit
+  warn logs so operators can detect billing drift.
+
+- **SSE tracker cost-as-object silently zero (#751 F1a)**. When cost
+  arrived as a JSON object instead of a plain number, the value was
+  never extracted — billing stayed at zero. Now extracts the `cost`
+  field from object shapes with a plain-number fallback.
+
+- **SSE tracker reconnect race (#751 F3)**. `StopWatching` didn't wait
+  for the subscribe goroutine to exit, allowing stale events to
+  resurrect cleared billing state. Added `sync.WaitGroup` per workspace;
+  `StopWatching` and `Stop` now block until goroutines drain.
+
+- **`sessionStartTime` keying mismatch (#751 F2)**. The start-time map
+  was keyed by bare session ID while cleanup used `workspaceID:` prefix
+  matching — entries leaked forever. Re-keyed to composite
+  `workspaceID:sessionID`.
+
+- **Frontend cold-start busy detection (#752 F4)**. `seedBusy` checked
+  `status === "active"` but the backend enum has no `"active"` value
+  (`idle/busy/unknown/error/compacting/archived`). Now accepts `"busy"`.
+
+- **Unknown SSE event types silently dropped (#752 F6)**. Both SSE
+  handlers (ChatPage + SessionActivityProvider) now log unknown event
+  types via `console.debug`, making version drift visible.
+
+- **Wrong workspace evicted on max-active limit (#770)**.
+  `enforceMaxActiveWorkspaces` sorted by DB `UpdatedAt` (bumped by any
+  row mutation) instead of `LastActivityAt` (CRD annotation written by
+  ActivityTracker on real user interaction). An actively-used workspace
+  with old `UpdatedAt` could be auto-suspended while a stale one stayed
+  running. Now sorts by `LastActivityAt` with `UpdatedAt` fallback for
+  pre-US-23.3 workspaces.
+
+- **window.confirm fail-open data loss (#775)**. Two call sites wrapped
+  `window.confirm()` in try/catch where the catch block proceeded with
+  deletion. In sandboxed iframes, `window.confirm` throws → session or
+  workspace deleted without confirmation.
+
+- **All confirm dialogs migrated to accessible ConfirmDialog (#814)**.
+  All 14 `window.confirm` call sites replaced with the Radix Dialog-
+  based `ConfirmDialog` component via the new `useConfirmDialog` hook.
+  Dialogs now render in the DOM, working in sandboxed iframe contexts
+  where `window.confirm` is blocked entirely.
+
+- **CI review bot git identity (#813)**. The pr-review workflow failed
+  with "Author identity unknown" because `persist-credentials: false`
+  left no git identity. Added `git config` step to all 4 opencode
+  workflows.
+
+### Changed
+
+- `fetchUserWorkspacePhases` refactored to `fetchUserWorkspaceStates`
+  returning both phase and `LastActivityAt` from a single K8s API call
+  (zero additional API calls).
+
 ## [0.15.3] - 2026-08-13
 
 ### Fixed
