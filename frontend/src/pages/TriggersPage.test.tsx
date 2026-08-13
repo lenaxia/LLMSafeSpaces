@@ -14,6 +14,7 @@ const mockList = vi.fn();
 const mockCreate = vi.fn();
 const mockDelete = vi.fn();
 const mockUpdate = vi.fn();
+const mockRotateSecret = vi.fn();
 const mockWorkspacesList = vi.fn();
 
 vi.mock("../api/workflows", () => ({
@@ -23,6 +24,7 @@ vi.mock("../api/workflows", () => ({
     create: (data: unknown) => mockCreate(data),
     delete: (id: string) => mockDelete(id),
     update: (id: string, data: unknown) => mockUpdate(id, data),
+    rotateSecret: (id: string) => mockRotateSecret(id),
   },
   runApi: { get: vi.fn(), cancel: vi.fn(), nodes: vi.fn() },
 }));
@@ -323,5 +325,40 @@ describe("TriggersPage — ConfirmDialog delete (#814)", () => {
     fireEvent.click(cancelBtn);
 
     expect(mockDelete).not.toHaveBeenCalled();
+  });
+});
+
+// ─── ConfirmDialog — webhook secret rotate (#814) ─────────────────────────────
+
+describe("TriggersPage — ConfirmDialog webhook rotate (#814)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockWorkspacesList.mockResolvedValue(WORKSPACES);
+    mockList.mockResolvedValue([WEBHOOK_TRIGGER]);
+    mockRotateSecret.mockResolvedValue({ webhookSecret: "new-secret-abc" });
+  });
+
+  it("rotates the webhook secret on confirm (#814)", async () => {
+    renderPage("/triggers/trig-2");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Rotate secret" })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Rotate secret" }));
+
+    // ConfirmDialog opens — click "Rotate"
+    await waitFor(() => expect(screen.getByText("Rotate webhook secret?")).toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Rotate" }));
+
+    await waitFor(() => expect(mockRotateSecret).toHaveBeenCalledWith("trig-2"));
+  });
+
+  it("does not rotate when the dialog is cancelled (#814)", async () => {
+    renderPage("/triggers/trig-2");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Rotate secret" })).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Rotate secret" }));
+    const cancelBtn = await screen.findByRole("button", { name: "Cancel" });
+    fireEvent.click(cancelBtn);
+
+    expect(mockRotateSecret).not.toHaveBeenCalled();
   });
 });

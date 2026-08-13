@@ -316,6 +316,46 @@ describe("Sidebar — session delete", () => {
   });
 });
 
+describe("Sidebar — workspace delete", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("calls deleteWorkspace when workspace kebab delete is confirmed (#814)", async () => {
+    renderSidebar();
+    await screen.findByText("alpha");
+
+    const kebabButtons = await screen.findAllByLabelText("Actions");
+    kebabButtons[0]!.click();
+
+    (await screen.findByRole("menuitem", { name: "Delete" })).click();
+
+    // ConfirmDialog opens — click "Delete" in dialog
+    await waitFor(() => screen.getByRole("button", { name: "Delete" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => {
+      expect(workspacesApi.deleteWorkspace).toHaveBeenCalledWith("ws-1");
+    });
+  });
+
+  it("does not call deleteWorkspace when the confirm dialog is cancelled (#814)", async () => {
+    renderSidebar();
+    await screen.findByText("alpha");
+
+    const kebabButtons = await screen.findAllByLabelText("Actions");
+    kebabButtons[0]!.click();
+
+    (await screen.findByRole("menuitem", { name: "Delete" })).click();
+
+    // ConfirmDialog opens — click Cancel
+    await waitFor(() => screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(workspacesApi.deleteWorkspace).not.toHaveBeenCalled();
+  });
+});
+
 describe("Sidebar — activity spinner and unread pulsation (US-37.5/37.6)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
