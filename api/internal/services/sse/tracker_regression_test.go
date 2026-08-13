@@ -285,3 +285,68 @@ func TestSSETracker_StopWatching_NoEventsAfterReturn(t *testing.T) {
 		"no events should be processed after StopWatching returns (reconnect race — "+
 			"goroutine may still be draining buffered events)")
 }
+
+// --- Real opencode 1.18.10 wire shape validation ---
+// Fixture: pkg/agent/opencode/testdata/session_get_1_18_10.json
+// Finding: cost is a plain int (0), NOT an object. The cost-as-object path
+// is defensive — doesn't fire with real 1.18.10 data but must not break.
+
+func TestSSETracker_RealWire_1_18_10_CostAsInt(t *testing.T) {
+	var mu sync.Mutex
+	var fired bool
+	var costVal float64
+
+	tracker := newTestSSETracker(func(_, _ string) {})
+	tracker.SetOnInference(func(_, _, _ string, _, _ int64, cost float64) {
+		mu.Lock()
+		fired = true
+		costVal = cost
+		mu.Unlock()
+	})
+
+	// Real 1.18.10 shape: cost is a plain number, model has providerID.
+	// Use non-zero (42) to detect parse regressions — cost=0 is tautological
+	// (0.0 is the default float64 value).
+	tracker.processEvent("ws-1", makeSessionUpdatedEvent("ses_real", map[string]interface{}{
+		"id":   "ses_real",
+		"cost": 42,
+		"tokens": map[string]interface{}{
+			"input": 4868893, "output": 330410,
+		},
+		"model": map[string]interface{}{
+			"id": "glm-5.2", "providerID": "thekaocloud", "variant": "default",
+		},
+	}))
+
+	mu.Lock()
+	assert.True(t, fired, "must fire on real 1.18.10 wire shape (cost as plain int)")
+	assert.Equal(t, 42.0, costVal, "cost must be 42.0 from plain int input")
+	mu.Unlock()
+}
+
+func TestSSETracker_RealWire_1_18_10_NonZeroCostAsFloat(t *testing.T) {
+	var mu sync.Mutex
+	var costVal float64
+
+	tracker := newTestSSETracker(func(_, _ string) {})
+	tracker.SetOnInference(func(_, _, _ string, _, _ int64, cost float64) {
+		mu.Lock()
+		costVal = cost
+		mu.Unlock()
+	})
+
+	tracker.processEvent("ws-1", makeSessionUpdatedEvent("ses_real2", map[string]interface{}{
+		"id":   "ses_real2",
+		"cost": 0.042,
+		"tokens": map[string]interface{}{
+			"input": 1000, "output": 500,
+		},
+		"model": map[string]interface{}{
+			"id": "glm-5.2", "providerID": "thekaocloud",
+		},
+	}))
+
+	mu.Lock()
+	assert.Equal(t, 0.042, costVal, "cost must parse correctly as plain float64")
+	mu.Unlock()
+}
