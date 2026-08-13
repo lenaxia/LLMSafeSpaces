@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
 )
 
@@ -674,7 +675,9 @@ func TestRefreshIsHealthyLoop_WatchdogFiresAfterSessionsGoIdle(t *testing.T) {
 		if n == 1 {
 			_ = json.NewEncoder(w).Encode(map[string]any{"healthy": true, "version": "v1.0"})
 		} else {
-			time.Sleep(10 * time.Second)
+			// Block long enough to trigger the readiness timeout (4s)
+			// but not so long that it eats the entire poll window.
+			time.Sleep(readinessRefreshTimeout + 1*time.Second)
 		}
 	}))
 	defer mock.Close()
@@ -693,15 +696,19 @@ func TestRefreshIsHealthyLoop_WatchdogFiresAfterSessionsGoIdle(t *testing.T) {
 
 	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, fr, bc)
 
-	// Wait for boot + failures + deferral (sessions busy).
-	time.Sleep(30 * time.Second)
+	// Wait for boot + failures + deferral (sessions busy). Use Eventually
+	// instead of fixed Sleep so it works on slow CI runners.
+	require.Eventually(t, func() bool {
+		return callCount.Load() >= 4 // 1 boot + 3 failed health checks
+	}, 60*time.Second, 500*time.Millisecond, "must accumulate failures while sessions busy")
 	assert.Equal(t, 0, fr.callCount(), "must not fire while sessions busy")
 
 	// Sessions go idle.
 	bc.busy = false
 
-	// Wait for next poll cycle — watchdog should now fire.
-	time.Sleep(15 * time.Second)
-	assert.Equal(t, 1, fr.callCount(),
+	// Watchdog should fire now that sessions are idle.
+	require.Eventually(t, func() bool {
+		return fr.callCount() == 1
+	}, 30*time.Second, 500*time.Millisecond,
 		"watchdog must fire after sessions go idle — latch must NOT be consumed by deferral")
 }
