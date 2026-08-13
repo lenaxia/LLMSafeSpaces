@@ -22,7 +22,6 @@ Rules:
 | opencode (g28) | G28 — reclassify as Accepted (architecture changed in Epic 35) + invariant test | `design/stories/epic-17-security-review/THREAT-MODEL.md`, `pkg/secrets/secret_service_test.go` | In Progress | 2026-07-11 |
 | opencode (g36) | G36 — workspace secrets cleanup on deletion | `controller/internal/workspace/phase_terminating.go`, `controller/internal/workspace/phase_terminating_test.go` | In Progress | 2026-07-11 |
 | opencode (g25) | G25 — secret value field logged unredacted | `api/internal/middleware/logging.go`, `api/internal/middleware/tests/logging_test.go`, `api/internal/server/router.go` | In Progress | 2026-07-11 |
-| opencode (#751/#752 gaps) | Real-fixture 1.18.10 tests + Stop→Ensure cycle test (PR #808 follow-up) | `api/internal/handlers/sse_billing_e2e_test.go`, `api/internal/services/sse/tracker_regression_test.go` | In Progress | 2026-08-13 |
 
 
 ---
@@ -40,6 +39,8 @@ Agents waiting to work on files currently held by an active claim. When the bloc
 
 | Completed | Agent | What | Commit |
 |-----------|-------|------|--------|
+| 2026-08-13 | opencode (#751/#752 gaps) | Real-fixture 1.18.10 tests + Stop→Ensure handler cycle test (PR [#812](https://github.com/lenaxia/LLMSafeSpaces/pull/812), merged) | `8586dd20` |
+| 2026-08-13 | opencode (#751/#752) | SSE tracker billing fixes + frontend 1.18.10 drift (PR [#808](https://github.com/lenaxia/LLMSafeSpaces/pull/808), merged) | `a3e50ea9` |
 | 2026-07-11 | opencode (g-batch) | Code-fixable batch — G6/G41, G21, G42, G44, G46, G47 (PR [#543](https://github.com/lenaxia/LLMSafeSpaces/pull/543), pending review) | (pending) |
 | 2026-07-11 | opencode (g28) | G28 — reclassify as Accepted + invariant test (PR [#541](https://github.com/lenaxia/LLMSafeSpaces/pull/541), pending review) | `7518ecf1` |
 | 2026-07-11 | opencode (g36) | G36 — workspace secrets cleanup on deletion (PR [#540](https://github.com/lenaxia/LLMSafeSpaces/pull/540), merged) | `f3043835` |
