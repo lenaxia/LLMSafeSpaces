@@ -160,4 +160,45 @@ describe("ChatHistoryErrorBanner", () => {
     // an empty line.
     expect(screen.getByText("Unknown error")).toBeInTheDocument();
   });
+
+  it("shows yellow 'Reconnecting…' state for 503 with agent_unreachable reason", () => {
+    const err = new ApiClientError(503, {
+      error: "workspace connection failed",
+      message: "The agent is not responding. Please try again in a moment.",
+      reason: "agent_unreachable",
+      retryAfter: 10,
+    });
+    render(<ChatHistoryErrorBanner error={err} onRetry={vi.fn()} />);
+
+    expect(screen.getByText("Reconnecting…")).toBeInTheDocument();
+    expect(screen.queryByText("Chat history unavailable")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Details"));
+    expect(screen.getByText("Reason: agent_unreachable")).toBeInTheDocument();
+  });
+
+  it("shows yellow 'Reconnecting…' state for 503 with agent_restarting reason", () => {
+    const err = new ApiClientError(503, {
+      error: "Workspace is restarting",
+      message: "The agent is restarting. Please try again in a moment.",
+      reason: "agent_restarting",
+      retryAfter: 5,
+    });
+    render(<ChatHistoryErrorBanner error={err} onRetry={vi.fn()} />);
+
+    expect(screen.getByText("Reconnecting…")).toBeInTheDocument();
+  });
+
+  it("shows red error state for 503 with not_ready reason (not recovering)", () => {
+    const err = new ApiClientError(503, {
+      error: "workspace not ready",
+      message: "Workspace is pending.",
+      reason: "not_ready",
+      retryAfter: 10,
+    });
+    render(<ChatHistoryErrorBanner error={err} onRetry={vi.fn()} />);
+
+    expect(screen.getByText("Chat history unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
+  });
 });

@@ -395,6 +395,13 @@ func TestProxy_ConnectionFailureReturns503(t *testing.T) {
 	assert.Equal(t, http.StatusServiceUnavailable, w.Code)
 	assert.Equal(t, "10", w.Header().Get("Retry-After"))
 	assert.Contains(t, w.Body.String(), "workspace connection failed")
+
+	// Verify the new structured fields that the frontend uses for
+	// contextual recovery messaging (PR #810 Part 3).
+	body := w.Body.String()
+	assert.Contains(t, body, `"code":"service_unavailable"`, "503 must carry code field")
+	assert.Contains(t, body, `"reason":"agent_unreachable"`, "503 must carry reason field")
+	assert.Contains(t, body, `"message":`, "503 must carry a human-readable message field")
 }
 
 func TestProxy_WorkspaceNotRunning(t *testing.T) {

@@ -308,6 +308,9 @@ func TestProxy_US44_1_ErrorEventFormat_IsValidSSE(t *testing.T) {
 		"agent_died event data must include type:agent_died")
 	assert.Contains(t, body, `"reason":"unknown"`,
 		"agent_died event data must include reason")
+	// Must include the message field added for user-facing surfacing (PR #810).
+	assert.Contains(t, body, `"message":`,
+		"agent_died event data must include a message field for frontend display")
 	// Must be terminated by a blank line (SSE spec).
 	assert.Contains(t, body, "\n\n",
 		"agent_died event must be terminated by blank line")
@@ -504,6 +507,8 @@ func TestProxy_US44_1_ErrorShapesAreDocumented(t *testing.T) {
 		assert.Contains(t, body,
 			`"error":"upstream connection lost"`,
 			"B2 wire format MUST carry the 'error' field — network-failure clients depend on it")
+		assert.Contains(t, body, `"message":`,
+			"B2 wire format MUST carry a 'message' field for frontend display (PR #810)")
 	})
 
 	t.Run("agent_died_US44_1_shape", func(t *testing.T) {
