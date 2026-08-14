@@ -94,10 +94,14 @@ func (h *ProxyHandler) PermissionReply(c *gin.Context) {
 // cancels the in-flight pod fetch promptly. Internally derives a 5s
 // timeout from the parent to keep the bounded-per-call cap.
 func (h *ProxyHandler) emitPendingInputRequests(ctx context.Context, workspaceID string) {
+	// D10: ok reports whether the pending-set fetch actually succeeded.
+	// The deferred marker carries it so clients can distinguish
+	// "authoritative empty" from "fetch failed — keep your state".
+	ok := false
+
 	// D9: emit the snapshot-complete marker unconditionally on exit, even on
-	// timeout/error. This lets the provider commit (or clear) the workspace's
-	// pending set without hanging. On timeout, staging is empty -> the provider
-	// commits empty (pending cleared for this workspace).
+	// timeout/error. On success this commits the staged set; on failure
+	// (ok=false) clients keep their existing pending state.
 	defer func() {
 		if h.userBroker == nil {
 			return
@@ -106,9 +110,22 @@ func (h *ProxyHandler) emitPendingInputRequests(ctx context.Context, workspaceID
 			h.userBroker.PublishToUser(userID, apitypes.WorkspaceSSEEvent{
 				Type:        "agent.input.snapshot_complete",
 				WorkspaceID: workspaceID,
+				SnapshotOK:  &ok,
 			})
 		}
 	}()
+
+	// D10: announce the snapshot before fetching so clients open a staging
+	// window — question/permission events that follow are snapshot-emitted
+	// and must survive the marker's authoritative commit.
+	if h.userBroker != nil {
+		if userID := h.userBroker.WorkspaceOwner(workspaceID); userID != "" {
+			h.userBroker.PublishToUser(userID, apitypes.WorkspaceSSEEvent{
+				Type:        "agent.input.snapshot_begin",
+				WorkspaceID: workspaceID,
+			})
+		}
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -118,7 +135,7 @@ func (h *ProxyHandler) emitPendingInputRequests(ctx context.Context, workspaceID
 	// The legacy path does two separate fetchFromPod calls + dialect-based
 	// parsing.
 	if h.adapter != nil {
-		h.emitPendingViaAdapter(ctx, workspaceID)
+		ok = h.emitPendingViaAdapter(ctx, workspaceID)
 		return
 	}
 
@@ -141,6 +158,7 @@ func (h *ProxyHandler) emitPendingInputRequests(ctx context.Context, workspaceID
 
 	// Fetch and emit pending questions
 	if body, err := h.fetchFromPod(ctx, podIP, password, h.dialect.QuestionListPath()); err == nil {
+		ok = true
 		for _, req := range h.parseQuestionList(body) {
 			if h.sessionParents != nil {
 				req.RootSessionID = h.sessionParents.resolveRoot(ctx, workspaceID, req.SessionID)
@@ -156,7 +174,9 @@ func (h *ProxyHandler) emitPendingInputRequests(ctx context.Context, workspaceID
 		}
 	}
 
-	// Fetch and emit pending permissions (only if not auto-approving)
+	// Fetch and emit pending permissions (only if not auto-approving).
+	// A permission-list failure downgrades ok — the snapshot is not a
+	// complete picture of the workspace's pending set.
 	if !h.shouldAutoApprovePermissions(ctx, workspaceID) {
 		if body, err := h.fetchFromPod(ctx, podIP, password, h.dialect.PermissionListPath()); err == nil {
 			for _, req := range h.parsePermissionList(body) {
@@ -172,6 +192,8 @@ func (h *ProxyHandler) emitPendingInputRequests(ctx context.Context, workspaceID
 					Data:      req,
 				})
 			}
+		} else {
+			ok = false
 		}
 	}
 }
@@ -180,10 +202,11 @@ func (h *ProxyHandler) emitPendingInputRequests(ctx context.Context, workspaceID
 // input requests in a single call, then publishes them as SSE events.
 // Converts session.InputRequest to the legacy agent.QuestionRequest /
 // agent.PermissionRequest shapes the SSE consumers expect.
-func (h *ProxyHandler) emitPendingViaAdapter(ctx context.Context, workspaceID string) {
+// Returns true when the ListPending call succeeded.
+func (h *ProxyHandler) emitPendingViaAdapter(ctx context.Context, workspaceID string) bool {
 	pending, err := h.adapter.ListPending(ctx, "", workspaceID, "")
 	if err != nil {
-		return
+		return false
 	}
 	autoApprove := h.shouldAutoApprovePermissions(ctx, workspaceID)
 
@@ -248,6 +271,7 @@ func (h *ProxyHandler) emitPendingViaAdapter(ctx context.Context, workspaceID st
 			})
 		}
 	}
+	return true
 }
 
 // fetchFromPod makes a GET request to the workspace pod.

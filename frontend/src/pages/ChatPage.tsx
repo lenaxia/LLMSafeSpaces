@@ -31,9 +31,23 @@ import { sessionsApi } from "../api/sessions";
 import type { Message, SessionListItem, WorkspaceStreamEvent, AgentEvent, QuestionRequest, PermissionRequest } from "../api/types";
 import { QuestionPrompt } from "../components/chat/QuestionPrompt";
 import { PermissionPrompt } from "../components/chat/PermissionPrompt";
-import { useClearPendingUnread, useAddPendingQuestion, useAddPendingPermission, useRemovePendingAction, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, useIsSessionBusy } from "../providers/SessionActivityProvider";
+import { useClearPendingUnread, useAddPendingQuestion, useAddPendingPermission, useRemovePendingAction, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, useIsSessionBusy, useWorkspaceInputSnapshot } from "../providers/SessionActivityProvider";
 
 type StreamPart = { type: "text" | "thinking" | "tool"; text: string; toolState?: string; toolCallID?: string; toolInput?: unknown; toolOutput?: string; messageID?: string };
+
+// Reconnect-mode activation window. Reconnect mode ("mounted into an
+// in-progress run") may only ARM within this long of the page mounting into
+// the session (or an SSE reconnect) — never from a mid-session busy
+// transition (e.g. the 60s send timeout dropping localStreaming while the
+// session legitimately stays busy waiting for an answer). Without the
+// window, that mid-session transition armed the stuck-session auto-abort
+// against live prompts (the "Session was interrupted" false positive).
+const RECONNECT_ACTIVATION_WINDOW_MS = 15_000;
+
+// Dwell before the stuck-session auto-abort fires once all evidence
+// conditions hold. Guards the sub-second race where a question registers in
+// opencode's queue between the snapshot fetch and its marker.
+const AUTO_ABORT_DWELL_MS = 1_500;
 
 // messageIdentityKey returns a stable identity for a chat message, used to tell
 // when an optimistic local message (id `local-N`) has round-tripped into server
@@ -319,6 +333,20 @@ export function ChatPage() {
   // US-15.4: Reconnect mode — active when page loads into a busy session
   const isReconnectMode = useRef(false);
   const knownLivePartIds = useRef<Set<string>>(new Set());
+  // F1 fix: activation is only permitted within RECONNECT_ACTIVATION_WINDOW_MS
+  // of mount/session-change or an SSE reconnect. armedAt feeds the auto-abort
+  // snapshot gate (only post-arming snapshots count as evidence).
+  const reconnectWindowOpenRef = useRef(true);
+  const reconnectArmedAtRef = useRef(0);
+  const reconnectWindowTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  const armReconnectWindow = useCallback(() => {
+    reconnectWindowOpenRef.current = true;
+    if (reconnectWindowTimerRef.current) clearTimeout(reconnectWindowTimerRef.current);
+    reconnectWindowTimerRef.current = setTimeout(() => {
+      reconnectWindowOpenRef.current = false;
+    }, RECONNECT_ACTIVATION_WINDOW_MS);
+  }, []);
 
   const [sessionWasInterrupted, setSessionWasInterrupted] = useState(false);
   const [agentDied, setAgentDied] = useState(false);
@@ -337,13 +365,23 @@ export function ChatPage() {
     // S36.4: Reset compaction state when navigating to a different session
     prevContextUsedRef.current = undefined;
     setCompactionDetected(false);
+    // F1 fix: open the activation window for the newly-mounted session.
+    armReconnectWindow();
+    return () => {
+      if (reconnectWindowTimerRef.current) clearTimeout(reconnectWindowTimerRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId]);
 
   // Enter reconnect mode when session is busy — MUST be after the session-change
   // reset effect so it runs second on mount and isn't cleared.
+  // F1 fix: only while the activation window is open (mount / SSE reconnect).
   useEffect(() => {
-    if (isSessionBusy && !localStreaming) {
-      isReconnectMode.current = true;
+    if (reconnectWindowOpenRef.current && isSessionBusy && !localStreaming) {
+      if (!isReconnectMode.current) {
+        isReconnectMode.current = true;
+        reconnectArmedAtRef.current = Date.now();
+      }
     }
   }, [isSessionBusy, localStreaming]);
 
@@ -388,12 +426,20 @@ export function ChatPage() {
   // Auto-abort sessions that are stuck on a question/permission tool that opencode
   // lost from its queue (e.g. due to opencode restarting while a question was pending).
   //
-  // Trigger: reconnect mode (busy on page load) + history has loaded + last assistant
-  // message ends with a question or permission tool in "running" state + no pending
-  // questions/permissions arrived via SSE (meaning opencode's queue is empty).
+  // Trigger: reconnect mode (busy at page load / SSE reconnect) + history has
+  // loaded + last assistant message ends with a question or permission tool in
+  // "running" state + no pending questions/permissions arrived via SSE.
+  //
+  // F2 fix: additionally requires a SUCCESSFUL input snapshot
+  // (agent.input.snapshot_complete ok:true) received AFTER reconnect mode
+  // armed — opencode's queue was actually consulted and reports nothing
+  // pending. A failed fetch (ok:false, e.g. opencode mid-restart) or a
+  // pre-arming snapshot is not evidence. A short dwell then guards the
+  // fetch→marker race where a just-asked question isn't in the fetched set.
   //
   // After abort we reconcile history and surface an "interrupted" banner.
   const pendingPromptCount = pendingQuestions.length + pendingPermissions.length;
+  const inputSnapshot = useWorkspaceInputSnapshot(workspaceId ?? "");
   useEffect(() => {
     if (!isReconnectMode.current) return;
     if (!workspaceId || !sessionId) return;
@@ -401,6 +447,10 @@ export function ChatPage() {
     if (hasAutoAbortedRef.current) return;
     // If SSE already delivered the question/permission, don't abort — let the user answer.
     if (pendingPromptCount > 0) return;
+    // A successful snapshot received after arming is required proof that
+    // opencode's pending-input queue was consulted and is empty.
+    if (!inputSnapshot?.ok) return;
+    if (inputSnapshot.at <= reconnectArmedAtRef.current) return;
 
     const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
     if (!lastAssistant) return;
@@ -413,11 +463,21 @@ export function ChatPage() {
     );
     if (!stuckTool) return;
 
-    hasAutoAbortedRef.current = true;
-    workspacesApi.abortSession(workspaceId, sessionId)
-      .then(() => { setSessionWasInterrupted(true); reconcileOnIdle(); })
-      .catch(() => { setSessionWasInterrupted(true); reconcileOnIdle(); });
-  }, [workspaceId, sessionId, history, pendingPromptCount, reconcileOnIdle]);
+    // All evidence holds — dwell briefly so a question registering in
+    // opencode's queue between the snapshot fetch and its marker (which
+    // would arrive as an agent.question event and cancel this timer via the
+    // pendingPromptCount guard) cannot be killed.
+    const timer = setTimeout(() => {
+      if (hasAutoAbortedRef.current) return;
+      if (pendingPromptCount > 0) return;
+      hasAutoAbortedRef.current = true;
+      workspacesApi.abortSession(workspaceId, sessionId)
+        .then(() => { setSessionWasInterrupted(true); reconcileOnIdle(); })
+        .catch(() => { setSessionWasInterrupted(true); reconcileOnIdle(); });
+    }, AUTO_ABORT_DWELL_MS);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workspaceId, sessionId, history, pendingPromptCount, inputSnapshot, reconcileOnIdle]);
   const hasAutoRenamedRef = useRef(false);
   useEffect(() => {
     if (!sessionTitle || !workspaceName || !workspaceId || hasAutoRenamedRef.current) return;
@@ -775,7 +835,12 @@ export function ChatPage() {
     }
     void queue.refreshQueue();
     void reconcileOnIdle();
-  }, [queryClient, workspaceId, queue, reconcileOnIdle]);
+    // F1 fix: an SSE gap means we may have missed part events — re-arm the
+    // reconnect activation window so boundary detection gates the resumed
+    // stream. The auto-abort remains snapshot-gated, so re-arming cannot
+    // reintroduce false aborts.
+    armReconnectWindow();
+  }, [queryClient, workspaceId, queue, reconcileOnIdle, armReconnectWindow]);
 
   // Connect SSE unconditionally (even before workspace is Active) so we can
   // detect the Pending→Active phase transition and auto-create a session.
@@ -807,6 +872,8 @@ export function ChatPage() {
     currentThinkingIdxRef.current = -1;
     currentTextIdxRef.current = -1;
     isReconnectMode.current = false;
+    reconnectWindowOpenRef.current = false;
+    if (reconnectWindowTimerRef.current) clearTimeout(reconnectWindowTimerRef.current);
     knownLivePartIds.current.clear();
     const userMsg: Message = {
       id: `local-${++idCounterRef.current}`,

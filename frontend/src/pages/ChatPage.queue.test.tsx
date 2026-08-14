@@ -62,6 +62,7 @@ vi.mock("../providers/SessionActivityProvider", async () => {
     usePendingQuestionsForSession: () => [],
     usePendingPermissionsForSession: () => [],
     useClearSessionPendingPrompts: () => () => {},
+    useWorkspaceInputSnapshot: () => undefined,
     useSessionStatus: () => "idle",
     resolveSessionStatus: () => "idle",
     SessionActivityProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,

@@ -13,4 +13,9 @@ type WorkspaceSSEEvent struct {
 	Status      string      `json:"status,omitempty"`
 	EventType   string      `json:"event_type,omitempty"`
 	Data        interface{} `json:"data,omitempty"`
+	// SnapshotOK is set only on agent.input.snapshot_complete markers:
+	// true when the pending-set fetch from the pod succeeded (the staged
+	// set is authoritative), false when it failed or timed out (clients
+	// must keep their existing pending state). nil on all other events.
+	SnapshotOK *bool `json:"snapshot_ok,omitempty"`
 }

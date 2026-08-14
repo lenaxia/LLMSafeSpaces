@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { SessionActivityProvider, useIsSessionBusy, useIsSessionUnread, useWorkspaceBusyCount, useClearPendingUnread, useIsSessionPendingAction, useAddPendingAction, useRemovePendingAction, useSessionPendingActions, useAddPendingQuestion, useAddPendingPermission, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, resolveSessionStatus } from "./SessionActivityProvider";
+import { SessionActivityProvider, useIsSessionBusy, useIsSessionUnread, useWorkspaceBusyCount, useClearPendingUnread, useIsSessionPendingAction, useAddPendingAction, useRemovePendingAction, useSessionPendingActions, useAddPendingQuestion, useAddPendingPermission, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, resolveSessionStatus, useWorkspaceInputSnapshot } from "./SessionActivityProvider";
 import type { QuestionRequest, PermissionRequest } from "../api/types";
 
 let capturedOnEvent: ((data: unknown) => void) | undefined;
@@ -1734,8 +1734,199 @@ describe("US-55.3: provider onEvent input-event handling", () => {
   });
 });
 
-describe("agent_died handler", () => {
-  function BusyIndicator({ sessionId }: { sessionId: string }) {
+describe("D10: snapshot begin/ok semantics (false-wipe fix)", () => {
+  function PendingIndicator({ sessionId }: { sessionId: string }) {
+    const isPending = useIsSessionPendingAction(sessionId);
+    return <span data-testid="pending">{isPending ? "yes" : "no"}</span>;
+  }
+
+  function SnapshotStatus({ workspaceId }: { workspaceId: string }) {
+    const snap = useWorkspaceInputSnapshot(workspaceId);
+    return (
+      <span data-testid="snapshot">
+        {snap ? `${snap.ok}:${snap.at > 0}` : "none"}
+      </span>
+    );
+  }
+
+  it("ok:false marker keeps existing pending state (fetch failure must not wipe)", () => {
+    renderProvider(<PendingIndicator sessionId="ses-1" />);
+
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_live",
+      });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+
+    // Snapshot attempt fails (pod restarting / transient fetch error)
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1" });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.input.snapshot_complete",
+        workspace_id: "ws-1",
+        snapshot_ok: false,
+      });
+    });
+
+    // Live question must survive — no empty-commit wipe
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+  });
+
+  it("post-commit live question survives a begin → re-emit → ok marker cycle", () => {
+    renderProvider(<PendingIndicator sessionId="ses-1" />);
+
+    // First snapshot: question staged + committed
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_live",
+      });
+    });
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1" });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+
+    // Second snapshot (e.g. ChatPage mount opening workspace SSE): begin
+    // re-opens staging, the pod re-emits the still-live question, marker ok.
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1" });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_live",
+      });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.input.snapshot_complete",
+        workspace_id: "ws-1",
+        snapshot_ok: true,
+      });
+    });
+
+    // Regression: the pre-D10 code never staged post-commit events, so this
+    // marker wiped the live question.
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+  });
+
+  it("post-commit ghost cleared by begin → ok marker (anti-entropy preserved)", () => {
+    renderProvider(<PendingIndicator sessionId="ses-1" />);
+
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_ghost",
+      });
+    });
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1" });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+
+    // Question was resolved while disconnected; pod no longer lists it.
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1" });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.input.snapshot_complete",
+        workspace_id: "ws-1",
+        snapshot_ok: true,
+      });
+    });
+
+    expect(screen.getByTestId("pending").textContent).toBe("no");
+  });
+
+  it("useWorkspaceInputSnapshot exposes ok:false after a failed snapshot", () => {
+    renderProvider(
+      <>
+        <PendingIndicator sessionId="ses-1" />
+        <SnapshotStatus workspaceId="ws-1" />
+      </>,
+    );
+
+    expect(screen.getByTestId("snapshot").textContent).toBe("none");
+
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1" });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.input.snapshot_complete",
+        workspace_id: "ws-1",
+        snapshot_ok: false,
+      });
+    });
+
+    expect(screen.getByTestId("snapshot").textContent).toBe("false:true");
+  });
+
+  it("useWorkspaceInputSnapshot exposes ok:true after a successful snapshot", () => {
+    renderProvider(<SnapshotStatus workspaceId="ws-1" />);
+
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1" });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.input.snapshot_complete",
+        workspace_id: "ws-1",
+        snapshot_ok: true,
+      });
+    });
+
+    expect(screen.getByTestId("snapshot").textContent).toBe("true:true");
+  });
+
+  it("ok:false marker does not mark the workspace committed (legacy marker can still commit)", () => {
+    renderProvider(<PendingIndicator sessionId="ses-1" />);
+
+    // Failed snapshot first — no commit, workspace stays uncommitted
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1" });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.input.snapshot_complete",
+        workspace_id: "ws-1",
+        snapshot_ok: false,
+      });
+    });
+
+    // Question arrives organically (uncommitted ws → staged per legacy rule)
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_new",
+      });
+    });
+
+    // A later legacy marker (no ok field) commits normally
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1" });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+  });
+});
+
+describe("agent_died handler", () => {  function BusyIndicator({ sessionId }: { sessionId: string }) {
     const isBusy = useIsSessionBusy(sessionId);
     return <span data-testid="busy">{isBusy ? "yes" : "no"}</span>;
   }
