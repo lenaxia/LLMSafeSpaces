@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -473,7 +474,12 @@ func TestV2StrandedRecovery_IntegrationWithReconcile(t *testing.T) {
 	handler.v2Pending.add("ws-1", "ses-stranded")
 
 	// Call the REAL reconcileSessionState — the full wiring path.
-	handler.reconcileSessionState("ws-1", srvAddr, "test-pw")
+	// podIP must be a bare host — reconcile formats "http://%s:%d". Passing
+	// srvAddr (host:port) builds a double-port URL that Go 1.26's stricter
+	// net/url rejects (1.25 parsed it leniently; the routing transport's
+	// host rewrite masked the malformation).
+	host, _, _ := net.SplitHostPort(srvAddr)
+	handler.reconcileSessionState("ws-1", host, "test-pw")
 
 	assert.Equal(t, int32(1), atomic.LoadInt32(&wakeCount),
 		"reconcileSessionState must wake stranded session with pending V2 input")
