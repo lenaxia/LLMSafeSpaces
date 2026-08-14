@@ -112,8 +112,23 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REF: ${{ needs.verify-changelog.outputs.ref }}
         run: |
-          SHA="${REF#refs/tags/}"
-          echo "Waiting for CI workflow run on commit ${SHA:0:8}..."
+          TAG="${REF#refs/tags/}"
+          # Resolve the tag to its commit SHA — gh run list --commit
+          # requires a 40-char SHA, not a tag name.
+          SHA=$(gh api "repos/${{ github.repository }}/git/refs/tags/${TAG}" \
+            --jq '.object.sha' 2>/dev/null) || {
+            echo "::error::Could not resolve tag ${TAG} to a commit SHA."
+            exit 1
+          }
+          # Handle annotated tags (object.type == "tag" → dereference).
+          OBJECT_TYPE=$(gh api "repos/${{ github.repository }}/git/tags/${SHA}" \
+            --jq '.object.type // "commit"' 2>/dev/null || echo "commit")
+          if [ "$OBJECT_TYPE" = "commit" ] && [ "${#SHA}" -ne 40 ]; then
+            SHA=$(gh api "repos/${{ github.repository }}/git/tags/${SHA}" \
+              --jq '.object.sha' 2>/dev/null) || true
+          fi
+          echo "Tag ${TAG} → commit ${SHA:0:8}"
+          echo "Waiting for CI workflow run..."
 
           MAX_WAIT=2400  # 40 minutes
           INTERVAL=30
