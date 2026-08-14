@@ -267,8 +267,11 @@ func (h *ProxyHandler) proxyToWorkspaceWithErrBody(
 		c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"error":      "workspace not ready",
+			"code":       "service_unavailable",
+			"reason":     "not_ready",
 			"phase":      workspace.Status.Phase,
 			"retryAfter": retryAfterSec,
+			"message":    fmt.Sprintf("Workspace is %s. This usually takes a few seconds.", strings.ToLower(string(workspace.Status.Phase))),
 		})
 		return
 	}
@@ -432,10 +435,23 @@ func (h *ProxyHandler) proxyToWorkspaceWithErrBody(
 			}
 			if !c.Writer.Written() && c.Request.Context().Err() == nil {
 				if errors.Is(ferr, errBufferTimeout) {
-					c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Workspace is restarting, please try again in a moment"})
+					c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
+					c.JSON(http.StatusServiceUnavailable, gin.H{
+						"error":      "Workspace is restarting, please try again in a moment",
+						"code":       "service_unavailable",
+						"reason":     "agent_restarting",
+						"retryAfter": retryAfterSec,
+						"message":    "The agent is restarting (credential change, OOM, or crash recovery). Your request will work once it's back.",
+					})
 				} else {
 					c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
-					c.JSON(http.StatusServiceUnavailable, gin.H{"error": "workspace connection failed", "retryAfter": retryAfterSec})
+					c.JSON(http.StatusServiceUnavailable, gin.H{
+						"error":      "workspace connection failed",
+						"code":       "service_unavailable",
+						"reason":     "agent_unreachable",
+						"retryAfter": retryAfterSec,
+						"message":    "The agent is not responding. It may be restarting or recovering — please try again in a moment.",
+					})
 				}
 			}
 			return
@@ -451,7 +467,10 @@ func (h *ProxyHandler) proxyToWorkspaceWithErrBody(
 			c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
 			c.JSON(http.StatusServiceUnavailable, gin.H{
 				"error":      "workspace connection failed",
+				"code":       "service_unavailable",
+				"reason":     "agent_unreachable",
 				"retryAfter": retryAfterSec,
+				"message":    "The agent is not responding. It may be restarting or recovering — please try again in a moment.",
 			})
 		}
 		return
@@ -617,7 +636,7 @@ func (h *ProxyHandler) doProxy(c *gin.Context, podIP, targetPath, password strin
 		if readErr != nil {
 			if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
 				if isSSEStream && bytesReceived > 0 {
-					const agentDiedEvent = "event: error\ndata: {\"type\":\"agent_died\",\"reason\":\"unknown\"}\n\n"
+					const agentDiedEvent = "event: error\ndata: {\"type\":\"agent_died\",\"reason\":\"unknown\",\"message\":\"The agent stopped responding (OOM, crash, or restart). Reconnecting…\"}\n\n"
 					_, _ = c.Writer.Write([]byte(agentDiedEvent))
 					if canFlush {
 						flusher.Flush()
@@ -631,7 +650,7 @@ func (h *ProxyHandler) doProxy(c *gin.Context, podIP, targetPath, password strin
 			// distinguish "network problem" from "process gone". Both
 			// shapes are pinned by TestProxy_US44_1_ErrorShapesAreDocumented
 			// and TestProxy_B2_MidStreamReadError_WritesSSEErrorEvent.
-			const sseErrEvent = "event: error\ndata: {\"error\":\"upstream connection lost\"}\n\n"
+			const sseErrEvent = "event: error\ndata: {\"error\":\"upstream connection lost\",\"message\":\"Connection to the agent was lost. Reconnecting…\"}\n\n"
 			_, _ = c.Writer.Write([]byte(sseErrEvent))
 			if canFlush {
 				flusher.Flush()

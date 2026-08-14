@@ -457,8 +457,11 @@ func (h *ProxyHandler) fetchUpstreamHistory(c *gin.Context, sessionID string) ([
 		c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"error":      "workspace not ready",
+			"code":       "service_unavailable",
+			"reason":     "not_ready",
 			"phase":      workspace.Status.Phase,
 			"retryAfter": retryAfterSec,
+			"message":    fmt.Sprintf("Workspace is %s. This usually takes a few seconds.", strings.ToLower(string(workspace.Status.Phase))),
 		})
 		return nil, 0, fmt.Errorf("workspace not ready")
 	}
@@ -521,7 +524,10 @@ func (h *ProxyHandler) fetchUpstreamHistory(c *gin.Context, sessionID string) ([
 			// buffered retry — buffering is reserved for writes.
 			c.JSON(http.StatusServiceUnavailable, gin.H{
 				"error":      "workspace connection failed",
+				"code":       "service_unavailable",
+				"reason":     "agent_unreachable",
 				"retryAfter": retryAfterSec,
+				"message":    "Chat history is temporarily unavailable — the agent is restarting or recovering. Please try again in a moment.",
 			})
 			return nil, 0, doErr
 		}

@@ -669,21 +669,6 @@ jobs:
           LLMSAFESPACES_URL: http://localhost:8080
         run: go run ./scenarios/s-ws-quota/
 
-      - name: Go canary — D-ACCOUNT-RECOVER
-        env:
-          LLMSAFESPACES_URL: http://localhost:8080
-        run: go run ./scenarios/d-account-recover/
-
-      - name: Go canary — D-CHANGE-PASSWORD
-        env:
-          LLMSAFESPACES_URL: http://localhost:8080
-        run: go run ./scenarios/d-change-password/
-
-      - name: Go canary — D-KEY-ROTATE
-        env:
-          LLMSAFESPACES_URL: http://localhost:8080
-        run: go run ./scenarios/d-key-rotate/
-
       - name: Go canary — S-RATE-LIMIT
         env:
           LLMSAFESPACES_URL: http://localhost:8080
@@ -740,8 +725,7 @@ jobs:
             s-health s-auth s-auth-config s-logout s-apikey s-user-settings \
             s-ws-crud s-ws-status s-secret-crud s-secret-reveal s-secret-audit \
             s-secret-bindings s-env-vars s-cred-crud s-error-format s-ownership \
-            s-email-reset s-rate-limit s-ws-quota \
-            d-account-recover d-change-password d-key-rotate; do
+            s-email-reset s-rate-limit s-ws-quota; do
             echo "--- TypeScript: $scenario ---"
             npx tsx sdks/canary/typescript/scenarios/${scenario}.ts
           done

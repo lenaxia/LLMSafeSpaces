@@ -197,6 +197,19 @@ export interface ApiError {
    * Mirrors the HTTP `Retry-After` header value.
    */
   retryAfter?: number;
+  /**
+   * Structured reason for 503 responses. One of:
+   * - "not_ready" — workspace is booting/resuming
+   * - "agent_unreachable" — opencode hung or crashed
+   * - "agent_restarting" — watchdog or credential reload in progress
+   * Used by the frontend to show contextual recovery messaging.
+   */
+  reason?: string;
+  /**
+   * Human-readable explanation of the error. Always present on 503s
+   * from the proxy; may be absent on other error types.
+   */
+  message?: string;
 }
 
 // --- Workspace SSE event types ---
@@ -292,7 +305,7 @@ export interface QueueUpdateEvent {
 export interface AgentDiedEvent {
   type: "agent_died";
   workspace_id?: string;
-  data: { reason: string };
+  data: { reason: string; message?: string };
 }
 
 /**

@@ -44,3 +44,29 @@ export class RateLimitError extends LLMSafeSpacesError {
     this.name = "RateLimitError";
   }
 }
+
+export class ServiceUnavailableError extends LLMSafeSpacesError {
+  /**
+   * The workspace exists but cannot service requests (503). The `reason`
+   * field distinguishes the cause:
+   * - "not_ready" — workspace is booting or resuming
+   * - "agent_unreachable" — the agent process hung or crashed
+   * - "agent_restarting" — the agent is being restarted by the health
+   *   watchdog or a credential reload
+   *
+   * Retry after `retryAfter` seconds (defaults to 10).
+   */
+  public readonly reason?: string;
+  public readonly retryAfter?: number;
+
+  constructor(
+    message: string = "Service temporarily unavailable",
+    reason?: string,
+    retryAfter?: number,
+  ) {
+    super(message, 503, "SERVICE_UNAVAILABLE");
+    this.name = "ServiceUnavailableError";
+    this.reason = reason;
+    this.retryAfter = retryAfter;
+  }
+}

@@ -1495,11 +1495,11 @@ describe("ChatPage SSE event handler", () => {
   });
 
   describe("agent_died events (US-44.1c)", () => {
-    function makeAgentDiedEvent(workspaceId: string): WorkspaceStreamEvent {
+    function makeAgentDiedEvent(workspaceId: string, message?: string): WorkspaceStreamEvent {
       return {
         type: "agent_died",
         workspace_id: workspaceId,
-        data: { reason: "unknown" },
+        data: { reason: "unknown", ...(message ? { message } : {}) },
       };
     }
 
@@ -1508,14 +1508,27 @@ describe("ChatPage SSE event handler", () => {
       renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
 
-      expect(screen.queryByText(/Agent is restarting/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/The agent stopped responding and is being restarted automatically/i)).not.toBeInTheDocument();
 
       sendSSEEvent(makeAgentDiedEvent("ws-1"));
 
       await waitFor(() => {
-        const banner = screen.getByText(/Agent is restarting/i);
+        const banner = screen.getByText(/The agent stopped responding and is being restarted automatically/i);
         expect(banner).toBeInTheDocument();
         expect(banner.closest("[role='alert']")).not.toBeNull();
+      });
+    });
+
+    it("renders the agent_died banner with SSE-provided message when present", async () => {
+      (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active" });
+      renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
+      await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
+
+      const customMessage = "Custom agent died message from server";
+      sendSSEEvent(makeAgentDiedEvent("ws-1", customMessage));
+
+      await waitFor(() => {
+        expect(screen.getByText(`⚠ ${customMessage}`)).toBeInTheDocument();
       });
     });
 
@@ -1526,12 +1539,12 @@ describe("ChatPage SSE event handler", () => {
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
 
       sendSSEEvent(makeAgentDiedEvent("ws-1"));
-      await waitFor(() => expect(screen.getByText(/Agent is restarting/i)).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText(/The agent stopped responding and is being restarted automatically/i)).toBeInTheDocument());
 
       await user.click(screen.getByRole("button", { name: "Dismiss" }));
 
       await waitFor(() => {
-        expect(screen.queryByText(/Agent is restarting/i)).not.toBeInTheDocument();
+        expect(screen.queryByText(/The agent stopped responding and is being restarted automatically/i)).not.toBeInTheDocument();
       });
     });
 
@@ -1541,14 +1554,14 @@ describe("ChatPage SSE event handler", () => {
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
 
       sendSSEEvent(makeAgentDiedEvent("ws-1"));
-      await waitFor(() => expect(screen.getByText(/Agent is restarting/i)).toBeInTheDocument());
+      await waitFor(() => expect(screen.getByText(/The agent stopped responding and is being restarted automatically/i)).toBeInTheDocument());
 
       await act(async () => {
         navigateRef.current?.("/chat/ws-1/sess-2");
       });
 
       await waitFor(() => {
-        expect(screen.queryByText(/Agent is restarting/i)).not.toBeInTheDocument();
+        expect(screen.queryByText(/The agent stopped responding and is being restarted automatically/i)).not.toBeInTheDocument();
       });
     });
   });

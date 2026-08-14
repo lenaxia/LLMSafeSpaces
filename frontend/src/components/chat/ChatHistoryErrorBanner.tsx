@@ -57,22 +57,22 @@ export function ChatHistoryErrorBanner({
   const ref = error instanceof ApiClientError ? extractAgentErrorRef(error.body) : undefined;
 
   let message: string = "Unknown error";
+  const reason = error instanceof ApiClientError ? error.body?.reason : undefined;
+  const isRecovering = status === 503 && (reason === "agent_unreachable" || reason === "agent_restarting");
+
   if (error instanceof ApiClientError) {
-    // Try opencode's `message` (both flat and nested), then the API's
-    // own `error` field. Only fall back to `err.message` for the
-    // shape-less network-layer case — since `super(body.error)` fills
-    // `err.message` with either the API `error` string or "" (empty)
-    // for opencode-shaped bodies that lack a top-level `error`. Empty
-    // strings are falsy and short-circuit the `&&` guard; the
-    // `!== "undefined"` clause is defense-in-depth against subclasses
-    // that stringify undefined.
-    message =
-      extractAgentErrorMessage(error.body) ??
-      (typeof error.body?.error === "string" && error.body.error.length > 0
-        ? error.body.error
-        : error.message && error.message !== "undefined"
-          ? error.message
-          : "Unknown error");
+    // Prefer the API's structured `message` field (always present on 503s).
+    if (typeof error.body?.message === "string" && error.body.message.length > 0) {
+      message = error.body.message;
+    } else {
+      message =
+        extractAgentErrorMessage(error.body) ??
+        (typeof error.body?.error === "string" && error.body.error.length > 0
+          ? error.body.error
+          : error.message && error.message !== "undefined"
+            ? error.message
+            : "Unknown error");
+    }
   } else if (error instanceof Error && error.message) {
     message = error.message;
   }
@@ -80,10 +80,14 @@ export function ChatHistoryErrorBanner({
   return (
     <div
       role="alert"
-      className="flex flex-col gap-2 border-b border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+      className={`flex flex-col gap-2 border-b px-4 py-3 text-sm ${
+        isRecovering
+          ? "border-yellow-300/50 bg-yellow-50 text-yellow-800 dark:border-yellow-800/50 dark:bg-yellow-950 dark:text-yellow-200"
+          : "border-destructive/50 bg-destructive/10 text-destructive"
+      }`}
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="font-medium">Chat history unavailable</span>
+        <span className="font-medium">{isRecovering ? "Reconnecting…" : "Chat history unavailable"}</span>
         <button
           type="button"
           onClick={onRetry}
@@ -96,6 +100,7 @@ export function ChatHistoryErrorBanner({
         <summary className="cursor-pointer">Details</summary>
         <div className="mt-1 space-y-0.5 font-mono">
           {status !== undefined && <div>HTTP {status}</div>}
+          {reason && <div>Reason: {reason}</div>}
           <div>{message}</div>
           {ref && <div>Ref: {ref}</div>}
         </div>

@@ -322,6 +322,7 @@ export function ChatPage() {
 
   const [sessionWasInterrupted, setSessionWasInterrupted] = useState(false);
   const [agentDied, setAgentDied] = useState(false);
+  const [agentDiedMessage, setAgentDiedMessage] = useState<string | null>(null);
   const hasAutoAbortedRef = useRef(false);
 
   // Reset reconnect state on session change — MUST be defined before the
@@ -332,6 +333,7 @@ export function ChatPage() {
     knownLivePartIds.current.clear();
     setSessionWasInterrupted(false);
     setAgentDied(false);
+    setAgentDiedMessage(null);
     // S36.4: Reset compaction state when navigating to a different session
     prevContextUsedRef.current = undefined;
     setCompactionDetected(false);
@@ -754,6 +756,7 @@ export function ChatPage() {
       removePendingAction(request_id);
     } else if (event.type === "agent_died") {
       setAgentDied(true);
+      if (event.data?.message) setAgentDiedMessage(event.data.message);
     } else {
       console.debug("[ChatPage] unhandled SSE event type:", event.type);
     }
@@ -1006,7 +1009,7 @@ export function ChatPage() {
 
       {isReady && agentDied && (
         <div role="alert" className="flex items-center gap-2 border-b border-yellow-200 bg-yellow-50 px-4 py-2 text-xs text-yellow-800 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-200">
-          <span>⚠ Agent is restarting (credential change, OOM, or crash) — reconnecting…</span>
+          <span>⚠ {agentDiedMessage ?? "The agent stopped responding and is being restarted automatically. Reconnecting…"}</span>
           <button
             className="ml-auto shrink-0 underline hover:no-underline"
             onClick={() => setAgentDied(false)}
@@ -1044,15 +1047,17 @@ export function ChatPage() {
 
       {streamTimedOut && (
         <div className="flex items-center justify-between gap-2 border-b border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          <span>Response interrupted — the connection timed out</span>
+          <span>Response interrupted — the agent may be processing a large operation or recovering. Try resending your message.</span>
           <button onClick={clearStreamTimedOut} className="underline hover:no-underline">Dismiss</button>
         </div>
       )}
 
       {chatError && (
-        <div className="flex items-center justify-between gap-2 border-b border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          <span>{chatError}</span>
-          <button onClick={clearError} className="underline hover:no-underline">Dismiss</button>
+        <div className="flex flex-col gap-1 border-b border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          <div className="flex items-center justify-between gap-2">
+            <span>{chatError}</span>
+            <button onClick={clearError} className="shrink-0 underline hover:no-underline">Dismiss</button>
+          </div>
         </div>
       )}
 

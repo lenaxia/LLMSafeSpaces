@@ -518,24 +518,23 @@ func TestPodBuilder_InitXDGDataHome(t *testing.T) {
 			"any drift between the two would silently break the personal-key bypass")
 }
 
-// TestPodBuilder_WorkspaceGitInit verifies the workspace-dirs init
-// container initializes /workspace as a git repo on every pod boot.
-// This is the prerequisite for FileChange parts (US-65.3/Epic 65):
-// pkg/agent/opencode/filediff.Producer runs `git diff HEAD` against
-// the paths opencode's session.diff event reports, and that only
-// works if /workspace is a git repo. The init is idempotent —
-// `git init` is a no-op on an existing repo, so pod restarts and
-// resumed workspaces both work cleanly.
+// TestPodBuilder_WorkspaceDirsInit_NoGitInit verifies the workspace-dirs
+// init container creates PVC directories but does NOT run `git init`.
 //
-// The git config lines set a deterministic identity so future per-turn
-// commits succeed without inheriting host config — CI pods often lack
-// user.email and would fail commits. The identity uses the workspace
-// name for traceability in `git log` when an operator inspects the PVC.
+// PR #715 (US-65.3) added `git init /workspace` to enable
+// pkg/agent/opencode/filediff.Producer. This was the root cause of the
+// snapshot bloat spiral (worklog 0746): making /workspace a git repo
+// triggers opencode's snapshot system, which has no self-exclusion and
+// recursively stages its own object database inside .local/, causing
+// exponential growth, CPU starvation, and "Load failed" for users.
 //
-// Lives in workspace-dirs (not workspace-setup) because workspace-dirs
-// runs unconditionally on every pod; workspace-setup only runs when
-// the workspace has packages or an initScript.
-func TestPodBuilder_WorkspaceGitInit(t *testing.T) {
+// The fix is to NOT git-init /workspace. opencode detects VCS
+// per-project (when users clone repos to /workspace/myproject) and does
+// the right thing natively. The container-level git repo served no
+// purpose: filediff.Producer diffs against HEAD (which never existed —
+// no commits were ever made), and opencode's native session.diff event
+// already carries patch text.
+func TestPodBuilder_WorkspaceDirsInit_NoGitInit(t *testing.T) {
 	ws := newWorkspaceForPodBuilder(t)
 	r := reconcilerFor(t)
 
@@ -549,17 +548,11 @@ func TestPodBuilder_WorkspaceGitInit(t *testing.T) {
 
 	script := dirsInit.Command[2]
 	assert.Contains(t, script, "mkdir -p /pvc/workspace /pvc/home /pvc/tmp",
-		"workspace-dirs must still create the three PVC subPath directories")
-	assert.Contains(t, script, "cd /pvc/workspace",
-		"workspace-dirs must cd to /workspace before git init")
-	assert.Contains(t, script, "git init",
-		"workspace-dirs must run `git init` to enable FileChange parts (US-65.3)")
-	assert.Contains(t, script, "git config user.email",
-		"workspace-dirs must set git user.email (otherwise commit fails on CI pods without git config)")
-	assert.Contains(t, script, "git config user.name",
-		"workspace-dirs must set git user.name (otherwise commit fails on CI pods without git config)")
-	assert.Contains(t, script, "ws-pod-builder-test",
-		"workspace-dirs must use the workspace name in the git identity for traceability")
+		"workspace-dirs must create the three PVC subPath directories")
+	assert.NotContains(t, script, "git init",
+		"workspace-dirs must NOT run `git init` — it triggers opencode's snapshot self-inclusion recursion (worklog 0746)")
+	assert.NotContains(t, script, "git config",
+		"workspace-dirs must NOT run `git config` — no git repo should be created")
 }
 
 // Silence "imported and not used" if any test above is removed.

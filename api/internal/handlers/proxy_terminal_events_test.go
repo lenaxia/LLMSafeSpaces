@@ -288,22 +288,32 @@ func TestProxy_US44_1_MidStreamNonEOFError_KeepsUpstreamConnectionLost(t *testin
 		"non-EOF errors must not be re-typed as agent_died — they are network failures, not process death")
 }
 
-// TestProxy_US44_1_ErrorEventFormat_IsValidSSE verifies the byte-exact
-// format of the agent_died event so frontend parsers can rely on it.
-// Expected wire format:
-//
-//	event: error
-//	data: {"type":"agent_died","reason":"unknown"}
+// TestProxy_US44_1_ErrorEventFormat_IsValidSSE verifies the agent_died
+// event is valid SSE (event line + data line with valid JSON + blank-line
+// terminator). The data payload must include "type":"agent_died" and
+// "reason" fields — the contract frontend parsers depend on. A "message"
+// field was added for user-facing surfacing (worklog 0747) but is not
+// part of the parser contract.
 func TestProxy_US44_1_ErrorEventFormat_IsValidSSE(t *testing.T) {
 	env := newTerminalEventTestEnv(t, &eofAfterDataTransport{})
 
 	w := postMessage(t, env)
 
 	body := w.Body.String()
-	// Must contain the canonical 3-line SSE event, terminated by a blank line.
-	expected := "event: error\ndata: {\"type\":\"agent_died\",\"reason\":\"unknown\"}\n\n"
-	assert.Contains(t, body, expected,
-		"agent_died event must use canonical SSE wire format (event line + JSON data line + blank-line terminator)")
+	// Must contain the event line.
+	assert.Contains(t, body, "event: error\n",
+		"agent_died event must start with 'event: error'")
+	// Must contain the required JSON fields.
+	assert.Contains(t, body, `"type":"agent_died"`,
+		"agent_died event data must include type:agent_died")
+	assert.Contains(t, body, `"reason":"unknown"`,
+		"agent_died event data must include reason")
+	// Must include the message field added for user-facing surfacing (PR #810).
+	assert.Contains(t, body, `"message":`,
+		"agent_died event data must include a message field for frontend display")
+	// Must be terminated by a blank line (SSE spec).
+	assert.Contains(t, body, "\n\n",
+		"agent_died event must be terminated by blank line")
 }
 
 // TestProxy_US44_1_AgentDiedResponseIncludesOriginalData verifies that the
@@ -487,17 +497,36 @@ func TestProxy_US44_1_ErrorShapesAreDocumented(t *testing.T) {
 		env := newTerminalEventTestEnv(t, &midStreamResetTransport{})
 		w := postMessage(t, env)
 		body := w.Body.String()
+		// The B2 wire format must carry the "error" field. A "message"
+		// field was added for user-facing surfacing (worklog 0747) —
+		// the contract is that "error" is present and stable, not that
+		// the JSON is a fixed shape.
 		assert.Contains(t, body,
-			`event: error`+"\n"+`data: {"error":"upstream connection lost"}`+"\n\n",
-			"B2 wire format MUST remain stable — network-failure clients depend on the 'error' field")
+			`event: error`+"\n",
+			"B2 wire format MUST start with event: error")
+		assert.Contains(t, body,
+			`"error":"upstream connection lost"`,
+			"B2 wire format MUST carry the 'error' field — network-failure clients depend on it")
+		assert.Contains(t, body, `"message":`,
+			"B2 wire format MUST carry a 'message' field for frontend display (PR #810)")
 	})
 
 	t.Run("agent_died_US44_1_shape", func(t *testing.T) {
 		env := newTerminalEventTestEnv(t, &eofAfterDataTransport{})
 		w := postMessage(t, env)
 		body := w.Body.String()
+		// The US-44.1 wire format must carry "type":"agent_died" and
+		// "reason". A "message" field was added for user-facing
+		// surfacing (worklog 0747) — the contract is that "type" and
+		// "reason" are present and stable.
 		assert.Contains(t, body,
-			`event: error`+"\n"+`data: {"type":"agent_died","reason":"unknown"}`+"\n\n",
-			"US-44.1 wire format MUST remain stable — agent-death clients depend on 'type' and 'reason' fields")
+			`event: error`+"\n",
+			"US-44.1 wire format MUST start with event: error")
+		assert.Contains(t, body,
+			`"type":"agent_died"`,
+			"US-44.1 wire format MUST carry 'type':'agent_died'")
+		assert.Contains(t, body,
+			`"reason":"unknown"`,
+			"US-44.1 wire format MUST carry 'reason'")
 	})
 }
