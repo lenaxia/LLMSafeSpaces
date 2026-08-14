@@ -226,5 +226,5 @@ E2E determinism (reviewer requirement): the specs now hold both SSE streams open
 
 | ID | Finding (validated) | Resolution |
 |---|---|---|
-| M1 | The round-5 e2e hold-pattern fix never landed: a leftover shadowing `session-events` override (route precedence: last-registered wins) kept serving the finite per-hit body — the parameterized first-body handler was dead and the re-delivery churn intact; the worklog row claimed it fixed. | Override deleted; the setup's parameterized first body serves the stream (one delivery, then hold). Duplicate `wsQuestion`/`questionData` and comment collapsed. Worklog row corrected (above). |
+| M1 | The round-5 e2e hold-pattern fix never landed: a leftover shadowing `session-events` override (route precedence: last-registered wins) kept serving the finite per-hit body — the parameterized first-body handler was dead and the re-delivery churn intact; the worklog row claimed it fixed. | Override deleted; the setup's parameterized first body serves the stream (two HTTP hits fulfilled — StrictMode's doomed first connection plus the surviving one; one effective delivery — then hold). Duplicate `wsQuestion`/`questionData` and comment collapsed. Worklog row corrected (above). |
 | nit | N4 test's `at: Date.now()` is vacuous on a same-millisecond collision with `sessionMountedAt`. | `at: Date.now() + 1`. |
