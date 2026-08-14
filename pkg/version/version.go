@@ -13,7 +13,7 @@
 // a missing injection is obvious. The release workflow sets them from the git
 // tag, sha, and build time.
 //
-// Each component that exposes a version surface (API /livez, /readyz,
+// Each component that exposes a version surface (API /livez,
 // /v1/admin/platform-info; workspace-agentd /v1/healthz; the controller
 // startup log; the relay healthz endpoints) reads from here so we never have
 // two competing version strings.

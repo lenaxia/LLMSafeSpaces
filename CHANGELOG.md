@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and release/CI never passed `VERSION`, so production images reported
   `"dev"` regardless of tag. Un-stamped local builds now report
   `"unknown"`. The base runtime healthz, the controller startup log, the
-  API `/livez`/`/readyz`/`/v1/admin/platform-info`, and the relay healthz
+  API `/livez`/`/v1/admin/platform-info`, and the relay healthz
   endpoints all surface the injected semver for tagged releases.
 
 ## [0.15.5] - 2026-08-14

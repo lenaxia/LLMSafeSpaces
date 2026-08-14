@@ -36,12 +36,15 @@ surface report the real semver for tagged releases.
    test main importing the package reports `9.9.9`. The API already
    read `version.Version` (router.go:750, platform_info.go:86), so
    wiring the other four binaries to the same package is consistent.
-2. **`-X` on an un-imported package fails the build** — therefore every
-   binary that receives version ldflags must import `pkg/version`.
-   relay-router/relay-proxy now import it and surface the version in a
-   healthz response header so the injection binds and is observable.
-   (cmd/redact does NOT import pkg/version, so the base Dockerfile
-   injects ldflags only into the agentd build, not redact.)
+2. **`-X` on an un-imported package is a silent no-op** (verified: a
+   scratch build with `-X` targeting a non-imported package succeeds and
+   just drops the flag) — it does NOT fail the build. That silent no-op
+   is exactly why the old `api/Makefile` flags were dead. The fix is
+   therefore to make every binary that receives version ldflags import
+   `pkg/version`. relay-router/relay-proxy now import it and surface the
+   version in a healthz response header so the injection binds and is
+   observable. (cmd/redact does NOT import pkg/version, so the base
+   Dockerfile injects ldflags only into the agentd build, not redact.)
 3. **The relay `/healthz` contract is 200 + empty body** (relay-router
    probes only `StatusCode == http.StatusOK`, verified in
    `cmd/relay-router/health.go`; `cmd/relay-proxy/README.md` documents
@@ -53,8 +56,10 @@ surface report the real semver for tagged releases.
    version. No Go or frontend consumer parses/compares the default
    (grep-verified).
 5. **Image tag vs binary version convention**: release image tags are
-   semver without leading `v` (`0.15.5`, from helm-release.yaml pins and
-   `verify-changelog`'s v-strip). The `VERSION` build-arg is the
+   semver without leading `v` (`0.15.5`, from `verify-changelog`'s
+   v-strip; the GitOps repo's `helm-release.yaml` in
+   talos-ops-prod/kubernetes/apps/llmsafespaces pins the same tag
+   format). The `VERSION` build-arg is the
    v-stripped semver so binary version == image tag.
 6. **CI `prepare` version resolution**: `github.ref_name` is `vX.Y.Z`
    on tag pushes (ci.yml triggers on `tags: ['v*.*.*']`) and
@@ -136,9 +141,11 @@ single flag string (verified by review).
 
 ## Follow-up filed
 
-- Stale sentence removed in c91718b: `e2e-nightly.yml` kind-cluster image
-  builds are stamped (VERSION + COMMIT_SHA) as of c91718b — no image
-  path remains un-stamped.
+- The earlier stale sentence ("e2e-nightly.yml images remain un-stamped")
+  was removed; e2e-nightly.yml kind-cluster image builds ARE stamped
+  (VERSION + COMMIT_SHA, c91718b). Remaining un-stamped image paths:
+  `e2e-pr.yml:87` (docker compose `--build` with no VERSION arg) and
+  `local/bootstrap.sh` (below).
 - `BUILD_TIME` format differs across call sites (epoch seconds in
   release.yml/ci.yml vs `%Y-%m-%d_%H:%M:%S` in api/Makefile and
   publish-relay-binaries.yml) — cosmetic, no consumer parses it.
