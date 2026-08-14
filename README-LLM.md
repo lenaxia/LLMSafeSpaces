@@ -750,7 +750,7 @@ When a workspace's `/workspace` PVC crosses **90% usage**, the API proxy prepend
 
 | Component | Technology | Reason |
 |-----------|-----------|--------|
-| API language | Go 1.25 | Type-safe, strong concurrency, idiomatic for K8s ecosystem |
+| API language | Go 1.26 | Type-safe, strong concurrency, idiomatic for K8s ecosystem |
 | API framework | Gin | High-performance HTTP framework with middleware support |
 | Controller framework | controller-runtime | Standard Kubernetes controller pattern |
 | Database | PostgreSQL (pgx/v5) | Relational data for users, API keys, workspace metadata |

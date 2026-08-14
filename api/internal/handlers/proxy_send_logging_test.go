@@ -4,16 +4,21 @@
 package handlers
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/logger"
 	agentoc "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 // TestSendMessage_AdapterErrorLogged verifies that when adapter.Send fails,
@@ -123,4 +128,65 @@ func TestDeleteSession_AdapterErrorLogged(t *testing.T) {
 
 	errLogs := logs.FilterMessage("DeleteSession: adapter failed")
 	require.NotEmpty(t, errLogs.All(), "DeleteSession adapter error must be logged")
+}
+
+// TestReload_MalformedPodIP_NoPanic_InvalidURL pins the agent_reload_url_invalid
+// branch (PR: Go 1.26 toolchain bump): a pod IP that produces an unparseable
+// URL must return a clean 500, not Do(nil) — the SIGSEGV 1.25's lenient
+// net/url parsing masked.
+func TestReload_MalformedPodIP_NoPanic_InvalidURL(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	srvAddr := srv.Listener.Addr().String() // host:port — malformed once Sprintf appends :4097
+
+	wsSvc := &e2eWorkspaceSvc{workspaces: map[string]*types.Workspace{
+		"ws-bad": {ID: "ws-bad", UserID: "user-1", Phase: "Active", Name: "bad-ip-ws"},
+	}}
+	agentDB := &e2eAgentStateStore{states: map[string]*agentState{
+		"ws-bad": {changedAt: time.Now().Add(-time.Hour), pending: true},
+	}}
+	pods := &e2ePodResolver{ips: map[string]string{"ws-bad": srvAddr}}
+	handler := NewAgentReloadHandler(wsSvc, agentDB, pods, srv.Client(), nil)
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) { c.Set("userID", "user-1"); c.Next() })
+	router.POST("/workspaces/:id/agent/reload", handler.Reload)
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/workspaces/ws-bad/agent/reload", nil)
+	require.NotPanics(t, func() { router.ServeHTTP(w, req) })
+	assert.Equal(t, http.StatusInternalServerError, w.Code)
+	assert.Contains(t, w.Body.String(), "agent_reload_url_invalid",
+		"malformed pod IP must hit the url_invalid branch, not panic")
+}
+
+// TestBulkReloadOne_MalformedPodIP_NDJSONErrorRow pins the bulk reloadOne
+// branch — same malformed-URL class; must yield an NDJSON error row.
+func TestBulkReloadOne_MalformedPodIP_NDJSONErrorRow(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	srvAddr := srv.Listener.Addr().String()
+
+	wsSvc := &e2eWorkspaceSvc{workspaces: map[string]*types.Workspace{
+		"ws-bad2": {ID: "ws-bad2", UserID: "user-1", Phase: "Active", Name: "bad-ip-ws"},
+	}}
+	agentDB := &e2eAgentStateStore{states: map[string]*agentState{
+		"ws-bad2": {changedAt: time.Now().Add(-time.Hour), pending: true},
+	}}
+	pods := &e2ePodResolver{ips: map[string]string{"ws-bad2": srvAddr}}
+	handler := NewBulkReloadHandler(nil, wsSvc, agentDB, pods, srv.Client(), nil)
+
+	var row map[string]any
+	require.NotPanics(t, func() {
+		row = handler.reloadOne(context.Background(), "user-1", "ws-bad2", false, 0)
+	})
+	require.NotNil(t, row["error"], "bulk reload must return an error row, not panic")
+	errObj, ok := row["error"].(map[string]any)
+	require.True(t, ok, "error row must be an object, got %T", row["error"])
+	assert.Equal(t, "agent_reload_url_invalid", errObj["code"])
 }

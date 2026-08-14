@@ -296,3 +296,32 @@ func TestMCPSessionRead_HappyPath(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Contains(t, body, "msg_1")
 }
+
+// TestMCPSessionRead_MalformedSessionID_NoPanic pins the URL-build error
+// branch (Go 1.26 toolchain bump PR): a sessionID containing a control
+// character makes the URL unparseable; previously req was nil and
+// SetBasicAuth panicked before Do. Must return a build error, not panic.
+func TestMCPSessionRead_MalformedSessionID_NoPanic(t *testing.T) {
+	var got error
+	assert.NotPanics(t, func() {
+		_, got = mcpSessionRead(context.Background(), "test-pw", "ses_\x7f", 50)
+	})
+	assert.Error(t, got, "malformed sessionID must return a build error")
+	assert.Contains(t, got.Error(), "failed to build session read request")
+}
+
+// TestMCPSessionList_MalformedAgentAddr_NoPanic pins the list-path build
+// error branch: an agent addr that yields an unparseable URL must return
+// a build error, not panic at SetBasicAuth.
+func TestMCPSessionList_MalformedAgentAddr_NoPanic(t *testing.T) {
+	old := agentAddrAtomic.Load().(string)
+	agentAddrAtomic.Store("http://127.0.0.1:1:2") // double port — unparseable
+	defer agentAddrAtomic.Store(old)
+
+	var got error
+	assert.NotPanics(t, func() {
+		_, got = mcpSessionList(context.Background(), "test-pw")
+	})
+	assert.Error(t, got, "malformed agent addr must return a build error")
+	assert.Contains(t, got.Error(), "failed to build session list request")
+}

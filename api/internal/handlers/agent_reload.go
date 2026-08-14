@@ -215,7 +215,16 @@ func (h *AgentReloadHandler) Reload(c *gin.Context) {
 
 	// Dispatch to agentd (which calls opencode dispose locally).
 	agentdURL := fmt.Sprintf("http://%s:%d/v1/agent/reload", podIP, agentd.AgentdPort)
-	req, _ := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, agentdURL, nil)
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, agentdURL, nil)
+	if err != nil {
+		// Malformed pod IP (empty, double-port, etc.) must not reach
+		// Do(nil) — that panics. Surface as an internal error instead.
+		if h.logger != nil {
+			h.logger.Error("agent reload: invalid agentd URL", err, "url", agentdURL)
+		}
+		respondWithAPIError(c, apierrors.NewInternalError("agent_reload_url_invalid", err))
+		return
+	}
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
 		if h.logger != nil {
@@ -472,7 +481,12 @@ func (h *BulkReloadHandler) reloadOne(ctx context.Context, userID, workspaceID s
 	}
 
 	agentdURL := fmt.Sprintf("http://%s:%d/v1/agent/reload", podIP, agentd.AgentdPort)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, agentdURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, agentdURL, nil)
+	if err != nil {
+		// Malformed pod IP must not reach Do(nil) — that panics (same
+		// class as the single-reload fix above).
+		return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "agent_reload_url_invalid", "message": err.Error()}}
+	}
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
 		return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "agent_unreachable", "message": err.Error()}}

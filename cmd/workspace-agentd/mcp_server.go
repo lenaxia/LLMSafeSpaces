@@ -162,8 +162,11 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 }
 
 func mcpSessionList(ctx context.Context, password string) (string, error) {
-	req, _ := http.NewRequestWithContext(ctx, "GET",
+	req, err := http.NewRequestWithContext(ctx, "GET",
 		fmt.Sprintf("%s/session", getAgentAddr()), nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to build session list request: %w", err)
+	}
 	req.SetBasicAuth(agentd.AuthUsername, password)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -179,7 +182,12 @@ func mcpSessionList(ctx context.Context, password string) (string, error) {
 
 func mcpSessionRead(ctx context.Context, password, sessionID string, limit int) (string, error) {
 	url := fmt.Sprintf("%s/session/%s/message?limit=%d", getAgentAddr(), sessionID, limit)
-	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		// A malformed sessionID (spaces, control chars) makes the URL
+		// unparseable; req is nil and SetBasicAuth would panic.
+		return "", fmt.Errorf("failed to build session read request: %w", err)
+	}
 	req.SetBasicAuth(agentd.AuthUsername, password)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

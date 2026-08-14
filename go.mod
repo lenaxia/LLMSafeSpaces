@@ -1,6 +1,6 @@
 module github.com/lenaxia/llmsafespaces
 
-go 1.25.12
+go 1.26.6
 
 require (
 	cloud.google.com/go/kms v1.31.0

@@ -71,7 +71,7 @@ The base image ([`runtimes/base/Dockerfile`](https://github.com/lenaxia/LLMSafeS
 | **gh** (GitHub CLI) | 2.74.1 (pinned) | Downloaded over TLS; **checksum-verified** via `checksums.txt` (G9 partial fix). |
 | **AWS CLI v2** | 2.34.57 (pinned) | Full PGP verification (AWS CLI Team key). |
 | **mise** | 2026.5.15 (pinned) | `MISE_GITHUB_ATTESTATIONS=1` — verifies Sigstore-backed GitHub attestations on every tool install. |
-| **redact** | built from source (this repo) | Go-built in a multi-stage `FROM golang:1.25-bookworm` builder. |
+| **redact** | built from source (this repo) | Go-built in a multi-stage `FROM golang:1.26-bookworm` builder. |
 | **workspace-agentd** | built from source (this repo) | Go-built in a multi-stage builder. |
 
 ### Entrypoints
