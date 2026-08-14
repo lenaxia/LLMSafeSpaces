@@ -754,7 +754,7 @@ func TestSendPromptAsync_AdapterPath_ReturnsMessageID(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 }
 
-func TestSendPromptAsync_AdapterPath_Error_Returns500(t *testing.T) {
+func TestSendPromptAsync_AdapterPath_Error_Returns502(t *testing.T) {
 	h := newProxyHandlerForAdapterTest(t)
 	h.adapter = &mockAdapter{
 		sendFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (*session.Message, error) {
