@@ -97,7 +97,11 @@ async function setupAPIMocks(page: Page, opts?: { sessionEventsFirstBody?: strin
   // "connecting" (no onConnect → no onReconnect churn), pinning state.
   await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/session-events`, async (route: Route) => {
     sessionStreamHits++;
-    if (sessionStreamHits === 1) {
+    // Deliver on the first TWO hits (React StrictMode's dev double-mount
+    // destroys connection #1 before its body is processed; #2 survives),
+    // then hold forever — a never-fulfilling handler keeps later reconnects
+    // "connecting" (no onConnect → no onReconnect churn, no re-delivery).
+    if (sessionStreamHits <= 2) {
       await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body: opts?.sessionEventsFirstBody ?? ":ok\n\n" });
     } else {
       await new Promise<never>(() => {}); // hold — no further delivery
@@ -153,11 +157,6 @@ function sseBody(events: object[]): string {
 
 test.describe("Stuck-session auto-abort gating (PR #852, mocked backend)", () => {
   test("live pending question survives a successful snapshot — no interrupted banner, prompt answerable", async ({ page }) => {
-    // Workspace stream delivers the question (dual-publish) via the setup's
-    // parameterized first body (one delivery, then hold — no re-delivery
-    // churn).
-    const wsQuestion = { type: "agent.question", data: { id: "que_live_e2e", session_id: SESSION_ID, root_session_id: SESSION_ID, questions: [{ header: "GitHub auth", question: "GitHub auth required — approve?", options: [{ label: "Yes", description: "" }, { label: "No", description: "" }] }] } };
-    await setupAPIMocks(page, { sessionEventsFirstBody: sseBody([wsQuestion]) });
     // Production dual-publishes question events on the workspace stream
     // (drives the prompt UI) and the user stream (drives the indicator).
     const questionData = {
@@ -166,6 +165,11 @@ test.describe("Stuck-session auto-abort gating (PR #852, mocked backend)", () =>
       root_session_id: SESSION_ID,
       questions: [{ header: "GitHub auth", question: "GitHub auth required — approve?", options: [{ label: "Yes", description: "" }, { label: "No", description: "" }] }],
     };
+    // Workspace stream: the setup's parameterized first body delivers the
+    // question once, then holds — no re-delivery churn on reconnect cycles.
+    await setupAPIMocks(page, {
+      sessionEventsFirstBody: sseBody([{ type: "agent.question", data: questionData }]),
+    });
     // First user-stream delivery: busy seed + a snapshot flight that
     // re-emits the LIVE question (pod fetch succeeded and lists it).
     const firstDelivery = [
@@ -175,14 +179,6 @@ test.describe("Stuck-session auto-abort gating (PR #852, mocked backend)", () =>
       { type: "agent.input.snapshot_complete", workspace_id: WORKSPACE_ID, snapshot_ok: true, snapshot_id: "flight-1" },
     ];
     await mockUserStream(page, firstDelivery);
-    // Workspace stream also delivers the question (dual-publish).
-    await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/session-events`, async (route: Route) => {
-      await route.fulfill({
-        status: 200,
-        headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
-        body: sseBody([{ type: "agent.question", data: questionData }]),
-      });
-    });
 
     let abortCalled = false;
     await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/sessions/${SESSION_ID}/abort`, async (route: Route) => {

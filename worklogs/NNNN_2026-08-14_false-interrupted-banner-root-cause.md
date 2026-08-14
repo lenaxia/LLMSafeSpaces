@@ -217,6 +217,14 @@ E2E determinism (reviewer requirement): the specs now hold both SSE streams open
 | N4 | `lastHistoryRef` (added in round 4's B fix) leaked across session switches: switching from busy stuck A to busy healthy B, with B's history delayed past marker+dwell, A's stale transcript satisfied the stuck-tool check and aborted healthy B — the PR's own bug class, reproduced by the reviewer. | `lastHistoryRef` and `abortDwellStartRef` reset in the session-change effect (evidence is per-session). Regression test: A rendered (stuck tool) → swap history mock to a pending promise for B → switch → arm + ok marker → wait past dwell → no abort for B; verified red with the reset removed. |
 | minor | Anchor-survives-send + re-arm could fire with zero dwell. | `doSendNow` clears the anchor outright (reviewer's one-liner); re-established evidence re-anchors and re-dwells from scratch. |
 | minor | A1 lacked a stable-`at` evidence assertion. | SnapshotStatus test component prints `at` verbatim; A1 asserts byte-identical evidence after the replayed marker. |
-| minor | e2e test 1's workspace-stream override re-delivered per reconnect (hold-pattern mismatch). | Same one-delivery-then-hold pattern as the default mock. |
+| minor | e2e test 1's workspace-stream override re-delivered per reconnect (hold-pattern mismatch). | Claimed fixed in round 5 but a shadowing override survived (route precedence kept serving the churn pattern — round 6 M1); actually landed in round 6 via the setup's parameterized first body with the override deleted. |
 
 **Accepted residual (N1, explicitly):** if a workspace-SSE reconnect's reconcileOnIdle disarms reconnect mode and the activation window closes before the busy effect re-arms (busy drops or timing), the abort stays suppressed until a fresh arming (next session view or reconnect). Fail-safe direction (no false aborts); accepted.
+
+
+### Review round 6 (fifth REQUEST CHANGES — "with M1 landed, this is an approve")
+
+| ID | Finding (validated) | Resolution |
+|---|---|---|
+| M1 | The round-5 e2e hold-pattern fix never landed: a leftover shadowing `session-events` override (route precedence: last-registered wins) kept serving the finite per-hit body — the parameterized first-body handler was dead and the re-delivery churn intact; the worklog row claimed it fixed. | Override deleted; the setup's parameterized first body serves the stream (one delivery, then hold). Duplicate `wsQuestion`/`questionData` and comment collapsed. Worklog row corrected (above). |
+| nit | N4 test's `at: Date.now()` is vacuous on a same-millisecond collision with `sessionMountedAt`. | `at: Date.now() + 1`. |

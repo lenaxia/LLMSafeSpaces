@@ -1355,7 +1355,7 @@ describe("ChatPage auto-abort stuck input sessions", () => {
     });
     act(() => {
       capturedSSEHandler!({ type: "session.status", session_id: "sess-healthy-b", status: "busy" });
-      snapshotStore.value = { ok: true, at: Date.now() };
+      snapshotStore.value = { ok: true, at: Date.now() + 1 };
     });
 
     // Wait past marker+dwell — with the stale-ref bug, A's transcript
