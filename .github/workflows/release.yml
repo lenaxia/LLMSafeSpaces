@@ -93,118 +93,79 @@ jobs:
           fi
           echo "CHANGELOG section for v${VERSION} found."
 
-  # Gate: wait for the CI workflow to finish successfully on this tag.
+  # Gate: wait for the CI workflow to finish successfully on this tag's SHA.
   # Images are built by CI; this release workflow only packages the chart,
   # generates SBOM, and creates the Release.
   #
-  # We use a custom polling script instead of lewagon/wait-on-check-action
-  # because that action suffers from a self-referential failure: when the
-  # wait job fails (e.g. transient API error) and is re-run, the prior
-  # failed check run persists on the ref, causing every subsequent retry
-  # to immediately see the old failure and re-fail. The custom script
-  # filters by workflow_file (ci.yml) so it only watches CI checks, never
-  # its own Release workflow checks.
+  # We poll the CI workflow run directly (by commit SHA) rather than
+  # individual check runs. This avoids the fragile bookkeeping of counting
+  # check runs, filtering by name regex, or guessing how many jobs a matrix
+  # will expand to. The CI workflow is a single unit — it passes or fails
+  # as a whole.
   wait-for-ci:
     name: Wait for CI workflow
     needs: verify-changelog
     runs-on: ubuntu-latest
     steps:
-      - name: Wait for CI checks to pass
+      - name: Wait for CI workflow run to complete
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REF: ${{ needs.verify-changelog.outputs.ref }}
         run: |
-          REF_SHA="${REF#refs/tags/}"
-          echo "Waiting for CI checks on ref: ${REF_SHA}"
+          SHA="${REF#refs/tags/}"
+          echo "Waiting for CI workflow run on commit ${SHA:0:8}..."
 
-          # Record the timestamp of the tag push so we can filter out
-          # stale check runs from prior CI runs on the same commit SHA.
-          # The tag commit SHA is the same as the main commit SHA, so
-          # the check-runs API returns ALL check runs for that SHA —
-          # including ones from main's CI that ran before the tag was
-          # pushed. Without the timestamp filter, a prior main CI
-          # failure blocks every release cut from that commit.
-          CUTOFF=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          echo "Filtering to check runs started after: ${CUTOFF}"
-
-          MAX_WAIT=2400  # 40 minutes max
+          MAX_WAIT=2400  # 40 minutes
           INTERVAL=30
           ELAPSED=0
 
           while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
-            RESPONSE=$(gh api "repos/${{ github.repository }}/commits/${REF_SHA}/check-runs?per_page=100" 2>/dev/null) || {
-              echo "WARN: API call failed, retrying in ${INTERVAL}s..."
+            # Query the CI workflow run for this exact SHA. The API returns
+            # all runs matching the SHA; we take the most recent one.
+            RUN_JSON=$(gh run list \
+              --workflow ci.yml \
+              --commit "$SHA" \
+              --json databaseId,status,conclusion,createdAt \
+              --jq 'sort_by(.createdAt) | last' 2>/dev/null) || {
+              echo "[$(date -u +%H:%M:%S)] API call failed, retrying in ${INTERVAL}s..."
               sleep "$INTERVAL"
               ELAPSED=$((ELAPSED + INTERVAL))
               continue
             }
 
-            # Count checks still running (excluding Release workflow jobs).
-            # Filter to only checks started after the tag push (CUTOFF).
-            ALL_DONE=$(printf '%s' "$RESPONSE" | jq -r --arg cutoff "$CUTOFF" '
-              .check_runs
-              | group_by(.name) | map(sort_by(.started_at // "0") | last)
-              | map(select(.started_at // "0" > $cutoff))
-              | map(select(.status != "completed"))
-              | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|gremlins|Scan images \\(Trivy\\)|Publish Python SDK|Publish TypeScript SDK|SDK Integration") | not))
-              | length
-            ')
-
-            # Count any non-Release completed checks that failed (post-tag only).
-            FAILED=$(printf '%s' "$RESPONSE" | jq -r --arg cutoff "$CUTOFF" '
-              .check_runs
-              | group_by(.name) | map(sort_by(.started_at // "0") | last)
-              | map(select(.started_at // "0" > $cutoff))
-              | map(select(.status == "completed"))
-              | map(select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral"))
-              | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|gremlins|Scan images \\(Trivy\\)|Publish Python SDK|Publish TypeScript SDK|SDK Integration") | not))
-              | map(.name)
-              | .[]
-            ')
-
-            # Are there any post-tag CI-specific checks at all yet?
-            CI_CHECKS=$(printf '%s' "$RESPONSE" | jq -r --arg cutoff "$CUTOFF" '
-              .check_runs
-              | group_by(.name) | map(sort_by(.started_at // "0") | last)
-              | map(select(.started_at // "0" > $cutoff))
-              | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|gremlins|Scan images \\(Trivy\\)|Publish Python SDK|Publish TypeScript SDK|SDK Integration") | not))
-              | length
-            ')
-
-            if [ "$CI_CHECKS" -eq 0 ]; then
-              echo "[$(date -u +%H:%M:%S)] No CI checks registered yet, waiting..."
+            if [ -z "$RUN_JSON" ] || [ "$RUN_JSON" = "null" ]; then
+              echo "[$(date -u +%H:%M:%S)] No CI workflow run found yet, waiting..."
               sleep "$INTERVAL"
               ELAPSED=$((ELAPSED + INTERVAL))
               continue
             fi
 
-            if [ -n "$FAILED" ]; then
-              echo "::error::CI checks failed:"
-              echo "$FAILED" | sed 's/^/  - /'
-              exit 1
+            STATUS=$(printf '%s' "$RUN_JSON" | jq -r '.status')
+            CONCLUSION=$(printf '%s' "$RUN_JSON" | jq -r '.conclusion // "in_progress"')
+            RUN_ID=$(printf '%s' "$RUN_JSON" | jq -r '.databaseId')
+
+            if [ "$STATUS" = "completed" ]; then
+              if [ "$CONCLUSION" = "success" ]; then
+                echo "[$(date -u +%H:%M:%S)] CI run #${RUN_ID} completed successfully."
+                exit 0
+              else
+                echo "::error::CI run #${RUN_ID} completed with conclusion: ${CONCLUSION}"
+                echo "View: https://github.com/${{ github.repository }}/actions/runs/${RUN_ID}"
+                # Show which jobs failed for quick diagnosis.
+                FAILED_JOBS=$(gh run view "$RUN_ID" --json jobs --jq '
+                  [.jobs[] | select(.conclusion == "FAILURE") | .name] | join(", ")
+                ' 2>/dev/null || echo "unable to fetch job details")
+                echo "Failed jobs: $FAILED_JOBS"
+                exit 1
+              fi
             fi
 
-            if [ "$ALL_DONE" -eq 0 ]; then
-              echo "[$(date -u +%H:%M:%S)] All CI checks completed successfully."
-              exit 0
-            fi
-
-            # Show progress: which checks are still running
-            RUNNING=$(printf '%s' "$RESPONSE" | jq -r --arg cutoff "$CUTOFF" '
-              .check_runs
-              | map(select(.started_at // "0" > $cutoff))
-              | map(select(.status != "completed"))
-              | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|gremlins|Scan images \\(Trivy\\)|Publish Python SDK|Publish TypeScript SDK|SDK Integration") | not))
-              | map(.name)
-              | .[]
-            ')
-            echo "[$(date -u +%H:%M:%S)] Waiting for: $(echo "$RUNNING" | tr '\n' ',' | sed 's/,$//')"
-
+            echo "[$(date -u +%H:%M:%S)] CI run #${RUN_ID} status: ${STATUS} (${CONCLUSION})"
             sleep "$INTERVAL"
             ELAPSED=$((ELAPSED + INTERVAL))
           done
 
-          echo "::error::Timed out after ${MAX_WAIT}s waiting for CI checks."
+          echo "::error::Timed out after ${MAX_WAIT}s waiting for CI workflow run."
           exit 1
 
   # Sign all built images with cosign keyless (OIDC). Each signature is
