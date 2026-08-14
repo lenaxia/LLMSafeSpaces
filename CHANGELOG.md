@@ -7,6 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.5] - 2026-08-14
+
+### Fixed
+
+- **Swallowed adapter errors on prompt/delete paths (#817, #851)**.
+  `SendMessage`, `SendPromptAsync`, and `DeleteSession` returned bare 502
+  responses without logging the underlying adapter error — production
+  failures (including the 125-second hangs under investigation in #817)
+  were undiagnosable. All three paths now log `adapter failed` with the
+  underlying error, matching every other adapter call site. Each branch
+  has a regression test.
+
+- **Five nil-request panic sites surfaced by Go 1.26 (#853)**. Go 1.26's
+  stricter `net/url` parsing exposed a latent panic class: call sites that
+  discarded the `http.NewRequestWithContext` error and called `Do(nil)`.
+  Most severe: the workflows engine's PreserveOnFailure cleanup embedded a
+  session ID from workspace-agent **output** into a URL — a control
+  character would crash the API process (the routine runs in the scheduler,
+  outside gin's recovery middleware; tenant-triggerable). Also fixed in
+  bulk agent-reload, MCP session list/read, and agentd session cleanup.
+  Dedicated regression tests pin every new error branch.
+
+### Changed
+
+- **Go toolchain 1.25.12 → 1.26.6 (#853)**. Fixes 7 Go standard-library
+  CVEs (GO-2026-6218, -6091, -6090, -6089, -6088, -5972, -5026) that began
+  failing govulncheck on every PR after the OSV database refresh. Verified
+  red→green locally and on CI (race detector and short suites green on
+  1.26.6). Pins updated across go.mod, 14 workflow pins, 6 Dockerfile base
+  images; the runtime base's mise `go@latest` is now pinned. The
+  CVE-2026-46600 `.trivyignore` entry is removed — obsolete under 1.26.6.
+
+### Known issues
+
+- #817 root cause (the 125-second prompt hangs) remains open — this
+  release ships the logging needed to diagnose it on the next occurrence.
+- #854: the tenant Go runtime image still pins Go 1.20.5 (follow-up).
+
 ## [0.15.4] - 2026-08-14
 
 ### Fixed
