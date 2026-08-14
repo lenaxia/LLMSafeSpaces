@@ -260,6 +260,10 @@ jobs:
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.API_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
           cache-from: type=gha,scope=api-${{ matrix.platform }}
           cache-to: type=gha,scope=api-${{ matrix.platform }},mode=max
+          build-args: |
+            VERSION=${{ needs.verify-changelog.outputs.version }}
+            COMMIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
 
       - name: Export digest
         run: |
@@ -360,7 +364,9 @@ jobs:
           cache-from: type=gha,scope=controller-${{ matrix.platform }}
           cache-to: type=gha,scope=controller-${{ matrix.platform }},mode=max
           build-args: |
+            VERSION=${{ needs.verify-changelog.outputs.version }}
             COMMIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
 
       - name: Export digest
         run: |
@@ -372,6 +378,7 @@ jobs:
         run: |
           docker buildx build \
             --build-arg COMMIT_SHA=${{ github.sha }} \
+            --build-arg VERSION=${{ needs.verify-changelog.outputs.version }} \
             -f controller/Dockerfile \
             --target builder \
             -t controller-smoke \
@@ -483,6 +490,10 @@ jobs:
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.RUNTIME_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
           cache-from: type=gha,scope=runtime-${{ matrix.platform }}
           cache-to: type=gha,scope=runtime-${{ matrix.platform }},mode=max
+          build-args: |
+            VERSION=${{ needs.verify-changelog.outputs.version }}
+            COMMIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
 
       - name: Export digest
         run: |
@@ -681,6 +692,10 @@ jobs:
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.RELAY_ROUTER_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
           cache-from: type=gha,scope=relay-router-${{ matrix.platform }}
           cache-to: type=gha,scope=relay-router-${{ matrix.platform }},mode=max
+          build-args: |
+            VERSION=${{ needs.verify-changelog.outputs.version }}
+            COMMIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
 
       - name: Export digest
         run: |
@@ -780,6 +795,10 @@ jobs:
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.RELAY_PROXY_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
           cache-from: type=gha,scope=relay-proxy-${{ matrix.platform }}
           cache-to: type=gha,scope=relay-proxy-${{ matrix.platform }},mode=max
+          build-args: |
+            VERSION=${{ needs.verify-changelog.outputs.version }}
+            COMMIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
 
       - name: Export digest
         run: |

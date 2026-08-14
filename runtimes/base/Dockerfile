@@ -25,12 +25,20 @@ WORKDIR /src
 ARG GOPROXY=https://proxy.golang.org,direct
 ENV GOPROXY=${GOPROXY}
 
+ARG VERSION=unknown
+ARG COMMIT_SHA=unknown
+ARG BUILD_TIME=unknown
+
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/ ./cmd/
 COPY pkg/ ./pkg/
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
-    go build -trimpath -o /out/workspace-agentd ./cmd/workspace-agentd
+    go build -trimpath \
+        -ldflags "-X github.com/lenaxia/llmsafespaces/pkg/version.Version=${VERSION} \
+                  -X github.com/lenaxia/llmsafespaces/pkg/version.CommitSHA=${COMMIT_SHA} \
+                  -X github.com/lenaxia/llmsafespaces/pkg/version.BuildTime=${BUILD_TIME}" \
+        -o /out/workspace-agentd ./cmd/workspace-agentd
 
 FROM debian:bookworm-slim
 

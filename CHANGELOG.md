@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Consistent build version injection across every component**. All Go
+  binaries (api, controller, workspace-agentd, relay-router, relay-proxy)
+  now read their build identity from `pkg/version` — the single source of
+  truth — stamped via `-ldflags` in every image build (VERSION/COMMIT_SHA/
+  BUILD_TIME). Previously the controller and workspace-agentd used their own
+  `"dev"` fallbacks, the API Makefile targeted non-existent linker symbols,
+  and release/CI never passed `VERSION`, so production images reported
+  `"dev"` regardless of tag. Un-stamped local builds now report
+  `"unknown"`. The base runtime healthz, the controller startup log, the
+  API `/livez`/`/readyz`/`/v1/admin/platform-info`, and the relay healthz
+  endpoints all surface the injected semver for tagged releases.
+
 ## [0.15.5] - 2026-08-14
 
 ### Fixed

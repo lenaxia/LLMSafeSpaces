@@ -29,7 +29,9 @@ COPY mocks/ mocks/
 COPY api/ api/
 COPY cmd/ cmd/
 
-ARG VERSION=dev
+ARG VERSION=unknown
+ARG COMMIT_SHA=unknown
+ARG BUILD_TIME=unknown
 
 # TARGETARCH is injected by buildx per-platform (linux/amd64, linux/arm64).
 # No hardcoded default — see issue #462.
@@ -37,7 +39,9 @@ ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
     go build \
         -trimpath \
-        -ldflags "-X github.com/lenaxia/llmsafespaces/pkg/version.Version=${VERSION}" \
+        -ldflags "-X github.com/lenaxia/llmsafespaces/pkg/version.Version=${VERSION} \
+                  -X github.com/lenaxia/llmsafespaces/pkg/version.CommitSHA=${COMMIT_SHA} \
+                  -X github.com/lenaxia/llmsafespaces/pkg/version.BuildTime=${BUILD_TIME}" \
         -o /out/manager \
         ./controller
 
