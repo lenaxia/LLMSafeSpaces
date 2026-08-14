@@ -114,6 +114,12 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 
 		msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{})
 		if err != nil {
+			// #817: log the underlying adapter error — without this the
+			// 502 body says only "failed to send message" and the root
+			// cause (context deadline, connection reset, decode failure)
+			// is invisible in production.
+			h.logger.Error("SendMessage: adapter failed", err,
+				"workspaceID", wid, "sessionID", sid)
 			if sid != "" {
 				h.removeActiveSession(c.Request.Context(), wid, sid)
 			}
@@ -228,6 +234,9 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 		// via SSE events regardless of which send path is used.
 		msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{})
 		if err != nil {
+			// #817: log the underlying adapter error for this path too.
+			h.logger.Error("SendMessage (legacy-session path): adapter failed", err,
+				"workspaceID", wid, "sessionID", sid)
 			if sid != "" {
 				h.removeActiveSession(c.Request.Context(), wid, sid)
 			}
