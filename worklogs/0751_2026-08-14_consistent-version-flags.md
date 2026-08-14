@@ -136,10 +136,15 @@ single flag string (verified by review).
 
 ## Follow-up filed
 
-- `e2e-nightly.yml` images remain un-stamped (test-only, low priority —
-  noted by review; the ci.yml comment's "no CI image reports unknown"
-  spirit is satisfied for all image-producing paths except the nightly
-  e2e run).
+- Stale sentence removed in c91718b: `e2e-nightly.yml` kind-cluster image
+  builds are stamped (VERSION + COMMIT_SHA) as of c91718b — no image
+  path remains un-stamped.
 - `BUILD_TIME` format differs across call sites (epoch seconds in
   release.yml/ci.yml vs `%Y-%m-%d_%H:%M:%S` in api/Makefile and
   publish-relay-binaries.yml) — cosmetic, no consumer parses it.
+- `local/bootstrap.sh:130-142` builds images un-stamped → local kind
+  clusters report `unknown` (previously `dev`) — acceptable dev path,
+  could add `VERSION=local` for clarity.
+- `publish-relay-binaries.yml:37` interpolates `${{ inputs.tag }}` into
+  shell (release.yml uses env passthrough) — pre-existing, worth aligning
+  in a follow-up.
