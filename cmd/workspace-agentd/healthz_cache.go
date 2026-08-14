@@ -106,16 +106,19 @@ type healthWatchdog struct {
 	fired          bool        // latches: fire only once per unhealthy episode
 	deferredLogged bool        // latches: log session-busy deferral (superseded by deferCount)
 	giveUpLogged   bool        // latches: log rate-limit give-up only once per episode
+	maxDeferLogged bool        // latches: log max-defer exceeded only once per episode
 	deferCount     int         // consecutive deferrals due to busy sessions
 	totalFired     int         // total watchdog restarts since boot
 	maxRestarts    int
+	maxDeferrals   int // injectable for fast tests (default: watchdogMaxDeferrals)
 	window         time.Duration
 }
 
 func newHealthWatchdog() *healthWatchdog {
 	return &healthWatchdog{
-		maxRestarts: watchdogMaxRestarts,
-		window:      watchdogRestartWindow,
+		maxRestarts:  watchdogMaxRestarts,
+		maxDeferrals: watchdogMaxDeferrals,
+		window:       watchdogRestartWindow,
 	}
 }
 
@@ -157,6 +160,7 @@ func (wd *healthWatchdog) reset() {
 	wd.fired = false
 	wd.deferredLogged = false
 	wd.giveUpLogged = false
+	wd.maxDeferLogged = false
 	wd.deferCount = 0
 }
 
@@ -248,7 +252,7 @@ func refreshIsHealthyLoop(ctx context.Context, client *OpenCodeClient, cache *he
 				// maxDefer pattern in secrets.go's credential-reload path.
 				if busyChecker != nil && busyChecker.anyBusy() {
 					wd.deferCount++
-					if wd.deferCount <= watchdogMaxDeferrals {
+					if wd.deferCount <= wd.maxDeferrals {
 						if !wd.deferredLogged || wd.deferCount%6 == 0 {
 							watchdogLogger.Warn("health-watchdog deferring restart — sessions are busy",
 								zap.Int("consecutiveFailures", snap.ConsecutiveFailures),
@@ -259,10 +263,13 @@ func refreshIsHealthyLoop(ctx context.Context, client *OpenCodeClient, cache *he
 						}
 						continue
 					}
-					watchdogLogger.Warn("health-watchdog max-defer exceeded — forcing restart despite busy sessions",
-						zap.Int("deferCount", wd.deferCount),
-						zap.Int("maxDefers", watchdogMaxDeferrals),
-					)
+					if !wd.maxDeferLogged {
+						wd.maxDeferLogged = true
+						watchdogLogger.Warn("health-watchdog max-defer exceeded — forcing restart despite busy sessions",
+							zap.Int("deferCount", wd.deferCount),
+							zap.Int("maxDefers", watchdogMaxDeferrals),
+						)
+					}
 					// Fall through to maybeFire + restart below.
 				}
 				if wd.maybeFire(time.Now()) {
