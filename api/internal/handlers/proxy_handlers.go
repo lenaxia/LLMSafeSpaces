@@ -235,7 +235,7 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 		msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{})
 		if err != nil {
 			// #817: log the underlying adapter error for this path too.
-			h.logger.Error("SendMessage (legacy-session path): adapter failed", err,
+			h.logger.Error("SendPromptAsync: adapter failed", err,
 				"workspaceID", wid, "sessionID", sid)
 			if sid != "" {
 				h.removeActiveSession(c.Request.Context(), wid, sid)
@@ -855,6 +855,9 @@ func (h *ProxyHandler) DeleteSession(c *gin.Context) {
 	// tombstone publish) that the legacy path runs.
 	if h.adapter != nil {
 		if err := h.adapter.DeleteSession(c.Request.Context(), "", workspaceID, sid); err != nil {
+			// #817: same observability gap — log the underlying error.
+			h.logger.Error("DeleteSession: adapter failed", err,
+				"workspaceID", workspaceID, "sessionID", sid)
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to delete session"})
 			return
 		}
