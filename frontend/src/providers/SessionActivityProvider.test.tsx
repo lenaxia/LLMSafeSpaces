@@ -2011,6 +2011,92 @@ describe("D10: snapshot begin/ok semantics (false-wipe fix)", () => {
     expect(screen.getByTestId("pending").textContent).toBe("yes");
   });
 
+  it("A1: replayed complete(ok) after reconnect does not wipe pending and records no evidence", () => {
+    // Review round 4 A1: begin delivered → question delivered → connection
+    // drops and reconnects (onReconnect clears flight/commit state) → the
+    // broker's id-filtered replay does NOT re-deliver the already-seen
+    // begin/question, but the complete arrives fresh. Its flight matches no
+    // open flight — committing the empty legacy bucket wiped the live
+    // question and the marker was recorded as ok:true evidence (feeding the
+    // false auto-abort gate).
+    renderProvider(
+      <>
+        <PendingIndicator sessionId="ses-1" />
+        <SnapshotStatus workspaceId="ws-1" />
+      </>,
+    );
+
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1", snapshot_id: "flight-A" });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_live",
+      });
+    });
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1", snapshot_ok: true, snapshot_id: "flight-A" });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+    expect(screen.getByTestId("snapshot").textContent).toBe("true:true");
+
+    // Reconnect: flight/commit state cleared; complete(A) replays without
+    // its begin (id-filtered replay skips already-seen events).
+    act(() => {
+      capturedOnReconnect!();
+    });
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1", snapshot_ok: true, snapshot_id: "flight-A" });
+    });
+
+    // Live question survives AND the stale marker is not recorded as fresh
+    // evidence (the auto-abort gate requires a snapshot newer than mount).
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+  });
+
+  it("A2: resync-interleaved unknown-flight complete(ok) does not wipe pending; resync clears evidence", () => {
+    renderProvider(
+      <>
+        <PendingIndicator sessionId="ses-1" />
+        <SnapshotStatus workspaceId="ws-1" />
+      </>,
+    );
+
+    // Commit a live question via a legacy flight
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1", snapshot_id: "flight-A" });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_live",
+      });
+    });
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1", snapshot_ok: true, snapshot_id: "flight-A" });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+    expect(screen.getByTestId("snapshot").textContent).toBe("true:true");
+
+    // Broker signals a drop, then a complete whose begin was dropped arrives
+    act(() => {
+      capturedOnEvent!({ type: "resync" });
+    });
+    expect(screen.getByTestId("snapshot").textContent).toBe("none");
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1", snapshot_ok: true, snapshot_id: "flight-B" });
+    });
+
+    // Live question survives; unknown-flight marker records no evidence
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+    expect(screen.getByTestId("snapshot").textContent).toBe("none");
+  });
+
   it("R2: unknown-flight complete(ok) on a committed workspace does not wipe pending (dropped begin)", () => {
     // Broker backpressure drops the begin; the question event and the
     // complete still arrive. The complete's flight matches no open flight and

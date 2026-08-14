@@ -462,6 +462,11 @@ export function ChatPage() {
   // effect re-runs (history refetches on SSE reconnect churn) cannot defer
   // the abort indefinitely — each timer schedules only the REMAINING dwell.
   const abortDwellStartRef = useRef<number | null>(null);
+  // Last-known history for the stuck-tool check. A workspace-status refetch
+  // gap can momentarily gate the messages query off (history === undefined
+  // while isReady flickers) — the stuck tool did not vanish; evaluating the
+  // last-known transcript keeps the anchor from being reset by refetch churn.
+  const lastHistoryRef = useRef<Message[] | null>(null);
   useEffect(() => {
     // Strong evidence: the conditions that, if they break, genuinely
     // invalidate the stuck-session diagnosis. The dwell ANCHOR survives
@@ -469,8 +474,9 @@ export function ChatPage() {
     // SSE reconnect; the window re-arms immediately) — otherwise reconnect
     // churn faster than the dwell would clear the anchor forever.
     const stuckToolPresent = (() => {
-      if (!history || history.length === 0) return false;
-      const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
+      const h = history ?? lastHistoryRef.current;
+      if (!h || h.length === 0) return false;
+      const lastAssistant = [...h].reverse().find((m) => m.role === "assistant");
       if (!lastAssistant) return false;
       return lastAssistant.parts.some(
         (p) =>
@@ -479,6 +485,7 @@ export function ChatPage() {
           (p.text?.startsWith("question") || p.text?.startsWith("permission")),
       );
     })();
+    if (history) lastHistoryRef.current = history;
     const strongEvidenceHold =
       !!workspaceId &&
       !!sessionId &&
@@ -492,7 +499,6 @@ export function ChatPage() {
       abortDwellStartRef.current = null;
       return;
     }
-    if (!isReconnectMode.current) return; // keep the anchor; timer idles until re-armed
     if (abortDwellStartRef.current === null) {
       abortDwellStartRef.current = Date.now();
     }
@@ -501,10 +507,23 @@ export function ChatPage() {
     // opencode's queue between the snapshot fetch and its marker (which
     // would arrive as an agent.question event and break the evidence,
     // clearing the anchor) cannot be killed.
+    //
+    // The timer is scheduled even while reconnect mode is momentarily
+    // disarmed (reconcile churn clears it; a user send disarms it
+    // permanently) — the CALLBACK re-checks isReconnectMode at fire time so
+    // a disarmed state fails safe (no abort). Scheduling here rather than
+    // only-when-armed matters: effect cleanups clear the timer on every dep
+    // churn, so an armed-only schedule would silently cancel the dwell the
+    // first time a render happens while disarmed.
     const remaining = Math.max(0, AUTO_ABORT_DWELL_MS - (Date.now() - abortDwellStartRef.current));
     const timer = setTimeout(() => {
       if (hasAutoAbortedRef.current) return;
       if (abortDwellStartRef.current === null) return;
+      // B (review round 4): a user send during the dwell disarms reconnect
+      // mode (doSendNow) — this session is actively in use, not stuck. The
+      // anchor persists across reconnect churn by design, so the disarm must
+      // be re-checked here, not only via effect deps (a send changes no dep).
+      if (!isReconnectMode.current) return;
       hasAutoAbortedRef.current = true;
       workspacesApi.abortSession(workspaceId!, sessionId!)
         .then(() => { setSessionWasInterrupted(true); reconcileOnIdle(); })

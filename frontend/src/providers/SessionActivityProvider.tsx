@@ -338,6 +338,23 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         if (!wsId) return;
         const ok = (evt as { snapshot_ok?: boolean }).snapshot_ok !== false;
         const flightId = evt.snapshot_id ?? "";
+        const openFlights = flightsRef.current.get(wsId);
+        const knownFlight = openFlights?.has(flightId) ?? false;
+
+        // R2/A (review rounds 3-4): a complete carrying a flight ID that
+        // matches no open flight is NON-AUTHORITATIVE regardless of committed
+        // state. Reachable when the begin was dropped by broker backpressure,
+        // OR when the complete replays after a reconnect/resync cleared the
+        // flight table while its begin (and any staged events) did not
+        // re-deliver — the id-filtered replay skips events the client already
+        // saw. Committing the legacy bucket in that state (empty — events
+        // staged into the lost flight, not the bucket) wipes live prompts,
+        // and recording the marker as evidence would green-light the
+        // stuck-session auto-abort. Skip both; pending state is kept and the
+        // next flight rebuilds authoritatively.
+        if (flightId !== "" && !knownFlight) {
+          return;
+        }
 
         setInputSnapshots((prev) => {
           const next = new Map(prev);
@@ -348,22 +365,12 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         // Take this flight's staging (per-flight when snapshot_id is present;
         // the legacy bucket otherwise).
         let staged: Map<string, string> | undefined;
-        const openFlights = flightsRef.current.get(wsId);
-        if (openFlights && openFlights.has(flightId)) {
+        if (knownFlight && openFlights) {
           staged = openFlights.get(flightId);
           openFlights.delete(flightId);
           if (openFlights.size === 0) {
             flightsRef.current.delete(wsId);
           }
-        } else if (flightId !== "" && committedWsRef.current.has(wsId)) {
-          // R2 (review round 3): a complete carrying a flight ID that matches
-          // no open flight, on an already-committed workspace — its begin was
-          // lost (the broker drops events when the subscriber channel is
-          // full), so events that should have staged into that flight staged
-          // nowhere. Committing the (empty) legacy bucket here would wipe
-          // live prompts — the exact false-abort class this provider guards
-          // against. Treat as non-authoritative: keep pending state.
-          return;
         } else {
           staged = legacyStagingRef.current.get(wsId);
           legacyStagingRef.current.delete(wsId);
@@ -516,11 +523,14 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       // backpressure). Snapshot flight state is unreliable — a begin may have
       // been dropped while its complete arrives. Clear the commit gate and
       // any open flights so subsequent events stage again (legacy rule) and
-      // the next flight rebuilds authoritatively.
+      // the next flight rebuilds authoritatively. Recorded snapshot evidence
+      // is also unreliable (its staging may have been dropped) — clear it so
+      // the stuck-session gate cannot lean on pre-resync proof.
       if (evt.type === "resync") {
         committedWsRef.current.clear();
         flightsRef.current.clear();
         legacyStagingRef.current.clear();
+        setInputSnapshots(new Map());
         return;
       }
 

@@ -1,4 +1,4 @@
-# 0749 — False "Session was interrupted" banners: root cause + 5 fixes
+# False "Session was interrupted" banners: root cause + 5 fixes
 
 **Date:** 2026-08-14
 **Status:** Complete
@@ -196,3 +196,16 @@ green in CI (full suite + race detector passed on this PR).
 | R2 | Unknown-flight `complete(ok)` on a committed workspace committed the empty legacy bucket — reachable when the broker drops the `begin` under channel backpressure (128-deep, drop-counted) — a false-abort path of the PR's target class. The provider also ignored the broker's `resync` sentinel. | Guard: a complete carrying a flight ID matching no open flight, on a committed workspace, is non-authoritative (no commit). `resync` now clears committed/flights/legacy staging so events stage again. Two provider tests (dropped-begin survival, resync re-arm). |
 | minor | `resolve()` failure in ListPending returned an untyped error. | Wrapped with `ErrPendingUnavailable` (`errors.Is` chainable). |
 | minor | Two mangled test lines. | Fixed. |
+
+
+### Review round 4 (third REQUEST CHANGES — "this is an approve" once done)
+
+| ID | Finding (validated) | Resolution |
+|---|---|---|
+| A | R2 guard too narrow: after `onReconnect` or `resync` clears the commit gate, a replayed unknown-flight `complete(ok)` fell into the LEGACY branch and committed an empty bucket (id-filtered replay does not re-deliver the begin/staged events) — wiping live prompts; the marker was also recorded as ok:true evidence, feeding the abort gate. | Any `snapshot_complete` carrying a `snapshot_id` that matches no open flight is non-authoritative REGARDLESS of committed state: no commit, no evidence record (guard moved before `setInputSnapshots`). `resync` additionally clears recorded snapshot evidence. Tests: A1 (replay after reconnect — question survives, no evidence refresh), A2 (resync-interleaved). |
+| B | Abort timer survived a user send: `doSendNow` disarms via refs only; no dwell-effect dep changes on send → a direct send during the 1.5s dwell was aborted with the false banner. | Callback re-checks `isReconnectMode` at fire time. Also: the timer is now scheduled even while momentarily disarmed (effect cleanups on dep churn were silently cancelling the dwell — the disarm must be decided at fire time, fail-safe). Regression test with positive control; verified failing with the re-check removed. |
+| — | (found while testing B) history becomes `undefined` during workspace-status refetch gaps (isReady flicker), resetting the dwell anchor before the dwell completes. | Stuck-tool check evaluates the last-known transcript (`lastHistoryRef`) — a refetch gap is not evidence the tool vanished. |
+| C | Worklog title hardcoded `0749`, already assigned to PR #851 by the merge bot. | Number dropped from the title. |
+| N3 | On-demand `/input-snapshot` publishes to the handling replica's in-process broker only; with the default `api.replicaCount: 2`, a POST landing on the other replica's flight is invisible to the user stream → the session-switch recovery silently no-ops (fail-safe: gate starves, no false abort; connect-time flights are same-process and unaffected). | Documented as a known limitation; follow-up: Redis pub/sub for snapshot markers (would also fix the cross-replica marker visibility during rolling deploys). |
+
+E2E determinism (reviewer requirement): the specs now hold both SSE streams open (first hit finite, later hits never fulfill — no reconnect churn, no full-body re-delivery) and gate marker delivery on the on-demand `/input-snapshot` POST, so markers can never precede arming. 4 consecutive runs green.

@@ -41,6 +41,8 @@ const HISTORY_WITH_RUNNING_QUESTION = [
 ];
 
 async function setupAPIMocks(page: Page) {
+  let sessionStreamHits = 0;
+
   await page.route(`${API_PREFIX}/auth/me`, async (route: Route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ id: "u1", username: "testuser", email: "t@t.com", role: "user", active: true }) });
   });
@@ -88,12 +90,60 @@ async function setupAPIMocks(page: Page) {
   await page.route(`${API_PREFIX}/orgs`, async (route: Route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) });
   });
+  // Workspace SSE: ONE finite response, then hold forever. Finite bodies make
+  // the browser reconnect-loop and re-deliver the full event body every ~1-3s
+  // (production replays are id-filtered) — that churn makes these specs
+  // timing-dependent. A handler that never fulfills keeps the reconnect
+  // "connecting" (no onConnect → no onReconnect churn), pinning state.
   await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/session-events`, async (route: Route) => {
-    await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body: ":ok\n\n" });
+    sessionStreamHits++;
+    if (sessionStreamHits === 1) {
+      await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body: ":ok\n\n" });
+    } else {
+      await new Promise<never>(() => {}); // hold — no further delivery
+    }
   });
   // question reply endpoint — the live-prompt scenario must be answerable
   await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/question/que_live_e2e/reply`, async (route: Route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: "true" });
+  });
+
+}
+
+// mockUserStream installs the scenario-specific user-event-stream mock.
+// Delivery is deterministic-by-construction:
+//  - hit 1 delivers `firstDelivery` and ends;
+//  - if `markersAfterSnapshotPost` is given, hit 2+ WAITS until the on-demand
+//    /input-snapshot POST fired (i.e. reconnect mode armed) and then delivers
+//    the markers exactly once — markers can never precede arming;
+//  - every other hit holds forever (never fulfills), so the browser's
+//    reconnect loop neither re-delivers events nor triggers onReconnect
+//    churn — unlike production's id-filtered replay, a finite mock body
+//    would otherwise redeliver the FULL event set every ~1-3s cycle and make
+//    the specs timing-dependent.
+function mockUserStream(page: Page, firstDelivery: object[], markersAfterSnapshotPost?: object[]) {
+  let hits = 0;
+  let markersDelivered = false;
+  let resolveSnapshotRequested!: () => void;
+  const snapshotRequested = new Promise<void>((resolve) => { resolveSnapshotRequested = resolve; });
+  page.on("request", (req) => {
+    if (req.method() === "POST" && req.url().includes(`/workspaces/${WORKSPACE_ID}/input-snapshot`)) {
+      resolveSnapshotRequested();
+    }
+  });
+  return page.route(`${API_PREFIX}/events`, async (route: Route) => {
+    hits++;
+    if (hits === 1) {
+      await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body: sseBody(firstDelivery) });
+      return;
+    }
+    if (markersAfterSnapshotPost && !markersDelivered) {
+      await snapshotRequested;
+      markersDelivered = true;
+      await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body: sseBody(markersAfterSnapshotPost) });
+      return;
+    }
+    await new Promise<never>(() => {}); // hold — no further delivery
   });
 }
 
@@ -109,28 +159,28 @@ test.describe("Stuck-session auto-abort gating (PR #852, mocked backend)", () =>
   test("live pending question survives a successful snapshot — no interrupted banner, prompt answerable", async ({ page }) => {
     // Production dual-publishes question events on the workspace stream
     // (drives the prompt UI) and the user stream (drives the indicator).
-    const questionEvent = {
-      type: "agent.question",
-      data: {
-        id: "que_live_e2e",
-        session_id: SESSION_ID,
-        root_session_id: SESSION_ID,
-        questions: [{ header: "GitHub auth", question: "GitHub auth required — approve?", options: [{ label: "Yes", description: "" }, { label: "No", description: "" }] }],
-      },
+    const questionData = {
+      id: "que_live_e2e",
+      session_id: SESSION_ID,
+      root_session_id: SESSION_ID,
+      questions: [{ header: "GitHub auth", question: "GitHub auth required — approve?", options: [{ label: "Yes", description: "" }, { label: "No", description: "" }] }],
     };
+    // First user-stream delivery: busy seed + a snapshot flight that
+    // re-emits the LIVE question (pod fetch succeeded and lists it).
+    const firstDelivery = [
+      { type: "session.status", session_id: SESSION_ID, workspace_id: WORKSPACE_ID, status: "busy" },
+      { type: "agent.input.snapshot_begin", workspace_id: WORKSPACE_ID, snapshot_id: "flight-1" },
+      { type: "agent.question", workspace_id: WORKSPACE_ID, session_id: SESSION_ID, request_id: "que_live_e2e", data: questionData },
+      { type: "agent.input.snapshot_complete", workspace_id: WORKSPACE_ID, snapshot_ok: true, snapshot_id: "flight-1" },
+    ];
+    await mockUserStream(page, firstDelivery);
+    // Workspace stream also delivers the question (dual-publish).
     await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/session-events`, async (route: Route) => {
-      await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body: sseBody([questionEvent]) });
-    });
-    // User stream: busy seed + snapshot flight that re-emits the LIVE
-    // question (pod fetch succeeded and lists it).
-    await page.route(`${API_PREFIX}/events`, async (route: Route) => {
-      const events = [
-        { type: "session.status", session_id: SESSION_ID, workspace_id: WORKSPACE_ID, status: "busy" },
-        { type: "agent.input.snapshot_begin", workspace_id: WORKSPACE_ID, snapshot_id: "flight-1" },
-        { type: "agent.question", workspace_id: WORKSPACE_ID, session_id: SESSION_ID, request_id: "que_live_e2e", data: questionEvent.data },
-        { type: "agent.input.snapshot_complete", workspace_id: WORKSPACE_ID, snapshot_ok: true, snapshot_id: "flight-1" },
-      ];
-      await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body: sseBody(events) });
+      await route.fulfill({
+        status: 200,
+        headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
+        body: sseBody([{ type: "agent.question", data: questionData }]),
+      });
     });
 
     let abortCalled = false;
@@ -157,15 +207,18 @@ test.describe("Stuck-session auto-abort gating (PR #852, mocked backend)", () =>
 
   test("genuinely stuck session (empty ok-snapshot) is still auto-aborted with banner", async ({ page }) => {
     // opencode restarted and lost the question: the pod's pending set is
-    // EMPTY and the session stays busy with a running question tool.
-    await page.route(`${API_PREFIX}/events`, async (route: Route) => {
-      const events = [
-        { type: "session.status", session_id: SESSION_ID, workspace_id: WORKSPACE_ID, status: "busy" },
+    // EMPTY and the session stays busy with a running question tool. The
+    // snapshot markers are gated on the on-demand /input-snapshot POST the
+    // page fires when reconnect mode arms — deterministic ordering (markers
+    // cannot precede arming), mirroring production.
+    await mockUserStream(
+      page,
+      [{ type: "session.status", session_id: SESSION_ID, workspace_id: WORKSPACE_ID, status: "busy" }],
+      [
         { type: "agent.input.snapshot_begin", workspace_id: WORKSPACE_ID, snapshot_id: "flight-1" },
         { type: "agent.input.snapshot_complete", workspace_id: WORKSPACE_ID, snapshot_ok: true, snapshot_id: "flight-1" },
-      ];
-      await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body: sseBody(events) });
-    });
+      ],
+    );
 
     let abortCalled = false;
     await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/sessions/${SESSION_ID}/abort`, async (route: Route) => {

@@ -3,7 +3,7 @@
  * Covers US-15.1 through US-15.5.
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, waitFor, act, screen } from "@testing-library/react";
+import { render, waitFor, act, screen, fireEvent } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ChatPage } from "./ChatPage";
@@ -1231,6 +1231,65 @@ describe("ChatPage auto-abort stuck input sessions", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("B: a direct send during the abort dwell disarms the auto-abort", async () => {
+    // Review round 4 B: evidence holds and the dwell is counting down; the
+    // session goes idle and the user sends directly (doSendNow disarms
+    // reconnect mode). The timer callback must re-check the disarm — the
+    // anchor intentionally survives churn, and a send changes no effect dep.
+    // (The sibling "auto-aborts ... stuck on question tool" test is the
+    // positive control proving the dwell DOES fire without the send.)
+    const stuckHistory = [
+      { id: "msg-user", role: "user", parts: [{ type: "text", text: "push" }] },
+      {
+        id: "msg-asst",
+        role: "assistant",
+        parts: [{ type: "tool_use", text: "question: auth?", toolState: "running" }],
+      },
+    ];
+    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue(stuckHistory);
+    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({
+      messages: stuckHistory,
+      nextCursor: undefined,
+    });
+    (messagesApi.sendAsync as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    const abort = vi.fn().mockResolvedValue(undefined);
+    (workspacesApi as Record<string, unknown>).abortSession = abort;
+    (workspacesApi as Record<string, unknown>).requestInputSnapshot = vi.fn().mockResolvedValue(undefined);
+
+    mockBusyState.set(true); // armed at mount
+    const qc = makeQueryClient();
+    renderChat(qc, "/chat/ws-1/sess-send");
+
+    // Deterministic evidence-ready signal: the stuck tool is rendered from
+    // history (history loaded) — then arm the snapshot evidence.
+    await waitFor(
+      () => expect(getRenderedMessages().some((m) => m.parts.some((p) => p.type === "tool_use"))).toBe(true),
+      { timeout: 5000 },
+    );
+    act(() => {
+      capturedSSEHandler!({ type: "session.status", session_id: "sess-send", status: "busy" });
+      snapshotStore.value = { ok: true, at: Date.now() };
+    });
+
+    // Session goes idle and the user sends directly — immediately, well
+    // inside the 1.5s dwell. (fireEvent, not userEvent; the busy flip is
+    // flushed in its own act so the send sees the idle state.)
+    act(() => {
+      mockBusyState.set(false);
+    });
+    const textarea = screen.getByRole("textbox");
+    act(() => {
+      fireEvent.change(textarea, { target: { value: "hello there" } });
+      fireEvent.keyDown(textarea, { key: "Enter" });
+    });
+    expect(messagesApi.sendAsync).toHaveBeenCalled();
+
+    // Far past the dwell — the send disarmed the abort.
+    await new Promise((r) => setTimeout(r, 3500));
+    expect(abort).not.toHaveBeenCalled();
+    expect(screen.queryByText(/session was interrupted/i)).toBeNull();
   });
 
   it("refreshes message queue on SSE reconnect", async () => {
