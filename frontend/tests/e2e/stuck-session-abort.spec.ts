@@ -76,7 +76,7 @@ async function setupAPIMocks(page: Page) {
   await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/models`, async (route: Route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ models: [], currentModel: "" }) });
   });
-  await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/queue`, async (route: Route) => {
+  await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/sessions/*/queue`, async (route: Route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ messages: [] }) });
   });
   await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/runs/active`, async (route: Route) => {

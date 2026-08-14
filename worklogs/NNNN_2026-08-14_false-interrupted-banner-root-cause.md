@@ -176,3 +176,14 @@ are upgraded.
 `TestValidateProbeBaseURL_PrivateRanges` performs live DNS resolution of
 `ai.thekao.cloud` and fails in DNS-restricted sandboxes — environment-specific,
 green in CI (full suite + race detector passed on this PR).
+
+### CI round 3
+
+- OpenAPI contract: new route documented in `sdks/openapi.yaml` (router contract test enforces parity).
+- E2E anchor livelock round 2 (CI-timing): the dwell anchor also survived
+  only while `isReconnectMode` stayed armed — reconcileOnIdle clears it on
+  every workspace-SSE reconnect and the window re-arms immediately, so churn
+  faster than the dwell cleared the anchor indefinitely on slow machines.
+  The anchor now survives reconnect-mode flips; only strong-evidence breaks
+  (live prompt arrived, stuck tool gone, snapshot not ok/too old, session
+  change) clear it.

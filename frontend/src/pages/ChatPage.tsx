@@ -459,38 +459,43 @@ export function ChatPage() {
   // the abort indefinitely — each timer schedules only the REMAINING dwell.
   const abortDwellStartRef = useRef<number | null>(null);
   useEffect(() => {
-    const conditionsHold =
-      isReconnectMode.current &&
+    // Strong evidence: the conditions that, if they break, genuinely
+    // invalidate the stuck-session diagnosis. The dwell ANCHOR survives
+    // transient flips of isReconnectMode (reconcileOnIdle clears it on every
+    // SSE reconnect; the window re-arms immediately) — otherwise reconnect
+    // churn faster than the dwell would clear the anchor forever.
+    const stuckToolPresent = (() => {
+      if (!history || history.length === 0) return false;
+      const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
+      if (!lastAssistant) return false;
+      return lastAssistant.parts.some(
+        (p) =>
+          p.type === "tool_use" &&
+          p.toolState === "running" &&
+          (p.text?.startsWith("question") || p.text?.startsWith("permission")),
+      );
+    })();
+    const strongEvidenceHold =
       !!workspaceId &&
       !!sessionId &&
-      !!history &&
-      history.length > 0 &&
+      stuckToolPresent &&
       !hasAutoAbortedRef.current &&
       pendingPromptCount === 0 &&
       !!inputSnapshot?.ok &&
-      inputSnapshot.at > sessionMountedAtRef.current &&
-      (() => {
-        const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
-        if (!lastAssistant) return false;
-        return lastAssistant.parts.some(
-          (p) =>
-            p.type === "tool_use" &&
-            p.toolState === "running" &&
-            (p.text?.startsWith("question") || p.text?.startsWith("permission")),
-        );
-      })();
+      inputSnapshot.at > sessionMountedAtRef.current;
 
-    if (!conditionsHold) {
+    if (!strongEvidenceHold) {
       abortDwellStartRef.current = null;
       return;
     }
+    if (!isReconnectMode.current) return; // keep the anchor; timer idles until re-armed
     if (abortDwellStartRef.current === null) {
       abortDwellStartRef.current = Date.now();
     }
 
     // All evidence holds — dwell briefly so a question registering in
     // opencode's queue between the snapshot fetch and its marker (which
-    // would arrive as an agent.question event and break the conditions,
+    // would arrive as an agent.question event and break the evidence,
     // clearing the anchor) cannot be killed.
     const remaining = Math.max(0, AUTO_ABORT_DWELL_MS - (Date.now() - abortDwellStartRef.current));
     const timer = setTimeout(() => {
