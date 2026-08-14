@@ -2011,6 +2011,85 @@ describe("D10: snapshot begin/ok semantics (false-wipe fix)", () => {
     expect(screen.getByTestId("pending").textContent).toBe("yes");
   });
 
+  it("R2: unknown-flight complete(ok) on a committed workspace does not wipe pending (dropped begin)", () => {
+    // Broker backpressure drops the begin; the question event and the
+    // complete still arrive. The complete's flight matches no open flight and
+    // the workspace is committed — committing the empty legacy bucket here
+    // wiped live prompts (review round 3 R2).
+    renderProvider(<PendingIndicator sessionId="ses-1" />);
+
+    // First snapshot commits the question
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1", snapshot_id: "flight-A" });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_live",
+      });
+    });
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1", snapshot_ok: true, snapshot_id: "flight-A" });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+
+    // begin(flight-B) is DROPPED by the broker; the question event and
+    // complete(flight-B) still arrive
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_live",
+      });
+    });
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1", snapshot_ok: true, snapshot_id: "flight-B" });
+    });
+
+    // Live question must survive the unknown-flight complete
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+  });
+
+  it("R2: resync clears the commit gate so subsequent events stage again", () => {
+    renderProvider(<PendingIndicator sessionId="ses-1" />);
+
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_1",
+      });
+    });
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1" });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+
+    // Broker signals a drop — committed state is unreliable
+    act(() => {
+      capturedOnEvent!({ type: "resync" });
+    });
+
+    // A NEW question on the (now uncommitted) workspace stages again and a
+    // legacy marker commit preserves it.
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_2",
+      });
+    });
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1" });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+  });
+
   it("superseded flight staging does not leak into a later flight's commit", () => {
     renderProvider(<PendingIndicator sessionId="ses-1" />);
 
@@ -2044,7 +2123,8 @@ describe("D10: snapshot begin/ok semantics (false-wipe fix)", () => {
   });
 });
 
-describe("agent_died handler", () => {  function BusyIndicator({ sessionId }: { sessionId: string }) {
+describe("agent_died handler", () => {
+  function BusyIndicator({ sessionId }: { sessionId: string }) {
     const isBusy = useIsSessionBusy(sessionId);
     return <span data-testid="busy">{isBusy ? "yes" : "no"}</span>;
   }

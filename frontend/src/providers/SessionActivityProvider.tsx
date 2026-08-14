@@ -39,6 +39,7 @@ const NON_ACTIVE_PHASES = new Set(["Suspending", "Suspended", "Terminating", "Te
 const KNOWN_EVENT_TYPES = new Set([
   "agent.question", "agent.question.resolved", "agent.permission", "agent.permission.resolved",
   "agent.input.snapshot_begin", "agent.input.snapshot_complete", "session.status", "agent_died", "workspace.phase",
+  "resync",
 ]);
 
 // pruneMany returns a copy of m with every key in doomed removed, or m itself
@@ -345,9 +346,7 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         });
 
         // Take this flight's staging (per-flight when snapshot_id is present;
-        // the legacy bucket otherwise). A duplicate/unknown flight complete
-        // yields an empty map — for the legacy path that is the pre-D10
-        // semantic (authoritative empty), preserved as-is.
+        // the legacy bucket otherwise).
         let staged: Map<string, string> | undefined;
         const openFlights = flightsRef.current.get(wsId);
         if (openFlights && openFlights.has(flightId)) {
@@ -356,6 +355,15 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           if (openFlights.size === 0) {
             flightsRef.current.delete(wsId);
           }
+        } else if (flightId !== "" && committedWsRef.current.has(wsId)) {
+          // R2 (review round 3): a complete carrying a flight ID that matches
+          // no open flight, on an already-committed workspace — its begin was
+          // lost (the broker drops events when the subscriber channel is
+          // full), so events that should have staged into that flight staged
+          // nowhere. Committing the (empty) legacy bucket here would wipe
+          // live prompts — the exact false-abort class this provider guards
+          // against. Treat as non-authoritative: keep pending state.
+          return;
         } else {
           staged = legacyStagingRef.current.get(wsId);
           legacyStagingRef.current.delete(wsId);
@@ -502,6 +510,18 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           return next;
         });
         clearWorkspacePendingActions(wsId);
+      }
+
+      // resync: the broker dropped events for this subscriber (channel
+      // backpressure). Snapshot flight state is unreliable — a begin may have
+      // been dropped while its complete arrives. Clear the commit gate and
+      // any open flights so subsequent events stage again (legacy rule) and
+      // the next flight rebuilds authoritatively.
+      if (evt.type === "resync") {
+        committedWsRef.current.clear();
+        flightsRef.current.clear();
+        legacyStagingRef.current.clear();
+        return;
       }
 
       if (evt.type === "workspace.phase" && evt.workspace_id && evt.phase) {

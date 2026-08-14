@@ -4,7 +4,7 @@
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, waitFor, act, screen } from "@testing-library/react";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useNavigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ChatPage } from "./ChatPage";
 import { TooltipProvider } from "../components/ui";
@@ -926,7 +926,8 @@ describe("ChatPage auto-abort stuck input sessions", () => {
     );
   });
 
-  it("does NOT auto-abort when the question is still in the SSE queue (re-emitted on reconnect)", async () => {    // If the agent.question SSE event arrives (emitPendingInputRequests replayed it),
+  it("does NOT auto-abort when the question is still in the SSE queue (re-emitted on reconnect)", async () => {
+    // If the agent.question SSE event arrives (emitPendingInputRequests replayed it),
     // the question is still live — don't abort, let the user answer.
     (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
       { id: "msg-user", role: "user", parts: [{ type: "text", text: "push to github" }] },
@@ -1103,6 +1104,80 @@ describe("ChatPage auto-abort stuck input sessions", () => {
 
     expect((workspacesApi as Record<string, unknown>).abortSession).not.toHaveBeenCalled();
     expect(screen.queryByText(/session was interrupted/i)).toBeNull();
+  });
+
+  it("R1: busy→busy same-workspace session switch re-arms reconnect mode and requests a snapshot", async () => {
+    // Review round 3 R1: navigating from busy session A to busy session B
+    // (isSessionBusy never transitions) must re-arm reconnect mode after the
+    // session-change reset cleared it — otherwise the stuck-session recovery
+    // never fires for B. Re-arming also requests a fresh input snapshot.
+    const stuckHistory = (sessionLabel: string) => [
+      { id: "msg-user", role: "user", parts: [{ type: "text", text: "push " + sessionLabel }] },
+      {
+        id: "msg-asst",
+        role: "assistant",
+        parts: [{ type: "tool_use", text: "question: auth?", toolState: "running" }],
+      },
+    ];
+    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockImplementation(async () => stuckHistory("a"));
+    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockImplementation(async () => ({
+      messages: stuckHistory("a"),
+      nextCursor: undefined,
+    }));
+    (workspacesApi as Record<string, unknown>).abortSession = vi.fn().mockResolvedValue(undefined);
+    const requestSnapshot = vi.fn().mockResolvedValue(undefined);
+    (workspacesApi as Record<string, unknown>).requestInputSnapshot = requestSnapshot;
+
+    mockBusyState.set(true); // busy at mount AND stays busy across the switch
+
+    const qc = makeQueryClient();
+    // navigate via react-router (rerendering with a new MemoryRouter does NOT
+    // navigate — initialEntries is only initial state).
+    function SwitchButton() {
+      const navigate = useNavigate();
+      return <button data-testid="switch-btn" onClick={() => navigate("/chat/ws-1/sess-b")}>switch</button>;
+    }
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={["/chat/ws-1/sess-a"]}>
+          <TooltipProvider delayDuration={0}>
+            <SwitchButton />
+            <Routes>
+              <Route path="/chat/:workspaceId/:sessionId" element={<ChatPage />} />
+            </Routes>
+          </TooltipProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
+    await waitFor(() => expect(requestSnapshot).toHaveBeenCalledWith("ws-1"));
+
+    // Fresh history for sess-b arrives (stuck question tool)
+    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockImplementation(async () => stuckHistory("b"));
+    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockImplementation(async () => ({
+      messages: stuckHistory("b"),
+      nextCursor: undefined,
+    }));
+
+    // Navigate within the SPA to a DIFFERENT busy session of the same workspace
+    act(() => {
+      screen.getByTestId("switch-btn").click();
+    });
+
+    // The switch re-arms: a fresh ok snapshot after the switch satisfies the
+    // gate and the abort fires for sess-b.
+    act(() => {
+      snapshotStore.value = { ok: true, at: Date.now() };
+    });
+
+    await waitFor(
+      () => expect((workspacesApi as Record<string, unknown>).abortSession)
+        .toHaveBeenCalledWith("ws-1", "sess-b"),
+      { timeout: 5000 },
+    );
+    // And the snapshot was requested again for the newly-viewed session
+    expect(requestSnapshot.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 
   it("does NOT arm reconnect mode when busy arrives after the activation window closed (F1)", async () => {

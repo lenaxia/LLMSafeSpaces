@@ -382,6 +382,10 @@ export function ChatPage() {
   // Enter reconnect mode when session is busy — MUST be after the session-change
   // reset effect so it runs second on mount and isn't cleared.
   // F1 fix: only while the activation window is open (mount / SSE reconnect).
+  // R1 (review round 3): sessionId is a dep — a busy→busy same-workspace
+  // switch (isSessionBusy never transitions) must re-run the effect to
+  // re-arm after the session-change reset cleared isReconnectMode, or the
+  // stuck-session recovery never fires for the newly-viewed session.
   useEffect(() => {
     if (reconnectWindowOpenRef.current && isSessionBusy && !localStreaming) {
       if (!isReconnectMode.current) {
@@ -396,7 +400,7 @@ export function ChatPage() {
         }
       }
     }
-  }, [isSessionBusy, localStreaming, workspaceId]);
+  }, [isSessionBusy, localStreaming, workspaceId, sessionId]);
 
   // US-15.5: Reconcile on idle — fetch authoritative history and clear streaming state
   const reconcileOnIdle = useCallback(async () => {

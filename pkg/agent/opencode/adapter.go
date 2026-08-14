@@ -626,7 +626,7 @@ func (a *Adapter) ListPending(ctx context.Context, userID, workspaceID, sessionI
 	// version" and returns an authoritative empty.
 	c, err := a.resolve(ctx, userID, workspaceID)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%w: resolve workspace: %v", ErrPendingUnavailable, err)
 	}
 	d := &Dialect{} // existing parser
 	var out []session.InputRequest

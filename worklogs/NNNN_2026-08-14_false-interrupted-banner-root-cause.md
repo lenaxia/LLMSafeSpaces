@@ -187,3 +187,12 @@ green in CI (full suite + race detector passed on this PR).
   The anchor now survives reconnect-mode flips; only strong-evidence breaks
   (live prompt arrived, stuck tool gone, snapshot not ok/too old, session
   change) clear it.
+
+### Review round 3 (second REQUEST CHANGES — "close")
+
+| ID | Finding (validated) | Resolution |
+|---|---|---|
+| R1 | Activation effect deps lacked `sessionId` — busy→busy same-workspace switch never re-armed (isSessionBusy never transitions), so the C3 recovery gap remained for that path. | `sessionId` added to deps. Regression test: SPA-navigate (react-router `useNavigate`) from busy A to stuck B → re-arms, requests snapshot, abort fires for B. Verified the test fails with the dep reverted. |
+| R2 | Unknown-flight `complete(ok)` on a committed workspace committed the empty legacy bucket — reachable when the broker drops the `begin` under channel backpressure (128-deep, drop-counted) — a false-abort path of the PR's target class. The provider also ignored the broker's `resync` sentinel. | Guard: a complete carrying a flight ID matching no open flight, on a committed workspace, is non-authoritative (no commit). `resync` now clears committed/flights/legacy staging so events stage again. Two provider tests (dropped-begin survival, resync re-arm). |
+| minor | `resolve()` failure in ListPending returned an untyped error. | Wrapped with `ErrPendingUnavailable` (`errors.Is` chainable). |
+| minor | Two mangled test lines. | Fixed. |
