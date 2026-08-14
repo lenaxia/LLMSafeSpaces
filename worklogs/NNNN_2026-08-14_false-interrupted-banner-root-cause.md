@@ -135,3 +135,44 @@ pre-existing on main, in files outside this change's scope.
 | Frontend abort fired while permission was live | API log abort at 08:21:00 + opencode log `error=Aborted` + permission still in queue afterwards |
 | "failed to fetch" chat error = ModelUnavailableError from direct-to-Zen free tier | opencode log 08:25:56 + relay skip at 07:58:31 + session model `opencode/deepseek-v4-flash-free` |
 | Parts lack timestamps in the normalized contract | `frontend/src/api/messages.ts` ContractMessage + `pkg/session` mapping |
+
+---
+
+## Review round 2 (PR #852 — REQUEST CHANGES → addressed)
+
+All findings independently validated before fixing:
+
+| ID | Finding (validated) | Resolution |
+|---|---|---|
+| C1 (critical) | `Adapter.ListPending` returned `(out, nil)` on transport errors and ≥500 — the adapter comment claimed the opposite. Production always wires the adapter, so `snapshot_ok:true` was emitted for failed fetches and the F2/F3 fixes were inert on the production path. | `ListPending` now returns typed `ErrPendingUnavailable` on transport/≥400(!404) failures; 404-not-implemented stays an authoritative empty. Interface doc codifies the contract. 4 new adapter tests (transport/5xx/partial-404/404) replace the test that codified the broken behavior; 2 new handler tests assert adapter-path `snapshot_ok` semantics. |
+| C2 (high) | Two concurrent snapshot flights (workspace-SSE + user-stream connect on hard page load) shared one staging map: the second `snapshot_complete` committed an authoritative empty over the first's commit — live prompts wiped on the most common load path. | `snapshot_id` flight identifier on begin/complete (`WorkspaceSSEEvent.SnapshotID`); provider stages per-flight (`flightsRef: ws → flightId → entries`). 3 new interleaving tests (A/B ok, failed+ok both orders, superseded staging). |
+| C3 | In-workspace session switch into a stuck session re-armed reconnect mode but no stream (re)connects → no fresh flight → abort gate starved forever (recovery regression vs pre-PR). | New `POST /workspaces/:id/input-snapshot` endpoint fires a flight on demand; ChatPage calls it when reconnect mode arms. Endpoint test asserts begin/complete share a flight ID. |
+| C3-minor | `zap.Duration("deadline", cfg.FetchDeadline)` logged `0s` in production. | Logs the effective deadline. |
+| C3-minor | `relayKillFunc` used rootCtx; reload path uses BgCtx — deferred restart not cancelled at shutdown, `bgWg` never drains. | `maybeStartRelayInjector(rootCtx, bgCtx, ...)`; kill decision uses bgCtx. |
+| C3-minor | `outcome="success"` metric counted config applications before a possibly-deferred restart. | Documented in-code (metric counts applications; restart may defer ≤15min). |
+| Test gap | Adapter-path `snapshot_ok` assertions missing; interleaved-flight coverage missing; wire-contract (omitempty `*bool`) unguarded; no e2e. | All added: 2 adapter-path handler tests, 3 interleaving tests, `TestSnapshotOK_WireContract` (asserts `"snapshot_ok":false` literally on the wire), Playwright e2e `stuck-session-abort.spec.ts` (live-question survival + answerable; genuine-stuck abort + banner). |
+| Style | Dead eslint-disable; worklog manually numbered; collapsed test formatting. | Removed; renamed to `NNNN_` sentinel; formatted. |
+
+Additional fix found while writing the e2e (validated by reproducing in the
+spec): the abort dwell timer restarted on every history refetch (SSE
+reconnect churn), deferring the abort indefinitely. Now anchored
+(`abortDwellStartRef`) with only the REMAINING dwell scheduled. The
+snapshot-freshness gate moved from per-arming `armedAt` (which the same
+churn livelocked — each re-arm demanded a newer snapshot, perpetually
+clearing the anchor) to a stable per-view `sessionMountedAt` — the
+anti-stale property is preserved (a pre-mount snapshot could predate the
+question) and the C3 on-demand flight covers the session-switch case.
+
+### Deploy-window caveat (explicit)
+
+Markers from old API replicas during a rolling deploy lack `snapshot_ok` and
+are treated as ok — legacy (buggy) commit semantics persist through the
+upgrade window. Transient and self-healing (any new-replica marker
+reconciles), but the false-abort fix is only fully active once API replicas
+are upgraded.
+
+### Validation note
+
+`TestValidateProbeBaseURL_PrivateRanges` performs live DNS resolution of
+`ai.thekao.cloud` and fails in DNS-restricted sandboxes — environment-specific,
+green in CI (full suite + race detector passed on this PR).

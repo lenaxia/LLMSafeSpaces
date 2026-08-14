@@ -334,10 +334,14 @@ export function ChatPage() {
   const isReconnectMode = useRef(false);
   const knownLivePartIds = useRef<Set<string>>(new Set());
   // F1 fix: activation is only permitted within RECONNECT_ACTIVATION_WINDOW_MS
-  // of mount/session-change or an SSE reconnect. armedAt feeds the auto-abort
-  // snapshot gate (only post-arming snapshots count as evidence).
+  // of mount/session-change or an SSE reconnect. sessionMountedAt feeds the
+  // auto-abort snapshot gate (only snapshots newer than this page's view of
+  // the session count as evidence) — it is intentionally STABLE across SSE
+  // reconnect churn: a per-reconnect reset livelocks against the user
+  // stream's own reconnect cadence (each re-arm would demand a newer
+  // snapshot, perpetually clearing the abort dwell anchor).
   const reconnectWindowOpenRef = useRef(true);
-  const reconnectArmedAtRef = useRef(0);
+  const sessionMountedAtRef = useRef(0); // set in the session-change effect (runs on mount) — keeps render pure
   const reconnectWindowTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const armReconnectWindow = useCallback(() => {
@@ -365,7 +369,9 @@ export function ChatPage() {
     // S36.4: Reset compaction state when navigating to a different session
     prevContextUsedRef.current = undefined;
     setCompactionDetected(false);
-    // F1 fix: open the activation window for the newly-mounted session.
+    // F1 fix: open the activation window for the newly-mounted session and
+    // stamp this view's mount time (auto-abort snapshot-evidence gate).
+    sessionMountedAtRef.current = Date.now();
     armReconnectWindow();
     return () => {
       if (reconnectWindowTimerRef.current) clearTimeout(reconnectWindowTimerRef.current);
@@ -380,10 +386,17 @@ export function ChatPage() {
     if (reconnectWindowOpenRef.current && isSessionBusy && !localStreaming) {
       if (!isReconnectMode.current) {
         isReconnectMode.current = true;
-        reconnectArmedAtRef.current = Date.now();
+        // F1/C3: guarantee a fresh input-snapshot flight exists after arming.
+        // Page loads and SSE reconnects fire one server-side, but an
+        // in-workspace session switch arms reconnect mode with no stream
+        // (re)connect — without this trigger the auto-abort gate would wait
+        // on a stale snapshot forever.
+        if (workspaceId) {
+          workspacesApi.requestInputSnapshot(workspaceId).catch(() => {});
+        }
       }
     }
-  }, [isSessionBusy, localStreaming]);
+  }, [isSessionBusy, localStreaming, workspaceId]);
 
   // US-15.5: Reconcile on idle — fetch authoritative history and clear streaming state
   const reconcileOnIdle = useCallback(async () => {
@@ -440,43 +453,55 @@ export function ChatPage() {
   // After abort we reconcile history and surface an "interrupted" banner.
   const pendingPromptCount = pendingQuestions.length + pendingPermissions.length;
   const inputSnapshot = useWorkspaceInputSnapshot(workspaceId ?? "");
+  // Dwell anchor: set when all abort evidence first holds; cleared when any
+  // evidence breaks. A persistent anchor (not a fresh timer) means frequent
+  // effect re-runs (history refetches on SSE reconnect churn) cannot defer
+  // the abort indefinitely — each timer schedules only the REMAINING dwell.
+  const abortDwellStartRef = useRef<number | null>(null);
   useEffect(() => {
-    if (!isReconnectMode.current) return;
-    if (!workspaceId || !sessionId) return;
-    if (!history || history.length === 0) return;
-    if (hasAutoAbortedRef.current) return;
-    // If SSE already delivered the question/permission, don't abort — let the user answer.
-    if (pendingPromptCount > 0) return;
-    // A successful snapshot received after arming is required proof that
-    // opencode's pending-input queue was consulted and is empty.
-    if (!inputSnapshot?.ok) return;
-    if (inputSnapshot.at <= reconnectArmedAtRef.current) return;
+    const conditionsHold =
+      isReconnectMode.current &&
+      !!workspaceId &&
+      !!sessionId &&
+      !!history &&
+      history.length > 0 &&
+      !hasAutoAbortedRef.current &&
+      pendingPromptCount === 0 &&
+      !!inputSnapshot?.ok &&
+      inputSnapshot.at > sessionMountedAtRef.current &&
+      (() => {
+        const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
+        if (!lastAssistant) return false;
+        return lastAssistant.parts.some(
+          (p) =>
+            p.type === "tool_use" &&
+            p.toolState === "running" &&
+            (p.text?.startsWith("question") || p.text?.startsWith("permission")),
+        );
+      })();
 
-    const lastAssistant = [...history].reverse().find((m) => m.role === "assistant");
-    if (!lastAssistant) return;
-
-    const stuckTool = lastAssistant.parts.find(
-      (p) =>
-        p.type === "tool_use" &&
-        p.toolState === "running" &&
-        (p.text?.startsWith("question") || p.text?.startsWith("permission")),
-    );
-    if (!stuckTool) return;
+    if (!conditionsHold) {
+      abortDwellStartRef.current = null;
+      return;
+    }
+    if (abortDwellStartRef.current === null) {
+      abortDwellStartRef.current = Date.now();
+    }
 
     // All evidence holds — dwell briefly so a question registering in
     // opencode's queue between the snapshot fetch and its marker (which
-    // would arrive as an agent.question event and cancel this timer via the
-    // pendingPromptCount guard) cannot be killed.
+    // would arrive as an agent.question event and break the conditions,
+    // clearing the anchor) cannot be killed.
+    const remaining = Math.max(0, AUTO_ABORT_DWELL_MS - (Date.now() - abortDwellStartRef.current));
     const timer = setTimeout(() => {
       if (hasAutoAbortedRef.current) return;
-      if (pendingPromptCount > 0) return;
+      if (abortDwellStartRef.current === null) return;
       hasAutoAbortedRef.current = true;
-      workspacesApi.abortSession(workspaceId, sessionId)
+      workspacesApi.abortSession(workspaceId!, sessionId!)
         .then(() => { setSessionWasInterrupted(true); reconcileOnIdle(); })
         .catch(() => { setSessionWasInterrupted(true); reconcileOnIdle(); });
-    }, AUTO_ABORT_DWELL_MS);
+    }, remaining);
     return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workspaceId, sessionId, history, pendingPromptCount, inputSnapshot, reconcileOnIdle]);
   const hasAutoRenamedRef = useRef(false);
   useEffect(() => {

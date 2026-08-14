@@ -99,9 +99,17 @@ func (h *ProxyHandler) emitPendingInputRequests(ctx context.Context, workspaceID
 	// "authoritative empty" from "fetch failed — keep your state".
 	ok := false
 
-	// D9: emit the snapshot-complete marker unconditionally on exit, even on
-	// timeout/error. On success this commits the staged set; on failure
-	// (ok=false) clients keep their existing pending state.
+	// D10: flight ID — identifies this snapshot attempt on both the begin
+	// and complete markers. Two flights can run concurrently for one
+	// workspace (workspace-SSE connect + user-stream connect on a hard page
+	// load); clients key per-flight staging on this ID so one flight's
+	// commit cannot consume another's staged events. Unix-nano is unique
+	// per workspace per invocation.
+	flightID := fmt.Sprintf("%s-%d", workspaceID, time.Now().UnixNano())
+
+	// D9/D10: emit the snapshot-complete marker unconditionally on exit,
+	// even on timeout/error. On success this commits the flight's staged
+	// set; on failure (ok=false) clients keep their existing pending state.
 	defer func() {
 		if h.userBroker == nil {
 			return
@@ -111,18 +119,20 @@ func (h *ProxyHandler) emitPendingInputRequests(ctx context.Context, workspaceID
 				Type:        "agent.input.snapshot_complete",
 				WorkspaceID: workspaceID,
 				SnapshotOK:  &ok,
+				SnapshotID:  flightID,
 			})
 		}
 	}()
 
-	// D10: announce the snapshot before fetching so clients open a staging
-	// window — question/permission events that follow are snapshot-emitted
-	// and must survive the marker's authoritative commit.
+	// D10: announce the snapshot before fetching so clients open a per-flight
+	// staging window — question/permission events that follow are
+	// snapshot-emitted and must survive the marker's authoritative commit.
 	if h.userBroker != nil {
 		if userID := h.userBroker.WorkspaceOwner(workspaceID); userID != "" {
 			h.userBroker.PublishToUser(userID, apitypes.WorkspaceSSEEvent{
 				Type:        "agent.input.snapshot_begin",
 				WorkspaceID: workspaceID,
+				SnapshotID:  flightID,
 			})
 		}
 	}
@@ -196,6 +206,31 @@ func (h *ProxyHandler) emitPendingInputRequests(ctx context.Context, workspaceID
 			ok = false
 		}
 	}
+}
+
+// RequestInputSnapshot triggers an input-snapshot flight for the workspace:
+// emits agent.input.snapshot_begin → pending question/permission events →
+// agent.input.snapshot_complete (with snapshot_ok) on the user stream.
+//
+// Clients call this when they need a FRESH authoritative snapshot without
+// reconnecting an SSE stream — e.g. ChatPage arming reconnect mode after an
+// in-workspace session switch (no stream reconnect fires, so no snapshot
+// flight would otherwise run and the stuck-session gate would wait forever).
+func (h *ProxyHandler) RequestInputSnapshot(c *gin.Context) {
+	workspaceID := c.Param("id")
+	if workspaceID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "workspace ID required"})
+		return
+	}
+	if h.dialect == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "input dialect not configured"})
+		return
+	}
+	// Detached context: the fetch (≤5s) must outlive this request, which
+	// returns immediately. The flight's events reach the caller via the
+	// user-event stream, not this response.
+	go h.emitPendingInputRequests(context.WithoutCancel(c.Request.Context()), workspaceID) //nolint:contextcheck // intentionally detached — the snapshot outlives the request
+	c.JSON(http.StatusAccepted, gin.H{"status": "snapshot requested"})
 }
 
 // emitPendingViaAdapter uses the Adapter's ListPending to fetch pending

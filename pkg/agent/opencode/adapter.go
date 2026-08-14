@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,6 +22,14 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
+
+// ErrPendingUnavailable is returned by ListPending when the agent's
+// pending-input endpoints could not be queried (transport failure or a
+// non-success response other than 404-not-implemented). Callers MUST treat
+// this as "pending set unknown" — never as an authoritative empty. The SSE
+// input snapshot maps it to snapshot_ok:false so a failed fetch cannot
+// commit an empty pending set over live prompts (PR #852 review C1).
+var ErrPendingUnavailable = errors.New("agent pending-input endpoints unavailable")
 
 // Compile-time assertion: *Adapter satisfies agent.Adapter.
 // AgentConfigWriter is NOT part of Adapter (see agent.Adapter doc:
@@ -609,11 +618,12 @@ func (a *Adapter) ListPending(ctx context.Context, userID, workspaceID, sessionI
 	// Implemented here because it is a synchronous poll, not a
 	// stream — the same shape the proxy's pending-input UI calls.
 	//
-	// Error handling: transport errors and 5xx responses are logged
-	// at warn (not silently swallowed) so a connectivity failure
-	// does not mask as "no pending input". 4xx responses other than
-	// 404 are also logged. 404 is treated as "endpoint not implemented
-	// in this opencode version" and silently returns empty.
+	// Error handling: transport errors and non-success responses
+	// (other than 404-not-implemented) return ErrPendingUnavailable —
+	// "pending set unknown", never "authoritative empty" — so a
+	// connectivity failure does not mask as "no pending input".
+	// 404 is treated as "endpoint not implemented in this opencode
+	// version" and returns an authoritative empty.
 	c, err := a.resolve(ctx, userID, workspaceID)
 	if err != nil {
 		return nil, err
@@ -625,37 +635,29 @@ func (a *Adapter) ListPending(ctx context.Context, userID, workspaceID, sessionI
 	if qErr != nil {
 		a.logger.Warn("adapter ListPending: GET /question transport error",
 			zap.Error(qErr), zap.String("workspaceID", workspaceID), zap.String("sessionID", sessionID))
-	} else {
-		defer qResp.Body.Close() //nolint:errcheck // best-effort drain
-		switch {
-		case qResp.StatusCode >= 500:
-			a.logger.Warn("adapter ListPending: GET /question returned server error",
-				zap.Int("status", qResp.StatusCode))
-		case qResp.StatusCode >= 400 && qResp.StatusCode != http.StatusNotFound:
-			a.logger.Warn("adapter ListPending: GET /question returned client error",
-				zap.Int("status", qResp.StatusCode))
-		case qResp.StatusCode < 400:
-			out = append(out, a.parsePendingQuestions(qResp)...)
-		}
+		return nil, fmt.Errorf("%w: GET /question: %v", ErrPendingUnavailable, qErr)
 	}
+	defer qResp.Body.Close() //nolint:errcheck // best-effort drain
+	if qResp.StatusCode >= 400 && qResp.StatusCode != http.StatusNotFound {
+		a.logger.Warn("adapter ListPending: GET /question returned error status",
+			zap.Int("status", qResp.StatusCode))
+		return nil, fmt.Errorf("%w: GET /question returned %d", ErrPendingUnavailable, qResp.StatusCode)
+	}
+	out = append(out, a.parsePendingQuestions(qResp)...)
 
 	pResp, pErr := a.doGet(ctx, c, d.PermissionListPath())
 	if pErr != nil {
 		a.logger.Warn("adapter ListPending: GET /permission transport error",
 			zap.Error(pErr), zap.String("workspaceID", workspaceID), zap.String("sessionID", sessionID))
-	} else {
-		defer pResp.Body.Close() //nolint:errcheck // best-effort drain
-		switch {
-		case pResp.StatusCode >= 500:
-			a.logger.Warn("adapter ListPending: GET /permission returned server error",
-				zap.Int("status", pResp.StatusCode))
-		case pResp.StatusCode >= 400 && pResp.StatusCode != http.StatusNotFound:
-			a.logger.Warn("adapter ListPending: GET /permission returned client error",
-				zap.Int("status", pResp.StatusCode))
-		case pResp.StatusCode < 400:
-			out = append(out, a.parsePendingPermissions(pResp)...)
-		}
+		return nil, fmt.Errorf("%w: GET /permission: %v", ErrPendingUnavailable, pErr)
 	}
+	defer pResp.Body.Close() //nolint:errcheck // best-effort drain
+	if pResp.StatusCode >= 400 && pResp.StatusCode != http.StatusNotFound {
+		a.logger.Warn("adapter ListPending: GET /permission returned error status",
+			zap.Int("status", pResp.StatusCode))
+		return nil, fmt.Errorf("%w: GET /permission returned %d", ErrPendingUnavailable, pResp.StatusCode)
+	}
+	out = append(out, a.parsePendingPermissions(pResp)...)
 	return out, nil
 }
 

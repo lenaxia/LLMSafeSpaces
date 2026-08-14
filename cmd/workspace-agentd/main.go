@@ -116,7 +116,10 @@ func main() {
 	}
 
 	startBackgroundLoops(bgCtx, &bgWg, deps)
-	maybeStartRelayInjector(rootCtx, &bgWg, deps)
+	// bgCtx (not rootCtx): the session-aware deferred restart must be
+	// cancelled by runShutdown's bgCancel so bgWg drains within its 5s wait —
+	// same context discipline as the credential-reload path (secrets.go).
+	maybeStartRelayInjector(rootCtx, bgCtx, &bgWg, deps)
 
 	adminSrv, userSrv, srvErr := wireHTTPServers(bgCtx, &bgWg, deps)
 
@@ -187,7 +190,7 @@ func startManagedProcess(supervise bool) *managedProcess {
 // and rewrite the config to use the self-hosted relay fleet. Runs at
 // most once per pod lifetime. Skipped if the user has a personal
 // opencode API key (paying Zen subscriber).
-func maybeStartRelayInjector(rootCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) {
+func maybeStartRelayInjector(rootCtx, bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) {
 	relayURL := os.Getenv("INFERENCE_RELAY_BASEURL")
 	if relayURL == "" || deps.proc == nil {
 		return
@@ -207,7 +210,7 @@ func maybeStartRelayInjector(rootCtx context.Context, bgWg *sync.WaitGroup, deps
 		AuthJSONPath:      authJSONPath,
 		AgentConfigWriter: deps.agentConfigWriter,
 		HealthCheck:       func() bool { snap := deps.healthCache.Snapshot(); return snap.Initialized && snap.Healthy },
-		KillOpenCode:      relayKillFunc(rootCtx, bgWg, deps.proc, deps.sseTracker, liveSessions),
+		KillOpenCode:      relayKillFunc(bgCtx, bgWg, deps.proc, deps.sseTracker, liveSessions),
 	})
 }
 
@@ -236,12 +239,12 @@ func liveSessionsLister(deps serverDeps) sessionLister {
 // permanently sticking the session. The restart is routed through the same
 // deferral the credential-reload path uses: restart now if no session is
 // busy, else poll until idle (bounded by defaultMaxDefer).
-func relayKillFunc(rootCtx context.Context, bgWg *sync.WaitGroup, proc restartableProcess, tracker *sessionStatusTracker, lister sessionLister) func() {
+func relayKillFunc(bgCtx context.Context, bgWg *sync.WaitGroup, proc restartableProcess, tracker *sessionStatusTracker, lister sessionLister) func() {
 	if proc == nil {
 		return func() {}
 	}
 	return func() {
-		makeSessionAwareRestartDecision(rootCtx, proc, tracker, restartIdleCheckInterval, defaultMaxDefer, lister, bgWg) //nolint:contextcheck // rootCtx is the agentd lifecycle context — the deferred goroutine must outlive the relay injector
+		makeSessionAwareRestartDecision(bgCtx, proc, tracker, restartIdleCheckInterval, defaultMaxDefer, lister, bgWg) //nolint:contextcheck // bgCtx is the agentd background lifecycle context — the deferred goroutine must outlive the relay injector and be cancelled at shutdown
 	}
 }
 

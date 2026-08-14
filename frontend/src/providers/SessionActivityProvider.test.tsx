@@ -1924,6 +1924,124 @@ describe("D10: snapshot begin/ok semantics (false-wipe fix)", () => {
     });
     expect(screen.getByTestId("pending").textContent).toBe("yes");
   });
+
+  it("interleaved flights: live question survives two begin→complete cycles (hard page load)", () => {
+    // PR #852 review C2: a hard page load opens the workspace SSE stream AND
+    // the user stream ~simultaneously — two snapshot flights for one
+    // workspace. The second complete must not commit an authoritative empty
+    // over the first's commit.
+    renderProvider(<PendingIndicator sessionId="ses-1" />);
+
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1", snapshot_id: "flight-A" });
+    });
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1", snapshot_id: "flight-B" });
+    });
+    // Both flights re-emit the live question
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_live",
+      });
+    });
+    // First flight completes ok — commits {que_live}
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.input.snapshot_complete",
+        workspace_id: "ws-1",
+        snapshot_ok: true,
+        snapshot_id: "flight-A",
+      });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+
+    // Second flight completes ok — must commit ITS staged set ({que_live}),
+    // not an empty map produced by consuming the first flight's staging.
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.input.snapshot_complete",
+        workspace_id: "ws-1",
+        snapshot_ok: true,
+        snapshot_id: "flight-B",
+      });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+  });
+
+  it("failed flight does not wipe a concurrent successful flight's commit", () => {
+    renderProvider(<PendingIndicator sessionId="ses-1" />);
+
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1", snapshot_id: "flight-A" });
+    });
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1", snapshot_id: "flight-B" });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_live",
+      });
+    });
+    // Failed flight completes first — keeps state
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.input.snapshot_complete",
+        workspace_id: "ws-1",
+        snapshot_ok: false,
+        snapshot_id: "flight-B",
+      });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+
+    // Successful flight commits {que_live}
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.input.snapshot_complete",
+        workspace_id: "ws-1",
+        snapshot_ok: true,
+        snapshot_id: "flight-A",
+      });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+  });
+
+  it("superseded flight staging does not leak into a later flight's commit", () => {
+    renderProvider(<PendingIndicator sessionId="ses-1" />);
+
+    // Flight A opens, question staged into A
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1", snapshot_id: "flight-A" });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_ghost",
+      });
+    });
+    // Flight B opens AFTER — its fetch (post-resolve) does not list the
+    // question; its begin starts a fresh staging map.
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1", snapshot_id: "flight-B" });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.input.snapshot_complete",
+        workspace_id: "ws-1",
+        snapshot_ok: true,
+        snapshot_id: "flight-B",
+      });
+    });
+    // Ghost cleared by B's authoritative commit
+    expect(screen.getByTestId("pending").textContent).toBe("no");
+  });
 });
 
 describe("agent_died handler", () => {  function BusyIndicator({ sessionId }: { sessionId: string }) {

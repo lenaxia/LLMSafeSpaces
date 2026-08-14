@@ -20,6 +20,7 @@ vi.mock("../api/workspaces", () => ({
     getStatus: vi.fn(),
     activate: vi.fn(),
     abortSession: vi.fn(),
+    requestInputSnapshot: vi.fn().mockResolvedValue(undefined),
     list: vi.fn().mockResolvedValue({ items: [], pagination: { limit: 20, offset: 0, total: 0 } }),
     renameSession: vi.fn(),
     renameWorkspace: vi.fn().mockResolvedValue({}),

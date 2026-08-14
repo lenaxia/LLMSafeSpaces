@@ -1044,6 +1044,38 @@ func TestEmitPendingInputRequests_MarkerOKFalseOnK8sFailure(t *testing.T) {
 	assert.False(t, *complete.SnapshotOK)
 }
 
+// TestSnapshotOK_WireContract asserts the raw JSON encoding of a FAILED
+// snapshot marker contains "snapshot_ok":false. The field is *bool +
+// omitempty by design — if it were ever changed to bool + omitempty, false
+// would silently vanish from the wire and every client would treat failed
+// fetches as authoritative. Unit-level (not HTTP) because the SSE writer
+// marshals this exact struct with encoding/json.
+func TestSnapshotOK_WireContract(t *testing.T) {
+	ok := false
+	evt := apitypes.WorkspaceSSEEvent{
+		Type:        "agent.input.snapshot_complete",
+		WorkspaceID: "ws-1",
+		SnapshotOK:  &ok,
+		SnapshotID:  "ws-1-123",
+	}
+	raw, err := json.Marshal(evt)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"snapshot_ok":false`,
+		"failed-snapshot markers MUST carry snapshot_ok:false on the wire")
+	assert.Contains(t, string(raw), `"snapshot_id":"ws-1-123"`)
+
+	// Success marker carries true; unrelated events carry neither field.
+	okTrue := true
+	evtOk := apitypes.WorkspaceSSEEvent{Type: "session.status", SnapshotOK: &okTrue}
+	rawOk, _ := json.Marshal(evtOk)
+	assert.Contains(t, string(rawOk), `"snapshot_ok":true`)
+
+	evtNone := apitypes.WorkspaceSSEEvent{Type: "session.status", Status: "busy"}
+	rawNone, _ := json.Marshal(evtNone)
+	assert.NotContains(t, string(rawNone), "snapshot_ok")
+	assert.NotContains(t, string(rawNone), "snapshot_id")
+}
+
 // ===== US-55.4: Regression Guards =====
 
 // TestForgottenPublishGuard verifies every sidebar-relevant input event type

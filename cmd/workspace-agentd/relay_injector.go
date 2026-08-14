@@ -358,6 +358,7 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 		if cfg.FetchDeadline <= 0 {
 			fetchDeadline = time.Now().Add(defaultFreeModelFetchDeadline)
 		}
+		effectiveDeadline := time.Until(fetchDeadline)
 		var models []opencode.RelayModel
 		for {
 			var fetchErr error
@@ -366,7 +367,7 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 				if time.Now().After(fetchDeadline) {
 					lg.Warn("relay injector: failed to fetch free models, deadline exhausted, skipping",
 						zap.Error(fetchErr),
-						zap.Duration("deadline", cfg.FetchDeadline))
+						zap.Duration("deadline", effectiveDeadline))
 					relayInjectorOutcomes.WithLabelValues("fetch_failed").Inc()
 					return
 				}
@@ -435,6 +436,11 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 		// Kill opencode — the supervisor restarts it and reads the new config.
 		// The relay state is already stored in the ConfigWriter (set above
 		// via SetRelay), so reloadSecretsHandler's Rebuild() will preserve it.
+		//
+		// Metric note: "success" counts config APPLICATIONS (relay block
+		// written + auth.json updated). The actual process restart may be
+		// deferred up to defaultMaxDefer by the session-aware kill decision
+		// while sessions are busy — the config takes effect at that restart.
 		cfg.KillOpenCode()
 		relayInjectorOutcomes.WithLabelValues("success").Inc()
 		lg.Info("relay injector: triggered opencode restart to apply relay config")

@@ -57,7 +57,8 @@ vi.mock("../api/workspaces", () => ({
     setModel: vi.fn().mockResolvedValue({ model: "", applied: false }),
     renameWorkspace: vi.fn().mockResolvedValue({}),
     renameSession: vi.fn().mockResolvedValue({}),
-    abortSession: vi.fn().mockResolvedValue({}),
+    abortSession: vi.fn(),
+    requestInputSnapshot: vi.fn().mockResolvedValue(undefined).mockResolvedValue({}),
     getSession: vi.fn().mockResolvedValue({ title: "" }),
     markSessionSeen: vi.fn().mockResolvedValue(undefined),
     getSessions: vi.fn().mockResolvedValue([]),
@@ -84,7 +85,7 @@ vi.mock("../api/messages", () => ({
   messagesApi: {
     getHistory: vi.fn().mockResolvedValue([]),
     getHistoryPage: vi.fn().mockResolvedValue({ messages: [], nextCursor: undefined }),
-    sendAsync: vi.fn(), queueMessage: vi.fn().mockResolvedValue({ messageID: "msg_q_mock" }), getQueue: vi.fn().mockResolvedValue({ messages: [] }), deleteQueueMessage: vi.fn().mockResolvedValue(undefined).mockResolvedValue(undefined),
+    sendAsync: vi.fn(), queueMessage: vi.fn().mockResolvedValue({ messageID: "msg_q_mock" }), getQueue: vi.fn().mockResolvedValue({ messages: [] }), deleteQueueMessage: vi.fn().mockResolvedValue(undefined),
   },
 }));
 vi.mock("../api/sessions", () => ({

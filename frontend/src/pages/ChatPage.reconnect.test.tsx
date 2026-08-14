@@ -82,6 +82,7 @@ vi.mock("../api/workspaces", () => ({
     renameSession: vi.fn().mockResolvedValue(undefined),
     markSessionSeen: vi.fn().mockResolvedValue(undefined),
     getSessions: vi.fn().mockResolvedValue([]),
+    requestInputSnapshot: vi.fn().mockResolvedValue(undefined),
   },
 }));
 vi.mock("../api/messages", () => {
@@ -93,7 +94,7 @@ vi.mock("../api/messages", () => {
         const msgs = await gh();
         return { messages: msgs, nextCursor: undefined };
       }),
-      sendAsync: vi.fn(), queueMessage: vi.fn().mockResolvedValue({ messageID: "msg_q_mock" }), getQueue: vi.fn().mockResolvedValue({ messages: [] }), deleteQueueMessage: vi.fn().mockResolvedValue(undefined).mockResolvedValue(undefined),
+      sendAsync: vi.fn(), queueMessage: vi.fn().mockResolvedValue({ messageID: "msg_q_mock" }), getQueue: vi.fn().mockResolvedValue({ messages: [] }), deleteQueueMessage: vi.fn().mockResolvedValue(undefined),
     },
   };
 });
