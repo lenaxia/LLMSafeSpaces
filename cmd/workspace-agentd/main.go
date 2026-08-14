@@ -117,7 +117,7 @@ func main() {
 
 	startBackgroundLoops(bgCtx, &bgWg, deps)
 	// bgCtx (not rootCtx): the session-aware deferred restart must be
-	// cancelled by runShutdown's bgCancel so bgWg drains within its 5s wait —
+	// canceled by runShutdown's bgCancel so bgWg drains within its 5s wait —
 	// same context discipline as the credential-reload path (secrets.go).
 	maybeStartRelayInjector(rootCtx, bgCtx, &bgWg, deps)
 
@@ -244,7 +244,7 @@ func relayKillFunc(bgCtx context.Context, bgWg *sync.WaitGroup, proc restartable
 		return func() {}
 	}
 	return func() {
-		makeSessionAwareRestartDecision(bgCtx, proc, tracker, restartIdleCheckInterval, defaultMaxDefer, lister, bgWg) //nolint:contextcheck // bgCtx is the agentd background lifecycle context — the deferred goroutine must outlive the relay injector and be cancelled at shutdown
+		makeSessionAwareRestartDecision(bgCtx, proc, tracker, restartIdleCheckInterval, defaultMaxDefer, lister, bgWg) //nolint:contextcheck // bgCtx is the agentd background lifecycle context — the deferred goroutine must outlive the relay injector and be canceled at shutdown
 	}
 }
 

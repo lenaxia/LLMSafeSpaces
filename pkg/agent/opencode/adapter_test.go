@@ -867,7 +867,7 @@ func TestAdapter_ListPending_TransportError_ReturnsPendingUnavailable(t *testing
 	// Server closed before the call — connection refused on both endpoints.
 	srv := newFakeOpencode(t)
 	a := newTestAdapter(t, srv.Server)
-	srv.Server.Close()
+	srv.Close()
 
 	_, err := a.ListPending(context.Background(), "u-1", "ws-1", "ses_1")
 	require.Error(t, err, "transport failure must surface as an error — the pending set is unknown")
