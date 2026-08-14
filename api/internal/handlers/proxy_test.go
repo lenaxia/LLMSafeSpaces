@@ -95,7 +95,7 @@ type testEnv struct {
 	clientset *k8sfake.Clientset
 	backend   *httptest.Server
 	router    *gin.Engine
-	log       *testLogger
+	log       pkginterfaces.LoggerInterface
 }
 
 func newTestEnv(t *testing.T) *testEnv {
@@ -123,6 +123,10 @@ func newTestEnv(t *testing.T) *testEnv {
 }
 
 func newTestEnvWithBackend(t *testing.T, backendHandler http.HandlerFunc) *testEnv {
+	return newTestEnvWithBackendAndLogger(t, backendHandler, &testLogger{})
+}
+
+func newTestEnvWithBackendAndLogger(t *testing.T, backendHandler http.HandlerFunc, log pkginterfaces.LoggerInterface) *testEnv {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 
@@ -142,7 +146,6 @@ func newTestEnvWithBackend(t *testing.T, backendHandler http.HandlerFunc) *testE
 	fakeClientset := k8sfake.NewSimpleClientset()
 	k8sMock.On("Clientset").Return(fakeClientset)
 
-	log := &testLogger{}
 	handler, err := NewProxyHandler(k8sMock, log, "default", httpClient, nil)
 	require.NoError(t, err)
 
