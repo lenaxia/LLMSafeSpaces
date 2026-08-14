@@ -36,3 +36,16 @@ CVE-2026-59869 exp:2026-10-21
 # suggestion, which would lose bug fixes). Re-evaluate when a patched
 # react-router release ships.
 GHSA-qwww-vcr4-c8h2 exp:2026-10-21
+
+# CVE-2026-46600 — golang.org/x/net/dns/dnsmessage: DoS via invalid DNS
+# record parsing
+# Affects Go stdlib < 1.26.6. All Go binaries in this repo are built with
+# Go 1.25.x (pinned in go.mod, CI, and Dockerfiles). The vulnerable code
+# path (net/dns/dnsmessage) is only exercised when parsing DNS responses
+# from a resolver. The relay-proxy makes outbound HTTP requests to
+# inference providers — it does not run a DNS resolver or parse raw DNS
+# packets from untrusted input. The platform API/controller make standard
+# HTTP calls via Go's net/http which uses the system resolver (getaddrinfo),
+# not the vulnerable pure-Go DNS parser. Upgrade to Go 1.26.6 is tracked
+# separately (toolchain bump requires validating all modules).
+CVE-2026-46600 exp:2026-11-14
