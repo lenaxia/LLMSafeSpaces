@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/lenaxia/llmsafespaces/pkg/version"
 )
 
 const (
@@ -84,6 +86,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("X-Llmsafespaces-Version", version.Version)
 		w.WriteHeader(http.StatusOK)
 	})
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) {

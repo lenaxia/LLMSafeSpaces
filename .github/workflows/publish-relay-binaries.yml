@@ -31,18 +31,6 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Build binaries
-        run: |
-          mkdir -p deploy
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o deploy/relay-proxy-arm64 ./cmd/relay-proxy/
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o deploy/relay-proxy-amd64 ./cmd/relay-proxy/
-
-      - name: Generate checksums
-        run: |
-          cd deploy
-          sha256sum relay-proxy-arm64 relay-proxy-amd64 > checksums.txt
-          cat checksums.txt
-
       - name: Determine tag
         id: tag
         run: |
@@ -53,6 +41,29 @@ jobs:
           else
             echo "name=v0.0.0-dev-$(echo $GITHUB_SHA | cut -c1-8)" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Build binaries
+        env:
+          # Version stamp mirrors the image convention (semver, no leading
+          # "v") so the X-Llmsafespaces-Version healthz header matches the
+          # release tag (e.g. "0.15.5"). Derived from the resolved tag name,
+          # NOT the branch name, so workflow_dispatch builds don't report
+          # "main".
+          RELAY_VERSION: ${{ steps.tag.outputs.name }}
+        run: |
+          mkdir -p deploy
+          LDFLAGS="-s -w \
+            -X github.com/lenaxia/llmsafespaces/pkg/version.Version=${RELAY_VERSION#v} \
+            -X github.com/lenaxia/llmsafespaces/pkg/version.CommitSHA=${GITHUB_SHA} \
+            -X github.com/lenaxia/llmsafespaces/pkg/version.BuildTime=$(date -u +%Y-%m-%d_%H:%M:%S)"
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="$LDFLAGS" -o deploy/relay-proxy-arm64 ./cmd/relay-proxy/
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="$LDFLAGS" -o deploy/relay-proxy-amd64 ./cmd/relay-proxy/
+
+      - name: Generate checksums
+        run: |
+          cd deploy
+          sha256sum relay-proxy-arm64 relay-proxy-amd64 > checksums.txt
+          cat checksums.txt
 
       - name: Create release + upload assets
         uses: softprops/action-gh-release@v2

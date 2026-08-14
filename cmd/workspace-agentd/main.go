@@ -20,6 +20,7 @@ import (
 
 	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
+	"github.com/lenaxia/llmsafespaces/pkg/version"
 )
 
 var (
@@ -43,8 +44,10 @@ func getAgentAddr() string {
 var log *zap.Logger
 
 // buildVersion is the workspace-agentd build identifier surfaced via
-// /v1/healthz. Default value is "dev" for development builds; production
-// builds should override via -ldflags "-X main.buildVersion=$VERSION".
+// /v1/healthz. It reads from pkg/version — the single source of truth —
+// which the image build stamps via -ldflags "-X
+// github.com/lenaxia/llmsafespaces/pkg/version.Version=$VERSION". Un-stamped
+// local builds report "unknown".
 //
 // This is the agentd build version, NOT opencode's version. See
 // HealthzResponse.Version: pre-US-22.1, this field carried opencode's
@@ -52,7 +55,7 @@ var log *zap.Logger
 // availability — see worklog 0096). Post-US-22.1, the field reports the
 // agentd build identifier, which is meaningful for the kubelet probe's
 // purpose: "is this agentd binary alive and serving HTTP?".
-var buildVersion = "dev"
+var buildVersion = version.Version
 
 func main() {
 	log = newLogger()
