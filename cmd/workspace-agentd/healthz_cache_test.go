@@ -712,3 +712,43 @@ func TestRefreshIsHealthyLoop_WatchdogFiresAfterSessionsGoIdle(t *testing.T) {
 	}, 30*time.Second, 500*time.Millisecond,
 		"watchdog must fire after sessions go idle — latch must NOT be consumed by deferral")
 }
+
+// TestRefreshIsHealthyLoop_WatchdogMaxDeferForcesRestart verifies that when
+// sessions stay busy indefinitely (stale busy state from a truly hung
+// opencode), the watchdog forces a restart after watchdogMaxDeferrals polls.
+// This prevents the deferral-forever blind spot.
+func TestRefreshIsHealthyLoop_WatchdogMaxDeferForcesRestart(t *testing.T) {
+	var callCount atomic.Int32
+	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := callCount.Add(1)
+		if n == 1 {
+			_ = json.NewEncoder(w).Encode(map[string]any{"healthy": true, "version": "v1.0"})
+		} else {
+			time.Sleep(readinessRefreshTimeout + 1*time.Second)
+		}
+	}))
+	defer mock.Close()
+
+	origAddr := getAgentAddr()
+	defer func() { setAgentAddr(origAddr) }()
+	setAgentAddr(mock.URL)
+
+	client := &OpenCodeClient{password: "test", client: &http.Client{Timeout: readinessRefreshTimeout}}
+	cache := newHealthzCache()
+	fr := &fakeRestarter{}
+	bc := &fakeBusyChecker{busy: true} // stays busy forever (stale state)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, fr, bc)
+
+	// Watchdog must fire despite sessions staying busy — the max-defer
+	// counter forces a restart after ~5 minutes (60 polls at 5s intervals).
+	// We test with a generous timeout; the real constraint is that it
+	// fires AT ALL, not that it's fast.
+	require.Eventually(t, func() bool {
+		return fr.callCount() >= 1
+	}, 6*time.Minute, 1*time.Second,
+		"watchdog must force restart after max-defer exceeded even when sessions stay busy")
+}
