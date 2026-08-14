@@ -215,7 +215,16 @@ func (h *AgentReloadHandler) Reload(c *gin.Context) {
 
 	// Dispatch to agentd (which calls opencode dispose locally).
 	agentdURL := fmt.Sprintf("http://%s:%d/v1/agent/reload", podIP, agentd.AgentdPort)
-	req, _ := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, agentdURL, nil)
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, agentdURL, nil)
+	if err != nil {
+		// Malformed pod IP (empty, double-port, etc.) must not reach
+		// Do(nil) — that panics. Surface as an internal error instead.
+		if h.logger != nil {
+			h.logger.Error("agent reload: invalid agentd URL", err, "url", agentdURL)
+		}
+		respondWithAPIError(c, apierrors.NewInternalError("agent_reload_url_invalid", err))
+		return
+	}
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
 		if h.logger != nil {
