@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.4] - 2026-08-14
+
+### Fixed
+
+- **Snapshot bloat root cause — `git init` in workspace boot (#810, #807)**.
+  Every workspace pod ran `git init` + `git config` during initialization,
+  creating a `.git` directory on the PVC that grew unbounded. Combined with
+  `filediff.Producer` (dead code that was never wired), this caused PVC
+  snapshot bloat and Longhorn volume-attach timeouts. The `git init` is
+  removed entirely; `buildWorkspaceDirsInit` now only runs `mkdir -p`.
+
+- **Health watchdog for opencode hangs (#807)**. A previously-healthy
+  opencode process that later hangs (deadlock, CPU starvation) was
+  undetectable — the pod stayed 1/1 Running forever with no restart. The
+  new health watchdog fires after 3 consecutive `/global/health` failures
+  (post-boot), triggers a restart via the managed-process supervisor, and
+  is rate-limited to 3 restarts per 10 minutes. Session-aware deferral
+  avoids killing in-flight LLM turns (checks busy state before restarting,
+  with a 5-minute max-defer cap). Restart reasons are recorded as markers,
+  Prometheus metrics, and structured logs.
+
+- **Structured 503 error responses (#810)**. Both `proxy.go` and
+  `proxy_handlers.go` now return `code`/`reason`/`message` fields on 503
+  responses. The frontend's `ChatHistoryErrorBanner` surfaces a yellow
+  "recovering" state when `reason` is present. All three SDKs (Go, Python,
+  TypeScript) raise `ServiceUnavailableError` with structured fields.
+
+- **SSE `agent_died` message consumed (#810)**. The `message` field in
+  `agent_died` SSE events was written to the wire but never read by the
+  frontend. `ChatPage.tsx` now reads `event.data.message` into
+  `agentDiedMessage` state and renders it in the banner.
+
+### Changed
+
+- CI workflows now configure git identity for the review bot (fixes
+  "Author identity unknown" errors in pr-review, ai-comment, issue-opened,
+  and renovate-analysis workflows).
+- `runtimes/base/Dockerfile` pins Python to 3.12.13 (floating `python@3.12`
+  resolved to 3.12.14 which has no precompiled binary in mise, breaking
+  the from-source build).
+- Makefile `release-tag` accepts semver pre-release suffixes (e.g.
+  `0.15.4-rc.1`).
+
 ## [0.15.4-rc.1] - 2026-08-13
 
 ### Fixed
