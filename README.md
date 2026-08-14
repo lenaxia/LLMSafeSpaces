@@ -430,7 +430,7 @@ design/                  # Architecture and design docs (0021_evolution-v2.md is
 
 ### Prerequisites
 
-- Go 1.25+
+- Go 1.26+
 - Docker
 - A Kubernetes cluster (or `kind`) and `kubectl`
 - Helm 3 (for the deployment chart)

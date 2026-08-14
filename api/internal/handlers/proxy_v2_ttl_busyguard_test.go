@@ -15,6 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
 	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
@@ -184,7 +185,8 @@ func TestReconcileSessionState_BusySessionNotWoken(t *testing.T) {
 	// srvAddr (host:port) builds a double-port URL that Go 1.26's stricter
 	// net/url rejects (1.25 parsed it leniently; the routing transport's
 	// host rewrite masked the malformation).
-	host, _, _ := net.SplitHostPort(srvAddr)
+	host, _, err := net.SplitHostPort(srvAddr)
+	require.NoError(t, err)
 	handler.reconcileSessionState("ws-1", host, "test-pw")
 
 	assert.Equal(t, int32(1), atomic.LoadInt32(&wakeCount),

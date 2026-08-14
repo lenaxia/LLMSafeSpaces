@@ -656,15 +656,23 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		// PreserveOnFailure: delete session on success.
 		sessionDeleted := false
 		if trigger.PreserveSession == types.PreserveOnFailure && sessionID != "" {
-			deleteReq, _ := http.NewRequestWithContext(ctx, "DELETE",
+			deleteReq, deleteErr := http.NewRequestWithContext(ctx, "DELETE",
 				fmt.Sprintf("http://%s:%d/v1/workflow/session/delete?sessionId=%s", podIP, agentdExecPort(), sessionID), nil)
-			deleteResp, err := httpClient().Do(deleteReq)
-			if err != nil {
-				logger.Error(err, "routine: failed to delete session for PreserveOnFailure", "sessionId", sessionID, "triggerId", trigger.ID)
+			if deleteErr != nil {
+				// sessionID comes from the workspace agent's output JSON;
+				// a control character makes the URL unparseable. This
+				// routine runs in the scheduler outside gin's recovery
+				// middleware — Do(nil) would crash the API process.
+				logger.Error(deleteErr, "routine: invalid delete-session URL for PreserveOnFailure", "sessionId", sessionID, "triggerId", trigger.ID)
 			} else {
-				_ = deleteResp.Body.Close()
-				if deleteResp.StatusCode < 400 {
-					sessionDeleted = true
+				deleteResp, err := httpClient().Do(deleteReq)
+				if err != nil {
+					logger.Error(err, "routine: failed to delete session for PreserveOnFailure", "sessionId", sessionID, "triggerId", trigger.ID)
+				} else {
+					_ = deleteResp.Body.Close()
+					if deleteResp.StatusCode < 400 {
+						sessionDeleted = true
+					}
 				}
 			}
 		}

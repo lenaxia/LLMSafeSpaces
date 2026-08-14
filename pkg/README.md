@@ -1,6 +1,6 @@
 # LLMSafeSpaces Core Packages
 
-Shared Go packages used by both the API service and the controller. All packages target Go 1.25+ and follow Kubernetes operator patterns where applicable.
+Shared Go packages used by both the API service and the controller. All packages target Go 1.26+ and follow Kubernetes operator patterns where applicable.
 
 ## Package Index
 

@@ -7,6 +7,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -103,8 +104,11 @@ func TestE2E_ReloadWorkflow_FullPath(t *testing.T) {
 		_, _ = w.Write([]byte(`{"disposed":true}`))
 	}))
 	defer agentdSrv.Close()
-	// Extract just the host (port doesn't match agentd.AgentdPort but that's the test limitation)
-	agentdHost := strings.TrimPrefix(agentdSrv.URL, "http://")
+	// Bare host — Reload formats "http://%s:%d". Passing host:port would
+	// build a double-port URL (Go 1.26's stricter net/url rejects it at
+	// request-build time; 1.25 parsed it leniently).
+	host, _, _ := net.SplitHostPort(strings.TrimPrefix(agentdSrv.URL, "http://"))
+	agentdHost := host
 
 	wsSvc := &e2eWorkspaceSvc{workspaces: map[string]*types.Workspace{
 		"ws-1": {ID: "ws-1", UserID: "user-1", Phase: "Active", Name: "test-ws"},
@@ -130,9 +134,11 @@ func TestE2E_ReloadWorkflow_FullPath(t *testing.T) {
 	router.POST("/workspaces/:id/agent/reload", handler.Reload)
 
 	t.Run("happy_path_active_workspace", func(t *testing.T) {
-		// Note: this test won't actually hit agentd correctly due to port mismatch
-		// (handler uses agentd.AgentdPort=4097 but test server is on random port).
-		// The test exercises all pre-dispatch logic.
+		// The dispatch targets agentd.AgentdPort (4097) while the mock listens
+		// on a random port — the request fails as agent_unreachable. This
+		// subtest exercises the full pre-dispatch logic and the dispatch
+		// error path (not the unreachable-URL-build path; see
+		// TestReload_MalformedPodIP_NoPanic_InvalidURL for that branch).
 		req := httptest.NewRequest(http.MethodPost, "/workspaces/ws-1/agent/reload", nil)
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, req)

@@ -481,7 +481,12 @@ func (h *BulkReloadHandler) reloadOne(ctx context.Context, userID, workspaceID s
 	}
 
 	agentdURL := fmt.Sprintf("http://%s:%d/v1/agent/reload", podIP, agentd.AgentdPort)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, agentdURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, agentdURL, nil)
+	if err != nil {
+		// Malformed pod IP must not reach Do(nil) — that panics (same
+		// class as the single-reload fix above).
+		return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "agent_reload_url_invalid", "message": err.Error()}}
+	}
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
 		return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "agent_unreachable", "message": err.Error()}}
