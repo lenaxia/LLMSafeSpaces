@@ -3134,7 +3134,7 @@
 <h3 id="sbom">SBOM<a class="headerlink" href="#sbom" title="Permanent link">&para;</a></h3>
 <p>Each release includes a Software Bill of Materials (SBOM) in CycloneDX JSON format for every image. Download from the GitHub Release page and feed into <a href="https://dependencytrack.org/">Dependency-Track</a>, <a href="https://github.com/anchore/grype">grype</a>, or your preferred SBOM consumer.</p>
 <h3 id="base-image-pinning">Base image pinning<a class="headerlink" href="#base-image-pinning" title="Permanent link">&para;</a></h3>
-<p>Dockerfile <code>FROM</code> lines use tag references (e.g. <code>golang:1.25</code>, <code>debian:bookworm-slim</code>) rather than digest-pinning. <a href="https://docs.renovatebot.com/">Renovate</a> is configured with <code>docker:pinDigests</code> to open PRs that pin each base image to its current digest. Accept those PRs to lock the supply chain further.</p>
+<p>Dockerfile <code>FROM</code> lines use tag references (e.g. <code>golang:1.26</code>, <code>debian:bookworm-slim</code>) rather than digest-pinning. <a href="https://docs.renovatebot.com/">Renovate</a> is configured with <code>docker:pinDigests</code> to open PRs that pin each base image to its current digest. Accept those PRs to lock the supply chain further.</p>
 <h3 id="whats-not-yet-covered">What's not yet covered<a class="headerlink" href="#whats-not-yet-covered" title="Permanent link">&para;</a></h3>
 <ul>
 <li><strong>No admission-time image verification policy.</strong> The cluster does not enforce cosign verification at deploy time. Operators who want this should install <a href="https://github.com/sigstore/policy-controller">cosign policy controller</a> or <a href="https://kyverno.io/">Kyverno</a> with a verifyImages rule.</li>
@@ -3169,7 +3169,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 23, 2026 17:14:52 UTC"><span class="timeago" datetime="2026-07-23T17:14:52+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 23, 2026 17:14:52 UTC">2026-07-23</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 14, 2026 15:36:11 UTC"><span class="timeago" datetime="2026-08-14T15:36:11+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 14, 2026 15:36:11 UTC">2026-08-14</span>
   </span>
 
     
