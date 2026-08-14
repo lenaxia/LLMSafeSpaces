@@ -209,3 +209,14 @@ green in CI (full suite + race detector passed on this PR).
 | N3 | On-demand `/input-snapshot` publishes to the handling replica's in-process broker only; with the default `api.replicaCount: 2`, a POST landing on the other replica's flight is invisible to the user stream → the session-switch recovery silently no-ops (fail-safe: gate starves, no false abort; connect-time flights are same-process and unaffected). | Documented as a known limitation; follow-up: Redis pub/sub for snapshot markers (would also fix the cross-replica marker visibility during rolling deploys). |
 
 E2E determinism (reviewer requirement): the specs now hold both SSE streams open (first hit finite, later hits never fulfill — no reconnect churn, no full-body re-delivery) and gate marker delivery on the on-demand `/input-snapshot` POST, so markers can never precede arming. 4 consecutive runs green.
+
+### Review round 5 (fourth REQUEST CHANGES — one item)
+
+| ID | Finding (validated) | Resolution |
+|---|---|---|
+| N4 | `lastHistoryRef` (added in round 4's B fix) leaked across session switches: switching from busy stuck A to busy healthy B, with B's history delayed past marker+dwell, A's stale transcript satisfied the stuck-tool check and aborted healthy B — the PR's own bug class, reproduced by the reviewer. | `lastHistoryRef` and `abortDwellStartRef` reset in the session-change effect (evidence is per-session). Regression test: A rendered (stuck tool) → swap history mock to a pending promise for B → switch → arm + ok marker → wait past dwell → no abort for B; verified red with the reset removed. |
+| minor | Anchor-survives-send + re-arm could fire with zero dwell. | `doSendNow` clears the anchor outright (reviewer's one-liner); re-established evidence re-anchors and re-dwells from scratch. |
+| minor | A1 lacked a stable-`at` evidence assertion. | SnapshotStatus test component prints `at` verbatim; A1 asserts byte-identical evidence after the replayed marker. |
+| minor | e2e test 1's workspace-stream override re-delivered per reconnect (hold-pattern mismatch). | Same one-delivery-then-hold pattern as the default mock. |
+
+**Accepted residual (N1, explicitly):** if a workspace-SSE reconnect's reconcileOnIdle disarms reconnect mode and the activation window closes before the busy effect re-arms (busy drops or timing), the abort stays suppressed until a fresh arming (next session view or reconnect). Fail-safe direction (no false aborts); accepted.

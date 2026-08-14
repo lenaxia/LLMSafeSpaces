@@ -1744,7 +1744,7 @@ describe("D10: snapshot begin/ok semantics (false-wipe fix)", () => {
     const snap = useWorkspaceInputSnapshot(workspaceId);
     return (
       <span data-testid="snapshot">
-        {snap ? `${snap.ok}:${snap.at > 0}` : "none"}
+        {snap ? `${snap.ok}:${snap.at}` : "none"}
       </span>
     );
   }
@@ -1873,7 +1873,7 @@ describe("D10: snapshot begin/ok semantics (false-wipe fix)", () => {
       });
     });
 
-    expect(screen.getByTestId("snapshot").textContent).toBe("false:true");
+    expect(screen.getByTestId("snapshot").textContent).toMatch(/^false:\d+$/);
   });
 
   it("useWorkspaceInputSnapshot exposes ok:true after a successful snapshot", () => {
@@ -1890,7 +1890,8 @@ describe("D10: snapshot begin/ok semantics (false-wipe fix)", () => {
       });
     });
 
-    expect(screen.getByTestId("snapshot").textContent).toBe("true:true");
+    const atBeforeReplay = screen.getByTestId("snapshot").textContent;
+    expect(atBeforeReplay).toMatch(/^true:\d+$/);
   });
 
   it("ok:false marker does not mark the workspace committed (legacy marker can still commit)", () => {
@@ -2041,7 +2042,8 @@ describe("D10: snapshot begin/ok semantics (false-wipe fix)", () => {
       capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1", snapshot_ok: true, snapshot_id: "flight-A" });
     });
     expect(screen.getByTestId("pending").textContent).toBe("yes");
-    expect(screen.getByTestId("snapshot").textContent).toBe("true:true");
+    const atBeforeReplay = screen.getByTestId("snapshot").textContent;
+    expect(atBeforeReplay).toMatch(/^true:\d+$/);
 
     // Reconnect: flight/commit state cleared; complete(A) replays without
     // its begin (id-filtered replay skips already-seen events).
@@ -2053,8 +2055,10 @@ describe("D10: snapshot begin/ok semantics (false-wipe fix)", () => {
     });
 
     // Live question survives AND the stale marker is not recorded as fresh
-    // evidence (the auto-abort gate requires a snapshot newer than mount).
+    // evidence — the recorded `at` is byte-identical (the auto-abort gate
+    // requires a snapshot newer than mount; a refresh would re-arm it).
     expect(screen.getByTestId("pending").textContent).toBe("yes");
+    expect(screen.getByTestId("snapshot").textContent).toBe(atBeforeReplay);
   });
 
   it("A2: resync-interleaved unknown-flight complete(ok) does not wipe pending; resync clears evidence", () => {
@@ -2081,7 +2085,8 @@ describe("D10: snapshot begin/ok semantics (false-wipe fix)", () => {
       capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1", snapshot_ok: true, snapshot_id: "flight-A" });
     });
     expect(screen.getByTestId("pending").textContent).toBe("yes");
-    expect(screen.getByTestId("snapshot").textContent).toBe("true:true");
+    const atBeforeReplay = screen.getByTestId("snapshot").textContent;
+    expect(atBeforeReplay).toMatch(/^true:\d+$/);
 
     // Broker signals a drop, then a complete whose begin was dropped arrives
     act(() => {

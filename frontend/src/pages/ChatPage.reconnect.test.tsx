@@ -1292,6 +1292,84 @@ describe("ChatPage auto-abort stuck input sessions", () => {
     expect(screen.queryByText(/session was interrupted/i)).toBeNull();
   });
 
+  it("N4: stale history from session A does not abort healthy busy session B", async () => {
+    // Review round 5 N4: switching from busy stuck session A to busy healthy
+    // session B, with B's history delayed past marker+dwell — the last-known
+    // transcript (A's, with the stuck tool) must not satisfy the stuck-tool
+    // check for B. getHistoryPage is the mock target (the messages query is
+    // backed by it), per the reviewer's correction.
+    const stuckA = [
+      { id: "msg-u", role: "user", parts: [{ type: "text", text: "push a" }] },
+      { id: "msg-a", role: "assistant", parts: [{ type: "tool_use", text: "question: auth?", toolState: "running" }] },
+    ];
+    const healthyB = [
+      { id: "msg-u2", role: "user", parts: [{ type: "text", text: "hello b" }] },
+      { id: "msg-a2", role: "assistant", parts: [{ type: "text", text: "all good" }] },
+    ];
+    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue(stuckA);
+    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({
+      messages: stuckA,
+      nextCursor: undefined,
+    });
+    (workspacesApi as Record<string, unknown>).abortSession = vi.fn().mockResolvedValue(undefined);
+    (workspacesApi as Record<string, unknown>).requestInputSnapshot = vi.fn().mockResolvedValue(undefined);
+
+    function SwitchButton() {
+      const navigate = useNavigate();
+      return <button data-testid="switch-btn" onClick={() => navigate("/chat/ws-1/sess-healthy-b")}>switch</button>;
+    }
+
+    mockBusyState.set(true); // busy at mount AND across the switch
+    const qc = makeQueryClient();
+    render(
+      <QueryClientProvider client={qc}>
+        <MemoryRouter initialEntries={["/chat/ws-1/sess-stuck-a"]}>
+          <TooltipProvider delayDuration={0}>
+            <SwitchButton />
+            <Routes>
+              <Route path="/chat/:workspaceId/:sessionId" element={<ChatPage />} />
+            </Routes>
+          </TooltipProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
+    // Deterministic: A's stuck tool must be RENDERED from history before the
+    // mocks are swapped — otherwise A's query can still be in flight and the
+    // override would swallow it (lastHistoryRef never populated).
+    await waitFor(
+      () => expect(getRenderedMessages().some((m) => m.parts.some((p) => p.type === "tool_use"))).toBe(true),
+      { timeout: 5000 },
+    );
+
+    // B's history is DELAYED: the query hangs until released.
+    let releaseB!: (v: { messages: typeof healthyB; nextCursor: undefined }) => void;
+    const bHistory = new Promise<{ messages: typeof healthyB; nextCursor: undefined }>((resolve) => { releaseB = resolve; });
+    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockImplementation(() => bHistory);
+    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockImplementation(() => bHistory.then((r) => r.messages));
+
+    // Switch to B; arm + evidence complete while B's history is still pending.
+    act(() => {
+      screen.getByTestId("switch-btn").click();
+    });
+    act(() => {
+      capturedSSEHandler!({ type: "session.status", session_id: "sess-healthy-b", status: "busy" });
+      snapshotStore.value = { ok: true, at: Date.now() };
+    });
+
+    // Wait past marker+dwell — with the stale-ref bug, A's transcript
+    // satisfied the stuck-tool check and aborted healthy B.
+    await new Promise((r) => setTimeout(r, 3000));
+    expect((workspacesApi as Record<string, unknown>).abortSession).not.toHaveBeenCalledWith("ws-1", "sess-healthy-b");
+    expect(screen.queryByText(/session was interrupted/i)).toBeNull();
+
+    // B's history finally loads — healthy content, no abort.
+    await act(async () => { releaseB({ messages: healthyB, nextCursor: undefined }); });
+    await new Promise((r) => setTimeout(r, 500));
+    expect((workspacesApi as Record<string, unknown>).abortSession).not.toHaveBeenCalled();
+  });
+
   it("refreshes message queue on SSE reconnect", async () => {
     const qc = makeQueryClient();
     qc.setQueryData(["workspace-status", "ws-1"], { phase: "Active", sessions: [{ id: "ses_1", status: "idle" }] });

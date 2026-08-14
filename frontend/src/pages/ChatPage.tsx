@@ -333,6 +333,19 @@ export function ChatPage() {
   // US-15.4: Reconnect mode — active when page loads into a busy session
   const isReconnectMode = useRef(false);
   const knownLivePartIds = useRef<Set<string>>(new Set());
+  // Dwell anchor: set when all abort evidence first holds; cleared when any
+  // evidence breaks (or on session change — evidence is per-session).
+  // A persistent anchor (not a fresh timer) means frequent effect re-runs
+  // (history refetches on SSE reconnect churn) cannot defer the abort
+  // indefinitely — each timer schedules only the REMAINING dwell.
+  const abortDwellStartRef = useRef<number | null>(null);
+  // Last-known history for the stuck-tool check. A workspace-status refetch
+  // gap can momentarily gate the messages query off (history === undefined
+  // while isReady flickers) — the stuck tool did not vanish; evaluating the
+  // last-known transcript keeps the anchor from being reset by refetch churn.
+  // Reset on session change (N4): stale transcripts must never satisfy the
+  // stuck-tool check for the newly-viewed session.
+  const lastHistoryRef = useRef<Message[] | null>(null);
   // F1 fix: activation is only permitted within RECONNECT_ACTIVATION_WINDOW_MS
   // of mount/session-change or an SSE reconnect. sessionMountedAt feeds the
   // auto-abort snapshot gate (only snapshots newer than this page's view of
@@ -372,6 +385,10 @@ export function ChatPage() {
     // F1 fix: open the activation window for the newly-mounted session and
     // stamp this view's mount time (auto-abort snapshot-evidence gate).
     sessionMountedAtRef.current = Date.now();
+    // N4: per-session abort state must not leak across the switch — see the
+    // lastHistoryRef declaration comment above.
+    lastHistoryRef.current = null;
+    abortDwellStartRef.current = null;
     armReconnectWindow();
     return () => {
       if (reconnectWindowTimerRef.current) clearTimeout(reconnectWindowTimerRef.current);
@@ -457,16 +474,6 @@ export function ChatPage() {
   // After abort we reconcile history and surface an "interrupted" banner.
   const pendingPromptCount = pendingQuestions.length + pendingPermissions.length;
   const inputSnapshot = useWorkspaceInputSnapshot(workspaceId ?? "");
-  // Dwell anchor: set when all abort evidence first holds; cleared when any
-  // evidence breaks. A persistent anchor (not a fresh timer) means frequent
-  // effect re-runs (history refetches on SSE reconnect churn) cannot defer
-  // the abort indefinitely — each timer schedules only the REMAINING dwell.
-  const abortDwellStartRef = useRef<number | null>(null);
-  // Last-known history for the stuck-tool check. A workspace-status refetch
-  // gap can momentarily gate the messages query off (history === undefined
-  // while isReady flickers) — the stuck tool did not vanish; evaluating the
-  // last-known transcript keeps the anchor from being reset by refetch churn.
-  const lastHistoryRef = useRef<Message[] | null>(null);
   useEffect(() => {
     // Strong evidence: the conditions that, if they break, genuinely
     // invalidate the stuck-session diagnosis. The dwell ANCHOR survives
@@ -494,7 +501,6 @@ export function ChatPage() {
       pendingPromptCount === 0 &&
       !!inputSnapshot?.ok &&
       inputSnapshot.at > sessionMountedAtRef.current;
-
     if (!strongEvidenceHold) {
       abortDwellStartRef.current = null;
       return;
@@ -927,6 +933,10 @@ export function ChatPage() {
     isReconnectMode.current = false;
     reconnectWindowOpenRef.current = false;
     if (reconnectWindowTimerRef.current) clearTimeout(reconnectWindowTimerRef.current);
+    // A send is active use — drop the abort anchor outright (review round 5
+    // recommendation). If stuck evidence genuinely re-establishes later, it
+    // re-anchors and re-dwells from scratch; no zero-dwell carryover.
+    abortDwellStartRef.current = null;
     knownLivePartIds.current.clear();
     const userMsg: Message = {
       id: `local-${++idCounterRef.current}`,

@@ -40,7 +40,7 @@ const HISTORY_WITH_RUNNING_QUESTION = [
   },
 ];
 
-async function setupAPIMocks(page: Page) {
+async function setupAPIMocks(page: Page, opts?: { sessionEventsFirstBody?: string }) {
   let sessionStreamHits = 0;
 
   await page.route(`${API_PREFIX}/auth/me`, async (route: Route) => {
@@ -98,7 +98,7 @@ async function setupAPIMocks(page: Page) {
   await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/session-events`, async (route: Route) => {
     sessionStreamHits++;
     if (sessionStreamHits === 1) {
-      await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body: ":ok\n\n" });
+      await route.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body: opts?.sessionEventsFirstBody ?? ":ok\n\n" });
     } else {
       await new Promise<never>(() => {}); // hold — no further delivery
     }
@@ -152,11 +152,12 @@ function sseBody(events: object[]): string {
 }
 
 test.describe("Stuck-session auto-abort gating (PR #852, mocked backend)", () => {
-  test.beforeEach(async ({ page }) => {
-    await setupAPIMocks(page);
-  });
-
   test("live pending question survives a successful snapshot — no interrupted banner, prompt answerable", async ({ page }) => {
+    // Workspace stream delivers the question (dual-publish) via the setup's
+    // parameterized first body (one delivery, then hold — no re-delivery
+    // churn).
+    const wsQuestion = { type: "agent.question", data: { id: "que_live_e2e", session_id: SESSION_ID, root_session_id: SESSION_ID, questions: [{ header: "GitHub auth", question: "GitHub auth required — approve?", options: [{ label: "Yes", description: "" }, { label: "No", description: "" }] }] } };
+    await setupAPIMocks(page, { sessionEventsFirstBody: sseBody([wsQuestion]) });
     // Production dual-publishes question events on the workspace stream
     // (drives the prompt UI) and the user stream (drives the indicator).
     const questionData = {
@@ -206,6 +207,7 @@ test.describe("Stuck-session auto-abort gating (PR #852, mocked backend)", () =>
   });
 
   test("genuinely stuck session (empty ok-snapshot) is still auto-aborted with banner", async ({ page }) => {
+    await setupAPIMocks(page);
     // opencode restarted and lost the question: the pod's pending set is
     // EMPTY and the session stays busy with a running question tool. The
     // snapshot markers are gated on the on-demand /input-snapshot POST the
