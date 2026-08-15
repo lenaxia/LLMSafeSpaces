@@ -22,7 +22,7 @@
 2. JSON-encoded-string `args` is what the staging branch consumes — validated by the contract test asserting `json.Unmarshal` round-trip.
 3. Legacy all-string files parse identically — pinned by `TestLoadSecretsFile_LegacyStringMetadata`.
 4. ~~Per-entry failure surfaces as `ErrPartialFailure`, which the entrypoint treats as exit 0~~ **Corrected (review F1):** this was the exact misconception behind the round-1 bug — `ErrPartialFailure` fires only when `HasFailures()` is true, and those same failures exit 3 at the entrypoint's SECOND gate (cmd/workspace-agentd/secrets.go:477-482). Malformed metadata maps to `OutcomeSkipped` (not Failed), which trips neither gate; both the subcommand tests and the reviewer's real-binary runs pin exit 0.
-5. Known outcome flip (review round-2, low, no security impact): a metadata-invalid entry of a metadata-ignoring type (api-key, llm-provider) is Skipped on first boot but Materialized after cache replay heals it — same plaintext, same batch. Noted, not fixed (fixing requires verdict persistence for skipped-by-validation entries too; tracked with the #860 wiring-e2e work).
+5. ~~Known outcome flip: a metadata-invalid api-key entry Skipped on first boot but Materialized after replay.~~ **Struck — empirically false at HEAD (review round 5):** written before the N1 fix landed, this claim ignores that the persisted verdict skips replay for EVERY type — applyOne checks MetadataInvalid before type dispatch, so metadata-ignoring types (api-key, llm-provider) skip identically on boot and replay. Pinned by the api-key replay case in verdict_roundtrip_test.go.
 
 ## Verification
 

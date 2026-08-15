@@ -117,3 +117,50 @@ func TestSecret_ReplayFromCache_SkipsIdentically(t *testing.T) {
 	assert.Contains(t, byName["deploy"].Reason, "not a JSON object")
 	assert.Equal(t, OutcomeMaterialized, byName["ok"].Outcome)
 }
+
+// The assumption-5 strike (review round 5): the persisted verdict skips
+// replay for EVERY type, including metadata-ignoring ones. An api-key
+// with garbage metadata is Skipped on first boot AND after a cache
+// replay — the "replay flip" the worklog once claimed does not exist
+// at HEAD.
+func TestSecret_ReplayFromCache_MetadataIgnoringTypeStillSkips(t *testing.T) {
+	dir := t.TempDir()
+	original := `[
+		{"type":"api-key","name":"legacy-key","metadata":"garbage","plaintext":"{\"kind\":\"custom\",\"slug\":\"x\"}"},
+		{"type":"env-secret","name":"ok","metadata":{"var_name":"OK"},"plaintext":"v"}
+	]`
+	path := filepath.Join(dir, "secrets.json")
+	require.NoError(t, os.WriteFile(path, []byte(original), 0o600))
+
+	run1, err := LoadSecretsFile(path)
+	require.NoError(t, err)
+	require.NotEmpty(t, run1[0].MetadataInvalid, "first parse records the verdict")
+
+	cachePath := filepath.Join(dir, "last-reload-secrets.json")
+	cacheData, err := json.Marshal(run1)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(cachePath, cacheData, 0o600))
+
+	run2, err := LoadSecretsFile(cachePath)
+	require.NoError(t, err)
+	require.Equal(t, run1[0].MetadataInvalid, run2[0].MetadataInvalid,
+		"api-key verdict must survive the cache round-trip")
+
+	m := &Materializer{FS: RealFS(), Paths: Paths{
+		Home:            "/home/sandbox",
+		SecretsBaseDir:  filepath.Join(dir, "rt", "secrets"),
+		SSHDir:          filepath.Join(dir, "rt", "ssh"),
+		AgentConfigPath: filepath.Join(dir, "agent-config.json"),
+		SecretsEnvPath:  filepath.Join(dir, "secrets-env"),
+		GitCredsPath:    filepath.Join(dir, "git-credentials"),
+	}}
+	res, err := m.Materialize(run2)
+	require.NoError(t, err)
+	byName := map[string]SecretResult{}
+	for _, r := range res.Results {
+		byName[r.Name] = r
+	}
+	assert.Equal(t, OutcomeSkipped, byName["legacy-key"].Outcome,
+		"metadata-ignoring type must STILL skip on replay — no flip at HEAD")
+	assert.Equal(t, OutcomeMaterialized, byName["ok"].Outcome)
+}
