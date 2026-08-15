@@ -64,7 +64,7 @@ The CI canary advanced past s_secret_crud's metadata fix to reveal `SecretRespon
 
 ### Round 8: email-reset login 429
 
-First-ever full Python section run reached scenario 18/19 with everything green through `s_ownership`; `s_email_reset` then failed on `login: unexpected status: got 429` — the accumulated JWT logins from the six converted scenarios share the per-IP login bucket (10/min). The scenario's contract is the 200-vs-403 email-verification semantics, so the login now retries on 429 (up to 7 attempts, 10s apart — one bucket refill).
+First-ever full Python section run: scenarios 1-16 green through `s_ownership`; `s_email_reset` (17 of 19) then failed on `login: unexpected status: got 429` — the accumulated logins across the section (11 POSTs to /auth/login across 9 scenarios — s_auth, s_logout, the six JWT-converted scenarios, and this one) share the per-IP login bucket (10/min). The scenario's contract is the 200-vs-403 email-verification semantics, so the login now retries on 429 (up to 7 attempts, 10s apart — one bucket refill), in both the Python and TS twins (the TS section's first-ever execution runs the same drained-bucket arithmetic).
 
 ### Round 9: MCP canary bootstrap
 
@@ -87,8 +87,11 @@ None for this PR's diff. Open convergence risk: the TS canary section's first-ev
 - sdks/python/llmsafespaces/types.py
 - sdks/python/tests/test_client.py, sdks/python/tests/test_async_client.py
 - sdks/openapi.yaml
+- sdks/canary/python/scenarios/s_email_reset.py
 - sdks/canary/python/scenarios/s_ws_crud.py, s_ws_status.py, s_secret_crud.py, s_secret_reveal.py, s_secret_audit.py, s_secret_bindings.py, s_env_vars.py, s_ownership.py, d_account_recover.py, d_change_password.py, d_key_rotate.py
 - sdks/canary/typescript/scenarios/*.ts (35 files: import repoint), s-secret-{crud,reveal,audit,bindings}.ts + s-env-vars.ts + s-ownership.ts (jwtLogin), s-ws-status.ts (phase relaxation), s-rate-limit.ts (8→12 burst attempts, Python-twin parity — this PR's only change to the file)
 - sdks/typescript/src/types.ts, sdks/typescript/src/client.ts
 - sdks/go/types.go
+- sdks/canary/typescript/scenarios/s-email-reset.ts (login 429 retry — Python-twin parity)
+- .github/workflows/ci.yml (MCP canary working-directory fix — its own Go module)
 - worklogs/NNNN_2026-08-15_python-sdk-workspace-model-drift.md (this file)
