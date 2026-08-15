@@ -26,7 +26,7 @@ FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS builder
 ARG TARGETARCH
 WORKDIR /src
 
-ARG GOPROXY=https://proxy.golang.org/direct
+ARG GOPROXY=https://proxy.golang.org,direct
 ENV GOPROXY=${GOPROXY}
 
 ARG VERSION=unknown
