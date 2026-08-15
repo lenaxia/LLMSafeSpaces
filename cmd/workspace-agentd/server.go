@@ -244,7 +244,7 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	// Epic 64: Workflow node execution endpoints. These are called by
 	// the API server's workflow engine to dispatch individual nodes.
 	userMux.HandleFunc("/v1/workflow/node/execute", workflowExecuteHandler(deps.password))
-	userMux.HandleFunc("/v1/workflow/node/cancel", workflowCancelHandler())
+	userMux.HandleFunc("/v1/workflow/node/cancel", workflowCancelHandler(deps.password))
 	userMux.HandleFunc("/v1/workflow/session/delete", workflowDeleteSessionHandler(deps.password))
 	userMux.HandleFunc("/v1/mcp", mcpHandler(deps.password))
 
