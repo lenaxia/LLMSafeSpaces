@@ -2,6 +2,8 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended",
+    ":disableRateLimiting",
+    ":dependencyDashboard",
     ":semanticCommits",
     ":rebaseStalePrs",
     "schedule:nonOfficeHours",
@@ -13,6 +15,24 @@
   "rangeStrategy": "bump",
   "postUpdateOptions": ["gomodTidy"],
   "packageRules": [
+    {
+      "description": "Auto merge GitHub Actions digest/patch/minor updates",
+      "matchManagers": ["github-actions"],
+      "automerge": true,
+      "automergeType": "branch",
+      "ignoreTests": true,
+      "matchUpdateTypes": ["digest", "patch", "minor"]
+    },
+    {
+      "description": "Never auto-merge anomalyco/opencode updates",
+      "matchPackageNames": ["anomalyco/opencode"],
+      "automerge": false
+    },
+    {
+      "description": "Never auto-merge lenaxia/ai-workflows updates",
+      "matchPackageNames": ["lenaxia/ai-workflows"],
+      "automerge": false
+    },
     {
       "description": "Auto-merge low-risk patch updates of dev-only npm packages.",
       "matchManagers": ["npm"],
