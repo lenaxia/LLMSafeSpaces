@@ -251,6 +251,30 @@ func TestConfigWriter_Apply_PromptDirs_ProductionConfig_SideCarPlusRendered(t *t
 
 // Sibling build fields survive a prompt clear; empty objects are pruned
 // (verified empirically in review round 2, unpinned until now).
+func TestConfigWriter_Apply_PromptDirs_NullExternalDirectory_NoPanic(t *testing.T) {
+	// Round-3 review: `"external_directory": null` decoded into a nil
+	// map without error; the first pattern write panicked the whole
+	// agentd process. Reachable via agent self-tampering
+	// (/sandbox-runtime is RW in the main container). Null must be
+	// treated as absent — fresh injected map, no panic.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-config.json")
+	base := `{
+		"$schema": "https://opencode.ai/config.json",
+		"mode": {"permissions": {"external_directory": null}}
+	}`
+	require.NoError(t, os.WriteFile(path, []byte(base), 0o600))
+
+	w := NewConfigWriter(path)
+	_, err := w.Apply(agent.AgentConfigInput{
+		AllowedDirs: &agent.AllowedDirsChange{Dirs: []string{"/tmp/*"}},
+	})
+	require.NoError(t, err, "null external_directory must not panic or error")
+
+	_, extDir := decodeRendered(t, path)
+	assert.Equal(t, "allow", extDir["/tmp/*"], "null treated as absent; patterns injected fresh")
+}
+
 func TestConfigWriter_Apply_PromptDirs_ClearPromptPreservesSiblingBuildFields(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent-config.json")

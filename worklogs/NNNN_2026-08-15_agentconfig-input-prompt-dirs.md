@@ -50,9 +50,13 @@ prompt or dirs required reconstructing the writer.
   realistic post-boot-normalize file state.
 - Clear/replace are now authoritative over prior renders: non-nil
   AdminPrompt strips the writer-owned `build.prompt` from the captured
-  agent section; non-nil AllowedDirs strips exactly the tracked
-  injected keys from `permissions.external_directory` (user-authored
-  entries — deny rules, own allows, bare-string policies — preserved).
+  agent section; non-nil AllowedDirs strips the tracked injected keys
+  from `permissions.external_directory`. **Round-2 correction:** the
+  original claim that user-authored "own allows" survive was FALSE —
+  the recovery heuristic treats every map-form "allow" entry as
+  writer-injected, so user-authored allows are swept with them
+  (fail-closed; deny/ask rules and bare-string policies survive;
+  ambiguity dissolves in increment 3, #860).
   `injectedDirs` is seeded from the side-car load and recovered from a
   previously rendered mode block, so a writer constructed over a
   rendered file (every real pod after #857) honors clears.
@@ -67,10 +71,11 @@ prompt or dirs required reconstructing the writer.
 
 ## Verification
 
-- Nine promptdirs tests: replace/clear/nil over side-car AND over
-  rendered files, sanitization, caller-slice isolation, failed-rebuild
-  rollback (scalars + captured raws), the production side-car+rendered
-  configuration (union semantics), and sibling-build-field preservation.
+- Nine promptdirs tests: replace/clear/nil over rendered files, clear
+  over the production side-car+rendered configuration (union
+  semantics), sanitization, caller-slice isolation, failed-rebuild
+  rollback (scalars + captured raws), null-external-directory panic
+  guard, and sibling-build-field preservation.
 - Round-2 additions: the side-car load UNIONs the recovered injected-dirs
   set (the first version overwrote it — a prior-lifetime /data/* would
   have resurrected on clear; mutation-verified); the preservation

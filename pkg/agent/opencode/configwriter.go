@@ -529,9 +529,17 @@ func (w *ConfigWriter) rebuildLocked() error {
 			// a global policy (e.g. "allow" for all dirs → "allow" only for
 			// /tmp/*). Only merge our patterns when the value is absent or is
 			// already in the map form.
+			// JSON `null` decodes into a nil map WITHOUT error — writing
+			// into it would panic the whole agentd process (round-3
+			// review; reachable via agent self-tampering of
+			// /sandbox-runtime, RW in the main container). Null is
+			// treated as absent: a fresh map of the injected patterns
+			// replaces it.
 			if raw, ok := perms["external_directory"]; ok {
 				var existing map[string]string
-				if json.Unmarshal(raw, &existing) == nil {
+				unmarshalErr := json.Unmarshal(raw, &existing)
+				switch {
+				case unmarshalErr == nil && existing != nil:
 					for _, p := range w.allowedDirs {
 						existing[p] = "allow"
 					}
@@ -540,8 +548,19 @@ func (w *ConfigWriter) rebuildLocked() error {
 						return fmt.Errorf("agent-config writer: marshal external_directory: %w", err)
 					}
 					perms["external_directory"] = extDirJSON
+				case unmarshalErr == nil && existing == nil:
+					extDir := make(map[string]string, len(w.allowedDirs))
+					for _, p := range w.allowedDirs {
+						extDir[p] = "allow"
+					}
+					extDirJSON, err := json.Marshal(extDir)
+					if err != nil {
+						return fmt.Errorf("agent-config writer: marshal external_directory: %w", err)
+					}
+					perms["external_directory"] = extDirJSON
+				default:
+					// Bare-string branch: preserved as-is, no injection.
 				}
-				// Bare-string branch: preserved as-is, no injection.
 			} else {
 				extDir := make(map[string]string, len(w.allowedDirs))
 				for _, p := range w.allowedDirs {
