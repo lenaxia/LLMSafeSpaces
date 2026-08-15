@@ -89,13 +89,47 @@ type Secret struct {
 	// MetadataInvalid records why the metadata could not be normalized
 	// (metadata that is not a JSON object). Materialize reports it
 	// per-entry as a Skipped result instead of aborting the whole batch.
+	//
+	// Wire persistence: round-tripped through the reserved
+	// "metadata_invalid" JSON key (MarshalJSON emits it; UnmarshalJSON
+	// reads it) so the reload-secrets cache replays the skip verdict
+	// identically — without it the cached entry marshals with
+	// "metadata":null, the flag is lost, and a restart materializes the
+	// rejected secret with defaults (T5 violation; review N1 on #871).
 	MetadataInvalid string `json:"-"`
+}
+
+// metadataInvalidWireKey is the reserved secrets.json / cache key for
+// the parse-verdict field. Namespaced so it cannot collide with a
+// legitimate metadata member key.
+const metadataInvalidWireKey = "metadata_invalid"
+
+// MarshalJSON emits the struct fields plus the reserved verdict key when
+// set, so cache round-trips preserve the skip decision.
+func (s Secret) MarshalJSON() ([]byte, error) {
+	type wireSecret struct {
+		Type      string            `json:"type"`
+		Name      string            `json:"name"`
+		Metadata  map[string]string `json:"metadata"`
+		Plaintext string            `json:"plaintext"`
+	}
+	w := wireSecret{Type: s.Type, Name: s.Name, Metadata: s.Metadata, Plaintext: s.Plaintext}
+	if s.MetadataInvalid != "" {
+		return json.Marshal(struct {
+			wireSecret
+			MetadataInvalid string `json:"metadata_invalid"`
+		}{w, s.MetadataInvalid})
+	}
+	return json.Marshal(w)
 }
 
 // UnmarshalJSON implements the dual-shape metadata contract documented on
 // Secret. It never fails on metadata content — malformed metadata sets
 // MetadataInvalid so the entry can be skipped downstream with an accurate
-// reason rather than killing the file parse for every other secret.
+// reason rather than killing the file parse for every other secret. The
+// reserved metadata_invalid key (emitted by MarshalJSON) restores a
+// persisted verdict so a replayed cache entry skips identically to its
+// first-boot parse.
 func (s *Secret) UnmarshalJSON(data []byte) error {
 	type wireSecret struct {
 		Type      string          `json:"type"`
@@ -110,6 +144,14 @@ func (s *Secret) UnmarshalJSON(data []byte) error {
 	s.Type = w.Type
 	s.Name = w.Name
 	s.Plaintext = w.Plaintext
+
+	// Persisted verdict (reserved wire key): restore before metadata
+	// analysis so replay skips identically.
+	var verdict struct {
+		MetadataInvalid string `json:"metadata_invalid"`
+	}
+	_ = json.Unmarshal(data, &verdict)
+	s.MetadataInvalid = verdict.MetadataInvalid
 
 	if len(w.Metadata) == 0 {
 		return nil
