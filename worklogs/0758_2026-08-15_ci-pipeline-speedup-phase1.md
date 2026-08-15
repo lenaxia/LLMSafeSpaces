@@ -106,5 +106,5 @@ None.
 - `.github/workflows/secrets-integration.yml` — concurrency stanza.
 - `.github/workflows/envtest.yml` — concurrency stanza.
 - `.github/workflows/migration-safety.yml` — concurrency stanza.
-- `worklogs/NNNN_2026-08-15_ci-pipeline-speedup-phase1.md` — this worklog.
+- `worklogs/0758_2026-08-15_ci-pipeline-speedup-phase1.md` — this worklog.
 - (docs pass, review round 2): `.github/workflows/ci.yml` comment-only correction (branch-protection claim), `.github/workflows/envtest.yml` comment-only correction (W2), this worklog's review-fix addendum.
