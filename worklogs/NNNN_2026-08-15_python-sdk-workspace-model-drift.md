@@ -64,7 +64,7 @@ The CI canary advanced past s_secret_crud's metadata fix to reveal `SecretRespon
 
 ### Round 8: email-reset login 429
 
-First-ever full Python section run: scenarios 1-16 green through `s_ownership`; `s_email_reset` (17 of 19) then failed on `login: unexpected status: got 429` — the accumulated logins across the section (12 POSTs to /auth/login across 10 scenarios — s_auth, s_logout, the seven JWT-converted scenarios, and this one) share the per-IP login bucket (10/min). The scenario's contract is the 200-vs-403 email-verification semantics, so the login now retries on 429 (up to 7 attempts, 10s apart — one bucket refill), in both the Python and TS twins (the TS section's first-ever execution runs the same drained-bucket arithmetic).
+First-ever full Python section run: scenarios 1-16 green through `s_ownership`; `s_email_reset` (17 of 19) then failed on `login: unexpected status: got 429` — the accumulated logins across the section (12 POSTs to /auth/login across 10 scenarios — s_auth, s_logout, the six JWT-converted scenarios (s_cred_crud already used jwt_login on main), and this one) share the per-IP login bucket (10/min). The scenario's contract is the 200-vs-403 email-verification semantics, so the login now retries on 429 (up to 7 attempts, 10s apart — one bucket refill), in both the Python and TS twins (the TS section's first-ever execution runs the same drained-bucket arithmetic).
 
 ### Round 9: MCP canary bootstrap
 
@@ -78,7 +78,7 @@ None for this PR's diff. The TS section's first-ever execution ran fully green (
 
 ## Next Steps
 
-- Python (round 8) and TS (round 10) sections ran fully green for the first time. Remaining for the `sdk-canary.continue-on-error: false` flip (ci.yml TODO): the MCP section fixes tracked in #874.
+- Python (round 8 run) and TS (same round 8 run — the section's first execution) were fully green for the first time. Remaining for the `sdk-canary.continue-on-error: false` flip (ci.yml TODO): the MCP section fixes tracked in #874.
 
 ---
 
