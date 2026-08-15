@@ -105,9 +105,11 @@ type AgentConfigInput struct {
 	// an empty Servers slice clears the MCP source.
 	MCPServers *MCPServerChange
 
-	// AdminPrompt updates the platform-level system prompt prepended to
-	// the agent's build prompt. A non-nil pointer with empty Text
-	// clears the prompt source (distinct from nil = leave unchanged).
+	// AdminPrompt updates the platform-level system prompt rendered into
+	// the agent's build prompt (replace semantics: the new Text fully
+	// supersedes the prior source, side-car-loaded or rendered). A
+	// non-nil pointer with empty Text clears the prompt source
+	// (distinct from nil = leave unchanged).
 	//
 	// At bootstrap the writer loads this source from the side-car file
 	// (WithAdminPromptPath — the materialize staging contract); this

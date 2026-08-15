@@ -249,14 +249,12 @@ func TestConfigWriter_Apply_PromptDirs_ProductionConfig_SideCarPlusRendered(t *t
 	assert.Equal(t, "deny", extDir["/secrets"], "user-authored deny rule survives")
 }
 
-// Sibling build fields survive a prompt clear; empty objects are pruned
-// (verified empirically in review round 2, unpinned until now).
+// Round-3 review: `"external_directory": null` decoded into a nil
+// map without error; the first pattern write panicked the whole
+// agentd process. Reachable via agent self-tampering
+// (/sandbox-runtime is RW in the main container). Null must be
+// treated as absent — fresh injected map, no panic.
 func TestConfigWriter_Apply_PromptDirs_NullExternalDirectory_NoPanic(t *testing.T) {
-	// Round-3 review: `"external_directory": null` decoded into a nil
-	// map without error; the first pattern write panicked the whole
-	// agentd process. Reachable via agent self-tampering
-	// (/sandbox-runtime is RW in the main container). Null must be
-	// treated as absent — fresh injected map, no panic.
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent-config.json")
 	base := `{
@@ -325,6 +323,8 @@ func TestConfigWriter_Rebuild_NullProviderSection_NoPanic(t *testing.T) {
 	assert.Contains(t, cfg.Provider, "opencode-relay", "relay entry written into a fresh map over the null section")
 }
 
+// Sibling build fields survive a prompt clear; empty objects are pruned
+// (verified empirically in review round 2, unpinned until now).
 func TestConfigWriter_Apply_PromptDirs_ClearPromptPreservesSiblingBuildFields(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent-config.json")
