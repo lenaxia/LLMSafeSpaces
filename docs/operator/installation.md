@@ -22,7 +22,7 @@ A cluster running **Kubernetes 1.35 or later**. The chart uses `admissionregistr
 
 ### Helm
 
-**Helm 3.13+** (also validated against Helm 4). The chart ships ~150 documented values and a pre-install/pre-upgrade migration Job.
+**Helm 3.21+** (older binaries' built-in kubeVersion defaults predate 1.35 and refuse the chart during offline `lint`/`template`; live installs use the server version. Also validated against Helm 4). The chart ships ~150 documented values and a pre-install/pre-upgrade migration Job.
 
 ### cert-manager
 
