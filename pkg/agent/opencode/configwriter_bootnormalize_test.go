@@ -132,3 +132,146 @@ func TestConfigWriter_ApplyEmpty_MissingPromptAndDirs_StillWrites(t *testing.T) 
 	require.NoError(t, json.Unmarshal(written, &cfg))
 	assert.Contains(t, cfg.MCP, "llmsafespaces")
 }
+
+// Regression (review of the boot-normalize PR): materialize stages
+// workspace/user-bound MCP servers (Epic 53) into agent-config.json
+// before agentd starts. loadExisting did not capture the on-disk "mcp"
+// section, so ANY writer rebuild (empty Apply at boot, relay-only Apply
+// in the pre-boot relay and relay injector) re-emitted mcp solely from
+// the writer's staged sources — nil at boot — silently deleting every
+// user MCP server until the next credential reload. The on-disk section
+// must be preserved like agent/mode, and staged servers must remain
+// authoritative when set.
+func TestConfigWriter_ApplyEmpty_PreservesUserMCPServers(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-config.json")
+
+	base := `{
+		"$schema": "https://opencode.ai/config.json",
+		"provider": {"openai": {"options": {"apiKey": "sk-test"}}},
+		"model": "openai/gpt-4o",
+		"mcp": {
+			"my-github": {"type": "remote", "url": "https://mcp.github.example/abc", "enabled": true},
+			"my-db": {"type": "local", "command": ["postgres-mcp"], "enabled": true}
+		}
+	}`
+	require.NoError(t, os.WriteFile(path, []byte(base), 0o600))
+
+	w := NewConfigWriter(path, WithPreMarshalHook(fakeBuiltinMCPHook))
+	_, err := w.Apply(agent.AgentConfigInput{})
+	require.NoError(t, err)
+
+	written, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var cfg struct {
+		MCP map[string]json.RawMessage `json:"mcp"`
+	}
+	require.NoError(t, json.Unmarshal(written, &cfg))
+
+	assert.Contains(t, cfg.MCP, "my-github", "user-staged remote MCP server must survive")
+	assert.Contains(t, cfg.MCP, "my-db", "user-staged local MCP server must survive")
+	assert.Contains(t, cfg.MCP, "llmsafespaces", "built-in MCP server must be injected alongside")
+
+	var gh struct {
+		URL string `json:"url"`
+	}
+	require.NoError(t, json.Unmarshal(cfg.MCP["my-github"], &gh))
+	assert.Equal(t, "https://mcp.github.example/abc", gh.URL, "user entry must be preserved verbatim")
+}
+
+// Same preservation through the relay-injection path (pre-boot relay and
+// relay injector construct a fresh writer over the materialize output and
+// Apply relay-only input — the narrower pre-existing variant of the drop).
+func TestConfigWriter_RelayApply_PreservesUserMCPServers(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-config.json")
+
+	base := `{
+		"$schema": "https://opencode.ai/config.json",
+		"provider": {"openai": {"options": {"apiKey": "sk-test"}}},
+		"model": "openai/gpt-4o",
+		"mcp": {"my-github": {"type": "remote", "url": "https://mcp.github.example/abc", "enabled": true}}
+	}`
+	require.NoError(t, os.WriteFile(path, []byte(base), 0o600))
+
+	w := NewConfigWriter(path, WithPreMarshalHook(fakeBuiltinMCPHook))
+	relayURL := "https://relay.example.test/path"
+	_, err := w.Apply(agent.AgentConfigInput{
+		Relay: &agent.RelayState{
+			URL:    relayURL,
+			Models: []agent.RelayModel{{ID: "glm-5-free", Name: "GLM-5 Free", ContextLimit: 200000, OutputLimit: 100000}},
+		},
+	})
+	require.NoError(t, err)
+
+	written, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var cfg struct {
+		Provider map[string]json.RawMessage `json:"provider"`
+		MCP      map[string]json.RawMessage `json:"mcp"`
+	}
+	require.NoError(t, json.Unmarshal(written, &cfg))
+
+	assert.Contains(t, cfg.Provider, "opencode-relay", "relay must still be injected")
+	assert.Contains(t, cfg.MCP, "my-github", "user MCP server must survive relay injection")
+	assert.Contains(t, cfg.MCP, "llmsafespaces")
+}
+
+// Staged servers remain authoritative over the preserved section: a
+// credential reload re-stages the full workspace MCP list and the
+// output must be exactly the staged list (not merged with stale disk
+// entries).
+func TestConfigWriter_StagedMCP_OverridesPreservedSection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-config.json")
+
+	base := `{
+		"$schema": "https://opencode.ai/config.json",
+		"provider": {"openai": {"options": {"apiKey": "sk-test"}}},
+		"mcp": {"stale-entry": {"type": "remote", "url": "https://old.example", "enabled": true}}
+	}`
+	require.NoError(t, os.WriteFile(path, []byte(base), 0o600))
+
+	w := NewConfigWriter(path, WithPreMarshalHook(fakeBuiltinMCPHook))
+	_, err := w.Apply(agent.AgentConfigInput{
+		MCPServers: &agent.MCPServerChange{
+			Servers: []agent.MCPServerEntry{
+				{Name: "fresh-entry", Transport: "remote", URL: "https://new.example"},
+			},
+		},
+	})
+	require.NoError(t, err)
+
+	written, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var cfg struct {
+		MCP map[string]json.RawMessage `json:"mcp"`
+	}
+	require.NoError(t, json.Unmarshal(written, &cfg))
+
+	assert.Contains(t, cfg.MCP, "fresh-entry", "staged server must be rendered")
+	assert.NotContains(t, cfg.MCP, "stale-entry", "staged list is authoritative — stale disk entry must not resurrect")
+	assert.Contains(t, cfg.MCP, "llmsafespaces")
+}
+
+// A non-object on-disk mcp section (corrupt/legacy shapes) must be
+// dropped, not round-tripped into the output.
+func TestConfigWriter_ApplyEmpty_NonObjectMCPSection_Dropped(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-config.json")
+	base := `{"$schema":"https://opencode.ai/config.json","mcp":null}`
+	require.NoError(t, os.WriteFile(path, []byte(base), 0o600))
+
+	w := NewConfigWriter(path, WithPreMarshalHook(fakeBuiltinMCPHook))
+	_, err := w.Apply(agent.AgentConfigInput{})
+	require.NoError(t, err)
+
+	written, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var cfg struct {
+		MCP map[string]json.RawMessage `json:"mcp"`
+	}
+	require.NoError(t, json.Unmarshal(written, &cfg))
+	assert.Len(t, cfg.MCP, 1, "only the built-in entry; null section must not round-trip")
+	assert.Contains(t, cfg.MCP, "llmsafespaces")
+}

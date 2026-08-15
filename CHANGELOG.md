@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   before starting opencode (`ensureBootAgentConfig`), stamping the MCP
   entry, admin prompt, and allowed dirs on every boot. Found while
   verifying the 2026-08-15 stale-image incident on v0.15.5.
+- **Writer rebuilds no longer drop user-staged MCP servers** (found in
+  review of the above): the config writer captured only
+  provider/model/agent/mode from the existing config, so any rebuild
+  from a writer with no staged MCP source (boot normalize, pre-boot
+  relay, relay injector) silently deleted workspace-bound MCP servers
+  written by materialize (Epic 53) until the next credential reload.
+  The on-disk `mcp` section is now captured and re-emitted unless a
+  staged source supersedes it.
 
 ### Changed
 

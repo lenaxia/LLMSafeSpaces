@@ -31,10 +31,10 @@ import (
 // write is idempotent — a second call (or a boot after the pre-boot
 // relay already wrote everything) reproduces the same config.
 //
-// A normalize failure is returned to the caller; boot proceeds with a
-// warning rather than dying — the alternative (no agentd at all) is
-// strictly worse than a degraded config that the next credential
-// reload repairs.
+// A normalize failure is logged and swallowed — boot continues with a
+// usable writer, because no agentd at all is strictly worse than a
+// degraded config that the next write path (credential reload, relay
+// injector) repairs.
 func ensureBootAgentConfig(agentConfigPath, adminPromptPath, allowedDirsPath string) *opencode.ConfigWriter {
 	w := opencode.NewConfigWriter(agentConfigPath,
 		opencode.WithAdminPromptPath(adminPromptPath),

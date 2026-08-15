@@ -56,7 +56,12 @@ all is strictly worse than a config the next credential reload repairs.
 1. `Apply` with all-nil fields preserves loaded sources — validated by
    reading `configwriter.go` Apply semantics and pinned by
    `TestConfigWriter_ApplyEmpty_StampsMissingBlocks` (provider + model
-   survive).
+   survive). **Corrected after review:** the first version claimed the
+   on-disk `mcp` section was preserved too — it was NOT (loadExisting
+   never captured it), which made the boot write delete user-staged
+   MCP servers (Epic 53). Reviewer reproduced it; fixed by capturing
+   `mcp` in loadExisting (object-only) and emitting it when no staged
+   source exists; pinned at both levels plus the relay-only variant.
 2. Empty-input Apply is idempotent (boot after pre-boot-relay wrote
    everything rewrites the same config) — pinned by
    `TestConfigWriter_ApplyEmpty_Idempotent` and
@@ -71,14 +76,22 @@ all is strictly worse than a config the next credential reload repairs.
    `mcpHandler`) — pinned by
    `TestEnsureBootAgentConfig_StampsPlatformBlocks` asserting
    `:4097/v1/mcp`.
+6. Normalize failure does not abort boot — pinned by
+   `TestEnsureBootAgentConfig_WriteFailure_ContinuesBoot` (warn logged,
+   usable writer returned).
 
 ## Verification
 
 - New tests: 3 × `pkg/agent/opencode/configwriter_bootnormalize_test.go`,
   3 × `cmd/workspace-agentd/boot_config_test.go` — all pass.
-- Full `./cmd/workspace-agentd/` suite (322s, includes e2e) — pass.
+- **Post-review additions:** 4 mcp-preservation regression tests
+  (writer level: empty Apply, relay-only Apply, staged-override,
+  non-object drop; agentd level: boot normalize with user servers) and
+  the write-failure continuation test — all pass.
+- Full `./cmd/workspace-agentd/` suite (includes e2e) — pass.
 - Full `./pkg/agent/...` suite — pass.
-- `go build ./...` clean; `gofmt` clean.
+- `go build ./...` clean; `gofmt -l` clean (the initial push had one
+  unformatted test file — CI caught it; since fixed and re-verified).
 - Live-cluster reproduction confirmed the bug shape (recreated v0.15.5
   pod: `mcp url: MISSING`, `:4097/v1/mcp` → 200); image with this fix
   ships via the next release.

@@ -111,3 +111,67 @@ func TestEnsureBootAgentConfig_Idempotent(t *testing.T) {
 
 	assert.JSONEq(t, string(first), string(second))
 }
+
+// Regression (review of the boot-normalize PR): materialize stages
+// user-bound MCP servers (Epic 53) into agent-config.json before agentd
+// starts. The boot normalize must preserve them alongside the injected
+// built-in entry — the first version of this fix rebuilt the section
+// from the (empty) staged source only and silently deleted every user
+// server until the next credential reload.
+func TestEnsureBootAgentConfig_PreservesUserMCPServers(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent-config.json")
+	promptPath := filepath.Join(dir, "admin-prompt.md")
+	dirsPath := filepath.Join(dir, "allowed-dirs")
+
+	base := `{
+		"$schema": "https://opencode.ai/config.json",
+		"provider": {"openai": {"options": {"apiKey": "sk-x"}}},
+		"model": "openai/gpt-4o",
+		"mcp": {"my-github": {"type": "remote", "url": "https://mcp.github.example/abc", "enabled": true}}
+	}`
+	require.NoError(t, os.WriteFile(cfgPath, []byte(base), 0o600))
+	require.NoError(t, os.WriteFile(promptPath, []byte("P"), 0o600))
+	require.NoError(t, os.WriteFile(dirsPath, []byte(`["/tmp/*"]`), 0o600))
+
+	w := ensureBootAgentConfig(cfgPath, promptPath, dirsPath)
+	require.NotNil(t, w)
+
+	written, err := os.ReadFile(cfgPath)
+	require.NoError(t, err)
+	var cfg struct {
+		MCP map[string]json.RawMessage `json:"mcp"`
+	}
+	require.NoError(t, json.Unmarshal(written, &cfg))
+
+	require.Contains(t, cfg.MCP, "my-github", "user-staged MCP server must survive the boot normalize")
+	require.Contains(t, cfg.MCP, "llmsafespaces", "built-in MCP server must be injected")
+
+	var gh struct {
+		URL string `json:"url"`
+	}
+	require.NoError(t, json.Unmarshal(cfg.MCP["my-github"], &gh))
+	assert.Equal(t, "https://mcp.github.example/abc", gh.URL)
+}
+
+// Unhappy path: when the normalize write cannot complete (here: the
+// config path is occupied by a directory, so the atomic rename fails),
+// boot must CONTINUE — a warn is logged and a usable writer is still
+// returned. No agentd at all is strictly worse than a degraded config
+// that the next write path repairs.
+func TestEnsureBootAgentConfig_WriteFailure_ContinuesBoot(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent-config.json")
+	promptPath := filepath.Join(dir, "admin-prompt.md")
+	dirsPath := filepath.Join(dir, "allowed-dirs")
+
+	// A directory where the config file should be: ReadFile fails
+	// (sources start empty), and the atomic write's rename onto a
+	// directory path fails deterministically — root or not.
+	require.NoError(t, os.Mkdir(cfgPath, 0o700))
+	require.NoError(t, os.WriteFile(promptPath, []byte("P"), 0o600))
+	require.NoError(t, os.WriteFile(dirsPath, []byte(`["/tmp/*"]`), 0o600))
+
+	w := ensureBootAgentConfig(cfgPath, promptPath, dirsPath)
+	require.NotNil(t, w, "writer must still be returned so later write paths (reload, injector) can repair")
+}
