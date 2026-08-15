@@ -28,6 +28,12 @@ on:
     - cron: '0 4 * * *'
   workflow_dispatch:
 
+# Superseded PR runs are cancelled; scheduled/main runs never are (see
+# the matching stanza in ci.yml for the rationale).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   envtest:
     name: CRD defaults + webhook integration (envtest)
