@@ -56,7 +56,7 @@ per puller is expected behavior; depending on them for correctness is not.
    unconditionally.
 3. Seed only inserts missing keys (`InsertInstanceSettingIfMissing`) —
    validated in `pkg/settings/seed.go`; therefore existing deployments
-   keep the stale row until migration `000023` removes it. Known
+   keep the stale row until migration `000024` removes it. Known
    narrow race (review Robustness-3): an old-binary API pod restarting
    between the pre-upgrade migration hook and rollout completion can
    re-seed `base:latest`; the read guard neutralizes it for new
@@ -101,8 +101,8 @@ per puller is expected behavior; depending on them for correctness is not.
 5. `api/.../workspace_service.go` — tier-3 read guard: a stored value
    that fails pin validation is skipped with a `Warn` and the hierarchy
    falls through to the base RTE. Covers rows written before validation
-   existed that migration 000023 deliberately preserves (admin-customized).
-6. Migration `000023_workspace_default_image_no_float` (canonical +
+   existed that migration 000024 deliberately preserves (admin-customized).
+6. Migration `000024_workspace_default_image_no_float` (renumbered from 000023 — #734 merged first) (canonical +
    chart copy via `make chart-sync-migrations`): deletes
    `instance_settings` rows still equal to the exact seeded default;
    admin-customized values preserved. Down-migration comment corrected

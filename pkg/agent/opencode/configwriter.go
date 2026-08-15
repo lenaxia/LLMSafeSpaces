@@ -111,6 +111,7 @@ type ConfigWriter struct {
 	adminPrompt     string           // admin-configured system prompt; "" = none
 	agentRaw        json.RawMessage  // existing "agent" config from loadExisting, preserved across rebuilds
 	modeRaw         json.RawMessage  // existing "mode" config from loadExisting, preserved across rebuilds
+	mcpRaw          json.RawMessage  // existing "mcp" object from loadExisting (e.g. user-staged servers written by materialize, Epic 53); re-emitted when no staged source. Non-object or null sections are NOT captured (dropped, not round-tripped)
 	allowedDirs     []string         // glob patterns, merged as external_directory allow-rules
 	adminPromptPath string           // path to admin-prompt file; "" = skip
 	allowedDirsPath string           // path to allowed-dirs JSON; "" = skip
@@ -148,6 +149,7 @@ func (w *ConfigWriter) loadExisting() {
 		Model    string          `json:"model,omitempty"`
 		Agent    json.RawMessage `json:"agent,omitempty"`
 		Mode     json.RawMessage `json:"mode,omitempty"`
+		MCP      json.RawMessage `json:"mcp,omitempty"`
 	}
 	if json.Unmarshal(data, &cfg) != nil {
 		return
@@ -156,6 +158,22 @@ func (w *ConfigWriter) loadExisting() {
 	w.model = cfg.Model
 	w.agentRaw = cfg.Agent
 	w.modeRaw = cfg.Mode
+
+	// Preserve the on-disk "mcp" section (user-staged servers written by
+	// the materialize subcommand, Epic 53). Without this, any rebuild
+	// from a writer whose staged MCP source is nil (boot normalize,
+	// pre-boot relay, relay injector) would silently delete the user's
+	// servers: rebuildLocked emitted "mcp" only from staged state.
+	// Staged sources (SetMCPServers / Apply MCPServers) remain
+	// authoritative and supersede the captured section entirely.
+	// Only a JSON object is captured — null / arrays / scalars are
+	// dropped rather than round-tripped into the output.
+	if len(cfg.MCP) > 0 {
+		var mcpMap map[string]json.RawMessage
+		if json.Unmarshal(cfg.MCP, &mcpMap) == nil && mcpMap != nil {
+			w.mcpRaw = cfg.MCP
+		}
+	}
 
 	// 2026-06-23 cold-start optimization (item #1a, Phase D): detect
 	// a pre-boot-injected relay block and set the writer's relay
@@ -517,9 +535,13 @@ func (w *ConfigWriter) rebuildLocked() error {
 
 	// Merge MCP servers into the top-level "mcp" section. Each server
 	// becomes one named entry. Remote transports (http/sse) render as
-	// opencode "remote"; stdio renders as "local". The section is only
-	// emitted when at least one server is staged — a no-MCP workspace
-	// produces byte-equivalent output to the pre-Epic-53 writer.
+	// opencode "remote"; stdio renders as "local". The staged source is
+	// authoritative: when at least one server is staged, the section is
+	// exactly the staged list (a credential reload re-stages the full
+	// workspace set). With no staged source, the section captured from
+	// the existing file in loadExisting is re-emitted verbatim — a
+	// no-MCP workspace with no on-disk section produces byte-equivalent
+	// output to the pre-Epic-53 writer.
 	if len(w.mcpServers) > 0 {
 		mcp := make(map[string]json.RawMessage, len(w.mcpServers))
 		for _, srv := range w.mcpServers {
@@ -542,6 +564,8 @@ func (w *ConfigWriter) rebuildLocked() error {
 			return fmt.Errorf("agent-config writer: marshal mcp section: %w", err)
 		}
 		cfg["mcp"] = mcpJSON
+	} else if len(w.mcpRaw) > 0 {
+		cfg["mcp"] = w.mcpRaw
 	}
 
 	// preMarshalHook lets the caller (agentd) inject entries that this
@@ -637,11 +661,13 @@ func (w *ConfigWriter) Apply(in agent.AgentConfigInput) (bool, error) {
 	prevModel := w.model
 	prevRelay := w.relay
 	prevMCPServers := w.mcpServers
+	prevMCPRaw := w.mcpRaw
 	rollback := func() {
 		w.providerRaw = prevProviderRaw
 		w.model = prevModel
 		w.relay = prevRelay
 		w.mcpServers = prevMCPServers
+		w.mcpRaw = prevMCPRaw
 	}
 
 	if in.Providers != nil {
@@ -676,11 +702,14 @@ func (w *ConfigWriter) Apply(in agent.AgentConfigInput) (bool, error) {
 	}
 
 	if in.MCPServers != nil {
+		// A staged MCP input (even an empty clear) supersedes the
+		// section captured from disk — staged state is authoritative.
+		w.mcpRaw = nil
 		if len(in.MCPServers.Servers) > 0 {
 			w.mcpServers = mcpServersFromAgent(in.MCPServers.Servers)
 		} else {
 			// Clear: a non-nil pointer with empty Servers drops the
-			// MCP source.
+			// MCP source entirely.
 			w.mcpServers = nil
 		}
 	}

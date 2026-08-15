@@ -129,15 +129,29 @@ func RateLimitMiddleware(rl interfaces.RateLimiterService, log pkginterfaces.Log
 
 		if err != nil {
 			if apiErr, ok := err.(*errors.APIError); ok && apiErr.Type == errors.ErrorTypeRateLimit {
+				// Derive the reset from the error when the strategy supplied
+				// one (token bucket ≈ now+1s, fixed window = now+TTL, sliding
+				// window = now+window); fall back to the configured window.
+				// Computing retryAfter from the window alone would tell
+				// token-bucket clients (the default strategy) to wait 60s
+				// when the bucket refills in ~1s.
+				now := time.Now().Unix()
+				resetUnix := now + int64(window.Seconds())
+				if r, ok := apiErr.Details["reset"].(int64); ok && r >= now {
+					resetUnix = r
+				}
+				retryAfter := int(resetUnix - now)
+				if retryAfter < 1 {
+					retryAfter = 1
+				}
 				c.Header("X-RateLimit-Limit", strconv.Itoa(limit))
 				c.Header("X-RateLimit-Remaining", "0")
-				c.Header("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(window).Unix(), 10))
+				c.Header("X-RateLimit-Reset", strconv.FormatInt(resetUnix, 10))
+				c.Header("Retry-After", strconv.Itoa(retryAfter))
 				c.AbortWithStatusJSON(apiErr.StatusCode(), gin.H{
-					"error": gin.H{
-						"code":    apiErr.Code,
-						"message": apiErr.Message,
-						"details": apiErr.Details,
-					},
+					"error":      apiErr.Message,
+					"limit":      limit,
+					"retryAfter": retryAfter,
 				})
 				return
 			}

@@ -1476,6 +1476,10 @@ func registerProxyRoutes(idGroup *gin.RouterGroup, proxyHandler *handlers.ProxyH
 	idGroup.POST("/question/:requestID/reject", proxyHandler.QuestionReject)
 	idGroup.GET("/permission", proxyHandler.ListPermissions)
 	idGroup.POST("/permission/:requestID/reply", proxyHandler.PermissionReply)
+
+	// D10: on-demand input-snapshot flight (ChatPage arms reconnect mode on
+	// in-workspace session switches where no SSE reconnect fires).
+	idGroup.POST("/input-snapshot", proxyHandler.RequestInputSnapshot)
 }
 
 // respondWithError maps API errors to HTTP responses. It uses errors.As to

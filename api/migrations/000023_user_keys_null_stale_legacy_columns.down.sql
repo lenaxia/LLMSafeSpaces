@@ -1,0 +1,12 @@
+-- Not meaningfully reversible.
+--
+-- The up migration nulls salt / wrapped_dek_recovery / recovery_salt on
+-- server_kek/passkey rows. These columns were only meaningful under the
+-- removed password tier (Argon2id salt, recovery-key wrap). Once nulled
+-- they cannot be reconstructed because the plaintext was re-wrapped
+-- under the master KEK by the migrate-passkey-dek tool (worklog 0662)
+-- and the original password-derived wraps are gone.
+--
+-- Per repo convention for irreversible migrations, this down file is
+-- a no-op comment. See 000014_dek_source_server_kek_only.down.sql for
+-- the same pattern.

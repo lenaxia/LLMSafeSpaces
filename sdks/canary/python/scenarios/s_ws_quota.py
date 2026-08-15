@@ -8,14 +8,23 @@ from __future__ import annotations
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 from canary import Runner, Config, config_from_env
 from llmsafespaces import LLMSafeSpaces, RateLimitError
 
 
 def run(r: Runner, cfg: Config) -> None:
-    limit = int(os.environ.get("LLMSAFESPACES_MAX_WORKSPACES_PER_USER", "10"))
+    # Match the Go/TypeScript canary behavior: skip if the quota env var
+    # is not explicitly set. The server enforces per-user quotas only when
+    # LLMSAFESPACES_MAX_WORKSPACES_PER_USER is configured (router.go); CI
+    # never sets it, so creating 11 workspaces against an unlimited
+    # cluster and expecting a 429 is a guaranteed false failure.
+    env_limit = os.environ.get("LLMSAFESPACES_MAX_WORKSPACES_PER_USER", "")
+    if not env_limit:
+        r.ok("ws-quota: skipped (LLMSAFESPACES_MAX_WORKSPACES_PER_USER not set)")
+        return
+    limit = int(env_limit)
     if limit <= 0:
         r.ok("ws-quota: skipped (unlimited)")
         return

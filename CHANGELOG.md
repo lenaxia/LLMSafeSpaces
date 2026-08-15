@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Workspace pods could boot with no platform MCP server, system
+  prompt, or `/tmp` external-dir approval**. Those blocks are rendered
+  only by the agent-config writer's marshal path, and every write
+  trigger at boot was conditional (pre-boot relay needs a free-models
+  catalog; the relay injector needs a successful fetch; credential
+  reload needs user action). When all skipped, opencode read the
+  materialize base config `{$schema, provider, model}` and ran without
+  the built-in `llmsafespaces` MCP server until the first credential
+  reload. agentd now performs one unconditional empty-input `Apply`
+  before starting opencode (`ensureBootAgentConfig`), stamping the MCP
+  entry, admin prompt, and allowed dirs on every boot. Found while
+  verifying the 2026-08-15 stale-image incident on v0.15.5.
+- **Writer rebuilds no longer drop user-staged MCP servers** (found in
+  review of the above): the config writer captured only
+  provider/model/agent/mode from the existing config, so any rebuild
+  from a writer with no staged MCP source (boot normalize, pre-boot
+  relay, relay injector) silently deleted workspace-bound MCP servers
+  written by materialize (Epic 53) until the next credential reload.
+  The on-disk `mcp` section is now captured and re-emitted unless a
+  staged source supersedes it.
+
 ### Changed
 
 - **Consistent build version injection across every component**. All Go
@@ -41,7 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     rejected (implicit `:latest`). RuntimeEnvironment names still pass.
   - The workspace-service read path skips stored floating-tag values with
     a warning, so values written before validation existed cannot launch.
-  - Migration `000023` removes the seeded `base:latest` row from existing
+  - Migration `000024` (renumbered from 000023 after #734 took that slot) removes the seeded `base:latest` row from existing
     deployments (admin-customized values are preserved).
 
 ## [0.15.5] - 2026-08-14

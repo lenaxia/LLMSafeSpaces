@@ -1,4 +1,4 @@
--- Reverse of 000023: restore the pre-fix floating default when the row
+-- Reverse of 000024: restore the pre-fix floating default when the row
 -- is missing.
 --
 -- Rollback behavior note (accurate, 2026-08-15 review): on a rollback,

@@ -1,0 +1,88 @@
+# Worklog: 0662 DEK migration cleanup — dead CLI + stale primitives
+
+**Date:** 2026-08-11
+**Session:** Final code/data cleanup deferred by worklog 0662 Next-Steps #4 ("after the cut ships, this script can be deleted") and #3 (comment/primitive residue).
+**Status:** Complete
+**Depends on:** worklogs 0662 (migration script), 0673 (password-tier cut), migration 000014
+
+---
+
+## Objective
+
+The DEK password→server_kek migration is operationally complete: worklog 0673 cut the password tier (PR #635, merged), migration 000014 tightened `users.dek_source` to `('server_kek', 'passkey')`, and prod has zero password-tier rows. This session removes the dead `migrate-passkey-dek` CLI, the stale primitives/comments the cut left behind, and the orphan password-tier residue on the two surviving `user_keys` rows.
+
+## Work Completed
+
+### A. Dead code deletion
+- **`cmd/migrate-passkey-dek/`** — entire directory deleted (`main.go`, `main_test.go`). Sole consumer was the one-shot operator run, which is done. Removed two stale `.gitignore` entries (`/migrate-passkey-dek`, `migrate-passkey-dek`).
+- **`KeyStore` interface shrunk** (`pkg/secrets/key_service.go`): dropped `UpdateWrappedDEKRecovery` and `UpdateWrappedDEKAndSource` from the interface. Both were retained solely for the CLI; the cut removed all non-test callers.
+- **`PgKeyStore`** (`pkg/secrets/pg_key_store.go`): deleted both method bodies (~55 LOC).
+- **`dbKeyStoreAdapter`** (`api/internal/app/secrets_adapters.go`): deleted both adapter methods.
+- **8 test fakes updated** to satisfy the shrunk interface: `mockKeyStore`, `failingKeyStore`, `reloadE2EKeyStore`, `e2eKeyStore`, `testKeyStore`, `fakeKeyStore`, `realKeyStore`, `memKeyStore`. Removed orphaned `updateWithSourceCalled` field on `mockKeyStore` (was write-only).
+- **`GenerateRecoveryKey`** (`pkg/secrets/crypto.go`): deleted. Its sole non-test caller was the CLI; `TestRecoveryKeyFlow` was a full password-tier recovery integration test testing dead functionality and is also deleted.
+- **`WrapDEK` / `UnwrapDEK`** (`pkg/secrets/crypto.go`): deleted. **Correction to the handoff:** the claim that `root_key.go` uses these is wrong — `root_key.go` uses `DeriveKEKFromPassword`, not `WrapDEK`/`UnwrapDEK`. After the CLI is gone these had zero production callers (verified by grep across the tree). User decision: delete (zero prod callers). Tests deleted: `TestWrapUnwrapDEK_RoundTrip`, `TestWrapDEK_DifferentCiphertexts`, `TestUnwrapDEK_*` (3), `TestFullKeyWrappingFlow`, `TestPasswordChangeFlow`, `TestRecoveryKeyFlow` in `crypto_test.go`; `TestWrapDEK_InvalidKeySize`, `TestUnwrapDEK_EmptyInput`, `TestUnwrapDEK_NilInput`, `TestWrapUnwrapDEK_16ByteKey`, `TestWrapUnwrapDEK_24ByteKey` in `crypto_boundary_test.go`. `DeriveKEKFromPassword` is retained (sealed provider uses it).
+
+### B. Data hygiene migration
+- **`api/migrations/000023_user_keys_null_stale_legacy_columns.up.sql`** + mirror under `helm/migrations/`. Idempotent UPDATE nulling `salt`, `wrapped_dek_recovery`, `recovery_salt` on rows whose `users.dek_source` is `server_kek`/`passkey`. Fresh `InitializeUserKeysServerKEK` writes already set these NULL; this brings the two pre-existing prod rows in line with that invariant. Down file is a comment-only no-op (legacy bytes cannot be reconstructed post-re-wrap) per the `000014` convention.
+- Not applied to prod in this session — operator applies via the normal dbinit migration path on deploy.
+
+### C. Stale comment/code cleanup
+- **`COALESCE(u.dek_source, 'password')` → `'server_kek'`** in `pg_key_store.go` `GetUserKey`. The column is `NOT NULL DEFAULT 'server_kek'` post-000014 so the COALESCE is defensive, but the `'password'` literal was misleading.
+- **`CreateUserKey` doc** rewritten — dropped "password reset reinitializing" framing; kept the atomic-flip explanation.
+- **`RotationRow.DEKSource` field + password-tier exclusion comments** removed from `pkg/secrets/rotation.go`. User decision: drop (the only `RotationStore` impl, `cmd/rotate-kek/store.go`, is a stub returning `"not implemented"`; password rows are schema-impossible post-000014, so the upstream-filter contract documents filtering that no one implements and can never fire). Fixed two `rotation_test.go` references.
+- **Orphan doc comment** "TestIntegration_RecoveryKeyFullFlow tests the complete recovery scenario" in `integration_test.go` — the referenced test was deleted in the cut; the comment had landed on the following test. Removed.
+
+## Key Decisions
+
+- **Delete `WrapDEK`/`UnwrapDEK` rather than retain as generic primitives.** The handoff was self-contradictory ("keep them" vs "do NOT delete unless you confirm zero production callers"). Grep confirmed zero production callers post-CLI-removal; the `root_key.go` dependency the handoff cited does not exist. Rule 4/5 (no speculative generality, zero tech debt) → delete.
+- **Drop `RotationRow.DEKSource` rather than keep for forward-compat.** The field's only justification was a password-tier exclusion contract. Post-cut, password rows are schema-impossible (migration 000014 CHECK). The only store implementation is a stub. Keeping the field + comments would document a filter that no one implements and can never fire — speculative generality, Rule 4.
+- **Migration scope kept narrow.** Only nulls residue on the two prod rows. Did NOT drop the legacy columns themselves (`salt`, `wrapped_dek_recovery`, `recovery_salt`, `kek_salt`) — that needs a full reader audit and was explicitly out of scope per the handoff's section D.
+
+## Assumptions (stated and validated)
+
+1. **Prod is server-KEK-only.** Validated indirectly: migration 000014 is merged, worklog 0673 is marked Complete, deployed tag (per handoff) is post-cut. The cut's irreversibility comment (`000014.up.sql:6-8`) confirms the operator ran `migrate-passkey-dek` before deploying.
+2. **`WrapDEK`/`UnwrapDEK` have no production callers after CLI removal.** Validated by grep (`grep -n "WrapDEK\(|UnwrapDEK\(" --type go`): only `crypto.go` (defs) + tests. No `root_key.go` usage (handoff claim disproved).
+3. **`RotationStore` impl is a stub.** Validated by reading `cmd/rotate-kek/store.go:62-80` — every method returns `"not implemented: wire pgx for production use"` or nil.
+4. **`recInfo` / `kekInfo` constants stay.** Validated: still referenced by retained `DeriveKEKFromKey` tests (`crypto_test.go:105,109,127,131,145,149`).
+
+## Tests Run
+
+- `go build ./...` — pass
+- `go vet ./pkg/secrets/... ./api/internal/app/ ./api/internal/handlers/ ./api/internal/services/auth/ ./api/internal/services/sso/ ./cmd/workspace-agentd/` — clean (no output)
+- `go test -timeout 60s ./pkg/secrets/` — pass (15s)
+- `go test -timeout 120s ./api/internal/app/ ./api/internal/services/auth/ ./api/internal/services/sso/` — all pass
+- `go test -timeout 120s -run "TestE2E" ./api/internal/handlers/` — pass (69s)
+- `go test -timeout 120s -run "ReloadCredentials" ./cmd/workspace-agentd/` — pass (no matching tests, compile-only)
+- `golangci-lint` — not run in this session; CI gate runs it on PR.
+
+## Next Steps
+
+1. Open a PR from `chore/0662-dek-migration-cleanup` and let the AI reviewer + CI run.
+2. Operator applies migration 000023 to prod via the normal dbinit path on next deploy. Before/after verification: `SELECT user_id, salt IS NOT NULL, wrapped_dek_recovery IS NOT NULL, recovery_salt IS NOT NULL FROM user_keys;` — expect all three columns to read `f` post-migration.
+3. **Deferred (section D):** drop the legacy columns (`user_keys.salt`, `wrapped_dek_recovery`, `recovery_salt`, and possibly `kek_salt` on other tables) via a follow-up migration. Higher risk — needs a full audit of every reader (the `user_keys` INSERT/SELECT in `pg_key_store.go` still carries them; the columns must be dropped from the SQL at the same time). Do not undertake without explicit approval.
+
+## Files Modified
+
+- `cmd/migrate-passkey-dek/main.go` — deleted
+- `cmd/migrate-passkey-dek/main_test.go` — deleted
+- `.gitignore` — removed 2 stale entries
+- `pkg/secrets/key_service.go` — shrunk `KeyStore` iface (2 methods removed)
+- `pkg/secrets/pg_key_store.go` — deleted 2 methods; fixed `COALESCE` default; rewrote `CreateUserKey` doc
+- `pkg/secrets/crypto.go` — deleted `GenerateRecoveryKey`, `WrapDEK`, `UnwrapDEK`
+- `pkg/secrets/rotation.go` — dropped `RotationRow.DEKSource`; rewrote stale comments
+- `pkg/secrets/key_service_test.go` — removed 2 fake methods + orphaned field
+- `pkg/secrets/key_service_unhappy_test.go` — removed 2 fake methods
+- `pkg/secrets/crypto_test.go` — deleted 8 password/recovery/wrap-unwrap tests
+- `pkg/secrets/crypto_boundary_test.go` — deleted 5 wrap/unwrap boundary tests
+- `pkg/secrets/rotation_test.go` — removed 2 `DEKSource` references + stale comment
+- `pkg/secrets/integration_test.go` — removed orphan doc comment
+- `api/internal/app/secrets_adapters.go` — deleted 2 adapter methods
+- `api/internal/handlers/pod_bootstrap_e2e_test.go` — removed 2 fake methods
+- `api/internal/handlers/secrets_test_helpers_test.go` — removed 2 fake methods
+- `api/internal/handlers/user_provider_credentials_test.go` — removed 2 fake methods
+- `api/internal/services/auth/auth_e2e_secrets_test.go` — removed 2 fake methods
+- `api/internal/services/sso/sso_integration_test.go` — removed 2 fake methods
+- `cmd/workspace-agentd/reload_credentials_e2e_test.go` — removed 2 fake methods
+- `api/migrations/000023_user_keys_null_stale_legacy_columns.{up,down}.sql` — new
+- `helm/migrations/000023_user_keys_null_stale_legacy_columns.{up,down}.sql` — new (mirror)
+- `worklogs/NNNN_2026-08-11_0662-dek-cleanup.md` — this entry (added)

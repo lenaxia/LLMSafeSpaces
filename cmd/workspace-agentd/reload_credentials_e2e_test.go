@@ -135,12 +135,6 @@ func (reloadE2EKeyStore) CreateUserKey(_ context.Context, _ *secrets.UserKeyReco
 func (reloadE2EKeyStore) UpdateWrappedDEK(_ context.Context, _ string, _, _ []byte, _ int) error {
 	return nil
 }
-func (reloadE2EKeyStore) UpdateWrappedDEKAndSource(_ context.Context, _ string, _, _ []byte, _ int, _ string) error {
-	return nil
-}
-func (reloadE2EKeyStore) UpdateWrappedDEKRecovery(_ context.Context, _ string, _, _ []byte) error {
-	return nil
-}
 
 type reloadE2EDEKCache struct{ dek []byte }
 

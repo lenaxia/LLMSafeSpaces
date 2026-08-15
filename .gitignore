@@ -50,6 +50,7 @@ sdks/python/*.egg-info/
 sdks/go/live-test
 
 # Frontend build / dev artifacts
+node_modules/
 frontend/node_modules/
 frontend/dist/
 frontend/test-results/
@@ -75,7 +76,6 @@ controller/bin/
 # One entry per binary so the intent is explicit and the list mirrors cmd/.
 /mcp
 /migrate-kek
-/migrate-passkey-dek
 /redact
 /relay-proxy
 /relay-router
@@ -98,4 +98,3 @@ node_modules/.vite/
 go.sum.backup
 site/
 crd-doc-gen
-migrate-passkey-dek

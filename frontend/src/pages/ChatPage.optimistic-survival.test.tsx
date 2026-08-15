@@ -66,6 +66,7 @@ vi.mock("../providers/SessionActivityProvider", async () => {
     usePendingQuestionsForSession: () => [],
     usePendingPermissionsForSession: () => [],
     useClearSessionPendingPrompts: () => () => {},
+    useWorkspaceInputSnapshot: () => undefined,
     useSessionStatus: () => "idle",
     resolveSessionStatus: () => "idle",
     SessionActivityProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -81,7 +82,8 @@ vi.mock("../api/workspaces", () => ({
     renameSession: vi.fn().mockResolvedValue(undefined),
     markSessionSeen: vi.fn().mockResolvedValue(undefined),
     getSessions: vi.fn().mockResolvedValue([]),
-    abortSession: vi.fn().mockResolvedValue(undefined),
+    abortSession: vi.fn(),
+    requestInputSnapshot: vi.fn().mockResolvedValue(undefined),
   },
 }));
 

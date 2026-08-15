@@ -34,15 +34,6 @@ func (f *failingKeyStore) UpdateWrappedDEK(ctx context.Context, userID string, w
 	}
 	return nil
 }
-func (f *failingKeyStore) UpdateWrappedDEKAndSource(ctx context.Context, userID string, wrappedDEK []byte, salt []byte, keyVersion int, dekSource string) error {
-	if f.failOn == "update" {
-		return errors.New("db update failed")
-	}
-	return nil
-}
-func (f *failingKeyStore) UpdateWrappedDEKRecovery(ctx context.Context, userID string, wrappedDEKRecovery []byte, recoverySalt []byte) error {
-	return nil
-}
 
 type failingDEKCache struct {
 	failOn string

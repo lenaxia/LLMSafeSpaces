@@ -19,9 +19,11 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
+	agentoc "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -265,6 +267,85 @@ func TestEmitPendingInputRequests_Adapter_ListPendingError_NoPanic(t *testing.T)
 	assert.NotPanics(t, func() {
 		h.emitPendingInputRequests(context.Background(), "ws-1")
 	})
+}
+
+// TestEmitPendingInputRequests_Adapter_FetchFailure_MarkerOKFalse verifies
+// the production (adapter) path's ok-flag semantics (PR #852 review C1): a
+// ListPending failure — including a typed ErrPendingUnavailable from a
+// failed pod fetch — must mark the snapshot ok:false so clients keep their
+// existing pending state instead of committing an authoritative empty.
+func TestEmitPendingInputRequests_Adapter_FetchFailure_MarkerOKFalse(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.userBroker = eventbroker.NewUserEventBroker()
+	h.userBroker.RecordWorkspaceOwner("ws-1", "user-1")
+	h.state().SetWorkspaceConfig(context.Background(), "ws-1", wsstate.Config{})
+	h.adapter = &mockAdapter{
+		listPendingFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return nil, fmt.Errorf("GET /question returned 500: %w", agentoc.ErrPendingUnavailable)
+		},
+	}
+
+	userSub, _ := h.userBroker.SubscribeUser("user-1")
+	defer h.userBroker.UnsubscribeUser("user-1", userSub)
+
+	h.emitPendingInputRequests(context.Background(), "ws-1")
+
+	_ = recvWithTimeout(t, userSub, "agent.input.snapshot_begin")
+	marker := recvWithTimeout(t, userSub, "agent.input.snapshot_complete")
+	require.NotNil(t, marker.SnapshotOK, "adapter-path marker must carry snapshot_ok")
+	assert.False(t, *marker.SnapshotOK, "failed ListPending must not claim authoritative empty")
+}
+
+// TestEmitPendingInputRequests_Adapter_Success_MarkerOKTrue is the adapter
+// path's happy-path ok assertion (the legacy path has its own).
+func TestEmitPendingInputRequests_Adapter_Success_MarkerOKTrue(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.userBroker = eventbroker.NewUserEventBroker()
+	h.userBroker.RecordWorkspaceOwner("ws-1", "user-1")
+	h.state().SetWorkspaceConfig(context.Background(), "ws-1", wsstate.Config{})
+	h.adapter = &mockAdapter{
+		listPendingFn: func(_ context.Context, _, _, _ string) ([]session.InputRequest, error) {
+			return nil, nil
+		},
+	}
+
+	userSub, _ := h.userBroker.SubscribeUser("user-1")
+	defer h.userBroker.UnsubscribeUser("user-1", userSub)
+
+	h.emitPendingInputRequests(context.Background(), "ws-1")
+
+	_ = recvWithTimeout(t, userSub, "agent.input.snapshot_begin")
+	marker := recvWithTimeout(t, userSub, "agent.input.snapshot_complete")
+	require.NotNil(t, marker.SnapshotOK)
+	assert.True(t, *marker.SnapshotOK)
+}
+
+// TestRequestInputSnapshot_FiresFlight verifies the on-demand snapshot
+// endpoint emits begin → complete(ok) on the user stream (PR #852 review C3:
+// ChatPage needs a fresh flight when arming reconnect mode without an SSE
+// reconnect).
+func TestRequestInputSnapshot_FiresFlight(t *testing.T) {
+	env := newInputTestEnv(t)
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
+	env.setupPasswordWithT(t, "ws-1", "test-password")
+	env.handler.userBroker = eventbroker.NewUserEventBroker()
+	env.handler.userBroker.RecordWorkspaceOwner("ws-1", "user-1")
+
+	proxy := env.router.Group("/api/v1/workspaces/:id")
+	proxy.POST("/input-snapshot", env.handler.RequestInputSnapshot)
+
+	userSub, _ := env.handler.userBroker.SubscribeUser("user-1")
+	defer env.handler.userBroker.UnsubscribeUser("user-1", userSub)
+
+	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/input-snapshot", nil)
+	assert.Equal(t, http.StatusAccepted, w.Code)
+
+	begin := recvWithTimeout(t, userSub, "agent.input.snapshot_begin")
+	assert.NotEmpty(t, begin.SnapshotID, "begin marker must carry the flight ID")
+	complete := recvWithTimeout(t, userSub, "agent.input.snapshot_complete")
+	require.NotNil(t, complete.SnapshotOK)
+	assert.True(t, *complete.SnapshotOK)
+	assert.Equal(t, begin.SnapshotID, complete.SnapshotID, "begin and complete must share the flight ID")
 }
 
 // --- helpers ---

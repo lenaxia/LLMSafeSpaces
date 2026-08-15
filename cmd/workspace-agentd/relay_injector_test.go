@@ -17,6 +17,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -173,6 +174,106 @@ func TestStartRelayInjector_SkipsWhenPersonalKey(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	assert.False(t, killed, "KillOpenCode must not be called when user has personal key")
 	assert.False(t, writer.HasRelay(), "writer must not have relay when skipped")
+}
+
+// TestStartRelayInjector_RetriesTransientFetchErrors verifies that a transient
+// GET /provider failure (e.g. truncated response → decode EOF, observed in
+// production pods) is retried within the fetch deadline instead of
+// permanently skipping relay injection for the pod's lifetime. Before this
+// fix, one transient error left free-tier sessions routing direct-to-Zen,
+// which then failed with ModelUnavailableError.
+func TestStartRelayInjector_RetriesTransientFetchErrors(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent-config.json")
+	authPath := filepath.Join(dir, "auth.json")
+	require.NoError(t, os.WriteFile(authPath,
+		[]byte(`{"opencode":{"type":"api","key":"public"}}`), 0o600))
+
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&attempts, 1) == 1 {
+			// Truncated body — mimics the production "decode /provider:
+			// unexpected EOF" failure.
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"connected":["open`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{
+			"connected": ["opencode"],
+			"all": [
+				{"id":"opencode","models":{
+					"free-model": {"id":"free-model","name":"Free Model","cost":{"input":0,"output":0},"limit":{"context":100000,"output":10000}}
+				}}
+			]
+		}`))
+	}))
+	defer srv.Close()
+
+	writer := opencode.NewConfigWriter(cfgPath)
+	killed := make(chan struct{}, 1)
+	startRelayInjector(context.Background(), relayInjectorConfig{
+		RelayURL:          "https://relay.example.test/path",
+		OpenCodeBaseURL:   srv.URL,
+		OpenCodePassword:  "testpw",
+		AgentConfigPath:   cfgPath,
+		AuthJSONPath:      authPath,
+		AgentConfigWriter: writer,
+		HealthCheck:       func() bool { return true },
+		KillOpenCode:      func() { close(killed) },
+		FetchRetryDelay:   10 * time.Millisecond,
+		FetchDeadline:     2 * time.Second,
+	})
+
+	select {
+	case <-killed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("KillOpenCode was not called within 3s — transient fetch error was not retried")
+	}
+	assert.True(t, writer.HasRelay(), "writer must have relay after retry succeeds")
+	assert.GreaterOrEqual(t, atomic.LoadInt32(&attempts), int32(2), "fetch must have been retried")
+}
+
+// TestStartRelayInjector_FetchErrorDeadlineExhausted_Skips verifies the
+// give-up path: persistent fetch errors are retried until the deadline, then
+// the injector skips (bounded, no infinite loop, no kill).
+func TestStartRelayInjector_FetchErrorDeadlineExhausted_Skips(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "agent-config.json")
+	authPath := filepath.Join(dir, "auth.json")
+	require.NoError(t, os.WriteFile(authPath,
+		[]byte(`{"opencode":{"type":"api","key":"public"}}`), 0o600))
+
+	var attempts int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&attempts, 1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	writer := opencode.NewConfigWriter(cfgPath)
+	killed := make(chan struct{}, 1)
+	startRelayInjector(context.Background(), relayInjectorConfig{
+		RelayURL:          "https://relay.example.test/path",
+		OpenCodeBaseURL:   srv.URL,
+		OpenCodePassword:  "testpw",
+		AgentConfigPath:   cfgPath,
+		AuthJSONPath:      authPath,
+		AgentConfigWriter: writer,
+		HealthCheck:       func() bool { return true },
+		KillOpenCode:      func() { close(killed) },
+		FetchRetryDelay:   10 * time.Millisecond,
+		FetchDeadline:     200 * time.Millisecond,
+	})
+
+	// No kill, no relay — but the injector must have stopped (deadline).
+	select {
+	case <-killed:
+		t.Fatal("KillOpenCode must not be called when fetch never succeeds")
+	case <-time.After(500 * time.Millisecond):
+	}
+	assert.False(t, writer.HasRelay())
+	assert.GreaterOrEqual(t, atomic.LoadInt32(&attempts), int32(2), "errors must be retried before giving up")
 }
 
 // TestStartRelayInjector_WritesConfigAndKills verifies the full injection path:

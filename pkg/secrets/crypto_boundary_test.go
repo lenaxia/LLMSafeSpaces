@@ -39,33 +39,6 @@ func TestDeriveKEKFromKey_EmptyInfo(t *testing.T) {
 	}
 }
 
-func TestWrapDEK_InvalidKeySize(t *testing.T) {
-	// AES requires 16, 24, or 32 byte keys
-	shortKey := []byte("short")
-	dek := make([]byte, 32)
-
-	_, err := WrapDEK(shortKey, dek)
-	if err == nil {
-		t.Error("WrapDEK with invalid key size should fail")
-	}
-}
-
-func TestUnwrapDEK_EmptyInput(t *testing.T) {
-	kek := make([]byte, 32)
-	_, err := UnwrapDEK(kek, []byte{})
-	if err != ErrInvalidCiphertext {
-		t.Errorf("Expected ErrInvalidCiphertext for empty input, got: %v", err)
-	}
-}
-
-func TestUnwrapDEK_NilInput(t *testing.T) {
-	kek := make([]byte, 32)
-	_, err := UnwrapDEK(kek, nil)
-	if err != ErrInvalidCiphertext {
-		t.Errorf("Expected ErrInvalidCiphertext for nil input, got: %v", err)
-	}
-}
-
 func TestEncryptSecret_InvalidKeySize(t *testing.T) {
 	_, err := EncryptSecret([]byte("short"), []byte("plaintext"))
 	if err == nil {
@@ -122,43 +95,5 @@ func TestEncryptDecryptSecret_UnicodeData(t *testing.T) {
 	}
 	if !bytes.Equal(plaintext, pt) {
 		t.Error("Unicode round-trip failed")
-	}
-}
-
-func TestWrapUnwrapDEK_16ByteKey(t *testing.T) {
-	// AES-128
-	kek := make([]byte, 16)
-	copy(kek, []byte("1234567890123456"))
-	dek, _ := GenerateDEK()
-
-	wrapped, err := WrapDEK(kek, dek)
-	if err != nil {
-		t.Fatalf("WrapDEK with 16-byte key failed: %v", err)
-	}
-	unwrapped, err := UnwrapDEK(kek, wrapped)
-	if err != nil {
-		t.Fatalf("UnwrapDEK with 16-byte key failed: %v", err)
-	}
-	if !bytes.Equal(dek, unwrapped) {
-		t.Error("16-byte key round-trip failed")
-	}
-}
-
-func TestWrapUnwrapDEK_24ByteKey(t *testing.T) {
-	// AES-192
-	kek := make([]byte, 24)
-	copy(kek, []byte("123456789012345678901234"))
-	dek, _ := GenerateDEK()
-
-	wrapped, err := WrapDEK(kek, dek)
-	if err != nil {
-		t.Fatalf("WrapDEK with 24-byte key failed: %v", err)
-	}
-	unwrapped, err := UnwrapDEK(kek, wrapped)
-	if err != nil {
-		t.Fatalf("UnwrapDEK with 24-byte key failed: %v", err)
-	}
-	if !bytes.Equal(dek, unwrapped) {
-		t.Error("24-byte key round-trip failed")
 	}
 }

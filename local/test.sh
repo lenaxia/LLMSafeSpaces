@@ -169,6 +169,16 @@ kc -n "${NS}" get pvc "${PVC_NAME}" >/dev/null \
     || die "PVC ${PVC_NAME} (referenced by workspace) does not exist"
 ok "Workspace PVC ${PVC_NAME} bound"
 
+# Verify the live pod sets fsGroupChangePolicy=OnRootMismatch — the default
+# (Always) recursively chowns the entire PVC on every pod start, which stuck
+# workspace restarts for 5+ minutes on large PVCs (v0.15.4 incident).
+POD_NAME=$(kc -n "${NS}" get pods -l llmsafespaces.dev/workspace="${WORKSPACE_NAME}" -o jsonpath='{.items[0].metadata.name}')
+[[ -n "${POD_NAME}" ]] || die "no pod found for workspace ${WORKSPACE_NAME}"
+FSGROUP_POLICY=$(kc -n "${NS}" get pod "${POD_NAME}" -o jsonpath='{.spec.securityContext.fsGroupChangePolicy}')
+[[ "${FSGROUP_POLICY}" == "OnRootMismatch" ]] \
+    || die "pod ${POD_NAME} fsGroupChangePolicy=${FSGROUP_POLICY:-<unset>} — expected OnRootMismatch"
+ok "Pod fsGroupChangePolicy=OnRootMismatch"
+
 # -----------------------------------------------------------------------------
 # Test 4: Workspace reaches Active, opencode serve responds
 # -----------------------------------------------------------------------------
