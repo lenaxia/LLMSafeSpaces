@@ -16,11 +16,14 @@ on:
   workflow_dispatch:
 
 # Superseded runs on the same PR are cancelled instead of queueing.
-# Push runs (main/tags) are NEVER cancelled: an image push interrupted
-# mid-manifest-merge would leave an incomplete tag set on ghcr. With
-# cancel-in-progress PR-only, a rapid main push sequence serialises in
-# this group (newest pending replaces older pending) rather than piling
-# 20-job runs on top of each other.
+# Push semantics on main/tags (cancel-in-progress is PR-only):
+#   - a RUNNING run is never cancelled — an image push interrupted
+#     mid-manifest-merge would leave an incomplete tag set on ghcr;
+#   - a PENDING run is replaced by a newer push (intended newest-wins),
+#     so a rapid push sequence serialises instead of piling 20-job
+#     runs on top of each other. Consequence: an intermediate commit
+#     whose pending run was replaced never publishes sha-<commit>
+#     images — pin rollbacks by the surviving ts-<unix>/dev tags.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -235,16 +238,20 @@ jobs:
           name: coverage-profile
 
       # Base coverage is generated in a worktree at the merge-base
-      # commit. Two deliberate differences from the PR run in `test`:
+      # commit. Three deliberate differences from the PR run in `test`:
       #   - no -race: the race detector does not change coverage
       #     percentages, and skipping it roughly halves the base run.
       #   - -short kept: must select the same test set as the PR run
       #     for the delta to be apples-to-apples.
-      # The base run is best-effort (`|| true`): if a flaky base test
-      # fails, the comment degrades to "base unavailable" rather than
-      # failing the job (previously this could hard-fail the entire
-      # `test` job and block merge on a flake in code the PR didn't
-      # touch).
+      #   - exit-status gated: a base run that fails partway still
+      #     writes a PARTIAL coverage-base.out; computing a total from
+      #     it would understate base coverage and post an optimistic
+      #     green delta. A non-zero go test exit forces the degraded
+      #     "base unavailable" comment instead.
+      # Either failure mode (hard flake, partial profile) degrades the
+      # comment rather than failing the job (previously a hard base
+      # flake could fail the entire `test` job and block merge on code
+      # the PR didn't touch).
       - name: Generate base coverage at merge-base
         run: |
           set -euo pipefail
@@ -252,17 +259,25 @@ jobs:
           echo "Base: $base_sha"
 
           git worktree add /tmp/base-tree "$base_sha"
-          (cd /tmp/base-tree && \
+          base_test_ok=false
+          if (cd /tmp/base-tree && \
             go test -timeout 300s -short \
               -coverprofile=coverage-base.out \
               -covermode=atomic \
               -coverpkg=./... \
-              ./... 2>/dev/null) || true
+              ./... 2>/dev/null); then
+            base_test_ok=true
+          else
+            echo "Base test run failed (hard flake); using degraded comment."
+          fi
           # cover -func must run INSIDE the worktree: the base profile
           # references source files that may have been deleted in this
           # PR (cover needs the sources to resolve function boundaries).
-          base_total=$(cd /tmp/base-tree && go tool cover -func=coverage-base.out 2>/dev/null \
-            | awk '/^total:/ {print $3}' | tr -d '%') || true
+          base_total=""
+          if [ "$base_test_ok" = true ]; then
+            base_total=$(cd /tmp/base-tree && go tool cover -func=coverage-base.out 2>/dev/null \
+              | awk '/^total:/ {print $3}' | tr -d '%') || true
+          fi
           new_total=$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}' | tr -d '%')
 
           if [ -z "${base_total}" ]; then

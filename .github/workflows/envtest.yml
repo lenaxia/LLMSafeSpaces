@@ -28,10 +28,13 @@ on:
     - cron: '0 4 * * *'
   workflow_dispatch:
 
-# Superseded PR runs are cancelled; scheduled/main runs never are (see
-# the matching stanza in ci.yml for the rationale).
+# Superseded PR runs are cancelled; a RUNNING main-push run is never
+# cancelled. The nightly schedule gets its OWN group via the event-name
+# key: a *pending* run is replaced by any newer run joining the same
+# group even with cancel-in-progress: false, so a nightly queued behind
+# a long main-push run would otherwise be dropped by the next push.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
