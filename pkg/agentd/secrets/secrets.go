@@ -99,13 +99,10 @@ type Secret struct {
 	MetadataInvalid string `json:"-"`
 }
 
-// metadataInvalidWireKey is the reserved secrets.json / cache key for
-// the parse-verdict field. Namespaced so it cannot collide with a
-// legitimate metadata member key.
-const metadataInvalidWireKey = "metadata_invalid"
-
-// MarshalJSON emits the struct fields plus the reserved verdict key when
-// set, so cache round-trips preserve the skip decision.
+// MarshalJSON emits the struct fields plus the reserved "metadata_invalid"
+// verdict key when set, so cache round-trips preserve the skip decision.
+// The key is namespaced ("metadata_invalid") so it cannot collide with a
+// legitimate metadata member key; UnmarshalJSON reads the same tag.
 func (s Secret) MarshalJSON() ([]byte, error) {
 	type wireSecret struct {
 		Type      string            `json:"type"`
