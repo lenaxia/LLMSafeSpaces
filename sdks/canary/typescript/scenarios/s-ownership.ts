@@ -19,7 +19,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
     ws1Id = ws1.id;
 
     const [ok2, s1] = await r.assertNoError(
-      () => c1.secrets.create({ name: 'canary-ts-own-s1', type: 'env-secret', value: 'v' }),
+      () => c1.secrets.create({ name: 'canary-ts-own-s1', type: 'env-secret', value: 'v', metadata: { var_name: 'CANARY_TS_VAR' } }),
       'user1-create-secret');
     if (ok2 && s1) s1Id = s1.id;
 

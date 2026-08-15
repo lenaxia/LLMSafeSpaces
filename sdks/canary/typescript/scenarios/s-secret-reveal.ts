@@ -13,7 +13,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
   let sid: string | null = null;
   try {
     const [ok, s] = await r.assertNoError(
-      () => c.secrets.create({ name: 'canary-ts-reveal', type: 'env-secret', value: SECRET_VALUE }),
+      () => c.secrets.create({ name: 'canary-ts-reveal', type: 'env-secret', value: SECRET_VALUE, metadata: { var_name: 'CANARY_TS_VAR' } }),
       'create: no error');
     if (!ok || !s) return;
     sid = s.id;

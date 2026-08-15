@@ -17,7 +17,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
     wsId = ws.id;
 
     const [ok2, s] = await r.assertNoError(
-      () => c.secrets.create({ name: 'canary-ts-bind-s', type: 'env-secret', value: 'v' }),
+      () => c.secrets.create({ name: 'canary-ts-bind-s', type: 'env-secret', value: 'v', metadata: { var_name: 'CANARY_TS_VAR' } }),
       'create-secret: no error');
     if (!ok2 || !s) return;
     sid = s.id;

@@ -10,7 +10,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
   let sid: string | null = null;
   try {
     const [ok, s] = await r.assertNoError(
-      () => c.secrets.create({ name: 'canary-ts-audit', type: 'env-secret', value: 'v' }),
+      () => c.secrets.create({ name: 'canary-ts-audit', type: 'env-secret', value: 'v', metadata: { var_name: 'CANARY_TS_VAR' } }),
       'create-for-audit: no error');
     if (ok && s) sid = s.id;
 

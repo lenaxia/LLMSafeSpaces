@@ -17,7 +17,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
   });
 
   const [ok, secret] = await r.assertNoError(
-    () => c.secrets.create({ name: 'canary-rotate-test', type: 'env-secret', value: 'rotate-secret-value' }),
+    () => c.secrets.create({ name: 'canary-rotate-test', type: 'env-secret', value: 'rotate-secret-value', metadata: { var_name: 'CANARY_TS_VAR' } }),
     'create-secret: no error');
   if (!ok || !secret) return;
 

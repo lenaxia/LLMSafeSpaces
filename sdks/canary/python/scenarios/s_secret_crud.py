@@ -96,17 +96,18 @@ def run(run: Runner, cfg: Config) -> None:
 
     # N3: Empty name
     run.assert_error(
-        lambda: c.secrets.create(name="", type="env-secret", value="x"),
+        lambda: c.secrets.create(name="", type="env-secret", value="x", metadata={"var_name": "CANARY_PY_VAR"}),
         "create-empty-name: error",
     )
 
     # N4: Duplicate name
     s1, s2 = None, None
     try:
-        s1 = c.secrets.create(name="canary-py-dup", type="env-secret", value="v1")
+        s1 = c.secrets.create(name="canary-py-dup", type="env-secret", value="v1", metadata={"var_name": "CANARY_PY_VAR"})
         run.assert_error(
             lambda: c.secrets.create(
-                name="canary-py-dup", type="env-secret", value="v2"
+                name="canary-py-dup", type="env-secret", value="v2",
+                metadata={"var_name": "CANARY_PY_VAR"},
             ),
             "create-duplicate: ConflictError",
         )

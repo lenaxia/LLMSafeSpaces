@@ -18,7 +18,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
   });
 
   const [ok, secret] = await r.assertNoError(
-    () => c.secrets.create({ name: 'canary-pw-change-test', type: 'env-secret', value: 'pw-change-secret' }),
+    () => c.secrets.create({ name: 'canary-pw-change-test', type: 'env-secret', value: 'pw-change-secret', metadata: { var_name: 'CANARY_TS_VAR' } }),
     'create-secret: no error');
   if (!ok || !secret) return;
 
