@@ -40,8 +40,8 @@ func (x *xorRootProvider) Encrypt(_ context.Context, plaintext []byte) ([]byte, 
 	return out, nil
 }
 
-func (x *xorRootProvider) Decrypt(_ context.Context, ciphertext []byte) ([]byte, error) {
-	return x.Encrypt(context.Background(), ciphertext)
+func (x *xorRootProvider) Decrypt(ctx context.Context, ciphertext []byte) ([]byte, error) {
+	return x.Encrypt(ctx, ciphertext)
 }
 
 // seamStore implements the SecretStore + CredentialStore surface with
