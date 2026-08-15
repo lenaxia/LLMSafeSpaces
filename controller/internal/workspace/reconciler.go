@@ -9,6 +9,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -58,8 +59,23 @@ type WorkspaceReconciler struct {
 	// fetch decrypted credentials via POST /internal/v1/pod-bootstrap. Same
 	// value as --api-service-url (also used for OrgStatusClient). When empty,
 	// the bootstrap subcommand degrades gracefully (empty secrets, pod boots
-	// without credentials; live /v1/reload-secrets push handles delivery).
+	// without credentials; live /reload-secrets push handles delivery).
 	APIServiceURL string
+
+	// #863 agentd overlay delivery. When AgentdImage is set, buildPod pins a
+	// digest-addressed image volume into every workspace pod and the
+	// entrypoint verifies the binary's sha256 against the per-arch pins
+	// before exec. All three fields must be set together (validated at
+	// startup by validateAgentdDeliveryConfig). Empty AgentdImage = legacy
+	// mode (binary baked into runtimes/base; no volume, mount, or env).
+	AgentdImage             string
+	AgentdBinarySHA256AMD64 string
+	AgentdBinarySHA256ARM64 string
+
+	// Recorder emits Kubernetes events on the Workspace (agentd verify
+	// failures). Injected from mgr.GetEventRecorderFor() in production;
+	// a FakeRecorder in tests.
+	Recorder record.EventRecorder
 
 	// lastDeepStatus tracks the last time enrichAgentStatus was called per
 	// workspace. In-memory only — lost on controller restart (acceptable;

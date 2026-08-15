@@ -238,6 +238,10 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 		volumes = append(volumes, buildFreeModelsVolume())
 	}
 
+	// #863: pin the agentd image volume + RO mount + verify env pins.
+	// No-op in legacy mode (AgentdImage empty).
+	r.wireAgentdOverlay(&mainContainer, &volumes)
+
 	// Epic 51 S51.1: Runtime class resolution. Per-workspace opt-out
 	// (spec.runtimeClass) takes precedence; otherwise use the controller's
 	// DefaultRuntimeClass (typically "gvisor" in production multi-tenant).

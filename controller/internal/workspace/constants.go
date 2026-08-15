@@ -43,6 +43,12 @@ const (
 // entering recovery backoff.
 const pendingPhaseTimeout = 5 * time.Minute
 
+// agentdVerifyFailureRequeue (#863): cadence for re-reconciling a workspace
+// whose agentd entrypoint verification failed (exit 81/82). Slow on purpose —
+// the failure requires operator action (correct the pin or investigate
+// tampering); reconciling faster only re-reads the same terminal state.
+const agentdVerifyFailureRequeue = 5 * time.Minute
+
 // stuckScheduledPendingTimeout is how long a pod can remain Pending
 // despite being scheduled (PodScheduled=True) before the controller
 // declares it stuck and enters recovery. This catches node-level
