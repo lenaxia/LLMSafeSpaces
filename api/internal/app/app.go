@@ -550,8 +550,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			ErrFn: func(err error, msg string, kv ...any) { log.Error(msg, err, kv...) },
 		}
 		wfReconciler = &apiwf.Reconciler{
-			Store:        wfStore,
-			AgentdClient: &apiwf.HTTPAgentExecutor{Port: 4097},
+			Store: wfStore,
+			AgentdClient: &apiwf.HTTPAgentExecutor{
+				Port:             4097,
+				PasswordProvider: proxyHandler,
+			},
 			Activator: &apiwf.K8sWorkspaceActivator{
 				K8sClient: k8sClient,
 				Namespace: cfg.Kubernetes.Namespace,
@@ -568,8 +571,12 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				K8sClient: k8sClient,
 				Namespace: cfg.Kubernetes.Namespace,
 			},
-			AgentdClient: &apiwf.HTTPAgentExecutor{Port: 4097},
-			Logger:       engineLogger,
+			AgentdClient: &apiwf.HTTPAgentExecutor{
+				Port:             4097,
+				PasswordProvider: proxyHandler,
+			},
+			Logger:           engineLogger,
+			PasswordProvider: proxyHandler,
 		}
 		// Wire pod-IP resolver so reload-secrets can reach in-pod agentd.
 		// Without this the SecretsHandler returns 503 for every reload

@@ -3,16 +3,96 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
 
-func TestWorkflowExecute_InvalidJSON(t *testing.T) {
-	req := httptest.NewRequest("POST", "/v1/workflow/node/execute", strings.NewReader("invalid json"))
+// authedReq builds a request carrying the agentd Basic-auth header, the
+// credential every user-mux endpoint requires at entry.
+func authedReq(method, target, password string, body io.Reader) *http.Request {
+	req := httptest.NewRequest(method, target, body)
+	req.Header.Set("Authorization", "Basic "+basicAuth(password))
+	return req
+}
+
+const testAuthPassword = "test-pass"
+
+func TestWorkflowExecute_RequiresAuth(t *testing.T) {
+	body := `{"nodeId":"c1","nodeType":"condition","spec":{"conditions":[]},"input":{}}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/workflow/node/execute", strings.NewReader(body))
 	w := httptest.NewRecorder()
-	h := workflowExecuteHandler("test-pass")
+	workflowExecuteHandler(testAuthPassword)(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 without Authorization, got %d", w.Code)
+	}
+	if got := w.Header().Get("WWW-Authenticate"); got != `Basic realm="agentd"` {
+		t.Errorf("expected WWW-Authenticate challenge, got %q", got)
+	}
+}
+
+func TestWorkflowExecute_WrongPassword(t *testing.T) {
+	body := `{"nodeId":"c1","nodeType":"condition","spec":{"conditions":[]},"input":{}}`
+	req := authedReq(http.MethodPost, "/v1/workflow/node/execute", "wrong-pass", strings.NewReader(body))
+	w := httptest.NewRecorder()
+	workflowExecuteHandler(testAuthPassword)(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 with wrong password, got %d", w.Code)
+	}
+}
+
+func TestWorkflowExecute_ValidAuth(t *testing.T) {
+	body := `{"nodeId":"c1","nodeType":"condition","spec":{"conditions":[]},"input":{}}`
+	req := authedReq(http.MethodPost, "/v1/workflow/node/execute", testAuthPassword, strings.NewReader(body))
+	w := httptest.NewRecorder()
+	workflowExecuteHandler(testAuthPassword)(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 with valid credentials, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestWorkflowCancel_RequiresAuth(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/v1/workflow/node/cancel?nodeId=test-node", nil)
+	w := httptest.NewRecorder()
+	workflowCancelHandler(testAuthPassword)(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 without Authorization, got %d", w.Code)
+	}
+}
+
+func TestWorkflowCancel_WrongPassword(t *testing.T) {
+	req := authedReq(http.MethodPost, "/v1/workflow/node/cancel?nodeId=test-node", "wrong-pass", nil)
+	w := httptest.NewRecorder()
+	workflowCancelHandler(testAuthPassword)(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 with wrong password, got %d", w.Code)
+	}
+}
+
+func TestWorkflowDeleteSession_RequiresAuth(t *testing.T) {
+	req := httptest.NewRequest(http.MethodDelete, "/v1/workflow/session/delete?sessionId=ses_1", nil)
+	w := httptest.NewRecorder()
+	workflowDeleteSessionHandler(testAuthPassword)(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 without Authorization, got %d", w.Code)
+	}
+}
+
+func TestWorkflowDeleteSession_WrongPassword(t *testing.T) {
+	req := authedReq(http.MethodDelete, "/v1/workflow/session/delete?sessionId=ses_1", "wrong-pass", nil)
+	w := httptest.NewRecorder()
+	workflowDeleteSessionHandler(testAuthPassword)(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 with wrong password, got %d", w.Code)
+	}
+}
+
+func TestWorkflowExecute_InvalidJSON(t *testing.T) {
+	req := authedReq(http.MethodPost, "/v1/workflow/node/execute", testAuthPassword, strings.NewReader("invalid json"))
+	w := httptest.NewRecorder()
+	h := workflowExecuteHandler(testAuthPassword)
 	h(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d", w.Code)
@@ -21,9 +101,9 @@ func TestWorkflowExecute_InvalidJSON(t *testing.T) {
 
 func TestWorkflowExecute_InvalidNodeType(t *testing.T) {
 	body := `{"nodeId":"n1","nodeType":"unknown","spec":{},"input":{}}`
-	req := httptest.NewRequest("POST", "/v1/workflow/node/execute", strings.NewReader(body))
+	req := authedReq(http.MethodPost, "/v1/workflow/node/execute", testAuthPassword, strings.NewReader(body))
 	w := httptest.NewRecorder()
-	h := workflowExecuteHandler("test-pass")
+	h := workflowExecuteHandler(testAuthPassword)
 	h(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d", w.Code)
@@ -37,9 +117,9 @@ func TestWorkflowExecute_InvalidNodeType(t *testing.T) {
 
 func TestWorkflowExecute_Condition(t *testing.T) {
 	body := `{"nodeId":"c1","nodeType":"condition","spec":{"conditions":[{"id":"skip","expression":"input.skipped == true"}]},"input":{"skipped":true}}`
-	req := httptest.NewRequest("POST", "/v1/workflow/node/execute", strings.NewReader(body))
+	req := authedReq(http.MethodPost, "/v1/workflow/node/execute", testAuthPassword, strings.NewReader(body))
 	w := httptest.NewRecorder()
-	h := workflowExecuteHandler("test-pass")
+	h := workflowExecuteHandler(testAuthPassword)
 	h(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
@@ -53,9 +133,9 @@ func TestWorkflowExecute_Condition(t *testing.T) {
 
 func TestWorkflowExecute_ConditionOtherwise(t *testing.T) {
 	body := `{"nodeId":"c1","nodeType":"condition","spec":{"conditions":[{"id":"skip","expression":"input.skipped == true"}]},"input":{"skipped":false}}`
-	req := httptest.NewRequest("POST", "/v1/workflow/node/execute", strings.NewReader(body))
+	req := authedReq(http.MethodPost, "/v1/workflow/node/execute", testAuthPassword, strings.NewReader(body))
 	w := httptest.NewRecorder()
-	h := workflowExecuteHandler("test-pass")
+	h := workflowExecuteHandler(testAuthPassword)
 	h(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
@@ -69,9 +149,9 @@ func TestWorkflowExecute_ConditionOtherwise(t *testing.T) {
 
 func TestWorkflowExecute_ScriptSuccess(t *testing.T) {
 	body := `{"nodeId":"s1","nodeType":"script","spec":{"language":"python","handler":"def handler(input):\n    return {\"result\": input.get(\"x\", 0) + 1}"},"input":{"x":41}}`
-	req := httptest.NewRequest("POST", "/v1/workflow/node/execute", strings.NewReader(body))
+	req := authedReq(http.MethodPost, "/v1/workflow/node/execute", testAuthPassword, strings.NewReader(body))
 	w := httptest.NewRecorder()
-	h := workflowExecuteHandler("test-pass")
+	h := workflowExecuteHandler(testAuthPassword)
 	h(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
@@ -87,9 +167,9 @@ func TestWorkflowExecute_ScriptSuccess(t *testing.T) {
 
 func TestWorkflowExecute_ScriptFailure(t *testing.T) {
 	body := `{"nodeId":"s1","nodeType":"script","spec":{"language":"python","handler":"def handler(input):\n    raise ValueError('boom')"},"input":{}}`
-	req := httptest.NewRequest("POST", "/v1/workflow/node/execute", strings.NewReader(body))
+	req := authedReq(http.MethodPost, "/v1/workflow/node/execute", testAuthPassword, strings.NewReader(body))
 	w := httptest.NewRecorder()
-	h := workflowExecuteHandler("test-pass")
+	h := workflowExecuteHandler(testAuthPassword)
 	h(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200 (error in body), got %d", w.Code)
@@ -102,9 +182,9 @@ func TestWorkflowExecute_ScriptFailure(t *testing.T) {
 }
 
 func TestWorkflowCancel(t *testing.T) {
-	req := httptest.NewRequest("POST", "/v1/workflow/node/cancel?nodeId=test-node", nil)
+	req := authedReq(http.MethodPost, "/v1/workflow/node/cancel?nodeId=test-node", testAuthPassword, nil)
 	w := httptest.NewRecorder()
-	h := workflowCancelHandler()
+	h := workflowCancelHandler(testAuthPassword)
 	h(w, req)
 	if w.Code != http.StatusNoContent {
 		t.Errorf("expected 204, got %d", w.Code)
@@ -112,9 +192,9 @@ func TestWorkflowCancel(t *testing.T) {
 }
 
 func TestWorkflowCancel_MissingNodeID(t *testing.T) {
-	req := httptest.NewRequest("POST", "/v1/workflow/node/cancel", nil)
+	req := authedReq(http.MethodPost, "/v1/workflow/node/cancel", testAuthPassword, nil)
 	w := httptest.NewRecorder()
-	h := workflowCancelHandler()
+	h := workflowCancelHandler(testAuthPassword)
 	h(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d", w.Code)
