@@ -71,11 +71,65 @@ import (
 // Secret is the materialization-time representation of a credential.
 // Metadata is intentionally kept as a typed map to avoid leaking arbitrary
 // JSON shape into the materializer; unknown keys are ignored.
+//
+// WIRE COMPATIBILITY (2026-08-15 incident): the injection pipeline writes
+// mcp-server metadata per MATERIALIZE-CONTRACT.md with native JSON types
+// ("args": [...], "timeoutMs": 5000), while this struct historically
+// required map[string]string — one bound MCP server crash-looped every
+// workspace boot ("cannot unmarshal array into ... Secret.metadata").
+// UnmarshalJSON accepts BOTH shapes: string values pass through;
+// booleans/numbers/arrays/objects are carried JSON-encoded as strings
+// (exactly what the mcp staging branch's json.Unmarshal(argsStr) expects).
 type Secret struct {
 	Type      string            `json:"type"`
 	Name      string            `json:"name"`
 	Metadata  map[string]string `json:"metadata"`
 	Plaintext string            `json:"plaintext"`
+
+	// MetadataInvalid records why the metadata could not be normalized
+	// (non-object JSON, or a member that failed to encode). Materialize
+	// reports it per-entry instead of aborting the whole batch.
+	MetadataInvalid string `json:"-"`
+}
+
+// UnmarshalJSON implements the dual-shape metadata contract documented on
+// Secret. It never fails on metadata content — malformed metadata sets
+// MetadataInvalid so the entry can be skipped downstream with an accurate
+// reason rather than killing the file parse for every other secret.
+func (s *Secret) UnmarshalJSON(data []byte) error {
+	type wireSecret struct {
+		Type      string          `json:"type"`
+		Name      string          `json:"name"`
+		Metadata  json.RawMessage `json:"metadata"`
+		Plaintext string          `json:"plaintext"`
+	}
+	var w wireSecret
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	s.Type = w.Type
+	s.Name = w.Name
+	s.Plaintext = w.Plaintext
+
+	if len(w.Metadata) == 0 {
+		return nil
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(w.Metadata, &raw); err != nil {
+		s.MetadataInvalid = "metadata is not a JSON object: " + err.Error()
+		return nil
+	}
+	s.Metadata = make(map[string]string, len(raw))
+	for k, v := range raw {
+		var str string
+		if err := json.Unmarshal(v, &str); err == nil {
+			s.Metadata[k] = str
+			continue
+		}
+		// Non-string member: carry the raw JSON verbatim (trimmed).
+		s.Metadata[k] = string(v)
+	}
+	return nil
 }
 
 // Outcome describes what happened to a single secret.
@@ -420,6 +474,12 @@ func (m *Materializer) reset() error {
 // captured into Reason; the function never returns an error.
 func (m *Materializer) applyOne(s Secret) SecretResult {
 	r := SecretResult{Type: s.Type, Name: s.Name}
+
+	if s.MetadataInvalid != "" {
+		r.Outcome = OutcomeFailed
+		r.Reason = s.MetadataInvalid
+		return r
+	}
 
 	if err := validateName(s.Name); err != nil {
 		// api-key and llm-provider do not require a meaningful name.

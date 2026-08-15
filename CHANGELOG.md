@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Binding any MCP server crash-looped workspace boot.** The injection
+  pipeline writes mcp-server metadata per MATERIALIZE-CONTRACT.md with
+  native JSON types (`"args": [...]`, `"timeoutMs": 5000`), but the
+  materializer's `Secret.Metadata` required `map[string]string` — the
+  whole secrets.json parse aborted on the first bound server, taking
+  every other secret down with it (Init:Error loop). `Secret` now
+  decodes both shapes (complex values carried JSON-encoded as strings),
+  and malformed metadata is reported per-entry instead of failing the
+  file. Found on v0.15.6 the moment the platform opengist server got an
+  auto-apply rule — the first MCP binding this cluster ever had.
+
 ## [0.15.6] - 2026-08-15
 
 ### Changed
