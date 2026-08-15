@@ -763,9 +763,25 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       timestamp: ${{ steps.ts.outputs.timestamp }}
+      version: ${{ steps.v.outputs.version }}
     steps:
       - id: ts
         run: echo "timestamp=$(date -u +%s)" >> "$GITHUB_OUTPUT"
+      # Resolve a build version for CI image builds. Tag pushes use the
+      # semver (without the leading "v"); branch/PR/dispatch builds fall
+      # back to the short commit sha so no CI image reports a bare "dev"
+      # or "unknown" as its binary version.
+      - id: v
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          if [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="sha-${GITHUB_SHA:0:12}"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
 
   build-api:
     name: Build API (${{ matrix.platform }})
@@ -810,6 +826,10 @@ jobs:
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.API_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
           cache-from: type=gha,scope=api-${{ matrix.platform }}
           cache-to: type=gha,scope=api-${{ matrix.platform }},mode=max
+          build-args: |
+            VERSION=${{ needs.prepare.outputs.version }}
+            COMMIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
 
       - name: Export digest
         if: github.event_name != 'pull_request'
@@ -914,7 +934,9 @@ jobs:
           cache-from: type=gha,scope=controller-${{ matrix.platform }}
           cache-to: type=gha,scope=controller-${{ matrix.platform }},mode=max
           build-args: |
+            VERSION=${{ needs.prepare.outputs.version }}
             COMMIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
 
       - name: Export digest
         if: github.event_name != 'pull_request'
@@ -926,6 +948,7 @@ jobs:
       - name: Smoke-test controller binary
         run: |
           docker buildx build \
+            --build-arg VERSION=${{ needs.prepare.outputs.version }} \
             --build-arg COMMIT_SHA=${{ github.sha }} \
             -f controller/Dockerfile \
             --target builder \
@@ -1041,6 +1064,10 @@ jobs:
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.RELAY_ROUTER_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
           cache-from: type=gha,scope=relay-router-${{ matrix.platform }}
           cache-to: type=gha,scope=relay-router-${{ matrix.platform }},mode=max
+          build-args: |
+            VERSION=${{ needs.prepare.outputs.version }}
+            COMMIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
 
       - name: Export digest
         if: github.event_name != 'pull_request'
@@ -1144,6 +1171,10 @@ jobs:
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.RELAY_PROXY_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
           cache-from: type=gha,scope=relay-proxy-${{ matrix.platform }}
           cache-to: type=gha,scope=relay-proxy-${{ matrix.platform }},mode=max
+          build-args: |
+            VERSION=${{ needs.prepare.outputs.version }}
+            COMMIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
 
       - name: Export digest
         if: github.event_name != 'pull_request'
@@ -1247,6 +1278,10 @@ jobs:
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.RUNTIME_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
           cache-from: type=gha,scope=runtime-${{ matrix.platform }}
           cache-to: type=gha,scope=runtime-${{ matrix.platform }},mode=max
+          build-args: |
+            VERSION=${{ needs.prepare.outputs.version }}
+            COMMIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
 
       - name: Export digest
         if: github.event_name != 'pull_request'

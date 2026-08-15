@@ -29,16 +29,12 @@ import (
 	"github.com/lenaxia/llmsafespaces/controller/internal/webhooks"
 	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
+	"github.com/lenaxia/llmsafespaces/pkg/version"
 )
 
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
-
-	// ldflags injection targets — set by the build system.
-	version   = "dev"
-	commitSHA = "unknown"
-	buildTime = "unknown"
 )
 
 func init() {
@@ -154,7 +150,7 @@ func main() {
 	apiInternalToken := os.Getenv("LLMSAFESPACES_INTERNAL_TOKEN")
 
 	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
-	setupLog.Info("starting controller", "version", version, "commit", commitSHA, "built", buildTime)
+	setupLog.Info("starting controller", "version", version.Version, "commit", version.CommitSHA, "built", version.BuildTime)
 
 	// Register custom metrics with the controller-runtime metrics registry
 	// (not prometheus.DefaultRegisterer). controller-runtime v0.15+ serves

@@ -39,9 +39,13 @@ jobs:
 
       - name: Build and load images
         run: |
-          docker build --network host -f api/Dockerfile -t llmsafespaces/api:$IMAGE_TAG .
-          docker build --network host -f controller/Dockerfile -t llmsafespaces/controller:$IMAGE_TAG .
-          docker build --network host -f runtimes/base/Dockerfile -t llmsafespaces/runtime-base:$IMAGE_TAG .
+          # Stamp build versions so the e2e cluster's healthz/platform-info
+          # surfaces report the e2e build identity (semver-style tag name
+          # without a leading "v") instead of the "unknown" default.
+          E2E_VERSION="${{ env.IMAGE_TAG }}"
+          docker build --network host --build-arg VERSION="$E2E_VERSION" --build-arg COMMIT_SHA="${{ github.sha }}" -f api/Dockerfile -t llmsafespaces/api:$IMAGE_TAG .
+          docker build --network host --build-arg VERSION="$E2E_VERSION" --build-arg COMMIT_SHA="${{ github.sha }}" -f controller/Dockerfile -t llmsafespaces/controller:$IMAGE_TAG .
+          docker build --network host --build-arg VERSION="$E2E_VERSION" --build-arg COMMIT_SHA="${{ github.sha }}" -f runtimes/base/Dockerfile -t llmsafespaces/runtime-base:$IMAGE_TAG .
 
           # Retag runtime-base with the ghcr.io/lenaxia/ prefix so the
           # RuntimeEnvironment validating webhook's image allow-list accepts
