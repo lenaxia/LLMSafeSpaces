@@ -263,17 +263,7 @@ func (w *ConfigWriter) loadAllowedDirs() {
 	if json.Unmarshal(data, &patterns) != nil {
 		return
 	}
-	seen := make(map[string]struct{}, len(patterns))
-	for _, p := range patterns {
-		if p == "" {
-			continue
-		}
-		if _, dup := seen[p]; dup {
-			continue
-		}
-		seen[p] = struct{}{}
-		w.allowedDirs = append(w.allowedDirs, p)
-	}
+	w.allowedDirs = sanitizeAllowedDirs(patterns)
 	// The side-car patterns are exactly what the first rebuild injects
 	// into mode.permissions.external_directory; track them so a later
 	// AllowedDirs Apply can strip what the writer rendered.
