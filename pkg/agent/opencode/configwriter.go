@@ -471,7 +471,7 @@ func (w *ConfigWriter) rebuildLocked() error {
 		agent := make(map[string]json.RawMessage)
 		if len(w.agentRaw) > 0 {
 			_ = json.Unmarshal(w.agentRaw, &agent)
-				// JSON null nils even a pre-initialized map — re-arm before
+			// JSON null nils even a pre-initialized map — re-arm before
 			// the prompt merge writes into it (nil-map panic guard).
 			if agent == nil {
 				agent = map[string]json.RawMessage{}
@@ -518,7 +518,7 @@ func (w *ConfigWriter) rebuildLocked() error {
 		mode := make(map[string]json.RawMessage)
 		if len(w.modeRaw) > 0 {
 			_ = json.Unmarshal(w.modeRaw, &mode)
-				// JSON null nils even a pre-initialized map — re-arm before
+			// JSON null nils even a pre-initialized map — re-arm before
 			// the permissions merge writes into it (nil-map panic guard).
 			if mode == nil {
 				mode = map[string]json.RawMessage{}
