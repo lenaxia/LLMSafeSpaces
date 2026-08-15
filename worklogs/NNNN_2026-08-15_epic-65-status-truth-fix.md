@@ -1,50 +1,71 @@
-# Epic-65 status truth fix: status lines, README-LLM contract section, Relay Config Subsystem rewrite
+# Worklog: Epic-65 status truth fix (PR #858)
 
-## Session Overview
+**Date:** 2026-08-15
+**Session:** Docs-only truth sweep of epic-65 status claims and the agent-session-contract / relay-config sections of README-LLM.md, driven through 10 posted AI review rounds
+**Status:** Complete
 
-- **PR:** #858 (`docs/epic-65-status` → `main`)
-- **Scope:** docs-only truth sweep of epic-65 status claims and the agent-session-contract / relay-config sections of `README-LLM.md`
-- **Duration:** 2026-08-15 04:31Z → 08:28Z (~4h, 10 commits, 11 review rounds)
-- **Trigger:** found while planning follow-up work against the board during the 2026-08-15 incident review — the epic-65 README still said `Status: Definition (not yet in implementation)` although US-65.1–65.7 merged 2026-08-09→2026-08-11 UTC (PRs #691–#727).
+---
 
-## What changed
+## Objective
 
-1. **Epic README status line** (`design/stories/epic-65-agent-session-contract/README.md`): `Definition` → `Implementation — US-65.1–65.7 merged (PRs #691–#727, 2026-08-09→2026-08-11 UTC); US-65.8 in progress (history path done; SSE, OpenAPI/SDKs, mobile remain).` Also the `pkg/agent/agent.go` seam reference `:31` → `:91` (`AgentRuntime`'s current line).
-2. **README-LLM contract section** (`:370/:372`): "in definition" → "in implementation; US-65.8 in progress"; `pkg/session/` is not "to be created" (10 source files exist).
-3. **README-LLM `:398/:400`** — stale future tense ("when the contract lands, those hacks are deleted") replaced with per-hack current truth, each attribution verified against git history and the tree:
-   - patch-stripping behavior removed **pre-epic** (2026-05-26, `3c0b1d52`); US-65.5 deleted only the stale `proxy_filter_test.go` artifact
-   - legacy history parsing off the live request path since **US-65.4** (#716 wired the adapter unconditionally; #721 made `GetHistory` adapter-first — tree comment `proxy_handlers.go:356` "Adapter path (US-65.4)"); survives only as an adapter-nil fallback
-   - relay-config fragilities contained behind `Apply` in **US-65.1**
-   - question/permission **event translation on the SSE path remains live** behind the opencode dialect (`proxy_events.go:196` guard; dialect unconditionally wired at `app.go:192`) pending the adapter SSE migration
-   - frontend opencode-shape SSE parsing goes when US-65.8 lands
-4. **Relay Config Subsystem section** rewritten from the deleted pre-`Apply` writer world (`cmd/workspace-agentd/agent_config_writer.go`, `newAgentConfigWriter`/`SetRelay`/`SetProviders`/`Rebuild`) to the `agent.AgentConfigWriter` seam:
-   - writers table: `ConfigWriter.Apply(AgentConfigInput)` (`pkg/agent/opencode/configwriter.go`); boot normalize (#857), pre-boot relay, relay injection, **credential reloads that stage llm-provider secrets** (Apply gated by `formatted != nil`, `secrets.go:809` — `FormatProviders` returns nil for provider-less batches)
-   - boot sequence: materialize (`Materialize` (resets tmpfs, then re-applies) → `EnrichProviders` → `FlushProviders` → `applyMCPServersToConfig` (Epic 53) → `applyWorkspaceConfig` → conditional `applyRelayConfigPreBoot`) → `ensureBootAgentConfig` empty-input normalize → injector (~T+7s) with the `HasRelay()` short-circuit (`skipped_pre_boot_applied`)
-   - reload sequence: `Lock` → `Materialize` → **cache write (`:783`)** → `EnrichProviders` → `FormatProviders` → `Apply` → `Unlock`; step 2 gates the restart: llm-provider batches → `StageCredentials` (no reboot); reboot only for `env-secret`/`api-key` batches (`shouldRestart`), via `makeSessionAwareRestartDecision` (immediate-if-idle else deferred, bounded)
-   - `#443` cache paragraph corrected: the cache is written right after `Materialize` succeeds so it survives later-step (`FormatProviders`/`Apply`) 500s
-   - `#852` correctly scoped to the injector's kill path only (reload's session-aware deferral predates it)
-5. **Stories index** (`design/stories/README.md:89`): epic-65 row "Definition only" → "In implementation" with the merge window.
-6. **PR-body discipline:** body kept in sync with the diff each round (squash-merge message defaults to title+body — round-2's wrong date would have been re-enshrined).
+While planning follow-up work during the 2026-08-15 incident review, the epic-65 README still said `Status: Definition (not yet in implementation)` although US-65.1–65.7 merged 2026-08-09→2026-08-11 UTC (PRs #691–#727). Fix every stale status claim of that class the sweep touches — and nothing the reviews can't verify against the tree.
 
-## Review-round history (the institutional-memory part)
+## Work Completed
 
-| Round | Blocking finding | Resolution |
-|---|---|---|
-| 1 | replacement date 2026-08-13 false (merges were 08-09→08-11 UTC); 2 other stale sites unswept; "US-65.8 pending" imprecise; correction-history parenthetical | dates fixed; README-LLM:370/372 + stories index swept; "in progress (history path done; …)" wording; parenthetical dropped |
-| 2 | `:400` stale future tense ("when the contract lands") contradicted the corrected header 30 lines up | rewritten with per-hack attribution |
-| 3 | "backend hacks deleted in US-65.5" overstated — history parsing + question/permission translation still in tree | scoped to live request path (later rounds refined further) |
-| 4 | question/permission translation is NOT adapter-nil fallback — it runs live on the SSE event path (dialect-guarded); relay-config attribution over-swept | live-dialect wording; per-hack attribution split |
-| 5 | (canary red herring: S-RATE-LIMIT 429-body failure is pre-existing on main — #861's fix; also main's NNNN sentinel from #852 broke repolint briefly, fixed by #865) | n/a — no doc change |
-| 6 | history live-path removal was **US-65.4** (#716/#721), not US-65.5; linked Relay Config Subsystem section still documented the deleted pre-`Apply` writer | attribution fixed; whole subsystem section rewritten |
-| 7 | `#852` mis-scoped to reload restart; pre-boot relay runs in the **materialize process**, not as agentd boot step; cache-write arrow misplaced vs `FormatProviders` | all three corrected |
-| 8 | cache write precedes `FormatProviders` (design intent: survives later-step failure); M1–M4 minors (injector skip clause, no `ModelSelection` caller, all 3+1 pre-boot-relay conditions, `makeSessionAwareRestartDecision` + `EnrichProviders`) | arrows + adjacent `#443` paragraph; **all minors fixed same pass** (strategy change: address everything, not just blocking, to stop round-promotion) |
-| 9/10 | reload restart presented as unconditional — `shouldRestart` gates to env-secret/api-key batches; table "every credential reload" over-broad; boot `EnrichProviders` missing; phantom explicit `reset()` step | restart gating + `StageCredentials` path; table scoped; enrich added; "Materialize(batch) (resets tmpfs, then re-applies)" |
-| 11 | worklog mandatory (README-LLM:777–793; no triviality exemption; 3h56m/10 commits/10 rounds) — all technical content verified | this file |
+### Docs changes (all claims verified against `origin/main` with file:line evidence)
 
-**Drifts surfaced for the codebase (beyond docs):** the provider-less reload batch drops the entire `Apply` including MCP staging (tracked in #860); `stripVerboseQuery`/openapi `verbose` residue vs US-65.5's done-when; US-65.6 PartType repolint rule absent; stale `app.go:202-203` comment; `proxy_input.go` REST endpoints still on the dialect; stories index rows for epics 53/63/64/66 still say "Definition only".
+1. **Epic README status line** — `Implementation — US-65.1–65.7 merged (PRs #691–#727, 2026-08-09→2026-08-11 UTC); US-65.8 in progress (history path done; SSE, OpenAPI/SDKs, mobile remain)`; seam reference `pkg/agent/agent.go:31` → `:91`.
+2. **README-LLM contract section** — "in definition" → "in implementation; US-65.8 in progress"; `pkg/session/` no longer "to be created" (4 non-test source files: `part.go`, `event.go`, `message.go`, `session.go`).
+3. **README-LLM:398/:400** — stale future tense replaced with per-hack current truth: patch-stripping behavior removed pre-epic (2026-05-26, `3c0b1d52`), US-65.5 deleted only the `proxy_filter_test.go` artifact; legacy history parsing off the live path since US-65.4 (#716 wired the adapter, #721 made `GetHistory` adapter-first), surviving only as an adapter-nil fallback; relay-config fragilities contained behind `Apply` in US-65.1; question/permission **SSE event translation remains live** behind the opencode dialect (`proxy_events.go:196`, dialect wired at `app.go:192`); frontend flat-shape SSE parsing goes when US-65.8 lands.
+4. **Relay Config Subsystem section** — rewritten from the deleted pre-`Apply` writer (`cmd/workspace-agentd/agent_config_writer.go`, `newAgentConfigWriter`/`SetRelay`/`SetProviders`/`Rebuild`) to the `agent.AgentConfigWriter` seam world: writers table (Apply gated by `formatted != nil`, `secrets.go:809`), boot sequence (materialize with `EnrichProviders` → conditional pre-boot relay inside the materialize process → `ensureBootAgentConfig` empty-input normalize (#857) → injector with `HasRelay()` short-circuit), reload sequence (`Materialize` (resets tmpfs first) → cache write (`:783`) → enrich → format → `Apply` (`:840`) → unlock; restart gated by `shouldRestart` to env-secret/api-key batches, llm-provider batches take `StageCredentials` without reboot).
+5. **Stories index row 89** — "Definition only" → "In implementation" with the merge window.
+6. **PR body** — re-synced with the final diff (it becomes the squash-merge message).
 
-## Verification
+### Review history (10 posted reviews 04:40Z→09:43Z, plus the self-description review of the first worklog that prompted this rewrite)
 
-- Every code claim in the rewritten sections was re-verified against `origin/main` with file:line evidence (the AI reviewer independently re-verified each round; round 11: "No factual error remains in the diff").
-- Docs-only: no tests affected; full CI green on the final commit except the pre-existing S-RATE-LIMIT canary (fails on main; fix is open PR #861).
-- Merge-window timestamps cross-checked via squash-merge committer dates in the pre-reseed history (`git log v0.14.4`) and `gh pr view` — the skeptical pass's lone refutation (timezone non-conversion) was itself rejected.
+| # | Blocking finding → resolution |
+|---|---|
+| 1 | date 2026-08-13 false; 2 stale sites unswept; "US-65.8 pending" imprecise; correction-history parenthetical → dates fixed, sweep, "in progress" wording, parenthetical dropped |
+| 2 | `:400` stale future tense ("when the contract lands") contradicted the corrected header → per-hack rewrite |
+| 3 | "backend hacks deleted in US-65.5" overstated → scoped to live request path |
+| 4 | question/permission translation is live (dialect-guarded), not adapter-nil fallback; relay attribution over-swept; PR body carried the wrong date → split per hack, body fixed |
+| 5 | history removal was US-65.4 not US-65.5; the linked subsystem section still documented the pre-`Apply` writer → attribution fixed, section rewritten |
+| 6 | #852 mis-scoped to the reload restart; pre-boot relay runs in the materialize process; cache-write arrow misplaced → all three fixed |
+| 7 | cache write precedes `FormatProviders` (design intent: survives later-step 500s); minors M1–M4 → arrows + `#443` paragraph; **all minors fixed same pass** (strategy change to stop round-promotion) |
+| 8 | restart presented as unconditional — `shouldRestart` gates to env-secret/api-key batches; writers-table "every credential reload" over-broad; boot `EnrichProviders` missing; phantom explicit `reset()` step → restart gating + `StageCredentials` path, table scoped, enrich added, reset folded into `Materialize` |
+| 9 | worklog mandatory (README-LLM:777–793; the earlier required/waived contradiction in the round-8-era reviews was adjudicated: no triviality exemption) → first worklog written |
+| 10 | that worklog's self-description carried the PR's own error class (stale CI claim, mis-citation, wrong counts) → this rewrite |
+
+### CI events on this PR (all main-side, none caused by the docs diff)
+
+- `TestLive_Worklogs_NoDuplicates` failed on three commits: #852's unnumbered `NNNN_` sentinel on main (06:37–06:52Z, fixed by #865), then a double sentinel from #734 + #861 pre-renumber (failures at 08:59:53Z on `97e25f87` and 09:12:40Z on `b2cd8b47`); the renumber bot cleared main at 09:08:15Z (`e4f33bc9`) and later runs pass.
+- S-RATE-LIMIT canary: failed on **main's** runs pre-#861 (04:52/06:52/08:12Z); #861 merged 08:32:00Z; the canary never ran on this docs-only branch (and is `continue-on-error`, `ci.yml:423`).
+- Settings canary (`schema-version: equals 10: got 11`): broken on main by #856's schemaVersion bump (merged 09:01:33Z) — fails this PR's 09:50Z SDK run and every open PR's until the canary expectation is reconciled; follow-up needed on main.
+
+## Key Decisions
+
+- **Address every finding, not just blocking ones.** Rounds 1–6 fixed only the blocking item; minors were promoted to blocking next round. From round 7 on, minors landed in the same pass — round 8's whole review was "verified ✓" except one item.
+- **Verify every new sentence against the tree before pushing.** Each rewrite adds fresh review surface; claims were checked against `origin/main` line numbers pre-push from round 6 on.
+- **The first worklog (09:12:51Z) violated both rules** — its CI paragraph was stale at write time (claimed the never-run canary was the exception; #861 had merged 40m prior; the actual failures were main-side sentinel races), plus a mis-citation (#860 tracks US-65.9, not this drift — the provider-less-reload `Apply` skip is now tracked in **#868**, filed this session), a wrong file count ("10 source files"; actual: 4 non-test, 11 with tests), and round-count drift (10 posted reviews, not 11; the extra row described CI events, not a review). This entry is the correction — kept as a full rewrite rather than an appended note because the erroneous predecessor never merged.
+- **Truth-fix scope discipline:** out-of-scope staleness (stories index rows for epics 53/62/63/64, epic-66's own README) left for follow-up per review precedent; not folded in.
+
+## Blockers
+
+None. (Transient: main-side sentinel/canary races above — all resolved or continue-on-error.)
+
+## Tests Run
+
+Docs-only change — no unit/integration/e2e applicable (all CI test suites pass on the final commit). Full CI observations recorded above with root causes.
+
+## Next Steps
+
+1. #868 — provider-less reload batch skips `Apply` (MCP staging lost, file absent until restart); fix + regression test.
+2. Reconcile the settings canary's `schemaVersion == 10` expectation with #856's bump to 11 (currently red on main's PR runs).
+3. Truth-sweep follow-ups: stories index rows epics 53/62/63/64; epic-66 README (#725 merged); `stripVerboseQuery` + `openapi.yaml:694,730` `verbose` residue vs US-65.5 done-when; US-65.6 PartType repolint rule; stale `app.go:202-203` comment; `proxy_input.go` REST endpoints off the dialect; delete the adapter-nil legacy fallbacks (Rule 5).
+
+## Files Modified
+
+- `design/stories/epic-65-agent-session-contract/README.md`
+- `README-LLM.md`
+- `design/stories/README.md`
+- `worklogs/NNNN_2026-08-15_epic-65-status-truth-fix.md` (this file)
