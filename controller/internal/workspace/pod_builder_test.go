@@ -557,3 +557,26 @@ func TestPodBuilder_WorkspaceDirsInit_NoGitInit(t *testing.T) {
 
 // Silence "imported and not used" if any test above is removed.
 var _ = metav1.ObjectMeta{}
+
+// TestPodBuilder_FSGroupChangePolicy_OnRootMismatch verifies the pod
+// security context sets fsGroupChangePolicy: OnRootMismatch.
+//
+// Without it, kubelet defaults to "Always" and recursively chowns the
+// ENTIRE PVC on every pod start — even when ownership already matches.
+// For workspace PVCs with hundreds of thousands of files, this adds
+// minutes to every suspend/resume and pod restart. OnRootMismatch makes
+// kubelet skip the recursion when the volume root already has the right
+// group (the case for every restart of an existing workspace).
+func TestPodBuilder_FSGroupChangePolicy_OnRootMismatch(t *testing.T) {
+	ws := newWorkspaceForPodBuilder(t)
+	r := reconcilerFor(t)
+
+	pod, err := r.buildPod(context.Background(), ws)
+	require.NoError(t, err)
+
+	require.NotNil(t, pod.Spec.SecurityContext, "pod security context must be set")
+	require.NotNil(t, pod.Spec.SecurityContext.FSGroupChangePolicy,
+		"fsGroupChangePolicy must be set explicitly")
+	assert.Equal(t, corev1.FSGroupChangeOnRootMismatch, *pod.Spec.SecurityContext.FSGroupChangePolicy,
+		"must be OnRootMismatch — OnWait/Always chowns every file on every pod start")
+}
