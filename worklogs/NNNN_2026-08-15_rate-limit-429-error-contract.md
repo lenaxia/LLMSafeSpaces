@@ -36,7 +36,7 @@ Every other error emitter in the API uses `{"error": "<string>"}` — `workspace
 **Consumer impact (why the string shape is correct, not just conventional):**
 - Go SDK `parseError` (`sdks/go/client.go:177-187`) decodes `Error string json:"error"` — an object fails to decode, falling through to an empty/generic message. `IsRateLimit(err)` still worked (status-based), but `APIError.Message` was degraded.
 - Frontend `ApiClientError` tests mock `{error: "rate limited", retryAfter: 10}` — string shape.
-- Python/TS canaries don't assert the 429 body shape (verified: `s_rate_limit.py` asserts only status codes).
+- Python canary doesn't assert the 429 body shape (status codes only). The TS canary asserted it leniently (any-typed `hasField`) — the same masking pattern as the Go duplicate; fixed to string-typed `hasErrorField` in this PR.
 
 ### Earlier failures explained (validated, already fixed on main)
 
@@ -59,7 +59,7 @@ Every other error emitter in the API uses `{"error": "<string>"}` — `workspace
 
 1. **Fix the middlewares, not the canary's `HasErrorField`.** The string-typed `"error"` field is the API-wide contract (every handler, the s-error-format canary P5, the Go SDK, the frontend). The object shape in exactly two middlewares was the defect.
 2. **Body carries `limit` + `retryAfter`, drops `code`/`details`.** Matches `email.go` (`error`+`limit`) and `dev_preview.go` (`error`+`retryAfter`) precedents; `code` is redundant with HTTP 429; reset timestamp remains in `X-RateLimit-Reset`. Added `Retry-After` header per RFC 6585/7231 since the value is now computed anyway.
-3. **`retryAfter` = ceil(window seconds)**, consistent with `X-RateLimit-Reset` = now + window in both middlewares.
+3. **`retryAfter` derives from the error's `Details["reset"]` when present** (token bucket ≈ now+1s; fixed/sliding = now+TTL), falling back to the full window; clamped ≥1s. Per-route (review-sanctioned simplification) uses the full route window. Prevents default-strategy 429s advertising a 60s wait for a ~1s refill.
 
 ---
 

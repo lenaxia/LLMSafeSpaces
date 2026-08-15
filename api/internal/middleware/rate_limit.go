@@ -136,7 +136,7 @@ func RateLimitMiddleware(rl interfaces.RateLimiterService, log pkginterfaces.Log
 				// strategy) to wait 60s when the bucket refills in ~1s.
 				now := time.Now().Unix()
 				resetUnix := now + int64(window.Seconds())
-				if r, ok := apiErr.Details["reset"].(int64); ok && r > now {
+				if r, ok := apiErr.Details["reset"].(int64); ok && r >= now {
 					resetUnix = r
 				}
 				retryAfter := int(resetUnix - now)

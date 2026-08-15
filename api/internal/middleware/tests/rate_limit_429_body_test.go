@@ -21,8 +21,9 @@ import (
 
 // TestRateLimitMiddleware_429BodyContract pins the 429 response body to the
 // API-wide 429 error contract: {"error": "<string>", "limit": <int>, "retryAfter":
-// <int seconds>}. The other 429 emitters (email.go, dev_preview.go,
-// workspace_access.go) emit "error" as a string; the Go SDK's parseError and
+// <int seconds>}. The other 429 emitters (email.go, dev_preview.go) emit
+// "error" as a string, as do the non-429 string-error emitters
+// (workspace_access.go, org_guard.go); the Go SDK's parseError and
 // the frontend ApiClientError both decode it as a string. The object shape
 // {"error": {code, message, details}} silently breaks both consumers and the
 // s-error-format canary contract ("all error values are strings"). (Some
