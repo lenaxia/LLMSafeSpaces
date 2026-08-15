@@ -25,7 +25,7 @@ Rules:
 | opencode (g25) | G25 — secret value field logged unredacted | `api/internal/middleware/logging.go`, `api/internal/middleware/tests/logging_test.go`, `api/internal/server/router.go` | In Progress | 2026-07-11 |
 | opencode (#751/#752 gaps) | Real-fixture 1.18.10 tests + Stop→Ensure cycle test (PR #808 follow-up) | `api/internal/handlers/sse_billing_e2e_test.go`, `api/internal/services/sse/tracker_regression_test.go` | In Progress | 2026-08-13 |
 | opencode (session d3e35405) | PR #810: remove git init + health watchdog + error surfacing. Review fixes pushed (`c1174368`), CI running. | `controller/internal/workspace/pod_builder.go`, `controller/internal/workspace/pod_builder_test.go`, `cmd/workspace-agentd/healthz_cache.go`, `cmd/workspace-agentd/healthz_cache_test.go`, `cmd/workspace-agentd/server.go`, `api/internal/errors/errors.go`, `api/internal/handlers/proxy.go`, `api/internal/handlers/proxy_handlers.go`, `api/internal/handlers/proxy_terminal_events_test.go`, `frontend/src/hooks/useChatStream.ts`, `frontend/src/hooks/useChatStream.test.ts`, `frontend/src/pages/ChatPage.tsx`, `frontend/src/components/chat/ChatHistoryErrorBanner.tsx`, `frontend/src/api/types.ts`, `sdks/*` | CI running | 2026-08-13 |
-| opencode (false-banner fix) | Fix false "Session was interrupted" auto-aborts + relay-injector transient-fetch skip. Overlaps PR #810's `ChatPage.tsx` claim — expect merge conflict, will rebase. | `api/internal/handlers/proxy_input.go` (+test), `api/internal/types/sse_event.go`, `cmd/workspace-agentd/main.go`, `cmd/workspace-agentd/relay_injector.go` (+tests), `cmd/workspace-agentd/session_aware_restart_test.go`, `frontend/src/providers/SessionActivityProvider.tsx` (+test), `frontend/src/pages/ChatPage.tsx`, `frontend/src/pages/ChatPage.*.test.tsx` (mock-only one-liners) | Approved (PR #852 — AI reviewer APPROVE after 7 rounds; NOT merged per instruction) | 2026-08-14 |
+
 
 
 ---
@@ -53,6 +53,7 @@ Agents waiting to work on files currently held by an active claim. When the bloc
 
 | Completed | Agent | What | Commit |
 |-----------|-------|------|--------|
+| 2026-08-15 | opencode (false-banner fix) | PR #852 MERGED (squash `0c445521`): false "Session was interrupted" auto-abort fixes F1-F5 + 9 review rounds (adapter ok-semantics, flight IDs, session-aware relay kill, injector retry, N4). Sole CI fail at merge: pre-existing S-RATE-LIMIT canary (documented). | `0c445521` |
 | 2026-07-11 | opencode (g-batch) | Code-fixable batch — G6/G41, G21, G42, G44, G46, G47 (PR [#543](https://github.com/lenaxia/LLMSafeSpaces/pull/543), pending review) | (pending) |
 | 2026-07-11 | opencode (g28) | G28 — reclassify as Accepted + invariant test (PR [#541](https://github.com/lenaxia/LLMSafeSpaces/pull/541), pending review) | `7518ecf1` |
 | 2026-07-11 | opencode (g36) | G36 — workspace secrets cleanup on deletion (PR [#540](https://github.com/lenaxia/LLMSafeSpaces/pull/540), merged) | `f3043835` |
