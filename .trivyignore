@@ -54,3 +54,12 @@ KSV-0053
 # not an over-grant. The rule also lists services/endpoints/ingresses
 # which we do NOT grant (F1.3.1 removed them). Accepted.
 KSV-0056
+
+# DS-0002 — no USER in cmd/workspace-agentd/Dockerfile.
+# The image is never executed: it exists to be mounted as a read-only
+# image volume (KEP-4639) in workspace pods, and its single file is
+# verified by sha256 before exec from the workspace container (which
+# runs as its own non-root user per pod securityContext). FROM scratch
+# has no passwd database to name a user with; a USER directive would be
+# cargo cult. Re-triage if this image ever gains an entrypoint.
+DS-0002 exp:2027-08-15
