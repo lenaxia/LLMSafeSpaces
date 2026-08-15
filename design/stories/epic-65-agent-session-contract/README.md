@@ -1,6 +1,6 @@
 # Epic 65: Agent Session Contract — Decouple the Platform from opencode
 
-**Status:** Implementation — US-65.1 through US-65.7 merged (PRs #691–#727, 2026-08-13); US-65.8 (frontend migration) pending. *(Status line corrected 2026-08-15; it previously claimed "Definition (not yet in implementation)" well after the stories landed.)*
+**Status:** Implementation — US-65.1–65.7 merged (PRs #691–#727, 2026-08-09→2026-08-11 UTC); US-65.8 in progress (history path done; SSE, OpenAPI/SDKs, mobile remain).
 **Created:** 2026-08-09
 **Priority:** High — eliminates the single largest source of hacks and jury-rigs in the codebase; unblocks mobile-first-class UX and multi-agent viability
 **Depends On:** The existing `pkg/agent/opencode/` seam (`AgentRuntime` + `Dialect`, folded into `Adapter` by US-65.3), Epic 30 (Unified Credential Model — `FormatProviderConfig` stays).

@@ -367,9 +367,9 @@ llmsafespaces/
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Agent Session Contract (Epic 65 — in definition)
+### Agent Session Contract (Epic 65 — in implementation; US-65.8 in progress)
 
-The platform is decoupling from opencode via a **platform-owned session contract** (`pkg/session/`, to be created) behind a single **adapter seam** (`pkg/agent.Adapter`). This is the single most important architectural change in progress. Full design: [`design/0049_2026-08-09_agent-session-contract.md`](design/0049_2026-08-09_agent-session-contract.md). Epic: [65](design/stories/epic-65-agent-session-contract/README.md).
+The platform is decoupling from opencode via a **platform-owned session contract** (`pkg/session/`) behind a single **adapter seam** (`pkg/agent.Adapter`). This is the single most important architectural change in progress. Full design: [`design/0049_2026-08-09_agent-session-contract.md`](design/0049_2026-08-09_agent-session-contract.md). Epic: [65](design/stories/epic-65-agent-session-contract/README.md).
 
 **Three first-class surfaces consume one contract:**
 
