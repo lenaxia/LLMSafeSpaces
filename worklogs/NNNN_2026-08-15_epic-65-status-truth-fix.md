@@ -1,7 +1,7 @@
 # Worklog: Epic-65 status truth fix (PR #858)
 
 **Date:** 2026-08-15
-**Session:** Docs-only truth sweep of epic-65 status claims and the agent-session-contract / relay-config sections of README-LLM.md, driven through sixteen posted AI review rounds (04:40Z→11:51Z)
+**Session:** Docs-only truth sweep of epic-65 status claims and the agent-session-contract / relay-config sections of README-LLM.md, driven through seventeen posted AI review rounds (04:40Z→12:10Z)
 **Status:** Complete
 
 ---
@@ -21,7 +21,7 @@ While planning follow-up work during the 2026-08-15 incident review, the epic-65
 5. **Stories index row 89** — "Definition only" → "In implementation" with the merge window.
 6. **PR body** — re-synced with the final diff (it becomes the squash-merge message).
 
-### Review history (16 posted reviews, 04:40Z→11:51Z, timestamps UTC — complete as of this revision's push)
+### Review history (17 posted reviews, 04:40Z→12:10Z, timestamps UTC — complete as of this revision's push)
 
 | # | Posted | Blocking finding → resolution |
 |---|---|---|
@@ -40,7 +40,8 @@ While planning follow-up work during the 2026-08-15 incident review, the epic-65
 | 13 | 10:57 | exact counts: `b2cd8b47`'s Test failure listed **both** sentinels (not #861's alone); **seven** branch canary failures (adds `b805edbc` 08:02:20Z); **five** main runs pre-fix (adds 06:21/06:22) → e174a929 |
 | 14 | 11:19 | e174a929 froze the self-description at d663ad9b (twelve-count, no row 13); round-13's line-39 "six" half-addressed; line-60 CI claim forward-dated → d103183f (rows 13–14 added, counts/mechanism corrected, CI claims evidence-backed) |
 | 15 | 11:39 | row-12 "seven" collided with row 13's "adds b805edbc" arithmetic; mechanism split inverted; three-draft undercount; body's "12 posted review rounds" stale → 9f53ab4b |
-| 16 | 11:51 | 9f53ab4b froze the count at fourteen (no row 15 — fifteen were posted before its push); line-53 needed five drafts; mechanism tally 1× stale + 3× transcription (← reviews 11, 12, 14) + 1× forward-dating; line-62 predecessor pointer → this revision |
+| 16 | 11:51 | 9f53ab4b froze the count at fourteen (no row 15 — fifteen were posted before its push); line-53 needed five drafts; mechanism tally 1× stale + 3× transcription (← reviews 11, 12, 14) + 1× forward-dating; line-62 predecessor pointer → 87bf52f6 |
+| 17 | 12:10 | 87bf52f6 kept "All five" (six violating drafts — 9f53ab4b established by review 16 pre-push); Tests Run named `d103183f` as predecessor instead of the actual parent `9f53ab4b` (both transcribed from review text) → this revision |
 
 ### CI events on this PR (all main-side, none caused by the docs diff)
 
@@ -50,9 +51,9 @@ While planning follow-up work during the 2026-08-15 incident review, the epic-65
 
 ## Key Decisions
 
-- **Address every finding, not just blocking ones.** The early reviews (1–6) fixed only the blocking item; minors were promoted to blocking next round. From review 7's M1–M4 minors on, minors landed in the same pass — reviews 8–10 were "verified ✓" except one item each; reviews 11–16 carried multiple findings (all worklog self-description).
+- **Address every finding, not just blocking ones.** The early reviews (1–6) fixed only the blocking item; minors were promoted to blocking next round. From review 7's M1–M4 minors on, minors landed in the same pass — reviews 8–10 were "verified ✓" except one item each; reviews 11–17 carried multiple findings (worklog self-description, plus review 15's PR-body count).
 - **Verify every new sentence against the tree before pushing.** Each rewrite adds fresh review surface; claims were checked against `origin/main` line numbers pre-push from review 5 on. The same discipline applies to CI claims — check per-**job** conclusions across the branch's runs, not run-level conclusions, memory, **or a review's suggested wording**: of the CI-claim failures, one was stale context (33c23e34), three were transcriptions of the reviews' own incorrect text (a182d916 ← review 11's fix-wording; d663ad9b ← review 12's instructions; d103183f ← review 14's instruction text), and one was forward-dating (e174a929's line 60) — re-derive from logs, don't copy from review text.
-- **All five worklog drafts to date violated these rules.** `33c23e34` (09:12:51Z): stale CI paragraph, the #860 mis-citation (#860 tracks US-65.9; the provider-less-reload `Apply` skip is now tracked in **#868**, filed this session), wrong file count. `a182d916` (09:55:40Z): "canary never ran on this branch" — transcribed from review 11's incorrect text; seven runs had failed. `d663ad9b` (10:29:11Z): "six runs" (its twelve-review count was correct at write time; the 13th review posted 10:57:47Z). `e174a929` (10:59:50Z): twelve-count frozen after review 13 posted; round-13's line-39 half-addressed; line-60 CI claim forward-dated. `d103183f` (11:21:48Z): row-12 "seven" and the mechanism tally, both from review 14's instruction text rather than re-derived provenance. Each correction supersedes its predecessor in place because no predecessor merged.
+- **All seven worklog drafts to date violated these rules.** `33c23e34` (09:12:51Z): stale CI paragraph, the #860 mis-citation (#860 tracks US-65.9; the provider-less-reload `Apply` skip is now tracked in **#868**, filed this session), wrong file count. `a182d916` (09:55:40Z): "canary never ran on this branch" — transcribed from review 11's incorrect text; seven runs had failed. `d663ad9b` (10:29:11Z): "six runs" (its twelve-review count was correct at write time; the 13th review posted 10:57:47Z). `e174a929` (10:59:50Z): twelve-count frozen after review 13 posted; round-13's line-39 half-addressed; line-60 CI claim forward-dated. `d103183f` (11:21:48Z): row-12 "seven" and the mechanism tally, both from review 14's instruction text rather than re-derived provenance. `9f53ab4b` (11:41:15Z): fourteen-count frozen (fifteen posted pre-push), no row 15, "All four" undercount, fabricated e174a929 attribution, line-62 predecessor mis-pointer. `87bf52f6` (11:54:51Z): "All five" undercount and the wrong predecessor named (`d103183f` for `9f53ab4b`), both transcribed from review 16's text. Each correction supersedes its predecessor in place because no predecessor merged.
 - **Truth-fix scope discipline:** out-of-scope staleness (stories index rows for epics 53/62/63/64, epic-66's own README) left for follow-up per review precedent; not folded in.
 
 ## Blockers
@@ -61,7 +62,7 @@ None. (Transient: main-side sentinel/canary races above — all resolved or cont
 
 ## Tests Run
 
-Docs-only change — no unit/integration/e2e applicable. CI evidence as of this revision's push: predecessor head `d103183f`'s check-runs are green on every required check — both Test suites (`-short` + full race), Lint, Gitleaks, Trivy, govulncheck, pkg/secrets integration, SDK contract tests, all arch builds, coverage delta — verified via the commit's check-runs API immediately before this push; this revision changes only this file. The SDK canary job (`continue-on-error`, `ci.yml:423`) was cancelled on `d103183f`'s run by the subsequent push; its last completed run (`e174a929`) is red only on the settings scenario, from #856's `SchemaVersion` bump (merged 09:01:33Z; only the Go canary was updated) — pre-existing on main, affecting every open PR; the rate-limit scenario passes post-#861.
+Docs-only change — no unit/integration/e2e applicable. CI evidence as of this revision's push, from the check-runs API of the actual predecessor head `87bf52f6` (`git rev-parse HEAD~1`, re-derived not transcribed): both Test suites (`-short` + full race), Frontend, Lint, Gitleaks, Trivy, govulncheck, pkg/secrets integration, SDK Contract Tests, the `review` job, and the amd64/arm64 API/Controller/Frontend/Relay builds completed **success**; **Build Runtime Base (linux/arm64) failed** on its docker build-push step (flake-class — same Dockerfile builds green on amd64 and on prior runs; superseded by this revision's fresh run); the SDK canary, Runtime Base (amd64), and coverage jobs were in progress at write time. For completed-run references: `d103183f` is the last head with every required check green; its SDK canary was cancelled by the subsequent push, and the last completed SDK run (`e174a929`) is red only on the settings scenario — #856's `SchemaVersion` bump (merged 09:01:33Z; only the Go canary was updated), pre-existing on main and visible on other open PRs (e.g. #859); the rate-limit scenario passes post-#861. The SDK job is `continue-on-error` (`ci.yml:423`).
 
 ## Next Steps
 
