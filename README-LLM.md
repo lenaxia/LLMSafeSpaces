@@ -395,9 +395,9 @@ The platform is decoupling from opencode via a **platform-owned session contract
 4. Cost/usage fields are display-only. Billing is cgroup-based.
 5. Diff text is authoritative (`Patch string`), not hunk structs.
 
-**The AgentConfigWriter seam (US-65.1):** opencode's config-merge quirks (no hot reload, `OPENCODE_CONFIG` always-wins, `disabled_providers` relay injection) move behind `Apply(AgentConfigInput) (restartRequired bool, err error)`. Platform code reacts to `restartRequired` without knowing why.
+**The AgentConfigWriter seam (US-65.1):** opencode's config-merge quirks (no hot reload, `OPENCODE_CONFIG` always-wins, `disabled_providers` relay injection) have moved behind `Apply(AgentConfigInput) (restartRequired bool, err error)`. Platform code reacts to `restartRequired` without knowing why.
 
-**What this replaces:** the patch-part stripping (`?verbose`), opencode-shape history parsing, inline question/permission translation, and the relay-config fragilities documented in [Relay Config Subsystem](#relay-config-subsystem). When the contract lands, those hacks are deleted.
+**What this replaces:** the patch-part stripping (`?verbose`), opencode-shape history parsing, inline question/permission translation, and the relay-config fragilities documented in [Relay Config Subsystem](#relay-config-subsystem). The backend hacks were deleted in US-65.5 (proxy filter, history parsing, question/permission translation); the remaining opencode-shape SSE parsing in the frontend goes when US-65.8 lands.
 
 **When working on agent-integration code, ask:** *"Does this line need to know the agent is opencode?"* If yes, it belongs in `pkg/agent/opencode/`, not in a handler, service, or controller. See [Rule 12](#12-containment-before-abstraction-external-dependency-coupling).
 
