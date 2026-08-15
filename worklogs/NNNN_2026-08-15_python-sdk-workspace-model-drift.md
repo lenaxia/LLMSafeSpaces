@@ -35,7 +35,7 @@ Close #867 fully: `workspaces.list()` crashed with `TypeError: ... unexpected ke
 
 ## Tests Run
 
-- `pytest sdks/python/tests/` — 85/85 pass (sync round-trips, async round-trip twins for the duplicated async_client.py parse paths, unknown-field rejection test)
+- `pytest sdks/python/tests/` — 87/87 pass (10 new: 2 sync round-trips, 2 async round-trips, 1 unknown-field rejection, 1 SecretResponse sync, 1 SecretResponse async, +2 pre-existing counts) (sync round-trips, async round-trip twins for the duplicated async_client.py parse paths, unknown-field rejection test)
 - Red/green mutation check on `devPreviewEnabled` — fails pre-fix, passes post-fix
 - `py_compile` both touched Python files; `yaml.safe_load` on openapi.yaml
 
@@ -47,8 +47,8 @@ The CI canary advanced past s_secret_crud's metadata fix to reveal `SecretRespon
 
 ### Round 5: bindings/env-vars twin parity (review findings #5/#6)
 
-- `s_secret_bindings` (py+ts): asserted `id`; the API's `BoundSecret` emits `secretId` (`pkg/secrets/types.go:170-178`) — the Go SDK passes only because its type remaps the tag. Fixed both twins to `secretId`.
-- `s_env_vars` (py+ts): asserted the raw var name; the API stores/returns mangled secret names `<wsId>-env-<lowercased_var>` (`workspace_env.go:121,185-193`), empirically confirmed by the Go twin's CI-passing suffix check. Fixed both twins to `endswith("-env-canary_var")` per Go-twin parity.
+- `s_secret_bindings` (py+ts): asserted `id`; the API's `BoundSecret` emits `secretId` (`pkg/secrets/types.go:170-178`) — the Go SDK passes only because its type remaps the tag. Fixed both twins to `secretId`, and the TS SDK's `getBindings` return type (`client.ts:218`) to match.
+- `s_env_vars` (py+ts): asserted the raw var name; the API stores/returns mangled secret names `<wsId>-env-<lowercased_var>` (`workspace_env.go:121,185-193`), empirically confirmed by the Go twin's CI-passing suffix check. Fixed both twins to `endsWith/endswith("-env-canary_var")` per Go-twin parity.
 
 ### Round 6: TS bootstrap + DEK parity (2b01d700 follow-through)
 
@@ -77,10 +77,10 @@ None for this PR's diff. Open convergence risk: the TS canary section's first-ev
 ## Files Modified
 
 - sdks/python/llmsafespaces/types.py
-- sdks/python/tests/test_client.py
+- sdks/python/tests/test_client.py, sdks/python/tests/test_async_client.py
 - sdks/openapi.yaml
 - sdks/canary/python/scenarios/s_ws_crud.py, s_ws_status.py, s_secret_crud.py, s_secret_reveal.py, s_secret_audit.py, s_secret_bindings.py, s_env_vars.py, s_ownership.py, s_rate_limit.py, s_ws_quota.py, d_account_recover.py, d_change_password.py, d_key_rotate.py
-- sdks/canary/typescript/scenarios/*.ts (35 files: import repoint), s-secret-{crud,reveal,audit,bindings}.ts + s-env-vars.ts + s-ownership.ts (jwtLogin), s-ws-status.ts (phase relaxation), s-rate-limit.ts (strict 429 body check)
+- sdks/canary/typescript/scenarios/*.ts (35 files: import repoint), s-secret-{crud,reveal,audit,bindings}.ts + s-env-vars.ts + s-ownership.ts (jwtLogin), s-ws-status.ts (phase relaxation), s-rate-limit.ts (strict string-typed 429 body check from #861's branch, plus 8→12 burst attempts for Python-twin parity in this PR's round 7)
 - sdks/typescript/src/types.ts, sdks/typescript/src/client.ts
 - sdks/go/types.go
 - worklogs/NNNN_2026-08-15_python-sdk-workspace-model-drift.md (this file)

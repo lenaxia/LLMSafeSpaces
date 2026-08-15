@@ -95,8 +95,6 @@ def run(r: Runner, cfg: Config) -> None:
             lambda: c2.sessions.ensure(ws1_id), "user2-ensure-session-user1: error"
         )
 
-        # N6: Bindings route uses secrets handler → ErrWorkspaceNotOwned → 404
-        # (different from workspace routes which return 403)
         s, _ = raw_do(
             "GET",
             f"{cfg.api_url}/api/v1/workspaces/{ws1_id}/bindings",

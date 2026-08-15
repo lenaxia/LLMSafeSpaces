@@ -43,9 +43,6 @@ async function run(r: Runner, cfg: Config): Promise<void> {
       r.assert(l2.items.some(i => i.id === ws2Id), 'user2-list: W2 present');
     }
 
-    // Validated: workspace routes return 403 (ForbiddenError), not 404.
-    // The bindings route goes through the secrets handler which maps
-    // cross-user access to 404 (ErrWorkspaceNotOwned).
     await r.assertError(() => c2.workspaces.get(ws1Id!), 'user2-get-user1-ws: 403 Forbidden');
     await r.assertError(() => c2.workspaces.delete(ws1Id!), 'user2-delete-user1-ws: error');
     await r.assertError(() => c2.workspaces.getStatus(ws1Id!), 'user2-status-user1-ws: 403');
