@@ -66,6 +66,10 @@ The CI canary advanced past s_secret_crud's metadata fix to reveal `SecretRespon
 
 First-ever full Python section run reached scenario 18/19 with everything green through `s_ownership`; `s_email_reset` then failed on `login: unexpected status: got 429` — the accumulated JWT logins from the six converted scenarios share the per-IP login bucket (10/min). The scenario's contract is the 200-vs-403 email-verification semantics, so the login now retries on 429 (up to 7 attempts, 10s apart — one bucket refill).
 
+### Round 9: MCP canary bootstrap
+
+With Python fully green and the TS section's first-ever execution also fully green, the job reached the final MCP section — never executed before either — and failed on `go run ./sdks/canary/mcp/` from the workspace root: the MCP canary is its own Go module (`sdks/canary/mcp/go.mod`), invisible to the root module. Fixed to the Go-canary pattern: `working-directory: sdks/canary/mcp` + `go run .`.
+
 ## Blockers
 
 None for this PR's diff. Open convergence risk: the TS canary section's first-ever CI execution may surface further twin drift (as the Python section's did); each is the same deterministic, source-verifiable class addressed iteratively here.
