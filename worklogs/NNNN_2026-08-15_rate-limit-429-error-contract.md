@@ -41,7 +41,7 @@ Every other **429** emitter in the API uses `{"error": "<string>"}` — `email.g
 ### Earlier failures explained (validated, already fixed on main)
 
 - **#647 (2026-08-04) `P2: no 429 after 30 rapid login attempts`** — transient; P2 passed on all later runs (2026-08-11, 2026-08-14). Message also drifted from the code (loop is 60 attempts, message said 30) — fixed.
-- **#734 (2026-08-11) `N1: beyond limit returns 429` (s-ws-quota)** — that day the scenario ran with `LLMSAFESPACES_MAX_WORKSPACES_PER_USER=10` wired; the skip behavior ("Go canary quota test skips when env var not set") landed on main via `20fa474a` (#810); the scenario now skips when the env var is absent, and the 2026-08-14 `main` run confirms (`PASS ws-quota: skipped`). No action needed.
+- **#734 (2026-08-11) `N1: beyond limit returns 429` (s-ws-quota)** — that day the scenario ran with `LLMSAFESPACES_MAX_WORKSPACES_PER_USER=10` wired; the skip behavior ("Go canary quota test skips when env var not set") landed on main via PR #810; the scenario now skips when the env var is absent, and the 2026-08-14 `main` run confirms (`PASS ws-quota: skipped`). No action needed.
 - **#647 Trivy (3 HIGH in frontend lockfile) and pkg/secrets integration failures (2026-08-04)** — both jobs pass on current `main` (dependency bumps + fixes landed between 2026-08-04 and 2026-08-11); stale-branch artifacts, no action in this PR.
 
 ### Fix (TDD)
@@ -104,4 +104,5 @@ None.
 - sdks/canary/typescript/scenarios/s-rate-limit.ts (string-typed hasErrorField — round 3)
 - sdks/canary/python/scenarios/*.py (40 files: sys.path depth fix — latent CI bootstrap bug)
 - .gitignore (root node_modules/; stray lockfile artifact)
+- .github/workflows/ci.yml (Python canary loop: 3 d_* parked with rationale)
 - worklogs/NNNN_2026-08-15_rate-limit-429-error-contract.md (this file)
