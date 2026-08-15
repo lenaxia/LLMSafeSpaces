@@ -105,4 +105,4 @@ None.
 - sdks/canary/python/scenarios/*.py (40 files: sys.path depth fix — latent CI bootstrap bug)
 - .gitignore (root node_modules/; stray lockfile artifact)
 - .github/workflows/ci.yml (Python canary loop: 3 d_* parked with rationale)
-- worklogs/NNNN_2026-08-15_rate-limit-429-error-contract.md (this file)
+- worklogs/0756_2026-08-15_rate-limit-429-error-contract.md (this file)
