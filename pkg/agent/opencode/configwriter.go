@@ -662,12 +662,16 @@ func (w *ConfigWriter) Apply(in agent.AgentConfigInput) (bool, error) {
 	prevRelay := w.relay
 	prevMCPServers := w.mcpServers
 	prevMCPRaw := w.mcpRaw
+	prevAdminPrompt := w.adminPrompt
+	prevAllowedDirs := w.allowedDirs
 	rollback := func() {
 		w.providerRaw = prevProviderRaw
 		w.model = prevModel
 		w.relay = prevRelay
 		w.mcpServers = prevMCPServers
 		w.mcpRaw = prevMCPRaw
+		w.adminPrompt = prevAdminPrompt
+		w.allowedDirs = prevAllowedDirs
 	}
 
 	if in.Providers != nil {
@@ -712,6 +716,17 @@ func (w *ConfigWriter) Apply(in agent.AgentConfigInput) (bool, error) {
 			// MCP source entirely.
 			w.mcpServers = nil
 		}
+	}
+
+	// AdminPrompt / AllowedDirs are first-class sources (US-65.9
+	// increment 2): construction may seed them from the bootstrap
+	// side-car files; Apply updates them thereafter with the same
+	// pointer semantics as every other source.
+	if in.AdminPrompt != nil {
+		w.adminPrompt = in.AdminPrompt.Text
+	}
+	if in.AllowedDirs != nil {
+		w.allowedDirs = in.AllowedDirs.Dirs
 	}
 
 	if err := w.rebuildLocked(); err != nil {

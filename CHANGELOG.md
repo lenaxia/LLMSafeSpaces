@@ -32,6 +32,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`AgentConfigInput` fully describes the agent config sources**. The
+  admin system prompt and allowed external directories are now
+  first-class `Apply` inputs (`AdminPrompt`, `AllowedDirs`) with the
+  same pointer semantics as providers/model/relay/MCP — previously
+  they were writer-construction options invisible to the seam contract,
+  requiring a writer rebuild to revise. Construction still seeds them
+  from the bootstrap side-car files; Apply updates thereafter.
+
 - **Consistent build version injection across every component**. All Go
   binaries (api, controller, workspace-agentd, relay-router, relay-proxy)
   now read their build identity from `pkg/version` — the single source of
