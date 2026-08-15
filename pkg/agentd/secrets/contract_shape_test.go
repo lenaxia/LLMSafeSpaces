@@ -56,7 +56,7 @@ func TestLoadSecretsFile_MalformedEntrySkippedNotFatal(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secrets.json")
 	doc := `[
-		{"type":"llm-provider","name":"good","metadata":{"api_base":"https://x"},"plaintext":"k"},
+		{"type":"llm-provider","name":"good","metadata":{"api_base":"https://x"},"plaintext":"{\"kind\":\"custom\",\"slug\":\"relay\",\"apiKey\":\"k\"}"},
 		{"type":"mcp-server","name":"bad","metadata":"not-an-object","plaintext":"{}"},
 		{"type":"env-secret","name":"also-good","metadata":{"var_name":"FOO"},"plaintext":"v"}
 	]`
@@ -77,16 +77,15 @@ func TestLoadSecretsFile_MalformedEntrySkippedNotFatal(t *testing.T) {
 		GitCredsPath:    filepath.Join(dir, "git-credentials"),
 	}}
 	res, err := m.Materialize(got)
-	// A failed entry yields the partial-failure sentinel error; the
-	// per-entry Results still say exactly which entry failed and which
-	// succeeded (the caller logs results and continues boot).
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "partial failures")
+	// Skipped entries do NOT trip ErrPartialFailure (Failed does) — the
+	// entrypoint exits 0 and boot continues, which the subcommand-level
+	// test below pins through the real exit code.
+	require.NoError(t, err)
 	byName := map[string]SecretResult{}
 	for _, r := range res.Results {
 		byName[r.Name] = r
 	}
-	assert.Equal(t, OutcomeFailed, byName["bad"].Outcome)
+	assert.Equal(t, OutcomeSkipped, byName["bad"].Outcome, "malformed metadata is input validation → Skipped (T5), boot continues")
 	assert.Contains(t, byName["bad"].Reason, "not a JSON object")
 	assert.Equal(t, OutcomeMaterialized, byName["also-good"].Outcome)
 }

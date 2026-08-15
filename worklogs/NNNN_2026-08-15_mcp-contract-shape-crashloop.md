@@ -12,21 +12,24 @@
 ## Fix (materialize side — the contract is authoritative)
 
 - `Secret.UnmarshalJSON`: dual-shape metadata. String members pass through; numbers/booleans/arrays/objects are carried JSON-encoded as strings — exactly the form the mcp staging branch already expects (`json.Unmarshal(argsStr)`, `strconv.Atoi(timeoutMs)`). Metadata that is not a JSON object sets `MetadataInvalid` instead of failing the parse.
-- `applyOne` reports `MetadataInvalid` as a per-entry `OutcomeFailed` with the reason; `LoadSecretsFile` therefore no longer lets one malformed entry kill the file, and `ErrPartialFailure` is already tolerated by the entrypoint (exit 0, results logged).
+- `applyOne` reports `MetadataInvalid` as a per-entry `OutcomeSkipped` with the reason (review F1: the first version used OutcomeFailed, which trips `HasFailures()` → ErrPartialFailure → the entrypoint's SECOND gate returns 3 → the very crash-loop this PR eliminates; empirically confirmed by the reviewer's subcommand run). Skipped keeps boot at exit 0 per invariant T5 ("an invalid secret skips that secret only") and makes the reload handler answer 200-with-reason instead of 500 — deliberate: malformed input is the client's, boot tolerance is the platform's.
+- Reload-cache replay consistency: a skipped entry caches identically on first boot and replay (the MetadataInvalid flag is `json:"-"`, but Skipped entries carry their Reason through the result the cache stores — no more exit-3-then-exit-0 split on the same input).
 - No API-side change: the contract document governs, and the API already implements it.
 
 ## Assumptions stated and validated
 
-1. The API only emits non-string metadata for mcp-server entries (`args`, `timeoutMs`) — validated by reading `loadMCPServers`; all other types marshal flat string maps (unchanged pass-through).
+1. ~~The API only emits non-string metadata for mcp-server entries~~ **Corrected (review F2):** user secrets pass `UserSecret.Metadata` through verbatim and the API's validateMetadata checks only key PRESENCE — a client can persist `{"var_name":123}` for any type, which pre-fix crash-looped the workspace identically. The dual-shape reader is load-bearing for every secret type, not just mcp-server.
 2. JSON-encoded-string `args` is what the staging branch consumes — validated by the contract test asserting `json.Unmarshal` round-trip.
 3. Legacy all-string files parse identically — pinned by `TestLoadSecretsFile_LegacyStringMetadata`.
 4. Per-entry failure surfaces as `ErrPartialFailure`, which the materialize entrypoint treats as exit 0 — validated at cmd/workspace-agentd/secrets.go:415.
 
 ## Verification
 
-- 3 new tests: contract-shaped entries (http + stdio variants), malformed-entry skip-not-fatal (asserts per-entry results through Materialize), legacy shape.
-- Red confirmed pre-fix (both new-shape tests failed on main).
-- Full `./pkg/agentd/...` + `./cmd/workspace-agentd/` (incl. e2e, 323s) pass.
+- Unit: contract-shaped entries (http + stdio variants), malformed-entry skip-not-fatal (per-entry results through Materialize), legacy shape. Red confirmed pre-fix.
+- Subcommand e2e (real binary, real exit codes): `TestMaterializeSubcommand_MCPContractShape_Exits0` (the incident workflow: contract entries → exit 0 → mcp section rendered into agent-config.json) and `TestMaterializeSubcommand_MalformedMCPMetadata_SkipsNotCrashloops` (exit 0, sibling materialized, skip reported by name).
+- Seam integration: `TestMCPInjection_MaterializerSeam_ContractShape` — real InjectSessionlessSecrets output (admin KEK round-trip) parsed and staged by the real LoadSecretsFile; mutation-verified in BOTH directions (writer emitting string-form args fails it; reader dropping raw values fails it).
+- Full `./pkg/agentd/...` + `./cmd/workspace-agentd/` (incl. e2e, 329s) pass.
+- Scope note: per-entry tolerance covers metadata-SHAPE malformations; a structurally malformed entry (non-object element / non-string type) still fails the whole file → exit 2 (unchanged, consistent with the PR's scoping).
 
 ## Cluster remediation (this deployment)
 

@@ -234,6 +234,81 @@ func TestMaterializeSubcommand_InvalidEntries_DoesNotBlockBoot(t *testing.T) {
 		"stderr should report the skipped entry by name or by reason")
 }
 
+// TestMaterializeSubcommand_MCPContractShape_Exits0 renders bound MCP
+// servers (contract metadata: native JSON args/timeoutMs) through the
+// real subcommand and asserts the incident workflow end-to-end:
+// secrets.json → exit 0 → "mcp" section in agent-config.json. This is
+// the automation of the 2026-08-15 crash-loop repro (one bound MCP
+// server aborted the whole-file parse → Init:Error loop).
+func TestMaterializeSubcommand_MCPContractShape_Exits0(t *testing.T) {
+	bin := buildAgentdBinary(t)
+	dir := t.TempDir()
+
+	secretsPath := filepath.Join(dir, "secrets.json")
+	require.NoError(t, os.WriteFile(secretsPath, []byte(`[
+		{"type":"llm-provider","name":"relay","metadata":{"api_base":"https://relay.example"},"plaintext":"{\"kind\":\"custom\",\"slug\":\"relay\",\"api_key\":\"k\"}"},
+		{"type":"mcp-server","name":"opengist","metadata":{"transport":"http","url":"https://mcp.example/abc","command":"","args":[],"timeoutMs":5000},"plaintext":"{\"env\":{},\"headers\":{}}"},
+		{"type":"mcp-server","name":"github-tools","metadata":{"transport":"stdio","url":"","command":"npx","args":["-y","@modelcontextprotocol/server-github"],"timeoutMs":5000},"plaintext":"{\"env\":{},\"headers\":{}}"}
+	]`), 0o600))
+
+	agentCfg := filepath.Join(dir, "agent-config.json")
+	exit, _, stderr := runMaterializeSubcommand(t, bin, secretsPath,
+		filepath.Join(dir, "secrets"),
+		filepath.Join(dir, ".ssh"),
+		agentCfg,
+		filepath.Join(dir, "env"),
+		filepath.Join(dir, ".git-credentials"))
+	require.Equal(t, 0, exit, "contract-shaped MCP entries must not block boot; stderr=%q", stderr)
+
+	cfgBytes, err := os.ReadFile(agentCfg)
+	require.NoError(t, err)
+	var cfg struct {
+		MCP map[string]struct {
+			Type    string   `json:"type"`
+			URL     string   `json:"url"`
+			Command []string `json:"command"`
+			Timeout int      `json:"timeout"`
+		} `json:"mcp"`
+	}
+	require.NoError(t, json.Unmarshal(cfgBytes, &cfg))
+	require.Contains(t, cfg.MCP, "opengist", "http MCP server rendered; got %s", cfgBytes)
+	require.Equal(t, "remote", cfg.MCP["opengist"].Type)
+	require.Equal(t, "https://mcp.example/abc", cfg.MCP["opengist"].URL)
+	require.Equal(t, 5000, cfg.MCP["opengist"].Timeout)
+	require.Contains(t, cfg.MCP, "github-tools", "stdio MCP server rendered")
+	require.Equal(t, "local", cfg.MCP["github-tools"].Type)
+	require.Equal(t, []string{"npx", "-y", "@modelcontextprotocol/server-github"}, cfg.MCP["github-tools"].Command)
+}
+
+// TestMaterializeSubcommand_MalformedMCPMetadata_SkipsNotCrashloops pins
+// the exit code for the per-entry tolerance path (review F1): malformed
+// metadata must behave like any other invalid input — Skipped, boot
+// exit 0, healthy siblings materialized.
+func TestMaterializeSubcommand_MalformedMCPMetadata_SkipsNotCrashloops(t *testing.T) {
+	bin := buildAgentdBinary(t)
+	dir := t.TempDir()
+
+	secretsPath := filepath.Join(dir, "secrets.json")
+	require.NoError(t, os.WriteFile(secretsPath, []byte(`[
+		{"type":"env-secret","name":"good","metadata":{"var_name":"GOOD"},"plaintext":"1"},
+		{"type":"mcp-server","name":"bad","metadata":"not-an-object","plaintext":"{}"}
+	]`), 0o600))
+
+	envPath := filepath.Join(dir, "env")
+	exit, _, stderr := runMaterializeSubcommand(t, bin, secretsPath,
+		filepath.Join(dir, "secrets"),
+		filepath.Join(dir, ".ssh"),
+		filepath.Join(dir, "agent-config.json"),
+		envPath,
+		filepath.Join(dir, ".git-credentials"))
+	require.Equal(t, 0, exit, "malformed-metadata entry must skip, not crash-loop; stderr=%q", stderr)
+
+	envContent, err := os.ReadFile(envPath)
+	require.NoError(t, err)
+	require.Contains(t, string(envContent), "export GOOD=")
+	require.Contains(t, stderr, "bad", "skipped entry reported by name")
+}
+
 // TestReloadSecretsHandler_HappyPath wires the handler against a real
 // in-memory materializer and verifies the response shape.
 func TestReloadSecretsHandler_HappyPath(t *testing.T) {

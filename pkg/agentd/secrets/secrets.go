@@ -78,7 +78,7 @@ import (
 // required map[string]string — one bound MCP server crash-looped every
 // workspace boot ("cannot unmarshal array into ... Secret.metadata").
 // UnmarshalJSON accepts BOTH shapes: string values pass through;
-// booleans/numbers/arrays/objects are carried JSON-encoded as strings
+// numbers/booleans/arrays/objects are carried JSON-encoded as strings
 // (exactly what the mcp staging branch's json.Unmarshal(argsStr) expects).
 type Secret struct {
 	Type      string            `json:"type"`
@@ -87,8 +87,8 @@ type Secret struct {
 	Plaintext string            `json:"plaintext"`
 
 	// MetadataInvalid records why the metadata could not be normalized
-	// (non-object JSON, or a member that failed to encode). Materialize
-	// reports it per-entry instead of aborting the whole batch.
+	// (metadata that is not a JSON object). Materialize reports it
+	// per-entry as a Skipped result instead of aborting the whole batch.
 	MetadataInvalid string `json:"-"`
 }
 
@@ -126,7 +126,7 @@ func (s *Secret) UnmarshalJSON(data []byte) error {
 			s.Metadata[k] = str
 			continue
 		}
-		// Non-string member: carry the raw JSON verbatim (trimmed).
+		// Non-string member: carry the raw JSON verbatim.
 		s.Metadata[k] = string(v)
 	}
 	return nil
@@ -476,7 +476,15 @@ func (m *Materializer) applyOne(s Secret) SecretResult {
 	r := SecretResult{Type: s.Type, Name: s.Name}
 
 	if s.MetadataInvalid != "" {
-		r.Outcome = OutcomeFailed
+		// Malformed input maps to Skipped — pod boot is not blocked by a
+		// single malformed secret (invariant T5; same doctrine as
+		// validateName below). The Reason carries the parse failure for
+		// the reload status and result log; OutcomeFailed is reserved
+		// for materializer-side errors the platform owns. Consequently
+		// the reload handler surfaces this entry as a per-entry skipped
+		// reason (200), not a 500 — a deliberate choice: malformed
+		// input is the client's, boot tolerance is the platform's.
+		r.Outcome = OutcomeSkipped
 		r.Reason = s.MetadataInvalid
 		return r
 	}
