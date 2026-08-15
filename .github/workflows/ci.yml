@@ -133,8 +133,12 @@ jobs:
     runs-on: ubuntu-latest
     # No `needs: [lint]` — lint is a serial 3.5m gate that added nothing
     # but latency; a lint failure now wastes one test run instead of
-    # delaying every run by the lint duration. Merge is still gated on
-    # Lint's own conclusion via branch protection.
+    # delaying every run by the lint duration. Verified 2026-08-15:
+    # the repo's branch protection (ruleset "Main Branch Protection")
+    # has NO required-status-checks rule — the merge gate is process
+    # (green checks + reviewer APPROVE before squash merge), which was
+    # equally true before this change; job names are kept stable so any
+    # future required-check config picks them up unchanged.
     permissions:
       contents: read
     steps:

@@ -28,7 +28,21 @@ Run `31871142694` (`fix/floating-tag-default-image`, 28.6 min): critical path wa
 
 ### Change 3 — removed `needs: [lint]` from `test`, `test-full`, `frontend-test`
 
-All three now start at t≈0 alongside lint. Merge is still gated on Lint's own conclusion via branch protection. Accepted trade-off: a lint-failing push now wastes one test-run's compute instead of delaying every run by 3.5 min.
+All three now start at t≈0 alongside lint. (Correction, post-review: this originally said "merge is still gated on Lint via branch protection" — verified 2026-08-15 via the rulesets API that the repo's "Main Branch Protection" ruleset contains only `deletion` + `non_fast_forward`, i.e. **no required status checks exist**; the merge gate is process — green checks + reviewer APPROVE before squash merge — and was equally un-mechanical before this change.) Accepted trade-off: a lint-failing push now wastes one test-run's compute instead of delaying every run by 3.5 min.
+
+### Review fixes (round 1 → 6dadf080; round 2 nits → docs pass)
+
+Round-1 REQUEST CHANGES (AI reviewer, PR #866) fixed in `6dadf080`:
+- **F1** — my original comment claimed scheduled and main-push runs "never cancel each other"; wrong: with `cancel-in-progress: false` GitHub still replaces a *pending* run when a newer run joins the group. Fixed in comments everywhere AND semantically: `security-scan.yml`/`envtest.yml` (the two scheduled workflows) now key the group on `${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}` so nightlies are un-droppable.
+- **F3** — base `go test` exit status is now gated; a partway-failed base run (partial profile → understated base → optimistic delta) forces the degraded comment instead.
+- **F4** — the sha-image consequence of pending-run replacement (replaced pending runs never publish `sha-<commit>` images; pin rollbacks by `ts-`/`dev`) is now spelled out in ci.yml.
+
+Round-2 APPROVE notes fixed in the docs pass:
+- **W1** — this addendum (the worklog previously described the pre-fix state and mis-attributed the F3 gating to the original move).
+- **W2** — `envtest.yml` comment said "main-push run"; envtest has no push trigger. Corrected to nightly/dispatch.
+- Branch-protection assumption (Key Decisions 5a) corrected above after API verification.
+
+Live evidence gathered on the PR itself: parallel start at t≈0; `coverage-delta` posted the base/new/delta comment (base 67.4% / PR 67.4% / +0%); superseded-run cancellation demonstrated twice (run 31873628311 → cancelled with 16 jobs killed on push; a duplicate same-sha run pair deduplicated by the concurrency group).
 
 ### Change 4 — `concurrency` stanzas (PR-only cancel-in-progress)
 
@@ -58,7 +72,7 @@ concurrency:
 2. **`cancel-in-progress` as an expression, PR-only.** Protects ghcr tag-set integrity on main/tag pushes (an interrupted manifest merge would publish an incomplete multi-arch image).
 3. **Keep `test-full` untouched in phase 1** (it was flagged for removal but only wastes compute, not wall-time — it finishes before `test`). Avoids conflating compute savings with latency savings in one PR; makes the verification measurements cleaner.
 4. **No path filters in this phase.** The docs-only-PR trap (worklog-numbering PRs skipping repolint → incident 0552/0553 class) requires job-level `dorny/paths-filter` design, deferred to phase 2.
-5. **Assumptions recorded per Rule 4:** (a) branch protection requires job names, which are unchanged (`Test (-short, with coverage)` etc.) — no required-check breakage; (b) `cancel-in-progress` accepts expressions (GitHub-documented, actionlint-validated); (c) fork PRs get the same group per PR number (fork PRs run `pull_request`, not `pull_request_target`, in all five workflows).
+5. **Assumptions recorded per Rule 4:** (a) ~~branch protection requires job names, which are unchanged — no required-check breakage~~ — corrected post-review: no required-status-checks rule exists; job-name stability is still kept so any future protection config picks the names up unchanged; (b) `cancel-in-progress` accepts expressions (GitHub-documented, actionlint-validated); (c) fork PRs get the same group per PR number (fork PRs run `pull_request`, not `pull_request_target`, in all five workflows).
 
 ---
 
@@ -81,7 +95,7 @@ None.
 
 1. After merge: pull run timings from the API (jobs' started_at deltas) and compare against the 28.6-min baseline; record actual numbers in the follow-up worklog.
 2. Phase 2 candidates (each needs its own stress-test): remove `test-full` (~11m compute/PR, 0 wall-time), per-component build path filters + amd64-only PR builds, `type=registry` buildx cache (fixes the 10-scope gha-cache eviction), docs-only PR fast path with job-level filtering, pin `golangci-lint` version.
-3. Watch for the first superseded-PR-cancel in practice and confirm no orphaned state (canary's kind cleanup is `if: always()`; cancellation skips `always()` steps — acceptable since the cluster is runner-local and ephemeral).
+3. Watch for the first superseded-PR-cancel in practice and confirm no orphaned state. (Observed during review, 2026-08-15: cancellation was demonstrated twice and left no shared state behind. Note on `always()`: per GitHub docs `always()` evaluates true even for cancelled jobs, but a cancelled job's in-flight steps are terminated regardless — either way the canary's `if: always()` kind-cleanup does not complete on cancel; acceptable because the kind cluster is runner-local and dies with the runner.)
 
 ---
 
@@ -93,3 +107,4 @@ None.
 - `.github/workflows/envtest.yml` — concurrency stanza.
 - `.github/workflows/migration-safety.yml` — concurrency stanza.
 - `worklogs/NNNN_2026-08-15_ci-pipeline-speedup-phase1.md` — this worklog.
+- (docs pass, review round 2): `.github/workflows/ci.yml` comment-only correction (branch-protection claim), `.github/workflows/envtest.yml` comment-only correction (W2), this worklog's review-fix addendum.
