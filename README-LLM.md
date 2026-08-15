@@ -3,7 +3,7 @@
 > **Repository:** `github.com/lenaxia/llmsafespaces`
 
 **Version:** 1.24
-**Last Updated:** 2026-08-09
+**Last Updated:** 2026-08-15
 **Project Status:** Active Development
 
 ---
@@ -397,7 +397,7 @@ The platform is decoupling from opencode via a **platform-owned session contract
 
 **The AgentConfigWriter seam (US-65.1):** opencode's config-merge quirks (no hot reload, `OPENCODE_CONFIG` always-wins, `disabled_providers` relay injection) have moved behind `Apply(AgentConfigInput) (restartRequired bool, err error)`. Platform code reacts to `restartRequired` without knowing why.
 
-**What this replaces:** the patch-part stripping (`?verbose`), opencode-shape history parsing, inline question/permission translation, and the relay-config fragilities documented in [Relay Config Subsystem](#relay-config-subsystem). The backend hacks were deleted in US-65.5 (proxy filter, history parsing, question/permission translation); the remaining opencode-shape SSE parsing in the frontend goes when US-65.8 lands.
+**What this replaces:** the patch-part stripping (`?verbose`), opencode-shape history parsing, inline question/permission translation, and the relay-config fragilities documented in [Relay Config Subsystem](#relay-config-subsystem). These were removed from the live request path in US-65.5 (the proxy filter was deleted outright; the legacy history parsing and question/permission translation survive only as adapter-nil fallbacks). The remaining opencode-shape SSE parsing in the frontend goes when US-65.8 lands.
 
 **When working on agent-integration code, ask:** *"Does this line need to know the agent is opencode?"* If yes, it belongs in `pkg/agent/opencode/`, not in a handler, service, or controller. See [Rule 12](#12-containment-before-abstraction-external-dependency-coupling).
 
