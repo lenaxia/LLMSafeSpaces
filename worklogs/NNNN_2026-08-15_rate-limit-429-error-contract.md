@@ -31,7 +31,7 @@ c.AbortWithStatusJSON(apiErr.StatusCode(), gin.H{
 })
 ```
 
-Every other **429** emitter in the API uses `{"error": "<string>"}` (some non-429 error paths still emit object shapes — see follow-up issue #862) — `workspace_access.go:54`, `org_guard.go:27`, `email.go:99` (`error` + `limit`), `dev_preview.go:181` (`error` + `retryAfter`). The s-error-format canary (P5: "All error values are strings (not null, object, array)") pins this contract on reachable paths, and it passes on `main` — the rate-limit paths were the outliers, previously masked because the canary asserted P3 with two semantics and the lenient one passed.
+Every other **429** emitter in the API uses `{"error": "<string>"}` — `email.go:99` (`error` + `limit`), `dev_preview.go:181` (`error` + `retryAfter`). (`workspace_access.go:54` and `org_guard.go:27` are non-429 string-error emitters; some non-429 paths still emit object shapes — see follow-up issue #862.) The s-error-format canary (P5: "All error values are strings (not null, object, array)") pins this contract on reachable paths, and it passes on `main` — the rate-limit paths were the outliers, previously masked because the canary asserted P3 with two semantics and the lenient one passed.
 
 **Consumer impact (why the string shape is correct, not just conventional):**
 - Go SDK `parseError` (`sdks/go/client.go:177-187`) decodes `Error string json:"error"` — an object fails to decode, falling through to an empty/generic message. `IsRateLimit(err)` still worked (status-based), but `APIError.Message` was degraded.
@@ -66,7 +66,7 @@ Every other **429** emitter in the API uses `{"error": "<string>"}` (some non-42
 
 1. **Fix the middlewares, not the canary's `HasErrorField`.** The string-typed `"error"` field is the API-wide contract (every handler, the s-error-format canary P5, the Go SDK, the frontend). The object shape in exactly two middlewares was the defect.
 2. **Body carries `limit` + `retryAfter`, drops `code`/`details`.** Matches `email.go` (`error`+`limit`) and `dev_preview.go` (`error`+`retryAfter`) precedents; `code` is redundant with HTTP 429; reset timestamp remains in `X-RateLimit-Reset`. Added `Retry-After` header per RFC 6585/7231 since the value is now computed anyway.
-3. **`retryAfter` derives from the error's `Details["reset"]` when present** (token bucket ≈ now+1s; fixed/sliding = now+TTL), falling back to the full window; clamped ≥1s. Per-route (review-sanctioned simplification) uses the full route window. Prevents default-strategy 429s advertising a 60s wait for a ~1s refill.
+3. **`retryAfter` derives from the error's `Details["reset"]` when present** (token bucket ≈ now+1s; fixed window = now+TTL, sliding window = now+window), falling back to the full window; clamped ≥1s. Per-route (review-sanctioned simplification) uses the full route window. Prevents default-strategy 429s advertising a 60s wait for a ~1s refill.
 
 ---
 
@@ -90,7 +90,7 @@ None.
 
 ## Next Steps
 
-- After merge: re-run CI on open PRs #647, #734, #816 (update branches to `main`) — the SDK canary job should be stable; consider flipping `sdk-canary.continue-on-error` to `false` once it passes consistently (per the TODO in `ci.yml`). The Python section is now expected green; the `d_*` trio stays parked until `_AccountAPI` exists.
+- After merge: re-run CI on open PRs #647, #734, #816 (update branches to `main`) — the SDK canary job should be stable; consider flipping `sdk-canary.continue-on-error` to `false` once it passes consistently (per the TODO in `ci.yml`). The Python section is now expected green; the `d_*` trio stays parked until `_AccountAPI` is implemented **and** seed-accounts provisions a rotate-enabled account (today only canary1/canary2 are seeded — `seed-accounts/main.go:43-45` — so even with `_AccountAPI`, the rotate scenario has no seeded subject).
 
 ---
 
