@@ -417,15 +417,10 @@ func multiplyQuantity(q resource.Quantity, factor int64) resource.Quantity {
 	return *resource.NewQuantity(q.Value()*factor, q.Format)
 }
 
-// fsGroupChangeOnRootMismatch is the fsGroupChangePolicy for workspace
-// pods: only chown the volume when its root doesn't already match
-// fsGroup. Avoids multi-minute recursive chown of large PVCs on every
-// pod start (see buildPodSecurityContext for the full rationale).
-var fsGroupChangeOnRootMismatch = corev1.FSGroupChangeOnRootMismatch
-
 func buildPodSecurityContext(workspace *v1.Workspace) *corev1.PodSecurityContext {
 	runAsUser := int64(1000)
 	runAsGroup := int64(1000)
+	fsGroupChangeOnRootMismatch := corev1.FSGroupChangeOnRootMismatch
 	runAsNonRoot := true
 	if psc := workspace.Spec.PodSecurityContext; psc != nil {
 		if psc.RunAsUser != 0 {
