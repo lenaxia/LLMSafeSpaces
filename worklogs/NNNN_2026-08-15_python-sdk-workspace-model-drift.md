@@ -72,7 +72,7 @@ With Python fully green and the TS section's first-ever execution also fully gre
 
 ## Blockers
 
-None for this PR's diff. The TS section's first-ever execution ran fully green (round 8 run), closing that risk. The remaining open item is the MCP section's first-ever execution, newly enabled by Round 9 — its tool-contract drift and ungated d-mcp-workspace are tracked in #874 (out of #867 scope).
+None for this PR's diff. The TS section's first-ever execution ran fully green (round 8 run), closing that risk. The remaining open item is the MCP section's first-ever execution, newly enabled by Round 9 — its four findings — tool-contract drift (24 vs 15, run_resolve collapse), ungated d-mcp-workspace, the DEK-gate 403 on credential_create, and the ListCredentials envelope-unmarshal bug — are tracked in #874 (out of #867 scope).
 
 ---
 
