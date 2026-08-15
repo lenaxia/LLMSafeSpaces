@@ -18,7 +18,12 @@ class Workspace:
     updatedAt: str
     pvcName: str | None = None
     labels: dict[str, str] | None = None
+    imageTag: str | None = None
+    agentVersion: str | None = None
+    defaultModel: str | None = None
     agentNeedsRefresh: bool = False
+    credentialsPendingSince: str | None = None
+    orgId: str | None = None
 
 
 @dataclass
@@ -31,7 +36,13 @@ class WorkspaceListItem:
     createdAt: str
     updatedAt: str
     phase: str | None = None
+    imageTag: str | None = None
+    agentVersion: str | None = None
+    defaultModel: str | None = None
     maxActiveSessions: int | None = None
+    agentNeedsRefresh: bool = False
+    credentialsPendingSince: str | None = None
+    orgId: str | None = None
 
 
 @dataclass
