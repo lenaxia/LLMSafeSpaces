@@ -2,15 +2,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // S-SECRET-AUDIT canary — TypeScript SDK
 
-import { LLMSafeSpaces } from '../../src/index.js';
-import { Runner, Config, configFromEnv, nodeFetch, rawDo } from '../canary.js';
+import { LLMSafeSpaces } from '../../../typescript/src/index.js';
+import { jwtLogin, Runner, Config, configFromEnv, nodeFetch, rawDo } from '../canary.js';
 
 async function run(r: Runner, cfg: Config): Promise<void> {
-  const c = new LLMSafeSpaces({ baseUrl: cfg.apiUrl, apiKey: cfg.apiKey, timeout: 15000, fetch: nodeFetch as any });
+  const c = new LLMSafeSpaces({ baseUrl: cfg.apiUrl, apiKey: await jwtLogin(cfg), timeout: 15000, fetch: nodeFetch as any });
   let sid: string | null = null;
   try {
     const [ok, s] = await r.assertNoError(
-      () => c.secrets.create({ name: 'canary-ts-audit', type: 'env-secret', value: 'v' }),
+      () => c.secrets.create({ name: 'canary-ts-audit', type: 'env-secret', value: 'v', metadata: { var_name: 'CANARY_TS_VAR' } }),
       'create-for-audit: no error');
     if (ok && s) sid = s.id;
 

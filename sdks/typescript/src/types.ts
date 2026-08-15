@@ -147,6 +147,7 @@ export interface SecretResponse {
   name: string;
   type: string;
   metadata?: unknown;
+  globalDefault: boolean;
   createdAt: string;
   updatedAt: string;
 }

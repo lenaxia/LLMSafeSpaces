@@ -580,3 +580,119 @@ def test_delete_trigger():
     respx.delete(f"{BASE}/me/triggers/trig-1").respond(status_code=200)
     client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
     client.triggers.delete("trig-1")  # no exception = pass
+
+
+# ── Workspace model round-trip (PR #870 / issue #867) ─────────────────────
+# The server emits fields the dataclasses historically lacked; strict
+# **kwargs expansion raised TypeError instead of degrading. These tests pin
+# the FULL server payload shapes (pkg/types/workspace.go Workspace DTO and
+# WorkspaceListItem) so the next added field fails here first.
+
+
+@respx.mock
+def test_workspace_get_full_payload_round_trip():
+    respx.get(f"{BASE}/workspaces/ws-1").respond(
+        json={
+            "id": "ws-1",
+            "name": "test",
+            "userId": "u1",
+            "runtime": "python:3.11",
+            "storageSize": "10Gi",
+            "phase": "Active",
+            "pvcName": "pvc-1",
+            "labels": {"env": "ci"},
+            "defaultModel": "gpt-test",
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z",
+            "agentNeedsRefresh": True,
+            "credentialsPendingSince": "2026-01-02T00:00:00Z",
+            "devPreviewEnabled": True,
+        }
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    ws = client.workspaces.get("ws-1")
+    assert ws.agentNeedsRefresh is True
+    assert ws.devPreviewEnabled is True
+    assert ws.defaultModel == "gpt-test"
+    assert ws.credentialsPendingSince == "2026-01-02T00:00:00Z"
+
+
+@respx.mock
+def test_workspace_list_full_payload_round_trip():
+    respx.get(f"{BASE}/workspaces?limit=20&offset=0").respond(
+        json={
+            "items": [
+                {
+                    "id": "ws-1",
+                    "name": "test",
+                    "userId": "u1",
+                    "runtime": "python:3.11",
+                    "storageSize": "10Gi",
+                    "phase": "Active",
+                    "imageTag": "sha256:abc",
+                    "agentVersion": "1.18.10",
+                    "defaultModel": "gpt-test",
+                    "maxActiveSessions": 3,
+                    "createdAt": "2026-01-01T00:00:00Z",
+                    "updatedAt": "2026-01-01T00:00:00Z",
+                    "agentNeedsRefresh": False,
+                    "credentialsPendingSince": None,
+                    "orgId": "org-9",
+                }
+            ],
+            "pagination": None,
+        }
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    result = client.workspaces.list()
+    item = result.items[0]
+    assert item.agentNeedsRefresh is False
+    assert item.imageTag == "sha256:abc"
+    assert item.agentVersion == "1.18.10"
+    assert item.orgId == "org-9"
+    assert item.maxActiveSessions == 3
+
+
+def test_workspace_models_reject_unknown_fields():
+    """Strict parsing IS the drift detector (PR #870 design decision).
+
+    The dataclasses deliberately expand **kwargs with no catch-all field:
+    an unknown server field must raise TypeError so drift fails loudly in
+    the SDK suite (and canaries) instead of silently degrading — the
+    #867 failure mode. If this test ever fails because the server added a
+    field, add the field to the dataclass AND the OpenAPI schema.
+    """
+    from llmsafespaces.types import Workspace, WorkspaceListItem
+
+    with pytest.raises(TypeError):
+        WorkspaceListItem(
+            id="ws-1", name="x", userId="u1", runtime="python",
+            storageSize="10Gi", createdAt="t", updatedAt="t",
+            someFutureServerField=True,
+        )
+    with pytest.raises(TypeError):
+        Workspace(
+            id="ws-1", name="x", userId="u1", runtime="python",
+            storageSize="10Gi", phase="Active", createdAt="t", updatedAt="t",
+            anotherFutureField=1,
+        )
+
+
+@respx.mock
+def test_secret_response_full_payload_round_trip():
+    """SecretResponse must accept the full server payload (pkg/secrets
+    SecretResponse: id, name, type, metadata, globalDefault, createdAt,
+    updatedAt) — globalDefault is always present (no omitempty)."""
+    respx.post(f"{BASE}/secrets").respond(
+        status_code=201,
+        json={
+            "id": "sec-1", "name": "canary", "type": "env-secret",
+            "metadata": {"var_name": "CANARY_VAR"},
+            "globalDefault": False,
+            "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+        },
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    s = client.secrets.create(name="canary", type="env-secret", value="v", metadata={"var_name": "CANARY_VAR"})
+    assert s.globalDefault is False
+    assert s.metadata == {"var_name": "CANARY_VAR"}

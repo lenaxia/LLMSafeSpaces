@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // S-SECRET-BINDINGS canary — TypeScript SDK
 
-import { LLMSafeSpaces } from '../../src/index.js';
-import { Runner, Config, configFromEnv, nodeFetch } from '../canary.js';
+import { LLMSafeSpaces } from '../../../typescript/src/index.js';
+import { jwtLogin, Runner, Config, configFromEnv, nodeFetch } from '../canary.js';
 
 async function run(r: Runner, cfg: Config): Promise<void> {
-  const c = new LLMSafeSpaces({ baseUrl: cfg.apiUrl, apiKey: cfg.apiKey, timeout: 20000, fetch: nodeFetch as any });
+  const c = new LLMSafeSpaces({ baseUrl: cfg.apiUrl, apiKey: await jwtLogin(cfg), timeout: 20000, fetch: nodeFetch as any });
   let wsId: string | null = null;
   let sid: string | null = null;
   try {
@@ -17,7 +17,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
     wsId = ws.id;
 
     const [ok2, s] = await r.assertNoError(
-      () => c.secrets.create({ name: 'canary-ts-bind-s', type: 'env-secret', value: 'v' }),
+      () => c.secrets.create({ name: 'canary-ts-bind-s', type: 'env-secret', value: 'v', metadata: { var_name: 'CANARY_TS_VAR' } }),
       'create-secret: no error');
     if (!ok2 || !s) return;
     sid = s.id;
@@ -27,13 +27,13 @@ async function run(r: Runner, cfg: Config): Promise<void> {
 
     // P2: Get — contains secret
     const [ok3, b] = await r.assertNoError(() => c.workspaces.getBindings(wsId!), 'get-bindings: no error');
-    if (ok3 && b) r.assert(b.bindings.some(x => x.id === sid), 'get-bindings: secret present');
+    if (ok3 && b) r.assert(b.bindings.some(x => x.secretId === sid), 'get-bindings: secret present');
 
     // P3: Idempotent re-bind
     await r.assertNoError(() => c.workspaces.setBindings(wsId!, [sid!]), 'rebind-same: idempotent');
     const [ok4, b2] = await r.assertNoError(() => c.workspaces.getBindings(wsId!), 'get-bindings-after-rebind: no error');
     if (ok4 && b2) {
-      const count = b2.bindings.filter(x => x.id === sid).length;
+      const count = b2.bindings.filter(x => x.secretId === sid).length;
       r.assert(count === 1, 'rebind-same: exactly 1 entry', String(count));
     }
 

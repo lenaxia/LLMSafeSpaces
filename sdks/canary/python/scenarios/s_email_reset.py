@@ -26,9 +26,16 @@ def run(run: Runner, cfg: Config) -> None:
     status, _ = raw_do("POST", base + "/auth/register", "", reg_body)
     run.assert_(status in (201, 409), f"register: 201 or 409 (got {status})")
 
-    # P2: Login
+    # P2: Login. Retry on 429: sibling scenarios' JWT logins share the
+    # per-IP login bucket (10/min); this scenario's contract is the
+    # 200-vs-403 email-verification semantics, not rate limiting.
     login_body = json.dumps({"email": email, "password": password}).encode()
-    login_status, _ = raw_do("POST", base + "/auth/login", "", login_body)
+    login_status = 0
+    for attempt in range(7):
+        login_status, _ = raw_do("POST", base + "/auth/login", "", login_body)
+        if login_status != 429:
+            break
+        time.sleep(10)
     if login_status == 200:
         run.ok("login: 200 (noop mode — auto-verified)")
     elif login_status == 403:

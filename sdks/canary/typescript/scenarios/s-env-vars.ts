@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // S-ENV-VARS canary — TypeScript SDK
 
-import { LLMSafeSpaces } from '../../src/index.js';
-import { Runner, Config, configFromEnv, nodeFetch, rawDo } from '../canary.js';
+import { LLMSafeSpaces } from '../../../typescript/src/index.js';
+import { jwtLogin, Runner, Config, configFromEnv, nodeFetch, rawDo } from '../canary.js';
 
 async function run(r: Runner, cfg: Config): Promise<void> {
-  const c = new LLMSafeSpaces({ baseUrl: cfg.apiUrl, apiKey: cfg.apiKey, timeout: 20000, fetch: nodeFetch as any });
+  const c = new LLMSafeSpaces({ baseUrl: cfg.apiUrl, apiKey: await jwtLogin(cfg), timeout: 20000, fetch: nodeFetch as any });
   let wsId: string | null = null;
   try {
     const [ok, ws] = await r.assertNoError(
@@ -20,7 +20,9 @@ async function run(r: Runner, cfg: Config): Promise<void> {
 
     // P2: Get — contains CANARY_VAR
     const [ok2, env] = await r.assertNoError(() => c.workspaces.getEnv(wsId!), 'get-env: no error');
-    if (ok2 && env) r.assert(env.vars?.includes('CANARY_VAR'), 'get-env: CANARY_VAR present');
+    if (ok2 && env) // The API returns secret names (<wsID>-env-<lowercased_var>), not the
+      // original var names — match the lowercased suffix (Go twin parity).
+      r.assert((env.vars ?? []).some((v: string) => v.endsWith('-env-canary_var')), 'get-env: CANARY_VAR present');
 
     // P3: Upsert
     await r.assertNoError(() => c.workspaces.setEnv(wsId!, { CANARY_VAR: 'updated' }), 'upsert-env: no error');

@@ -2,17 +2,17 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // S-SECRET-CRUD canary — TypeScript SDK
 
-import { LLMSafeSpaces } from '../../src/index.js';
-import { Runner, Config, configFromEnv, nodeFetch, rawDo, hasField } from '../canary.js';
+import { LLMSafeSpaces } from '../../../typescript/src/index.js';
+import { jwtLogin, Runner, Config, configFromEnv, nodeFetch, rawDo, hasField } from '../canary.js';
 
 async function run(r: Runner, cfg: Config): Promise<void> {
-  const c = new LLMSafeSpaces({ baseUrl: cfg.apiUrl, apiKey: cfg.apiKey, timeout: 20000, fetch: nodeFetch as any });
+  const c = new LLMSafeSpaces({ baseUrl: cfg.apiUrl, apiKey: await jwtLogin(cfg), timeout: 20000, fetch: nodeFetch as any });
   let secretId: string | null = null;
 
   try {
     // P1: Create
     const [ok, s] = await r.assertNoError(
-      () => c.secrets.create({ name: 'canary-ts-secret', type: 'env-secret', value: 'canary-val' }),
+      () => c.secrets.create({ name: 'canary-ts-secret', type: 'env-secret', value: 'canary-val', metadata: { var_name: 'CANARY_TS_VAR' } }),
       'create: no error');
     if (!ok || !s) return;
     r.assert(s.id !== '', 'create: id non-empty');
@@ -41,7 +41,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
 
     // P6: Re-create with same name → succeeds
     const [ok4, s2] = await r.assertNoError(
-      () => c.secrets.create({ name: 'canary-ts-secret', type: 'env-secret', value: 'v2' }),
+      () => c.secrets.create({ name: 'canary-ts-secret', type: 'env-secret', value: 'v2', metadata: { var_name: 'CANARY_TS_VAR' } }),
       're-create-after-delete: no error');
     if (ok4 && s2) { await c.secrets.delete(s2.id).catch(() => {}); }
 
@@ -55,10 +55,10 @@ async function run(r: Runner, cfg: Config): Promise<void> {
   // N4: Duplicate name
   let dup1Id: string | null = null;
   try {
-    const dup = await c.secrets.create({ name: 'canary-ts-dup', type: 'env-secret', value: 'v1' });
+    const dup = await c.secrets.create({ name: 'canary-ts-dup', type: 'env-secret', value: 'v1', metadata: { var_name: 'CANARY_TS_VAR' } });
     dup1Id = dup.id;
     await r.assertError(
-      () => c.secrets.create({ name: 'canary-ts-dup', type: 'env-secret', value: 'v2' }),
+      () => c.secrets.create({ name: 'canary-ts-dup', type: 'env-secret', value: 'v2', metadata: { var_name: 'CANARY_TS_VAR' } }),
       'create-duplicate: ConflictError');
   } finally {
     if (dup1Id) { try { await c.secrets.delete(dup1Id); } catch {} }

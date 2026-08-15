@@ -8,6 +8,12 @@ from typing import Any
 
 @dataclass
 class Workspace:
+    # Mirrors the API transfer object (pkg/types/workspace.go Workspace):
+    # id, name, userId, runtime, storageSize, phase, pvcName, labels,
+    # defaultModel, createdAt, updatedAt, agentNeedsRefresh,
+    # credentialsPendingSince, devPreviewEnabled. NOT WorkspaceMetadata —
+    # the DB record also carries imageTag/agentVersion/orgId, which the
+    # DTO does not emit.
     id: str
     name: str
     userId: str
@@ -18,7 +24,10 @@ class Workspace:
     updatedAt: str
     pvcName: str | None = None
     labels: dict[str, str] | None = None
+    defaultModel: str | None = None
     agentNeedsRefresh: bool = False
+    credentialsPendingSince: str | None = None
+    devPreviewEnabled: bool = False
 
 
 @dataclass
@@ -31,7 +40,13 @@ class WorkspaceListItem:
     createdAt: str
     updatedAt: str
     phase: str | None = None
+    imageTag: str | None = None
+    agentVersion: str | None = None
+    defaultModel: str | None = None
     maxActiveSessions: int | None = None
+    agentNeedsRefresh: bool = False
+    credentialsPendingSince: str | None = None
+    orgId: str | None = None
 
 
 @dataclass
@@ -85,12 +100,14 @@ SECRET_NAME_PATTERN = r"^[a-z0-9._-]+$"
 
 @dataclass
 class SecretResponse:
+    # Mirrors pkg/secrets/types.go SecretResponse.
     id: str
     name: str
     type: str
     createdAt: str
     updatedAt: str
     metadata: Any = None
+    globalDefault: bool = False
 
 
 @dataclass

@@ -15,7 +15,15 @@ async function run(run: Runner, cfg: Config): Promise<void> {
   run.assert(regStatus === 201 || regStatus === 409, `register: 201 or 409 (got ${regStatus})`, '');
 
   // P2: Login
-  const [loginStatus] = await rawDo('POST', base + '/auth/login', '', Buffer.from(JSON.stringify({ email, password })));
+  // Retry on 429: sibling scenarios' logins share the per-IP login bucket
+  // (10/min); this scenario's contract is the 200-vs-403 verification
+  // semantics, not rate limiting (Python-twin parity).
+  let loginStatus = 0;
+  for (let attempt = 0; attempt < 7; attempt++) {
+    [loginStatus] = await rawDo('POST', base + '/auth/login', '', Buffer.from(JSON.stringify({ email, password })));
+    if (loginStatus !== 429) break;
+    await new Promise((res) => setTimeout(res, 10_000));
+  }
   if (loginStatus === 200) {
     run.ok('login: 200 (noop mode — auto-verified)');
   } else if (loginStatus === 403) {

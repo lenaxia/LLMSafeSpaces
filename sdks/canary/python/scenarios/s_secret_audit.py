@@ -17,7 +17,7 @@ def run(r: Runner, cfg: Config) -> None:
     try:
         ok, s = r.assert_no_error(
             lambda: c.secrets.create(
-                name="canary-py-audit", type="env-secret", value="v"
+                name="canary-py-audit", type="env-secret", value="v", metadata={"var_name": "CANARY_PY_VAR"}
             ),
             "create-for-audit: no error",
         )

@@ -101,11 +101,27 @@ def run(run: Runner, cfg: Config) -> None:
         "get-nonexistent: NotFoundError",
     )
 
-    # N3: Empty runtime
-    run.assert_error(
-        lambda: c.workspaces.create(name="x", runtime="", storage_size="1Gi"),
-        "create-empty-runtime: error",
+    # N3: Empty runtime — the API resolves the default-runtime hierarchy
+    # (user preference → org policy → workspace.defaultImage → "base"),
+    # so it should succeed (not fail). Mirror of the Go twin.
+    ok_flag, ws_default = run.assert_no_error(
+        lambda: c.workspaces.create(name="canary-default-runtime", runtime="", storage_size="1Gi"),
+        "create-empty-runtime: defaults (no error)",
     )
+    if ok_flag:
+        detail = ws_default.runtime if ws_default is not None else ""
+        run.assert_(
+            ws_default is not None and ws_default.runtime != "",
+            "create-empty-runtime: runtime defaulted",
+            detail,
+        )
+        if ws_default is not None:
+            # Best-effort cleanup — unlike Go's discarded error, an HTTP
+            # error here raises; don't let it abort N5/N6.
+            try:
+                c.workspaces.delete(ws_default.id)
+            except Exception:
+                pass
 
     # N5: Storage too large
     run.assert_error(

@@ -215,7 +215,7 @@ class WorkspacesAPI {
     return this.client.request<void>("PUT", `/workspaces/${id}/bindings`, { secretIds });
   }
   getBindings(id: string) {
-    return this.client.request<{ bindings: Array<{ id: string; name: string; type: string }> }>(
+    return this.client.request<{ bindings: Array<{ secretId: string; name: string; type: string }> }>(
       "GET", `/workspaces/${id}/bindings`);
   }
   reloadSecrets(id: string) {
