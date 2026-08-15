@@ -8,9 +8,9 @@ Get LLMSafeSpaces running on a local [`kind`](https://kind.sigs.k8s.io/) cluster
 |---|---|---|
 | `go` | 1.26+ | Build the API and controller |
 | `docker` | any recent | kind runs on it |
-| `kind` | 0.20+ | Local Kubernetes cluster |
-| `kubectl` | 1.28+ | Talk to the cluster |
-| `helm` | 3.12+ | Deploy the chart |
+| `kind` | 0.32+ | Local Kubernetes cluster (must support the pinned 1.35 node image; see `local/kind-cluster.yaml`) |
+| `kubectl` | 1.34+ | Talk to the cluster (±1 skew vs the 1.35 nodes) |
+| `helm` | 3.21+ | Deploy the chart (older binaries' built-in kubeVersion defaults predate 1.35 and refuse the chart offline) |
 | `curl` + `jq` | any | API requests |
 
 Verify:
@@ -18,7 +18,7 @@ Verify:
 ```bash
 go version          # go1.26+
 docker version     # any
-kind version       # kind v0.20+
+kind version       # kind v0.32+
 kubectl version --client --short
 helm version --short
 ```

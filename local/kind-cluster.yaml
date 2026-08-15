@@ -22,6 +22,7 @@ nodes:
       # cert-manager webhook traffic is internal; no host mapping needed.
 networking:
   # kind defaults to disableDefaultCNI=false and uses kindnet, which works
-  # for our purposes (no NetworkPolicy enforcement is required for these
-  # tests since chart's networkPolicy.enabled defaults to false).
+  # for our purposes: kindnet does not ENFORCE NetworkPolicy, so the chart's
+  # default networkPolicy.enabled=true policies are rendered but inert in
+  # this dev cluster. No override is needed.
   apiServerAddress: "127.0.0.1"
