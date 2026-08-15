@@ -64,21 +64,21 @@ The CI canary advanced past s_secret_crud's metadata fix to reveal `SecretRespon
 
 ### Round 8: email-reset login 429
 
-First-ever full Python section run: scenarios 1-16 green through `s_ownership`; `s_email_reset` (17 of 19) then failed on `login: unexpected status: got 429` — the accumulated logins across the section (11 POSTs to /auth/login across 9 scenarios — s_auth, s_logout, the six JWT-converted scenarios, and this one) share the per-IP login bucket (10/min). The scenario's contract is the 200-vs-403 email-verification semantics, so the login now retries on 429 (up to 7 attempts, 10s apart — one bucket refill), in both the Python and TS twins (the TS section's first-ever execution runs the same drained-bucket arithmetic).
+First-ever full Python section run: scenarios 1-16 green through `s_ownership`; `s_email_reset` (17 of 19) then failed on `login: unexpected status: got 429` — the accumulated logins across the section (12 POSTs to /auth/login across 10 scenarios — s_auth, s_logout, the seven JWT-converted scenarios, and this one) share the per-IP login bucket (10/min). The scenario's contract is the 200-vs-403 email-verification semantics, so the login now retries on 429 (up to 7 attempts, 10s apart — one bucket refill), in both the Python and TS twins (the TS section's first-ever execution runs the same drained-bucket arithmetic).
 
 ### Round 9: MCP canary bootstrap
 
-With Python fully green and the TS section's first-ever execution also fully green, the job reached the final MCP section — never executed before either — and failed on `go run ./sdks/canary/mcp/` from the workspace root: the MCP canary is its own Go module (`sdks/canary/mcp/go.mod`), invisible to the root module. Fixed to the Go-canary pattern: `working-directory: sdks/canary/mcp` + `go run .`.
+With Python fully green and the TS section's first-ever execution also fully green, the job reached the final MCP section — never executed before either — and failed on `go run ./sdks/canary/mcp/` from the workspace root: the MCP canary is its own Go module (`sdks/canary/mcp/go.mod`), invisible to the root module. Fixed to the Go-canary pattern: `working-directory: sdks/canary/mcp` + `go run .`. The section's own first execution then surfaced its contract drift — tracked in #874 (not this PR's scope).
 
 ## Blockers
 
-None for this PR's diff. Open convergence risk: the TS canary section's first-ever CI execution may surface further twin drift (as the Python section's did); each is the same deterministic, source-verifiable class addressed iteratively here.
+None for this PR's diff. The TS section's first-ever execution ran fully green (round 8 run), closing that risk. The remaining open item is the MCP section's first-ever execution, newly enabled by Round 9 — its tool-contract drift and ungated d-mcp-workspace are tracked in #874 (out of #867 scope).
 
 ---
 
 ## Next Steps
 
-- After merge with #869: the Python canary section should complete fully green for the first time; consider flipping `sdk-canary.continue-on-error` to `false` (ci.yml TODO) after a few consistently green runs.
+- Python (round 8) and TS (round 10) sections ran fully green for the first time. Remaining for the `sdk-canary.continue-on-error: false` flip (ci.yml TODO): the MCP section fixes tracked in #874.
 
 ---
 
