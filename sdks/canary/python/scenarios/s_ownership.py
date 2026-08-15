@@ -102,7 +102,9 @@ def run(r: Runner, cfg: Config) -> None:
             f"{cfg.api_url}/api/v1/workspaces/{ws1_id}/bindings",
             cfg.api_key_user2,
         )
-        r.assert_(s == 404, "user2-bindings-user1: 404 (secrets handler)", str(s))
+        # N6: 403 (workspace ownership middleware denies before the secrets
+        # handler) or 404 — the Go twin's access-denied contract.
+        r.assert_(s in (403, 404), "user2-bindings-user1: 403/404 (access denied)", str(s))
 
     finally:
         for ws_id, client in [(ws1_id, c1), (ws2_id, c2)]:

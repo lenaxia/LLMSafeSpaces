@@ -53,7 +53,8 @@ async function run(r: Runner, cfg: Config): Promise<void> {
     await r.assertError(() => c2.sessions.ensure(ws1Id!), 'user2-ensure-session-user1: error');
 
     const [s] = await rawDo('GET', `${cfg.apiUrl}/api/v1/workspaces/${ws1Id}/bindings`, cfg.apiKeyUser2);
-    r.assert(s === 404, `user2-bindings-user1: 404 (secrets handler, got ${s})`);
+    // N6: 403 (ownership middleware denies before the secrets handler) or 404 — Go twin contract.
+    r.assert(s === 403 || s === 404, `user2-bindings-user1: 403/404 (access denied, got ${s})`);
 
   } finally {
     if (s1Id) { try { await c1.secrets.delete(s1Id); } catch {} }
