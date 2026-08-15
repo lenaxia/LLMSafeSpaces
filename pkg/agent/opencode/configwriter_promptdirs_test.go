@@ -275,6 +275,56 @@ func TestConfigWriter_Apply_PromptDirs_NullExternalDirectory_NoPanic(t *testing.
 	assert.Equal(t, "allow", extDir["/tmp/*"], "null treated as absent; patterns injected fresh")
 }
 
+// Null sections across the writer (round-4): Go's encoding/json NILS a
+// map when unmarshaling JSON null into it — even a pre-initialized one —
+// so every unmarshal-then-write site in rebuildLocked panicked on a
+// tampered `null` section. Each guard is pinned by its own route.
+func TestConfigWriter_Apply_PromptDirs_NullAgentSection_NoPanic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-config.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"$schema":"https://opencode.ai/config.json","agent":null}`), 0o600))
+
+	w := NewConfigWriter(path)
+	_, err := w.Apply(agent.AgentConfigInput{AdminPrompt: &agent.AdminPromptChange{Text: "P"}})
+	require.NoError(t, err, "null agent section must not panic")
+
+	prompt, _ := decodeRendered(t, path)
+	assert.Equal(t, "P", prompt, "prompt written into a fresh map over the null section")
+}
+
+func TestConfigWriter_Apply_PromptDirs_NullModeSection_NoPanic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-config.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"$schema":"https://opencode.ai/config.json","mode":null}`), 0o600))
+
+	w := NewConfigWriter(path)
+	_, err := w.Apply(agent.AgentConfigInput{AllowedDirs: &agent.AllowedDirsChange{Dirs: []string{"/tmp/*"}}})
+	require.NoError(t, err, "null mode section must not panic")
+
+	_, extDir := decodeRendered(t, path)
+	assert.Equal(t, "allow", extDir["/tmp/*"])
+}
+
+func TestConfigWriter_Rebuild_NullProviderSection_NoPanic(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-config.json")
+	require.NoError(t, os.WriteFile(path, []byte(`{"$schema":"https://opencode.ai/config.json","provider":null}`), 0o600))
+
+	// Relay injection writes into the parsed provider map after the
+	// null unmarshal — the pre-guard panic site.
+	w := NewConfigWriter(path)
+	w.SetRelay("https://relay.example.test/path", []RelayModel{{ID: "glm-5-free", Name: "GLM-5 Free"}})
+	require.NoError(t, w.Rebuild())
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var cfg struct {
+		Provider map[string]json.RawMessage `json:"provider"`
+	}
+	require.NoError(t, json.Unmarshal(data, &cfg))
+	assert.Contains(t, cfg.Provider, "opencode-relay", "relay entry written into a fresh map over the null section")
+}
+
 func TestConfigWriter_Apply_PromptDirs_ClearPromptPreservesSiblingBuildFields(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent-config.json")

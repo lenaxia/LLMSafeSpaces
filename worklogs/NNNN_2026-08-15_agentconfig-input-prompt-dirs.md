@@ -71,7 +71,7 @@ prompt or dirs required reconstructing the writer.
 
 ## Verification
 
-- Nine promptdirs tests: replace/clear/nil over rendered files, clear
+- Twelve promptdirs tests: replace/clear/nil over rendered files, clear
   over the production side-car+rendered configuration (union
   semantics), sanitization, caller-slice isolation, failed-rebuild
   rollback (scalars + captured raws), null-external-directory panic
