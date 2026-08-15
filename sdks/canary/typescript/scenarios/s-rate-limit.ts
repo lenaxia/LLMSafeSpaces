@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // S-RATE-LIMIT canary — TypeScript SDK
 
-import { Runner, Config, configFromEnv, rawDo, hasField } from '../canary.js';
+import { Runner, Config, configFromEnv, rawDo, hasErrorField } from '../canary.js';
 
 async function run(r: Runner, cfg: Config): Promise<void> {
   const loginUrl = `${cfg.apiUrl}/api/v1/auth/login`;
@@ -16,7 +16,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
     const [s, b] = await rawDo('POST', loginUrl, '', body);
     if (s === 429) {
       got429 = true;
-      r.assert(hasField(b, 'error'), '429: has error field');
+      r.assert(hasErrorField(b), '429: error field is a string');
       break;
     }
   }

@@ -50,6 +50,7 @@ sdks/python/*.egg-info/
 sdks/go/live-test
 
 # Frontend build / dev artifacts
+node_modules/
 frontend/node_modules/
 frontend/dist/
 frontend/test-results/
