@@ -34,7 +34,15 @@ package settings
 // workflows.maxPerUser/maxPerOrg/maxRunDurationSec/workspaceActivationTimeoutSec/
 // maxNodeOutputBytes + triggers.maxPerUser/cronMinIntervalSec/webhookRateLimitPerSec.
 // New keys; admin UI schema cache must refresh.
-const SchemaVersion = 10
+// Bumped to 11 (2026-08-15): workspace.defaultImage Default changed from the
+// floating "ghcr.io/lenaxia/llmsafespaces/base:latest" to "" (fall through to
+// the chart-pinned base RuntimeEnvironment), its Description rewritten, and a
+// new RejectMutableTags field added to SettingDef (schema response shape
+// change). Context: the floating default let a registry mirror serve a
+// 4-day-stale image digest to new workspaces (incident 2026-08-14); writes of
+// mutable-tag image refs are now rejected. Existing deployments are cleaned
+// by migration 000023.
+const SchemaVersion = 11
 
 // SettingType defines the data type of a setting.
 type SettingType string
@@ -65,7 +73,14 @@ type SettingDef struct {
 	// helm-precedence model, US-49.2). The admin UX must disable edits to
 	// these keys and show a "Managed by Helm" badge. Set() rejects writes
 	// to read-only keys with ErrReadOnly.
-	ReadOnly bool `json:"readOnly,omitempty"`
+	// RejectMutableTags causes Validate to reject values shaped like
+	// container image references (contain '/') unless they are pinned to
+	// an explicit non-mutable tag or a digest. Un-tagged refs are rejected
+	// too — registries resolve them to :latest implicitly. Values without
+	// '/' are RuntimeEnvironment names and pass. Use for any setting whose
+	// value becomes a workspace image.
+	RejectMutableTags bool `json:"rejectMutableTags,omitempty"`
+	ReadOnly          bool `json:"readOnly,omitempty"`
 }
 
 // intPtr returns a pointer to an int value.
@@ -88,7 +103,7 @@ func InstanceSettings() []SettingDef {
 		{Key: "rateLimiting.strategy", Tier: 2, Type: TypeEnum, Default: "token_bucket", Enum: []string{"token_bucket", "fixed_window", "sliding_window"}, Category: "Rate Limiting", Label: "Strategy", Description: "Rate limiting algorithm"},
 
 		// Workspace
-		{Key: "workspace.defaultImage", Tier: 2, Type: TypeString, Default: "ghcr.io/lenaxia/llmsafespaces/base:latest", Category: "Workspace", Label: "Default Image", Description: "Image for new workspaces"},
+		{Key: "workspace.defaultImage", Tier: 2, Type: TypeString, Default: "", RejectMutableTags: true, Category: "Workspace", Label: "Default Image", Description: "Image for new workspaces (pinned tag or digest). Empty = the chart-pinned 'base' RuntimeEnvironment. Floating tags like :latest are rejected — they resolve differently per pull and per registry mirror."},
 		{Key: "workspace.defaultStorageSize", Tier: 2, Type: TypeString, Default: "15Gi", Pattern: StorageQuantityPattern, Category: "Workspace", Label: "Default Storage", Description: "Default PVC size"},
 		{Key: "workspace.defaultStorageClass", Tier: 2, Type: TypeString, Default: "", Category: "Workspace", Label: "Storage Class", Description: "K8s StorageClass (empty = cluster default)"},
 		{Key: "workspace.maxActiveWorkspacesPerUser", Tier: 2, Type: TypeInt, Default: 10, Min: intPtr(1), Max: intPtr(50), Category: "Workspace", Label: "Max Active Workspaces", Description: "Max running pods per user; oldest auto-suspended"},

@@ -83,6 +83,16 @@ describe("normalizeSettingValue", () => {
     });
   });
 
+  describe("default image", () => {
+    const key = "workspace.defaultImage";
+
+    it("trims surrounding whitespace", () => {
+      expect(normalizeSettingValue(key, "  ghcr.io/x/y:1.0.0 ")).toBe(
+        "ghcr.io/x/y:1.0.0",
+      );
+    });
+  });
+
   describe("non-resource settings", () => {
     it("does not touch instance.name", () => {
       // Free-form name field — auto-trimming would be surprising.

@@ -49,6 +49,8 @@ func Normalize(def SettingDef, value any) any {
 		return normalizeMemory(s)
 	case "workspace.defaultResources.cpu":
 		return normalizeCPU(s)
+	case "workspace.defaultImage":
+		return strings.TrimSpace(s)
 	}
 	return s
 }

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Floating-tag default workspace image (`workspace.defaultImage`)**. The
+  schema seeded `ghcr.io/lenaxia/llmsafespaces/base:latest` as the platform
+  default. Floating tags resolve per-puller — registry mirrors (e.g. spegel)
+  serve stale per-node digests while upstream has already moved the tag —
+  so new workspaces silently launched week-old images (incident 2026-08-14:
+  a v0.13.0 agentd missing the MCP 4098→4097 port fix was served for
+  `latest` while upstream had published v0.15.5). Fixes, in depth:
+  - Schema default is now empty — new workspaces fall through to the
+    `base` RuntimeEnvironment, whose image tag is pinned by the Helm chart
+    (`runtimeEnvironments.base.image.tag`, defaulting to the chart
+    AppVersion).
+  - `workspace.defaultImage` writes are validated: image refs must be
+    pinned to an explicit non-mutable tag (`latest`, `main`, `master`,
+    `dev`, `edge`, `nightly` rejected) or a digest; untagged refs are
+    rejected (implicit `:latest`). RuntimeEnvironment names still pass.
+  - The workspace-service read path skips stored floating-tag values with
+    a warning, so values written before validation existed cannot launch.
+  - Migration `000023` removes the seeded `base:latest` row from existing
+    deployments (admin-customized values are preserved).
+
 ## [0.15.5] - 2026-08-14
 
 ### Fixed
