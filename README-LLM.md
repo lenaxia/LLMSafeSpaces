@@ -397,7 +397,7 @@ The platform is decoupling from opencode via a **platform-owned session contract
 
 **The AgentConfigWriter seam (US-65.1):** opencode's config-merge quirks (no hot reload, `OPENCODE_CONFIG` always-wins, `disabled_providers` relay injection) have moved behind `Apply(AgentConfigInput) (restartRequired bool, err error)`. Platform code reacts to `restartRequired` without knowing why.
 
-**What this replaces:** the patch-part stripping (`?verbose`), opencode-shape history parsing, inline question/permission translation, and the relay-config fragilities documented in [Relay Config Subsystem](#relay-config-subsystem). The proxy filter was deleted outright and the legacy history parsing removed from the live request path in US-65.5 (it survives only as an adapter-nil fallback); the relay-config fragilities were contained behind `Apply` in US-65.1; question/permission event translation on the SSE path remains live behind the opencode dialect pending the adapter SSE migration; the frontend's opencode-shape SSE parsing goes when US-65.8 lands.
+**What this replaces:** the patch-part stripping (`?verbose`), opencode-shape history parsing, inline question/permission translation, and the relay-config fragilities documented in [Relay Config Subsystem](#relay-config-subsystem). The patch-stripping behavior was already gone before the epic (removed 2026-05-26, `3c0b1d52`); US-65.5 deleted its last artifact (the stale `proxy_filter_test.go`). The legacy history parsing left the live request path in US-65.4 — #716 wired the adapter unconditionally, #721 made `GetHistory` adapter-first — and survives only as an adapter-nil fallback. The relay-config fragilities were contained behind `Apply` in US-65.1. Question/permission event translation on the SSE path remains live behind the opencode dialect pending the adapter SSE migration. The frontend's opencode-shape SSE parsing goes when US-65.8 lands.
 
 **When working on agent-integration code, ask:** *"Does this line need to know the agent is opencode?"* If yes, it belongs in `pkg/agent/opencode/`, not in a handler, service, or controller. See [Rule 12](#12-containment-before-abstraction-external-dependency-coupling).
 
@@ -530,28 +530,29 @@ opencode merges config files via recursive deep-merge, last writer wins:
 
 ---
 
-### Writers of agent-config.json (as of 2026-06-19, post-US-46.10)
+### Writers of agent-config.json (as of 2026-08-15, post-US-65.1 + boot normalize #857)
 
-Within the agentd process, there is **one** write path to `agent-config.json`:
+Within the agentd process, there is **one** write path to `agent-config.json`, behind a single seam:
 
 | Writer | File | When | Produces |
 |---|---|---|---|
-| `AgentConfigWriter.Rebuild()` | `cmd/workspace-agentd/agent_config_writer.go` | Every credential reload + relay injection | Complete merged config: providers + model + relay (temp-file + `os.Rename`) |
+| `ConfigWriter.Apply(AgentConfigInput)` | `pkg/agent/opencode/configwriter.go` (behind the `agent.AgentConfigWriter` interface, `pkg/agent/agentconfig.go`) | Boot normalize (unconditional, #857), pre-boot relay, relay injection (~T+7s), every credential reload | Complete merged config: providers + model + relay + MCP servers + admin prompt + allowed dirs + the injected platform MCP entry (temp-file + `os.Rename`) |
 
-The **materialize subcommand** (separate process, runs before agentd) writes directly via `FlushProviders` + `applyWorkspaceConfig`. Once agentd starts, it reads this initial file via `newAgentConfigWriter()` and owns all subsequent writes.
+The **materialize subcommand** (separate process, runs before agentd) writes directly via `FlushProviders` + `applyMCPServersToConfig` (user-staged MCP servers, Epic 53) + `applyWorkspaceConfig` (model key). Once agentd starts, `ensureBootAgentConfig` (`cmd/workspace-agentd/boot_config.go`) constructs the writer — `NewConfigWriter` with the admin-prompt path, allowed-dirs path, and the pre-marshal hook that injects the platform MCP entry — and immediately applies an empty input, stamping the missing platform blocks while preserving the captured sources.
 
-The writer holds three sources, each updated independently:
-- **Providers** — `setProviders()` called after `Materializer.FormatProviders()` on credential reload
-- **Model** — captured from the existing file at boot (set by `applyWorkspaceConfig`)
-- **Relay** — `setRelay()` called by `startRelayInjector` after successful free-model discovery
+The writer captures the existing on-disk config at construction (`loadExisting()`: provider, model, agent, mode, and the `mcp` section — the #857 fix that keeps user-staged MCP servers alive across rebuilds) and merges staged changes from `AgentConfigInput`:
+- **Providers** — `Apply` with a `Providers` change, staged after `Materializer.FormatProviders()` on credential reload
+- **Model** — `Apply` with a `ModelSelection`; captured from the existing file otherwise
+- **Relay** — `Apply` with a `RelayState`, staged by the pre-boot relay or `startRelayInjector` after successful free-model discovery
+- **MCP servers** — `Apply` with an `MCPServerChange` (staged input supersedes the captured on-disk section, including on clear)
 
-`Rebuild()` merges all three and writes atomically. The `sync.Mutex` serialises concurrent calls.
+`Apply` with nil fields preserves the captured sources. The merged rebuild (`rebuildLocked()`) writes atomically; the writer's `sync.Mutex` serialises concurrent calls.
 
 ---
 
 ### Known design fragilities (documented, not bugs)
 
-1. **~~Multiple writers of agent-config.json~~ — RESOLVED (US-46.10).** The four-writer design has been replaced by a single `AgentConfigWriter` that owns all writes to `agent-config.json`. The writer holds three sources (providers, model, relay) and `Rebuild()` merges them into a complete config written atomically via temp-file + `os.Rename`. The relay injector and reload handler update their source then call `Rebuild()`. The `atomic.Pointer[[]relayModel]` coordination and the reload handler's manual relay re-merge have been removed — the writer always reflects current state.
+1. **~~Multiple writers of agent-config.json~~ — RESOLVED (US-46.10), then contained behind a seam (US-65.1).** The four-writer design was replaced by a single writer (`pkg/agent/opencode.ConfigWriter`, behind the `agent.AgentConfigWriter` interface) that owns all writes to `agent-config.json`. Callers stage an `AgentConfigInput` and call `Apply` — the writer merges staged changes over its captured sources into a complete config written atomically via temp-file + `os.Rename`. The relay injector, pre-boot relay, boot normalize, and reload handler all go through this one seam; the writer always reflects current state.
 
 2. **One-shot relay injector.** The injector goroutine runs once per pod lifetime. If the opencode credential changes after the injector has run (personal key → public key), the relay is not re-evaluated. The user must restart the pod. A re-triggerable injector (channel-based state machine) would handle this automatically.
 
@@ -563,23 +564,25 @@ The writer holds three sources, each updated independently:
 
 ### How the relay config subsystem works (as-built)
 
-The relay config subsystem uses a single `AgentConfigWriter` (`cmd/workspace-agentd/agent_config_writer.go`) that owns all writes to `agent-config.json` within the agentd process. The writer holds three sources:
+The relay config subsystem uses a single `ConfigWriter` (`pkg/agent/opencode/configwriter.go`, behind the `agent.AgentConfigWriter` interface) that owns all writes to `agent-config.json` within the agentd process. The writer captures the existing on-disk config (`loadExisting()`) and merges staged `AgentConfigInput` changes:
 1. **Providers** — from `Materializer.FormatProviders()` (llm-provider credentials)
 2. **Model** — from `applyWorkspaceConfig()` (workspace-config.json default model)
-3. **Relay** — from `startRelayInjector()` (opencode-relay provider + disabled_providers)
+3. **Relay** — from the pre-boot relay or `startRelayInjector()` (opencode-relay provider + disabled_providers)
+4. **MCP servers** — from `StagedMCPServers()` (Epic 53) on reload; user-staged servers captured from disk otherwise
 
-`Rebuild()` merges all three sources and writes atomically (temp-file + `os.Rename`). Coordination is via the writer's `sync.Mutex`, which serialises concurrent `Rebuild()` calls. opencode reads `agent-config.json` once at startup — not hot-reloaded.
+`rebuildLocked()` merges captured sources + staged changes and writes atomically (temp-file + `os.Rename`). Coordination is via the writer's `sync.Mutex`, which serialises concurrent rebuilds. opencode reads `agent-config.json` once at startup — not hot-reloaded.
 
 #### Agent-config.json write sequence (boot)
 
-1. **Materialize subcommand** (separate process, before agentd): loads base `/sandbox-cfg/secrets.json` (server-KEK creds) and replays `/sandbox-runtime/last-reload-secrets.json` (the last reload-secrets batch, #443) merged on top — cache wins on duplicate Type+Name. `Materializer.reset()` wipes tmpfs credential files → `Materialize(merged)` re-applies both base + cached user-DEK creds → `FlushProviders()` writes provider credentials → `applyWorkspaceConfig()` adds model key with providerID/modelID. Absent cache = first boot (base only). Corrupt cache = warn + base only.
-2. **agentd starts**: `newAgentConfigWriter()` reads the existing file, captures providers + model as initial sources
-3. **~T+7s**: `startRelayInjector()` fetches free models → `writer.SetRelay(url, models)` + `writer.Rebuild()` writes merged config → updates auth.json → restarts opencode
+1. **Materialize subcommand** (separate process, before agentd): loads base `/sandbox-cfg/secrets.json` (server-KEK creds) and replays `/sandbox-runtime/last-reload-secrets.json` (the last reload-secrets batch, #443) merged on top — cache wins on duplicate Type+Name. `Materializer.reset()` wipes tmpfs credential files → `Materialize(merged)` re-applies both base + cached user-DEK creds → `FlushProviders()` writes provider credentials → `applyMCPServersToConfig()` stages user-bound MCP servers (Epic 53) → `applyWorkspaceConfig()` adds model key with providerID/modelID. Absent cache = first boot (base only). Corrupt cache = warn + base only.
+2. **agentd starts**: `ensureBootAgentConfig` (`boot_config.go`, #857) constructs the writer and applies an empty `AgentConfigInput` — one unconditional, idempotent write that stamps the platform MCP entry, admin prompt, and allowed dirs while preserving the captured provider/model/mcp sources, before `startManagedProcess` so opencode's first read sees the completed config
+3. **Pre-boot relay** (conditional: free-models catalog present and no personal key): `pre_boot_relay.go` applies a relay-only `AgentConfigInput`
+4. **~T+7s**: `startRelayInjector()` fetches free models → `Apply` with a `RelayState` writes the merged config → updates auth.json → restarts opencode (session-aware restart, #852)
 
 #### Agent-config.json write sequence (credential reload)
 
-1. `reloadMu.Lock()` → `Materializer.reset()` → `Materialize(batch)` → `Materializer.FormatProviders()` formats credentials → `writer.SetProviders(formatted)` + `writer.Rebuild()` merges with existing model + relay sources → **`writeReloadSecretsCache()`** persists the batch to `/sandbox-runtime/last-reload-secrets.json` (tmpfs; survives container restart, wiped on pod death) → `reloadMu.Unlock()`
-2. `proc.restart()` reboots opencode with updated config
+1. `reloadMu.Lock()` → `Materializer.reset()` → `Materialize(batch)` → `Materializer.FormatProviders()` formats credentials → `deps.AgentConfigWriter.Apply(input)` (providers + staged MCP servers) merges with the captured model + relay sources → **`writeReloadSecretsCache()`** persists the batch to `/sandbox-runtime/last-reload-secrets.json` (tmpfs; survives container restart, wiped on pod death) → `reloadMu.Unlock()`
+2. `proc.restart()` reboots opencode with updated config (session-aware deferral, #852)
 
 The cache write (#443) is what lets user-DEK credentials (env-secrets like `GH_TOKEN`, SSH keys, user LLM providers) survive a main-container restart (OOM, panic, kubelet restart): without it, the next boot's `reset()` would wipe them and the base `secrets.json` (bootstrap, sessionless) never contained them. The cache is written after `Materialize` succeeds, is never written on a hard failure (500), and degrades to base-only on a corrupt read.
 
@@ -590,7 +593,7 @@ so it can correctly annotate the model catalog. The signal flows:
 
 ```
 relay_injector.go:
-  writer.SetRelay(url, models) → AgentConfigWriter.relay (non-nil after success)
+  Apply(AgentConfigInput{Relay: ...}) → ConfigWriter relay source (HasRelay() true after success)
 
 agentd /v1/readyz:
   writer.HasRelay() → ReadyzResponse.RelayInjected = true
