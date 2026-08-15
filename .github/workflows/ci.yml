@@ -1496,7 +1496,10 @@ jobs:
           arch="${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}"
           tag="${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}:sha-${{ github.sha }}-${arch}"
           docker buildx imagetools create -t "$tag" \
-            ${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}@sha256:${{ steps.build.outputs.digest }}
+            # outputs.digest already carries the sha256: prefix — do not
+            # prepend @sha256: again (double prefix = invalid reference,
+            # caught on the first live non-PR run).
+            ${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}@${{ steps.build.outputs.digest }}
           docker pull --platform ${{ matrix.platform }} "$tag"
           cid="agentd-extract-$GITHUB_RUN_ID"
           docker create --platform ${{ matrix.platform }} --name "$cid" "$tag" >/dev/null
