@@ -92,6 +92,7 @@ func TestEntrypointAgentd_MatchSelectsOverlayBinary(t *testing.T) {
 		"AGENTD_IMAGE_VOLUME=1",
 		"LLMSAFESPACES_AGENTD_BINARY=" + bin,
 		"LLMSAFESPACES_AGENTD_SHA256_AMD64=" + sha,
+		"LLMSAFESPACES_AGENTD_SHA256_ARM64=" + sha,
 	}, dir)
 	require.Equal(t, 0, code, "output: %s", out)
 	require.Contains(t, out, "AGENTD_BIN="+bin, "output: %s", out)
@@ -106,6 +107,7 @@ func TestEntrypointAgentd_MismatchExits81WithExpectedGot(t *testing.T) {
 		"AGENTD_IMAGE_VOLUME=1",
 		"LLMSAFESPACES_AGENTD_BINARY=" + bin,
 		"LLMSAFESPACES_AGENTD_SHA256_AMD64=" + strings.Repeat("d", 64),
+		"LLMSAFESPACES_AGENTD_SHA256_ARM64=" + strings.Repeat("d", 64),
 	}, dir)
 	require.Equal(t, 81, code, "mismatch must exit 81; output: %s", out)
 	require.Contains(t, out, "expected="+strings.Repeat("d", 64), "event-message format; output: %s", out)
@@ -120,6 +122,7 @@ func TestEntrypointAgentd_MissingBinaryExits82(t *testing.T) {
 		"AGENTD_IMAGE_VOLUME=1",
 		"LLMSAFESPACES_AGENTD_BINARY=" + filepath.Join(dir, "does-not-exist"),
 		"LLMSAFESPACES_AGENTD_SHA256_AMD64=" + strings.Repeat("a", 64),
+		"LLMSAFESPACES_AGENTD_SHA256_ARM64=" + strings.Repeat("a", 64),
 	}, dir)
 	require.Equal(t, 82, code, "missing overlay must exit 82; output: %s", out)
 }

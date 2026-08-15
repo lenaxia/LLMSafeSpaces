@@ -1538,8 +1538,6 @@ jobs:
     permissions:
       contents: read
       packages: write
-    outputs:
-      manifest-digest: ${{ steps.create.outputs.digest }}
     steps:
       - uses: actions/checkout@v6
 

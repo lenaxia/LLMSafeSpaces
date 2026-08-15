@@ -76,10 +76,11 @@ On 81/82 the controller:
 - emits a Warning event on the Workspace with **expected vs observed
   digest** and the node name,
 - increments
-  `llmsafespaces_workspace_agentd_verify_failures_total{outcome}`,
+  `llmsafespaces_workspace_agentd_verify_failures_total{outcome,node,agentd}`,
 - deliberately does **not** enter the crashloop recovery machinery —
-  restarting cannot fix a digest mismatch; the workspace stays Active
-  with the condition set, requeued at a slow cadence.
+  restarting cannot fix a digest mismatch; the workspace stays in its
+  current phase (Active or Creating) with the condition set, requeued at
+  a slow cadence.
 
 A Prometheus alert (`LLMSafeSpacesAgentdVerificationFailed`, severity
 **critical**, fires on any increase) is shipped in the chart.
