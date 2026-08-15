@@ -228,3 +228,21 @@ E2E determinism (reviewer requirement): the specs now hold both SSE streams open
 |---|---|---|
 | M1 | The round-5 e2e hold-pattern fix never landed: a leftover shadowing `session-events` override (route precedence: last-registered wins) kept serving the finite per-hit body — the parameterized first-body handler was dead and the re-delivery churn intact; the worklog row claimed it fixed. | Override deleted; the setup's parameterized first body serves the stream (two HTTP hits fulfilled — StrictMode's doomed first connection plus the surviving one; one effective delivery — then hold). Duplicate `wsQuestion`/`questionData` and comment collapsed. Worklog row corrected (above). |
 | nit | N4 test's `at: Date.now()` is vacuous on a same-millisecond collision with `sessionMountedAt`. | `at: Date.now() + 1`. |
+
+### Review rounds 7–9 (approvals; round-9 = rebase onto main `f6cbb834`)
+
+- Round 7 (APPROVE at `a4694921`): no new findings; all prior-round
+  invariants re-verified. Post-approval delta to `25ef474a` was
+  verifiably docs-only (COORDINATE.md status + a worklog wording nit —
+  round 8 re-review APPROVE).
+- Round 9 (APPROVE at `31988821`, 2026-08-15): branch rebased onto
+  main `f6cbb834` (picks up #853 Go 1.26.6, #855 version flags, #851
+  proxy send-error logging, #810 error surfacing). Rebase verified
+  semantically clean: #810's `ChatPage.tsx`/`useChatStream.ts` changes
+  fully preserved (COORDINATE.md's anticipated conflict never
+  materialized — the branch was cut after #810 landed); #851 touched
+  `proxy_handlers.go`, not `adapter.go` (no textual overlap); #855's
+  version plumbing intact (`main.go:23,58`). Reviewer re-ran every
+  suite at HEAD: Go incl. `-race`, vitest 1646/1646, `tsc --noEmit`,
+  eslint, Playwright 10/10 — all green. This entry completes the
+  round-9 non-blocking worklog request.
