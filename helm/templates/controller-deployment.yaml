@@ -127,6 +127,15 @@ spec:
             {{- if .Values.gvisor.enabled }}
             - --default-runtime-class={{ .Values.gvisor.defaultRuntimeClass | default "gvisor" }}
             {{- end }}
+            {{- /* #863: agentd overlay delivery (image volume). All-or-nothing:
+                    the required guards fail the render when the contract is
+                    half-configured, and the controller re-validates at
+                    startup. Empty image (legacy mode) renders nothing. */}}
+            {{- with .Values.controller.agentdDelivery.image }}
+            - --agentd-image={{ . }}
+            - --agentd-binary-sha256-amd64={{ $.Values.controller.agentdDelivery.binarySHA256Amd64 | required "controller.agentdDelivery.binarySHA256Amd64 is required when agentdDelivery.image is set (64-hex sha256 of the amd64 workspace-agentd binary)" }}
+            - --agentd-binary-sha256-arm64={{ $.Values.controller.agentdDelivery.binarySHA256Arm64 | required "controller.agentdDelivery.binarySHA256Arm64 is required when agentdDelivery.image is set (64-hex sha256 of the arm64 workspace-agentd binary)" }}
+            {{- end }}
             {{- /* Epic 51 S51.2: per-tenant resource quotas. Only wired when
                     any limit is > 0; the webhook registration is conditional
                     in main.go (disabled when all are 0). */}}

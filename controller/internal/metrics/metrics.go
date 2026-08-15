@@ -59,6 +59,13 @@ var (
 	WorkspacesInRecovery = prometheus.NewGauge(
 		prometheus.GaugeOpts{Name: "llmsafespaces_workspaces_in_recovery", Help: "Workspaces currently in recovery backoff (ConsecutiveFailures > 0 and not Active)"},
 	)
+	// #863: entrypoint agentd sha256 verification failures. Should-never-
+	// fire signal — a single occurrence indicates rollout drift, node
+	// corruption, or tampering. Page-on-any, not threshold.
+	WorkspaceAgentdVerifyFailuresTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "llmsafespaces_workspace_agentd_verify_failures_total", Help: "Entrypoint agentd binary verification failures by outcome (verify_failed = sha256 mismatch, overlay_missing = pinned binary absent). Once per failure episode, not per restart"},
+		[]string{"outcome"},
+	)
 	WorkspaceRecoveryDurationSeconds = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "llmsafespaces_workspace_recovery_duration_seconds",
@@ -190,6 +197,7 @@ func AllCollectors() []prometheus.Collector {
 		WorkspaceRecoveryBackoffDurationSeconds,
 		WorkspaceSafeModeActive, WorkspaceSafeModeEntriesTotal, WorkspaceSafeModeExitsTotal,
 		WorkspaceControllerRestartsTotal, WorkspacesInRecovery,
+		WorkspaceAgentdVerifyFailuresTotal,
 		WorkspaceRecoveryDurationSeconds,
 		WorkspaceStatusUpdateConflictsTotal,
 		WorkspaceCreateDurationSeconds, WorkspaceResumeDurationSeconds,

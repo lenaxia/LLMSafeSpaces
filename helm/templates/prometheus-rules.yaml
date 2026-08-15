@@ -90,6 +90,28 @@ spec:
 
     - name: llmsafespaces.controller
       rules:
+        # #863: page-on-any. The counter increments once per failure
+        # episode (not per restart), so any increase means a workspace
+        # refused to exec a tampered/mismatched agentd binary — rollout
+        # drift, node corruption, or an integrity attack. All three
+        # warrant waking someone.
+        - alert: LLMSafeSpacesAgentdVerificationFailed
+          expr: |
+            sum(increase(llmsafespaces_workspace_agentd_verify_failures_total{job=~"{{ $ctrlJob }}"}[1h])) > 0
+          for: 0m
+          labels:
+            severity: critical
+            component: controller
+          annotations:
+            summary: "LLMSafeSpaces agentd binary verification failed"
+            description: >-
+              {{ `{{ $labels.outcome }}` }}: a workspace entrypoint refused to exec the
+              pinned agentd binary (sha256 mismatch or missing overlay). This is a
+              should-never-fire signal. Check the workspace's AgentdVerified condition
+              and the AgentdVerificationFailed event (expected vs observed digest);
+              an observed digest matching a known agentd version indicates rollout
+              drift, an unknown digest indicates tampering or corruption.
+
         - alert: LLMSafeSpacesReconciliationErrors
           expr: |
             sum(rate(llmsafespaces_reconciliation_errors_total{job=~"{{ $ctrlJob }}"}[10m])) > 0.01

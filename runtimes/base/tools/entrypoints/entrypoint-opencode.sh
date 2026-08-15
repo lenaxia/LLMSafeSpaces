@@ -18,4 +18,6 @@ if [[ -f /sandbox-cfg/password ]]; then
 fi
 
 # agentd is PID 1 (supervisor). It manages opencode as a child process.
-exec workspace-agentd --supervise
+# AGENTD_BIN is exported by entrypoint-common.sh: the sha256-verified
+# overlay binary (#863) or the baked-in one (legacy mode).
+exec "${AGENTD_BIN}" --supervise
