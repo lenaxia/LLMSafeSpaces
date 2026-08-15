@@ -64,4 +64,4 @@ None.
 - controller/internal/workspace/pod_builder.go
 - controller/internal/workspace/pod_spec_consistency_test.go
 - local/test.sh
-- worklogs/NNNN_2026-08-15_fsgroup-policy-review-remediation.md (this file)
+- worklogs/0754_2026-08-15_fsgroup-policy-review-remediation.md (this file)
