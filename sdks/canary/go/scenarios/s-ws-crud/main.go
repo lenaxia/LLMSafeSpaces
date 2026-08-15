@@ -117,9 +117,10 @@ func runWSCRUD(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	err = c.Workspaces.Delete(ctx, "00000000-0000-0000-0000-000000000001")
 	run.Assert(err != nil, "delete-nonexistent: error", canary.ErrDetail(err, "expected error"))
 
-	// N3: Create with empty runtime — the API defaults it to the instance's
-	// workspace.defaultImage, so it should succeed (not fail). Verify the
-	// returned workspace has a non-empty runtime (the default was applied).
+	// N3: Create with empty runtime — the API resolves the default-runtime
+	// hierarchy (user preference → org policy → workspace.defaultImage →
+	// "base" RuntimeEnvironment), so it should succeed (not fail). Verify the
+	// returned workspace has a non-empty runtime (a default was applied).
 	wsDefault, err := c.Workspaces.Create(ctx, llm.CreateWorkspaceRequest{Name: "canary-default-runtime", Runtime: "", StorageSize: "1Gi"})
 	if run.AssertNoError(err, "create-empty-runtime: defaults (no error)") {
 		detail := ""

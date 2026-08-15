@@ -13,6 +13,7 @@ export interface SettingDef {
   label: string;
   description: string;
   readOnly?: boolean;
+  rejectMutableTags?: boolean;
 }
 
 export interface SettingsResponse {
