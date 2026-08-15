@@ -12,7 +12,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
   r.assert(s0 === 401, 'first-login: 401 (not 429)', `got ${s0}`);
 
   let got429 = false;
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < 12; i++) {
     const [s, b] = await rawDo('POST', loginUrl, '', body);
     if (s === 429) {
       got429 = true;
@@ -20,7 +20,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
       break;
     }
   }
-  r.assert(got429, 'rate-limit: got 429 within burst', 'no 429 after 8 rapid attempts');
+  r.assert(got429, 'rate-limit: got 429 within burst', 'no 429 after 12 rapid attempts');
 
   for (const path of ['/readyz', '/livez']) {
     let blocked = false;

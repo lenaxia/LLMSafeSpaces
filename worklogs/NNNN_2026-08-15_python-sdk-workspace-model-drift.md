@@ -57,9 +57,14 @@ The CI canary advanced past s_secret_crud's metadata fix to reveal `SecretRespon
 - **Async `SecretResponse` round-trip twin** added — the duplicated async parse path is now pinned like every other model (87/87).
 - `sdks/typescript/src/client.ts:218` — `getBindings` type declares `secretId` (server shape).
 
+### Round 7: N6 + rate-limit parity
+
+- `s_ownership` N6 (py+ts): 403-or-404 access-denied contract (Go twin; CI-proven red at `2b01d700`'s run).
+- `s-rate-limit.ts`: 8 → 12 burst attempts (Python-twin parity — the login limit is 10/min, so 8 may not trip it).
+
 ## Blockers
 
-None for this PR. The TS canary section's first-ever CI execution may surface further twin drift (as the Python section's did); each is the same deterministic, source-verifiable class addressed iteratively here.
+None for this PR's diff. Open convergence risk: the TS canary section's first-ever CI execution may surface further twin drift (as the Python section's did); each is the same deterministic, source-verifiable class addressed iteratively here.
 
 ---
 
