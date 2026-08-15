@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Workspace pods could boot with no platform MCP server, system
+  prompt, or `/tmp` external-dir approval**. Those blocks are rendered
+  only by the agent-config writer's marshal path, and every write
+  trigger at boot was conditional (pre-boot relay needs a free-models
+  catalog; the relay injector needs a successful fetch; credential
+  reload needs user action). When all skipped, opencode read the
+  materialize base config `{$schema, provider, model}` and ran without
+  the built-in `llmsafespaces` MCP server until the first credential
+  reload. agentd now performs one unconditional empty-input `Apply`
+  before starting opencode (`ensureBootAgentConfig`), stamping the MCP
+  entry, admin prompt, and allowed dirs on every boot. Found while
+  verifying the 2026-08-15 stale-image incident on v0.15.5.
+
 ### Changed
 
 - **Consistent build version injection across every component**. All Go

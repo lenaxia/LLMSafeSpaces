@@ -18,7 +18,6 @@ import (
 
 	"go.uber.org/zap"
 
-	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"github.com/lenaxia/llmsafespaces/pkg/version"
 )
@@ -93,15 +92,16 @@ func main() {
 	// supervisor. No-op when no marker is present (clean boot).
 	logRestartReason(RestartReasonMarkerPath, log.Core())
 
+	// Stamp the platform blocks (built-in MCP server, admin prompt,
+	// allowed dirs) onto agent-config.json BEFORE opencode starts, so
+	// its first read sees the completed config regardless of which
+	// conditional write paths later skip. See boot_config.go.
+	agentConfigPath := envOrDefault("LLMSAFESPACES_AGENT_CONFIG_PATH", agentd.AgentConfigPath)
+	agentConfigWriter := ensureBootAgentConfig(agentConfigPath, agentd.AdminPromptPath, agentd.AllowedDirsPath)
+
 	proc := startManagedProcess(supervise)
 
 	startedAt := time.Now()
-	agentConfigPath := envOrDefault("LLMSAFESPACES_AGENT_CONFIG_PATH", agentd.AgentConfigPath)
-	agentConfigWriter := opencode.NewConfigWriter(agentConfigPath,
-		opencode.WithAdminPromptPath(agentd.AdminPromptPath),
-		opencode.WithAllowedDirsPath(agentd.AllowedDirsPath),
-		opencode.WithPreMarshalHook(injectAgentdMCPServer),
-	)
 	deps := serverDeps{
 		client:            client,
 		cache:             &providerCache{},
