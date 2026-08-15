@@ -31,7 +31,7 @@ c.AbortWithStatusJSON(apiErr.StatusCode(), gin.H{
 })
 ```
 
-Every other error emitter in the API uses `{"error": "<string>"}` — `workspace_access.go:54`, `org_guard.go:27`, `email.go:99` (`error` + `limit`), `dev_preview.go:181` (`error` + `retryAfter`). The s-error-format canary (P5: "All error values are strings (not null, object, array)") pins this contract on reachable paths, and it passes on `main` — the rate-limit paths were the outliers, previously masked because the canary asserted P3 with two semantics and the lenient one passed.
+Every other **429** emitter in the API uses `{"error": "<string>"}` (some non-429 error paths still emit object shapes — see follow-up issue #862) — `workspace_access.go:54`, `org_guard.go:27`, `email.go:99` (`error` + `limit`), `dev_preview.go:181` (`error` + `retryAfter`). The s-error-format canary (P5: "All error values are strings (not null, object, array)") pins this contract on reachable paths, and it passes on `main` — the rate-limit paths were the outliers, previously masked because the canary asserted P3 with two semantics and the lenient one passed.
 
 **Consumer impact (why the string shape is correct, not just conventional):**
 - Go SDK `parseError` (`sdks/go/client.go:177-187`) decodes `Error string json:"error"` — an object fails to decode, falling through to an empty/generic message. `IsRateLimit(err)` still worked (status-based), but `APIError.Message` was degraded.
@@ -41,7 +41,7 @@ Every other error emitter in the API uses `{"error": "<string>"}` — `workspace
 ### Earlier failures explained (validated, already fixed on main)
 
 - **#647 (2026-08-04) `P2: no 429 after 30 rapid login attempts`** — transient; P2 passed on all later runs (2026-08-11, 2026-08-14). Message also drifted from the code (loop is 60 attempts, message said 30) — fixed.
-- **#734 (2026-08-11) `N1: beyond limit returns 429` (s-ws-quota)** — that day the scenario ran with `LLMSAFESPACES_MAX_WORKSPACES_PER_USER=10` wired; `ea6c869b` ("Go canary quota test skips when env var not set") and `20fa474a` (#810) landed after; the scenario now skips when the env var is absent, and the 2026-08-14 `main` run confirms (`PASS ws-quota: skipped`). No action needed.
+- **#734 (2026-08-11) `N1: beyond limit returns 429` (s-ws-quota)** — that day the scenario ran with `LLMSAFESPACES_MAX_WORKSPACES_PER_USER=10` wired; the skip behavior ("Go canary quota test skips when env var not set") landed on main via `20fa474a` (#810); the scenario now skips when the env var is absent, and the 2026-08-14 `main` run confirms (`PASS ws-quota: skipped`). No action needed.
 - **#647 Trivy (3 HIGH in frontend lockfile) and pkg/secrets integration failures (2026-08-04)** — both jobs pass on current `main` (dependency bumps + fixes landed between 2026-08-04 and 2026-08-11); stale-branch artifacts, no action in this PR.
 
 ### Fix (TDD)
@@ -49,8 +49,8 @@ Every other error emitter in the API uses `{"error": "<string>"}` — `workspace
 1. **Tests first** (red verified against unfixed middlewares):
    - `api/internal/middleware/tests/rate_limit_429_body_test.go` — `TestRateLimitMiddleware_429BodyContract`: global token-bucket limiter 429 body must have `error` (non-empty string), `limit` (number == configured limit), `retryAfter` (positive number).
    - `api/internal/middleware/per_route_rate_limit_test.go` — `TestPerRouteRateLimit_429BodyContract`: same contract for the per-route limiter (miniredis-backed real limiter).
-2. **`api/internal/middleware/rate_limit.go`** — 429 body now `{"error": <message string>, "limit": <limit>, "retryAfter": <window seconds, rounded up>}`; adds standard `Retry-After` header.
-3. **`api/internal/middleware/per_route_rate_limit.go`** — same shape (`limit` = route limit, `retryAfter` = route window rounded up); adds `Retry-After` header.
+2. **`api/internal/middleware/rate_limit.go`** — 429 body now `{"error": <message string>, "limit": <limit>, "retryAfter": <seconds derived from the error's reset, clamped ≥1>}`; adds standard `Retry-After` header (same value).
+3. **`api/internal/middleware/per_route_rate_limit.go`** — same shape (`limit` = route limit, `retryAfter` = full route window — review-sanctioned simplification); adds `Retry-After` header.
 4. **`sdks/canary/go/scenarios/s-rate-limit/main.go`** — removed the duplicate P3 assertion block (kept the string-typed `HasErrorField` check; the removed lenient re-check is what masked the middleware bug); P3 detail now includes the body prefix for future diagnosis; fixed P2 message drift ("30" → "60").
 
 ---
@@ -92,4 +92,7 @@ None.
 - api/internal/middleware/per_route_rate_limit_test.go
 - api/internal/middleware/tests/rate_limit_429_body_test.go (new)
 - sdks/canary/go/scenarios/s-rate-limit/main.go
+- sdks/canary/typescript/scenarios/s-rate-limit.ts (string-typed hasErrorField — round 3)
+- sdks/canary/python/scenarios/*.py (40 files: sys.path depth fix — latent CI bootstrap bug)
+- .gitignore (root node_modules/; stray lockfile artifact)
 - worklogs/NNNN_2026-08-15_rate-limit-429-error-contract.md (this file)

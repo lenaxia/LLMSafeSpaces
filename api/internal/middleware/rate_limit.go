@@ -130,10 +130,11 @@ func RateLimitMiddleware(rl interfaces.RateLimiterService, log pkginterfaces.Log
 		if err != nil {
 			if apiErr, ok := err.(*errors.APIError); ok && apiErr.Type == errors.ErrorTypeRateLimit {
 				// Derive the reset from the error when the strategy supplied
-				// one (token bucket ≈ now+1s, fixed/sliding window = now+TTL);
-				// fall back to the full window. Computing retryAfter from the
-				// window alone would tell token-bucket clients (the default
-				// strategy) to wait 60s when the bucket refills in ~1s.
+				// one (token bucket ≈ now+1s, fixed window = now+TTL, sliding
+				// window = now+window); fall back to the configured window.
+				// Computing retryAfter from the window alone would tell
+				// token-bucket clients (the default strategy) to wait 60s
+				// when the bucket refills in ~1s.
 				now := time.Now().Unix()
 				resetUnix := now + int64(window.Seconds())
 				if r, ok := apiErr.Details["reset"].(int64); ok && r >= now {
