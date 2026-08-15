@@ -71,11 +71,104 @@ import (
 // Secret is the materialization-time representation of a credential.
 // Metadata is intentionally kept as a typed map to avoid leaking arbitrary
 // JSON shape into the materializer; unknown keys are ignored.
+//
+// WIRE COMPATIBILITY (2026-08-15 incident): the injection pipeline writes
+// mcp-server metadata per MATERIALIZE-CONTRACT.md with native JSON types
+// ("args": [...], "timeoutMs": 5000), while this struct historically
+// required map[string]string — one bound MCP server crash-looped every
+// workspace boot ("cannot unmarshal array into ... Secret.metadata").
+// UnmarshalJSON accepts BOTH shapes: string values pass through;
+// numbers/booleans/arrays/objects are carried JSON-encoded as strings
+// (exactly what the mcp staging branch's json.Unmarshal(argsStr) expects).
 type Secret struct {
 	Type      string            `json:"type"`
 	Name      string            `json:"name"`
 	Metadata  map[string]string `json:"metadata"`
 	Plaintext string            `json:"plaintext"`
+
+	// MetadataInvalid records why the metadata could not be normalized
+	// (metadata that is not a JSON object). Materialize reports it
+	// per-entry as a Skipped result instead of aborting the whole batch.
+	//
+	// Wire persistence: round-tripped through the reserved
+	// "metadata_invalid" JSON key (MarshalJSON emits it; UnmarshalJSON
+	// reads it) so the reload-secrets cache replays the skip verdict
+	// identically — without it the cached entry marshals with
+	// "metadata":null, the flag is lost, and a restart materializes the
+	// rejected secret with defaults (T5 violation; review N1 on #871).
+	MetadataInvalid string `json:"-"`
+}
+
+// MarshalJSON emits the struct fields plus the reserved "metadata_invalid"
+// verdict key when set, so cache round-trips preserve the skip decision.
+// The key is namespaced ("metadata_invalid") so it cannot collide with a
+// legitimate metadata member key; UnmarshalJSON reads the same tag.
+func (s Secret) MarshalJSON() ([]byte, error) {
+	type wireSecret struct {
+		Type      string            `json:"type"`
+		Name      string            `json:"name"`
+		Metadata  map[string]string `json:"metadata"`
+		Plaintext string            `json:"plaintext"`
+	}
+	w := wireSecret{Type: s.Type, Name: s.Name, Metadata: s.Metadata, Plaintext: s.Plaintext}
+	if s.MetadataInvalid != "" {
+		return json.Marshal(struct {
+			wireSecret
+			MetadataInvalid string `json:"metadata_invalid"`
+		}{w, s.MetadataInvalid})
+	}
+	return json.Marshal(w)
+}
+
+// UnmarshalJSON implements the dual-shape metadata contract documented on
+// Secret. It never fails on metadata content — malformed metadata sets
+// MetadataInvalid so the entry can be skipped downstream with an accurate
+// reason rather than killing the file parse for every other secret. The
+// reserved metadata_invalid key (emitted by MarshalJSON) restores a
+// persisted verdict so a replayed cache entry skips identically to its
+// first-boot parse.
+func (s *Secret) UnmarshalJSON(data []byte) error {
+	type wireSecret struct {
+		Type      string          `json:"type"`
+		Name      string          `json:"name"`
+		Metadata  json.RawMessage `json:"metadata"`
+		Plaintext string          `json:"plaintext"`
+	}
+	var w wireSecret
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	s.Type = w.Type
+	s.Name = w.Name
+	s.Plaintext = w.Plaintext
+
+	// Persisted verdict (reserved wire key): restore before metadata
+	// analysis so replay skips identically.
+	var verdict struct {
+		MetadataInvalid string `json:"metadata_invalid"`
+	}
+	_ = json.Unmarshal(data, &verdict)
+	s.MetadataInvalid = verdict.MetadataInvalid
+
+	if len(w.Metadata) == 0 {
+		return nil
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(w.Metadata, &raw); err != nil {
+		s.MetadataInvalid = "metadata is not a JSON object: " + err.Error()
+		return nil
+	}
+	s.Metadata = make(map[string]string, len(raw))
+	for k, v := range raw {
+		var str string
+		if err := json.Unmarshal(v, &str); err == nil {
+			s.Metadata[k] = str
+			continue
+		}
+		// Non-string member: carry the raw JSON verbatim.
+		s.Metadata[k] = string(v)
+	}
+	return nil
 }
 
 // Outcome describes what happened to a single secret.
@@ -420,6 +513,20 @@ func (m *Materializer) reset() error {
 // captured into Reason; the function never returns an error.
 func (m *Materializer) applyOne(s Secret) SecretResult {
 	r := SecretResult{Type: s.Type, Name: s.Name}
+
+	if s.MetadataInvalid != "" {
+		// Malformed input maps to Skipped — pod boot is not blocked by a
+		// single malformed secret (invariant T5; same doctrine as
+		// validateName below). The Reason carries the parse failure for
+		// the reload status and result log; OutcomeFailed is reserved
+		// for materializer-side errors the platform owns. Consequently
+		// the reload handler surfaces this entry as a per-entry skipped
+		// reason (200), not a 500 — a deliberate choice: malformed
+		// input is the client's, boot tolerance is the platform's.
+		r.Outcome = OutcomeSkipped
+		r.Reason = s.MetadataInvalid
+		return r
+	}
 
 	if err := validateName(s.Name); err != nil {
 		// api-key and llm-provider do not require a meaningful name.
