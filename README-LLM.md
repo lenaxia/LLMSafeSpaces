@@ -542,7 +542,7 @@ The **materialize subcommand** (separate process, runs before agentd) writes dir
 
 The writer captures the existing on-disk config at construction (`loadExisting()`: provider, model, agent, mode, and the `mcp` section — the #857 fix that keeps user-staged MCP servers alive across rebuilds) and merges staged changes from `AgentConfigInput`:
 - **Providers** — `Apply` with a `Providers` change, staged after `Materializer.FormatProviders()` on credential reload
-- **Model** — `Apply` with a `ModelSelection`; captured from the existing file otherwise
+- **Model** — captured from the existing file at construction (written by `applyWorkspaceConfig` in the materialize process); no production caller stages a `ModelSelection` through `Apply` today
 - **Relay** — `Apply` with a `RelayState`, staged by the pre-boot relay or `startRelayInjector` after successful free-model discovery
 - **MCP servers** — `Apply` with an `MCPServerChange` (staged input supersedes the captured on-disk section, including on clear)
 
@@ -575,14 +575,14 @@ The relay config subsystem uses a single `ConfigWriter` (`pkg/agent/opencode/con
 #### Agent-config.json write sequence (boot)
 
 1. **Materialize subcommand** (separate process, before agentd): loads base `/sandbox-cfg/secrets.json` (server-KEK creds) and replays `/sandbox-runtime/last-reload-secrets.json` (the last reload-secrets batch, #443) merged on top — cache wins on duplicate Type+Name. `Materializer.reset()` wipes tmpfs credential files → `Materialize(merged)` re-applies both base + cached user-DEK creds → `FlushProviders()` writes provider credentials → `applyMCPServersToConfig()` stages user-bound MCP servers (Epic 53) → `applyWorkspaceConfig()` adds model key with providerID/modelID. Absent cache = first boot (base only). Corrupt cache = warn + base only.
-2. **Pre-boot relay** (conditional: free-models catalog present and no personal key): still inside the materialize process — `applyRelayConfigPreBoot` (`pre_boot_relay.go`) applies a relay-only `AgentConfigInput` before agentd's main writer exists
+2. **Pre-boot relay** (conditional: `INFERENCE_RELAY_BASEURL` set, free-models catalog present and non-empty, and no personal opencode API key in auth.json): still inside the materialize process — `applyRelayConfigPreBoot` (`pre_boot_relay.go`) applies a relay-only `AgentConfigInput` before agentd's main writer exists
 3. **agentd starts**: `ensureBootAgentConfig` (`boot_config.go`, #857) constructs the writer and applies an empty `AgentConfigInput` — one unconditional, idempotent write that stamps the platform MCP entry, admin prompt, and allowed dirs while preserving the captured provider/model/mcp sources, before `startManagedProcess` so opencode's first read sees the completed config
-4. **~T+7s**: `startRelayInjector()` fetches free models → `Apply` with a `RelayState` writes the merged config → updates auth.json → restarts opencode (session-aware restart, #852)
+4. **~T+7s**: `startRelayInjector()` — skips entirely when the pre-boot relay already applied (`HasRelay()` short-circuit, outcome `skipped_pre_boot_applied`); otherwise fetches free models → `Apply` with a `RelayState` writes the merged config → updates auth.json → restarts opencode (session-aware restart, #852)
 
 #### Agent-config.json write sequence (credential reload)
 
-1. `reloadMu.Lock()` → `Materializer.reset()` → `Materialize(batch)` → **`writeReloadSecretsCache()`** persists the batch to `/sandbox-runtime/last-reload-secrets.json` (tmpfs; survives container restart, wiped on pod death) → `Materializer.FormatProviders()` formats credentials → `deps.AgentConfigWriter.Apply(input)` (providers + staged MCP servers) merges with the captured model + relay sources → `reloadMu.Unlock()`
-2. `proc.restart()` reboots opencode with updated config
+1. `reloadMu.Lock()` → `Materializer.reset()` → `Materialize(batch)` → **`writeReloadSecretsCache()`** persists the batch to `/sandbox-runtime/last-reload-secrets.json` (tmpfs; survives container restart, wiped on pod death) → `EnrichProviders` refreshes custom-endpoint model lists → `Materializer.FormatProviders()` formats credentials → `deps.AgentConfigWriter.Apply(input)` (providers + staged MCP servers) merges with the captured model + relay sources → `reloadMu.Unlock()`
+2. `makeSessionAwareRestartDecision` reboots opencode with the updated config — immediately if no session is busy, else deferred until idle (bounded)
 
 The cache write (#443) is what lets user-DEK credentials (env-secrets like `GH_TOKEN`, SSH keys, user LLM providers) survive a main-container restart (OOM, panic, kubelet restart): without it, the next boot's `reset()` would wipe them and the base `secrets.json` (bootstrap, sessionless) never contained them. The cache is written immediately after `Materialize` succeeds — before provider formatting and the config write — so it reflects what was materialized even if a later step fails with a 500; it degrades to base-only on a corrupt read.
 
