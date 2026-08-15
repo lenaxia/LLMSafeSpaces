@@ -36,7 +36,7 @@ def run(r: Runner, cfg: Config) -> None:
             # contract under test is that GetStatus returns 200 with a
             # parseable shape (mirror of the Go twin).
             r.assert_(
-                st.get("phase", "") is not None,
+                "phase" in st and isinstance(st["phase"], str),
                 "status: phase present (may be empty pre-reconcile)",
             )
             r.assert_(
