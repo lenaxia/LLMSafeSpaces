@@ -178,9 +178,13 @@ func (w *ConfigWriter) loadExisting() {
 
 	// Recover the writer-injected external_directory keys from a
 	// previously rendered mode block (the post-boot-normalize pod
-	// state): map-form entries valued "allow" are ours — a later
-	// AllowedDirs Apply strips exactly these, preserving user-authored
-	// entries (deny rules, their own allows, bare-string policies).
+	// state). Fail-closed heuristic: every map-form entry valued
+	// "allow" is treated as writer-injected — a user-authored allow is
+	// indistinguishable from a writer-rendered one in the artifact, so
+	// a later AllowedDirs replace/clear sweeps it too. Deny/ask rules
+	// and bare-string policies are distinguishable and survive. The
+	// ambiguity dissolves in increment 3 (#860, pure render: injected
+	// keys tracked in writer state, not re-derived from the artifact).
 	if len(cfg.Mode) > 0 {
 		var mode struct {
 			Permissions struct {
@@ -264,10 +268,25 @@ func (w *ConfigWriter) loadAllowedDirs() {
 		return
 	}
 	w.allowedDirs = sanitizeAllowedDirs(patterns)
-	// The side-car patterns are exactly what the first rebuild injects
-	// into mode.permissions.external_directory; track them so a later
-	// AllowedDirs Apply can strip what the writer rendered.
-	w.injectedDirs = w.allowedDirs
+	// The side-car patterns are what this writer will inject; UNION them
+	// with the injected-dirs set recovered from a previously rendered
+	// mode block (loadExisting ran first) — a restart must retain
+	// authority over entries a prior writer lifetime rendered (e.g. a
+	// runtime AllowedDirs Apply before the restart), or a later clear
+	// would resurrect them (round-2 review: the side-car load used to
+	// overwrite the recovered set wholesale).
+	seen := make(map[string]struct{}, len(w.injectedDirs)+len(w.allowedDirs))
+	union := make([]string, 0, len(w.injectedDirs)+len(w.allowedDirs))
+	for _, set := range [][]string{w.injectedDirs, w.allowedDirs} {
+		for _, p := range set {
+			if _, dup := seen[p]; dup {
+				continue
+			}
+			seen[p] = struct{}{}
+			union = append(union, p)
+		}
+	}
+	w.injectedDirs = union
 }
 
 // parseRelayFromExisting extracts URL + models from a pre-injected

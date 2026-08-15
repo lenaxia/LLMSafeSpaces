@@ -67,6 +67,17 @@ prompt or dirs required reconstructing the writer.
 
 ## Verification
 
-- 3 new tests: replace-over-side-car, clear, nil-unchanged.
+- Nine promptdirs tests: replace/clear/nil over side-car AND over
+  rendered files, sanitization, caller-slice isolation, failed-rebuild
+  rollback (scalars + captured raws), the production side-car+rendered
+  configuration (union semantics), and sibling-build-field preservation.
+- Round-2 additions: the side-car load UNIONs the recovered injected-dirs
+  set (the first version overwrote it — a prior-lifetime /data/* would
+  have resurrected on clear; mutation-verified); the preservation
+  comments corrected to the actual fail-closed semantics (user-authored
+  map-form allows are swept; deny/ask and bare-string survive;
+  ambiguity dissolves in increment 3).
+- All tests mutation-verified: deleting the Apply handling, the strip
+  calls, the rollback restores, or the union each fails its test.
 - Full `./pkg/agent/...` + `./cmd/workspace-agentd/` (incl. e2e) pass.
 - `go build ./...` clean; gofmt clean.

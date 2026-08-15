@@ -175,3 +175,110 @@ func TestConfigWriter_Apply_PromptDirs_RollbackOnFailedRebuild(t *testing.T) {
 	assert.Empty(t, w.allowedDirs, "failed Apply must roll back the dirs source")
 	assert.Empty(t, w.injectedDirs, "failed Apply must roll back the injected-key set")
 }
+
+// Rollback of the STRIP mutations (round-2 hard requirement): a failed
+// Apply must also restore agentRaw/modeRaw — the strips run before the
+// rebuild, so without restoration a failed update would leave the
+// captured sections already stripped (the subtlest rollback branch).
+// Construct over a rendered file (raws captured), then make the write
+// fail via a read-only directory (root-skip per the file convention).
+func TestConfigWriter_Apply_PromptDirs_RollbackRestoresCapturedRaws(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root — chmod bits ineffective, cannot test write failure")
+	}
+	dir := t.TempDir()
+	path := writeRenderedBase(t, dir)
+
+	w := NewConfigWriter(path)
+	require.NotEmpty(t, w.agentRaw, "rendered agent section must be captured at construction")
+	require.NotEmpty(t, w.modeRaw, "rendered mode section must be captured at construction")
+	prevAgent, prevMode := w.agentRaw, w.modeRaw
+
+	require.NoError(t, os.Chmod(dir, 0o555))
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+
+	_, err := w.Apply(agent.AgentConfigInput{
+		AdminPrompt: &agent.AdminPromptChange{Text: "X"},
+		AllowedDirs: &agent.AllowedDirsChange{Dirs: []string{"/x/*"}},
+	})
+	require.Error(t, err, "Apply into a read-only directory must fail")
+
+	assert.JSONEq(t, string(prevAgent), string(w.agentRaw),
+		"failed Apply must restore the stripped agentRaw")
+	assert.JSONEq(t, string(prevMode), string(w.modeRaw),
+		"failed Apply must restore the stripped modeRaw")
+}
+
+// Production configuration (round-2 hard requirement): BOTH constructors
+// that ship today pass WithAllowedDirsPath (boot_config.go,
+// pre_boot_relay.go), so the authority mechanism must hold when the
+// side-car set and the rendered file's injected set DIFFER — e.g. a
+// runtime AllowedDirs Apply added /data/* before a restart, while the
+// side-car still lists only /tmp/*. The side-car load must UNION with
+// the recovered set (the first version overwrote it, resurrecting
+// /data/* on a later clear).
+func TestConfigWriter_Apply_PromptDirs_ProductionConfig_SideCarPlusRendered(t *testing.T) {
+	dir := t.TempDir()
+	path := writeRenderedBase(t, dir) // rendered injected: /tmp/* (+ user deny /secrets)
+
+	// Extend the rendered file with a prior-runtime-Apply pattern so the
+	// sets differ (side-car below has only /tmp/*).
+	rendered := `{
+		"$schema": "https://opencode.ai/config.json",
+		"provider": {"openai": {"options": {"apiKey": "k"}}},
+		"agent": {"build": {"prompt": "BOOT PROMPT"}},
+		"mode": {"permissions": {"external_directory": {"/tmp/*": "allow", "/data/*": "allow", "/secrets": "deny"}}}
+	}`
+	require.NoError(t, os.WriteFile(path, []byte(rendered), 0o600))
+
+	dirsPath := filepath.Join(dir, "allowed-dirs")
+	require.NoError(t, os.WriteFile(dirsPath, []byte(`["/tmp/*"]`), 0o600))
+
+	// Production wiring: side-car present, constructed over the
+	// rendered file.
+	w := NewConfigWriter(path, WithAllowedDirsPath(dirsPath))
+
+	_, err := w.Apply(agent.AgentConfigInput{
+		AllowedDirs: &agent.AllowedDirsChange{}, // clear
+	})
+	require.NoError(t, err)
+
+	_, extDir := decodeRendered(t, path)
+	assert.NotContains(t, extDir, "/tmp/*", "side-car pattern must clear")
+	assert.NotContains(t, extDir, "/data/*", "pattern injected by a prior writer lifetime must clear too (union semantics)")
+	assert.Equal(t, "deny", extDir["/secrets"], "user-authored deny rule survives")
+}
+
+// Sibling build fields survive a prompt clear; empty objects are pruned
+// (verified empirically in review round 2, unpinned until now).
+func TestConfigWriter_Apply_PromptDirs_ClearPromptPreservesSiblingBuildFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "agent-config.json")
+	base := `{
+		"$schema": "https://opencode.ai/config.json",
+		"agent": {"build": {"prompt": "BOOT PROMPT", "tools": {"edit": true}, "temperature": 0.2}}
+	}`
+	require.NoError(t, os.WriteFile(path, []byte(base), 0o600))
+
+	w := NewConfigWriter(path)
+	_, err := w.Apply(agent.AgentConfigInput{
+		AdminPrompt: &agent.AdminPromptChange{},
+	})
+	require.NoError(t, err)
+
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	var cfg struct {
+		Agent struct {
+			Build struct {
+				Prompt      string         `json:"prompt"`
+				Tools       map[string]any `json:"tools"`
+				Temperature float64        `json:"temperature"`
+			} `json:"build"`
+		} `json:"agent"`
+	}
+	require.NoError(t, json.Unmarshal(data, &cfg))
+	assert.Empty(t, cfg.Agent.Build.Prompt, "cleared prompt removed")
+	assert.True(t, cfg.Agent.Build.Tools["edit"].(bool), "sibling build.tools preserved")
+	assert.InDelta(t, 0.2, cfg.Agent.Build.Temperature, 1e-9, "sibling build.temperature preserved")
+}

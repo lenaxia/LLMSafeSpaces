@@ -58,11 +58,14 @@ func stripBuildPrompt(raw json.RawMessage) json.RawMessage {
 // captured "mode" section's permissions.external_directory map. Called
 // when an Apply supplies the AllowedDirs source (replace or clear):
 // like stripBuildPrompt, the source is authoritative over prior
-// renders. Only the tracked injected keys are removed — user-authored
-// entries (deny rules, their own allows, a bare-string policy) survive.
-// Objects that become empty are pruned; a nil/absent or bare-string
-// external_directory is returned untouched. Returns nil when the mode
-// section becomes empty.
+// renders. Fail-closed semantics: only the tracked injected keys are
+// removed, but the tracked set is itself recovered heuristically from
+// rendered artifacts (every map-form "allow" entry), so a user-authored
+// allow swept into that set is removed with them; deny/ask rules and
+// bare-string policies are never touched. The heuristic dissolves in
+// increment 3 (#860). Objects that become empty are pruned; a
+// nil/absent or bare-string external_directory is returned untouched.
+// Returns nil when the mode section becomes empty.
 func stripInjectedExternalDirs(raw json.RawMessage, keys []string) json.RawMessage {
 	if len(raw) == 0 || len(keys) == 0 {
 		return raw
