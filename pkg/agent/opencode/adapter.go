@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -252,13 +253,18 @@ func (a *Adapter) Send(ctx context.Context, userID, workspaceID, sessionID, text
 	if resp.StatusCode >= 400 {
 		return nil, a.httpError("POST /session/"+sessionID+"/message", resp)
 	}
-	raw, err := readBody(resp, 4<<20)
-	if err != nil {
-		return nil, fmt.Errorf("POST /session/%s/message: read body: %w", sessionID, err)
-	}
+	// Use a 64 MB cap (was 4 MB). A single assistant turn can exceed 4 MB
+	// when the model emits verbose tool output (e.g. a large file read or
+	// a long shell command dump). The previous 4 MB cap silently truncated
+	// the response, causing json.Unmarshal to fail with "unexpected end of
+	// JSON input" and the user's message to appear to vanish even though
+	// the LLM completed successfully. 64 MB is generous for one message
+	// while still bounding a malicious upstream. Use streaming decode via
+	// json.NewDecoder instead of buffering+Unmarshal for consistency with
+	// GetHistory's streaming path.
 	var om ocMessage
-	if err := json.Unmarshal(raw, &om); err != nil {
-		return nil, fmt.Errorf("POST /session/%s/message: parse: %w", sessionID, err)
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<20)).Decode(&om); err != nil {
+		return nil, fmt.Errorf("POST /session/%s/message: decode: %w", sessionID, err)
 	}
 	msg, files := translateMessage(om)
 	if len(files) > 0 && a.differ != nil {
@@ -287,13 +293,18 @@ func (a *Adapter) SendAsync(ctx context.Context, userID, workspaceID, sessionID,
 }
 
 func (a *Adapter) Abort(ctx context.Context, userID, workspaceID, sessionID string) error {
-	// Abort uses the V2 non-destructive interrupt (Epic 63 US-63.4):
-	// stops in-flight work but preserves queued input.
+	// Abort uses the V1 /session/:id/abort endpoint. The V2 interrupt
+	// endpoint (POST /api/session/:id/interrupt) was removed in opencode
+	// 1.18.10 — the entire v2/ route group was deleted. On 1.18.10 the
+	// V2 path returns 204 from a catch-all stub but does nothing (verified
+	// live: a long V1 turn keeps running after V2 interrupt). The V1
+	// /abort path returns 200 and actually stops the in-flight turn
+	// (verified live: session transitions to idle within 3s).
 	c, err := a.resolve(ctx, userID, workspaceID)
 	if err != nil {
 		return err
 	}
-	return c.InterruptV2(ctx, sessionID)
+	return c.Abort(ctx, sessionID)
 }
 
 func (a *Adapter) GetHistory(ctx context.Context, userID, workspaceID, sessionID string) ([]session.Message, error) {
@@ -309,13 +320,20 @@ func (a *Adapter) GetHistory(ctx context.Context, userID, workspaceID, sessionID
 	if resp.StatusCode >= 400 {
 		return nil, a.httpError("GET /session/"+sessionID+"/message", resp)
 	}
-	raw, err := readBody(resp, 16<<20)
-	if err != nil {
-		return nil, fmt.Errorf("GET /session/%s/message: read body: %w", sessionID, err)
-	}
-	msgs, changedFilesPerMsg, err := ParseHistoryWire(raw, workspaceID)
+	// Stream-decode the history body instead of buffering it. This
+	// avoids the silent-truncation failure mode when the upstream body
+	// exceeds the readBody cap (issue #737: sessions >16 MiB).
+	msgs, changedFilesPerMsg, downgraded, err := ParseHistoryStream(resp.Body, workspaceID)
 	if err != nil {
 		return nil, err
+	}
+	if downgraded > 0 {
+		a.logger.Warn("opencode history: some messages could not be decoded and were downgraded to system notices",
+			zap.Int("downgraded", downgraded),
+			zap.Int("total", len(msgs)),
+			zap.String("workspaceID", workspaceID),
+			zap.String("sessionID", sessionID),
+		)
 	}
 	// Produce FileChange parts for any message whose patch part
 	// collected file paths. Skipped when no differ is wired.
@@ -797,11 +815,14 @@ func (a *Adapter) Capabilities() []session.Capability {
 	// emission, and diff (via filediff when wired). Steer is supported
 	// by the V2 API but not yet exposed by the platform; rewind/fork/
 	// stash are not implemented upstream.
-	return []session.Capability{
+	caps := []session.Capability{
 		session.CapQueue,
 		session.CapReasoning,
-		session.CapDiff,
 	}
+	if a.differ != nil {
+		caps = append(caps, session.CapDiff)
+	}
+	return caps
 }
 
 // --- Credentials (folded from AgentRuntime) ---

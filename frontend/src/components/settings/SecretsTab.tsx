@@ -4,6 +4,7 @@ import { secretsApi, type SecretResponse } from "../../api/secrets";
 import { Button } from "../ui/Button";
 import { Input } from "../ui/Input";
 import { Tooltip } from "../ui/Tooltip";
+import { useConfirmDialog } from "../../hooks/useConfirmDialog";
 
 const SECRET_TYPES = [
   { value: "llm-provider", label: "LLM Providers", icon: "🤖", metaFields: ["provider", "apiKey"] },
@@ -60,6 +61,7 @@ export function SecretsTab() {
   const [updatingId, setUpdatingId] = useState<string | null>(null);
   const [secretBindings, setSecretBindings] = useState<Record<string, string[]>>({});
   const { toast } = useToast();
+  const { confirm: confirmAction, dialog: confirmDialog } = useConfirmDialog();
 
   const fetchSecrets = async () => {
     try {
@@ -92,14 +94,21 @@ export function SecretsTab() {
     }
   }, [revealedValue]);
 
-  const handleDelete = async (id: string, name: string) => {
-    if (!confirm(`Delete secret "${name}"? This cannot be undone.`)) return;
-    try {
-      await secretsApi.delete(id);
-      setSecrets((s) => s.filter((x) => x.id !== id));
-    } catch (e: unknown) {
-      setError((e instanceof Error ? e.message : String(e)));
-    }
+  const handleDelete = (id: string, name: string) => {
+    confirmAction({
+      title: "Delete secret?",
+      description: `Delete secret "${name}"? This cannot be undone.`,
+      confirmLabel: "Delete",
+      destructive: true,
+      onConfirm: async () => {
+        try {
+          await secretsApi.delete(id);
+          setSecrets((s) => s.filter((x) => x.id !== id));
+        } catch (e: unknown) {
+          setError((e instanceof Error ? e.message : String(e)));
+        }
+      },
+    });
   };
 
   const handleReveal = async (id: string) => {
@@ -308,6 +317,7 @@ export function SecretsTab() {
           ))}
         </div>
       )}
+      {confirmDialog}
     </div>
   );
 }

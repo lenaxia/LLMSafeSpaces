@@ -7,6 +7,7 @@ import { Badge } from "../components/ui/Badge";
 import { Spinner } from "../components/ui/Spinner";
 import { cn } from "../lib/utils";
 import { Plus, History, ArrowLeft } from "lucide-react";
+import { useConfirmDialog } from "../hooks/useConfirmDialog";
 
 export function WorkflowsPage() {
   const { workflowId } = useParams();
@@ -14,6 +15,8 @@ export function WorkflowsPage() {
   const queryClient = useQueryClient();
   const [showCreate, setShowCreate] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+
+  const { confirm: confirmAction, dialog: confirmDialog } = useConfirmDialog();
 
   const { data: workflows, isLoading } = useQuery({
     queryKey: ["workflows"],
@@ -143,10 +146,16 @@ export function WorkflowsPage() {
                   });
                   queryClient.invalidateQueries({ queryKey: ["workflows"] });
                 }}
-                onDelete={async () => {
-                  if (confirm(`Delete workflow "${selected.name}"?`)) {
-                    deleteMutation.mutate(selected.id);
-                  }
+                onDelete={() => {
+                  confirmAction({
+                    title: "Delete workflow?",
+                    description: `Delete workflow "${selected.name}"?`,
+                    confirmLabel: "Delete",
+                    destructive: true,
+                    onConfirm: () => {
+                      deleteMutation.mutate(selected.id);
+                    },
+                  });
                 }}
                 onRun={async (input?: string, workspaceId?: string) => {
                   const run = await workflowApi.run(selected.id, input || undefined, workspaceId);
@@ -199,6 +208,7 @@ export function WorkflowsPage() {
           </div>
         )}
       </div>
+      {confirmDialog}
     </div>
   );
 }

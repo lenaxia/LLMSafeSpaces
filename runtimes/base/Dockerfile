@@ -1,6 +1,6 @@
 ARG TARGETARCH
 
-FROM --platform=$BUILDPLATFORM golang:1.25-bookworm AS redact-builder
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS redact-builder
 
 ARG TARGETARCH
 
@@ -16,7 +16,7 @@ COPY pkg/ ./pkg/
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
     go build -trimpath -o /out/redact ./cmd/redact
 
-FROM --platform=$BUILDPLATFORM golang:1.25-bookworm AS agentd-builder
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS agentd-builder
 
 ARG TARGETARCH
 
@@ -25,12 +25,20 @@ WORKDIR /src
 ARG GOPROXY=https://proxy.golang.org,direct
 ENV GOPROXY=${GOPROXY}
 
+ARG VERSION=unknown
+ARG COMMIT_SHA=unknown
+ARG BUILD_TIME=unknown
+
 COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/ ./cmd/
 COPY pkg/ ./pkg/
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
-    go build -trimpath -o /out/workspace-agentd ./cmd/workspace-agentd
+    go build -trimpath \
+        -ldflags "-X github.com/lenaxia/llmsafespaces/pkg/version.Version=${VERSION} \
+                  -X github.com/lenaxia/llmsafespaces/pkg/version.CommitSHA=${COMMIT_SHA} \
+                  -X github.com/lenaxia/llmsafespaces/pkg/version.BuildTime=${BUILD_TIME}" \
+        -o /out/workspace-agentd ./cmd/workspace-agentd
 
 FROM debian:bookworm-slim
 
@@ -277,7 +285,7 @@ COPY --chmod=755 runtimes/base/tools/smoke-test.sh /usr/local/bin/smoke-test.sh
 RUN mkdir -p /etc/mise \
     && ARCH=$(uname -m) \
     && echo "Building for architecture: $ARCH" \
-    && for tool in python@3.12 node@lts rust@stable go@latest; do \
+    && for tool in python@3.12.13 node@lts rust@stable go@1.26.6; do \
         echo "Installing $tool..." \
         && for attempt in 1 2 3; do \
             MISE_YES=1 MISE_GITHUB_ATTESTATIONS=1 \
@@ -292,7 +300,7 @@ RUN mkdir -p /etc/mise \
         mise install --system "$tool" \
         || echo "WARN: $tool failed on $ARCH, skipping (will be available via mise at runtime)"; \
     done \
-    && printf '[tools]\npython = "3.12"\nnode = "lts"\nrust = "stable"\ngo = "latest"\njava = "lts"\nmaven = "latest"\ngradle = "latest"\n' > /etc/mise/config.toml \
+    && printf '[tools]\npython = "3.12.13"\nnode = "lts"\nrust = "stable"\ngo = "1.26.6"\njava = "lts"\nmaven = "latest"\ngradle = "latest"\n' > /etc/mise/config.toml \
     && mise reshim
 
 RUN /usr/local/bin/smoke-test.sh

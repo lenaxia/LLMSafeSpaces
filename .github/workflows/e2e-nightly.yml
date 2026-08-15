@@ -21,7 +21,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25.12"
+          go-version: "1.26.6"
           cache: true
 
       - name: Install kind
@@ -39,9 +39,13 @@ jobs:
 
       - name: Build and load images
         run: |
-          docker build --network host -f api/Dockerfile -t llmsafespaces/api:$IMAGE_TAG .
-          docker build --network host -f controller/Dockerfile -t llmsafespaces/controller:$IMAGE_TAG .
-          docker build --network host -f runtimes/base/Dockerfile -t llmsafespaces/runtime-base:$IMAGE_TAG .
+          # Stamp build versions so the e2e cluster's healthz/platform-info
+          # surfaces report the e2e build identity (semver-style tag name
+          # without a leading "v") instead of the "unknown" default.
+          E2E_VERSION="${{ env.IMAGE_TAG }}"
+          docker build --network host --build-arg VERSION="$E2E_VERSION" --build-arg COMMIT_SHA="${{ github.sha }}" -f api/Dockerfile -t llmsafespaces/api:$IMAGE_TAG .
+          docker build --network host --build-arg VERSION="$E2E_VERSION" --build-arg COMMIT_SHA="${{ github.sha }}" -f controller/Dockerfile -t llmsafespaces/controller:$IMAGE_TAG .
+          docker build --network host --build-arg VERSION="$E2E_VERSION" --build-arg COMMIT_SHA="${{ github.sha }}" -f runtimes/base/Dockerfile -t llmsafespaces/runtime-base:$IMAGE_TAG .
 
           # Retag runtime-base with the ghcr.io/lenaxia/ prefix so the
           # RuntimeEnvironment validating webhook's image allow-list accepts
@@ -102,6 +106,7 @@ jobs:
             --set externalSecret.create=true \
             --set "externalSecret.postgresPassword=e2e-pg-pw-2026" \
             --set "externalSecret.redisPassword=e2e-redis-pw-2026" \
+            --set rbac.scope=cluster \
             --set api.config.logging.development=true \
             --wait --timeout 5m
 
@@ -228,7 +233,7 @@ jobs:
           CTX: kind-${{ env.CLUSTER_NAME }}
           NS: ${{ env.NS }}
           PORTFWD_PORT: 18080
-          WORKSPACE_NAME: e2e-workspace
+          WORKSPACE_NAME: e2e00000-0000-0000-0000-000000000001
           LLM_MODEL: ${{ secrets.LLM_MODEL }}
         run: bash local/us-63-v2-behavior-e2e.sh
 

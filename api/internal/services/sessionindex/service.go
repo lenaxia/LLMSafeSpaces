@@ -61,7 +61,11 @@ func (s *Service) RecordMessage(workspaceID, sessionID, title string, at time.Ti
 	select {
 	case s.queue <- recordEvent{workspaceID: workspaceID, sessionID: sessionID, title: title, at: at}:
 	default:
-		// Channel full — drop oldest by reading one and pushing new
+		if s.logger != nil {
+			s.logger.Warn("session_index: channel full, dropping oldest event",
+				"workspaceID", workspaceID, "sessionID", sessionID,
+				"queueSize", len(s.queue))
+		}
 		select {
 		case <-s.queue:
 		default:
@@ -130,7 +134,9 @@ func (s *Service) drain() {
 				ev := <-s.queue
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				if err := s.db.UpsertSessionMessage(ctx, ev.workspaceID, ev.sessionID, ev.at); err != nil {
-					s.logger.Warn("Failed to flush session message on shutdown", "error", err, "workspaceID", ev.workspaceID, "sessionID", ev.sessionID)
+					if s.logger != nil {
+						s.logger.Warn("Failed to flush session message on shutdown", "error", err, "workspaceID", ev.workspaceID, "sessionID", ev.sessionID)
+					}
 				}
 				cancel()
 			}

@@ -3,8 +3,9 @@
 # Variables
 APP_NAME := agent-api
 VERSION := $(shell git describe --tags --always --dirty)
+COMMIT_SHA := $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 BUILD_TIME := $(shell date -u '+%Y-%m-%d_%H:%M:%S')
-LDFLAGS := -ldflags "-X main.version=$(VERSION) -X main.buildTime=$(BUILD_TIME)"
+LDFLAGS := -ldflags "-X github.com/lenaxia/llmsafespaces/pkg/version.Version=$(VERSION) -X github.com/lenaxia/llmsafespaces/pkg/version.CommitSHA=$(COMMIT_SHA) -X github.com/lenaxia/llmsafespaces/pkg/version.BuildTime=$(BUILD_TIME)"
 DOCKER_REPO := llmsafespaces
 
 # Go commands

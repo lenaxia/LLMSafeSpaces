@@ -10,6 +10,7 @@ from .errors import (
     LLMSafeSpacesError,
     NotFoundError,
     RateLimitError,
+    ServiceUnavailableError,
     TimeoutError,
 )
 from .types import (
@@ -42,6 +43,7 @@ __all__ = [
     "ConflictError",
     "TimeoutError",
     "RateLimitError",
+    "ServiceUnavailableError",
     "Workspace",
     "WorkspaceListItem",
     "WorkspaceListResult",

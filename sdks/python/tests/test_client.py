@@ -11,6 +11,7 @@ from llmsafespaces import (
     ConflictError,
     LLMSafeSpacesError,
     TimeoutError,
+    ServiceUnavailableError,
     MessageResponse,
     ProviderCredential,
 )
@@ -55,6 +56,25 @@ def test_auth_error():
     client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_bad")
     with pytest.raises(AuthError):
         client.auth.me()
+
+
+@respx.mock
+def test_service_unavailable_error():
+    respx.get(f"{BASE}/workspaces?limit=20&offset=0").respond(
+        status_code=503,
+        json={
+            "error": "workspace connection failed",
+            "message": "The agent is not responding.",
+            "reason": "agent_unreachable",
+            "retryAfter": 10,
+        },
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    with pytest.raises(ServiceUnavailableError) as exc_info:
+        client.workspaces.list()
+    assert exc_info.value.reason == "agent_unreachable"
+    assert exc_info.value.retry_after == 10
+    assert "not responding" in exc_info.value.args[0]
 
 
 @respx.mock

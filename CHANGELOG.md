@@ -7,6 +7,493 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Consistent build version injection across every component**. All Go
+  binaries (api, controller, workspace-agentd, relay-router, relay-proxy)
+  now read their build identity from `pkg/version` — the single source of
+  truth — stamped via `-ldflags` in every image build (VERSION/COMMIT_SHA/
+  BUILD_TIME). Previously the controller and workspace-agentd used their own
+  `"dev"` fallbacks, the API Makefile targeted non-existent linker symbols,
+  and release/CI never passed `VERSION`, so production images reported
+  `"dev"` regardless of tag. Un-stamped local builds now report
+  `"unknown"`. The base runtime healthz, the controller startup log, the
+  API `/livez`/`/v1/admin/platform-info`, and the relay healthz
+  endpoints all surface the injected semver for tagged releases.
+
+## [0.15.5] - 2026-08-14
+
+### Fixed
+
+- **Swallowed adapter errors on prompt/delete paths (#817, #851)**.
+  `SendMessage`, `SendPromptAsync`, and `DeleteSession` returned bare 502
+  responses without logging the underlying adapter error — production
+  failures (including the 125-second hangs under investigation in #817)
+  were undiagnosable. All three paths now log `adapter failed` with the
+  underlying error, matching every other adapter call site. Each branch
+  has a regression test.
+
+- **Five nil-request panic sites surfaced by Go 1.26 (#853)**. Go 1.26's
+  stricter `net/url` parsing exposed a latent panic class: call sites that
+  discarded the `http.NewRequestWithContext` error and called `Do(nil)`.
+  Most severe: the workflows engine's PreserveOnFailure cleanup embedded a
+  session ID from workspace-agent **output** into a URL — a control
+  character would crash the API process (the routine runs in the scheduler,
+  outside gin's recovery middleware; tenant-triggerable). Also fixed in
+  bulk agent-reload, MCP session list/read, and agentd session cleanup.
+  Dedicated regression tests pin every new error branch.
+
+### Changed
+
+- **Go toolchain 1.25.12 → 1.26.6 (#853)**. Fixes 7 Go standard-library
+  CVEs (GO-2026-6218, -6091, -6090, -6089, -6088, -5972, -5026) that began
+  failing govulncheck on every PR after the OSV database refresh. Verified
+  red→green locally and on CI (race detector and short suites green on
+  1.26.6). Pins updated across go.mod, 14 workflow pins, 6 Dockerfile base
+  images; the runtime base's mise `go@latest` is now pinned. The
+  CVE-2026-46600 `.trivyignore` entry is removed — obsolete under 1.26.6.
+
+### Known issues
+
+- #817 root cause (the 125-second prompt hangs) remains open — this
+  release ships the logging needed to diagnose it on the next occurrence.
+- #854: the tenant Go runtime image still pins Go 1.20.5 (follow-up).
+
+## [0.15.4] - 2026-08-14
+
+### Fixed
+
+- **Snapshot bloat root cause — `git init` in workspace boot (#810, #807)**.
+  Every workspace pod ran `git init` + `git config` during initialization,
+  creating a `.git` directory on the PVC that grew unbounded. Combined with
+  `filediff.Producer` (dead code that was never wired), this caused PVC
+  snapshot bloat and Longhorn volume-attach timeouts. The `git init` is
+  removed entirely; `buildWorkspaceDirsInit` now only runs `mkdir -p`.
+
+- **Health watchdog for opencode hangs (#807)**. A previously-healthy
+  opencode process that later hangs (deadlock, CPU starvation) was
+  undetectable — the pod stayed 1/1 Running forever with no restart. The
+  new health watchdog fires after 3 consecutive `/global/health` failures
+  (post-boot), triggers a restart via the managed-process supervisor, and
+  is rate-limited to 3 restarts per 10 minutes. Session-aware deferral
+  avoids killing in-flight LLM turns (checks busy state before restarting,
+  with a 5-minute max-defer cap). Restart reasons are recorded as markers,
+  Prometheus metrics, and structured logs.
+
+- **Structured 503 error responses (#810)**. Both `proxy.go` and
+  `proxy_handlers.go` now return `code`/`reason`/`message` fields on 503
+  responses. The frontend's `ChatHistoryErrorBanner` surfaces a yellow
+  "recovering" state when `reason` is present. All three SDKs (Go, Python,
+  TypeScript) raise `ServiceUnavailableError` with structured fields.
+
+- **SSE `agent_died` message consumed (#810)**. The `message` field in
+  `agent_died` SSE events was written to the wire but never read by the
+  frontend. `ChatPage.tsx` now reads `event.data.message` into
+  `agentDiedMessage` state and renders it in the banner.
+
+### Changed
+
+- CI workflows now configure git identity for the review bot (fixes
+  "Author identity unknown" errors in pr-review, ai-comment, issue-opened,
+  and renovate-analysis workflows).
+- `runtimes/base/Dockerfile` pins Python to 3.12.13 (floating `python@3.12`
+  resolved to 3.12.14 which has no precompiled binary in mise, breaking
+  the from-source build).
+- Makefile `release-tag` accepts semver pre-release suffixes (e.g.
+  `0.15.4-rc.1`).
+
+## [0.15.4-rc.1] - 2026-08-13
+
+### Fixed
+
+- **SSE tracker billing silent-zero on incomplete events (#751 F1c)**.
+  `handleSessionUpdated` silently dropped events with empty model ID,
+  zero output tokens, or empty session ID. All failure paths now emit
+  warn logs so operators can detect billing drift.
+
+- **SSE tracker cost-as-object silently zero (#751 F1a)**. When cost
+  arrived as a JSON object instead of a plain number, the value was
+  never extracted — billing stayed at zero. Now extracts the `cost`
+  field from object shapes with a plain-number fallback.
+
+- **SSE tracker reconnect race (#751 F3)**. `StopWatching` didn't wait
+  for the subscribe goroutine to exit, allowing stale events to
+  resurrect cleared billing state. Added `sync.WaitGroup` per workspace;
+  `StopWatching` and `Stop` now block until goroutines drain.
+
+- **`sessionStartTime` keying mismatch (#751 F2)**. The start-time map
+  was keyed by bare session ID while cleanup used `workspaceID:` prefix
+  matching — entries leaked forever. Re-keyed to composite
+  `workspaceID:sessionID`.
+
+- **Frontend cold-start busy detection (#752 F4)**. `seedBusy` checked
+  `status === "active"` but the backend enum has no `"active"` value
+  (`idle/busy/unknown/error/compacting/archived`). Now accepts `"busy"`.
+
+- **Unknown SSE event types silently dropped (#752 F6)**. Both SSE
+  handlers (ChatPage + SessionActivityProvider) now log unknown event
+  types via `console.debug`, making version drift visible.
+
+- **Wrong workspace evicted on max-active limit (#770)**.
+  `enforceMaxActiveWorkspaces` sorted by DB `UpdatedAt` (bumped by any
+  row mutation) instead of `LastActivityAt` (CRD annotation written by
+  ActivityTracker on real user interaction). An actively-used workspace
+  with old `UpdatedAt` could be auto-suspended while a stale one stayed
+  running. Now sorts by `LastActivityAt` with `UpdatedAt` fallback for
+  pre-US-23.3 workspaces.
+
+- **window.confirm fail-open data loss (#775)**. Two call sites wrapped
+  `window.confirm()` in try/catch where the catch block proceeded with
+  deletion. In sandboxed iframes, `window.confirm` throws → session or
+  workspace deleted without confirmation.
+
+- **All confirm dialogs migrated to accessible ConfirmDialog (#814)**.
+  All 14 `window.confirm` call sites replaced with the Radix Dialog-
+  based `ConfirmDialog` component via the new `useConfirmDialog` hook.
+  Dialogs now render in the DOM, working in sandboxed iframe contexts
+  where `window.confirm` is blocked entirely.
+
+- **CI review bot git identity (#813)**. The pr-review workflow failed
+  with "Author identity unknown" because `persist-credentials: false`
+  left no git identity. Added `git config` step to all 4 opencode
+  workflows.
+
+### Changed
+
+- `fetchUserWorkspacePhases` refactored to `fetchUserWorkspaceStates`
+  returning both phase and `LastActivityAt` from a single K8s API call
+  (zero additional API calls).
+
+## [0.15.3] - 2026-08-13
+
+### Fixed
+
+- **Sessions stuck "busy" after message — TRUE root cause (#805, #806)**.
+  The SSE event scanners in both agentd and the API had a 64KB per-line
+  buffer. opencode 1.18.10 emits `message.part.updated` events that
+  exceed 300KB (patch parts listing thousands of changed files; observed
+  370KB in production). When the scanner hit such a line, it failed
+  silently and dropped the SSE connection. The tracker then missed the
+  subsequent `session.status:idle` event and the session stayed "busy"
+  forever. Both scanners raised to 16MB. Regression tests verified to
+  fail on revert.
+
+## [0.15.2] - 2026-08-12
+
+### Fixed
+
+- **Frontend crash on empty response bodies (#782)** — the frontend
+  `client.ts` unconditionally called `res.json()` for any non-204 success.
+  A 202/200 with empty body (e.g., the old prompt endpoint behavior)
+  threw "Unexpected end of JSON input". Now reads `text()` first and
+  returns `undefined` for empty bodies, matching the TypeScript SDK's
+  defensive pattern.
+
+- **Stale sessions accumulate in agentd tracker (#792 Pattern 2 S8)** —
+  the `sessionStatusTracker` never pruned sessions from its in-memory
+  maps during the 30s `fillGaps` cycle. Deleted sessions stayed forever,
+  causing phantom busy counts and incorrect restart gating. The cycle
+  now calls `prune(activeIDs)` at the top of each run.
+
+## [0.15.1] - 2026-08-12
+
+### Fixed
+
+- **AbortSession silently broken on opencode 1.18.10 (SEV1)** — the V2
+  interrupt endpoint (`POST /api/session/:id/interrupt`) was removed in
+  opencode 1.18.10 (the entire `v2/` route group was deleted). On 1.18.10
+  the V2 path returns 204 from a catch-all stub but does nothing —
+  clicking "Stop" had no effect. Switched to V1 `POST /session/:id/abort`
+  which actually stops the in-flight turn.
+
+- **V1 Send response truncated at 4 MB** — same class of silent-
+  truncation as #737. A single assistant turn with verbose tool output
+  (>4 MB) would truncate, the JSON parse would fail, and the user's
+  message would appear to vanish even though the LLM completed.
+  Raised to 64 MB.
+
+- **statusz 16 KB decode cap too small** — a workspace with 55+ sessions
+  produces a statusz body >16 KB. The decode silently failed and the
+  stuck-busy self-heal stopped working for heavy users. Raised to 1 MB.
+
+### Root cause
+
+The entire `v2/` route group directory was deleted from opencode 1.18.10
+(`packages/opencode/src/server/routes/instance/httpapi/groups/v2/`).
+Both V2 endpoints (`/api/session/:id/prompt` and `/api/session/:id/interrupt`)
+are gone — they return 200/204 from a catch-all stub but execute nothing.
+Confirmed via source diff of anomalyco/opencode v1.15.12 vs v1.18.10.
+
+## [0.15.0] - 2026-08-12
+
+### Summary
+
+First production-ready release since v0.13.1. Bundles all v0.14.x hotfixes
+(Epic 65 adapter migration fallout) plus the stuck-busy ground-truth fix.
+Production was intentionally held at v0.13.1 through v0.14.x; this release
+is the culmination of the full investigation, root-cause analysis, and fix
+verification marathon documented in worklog 0744.
+
+The minor version bump (0.14 → 0.15) is justified by the breaking
+`SendPromptAsync` response change (202 → 200 with full assistant message
+body) and the switch from V2 queue to V1 synchronous send.
+
+### Fixed
+
+- **Sessions stuck "busy" forever (#792, #795)** — the in-memory
+  `activeSess` map retained stale "active" entries when the SSE stream
+  dropped or the API pod restarted mid-turn, making sessions appear
+  stuck busy indefinitely. `GetAuthoritativeActiveSessions` now queries
+  the workspace pod's `/v1/statusz` for ground-truth busy/idle status
+  and self-heals stale entries on every session-list request.
+
+- **Dev-preview URL used relative origin (#793, #797)** — dev-preview
+  links now use the absolute API origin instead of a relative path that
+  broke when the frontend was served from a different host.
+
+### Changed
+
+- **`SendPromptAsync` now returns 200 with the assistant message body**
+  (#755) — previously returned 202 (accepted) via V2 queue, which is
+  admitted but never drained on opencode 1.18.10. Now uses synchronous
+  V1 `POST /session/:id/message` and returns the completed assistant
+  message as JSON.
+
+### Testing
+
+- **E2e regression coverage closed for three hotfix gaps (#800)** —
+  worklog 0744's audit found that three of the four Epic 65 symptom
+  fixes were marked "Code path verified" (non-evidence per Rule 0).
+  Added three integration tests that exercise the full gin → handler →
+  adapter → HTTP path and are verified to FAIL when the corresponding
+  fix is reverted:
+  - `TestE2E_Adapter_GetHistory_LargeBodyOver16MiB_No502` (#737)
+  - `TestE2E_Adapter_SendPromptAsync_UsesV1SendNotV2Queue` (#755)
+  - `TestE2E_Adapter_GetHistory_EmptySession_ReturnsArrayNotNull`
+
+### Included from v0.14.x (previously unreleased to production)
+
+All fixes from v0.14.3 through v0.14.6 are included. See the individual
+changelog entries below for details. Key user-facing fixes:
+
+- Messages disappear on send (#755) — V1 synchronous send
+- GetHistory 502 on large sessions (#737) — streaming decoder
+- Null history crash on new sessions — nil→[] guard
+- Sessions stuck busy after LLM finishes — SSE watch on read paths
+- opencode 1.18.10 wire-shape drift (#740, #743, #744, #748) — providerID,
+  Agent, Status, flat tool parts, summary object, cost tokens
+- SSE tracker billing drift + memory leak (#751)
+- Secrets rotation restart mid-turn (#753)
+- Reasoning content silently dropped (#750)
+
+## [0.14.6] - 2026-08-12
+
+### Fixed
+
+- **GetHistory returns `null` for empty sessions — frontend crash** — when
+  opencode returns no messages (new session), the adapter returned a nil
+  slice which Go serializes as `null`. The frontend called `.filter()` on
+  the response, crashing with "Cannot read properties of null". Fixed to
+  return `[]`.
+
+## [0.14.5] - 2026-08-12
+
+### Fixed
+
+- **Sessions stuck "busy" after LLM finishes (#755)** — adapter read
+  paths (GetHistory, GetSession, ListSessions) never called
+  `adapterEnsureSSEWatch`, so opening a busy session without sending a
+  message never started the SSE tracker. The `session.status=idle`
+  event was never received and the session appeared stuck busy forever.
+  Fixed by adding SSE watch to all three read-path handlers.
+
+## [0.14.4] - 2026-08-12
+
+### Fixed
+
+- **Messages disappear on send — Sev1 (#755, #757)** — `SendPromptAsync` always routed through V2 queue (`delivery:"queue"`) which is admitted but never drained on opencode 1.18.10. Every message from every workspace vanished. Switched to synchronous `adapter.Send` (V1 `POST /session/:id/message`) which works on all versions.
+
+- **GetHistory 502 on large sessions — streaming decoder (#737, #738)** — the 16 MiB `readBody` cap truncated history bodies >16 MiB (94 MB sessions), causing JSON parse failure → 502. Replaced with streaming `json.Decoder` that has no body-size cap and returns partial results on truncation.
+
+- **Reasoning content silently dropped (#750, #757)** — `translate.go` read `p.Reasoning` but opencode 1.18.10 puts reasoning text in `p.Text`. Added fallback.
+
+- **Adapter 10s HTTP timeout broke sync Send (#746, #757)** — the hard `http.Client.Timeout: 10s` covered the entire exchange including body read. Removed; context deadline is the correct boundary.
+
+- **CapDiff falsely advertised (#745, #757)** — `Capabilities()` unconditionally returned `CapDiff` even though filediff is never wired. Made conditional on `a.differ != nil`.
+
+- **SSE tracker billing drift + memory leak (#751, #757)** — `handleSessionUpdated` parsed cost as `float64` (breaks on object shape), provider key only accepted `providerID` not legacy `provider`, and per-session billing maps never cleaned up on `StopWatching`. Fixed all three + data race on `sessionStartTime` mutex.
+
+- **Secrets rotation restart mid-turn (#753, #757)** — agentd session tracker only stored `busy`/`idle`, treating `retry`/`error`/`compacting` as neither (stale idle). Restart decision then fired mid-turn. Fixed to treat all non-idle statuses as busy.
+
+- **agentd parser drift (#747, #757)** — `fetchSessionPromptTokens` had silent zero-return paths with no logging and unbounded body read. Added debug logs + 16 MB `io.LimitReader` cap.
+
+- **MCP server OOM risk (#749, #757)** — `mcpSessionList`/`mcpSessionRead` used unbounded `io.ReadAll` with no status check. Added 4 MB/16 MB caps + status-code validation. Fixed MCP functions to use `getAgentAddr()` for testability.
+
+- **session_index channel drop (#754, #757)** — `RecordMessage` silently dropped events when channel full. Added nil-guarded warn log.
+
+- **opencode 1.18.10 wire-shape drift (#743, #748)** — `providerID` dropped (custom UnmarshalJSON), `Agent` field missing, `Status` latent 502 (polymorphic decoder).
+
+- **V2 bridge: spurious wake + TTL leak + nil-guard (#744, #748)** — busy-session guard in `wakeStrandedV2Sessions`, TTL pruning in `v2PendingSessions`, symmetric nil-guard.
+
+- **ParseSessionWire/ParseSessionListWire 502 on 1.18.10 (#740, #741)** — `Summary` string→object, `Cost` object→bare number, `Time` field name drift. All fixed with `json.RawMessage` + custom unmarshalers.
+
+- **Context usage backfill from CRD (#739, #741)** — `context_used` NULL after API pod restarts. Backfill from CRD status + observability.
+
+- **Adapter cross-cutting regressions (#740, #741)** — all adapter handler paths now enforce workspace readiness, connection limits, session limits, metering, quota, activity tracking.
+
+## [0.14.3] - 2026-08-11
+
+### Fixed
+
+- **Per-session context usage broken after API pod restarts (#739, #741)** —
+  `session_index.context_used` stayed NULL for sessions whose last LLM step
+  completed during an API pod restart. The SSE tracker reconnects but does
+  not replay missed events. `ListWorkspaceSessions` now backfills NULL
+  values from the workspace CRD status (which carries fresh per-session
+  values from agentd) and persists them to the DB (self-healing). Also adds
+  warn logs to `persistContextFromEvent`'s previously-silent no-op paths.
+
+- **Epic 65 adapter cross-cutting regressions (#740, #741)** — every
+  `if h.adapter != nil` handler branch bypassed `proxyToWorkspaceWithErrBody`,
+  skipping workspace-readiness checks, connection limits, session limits,
+  metering, quota enforcement, and activity tracking. Extracted 5
+  cross-cutting helpers (`resolveWorkspaceForAdapter`,
+  `checkAdapterSessionLimit`, `checkAdapterQuota`, `postAdapterSuccess`,
+  `adapterEnsureSSEWatch`) and wired them into SendMessage, SendPromptAsync,
+  GetHistory, GetSession, ListSessions, and CreateSession.
+
+- **ParseSessionWire/ParseSessionListWire deterministic 502 on opencode
+  1.18.10 (Finding O, #741)** — `ocSession.Summary` was typed as `string`
+  but 1.18.10 returns an object; `ocSession.Cost` was `*ocCost` but 1.18.10
+  returns a bare number; `ocTime` used `startedAt`/`completedAt` but 1.18.10
+  uses `created`/`updated` (epoch ms). All three fixed with `json.RawMessage`
+  and custom unmarshalers. Added `ocTokens` struct to extract session-level
+  token data.
+
+- **Read-path adapter error paths swallowed errors with no logging (Finding
+  N, #741)** — CreateSession, ListSessions, GetSession now log via
+  `h.logger.Error` before returning 502, matching the existing GetHistory
+  pattern.
+
+- **opencode 1.18.10 wire-shape drift: providerID, Agent, Status (#743,
+  #748)** — (1) `ocModelRef.Provider` used JSON key `"provider"` but 1.18.10
+  sends `"providerID"` — provider silently dropped for every session.
+  Fixed with custom `UnmarshalJSON` accepting both keys. (2) `ocSession`
+  had no `Agent` field — `session.AgentID` always empty. Added field +
+  mapping. (3) `ocSession.Status` was a required value type — latent 502
+  if opencode sends status as a bare string. Changed to `json.RawMessage`
+  with polymorphic decoder.
+
+- **V2 session-queue bridge: spurious wake + TTL leak + nil-guard (#744,
+  #748)** — (1) `wakeStrandedV2Sessions` had no busy-session guard,
+  creating concurrent turns on SSE reconnect. Now skips non-idle sessions.
+  (2) In-memory `v2PendingSessions` had no TTL — lost events left entries
+  forever. Added `lastAdded` timestamp + prune-on-read matching Redis's
+  10-min TTL. (3) Legacy `enqueueV2` path lacked nil-guard on `v2Pending`.
+
+- **Epoch-millis timestamp parsing in translator (#735)** — message
+  timestamps from opencode were parsed incorrectly, causing incorrect
+  message ordering in the frontend.
+
+- **Dec 31 timestamps — `CreatedAt` JSON tag missing omitempty (#736)** —
+  `session.Message.CreatedAt` serialized as `"0001-01-01T00:00:00Z"` when
+  unset, causing frontend to show epoch-zero timestamps.
+
+- **Nightly e2e: RBAC scope + Workspace CRD schema + session routes (#742)** —
+  fixed e2e test infrastructure for controller RBAC, CRD schema validation,
+  and session route mapping.
+
+## [0.14.2] - 2026-08-11
+
+### Changed
+
+- **Session queue is now inboard/durable (US-63.7)** — the external Redis-
+  backed message queue (`api/internal/services/msgqueue/`) and its incident-
+  scarred workarounds (message-id hack, 409-requeue, destructive abort,
+  stranded-queue sweep) have been deleted. The proxy now uses opencode's V2
+  session API exclusively (`delivery:"queue"` prompt + non-destructive
+  `interrupt`). The `LLMSAFESPACE_V2_SESSION_QUEUE` feature flag is removed;
+  V2 is the only path.
+  - **Abort is non-destructive:** queued messages survive an abort and drain
+    on the next turn.
+  - **Dismiss/revoke is removed:** the V2 API has no revoke on admitted-but-
+    unpromoted rows. `DELETE /sessions/:sid/queue/:messageId` now removes
+    from the shadow marker only (best-effort).
+  - **`ForceAbortSession`** (Epic 44 admin escape hatch) is retained.
+
+## [0.14.1] - 2026-08-11
+
+### Fixed
+
+- **Session history 502 on opencode 1.18.10 — flat-string tool shape (#730,
+  #731)** — the 0.14.0 GetHistory typed parser declared `ocPart.tool` as a
+  JSON object (`*ocTool`) but opencode 1.18.10 emits `"tool"` as a bare
+  string (the tool name) with `callID`/`state`/`input`/`output` hoisted to
+  the part level. Every `GET /api/v1/workspaces/{wid}/sessions/{sid}/message`
+  returned **502 Bad Gateway** for any session containing a tool call —
+  effectively every session in every workspace within minutes of creation
+  (Sev1 outage, ~24 min, mitigated by rolling the API back to 0.13.1).
+
+  **Root cause:** silent opencode wire-shape assumption drift (README §7).
+  The parser was "validated from opencode 1.15.12 binary"; production pods
+  run **1.18.10**. The Epic 65 translator tests built `ocPart` values with
+  the legacy nested-object shape, so every test passed while production
+  502'd. Same failure class as #707 and #486.
+
+  **Fix 1 (parser):** a custom `UnmarshalJSON` on `ocPart` normalizes both
+  wire shapes — flat-string (1.18.10+: `tool:"bash"` + part-level
+  `callID`/`state.time.{start,end}`) and legacy nested (≤1.15.x) — into the
+  canonical `ocTool`. The `session.ToolPart` contract is unchanged.
+
+  **Fix 2 (resilience, README §12 containment):** `ParseHistoryWire` now
+  decodes in two stages — `[]json.RawMessage` first (only fails on non-array
+  bodies), then per-message. A future opencode schema change in one part
+  degrades that single message to a `session.MessageSystem` notice instead
+  of 502-ing the whole history. Operators get a signal via the adapter WARN
+  log (`downgraded` count + session/workspace context).
+
+  **Regression tests (TDD, golden fixtures as schema pins):**
+  `testdata/history_1_18_10_flat_tool.json` (verbatim captured payload) and
+  `testdata/history_1_15_12_nested_tool.json` guard both shapes. Six tests
+  cover the verbatim shape, legacy non-regression, mixed shapes in one
+  history, one-malformed-part no longer killing the page, totally-garbage
+  still erroring, and all 9 tool names observed in production. Plus adapter
+  integration and two handler e2e tests.
+
+- **WorkspaceImagesTab re-fetch loop (#731)** — `load` had `baseName` in
+  its `useCallback` deps but `load` itself sets `baseName` on first run,
+  creating a re-fetch loop (`load → setBaseName → load recreated → useEffect
+  → load → setLoading(true)`). The component flickered back to the spinner
+  after initial load, racing the scope-routing test. Fixed with a `useRef`
+  guard so `load` has a stable identity and `useEffect` fires once.
+
+- **Playwright e2e mock shape drift (#731)** — after Epic 65 the GetHistory
+  endpoint returns the contract shape (`type`/`createdAt`/`parts`), not
+  opencode's raw shape (`info.role`/`time.created`). The e2e mock helpers
+  in `composer.spec.ts` and `session-activity.spec.ts` were never updated,
+  so `transformHistory` filtered out every message and 7 Playwright tests
+  failed on main. Updated mocks to emit contract shape.
+
+- **TypeScript SDK — `baseUrl` visibility (TS2341, #731)** —
+  `WorkspacesAPI.devPreviewUrl()` accesses `this.client.baseUrl`, but
+  `baseUrl` was declared `private`. The SDK Contract Tests CI job was
+  masked by the failing frontend-test dependency; fixing the frontend
+  unblocked it and exposed the bug. Changed to `readonly` (package-visible).
+
+- **SDK canary `expectedSchemaVersion` drift (8/4 → 10, #731)** —
+  `pkg/settings/schema.go` bumped `SchemaVersion` to 10 but the Go/TS/Python
+  SDK canary tests expected 8/4 respectively. The schema-version assertion is
+  a SCHEMA DRIFT DETECTOR by design — it caught the gap. Aligned all three
+  SDK canaries with the current version.
+
+- **SDK canary login rate-limit exhaustion (#731)** — the `/auth/login`
+  endpoint has a per-route rate limit of 10/min (burst 10). Each SDK canary
+  suite calls `jwtLogin` per scenario, exhausting the bucket and causing
+  spurious 429 failures in cred-crud and other login-bearing scenarios. The
+  Go section already had a `sleep 65` before S-RATE-LIMIT; added matching
+  waits before the Python and TypeScript sections and a mid-Go wait before
+  S-CRED-CRUD.
+
 ## [0.14.0] - 2026-08-11
 
 ### Added
@@ -1449,7 +1936,9 @@ Network hardening sweep + KMS-backed master KEK foundation + Go security bump.
 
 ## [0.1.0] - 2026-07-04
 
-[Unreleased]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.14.2...HEAD
+[0.14.2]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.14.1...v0.14.2
+[0.14.1]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.14.0...v0.14.1
 [0.5.1]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.5...v0.5.0
 [0.4.5]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.4.4...v0.4.5
@@ -1463,3 +1952,4 @@ Network hardening sweep + KMS-backed master KEK foundation + Go security bump.
 [0.2.1]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/lenaxia/LLMSafeSpaces/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/lenaxia/LLMSafeSpaces/releases/tag/v0.1.0
+## Placeholder

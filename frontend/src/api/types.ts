@@ -92,7 +92,7 @@ export interface ActiveSessionsResponse {
 }
 
 // Shape returned by the opencode agent GET /session/:id (proxied through)
-export interface OpenCodeSession {
+export interface AgentSession {
   id: string;
   title?: string;
   parentID?: string;
@@ -197,6 +197,19 @@ export interface ApiError {
    * Mirrors the HTTP `Retry-After` header value.
    */
   retryAfter?: number;
+  /**
+   * Structured reason for 503 responses. One of:
+   * - "not_ready" — workspace is booting/resuming
+   * - "agent_unreachable" — opencode hung or crashed
+   * - "agent_restarting" — watchdog or credential reload in progress
+   * Used by the frontend to show contextual recovery messaging.
+   */
+  reason?: string;
+  /**
+   * Human-readable explanation of the error. Always present on 503s
+   * from the proxy; may be absent on other error types.
+   */
+  message?: string;
 }
 
 // --- Workspace SSE event types ---
@@ -212,12 +225,12 @@ export interface SessionStatusEvent {
   session_id: string;
   // The proxy synthesizes string "idle" | "busy" for this field.
   // The full retry shape (attempt, message, next, action) is NOT carried here —
-  // it travels inside an opencode.event wrapper with event_type="session.status".
+  // it travels inside an agent.event wrapper with event_type="session.status".
   status: "idle" | "busy";
 }
 
-export interface OpenCodeEvent {
-  type: "opencode.event";
+export interface AgentEvent {
+  type: "agent.event";
   event_type: string;
   data: unknown;
 }
@@ -292,7 +305,7 @@ export interface QueueUpdateEvent {
 export interface AgentDiedEvent {
   type: "agent_died";
   workspace_id?: string;
-  data: { reason: string };
+  data: { reason: string; message?: string };
 }
 
 /**
@@ -302,7 +315,7 @@ export interface AgentDiedEvent {
 export type WorkspaceStreamEvent =
   | WorkspacePhaseEvent
   | SessionStatusEvent
-  | OpenCodeEvent
+  | AgentEvent
   | AgentQuestionEvent
   | AgentQuestionResolvedEvent
   | AgentPermissionEvent

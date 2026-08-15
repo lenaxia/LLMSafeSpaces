@@ -23,7 +23,7 @@ describe("mcpServers list envelope unwrap", () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       status: 200,
-      json: () => Promise.resolve({ servers: [server] }),
+      json: () => Promise.resolve({ servers: [server] }), text: () => Promise.resolve(JSON.stringify({ servers: [server] })),
     });
     const result = await adminMcpServersApi.list();
     expect(Array.isArray(result)).toBe(true);
@@ -35,7 +35,7 @@ describe("mcpServers list envelope unwrap", () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       status: 200,
-      json: () => Promise.resolve({ servers: [server] }),
+      json: () => Promise.resolve({ servers: [server] }), text: () => Promise.resolve(JSON.stringify({ servers: [server] })),
     });
     const result = await orgMcpServersApi.list("org-1");
     expect(Array.isArray(result)).toBe(true);
@@ -49,7 +49,7 @@ describe("mcpServers list envelope unwrap", () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       status: 200,
-      json: () => Promise.resolve({ servers: [server] }),
+      json: () => Promise.resolve({ servers: [server] }), text: () => Promise.resolve(JSON.stringify({ servers: [server] })),
     });
     const result = await userMcpServersApi.list();
     expect(Array.isArray(result)).toBe(true);
@@ -59,7 +59,7 @@ describe("mcpServers list envelope unwrap", () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       status: 200,
-      json: () => Promise.resolve({ servers: [] }),
+      json: () => Promise.resolve({ servers: [] }), text: () => Promise.resolve(JSON.stringify({ servers: [] })),
     });
     const result = await adminMcpServersApi.list();
     expect(Array.isArray(result)).toBe(true);
@@ -70,7 +70,7 @@ describe("mcpServers list envelope unwrap", () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       status: 200,
-      json: () => Promise.resolve([server]),
+      json: () => Promise.resolve([server]), text: () => Promise.resolve(JSON.stringify([server])),
     });
     const result = await adminMcpServersApi.list();
     expect(Array.isArray(result)).toBe(true);

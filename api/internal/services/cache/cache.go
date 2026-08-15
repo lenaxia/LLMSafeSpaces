@@ -128,6 +128,21 @@ func (s *Service) SetNX(ctx context.Context, key string, value string, expiratio
 	return ok, nil
 }
 
+// Incr atomically increments a key by 1 and sets expiration on the
+// first increment. Returns the new value after increment. This closes
+// the TOCTOU race in login lockout counting (#765) — the previous
+// GET→SET pattern allowed concurrent requests to read the same count.
+func (s *Service) Incr(ctx context.Context, key string, expiration time.Duration) (int64, error) {
+	result, err := s.client.Incr(ctx, key).Result()
+	if err != nil {
+		return 0, fmt.Errorf("failed to incr in cache: %w", err)
+	}
+	if result == 1 {
+		s.client.Expire(ctx, key, expiration)
+	}
+	return result, nil
+}
+
 // Delete deletes a value from the cache
 func (s *Service) Delete(ctx context.Context, key string) error {
 	err := s.client.Del(ctx, key).Err()

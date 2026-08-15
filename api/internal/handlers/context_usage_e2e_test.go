@@ -118,7 +118,7 @@ func TestE2E_StepEndedEvent_PersistsContextUsed(t *testing.T) {
 
 	select {
 	case evt := <-sub.Ch:
-		assert.Equal(t, "opencode.event", evt.Type)
+		assert.Equal(t, "agent.event", evt.Type)
 		assert.Equal(t, "session.next.step.ended", evt.EventType)
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for SSE event through broker")

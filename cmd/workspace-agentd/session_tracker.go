@@ -218,7 +218,22 @@ func (t *sessionStatusTracker) connectAndRead(ctx context.Context, client *OpenC
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 64*1024), 64*1024)
+	// 16 MB buffer per line (was 64 KB). SSE events like
+	// message.part.updated carry full message metadata and can be very
+	// large:
+	//   - patch parts list every changed file path (observed: 2717 files
+	//     = 370KB in a single event; a large monorepo could be 10MB+)
+	//   - tool output is truncated to 50KB by opencode but the full
+	//     Part envelope adds metadata
+	//   - reasoning/text parts carry the model's full output
+	// The old 64 KB cap caused the scanner to fail silently on large
+	// events, dropping the SSE connection. The agentd tracker then
+	// missed the session.status:idle transition and the session stayed
+	// "busy" forever — the stuck-busy bug.
+	// 16 MB is generous: it handles a 100K-file patch event (~10MB)
+	// while still bounding a malicious or runaway upstream. The Go
+	// scanner allocates lazily so the 16MB is a max, not a baseline.
+	scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
 
 	var eventData strings.Builder
 	for scanner.Scan() {
@@ -278,8 +293,11 @@ func (t *sessionStatusTracker) handleSessionStatus(props json.RawMessage) {
 	if json.Unmarshal(props, &p) != nil || p.SessionID == "" {
 		return
 	}
-	if p.Status.Type == "busy" || p.Status.Type == "idle" {
-		t.set(p.SessionID, p.Status.Type)
+	switch p.Status.Type {
+	case "idle":
+		t.set(p.SessionID, "idle")
+	case "busy", "retry", "error", "compacting":
+		t.set(p.SessionID, "busy")
 	}
 }
 
@@ -322,7 +340,19 @@ func runFill(ctx context.Context, client *OpenCodeClient, tracker *sessionStatus
 	iterCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
-	for _, s := range sessions() {
+	activeSessions := sessions()
+
+	// Pattern 2 Fix S8: prune stale session entries every fill cycle.
+	// Without this, sessions that were deleted from opencode (but not
+	// cleared from the tracker) stay in statuses/promptTokens forever,
+	// causing phantom busy counts and incorrect restart gating.
+	activeIDs := make([]string, 0, len(activeSessions))
+	for _, s := range activeSessions {
+		activeIDs = append(activeIDs, s.ID)
+	}
+	tracker.prune(activeIDs)
+
+	for _, s := range activeSessions {
 		if tracker.hasPromptTokens(s.ID) {
 			continue
 		}

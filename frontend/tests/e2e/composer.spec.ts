@@ -114,16 +114,12 @@ async function mockAuthAndWorkspace(page: Page, opts: { phase?: string } = {}) {
   });
 }
 
-/** Render a chronological message array (oldest-first) as the opencode-shaped JSON the API returns. */
-function opencodeShape(msgs: MockMessage[]): unknown[] {
+/** Render a chronological message array (oldest-first) as the contract-shaped JSON the API returns (post-Epic-65 Adapter). */
+function contractShape(msgs: MockMessage[]): unknown[] {
   return msgs.map((m) => ({
-    info: {
-      id: m.id,
-      role: m.role,
-      time: { created: new Date(m.createdAt).getTime() },
-    },
     id: m.id,
-    role: m.role,
+    type: m.role,
+    createdAt: m.createdAt,
     parts: [{ type: "text", text: m.text }],
   }));
 }
@@ -134,7 +130,7 @@ async function mockHistory(page: Page, msgs: MockMessage[], opts: { nextCursor?:
     if (opts.nextCursor) headers["X-Next-Cursor"] = opts.nextCursor;
     await route.fulfill({
       status: 200, headers,
-      body: JSON.stringify(opencodeShape(msgs)),
+      body: JSON.stringify(contractShape(msgs)),
     });
   });
 }
@@ -304,11 +300,11 @@ test.describe("Load earlier messages + scroll anchoring (real browser)", () => {
       const url = route.request().url();
       const isSecondCall = url.includes("before=");
       const body = isSecondCall
-        ? opencodeShape([
+        ? contractShape([
             { id: "old-u", role: "user", text: "OLDER user msg", createdAt: "2026-01-01T00:00:01Z" },
             { id: "old-a", role: "assistant", text: "OLDER asst msg", createdAt: "2026-01-01T00:00:02Z" },
           ])
-        : opencodeShape([
+        : contractShape([
             { id: "new-u", role: "user", text: "NEW user msg", createdAt: "2026-01-01T00:00:10Z" },
             { id: "new-a", role: "assistant", text: "NEW asst msg", createdAt: "2026-01-01T00:00:11Z" },
           ]);
@@ -346,10 +342,10 @@ test.describe("Load earlier messages + scroll anchoring (real browser)", () => {
       const url = route.request().url();
       const isSecondCall = url.includes("before=");
       const body = isSecondCall
-        ? opencodeShape([
+        ? contractShape([
             { id: "old-1", role: "user", text: "OLDER-MARKER " + tallText, createdAt: "2026-01-01T00:00:01Z" },
           ])
-        : opencodeShape([
+        : contractShape([
             { id: "new-1", role: "user", text: "ANCHOR-MARKER " + tallText, createdAt: "2026-01-01T00:00:10Z" },
           ]);
       const headers: Record<string, string> = { "Content-Type": "application/json" };

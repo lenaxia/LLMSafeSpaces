@@ -92,6 +92,41 @@ func TestClient_RateLimit(t *testing.T) {
 	}
 }
 
+func TestClient_ServiceUnavailableError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		json.NewEncoder(w).Encode(map[string]any{
+			"error":      "workspace connection failed",
+			"message":    "The agent is not responding. Please try again in a moment.",
+			"reason":     "agent_unreachable",
+			"retryAfter": 10,
+		})
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("lsp_test"))
+	_, err := c.Auth.Me(context.Background())
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !IsServiceUnavailable(err) {
+		t.Errorf("expected ServiceUnavailable error, got: %v", err)
+	}
+	apiErr, ok := err.(*APIError)
+	if !ok {
+		t.Fatalf("expected *APIError, got %T", err)
+	}
+	if apiErr.Reason != "agent_unreachable" {
+		t.Errorf("expected reason 'agent_unreachable', got %q", apiErr.Reason)
+	}
+	if apiErr.RetryAfter != 10 {
+		t.Errorf("expected retryAfter 10, got %d", apiErr.RetryAfter)
+	}
+	if apiErr.Message != "The agent is not responding. Please try again in a moment." {
+		t.Errorf("expected structured message, got %q", apiErr.Message)
+	}
+}
+
 func TestClient_SendMessage(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{

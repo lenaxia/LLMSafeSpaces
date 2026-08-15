@@ -3,13 +3,16 @@ name: Release
 # Tag-triggered release pipeline. Cuts a real release when a `v*.*.*` tag
 # is pushed:
 #
-#   1. CI workflow already builds and pushes images (api, controller,
-#      frontend, relay-router, relay-proxy, base) to ghcr.io with semver
-#      tags. This workflow waits for CI to complete.
-#   2. Packages the Helm chart and publishes to the gh-pages branch's
-#      Helm repo via chart-releaser.
-#   3. Generates SBOM (CycloneDX) from each built image via syft.
-#   4. Creates a GitHub Release with notes pulled from CHANGELOG.md.
+#   1. Runs lint + tests (Go + frontend) to guarantee the tagged commit
+#      is tested. Self-contained — does NOT depend on the CI workflow.
+#   2. Builds and pushes multi-arch images (api, controller, frontend,
+#      relay-router, relay-proxy, base) to ghcr.io with semver tags.
+#   3. Signs images with cosign keyless (OIDC).
+#   4. Scans images with Trivy (HIGH/CRITICAL gate for control-plane).
+#   5. Packages the Helm chart and publishes to gh-pages.
+#   6. Generates SBOM (CycloneDX) from each built image.
+#   7. Publishes Python + TypeScript SDKs to PyPI + npm.
+#   8. Creates a GitHub Release with notes from CHANGELOG.md.
 #
 # Tagging a release:
 #
@@ -93,119 +96,765 @@ jobs:
           fi
           echo "CHANGELOG section for v${VERSION} found."
 
-  # Gate: wait for the CI workflow to finish successfully on this tag.
-  # Images are built by CI; this release workflow only packages the chart,
-  # generates SBOM, and creates the Release.
-  #
-  # We use a custom polling script instead of lewagon/wait-on-check-action
-  # because that action suffers from a self-referential failure: when the
-  # wait job fails (e.g. transient API error) and is re-run, the prior
-  # failed check run persists on the ref, causing every subsequent retry
-  # to immediately see the old failure and re-fail. The custom script
-  # filters by workflow_file (ci.yml) so it only watches CI checks, never
-  # its own Release workflow checks.
-  wait-for-ci:
-    name: Wait for CI workflow
+  prepare:
+    name: Prepare build metadata
+    needs: verify-changelog
+    runs-on: ubuntu-latest
+    outputs:
+      timestamp: ${{ steps.ts.outputs.timestamp }}
+    steps:
+      - id: ts
+        run: echo "timestamp=$(date -u +%s)" >> "$GITHUB_OUTPUT"
+
+  # Tests — guarantees the tagged commit is tested before images are
+  # built. The release workflow is self-contained: it does not depend
+  # on the CI workflow passing. These jobs are copies of CI's test jobs
+  # (without the coverage/PR-comment steps that only make sense on PRs).
+
+  lint:
+    name: Lint
     needs: verify-changelog
     runs-on: ubuntu-latest
     steps:
-      - name: Wait for CI checks to pass
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REF: ${{ needs.verify-changelog.outputs.ref }}
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.6"
+          cache: true
+      - name: Repository layout lint
+        run: make repolint
+      - name: gofmt
+        run: make fmt-check
+      - name: goimports
+        run: make imports-check
+      - name: go vet
+        run: go vet ./...
+      - name: context.TODO check
         run: |
-          REF_SHA="${REF#refs/tags/}"
-          echo "Waiting for CI checks on ref: ${REF_SHA}"
+          if hits=$(grep -rn 'context.TODO()' --include='*.go' . \
+              | grep -v '_test.go' \
+              | grep -v 'zz_generated' \
+              | grep -v 'sdks/'); then
+            echo "$hits"
+            echo "FAIL: context.TODO() found in production code."
+            exit 1
+          fi
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+          args: --timeout=5m
+      - name: helm-render
+        run: |
+          curl -sSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+          make helm-render
+      - name: Validate OpenAPI spec
+        run: make openapi-validate
 
-          # Record the timestamp of the tag push so we can filter out
-          # stale check runs from prior CI runs on the same commit SHA.
-          # The tag commit SHA is the same as the main commit SHA, so
-          # the check-runs API returns ALL check runs for that SHA —
-          # including ones from main's CI that ran before the tag was
-          # pushed. Without the timestamp filter, a prior main CI
-          # failure blocks every release cut from that commit.
-          CUTOFF=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-          echo "Filtering to check runs started after: ${CUTOFF}"
+  test:
+    name: Test (-short, with coverage)
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.6"
+          cache: true
+      - name: Install helm
+        run: curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+      - name: Run tests with coverage
+        run: |
+          go test -timeout 300s -race -short \
+            -coverprofile=coverage.out \
+            -covermode=atomic \
+            -coverpkg=./... \
+            ./...
+      - name: Enforce coverage floor (50%)
+        run: |
+          set -euo pipefail
+          total=$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}' | tr -d '%')
+          if awk -v t="$total" 'BEGIN { exit !(t < 50) }'; then
+            echo "FAIL: total coverage ${total}% is below the 50.0% floor."
+            exit 1
+          fi
 
-          MAX_WAIT=2400  # 40 minutes max
-          INTERVAL=30
-          ELAPSED=0
+  test-full:
+    name: Test (full suite, race detector)
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.6"
+          cache: true
+      - name: Install helm
+        run: curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+      - name: Run full test suite with race detector
+        run: go test -timeout 600s -race -count=1 ./...
 
-          while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
-            RESPONSE=$(gh api "repos/${{ github.repository }}/commits/${REF_SHA}/check-runs?per_page=100" 2>/dev/null) || {
-              echo "WARN: API call failed, retrying in ${INTERVAL}s..."
-              sleep "$INTERVAL"
-              ELAPSED=$((ELAPSED + INTERVAL))
-              continue
-            }
+  frontend-test:
+    name: Frontend (unit + typecheck + e2e)
+    needs: [lint]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        run: cd frontend && npm ci
+      - name: Typecheck
+        run: cd frontend && npx tsc --noEmit
+      - name: Unit tests
+        run: cd frontend && npx vitest run
+      - name: Install Playwright browsers
+        run: cd frontend && npx playwright install --with-deps chromium
+      - name: E2E tests
+        run: cd frontend && npx playwright test --reporter=line
 
-            # Count checks still running (excluding Release workflow jobs).
-            # Filter to only checks started after the tag push (CUTOFF).
-            ALL_DONE=$(printf '%s' "$RESPONSE" | jq -r --arg cutoff "$CUTOFF" '
-              .check_runs
-              | group_by(.name) | map(sort_by(.started_at // "0") | last)
-              | map(select(.started_at // "0" > $cutoff))
-              | map(select(.status != "completed"))
-              | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|gremlins|Scan images \\(Trivy\\)|Publish Python SDK|Publish TypeScript SDK|SDK Integration") | not))
-              | length
-            ')
+  # All build jobs gate on tests passing. This guarantees the tagged
+  # commit is tested before any image is published.
+  build-api:
+    name: Build API (${{ matrix.platform }})
+    needs: [verify-changelog, prepare, test, test-full, frontend-test]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
 
-            # Count any non-Release completed checks that failed (post-tag only).
-            FAILED=$(printf '%s' "$RESPONSE" | jq -r --arg cutoff "$CUTOFF" '
-              .check_runs
-              | group_by(.name) | map(sort_by(.started_at // "0") | last)
-              | map(select(.started_at // "0" > $cutoff))
-              | map(select(.status == "completed"))
-              | map(select(.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral"))
-              | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|gremlins|Scan images \\(Trivy\\)|Publish Python SDK|Publish TypeScript SDK|SDK Integration") | not))
-              | map(.name)
-              | .[]
-            ')
+      - uses: docker/setup-buildx-action@v4
 
-            # Are there any post-tag CI-specific checks at all yet?
-            CI_CHECKS=$(printf '%s' "$RESPONSE" | jq -r --arg cutoff "$CUTOFF" '
-              .check_runs
-              | group_by(.name) | map(sort_by(.started_at // "0") | last)
-              | map(select(.started_at // "0" > $cutoff))
-              | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|gremlins|Scan images \\(Trivy\\)|Publish Python SDK|Publish TypeScript SDK|SDK Integration") | not))
-              | length
-            ')
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-            if [ "$CI_CHECKS" -eq 0 ]; then
-              echo "[$(date -u +%H:%M:%S)] No CI checks registered yet, waiting..."
-              sleep "$INTERVAL"
-              ELAPSED=$((ELAPSED + INTERVAL))
-              continue
-            fi
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.API_IMAGE }}
 
-            if [ -n "$FAILED" ]; then
-              echo "::error::CI checks failed:"
-              echo "$FAILED" | sed 's/^/  - /'
-              exit 1
-            fi
+      - uses: docker/build-push-action@v7
+        id: build
+        with:
+          context: .
+          file: api/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: ${{ github.event_name != 'pull_request' }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.API_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          cache-from: type=gha,scope=api-${{ matrix.platform }}
+          cache-to: type=gha,scope=api-${{ matrix.platform }},mode=max
+          build-args: |
+            VERSION=${{ needs.verify-changelog.outputs.version }}
+            COMMIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
 
-            if [ "$ALL_DONE" -eq 0 ]; then
-              echo "[$(date -u +%H:%M:%S)] All CI checks completed successfully."
-              exit 0
-            fi
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
 
-            # Show progress: which checks are still running
-            RUNNING=$(printf '%s' "$RESPONSE" | jq -r --arg cutoff "$CUTOFF" '
-              .check_runs
-              | map(select(.started_at // "0" > $cutoff))
-              | map(select(.status != "completed"))
-              | map(select(.name | test("Verify CHANGELOG|Wait for CI|Sign images \\(cosign|Publish Helm|Generate SBOM|Build relay-proxy|Create GitHub Release|gremlins|Scan images \\(Trivy\\)|Publish Python SDK|Publish TypeScript SDK|SDK Integration") | not))
-              | map(.name)
-              | .[]
-            ')
-            echo "[$(date -u +%H:%M:%S)] Waiting for: $(echo "$RUNNING" | tr '\n' ',' | sed 's/,$//')"
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: api-digests-${{ matrix.runner }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
 
-            sleep "$INTERVAL"
-            ELAPSED=$((ELAPSED + INTERVAL))
-          done
+  merge-api:
+    name: Merge API Manifest
+    needs: [build-api, prepare]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/digests
+          pattern: api-digests-*
+          merge-multiple: true
 
-          echo "::error::Timed out after ${MAX_WAIT}s waiting for CI checks."
-          exit 1
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.API_IMAGE }}
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=ts-${{ needs.prepare.outputs.timestamp }}
+            type=raw,value=dev,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.API_IMAGE }}@sha256:%s ' *)
+
+  build-controller:
+    name: Build Controller (${{ matrix.platform }})
+    needs: [verify-changelog, prepare, test, test-full, frontend-test]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.CONTROLLER_IMAGE }}
+
+      - uses: docker/build-push-action@v7
+        id: build
+        with:
+          context: .
+          file: controller/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: ${{ github.event_name != 'pull_request' }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.CONTROLLER_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          cache-from: type=gha,scope=controller-${{ matrix.platform }}
+          cache-to: type=gha,scope=controller-${{ matrix.platform }},mode=max
+          build-args: |
+            VERSION=${{ needs.verify-changelog.outputs.version }}
+            COMMIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Smoke-test controller binary
+        run: |
+          docker buildx build \
+            --build-arg COMMIT_SHA=${{ github.sha }} \
+            --build-arg VERSION=${{ needs.verify-changelog.outputs.version }} \
+            -f controller/Dockerfile \
+            --target builder \
+            -t controller-smoke \
+            --load \
+            .
+          MATCHES=$(docker run --rm --entrypoint sh controller-smoke -c \
+            'if [ ! -s /out/manager ]; then echo "FATAL: /out/manager is empty"; exit 1; fi; \
+             grep -ac "llmsafespaces_workspaces_running" /out/manager || true') || {
+            echo "::error::docker run failed with exit code $?"
+            exit 1
+          }
+          if [ "$MATCHES" -eq 0 ] 2>/dev/null; then
+            echo "::error::Controller binary missing llmsafespaces_workspaces_running metric string."
+            echo "This usually means Docker BuildKit served a stale cache layer."
+            echo "Binary size: $(docker run --rm --entrypoint stat controller-smoke -c '%s' /out/manager) bytes"
+            exit 1
+          fi
+          echo "Controller binary smoke test passed: llmsafespaces_* metric strings present"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: controller-digests-${{ matrix.runner }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-controller:
+    name: Merge Controller Manifest
+    needs: [build-controller, prepare]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/digests
+          pattern: controller-digests-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.CONTROLLER_IMAGE }}
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=ts-${{ needs.prepare.outputs.timestamp }}
+            type=raw,value=dev,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.CONTROLLER_IMAGE }}@sha256:%s ' *)
+
+  build-runtime:
+    name: Build Runtime Base (${{ matrix.platform }})
+    needs: [verify-changelog, prepare, test, test-full, frontend-test]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.RUNTIME_IMAGE }}
+
+      - uses: docker/build-push-action@v7
+        id: build
+        with:
+          context: .
+          file: runtimes/base/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: ${{ github.event_name != 'pull_request' }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.RUNTIME_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          cache-from: type=gha,scope=runtime-${{ matrix.platform }}
+          cache-to: type=gha,scope=runtime-${{ matrix.platform }},mode=max
+          build-args: |
+            VERSION=${{ needs.verify-changelog.outputs.version }}
+            COMMIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: runtime-digests-${{ matrix.runner }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-runtime:
+    name: Merge Runtime Manifest
+    needs: [build-runtime, prepare]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/digests
+          pattern: runtime-digests-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.RUNTIME_IMAGE }}
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=ts-${{ needs.prepare.outputs.timestamp }}
+            type=raw,value=dev,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.RUNTIME_IMAGE }}@sha256:%s ' *)
+
+  build-frontend:
+    name: Build Frontend (${{ matrix.platform }})
+    needs: [verify-changelog, prepare, test, test-full, frontend-test]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}
+
+      - uses: docker/build-push-action@v7
+        id: build
+        with:
+          context: ./frontend
+          file: frontend/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: ${{ github.event_name != 'pull_request' }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          cache-from: type=gha,scope=frontend-${{ matrix.platform }}
+          cache-to: type=gha,scope=frontend-${{ matrix.platform }},mode=max
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-digests-${{ matrix.runner }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-frontend:
+    name: Merge Frontend Manifest
+    needs: [build-frontend, prepare]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/digests
+          pattern: frontend-digests-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=ts-${{ needs.prepare.outputs.timestamp }}
+            type=raw,value=dev,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.FRONTEND_IMAGE }}@sha256:%s ' *)
+
+  build-relay-router:
+    name: Build Relay Router (${{ matrix.platform }})
+    needs: [verify-changelog, prepare, test, test-full, frontend-test]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.RELAY_ROUTER_IMAGE }}
+
+      - uses: docker/build-push-action@v7
+        id: build
+        with:
+          context: .
+          file: cmd/relay-router/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: ${{ github.event_name != 'pull_request' }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.RELAY_ROUTER_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          cache-from: type=gha,scope=relay-router-${{ matrix.platform }}
+          cache-to: type=gha,scope=relay-router-${{ matrix.platform }},mode=max
+          build-args: |
+            VERSION=${{ needs.verify-changelog.outputs.version }}
+            COMMIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: relay-router-digests-${{ matrix.runner }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-relay-router:
+    name: Merge Relay Router Manifest
+    needs: [build-relay-router, prepare]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/digests
+          pattern: relay-router-digests-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.RELAY_ROUTER_IMAGE }}
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=ts-${{ needs.prepare.outputs.timestamp }}
+            type=raw,value=dev,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.RELAY_ROUTER_IMAGE }}@sha256:%s ' *)
+
+  build-relay-proxy:
+    name: Build Relay Proxy (${{ matrix.platform }})
+    needs: [verify-changelog, prepare, test, test-full, frontend-test]
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.RELAY_PROXY_IMAGE }}
+
+      - uses: docker/build-push-action@v7
+        id: build
+        with:
+          context: .
+          file: cmd/relay-proxy/Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: ${{ github.event_name != 'pull_request' }}
+          labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.RELAY_PROXY_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
+          cache-from: type=gha,scope=relay-proxy-${{ matrix.platform }}
+          cache-to: type=gha,scope=relay-proxy-${{ matrix.platform }},mode=max
+          build-args: |
+            VERSION=${{ needs.verify-changelog.outputs.version }}
+            COMMIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
+
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v7
+        with:
+          name: relay-proxy-digests-${{ matrix.runner }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge-relay-proxy:
+    name: Merge Relay Proxy Manifest
+    needs: [build-relay-proxy, prepare]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/digests
+          pattern: relay-proxy-digests-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.RELAY_PROXY_IMAGE }}
+          tags: |
+            type=sha,prefix=sha-
+            type=raw,value=ts-${{ needs.prepare.outputs.timestamp }}
+            type=raw,value=dev,enable={{is_default_branch}}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.RELAY_PROXY_IMAGE }}@sha256:%s ' *)
 
   # Sign all built images with cosign keyless (OIDC). Each signature is
   # recorded in the public Rekor transparency log, so anyone can verify
@@ -216,7 +865,7 @@ jobs:
   #     --certificate-oidc-issuer "https://token.actions.githubusercontent.com"
   sign-images:
     name: Sign images (cosign keyless)
-    needs: [verify-changelog, wait-for-ci]
+    needs: [verify-changelog, merge-api, merge-controller, merge-runtime, merge-frontend, merge-relay-router, merge-relay-proxy]
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.verify-changelog.outputs.version }}
@@ -261,7 +910,7 @@ jobs:
   # (catches vulns in base images, installed packages, etc.).
   scan-images:
     name: Scan images (Trivy)
-    needs: [verify-changelog, wait-for-ci]
+    needs: [verify-changelog, merge-api, merge-controller, merge-runtime, merge-frontend, merge-relay-router, merge-relay-proxy]
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.verify-changelog.outputs.version }}
@@ -353,7 +1002,7 @@ jobs:
   # `helm package` step needed (and one was previously dead code).
   publish-chart:
     name: Publish Helm chart
-    needs: [verify-changelog, wait-for-ci]
+    needs: [verify-changelog, merge-api, merge-controller, merge-runtime, merge-frontend, merge-relay-router, merge-relay-proxy]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -376,7 +1025,7 @@ jobs:
   # grype, or similar.
   generate-sbom:
     name: Generate SBOM
-    needs: [verify-changelog, wait-for-ci]
+    needs: [verify-changelog, merge-api, merge-controller, merge-runtime, merge-frontend, merge-relay-router, merge-relay-proxy]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -426,7 +1075,7 @@ jobs:
   # download them and wire them into controller.inferenceRelay.artifact.
   build-relay-binaries:
     name: Build relay-proxy binaries
-    needs: [verify-changelog, wait-for-ci]
+    needs: [verify-changelog, merge-api, merge-controller, merge-runtime, merge-frontend, merge-relay-router, merge-relay-proxy]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -440,8 +1089,12 @@ jobs:
       - name: Build binaries
         run: |
           mkdir -p deploy
-          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o deploy/relay-proxy-arm64 ./cmd/relay-proxy/
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o deploy/relay-proxy-amd64 ./cmd/relay-proxy/
+          LDFLAGS="-s -w \
+            -X github.com/lenaxia/llmsafespaces/pkg/version.Version=${{ needs.verify-changelog.outputs.version }} \
+            -X github.com/lenaxia/llmsafespaces/pkg/version.CommitSHA=${{ github.sha }} \
+            -X github.com/lenaxia/llmsafespaces/pkg/version.BuildTime=$(date -u +%Y-%m-%d_%H:%M:%S)"
+          CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="$LDFLAGS" -o deploy/relay-proxy-arm64 ./cmd/relay-proxy/
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="$LDFLAGS" -o deploy/relay-proxy-amd64 ./cmd/relay-proxy/
 
       - name: Generate checksums
         run: |
@@ -461,7 +1114,7 @@ jobs:
   # Create the GitHub Release with notes from CHANGELOG.md.
   create-release:
     name: Create GitHub Release
-    needs: [verify-changelog, wait-for-ci, sign-images, scan-images, publish-chart, generate-sbom, build-relay-binaries]
+    needs: [verify-changelog, merge-api, merge-controller, merge-runtime, merge-frontend, merge-relay-router, merge-relay-proxy, sign-images, scan-images, publish-chart, generate-sbom, build-relay-binaries]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -566,7 +1219,7 @@ jobs:
   publish-python-sdk:
     name: Publish Python SDK to PyPI
     runs-on: ubuntu-latest
-    needs: [verify-changelog, wait-for-ci]
+    needs: [verify-changelog, merge-api, merge-controller, merge-runtime, merge-frontend, merge-relay-router, merge-relay-proxy]
     environment: pypi
     permissions:
       id-token: write  # PyPI trusted publishing (OIDC)
@@ -590,7 +1243,7 @@ jobs:
   publish-typescript-sdk:
     name: Publish TypeScript SDK to npm
     runs-on: ubuntu-latest
-    needs: [verify-changelog, wait-for-ci]
+    needs: [verify-changelog, merge-api, merge-controller, merge-runtime, merge-frontend, merge-relay-router, merge-relay-proxy]
     environment: npm
     steps:
       - uses: actions/checkout@v4

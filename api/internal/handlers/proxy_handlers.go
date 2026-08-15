@@ -20,7 +20,6 @@ import (
 	"github.com/gin-gonic/gin"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/lenaxia/llmsafespaces/api/internal/services/msgqueue"
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
@@ -30,8 +29,15 @@ import (
 func (h *ProxyHandler) CreateSession(c *gin.Context) {
 	if h.adapter != nil {
 		wid := c.Param("id")
+		_, ok := h.resolveWorkspaceForAdapter(c, wid)
+		if !ok {
+			return
+		}
+		defer h.releaseConnection(wid)
+
 		s, err := h.adapter.CreateSession(c.Request.Context(), "", wid, "")
 		if err != nil {
+			h.logger.Error("CreateSession: adapter failed", err, "workspaceID", wid)
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to create session"})
 			return
 		}
@@ -44,8 +50,16 @@ func (h *ProxyHandler) CreateSession(c *gin.Context) {
 func (h *ProxyHandler) ListSessions(c *gin.Context) {
 	if h.adapter != nil {
 		wid := c.Param("id")
+		_, ok := h.resolveWorkspaceForAdapter(c, wid)
+		if !ok {
+			return
+		}
+		defer h.releaseConnection(wid)
+		h.adapterEnsureSSEWatch(wid)
+
 		sessions, err := h.adapter.ListSessions(c.Request.Context(), "", wid)
 		if err != nil {
+			h.logger.Error("ListSessions: adapter failed", err, "workspaceID", wid)
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to list sessions"})
 			return
 		}
@@ -80,8 +94,35 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "text exceeds 100KB limit"})
 			return
 		}
+
+		workspace, ok := h.resolveWorkspaceForAdapter(c, wid)
+		if !ok {
+			return
+		}
+		defer h.releaseConnection(wid)
+
+		if !h.checkAdapterSessionLimit(c, workspace, wid, sid) {
+			return
+		}
+		if !h.checkAdapterQuota(c, workspace) {
+			if sid != "" {
+				h.removeActiveSession(c.Request.Context(), wid, sid)
+			}
+			return
+		}
+		h.adapterEnsureSSEWatch(wid)
+
 		msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{})
 		if err != nil {
+			// #817: log the underlying adapter error — without this the
+			// 502 body says only "failed to send message" and the root
+			// cause (context deadline, connection reset, decode failure)
+			// is invisible in production.
+			h.logger.Error("SendMessage: adapter failed", err,
+				"workspaceID", wid, "sessionID", sid)
+			if sid != "" {
+				h.removeActiveSession(c.Request.Context(), wid, sid)
+			}
 			errBody := []byte(`{"error":"failed to send message"}`)
 			if h.agentStateChecker != nil {
 				changedAt, checkerErr := h.agentStateChecker.GetLastCredentialChangedAt(c.Request.Context(), wid)
@@ -92,6 +133,7 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 			c.Data(http.StatusBadGateway, "application/json", errBody)
 			return
 		}
+		h.postAdapterSuccess(c, workspace, wid, sid, true)
 		c.JSON(http.StatusOK, msg)
 		if h.sessionIndex != nil {
 			go h.fetchAndPersistTitle(wid, sid)
@@ -138,77 +180,8 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 	wid := c.Param("id")
 
 	// V2 path (Epic 63): extract text from the V1 parts body and send via
-	// PromptV2 with delivery:"queue". Bypasses the 409 guard, the queue-len
-	// check, and redirectPromptToQueue — opencode admits atomically.
-	if h.v2SessionQueueEnabled {
-		const maxPromptBodyBytes = 100_000 + 1024
-		c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPromptBodyBytes)
-		bodyBytes, err := io.ReadAll(c.Request.Body)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read request body"})
-			return
-		}
-		_ = c.Request.Body.Close()
-		text, perr := extractPromptText(bodyBytes)
-		if perr != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": perr.Error()})
-			return
-		}
-		if len(text) == 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "text must not be empty"})
-			return
-		}
-		if len(text) > 100_000 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "text exceeds 100KB limit"})
-			return
-		}
-		if h.enqueueV2(c, wid, sid, text) {
-			return
-		}
-	}
-
-	if h.isSessionActive(c.Request.Context(), wid, sid) {
-		c.Header("Retry-After", "1")
-		c.JSON(http.StatusConflict, gin.H{
-			"error":      "session is busy; retry after idle",
-			"retryAfter": 1,
-		})
-		return
-	}
-	// Close the residual race window left by the frontend fix
-	// (PR #563): if the client's view of the queue is stale (the
-	// refreshQueue poll hasn't landed yet), a direct POST /prompt can
-	// still race ahead of the server-side drain goroutine. Check the
-	// authoritative source (Redis) and redirect to Enqueue when non-
-	// empty. This preserves FIFO ordering regardless of client state
-	// staleness.
-	if h.queueSvc != nil {
-		n, err := h.queueSvc.Len(c.Request.Context(), wid, sid)
-		if err != nil {
-			h.logger.Warn("SendPromptAsync: queue Len check failed; proceeding with direct send",
-				"error", err.Error(), "workspaceID", wid, "sessionID", sid)
-		} else if n > 0 {
-			h.redirectPromptToQueue(c, wid, sid)
-			return
-		}
-	}
-	h.proxyToWorkspace(c, "/session/"+sid+"/prompt_async", true, sid)
-}
-
-// redirectPromptToQueue reads the prompt_async request body, extracts
-// the text content, enqueues it, and writes the same 202 response shape
-// as EnqueueMessage. The body is expected to match the opencode prompt
-// shape {parts: [{type: "text", text: "..."}, ...]}; only text parts
-// are enqueued (tool parts have no analog in the queue). The original
-// body bytes are consumed and not forwarded to opencode.
-func (h *ProxyHandler) redirectPromptToQueue(c *gin.Context, wid, sid string) {
-	// Cap the body before reading — same pattern as proxy.go:275. The
-	// prompt body shape is ~the text size + ~50 bytes of JSON overhead,
-	// so 100KB+slack is generous; anything bigger is a malicious/mis-
-	// configured client. Without this cap a client could force the API
-	// to allocate an arbitrarily large buffer before the 100KB text
-	// check below rejects it.
-	const maxPromptBodyBytes = 100_000 + 1024 // 100KB text limit + JSON overhead
+	// PromptV2 with delivery:"queue". opencode admits atomically.
+	const maxPromptBodyBytes = 100_000 + 1024
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxPromptBodyBytes)
 	bodyBytes, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -216,7 +189,6 @@ func (h *ProxyHandler) redirectPromptToQueue(c *gin.Context, wid, sid string) {
 		return
 	}
 	_ = c.Request.Body.Close()
-
 	text, perr := extractPromptText(bodyBytes)
 	if perr != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": perr.Error()})
@@ -231,34 +203,63 @@ func (h *ProxyHandler) redirectPromptToQueue(c *gin.Context, wid, sid string) {
 		return
 	}
 
-	msgID, err := h.queueSvc.Enqueue(c.Request.Context(), wid, sid, text)
-	if err != nil {
-		h.logger.Error("SendPromptAsync: redirect to Enqueue failed", err,
-			"workspaceID", wid, "sessionID", sid)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enqueue message"})
+	// Adapter path: uses synchronous adapter.Send (V1 POST /session/:id/message).
+	// Previously used V2 queue (delivery:"queue") which is never drained on
+	// opencode 1.18.10 — messages vanished (#755). The frontend receives the
+	// assistant response via SSE events regardless of send path.
+	if h.adapter != nil {
+		workspace, ok := h.resolveWorkspaceForAdapter(c, wid)
+		if !ok {
+			return
+		}
+		defer h.releaseConnection(wid)
+
+		if !h.checkAdapterSessionLimit(c, workspace, wid, sid) {
+			return
+		}
+		if !h.checkAdapterQuota(c, workspace) {
+			if sid != "" {
+				h.removeActiveSession(c.Request.Context(), wid, sid)
+			}
+			return
+		}
+		h.adapterEnsureSSEWatch(wid)
+
+		// Use synchronous Send (V1 POST /session/:id/message) instead
+		// of V2 queue (POST /api/session/:id/prompt delivery:queue).
+		// The V2 queue is admitted but never drained on opencode 1.18.10
+		// — the SSE event taxonomy that the bridge depends on has
+		// drifted (see #755, #739). The synchronous path works correctly
+		// on all versions. The frontend receives the assistant response
+		// via SSE events regardless of which send path is used.
+		msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{})
+		if err != nil {
+			// #817: log the underlying adapter error for this path too.
+			h.logger.Error("SendPromptAsync: adapter failed", err,
+				"workspaceID", wid, "sessionID", sid)
+			if sid != "" {
+				h.removeActiveSession(c.Request.Context(), wid, sid)
+			}
+			errBody := []byte(`{"error":"failed to send message"}`)
+			if h.agentStateChecker != nil {
+				changedAt, checkerErr := h.agentStateChecker.GetLastCredentialChangedAt(c.Request.Context(), wid)
+				if checkerErr == nil && !changedAt.IsZero() {
+					errBody = EnrichChatErrorBody(errBody, true, changedAt, wid)
+				}
+			}
+			c.Data(http.StatusBadGateway, "application/json", errBody)
+			return
+		}
+		h.postAdapterSuccess(c, workspace, wid, sid, true)
+		if h.sessionIndex != nil {
+			go h.fetchAndPersistTitle(wid, sid)
+		}
+		c.JSON(http.StatusOK, msg)
 		return
 	}
 
-	if h.userBroker != nil {
-		h.publishWorkspaceEvent(wid, apitypes.WorkspaceSSEEvent{
-			Type:      "queue.update",
-			SessionID: sid,
-			Data: queueUpdateData{
-				Event:     "enqueued",
-				MessageID: msgID,
-			},
-		})
-	}
-
-	// Session is idle (we just checked in SendPromptAsync). Trigger the
-	// drain goroutine immediately so the redirected message does not
-	// wait for the next idle SSE event (which will not come — the
-	// session is already idle).
-	if !h.isSessionActive(c.Request.Context(), wid, sid) && !h.isSessionDeleted(wid, sid) {
-		go h.drainQueuedMessage(wid, sid)
-	}
-
-	c.JSON(http.StatusAccepted, gin.H{"messageID": msgID})
+	// Legacy V2 path (no adapter).
+	h.enqueueV2(c, wid, sid, text)
 }
 
 // extractMessageText reads the request body and extracts the
@@ -274,7 +275,7 @@ func extractMessageText(c *gin.Context) (string, error) {
 	return extractPromptText(body)
 }
 
-// extractPromptText parses a prompt_async body and returns the
+// extractPromptText parses a prompt body and returns the
 // concatenation of all text parts. Returns an error only if the body
 // is not valid JSON. Empty/whitespace-only text is returned as "" so
 // the caller can apply its own empty-check policy.
@@ -357,6 +358,13 @@ func (h *ProxyHandler) GetHistory(c *gin.Context) {
 	// drops step-start/step-finish and collects patch file paths, so the
 	// response is clean contract data — no opencode-specific shapes.
 	if h.adapter != nil {
+		_, ok := h.resolveWorkspaceForAdapter(c, wid)
+		if !ok {
+			return
+		}
+		defer h.releaseConnection(wid)
+		h.adapterEnsureSSEWatch(wid)
+
 		msgs, err := h.adapter.GetHistory(c.Request.Context(), "", wid, sid)
 		if err != nil {
 			h.logger.Error("GetHistory: adapter failed", err, "sessionID", sid)
@@ -364,6 +372,9 @@ func (h *ProxyHandler) GetHistory(c *gin.Context) {
 			return
 		}
 		page, nextCursor := paginateContractHistory(msgs, limit, before)
+		if page == nil {
+			page = []session.Message{}
+		}
 		if nextCursor != "" {
 			c.Header("X-Next-Cursor", nextCursor)
 		}
@@ -455,8 +466,11 @@ func (h *ProxyHandler) fetchUpstreamHistory(c *gin.Context, sessionID string) ([
 		c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"error":      "workspace not ready",
+			"code":       "service_unavailable",
+			"reason":     "not_ready",
 			"phase":      workspace.Status.Phase,
 			"retryAfter": retryAfterSec,
+			"message":    fmt.Sprintf("Workspace is %s. This usually takes a few seconds.", strings.ToLower(string(workspace.Status.Phase))),
 		})
 		return nil, 0, fmt.Errorf("workspace not ready")
 	}
@@ -519,7 +533,10 @@ func (h *ProxyHandler) fetchUpstreamHistory(c *gin.Context, sessionID string) ([
 			// buffered retry — buffering is reserved for writes.
 			c.JSON(http.StatusServiceUnavailable, gin.H{
 				"error":      "workspace connection failed",
+				"code":       "service_unavailable",
+				"reason":     "agent_unreachable",
 				"retryAfter": retryAfterSec,
+				"message":    "Chat history is temporarily unavailable — the agent is restarting or recovering. Please try again in a moment.",
 			})
 			return nil, 0, doErr
 		}
@@ -774,8 +791,16 @@ func (h *ProxyHandler) GetSession(c *gin.Context) {
 	}
 	if h.adapter != nil {
 		wid := c.Param("id")
+		_, ok := h.resolveWorkspaceForAdapter(c, wid)
+		if !ok {
+			return
+		}
+		defer h.releaseConnection(wid)
+		h.adapterEnsureSSEWatch(wid)
+
 		s, err := h.adapter.GetSession(c.Request.Context(), "", wid, sid)
 		if err != nil {
+			h.logger.Error("GetSession: adapter failed", err, "workspaceID", wid, "sessionID", sid)
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to get session"})
 			return
 		}
@@ -793,141 +818,28 @@ func (h *ProxyHandler) AbortSession(c *gin.Context) {
 	}
 	wid := c.Param("id")
 
-	// Adapter path (US-65.4): non-destructive abort via adapter.Abort.
-	// Returns 204 to match the V2 interrupt response shape.
+	// Adapter path (US-65.4): abort via adapter.Abort. The V1
+	// POST /session/:id/abort (the only interrupt endpoint on opencode
+	// 1.18.10+) destructively stops the in-flight turn — queued input
+	// is not preserved, unlike the old V2 interrupt which was removed
+	// in 1.18.10. We clear pending tracking so US-63.9 stranded-input
+	// recovery doesn't re-wake a session the user explicitly aborted.
 	if h.adapter != nil {
 		if err := h.adapter.Abort(c.Request.Context(), "", wid, sid); err != nil {
+			h.logger.Error("AbortSession: adapter abort failed", err, "workspaceID", wid, "sessionID", sid)
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to abort session"})
 			return
+		}
+		if h.v2Pending != nil {
+			h.v2Pending.remove(wid, sid)
 		}
 		c.Status(http.StatusNoContent)
 		return
 	}
 
 	// V2 path (Epic 63): non-destructive interrupt. Queued messages survive
-	// and drain on the next execution.wake (F8). No Redis queue mutation,
-	// no dismissed SSE, no flushAndAbortAfterIdle.
-	if h.abortV2(c, wid, sid) {
-		return
-	}
-
-	// Proxy the abort to opencode first. Only if that succeeds do we take
-	// ownership of queued messages — this avoids clearing the queue when the
-	// abort itself fails (network error, workspace not active, etc.).
-	h.proxyToWorkspace(c, "/session/"+sid+"/abort", false, sid)
-
-	if h.queueSvc == nil || c.Writer.Status() >= 400 {
-		return
-	}
-
-	// Abort succeeded. Peek then clear the session queue. Note: PeekAll and
-	// Clear are separate Redis commands — a message enqueued between them will
-	// be cleared without a dismissed SSE event. This is acceptable: the message
-	// is still discarded (the intent of abort), just silently.
-	flushed, err := h.queueSvc.PeekAll(c.Request.Context(), wid, sid)
-	if err != nil {
-		h.logger.Error("AbortSession: failed to peek queue after abort", err, "workspaceID", wid, "sessionID", sid)
-		return
-	}
-	if len(flushed) == 0 {
-		return
-	}
-	if err := h.queueSvc.Clear(c.Request.Context(), wid, sid); err != nil {
-		h.logger.Error("AbortSession: failed to clear queue after abort", err, "workspaceID", wid, "sessionID", sid)
-		return
-	}
-	// Publish dismissed SSE so UIs remove the pills immediately.
-	for _, msg := range flushed {
-		h.publishQueueEvent(wid, sid, "dismissed", msg.ID, "")
-	}
-
-	// In the background: wait for idle, then send each flushed message one at a
-	// time (with an idle-wait between each) and abort again at the end. This
-	// ensures messages appear in the transcript without being processed.
-	go h.flushAndAbortAfterIdle(wid, sid, flushed)
-}
-
-// flushAndAbortAfterIdle waits for the session to become idle (after an abort),
-// then sends each flushed message one at a time to opencode. Between each send
-// it waits for the session to go idle again before sending the next, ensuring
-// no 409 "session busy" errors. After all messages are sent it aborts once more
-// so they appear in the transcript but are not processed further.
-func (h *ProxyHandler) flushAndAbortAfterIdle(workspaceID, sessionID string, msgs []msgqueue.QueuedMessage) {
-	if h.sseTracker == nil {
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-
-	// waitIdle subscribes to the SSE drain and returns once this session signals idle,
-	// or when ctx is done.
-	waitIdle := func() bool {
-		idleCh := make(chan struct{}, 1)
-		unsub := h.sseTracker.SubscribeDrain(workspaceID,
-			func(_, sid string) {
-				if sid == sessionID {
-					select {
-					case idleCh <- struct{}{}:
-					default:
-					}
-				}
-			},
-			func(_, _ string) {},
-		)
-		defer unsub()
-		select {
-		case <-idleCh:
-			return true
-		case <-ctx.Done():
-			return false
-		}
-	}
-
-	// Wait for idle from the initial abort before sending anything.
-	if !waitIdle() {
-		h.logger.Warn("flushAndAbortAfterIdle: timed out waiting for initial idle",
-			"workspaceID", workspaceID, "sessionID", sessionID)
-		return
-	}
-
-	// Send each message one at a time, waiting for idle after each send.
-	for i, msg := range msgs {
-		if err := h.sendQueuedToOpencode(ctx, workspaceID, sessionID, &msg); err != nil {
-			h.logger.Warn("flushAndAbortAfterIdle: failed to send flushed message",
-				"workspaceID", workspaceID, "sessionID", sessionID,
-				"messageID", msg.ID, "index", i, "error", err)
-			// Stop on first error — remaining messages would also fail.
-			break
-		}
-		// Wait for this message's turn to complete before sending the next.
-		if i < len(msgs)-1 {
-			if !waitIdle() {
-				h.logger.Warn("flushAndAbortAfterIdle: timed out waiting for idle between messages",
-					"workspaceID", workspaceID, "sessionID", sessionID, "sentSoFar", i+1)
-				break
-			}
-		}
-	}
-
-	// Abort again to stop processing the flushed messages.
-	podIP, password, err := h.getPodIPAndPassword(ctx, workspaceID)
-	if err != nil {
-		return
-	}
-	abortURL := fmt.Sprintf("http://%s:%d/session/%s/abort", podIP, opencodePort, sessionID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, abortURL, nil)
-	if err != nil {
-		return
-	}
-	req.SetBasicAuth(agentd.AuthUsername, password)
-	resp, err := h.httpClient.Do(req)
-	if err != nil {
-		h.logger.Warn("flushAndAbortAfterIdle: second abort failed",
-			"workspaceID", workspaceID, "sessionID", sessionID, "error", err)
-		return
-	}
-	_ = resp.Body.Close()
+	// and drain on the next execution.wake (F8).
+	h.abortV2(c, wid, sid)
 }
 
 func (h *ProxyHandler) DeleteSession(c *gin.Context) {
@@ -943,6 +855,9 @@ func (h *ProxyHandler) DeleteSession(c *gin.Context) {
 	// tombstone publish) that the legacy path runs.
 	if h.adapter != nil {
 		if err := h.adapter.DeleteSession(c.Request.Context(), "", workspaceID, sid); err != nil {
+			// #817: same observability gap — log the underlying error.
+			h.logger.Error("DeleteSession: adapter failed", err,
+				"workspaceID", workspaceID, "sessionID", sid)
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to delete session"})
 			return
 		}
@@ -1094,7 +1009,7 @@ type enqueueRequest struct {
 }
 
 // queuedMessageResponse is the typed JSON shape for a queue list entry.
-// Matches msgqueue.QueuedMessage's wire shape so the frontend is unchanged.
+// Mirrors the queued-message wire shape so the frontend is unchanged.
 type queuedMessageResponse struct {
 	ID          string `json:"id"`
 	Text        string `json:"text"`
@@ -1118,8 +1033,7 @@ func (h *ProxyHandler) EnqueueMessage(c *gin.Context) {
 	// Cap the body before ShouldBindJSON reads it. Without this, a client
 	// could force the API to allocate an arbitrarily large buffer in memory
 	// before the 100KB text check below rejects it. Same pattern as
-	// redirectPromptToQueue above and proxy.go:275. 100KB text limit + 1KB
-	// slack for JSON overhead.
+	// proxy.go:275. 100KB text limit + 1KB slack for JSON overhead.
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 100_000+1024)
 	var req enqueueRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -1135,45 +1049,8 @@ func (h *ProxyHandler) EnqueueMessage(c *gin.Context) {
 		return
 	}
 
-	// V2 path (Epic 63): send via PromptV2 with delivery:"queue". The Redis
-	// write path is unreachable under the flag.
-	if h.enqueueV2(c, wid, sid, req.Text) {
-		return
-	}
-
-	if h.queueSvc == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "message queue not available"})
-		return
-	}
-
-	msgID, err := h.queueSvc.Enqueue(c.Request.Context(), wid, sid, req.Text)
-	if err != nil {
-		h.logger.Error("Failed to enqueue message", err, "workspaceID", wid, "sessionID", sid)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enqueue message"})
-		return
-	}
-
-	if h.userBroker != nil {
-		h.publishWorkspaceEvent(wid, apitypes.WorkspaceSSEEvent{
-			Type:      "queue.update",
-			SessionID: sid,
-			Data: queueUpdateData{
-				Event:     "enqueued",
-				MessageID: msgID,
-			},
-		})
-	}
-
-	// If the session is already idle (not in activeSess), drain immediately.
-	// This handles the case where the user queues a message after the agent
-	// finished — no session.status=idle event will arrive because the session
-	// is already quiet. Without this check the message would sit in Redis
-	// until the next SSE reconnect triggers reconcileSessionState.
-	if !h.isSessionActive(c.Request.Context(), wid, sid) && !h.isSessionDeleted(wid, sid) {
-		go h.drainQueuedMessage(wid, sid)
-	}
-
-	c.JSON(http.StatusAccepted, gin.H{"messageID": msgID})
+	// V2 path (Epic 63): send via PromptV2 with delivery:"queue".
+	h.enqueueV2(c, wid, sid, req.Text)
 }
 
 func (h *ProxyHandler) ListQueue(c *gin.Context) {
@@ -1184,10 +1061,10 @@ func (h *ProxyHandler) ListQueue(c *gin.Context) {
 	}
 	wid := c.Param("id")
 
-	// US-63.10: under V2, read from the Redis-backed shadow marker instead
-	// of the deleted msgqueue. The shadow is populated by the SSE bridge
-	// on PromptAdmitted events and cleared on Prompted events.
-	if h.v2SessionQueueEnabled && h.v2Shadow != nil {
+	// US-63.10: read from the Redis-backed shadow marker. The shadow is
+	// populated by the SSE bridge on PromptAdmitted events and cleared on
+	// Prompted events.
+	if h.v2Shadow != nil {
 		entries := h.v2Shadow.List(c.Request.Context(), wid, sid)
 		result := make([]queuedMessageResponse, 0, len(entries))
 		for _, e := range entries {
@@ -1203,19 +1080,7 @@ func (h *ProxyHandler) ListQueue(c *gin.Context) {
 		return
 	}
 
-	if h.queueSvc == nil {
-		c.JSON(http.StatusOK, gin.H{"messages": []msgqueue.QueuedMessage{}})
-		return
-	}
-
-	msgs, err := h.queueSvc.PeekAll(c.Request.Context(), wid, sid)
-	if err != nil {
-		h.logger.Error("Failed to list queue", err, "workspaceID", wid, "sessionID", sid)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list queue"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"messages": msgs})
+	c.JSON(http.StatusOK, queueListResponse{Messages: []queuedMessageResponse{}})
 }
 
 func (h *ProxyHandler) DeleteQueueMessage(c *gin.Context) {
@@ -1231,36 +1096,11 @@ func (h *ProxyHandler) DeleteQueueMessage(c *gin.Context) {
 		return
 	}
 
-	if h.v2SessionQueueEnabled && h.v2Shadow != nil {
-		// US-63.10: under V2, remove from the shadow marker. Dismissed
-		// messages must not reappear on fresh load.
+	// US-63.10: remove from the shadow marker. Dismissed messages must not
+	// reappear on fresh load.
+	if h.v2Shadow != nil {
 		h.v2Shadow.Remove(c.Request.Context(), wid, sid, msgID)
-		h.publishQueueEvent(wid, sid, "dismissed", msgID, "")
-		c.Status(http.StatusNoContent)
-		return
 	}
-
-	if h.queueSvc == nil {
-		c.Status(http.StatusNoContent)
-		return
-	}
-
-	if err := h.queueSvc.Remove(c.Request.Context(), wid, sid, msgID); err != nil {
-		h.logger.Error("Failed to remove queue message", err, "workspaceID", wid, "sessionID", sid, "messageID", msgID)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to remove message"})
-		return
-	}
-
-	if h.userBroker != nil {
-		h.publishWorkspaceEvent(wid, apitypes.WorkspaceSSEEvent{
-			Type:      "queue.update",
-			SessionID: sid,
-			Data: queueUpdateData{
-				Event:     "dismissed",
-				MessageID: msgID,
-			},
-		})
-	}
-
+	h.publishQueueEvent(wid, sid, "dismissed", msgID, "")
 	c.Status(http.StatusNoContent)
 }

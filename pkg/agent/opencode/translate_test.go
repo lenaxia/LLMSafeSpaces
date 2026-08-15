@@ -5,6 +5,8 @@ package opencode
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
 	"testing"
 	"time"
 
@@ -241,15 +243,26 @@ func TestTranslateMessage_ErrorPropagated(t *testing.T) {
 }
 
 func TestTranslateMessage_CostAndTime(t *testing.T) {
-	started := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
-	ended := started.Add(5 * time.Second)
-	m := ocMessage{
-		Info: ocInfo{Role: "assistant", ID: "msg_t"},
-		Time: &ocTime{StartedAt: started, CompletedAt: &ended},
-		Cost: &ocCost{InputTokens: 100, OutputTokens: 50, CostUSD: 0.001},
-	}
+	// Regression test: timestamp must be parsed from info.time.created
+	// (epoch millis) — NOT from a top-level time field. Pre-fix the
+	// translator read from the wrong JSON hierarchy, producing zero
+	// timestamps that broke frontend message ordering.
+	raw := []byte(`{
+		"info": {
+			"role": "assistant",
+			"id": "msg_t",
+			"time": {"created": 1723291200000}
+		},
+		"cost": {"input": 100, "output": 50, "cost": 0.001}
+	}`)
+	var m ocMessage
+	require.NoError(t, json.Unmarshal(raw, &m))
 	sm, _ := translateMessage(m)
-	assert.Equal(t, started, sm.CreatedAt)
+
+	expected := time.UnixMilli(1723291200000).UTC()
+	require.NotNil(t, sm.CreatedAt, "createdAt must be non-nil when info.time.created is present")
+	assert.Equal(t, expected, *sm.CreatedAt,
+		"createdAt must be parsed from info.time.created epoch millis")
 	require.NotNil(t, sm.Cost)
 	assert.Equal(t, int64(100), sm.Cost.InputTokens)
 	assert.Equal(t, 0.001, sm.Cost.CostUSD)
@@ -257,6 +270,25 @@ func TestTranslateMessage_CostAndTime(t *testing.T) {
 
 func TestTranslateTool_Nil(t *testing.T) {
 	assert.Nil(t, translateTool(nil))
+}
+
+// TestParseHistoryWire_ToolNull_ProducesNoToolPart covers the C1 edge
+// case from the #731 review: a "tool": null field must NOT produce an
+// empty &ocTool{} — it should leave Tool nil so the translator skips
+// the tool part entirely.
+func TestParseHistoryWire_ToolNull_ProducesNoToolPart(t *testing.T) {
+	body := []byte(`[{
+		"info": {"role": "assistant", "id": "msg_null"},
+		"parts": [
+			{"type": "tool", "tool": null}
+		]
+	}]`)
+	msgs, _, _, err := ParseHistoryWire(body, "ws-null")
+	require.NoError(t, err)
+	require.Len(t, msgs, 1)
+	for _, p := range msgs[0].Parts {
+		assert.NotEqual(t, session.PartTool, p.Type, "\"tool\":null must not produce a tool part")
+	}
 }
 
 func TestTranslateTool_NoState(t *testing.T) {
@@ -290,7 +322,7 @@ func TestParseHistoryWire_RealShape(t *testing.T) {
 		}
 	]`)
 
-	msgs, changedFiles, err := ParseHistoryWire(body, "ws-1")
+	msgs, changedFiles, _, err := ParseHistoryWire(body, "ws-1")
 	require.NoError(t, err)
 	require.Len(t, msgs, 2)
 	require.Len(t, changedFiles, 2, "changedFilesPerMsg parallels msgs")
@@ -308,9 +340,9 @@ func TestParseHistoryWire_RealShape(t *testing.T) {
 }
 
 func TestParseHistoryWire_MalformedJSON(t *testing.T) {
-	_, _, err := ParseHistoryWire([]byte(`not json`), "ws-1")
+	_, _, _, err := ParseHistoryWire([]byte(`not json`), "ws-1")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "parse message array")
+	assert.Contains(t, err.Error(), "opencode history:")
 }
 
 func TestParseSessionListWire_BareArray(t *testing.T) {
@@ -406,6 +438,294 @@ func TestTranslateToolStatus_AllVariants(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.in, func(t *testing.T) {
 			assert.Equal(t, c.out, translateToolStatus(c.in))
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Issue #730 regression tests: opencode 1.18.10 flat-string tool shape.
+//
+// The Epic 65 parser declared ocPart.tool as *ocTool (object), but opencode
+// 1.18.10 emits "tool" as a bare string (the tool name) with callID/state/
+// input/output hoisted onto the part itself. The whole history 502'd.
+//
+// Golden fixtures in testdata/ are the schema pins: any future opencode
+// wire-shape change will fail these tests loudly instead of becoming a Sev1.
+// ---------------------------------------------------------------------------
+
+// mustLoadFixture loads a golden payload from testdata/. Golden files are the
+// verbatim captured wire shapes and MUST NOT be hand-edited to satisfy a test
+// — re-capture from a real pod if opencode's shape changes.
+func mustLoadFixture(t *testing.T, name string) []byte {
+	t.Helper()
+	b, err := os.ReadFile("testdata/" + name)
+	require.NoError(t, err, "missing golden fixture testdata/%s", name)
+	return b
+}
+
+// TestParseHistoryWire_RealShape1_18_10_FlatTool is the PRIMARY regression
+// test for issue #730. It feeds the verbatim captured 1.18.10 wire shape
+// (tool as a bare string + part-level callID/state/input/output) and asserts
+// the translator produces a correct session.ToolPart.
+//
+// RED pre-fix: fails with the production error
+// "cannot unmarshal string into Go struct field ocPart.parts.tool of type
+// opencode.ocTool".
+// GREEN post-fix: all assertions pass.
+func TestParseHistoryWire_RealShape1_18_10_FlatTool(t *testing.T) {
+	body := mustLoadFixture(t, "history_1_18_10_flat_tool.json")
+
+	msgs, _, _, err := ParseHistoryWire(body, "ws-1")
+	require.NoError(t, err, "flat-string tool shape must decode without error")
+	require.Len(t, msgs, 2, "user message + assistant message")
+
+	// Assistant message (index 1) carries the tool part.
+	assistant := msgs[1]
+	require.Equal(t, session.MessageAssistant, assistant.Type)
+
+	var toolPart *session.ToolPart
+	for _, p := range assistant.Parts {
+		if p.Type == session.PartTool {
+			toolPart = p.Tool
+			break
+		}
+	}
+	require.NotNil(t, toolPart, "expected exactly one ToolPart in the assistant message")
+
+	// Name came from the part-level "tool":"bash" string (not nested object).
+	assert.Equal(t, "bash", toolPart.Name)
+
+	// CallID came from the part-level callID (hoisted in 1.18.10).
+	assert.Equal(t, "call_80396e4d40744245897866a7", toolPart.CallID)
+
+	// State status came from state.status.
+	assert.Equal(t, session.ToolStatusCompleted, toolPart.State.Status,
+		"state.status must map to completed")
+
+	// Input came from state.input (NOT a top-level part field in 1.18.10).
+	require.NotNil(t, toolPart.Input, "state.input must populate ToolPart.Input")
+	var in map[string]string
+	require.NoError(t, json.Unmarshal(toolPart.Input, &in))
+	assert.Contains(t, in["command"], "git clone https://github.com/lenaxia/llmsafespaces.git")
+
+	// Output came from state.output.
+	require.NotNil(t, toolPart.Output, "state.output must populate ToolPart.Output")
+	var out string
+	require.NoError(t, json.Unmarshal(toolPart.Output, &out), "output is a string in 1.18.10")
+	assert.Contains(t, out, "Cloning into '/workspace/llmsafespaces'")
+
+	// StartedAt came from state.time.start (epoch-millis number).
+	require.NotNil(t, toolPart.State.StartedAt, "state.time.start must populate StartedAt")
+	assert.Equal(t, time.UnixMilli(1786374885930), *toolPart.State.StartedAt)
+
+	// CompletedAt came from state.time.end (epoch-millis number).
+	require.NotNil(t, toolPart.State.CompletedAt, "state.time.end must populate CompletedAt")
+	assert.Equal(t, time.UnixMilli(1786374894033), *toolPart.State.CompletedAt)
+}
+
+// TestParseHistoryWire_LegacyNestedTool_StillWorks guards the 1.15.x path.
+// Prod still runs workspaces on opencode 1.15.12 (confirmed in cluster logs),
+// so the fix must not regress the legacy nested-object tool shape. This test
+// must stay GREEN before AND after the fix.
+func TestParseHistoryWire_LegacyNestedTool_StillWorks(t *testing.T) {
+	body := mustLoadFixture(t, "history_1_15_12_nested_tool.json")
+
+	msgs, _, _, err := ParseHistoryWire(body, "ws-1")
+	require.NoError(t, err)
+	require.Len(t, msgs, 2)
+
+	assistant := msgs[1]
+	require.Equal(t, session.MessageAssistant, assistant.Type)
+
+	var toolPart *session.ToolPart
+	for _, p := range assistant.Parts {
+		if p.Type == session.PartTool {
+			toolPart = p.Tool
+			break
+		}
+	}
+	require.NotNil(t, toolPart)
+
+	assert.Equal(t, "bash", toolPart.Name, "name from nested tool.name")
+	assert.Equal(t, "call_legacy_1", toolPart.CallID, "callID from nested tool.callID")
+	assert.Equal(t, session.ToolStatusCompleted, toolPart.State.Status)
+
+	// Input came from the nested tool.input object.
+	require.NotNil(t, toolPart.Input)
+	var in map[string]string
+	require.NoError(t, json.Unmarshal(toolPart.Input, &in))
+	assert.Equal(t, "ls -la", in["command"])
+
+	// Output came from the nested tool.output object.
+	require.NotNil(t, toolPart.Output)
+	var outMap map[string]string
+	require.NoError(t, json.Unmarshal(toolPart.Output, &outMap))
+	assert.Contains(t, outMap["stdout"], "total 0")
+
+	// Legacy shape uses ISO-8601 strings for startedAt/completedAt (NOT
+	// state.time.{start,end} epoch-millis).
+	require.NotNil(t, toolPart.State.StartedAt)
+	assert.Equal(t, "2025-08-10T12:00:05Z", toolPart.State.StartedAt.UTC().Format(time.RFC3339))
+	require.NotNil(t, toolPart.State.CompletedAt)
+	assert.Equal(t, "2025-08-10T12:00:06Z", toolPart.State.CompletedAt.UTC().Format(time.RFC3339))
+}
+
+// TestParseHistoryWire_MixedShapesInOneHistory covers the realistic fleet
+// case during a rolling upgrade: a single history array containing both the
+// legacy nested-object tool shape and the new flat-string tool shape. Both
+// must translate correctly — the array is built by concatenating the two
+// golden fixtures' messages.
+func TestParseHistoryWire_MixedShapesInOneHistory(t *testing.T) {
+	flatBody := mustLoadFixture(t, "history_1_18_10_flat_tool.json")
+	nestedBody := mustLoadFixture(t, "history_1_15_12_nested_tool.json")
+
+	var flatMsgs, nestedMsgs []json.RawMessage
+	require.NoError(t, json.Unmarshal(flatBody, &flatMsgs))
+	require.NoError(t, json.Unmarshal(nestedBody, &nestedMsgs))
+
+	// Interleave: nested-user, flat-user, nested-assistant, flat-assistant.
+	mixed := []json.RawMessage{
+		nestedMsgs[0], flatMsgs[0], nestedMsgs[1], flatMsgs[1],
+	}
+	body, err := json.Marshal(mixed)
+	require.NoError(t, err)
+
+	msgs, _, _, err := ParseHistoryWire(body, "ws-mixed")
+	require.NoError(t, err, "mixed shapes must both decode")
+	require.Len(t, msgs, 4, "all four messages must survive")
+
+	// mixed = [nested-user(0), flat-user(1), nested-assistant(2), flat-assistant(3)].
+	// Indices 2 and 3 carry the tool parts.
+	for _, idx := range []int{2, 3} {
+		var toolPart *session.ToolPart
+		for _, p := range msgs[idx].Parts {
+			if p.Type == session.PartTool {
+				toolPart = p.Tool
+				break
+			}
+		}
+		require.NotNil(t, toolPart, "assistant at mixed index %d must have a tool part", idx)
+		assert.Equal(t, "bash", toolPart.Name, "both shapes resolve to name=bash")
+		assert.Equal(t, session.ToolStatusCompleted, toolPart.State.Status)
+		assert.NotNil(t, toolPart.Input, "input must be populated for both shapes")
+		assert.NotNil(t, toolPart.State.StartedAt, "startedAt must be populated for both shapes")
+	}
+}
+
+// TestParseHistoryWire_OneMalformedPart_DoesNot502 validates Fix 2
+// (per-message resilience). One message with an undecodable part must NOT
+// fail the whole history — it downgrades to a MessageSystem notice while
+// the surrounding messages translate normally. This is the containment
+// rule (README §12): one bad upstream shape must never Sev1 the surface.
+func TestParseHistoryWire_OneMalformedPart_DoesNot502(t *testing.T) {
+	// Index 1 has a part whose "tool" field is a number — a shape neither
+	// the legacy nested nor the new flat-string path can decode. Simulates
+	// a future opencode schema change.
+	body := []byte(`[
+		{
+			"info": {"role": "assistant", "id": "msg_good_before"},
+			"parts": [
+				{"type": "tool", "callID": "call_ok_1", "tool": "read", "state": {"status": "completed", "input": {"path": "/a"}, "output": "ok", "time": {"start": 1786374885930, "end": 1786374894033}}}
+			]
+		},
+		{
+			"info": {"role": "assistant", "id": "msg_bad"},
+			"parts": [
+				{"type": "tool", "tool": 42}
+			]
+		},
+		{
+			"info": {"role": "assistant", "id": "msg_good_after"},
+			"parts": [
+				{"type": "tool", "callID": "call_ok_2", "tool": "read", "state": {"status": "completed", "input": {"path": "/b"}, "output": "ok", "time": {"start": 1786374885930, "end": 1786374894033}}}
+			]
+		}
+	]`)
+
+	msgs, _, _, err := ParseHistoryWire(body, "ws-resilience")
+	require.NoError(t, err, "one malformed message must NOT fail the whole history")
+	require.Len(t, msgs, 3, "all three messages must be present (bad one downgraded, not dropped)")
+
+	// Good messages before and after still translate correctly.
+	assert.Equal(t, "msg_good_before", msgs[0].ID)
+	var tpBefore *session.ToolPart
+	for _, p := range msgs[0].Parts {
+		if p.Type == session.PartTool {
+			tpBefore = p.Tool
+		}
+	}
+	require.NotNil(t, tpBefore, "well-formed message before the bad one must keep its tool part")
+	assert.Equal(t, "read", tpBefore.Name)
+
+	assert.Equal(t, "msg_good_after", msgs[2].ID)
+	var tpAfter *session.ToolPart
+	for _, p := range msgs[2].Parts {
+		if p.Type == session.PartTool {
+			tpAfter = p.Tool
+		}
+	}
+	require.NotNil(t, tpAfter, "well-formed message after the bad one must keep its tool part")
+	assert.Equal(t, "read", tpAfter.Name)
+
+	// The malformed message is downgraded to a system notice with
+	// non-empty text. Its raw bytes are NOT echoed (avoid leaking
+	// potentially huge/garbage payloads to the UI).
+	assert.Equal(t, session.MessageSystem, msgs[1].Type,
+		"undecodable message must be downgraded to MessageSystem")
+	assert.NotEmpty(t, msgs[1].Text, "downgraded message must carry an explanatory text")
+	assert.NotContains(t, msgs[1].Text, "42",
+		"raw malformed bytes must not leak into the downgrade text")
+}
+
+// TestParseHistoryWire_TotallyGarbage_StillErrors is defense-in-depth for
+// Fix 2: the resilience must NOT over-correct into swallowing genuine
+// decode failures. A body that is not a JSON array at all still returns a
+// clear top-level error so real bugs surface.
+func TestParseHistoryWire_TotallyGarbage_StillErrors(t *testing.T) {
+	cases := map[string][]byte{
+		"not json":         []byte(`not json`),
+		"object not array": []byte(`{"unexpected":"object"}`),
+		"html 404":         []byte(`<html>404</html>`),
+		"empty":            []byte(``),
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, _, _, err := ParseHistoryWire(body, "ws-1")
+			require.Error(t, err, "genuinely malformed body must still error")
+			assert.Contains(t, err.Error(), "opencode history:",
+				"error must carry the established wrap prefix")
+		})
+	}
+}
+
+// TestParseHistoryWire_AllObservedToolNames_1_18_10 is a breadth sweep over
+// every tool name observed in the captured production payload. The fix must
+// handle all of them, not just bash.
+func TestParseHistoryWire_AllObservedToolNames_1_18_10(t *testing.T) {
+	observedNames := []string{
+		"bash", "edit", "glob", "grep", "question",
+		"read", "task", "todowrite", "write",
+	}
+	for _, name := range observedNames {
+		t.Run(name, func(t *testing.T) {
+			body := []byte(fmt.Sprintf(`[{
+				"info": {"role": "assistant", "id": "msg_%s"},
+				"parts": [
+					{"type": "tool", "callID": "call_%s", "tool": "%s", "state": {"status": "completed", "input": {}, "output": "", "time": {"start": 1786374885930, "end": 1786374894033}}}
+				]
+			}]`, name, name, name))
+			msgs, _, _, err := ParseHistoryWire(body, "ws-names")
+			require.NoError(t, err, "tool name %q must decode in the flat shape", name)
+			require.Len(t, msgs, 1)
+			var tp *session.ToolPart
+			for _, p := range msgs[0].Parts {
+				if p.Type == session.PartTool {
+					tp = p.Tool
+				}
+			}
+			require.NotNil(t, tp)
+			assert.Equal(t, name, tp.Name)
+			assert.Equal(t, "call_"+name, tp.CallID)
 		})
 	}
 }

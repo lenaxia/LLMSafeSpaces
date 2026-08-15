@@ -162,28 +162,42 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 }
 
 func mcpSessionList(ctx context.Context, password string) (string, error) {
-	req, _ := http.NewRequestWithContext(ctx, "GET",
-		fmt.Sprintf("http://127.0.0.1:%d/session", agentd.AgentPort), nil)
+	req, err := http.NewRequestWithContext(ctx, "GET",
+		fmt.Sprintf("%s/session", getAgentAddr()), nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to build session list request: %w", err)
+	}
 	req.SetBasicAuth(agentd.AuthUsername, password)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to list sessions: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("opencode returned status %d for session list", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	return string(body), nil
 }
 
 func mcpSessionRead(ctx context.Context, password, sessionID string, limit int) (string, error) {
-	url := fmt.Sprintf("http://127.0.0.1:%d/session/%s/message?limit=%d", agentd.AgentPort, sessionID, limit)
-	req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+	url := fmt.Sprintf("%s/session/%s/message?limit=%d", getAgentAddr(), sessionID, limit)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		// A malformed sessionID (spaces, control chars) makes the URL
+		// unparseable; req is nil and SetBasicAuth would panic.
+		return "", fmt.Errorf("failed to build session read request: %w", err)
+	}
 	req.SetBasicAuth(agentd.AuthUsername, password)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to read session: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("opencode returned status %d for session read", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	return string(body), nil
 }
 

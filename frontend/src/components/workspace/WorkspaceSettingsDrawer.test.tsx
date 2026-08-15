@@ -23,6 +23,13 @@ vi.mock("../../api/prompts", () => ({
   },
 }));
 
+vi.mock("../../env", () => ({
+  getEnv: vi.fn(() => ({
+    apiBaseUrl: "https://api.safespaces.dev/api/v1",
+    turnstileSiteKey: "",
+  })),
+}));
+
 import { secretsApi } from "../../api/secrets";
 import { api } from "../../api/client";
 import { promptsApi } from "../../api/prompts";
@@ -160,9 +167,62 @@ describe("WorkspaceSettingsDrawer", () => {
     );
 
     await waitFor(() => expect(screen.getByText("Open preview")).toBeInTheDocument());
-    expect(screen.getByText("Open preview").closest("a")).toHaveAttribute(
+    const link = screen.getByText("Open preview").closest("a");
+    expect(link).toHaveAttribute(
       "href",
       expect.stringContaining(`/api/v1/workspaces/ws-1/dev-preview/5173/`),
+    );
+  });
+
+  // #793: dev-preview link must use the absolute API origin from env.json,
+  // not a relative URL. A relative URL resolves to the frontend host
+  // (chat.safespaces.dev) which nginx catches with `return 502` for /api/.
+  it("dev-preview link uses absolute API origin, not relative path (#793)", async () => {
+    (api.get as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
+      if (path.includes("/prompt")) return Promise.resolve({ prompt: "" });
+      if (path.includes("/bindings")) return Promise.resolve({ bindings: [] });
+      if (path === `/workspaces/ws-1`) return Promise.resolve({ devPreviewEnabled: true });
+      return Promise.resolve({});
+    });
+    render(
+      <WorkspaceSettingsDrawer
+        workspace={mockWorkspace}
+        open={true}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("Open preview")).toBeInTheDocument());
+    const link = screen.getByText("Open preview").closest("a");
+    const href = link?.getAttribute("href") ?? "";
+    // Must be an absolute URL starting with the API origin
+    expect(href).toMatch(/^https?:\/\//);
+    expect(href).toContain("api.safespaces.dev");
+    expect(href).toBe(`https://api.safespaces.dev/api/v1/workspaces/ws-1/dev-preview/5173/`);
+  });
+
+  it("dev-preview link uses custom port when specified (#793)", async () => {
+    (api.get as ReturnType<typeof vi.fn>).mockImplementation((path: string) => {
+      if (path.includes("/prompt")) return Promise.resolve({ prompt: "" });
+      if (path.includes("/bindings")) return Promise.resolve({ bindings: [] });
+      if (path === `/workspaces/ws-1`) return Promise.resolve({ devPreviewEnabled: true });
+      return Promise.resolve({});
+    });
+    render(
+      <WorkspaceSettingsDrawer
+        workspace={mockWorkspace}
+        open={true}
+        onOpenChange={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText("Open preview")).toBeInTheDocument());
+    const portInput = screen.getByDisplayValue("5173");
+    fireEvent.change(portInput, { target: { value: "3000" } });
+
+    const link = screen.getByText("Open preview").closest("a");
+    expect(link?.getAttribute("href")).toBe(
+      `https://api.safespaces.dev/api/v1/workspaces/ws-1/dev-preview/3000/`,
     );
   });
 

@@ -67,8 +67,8 @@ func recordUpstream5xx(logger pkginterfaces.LoggerInterface, workspaceID, path s
 // path segments to `:id`. Prometheus counters with unbounded
 // cardinality (raw session IDs) would exhaust memory.
 //
-// Currently handles: /session/{id}/message, /session/{id}, and
-// /session/{id}/prompt_async. Any other path passes through verbatim.
+// Currently handles: /session/{id}/message, /session/{id}. Any other
+// path passes through verbatim.
 func sanitizePathForMetric(path string) string {
 	segments := strings.Split(path, "/")
 	for i, seg := range segments {

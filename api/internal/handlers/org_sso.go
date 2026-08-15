@@ -281,6 +281,7 @@ func (h *SSOHandler) Callback(c *gin.Context) {
 	if maxAge <= 0 {
 		maxAge = 86400
 	}
+	c.SetSameSite(http.SameSiteLaxMode)
 	c.SetCookie(h.sessionCookie, result.Token, maxAge, "/", h.cookieDomain, true, true)
 	c.Redirect(http.StatusFound, h.frontendRedirectWithSuccess())
 }

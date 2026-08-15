@@ -11,18 +11,15 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
-	pkgerrors "github.com/lenaxia/llmsafespaces/pkg/errors"
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 )
 
-// ErrNoRunningPod is returned when the workspace has no running pod
-// (empty podIP). The handler maps this to 404.
-var ErrNoRunningPod = &pkgerrors.StatusError{
-	Status:  http.StatusNotFound,
-	Code:    "no_running_pod",
-	Message: "workspace pod not running",
-}
+// ErrNoRunningPod is re-exported from pkg/agent (the canonical location).
+// Callers should use agent.ErrNoRunningPod; this alias exists for
+// backward compatibility with code that still imports this package.
+var ErrNoRunningPod = agent.ErrNoRunningPod
 
 // PasswordResolver resolves the opencode Basic-auth password for a workspace.
 // The API-side implementation reads from the K8s Secret cache (pwCache);
@@ -73,7 +70,11 @@ func WithWorkspaceHTTPClient(hc *http.Client) WorkspaceClientOption {
 // connections warm simultaneously.
 func newTunedHTTPClient() *http.Client {
 	return &http.Client{
-		Timeout: 10 * time.Second,
+		// No hard client-level timeout — the caller's context deadline
+		// is the correct per-request boundary. A fixed client.Timeout
+		// covers the entire exchange including body read, which breaks
+		// sync Send (blocks on LLM completion, typically 10-120s) and
+		// GetHistory on large sessions (#746).
 		Transport: &http.Transport{
 			MaxIdleConns:        500,
 			MaxIdleConnsPerHost: 10,

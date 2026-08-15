@@ -5,11 +5,16 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
+	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
 
 // WorkspacePassword implements interfaces.WorkspacePasswordProvider (US-46.11).
@@ -102,6 +107,106 @@ func (h *ProxyHandler) invalidateCaches(ctx context.Context, workspaceID string)
 // the handlers package (admin tooling, canary checks).
 func (h *ProxyHandler) GetActiveSessions(ctx context.Context, workspaceID string) []string {
 	return h.state().GetActiveSessions(ctx, workspaceID)
+}
+
+// GetAuthoritativeActiveSessions queries the workspace pod's /v1/statusz
+// for ground-truth busy/idle status (#792 Pattern 1). This eliminates
+// the stale-forever window of the in-memory activeSess map: when the
+// SSE stream drops or the API restarts mid-turn, the in-memory map
+// retains stale "active" entries that make sessions appear stuck busy
+// forever.
+//
+// Falls back to the in-memory activeSess map if the workspace is not
+// Active (pod restarting, suspended). If the workspace IS Active but
+// statusz fails (agentd crashed), returns empty — conservative: better
+// to allow a new turn than to block the user on stale state.
+//
+// As a side effect, reconciles stale in-memory activeSess entries:
+// sessions that statusz reports as idle are removed from the in-memory
+// set. This self-heals the write-side gating path.
+func (h *ProxyHandler) GetAuthoritativeActiveSessions(ctx context.Context, workspaceID string) map[string]bool {
+	// If we can't reach K8s or the workspace pod, fall back to the
+	// in-memory activeSess map. This handles test fixtures, non-Active
+	// workspaces, and transient failures.
+	v1Client, v1Err := h.k8sClient.LlmsafespacesV1()
+	if v1Err != nil || v1Client == nil {
+		return h.fallbackActiveSessions(ctx, workspaceID)
+	}
+	ws, wsErr := v1Client.Workspaces(h.namespace).Get(ctx, workspaceID, metav1.GetOptions{})
+	if wsErr != nil || ws == nil || ws.Status.Phase != phaseActive || ws.Status.PodIP == "" {
+		return h.fallbackActiveSessions(ctx, workspaceID)
+	}
+
+	password, pwErr := h.getPassword(ctx, workspaceID)
+	if pwErr != nil {
+		return h.fallbackActiveSessions(ctx, workspaceID)
+	}
+
+	statuszCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+
+	url := fmt.Sprintf("http://%s:%d/v1/statusz", ws.Status.PodIP, agentd.AgentdAdminPort) //nolint:gosec // G107: internal pod
+	req, err := http.NewRequestWithContext(statuszCtx, http.MethodGet, url, nil)
+	if err != nil {
+		return map[string]bool{}
+	}
+	if password != "" {
+		req.Header.Set("Authorization", "Bearer "+password)
+	}
+
+	resp, err := h.httpClient.Do(req)
+	if err != nil {
+		h.logger.Debug("GetAuthoritativeActiveSessions: statusz unavailable",
+			"workspaceID", workspaceID, "error", err)
+		return map[string]bool{}
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		return map[string]bool{}
+	}
+
+	var statusz agentd.StatuszResponse
+	// 1 MB cap (was 16 KB). A workspace with many sessions produces a
+	// statusz body well over 16 KB — each session entry is ~300 bytes, so
+	// ~55 sessions exceeds the old cap. When the decode failed,
+	// GetAuthoritativeActiveSessions silently returned an empty set,
+	// causing the stuck-busy self-heal to stop working for heavy users.
+	// 1 MB accommodates ~3,500 sessions while still bounding a malicious
+	// or runaway upstream.
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&statusz); err != nil {
+		h.logger.Debug("GetAuthoritativeActiveSessions: failed to decode statusz",
+			"workspaceID", workspaceID, "error", err)
+		return map[string]bool{}
+	}
+
+	busySessions := make(map[string]bool)
+	for _, sess := range statusz.Sessions {
+		if sess.Status != "idle" {
+			busySessions[sess.ID] = true
+		}
+	}
+
+	// Self-heal: reconcile stale in-memory activeSess entries.
+	for _, sess := range statusz.Sessions {
+		if sess.Status == "idle" && h.isSessionActive(ctx, workspaceID, sess.ID) {
+			h.removeActiveSession(ctx, workspaceID, sess.ID)
+		}
+	}
+
+	return busySessions
+}
+
+func (h *ProxyHandler) fallbackActiveSessions(ctx context.Context, workspaceID string) map[string]bool {
+	activeIDs := h.GetActiveSessions(ctx, workspaceID)
+	if len(activeIDs) == 0 {
+		return map[string]bool{}
+	}
+	result := make(map[string]bool, len(activeIDs))
+	for _, id := range activeIDs {
+		result[id] = true
+	}
+	return result
 }
 
 // SetActiveSessionsForTest seeds the active-session set for the workspace.

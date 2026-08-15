@@ -250,6 +250,49 @@ func TestAdapter_GetHistory_ReturnsContractShape(t *testing.T) {
 	assert.Equal(t, session.MessageAssistant, msgs[1].Type)
 }
 
+// TestAdapter_GetHistory_FlatToolShape_ReturnsContractShape is an
+// integration test that sends a flat-string tool part (opencode 1.18.10
+// wire shape) through the Adapter's real HTTP round-trip and verifies
+// a correct session.ToolPart in the output. Pins the production code
+// path that 502'd in issue #730.
+func TestAdapter_GetHistory_FlatToolShape_ReturnsContractShape(t *testing.T) {
+	srv := newFakeOpencode(t)
+	srv.register("GET", "/session/ses_1/message", `[
+		{
+			"info":{"role":"user","id":"msg_0"},
+			"parts":[{"type":"text","text":"run ls"}]
+		},
+		{
+			"info":{"role":"assistant","id":"msg_1"},
+			"parts":[
+				{"type":"text","text":"running it"},
+				{"type":"tool","callID":"call_flat_1","tool":"bash","state":{"status":"completed","input":{"command":"ls"},"output":"file.go\n","time":{"start":1786374885930,"end":1786374894033}}}
+			]
+		}
+	]`, 0)
+
+	a := newTestAdapter(t, srv.Server)
+	msgs, err := a.GetHistory(context.Background(), "u-1", "ws-1", "ses_1")
+	require.NoError(t, err)
+	require.Len(t, msgs, 2)
+
+	assistant := msgs[1]
+	require.Equal(t, session.MessageAssistant, assistant.Type)
+
+	var tp *session.ToolPart
+	for _, p := range assistant.Parts {
+		if p.Type == session.PartTool {
+			tp = p.Tool
+		}
+	}
+	require.NotNil(t, tp, "flat-string tool part must survive the HTTP round-trip")
+	assert.Equal(t, "bash", tp.Name)
+	assert.Equal(t, "call_flat_1", tp.CallID)
+	assert.Equal(t, session.ToolStatusCompleted, tp.State.Status)
+	require.NotNil(t, tp.State.StartedAt)
+	assert.Equal(t, int64(1786374885930), tp.State.StartedAt.UnixMilli())
+}
+
 func TestAdapter_SendAsync_UsesV2PromptEndpoint(t *testing.T) {
 	srv := newFakeOpencode(t)
 	srv.register("POST", "/api/session/ses_1/prompt", `{"data":{
@@ -276,13 +319,20 @@ func TestAdapter_SendAsync_SteerDelivery(t *testing.T) {
 	// verification would need a custom handler.
 }
 
-func TestAdapter_Abort_UsesV2Interrupt(t *testing.T) {
+func TestAdapter_Abort_UsesV1AbortEndpoint(t *testing.T) {
+	// Abort must use V1 POST /session/:id/abort, not the V2 interrupt
+	// endpoint which was removed in opencode 1.18.10. Register both
+	// endpoints; only V1 /abort should be hit.
 	srv := newFakeOpencode(t)
+	srv.register("POST", "/session/ses_1/abort", ``, http.StatusOK)
 	srv.register("POST", "/api/session/ses_1/interrupt", ``, http.StatusNoContent)
 
 	a := newTestAdapter(t, srv.Server)
 	require.NoError(t, a.Abort(context.Background(), "u-1", "ws-1", "ses_1"))
-	require.Contains(t, srv.requests, "POST /api/session/ses_1/interrupt")
+	require.Contains(t, srv.requests, "POST /session/ses_1/abort",
+		"Abort must use V1 /session/:id/abort (the only interrupt endpoint on opencode 1.18.10+)")
+	require.NotContains(t, srv.requests, "POST /api/session/ses_1/interrupt",
+		"Abort must NOT use V2 /api/session/:id/interrupt (endpoint removed in opencode 1.18.10)")
 }
 
 // --- Models ---
@@ -365,7 +415,18 @@ func TestAdapter_Capabilities_ReportsQueueReasoningDiff(t *testing.T) {
 	caps := a.Capabilities()
 	assert.Contains(t, caps, session.CapQueue)
 	assert.Contains(t, caps, session.CapReasoning)
-	assert.Contains(t, caps, session.CapDiff)
+	assert.NotContains(t, caps, session.CapDiff, "CapDiff must not be advertised when differ is nil (#745)")
+}
+
+func TestAdapter_Capabilities_WithDiffer_ReportsCapDiff(t *testing.T) {
+	a := NewAdapter(
+		func(_ context.Context, _ string) (string, error) { return "", nil },
+		&staticPodIPResolver{ip: ""},
+		zap.NewNop(),
+		WithFileDiffProducer(&filediff.Producer{}),
+	)
+	caps := a.Capabilities()
+	assert.Contains(t, caps, session.CapDiff, "CapDiff must be advertised when differ is wired")
 }
 
 // --- Stream (not implemented in US-65.3) ---
@@ -716,6 +777,35 @@ func TestAdapter_Send_5xx_ReturnsErrorWithStatus(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "500")
 	assert.Contains(t, err.Error(), "internal")
+}
+
+// TestAdapter_Send_LargeResponseOver4MB_NoTruncation is the regression
+// test for the Send response cap fix. The previous code used
+// readBody(resp, 4<<20) which silently truncated any assistant turn
+// with verbose tool output (>4 MB). This test feeds a >5 MB response
+// body (a valid assistant message with a very large text part) and
+// asserts it decodes without error and the text is intact.
+//
+// Reverting to readBody(resp, 4<<20)+json.Unmarshal would truncate the
+// body at 4 MB, the JSON parse would fail with "unexpected end of JSON
+// input", and Send would return an error — failing this test.
+func TestAdapter_Send_LargeResponseOver4MB_NoTruncation(t *testing.T) {
+	// Build a valid opencode message with >5 MB of text content.
+	// 5 MB > the old 4 MB cap but well under the new 64 MB cap.
+	largeText := strings.Repeat("x", 5<<20)
+	body := `{"info":{"role":"assistant","id":"msg_big"},"parts":[{"type":"text","text":"` +
+		largeText + `"}]}`
+
+	srv := newFakeOpencode(t)
+	srv.register("POST", "/session/ses_1/message", body, 0)
+
+	a := newTestAdapter(t, srv.Server)
+	msg, err := a.Send(context.Background(), "u-1", "ws-1", "ses_1", "hi", session.SendOpts{})
+	require.NoError(t, err, "Send must not fail on response bodies >4 MB")
+	require.NotNil(t, msg)
+	assert.Equal(t, "msg_big", msg.ID)
+	require.Len(t, msg.Parts, 1)
+	assert.Equal(t, 5<<20, len(msg.Parts[0].Text), "full text must survive (not truncated at the old 4 MB cap)")
 }
 
 // --- SendAsync error paths (PR #714 review follow-up) ---

@@ -8,7 +8,7 @@
 # ARG TARGETARCH to a default — buildx injects the value per-platform; a
 # hardcoded default can produce a binary for the wrong arch (issue #462).
 
-FROM --platform=$BUILDPLATFORM golang:1.25 AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26 AS builder
 
 WORKDIR /workspace
 
@@ -21,11 +21,18 @@ RUN go mod download
 COPY cmd/ cmd/
 COPY pkg/ pkg/
 
+ARG VERSION=unknown
+ARG COMMIT_SHA=unknown
+ARG BUILD_TIME=unknown
+
 # TARGETARCH is injected by buildx per-platform. No hardcoded default — see #462.
 ARG TARGETARCH
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
     go build \
         -trimpath \
+        -ldflags "-X github.com/lenaxia/llmsafespaces/pkg/version.Version=${VERSION} \
+                  -X github.com/lenaxia/llmsafespaces/pkg/version.CommitSHA=${COMMIT_SHA} \
+                  -X github.com/lenaxia/llmsafespaces/pkg/version.BuildTime=${BUILD_TIME}" \
         -o /out/relay-proxy \
         ./cmd/relay-proxy
 

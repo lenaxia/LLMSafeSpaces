@@ -12,7 +12,9 @@ import (
 	"github.com/stretchr/testify/mock"
 
 	apiinterfaces "github.com/lenaxia/llmsafespaces/api/internal/interfaces"
+	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // mockSessionIndex implements interfaces.SessionIndexService for testing.
@@ -58,7 +60,6 @@ func TestListWorkspaceSessions_DelegatesToSessionIndex(t *testing.T) {
 	si := &mockSessionIndex{}
 	f.svc.SetSessionIndex(si)
 
-	// verifyOwner needs DB to return the workspace owned by test-user
 	f.db.On("GetWorkspace", mock.Anything, "ws-1").Return(&types.WorkspaceMetadata{
 		ID: "ws-1", UserID: "user-1",
 	}, nil)
@@ -67,6 +68,11 @@ func TestListWorkspaceSessions_DelegatesToSessionIndex(t *testing.T) {
 		{ID: "s1", Title: "Chat", MessageCount: 5, Status: "idle"},
 	}
 	si.On("ListByWorkspace", mock.Anything, "ws-1").Return(expected, nil)
+
+	f.ws.On("Get", mock.Anything, "ws-1", mock.Anything).Return(&v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "default"},
+		Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive},
+	}, nil)
 
 	result, err := f.svc.ListWorkspaceSessions(context.Background(), "user-1", "ws-1")
 	assert.NoError(t, err)

@@ -13,7 +13,7 @@ function jsonResponse(body: unknown, status = 200) {
   return Promise.resolve({
     ok: status >= 200 && status < 300,
     status,
-    json: () => Promise.resolve(body),
+    json: () => Promise.resolve(body), text: () => Promise.resolve(JSON.stringify(body)),
     statusText: "OK",
   });
 }
@@ -81,7 +81,7 @@ describe("inputApi", () => {
       Promise.resolve({
         ok: false,
         status: 500,
-        json: () => Promise.resolve({ error: "internal" }),
+        json: () => Promise.resolve({ error: "internal" }), text: () => Promise.resolve(JSON.stringify({ error: "internal" })),
         statusText: "Internal Server Error",
       }),
     );

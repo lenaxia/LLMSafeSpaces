@@ -6,7 +6,6 @@ package auth
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"testing"
 	"time"
 
@@ -135,8 +134,7 @@ func TestRecordFailedAttempt_UsesSettingsDuration(t *testing.T) {
 	})
 	ctx := context.Background()
 
-	mockCache.On("Get", ctx, "lockout:x@e.com").Return("", errors.New("miss"))
-	mockCache.On("Set", ctx, "lockout:x@e.com", "1", 10*time.Minute).Return(nil)
+	mockCache.On("Incr", ctx, "lockout:x@e.com", 10*time.Minute).Return(int64(1), nil)
 
 	svc.recordFailedAttempt(ctx, "x@e.com")
 	mockCache.AssertExpectations(t)

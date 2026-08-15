@@ -88,20 +88,17 @@ type ProxyHandler struct {
 	// SetWorkspaceUpdateCallback before Start().
 	workspaceUpdateCb workspace.WorkspaceUpdateCallback
 
-	queueSvc interfaces.MessageQueueService
-
-	// v2SessionQueueEnabled switches the enqueue/abort paths from the
-	// external Redis queue (V1 prompt_async + destructive abort) to
-	// opencode's V2 session API (delivery:"queue" + non-destructive
-	// interrupt). Feature flag for Epic 63; default false.
-	v2SessionQueueEnabled bool
-
 	// v2ClientFactory overrides V2 client construction. nil in production
 	// (v2Client resolves pod IP + password and builds the default client).
 	// Tests inject a factory pointing at a dynamic-port httptest.Server,
 	// eliminating the port 4096 dependency that caused non-deterministic
 	// CI failures.
 	v2ClientFactory V2ClientFactory
+
+	// v2ClientConcreteFactory builds a V2SessionClient from a baseURL +
+	// password. Set during wiring (app.go) with opencode.NewClient; this
+	// file does not import pkg/agent/opencode.
+	v2ClientConcreteFactory func(baseURL, password string) (agent.V2SessionClient, error)
 
 	// v2Pending tracks sessions with undrained V2 queue-delivered input.
 	// Used by US-63.9 (stranded-input recovery) to identify sessions
@@ -115,10 +112,6 @@ type ProxyHandler struct {
 	// Redis client is available (shadow disabled; ListQueue returns empty
 	// under V2). Set via SetV2QueueShadow before Start().
 	v2Shadow *V2QueueShadow
-
-	// sweepInterval overrides the default queueSweepInterval for testing.
-	// Zero means use the default (30s). Set via SetSweepInterval before Start().
-	sweepInterval time.Duration
 
 	// requestBuffer parks POST /message requests during an opencode restart
 	// (connection-refused window) so users do not see 503s. See US-44.10.
@@ -274,8 +267,11 @@ func (h *ProxyHandler) proxyToWorkspaceWithErrBody(
 		c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
 		c.JSON(http.StatusServiceUnavailable, gin.H{
 			"error":      "workspace not ready",
+			"code":       "service_unavailable",
+			"reason":     "not_ready",
 			"phase":      workspace.Status.Phase,
 			"retryAfter": retryAfterSec,
+			"message":    fmt.Sprintf("Workspace is %s. This usually takes a few seconds.", strings.ToLower(string(workspace.Status.Phase))),
 		})
 		return
 	}
@@ -341,7 +337,7 @@ func (h *ProxyHandler) proxyToWorkspaceWithErrBody(
 	}
 
 	// Disk-pressure injection: when the workspace disk is >=90% full,
-	// prepend a notice part to LLM-bound requests (message / prompt_async)
+	// prepend a notice part to LLM-bound requests (POST /message)
 	// so the agent nudges the user to free up space; >=95% escalates to
 	// safe-cleanup guidance (build artifacts + caches only, logs last).
 	// The ratio comes from the Workspace CRD status (controller-mirrored
@@ -439,10 +435,23 @@ func (h *ProxyHandler) proxyToWorkspaceWithErrBody(
 			}
 			if !c.Writer.Written() && c.Request.Context().Err() == nil {
 				if errors.Is(ferr, errBufferTimeout) {
-					c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Workspace is restarting, please try again in a moment"})
+					c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
+					c.JSON(http.StatusServiceUnavailable, gin.H{
+						"error":      "Workspace is restarting, please try again in a moment",
+						"code":       "service_unavailable",
+						"reason":     "agent_restarting",
+						"retryAfter": retryAfterSec,
+						"message":    "The agent is restarting (credential change, OOM, or crash recovery). Your request will work once it's back.",
+					})
 				} else {
 					c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
-					c.JSON(http.StatusServiceUnavailable, gin.H{"error": "workspace connection failed", "retryAfter": retryAfterSec})
+					c.JSON(http.StatusServiceUnavailable, gin.H{
+						"error":      "workspace connection failed",
+						"code":       "service_unavailable",
+						"reason":     "agent_unreachable",
+						"retryAfter": retryAfterSec,
+						"message":    "The agent is not responding. It may be restarting or recovering — please try again in a moment.",
+					})
 				}
 			}
 			return
@@ -458,7 +467,10 @@ func (h *ProxyHandler) proxyToWorkspaceWithErrBody(
 			c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSec))
 			c.JSON(http.StatusServiceUnavailable, gin.H{
 				"error":      "workspace connection failed",
+				"code":       "service_unavailable",
+				"reason":     "agent_unreachable",
 				"retryAfter": retryAfterSec,
+				"message":    "The agent is not responding. It may be restarting or recovering — please try again in a moment.",
 			})
 		}
 		return
@@ -503,7 +515,7 @@ func (h *ProxyHandler) proxyToWorkspaceWithErrBody(
 const chatErrorBufferCap = 64 * 1024
 
 // doProxy sends the request to the sandbox and writes the response back to
-// the client. Streaming endpoints (events, prompt_async) are streamed
+// the client. Streaming endpoints (events) are streamed
 // directly to the client with flushed writes.
 //
 // When onErrorBody is non-nil and the upstream returns status >= 400, the
@@ -624,7 +636,7 @@ func (h *ProxyHandler) doProxy(c *gin.Context, podIP, targetPath, password strin
 		if readErr != nil {
 			if readErr == io.EOF || readErr == io.ErrUnexpectedEOF {
 				if isSSEStream && bytesReceived > 0 {
-					const agentDiedEvent = "event: error\ndata: {\"type\":\"agent_died\",\"reason\":\"unknown\"}\n\n"
+					const agentDiedEvent = "event: error\ndata: {\"type\":\"agent_died\",\"reason\":\"unknown\",\"message\":\"The agent stopped responding (OOM, crash, or restart). Reconnecting…\"}\n\n"
 					_, _ = c.Writer.Write([]byte(agentDiedEvent))
 					if canFlush {
 						flusher.Flush()
@@ -638,7 +650,7 @@ func (h *ProxyHandler) doProxy(c *gin.Context, podIP, targetPath, password strin
 			// distinguish "network problem" from "process gone". Both
 			// shapes are pinned by TestProxy_US44_1_ErrorShapesAreDocumented
 			// and TestProxy_B2_MidStreamReadError_WritesSSEErrorEvent.
-			const sseErrEvent = "event: error\ndata: {\"error\":\"upstream connection lost\"}\n\n"
+			const sseErrEvent = "event: error\ndata: {\"error\":\"upstream connection lost\",\"message\":\"Connection to the agent was lost. Reconnecting…\"}\n\n"
 			_, _ = c.Writer.Write([]byte(sseErrEvent))
 			if canFlush {
 				flusher.Flush()

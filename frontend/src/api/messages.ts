@@ -58,7 +58,7 @@ export function transformHistory(raw: ContractMessage[]): Message[] {
         }
         return p;
       }),
-      createdAt: m.createdAt,
+      createdAt: m.createdAt || undefined,
       modelID: m.model?.id ?? undefined,
     }))
     .filter((m) => m.parts.length > 0);

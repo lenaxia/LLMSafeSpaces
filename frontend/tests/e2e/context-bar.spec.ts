@@ -68,7 +68,7 @@ async function setupAPIMocks(
 
 function stepEndedSSE(sessionID: string, input: number, cacheRead = 0, cacheWrite = 0): string {
   const evt = {
-    type: "opencode.event",
+    type: "agent.event",
     event_type: "session.next.step.ended",
     data: {
       type: "session.next.step.ended",

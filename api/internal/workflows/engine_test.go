@@ -21,6 +21,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 	wf "github.com/lenaxia/llmsafespaces/pkg/workflows"
 	"github.com/stretchr/testify/mock"
+	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -1019,6 +1020,37 @@ func TestExecuteRoutine_PreserveOnFailure_DeleteFails_RecordsOrigin(t *testing.T
 	// robustness fix: sessionDeleted only flips when DELETE succeeds.
 	if len(store.sessionOrigins) != 1 {
 		t.Errorf("expected 1 session origin when DELETE fails (session still exists), got %d", len(store.sessionOrigins))
+	}
+}
+
+// TestExecuteRoutine_PreserveOnFailure_ControlCharSessionID_NoCrash pins
+// the Go 1.26 nil-request fix in the PreserveOnFailure delete path: a
+// session_id from the workspace agent's output containing a control
+// character makes the DELETE URL unparseable. This routine runs in the
+// scheduler outside gin's recovery middleware — a nil-req Do used to
+// crash the API process. Now: logged failure, session origin still
+// recorded (session not deleted), fire delivered.
+func TestExecuteRoutine_PreserveOnFailure_ControlCharSessionID_NoCrash(t *testing.T) {
+	store := newMockSchedulerStore()
+	agentd := newMockAgentd()
+	// Control character in session_id → unparseable DELETE URL.
+	agentd.outputs["routine-agent"] = json.RawMessage(`{"response":"ok","session_id":"ses_\u0007bad"}`)
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{ID: "trig-ctl", WorkspaceID: &wsID, Prompt: "test", CaptureMode: types.CaptureFull, PreserveSession: types.PreserveOnFailure}
+	fire := &wf.TriggerFireRow{ID: "fire-ctl", TriggerID: "trig-ctl", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: noopLogger{}}
+
+	require.NotPanics(t, func() {
+		sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+	})
+
+	if store.statuses["fire-ctl"] != "delivered" {
+		t.Fatalf("expected delivered, got %s", store.statuses["fire-ctl"])
+	}
+	// DELETE could not run (URL build failed) → session still exists →
+	// origin recorded as fallback, same as the unreachable-DELETE case.
+	if len(store.sessionOrigins) != 1 {
+		t.Errorf("expected 1 session origin when DELETE URL is invalid, got %d", len(store.sessionOrigins))
 	}
 }
 

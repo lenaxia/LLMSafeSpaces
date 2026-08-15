@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -253,6 +254,82 @@ func TestE2E_SSENestedFormat(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	assert.Equal(t, "busy", tracker.get("ses_nested"))
+
+	close(sseEvents)
+}
+
+// TestE2E_SSELargeEventDoesNotDropConnection is the regression test for
+// the stuck-busy root cause. The SSE scanner had a 64KB per-line buffer.
+// opencode 1.18.10 emits message.part.updated events that exceed 300KB
+// (patch parts listing thousands of files). When the scanner hit such a
+// line, it failed silently and dropped the SSE connection, causing the
+// tracker to miss the subsequent session.status:idle event.
+//
+// This test sends:
+//  1. A session.status:busy event
+//  2. A very large (>64KB) message.part.updated event
+//  3. A session.status:idle event
+//
+// With the old 64KB buffer, step 2 kills the scanner and step 3 is never
+// received → session stays "busy". With the fix (16MB buffer), all three
+// events are processed and the session transitions to idle.
+func TestE2E_SSELargeEventDoesNotDropConnection(t *testing.T) {
+	sseEvents := make(chan string, 10)
+	var connected sync.WaitGroup
+	connected.Add(1)
+
+	opencodeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/event" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			flusher := w.(http.Flusher)
+			connected.Done()
+			for evt := range sseEvents {
+				fmt.Fprintf(w, "data: %s\n\n", evt)
+				flusher.Flush()
+			}
+			return
+		}
+		json.NewEncoder(w).Encode(struct{}{})
+	}))
+	defer opencodeSrv.Close()
+
+	origAddr := getAgentAddr()
+	defer func() { agentAddrAtomic.Store(origAddr) }()
+	agentAddrAtomic.Store(opencodeSrv.URL)
+
+	client := &OpenCodeClient{password: "pw", client: &http.Client{Timeout: 5 * time.Second}}
+	tracker := newSessionStatusTracker()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go tracker.subscribe(ctx, client)
+	connected.Wait()
+
+	// Step 1: session goes busy
+	sseEvents <- `{"type":"session.status","properties":{"sessionID":"ses_big","status":{"type":"busy"}}}`
+	require.Eventually(t, func() bool {
+		return tracker.get("ses_big") == "busy"
+	}, 3*time.Second, 20*time.Millisecond, "session must be busy before large event")
+
+	// Step 2: send a large event (>64KB, simulating a patch part with
+	// thousands of files). This must NOT kill the SSE connection.
+	largeFiles := strings.Repeat(`"file.go",`, 8000) // ~72KB of file paths
+	largeEvent := `{"type":"message.part.updated","properties":{"sessionID":"ses_big","part":{"type":"patch","files":[` +
+		strings.TrimSuffix(largeFiles, ",") + `]},"time":1234567890}}`
+	require.Greater(t, len(largeEvent), 64*1024,
+		"large event must exceed the old 64KB scanner buffer (got %d bytes)", len(largeEvent))
+	sseEvents <- largeEvent
+
+	// Step 3: session goes idle — this is the event that was missed when
+	// the scanner died on the large event.
+	sseEvents <- `{"type":"session.status","properties":{"sessionID":"ses_big","status":{"type":"idle"}}}`
+
+	// The tracker must receive the idle transition.
+	require.Eventually(t, func() bool {
+		return tracker.get("ses_big") == "idle"
+	}, 5*time.Second, 50*time.Millisecond,
+		"session must transition to idle AFTER the large event (stuck-busy regression)")
 
 	close(sseEvents)
 }

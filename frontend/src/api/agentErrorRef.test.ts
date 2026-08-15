@@ -1,13 +1,13 @@
 import { describe, it, expect } from "vitest";
-import { extractOpencodeRef } from "./opencodeRef";
+import { extractAgentErrorRef } from "./agentErrorRef";
 
 // LLMSafeSpaces#490: the chat page's message-history query silently
 // renders empty on 5xx. Part of the diagnostic banner design is
 // surfacing opencode's err_XXXXXXXX ref so operators can jump directly
 // from the browser DevTools/UI to the workspace pod's opencode log.
 // This helper reads the ref from either of the two shapes it appears
-// in — see the JSDoc on extractOpencodeRef for details.
-describe("extractOpencodeRef", () => {
+// in — see the JSDoc on extractAgentErrorRef for details.
+describe("extractAgentErrorRef", () => {
   it("returns the ref from the flat allowlisted shape (POST /prompt path)", () => {
     // Backend's EnrichChatErrorBody promotes `ref` to top level.
     const body = {
@@ -16,7 +16,7 @@ describe("extractOpencodeRef", () => {
       ref: "err_abcdef12",
       sessionID: "ses_xxx",
     };
-    expect(extractOpencodeRef(body)).toBe("err_abcdef12");
+    expect(extractAgentErrorRef(body)).toBe("err_abcdef12");
   });
 
   it("returns the ref from the nested opencode envelope (GET history path)", () => {
@@ -29,7 +29,7 @@ describe("extractOpencodeRef", () => {
         ref: "err_b8d02ae9",
       },
     };
-    expect(extractOpencodeRef(body)).toBe("err_b8d02ae9");
+    expect(extractAgentErrorRef(body)).toBe("err_b8d02ae9");
   });
 
   it("prefers the top-level ref when both are present", () => {
@@ -39,27 +39,27 @@ describe("extractOpencodeRef", () => {
       ref: "err_top",
       data: { ref: "err_nested" },
     };
-    expect(extractOpencodeRef(body)).toBe("err_top");
+    expect(extractAgentErrorRef(body)).toBe("err_top");
   });
 
   it("returns undefined when no ref is present", () => {
-    expect(extractOpencodeRef({ error: "unauthorized" })).toBeUndefined();
-    expect(extractOpencodeRef({ data: { message: "nope" } })).toBeUndefined();
+    expect(extractAgentErrorRef({ error: "unauthorized" })).toBeUndefined();
+    expect(extractAgentErrorRef({ data: { message: "nope" } })).toBeUndefined();
   });
 
   it("returns undefined for non-object bodies", () => {
-    expect(extractOpencodeRef(null)).toBeUndefined();
-    expect(extractOpencodeRef(undefined)).toBeUndefined();
-    expect(extractOpencodeRef("some string")).toBeUndefined();
-    expect(extractOpencodeRef(42)).toBeUndefined();
-    expect(extractOpencodeRef([])).toBeUndefined();
+    expect(extractAgentErrorRef(null)).toBeUndefined();
+    expect(extractAgentErrorRef(undefined)).toBeUndefined();
+    expect(extractAgentErrorRef("some string")).toBeUndefined();
+    expect(extractAgentErrorRef(42)).toBeUndefined();
+    expect(extractAgentErrorRef([])).toBeUndefined();
   });
 
   it("returns undefined when ref is an empty string or non-string", () => {
     // Empty-string ref is treated as absent — it's not a useful ID.
-    expect(extractOpencodeRef({ ref: "" })).toBeUndefined();
-    expect(extractOpencodeRef({ ref: 42 })).toBeUndefined();
-    expect(extractOpencodeRef({ ref: null })).toBeUndefined();
-    expect(extractOpencodeRef({ data: { ref: "" } })).toBeUndefined();
+    expect(extractAgentErrorRef({ ref: "" })).toBeUndefined();
+    expect(extractAgentErrorRef({ ref: 42 })).toBeUndefined();
+    expect(extractAgentErrorRef({ ref: null })).toBeUndefined();
+    expect(extractAgentErrorRef({ data: { ref: "" } })).toBeUndefined();
   });
 });

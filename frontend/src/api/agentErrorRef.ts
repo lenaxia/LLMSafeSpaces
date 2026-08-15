@@ -1,5 +1,5 @@
 /**
- * extractOpencodeRef pulls the opencode error reference (err_XXXXXXXX)
+ * extractAgentErrorRef pulls the opencode error reference (err_XXXXXXXX)
  * from either of the two shapes it appears in on API responses:
  *
  *   1. `{ ref: "err_abcdef12", ...allowlisted fields }` — the shape after
@@ -17,14 +17,14 @@
  * carry the same ref). Together an operator can go: banner shows the ref
  * → grep opencode logs → root cause.
  */
-export function extractOpencodeRef(body: unknown): string | undefined {
+export function extractAgentErrorRef(body: unknown): string | undefined {
   return extractOpencodeField(body, "ref");
 }
 
 /**
- * extractOpencodeMessage pulls the human-readable error message from
+ * extractAgentErrorMessage pulls the human-readable error message from
  * either of the two error-body shapes (same reasoning as
- * extractOpencodeRef). The GET-history path (#486) hit shape 2 with
+ * extractAgentErrorRef). The GET-history path (#486) hit shape 2 with
  * the message nested at `body.data.message`; the POST-prompt path hits
  * shape 1 where the API's EnrichChatErrorBody promotes `message` to
  * top level.
@@ -35,7 +35,7 @@ export function extractOpencodeRef(body: unknown): string | undefined {
  * or `err.message` (Error base class) if neither top-level nor nested
  * `message` is present.
  */
-export function extractOpencodeMessage(body: unknown): string | undefined {
+export function extractAgentErrorMessage(body: unknown): string | undefined {
   return extractOpencodeField(body, "message");
 }
 

@@ -138,7 +138,8 @@ func (c *recordingCache) DeleteByPrefix(_ context.Context, _ string) error { ret
 func (c *recordingCache) SetNX(context.Context, string, string, time.Duration) (bool, error) {
 	return false, nil
 }
-func (c *recordingCache) GetObject(context.Context, string, interface{}) error { return nil }
+func (c *recordingCache) Incr(context.Context, string, time.Duration) (int64, error) { return 1, nil }
+func (c *recordingCache) GetObject(context.Context, string, interface{}) error       { return nil }
 func (c *recordingCache) SetObject(context.Context, string, interface{}, time.Duration) error {
 	return nil
 }

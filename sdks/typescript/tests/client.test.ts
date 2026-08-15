@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { LLMSafeSpaces } from "../src/client.js";
-import { AuthError, NotFoundError, TimeoutError, LLMSafeSpacesError } from "../src/errors.js";
+import { AuthError, NotFoundError, TimeoutError, LLMSafeSpacesError, ServiceUnavailableError, RateLimitError } from "../src/errors.js";
 
 // Mock fetch globally
 const mockFetch = vi.fn();
@@ -404,5 +404,30 @@ describe("LLMSafeSpaces Client", () => {
       "http://localhost:8080/api/v1/me/triggers/trig-1",
       expect.objectContaining({ method: "DELETE" }),
     );
+  });
+
+  describe("error handling", () => {
+    it("throws ServiceUnavailableError on 503 with structured fields", async () => {
+      const mock503 = () => new Response(JSON.stringify({
+        error: "workspace connection failed",
+        message: "The agent is not responding.",
+        reason: "agent_unreachable",
+        retryAfter: 10,
+      }), { status: 503, headers: { "Content-Type": "application/json" } });
+
+      mockFetch.mockResolvedValueOnce(mock503());
+      mockFetch.mockResolvedValueOnce(mock503());
+
+      await expect(client.workspaces.list()).rejects.toThrow(ServiceUnavailableError);
+      try {
+        await client.workspaces.list();
+      } catch (e) {
+        expect(e).toBeInstanceOf(ServiceUnavailableError);
+        const sue = e as ServiceUnavailableError;
+        expect(sue.reason).toBe("agent_unreachable");
+        expect(sue.retryAfter).toBe(10);
+        expect(sue.message).toBe("The agent is not responding.");
+      }
+    });
   });
 });

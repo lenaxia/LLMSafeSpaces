@@ -17,6 +17,7 @@ from .errors import (
     LLMSafeSpacesError,
     NotFoundError,
     RateLimitError,
+    ServiceUnavailableError,
     TimeoutError,
 )
 from .types import (
@@ -155,6 +156,17 @@ class AsyncLLMSafeSpaces:
                 raise ConflictError(msg)
             case 429:
                 raise RateLimitError(msg)
+            case 503:
+                body = {}
+                try:
+                    body = resp.json()
+                except Exception:
+                    pass
+                raise ServiceUnavailableError(
+                    message=body.get("message", msg),
+                    reason=body.get("reason"),
+                    retry_after=body.get("retryAfter", 10),
+                )
             case _:
                 raise LLMSafeSpacesError(msg, resp.status_code)
 

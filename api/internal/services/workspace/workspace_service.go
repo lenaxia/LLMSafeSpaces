@@ -21,7 +21,6 @@ import (
 	apierrors "github.com/lenaxia/llmsafespaces/api/internal/errors"
 	"github.com/lenaxia/llmsafespaces/api/internal/imagefactory"
 	apiinterfaces "github.com/lenaxia/llmsafespaces/api/internal/interfaces"
-	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/settings"
@@ -30,8 +29,11 @@ import (
 	"github.com/google/uuid"
 )
 
-func init() {
-	opencode.Register()
+// RegisterAgentRuntime is called from app.go to register the opencode
+// agent runtime. The actual opencode.Register() call happens in app.go
+// (the allowed construction layer).
+func RegisterAgentRuntime() {
+	// No-op here; app.go calls agentoc.Register() directly.
 }
 
 // storageSizeRegex validates workspace storage size format. Matches the
@@ -616,6 +618,32 @@ func (s *Service) ListWorkspaces(ctx context.Context, userID string, opts types.
 // callers degrade gracefully (empty phase is propagated to the API response).
 // A nil map is safe to read from in Go.
 func (s *Service) fetchUserWorkspacePhases(ctx context.Context, userID string) map[string]string {
+	states := s.fetchUserWorkspaceStates(ctx, userID)
+	if states == nil {
+		return nil
+	}
+	out := make(map[string]string, len(states))
+	for id, st := range states {
+		out[id] = string(st.Phase)
+	}
+	return out
+}
+
+// workspaceState holds the fields extracted from a CRD that callers need.
+// fetchUserWorkspaceStates returns this so callers can access phase and
+// LastActivityAt from a single K8s API call.
+type workspaceState struct {
+	Phase          v1.WorkspacePhase
+	LastActivityAt time.Time // zero if no annotation or pre-US-23.3 workspace
+}
+
+// fetchUserWorkspaceStates lists CRDs for a user and returns id -> state
+// (phase + last activity). The activity timestamp comes from the
+// llmsafespaces.dev/last-activity-at annotation written by ActivityTracker
+// (every 60s on user interaction) and on Resume. This is the authoritative
+// activity signal — more accurate than the DB UpdatedAt column, which is
+// bumped by background operations unrelated to user activity.
+func (s *Service) fetchUserWorkspaceStates(ctx context.Context, userID string) map[string]workspaceState {
 	if s.k8sClient == nil || userID == "" {
 		return nil
 	}
@@ -633,10 +661,14 @@ func (s *Service) fetchUserWorkspacePhases(ctx context.Context, userID string) m
 			"userID", userID, "error", err.Error())
 		return nil
 	}
-	out := make(map[string]string, len(list.Items))
+	out := make(map[string]workspaceState, len(list.Items))
 	for i := range list.Items {
 		w := &list.Items[i]
-		out[w.Name] = string(w.Status.Phase)
+		st := workspaceState{Phase: w.Status.Phase}
+		if t := v1.GetLastActivityAt(w); t != nil {
+			st.LastActivityAt = t.Time
+		}
+		out[w.Name] = st
 	}
 	return out
 }
@@ -1745,7 +1777,74 @@ func (s *Service) ListWorkspaceSessions(ctx context.Context, userID, workspaceID
 	if s.sessionIndex == nil {
 		return []types.SessionListItem{}, nil
 	}
-	return s.sessionIndex.ListByWorkspace(ctx, workspaceID)
+	sessions, err := s.sessionIndex.ListByWorkspace(ctx, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	sessions = s.backfillContextUsed(ctx, workspaceID, sessions)
+	return sessions, nil
+}
+
+// backfillContextUsed enriches sessions that have NULL context_used in
+// the DB with values from the workspace CRD status (which carries fresh
+// per-session ContextUsed from agentd's statusz, reported every ~60s by
+// the controller).
+//
+// The session_index DB is populated by live SSE events
+// (persistContextFromEvent on session.next.step.ended). When the API
+// pod restarts (deploy, crash), the SSE tracker reconnects but events
+// during the downtime are missed — leaving context_used NULL for any
+// session whose last LLM step completed before the reconnection.
+//
+// This merge heals those gaps at read time. It only fetches the CRD
+// when at least one session has NULL context_used, and persists the
+// backfilled values to the DB so subsequent calls skip the CRD fetch
+// entirely (self-healing).
+func (s *Service) backfillContextUsed(ctx context.Context, workspaceID string, sessions []types.SessionListItem) []types.SessionListItem {
+	needsBackfill := false
+	for i := range sessions {
+		if sessions[i].ContextUsed == nil {
+			needsBackfill = true
+			break
+		}
+	}
+	if !needsBackfill {
+		return sessions
+	}
+
+	wsClient, err := s.workspaceCRDClient()
+	if err != nil {
+		s.logger.Warn("backfillContextUsed: failed to init workspace client",
+			"error", err, "workspaceID", workspaceID)
+		return sessions
+	}
+	crd, err := wsClient.Get(ctx, workspaceID, metav1.GetOptions{})
+	if err != nil {
+		s.logger.Warn("backfillContextUsed: failed to fetch workspace CRD",
+			"error", err, "workspaceID", workspaceID)
+		return sessions
+	}
+
+	ctxBySession := make(map[string]int64, len(crd.Status.Sessions))
+	for _, ses := range crd.Status.Sessions {
+		if ses.ContextUsed > 0 {
+			ctxBySession[ses.ID] = ses.ContextUsed
+		}
+	}
+
+	for i := range sessions {
+		if sessions[i].ContextUsed == nil {
+			if v, ok := ctxBySession[sessions[i].ID]; ok {
+				val := v
+				sessions[i].ContextUsed = &val
+				if uErr := s.sessionIndex.UpsertContextUsed(ctx, workspaceID, sessions[i].ID, v); uErr != nil {
+					s.logger.Warn("backfillContextUsed: failed to persist backfilled value",
+						"error", uErr, "workspaceID", workspaceID, "sessionID", sessions[i].ID)
+				}
+			}
+		}
+	}
+	return sessions
 }
 
 func (s *Service) MarkSessionSeen(ctx context.Context, userID, workspaceID, sessionID string) error {

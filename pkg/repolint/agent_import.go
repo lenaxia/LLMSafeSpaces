@@ -30,6 +30,7 @@ var agentImportAllowedPrefixes = []string{
 	"cmd/workspace-agentd/",
 	"cmd/controller/",
 	"controller/cmd/", // alternate layout
+	"controller/main.go",
 }
 
 // agentImportKnownLeaks records current violations of the boundary rule as
@@ -49,14 +50,7 @@ var agentImportAllowedPrefixes = []string{
 //     app.New / controller main boot.
 //   - Once those land, this list must be empty; the rule then enforces the
 //     design's full allow-set with no exceptions.
-var agentImportKnownLeaks = map[string]string{
-	"api/internal/handlers/agent_drain.go":                 "US-65.4 (proxy migration to Adapter) — uses *opencode.Client concrete type for the drain snapshot",
-	"api/internal/handlers/agent_reload.go":                "US-65.4 (proxy migration to Adapter) — constructs opencode.NewClient inline (2 sites)",
-	"api/internal/handlers/models_handler.go":              "US-65.6-followup — references opencode.ErrNoRunningPod sentinel; re-export blocked by import cycle (opencode imports pkg/agent)",
-	"api/internal/handlers/proxy_v2.go":                    "US-65.4 (proxy migration to Adapter) — V2 session client calls (PromptV2/InterruptV2) added by Epic 63 US-63.3/63.4",
-	"api/internal/services/workspace/workspace_service.go": "US-65.6-followup — init() side-effect opencode.Register(); needs explicit boot wiring in app.New",
-	"controller/internal/controller/controller.go":         "US-65.6-followup — init() side-effect opencode.Register(); needs explicit boot wiring in controller main",
-}
+var agentImportKnownLeaks = map[string]string{}
 
 // KnownLeaks returns a defensive copy of the current agentImportKnownLeaks
 // map. The success message in cmd/repolint uses len() on this to surface how

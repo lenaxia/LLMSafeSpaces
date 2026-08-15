@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,14 +16,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
 	"github.com/gin-gonic/gin"
-	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/msgqueue"
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 )
@@ -69,7 +67,6 @@ func newV2TestHandler(t *testing.T, srv *httptest.Server) (*gin.Engine, *ProxyHa
 	k8sMock := newMockK8sWithWorkspace(t, "ws-1", "127.0.0.1")
 	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{}, nil)
 	require.NoError(t, err)
-	handler.SetV2SessionQueueEnabled(true)
 	handler.SetCachedPasswordForTest("ws-1", "test-pw")
 	handler.userBroker = eventbroker.NewUserEventBroker()
 	handler.SetV2ClientFactory(func(ctx context.Context, workspaceID string) (V2SessionClient, error) {
@@ -133,22 +130,6 @@ func TestEnqueueV2_ServerError(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusInternalServerError, w.Code)
-}
-
-func TestEnqueueV2_FlagOff_FallsThroughToV1(t *testing.T) {
-	srv := startV2TestServer(t, "test-pw")
-	defer srv.Close()
-
-	router, handler := newV2TestHandler(t, srv)
-	handler.SetV2SessionQueueEnabled(false) // flag OFF
-
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/ws-1/sessions/ses-1/queue",
-		strings.NewReader(`{"text":"hello"}`))
-	router.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusServiceUnavailable, w.Code,
-		"flag off → V1 path → 503 (no queueSvc)")
 }
 
 func TestEnqueueV2_SessionNotFound404(t *testing.T) {
@@ -223,52 +204,6 @@ func TestAbortV2_Success(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	assert.Equal(t, http.StatusNoContent, w.Code)
-}
-
-func TestAbortV2_QueueSurvivesAbort(t *testing.T) {
-	// The defining difference from V1: under V2, queued messages SURVIVE
-	// an abort. V1's AbortSession clears the Redis queue (PeekAll+Clear)
-	// and emits "dismissed" for each. V2's InterruptV2 does neither.
-	//
-	// This test sets up a real Redis-backed queue with messages, aborts
-	// via V2, and asserts the queue is untouched — proving the V2 path
-	// was taken AND that it is non-destructive (F8).
-	srv := startV2TestServer(t, "test-pw")
-	defer srv.Close()
-
-	router, handler := newV2TestHandler(t, srv)
-
-	// Set up a real Redis-backed queue with 2 messages.
-	mr, err := miniredis.Run()
-	require.NoError(t, err)
-	defer mr.Close()
-	redisClient := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer redisClient.Close()
-	queueSvc := msgqueue.NewWithClient(redisClient)
-	handler.SetMessageQueueService(queueSvc)
-
-	// Enqueue 2 messages into the Redis queue.
-	_, err = queueSvc.Enqueue(context.Background(), "ws-1", "ses-1", "msg-a")
-	require.NoError(t, err)
-	_, err = queueSvc.Enqueue(context.Background(), "ws-1", "ses-1", "msg-b")
-	require.NoError(t, err)
-
-	// Verify they're there.
-	n, _ := queueSvc.Len(context.Background(), "ws-1", "ses-1")
-	require.Equal(t, int64(2), n, "precondition: 2 messages queued")
-
-	// Abort via V2 (routes through gin → AbortSession → abortV2 → InterruptV2).
-	w := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/ws-1/sessions/ses-1/abort", nil)
-	router.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusNoContent, w.Code)
-
-	// THE ASSERTION: the queue must still have 2 messages. V1 would have
-	// cleared it. V2 is non-destructive (F8).
-	n, _ = queueSvc.Len(context.Background(), "ws-1", "ses-1")
-	assert.Equal(t, int64(2), n,
-		"V2 abort is non-destructive: queued messages must survive (F8)")
 }
 
 // ---------------------------------------------------------------------------
@@ -374,32 +309,6 @@ drainSteer:
 		"steer delivery must not be tracked for US-63.9")
 }
 
-func TestV2SSEBridge_FlagOff_NoBridge(t *testing.T) {
-	srv := startV2TestServer(t, "test-pw")
-	defer srv.Close()
-	_, handler := newV2TestHandler(t, srv)
-	handler.SetV2SessionQueueEnabled(false)
-
-	sub, err := handler.userBroker.SubscribeWorkspace("ws-1")
-	require.NoError(t, err)
-	defer handler.userBroker.UnsubscribeWorkspace("ws-1", sub)
-
-	handler.onRawEvent("ws-1", "session.next.prompt.admitted",
-		`{"id":"e1","type":"session.next.prompt.admitted","properties":{"messageID":"msg_x","sessionID":"ses-1","delivery":"queue"}}`)
-
-drainFlagOff:
-	for {
-		select {
-		case e := <-sub.Ch:
-			if e.Type == "queue.update" {
-				t.Fatal("flag off: V2 SSE bridge must not run")
-			}
-		case <-time.After(100 * time.Millisecond):
-			break drainFlagOff
-		}
-	}
-}
-
 // ---------------------------------------------------------------------------
 // US-63.9: Stranded-Input Recovery tests
 // ---------------------------------------------------------------------------
@@ -463,7 +372,7 @@ func TestV2StrandedRecovery_WakesIdleSession(t *testing.T) {
 	_, handler := newV2TestHandler(t, srv)
 	handler.v2Pending.add("ws-1", "ses-stranded")
 
-	handler.wakeStrandedV2Sessions(context.Background(), "ws-1")
+	handler.wakeStrandedV2Sessions(context.Background(), "ws-1", nil)
 
 	assert.Equal(t, int32(1), atomic.LoadInt32(&wakeCount),
 		"stranded session must receive exactly one wake prompt")
@@ -480,7 +389,7 @@ func TestV2StrandedRecovery_NoWakeForUntrackedSession(t *testing.T) {
 	defer srv.Close()
 
 	_, handler := newV2TestHandler(t, srv)
-	handler.wakeStrandedV2Sessions(context.Background(), "ws-1")
+	handler.wakeStrandedV2Sessions(context.Background(), "ws-1", nil)
 
 	assert.Equal(t, int32(0), atomic.LoadInt32(&wakeCount),
 		"untracked sessions must not receive wake prompts")
@@ -512,7 +421,7 @@ func TestV2StrandedRecovery_WakeSendsNewlineWithDeliveryQueue(t *testing.T) {
 	_, handler := newV2TestHandler(t, srv)
 	handler.v2Pending.add("ws-1", "ses-1")
 
-	handler.wakeStrandedV2Sessions(context.Background(), "ws-1")
+	handler.wakeStrandedV2Sessions(context.Background(), "ws-1", nil)
 
 	require.NotEmpty(t, bodyBytes, "wake prompt must send a body")
 	var body struct {
@@ -555,7 +464,6 @@ func TestV2StrandedRecovery_IntegrationWithReconcile(t *testing.T) {
 	k8sMock := newMockK8sWithWorkspace(t, "ws-1", srvAddr)
 	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient, nil)
 	require.NoError(t, err)
-	handler.SetV2SessionQueueEnabled(true)
 	handler.SetCachedPasswordForTest("ws-1", "test-pw")
 	handler.userBroker = eventbroker.NewUserEventBroker()
 	handler.SetV2ClientFactory(func(ctx context.Context, workspaceID string) (V2SessionClient, error) {
@@ -566,7 +474,13 @@ func TestV2StrandedRecovery_IntegrationWithReconcile(t *testing.T) {
 	handler.v2Pending.add("ws-1", "ses-stranded")
 
 	// Call the REAL reconcileSessionState — the full wiring path.
-	handler.reconcileSessionState("ws-1", srvAddr, "test-pw")
+	// podIP must be a bare host — reconcile formats "http://%s:%d". Passing
+	// srvAddr (host:port) builds a double-port URL that Go 1.26's stricter
+	// net/url rejects (1.25 parsed it leniently; the routing transport's
+	// host rewrite masked the malformation).
+	host, _, err := net.SplitHostPort(srvAddr)
+	require.NoError(t, err)
+	handler.reconcileSessionState("ws-1", host, "test-pw")
 
 	assert.Equal(t, int32(1), atomic.LoadInt32(&wakeCount),
 		"reconcileSessionState must wake stranded session with pending V2 input")
@@ -624,7 +538,7 @@ func TestV2StrandedRecovery_WakeErrorDoesNotPanic(t *testing.T) {
 	handler.v2Pending.add("ws-1", "ses-ok")
 
 	assert.NotPanics(t, func() {
-		handler.wakeStrandedV2Sessions(context.Background(), "ws-1")
+		handler.wakeStrandedV2Sessions(context.Background(), "ws-1", nil)
 	})
 
 	assert.Equal(t, int32(2), atomic.LoadInt32(&callCount),
@@ -654,7 +568,7 @@ func TestV2StrandedRecovery_PromptV2FailureContinuesToNextSession(t *testing.T) 
 	handler.v2Pending.add("ws-1", "ses-b")
 
 	assert.NotPanics(t, func() {
-		handler.wakeStrandedV2Sessions(context.Background(), "ws-1")
+		handler.wakeStrandedV2Sessions(context.Background(), "ws-1", nil)
 	})
 
 	assert.Equal(t, int32(2), atomic.LoadInt32(&promptCalls),

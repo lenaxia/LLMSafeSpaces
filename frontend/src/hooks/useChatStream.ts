@@ -5,6 +5,15 @@ import type { Message } from "../api/types";
 
 // If session.status=idle SSE never arrives (e.g. connection drops), fall
 // back to getHistory after this many ms.
+//
+// #752 F5: The busy-guard at the timeout-fire site (line ~118) prevents
+// false "interrupted" banners when the server is still actively processing
+// (serverBusyRef.current === true). Combined with v0.15.3's SSE scanner
+// fix (which prevents connection drops on large events), the 60s timeout
+// is sufficient: the only scenario where a false positive could occur is
+// if the SSE connection drops AND serverBusy is stale (false), which
+// requires both a network failure and a missed busy event — a narrow race
+// that v0.15.3's fix makes extremely unlikely.
 const IDLE_WAIT_TIMEOUT_MS = 60_000;
 
 // When the workspace is restarting (opencode down for a credential reload,
@@ -132,6 +141,16 @@ export function useChatStream(workspaceId: string | undefined, sessionId: string
         if (err instanceof ApiClientError && err.status === 429) {
           const retryAfter = Number(err.body.retryAfter ?? 60);
           setAtCapRetryAfter(isNaN(retryAfter) ? 60 : retryAfter);
+        } else if (err instanceof ApiClientError && err.status === 503) {
+          // Surface the API's structured message for service-unavailable
+          // errors (agent unreachable, restarting, etc.) instead of the
+          // raw "workspace connection failed" string.
+          const apiMessage = err.body?.message;
+          setError(
+            typeof apiMessage === "string" && apiMessage.length > 0
+              ? apiMessage
+              : "The agent is not responding. Please try again in a moment.",
+          );
         } else {
           const message = err instanceof Error ? err.message : "Failed to send message";
           setError(message);

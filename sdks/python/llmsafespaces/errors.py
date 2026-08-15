@@ -43,3 +43,26 @@ class RateLimitError(LLMSafeSpacesError):
 
     def __init__(self, message: str = "Rate limit exceeded"):
         super().__init__(message, 429, "RATE_LIMIT")
+
+
+class ServiceUnavailableError(LLMSafeSpacesError):
+    """The workspace exists but cannot service requests (503).
+
+    The ``reason`` attribute distinguishes the cause:
+    - ``"not_ready"`` — workspace is booting or resuming
+    - ``"agent_unreachable"`` — the agent process hung or crashed
+    - ``"agent_restarting"`` — the agent is being restarted by the health
+      watchdog or a credential reload
+
+    Retry after ``retry_after`` seconds (defaults to 10).
+    """
+
+    def __init__(
+        self,
+        message: str = "Service temporarily unavailable",
+        reason: str | None = None,
+        retry_after: int = 10,
+    ):
+        super().__init__(message, 503, "SERVICE_UNAVAILABLE")
+        self.reason = reason
+        self.retry_after = retry_after

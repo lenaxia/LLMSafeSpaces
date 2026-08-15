@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -989,6 +990,68 @@ func TestSSETracker_Subscribe_ReceivesStepEndedViaSSE(t *testing.T) {
 	assert.Contains(t, rawCalls[0].rawData, `"read":1000`)
 	assert.Contains(t, rawCalls[0].rawData, `"write":500`)
 	mu.Unlock()
+
+	tracker.Stop()
+}
+
+// TestSSETracker_Subscribe_LargeEventDoesNotDropConnection is the
+// regression test for the API-side SSE scanner buffer bug (parallel
+// to agentd #805). The tracker's scanner had a 64KB per-line buffer;
+// large message.part.updated events would kill the scanner and cause
+// the tracker to miss subsequent session.status:idle events.
+func TestSSETracker_Subscribe_LargeEventDoesNotDropConnection(t *testing.T) {
+	var mu sync.Mutex
+	var idleCalls []string
+
+	sseServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher := w.(http.Flusher)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+
+		// 1. Session goes busy
+		fmt.Fprintf(w, "data: %s\n\n", makeSessionStatusEvent("sess-big", "busy"))
+		flusher.Flush()
+
+		// 2. Large event (>64KB) — simulates a patch part with thousands
+		// of files. Must NOT kill the scanner.
+		largeFiles := strings.Repeat(`"file.go",`, 8000) // ~72KB
+		largeEvent := `{"type":"message.part.updated","properties":{"sessionID":"sess-big","part":{"type":"patch","files":[` +
+			strings.TrimSuffix(largeFiles, ",") + `]},"time":1234567890}}`
+		require.Greater(t, len(largeEvent), 64*1024)
+		fmt.Fprintf(w, "data: %s\n\n", largeEvent)
+		flusher.Flush()
+
+		// 3. Session goes idle — the event that was missed when the
+		// scanner died on the large event.
+		fmt.Fprintf(w, "data: %s\n\n", makeSessionStatusEvent("sess-big", "idle"))
+		flusher.Flush()
+
+		<-r.Context().Done()
+	}))
+	defer sseServer.Close()
+
+	tracker := NewTracker(
+		&http.Client{
+			Transport: &redirectTransport{server: sseServer},
+		},
+		&testLogger{},
+		func(sandboxID, sessionID string) {
+			mu.Lock()
+			idleCalls = append(idleCalls, sessionID)
+			mu.Unlock()
+		},
+	)
+	tracker.SetPasswordGetter(fakePWProvider{pw: "test-pw"})
+	tracker.SetPodIPResolver(func(sandboxID string) string { return "10.0.0.1" })
+
+	tracker.EnsureWatching("sb-1")
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(idleCalls) > 0 && idleCalls[len(idleCalls)-1] == "sess-big"
+	}, 5*time.Second, 50*time.Millisecond,
+		"tracker must receive idle for sess-big AFTER the large event (scanner buffer regression)")
 
 	tracker.Stop()
 }

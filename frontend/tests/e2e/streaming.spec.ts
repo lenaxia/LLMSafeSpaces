@@ -63,7 +63,7 @@ async function setupAPIMocks(page: Page) {
   await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/session-events`, async (route: Route) => {
     const events = [
       {
-        type: "opencode.event",
+        type: "agent.event",
         event_type: "message.part.updated",
         data: {
           type: "message.part.updated",

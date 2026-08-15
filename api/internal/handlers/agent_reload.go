@@ -15,24 +15,15 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"go.uber.org/zap"
 
 	apierrors "github.com/lenaxia/llmsafespaces/api/internal/errors"
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/msgqueue"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
-	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
-
-// QueueClearer is the minimal queue interface needed by the reload handler.
-type QueueClearer interface {
-	PeekAllWorkspace(ctx context.Context, workspaceID string) ([]msgqueue.QueuedMessage, error)
-	ClearWorkspace(ctx context.Context, workspaceID string) error
-}
 
 // BrokerPublisher is the minimal SSE broker interface needed by the reload handler.
 type BrokerPublisher interface {
@@ -72,17 +63,16 @@ type WorkspaceServicer interface {
 
 // AgentReloadHandler handles POST /api/v1/workspaces/:id/agent/reload.
 type AgentReloadHandler struct {
-	workspaceSvc   WorkspaceServicer
-	db             AgentStateStore
-	podResolver    PodIPResolver
-	httpClient     *http.Client
-	logger         pkginterfaces.LoggerInterface
-	zapLogger      *zap.Logger
-	sseTracker     *sse.Tracker
-	getPassword    interfaces.WorkspacePasswordProvider
-	metricsService MetricsRecorder
-	queueSvc       QueueClearer
-	broker         BrokerPublisher
+	workspaceSvc         WorkspaceServicer
+	db                   AgentStateStore
+	podResolver          PodIPResolver
+	httpClient           *http.Client
+	logger               pkginterfaces.LoggerInterface
+	sseTracker           *sse.Tracker
+	getPassword          interfaces.WorkspacePasswordProvider
+	metricsService       MetricsRecorder
+	broker               BrokerPublisher
+	statusCheckerFactory func(podIP, password string) SessionStatusChecker
 }
 
 // MetricsRecorder is the minimal metrics interface for reload handlers.
@@ -109,6 +99,13 @@ func NewAgentReloadHandler(
 	}
 }
 
+// SetStatusCheckerFactory injects the factory that builds a SessionStatusChecker
+// from podIP + password. app.go wires this with opencode.NewClient; the handler
+// itself never imports the opencode package.
+func (h *AgentReloadHandler) SetStatusCheckerFactory(f func(podIP, password string) SessionStatusChecker) {
+	h.statusCheckerFactory = f
+}
+
 // SetSSETracker injects the tracker for drain mode support.
 func (h *AgentReloadHandler) SetSSETracker(t *sse.Tracker) { h.sseTracker = t }
 
@@ -120,49 +117,8 @@ func (h *AgentReloadHandler) SetPasswordGetter(provider interfaces.WorkspacePass
 // SetMetrics injects the metrics recorder.
 func (h *AgentReloadHandler) SetMetrics(m MetricsRecorder) { h.metricsService = m }
 
-// SetQueueClearer injects the queue service for clearing queued messages on dispose.
-func (h *AgentReloadHandler) SetQueueClearer(q QueueClearer) { h.queueSvc = q }
-
 // SetBrokerPublisher injects the SSE broker for publishing dismissed events on dispose.
 func (h *AgentReloadHandler) SetBrokerPublisher(b BrokerPublisher) { h.broker = b }
-
-// clearQueueForWorkspace peeks all queued messages for the workspace, publishes
-// a dismissed SSE event for each, then clears the queue. Called after a
-// successful dispose so UIs remove pending pills and messages are not drained
-// to a freshly-reloaded opencode with no session context.
-func clearQueueForWorkspace(ctx context.Context, workspaceID string, q QueueClearer, b BrokerPublisher, logger pkginterfaces.LoggerInterface) {
-	if q == nil {
-		return
-	}
-	msgs, err := q.PeekAllWorkspace(ctx, workspaceID)
-	if err != nil {
-		if logger != nil {
-			logger.Error("clearQueueForWorkspace: peek failed", err, "workspaceID", workspaceID)
-		}
-		return
-	}
-	if b != nil {
-		for _, msg := range msgs {
-			b.PublishToWorkspace(workspaceID, apitypes.WorkspaceSSEEvent{
-				Type:      "queue.update",
-				SessionID: msg.SessionID,
-				Data: queueUpdateData{
-					Event:     "dismissed",
-					MessageID: msg.ID,
-				},
-			})
-		}
-	}
-	if err := q.ClearWorkspace(ctx, workspaceID); err != nil {
-		if logger != nil {
-			logger.Error("clearQueueForWorkspace: clear failed", err, "workspaceID", workspaceID)
-		}
-	}
-}
-
-func (h *AgentReloadHandler) clearQueueOnDispose(ctx context.Context, workspaceID string) {
-	clearQueueForWorkspace(ctx, workspaceID, h.queueSvc, h.broker, h.logger)
-}
 
 // Reload handles POST /api/v1/workspaces/:id/agent/reload.
 func (h *AgentReloadHandler) Reload(c *gin.Context) {
@@ -223,12 +179,15 @@ func (h *AgentReloadHandler) Reload(c *gin.Context) {
 			respondWithAPIError(c, apierrors.NewInternalError("get_opencode_password_failed", err))
 			return
 		}
-		opencodeCl := opencode.NewClient(
-			fmt.Sprintf("http://%s:%d", podIP, agentd.AgentPort),
+		if h.statusCheckerFactory == nil {
+			h.logger.Warn("Drain mode requested but statusCheckerFactory not wired; skipping drain")
+			return
+		}
+		statusChecker := h.statusCheckerFactory(
+			fmt.Sprintf("%s:%d", podIP, agentd.AgentPort),
 			pw,
-			h.zapLogger,
 		)
-		if err := WaitUntilIdle(c.Request.Context(), workspaceID, h.sseTracker, opencodeCl, drainTimeout); err != nil {
+		if err := WaitUntilIdle(c.Request.Context(), workspaceID, h.sseTracker, statusChecker, drainTimeout); err != nil {
 			var drainErr *ErrDrainTimeout
 			if errors.As(err, &drainErr) {
 				if h.metricsService != nil {
@@ -256,7 +215,16 @@ func (h *AgentReloadHandler) Reload(c *gin.Context) {
 
 	// Dispatch to agentd (which calls opencode dispose locally).
 	agentdURL := fmt.Sprintf("http://%s:%d/v1/agent/reload", podIP, agentd.AgentdPort)
-	req, _ := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, agentdURL, nil)
+	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, agentdURL, nil)
+	if err != nil {
+		// Malformed pod IP (empty, double-port, etc.) must not reach
+		// Do(nil) — that panics. Surface as an internal error instead.
+		if h.logger != nil {
+			h.logger.Error("agent reload: invalid agentd URL", err, "url", agentdURL)
+		}
+		respondWithAPIError(c, apierrors.NewInternalError("agent_reload_url_invalid", err))
+		return
+	}
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
 		if h.logger != nil {
@@ -273,13 +241,6 @@ func (h *AgentReloadHandler) Reload(c *gin.Context) {
 		))
 		return
 	}
-
-	// Dispose succeeded. Clear any queued messages for this workspace — they
-	// would otherwise be drained to a freshly-loaded opencode that has no context
-	// of the previous session state. Publish dismissed SSE so UIs remove pills.
-	// Use context.Background() so a client disconnect after dispose doesn't
-	// silently skip the cleanup.
-	h.clearQueueOnDispose(context.Background(), workspaceID)
 
 	// Update agent state.
 	tx, err := h.db.BeginTx(c.Request.Context(), nil)
@@ -342,18 +303,17 @@ type PendingReloadLister interface {
 
 // BulkReloadHandler handles POST /api/v1/users/me/agents/reload.
 type BulkReloadHandler struct {
-	pendingLister  PendingReloadLister
-	workspaceSvc   WorkspaceServicer
-	db             AgentStateStore
-	podResolver    PodIPResolver
-	httpClient     *http.Client
-	logger         pkginterfaces.LoggerInterface
-	zapLogger      *zap.Logger
-	sseTracker     *sse.Tracker
-	getPassword    interfaces.WorkspacePasswordProvider
-	metricsService MetricsRecorder
-	queueSvc       QueueClearer
-	broker         BrokerPublisher
+	pendingLister        PendingReloadLister
+	workspaceSvc         WorkspaceServicer
+	db                   AgentStateStore
+	podResolver          PodIPResolver
+	httpClient           *http.Client
+	logger               pkginterfaces.LoggerInterface
+	sseTracker           *sse.Tracker
+	getPassword          interfaces.WorkspacePasswordProvider
+	metricsService       MetricsRecorder
+	broker               BrokerPublisher
+	statusCheckerFactory func(podIP, password string) SessionStatusChecker
 }
 
 // NewBulkReloadHandler constructs the bulk reload handler.
@@ -386,17 +346,13 @@ func (h *BulkReloadHandler) SetPasswordGetter(provider interfaces.WorkspacePassw
 	h.getPassword = provider
 }
 
-// SetQueueClearer injects the queue service for clearing queued messages on dispose.
-func (h *BulkReloadHandler) SetQueueClearer(q QueueClearer) { h.queueSvc = q }
+// SetStatusCheckerFactory injects the factory (same as AgentReloadHandler).
+func (h *BulkReloadHandler) SetStatusCheckerFactory(f func(podIP, password string) SessionStatusChecker) {
+	h.statusCheckerFactory = f
+}
 
 // SetBrokerPublisher injects the SSE broker for publishing dismissed events on dispose.
 func (h *BulkReloadHandler) SetBrokerPublisher(b BrokerPublisher) { h.broker = b }
-
-// clearQueueOnDispose peeks all queued messages for the workspace, publishes
-// a dismissed SSE event for each, then clears the queue.
-func (h *BulkReloadHandler) clearQueueOnDispose(ctx context.Context, workspaceID string) {
-	clearQueueForWorkspace(ctx, workspaceID, h.queueSvc, h.broker, h.logger)
-}
 
 // BulkReload streams per-workspace reload results as NDJSON.
 func (h *BulkReloadHandler) BulkReload(c *gin.Context) {
@@ -505,8 +461,12 @@ func (h *BulkReloadHandler) reloadOne(ctx context.Context, userID, workspaceID s
 		if err != nil {
 			return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "get_password_failed", "message": err.Error()}}
 		}
-		opencodeCl := opencode.NewClient(fmt.Sprintf("http://%s:%d", podIP, agentd.AgentPort), pw, h.zapLogger)
-		if err := WaitUntilIdle(ctx, workspaceID, h.sseTracker, opencodeCl, drainTimeout); err != nil {
+		if h.statusCheckerFactory == nil {
+			h.logger.Warn("Drain mode requested but statusCheckerFactory not wired; skipping drain")
+			return map[string]any{"workspaceId": workspaceID, "skip_reason": "status_checker_factory_not_wired"}
+		}
+		statusChecker := h.statusCheckerFactory(fmt.Sprintf("%s:%d", podIP, agentd.AgentPort), pw)
+		if err := WaitUntilIdle(ctx, workspaceID, h.sseTracker, statusChecker, drainTimeout); err != nil {
 			var drainErr *ErrDrainTimeout
 			if errors.As(err, &drainErr) {
 				return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "drain_timeout", "busySessionIDs": drainErr.BusySessions}}
@@ -521,7 +481,12 @@ func (h *BulkReloadHandler) reloadOne(ctx context.Context, userID, workspaceID s
 	}
 
 	agentdURL := fmt.Sprintf("http://%s:%d/v1/agent/reload", podIP, agentd.AgentdPort)
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, agentdURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, agentdURL, nil)
+	if err != nil {
+		// Malformed pod IP must not reach Do(nil) — that panics (same
+		// class as the single-reload fix above).
+		return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "agent_reload_url_invalid", "message": err.Error()}}
+	}
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
 		return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "agent_unreachable", "message": err.Error()}}
@@ -533,8 +498,6 @@ func (h *BulkReloadHandler) reloadOne(ctx context.Context, userID, workspaceID s
 	}
 
 	// Dispose succeeded — update state.
-	// Use context.Background() so a client disconnect doesn't skip queue cleanup.
-	h.clearQueueOnDispose(context.Background(), workspaceID) //nolint:contextcheck
 	tx, err := h.db.BeginTx(ctx, nil)
 	if err != nil {
 		return map[string]any{"workspaceId": workspaceID, "disposed": true, "warning": "state could not be updated"}

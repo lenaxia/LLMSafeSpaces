@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { useNavigate, useParams } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
 import { workspacesApi } from "../api/workspaces";
+import { useConfirmDialog } from "../hooks/useConfirmDialog";
 import { ApiClientError } from "../api/client";
 import { workspaceWorkflowApi } from "../api/workflows";
 import { useWorkspaceStatus } from "../hooks/useWorkspaces";
@@ -27,7 +28,7 @@ import { Spinner } from "../components/ui/Spinner";
 import { KebabMenu } from "../components/ui/KebabMenu";
 import type { KebabMenuItem } from "../components/ui/KebabMenu";
 import { sessionsApi } from "../api/sessions";
-import type { Message, SessionListItem, WorkspaceStreamEvent, OpenCodeEvent, QuestionRequest, PermissionRequest } from "../api/types";
+import type { Message, SessionListItem, WorkspaceStreamEvent, AgentEvent, QuestionRequest, PermissionRequest } from "../api/types";
 import { QuestionPrompt } from "../components/chat/QuestionPrompt";
 import { PermissionPrompt } from "../components/chat/PermissionPrompt";
 import { useClearPendingUnread, useAddPendingQuestion, useAddPendingPermission, useRemovePendingAction, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, useIsSessionBusy } from "../providers/SessionActivityProvider";
@@ -51,6 +52,7 @@ function messageIdentityKey(m: Message): string {
 export function ChatPage() {
   const { workspaceId, sessionId } = useParams();
   const navigate = useNavigate();
+  const { confirm: confirmDelete, dialog: confirmDialog } = useConfirmDialog();
   const [localMessages, setLocalMessages] = useState<Message[]>([]);
   // sessionErrors holds error messages surfaced by session.error SSE events.
   // Kept separate from localMessages so they survive between send and idle.
@@ -320,6 +322,7 @@ export function ChatPage() {
 
   const [sessionWasInterrupted, setSessionWasInterrupted] = useState(false);
   const [agentDied, setAgentDied] = useState(false);
+  const [agentDiedMessage, setAgentDiedMessage] = useState<string | null>(null);
   const hasAutoAbortedRef = useRef(false);
 
   // Reset reconnect state on session change — MUST be defined before the
@@ -330,6 +333,7 @@ export function ChatPage() {
     knownLivePartIds.current.clear();
     setSessionWasInterrupted(false);
     setAgentDied(false);
+    setAgentDiedMessage(null);
     // S36.4: Reset compaction state when navigating to a different session
     prevContextUsedRef.current = undefined;
     setCompactionDetected(false);
@@ -439,7 +443,7 @@ export function ChatPage() {
   const currentThinkingIdxRef = useRef<number>(-1);
   const currentTextIdxRef = useRef<number>(-1);
 
-  const parseStreamEvent = useCallback((event: OpenCodeEvent, currentSessionId: string) => {
+  const parseStreamEvent = useCallback((event: AgentEvent, currentSessionId: string) => {
     let payload = event.data as Record<string, unknown> | undefined;
     if (!payload) return;
 
@@ -640,8 +644,8 @@ export function ChatPage() {
       } else if (qe.event === "dismissed" && qe.messageID) {
         queue.removeById(qe.messageID);
       }
-    } else if (event.type === "opencode.event" && workspaceId) {
-      const oe = event as OpenCodeEvent;
+    } else if (event.type === "agent.event" && workspaceId) {
+      const oe = event as AgentEvent;
       // Handle session.updated — update sidebar title in real-time
       if (oe.event_type === "session.updated") {
         const payload = oe.data as Record<string, unknown> | undefined;
@@ -655,7 +659,7 @@ export function ChatPage() {
           });
         }
       }
-      // Handle session.status inside opencode.event — this is where the full
+      // Handle session.status inside agent.event — this is where the full
       // retry payload lives. The proxy also synthesizes a string "busy" event
       // on the session.status channel for retry, but the rich retry fields
       // (attempt, message, next, action) only travel through this path.
@@ -752,6 +756,9 @@ export function ChatPage() {
       removePendingAction(request_id);
     } else if (event.type === "agent_died") {
       setAgentDied(true);
+      if (event.data?.message) setAgentDiedMessage(event.data.message);
+    } else {
+      console.debug("[ChatPage] unhandled SSE event type:", event.type);
     }
   }, [queryClient, workspaceId, sessionId, parseStreamEvent, notifySessionIdle, reconcileOnIdle, queue, addPendingQuestion, addPendingPermission, removePendingAction, clearSessionPendingPrompts, clearStreamTimedOut]);
 
@@ -890,23 +897,26 @@ export function ChatPage() {
       label: "Delete session",
       onClick: () => {
         if (!workspaceId || !sessionId) return;
-        try {
-          if (!window.confirm("Delete this session?")) return;
-        } catch {
-          // confirm() blocked — proceed with deletion
-        }
-        workspacesApi.deleteSession(workspaceId, sessionId)
-          .catch((err: unknown) => {
-            if (err instanceof ApiClientError && err.status === 404) return;
-            throw err;
-          })
-          .then(() => {
-            queryClient.invalidateQueries({ queryKey: ["sessions", workspaceId] });
-            navigate(`/chat/${workspaceId}`);
-          })
-          .catch(() => {
-            try { window.alert("Failed to delete session."); } catch { /* blocked */ }
-          });
+        confirmDelete({
+          title: "Delete this session?",
+          description: "This action cannot be undone.",
+          confirmLabel: "Delete",
+          destructive: true,
+          onConfirm: () => {
+            workspacesApi.deleteSession(workspaceId, sessionId)
+              .catch((err: unknown) => {
+                if (err instanceof ApiClientError && err.status === 404) return;
+                throw err;
+              })
+              .then(() => {
+                queryClient.invalidateQueries({ queryKey: ["sessions", workspaceId] });
+                navigate(`/chat/${workspaceId}`);
+              })
+              .catch(() => {
+                try { window.alert("Failed to delete session."); } catch { /* blocked */ }
+              });
+          },
+        });
       },
       destructive: true,
     },
@@ -999,7 +1009,7 @@ export function ChatPage() {
 
       {isReady && agentDied && (
         <div role="alert" className="flex items-center gap-2 border-b border-yellow-200 bg-yellow-50 px-4 py-2 text-xs text-yellow-800 dark:border-yellow-800 dark:bg-yellow-950 dark:text-yellow-200">
-          <span>⚠ Agent is restarting (credential change, OOM, or crash) — reconnecting…</span>
+          <span>⚠ {agentDiedMessage ?? "The agent stopped responding and is being restarted automatically. Reconnecting…"}</span>
           <button
             className="ml-auto shrink-0 underline hover:no-underline"
             onClick={() => setAgentDied(false)}
@@ -1037,15 +1047,17 @@ export function ChatPage() {
 
       {streamTimedOut && (
         <div className="flex items-center justify-between gap-2 border-b border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          <span>Response interrupted — the connection timed out</span>
+          <span>Response interrupted — the agent may be processing a large operation or recovering. Try resending your message.</span>
           <button onClick={clearStreamTimedOut} className="underline hover:no-underline">Dismiss</button>
         </div>
       )}
 
       {chatError && (
-        <div className="flex items-center justify-between gap-2 border-b border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          <span>{chatError}</span>
-          <button onClick={clearError} className="underline hover:no-underline">Dismiss</button>
+        <div className="flex flex-col gap-1 border-b border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          <div className="flex items-center justify-between gap-2">
+            <span>{chatError}</span>
+            <button onClick={clearError} className="shrink-0 underline hover:no-underline">Dismiss</button>
+          </div>
         </div>
       )}
 
@@ -1106,6 +1118,7 @@ export function ChatPage() {
           />
         </div>
       )}
+      {confirmDialog}
     </div>
   );
 }

@@ -16,12 +16,15 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
+	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // US-65.4 handler-level adapter path tests. PR #717 review requested
@@ -281,8 +284,23 @@ func (t *trackingSessionIndex) UpsertParent(ctx context.Context, wid, sid, pid s
 
 func newProxyHandlerForAdapterTest(t *testing.T) *ProxyHandler {
 	t.Helper()
+	k8sMock := k8smocks.NewMockKubernetesClient()
+	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
+	wsMock := k8smocks.NewMockWorkspaceInterface()
+
+	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil)
+	llmMock.On("Workspaces", "default").Return(wsMock)
+	wsMock.On("Get", mock.Anything, mock.Anything, mock.Anything).Return(&v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "default"},
+		Status: v1.WorkspaceStatus{
+			Phase:   v1.WorkspacePhaseActive,
+			PodIP:   "10.0.0.1",
+			PodName: "test-pod",
+		},
+	}, nil)
+
 	h, err := NewProxyHandler(
-		k8smocks.NewMockKubernetesClient(),
+		k8sMock,
 		&testLogger{},
 		"default",
 		nil,
@@ -291,6 +309,8 @@ func newProxyHandlerForAdapterTest(t *testing.T) *ProxyHandler {
 	require.NoError(t, err)
 	return h
 }
+
+func ptrTime(t time.Time) *time.Time { return &t }
 
 // Ensure mockAdapter satisfies agent.Adapter at compile time.
 var _ agent.Adapter = (*mockAdapter)(nil)
@@ -308,7 +328,7 @@ func TestGetHistory_AdapterPath_ReturnsContractJSON(t *testing.T) {
 				{
 					ID:        "msg_1",
 					Type:      session.MessageUser,
-					CreatedAt: time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC),
+					CreatedAt: ptrTime(time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)),
 					Parts: []session.Part{
 						{Type: session.PartText, Text: "hello"},
 					},
@@ -708,6 +728,120 @@ func TestAbortSession_AdapterPath_Error_Returns502(t *testing.T) {
 
 	h.AbortSession(c)
 	assert.Equal(t, http.StatusBadGateway, w.Code)
+}
+
+func TestSendPromptAsync_AdapterPath_ReturnsMessageID(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	called := false
+	h.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _, text string, _ session.SendOpts) (*session.Message, error) {
+			called = true
+			assert.Equal(t, "hello async", text)
+			return &session.Message{ID: "msg_async_1", Type: session.MessageAssistant}, nil
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"parts":[{"type":"text","text":"hello async"}]}`))
+
+	h.SendPromptAsync(c)
+	require.True(t, called, "adapter.Send must be called")
+	require.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestSendPromptAsync_AdapterPath_Error_Returns502(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (*session.Message, error) {
+			return nil, fmt.Errorf("pod unreachable")
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"parts":[{"type":"text","text":"hi"}]}`))
+
+	h.SendPromptAsync(c)
+	assert.Equal(t, http.StatusBadGateway, w.Code)
+}
+
+func TestSendPromptAsync_AdapterPath_SessionNotFound_Returns404(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	h.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (*session.Message, error) {
+			return nil, fmt.Errorf("session not found: ses_missing")
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_missing"},
+	}
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"parts":[{"type":"text","text":"hi"}]}`))
+
+	h.SendPromptAsync(c)
+	assert.Equal(t, http.StatusBadGateway, w.Code, "session-not-found error maps to 502 via Send path")
+}
+
+// TestE2E_Adapter_SendPromptAsync_UsesV1SendNotV2Queue is the regression
+// test for #755 (messages disappear). SendPromptAsync must use V1
+// synchronous POST /session/:id/message, NOT the V2 queue endpoint
+// POST /api/session/:id/prompt. On opencode 1.18.10 the V2 queue is
+// admitted but never drained — messages vanish.
+//
+// This test makes three positive assertions that all must hold:
+//  1. The V1 endpoint is hit exactly once.
+//  2. The V2 endpoint is NEVER hit.
+//  3. The HTTP response carries the contract-shaped assistant message
+//     (proving the synchronous Send return value flows back to the client).
+//
+// A revert to adapter.SendAsync (V2) would fail all three: V2 hit >0,
+// V1 hit ==0, and the response body would not contain the assistant
+// message ID returned by the V1 backend.
+func TestE2E_Adapter_SendPromptAsync_UsesV1SendNotV2Queue(t *testing.T) {
+	var v1Hits, v2Hits int
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/message"):
+			v1Hits++
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"info":{"role":"assistant","id":"msg_v1_reply","time":{"created":1786400000000}},"parts":[{"type":"text","text":"V1 reply"}]}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/prompt"):
+			v2Hits++
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"data":{"id":"msg_v2_admit","admittedSeq":1}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(backend.Close)
+
+	env := newE2EEnv(t, backend)
+
+	body := strings.NewReader(`{"parts":[{"type":"text","text":"async hello"}]}`)
+	w := env.do(http.MethodPost, "/api/v1/workspaces/ws-1/sessions/ses_1/prompt", body)
+
+	require.Equal(t, http.StatusOK, w.Code, "SendPromptAsync must return 200 via synchronous Send (#755)")
+	assert.Equal(t, 1, v1Hits, "V1 POST /session/:id/message must be called exactly once")
+	assert.Equal(t, 0, v2Hits, "V2 POST /api/session/:id/prompt must NEVER be called (messages vanish, #755)")
+
+	var msg session.Message
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &msg), "response must be the contract-shaped assistant message")
+	assert.Equal(t, "msg_v1_reply", msg.ID, "response must carry the V1 assistant message ID, not a V2 admit receipt")
+	assert.Equal(t, session.MessageAssistant, msg.Type)
+	require.Len(t, msg.Parts, 1)
+	assert.Equal(t, "V1 reply", msg.Parts[0].Text)
 }
 
 // --- DeleteSession adapter path ---

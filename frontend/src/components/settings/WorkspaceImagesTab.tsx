@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useOutletContext } from "react-router-dom";
 import { imageFactoryApi, type Catalog, type Config, type Extension } from "../../api/imageFactory";
 import type { OrgResponse } from "../../api/orgs";
 import { Spinner } from "../ui/Spinner";
 import { useToast } from "../../providers/ToastProvider";
+import { useConfirmDialog } from "../../hooks/useConfirmDialog";
 
 type ImageScope = "user" | "org" | "platform";
 
@@ -20,6 +21,7 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { toast } = useToast();
+  const { confirm: confirmAction, dialog: confirmDialog } = useConfirmDialog();
 
   const [name, setName] = useState("");
   const [baseName, setBaseName] = useState("");
@@ -28,6 +30,12 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
   const [expandedConfig, setExpandedConfig] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+
+  // Track whether the default base has been auto-selected on first load.
+  // Using a ref (not state) avoids re-creating the `load` callback when
+  // baseName changes, which would trigger a spurious re-fetch loop:
+  // load → setBaseName → load recreated → useEffect → load → setLoading(true).
+  const defaultBaseSetRef = useRef(false);
 
   // Determine which configs are editable based on scope. For user scope,
   // only member configs are editable. For org scope, only org configs.
@@ -50,16 +58,23 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
   // The scope label for newly created configs (for the section heading).
   const createScopeLabel = scope === "org" ? "Org" : scope === "platform" ? "Platform" : "Personal";
 
-  const handleDelete = async (hash: string, name: string) => {
-    if (!confirm(`Delete "${name}"? This cannot be undone.`)) return;
-    try {
-      await imageFactoryApi.deleteConfig(hash);
-      setConfigs(configs.filter((c) => c.hash !== hash));
-      setExpandedConfig(null);
-      toast("Image config deleted", "success");
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Failed to delete config", "error");
-    }
+  const handleDelete = (hash: string, name: string) => {
+    confirmAction({
+      title: "Delete image?",
+      description: `Delete "${name}"? This cannot be undone.`,
+      confirmLabel: "Delete",
+      destructive: true,
+      onConfirm: async () => {
+        try {
+          await imageFactoryApi.deleteConfig(hash);
+          setConfigs(configs.filter((c) => c.hash !== hash));
+          setExpandedConfig(null);
+          toast("Image config deleted", "success");
+        } catch (e) {
+          toast(e instanceof Error ? e.message : "Failed to delete config", "error");
+        }
+      },
+    });
   };
 
   const handleRename = async (hash: string) => {
@@ -85,19 +100,20 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
       ]);
       setCatalog(cat);
       setConfigs(cfgs);
-      if (cat.bases.length > 0 && !baseName) {
+      if (cat.bases.length > 0 && !defaultBaseSetRef.current) {
         const def = cat.bases.find((b) => b.isDefault) ?? cat.bases[0];
         if (def) {
           setBaseName(def.name);
           setBaseVersion(def.version);
         }
+        defaultBaseSetRef.current = true;
       }
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : "Failed to load image factory data");
     } finally {
       setLoading(false);
     }
-  }, [baseName]);
+  }, []);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -391,6 +407,7 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
       )}
 
       {renderConfigBuilder()}
+      {confirmDialog}
     </div>
   );
 }

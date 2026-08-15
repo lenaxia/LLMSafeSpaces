@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/lenaxia/llmsafespaces/pkg/version"
 )
 
 // ---------------------------------------------------------------------------
@@ -639,6 +641,40 @@ func TestHealthzHandler_Returns200(t *testing.T) {
 	}
 	if rec.Body.Len() != 0 {
 		t.Errorf("body should be empty, got %q", rec.Body.String())
+	}
+	// The version header is set BEFORE WriteHeader; a regression that moves
+	// the Set after WriteHeader silently drops it, so assert it explicitly.
+	if got := rec.Header().Get("X-Llmsafespaces-Version"); got != version.Version {
+		t.Errorf("X-Llmsafespaces-Version = %q, want %q (the injected pkg/version.Version)", got, version.Version)
+	}
+}
+
+// TestHealthz_VersionHeaderWiredThroughMux verifies the version header is
+// present on the token-exempt /healthz route wired by buildMux (not just on
+// the bare handler), while the catch-all / route stays token-gated.
+func TestHealthz_VersionHeaderWiredThroughMux(t *testing.T) {
+	mux := buildMux("secret-abc", dummyProxy{}, newRelayMetrics())
+
+	// /healthz: no token, 200, version header present.
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Errorf("/healthz status = %d, want 200 (must be reachable without a token)", rec.Code)
+	}
+	if got := rec.Header().Get("X-Llmsafespaces-Version"); got != version.Version {
+		t.Errorf("X-Llmsafespaces-Version = %q, want %q on the wired /healthz route", got, version.Version)
+	}
+	if rec.Body.Len() != 0 {
+		t.Errorf("/healthz body should be empty, got %q", rec.Body.String())
+	}
+
+	// Catch-all /: still token-gated.
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("/ status = %d, want 401 (must remain token-gated)", rec.Code)
 	}
 }
 

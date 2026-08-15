@@ -6,6 +6,7 @@ package auth
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
@@ -24,17 +25,19 @@ import (
 // complete in seconds. Adding TTL expiry would require a goroutine and a
 // heap of edge cases; not worth it for test infra.
 type statefulMockCache struct {
-	mu      sync.RWMutex
-	strs    map[string]string
-	objects map[string][]byte
-	sess    map[string]types.CachedSession
+	mu       sync.RWMutex
+	strs     map[string]string
+	counters map[string]int
+	objects  map[string][]byte
+	sess     map[string]types.CachedSession
 }
 
 func newStatefulMockCache() *statefulMockCache {
 	return &statefulMockCache{
-		strs:    make(map[string]string),
-		objects: make(map[string][]byte),
-		sess:    make(map[string]types.CachedSession),
+		strs:     make(map[string]string),
+		counters: make(map[string]int),
+		objects:  make(map[string][]byte),
+		sess:     make(map[string]types.CachedSession),
 	}
 }
 
@@ -62,6 +65,16 @@ func (c *statefulMockCache) SetNX(_ context.Context, key, value string, _ time.D
 	}
 	c.strs[key] = value
 	return true, nil
+}
+
+func (c *statefulMockCache) Incr(_ context.Context, key string, _ time.Duration) (int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	v := c.counters[key]
+	v++
+	c.counters[key] = v
+	c.strs[key] = fmt.Sprintf("%d", v) // keep Get in sync for lockout check
+	return int64(v), nil
 }
 
 func (c *statefulMockCache) Delete(_ context.Context, key string) error {

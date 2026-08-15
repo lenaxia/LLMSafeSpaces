@@ -464,17 +464,6 @@ terminal:
   allowedOrigins: []
 
 # ----------------------------------------------------------------------------
-# Session queue (Epic 63: Inboard Session Queue)
-# ----------------------------------------------------------------------------
-# V2Enabled switches the proxy's enqueue/abort paths from the external Redis
-# queue (V1 prompt_async + destructive abort) to opencode's V2 session API
-# (delivery:"queue" + non-destructive interrupt). Default false; the V1 path
-# stays until US-63.3–63.7 complete the migration. Override at runtime with
-# env LLMSAFESPACES_V2_SESSION_QUEUE=true.
-sessionQueue:
-  v2Enabled: false
-
-# ----------------------------------------------------------------------------
 # CRDs
 # ----------------------------------------------------------------------------
 # CRDs are installed from the chart's crds/ directory by default.

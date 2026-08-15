@@ -1,5 +1,5 @@
 import { ApiClientError } from "../../api/client";
-import { extractOpencodeMessage, extractOpencodeRef } from "../../api/opencodeRef";
+import { extractAgentErrorMessage, extractAgentErrorRef } from "../../api/agentErrorRef";
 
 interface ChatHistoryErrorBannerProps {
   error: unknown;
@@ -19,7 +19,7 @@ interface ChatHistoryErrorBannerProps {
  *     wire it here so the user can self-service the transient case
  *     (pod-restart, rate-limit, etc.) without a page reload.
  *   - Opencode ref — pulled from the API error body via
- *     extractOpencodeRef, shown in a `<details>` block. Not front-and-
+ *     extractAgentErrorRef, shown in a `<details>` block. Not front-and-
  *     center (users don't need it) but discoverable for operators
  *     debugging their own or a support-ticketed session.
  *   - Visual language reused from the sibling chatError + streamTimedOut
@@ -32,7 +32,7 @@ interface ChatHistoryErrorBannerProps {
  * copies the ref → greps opencode logs by that ref → stack trace.
  *
  * Message extraction hierarchy (verified against production shapes):
- *   1. `extractOpencodeMessage(body)` — nested-or-flat opencode `message`.
+ *   1. `extractAgentErrorMessage(body)` — nested-or-flat opencode `message`.
  *      Handles both the raw envelope (#486 GET-history shape,
  *      `body.data.message`) and the allowlisted shape (POST-prompt path,
  *      where the backend promotes `message` to top level).
@@ -54,25 +54,25 @@ export function ChatHistoryErrorBanner({
   onRetry,
 }: ChatHistoryErrorBannerProps) {
   const status = error instanceof ApiClientError ? error.status : undefined;
-  const ref = error instanceof ApiClientError ? extractOpencodeRef(error.body) : undefined;
+  const ref = error instanceof ApiClientError ? extractAgentErrorRef(error.body) : undefined;
 
   let message: string = "Unknown error";
+  const reason = error instanceof ApiClientError ? error.body?.reason : undefined;
+  const isRecovering = status === 503 && (reason === "agent_unreachable" || reason === "agent_restarting");
+
   if (error instanceof ApiClientError) {
-    // Try opencode's `message` (both flat and nested), then the API's
-    // own `error` field. Only fall back to `err.message` for the
-    // shape-less network-layer case — since `super(body.error)` fills
-    // `err.message` with either the API `error` string or "" (empty)
-    // for opencode-shaped bodies that lack a top-level `error`. Empty
-    // strings are falsy and short-circuit the `&&` guard; the
-    // `!== "undefined"` clause is defense-in-depth against subclasses
-    // that stringify undefined.
-    message =
-      extractOpencodeMessage(error.body) ??
-      (typeof error.body?.error === "string" && error.body.error.length > 0
-        ? error.body.error
-        : error.message && error.message !== "undefined"
-          ? error.message
-          : "Unknown error");
+    // Prefer the API's structured `message` field (always present on 503s).
+    if (typeof error.body?.message === "string" && error.body.message.length > 0) {
+      message = error.body.message;
+    } else {
+      message =
+        extractAgentErrorMessage(error.body) ??
+        (typeof error.body?.error === "string" && error.body.error.length > 0
+          ? error.body.error
+          : error.message && error.message !== "undefined"
+            ? error.message
+            : "Unknown error");
+    }
   } else if (error instanceof Error && error.message) {
     message = error.message;
   }
@@ -80,10 +80,14 @@ export function ChatHistoryErrorBanner({
   return (
     <div
       role="alert"
-      className="flex flex-col gap-2 border-b border-destructive/50 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+      className={`flex flex-col gap-2 border-b px-4 py-3 text-sm ${
+        isRecovering
+          ? "border-yellow-300/50 bg-yellow-50 text-yellow-800 dark:border-yellow-800/50 dark:bg-yellow-950 dark:text-yellow-200"
+          : "border-destructive/50 bg-destructive/10 text-destructive"
+      }`}
     >
       <div className="flex items-center justify-between gap-2">
-        <span className="font-medium">Chat history unavailable</span>
+        <span className="font-medium">{isRecovering ? "Reconnecting…" : "Chat history unavailable"}</span>
         <button
           type="button"
           onClick={onRetry}
@@ -96,6 +100,7 @@ export function ChatHistoryErrorBanner({
         <summary className="cursor-pointer">Details</summary>
         <div className="mt-1 space-y-0.5 font-mono">
           {status !== undefined && <div>HTTP {status}</div>}
+          {reason && <div>Reason: {reason}</div>}
           <div>{message}</div>
           {ref && <div>Ref: {ref}</div>}
         </div>

@@ -13,6 +13,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/lenaxia/llmsafespaces/pkg/version"
 )
 
 const (
@@ -99,6 +101,7 @@ func defaultHTTPClient() *http.Client {
 }
 
 func healthzHandler(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("X-Llmsafespaces-Version", version.Version)
 	w.WriteHeader(http.StatusOK)
 }
 

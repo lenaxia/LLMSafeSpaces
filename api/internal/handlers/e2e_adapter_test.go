@@ -193,21 +193,221 @@ func TestE2E_Adapter_GetHistory_Backend500_Returns502(t *testing.T) {
 	assert.Equal(t, http.StatusBadGateway, w.Code)
 }
 
-func TestE2E_Adapter_AbortSession_FullPipeline(t *testing.T) {
-	abortCalled := false
+// TestE2E_Adapter_GetHistory_FlatToolShape_Returns200 pins the exact
+// production code path that 502'd in issue #730: a flat-string tool
+// part (opencode 1.18.10 wire shape) from the backend must surface as
+// a correct session.ToolPart in the JSON API response.
+func TestE2E_Adapter_GetHistory_FlatToolShape_Returns200(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/interrupt") {
-			abortCalled = true
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		w.WriteHeader(http.StatusNotFound)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[
+			{
+				"info": {"role":"assistant","id":"msg_flat"},
+				"parts": [
+					{"type":"tool","callID":"call_e2e_1","tool":"bash","state":{"status":"completed","input":{"command":"echo hi"},"output":"hi\n","time":{"start":1786374885930,"end":1786374894033}}}
+				]
+			}
+		]`))
 	}))
 	t.Cleanup(backend.Close)
 
 	env := newE2EEnv(t, backend)
-	env.do(http.MethodPost, "/api/v1/workspaces/ws-1/sessions/ses_1/abort", nil)
-	assert.True(t, abortCalled, "adapter must call the interrupt endpoint")
+	w := env.do(http.MethodGet, "/api/v1/workspaces/ws-1/sessions/ses_1/message?limit=50", nil)
+
+	require.Equal(t, http.StatusOK, w.Code, "flat-string tool shape must NOT 502 (issue #730)")
+
+	var msgs []session.Message
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &msgs))
+	require.Len(t, msgs, 1)
+	require.Len(t, msgs[0].Parts, 1)
+	assert.Equal(t, session.PartTool, msgs[0].Parts[0].Type)
+	require.NotNil(t, msgs[0].Parts[0].Tool)
+	assert.Equal(t, "bash", msgs[0].Parts[0].Tool.Name)
+	assert.Equal(t, "call_e2e_1", msgs[0].Parts[0].Tool.CallID)
+	assert.Equal(t, session.ToolStatusCompleted, msgs[0].Parts[0].Tool.State.Status)
+}
+
+// TestE2E_Adapter_GetHistory_MalformedMessage_Returns200WithSystemNotice
+// pins the Fix 2 decode-resilience path through the handler: one
+// undecodable message downgrades to a system notice (200, not 502),
+// while well-formed messages survive.
+func TestE2E_Adapter_GetHistory_MalformedMessage_Returns200WithSystemNotice(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`[
+			{
+				"info": {"role":"assistant","id":"msg_good"},
+				"parts": [{"type":"text","text":"before"}]
+			},
+			{
+				"info": {"role":"assistant","id":"msg_bad"},
+				"parts": [{"type":"tool","tool":42}]
+			},
+			{
+				"info": {"role":"assistant","id":"msg_good2"},
+				"parts": [{"type":"text","text":"after"}]
+			}
+		]`))
+	}))
+	t.Cleanup(backend.Close)
+
+	env := newE2EEnv(t, backend)
+	w := env.do(http.MethodGet, "/api/v1/workspaces/ws-1/sessions/ses_1/message?limit=50", nil)
+
+	require.Equal(t, http.StatusOK, w.Code, "one malformed message must NOT 502 the whole history (Fix 2)")
+
+	var msgs []session.Message
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &msgs))
+	require.Len(t, msgs, 3, "all three messages must be present (bad one downgraded)")
+
+	// Good messages survive.
+	assert.Equal(t, "msg_good", msgs[0].ID)
+	assert.Equal(t, "msg_good2", msgs[2].ID)
+
+	// Bad message downgraded to system notice.
+	assert.Equal(t, session.MessageSystem, msgs[1].Type, "undecodable message must be downgraded")
+	assert.NotEmpty(t, msgs[1].Text, "downgrade notice must carry explanatory text")
+	assert.NotContains(t, msgs[1].Text, "42", "raw malformed bytes must not leak")
+}
+
+// TestE2E_Adapter_GetHistory_LargeBodyOver16MiB_No502 is the integration
+// regression test for #737. The pre-fix code called readBody(resp, 16<<20)
+// inside Adapter.GetHistory, which silently truncated any history body
+// larger than 16 MiB — the subsequent json.Unmarshal hit "unexpected end
+// of JSON input" and the handler returned 502.
+//
+// This test stands up a fake opencode backend that streams a ~17 MiB
+// JSON array, then drives the FULL request path: gin router →
+// ProxyHandler.GetHistory → adapter.GetHistory → real HTTP → streaming
+// json.Decoder → contract JSON response. It must return 200 with all
+// messages intact.
+//
+// A revert to readBody(resp, 16<<20)+json.Unmarshal would truncate the
+// body, the parse would fail, and the handler would return 502 —
+// failing this test at the status-code assertion.
+func TestE2E_Adapter_GetHistory_LargeBodyOver16MiB_No502(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Stream a JSON array of 10 messages, each ~1.7 MiB → ~17 MiB total.
+		const numMessages = 10
+		const textLen = 1700000
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("["))
+		for i := 0; i < numMessages; i++ {
+			if i > 0 {
+				_, _ = w.Write([]byte(","))
+			}
+			// Write the JSON prefix: info + opening of the text part.
+			_, _ = fmt.Fprintf(w, `{"info":{"role":"assistant","id":"msg_%d"},"parts":[{"type":"text","text":"`, i)
+			// Write textLen bytes of filler (no escaping needed — 'x' is literal).
+			chunk := []byte(strings.Repeat("x", 4096))
+			written := 0
+			for written < textLen {
+				n := textLen - written
+				if n > len(chunk) {
+					n = len(chunk)
+				}
+				_, _ = w.Write(chunk[:n])
+				written += n
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+			_, _ = w.Write([]byte(`"}]}`))
+		}
+		_, _ = w.Write([]byte("]"))
+	}))
+	t.Cleanup(backend.Close)
+
+	env := newE2EEnv(t, backend)
+	w := env.do(http.MethodGet, "/api/v1/workspaces/ws-1/sessions/ses_1/message?limit=50", nil)
+
+	require.Equal(t, http.StatusOK, w.Code,
+		"large history body must NOT 502 — streaming decoder must handle >16 MiB (issue #737)")
+
+	var msgs []session.Message
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &msgs), "response must be valid contract JSON")
+	require.Len(t, msgs, 10, "all 10 messages must survive the streaming decode")
+	assert.Equal(t, "msg_0", msgs[0].ID)
+	assert.Equal(t, "msg_9", msgs[9].ID)
+	require.Len(t, msgs[0].Parts, 1)
+	assert.Equal(t, 1700000, len(msgs[0].Parts[0].Text),
+		"first message text must be intact (not truncated at the 16 MiB readBody cap)")
+}
+
+// TestE2E_Adapter_GetHistory_EmptySession_ReturnsArrayNotNull is the
+// integration regression test for the null-history crash. opencode
+// returns "[]" for a session with no messages; ParseHistoryStream
+// returns a nil slice for empty input (named return, nothing appended).
+// paginateContractHistory(nil, ...) also returns nil. Without the
+// explicit nil→[] guard at proxy_handlers.go:366-368, the handler
+// emits "null" — the frontend's .filter() crashes ("Cannot read
+// properties of null").
+//
+// This test wires a REAL Adapter (so the adapter path is taken, not
+// the legacy path), feeds the backend an empty "[]" body, and asserts
+// the wire response is byte-identical to "[]", not "null".
+//
+// Note: TestGetHistory_EmptySession_ReturnsEmptyArrayNotNull (in
+// proxy_history_pagination_test.go) looks like it covers this but
+// does NOT — its harness (newTestEnvWithBackend) leaves h.adapter
+// nil, so the request takes the legacy paginateOpencodeHistory path
+// which is structurally immune. Only THIS test exercises the actual
+// null-guard in the adapter code path.
+func TestE2E_Adapter_GetHistory_EmptySession_ReturnsArrayNotNull(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// opencode returns a bare empty array for empty sessions.
+		_, _ = w.Write([]byte("[]"))
+	}))
+	t.Cleanup(backend.Close)
+
+	env := newE2EEnv(t, backend)
+	w := env.do(http.MethodGet, "/api/v1/workspaces/ws-1/sessions/ses_1/message?limit=50", nil)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, "[]", w.Body.String(),
+		"empty adapter history must serialize as JSON array '[]', not 'null' (frontend .filter crash)")
+}
+
+// TestE2E_Adapter_AbortSession_UsesV1AbortNotV2Interrupt is the regression
+// test for the V2 interrupt removal in opencode 1.18.10. The entire v2/
+// route group was deleted from opencode 1.18.10 — the V2 interrupt
+// endpoint (POST /api/session/:id/interrupt) returns 204 from a catch-all
+// stub but does nothing. AbortSession must use the V1 /abort endpoint
+// (POST /session/:id/abort) which actually stops the in-flight turn.
+//
+// Verified live on opencode 1.18.10: V2 interrupt returned 204 but a
+// long V1 turn kept running; V1 /abort returned 200 and the session
+// transitioned to idle within 3s.
+//
+// This test asserts:
+//  1. V1 /abort endpoint is hit exactly once.
+//  2. V2 /interrupt endpoint is NEVER hit.
+//
+// A revert to InterruptV2 would fail both assertions.
+func TestE2E_Adapter_AbortSession_UsesV1AbortNotV2Interrupt(t *testing.T) {
+	var v1AbortHits, v2InterruptHits int
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/abort"):
+			v1AbortHits++
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/interrupt"):
+			v2InterruptHits++
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(backend.Close)
+
+	env := newE2EEnv(t, backend)
+	w := env.do(http.MethodPost, "/api/v1/workspaces/ws-1/sessions/ses_1/abort", nil)
+
+	assert.Equal(t, http.StatusNoContent, w.Code, "AbortSession must return 204")
+	assert.Equal(t, 1, v1AbortHits, "V1 POST /session/:id/abort must be called exactly once")
+	assert.Equal(t, 0, v2InterruptHits, "V2 POST /api/session/:id/interrupt must NEVER be called (endpoint removed in 1.18.10)")
 }
 
 // --- E2E test environment ---
@@ -261,6 +461,7 @@ func newE2EEnv(t *testing.T, backend *httptest.Server) *e2eEnv {
 		proxy.POST("/sessions", handler.CreateSession)
 		proxy.GET("/sessions", handler.ListSessions)
 		proxy.POST("/sessions/:sessionId/message", handler.SendMessage)
+		proxy.POST("/sessions/:sessionId/prompt", handler.SendPromptAsync)
 		proxy.GET("/sessions/:sessionId/message", handler.GetHistory)
 		proxy.GET("/sessions/:sessionId", handler.GetSession)
 		proxy.POST("/sessions/:sessionId/abort", handler.AbortSession)

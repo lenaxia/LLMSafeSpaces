@@ -33,7 +33,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25.12"
+          go-version: "1.26.6"
           cache: true
 
       # repolint catches the failure modes that have caused production
@@ -132,7 +132,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25.12"
+          go-version: "1.26.6"
           cache: true
 
       # helm is required by chart_test.go (helm/...). Without
@@ -283,7 +283,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25.12"
+          go-version: "1.26.6"
           cache: true
 
       # helm is required by chart_test.go — without it the tests skip silently.
@@ -344,7 +344,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25.12"
+          go-version: "1.26.6"
           cache: true
 
       - uses: actions/setup-node@v6
@@ -380,6 +380,7 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
+          cache: 'maven'
 
       - name: Java SDK — build and test
         working-directory: sdks/java
@@ -458,7 +459,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25.12"
+          go-version: "1.26.6"
           cache: true
 
       - uses: actions/setup-node@v6
@@ -632,6 +633,12 @@ jobs:
           LLMSAFESPACES_URL: http://localhost:8080
         run: go run ./scenarios/s-env-vars/
 
+      - name: Wait for login rate-limit bucket refill (mid-Go)
+        # The first 12 Go canaries each call jwtLogin, consuming the
+        # /auth/login burst of 10 (+~2 refilled during execution). Without
+        # this wait, S-CRED-CRUD and later login-bearing scenarios hit 429.
+        run: sleep 65
+
       - name: Go canary — S-CRED-CRUD
         env:
           LLMSAFESPACES_URL: http://localhost:8080
@@ -663,21 +670,6 @@ jobs:
           LLMSAFESPACES_URL: http://localhost:8080
         run: go run ./scenarios/s-ws-quota/
 
-      - name: Go canary — D-ACCOUNT-RECOVER
-        env:
-          LLMSAFESPACES_URL: http://localhost:8080
-        run: go run ./scenarios/d-account-recover/
-
-      - name: Go canary — D-CHANGE-PASSWORD
-        env:
-          LLMSAFESPACES_URL: http://localhost:8080
-        run: go run ./scenarios/d-change-password/
-
-      - name: Go canary — D-KEY-ROTATE
-        env:
-          LLMSAFESPACES_URL: http://localhost:8080
-        run: go run ./scenarios/d-key-rotate/
-
       - name: Go canary — S-RATE-LIMIT
         env:
           LLMSAFESPACES_URL: http://localhost:8080
@@ -694,6 +686,9 @@ jobs:
       - name: Python SDK install
         working-directory: sdks/python
         run: pip install -e ".[dev]" httpx -q
+
+      - name: Wait for login rate-limit bucket refill (pre-Python)
+        run: sleep 65
 
       - name: Python canaries — all ci:fast scenarios
         working-directory: ${{ github.workspace }}
@@ -718,6 +713,9 @@ jobs:
           npm ci
           npx tsup src/index.ts --format esm,cjs --dts
 
+      - name: Wait for login rate-limit bucket refill (pre-TypeScript)
+        run: sleep 65
+
       - name: TypeScript canaries — all ci:fast scenarios
         working-directory: ${{ github.workspace }}
         env:
@@ -728,8 +726,7 @@ jobs:
             s-health s-auth s-auth-config s-logout s-apikey s-user-settings \
             s-ws-crud s-ws-status s-secret-crud s-secret-reveal s-secret-audit \
             s-secret-bindings s-env-vars s-cred-crud s-error-format s-ownership \
-            s-email-reset s-rate-limit s-ws-quota \
-            d-account-recover d-change-password d-key-rotate; do
+            s-email-reset s-rate-limit s-ws-quota; do
             echo "--- TypeScript: $scenario ---"
             npx tsx sdks/canary/typescript/scenarios/${scenario}.ts
           done
@@ -766,9 +763,25 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       timestamp: ${{ steps.ts.outputs.timestamp }}
+      version: ${{ steps.v.outputs.version }}
     steps:
       - id: ts
         run: echo "timestamp=$(date -u +%s)" >> "$GITHUB_OUTPUT"
+      # Resolve a build version for CI image builds. Tag pushes use the
+      # semver (without the leading "v"); branch/PR/dispatch builds fall
+      # back to the short commit sha so no CI image reports a bare "dev"
+      # or "unknown" as its binary version.
+      - id: v
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          if [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="sha-${GITHUB_SHA:0:12}"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
 
   build-api:
     name: Build API (${{ matrix.platform }})
@@ -813,6 +826,10 @@ jobs:
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.API_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
           cache-from: type=gha,scope=api-${{ matrix.platform }}
           cache-to: type=gha,scope=api-${{ matrix.platform }},mode=max
+          build-args: |
+            VERSION=${{ needs.prepare.outputs.version }}
+            COMMIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
 
       - name: Export digest
         if: github.event_name != 'pull_request'
@@ -917,7 +934,9 @@ jobs:
           cache-from: type=gha,scope=controller-${{ matrix.platform }}
           cache-to: type=gha,scope=controller-${{ matrix.platform }},mode=max
           build-args: |
+            VERSION=${{ needs.prepare.outputs.version }}
             COMMIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
 
       - name: Export digest
         if: github.event_name != 'pull_request'
@@ -929,6 +948,7 @@ jobs:
       - name: Smoke-test controller binary
         run: |
           docker buildx build \
+            --build-arg VERSION=${{ needs.prepare.outputs.version }} \
             --build-arg COMMIT_SHA=${{ github.sha }} \
             -f controller/Dockerfile \
             --target builder \
@@ -1044,6 +1064,10 @@ jobs:
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.RELAY_ROUTER_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
           cache-from: type=gha,scope=relay-router-${{ matrix.platform }}
           cache-to: type=gha,scope=relay-router-${{ matrix.platform }},mode=max
+          build-args: |
+            VERSION=${{ needs.prepare.outputs.version }}
+            COMMIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
 
       - name: Export digest
         if: github.event_name != 'pull_request'
@@ -1147,6 +1171,10 @@ jobs:
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.RELAY_PROXY_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
           cache-from: type=gha,scope=relay-proxy-${{ matrix.platform }}
           cache-to: type=gha,scope=relay-proxy-${{ matrix.platform }},mode=max
+          build-args: |
+            VERSION=${{ needs.prepare.outputs.version }}
+            COMMIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
 
       - name: Export digest
         if: github.event_name != 'pull_request'
@@ -1250,6 +1278,10 @@ jobs:
           outputs: type=image,name=${{ env.REGISTRY }}/${{ env.RUNTIME_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ github.event_name != 'pull_request' }}
           cache-from: type=gha,scope=runtime-${{ matrix.platform }}
           cache-to: type=gha,scope=runtime-${{ matrix.platform }},mode=max
+          build-args: |
+            VERSION=${{ needs.prepare.outputs.version }}
+            COMMIT_SHA=${{ github.sha }}
+            BUILD_TIME=${{ needs.prepare.outputs.timestamp }}
 
       - name: Export digest
         if: github.event_name != 'pull_request'

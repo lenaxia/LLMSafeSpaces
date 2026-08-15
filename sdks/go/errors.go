@@ -7,8 +7,10 @@ import "fmt"
 
 // APIError represents an error response from the LLMSafeSpaces API.
 type APIError struct {
-	Status  int
-	Message string
+	Status     int
+	Message    string
+	Reason     string // structured reason for 503s (not_ready, agent_unreachable, agent_restarting)
+	RetryAfter int    // seconds to wait before retrying (for 429/503)
 }
 
 func (e *APIError) Error() string {
@@ -43,6 +45,15 @@ func IsConflict(err error) bool {
 func IsRateLimit(err error) bool {
 	if e, ok := err.(*APIError); ok {
 		return e.Status == 429
+	}
+	return false
+}
+
+// IsServiceUnavailable returns true if the error is a 503 — the workspace
+// exists but the agent is unreachable, restarting, or not yet booted.
+func IsServiceUnavailable(err error) bool {
+	if e, ok := err.(*APIError); ok {
+		return e.Status == 503
 	}
 	return false
 }

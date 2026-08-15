@@ -113,3 +113,45 @@ describe("WorkflowsPage", () => {
     });
   });
 });
+
+// ─── ConfirmDialog (#814) ────────────────────────────────────────────────────
+
+describe("WorkflowsPage — ConfirmDialog delete (#814)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockList.mockResolvedValue([WF1]);
+    mockDelete.mockResolvedValue(undefined);
+  });
+
+  it("opens the confirm dialog and deletes the workflow on confirm", async () => {
+    renderPage("/workflows/wf-1");
+    // Wait for the editor (edit mode) to mount its Delete button.
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument(),
+    );
+
+    // Editor's Delete button opens the confirm dialog.
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+
+    // ConfirmDialog opens — title visible, and a second "Delete" button (the
+    // dialog's confirm) is now present. The last matching button is the dialog's.
+    await waitFor(() => expect(screen.getByText("Delete workflow?")).toBeInTheDocument());
+    const dialogConfirm = screen.getAllByRole("button", { name: "Delete" }).pop()!;
+    fireEvent.click(dialogConfirm);
+
+    await waitFor(() => expect(mockDelete).toHaveBeenCalledWith("wf-1"));
+  });
+
+  it("does not delete when the dialog is cancelled", async () => {
+    renderPage("/workflows/wf-1");
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Delete" })).toBeInTheDocument(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    const cancelBtn = await screen.findByRole("button", { name: "Cancel" });
+    fireEvent.click(cancelBtn);
+
+    expect(mockDelete).not.toHaveBeenCalled();
+  });
+});

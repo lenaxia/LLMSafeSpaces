@@ -17,7 +17,7 @@ describe("policiesApi", () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       status: 200,
-      json: () => Promise.resolve([{ key: "allow_user_mcp_servers", value: true, updatedAt: "2026-01-01T00:00:00Z" }]),
+      json: () => Promise.resolve([{ key: "allow_user_mcp_servers", value: true, updatedAt: "2026-01-01T00:00:00Z" }]), text: () => Promise.resolve(JSON.stringify([{ key: "allow_user_mcp_servers", value: true, updatedAt: "2026-01-01T00:00:00Z" }])),
     });
     const result = await policiesApi.listOrg("org-1");
     expect(result).toHaveLength(1);
@@ -31,7 +31,7 @@ describe("policiesApi", () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       status: 200,
-      json: () => Promise.resolve({ status: "ok" }),
+      json: () => Promise.resolve({ status: "ok" }), text: () => Promise.resolve(JSON.stringify({ status: "ok" })),
     });
     await policiesApi.setOrg("org-1", "allow_user_mcp_servers", true);
     expect(mockFetch).toHaveBeenCalledWith(
@@ -46,7 +46,7 @@ describe("policiesApi", () => {
     mockFetch.mockResolvedValueOnce({
       ok: true,
       status: 200,
-      json: () => Promise.resolve({ status: "ok" }),
+      json: () => Promise.resolve({ status: "ok" }), text: () => Promise.resolve(JSON.stringify({ status: "ok" })),
     });
     await policiesApi.setOrg("org-1", "allow_user_mcp_servers", false);
     expect(mockFetch).toHaveBeenCalledWith(

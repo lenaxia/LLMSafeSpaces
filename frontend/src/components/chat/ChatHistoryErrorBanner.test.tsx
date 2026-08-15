@@ -51,7 +51,7 @@ describe("ChatHistoryErrorBanner", () => {
     // body.error=undefined leaves err.message = "" (empty string —
     // the Error constructor treats `undefined` as absent). The banner
     // must skip past empty err.message (via the truthy `&&` guard) and
-    // fall back to opencode's data.message via extractOpencodeMessage.
+    // fall back to opencode's data.message via extractAgentErrorMessage.
     // Regression test at line ~137 pins this end-to-end.
     const body = {
       name: "UnknownError",
@@ -79,7 +79,7 @@ describe("ChatHistoryErrorBanner", () => {
     // After EnrichChatErrorBody's allowlist, `message`, `ref`, `_tag`
     // etc. sit at the top level. body.error is still absent — the
     // allowlist does not synthesize it. Banner reads message via
-    // extractOpencodeMessage, not body.error.
+    // extractAgentErrorMessage, not body.error.
     const body = {
       _tag: "SomeOpencodeError",
       message: "big-pickle rate-limited",
@@ -159,5 +159,46 @@ describe("ChatHistoryErrorBanner", () => {
     // The banner must fall through to the placeholder, not render
     // an empty line.
     expect(screen.getByText("Unknown error")).toBeInTheDocument();
+  });
+
+  it("shows yellow 'Reconnecting…' state for 503 with agent_unreachable reason", () => {
+    const err = new ApiClientError(503, {
+      error: "workspace connection failed",
+      message: "The agent is not responding. Please try again in a moment.",
+      reason: "agent_unreachable",
+      retryAfter: 10,
+    });
+    render(<ChatHistoryErrorBanner error={err} onRetry={vi.fn()} />);
+
+    expect(screen.getByText("Reconnecting…")).toBeInTheDocument();
+    expect(screen.queryByText("Chat history unavailable")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Details"));
+    expect(screen.getByText("Reason: agent_unreachable")).toBeInTheDocument();
+  });
+
+  it("shows yellow 'Reconnecting…' state for 503 with agent_restarting reason", () => {
+    const err = new ApiClientError(503, {
+      error: "Workspace is restarting",
+      message: "The agent is restarting. Please try again in a moment.",
+      reason: "agent_restarting",
+      retryAfter: 5,
+    });
+    render(<ChatHistoryErrorBanner error={err} onRetry={vi.fn()} />);
+
+    expect(screen.getByText("Reconnecting…")).toBeInTheDocument();
+  });
+
+  it("shows red error state for 503 with not_ready reason (not recovering)", () => {
+    const err = new ApiClientError(503, {
+      error: "workspace not ready",
+      message: "Workspace is pending.",
+      reason: "not_ready",
+      retryAfter: 10,
+    });
+    render(<ChatHistoryErrorBanner error={err} onRetry={vi.fn()} />);
+
+    expect(screen.getByText("Chat history unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("Reconnecting…")).not.toBeInTheDocument();
   });
 });

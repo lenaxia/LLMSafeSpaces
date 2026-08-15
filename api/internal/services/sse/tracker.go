@@ -5,6 +5,7 @@ package sse
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -77,6 +78,7 @@ type Tracker struct {
 	sessionMetrics   SessionMetricsRecorder
 	subscriptions    map[string]context.CancelFunc
 	subMu            sync.Mutex
+	goroutineWg      map[string]*sync.WaitGroup
 	passwordGetter   interfaces.WorkspacePasswordProvider
 	podIPResolver    func(workspaceID string) string
 	drainMu          sync.Mutex
@@ -100,6 +102,7 @@ func NewTracker(
 		onSessionIdle:    onSessionIdle,
 		idleTimeout:      sseIdleTimeout,
 		subscriptions:    make(map[string]context.CancelFunc),
+		goroutineWg:      make(map[string]*sync.WaitGroup),
 		sessionTokenSeen: make(map[string]int64),
 		sessionCostSeen:  make(map[string]float64),
 		sessionStartTime: make(map[string]time.Time),
@@ -156,26 +159,83 @@ func (t *Tracker) EnsureWatching(workspaceID string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.subscriptions[workspaceID] = cancel
 
-	go t.subscribe(ctx, workspaceID)
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+	t.goroutineWg[workspaceID] = wg
+
+	go func() {
+		defer wg.Done()
+		t.subscribe(ctx, workspaceID)
+	}()
+}
+
+// IsWatching returns true if the tracker has an active SSE subscription
+// for the given workspace. Used by tests to verify that read-path
+// handlers trigger SSE watch (#755 stuck-busy regression).
+func (t *Tracker) IsWatching(workspaceID string) bool {
+	t.subMu.Lock()
+	defer t.subMu.Unlock()
+	_, exists := t.subscriptions[workspaceID]
+	return exists
 }
 
 func (t *Tracker) StopWatching(workspaceID string) {
 	t.subMu.Lock()
-	defer t.subMu.Unlock()
-
 	if cancel, exists := t.subscriptions[workspaceID]; exists {
 		cancel()
 		delete(t.subscriptions, workspaceID)
 	}
+	wg := t.goroutineWg[workspaceID]
+	delete(t.goroutineWg, workspaceID)
+
+	// Wait for the subscribe goroutine to exit while still holding subMu.
+	// This prevents a concurrent EnsureWatching from starting a new goroutine
+	// that writes to billing maps before cleanup completes. subscribe() never
+	// acquires subMu, so no deadlock risk.
+	if wg != nil {
+		wg.Wait()
+	}
+
+	prefix := workspaceID + ":"
+	t.tokensMu.Lock()
+	for k := range t.sessionTokenSeen {
+		if strings.HasPrefix(k, prefix) {
+			delete(t.sessionTokenSeen, k)
+		}
+	}
+	for k := range t.sessionCostSeen {
+		if strings.HasPrefix(k, prefix) {
+			delete(t.sessionCostSeen, k)
+		}
+	}
+	t.tokensMu.Unlock()
+
+	t.startTimeMu.Lock()
+	for k := range t.sessionStartTime {
+		if strings.HasPrefix(k, prefix) {
+			delete(t.sessionStartTime, k)
+		}
+	}
+	t.startTimeMu.Unlock()
+
+	t.subMu.Unlock()
 }
 
 func (t *Tracker) Stop() {
 	t.subMu.Lock()
-	defer t.subMu.Unlock()
-
 	for id, cancel := range t.subscriptions {
 		cancel()
 		delete(t.subscriptions, id)
+	}
+	wgs := make([]*sync.WaitGroup, 0, len(t.goroutineWg))
+	for id, wg := range t.goroutineWg {
+		wgs = append(wgs, wg)
+		delete(t.goroutineWg, id)
+	}
+	t.subMu.Unlock()
+
+	for _, wg := range wgs {
+		wg.Wait()
 	}
 }
 
@@ -183,6 +243,38 @@ func (t *Tracker) SubscriptionCount() int {
 	t.subMu.Lock()
 	defer t.subMu.Unlock()
 	return len(t.subscriptions)
+}
+
+// GetBillingState returns entries from the three billing maps that match the
+// given workspace prefix. Used by integration tests to verify cleanup.
+func (t *Tracker) GetBillingState(workspaceID string) (tokens, costs, startTimes map[string]bool) {
+	prefix := workspaceID + ":"
+	tokens = make(map[string]bool)
+	costs = make(map[string]bool)
+	startTimes = make(map[string]bool)
+
+	t.tokensMu.Lock()
+	for k := range t.sessionTokenSeen {
+		if strings.HasPrefix(k, prefix) {
+			tokens[k] = true
+		}
+	}
+	for k := range t.sessionCostSeen {
+		if strings.HasPrefix(k, prefix) {
+			costs[k] = true
+		}
+	}
+	t.tokensMu.Unlock()
+
+	t.startTimeMu.Lock()
+	for k := range t.sessionStartTime {
+		if strings.HasPrefix(k, prefix) {
+			startTimes[k] = true
+		}
+	}
+	t.startTimeMu.Unlock()
+
+	return
 }
 
 func (t *Tracker) SubscribeDrain(
@@ -293,7 +385,14 @@ func (t *Tracker) connectAndRead(ctx context.Context, workspaceID string) error 
 	}
 
 	scanner := bufio.NewScanner(resp.Body)
-	scanner.Buffer(make([]byte, 64*1024), 64*1024)
+	// 16 MB buffer per line (was 64 KB). Same root cause as the agentd
+	// SSE scanner bug (#805): opencode emits message.part.updated events
+	// that exceed 300KB (patch parts listing thousands of files), and a
+	// large monorepo could produce 10MB+. The old 64 KB cap caused the
+	// scanner to fail silently, dropping the SSE connection and causing
+	// the API-side tracker to miss session.status:idle events — the
+	// stuck-busy bug. 16 MB matches the agentd-side fix.
+	scanner.Buffer(make([]byte, 1024*1024), 16*1024*1024)
 
 	var eventData strings.Builder
 	var bytesReceived int64
@@ -386,9 +485,10 @@ func (t *Tracker) dispatchProperties(workspaceID, eventType string, props json.R
 	switch p.Status.Type {
 	case "idle":
 		if t.sessionMetrics != nil {
+			timeKey := workspaceID + ":" + p.SessionID
 			t.startTimeMu.Lock()
-			if start, ok := t.sessionStartTime[p.SessionID]; ok {
-				delete(t.sessionStartTime, p.SessionID)
+			if start, ok := t.sessionStartTime[timeKey]; ok {
+				delete(t.sessionStartTime, timeKey)
 				t.startTimeMu.Unlock()
 				t.sessionMetrics.RecordSessionCompleted(workspaceID, time.Since(start).Seconds())
 			} else {
@@ -408,9 +508,10 @@ func (t *Tracker) dispatchProperties(workspaceID, eventType string, props json.R
 			s.onIdle(workspaceID, p.SessionID)
 		}
 	case "busy", "retry":
+		timeKey := workspaceID + ":" + p.SessionID
 		t.startTimeMu.Lock()
-		if _, exists := t.sessionStartTime[p.SessionID]; !exists {
-			t.sessionStartTime[p.SessionID] = time.Now()
+		if _, exists := t.sessionStartTime[timeKey]; !exists {
+			t.sessionStartTime[timeKey] = time.Now()
 		}
 		t.startTimeMu.Unlock()
 		if t.onSessionActive != nil {
@@ -436,17 +537,55 @@ func (t *Tracker) handleSessionUpdated(workspaceID string, props []byte) {
 			Model struct {
 				ID         string `json:"id"`
 				ProviderID string `json:"providerID"`
+				Provider   string `json:"provider"`
 			} `json:"model"`
 			Tokens struct {
 				Input  int64 `json:"input"`
 				Output int64 `json:"output"`
 			} `json:"tokens"`
-			Cost float64 `json:"cost"`
+			Cost json.RawMessage `json:"cost"`
 		} `json:"info"`
 	}
-	if json.Unmarshal(props, &p) != nil || p.Info.ID == "" || p.Info.Tokens.Output == 0 || p.Info.Model.ID == "" {
+	if err := json.Unmarshal(props, &p); err != nil {
+		t.Logger.Warn("handleSessionUpdated: failed to parse event", "workspaceID", workspaceID, "error", err)
 		return
 	}
+	if p.Info.ID == "" || p.Info.Tokens.Output == 0 || p.Info.Model.ID == "" {
+		t.Logger.Warn("handleSessionUpdated: dropping session.updated with incomplete billing fields",
+			"workspaceID", workspaceID, "sessionID", p.Info.ID,
+			"hasModel", p.Info.Model.ID != "", "outputTokens", p.Info.Tokens.Output)
+		return
+	}
+
+	providerID := p.Info.Model.ProviderID
+	if providerID == "" {
+		providerID = p.Info.Model.Provider
+	}
+
+	costVal := 0.0
+	if len(p.Info.Cost) > 0 {
+		trimmed := bytes.TrimSpace(p.Info.Cost)
+		// Try as a plain number first (1.15.x wire shape): "cost": 0.042
+		var costFloat float64
+		if json.Unmarshal(trimmed, &costFloat) == nil {
+			costVal = costFloat
+		} else {
+			// Try as an object (potential 1.18.10 wire shape).
+			// In ocCost, "cost" is CostUSD (dollar amount), while
+			// "total" is TotalTokens (int64 count). Extract the
+			// dollar field, not the token count.
+			var costObj struct {
+				Cost float64 `json:"cost"`
+			}
+			if json.Unmarshal(trimmed, &costObj) == nil {
+				costVal = costObj.Cost
+			} else {
+				t.Logger.Warn("handleSessionUpdated: could not parse cost field",
+					"workspaceID", workspaceID, "raw", string(trimmed))
+			}
+		}
+	}
+
 	key := workspaceID + ":" + p.Info.ID
 	t.tokensMu.Lock()
 	prevOutput := t.sessionTokenSeen[key]
@@ -456,7 +595,7 @@ func (t *Tracker) handleSessionUpdated(workspaceID string, props []byte) {
 	}
 	prevCost := t.sessionCostSeen[key]
 	t.sessionTokenSeen[key] = p.Info.Tokens.Output
-	t.sessionCostSeen[key] = p.Info.Cost
+	t.sessionCostSeen[key] = costVal
 	t.tokensMu.Unlock()
 
 	outputDelta := p.Info.Tokens.Output - prevOutput
@@ -464,9 +603,9 @@ func (t *Tracker) handleSessionUpdated(workspaceID string, props []byte) {
 	if prevOutput > 0 {
 		inputTokens = 0
 	}
-	costDelta := p.Info.Cost - prevCost
+	costDelta := costVal - prevCost
 	if costDelta < 0 {
 		costDelta = 0
 	}
-	t.onInference(workspaceID, p.Info.Model.ID, p.Info.Model.ProviderID, inputTokens, outputDelta, costDelta)
+	t.onInference(workspaceID, p.Info.Model.ID, providerID, inputTokens, outputDelta, costDelta)
 }

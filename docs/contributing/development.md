@@ -6,7 +6,7 @@ How to get a local LLMSafeSpaces environment running, run the tests, and iterate
 
 | Tool | Version | Why |
 |------|---------|-----|
-| [Go](https://go.dev/) | 1.25+ | API service, controller, all Go binaries |
+| [Go](https://go.dev/) | 1.26+ | API service, controller, all Go binaries |
 | [Docker](https://www.docker.com/) | any recent | `kind` runs on it; image builds |
 | [kind](https://kind.sigs.k8s.io/) | 0.20+ | Local Kubernetes cluster |
 | [kubectl](https://kubernetes.io/docs/reference/kubectl/) | 1.28+ | Talk to the cluster |
@@ -18,7 +18,7 @@ Optional but recommended: `jq` (for working with API responses in the shell), `m
 Verify:
 
 ```bash
-go version          # go1.25+
+go version          # go1.26+
 docker version
 kind version        # kind v0.20+
 kubectl version --client --short

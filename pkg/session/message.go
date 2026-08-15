@@ -28,7 +28,7 @@ type Message struct {
 	ID        string      `json:"id"`
 	SessionID string      `json:"sessionId,omitempty"`
 	Type      MessageType `json:"type"`
-	CreatedAt time.Time   `json:"createdAt"`
+	CreatedAt *time.Time  `json:"createdAt,omitempty"`
 
 	Parts []Part    `json:"parts,omitempty"`
 	Model *ModelRef `json:"model,omitempty"`
@@ -49,7 +49,7 @@ type Message struct {
 }
 
 func newMessage(id string, t MessageType, createdAt time.Time) Message {
-	return Message{ID: id, Type: t, CreatedAt: createdAt}
+	return Message{ID: id, Type: t, CreatedAt: &createdAt}
 }
 
 func UserMessage(id, text string, createdAt time.Time) Message {
@@ -91,8 +91,11 @@ func CompactionMessage(id, text string, createdAt time.Time) Message {
 	return m
 }
 
-func SystemMessage(id, text string, createdAt time.Time) Message {
-	m := newMessage(id, MessageSystem, createdAt)
+func SystemMessage(id, text string, createdAt *time.Time) Message {
+	m := Message{ID: id, Type: MessageSystem}
+	if createdAt != nil {
+		m.CreatedAt = createdAt
+	}
 	m.Text = text
 	return m
 }

@@ -99,7 +99,7 @@ function seedSessionsCache(qc: QueryClient, workspaceId: string, sessionId: stri
 /** Fire a synthetic session.next.step.ended SSE event via the captured handler. */
 function fireStepEnded(sessionId: string, inputTokens: number) {
   capturedSSEHandler?.({
-    type: "opencode.event",
+    type: "agent.event",
     event_type: "session.next.step.ended",
     data: {
       properties: {

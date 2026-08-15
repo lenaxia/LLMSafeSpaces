@@ -541,6 +541,127 @@ func (m *mockWSInterfaceForMaxActive) Patch(ctx context.Context, name string, _ 
 	return m.workspaces[name], nil
 }
 
+// TestEnforceMaxActive_EvictsByLastActivityAt_NotUpdatedAt verifies that
+// eviction sorts by the CRD LastActivityAt annotation (user activity), not
+// the DB UpdatedAt column (bumped by any row mutation). A workspace that
+// was recently active (fresh annotation) but has an old UpdatedAt must NOT
+// be evicted over one with a fresh UpdatedAt but stale activity.
+func TestEnforceMaxActive_EvictsByLastActivityAt_NotUpdatedAt(t *testing.T) {
+	store := &mockSettingsStore{data: make(map[string]json.RawMessage)}
+	raw, _ := json.Marshal(2)
+	store.data["workspace.maxActiveWorkspacesPerUser"] = raw
+
+	instanceSvc := settings.NewInstanceService(store, nil)
+
+	now := time.Now()
+
+	// ws-active-user: DB UpdatedAt is OLD, but the user was recently active
+	// (fresh LastActivityAt annotation). This workspace must NOT be evicted.
+	// ws-idle-user: DB UpdatedAt is FRESH (some background op bumped the row),
+	// but user hasn't touched it in hours. This one SHOULD be evicted.
+	db := &mockDBForMaxActive{workspaces: []*types.WorkspaceMetadata{
+		{ID: "ws-active-user", UserID: "user-1", UpdatedAt: now.Add(-3 * time.Hour)},
+		{ID: "ws-idle-user", UserID: "user-1", UpdatedAt: now.Add(-5 * time.Minute)},
+	}}
+
+	k8sMock := &mockK8sForMaxActive{
+		workspaces: map[string]*v1.Workspace{
+			"ws-active-user": {
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "ws-active-user",
+					Annotations: map[string]string{
+						v1.AnnotationLastActivityAt: now.Add(-1 * time.Minute).Format(time.RFC3339),
+					},
+				},
+				Status: v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive},
+			},
+			"ws-idle-user": {
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "ws-idle-user",
+					Annotations: map[string]string{
+						v1.AnnotationLastActivityAt: now.Add(-4 * time.Hour).Format(time.RFC3339),
+					},
+				},
+				Status: v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive},
+			},
+		},
+	}
+
+	svc := &Service{
+		logger:           &testLogger{},
+		instanceSettings: instanceSvc,
+		dbService:        db,
+		k8sClient:        k8sMock,
+		config:           &Config{Namespace: "default"},
+	}
+
+	suspended, err := svc.enforceMaxActiveWorkspaces(context.Background(), "user-1", "ws-target")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if suspended != "ws-idle-user" {
+		t.Errorf("expected ws-idle-user (stalest activity) to be suspended, got %q", suspended)
+	}
+}
+
+// TestEnforceMaxActive_MixedFleet_AnnotatedFallback tests the realistic
+// upgrade scenario: one workspace has the LastActivityAt annotation
+// (post-US-23.3), the other doesn't (pre-US-23.3). The pre-US-23.3
+// workspace must fall back to DB UpdatedAt for its activity signal.
+func TestEnforceMaxActive_MixedFleet_AnnotatedFallback(t *testing.T) {
+	store := &mockSettingsStore{data: make(map[string]json.RawMessage)}
+	raw, _ := json.Marshal(2)
+	store.data["workspace.maxActiveWorkspacesPerUser"] = raw
+
+	instanceSvc := settings.NewInstanceService(store, nil)
+
+	now := time.Now()
+	db := &mockDBForMaxActive{workspaces: []*types.WorkspaceMetadata{
+		// ws-old-annotated: has annotation, last active 4h ago
+		{ID: "ws-old-annotated", UserID: "user-1", UpdatedAt: now.Add(-6 * time.Hour)},
+		// ws-no-annotation: no annotation (pre-US-23.3), UpdatedAt 1h ago (recent background op)
+		{ID: "ws-no-annotation", UserID: "user-1", UpdatedAt: now.Add(-1 * time.Hour)},
+	}}
+
+	k8sMock := &mockK8sForMaxActive{
+		workspaces: map[string]*v1.Workspace{
+			"ws-old-annotated": {
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "ws-old-annotated",
+					Annotations: map[string]string{
+						v1.AnnotationLastActivityAt: now.Add(-4 * time.Hour).Format(time.RFC3339),
+					},
+				},
+				Status: v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive},
+			},
+			"ws-no-annotation": {
+				// No annotations — simulates pre-US-23.3 workspace
+				ObjectMeta: metav1.ObjectMeta{Name: "ws-no-annotation"},
+				Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive},
+			},
+		},
+	}
+
+	svc := &Service{
+		logger:           &testLogger{},
+		instanceSettings: instanceSvc,
+		dbService:        db,
+		k8sClient:        k8sMock,
+		config:           &Config{Namespace: "default"},
+	}
+
+	suspended, err := svc.enforceMaxActiveWorkspaces(context.Background(), "user-1", "ws-target")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// ws-old-annotated has activity 4h ago (from annotation)
+	// ws-no-annotation falls back to UpdatedAt = 1h ago
+	// Stalest = ws-old-annotated (4h > 1h)
+	if suspended != "ws-old-annotated" {
+		t.Errorf("expected ws-old-annotated (4h stale activity) to be suspended over ws-no-annotation (1h UpdatedAt fallback), got %q", suspended)
+	}
+}
+
 func TestParseStorageSize(t *testing.T) {
 	tests := []struct {
 		input string

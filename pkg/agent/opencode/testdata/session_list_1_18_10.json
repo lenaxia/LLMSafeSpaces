@@ -1,0 +1,65 @@
+[
+  {
+    "id": "ses_test07YTkR",
+    "slug": "test-slug",
+    "projectID": "prj_test",
+    "directory": "/workspace",
+    "path": "",
+    "cost": 0,
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "reasoning": 0,
+      "cache": {
+        "read": 0,
+        "write": 0
+      }
+    },
+    "title": "Test",
+    "version": "1.18.10",
+    "status": {
+      "type": "idle"
+    },
+    "time": {
+      "created": 1786469008371,
+      "updated": 1786469008371
+    }
+  },
+  {
+    "id": "ses_test0ANQGL",
+    "slug": "test-slug",
+    "projectID": "prj_test",
+    "directory": "/workspace",
+    "path": "workspace",
+    "summary": {
+      "additions": 0,
+      "deletions": 0,
+      "files": 0
+    },
+    "cost": 0,
+    "tokens": {
+      "input": 3188981,
+      "output": 144442,
+      "reasoning": 58479,
+      "cache": {
+        "read": 115850816,
+        "write": 0
+      }
+    },
+    "title": "Test",
+    "agent": "build",
+    "model": {
+      "id": "glm-5.2",
+      "providerID": "thekaocloud",
+      "variant": "default"
+    },
+    "version": "1.18.10",
+    "status": {
+      "type": "busy"
+    },
+    "time": {
+      "created": 1786341089339,
+      "updated": 1786467698103
+    }
+  }
+]

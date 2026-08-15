@@ -26,8 +26,10 @@
 package opencode
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/lenaxia/llmsafespaces/pkg/session"
@@ -38,10 +40,13 @@ import (
 // POST /session/:id/message). Info carries role + IDs; Parts is the
 // ordered content list.
 type ocMessage struct {
-	Info  ocInfo         `json:"info"`
-	Parts []ocPart       `json:"parts"`
-	Model *ocModelRef    `json:"model,omitempty"`
-	Cost  *ocCost        `json:"cost,omitempty"`
+	Info  ocInfo      `json:"info"`
+	Parts []ocPart    `json:"parts"`
+	Model *ocModelRef `json:"model,omitempty"`
+	Cost  *ocCost     `json:"cost,omitempty"`
+	// ocTime is retained for session-level Time fields that use the
+	// {startedAt, completedAt} shape. Message timestamps are parsed
+	// from ocInfo.Time.Created (epoch millis).
 	Time  *ocTime        `json:"time,omitempty"`
 	Error *session.Error `json:"error,omitempty"`
 }
@@ -67,11 +72,44 @@ type ocInfo struct {
 	// model_switch:
 	FromModel *ocModelRef `json:"fromModel,omitempty"`
 	ToModel   *ocModelRef `json:"toModel,omitempty"`
+
+	// opencode sends the timestamp at info.time.created as epoch
+	// milliseconds. This is the authoritative creation timestamp used
+	// by the frontend for message ordering.
+	Time *ocInfoTime `json:"time,omitempty"`
+}
+
+// ocInfoTime is the time block nested inside info. opencode sends
+// epoch milliseconds under "created" and optionally "completed".
+type ocInfoTime struct {
+	Created   int64  `json:"created"`
+	Completed *int64 `json:"completed,omitempty"`
 }
 
 type ocModelRef struct {
 	ID       string `json:"id"`
 	Provider string `json:"provider,omitempty"`
+}
+
+// UnmarshalJSON handles both the legacy "provider" key (1.15.x) and the
+// "providerID" key (1.18.10+). Without this, Go's decoder silently drops
+// the provider for 1.18.10 sessions (#743 Finding 1).
+func (m *ocModelRef) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		ID         string `json:"id"`
+		Provider   string `json:"provider,omitempty"`
+		ProviderID string `json:"providerID,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	m.ID = raw.ID
+	if raw.Provider != "" {
+		m.Provider = raw.Provider
+	} else {
+		m.Provider = raw.ProviderID
+	}
+	return nil
 }
 
 type ocCost struct {
@@ -89,9 +127,43 @@ type ocTime struct {
 	CompletedAt *time.Time `json:"completedAt,omitempty"`
 }
 
+func (t *ocTime) UnmarshalJSON(data []byte) error {
+	var legacy struct {
+		StartedAt   time.Time  `json:"startedAt"`
+		CompletedAt *time.Time `json:"completedAt,omitempty"`
+	}
+	if err := json.Unmarshal(data, &legacy); err == nil && !legacy.StartedAt.IsZero() {
+		t.StartedAt = legacy.StartedAt
+		t.CompletedAt = legacy.CompletedAt
+		return nil
+	}
+	var modern struct {
+		Created int64  `json:"created"`
+		Updated *int64 `json:"updated,omitempty"`
+	}
+	if err := json.Unmarshal(data, &modern); err != nil {
+		return fmt.Errorf("ocTime: expected {startedAt,completedAt} or {created,updated}: %w", err)
+	}
+	t.StartedAt = time.UnixMilli(modern.Created)
+	if modern.Updated != nil {
+		u := time.UnixMilli(*modern.Updated)
+		t.CompletedAt = &u
+	}
+	return nil
+}
+
 // ocPart is one entry in opencode's parts array. Type discriminates.
 // Unknown types (step-start, step-finish, patch, custom extensions)
 // are passed through as-is and the translator decides what to keep.
+//
+// opencode changed the tool-part wire shape between 1.15.x and 1.18.10:
+//   - 1.15.x (legacy nested): "tool": {"name": ..., "callID": ..., ...}
+//   - 1.18.10 (flat string):  "tool": "bash" (bare name string) with
+//     callID/state/input/output hoisted to the part level.
+//
+// UnmarshalJSON normalizes both shapes into the canonical ocTool so
+// translateTool and the downstream session.ToolPart contract stay
+// unchanged (issue #730).
 type ocPart struct {
 	Type string `json:"type"`
 
@@ -104,7 +176,7 @@ type ocPart struct {
 	Text      string `json:"text,omitempty"`
 	Reasoning string `json:"reasoning,omitempty"`
 
-	// tool:
+	// tool (populated by UnmarshalJSON from either wire shape):
 	Tool *ocTool `json:"tool,omitempty"`
 
 	// patch (file paths only — diff text comes from filediff):
@@ -112,6 +184,105 @@ type ocPart struct {
 
 	// Custom pass-through:
 	Custom *session.CustomPart `json:"custom,omitempty"`
+}
+
+// UnmarshalJSON normalizes the two opencode tool-part wire shapes into
+// the canonical ocPart.Tool. Non-tool parts decode identically to the
+// default. For tool parts:
+//
+//   - Flat string (1.18.10+): {"type":"tool","tool":"bash","callID":"...",
+//     "state":{"status":"...","input":{...},"output":"...","time":{...}}}
+//     → Tool.Name = "bash", Tool.CallID = part-level callID,
+//     Tool.Input/Output from state, Tool.State.{StartedAt,CompletedAt}
+//     from state.time.{start,end} (epoch-millis).
+//
+//   - Legacy nested (≤1.15.x): {"type":"tool","tool":{"name":"bash",
+//     "callID":"...","input":{...},"state":{"status":"...",
+//     "startedAt":"...","completedAt":"..."}}}
+//     → decoded directly into ocTool.
+func (p *ocPart) UnmarshalJSON(data []byte) error {
+	// Intermediate: same fields as ocPart but Tool is raw so we can
+	// inspect its JSON kind before committing to a decode path. The
+	// extra fields (CallID, State) are the flat-shape hoisted fields.
+	var intermediate struct {
+		Type      string              `json:"type"`
+		ID        string              `json:"id,omitempty"`
+		SessionID string              `json:"sessionID,omitempty"`
+		MessageID string              `json:"messageID,omitempty"`
+		Text      string              `json:"text,omitempty"`
+		Reasoning string              `json:"reasoning,omitempty"`
+		Tool      json.RawMessage     `json:"tool,omitempty"`
+		Files     []string            `json:"files,omitempty"`
+		Custom    *session.CustomPart `json:"custom,omitempty"`
+		CallID    string              `json:"callID,omitempty"`
+		State     json.RawMessage     `json:"state,omitempty"`
+	}
+	if err := json.Unmarshal(data, &intermediate); err != nil {
+		return err
+	}
+
+	p.Type = intermediate.Type
+	p.ID = intermediate.ID
+	p.SessionID = intermediate.SessionID
+	p.MessageID = intermediate.MessageID
+	p.Text = intermediate.Text
+	p.Reasoning = intermediate.Reasoning
+	p.Files = intermediate.Files
+	p.Custom = intermediate.Custom
+
+	if len(intermediate.Tool) == 0 {
+		return nil
+	}
+
+	trimmed := bytes.TrimSpace(intermediate.Tool)
+	if bytes.HasPrefix(trimmed, []byte("\"")) {
+		// Flat string shape (opencode 1.18.10+): "tool":"<name>".
+		var toolName string
+		if err := json.Unmarshal(intermediate.Tool, &toolName); err != nil {
+			return fmt.Errorf("decode flat tool name: %w", err)
+		}
+		tool := &ocTool{
+			Name:   toolName,
+			CallID: intermediate.CallID,
+		}
+		if len(intermediate.State) > 0 {
+			var fs ocFlatToolState
+			if err := json.Unmarshal(intermediate.State, &fs); err != nil {
+				return fmt.Errorf("decode flat tool state: %w", err)
+			}
+			tool.Input = fs.Input
+			tool.Output = fs.Output
+			tool.State = &ocToolState{
+				Status: fs.Status,
+				Error:  fs.Error,
+			}
+			if fs.Time != nil {
+				if fs.Time.Start > 0 {
+					t := time.UnixMilli(fs.Time.Start)
+					tool.State.StartedAt = &t
+				}
+				if fs.Time.End > 0 {
+					t := time.UnixMilli(fs.Time.End)
+					tool.State.CompletedAt = &t
+				}
+			}
+		}
+		p.Tool = tool
+		return nil
+	}
+
+	// "tool": null → leave nil (don't produce &ocTool{}).
+	if bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+
+	// Legacy nested-object shape (opencode ≤1.15.x): "tool":{...}.
+	var nested ocTool
+	if err := json.Unmarshal(intermediate.Tool, &nested); err != nil {
+		return fmt.Errorf("decode nested tool object: %w", err)
+	}
+	p.Tool = &nested
+	return nil
 }
 
 type ocTool struct {
@@ -127,6 +298,30 @@ type ocToolState struct {
 	Error       string     `json:"error,omitempty"`
 	StartedAt   *time.Time `json:"startedAt,omitempty"`
 	CompletedAt *time.Time `json:"completedAt,omitempty"`
+}
+
+// ocFlatToolState is the state object on a flat-shape (1.18.10+) tool
+// part. Compared to the legacy ocToolState, input/output live INSIDE
+// state (not on the tool object), and times are epoch-millis numbers
+// under state.time.{start,end} (not ISO-8601 strings).
+type ocFlatToolState struct {
+	Status string          `json:"status,omitempty"`
+	Error  string          `json:"error,omitempty"`
+	Input  json.RawMessage `json:"input,omitempty"`
+	Output json.RawMessage `json:"output,omitempty"`
+	// Metadata and Title are captured for completeness (they appear on
+	// the 1.18.10 wire shape) but are NOT propagated to the platform's
+	// session.ToolPart — the contract has no field for them.
+	Metadata json.RawMessage `json:"metadata,omitempty"`
+	Title    string          `json:"title,omitempty"`
+	Time     *ocFlatToolTime `json:"time,omitempty"`
+}
+
+// ocFlatToolTime carries the epoch-millis start/end of a flat-shape
+// tool call (opencode 1.18.10+).
+type ocFlatToolTime struct {
+	Start int64 `json:"start,omitempty"`
+	End   int64 `json:"end,omitempty"`
 }
 
 // translateMessage converts one opencode wire message to a platform
@@ -152,7 +347,6 @@ func translateMessage(m ocMessage) (session.Message, []string) {
 	sm := session.Message{
 		ID:        m.Info.ID,
 		SessionID: m.Info.SessionID,
-		CreatedAt: time.Time{},
 	}
 
 	switch m.Info.Role {
@@ -197,12 +391,9 @@ func translateMessage(m ocMessage) (session.Message, []string) {
 	if m.Cost != nil {
 		sm.Cost = translateCost(*m.Cost)
 	}
-	if m.Time != nil {
-		// Use the wire-provided StartedAt if non-zero; otherwise leave
-		// CreatedAt zero (caller may fill from Info).
-		if !m.Time.StartedAt.IsZero() {
-			sm.CreatedAt = m.Time.StartedAt
-		}
+	if m.Info.Time != nil && m.Info.Time.Created > 0 {
+		t := time.UnixMilli(m.Info.Time.Created).UTC()
+		sm.CreatedAt = &t
 	}
 	if m.Error != nil {
 		sm.Error = m.Error
@@ -224,16 +415,26 @@ func translateMessage(m ocMessage) (session.Message, []string) {
 				Text: p.Text,
 			})
 		case "reasoning":
+			r := p.Reasoning
+			if r == "" {
+				r = p.Text
+			}
 			parts = append(parts, session.Part{
 				Type:      session.PartReasoning,
 				ID:        p.ID,
-				Reasoning: p.Reasoning,
+				Reasoning: r,
 			})
 		case "tool":
+			tp := translateTool(p.Tool)
+			if tp == nil {
+				// "tool": null or a tool part with no tool object —
+				// skip it rather than emitting an empty PartTool.
+				continue
+			}
 			parts = append(parts, session.Part{
 				Type: session.PartTool,
 				ID:   p.ID,
-				Tool: translateTool(p.Tool),
+				Tool: tp,
 			})
 		case "custom":
 			if p.Custom != nil && p.Custom.Kind != "" {
@@ -351,18 +552,35 @@ func translateCost(c ocCost) *session.Cost {
 
 // ocSession is the wire shape opencode returns for GET /session and
 // GET /session/:id. Fields not consumed by the platform are ignored.
+//
+// Version drift (1.15.12 → 1.18.10):
+//   - Summary: 1.15.12 string; 1.18.10 {additions,deletions,files} object.
+//   - Cost: 1.15.12 structured object; 1.18.10 bare number.
+//   - Tokens: 1.18.10 adds top-level structured tokens object.
+//   - Time: 1.15.12 startedAt/completedAt; 1.18.10 created/updated (handled in ocTime.UnmarshalJSON).
 type ocSession struct {
-	ID        string      `json:"id"`
-	Title     string      `json:"title,omitempty"`
-	Model     *ocModelRef `json:"model,omitempty"`
-	Time      *ocTime     `json:"time,omitempty"`
-	Cost      *ocCost     `json:"cost,omitempty"`
-	Status    ocStatus    `json:"status"`
-	IsSubtask bool        `json:"isSubtask,omitempty"`
-	Summary   string      `json:"summary,omitempty"`
-	ParentID  string      `json:"parentID,omitempty"`
-	// Archived is absent in opencode 1.18.10; left for forward-compat.
-	Archived bool `json:"archived,omitempty"`
+	ID        string          `json:"id"`
+	Title     string          `json:"title,omitempty"`
+	Agent     string          `json:"agent,omitempty"`
+	Model     *ocModelRef     `json:"model,omitempty"`
+	Time      *ocTime         `json:"time,omitempty"`
+	Cost      json.RawMessage `json:"cost,omitempty"`
+	Tokens    *ocTokens       `json:"tokens,omitempty"`
+	Status    json.RawMessage `json:"status,omitempty"`
+	IsSubtask bool            `json:"isSubtask,omitempty"`
+	Summary   json.RawMessage `json:"summary,omitempty"`
+	ParentID  string          `json:"parentID,omitempty"`
+	Archived  bool            `json:"archived,omitempty"`
+}
+
+type ocTokens struct {
+	Input     int64 `json:"input"`
+	Output    int64 `json:"output"`
+	Reasoning int64 `json:"reasoning"`
+	Cache     struct {
+		Read  int64 `json:"read"`
+		Write int64 `json:"write"`
+	} `json:"cache"`
 }
 
 type ocStatus struct {
@@ -372,13 +590,24 @@ type ocStatus struct {
 // translateSession converts one opencode session record to the
 // platform session.Session shape.
 func translateSession(s ocSession, workspaceID string) session.Session {
+	summaryStr := ""
+	if len(s.Summary) > 0 {
+		var strVal string
+		if json.Unmarshal(s.Summary, &strVal) == nil {
+			summaryStr = strVal
+		} else {
+			summaryStr = string(s.Summary)
+		}
+	}
+
 	out := session.Session{
 		ID:          s.ID,
 		WorkspaceID: workspaceID,
 		ParentID:    s.ParentID,
 		Title:       s.Title,
-		Status:      translateStatus(s.Status.Type),
-		Summary:     s.Summary,
+		AgentID:     s.Agent,
+		Status:      translateSessionStatus(s.Status),
+		Summary:     summaryStr,
 		Archived:    s.Archived,
 	}
 	if s.Model != nil {
@@ -390,10 +619,47 @@ func translateSession(s ocSession, workspaceID string) session.Session {
 			CompletedAt: s.Time.CompletedAt,
 		}
 	}
-	if s.Cost != nil {
-		out.Cost = translateCost(*s.Cost)
-	}
+	out.Cost = translateSessionCost(s.Cost, s.Tokens)
 	return out
+}
+
+func translateSessionCost(rawCost json.RawMessage, tokens *ocTokens) *session.Cost {
+	var c session.Cost
+	haveData := false
+
+	if tokens != nil {
+		c.InputTokens = tokens.Input
+		c.OutputTokens = tokens.Output
+		c.ReasoningTokens = tokens.Reasoning
+		c.CacheReadTokens = tokens.Cache.Read
+		c.CacheWriteTokens = tokens.Cache.Write
+		c.TotalTokens = tokens.Input + tokens.Output + tokens.Reasoning +
+			tokens.Cache.Read + tokens.Cache.Write
+		haveData = true
+	}
+
+	if len(rawCost) > 0 {
+		var legacy ocCost
+		if json.Unmarshal(rawCost, &legacy) == nil && legacy != (ocCost{}) {
+			if legacy.InputTokens != 0 && c.InputTokens == 0 {
+				c.InputTokens = legacy.InputTokens
+				haveData = true
+			}
+			if legacy.TotalTokens != 0 && c.TotalTokens == 0 {
+				c.TotalTokens = legacy.TotalTokens
+				haveData = true
+			}
+			c.CostUSD = legacy.CostUSD
+			if legacy.CostUSD != 0 {
+				haveData = true
+			}
+		}
+	}
+
+	if !haveData {
+		return nil
+	}
+	return &c
 }
 
 // translateStatus maps opencode session-status types to the platform
@@ -418,6 +684,24 @@ func translateStatus(s string) session.Status {
 	}
 }
 
+// translateSessionStatus extracts the status string from a raw JSON
+// status field, handling three shapes: object ({"type":"idle"}, 1.15.x),
+// bare string ("idle", possible future), and absent/empty (#743 F3).
+func translateSessionStatus(raw json.RawMessage) session.Status {
+	if len(raw) == 0 {
+		return session.StatusUnknown
+	}
+	var obj ocStatus
+	if json.Unmarshal(raw, &obj) == nil && obj.Type != "" {
+		return translateStatus(obj.Type)
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return translateStatus(s)
+	}
+	return session.StatusUnknown
+}
+
 // ParseHistoryWire is the testable boundary: bytes in, contract out.
 // Used by Adapter.GetHistory after the HTTP round-trip. Returns the
 // translated messages AND a parallel slice of changed-file path lists
@@ -427,19 +711,70 @@ func translateStatus(s string) session.Status {
 //
 // Exported for the package's own test consumers (translate_test.go,
 // adapter_test.go).
-func ParseHistoryWire(body []byte, workspaceID string) (msgs []session.Message, changedFilesPerMsg [][]string, err error) {
-	var raw []ocMessage
-	if err = json.Unmarshal(body, &raw); err != nil {
-		return nil, nil, fmt.Errorf("opencode history: parse message array: %w", err)
+//
+// Resilience (issues #730, #737): delegates to ParseHistoryStream which
+// uses a streaming json.Decoder — no body-size cap, no buffering of the
+// full array. Each message is decoded independently; a message that
+// fails to decode (e.g. a future opencode wire-shape change in one part)
+// is downgraded to a session.MessageSystem notice rather than failing
+// the entire history. If the body is truncated mid-stream, the messages
+// decoded so far are returned with no error (graceful partial result).
+//
+// The returned `downgraded` count is the number of messages that were
+// degraded to system notices. Callers (Adapter.GetHistory) log it so
+// operators have a signal when wire-shape drift is happening (Rule 3:
+// no swallowed errors).
+func ParseHistoryWire(body []byte, workspaceID string) (msgs []session.Message, changedFilesPerMsg [][]string, downgraded int, err error) {
+	return ParseHistoryStream(bytes.NewReader(body), workspaceID)
+}
+
+// ParseHistoryStream decodes + translates an opencode history array from
+// an io.Reader using a streaming json.Decoder. It does NOT buffer the
+// whole body — peak memory is O(largest single message), not O(total
+// history size). This removes the silent-truncation failure mode that
+// affected sessions larger than the previous fixed readBody cap (issue #737).
+//
+// Resilience is identical to ParseHistoryWire (issue #730): a message
+// that fails to decode is downgraded to a session.MessageSystem notice
+// and counted in `downgraded`; the rest translate normally.
+func ParseHistoryStream(r io.Reader, workspaceID string) (msgs []session.Message, changedFilesPerMsg [][]string, downgraded int, err error) {
+	dec := json.NewDecoder(r)
+
+	// Read opening bracket.
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("opencode history: read opening token: %w", err)
 	}
-	msgs = make([]session.Message, 0, len(raw))
-	changedFilesPerMsg = make([][]string, 0, len(raw))
-	for _, m := range raw {
+	delim, ok := tok.(json.Delim)
+	if !ok || delim != '[' {
+		return nil, nil, 0, fmt.Errorf("opencode history: expected '[' got %v", tok)
+	}
+
+	// Stream-decode each message independently.
+	for dec.More() {
+		var m ocMessage
+		if dErr := dec.Decode(&m); dErr != nil {
+			downgraded++
+			msgs = append(msgs, session.SystemMessage(
+				fmt.Sprintf("decode-failed-msg-%d", len(msgs)),
+				"This message could not be decoded (the agent history shape may have changed). "+
+					"Other messages in this conversation are unaffected.",
+				nil,
+			))
+			changedFilesPerMsg = append(changedFilesPerMsg, nil)
+			continue
+		}
 		sm, files := translateMessage(m)
 		msgs = append(msgs, sm)
 		changedFilesPerMsg = append(changedFilesPerMsg, files)
 	}
-	return msgs, changedFilesPerMsg, nil
+
+	// Read closing bracket. If the body was truncated mid-stream,
+	// dec.Token() returns an error (io.EOF or unexpected EOF). We
+	// return what was decoded so far regardless — the frontend gets
+	// partial history instead of a 502.
+	_, _ = dec.Token()
+	return msgs, changedFilesPerMsg, downgraded, nil
 }
 
 // ParseSessionListWire is the testable boundary for GET /session.

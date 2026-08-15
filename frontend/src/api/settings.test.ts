@@ -20,7 +20,7 @@ describe("settingsApi", () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({ settings: { theme: "dark" }, schemaVersion: 1 }),
+        json: () => Promise.resolve({ settings: { theme: "dark" }, schemaVersion: 1 }), text: () => Promise.resolve(JSON.stringify({ settings: { theme: "dark" }, schemaVersion: 1 })),
       });
 
       const result = await settingsApi.getUserSettings();
@@ -37,7 +37,7 @@ describe("settingsApi", () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({ settings: [{ key: "theme", type: "enum" }], schemaVersion: 1 }),
+        json: () => Promise.resolve({ settings: [{ key: "theme", type: "enum" }], schemaVersion: 1 }), text: () => Promise.resolve(JSON.stringify({ settings: [{ key: "theme", type: "enum" }], schemaVersion: 1 })),
       });
 
       const result = await settingsApi.getUserSchema();
@@ -51,7 +51,7 @@ describe("settingsApi", () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({ key: "theme", value: "dark" }),
+        json: () => Promise.resolve({ key: "theme", value: "dark" }), text: () => Promise.resolve(JSON.stringify({ key: "theme", value: "dark" })),
       });
 
       await settingsApi.setUserSetting("theme", "dark");
@@ -70,7 +70,7 @@ describe("settingsApi", () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({ settings: { "auth.registrationEnabled": true }, schemaVersion: 1 }),
+        json: () => Promise.resolve({ settings: { "auth.registrationEnabled": true }, schemaVersion: 1 }), text: () => Promise.resolve(JSON.stringify({ settings: { "auth.registrationEnabled": true }, schemaVersion: 1 })),
       });
 
       const result = await settingsApi.getAdminSettings();
@@ -82,7 +82,7 @@ describe("settingsApi", () => {
         ok: false,
         status: 404,
         statusText: "Not Found",
-        json: () => Promise.resolve({ error: "Not Found" }),
+        json: () => Promise.resolve({ error: "Not Found" }), text: () => Promise.resolve(JSON.stringify({ error: "Not Found" })),
       });
 
       await expect(settingsApi.getAdminSettings()).rejects.toThrow();
@@ -94,7 +94,7 @@ describe("settingsApi", () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         status: 200,
-        json: () => Promise.resolve({ key: "auth.lockoutAttempts", value: 10 }),
+        json: () => Promise.resolve({ key: "auth.lockoutAttempts", value: 10 }), text: () => Promise.resolve(JSON.stringify({ key: "auth.lockoutAttempts", value: 10 })),
       });
 
       await settingsApi.setAdminSetting("auth.lockoutAttempts", 10);
@@ -112,7 +112,7 @@ describe("settingsApi", () => {
         ok: false,
         status: 400,
         statusText: "Bad Request",
-        json: () => Promise.resolve({ error: "value 999 above maximum 100" }),
+        json: () => Promise.resolve({ error: "value 999 above maximum 100" }), text: () => Promise.resolve(JSON.stringify({ error: "value 999 above maximum 100" })),
       });
 
       await expect(settingsApi.setAdminSetting("auth.lockoutAttempts", 999)).rejects.toThrow();

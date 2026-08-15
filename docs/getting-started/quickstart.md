@@ -6,7 +6,7 @@ Get LLMSafeSpaces running on a local [`kind`](https://kind.sigs.k8s.io/) cluster
 
 | Tool | Version | Why |
 |---|---|---|
-| `go` | 1.25+ | Build the API and controller |
+| `go` | 1.26+ | Build the API and controller |
 | `docker` | any recent | kind runs on it |
 | `kind` | 0.20+ | Local Kubernetes cluster |
 | `kubectl` | 1.28+ | Talk to the cluster |
@@ -16,7 +16,7 @@ Get LLMSafeSpaces running on a local [`kind`](https://kind.sigs.k8s.io/) cluster
 Verify:
 
 ```bash
-go version          # go1.25+
+go version          # go1.26+
 docker version     # any
 kind version       # kind v0.20+
 kubectl version --client --short

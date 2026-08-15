@@ -178,8 +178,8 @@ test.describe("Epic 37: Session Activity & Unread State UX", () => {
     await setupBase(page, {
       sessALastSeenAt: lastSeenAt,
       sessAMessages: [
-        { id: "msg-old", role: "user", parts: [{ type: "text", text: "Old question" }], info: { role: "user", id: "msg-old", time: { created: new Date("2026-06-10T09:59:00Z").getTime() } } },
-        { id: "msg-new", role: "user", parts: [{ type: "text", text: "New question" }], info: { role: "user", id: "msg-new", time: { created: new Date("2026-06-10T10:01:00Z").getTime() } } },
+        { id: "msg-old", type: "user", createdAt: "2026-06-10T09:59:00Z", parts: [{ type: "text", text: "Old question" }] },
+        { id: "msg-new", type: "user", createdAt: "2026-06-10T10:01:00Z", parts: [{ type: "text", text: "New question" }] },
       ],
     });
 
@@ -204,7 +204,7 @@ test.describe("Epic 37: Session Activity & Unread State UX", () => {
     await setupBase(page, {
       sessALastSeenAt: lastSeenAt,
       sessAMessages: [
-        { id: "msg-1", role: "user", parts: [{ type: "text", text: "Question" }], createdAt: "2026-06-10T09:00:00Z" },
+        { id: "msg-1", type: "user", createdAt: "2026-06-10T09:00:00Z", parts: [{ type: "text", text: "Question" }] },
       ],
     });
 

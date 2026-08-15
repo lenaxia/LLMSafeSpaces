@@ -49,7 +49,7 @@ func TestEventRoundTripAllTypes(t *testing.T) {
 		},
 		{
 			name:  "message.start",
-			event: Event{Type: EventMessageStart, Timestamp: now, SessionID: "s1", MessageID: "m1", Message: &Message{ID: "m1", Type: MessageAssistant, CreatedAt: now}},
+			event: Event{Type: EventMessageStart, Timestamp: now, SessionID: "s1", MessageID: "m1", Message: &Message{ID: "m1", Type: MessageAssistant, CreatedAt: &now}},
 		},
 		{
 			name:  "message.end",

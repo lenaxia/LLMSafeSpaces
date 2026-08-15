@@ -56,6 +56,35 @@ answer is yes. Discard trivial, redundant, or low-value cases.
 Do the tests actually exercise the changed code (not just pass trivially)? If a test would
 pass against the pre-PR code unchanged, it is not exercising the change — flag it.
 
+ISSUE CLOSURE VERIFICATION — this is a hard gate, not guidance
+If the PR description or commit message cites one or more issues as closed/resolved by this
+PR, you MUST verify that the PR actually addresses EVERY finding and acceptance criterion in
+each cited issue. A PR that partially addresses an issue must NOT be approved as closing it.
+
+For each cited issue:
+1. Read the full issue body AND all comments. Issues often contain follow-up findings in
+   comments that expand the scope beyond the original body. The PR must address these too.
+2. Enumerate every distinct finding or acceptance criterion in the issue. Number them.
+3. For each finding, trace the PR diff to the specific code change that addresses it. State
+   the file and the nature of the fix.
+4. If ANY finding or criterion is not addressed by the diff, REQUEST CHANGES and list the
+   unaddressed items explicitly. Do not assume a finding is resolved just because the issue
+   was closed — verify against the diff.
+5. Pay special attention to issues with multiple numbered findings (e.g., "Finding 1",
+   "Finding 2", "Finding 3"). These are often independently actionable. A PR that fixes
+   Finding 1 but not Findings 2 and 3 does not close the issue.
+
+After your own review, DELEGATE to a skeptical second-pass reviewer. Spawn a sub-agent with
+this prompt: "You are a skeptical reviewer. The PR at <link> claims to close issue(s) <list>.
+Read the issue(s) in full, including all comments. Read the PR diff. For each finding or
+acceptance criterion in the issue(s), state whether the diff addresses it, citing specific
+file:line. List any finding that is NOT addressed. Be adversarial: assume the fix is
+incomplete until proven otherwise. Do not trust the commit message or the PR description —
+verify against the actual code changes." Incorporate the skeptical reviewer's findings into
+your review. If the skeptical reviewer identifies unaddressed findings, REQUEST CHANGES. If
+sub-agent spawning is unavailable, perform the adversarial pass yourself by re-reading each
+issue assuming the fix is incomplete.
+
 ROBUSTNESS
 - Identify specific points in the design or implementation that are weak, fragile, or prone
   to failure — e.g. missing bounds checks, unhandled edge cases, race conditions, incorrect
@@ -113,6 +142,16 @@ missing/thin:]
 [List only meaningful, impactful missing tests that would catch real bugs or regressions —
 or "None identified"]
 
+### Issue Closure Verification
+[If the PR cites no issues as closed/resolved, state "N/A — no issues cited". Otherwise:]
+For each cited issue:
+- Issue #N: [FULLY ADDRESSED / PARTIALLY ADDRESSED / NOT ADDRESSED]
+  - Finding/criterion 1: [addressed — file:line / NOT addressed]
+  - Finding/criterion 2: [addressed — file:line / NOT addressed]
+  - [ ... ]
+  - Skeptical reviewer verdict: [AGREES / DISAGREES — <details>]
+If any issue is PARTIALLY ADDRESSED or NOT ADDRESSED, this is a hard REQUEST CHANGES.
+
 ### Robustness
 [List only validated weaknesses confirmed to be real and reachable — or ✓ No concerns]
 
@@ -129,5 +168,5 @@ or "None identified"]
 [APPROVE / REQUEST CHANGES / COMMENT] — [one sentence reason]
 NOTE: REQUEST CHANGES is mandatory if any required test level (unit / integration / e2e
 happy / e2e unhappy) is missing or thin for the changed behaviour, OR if this is a bug-fix
-PR without a reproducing regression test. Do not APPROVE in those cases regardless of
-correctness.
+PR without a reproducing regression test, OR if any cited issue is partially or not
+addressed. Do not APPROVE in those cases regardless of correctness.

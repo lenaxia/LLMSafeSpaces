@@ -6,10 +6,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"time"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
+	"go.uber.org/zap"
 )
 
 // OpenCodeClient is the HTTP client agentd uses to talk to the local
@@ -189,6 +191,7 @@ func (c *OpenCodeClient) fetchSessionPromptTokens(ctx context.Context, sessionID
 	defer cancel()
 	resp, err := c.doRequest(fetchCtx, "/session/"+sessionID+"/message?limit=20")
 	if err != nil {
+		log.Debug("fetchSessionPromptTokens: request failed", zap.Error(err), zap.String("sessionID", sessionID))
 		return 0
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -205,7 +208,8 @@ func (c *OpenCodeClient) fetchSessionPromptTokens(ctx context.Context, sessionID
 			} `json:"tokens"`
 		} `json:"info"`
 	}
-	if json.NewDecoder(resp.Body).Decode(&messages) != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<20)).Decode(&messages); err != nil {
+		log.Debug("fetchSessionPromptTokens: decode failed", zap.Error(err), zap.String("sessionID", sessionID))
 		return 0
 	}
 
@@ -214,5 +218,6 @@ func (c *OpenCodeClient) fetchSessionPromptTokens(ctx context.Context, sessionID
 			return messages[i].Info.Tokens.Input + messages[i].Info.Tokens.Cache.Read + messages[i].Info.Tokens.Cache.Write
 		}
 	}
+	log.Debug("fetchSessionPromptTokens: no assistant message with tokens found", zap.String("sessionID", sessionID))
 	return 0
 }

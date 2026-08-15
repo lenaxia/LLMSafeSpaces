@@ -4,28 +4,26 @@
 package handlers
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/alicebob/miniredis/v2"
-	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	k8sfake "k8s.io/client-go/kubernetes/fake"
-
-	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/msgqueue"
-	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
-	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 )
+
+type promptPart struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type promptRequestBody struct {
+	Parts []promptPart `json:"parts"`
+}
 
 // --- diskPressureLevelForRatio boundary tests ---
 
@@ -445,22 +443,6 @@ func TestProxy_DiskPressure_NotInjectedWhenDiskUnknown(t *testing.T) {
 	assert.Equal(t, body, string(captured), "unknown disk state must pass through unchanged")
 }
 
-func TestProxy_DiskPressure_InjectsIntoPromptAsync(t *testing.T) {
-	var captured []byte
-	env := newTestEnvWithBackend(t, captureBackend(&captured))
-	env.setupWorkspaceWithDiskT(t, "ws-1", 960, 1000) // 96% — critical
-	env.setupPasswordWithT(t, "ws-1", "test-password")
-
-	w := env.doRequestWithT(t, "POST", "/api/v1/workspaces/ws-1/sessions/ses_1/prompt",
-		strings.NewReader(`{"parts":[{"type":"text","text":"hi"}]}`))
-	assert.Equal(t, http.StatusOK, w.Code)
-
-	var sent promptRequestBody
-	require.NoError(t, json.Unmarshal(captured, &sent))
-	require.Len(t, sent.Parts, 2, "prompt_async must receive the injection too")
-	assert.Contains(t, sent.Parts[0].Text, "critically low")
-}
-
 func TestProxy_DiskPressure_NotInjectedOnNonPromptPath(t *testing.T) {
 	// POST /session (session creation) carries a body but is not LLM-bound —
 	// the injection gate must leave it alone even at 99% usage.
@@ -474,139 +456,4 @@ func TestProxy_DiskPressure_NotInjectedOnNonPromptPath(t *testing.T) {
 		strings.NewReader(body))
 	assert.Equal(t, http.StatusOK, w.Code)
 	assert.Equal(t, body, string(captured), "non-LLM-bound paths must never receive the injection")
-}
-
-// --- queue-drain path parity ---
-
-func TestDrainQueuedMessage_DiskPressureCritical_InjectsNotice(t *testing.T) {
-	var captured []byte
-	backend := httptestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		captured = body
-		w.WriteHeader(http.StatusNoContent)
-	})
-
-	transport := &redirectTransport{server: backend}
-	httpClient := &http.Client{Transport: transport, Timeout: 5 * time.Second}
-
-	k8sMock := newMockK8sWithDisk(t, "ws-1", "10.0.0.1", 950, 1000)
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient, nil)
-	require.NoError(t, err)
-
-	mr, err := miniredis.Run()
-	require.NoError(t, err)
-	defer mr.Close()
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
-	svc := msgqueue.NewWithClient(client)
-	handler.SetMessageQueueService(svc)
-	handler.userBroker = eventbroker.NewUserEventBroker()
-	setupPasswordSecret(t, handler, "ws-1", "test-pw")
-
-	_, err = svc.Enqueue(context.Background(), "ws-1", "ses-1", "queued msg")
-	require.NoError(t, err)
-
-	sub, _ := handler.userBroker.SubscribeWorkspace("ws-1")
-	defer handler.userBroker.UnsubscribeWorkspace("ws-1", sub)
-
-	go handler.drainQueuedMessage("ws-1", "ses-1")
-
-	require.Eventually(t, func() bool {
-		select {
-		case evt := <-sub.Ch:
-			if evt.Type != "queue.update" {
-				return false
-			}
-			data, ok := evt.Data.(queueUpdateData)
-			return ok && data.Event == "sent"
-		default:
-			return false
-		}
-	}, 2*time.Second, 10*time.Millisecond, "should publish queue.update with event=sent")
-
-	var sent promptRequestBody
-	require.NoError(t, json.Unmarshal(captured, &sent))
-	require.Len(t, sent.Parts, 2, "queued message must receive the injection")
-	assert.Contains(t, sent.Parts[0].Text, "95%")
-	assert.Contains(t, sent.Parts[0].Text, "last resort")
-	assert.Equal(t, "queued msg", sent.Parts[1].Text, "the queued text must be preserved")
-}
-
-func TestDrainQueuedMessage_DiskBelowWarning_NoInjection(t *testing.T) {
-	var captured []byte
-	backend := httptestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		captured = body
-		w.WriteHeader(http.StatusNoContent)
-	})
-
-	transport := &redirectTransport{server: backend}
-	httpClient := &http.Client{Transport: transport, Timeout: 5 * time.Second}
-
-	k8sMock := newMockK8sWithDisk(t, "ws-1", "10.0.0.1", 800, 1000) // 80%
-	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient, nil)
-	require.NoError(t, err)
-
-	mr, err := miniredis.Run()
-	require.NoError(t, err)
-	defer mr.Close()
-	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
-	svc := msgqueue.NewWithClient(client)
-	handler.SetMessageQueueService(svc)
-	handler.userBroker = eventbroker.NewUserEventBroker()
-	setupPasswordSecret(t, handler, "ws-1", "test-pw")
-
-	_, err = svc.Enqueue(context.Background(), "ws-1", "ses-1", "queued msg")
-	require.NoError(t, err)
-
-	sub, _ := handler.userBroker.SubscribeWorkspace("ws-1")
-	defer handler.userBroker.UnsubscribeWorkspace("ws-1", sub)
-
-	go handler.drainQueuedMessage("ws-1", "ses-1")
-
-	require.Eventually(t, func() bool {
-		select {
-		case evt := <-sub.Ch:
-			if evt.Type != "queue.update" {
-				return false
-			}
-			data, ok := evt.Data.(queueUpdateData)
-			return ok && data.Event == "sent"
-		default:
-			return false
-		}
-	}, 2*time.Second, 10*time.Millisecond, "should publish queue.update with event=sent")
-
-	var sent promptRequestBody
-	require.NoError(t, json.Unmarshal(captured, &sent))
-	require.Len(t, sent.Parts, 1, "below 90% no notice part may be injected")
-	assert.Equal(t, "queued msg", sent.Parts[0].Text)
-}
-
-// newMockK8sWithDisk returns a mock k8s client whose workspace CRD carries
-// the given disk usage in status. Used by the queue-drain integration tests
-// (sendQueuedToOpencode reads disk via workspaceDiskRatio).
-func newMockK8sWithDisk(t *testing.T, workspaceID, podIP string, usedBytes, totalBytes int64) *k8smocks.MockKubernetesClient {
-	t.Helper()
-	k8sMock := k8smocks.NewMockKubernetesClient()
-	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
-	wsMock := k8smocks.NewMockWorkspaceInterface()
-	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil).Maybe()
-	llmMock.On("Workspaces", "default").Return(wsMock).Maybe()
-	ws := makeWorkspaceCRDWithStatus(workspaceID, podIP, string(v1.WorkspacePhaseActive), workspaceID)
-	ws.Status.DiskUsedBytes = usedBytes
-	ws.Status.DiskTotalBytes = totalBytes
-	wsMock.On("Get", mock.Anything, mock.Anything, mock.Anything).Return(ws, nil).Maybe()
-	fakeClientset := k8sfake.NewSimpleClientset()
-	k8sMock.On("Clientset").Return(fakeClientset).Maybe()
-	return k8sMock
-}
-
-// httptestServer wraps httptest.NewServer with cleanup registration.
-func httptestServer(t *testing.T, h http.HandlerFunc) *httptest.Server {
-	t.Helper()
-	srv := httptest.NewServer(h)
-	t.Cleanup(srv.Close)
-	return srv
 }

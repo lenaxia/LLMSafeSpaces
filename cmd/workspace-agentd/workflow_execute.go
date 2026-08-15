@@ -464,8 +464,13 @@ func createOpencodeSession(ctx context.Context, password string) string {
 }
 
 func deleteOpencodeSession(ctx context.Context, password, sessionID string) {
-	req, _ := http.NewRequestWithContext(ctx, "DELETE", //nolint:gosec // G704: local-only, sessionID from opencode
+	req, err := http.NewRequestWithContext(ctx, "DELETE", //nolint:gosec // G704: local-only, sessionID from opencode
 		fmt.Sprintf("http://127.0.0.1:%d/session/%s", agentd.AgentPort, sessionID), nil)
+	if err != nil {
+		// Malformed sessionID (control chars) makes the URL unparseable;
+		// req would be nil and SetBasicAuth would panic.
+		return
+	}
 	req.SetBasicAuth(agentd.AuthUsername, password)
 	resp, err := (&http.Client{}).Do(req) //nolint:gosec // G704: local-only
 	if err != nil {

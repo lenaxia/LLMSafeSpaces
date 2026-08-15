@@ -33,7 +33,6 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/health"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/metering"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/metrics"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/msgqueue"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/passkey"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/policy"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/prompt"
@@ -44,6 +43,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
 	apiwf "github.com/lenaxia/llmsafespaces/api/internal/workflows"
+	pkgagent "github.com/lenaxia/llmsafespaces/pkg/agent"
 	agentoc "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"github.com/lenaxia/llmsafespaces/pkg/billing"
@@ -179,6 +179,10 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		return nil, fmt.Errorf("failed to create Kubernetes client: %w", err)
 	}
 
+	// US-65.6-followup: register the agent runtime explicitly instead of
+	// relying on init() side-effects.
+	agentoc.Register()
+
 	svc, err := services.New(cfg, log, k8sClient)
 	if err != nil {
 		cancel()
@@ -211,6 +215,12 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	)
 	proxyHandler.SetAdapter(agentAdapter)
 
+	// Wire the V2 client concrete factory (US-65.6: removes opencode import
+	// from proxy_v2.go; the factory is the only allowed opencode import site).
+	proxyHandler.SetV2ClientConcreteFactory(func(baseURL, password string) (pkgagent.V2SessionClient, error) {
+		return agentoc.NewClient(baseURL, password, log.ZapLogger()), nil
+	})
+
 	// Resolve subagent (subtask) sessions back to their root user-visible
 	// session, so permission/question events from child sessions bubble up
 	// to the chat view of the active parent session.
@@ -222,11 +232,8 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		wsSvc.SetSessionIndex(sessionIndexSvc)
 	}
 	proxyHandler.SetSessionIndex(sessionIndexSvc)
-	proxyHandler.SetV2SessionQueueEnabled(cfg.SessionQueue.V2Enabled)
 
 	if cacheSvc, ok := svc.Cache.(*cache.Service); ok {
-		queueSvc := msgqueue.NewWithClient(cacheSvc.GetClient())
-		proxyHandler.SetMessageQueueService(queueSvc)
 		proxyHandler.SetV2QueueShadow(handlers.NewV2QueueShadow(cacheSvc.GetClient()))
 		proxyHandler.SetV2PendingTracker(handlers.NewV2PendingTracker(cacheSvc.GetClient()))
 
@@ -1060,6 +1067,14 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		pwGetter := proxyHandler.GetPasswordGetter()
 		agentReloadHandler.SetPasswordGetter(pwGetter)
 		bulkReloadHandler.SetPasswordGetter(pwGetter)
+		// US-65.6: wire the status checker factory so agent_reload.go
+		// doesn't import pkg/agent/opencode.
+		agentReloadHandler.SetStatusCheckerFactory(func(podIP, password string) handlers.SessionStatusChecker {
+			return agentoc.NewClient("http://"+podIP, password, log.ZapLogger())
+		})
+		bulkReloadHandler.SetStatusCheckerFactory(func(podIP, password string) handlers.SessionStatusChecker {
+			return agentoc.NewClient("http://"+podIP, password, log.ZapLogger())
+		})
 		// US-29.5: construct ModelsHandler with AgentClient now that
 		// the password getter is available.
 		if modelsHandler != nil {
@@ -1422,13 +1437,6 @@ func (a *App) Run() error {
 			a.agentReloadHandler.SetSSETracker(tracker)
 			if a.bulkReloadHandler != nil {
 				a.bulkReloadHandler.SetSSETracker(tracker)
-			}
-		}
-		// Wire queue clearer and broker so dispose clears pending queue messages.
-		if qs := a.proxyHandler.GetMessageQueueService(); qs != nil {
-			a.agentReloadHandler.SetQueueClearer(qs)
-			if a.bulkReloadHandler != nil {
-				a.bulkReloadHandler.SetQueueClearer(qs)
 			}
 		}
 		if b := a.proxyHandler.GetBroker(); b != nil {
