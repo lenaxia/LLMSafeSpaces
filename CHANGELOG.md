@@ -36,7 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     AppVersion).
   - `workspace.defaultImage` writes are validated: image refs must be
     pinned to an explicit non-mutable tag (`latest`, `main`, `master`,
-    `dev`, `edge`, `nightly` rejected) or a digest; untagged refs are
+    `dev`, `edge`, `nightly`, `stable`, `prod`, `current`, `release`
+    rejected) or a digest; untagged refs are
     rejected (implicit `:latest`). RuntimeEnvironment names still pass.
   - The workspace-service read path skips stored floating-tag values with
     a warning, so values written before validation existed cannot launch.
