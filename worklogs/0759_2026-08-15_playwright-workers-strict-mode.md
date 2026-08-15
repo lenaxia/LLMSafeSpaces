@@ -53,4 +53,4 @@ None.
 
 - frontend/playwright.config.ts
 - frontend/tests/e2e/session-activity.spec.ts
-- worklogs/NNNN_2026-08-15_playwright-workers-strict-mode.md (this file)
+- worklogs/0759_2026-08-15_playwright-workers-strict-mode.md (this file)
