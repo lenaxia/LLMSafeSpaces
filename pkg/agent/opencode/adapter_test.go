@@ -844,19 +844,59 @@ func TestParseSessionListWire_EmptyWrapped_ReturnsEmptyNotError(t *testing.T) {
 	assert.Empty(t, sessions, "empty wrapped response must return empty slice, not error")
 }
 
-// --- ListPending error path (PR #714 review R1 follow-up) ---
+// --- ListPending error path (PR #714 review R1 follow-up; PR #852 C1 fix) ---
 
-func TestAdapter_ListPending_ServerError_ReturnsEmptyNoPanic(t *testing.T) {
-	// When both /question and /permission return 5xx, ListPending
-	// must NOT panic and must return an empty slice. The errors are
-	// logged at warn so they surface in operator dashboards without
-	// failing the user-facing call.
+// TestAdapter_ListPending_ServerError_ReturnsPendingUnavailable verifies the
+// fetch-failure contract: 5xx from the agent's pending-input endpoints means
+// "pending set UNKNOWN", never "authoritative empty". Callers (the SSE input
+// snapshot) rely on a non-nil error to mark the snapshot ok:false — returning
+// nil here made failed fetches commit empty pending sets over live prompts.
+func TestAdapter_ListPending_ServerError_ReturnsPendingUnavailable(t *testing.T) {
 	srv := newFakeOpencode(t)
 	srv.register("GET", "/question", `internal`, http.StatusInternalServerError)
 	srv.register("GET", "/permission", `internal`, http.StatusInternalServerError)
 
 	a := newTestAdapter(t, srv.Server)
 	reqs, err := a.ListPending(context.Background(), "u-1", "ws-1", "ses_1")
-	require.NoError(t, err, "5xx must not fail the call — surfaces as empty pending")
+	require.Error(t, err, "5xx must surface as an error — the pending set is unknown")
+	assert.ErrorIs(t, err, ErrPendingUnavailable)
+	assert.Empty(t, reqs)
+}
+
+func TestAdapter_ListPending_TransportError_ReturnsPendingUnavailable(t *testing.T) {
+	// Server closed before the call — connection refused on both endpoints.
+	srv := newFakeOpencode(t)
+	a := newTestAdapter(t, srv.Server)
+	srv.Close()
+
+	_, err := a.ListPending(context.Background(), "u-1", "ws-1", "ses_1")
+	require.Error(t, err, "transport failure must surface as an error — the pending set is unknown")
+	assert.ErrorIs(t, err, ErrPendingUnavailable)
+}
+
+func TestAdapter_ListPending_PermissionsServerError_ReturnsPendingUnavailable(t *testing.T) {
+	// Partial failure: questions list fine, permissions 5xx. The snapshot is
+	// not a complete picture of the workspace's pending set — still an error.
+	srv := newFakeOpencode(t)
+	srv.register("GET", "/question", `[]`, http.StatusOK)
+	srv.register("GET", "/permission", `internal`, http.StatusInternalServerError)
+
+	a := newTestAdapter(t, srv.Server)
+	_, err := a.ListPending(context.Background(), "u-1", "ws-1", "ses_1")
+	require.Error(t, err, "partial fetch failure must surface as an error")
+	assert.ErrorIs(t, err, ErrPendingUnavailable)
+}
+
+func TestAdapter_ListPending_NotImplemented404_ReturnsEmptyNoError(t *testing.T) {
+	// 404 = endpoint not implemented in this agent version — no pending
+	// input is possible via that endpoint; empty is authoritative, not a
+	// failure.
+	srv := newFakeOpencode(t)
+	srv.register("GET", "/question", `missing`, http.StatusNotFound)
+	srv.register("GET", "/permission", `missing`, http.StatusNotFound)
+
+	a := newTestAdapter(t, srv.Server)
+	reqs, err := a.ListPending(context.Background(), "u-1", "ws-1", "ses_1")
+	require.NoError(t, err, "404 not-implemented is an authoritative empty, not a failure")
 	assert.Empty(t, reqs)
 }

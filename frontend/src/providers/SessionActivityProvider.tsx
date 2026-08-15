@@ -25,6 +25,11 @@ interface SessionActivityContextValue {
   pendingQuestionsForSession: (sessionId: string) => QuestionRequest[];
   pendingPermissionsForSession: (sessionId: string) => PermissionRequest[];
   clearSessionPendingPrompts: (sessionId: string) => void;
+  // D10: outcome of the most recent agent.input.snapshot_complete per
+  // workspace. ChatPage gates its stuck-session auto-abort on a successful
+  // (ok:true) snapshot so a failed pod fetch can never read as "no pending
+  // input".
+  workspaceInputSnapshot: (workspaceId: string) => { ok: boolean; at: number } | undefined;
 }
 
 const SessionActivityContext = createContext<SessionActivityContextValue | null>(null);
@@ -33,7 +38,8 @@ const NON_ACTIVE_PHASES = new Set(["Suspending", "Suspended", "Terminating", "Te
 
 const KNOWN_EVENT_TYPES = new Set([
   "agent.question", "agent.question.resolved", "agent.permission", "agent.permission.resolved",
-  "agent.input.snapshot_complete", "session.status", "agent_died", "workspace.phase",
+  "agent.input.snapshot_begin", "agent.input.snapshot_complete", "session.status", "agent_died", "workspace.phase",
+  "resync",
 ]);
 
 // pruneMany returns a copy of m with every key in doomed removed, or m itself
@@ -88,14 +94,26 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
   const [pendingQuestionContent, setPendingQuestionContent] = useState<Map<string, QuestionRequest>>(new Map());
   const [pendingPermissionContent, setPendingPermissionContent] = useState<Map<string, PermissionRequest>>(new Map());
 
-  // D9: Per-workspace staging buffer for snapshot anti-entropy.
-  // Keyed by workspaceId → Map<requestId, sessionId>. Uses requestId as key
-  // (not an object) so unstage is O(1) and not affected by reference equality.
-  const stagingRef = useRef(new Map<string, Map<string, string>>());
+  // D9: Legacy staging buffer for snapshot anti-entropy — used when no
+  // snapshot flight is open (markers without snapshot_id, older API) and the
+  // workspace has not committed a marker since the last reconnect.
+  // Keyed by workspaceId → Map<requestId, sessionId>.
+  const legacyStagingRef = useRef(new Map<string, Map<string, string>>());
 
   // D9: Workspaces whose snapshot marker has been received since the last reconnect.
   // Events for committed workspaces go live; events for uncommitted workspaces stage.
   const committedWsRef = useRef(new Set<string>());
+
+  // D10: Open snapshot flights, keyed by workspaceId → Map<flightId, Map<requestId, sessionId>>.
+  // A hard page load opens TWO flights per workspace (workspace-SSE connect +
+  // user-stream connect); per-flight staging (keyed by the marker's
+  // snapshot_id) ensures one flight's commit cannot consume another's staged
+  // events — the pre-flight single shared map made the second complete commit
+  // an authoritative empty over live prompts (PR #852 review C2).
+  const flightsRef = useRef(new Map<string, Map<string, Map<string, string>>>());
+
+  // D10: Most recent snapshot outcome per workspace (ok + arrival time).
+  const [inputSnapshots, setInputSnapshots] = useState<Map<string, { ok: boolean; at: number }>>(new Map());
 
   useEffect(() => {
     const queryCache = queryClient.getQueryCache();
@@ -219,8 +237,9 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
       // D9: do NOT wipe pendingActions — rebuild is async via per-workspace
       // snapshot markers. A global wipe would blank all ?s until the slowest
       // pod fetch completes (visible flicker).
-      stagingRef.current.clear();
+      legacyStagingRef.current.clear();
       committedWsRef.current.clear();
+      flightsRef.current.clear();
     },
     onEvent: (data) => {
       const evt = data as {
@@ -230,6 +249,7 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         session_id?: string;
         status?: string;
         phase?: string;
+        snapshot_id?: string;
       };
 
       if (evt.type === "agent.question" || evt.type === "agent.permission") {
@@ -239,12 +259,21 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           const requestId = evt.request_id;
           // Always apply optimistically for responsiveness.
           addPendingAction(wsId, sessionId, requestId);
-          // Stage if workspace snapshot hasn't committed yet (D9 anti-entropy).
-          if (!committedWsRef.current.has(wsId)) {
-            let staged = stagingRef.current.get(wsId);
+          // Stage if an anti-entropy window is open: into EVERY open flight
+          // for the workspace (the event may belong to any of them, and a
+          // flight's commit must include it), or — when no flight is open —
+          // into the legacy bucket if the workspace has not committed a
+          // marker since the last reconnect (D9 rule).
+          const openFlights = flightsRef.current.get(wsId);
+          if (openFlights && openFlights.size > 0) {
+            for (const flight of openFlights.values()) {
+              flight.set(requestId, sessionId);
+            }
+          } else if (!committedWsRef.current.has(wsId)) {
+            let staged = legacyStagingRef.current.get(wsId);
             if (!staged) {
               staged = new Map();
-              stagingRef.current.set(wsId, staged);
+              legacyStagingRef.current.set(wsId, staged);
             }
             staged.set(requestId, sessionId);
           }
@@ -258,10 +287,16 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           const wsId = evt.workspace_id;
           // Unstage BEFORE removePendingAction — removePendingAction deletes
           // from requestToSessionRef, so we must capture the sessionId first.
-          if (wsId && !committedWsRef.current.has(wsId)) {
-            const staged = stagingRef.current.get(wsId);
-            if (staged) {
-              staged.delete(requestId);
+          if (wsId) {
+            const openFlights = flightsRef.current.get(wsId);
+            if (openFlights) {
+              for (const flight of openFlights.values()) {
+                flight.delete(requestId);
+              }
+            }
+            const legacy = legacyStagingRef.current.get(wsId);
+            if (legacy) {
+              legacy.delete(requestId);
             }
           }
           // Always remove optimistically.
@@ -270,15 +305,80 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      // D9: Per-workspace marker commit. On receiving the marker for wsId,
-      // authoritatively replace pendingActions for that workspace's sessions
-      // with the staged set. This clears ghost entries (questions resolved
-      // during disconnect that the pod no longer lists) without flickering.
+      // D10: a snapshot attempt is starting. Open a per-flight staging map —
+      // concurrent flights for the same workspace each get their own map, so
+      // one flight's commit cannot consume another's staged events.
+      if (evt.type === "agent.input.snapshot_begin") {
+        const wsId = evt.workspace_id;
+        if (!wsId) return;
+        const flightId = evt.snapshot_id ?? "";
+        let openFlights = flightsRef.current.get(wsId);
+        if (!openFlights) {
+          openFlights = new Map();
+          flightsRef.current.set(wsId, openFlights);
+        }
+        openFlights.set(flightId, new Map());
+        return;
+      }
+
+      // D9/D10: Per-workspace marker commit. On receiving the marker for
+      // wsId, authoritatively replace pendingActions for that workspace's
+      // sessions with the flight's staged set. This clears ghost entries
+      // (questions resolved during disconnect that the pod no longer lists)
+      // without flickering.
+      //
+      // D10: snapshot_ok === false means the pod fetch failed — the staged
+      // set is NOT authoritative. Keep existing pending state (a failed fetch
+      // must never read as "no pending input") and leave the commit gate
+      // (committedWsRef) untouched so a later marker can still commit.
+      // Markers without the field (older API) are treated as ok for
+      // backwards compatibility.
       if (evt.type === "agent.input.snapshot_complete") {
         const wsId = evt.workspace_id;
         if (!wsId) return;
-        const staged = stagingRef.current.get(wsId);
-        stagingRef.current.delete(wsId);
+        const ok = (evt as { snapshot_ok?: boolean }).snapshot_ok !== false;
+        const flightId = evt.snapshot_id ?? "";
+        const openFlights = flightsRef.current.get(wsId);
+        const knownFlight = openFlights?.has(flightId) ?? false;
+
+        // R2/A (review rounds 3-4): a complete carrying a flight ID that
+        // matches no open flight is NON-AUTHORITATIVE regardless of committed
+        // state. Reachable when the begin was dropped by broker backpressure,
+        // OR when the complete replays after a reconnect/resync cleared the
+        // flight table while its begin (and any staged events) did not
+        // re-deliver — the id-filtered replay skips events the client already
+        // saw. Committing the legacy bucket in that state (empty — events
+        // staged into the lost flight, not the bucket) wipes live prompts,
+        // and recording the marker as evidence would green-light the
+        // stuck-session auto-abort. Skip both; pending state is kept and the
+        // next flight rebuilds authoritatively.
+        if (flightId !== "" && !knownFlight) {
+          return;
+        }
+
+        setInputSnapshots((prev) => {
+          const next = new Map(prev);
+          next.set(wsId, { ok, at: Date.now() });
+          return next;
+        });
+
+        // Take this flight's staging (per-flight when snapshot_id is present;
+        // the legacy bucket otherwise).
+        let staged: Map<string, string> | undefined;
+        if (knownFlight && openFlights) {
+          staged = openFlights.get(flightId);
+          openFlights.delete(flightId);
+          if (openFlights.size === 0) {
+            flightsRef.current.delete(wsId);
+          }
+        } else {
+          staged = legacyStagingRef.current.get(wsId);
+          legacyStagingRef.current.delete(wsId);
+        }
+
+        if (!ok) {
+          return;
+        }
         committedWsRef.current.add(wsId);
 
         // Compute doomed requestIds from the CURRENT pendingActions snapshot
@@ -417,6 +517,21 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
           return next;
         });
         clearWorkspacePendingActions(wsId);
+      }
+
+      // resync: the broker dropped events for this subscriber (channel
+      // backpressure). Snapshot flight state is unreliable — a begin may have
+      // been dropped while its complete arrives. Clear the commit gate and
+      // any open flights so subsequent events stage again (legacy rule) and
+      // the next flight rebuilds authoritatively. Recorded snapshot evidence
+      // is also unreliable (its staging may have been dropped) — clear it so
+      // the stuck-session gate cannot lean on pre-resync proof.
+      if (evt.type === "resync") {
+        committedWsRef.current.clear();
+        flightsRef.current.clear();
+        legacyStagingRef.current.clear();
+        setInputSnapshots(new Map());
+        return;
       }
 
       if (evt.type === "workspace.phase" && evt.workspace_id && evt.phase) {
@@ -657,9 +772,14 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
     [pendingActions]
   );
 
+  const workspaceInputSnapshot = useCallback(
+    (workspaceId: string) => inputSnapshots.get(workspaceId),
+    [inputSnapshots],
+  );
+
   return (
     <SessionActivityContext.Provider
-      value={{ isSessionBusy, isSessionUnread, workspaceBusyCount, clearPendingUnread, isSessionPendingAction, pendingActionSessionIds, addPendingAction, removePendingAction, clearWorkspacePendingActions, addPendingQuestion, addPendingPermission, pendingQuestionsForSession, pendingPermissionsForSession, clearSessionPendingPrompts }}
+      value={{ isSessionBusy, isSessionUnread, workspaceBusyCount, clearPendingUnread, isSessionPendingAction, pendingActionSessionIds, addPendingAction, removePendingAction, clearWorkspacePendingActions, addPendingQuestion, addPendingPermission, pendingQuestionsForSession, pendingPermissionsForSession, clearSessionPendingPrompts, workspaceInputSnapshot }}
     >
       {children}
     </SessionActivityContext.Provider>
@@ -742,6 +862,15 @@ export function useClearSessionPendingPrompts(): (sessionId: string) => void {
   const ctx = useContext(SessionActivityContext);
   if (!ctx) return () => {};
   return ctx.clearSessionPendingPrompts;
+}
+
+// D10: most recent input-snapshot outcome for a workspace. undefined until
+// the first marker arrives. ChatPage gates the stuck-session auto-abort on
+// a successful snapshot ({ok: true}) received after reconnect-mode armed.
+export function useWorkspaceInputSnapshot(workspaceId: string): { ok: boolean; at: number } | undefined {
+  const ctx = useContext(SessionActivityContext);
+  if (!ctx) return undefined;
+  return ctx.workspaceInputSnapshot(workspaceId);
 }
 
 export type SessionDisplayStatus =

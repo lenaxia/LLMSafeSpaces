@@ -471,3 +471,31 @@ func (m *mockManagedProcess) restart() {
 func (m *mockManagedProcess) restartCount() int {
 	return int(m.restarts.Load())
 }
+
+// ---------------------------------------------------------------------------
+// relayKillFunc — session-aware relay-injector restart (false-interrupted
+// banner fix: relay KillOpenCode previously bypassed session-aware deferral)
+// ---------------------------------------------------------------------------
+
+func TestRelayKillFunc_IdleTracker_RestartsImmediately(t *testing.T) {
+	proc := &mockManagedProcess{}
+	tracker := newSessionStatusTracker()
+	kill := relayKillFunc(context.Background(), nil, proc, tracker, nil)
+	kill()
+	assert.Equal(t, 1, proc.restartCount(), "idle sessions — restart must fire immediately")
+}
+
+func TestRelayKillFunc_BusyTracker_DefersRestart(t *testing.T) {
+	proc := &mockManagedProcess{}
+	tracker := newSessionStatusTracker()
+	tracker.set("ses_busy", "busy")
+	kill := relayKillFunc(context.Background(), nil, proc, tracker, nil)
+	kill()
+	assert.Equal(t, 0, proc.restartCount(),
+		"a busy session (e.g. waiting on a pending question) must not be killed by the relay injector")
+}
+
+func TestRelayKillFunc_NilProc_NoPanic(t *testing.T) {
+	kill := relayKillFunc(context.Background(), nil, nil, newSessionStatusTracker(), nil)
+	kill() // must not panic
+}

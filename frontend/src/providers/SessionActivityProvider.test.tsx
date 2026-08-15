@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { SessionActivityProvider, useIsSessionBusy, useIsSessionUnread, useWorkspaceBusyCount, useClearPendingUnread, useIsSessionPendingAction, useAddPendingAction, useRemovePendingAction, useSessionPendingActions, useAddPendingQuestion, useAddPendingPermission, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, resolveSessionStatus } from "./SessionActivityProvider";
+import { SessionActivityProvider, useIsSessionBusy, useIsSessionUnread, useWorkspaceBusyCount, useClearPendingUnread, useIsSessionPendingAction, useAddPendingAction, useRemovePendingAction, useSessionPendingActions, useAddPendingQuestion, useAddPendingPermission, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, resolveSessionStatus, useWorkspaceInputSnapshot } from "./SessionActivityProvider";
 import type { QuestionRequest, PermissionRequest } from "../api/types";
 
 let capturedOnEvent: ((data: unknown) => void) | undefined;
@@ -1731,6 +1731,486 @@ describe("US-55.3: provider onEvent input-event handling", () => {
 
     // Content should be pruned — no ghost prompt card
     expect(screen.getByTestId("q-count").textContent).toBe("0");
+  });
+});
+
+describe("D10: snapshot begin/ok semantics (false-wipe fix)", () => {
+  function PendingIndicator({ sessionId }: { sessionId: string }) {
+    const isPending = useIsSessionPendingAction(sessionId);
+    return <span data-testid="pending">{isPending ? "yes" : "no"}</span>;
+  }
+
+  function SnapshotStatus({ workspaceId }: { workspaceId: string }) {
+    const snap = useWorkspaceInputSnapshot(workspaceId);
+    return (
+      <span data-testid="snapshot">
+        {snap ? `${snap.ok}:${snap.at}` : "none"}
+      </span>
+    );
+  }
+
+  it("ok:false marker keeps existing pending state (fetch failure must not wipe)", () => {
+    renderProvider(<PendingIndicator sessionId="ses-1" />);
+
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_live",
+      });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+
+    // Snapshot attempt fails (pod restarting / transient fetch error)
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1" });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.input.snapshot_complete",
+        workspace_id: "ws-1",
+        snapshot_ok: false,
+      });
+    });
+
+    // Live question must survive — no empty-commit wipe
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+  });
+
+  it("post-commit live question survives a begin → re-emit → ok marker cycle", () => {
+    renderProvider(<PendingIndicator sessionId="ses-1" />);
+
+    // First snapshot: question staged + committed
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_live",
+      });
+    });
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1" });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+
+    // Second snapshot (e.g. ChatPage mount opening workspace SSE): begin
+    // re-opens staging, the pod re-emits the still-live question, marker ok.
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1" });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_live",
+      });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.input.snapshot_complete",
+        workspace_id: "ws-1",
+        snapshot_ok: true,
+      });
+    });
+
+    // Regression: the pre-D10 code never staged post-commit events, so this
+    // marker wiped the live question.
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+  });
+
+  it("post-commit ghost cleared by begin → ok marker (anti-entropy preserved)", () => {
+    renderProvider(<PendingIndicator sessionId="ses-1" />);
+
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_ghost",
+      });
+    });
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1" });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+
+    // Question was resolved while disconnected; pod no longer lists it.
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1" });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.input.snapshot_complete",
+        workspace_id: "ws-1",
+        snapshot_ok: true,
+      });
+    });
+
+    expect(screen.getByTestId("pending").textContent).toBe("no");
+  });
+
+  it("useWorkspaceInputSnapshot exposes ok:false after a failed snapshot", () => {
+    renderProvider(
+      <>
+        <PendingIndicator sessionId="ses-1" />
+        <SnapshotStatus workspaceId="ws-1" />
+      </>,
+    );
+
+    expect(screen.getByTestId("snapshot").textContent).toBe("none");
+
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1" });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.input.snapshot_complete",
+        workspace_id: "ws-1",
+        snapshot_ok: false,
+      });
+    });
+
+    expect(screen.getByTestId("snapshot").textContent).toMatch(/^false:\d+$/);
+  });
+
+  it("useWorkspaceInputSnapshot exposes ok:true after a successful snapshot", () => {
+    renderProvider(<SnapshotStatus workspaceId="ws-1" />);
+
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1" });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.input.snapshot_complete",
+        workspace_id: "ws-1",
+        snapshot_ok: true,
+      });
+    });
+
+    const atBeforeReplay = screen.getByTestId("snapshot").textContent;
+    expect(atBeforeReplay).toMatch(/^true:\d+$/);
+  });
+
+  it("ok:false marker does not mark the workspace committed (legacy marker can still commit)", () => {
+    renderProvider(<PendingIndicator sessionId="ses-1" />);
+
+    // Failed snapshot first — no commit, workspace stays uncommitted
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1" });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.input.snapshot_complete",
+        workspace_id: "ws-1",
+        snapshot_ok: false,
+      });
+    });
+
+    // Question arrives organically (uncommitted ws → staged per legacy rule)
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_new",
+      });
+    });
+
+    // A later legacy marker (no ok field) commits normally
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1" });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+  });
+
+  it("interleaved flights: live question survives two begin→complete cycles (hard page load)", () => {
+    // PR #852 review C2: a hard page load opens the workspace SSE stream AND
+    // the user stream ~simultaneously — two snapshot flights for one
+    // workspace. The second complete must not commit an authoritative empty
+    // over the first's commit.
+    renderProvider(<PendingIndicator sessionId="ses-1" />);
+
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1", snapshot_id: "flight-A" });
+    });
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1", snapshot_id: "flight-B" });
+    });
+    // Both flights re-emit the live question
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_live",
+      });
+    });
+    // First flight completes ok — commits {que_live}
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.input.snapshot_complete",
+        workspace_id: "ws-1",
+        snapshot_ok: true,
+        snapshot_id: "flight-A",
+      });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+
+    // Second flight completes ok — must commit ITS staged set ({que_live}),
+    // not an empty map produced by consuming the first flight's staging.
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.input.snapshot_complete",
+        workspace_id: "ws-1",
+        snapshot_ok: true,
+        snapshot_id: "flight-B",
+      });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+  });
+
+  it("failed flight does not wipe a concurrent successful flight's commit", () => {
+    renderProvider(<PendingIndicator sessionId="ses-1" />);
+
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1", snapshot_id: "flight-A" });
+    });
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1", snapshot_id: "flight-B" });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_live",
+      });
+    });
+    // Failed flight completes first — keeps state
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.input.snapshot_complete",
+        workspace_id: "ws-1",
+        snapshot_ok: false,
+        snapshot_id: "flight-B",
+      });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+
+    // Successful flight commits {que_live}
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.input.snapshot_complete",
+        workspace_id: "ws-1",
+        snapshot_ok: true,
+        snapshot_id: "flight-A",
+      });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+  });
+
+  it("A1: replayed complete(ok) after reconnect does not wipe pending and records no evidence", () => {
+    // Review round 4 A1: begin delivered → question delivered → connection
+    // drops and reconnects (onReconnect clears flight/commit state) → the
+    // broker's id-filtered replay does NOT re-deliver the already-seen
+    // begin/question, but the complete arrives fresh. Its flight matches no
+    // open flight — committing the empty legacy bucket wiped the live
+    // question and the marker was recorded as ok:true evidence (feeding the
+    // false auto-abort gate).
+    renderProvider(
+      <>
+        <PendingIndicator sessionId="ses-1" />
+        <SnapshotStatus workspaceId="ws-1" />
+      </>,
+    );
+
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1", snapshot_id: "flight-A" });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_live",
+      });
+    });
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1", snapshot_ok: true, snapshot_id: "flight-A" });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+    const atBeforeReplay = screen.getByTestId("snapshot").textContent;
+    expect(atBeforeReplay).toMatch(/^true:\d+$/);
+
+    // Reconnect: flight/commit state cleared; complete(A) replays without
+    // its begin (id-filtered replay skips already-seen events).
+    act(() => {
+      capturedOnReconnect!();
+    });
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1", snapshot_ok: true, snapshot_id: "flight-A" });
+    });
+
+    // Live question survives AND the stale marker is not recorded as fresh
+    // evidence — the recorded `at` is byte-identical (the auto-abort gate
+    // requires a snapshot newer than mount; a refresh would re-arm it).
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+    expect(screen.getByTestId("snapshot").textContent).toBe(atBeforeReplay);
+  });
+
+  it("A2: resync-interleaved unknown-flight complete(ok) does not wipe pending; resync clears evidence", () => {
+    renderProvider(
+      <>
+        <PendingIndicator sessionId="ses-1" />
+        <SnapshotStatus workspaceId="ws-1" />
+      </>,
+    );
+
+    // Commit a live question via a legacy flight
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1", snapshot_id: "flight-A" });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_live",
+      });
+    });
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1", snapshot_ok: true, snapshot_id: "flight-A" });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+    const atBeforeReplay = screen.getByTestId("snapshot").textContent;
+    expect(atBeforeReplay).toMatch(/^true:\d+$/);
+
+    // Broker signals a drop, then a complete whose begin was dropped arrives
+    act(() => {
+      capturedOnEvent!({ type: "resync" });
+    });
+    expect(screen.getByTestId("snapshot").textContent).toBe("none");
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1", snapshot_ok: true, snapshot_id: "flight-B" });
+    });
+
+    // Live question survives; unknown-flight marker records no evidence
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+    expect(screen.getByTestId("snapshot").textContent).toBe("none");
+  });
+
+  it("R2: unknown-flight complete(ok) on a committed workspace does not wipe pending (dropped begin)", () => {
+    // Broker backpressure drops the begin; the question event and the
+    // complete still arrive. The complete's flight matches no open flight and
+    // the workspace is committed — committing the empty legacy bucket here
+    // wiped live prompts (review round 3 R2).
+    renderProvider(<PendingIndicator sessionId="ses-1" />);
+
+    // First snapshot commits the question
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1", snapshot_id: "flight-A" });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_live",
+      });
+    });
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1", snapshot_ok: true, snapshot_id: "flight-A" });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+
+    // begin(flight-B) is DROPPED by the broker; the question event and
+    // complete(flight-B) still arrive
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_live",
+      });
+    });
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1", snapshot_ok: true, snapshot_id: "flight-B" });
+    });
+
+    // Live question must survive the unknown-flight complete
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+  });
+
+  it("R2: resync clears the commit gate so subsequent events stage again", () => {
+    renderProvider(<PendingIndicator sessionId="ses-1" />);
+
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_1",
+      });
+    });
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1" });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+
+    // Broker signals a drop — committed state is unreliable
+    act(() => {
+      capturedOnEvent!({ type: "resync" });
+    });
+
+    // A NEW question on the (now uncommitted) workspace stages again and a
+    // legacy marker commit preserves it.
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_2",
+      });
+    });
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_complete", workspace_id: "ws-1" });
+    });
+    expect(screen.getByTestId("pending").textContent).toBe("yes");
+  });
+
+  it("superseded flight staging does not leak into a later flight's commit", () => {
+    renderProvider(<PendingIndicator sessionId="ses-1" />);
+
+    // Flight A opens, question staged into A
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1", snapshot_id: "flight-A" });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.question",
+        workspace_id: "ws-1",
+        session_id: "ses-1",
+        request_id: "que_ghost",
+      });
+    });
+    // Flight B opens AFTER — its fetch (post-resolve) does not list the
+    // question; its begin starts a fresh staging map.
+    act(() => {
+      capturedOnEvent!({ type: "agent.input.snapshot_begin", workspace_id: "ws-1", snapshot_id: "flight-B" });
+    });
+    act(() => {
+      capturedOnEvent!({
+        type: "agent.input.snapshot_complete",
+        workspace_id: "ws-1",
+        snapshot_ok: true,
+        snapshot_id: "flight-B",
+      });
+    });
+    // Ghost cleared by B's authoritative commit
+    expect(screen.getByTestId("pending").textContent).toBe("no");
   });
 });
 
