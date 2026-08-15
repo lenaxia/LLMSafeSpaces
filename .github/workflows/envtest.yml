@@ -28,6 +28,16 @@ on:
     - cron: '0 4 * * *'
   workflow_dispatch:
 
+# Superseded PR runs are cancelled; a RUNNING nightly/dispatch run is
+# never cancelled. The nightly schedule gets its OWN group via the
+# event-name key: a *pending* run is replaced by any newer run joining
+# the same group even with cancel-in-progress: false, so a nightly
+# queued behind a long-running run would otherwise be dropped by the
+# next queued run. Separate groups make the nightly un-droppable.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   envtest:
     name: CRD defaults + webhook integration (envtest)

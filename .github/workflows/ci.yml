@@ -15,6 +15,19 @@ on:
   # for a helm-upgrade dry run.
   workflow_dispatch:
 
+# Superseded runs on the same PR are cancelled instead of queueing.
+# Push semantics on main/tags (cancel-in-progress is PR-only):
+#   - a RUNNING run is never cancelled — an image push interrupted
+#     mid-manifest-merge would leave an incomplete tag set on ghcr;
+#   - a PENDING run is replaced by a newer push (intended newest-wins),
+#     so a rapid push sequence serialises instead of piling 20-job
+#     runs on top of each other. Consequence: an intermediate commit
+#     whose pending run was replaced never publishes sha-<commit>
+#     images — pin rollbacks by the surviving ts-<unix>/dev tags.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   REGISTRY: ghcr.io
   API_IMAGE: lenaxia/llmsafespaces/api
@@ -118,17 +131,21 @@ jobs:
   test:
     name: Test (-short, with coverage)
     runs-on: ubuntu-latest
-    needs: [lint]
+    # No `needs: [lint]` — lint is a serial 3.5m gate that added nothing
+    # but latency; a lint failure now wastes one test run instead of
+    # delaying every run by the lint duration. Verified 2026-08-15:
+    # the repo's branch protection (ruleset "Main Branch Protection")
+    # has NO required-status-checks rule — the merge gate is process
+    # (green checks + reviewer APPROVE before squash merge), which was
+    # equally true before this change; job names are kept stable so any
+    # future required-check config picks them up unchanged.
     permissions:
       contents: read
-      pull-requests: write    # for posting coverage delta as a comment
     steps:
+      # Shallow checkout: merge-base resolution for the coverage delta
+      # moved to the coverage-delta job, which is the only consumer of
+      # full history.
       - uses: actions/checkout@v6
-        with:
-          # Fetch base ref so the coverage-delta comparison can resolve
-          # `git merge-base origin/main HEAD`. Default depth=1 doesn't
-          # include the base commit, breaking the comparison.
-          fetch-depth: 0
 
       - uses: actions/setup-go@v6
         with:
@@ -182,55 +199,132 @@ jobs:
           path: coverage.out
           retention-days: 7
 
-      # Post a coverage delta comment on PRs. Requires the base branch's
-      # coverage; we generate it freshly rather than caching to keep the
-      # comparison apples-to-apples.
-      - name: Compare coverage against base
-        if: github.event_name == 'pull_request'
+      # The PR-vs-base coverage comparison and the PR comment it produced
+      # used to run here, serially re-running the entire test suite at the
+      # merge-base commit (~5min) inside this job. That re-run now lives in
+      # the coverage-delta job below, which consumes this artifact and
+      # blocks nothing.
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Validate OpenAPI spec
+        run: make openapi-validate
+
+  # Coverage delta vs merge-base, extracted from the `test` job so the
+  # base-suite re-run never sits on the critical path (it used to extend
+  # `test` — and therefore the builds behind it — by ~5min). Nothing
+  # `needs` this job; the merge gate is the 50% floor in `test` plus the
+  # required checks. The comment it posts is informational.
+  coverage-delta:
+    name: Coverage delta (vs merge-base)
+    runs-on: ubuntu-latest
+    needs: [test]
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: write    # posts/updates the coverage comment
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Full history: `git merge-base origin/main HEAD` must resolve.
+          # Only this job pays for the full clone now.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.6"
+          cache: true
+
+      - name: Download PR coverage profile
+        uses: actions/download-artifact@v8
+        with:
+          name: coverage-profile
+
+      # Base coverage is generated in a worktree at the merge-base
+      # commit. Three deliberate differences from the PR run in `test`:
+      #   - no -race: the race detector does not change coverage
+      #     percentages, and skipping it roughly halves the base run.
+      #   - -short kept: must select the same test set as the PR run
+      #     for the delta to be apples-to-apples.
+      #   - exit-status gated: a base run that fails partway still
+      #     writes a PARTIAL coverage-base.out; computing a total from
+      #     it would understate base coverage and post an optimistic
+      #     green delta. A non-zero go test exit forces the degraded
+      #     "base unavailable" comment instead.
+      # Either failure mode (hard flake, partial profile) degrades the
+      # comment rather than failing the job (previously a hard base
+      # flake could fail the entire `test` job and block merge on code
+      # the PR didn't touch).
+      - name: Generate base coverage at merge-base
         run: |
           set -euo pipefail
           base_sha=$(git merge-base origin/main HEAD)
           echo "Base: $base_sha"
 
-          # Generate base coverage in a worktree so we don't disturb HEAD.
           git worktree add /tmp/base-tree "$base_sha"
-          (cd /tmp/base-tree && \
-            go test -timeout 300s -race -short \
+          base_test_ok=false
+          if (cd /tmp/base-tree && \
+            go test -timeout 300s -short \
               -coverprofile=coverage-base.out \
               -covermode=atomic \
               -coverpkg=./... \
-              ./... 2>/dev/null) || true
-          # Run cover -func INSIDE the worktree because the base coverage
-          # profile references source files that may have been deleted in
-          # this PR (go tool cover needs the source to resolve function
-          # boundaries). Running from HEAD would fail on any file deletion.
-          base_total=$(cd /tmp/base-tree && go tool cover -func=coverage-base.out | awk '/^total:/ {print $3}' | tr -d '%')
+              ./... 2>/dev/null); then
+            base_test_ok=true
+          else
+            echo "Base test run failed (hard flake); using degraded comment."
+          fi
+          # cover -func must run INSIDE the worktree: the base profile
+          # references source files that may have been deleted in this
+          # PR (cover needs the sources to resolve function boundaries).
+          base_total=""
+          if [ "$base_test_ok" = true ]; then
+            base_total=$(cd /tmp/base-tree && go tool cover -func=coverage-base.out 2>/dev/null \
+              | awk '/^total:/ {print $3}' | tr -d '%') || true
+          fi
           new_total=$(go tool cover -func=coverage.out | awk '/^total:/ {print $3}' | tr -d '%')
-          delta=$(awk -v b="$base_total" -v n="$new_total" 'BEGIN { printf "%.2f", n - b }')
-          echo "base=${base_total}%  new=${new_total}%  delta=${delta}%"
-          {
-            echo "COVERAGE_BASE=$base_total"
-            echo "COVERAGE_NEW=$new_total"
-            echo "COVERAGE_DELTA=$delta"
-          } >> "$GITHUB_ENV"
+
+          if [ -z "${base_total}" ]; then
+            echo "Base coverage unavailable (base test run failed); posting degraded comment."
+            echo "COVERAGE_NEW=$new_total" >> "$GITHUB_ENV"
+          else
+            delta=$(awk -v b="$base_total" -v n="$new_total" 'BEGIN { printf "%.2f", n - b }')
+            echo "base=${base_total}%  new=${new_total}%  delta=${delta}%"
+            {
+              echo "COVERAGE_BASE=$base_total"
+              echo "COVERAGE_NEW=$new_total"
+              echo "COVERAGE_DELTA=$delta"
+            } >> "$GITHUB_ENV"
+          fi
 
       - name: Post coverage comment
-        if: github.event_name == 'pull_request'
         uses: actions/github-script@v9
         with:
           script: |
             const base = process.env.COVERAGE_BASE;
             const newC = process.env.COVERAGE_NEW;
-            const delta = parseFloat(process.env.COVERAGE_DELTA);
-            const sign = delta >= 0 ? '+' : '';
-            const emoji = delta >= 0 ? ':white_check_mark:' : ':warning:';
-            const body = `## ${emoji} Coverage report\n\n` +
-              `| | Coverage |\n` +
-              `|---|---|\n` +
-              `| base | ${base}% |\n` +
-              `| this PR | ${newC}% |\n` +
-              `| delta | ${sign}${delta}% |\n\n` +
-              `_Floor: 50% (enforced). See .github/workflows/ci.yml._`;
+
+            let body;
+            if (!base) {
+              // Base run failed — still report PR coverage + floor status.
+              body = `## :warning: Coverage report\n\n` +
+                `| | Coverage |\n` +
+                `|---|---|\n` +
+                `| this PR | ${newC}% |\n\n` +
+                `_Base coverage unavailable (base test run failed). ` +
+                `Floor: 50% (enforced in the Test job). See .github/workflows/ci.yml._`;
+            } else {
+              const delta = parseFloat(process.env.COVERAGE_DELTA);
+              const sign = delta >= 0 ? '+' : '';
+              const emoji = delta >= 0 ? ':white_check_mark:' : ':warning:';
+              body = `## ${emoji} Coverage report\n\n` +
+                `| | Coverage |\n` +
+                `|---|---|\n` +
+                `| base | ${base}% |\n` +
+                `| this PR | ${newC}% |\n` +
+                `| delta | ${sign}${delta}% |\n\n` +
+                `_Floor: 50% (enforced). See .github/workflows/ci.yml._`;
+            }
 
             // Find any existing coverage comment and update it instead
             // of posting a new one each push.
@@ -259,12 +353,6 @@ jobs:
               });
             }
 
-      - name: Run go vet
-        run: go vet ./...
-
-      - name: Validate OpenAPI spec
-        run: make openapi-validate
-
   # Full-suite test (no -short). The fast `test` job above is sufficient
   # for most PR feedback; this job runs the long tests too, with the race
   # detector. Lives in a separate job so it doesn't gate the fast path
@@ -277,7 +365,7 @@ jobs:
   test-full:
     name: Test (full suite, race detector)
     runs-on: ubuntu-latest
-    needs: [lint]
+    # No `needs: [lint]` — see the comment on the `test` job.
     steps:
       - uses: actions/checkout@v6
 
@@ -297,7 +385,7 @@ jobs:
   frontend-test:
     name: Frontend (unit + typecheck + e2e)
     runs-on: ubuntu-latest
-    needs: [lint]
+    # No `needs: [lint]` — see the comment on the `test` job.
     steps:
       - uses: actions/checkout@v6
 
