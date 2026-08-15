@@ -1,7 +1,7 @@
 # Worklog: Epic-65 status truth fix (PR #858)
 
 **Date:** 2026-08-15
-**Session:** Docs-only truth sweep of epic-65 status claims and the agent-session-contract / relay-config sections of README-LLM.md, driven through twelve posted AI review rounds (04:40Z→10:24Z)
+**Session:** Docs-only truth sweep of epic-65 status claims and the agent-session-contract / relay-config sections of README-LLM.md, driven through fourteen posted AI review rounds (04:40Z→11:19Z)
 **Status:** Complete
 
 ---
@@ -21,7 +21,7 @@ While planning follow-up work during the 2026-08-15 incident review, the epic-65
 5. **Stories index row 89** — "Definition only" → "In implementation" with the merge window.
 6. **PR body** — re-synced with the final diff (it becomes the squash-merge message).
 
-### Review history (12 posted reviews, 04:40Z→10:24Z, timestamps UTC)
+### Review history (14 posted reviews, 04:40Z→11:19Z, timestamps UTC — complete as of this revision's push)
 
 | # | Posted | Blocking finding → resolution |
 |---|---|---|
@@ -36,7 +36,9 @@ While planning follow-up work during the 2026-08-15 incident review, the epic-65
 | 9 | 08:26 | restart presented as unconditional — `shouldRestart` gates to env-secret/api-key batches; writers-table "every credential reload" over-broad; boot `EnrichProviders` missing; phantom explicit `reset()` step; worklog waived as "exempt — trivial" → restart gating + `StageCredentials` path, table scoped, enrich added, reset folded into `Materialize` |
 | 10 | 08:45 | worklog re-mandated (the 08:26 waiver adjudicated incorrect: no triviality exemption, README-LLM:777–793) → first worklog written |
 | 11 | 09:43 | that worklog's self-description carried the PR's own error class (stale CI claim, #860 mis-citation, wrong counts, structure) → full rewrite (current file's predecessor) |
-| 12 | 10:24 | the canary claim "never ran on this branch" false (it ran and failed on six pre-#861 runs); numbering scheme inconsistent; sentinel-failure attribution conflated → this revision |
+| 12 | 10:24 | the canary claim "never ran on this branch" false (it ran and failed on seven pre-#861 runs); numbering scheme inconsistent; sentinel-failure attribution conflated → d663ad9b |
+| 13 | 10:57 | exact counts: `b2cd8b47`'s Test failure listed **both** sentinels (not #861's alone); **seven** branch canary failures (adds `b805edbc` 08:02:20Z); **five** main runs pre-fix (adds 06:21/06:22) → e174a929 |
+| 14 | 11:19 | e174a929 froze the self-description at d663ad9b (twelve-count, no row 13); round-13's line-39 "six" half-addressed; line-60 CI claim forward-dated → this revision (rows 13–14 added, counts/mechanism corrected, CI claims evidence-backed) |
 
 ### CI events on this PR (all main-side, none caused by the docs diff)
 
@@ -46,9 +48,9 @@ While planning follow-up work during the 2026-08-15 incident review, the epic-65
 
 ## Key Decisions
 
-- **Address every finding, not just blocking ones.** The early reviews (1–6) fixed only the blocking item; minors were promoted to blocking next round. From review 7's M1–M4 minors on, minors landed in the same pass — later reviews were "verified ✓" except one item each.
-- **Verify every new sentence against the tree before pushing.** Each rewrite adds fresh review surface; claims were checked against `origin/main` line numbers pre-push from review 5 on. The same discipline applies to CI claims: check per-**job** conclusions across the branch's runs, not run-level conclusions or memory — both worklog failures (reviews 11 and 12) were CI-history claims written from stale context.
-- **The two worklog drafts violated both rules** — the first (09:12:51Z) had a stale CI paragraph, the #860 mis-citation (#860 tracks US-65.9; the provider-less-reload `Apply` skip is now tracked in **#868**, filed this session), a wrong file count, and round-count drift; its rewrite then repeated the CI-claim error ("canary never ran on this branch" — it ran and failed on seven pre-#861 runs) and an inconsistent numbering scheme. This entry is the second correction — kept as a full rewrite rather than an appended note because neither predecessor merged.
+- **Address every finding, not just blocking ones.** The early reviews (1–6) fixed only the blocking item; minors were promoted to blocking next round. From review 7's M1–M4 minors on, minors landed in the same pass — reviews 8–10 were "verified ✓" except one item each; reviews 11–14 carried multiple findings (all worklog self-description).
+- **Verify every new sentence against the tree before pushing.** Each rewrite adds fresh review surface; claims were checked against `origin/main` line numbers pre-push from review 5 on. The same discipline applies to CI claims: check per-**job** conclusions across the branch's runs, not run-level conclusions or memory — the three CI-claim failures had two mechanisms: stale context (reviews 11–12) and transcription of a review's own incorrect instructions (review 13's "six runs"/"#861-alone" came from review 12's text, not the logs).
+- **All three worklog drafts to date violated these rules.** `33c23e34` (09:12:51Z): stale CI paragraph, the #860 mis-citation (#860 tracks US-65.9; the provider-less-reload `Apply` skip is now tracked in **#868**, filed this session), wrong file count. `a182d916` (09:52Z): "canary never ran on this branch" — seven runs had failed. `d663ad9b` (10:29Z): "six runs" and the frozen twelve-review count. This revision is the third correction — kept as full rewrites rather than appended notes because no predecessor merged.
 - **Truth-fix scope discipline:** out-of-scope staleness (stories index rows for epics 53/62/63/64, epic-66's own README) left for follow-up per review precedent; not folded in.
 
 ## Blockers
@@ -57,7 +59,7 @@ None. (Transient: main-side sentinel/canary races above — all resolved or cont
 
 ## Tests Run
 
-Docs-only change — no unit/integration/e2e applicable (all CI test suites pass on the final commit). Full CI observations recorded above with root causes.
+Docs-only change — no unit/integration/e2e applicable. CI evidence as of this revision's push: predecessor head `e174a929`'s run is green on every required check — both Test suites (`-short` + full race), Lint, Gitleaks, Trivy, govulncheck, pkg/secrets integration, SDK contract tests, all arch builds, coverage delta — observed via the PR checks API immediately before this push; this revision changes only this file. The SDK canary job (`continue-on-error`, `ci.yml:423`) is red on the settings scenario from #856's `SchemaVersion` bump (merged 09:01:33Z; only the Go canary was updated) — pre-existing on main, affecting every open PR; the rate-limit scenario passes post-#861.
 
 ## Next Steps
 
