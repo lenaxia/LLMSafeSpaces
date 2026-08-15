@@ -113,6 +113,7 @@ type ConfigWriter struct {
 	modeRaw         json.RawMessage  // existing "mode" config from loadExisting, preserved across rebuilds
 	mcpRaw          json.RawMessage  // existing "mcp" object from loadExisting (e.g. user-staged servers written by materialize, Epic 53); re-emitted when no staged source. Non-object or null sections are NOT captured (dropped, not round-tripped)
 	allowedDirs     []string         // glob patterns, merged as external_directory allow-rules
+	injectedDirs    []string         // external_directory keys the writer last injected (or recovered from a prior render); stripped from modeRaw when the AllowedDirs source changes so replace/clear are authoritative over prior renders
 	adminPromptPath string           // path to admin-prompt file; "" = skip
 	allowedDirsPath string           // path to allowed-dirs JSON; "" = skip
 	preMarshalHook  func(map[string]json.RawMessage)
@@ -172,6 +173,26 @@ func (w *ConfigWriter) loadExisting() {
 		var mcpMap map[string]json.RawMessage
 		if json.Unmarshal(cfg.MCP, &mcpMap) == nil && mcpMap != nil {
 			w.mcpRaw = cfg.MCP
+		}
+	}
+
+	// Recover the writer-injected external_directory keys from a
+	// previously rendered mode block (the post-boot-normalize pod
+	// state): map-form entries valued "allow" are ours — a later
+	// AllowedDirs Apply strips exactly these, preserving user-authored
+	// entries (deny rules, their own allows, bare-string policies).
+	if len(cfg.Mode) > 0 {
+		var mode struct {
+			Permissions struct {
+				ExternalDirectory map[string]string `json:"external_directory"`
+			} `json:"permissions"`
+		}
+		if json.Unmarshal(cfg.Mode, &mode) == nil {
+			for k, v := range mode.Permissions.ExternalDirectory {
+				if v == "allow" {
+					w.injectedDirs = append(w.injectedDirs, k)
+				}
+			}
 		}
 	}
 
@@ -253,6 +274,10 @@ func (w *ConfigWriter) loadAllowedDirs() {
 		seen[p] = struct{}{}
 		w.allowedDirs = append(w.allowedDirs, p)
 	}
+	// The side-car patterns are exactly what the first rebuild injects
+	// into mode.permissions.external_directory; track them so a later
+	// AllowedDirs Apply can strip what the writer rendered.
+	w.injectedDirs = w.allowedDirs
 }
 
 // parseRelayFromExisting extracts URL + models from a pre-injected
@@ -664,6 +689,9 @@ func (w *ConfigWriter) Apply(in agent.AgentConfigInput) (bool, error) {
 	prevMCPRaw := w.mcpRaw
 	prevAdminPrompt := w.adminPrompt
 	prevAllowedDirs := w.allowedDirs
+	prevAgentRaw := w.agentRaw
+	prevModeRaw := w.modeRaw
+	prevInjectedDirs := w.injectedDirs
 	rollback := func() {
 		w.providerRaw = prevProviderRaw
 		w.model = prevModel
@@ -672,6 +700,9 @@ func (w *ConfigWriter) Apply(in agent.AgentConfigInput) (bool, error) {
 		w.mcpRaw = prevMCPRaw
 		w.adminPrompt = prevAdminPrompt
 		w.allowedDirs = prevAllowedDirs
+		w.agentRaw = prevAgentRaw
+		w.modeRaw = prevModeRaw
+		w.injectedDirs = prevInjectedDirs
 	}
 
 	if in.Providers != nil {
@@ -721,12 +752,20 @@ func (w *ConfigWriter) Apply(in agent.AgentConfigInput) (bool, error) {
 	// AdminPrompt / AllowedDirs are first-class sources (US-65.9
 	// increment 2): construction may seed them from the bootstrap
 	// side-car files; Apply updates them thereafter with the same
-	// pointer semantics as every other source.
+	// pointer semantics as every other source. Non-nil input makes the
+	// source authoritative: keys the writer previously rendered are
+	// stripped from the captured raw sections first, so replace/clear
+	// take effect on the output even when this writer was constructed
+	// over an already-rendered file (the post-boot-normalize pod state).
 	if in.AdminPrompt != nil {
 		w.adminPrompt = in.AdminPrompt.Text
+		w.agentRaw = stripBuildPrompt(w.agentRaw)
 	}
 	if in.AllowedDirs != nil {
-		w.allowedDirs = in.AllowedDirs.Dirs
+		dirs := sanitizeAllowedDirs(in.AllowedDirs.Dirs)
+		w.modeRaw = stripInjectedExternalDirs(w.modeRaw, w.injectedDirs)
+		w.allowedDirs = dirs
+		w.injectedDirs = dirs
 	}
 
 	if err := w.rebuildLocked(); err != nil {

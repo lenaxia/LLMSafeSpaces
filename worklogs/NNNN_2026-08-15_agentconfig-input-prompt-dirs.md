@@ -1,14 +1,14 @@
 # Worklog: AgentConfigInput gains first-class prompt/dirs sources (US-65.9 increment 2)
 
 **Date:** 2026-08-15
-**PR:** TBD (stacked on #857)
-**Story:** first increment of US-65.9 "agent config render ownership" (issue TBD)
+**PR:** #859 (stacked on #857)
+**Story:** first increment of US-65.9 "agent config render ownership" (#860)
 
 ---
 
 ## Context
 
-End-state ownership model for the agent config (see issue TBD): the
+End-state ownership model for the agent config (see #860): the
 config file is a rendered artifact of declared sources, and the
 `AgentConfigInput` type fully describes those sources. Until this
 change, the admin system prompt and allowed external directories were
@@ -40,7 +40,30 @@ prompt or dirs required reconstructing the writer.
   Rule 12: the seam is complete, usage arrives with the first feature
   that updates prompts at runtime, e.g. live admin-prompt reload).
 - The writer remains self-merging (`loadExisting`) — pure render is
-  increment 3 (see issue TBD).
+  increment 3 (#860).
+
+## Review round 1 corrections (applied in-PR)
+
+- The first version's clear-semantics test was vacuous (double-nested
+  decode — its assertions could never fail; the reviewer
+  mutation-proved it). Rewritten with correct decode shapes over the
+  realistic post-boot-normalize file state.
+- Clear/replace are now authoritative over prior renders: non-nil
+  AdminPrompt strips the writer-owned `build.prompt` from the captured
+  agent section; non-nil AllowedDirs strips exactly the tracked
+  injected keys from `permissions.external_directory` (user-authored
+  entries — deny rules, own allows, bare-string policies — preserved).
+  `injectedDirs` is seeded from the side-car load and recovered from a
+  previously rendered mode block, so a writer constructed over a
+  rendered file (every real pod after #857) honors clears.
+- `AllowedDirs` inputs are sanitized (empty dropped, deduped) and
+  defensively copied — parity with the side-car path; no caller-slice
+  aliasing.
+- Rollback now captures and restores `agentRaw`/`modeRaw`/`injectedDirs`;
+  pinned by a same-package failed-rebuild test asserting the sources.
+- `TestAgentConfigInput_NilFieldsMeanLeaveUnchanged` extended to the
+  two new fields.
+- Worklog renamed to the `NNNN_` pre-merge sentinel; TBD refs → #859/#860.
 
 ## Verification
 

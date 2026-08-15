@@ -44,6 +44,12 @@ func TestAgentConfigInput_NilFieldsMeanLeaveUnchanged(t *testing.T) {
 	if in.MCPServers != nil {
 		t.Errorf("zero-value AgentConfigInput.MCPServers = %v, want nil", in.MCPServers)
 	}
+	if in.AdminPrompt != nil {
+		t.Errorf("zero-value AgentConfigInput.AdminPrompt = %v, want nil", in.AdminPrompt)
+	}
+	if in.AllowedDirs != nil {
+		t.Errorf("zero-value AgentConfigInput.AllowedDirs = %v, want nil", in.AllowedDirs)
+	}
 }
 
 func TestModelSelection_FullyQualifiedForm(t *testing.T) {
