@@ -68,11 +68,12 @@ type TerminalTicket struct {
 const SecretNamePattern = "^[a-z0-9._-]+$"
 
 type SecretResponse struct {
-	ID        string    `json:"id"`
-	Name      string    `json:"name"`
-	Type      string    `json:"type"`
-	CreatedAt time.Time `json:"createdAt"`
-	UpdatedAt time.Time `json:"updatedAt"`
+	ID            string    `json:"id"`
+	Name          string    `json:"name"`
+	Type          string    `json:"type"`
+	GlobalDefault bool      `json:"globalDefault"`
+	CreatedAt     time.Time `json:"createdAt"`
+	UpdatedAt     time.Time `json:"updatedAt"`
 }
 
 // APIKey represents an API key record.

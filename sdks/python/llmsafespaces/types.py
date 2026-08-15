@@ -100,12 +100,14 @@ SECRET_NAME_PATTERN = r"^[a-z0-9._-]+$"
 
 @dataclass
 class SecretResponse:
+    # Mirrors pkg/secrets/types.go SecretResponse.
     id: str
     name: str
     type: str
     createdAt: str
     updatedAt: str
     metadata: Any = None
+    globalDefault: bool = False
 
 
 @dataclass

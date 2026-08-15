@@ -41,6 +41,10 @@ Close #867 fully: `workspaces.list()` crashed with `TypeError: ... unexpected ke
 
 ---
 
+### Round 4: SecretResponse.globalDefault
+
+The CI canary advanced past s_secret_crud's metadata fix to reveal `SecretResponse.__init__() got an unexpected keyword argument 'globalDefault'` — the same strict-expansion class; `globalDefault` is always emitted (no omitempty, `pkg/secrets/types.go:158`). Backfilled the field across all four surfaces per the PR's own parity standard: Python dataclass, Go SDK type (was silently ignoring it), TS interface, and the OpenAPI `SecretResponse` schema; added a full-payload round-trip test (86/86).
+
 ## Blockers
 
 None.

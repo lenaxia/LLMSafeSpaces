@@ -676,3 +676,23 @@ def test_workspace_models_reject_unknown_fields():
             storageSize="10Gi", phase="Active", createdAt="t", updatedAt="t",
             anotherFutureField=1,
         )
+
+
+@respx.mock
+def test_secret_response_full_payload_round_trip():
+    """SecretResponse must accept the full server payload (pkg/secrets
+    SecretResponse: id, name, type, metadata, globalDefault, createdAt,
+    updatedAt) — globalDefault is always present (no omitempty)."""
+    respx.post(f"{BASE}/secrets").respond(
+        status_code=201,
+        json={
+            "id": "sec-1", "name": "canary", "type": "env-secret",
+            "metadata": {"var_name": "CANARY_VAR"},
+            "globalDefault": False,
+            "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+        },
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    s = client.secrets.create(name="canary", type="env-secret", value="v", metadata={"var_name": "CANARY_VAR"})
+    assert s.globalDefault is False
+    assert s.metadata == {"var_name": "CANARY_VAR"}

@@ -3453,6 +3453,9 @@ components:
           enum: [llm-provider, ssh-key, git-credential, secret-file, env-secret]
         metadata:
           type: object
+        globalDefault:
+          type: boolean
+          description: Whether the secret applies to all workspaces by default; always present (no omitempty).
         createdAt:
           type: string
           format: date-time
