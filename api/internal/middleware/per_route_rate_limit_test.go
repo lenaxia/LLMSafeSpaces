@@ -140,11 +140,13 @@ func TestPerRouteRateLimit_BucketsAreIsolatedPerPath(t *testing.T) {
 }
 
 // TestPerRouteRateLimit_429BodyContract pins the 429 response body to the
-// API-wide error contract: {"error": "<string>", "limit": <int>,
+// API-wide 429 error contract: {"error": "<string>", "limit": <int>,
 // "retryAfter": <int seconds>} — matching the global limiter, email.go, and
-// dev_preview.go. The Go SDK's parseError decodes "error" as a string; the
-// previous object shape {"error": {code, message, details}} broke it and the
-// s-error-format canary contract.
+// dev_preview.go (the other 429 emitters; some non-429 error paths still
+// emit object-shaped errors — tracked separately). The Go SDK's parseError
+// decodes "error" as a string; the previous object shape
+// {"error": {code, message, details}} broke it and the s-error-format
+// canary contract.
 func TestPerRouteRateLimit_429BodyContract(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	svc, cleanup := newMiniredisRateLimiter(t)
@@ -188,6 +190,13 @@ func TestPerRouteRateLimit_429BodyContract(t *testing.T) {
 	retryAfter, isNumber := body["retryAfter"].(float64)
 	assert.True(t, isNumber, `body["retryAfter"] must be a number, got %T (%v)`, body["retryAfter"], body["retryAfter"])
 	assert.Greater(t, retryAfter, float64(0))
+
+	// The Retry-After header is new behavior added with this contract fix;
+	// assert it so a regression cannot silently drop it. Window=1min → 60s.
+	assert.Equal(t, "60", w.Header().Get("Retry-After"),
+		"Retry-After header must be the route window in seconds")
+	assert.Equal(t, "2", w.Header().Get("X-RateLimit-Limit"))
+	assert.Equal(t, "0", w.Header().Get("X-RateLimit-Remaining"))
 }
 
 // TestPerRouteRateLimit_DisabledWhenConfigDisabled confirms the

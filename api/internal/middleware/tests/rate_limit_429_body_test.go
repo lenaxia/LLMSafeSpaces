@@ -20,12 +20,13 @@ import (
 )
 
 // TestRateLimitMiddleware_429BodyContract pins the 429 response body to the
-// API-wide error contract: {"error": "<string>", "limit": <int>, "retryAfter":
-// <int seconds>}. Every other middleware and handler (email.go, dev_preview.go,
-// workspace_access.go) emits "error" as a string; the Go SDK's parseError and
+// API-wide 429 error contract: {"error": "<string>", "limit": <int>, "retryAfter":
+// <int seconds>}. The other 429 emitters (email.go, dev_preview.go,
+// workspace_access.go) emit "error" as a string; the Go SDK's parseError and
 // the frontend ApiClientError both decode it as a string. The object shape
 // {"error": {code, message, details}} silently breaks both consumers and the
-// s-error-format canary contract ("all error values are strings").
+// s-error-format canary contract ("all error values are strings"). (Some
+// non-429 error paths still emit object-shaped errors — tracked separately.)
 func TestRateLimitMiddleware_429BodyContract(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	mockLogger := logmock.NewMockLogger()
@@ -84,6 +85,16 @@ func TestRateLimitMiddleware_429BodyContract(t *testing.T) {
 	retryAfter, isNumber := body["retryAfter"].(float64)
 	assert.True(t, isNumber, `body["retryAfter"] must be a number, got %T (%v)`, body["retryAfter"], body["retryAfter"])
 	assert.Greater(t, retryAfter, float64(0), `body["retryAfter"] must be positive`)
+
+	// The Retry-After header is new behavior added with this contract fix;
+	// assert it so a regression cannot silently drop it. Token bucket (the
+	// default strategy) resets in ~1s, so Retry-After must be "1" — NOT the
+	// 60s window (the inaccuracy this fix removes).
+	assert.Equal(t, "1", w.Header().Get("Retry-After"),
+		"Retry-After must derive from the token-bucket reset (~1s), not the 60s window")
+	assert.Equal(t, "2", w.Header().Get("X-RateLimit-Limit"))
+	assert.Equal(t, "0", w.Header().Get("X-RateLimit-Remaining"))
+	assert.NotEmpty(t, w.Header().Get("X-RateLimit-Reset"))
 
 	mockRateLimiter.AssertExpectations(t)
 	mockLogger.AssertExpectations(t)
