@@ -47,7 +47,7 @@ def run(r: Runner, cfg: Config) -> None:
         if ok3 and b is not None:
             bindings = b.get("bindings", [])
             r.assert_(
-                any(x.get("id") == sid for x in bindings),
+                any(x.get("secretId") == sid for x in bindings),
                 "get-bindings: secret present",
             )
 
@@ -60,7 +60,7 @@ def run(r: Runner, cfg: Config) -> None:
             "get-bindings-after-rebind: no error",
         )
         if ok4 and b2 is not None:
-            count = sum(1 for x in b2.get("bindings", []) if x.get("id") == sid)
+            count = sum(1 for x in b2.get("bindings", []) if x.get("secretId") == sid)
             r.assert_(count == 1, "rebind-same: exactly 1 entry", str(count))
 
         # P4+P5: Clear

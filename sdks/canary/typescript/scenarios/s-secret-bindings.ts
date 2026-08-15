@@ -27,13 +27,13 @@ async function run(r: Runner, cfg: Config): Promise<void> {
 
     // P2: Get — contains secret
     const [ok3, b] = await r.assertNoError(() => c.workspaces.getBindings(wsId!), 'get-bindings: no error');
-    if (ok3 && b) r.assert(b.bindings.some(x => x.id === sid), 'get-bindings: secret present');
+    if (ok3 && b) r.assert(b.bindings.some(x => x.secretId === sid), 'get-bindings: secret present');
 
     // P3: Idempotent re-bind
     await r.assertNoError(() => c.workspaces.setBindings(wsId!, [sid!]), 'rebind-same: idempotent');
     const [ok4, b2] = await r.assertNoError(() => c.workspaces.getBindings(wsId!), 'get-bindings-after-rebind: no error');
     if (ok4 && b2) {
-      const count = b2.bindings.filter(x => x.id === sid).length;
+      const count = b2.bindings.filter(x => x.secretId === sid).length;
       r.assert(count === 1, 'rebind-same: exactly 1 entry', String(count));
     }
 

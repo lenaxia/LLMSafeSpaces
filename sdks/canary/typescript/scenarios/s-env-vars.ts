@@ -20,7 +20,9 @@ async function run(r: Runner, cfg: Config): Promise<void> {
 
     // P2: Get — contains CANARY_VAR
     const [ok2, env] = await r.assertNoError(() => c.workspaces.getEnv(wsId!), 'get-env: no error');
-    if (ok2 && env) r.assert(env.vars?.includes('CANARY_VAR'), 'get-env: CANARY_VAR present');
+    if (ok2 && env) // The API returns secret names (<wsID>-env-<lowercased_var>), not the
+      // original var names — match the lowercased suffix (Go twin parity).
+      r.assert((env.vars ?? []).some((v: string) => v.endsWith('-env-canary_var')), 'get-env: CANARY_VAR present');
 
     // P3: Upsert
     await r.assertNoError(() => c.workspaces.setEnv(wsId!, { CANARY_VAR: 'updated' }), 'upsert-env: no error');

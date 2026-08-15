@@ -37,7 +37,11 @@ def run(r: Runner, cfg: Config) -> None:
         )
         if ok2 and env is not None:
             r.assert_(
-                "CANARY_VAR" in env.get("vars", []), "get-env: CANARY_VAR present"
+                any(
+                    isinstance(v, str) and v.endswith("-env-canary_var")
+                    for v in env.get("vars", [])
+                ),
+                "get-env: CANARY_VAR present",
             )
 
         # P3: Upsert

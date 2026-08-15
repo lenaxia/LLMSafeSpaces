@@ -45,6 +45,11 @@ Close #867 fully: `workspaces.list()` crashed with `TypeError: ... unexpected ke
 
 The CI canary advanced past s_secret_crud's metadata fix to reveal `SecretResponse.__init__() got an unexpected keyword argument 'globalDefault'` — the same strict-expansion class; `globalDefault` is always emitted (no omitempty, `pkg/secrets/types.go:158`). Backfilled the field across all four surfaces per the PR's own parity standard: Python dataclass, Go SDK type (was silently ignoring it), TS interface, and the OpenAPI `SecretResponse` schema; added a full-payload round-trip test (86/86).
 
+### Round 5: bindings/env-vars twin parity (review findings #5/#6)
+
+- `s_secret_bindings` (py+ts): asserted `id`; the API's `BoundSecret` emits `secretId` (`pkg/secrets/types.go:170-178`) — the Go SDK passes only because its type remaps the tag. Fixed both twins to `secretId`.
+- `s_env_vars` (py+ts): asserted the raw var name; the API stores/returns mangled secret names `<wsId>-env-<lowercased_var>` (`workspace_env.go:121,185-193`), empirically confirmed by the Go twin's CI-passing suffix check. Fixed both twins to `endswith("-env-canary_var")` per Go-twin parity.
+
 ## Blockers
 
 None.
