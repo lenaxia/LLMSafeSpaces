@@ -651,3 +651,28 @@ def test_workspace_list_full_payload_round_trip():
     assert item.agentVersion == "1.18.10"
     assert item.orgId == "org-9"
     assert item.maxActiveSessions == 3
+
+
+def test_workspace_models_reject_unknown_fields():
+    """Strict parsing IS the drift detector (PR #870 design decision).
+
+    The dataclasses deliberately expand **kwargs with no catch-all field:
+    an unknown server field must raise TypeError so drift fails loudly in
+    the SDK suite (and canaries) instead of silently degrading — the
+    #867 failure mode. If this test ever fails because the server added a
+    field, add the field to the dataclass AND the OpenAPI schema.
+    """
+    from llmsafespaces.types import Workspace, WorkspaceListItem
+
+    with pytest.raises(TypeError):
+        WorkspaceListItem(
+            id="ws-1", name="x", userId="u1", runtime="python",
+            storageSize="10Gi", createdAt="t", updatedAt="t",
+            someFutureServerField=True,
+        )
+    with pytest.raises(TypeError):
+        Workspace(
+            id="ws-1", name="x", userId="u1", runtime="python",
+            storageSize="10Gi", phase="Active", createdAt="t", updatedAt="t",
+            anotherFutureField=1,
+        )

@@ -33,7 +33,7 @@ Close #867 fully: `workspaces.list()` crashed with `TypeError: ... unexpected ke
 
 ## Tests Run
 
-- `pytest sdks/python/tests/test_client.py` — 55/55 pass
+- `pytest sdks/python/tests/` — 85/85 pass (sync round-trips, async round-trip twins for the duplicated async_client.py parse paths, unknown-field rejection test)
 - Red/green mutation check on `devPreviewEnabled` — fails pre-fix, passes post-fix
 - `py_compile` both touched Python files; `yaml.safe_load` on openapi.yaml
 
