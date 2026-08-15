@@ -116,7 +116,8 @@ func validTagChars(tag string) bool {
 		return false
 	}
 	c := tag[0]
-	if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
+	isAlnum := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
+	if !isAlnum {
 		return false
 	}
 	for i := 1; i < len(tag); i++ {
