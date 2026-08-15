@@ -94,4 +94,4 @@ None for this PR's diff. The TS section's first-ever execution ran fully green (
 - sdks/go/types.go
 - sdks/canary/typescript/scenarios/s-email-reset.ts (login 429 retry — Python-twin parity)
 - .github/workflows/ci.yml (MCP canary working-directory fix — its own Go module)
-- worklogs/NNNN_2026-08-15_python-sdk-workspace-model-drift.md (this file)
+- worklogs/0764_2026-08-15_python-sdk-workspace-model-drift.md (this file)
