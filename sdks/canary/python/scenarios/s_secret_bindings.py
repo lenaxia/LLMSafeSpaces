@@ -27,7 +27,7 @@ def run(r: Runner, cfg: Config) -> None:
 
         ok2, s = r.assert_no_error(
             lambda: c.secrets.create(
-                name="canary-py-bind-secret", type="env-secret", value="v"
+                name="canary-py-bind-secret", type="env-secret", value="v", metadata={"var_name": "CANARY_PY_VAR"}
             ),
             "create-secret: no error",
         )

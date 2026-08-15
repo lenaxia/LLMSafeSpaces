@@ -28,7 +28,7 @@ def run(r: Runner, cfg: Config) -> None:
 
         ok, secret = r.assert_no_error(
             lambda: c.secrets.create(
-                name="canary-py-rotate", type="env-secret", value="rotate-test-value"
+                name="canary-py-rotate", type="env-secret", value="rotate-test-value", metadata={"var_name": "CANARY_PY_VAR"}
             ),
             "create-secret: no error",
         )
