@@ -7,7 +7,7 @@ from __future__ import annotations
 import sys, os
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from canary import Runner, Config, config_from_env, raw_do
+from canary import Runner, Config, config_from_env, jwt_login, raw_do
 from llmsafespaces import LLMSafeSpaces
 
 
@@ -16,7 +16,7 @@ def run(r: Runner, cfg: Config) -> None:
         r.ok("ownership: skipped (no LLMSAFESPACES_API_KEY_USER2)")
         return
 
-    c1 = LLMSafeSpaces(cfg.api_url, api_key=cfg.api_key, timeout=20.0)
+    c1 = LLMSafeSpaces(cfg.api_url, api_key=jwt_login(cfg), timeout=20.0)
     c2 = LLMSafeSpaces(cfg.api_url, api_key=cfg.api_key_user2, timeout=20.0)
     ws1_id = ws2_id = s1_id = None
     try:

@@ -7,12 +7,12 @@ from __future__ import annotations
 import sys, os
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from canary import Runner, Config, config_from_env
+from canary import Runner, Config, config_from_env, jwt_login
 from llmsafespaces import LLMSafeSpaces
 
 
 def run(r: Runner, cfg: Config) -> None:
-    c = LLMSafeSpaces(cfg.api_url, api_key=cfg.api_key, timeout=20.0)
+    c = LLMSafeSpaces(cfg.api_url, api_key=jwt_login(cfg), timeout=20.0)
     ws_id = sid = None
     try:
         ok, ws = r.assert_no_error(

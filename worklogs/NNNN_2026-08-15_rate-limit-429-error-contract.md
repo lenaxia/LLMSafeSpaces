@@ -52,6 +52,13 @@ Every other **429** emitter in the API uses `{"error": "<string>"}` (some non-42
 2. **`api/internal/middleware/rate_limit.go`** — 429 body now `{"error": <message string>, "limit": <limit>, "retryAfter": <seconds derived from the error's reset, clamped ≥1>}`; adds standard `Retry-After` header (same value).
 3. **`api/internal/middleware/per_route_rate_limit.go`** — same shape (`limit` = route limit, `retryAfter` = full route window — review-sanctioned simplification); adds `Retry-After` header.
 4. **`sdks/canary/go/scenarios/s-rate-limit/main.go`** — removed the duplicate P3 assertion block (kept the string-typed `HasErrorField` check; the removed lenient re-check is what masked the middleware bug); P3 detail now includes the body prefix for future diagnosis; fixed P2 message drift ("30" → "60").
+5. **`sdks/canary/python/scenarios/*.py` (40 files) — sys.path depth fix.** All scenarios inserted `scenarios/../..` (= `sdks/canary/`, no `canary.py` there) instead of `scenarios/..` (= `sdks/canary/python/`); the Python section had never executed in CI (earlier Go failures aborted the job first), so the `ModuleNotFoundError` was latent. Also anchored to `abspath(__file__)` for CWD independence.
+6. **Python scenario repairs (10/22 deterministic failures once the section activated):**
+   - 6 scenarios used API-key clients where their Go twins use `jwt_login` — `s_secret_crud`, `s_secret_reveal`, `s_secret_audit`, `s_secret_bindings`, `s_env_vars`, `s_ownership` (user-DEK paths 403 "encryption key not available" with API-key auth, per `canary.py` docstring).
+   - `s_ws_quota` now skips when `LLMSAFESPACES_MAX_WORKSPACES_PER_USER` is unset (Go/TS twin behavior; the server never enforces quota without the env, CI never sets it → guaranteed false failure).
+   - 3 `d_*` scenarios (`d_account_recover`, `d_change_password`, `d_key_rotate`) dropped from the CI loop — `_AccountAPI` is an empty class (`sdks/python/llmsafespaces/client.py:506`), so `c.account.*` raises AttributeError; no Go/TS CI precedent. Parked until implemented.
+   - `s_rate_limit` now asserts the 429 body's `error` field is a string (`has_error_field`), matching the strict Go/TS checks.
+7. **`.gitignore`** — root `node_modules/` ignored; stray committed `node_modules/.package-lock.json` removed (debug artifact).
 
 ---
 
@@ -75,13 +82,15 @@ None.
 - `go test -timeout 300s ./api/internal/server/` — pass (router/middleware integration unaffected)
 - `go vet ./api/internal/middleware/...` — clean
 - `go build` + `go vet` on `sdks/canary/go/scenarios/s-rate-limit/` — clean
+- `python3 -m py_compile sdks/canary/python/scenarios/*.py` — all compile; jwt_login import verified present in all 6 converted scenarios
+- `ci.yml` Python loop: 19 scenarios (3 d_* parked with rationale comment)
 - Full CI (lint, race suite, canaries) — deferred to the PR gate
 
 ---
 
 ## Next Steps
 
-- After merge: re-run CI on open PRs #647, #734, #816 (update branches to `main`) — the SDK canary job should be stable; consider flipping `sdk-canary.continue-on-error` to `false` once it passes consistently (per the TODO in `ci.yml`).
+- After merge: re-run CI on open PRs #647, #734, #816 (update branches to `main`) — the SDK canary job should be stable; consider flipping `sdk-canary.continue-on-error` to `false` once it passes consistently (per the TODO in `ci.yml`). The Python section is now expected green; the `d_*` trio stays parked until `_AccountAPI` exists.
 
 ---
 
