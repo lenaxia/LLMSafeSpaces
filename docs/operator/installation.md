@@ -18,7 +18,7 @@ This page covers deploying LLMSafeSpaces into a production Kubernetes cluster wi
 
 ### Kubernetes
 
-A cluster running **Kubernetes 1.35 or later**. The chart uses `admissionregistration.k8s.io/v1` (validating webhooks), `cert-manager.io/v1` (webhook TLS), and image volumes (KEP-4639, GA in 1.35) for workspace-agentd delivery. Node operating systems must run **cgroup v2** — the workspace-agentd sidecar reads `/sys/fs/cgroup/memory.current` and `/sys/fs/cgroup/memory.max` to surface memory-pressure warnings and OOM attribution (see [Storage](storage.md#cgroup-v2) for why this matters). All modern node OSes (Debian 11+, Ubuntu 22.04+, RHEL 9, Flatcar, Bottlerocket, Talos) default to cgroup v2.
+A cluster running **Kubernetes 1.35 or later**. The chart uses `admissionregistration.k8s.io/v1` (validating webhooks), `cert-manager.io/v1` (webhook TLS), and (once #863 lands) image volumes (KEP-4639, GA in 1.35) for workspace-agentd delivery. Node operating systems must run **cgroup v2** — the workspace-agentd sidecar reads `/sys/fs/cgroup/memory.current` and `/sys/fs/cgroup/memory.max` to surface memory-pressure warnings and OOM attribution (see [Storage](storage.md#cgroup-v2) for why this matters). All modern node OSes (Debian 11+, Ubuntu 22.04+, RHEL 9, Flatcar, Bottlerocket, Talos) default to cgroup v2.
 
 ### Helm
 
