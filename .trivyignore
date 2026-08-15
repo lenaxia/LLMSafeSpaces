@@ -36,3 +36,21 @@ CVE-2026-59869 exp:2026-10-21
 # suggestion, which would lose bug fixes). Re-evaluate when a patched
 # react-router release ships.
 GHSA-qwww-vcr4-c8h2 exp:2026-10-21
+
+# KSV-0053 — pods/exec writable by the API's terminal Role.
+# Unmasked 2026-08-15 when the Trivy helm scanner finally rendered the
+# chart (--helm-kube-version matched the >=1.35 floor; before that the
+# render failed silently and the rule never ran). The terminal feature
+# requires pods/exec create; RBAC cannot scope subresources by
+# resourceNames/labels, so the compensating control is the runtime label
+# check in api/internal/handlers/terminal.go (F1.3.6, documented inline
+# in helm/templates/rbac.yaml). Accepted with that caveat.
+KSV-0053
+
+# KSV-0056 — controller Role writes networkpolicies.
+# Same unmasking as KSV-0053. The controller's per-workspace egress
+# NetworkPolicy generator (F1.2.4/G4) is the legitimate primary user of
+# networkpolicies CRUD in the workspace namespace; this is the feature,
+# not an over-grant. The rule also lists services/endpoints/ingresses
+# which we do NOT grant (F1.3.1 removed them). Accepted.
+KSV-0056
