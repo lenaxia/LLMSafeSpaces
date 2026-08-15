@@ -24,6 +24,16 @@
       "matchUpdateTypes": ["digest", "patch", "minor"]
     },
     {
+      "description": "Never auto-merge anomalyco/opencode updates",
+      "matchPackageNames": ["anomalyco/opencode"],
+      "automerge": false
+    },
+    {
+      "description": "Never auto-merge lenaxia/ai-workflows updates",
+      "matchPackageNames": ["lenaxia/ai-workflows"],
+      "automerge": false
+    },
+    {
       "description": "Auto-merge low-risk patch updates of dev-only npm packages.",
       "matchManagers": ["npm"],
       "matchDepTypes": ["devDependencies"],
