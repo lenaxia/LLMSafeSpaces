@@ -75,4 +75,4 @@ Docs-only change — no unit/integration/e2e applicable. CI evidence as of this 
 - `design/stories/epic-65-agent-session-contract/README.md`
 - `README-LLM.md`
 - `design/stories/README.md`
-- `worklogs/NNNN_2026-08-15_epic-65-status-truth-fix.md` (this file)
+- `worklogs/0760_2026-08-15_epic-65-status-truth-fix.md` (this file)
