@@ -2564,9 +2564,9 @@
 <hr />
 <h2 id="prerequisites">Prerequisites<a class="headerlink" href="#prerequisites" title="Permanent link">&para;</a></h2>
 <h3 id="kubernetes">Kubernetes<a class="headerlink" href="#kubernetes" title="Permanent link">&para;</a></h3>
-<p>A cluster running <strong>Kubernetes 1.27 or later</strong>. The chart uses <code>admissionregistration.k8s.io/v1</code> (validating webhooks) and <code>cert-manager.io/v1</code> (webhook TLS). Node operating systems must run <strong>cgroup v2</strong> — the workspace-agentd sidecar reads <code>/sys/fs/cgroup/memory.current</code> and <code>/sys/fs/cgroup/memory.max</code> to surface memory-pressure warnings and OOM attribution (see <a href="../storage/#cgroup-v2">Storage</a> for why this matters). All modern node OSes (Debian 11+, Ubuntu 22.04+, RHEL 9, Flatcar, Bottlerocket, Talos) default to cgroup v2.</p>
+<p>A cluster running <strong>Kubernetes 1.35 or later</strong>. The chart uses <code>admissionregistration.k8s.io/v1</code> (validating webhooks), <code>cert-manager.io/v1</code> (webhook TLS), and (once #863 lands) image volumes (KEP-4639, GA in 1.35) for workspace-agentd delivery. Node operating systems must run <strong>cgroup v2</strong> — the workspace-agentd sidecar reads <code>/sys/fs/cgroup/memory.current</code> and <code>/sys/fs/cgroup/memory.max</code> to surface memory-pressure warnings and OOM attribution (see <a href="../storage/#cgroup-v2">Storage</a> for why this matters). All modern node OSes (Debian 11+, Ubuntu 22.04+, RHEL 9, Flatcar, Bottlerocket, Talos) default to cgroup v2.</p>
 <h3 id="helm">Helm<a class="headerlink" href="#helm" title="Permanent link">&para;</a></h3>
-<p><strong>Helm 3.13+</strong> (also validated against Helm 4). The chart ships ~150 documented values and a pre-install/pre-upgrade migration Job.</p>
+<p><strong>Helm 3.21+</strong> (older binaries' built-in kubeVersion defaults predate 1.35 and refuse the chart during offline <code>lint</code>/<code>template</code>; live installs use the server version. Also validated against Helm 4). The chart ships ~150 documented values and a pre-install/pre-upgrade migration Job.</p>
 <h3 id="cert-manager">cert-manager<a class="headerlink" href="#cert-manager" title="Permanent link">&para;</a></h3>
 <p>Required for the validating webhooks (<code>Workspace</code>, <code>RuntimeEnvironment</code>, optional per-tenant quota). The chart uses <code>cert-manager.io/v1</code> <code>Issuer</code> + <code>Certificate</code> resources plus the <code>cert-manager.io/inject-ca-from</code> annotation read by <code>cainjector</code>.</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>kubectl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>https://github.com/cert-manager/cert-manager/releases/download/v1.16.0/cert-manager.yaml
@@ -2832,7 +2832,7 @@
 <h2 id="production-checklist">Production checklist<a class="headerlink" href="#production-checklist" title="Permanent link">&para;</a></h2>
 <p>Before declaring the install production-ready:</p>
 <ul class="task-list">
-<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Kubernetes 1.27+</strong> with cgroup v2 nodes.</li>
+<li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Kubernetes 1.35+</strong> with cgroup v2 nodes.</li>
 <li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>cert-manager</strong> installed (or <code>webhooks.enabled=false</code> with the trade-off understood).</li>
 <li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Postgres</strong> reachable, database + role created, TLS configured, backups scheduled.</li>
 <li class="task-list-item"><label class="task-list-control"><input type="checkbox" disabled/><span class="task-list-indicator"></span></label> <strong>Redis</strong> reachable, TLS in transit, at-rest encryption, NetworkPolicy restricting ingress.</li>
@@ -2880,7 +2880,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 23, 2026 17:14:52 UTC"><span class="timeago" datetime="2026-07-23T17:14:52+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 23, 2026 17:14:52 UTC">2026-07-23</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 15, 2026 08:35:04 UTC"><span class="timeago" datetime="2026-08-15T08:35:04+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 15, 2026 08:35:04 UTC">2026-08-15</span>
   </span>
 
     
