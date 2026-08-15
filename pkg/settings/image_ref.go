@@ -16,6 +16,14 @@ import (
 // ghcr.io/lenaxia/llmsafespaces/base:latest served a 4-day-old v0.13.0
 // digest through the cluster mirror while upstream latest was v0.15.5,
 // so new workspaces silently launched with a pre-fix agentd.
+//
+// Scope decision (2026-08-15 review): this is a blocklist of the common
+// mutable conventions, NOT a shape allow-list (semver/sha-/ts-). A shape
+// rule would reject legitimate private conventions (e.g. "v2-final",
+// "2026q3-pinned"). The blocklist is deliberately extended with the
+// common alias family (stable/prod/current/release); an operator using a
+// non-listed re-pushable tag owns that choice — the known-mutable
+// conventions are what the platform has ever seeded or documented.
 var mutableTags = map[string]struct{}{
 	"latest":  {},
 	"main":    {},
@@ -23,11 +31,15 @@ var mutableTags = map[string]struct{}{
 	"dev":     {},
 	"edge":    {},
 	"nightly": {},
+	"stable":  {},
+	"prod":    {},
+	"current": {},
+	"release": {},
 }
 
 const (
-	maxTagLen   = 128
-	maxDigestLn = 71
+	maxTagLen    = 128
+	maxDigestLen = 71 // "sha256:" + 64 hex
 )
 
 func isMutableTag(tag string) bool {
@@ -53,7 +65,7 @@ func validateImageRefPinned(value string) error {
 	if value == "" {
 		return nil
 	}
-	if strings.ContainsAny(value, " \t") {
+	if strings.ContainsAny(value, " \t\n\r") {
 		return fmt.Errorf("image reference %q must not contain whitespace", value)
 	}
 	lastSlash := strings.LastIndex(value, "/")
@@ -66,7 +78,10 @@ func validateImageRefPinned(value string) error {
 
 	if at := strings.LastIndex(value, "@"); at > lastSlash {
 		digest := value[at+1:]
-		if len(digest) < maxDigestLn || !strings.HasPrefix(digest, "sha256:") || !isHex(digest[len("sha256:"):]) {
+		// sha256 digests are exactly "sha256:" + 64 hex chars. An
+		// over-long hex tail (65+) would only fail later at pull time —
+		// reject at the write boundary with a precise message instead.
+		if len(digest) != maxDigestLen || !strings.HasPrefix(digest, "sha256:") || !isHex(digest[len("sha256:"):]) {
 			return fmt.Errorf("image reference %q has a malformed digest", value)
 		}
 		return nil
@@ -93,8 +108,18 @@ func validateImageRefPinned(value string) error {
 	return nil
 }
 
+// validTagChars enforces the OCI tag grammar: alphanumerics, underscores,
+// periods, and dashes, with an alphanumeric FIRST character (a leading
+// "." or "-" is invalid — it would only fail later at pull time).
 func validTagChars(tag string) bool {
-	for i := 0; i < len(tag); i++ {
+	if len(tag) == 0 {
+		return false
+	}
+	c := tag[0]
+	if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9') {
+		return false
+	}
+	for i := 1; i < len(tag); i++ {
 		c := tag[i]
 		switch {
 		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':

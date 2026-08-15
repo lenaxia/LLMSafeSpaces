@@ -4,6 +4,7 @@
 package settings
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -30,10 +31,20 @@ func TestValidateImageRefPinned(t *testing.T) {
 		{"dev tag", "ghcr.io/lenaxia/llmsafespaces/base:dev", false},
 		{"edge tag", "ghcr.io/lenaxia/llmsafespaces/base:edge", false},
 		{"nightly tag", "ghcr.io/lenaxia/llmsafespaces/base:nightly", false},
+		{"stable alias tag", "ghcr.io/lenaxia/llmsafespaces/base:stable", false},
+		{"prod alias tag", "registry.local:5000/team/img:prod", false},
+		{"current alias tag", "ghcr.io/x/y:current", false},
+		{"release alias tag", "ghcr.io/x/y:release", false},
 		{"untagged image ref is implicit latest", "ghcr.io/lenaxia/llmsafespaces/base", false},
 		{"untagged with port registry", "registry.local:5000/team/img", false},
 		{"image ref with spaces", "ghcr.io/lenaxia/llmsafespaces/base:0.15.5 extra", false},
+		{"image ref with newline in repo", "ghcr.io/lenaxia/llmsafesp\naces/base:0.15.5", false},
 		{"tag with invalid chars", "ghcr.io/lenaxia/llmsafespaces/base:0.15.5^", false},
+		{"tag with leading period", "ghcr.io/lenaxia/llmsafespaces/base:.1.0", false},
+		{"tag with leading dash", "ghcr.io/lenaxia/llmsafespaces/base:-1.0", false},
+		{"digest with 65 hex chars (too long)", "ghcr.io/x/y@sha256:" + strings.Repeat("a", 65), false},
+		{"digest with 63 hex chars (too short)", "ghcr.io/x/y@sha256:" + strings.Repeat("a", 63), false},
+		{"digest with non-hex tail", "ghcr.io/x/y@sha256:" + strings.Repeat("a", 63) + "zz", false},
 		{"bare latest is not an rte name", "latest", false},
 		{"bare main is not an rte name", "main", false},
 	}

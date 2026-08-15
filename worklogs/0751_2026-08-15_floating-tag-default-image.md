@@ -44,17 +44,37 @@ per puller is expected behavior; depending on them for correctness is not.
    `api/internal/services/workspace/workspace_service.go`
    (`TestCreateWorkspace_EmptyRuntime_StoredRTEDefaultImage_StillUsed`).
 2. The chart seeds a `base` RuntimeEnvironment pinned to
-   `.Chart.AppVersion` — validated in
-   `helm/templates/runtimeenvironment-base.yaml`.
+   `.Chart.AppVersion` — **Corrected after review (Rule 7):** I
+   validated the template *mechanism* but not the *currency of the
+   value*. `appVersion` had drifted to `0.8.13` (lockstep bumps
+   stopped at the v0.9.0 chart release), which would have made the
+   tier-4 default launch a pre-v0.14 base image on default-values
+   deployments — trading nondeterministic staleness for deterministic
+   staleness. Fixed in this PR: appVersion bumped to `0.15.5` and
+   `helm/appversion_drift_test.go` now asserts appVersion and the
+   default-rendered base RTE tag equal the latest CHANGELOG release,
+   unconditionally.
 3. Seed only inserts missing keys (`InsertInstanceSettingIfMissing`) —
    validated in `pkg/settings/seed.go`; therefore existing deployments
-   keep the stale row until migration `000023` removes it.
+   keep the stale row until migration `000023` removes it. Known
+   narrow race (review Robustness-3): an old-binary API pod restarting
+   between the pre-upgrade migration hook and rollout completion can
+   re-seed `base:latest`; the read guard neutralizes it for new
+   workspaces — only a full rollback then launches it.
 4. The admin UX "clear" writes `""` — validated by allowing empty in the
    new validator (empty is the new default).
 5. No other setting/chart default ships a floating image tag —
    validated by grep: only `schema.go:91` (fixed). Chart
    `namespace.podSecurityVersion: "latest"` is the Pod Security
    Standards API-version keyword, not an image tag — left as-is.
+   **Residual (follow-up #860):** `runtimes/*/Dockerfile` still `FROM
+   base:latest`, and `api/internal/imagefactory/catalog.seed.yaml`
+   hardcodes base `0.8.0` as the tier-1/2 build base (user-reachable;
+   same drift disease). Also: a user-supplied explicit `runtime` with
+   a floating tag remains reachable by design (webhook allow-lists
+   registries, not tag mutability — extending it would break UPDATEs
+   of pre-existing CRs; operator policy decision). This fix closes the
+   *platform-default* path, which is what the incident exercised.
 
 ## Changes
 
@@ -65,10 +85,15 @@ per puller is expected behavior; depending on them for correctness is not.
    version comment).
 2. `pkg/settings/image_ref.go` (new) — `validateImageRefPinned` +
    exported `ValidateImageRefPinned`: rejects known-mutable tags
-   (`latest`, `main`, `master`, `dev`, `edge`, `nightly`, case-folded),
-   untagged image refs (implicit `:latest`), malformed digests, embedded
-   whitespace; accepts digest pins, explicit non-mutable tags
-   (semver/`sha-`/`ts-`), RuntimeEnvironment names (no `/`), and empty.
+   (`latest`, `main`, `master`, `dev`, `edge`, `nightly` — extended
+   post-review with `stable`, `prod`, `current`, `release`; documented
+   as a deliberate blocklist-scope decision, not a shape allow-list),
+   untagged image refs (implicit `:latest`), malformed digests
+   (post-review: exact 64-hex length enforced), embedded whitespace
+   (post-review: `\n`/`\r` included; tag grammar enforces alphanumeric
+   first char — leading `.`/`-` rejected); accepts digest pins,
+   explicit non-mutable tags (semver/`sha-`/`ts-`),
+   RuntimeEnvironment names (no `/`), and empty.
 3. `pkg/settings/validate.go` — TypeString branch enforces
    `RejectMutableTags` after pattern.
 4. `pkg/settings/normalize.go` — trim whitespace for
@@ -80,18 +105,33 @@ per puller is expected behavior; depending on them for correctness is not.
 6. Migration `000023_workspace_default_image_no_float` (canonical +
    chart copy via `make chart-sync-migrations`): deletes
    `instance_settings` rows still equal to the exact seeded default;
-   admin-customized values preserved.
-7. Frontend: `SettingDef.rejectMutableTags?` typed; `settingsNormalize`
-   trims `workspace.defaultImage` (mirrors backend). Enforcement stays
-   server-authoritative — no third copy of the tag policy client-side.
-8. Tests: `pkg/settings/image_ref_test.go` (22 cases),
-   `pkg/settings/default_image_boundary_test.go` (Set accepts/rejects ×
-   default fallthrough), `api/.../default_image_read_guard_test.go`
-   (stored floating/untagged values not launched; pinned/RTE still used).
-   Existing `:latest` fixture values in `workspace_defaults_test.go`
-   updated to pinned refs.
-9. `docs/reference/crds.md` RTE example repinned; canary N3 comment
-   updated to describe the full hierarchy; CHANGELOG entry.
+   admin-customized values preserved. Down-migration comment corrected
+   post-review to state actual rollback behavior (old-binary re-seed
+   wins; the statement is a no-op in the common path).
+7. `helm/Chart.yaml` — appVersion `0.8.13` → `0.15.5`, chart version
+   `0.9.0` → `0.9.1` (post-review critical fix; the tier-4 fallback's
+   load-bearing dependency).
+8. `helm/appversion_drift_test.go` (new) — drift guard: appVersion and
+   the default-rendered base RTE tag must equal the latest CHANGELOG
+   release section (release.yml treats CHANGELOG as source of truth;
+   now the test does too).
+9. `api/.../platform_info.go` — BaseRuntime display falls back to the
+   API build version when the setting is empty (lockstep release
+   contract; prevents an empty/misleading Versions cell — post-review
+   Minor-2).
+10. Frontend: `SettingDef.rejectMutableTags?` typed; `settingsNormalize`
+    trims `workspace.defaultImage` (mirrors backend). Enforcement stays
+    server-authoritative — no third copy of the tag policy client-side.
+11. Tests: `pkg/settings/image_ref_test.go` (30+ cases incl. post-review
+    laxity cases: 65/63-hex digests, leading-punct tags, `\n` in repo,
+    alias tags), `pkg/settings/default_image_boundary_test.go`,
+    `api/.../default_image_read_guard_test.go`, HTTP-level boundary
+    `TestAdminSettings_PUT_WorkspaceDefaultImage_*` (router wiring →
+    400/200), `TestGetPlatformInfo` fallback sub-test.
+    Existing `:latest` fixture values in `workspace_defaults_test.go`
+    updated to pinned refs.
+12. `docs/reference/crds.md` RTE example repinned; canary N3 comment
+    updated to describe the full hierarchy; CHANGELOG entry.
 
 ## Adversarial review
 

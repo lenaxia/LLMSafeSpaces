@@ -10,7 +10,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/lenaxia/llmsafespaces/pkg/interfaces"
-	"github.com/lenaxia/llmsafespaces/pkg/version"
+	versionpkg "github.com/lenaxia/llmsafespaces/pkg/version"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
@@ -83,7 +83,7 @@ func parseImageTag(image string) string {
 // GetPlatformInfo handles GET /api/v1/admin/platform-info.
 func (h *PlatformInfoHandler) GetPlatformInfo(c *gin.Context) {
 	ctx := c.Request.Context()
-	resp := PlatformInfoResponse{API: version.Version}
+	resp := PlatformInfoResponse{API: versionpkg.Version}
 
 	if h.clientset != nil {
 		deps, err := h.clientset.AppsV1().Deployments(h.namespace).List(ctx, metav1.ListOptions{
@@ -112,6 +112,7 @@ func (h *PlatformInfoHandler) GetPlatformInfo(c *gin.Context) {
 		}
 	}
 
+	settingReadOK := false
 	if h.baseImageGetter != nil {
 		baseImage, err := h.baseImageGetter.GetString(ctx, "workspace.defaultImage")
 		if err != nil {
@@ -119,8 +120,26 @@ func (h *PlatformInfoHandler) GetPlatformInfo(c *gin.Context) {
 				h.logger.Warn("platform-info: failed to read workspace.defaultImage setting", "error", err.Error())
 			}
 		} else {
-			resp.BaseRuntime = parseImageTag(baseImage)
+			settingReadOK = true
+			if tag := parseImageTag(baseImage); tag != "" {
+				resp.BaseRuntime = tag
+			}
 		}
+	}
+
+	// With the platform default cleared (floating-tag fix, 2026-08-15),
+	// workspace.defaultImage is empty on default deployments and the
+	// actual launch image is the chart-pinned `base` RuntimeEnvironment.
+	// That RTE's tag is the release semver (appVersion, guarded against
+	// drift by helm/appversion_drift_test.go), and the release workflow
+	// builds all five images — including base — with the same semver as
+	// this API binary. Falling back to our own build version is therefore
+	// truthful in lockstep deployments and never emptier than the
+	// pre-fix display. Only on a SUCCESSFUL read: when the settings
+	// backend is down we can't know whether a custom default is set, and
+	// an empty cell is the honest display.
+	if settingReadOK && resp.BaseRuntime == "" {
+		resp.BaseRuntime = strings.TrimPrefix(versionpkg.Version, "v")
 	}
 
 	c.JSON(http.StatusOK, resp)

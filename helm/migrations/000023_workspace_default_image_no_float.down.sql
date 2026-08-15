@@ -1,6 +1,16 @@
--- Reverse of 000023: restore the pre-fix floating default. Only
--- meaningful when rolling the application back to a schema-v10-or-older
--- binary, which both expects and re-seeds this value anyway.
+-- Reverse of 000023: restore the pre-fix floating default when the row
+-- is missing.
+--
+-- Rollback behavior note (accurate, 2026-08-15 review): on a rollback,
+-- an older API binary re-runs its boot-time settings Seed, which
+-- re-inserts the schema-v10 default `base:latest` via
+-- InsertInstanceSettingIfMissing BEFORE this statement is reached in
+-- any later forward/down cycle — so in the common rollback path this
+-- statement is a no-op (the row already exists and ON CONFLICT DO
+-- NOTHING skips). It only restores the row on a database restored
+-- without a subsequent boot. Harmless either way: a rollback to
+-- schema-v10 code deterministically re-seeds the floating default
+-- itself, which is the pre-fix behavior a rollback asks for.
 
 BEGIN;
 

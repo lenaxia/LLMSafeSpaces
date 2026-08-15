@@ -186,12 +186,64 @@ func TestAdminSettings_PUT_InvalidValue(t *testing.T) {
 
 	body := `{"value": 999}`
 	w := httptest.NewRecorder()
-	req, _ := http.NewRequest("PUT", "/api/v1/admin/settings/auth.lockoutAttempts", bytes.NewBufferString(body))
+	req, _ := http.NewRequest(http.MethodPut, "/api/v1/admin/settings/auth.lockoutAttempts", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	r.ServeHTTP(w, req)
 
 	if w.Code != 400 {
 		t.Errorf("expected 400 for out-of-range value, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// HTTP-level boundary for the floating-tag fix (2026-08-15): the router
+// wiring must surface the RejectMutableTags validation as 400 with the
+// pinning message — not just the service-level Set (unit-tested in
+// pkg/settings). This is the exact write an admin would attempt.
+func TestAdminSettings_PUT_WorkspaceDefaultImage_FloatingTagsRejected(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{"latest", "ghcr.io/lenaxia/llmsafespaces/base:latest"},
+		{"dev", "ghcr.io/lenaxia/llmsafespaces/base:dev"},
+		{"stable alias", "ghcr.io/lenaxia/llmsafespaces/base:stable"},
+		{"untagged implicit latest", "ghcr.io/lenaxia/llmsafespaces/base"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _ := setupSettingsRouter("admin")
+
+			body, _ := json.Marshal(map[string]string{"value": tc.value})
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest(http.MethodPut, "/api/v1/admin/settings/workspace.defaultImage", bytes.NewBuffer(body))
+			req.Header.Set("Content-Type", "application/json")
+			r.ServeHTTP(w, req)
+
+			if w.Code != 400 {
+				t.Errorf("expected 400 for %q, got %d: %s", tc.value, w.Code, w.Body.String())
+			}
+			if !bytes.Contains(w.Body.Bytes(), []byte("mutable")) &&
+				!bytes.Contains(w.Body.Bytes(), []byte(":latest")) {
+				t.Errorf("error should explain the pinning requirement, got: %s", w.Body.String())
+			}
+		})
+	}
+}
+
+func TestAdminSettings_PUT_WorkspaceDefaultImage_PinnedAccepted(t *testing.T) {
+	r, store := setupSettingsRouter("admin")
+
+	body := `{"value": "ghcr.io/lenaxia/llmsafespaces/base:0.15.5"}`
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest(http.MethodPut, "/api/v1/admin/settings/workspace.defaultImage", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("expected 200 for pinned tag, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := string(store.instanceData["workspace.defaultImage"]); got != `"ghcr.io/lenaxia/llmsafespaces/base:0.15.5"` {
+		t.Errorf("pinned value not persisted, store has %s", got)
 	}
 }
 
