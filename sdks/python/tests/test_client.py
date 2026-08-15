@@ -32,6 +32,48 @@ def test_list_workspaces():
 
 
 @respx.mock
+def test_list_workspaces_full_schema_round_trip():
+    """Regression for #867: every field the API's WorkspaceListItem emits
+    (pkg/types workspace.go — including omitempty ones) must be accepted
+    by the dataclass without TypeError. Drift here crashes list() in the
+    live canary (agentNeedsRefresh was the observed instance)."""
+    respx.get(f"{BASE}/workspaces?limit=20&offset=0").respond(
+        json={
+            "items": [
+                {
+                    "id": "ws-full",
+                    "name": "full",
+                    "userId": "u1",
+                    "runtime": "python",
+                    "storageSize": "10Gi",
+                    "phase": "Active",
+                    "imageTag": "sha-abc123",
+                    "agentVersion": "1.18.10",
+                    "defaultModel": "claude-sonnet-4-5",
+                    "maxActiveSessions": 3,
+                    "createdAt": "2026-01-01T00:00:00Z",
+                    "updatedAt": "2026-01-01T00:00:00Z",
+                    "agentNeedsRefresh": True,
+                    "credentialsPendingSince": "2026-01-02T00:00:00Z",
+                    "orgId": "org-9",
+                }
+            ],
+            "pagination": None,
+        }
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    item = client.workspaces.list().items[0]
+    assert item.id == "ws-full"
+    assert item.agentNeedsRefresh is True
+    assert item.imageTag == "sha-abc123"
+    assert item.agentVersion == "1.18.10"
+    assert item.defaultModel == "claude-sonnet-4-5"
+    assert item.maxActiveSessions == 3
+    assert item.credentialsPendingSince == "2026-01-02T00:00:00Z"
+    assert item.orgId == "org-9"
+
+
+@respx.mock
 def test_create_workspace():
     respx.post(f"{BASE}/workspaces").respond(
         status_code=201,
