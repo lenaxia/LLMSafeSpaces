@@ -144,12 +144,6 @@ func (f *fakeKeyStore) CreateUserKey(_ context.Context, _ *secrets.UserKeyRecord
 func (f *fakeKeyStore) UpdateWrappedDEK(_ context.Context, _ string, _ []byte, _ []byte, _ int) error {
 	return nil
 }
-func (f *fakeKeyStore) UpdateWrappedDEKAndSource(_ context.Context, _ string, _, _ []byte, _ int, _ string) error {
-	return nil
-}
-func (f *fakeKeyStore) UpdateWrappedDEKRecovery(_ context.Context, _ string, _ []byte, _ []byte) error {
-	return nil
-}
 
 func setupUserCredRouter(h *UserProviderCredentialsHandler) *gin.Engine {
 	gin.SetMode(gin.TestMode)

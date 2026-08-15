@@ -41,6 +41,11 @@ func Validate(def SettingDef, value any) error {
 				return fmt.Errorf("key %q: value %q does not match pattern %q", def.Key, s, def.Pattern)
 			}
 		}
+		if def.RejectMutableTags {
+			if err := validateImageRefPinned(s); err != nil {
+				return fmt.Errorf("key %q: %w", def.Key, err)
+			}
+		}
 	case TypeEnum:
 		s, ok := value.(string)
 		if !ok {

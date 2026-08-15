@@ -285,7 +285,7 @@ kind: RuntimeEnvironment
 metadata:
   name: python-3.11
 spec:
-  image: ghcr.io/lenaxia/llmsafespaces/base:latest
+  image: ghcr.io/lenaxia/llmsafespaces/base:0.15.5
   language: python
   version: "3.11"
   packageManager: pip

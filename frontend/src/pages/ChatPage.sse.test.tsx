@@ -35,6 +35,7 @@ vi.mock("../providers/SessionActivityProvider", () => ({
   usePendingQuestionsForSession: () => [],
   usePendingPermissionsForSession: () => [],
   useClearSessionPendingPrompts: () => () => {},
+    useWorkspaceInputSnapshot: () => undefined,
   SessionActivityProvider: ({ children }: { children: any }) => <>{children}</>,
 }));
 vi.mock("../api/messages", () => {

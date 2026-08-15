@@ -21,6 +21,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -273,5 +274,61 @@ func TestE2E_Reconcile_NoRuntimeEnvironment_DoesNotCreatePod(t *testing.T) {
 	podKey := types.NamespacedName{Name: podName(ws.Name, string(ws.UID)), Namespace: ws.Namespace}
 	getErr := r.Get(context.Background(), podKey, pod)
 	assert.True(t, apierrors.IsNotFound(getErr),
-		"no pod must be created when the RuntimeEnvironment is missing — creating one with an empty image would CrashLoopBackOff silently")
+		"no pod must be created when the RuntimeEnvironment is missing — creating one with an empty image would CrashLoopBackoff silently")
+}
+
+// TestE2E_Reconcile_PodSpec_FSGroupChangePolicyPersisted asserts the pod
+// PERSISTED by the real Reconcile loop carries
+// fsGroupChangePolicy=OnRootMismatch. The unit test on buildPod covers the
+// builder; this guards the full create path (handleCreating → buildPod →
+// Create), so a future regression in the create/persist path (e.g. pod-spec
+// normalization stripping the field) cannot pass silently.
+func TestE2E_Reconcile_PodSpec_FSGroupChangePolicyPersisted(t *testing.T) {
+	ws := makeWorkspace("ws-fsgroup", "default", v1.WorkspacePhasePending)
+	_, pod := reconcileToCreatingPod(t, ws, "http://test-api.e2e:8080")
+
+	require.NotNil(t, pod.Spec.SecurityContext, "persisted pod must have a security context")
+	require.NotNil(t, pod.Spec.SecurityContext.FSGroupChangePolicy,
+		"persisted pod must set fsGroupChangePolicy explicitly")
+	assert.Equal(t, corev1.FSGroupChangeOnRootMismatch, *pod.Spec.SecurityContext.FSGroupChangePolicy,
+		"must be OnRootMismatch — the default (Always) recursively chowns the entire PVC on every pod start")
+}
+
+// TestE2E_Reconcile_PodSpec_FSGroupChangePolicyPersistedOnResume asserts the
+// same on the suspend→resume path — a Resuming workspace re-creates its pod
+// through handleCreating, and resume is where the production incident
+// (Init:0/2 stuck for 5+ minutes chowning 315,923 files) was observed.
+func TestE2E_Reconcile_PodSpec_FSGroupChangePolicyPersistedOnResume(t *testing.T) {
+	ws := makeWorkspace("ws-fsgroup-resume", "default", v1.WorkspacePhaseResuming)
+	past := metav1.Now()
+	ws.Status.SuspendedAt = &past
+	ws.Annotations = map[string]string{
+		v1.AnnotationLastActivityAt: time.Now().Format(time.RFC3339),
+	}
+	pvc := makeBoundPVC("workspace-"+ws.Name, ws.Namespace, ws.UID)
+	pwSecret := makePasswordSecret(ws.Name, ws.Namespace)
+	rte := &v1.RuntimeEnvironment{
+		ObjectMeta: metav1.ObjectMeta{Name: "python-3.11"},
+		Spec: v1.RuntimeEnvironmentSpec{
+			Image: "ghcr.io/test/python:3.11", Language: "python", Version: "3.11",
+		},
+	}
+	r := reconcilerFor(t, ws, pvc, pwSecret, rte)
+
+	ctx := context.Background()
+	// First reconcile: Resuming → Creating. Second: Creating → pod created.
+	for i := 0; i < 2; i++ {
+		_, err := r.Reconcile(ctx, reqFor(ws.Name, ws.Namespace))
+		require.NoError(t, err, "reconcile %d", i+1)
+	}
+
+	pod := &corev1.Pod{}
+	podKey := types.NamespacedName{Name: podName(ws.Name, string(ws.UID)), Namespace: ws.Namespace}
+	require.NoError(t, r.Get(ctx, podKey, pod), "pod must be re-created after resume")
+
+	require.NotNil(t, pod.Spec.SecurityContext, "resumed pod must have a security context")
+	require.NotNil(t, pod.Spec.SecurityContext.FSGroupChangePolicy,
+		"resumed pod must set fsGroupChangePolicy explicitly")
+	assert.Equal(t, corev1.FSGroupChangeOnRootMismatch, *pod.Spec.SecurityContext.FSGroupChangePolicy,
+		"must be OnRootMismatch on the resume path — resume was the observed incident path")
 }

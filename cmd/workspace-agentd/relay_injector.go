@@ -261,7 +261,18 @@ type relayInjectorConfig struct {
 	KillOpenCode func()
 	// HealthCheck returns true when opencode is healthy and ready to serve API calls.
 	HealthCheck func() bool
+	// FetchRetryDelay is how long to wait between free-model fetch attempts
+	// (both errors and empty catalog). Zero → defaultFreeModelFetchRetryDelay.
+	FetchRetryDelay time.Duration
+	// FetchDeadline bounds the total time spent retrying the free-model
+	// fetch. Zero → defaultFreeModelFetchDeadline.
+	FetchDeadline time.Duration
 }
+
+const (
+	defaultFreeModelFetchRetryDelay = 5 * time.Second
+	defaultFreeModelFetchDeadline   = 30 * time.Second
+)
 
 // startRelayInjector starts a background goroutine that waits for opencode to
 // be healthy, then applies the relay config (Phase 2 injection). It runs at
@@ -331,34 +342,53 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 			return
 		}
 
-		// Fetch the live free model list from the running opencode.
-		// Retry for up to 30s if the catalog returns no free models — this
-		// handles the race where the relay injector runs before opencode's
-		// provider catalog is fully initialized (~16s after startup). Without
-		// the retry, a 0-model response permanently skips relay injection for
-		// the pod's lifetime, leaving free-tier users with no working models.
+		// Fetch the live free model list from the running opencode. Retry for
+		// up to FetchDeadline on BOTH empty catalogs and transient errors —
+		// the catalog race (injector runs before opencode's provider catalog
+		// is initialized, ~16s after startup) AND boot-time network
+		// transients (e.g. "decode /provider: unexpected EOF" while
+		// models.dev is unreachable) previously skipped relay injection
+		// permanently, leaving free-tier sessions routing direct-to-Zen
+		// until the pod was recreated.
+		retryDelay := cfg.FetchRetryDelay
+		if retryDelay <= 0 {
+			retryDelay = defaultFreeModelFetchRetryDelay
+		}
+		fetchDeadline := time.Now().Add(cfg.FetchDeadline)
+		if cfg.FetchDeadline <= 0 {
+			fetchDeadline = time.Now().Add(defaultFreeModelFetchDeadline)
+		}
+		effectiveDeadline := time.Until(fetchDeadline)
 		var models []opencode.RelayModel
-		fetchDeadline := time.Now().Add(30 * time.Second)
 		for {
 			var fetchErr error
 			models, fetchErr = fetchFreeModels(ctx, cfg.OpenCodeBaseURL, cfg.OpenCodePassword)
 			if fetchErr != nil {
-				lg.Warn("relay injector: failed to fetch free models, skipping", zap.Error(fetchErr))
-				return
-			}
-			if len(models) > 0 {
+				if time.Now().After(fetchDeadline) {
+					lg.Warn("relay injector: failed to fetch free models, deadline exhausted, skipping",
+						zap.Error(fetchErr),
+						zap.Duration("deadline", effectiveDeadline))
+					relayInjectorOutcomes.WithLabelValues("fetch_failed").Inc()
+					return
+				}
+				lg.Warn("relay injector: transient error fetching free models, retrying",
+					zap.Error(fetchErr),
+					zap.Duration("retryIn", retryDelay))
+			} else if len(models) > 0 {
 				break
 			}
 			if time.Now().After(fetchDeadline) {
-				lg.Warn("relay injector: no free opencode models found after 30s wait, skipping relay config")
+				lg.Warn("relay injector: no free opencode models found after deadline, skipping relay config")
 				relayInjectorOutcomes.WithLabelValues("no_free_models").Inc()
 				return
 			}
-			lg.Info("relay injector: no free models yet (catalog still initializing), retrying in 5s")
+			if fetchErr == nil {
+				lg.Info("relay injector: no free models yet (catalog still initializing), retrying")
+			}
 			select {
 			case <-ctx.Done():
 				return
-			case <-time.After(5 * time.Second):
+			case <-time.After(retryDelay):
 			}
 		}
 		lg.Info("relay injector: fetched free models", zap.Int("count", len(models)))
@@ -406,6 +436,11 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 		// Kill opencode — the supervisor restarts it and reads the new config.
 		// The relay state is already stored in the ConfigWriter (set above
 		// via SetRelay), so reloadSecretsHandler's Rebuild() will preserve it.
+		//
+		// Metric note: "success" counts config APPLICATIONS (relay block
+		// written + auth.json updated). The actual process restart may be
+		// deferred up to defaultMaxDefer by the session-aware kill decision
+		// while sessions are busy — the config takes effect at that restart.
 		cfg.KillOpenCode()
 		relayInjectorOutcomes.WithLabelValues("success").Inc()
 		lg.Info("relay injector: triggered opencode restart to apply relay config")

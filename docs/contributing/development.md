@@ -8,9 +8,9 @@ How to get a local LLMSafeSpaces environment running, run the tests, and iterate
 |------|---------|-----|
 | [Go](https://go.dev/) | 1.26+ | API service, controller, all Go binaries |
 | [Docker](https://www.docker.com/) | any recent | `kind` runs on it; image builds |
-| [kind](https://kind.sigs.k8s.io/) | 0.20+ | Local Kubernetes cluster |
-| [kubectl](https://kubernetes.io/docs/reference/kubectl/) | 1.28+ | Talk to the cluster |
-| [Helm](https://helm.sh/) | 3.12+ | Deploy the chart |
+| [kind](https://kind.sigs.k8s.io/) | 0.32+ | Local Kubernetes cluster (must support the pinned 1.35 node image; see `local/kind-cluster.yaml`) |
+| [kubectl](https://kubernetes.io/docs/reference/kubectl/) | 1.34+ | Talk to the cluster (±1 skew vs the 1.35 nodes) |
+| [Helm](https://helm.sh/) | 3.21+ | Deploy the chart (older binaries' built-in kubeVersion defaults predate 1.35 and refuse the chart offline) |
 | [Node.js](https://nodejs.org/) | 22+ | Frontend (React + Vite) |
 
 Optional but recommended: `jq` (for working with API responses in the shell), `make`.
@@ -20,7 +20,7 @@ Verify:
 ```bash
 go version          # go1.26+
 docker version
-kind version        # kind v0.20+
+kind version        # kind v0.32+
 kubectl version --client --short
 helm version --short
 node --version      # v22+

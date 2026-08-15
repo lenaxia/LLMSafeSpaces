@@ -9,9 +9,11 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	versionpkg "github.com/lenaxia/llmsafespaces/pkg/version"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
@@ -134,6 +136,27 @@ func TestGetPlatformInfo(t *testing.T) {
 
 		h.GetPlatformInfo(c)
 		require.Equal(t, http.StatusOK, w.Code)
+	})
+
+	t.Run("cleared default falls back to build version for BaseRuntime", func(t *testing.T) {
+		// Floating-tag fix: workspace.defaultImage is empty on default
+		// deployments; the launched image is the chart-pinned base RTE,
+		// which the release workflow tags with the same semver as this
+		// binary. The Versions tab must show that, not an empty cell.
+		clientset := fake.NewSimpleClientset()
+		h := NewPlatformInfoHandler(clientset, "test-ns", &fakeSettingGetter{image: ""})
+
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodGet, "/admin/platform-info", nil)
+
+		h.GetPlatformInfo(c)
+		require.Equal(t, http.StatusOK, w.Code)
+		var resp PlatformInfoResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		assert.Equal(t, strings.TrimPrefix(versionpkg.Version, "v"), resp.BaseRuntime,
+			"empty setting must fall back to the API build version (lockstep with the base RTE tag)")
+		assert.NotEmpty(t, resp.BaseRuntime)
 	})
 }
 

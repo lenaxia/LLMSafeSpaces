@@ -431,7 +431,7 @@ func TestCreateWorkspace_AutoSuspendTimeout_MinutesToSeconds(t *testing.T) {
 
 func TestCreateWorkspace_AllDefaults_AppliedTogether(t *testing.T) {
 	f := newDefaultsFixture(t, map[string]any{
-		"workspace.defaultImage":                       "custom:latest",
+		"workspace.defaultImage":                       "custom:1.0.0",
 		"workspace.defaultStorageSize":                 "5Gi",
 		"workspace.defaultStorageClass":                "premium",
 		"workspace.defaultSecurityLevel":               "high",
@@ -446,7 +446,7 @@ func TestCreateWorkspace_AllDefaults_AppliedTogether(t *testing.T) {
 	ctx := context.Background()
 
 	f.ws.On("Create", mock.Anything, mock.MatchedBy(func(ws *v1.Workspace) bool {
-		return ws.Spec.Runtime == "custom:latest" &&
+		return ws.Spec.Runtime == "custom:1.0.0" &&
 			ws.Spec.Storage.Size == "5Gi" &&
 			ws.Spec.Storage.StorageClassName == "premium" &&
 			ws.Spec.SecurityLevel == "high" &&
@@ -473,7 +473,7 @@ func TestCreateWorkspace_AllDefaults_AppliedTogether(t *testing.T) {
 
 func TestCreateWorkspace_ExplicitValues_OverrideAllDefaults(t *testing.T) {
 	f := newDefaultsFixture(t, map[string]any{
-		"workspace.defaultImage":        "default:latest",
+		"workspace.defaultImage":        "default:1.0.0",
 		"workspace.defaultStorageSize":  "1Gi",
 		"workspace.defaultStorageClass": "slow",
 	})

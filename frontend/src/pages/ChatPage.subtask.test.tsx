@@ -19,7 +19,8 @@ vi.mock("../api/workspaces", () => ({
     markSessionSeen: vi.fn().mockResolvedValue(undefined),
     ensureSession: vi.fn(),
     renameSession: vi.fn().mockResolvedValue(undefined),
-    abortSession: vi.fn().mockResolvedValue({}),
+    abortSession: vi.fn(),
+    requestInputSnapshot: vi.fn().mockResolvedValue(undefined).mockResolvedValue({}),
     deleteSession: vi.fn().mockResolvedValue({}),
     listModels: vi.fn().mockResolvedValue({ models: [], currentModel: "" }),
     setModel: vi.fn().mockResolvedValue({ model: "", applied: false }),
@@ -61,6 +62,7 @@ vi.mock("../providers/SessionActivityProvider", () => ({
   usePendingQuestionsForSession: () => [],
   usePendingPermissionsForSession: () => [],
   useClearSessionPendingPrompts: () => () => {},
+    useWorkspaceInputSnapshot: () => undefined,
   SessionActivityProvider: ({ children }: { children: any }) => <>{children}</>,
 }));
 

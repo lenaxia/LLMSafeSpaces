@@ -11,9 +11,9 @@ import os
 
 import httpx
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-from canary import Runner, Config, config_from_env, raw_do, has_error_field, has_field
+from canary import Runner, Config, config_from_env, raw_do, has_error_field
 
 
 def run(r: Runner, cfg: Config) -> None:
@@ -22,9 +22,10 @@ def run(r: Runner, cfg: Config) -> None:
 
     got_429 = False
     for i in range(12):
-        status, _ = raw_do("POST", login_url, "", body, timeout=5.0)
+        status, resp_body = raw_do("POST", login_url, "", body, timeout=5.0)
         if status == 429:
             got_429 = True
+            r.assert_(has_error_field(resp_body), "429: error field is a string")
             break
 
     r.assert_(got_429, "rate-limit: at least one 429", f"attempted 12 rapid logins")

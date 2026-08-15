@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`AgentConfigInput` fully describes the agent config sources**. The
+  admin system prompt and allowed external directories are now
+  first-class `Apply` inputs (`AdminPrompt`, `AllowedDirs`) with the
+  same pointer semantics as providers/model/relay/MCP — previously
+  they were writer-construction options invisible to the seam contract,
+  requiring a writer rebuild to revise. Construction still seeds them
+  from the bootstrap side-car files; Apply updates thereafter; replace
+  and clear are authoritative over prior renders.
+
+## [0.15.6] - 2026-08-15
+
+### Changed
+
+- **Consistent build version injection across every component**. All Go
+  binaries (api, controller, workspace-agentd, relay-router, relay-proxy)
+  now read their build identity from `pkg/version` — the single source of
+  truth — stamped via `-ldflags` in every image build (VERSION/COMMIT_SHA/
+  BUILD_TIME). Previously the controller and workspace-agentd used their own
+  `"dev"` fallbacks, the API Makefile targeted non-existent linker symbols,
+  and release/CI never passed `VERSION`, so production images reported
+  `"dev"` regardless of tag. Un-stamped local builds now report
+  `"unknown"`. The base runtime healthz, the controller startup log, the
+  API `/livez`/`/v1/admin/platform-info`, and the relay healthz
+  endpoints all surface the injected semver for tagged releases.
+
 ### Fixed
 
 - **Workspace pods could boot with no platform MCP server, system
@@ -29,28 +56,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   written by materialize (Epic 53) until the next credential reload.
   The on-disk `mcp` section is now captured and re-emitted unless a
   staged source supersedes it.
-
-### Changed
-
-- **`AgentConfigInput` fully describes the agent config sources**. The
-  admin system prompt and allowed external directories are now
-  first-class `Apply` inputs (`AdminPrompt`, `AllowedDirs`) with the
-  same pointer semantics as providers/model/relay/MCP — previously
-  they were writer-construction options invisible to the seam contract,
-  requiring a writer rebuild to revise. Construction still seeds them
-  from the bootstrap side-car files; Apply updates thereafter.
-
-- **Consistent build version injection across every component**. All Go
-  binaries (api, controller, workspace-agentd, relay-router, relay-proxy)
-  now read their build identity from `pkg/version` — the single source of
-  truth — stamped via `-ldflags` in every image build (VERSION/COMMIT_SHA/
-  BUILD_TIME). Previously the controller and workspace-agentd used their own
-  `"dev"` fallbacks, the API Makefile targeted non-existent linker symbols,
-  and release/CI never passed `VERSION`, so production images reported
-  `"dev"` regardless of tag. Un-stamped local builds now report
-  `"unknown"`. The base runtime healthz, the controller startup log, the
-  API `/livez`/`/v1/admin/platform-info`, and the relay healthz
-  endpoints all surface the injected semver for tagged releases.
+- **Floating-tag default workspace image (`workspace.defaultImage`)**. The
+  schema seeded `ghcr.io/lenaxia/llmsafespaces/base:latest` as the platform
+  default. Floating tags resolve per-puller — registry mirrors (e.g. spegel)
+  serve stale per-node digests while upstream has already moved the tag —
+  so new workspaces silently launched week-old images (incident 2026-08-14:
+  a v0.13.0 agentd missing the MCP 4098→4097 port fix was served for
+  `latest` while upstream had published v0.15.5). Fixes, in depth:
+  - Schema default is now empty — new workspaces fall through to the
+    `base` RuntimeEnvironment, whose image tag is pinned by the Helm chart
+    (`runtimeEnvironments.base.image.tag`, defaulting to the chart
+    AppVersion).
+  - `workspace.defaultImage` writes are validated: image refs must be
+    pinned to an explicit non-mutable tag (`latest`, `main`, `master`,
+    `dev`, `edge`, `nightly`, `stable`, `prod`, `current`, `release`
+    rejected) or a digest; untagged refs are
+    rejected (implicit `:latest`). RuntimeEnvironment names still pass.
+  - The workspace-service read path skips stored floating-tag values with
+    a warning, so values written before validation existed cannot launch.
+  - Migration `000024` (renumbered from 000023 after #734 took that slot) removes the seeded `base:latest` row from existing
+    deployments (admin-customized values are preserved).
 
 ## [0.15.5] - 2026-08-14
 

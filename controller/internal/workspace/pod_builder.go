@@ -420,6 +420,7 @@ func multiplyQuantity(q resource.Quantity, factor int64) resource.Quantity {
 func buildPodSecurityContext(workspace *v1.Workspace) *corev1.PodSecurityContext {
 	runAsUser := int64(1000)
 	runAsGroup := int64(1000)
+	fsGroupChangeOnRootMismatch := corev1.FSGroupChangeOnRootMismatch
 	runAsNonRoot := true
 	if psc := workspace.Spec.PodSecurityContext; psc != nil {
 		if psc.RunAsUser != 0 {
@@ -433,6 +434,13 @@ func buildPodSecurityContext(workspace *v1.Workspace) *corev1.PodSecurityContext
 		RunAsUser:  &runAsUser,
 		RunAsGroup: &runAsGroup,
 		FSGroup:    &runAsGroup,
+		// Without OnRootMismatch, kubelet defaults to "Always" and
+		// recursively chowns the ENTIRE PVC on every pod start — even
+		// when ownership already matches. Workspace PVCs accumulate
+		// hundreds of thousands of files, so every suspend/resume and
+		// restart paid minutes of chown. OnRootMismatch skips the
+		// recursion when the volume root already has the right group.
+		FSGroupChangePolicy: &fsGroupChangeOnRootMismatch,
 		// G44: pod-level RunAsNonRoot is defense-in-depth. Every
 		// container today sets RunAsNonRoot: &trueVal explicitly (line
 		// 151 for main, lines 595/621/671 for init containers), but a

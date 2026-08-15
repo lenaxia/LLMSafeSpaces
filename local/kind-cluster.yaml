@@ -1,11 +1,18 @@
 # Local kind cluster for LLMSafeSpaces end-to-end testing.
 # Single-node cluster; sandbox pods + control plane run on the same node.
 # This is a development tool, NOT a production layout.
+#
+# The node image is pinned (digest included) so the cluster version never
+# floats with the installed kind CLI. It must satisfy the chart's
+# kubeVersion floor (>=1.35, for image-volume agentd delivery — #863);
+# helm/chart_kubeversion_test.go enforces this coupling.
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 name: llmsafespaces
 nodes:
   - role: control-plane
+    # v1.35.5, listed in kind v0.32.0 release notes.
+    image: kindest/node:v1.35.5@sha256:ce977ae6d65918d0b58a5f8b5e940429c2ce42fa3a5619ec2bbc60b949c0ac95
     extraPortMappings:
       # Map host port 8080 to a NodePort on the cluster so the API is
       # reachable from the host without `kubectl port-forward`.
@@ -15,6 +22,7 @@ nodes:
       # cert-manager webhook traffic is internal; no host mapping needed.
 networking:
   # kind defaults to disableDefaultCNI=false and uses kindnet, which works
-  # for our purposes (no NetworkPolicy enforcement is required for these
-  # tests since chart's networkPolicy.enabled defaults to false).
+  # for our purposes: kindnet does not ENFORCE NetworkPolicy, so the chart's
+  # default networkPolicy.enabled=true policies are rendered but inert in
+  # this dev cluster. No override is needed.
   apiServerAddress: "127.0.0.1"

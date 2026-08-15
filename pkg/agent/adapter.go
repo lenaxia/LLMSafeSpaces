@@ -96,6 +96,13 @@ type Adapter interface {
 	// ListPending returns the currently-blocking InputRequests on a
 	// session (questions or permissions). The adapter unifies the
 	// agent's question/permission shapes into session.InputRequest.
+	//
+	// Contract: a non-nil error means the pending set is UNKNOWN
+	// (agent unreachable, endpoint error) — never treat it as an
+	// authoritative empty. A 404-not-implemented endpoint yields an
+	// authoritative empty with a nil error. Callers that broadcast
+	// snapshots (the SSE input snapshot) must mark failed fetches as
+	// non-authoritative so they cannot wipe live pending prompts.
 	ListPending(ctx context.Context, userID, workspaceID, sessionID string) ([]session.InputRequest, error)
 
 	// Resolve settles a pending InputRequest with the user's reply.

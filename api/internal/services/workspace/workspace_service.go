@@ -1298,13 +1298,23 @@ func (s *Service) resolveDefaultRuntime(ctx context.Context, userID string, orgI
 		}
 	}
 
-	// 3. Platform default (workspace.defaultImage — a direct image ref).
+	// 3. Platform default (workspace.defaultImage — an image ref pinned to
+	// a non-mutable tag or digest, or a RuntimeEnvironment name). Values
+	// stored before write-side validation existed may still carry a
+	// floating tag; launching those would silently resolve per-puller
+	// (registry mirrors serve stale digests), so they are skipped with a
+	// warning rather than launched.
 	if s.instanceSettings != nil {
 		img, err := s.instanceSettings.GetString(ctx, settings.KeyWorkspaceDefaultImage.Name())
 		if err != nil {
 			s.logger.Warn("Failed to read platform defaultImage, falling through", "error", err)
 		} else if img != "" {
-			return img
+			if pinErr := settings.ValidateImageRefPinned(img); pinErr != nil {
+				s.logger.Warn("Platform defaultImage is not pinned, falling through to base RuntimeEnvironment",
+					"image", img, "error", pinErr.Error())
+			} else {
+				return img
+			}
 		}
 	}
 

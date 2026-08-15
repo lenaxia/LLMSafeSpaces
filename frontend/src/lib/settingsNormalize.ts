@@ -12,9 +12,9 @@
 //      "8.5Gi") pass through unchanged so the pattern check rejects
 //      them with aria-invalid + helpful error.
 //
-// Only resource-quantity settings are normalized. Other patterned
-// strings (instance.name, MOTD) pass through verbatim — auto-trimming
-// a name field would be surprising.
+// Resource-quantity settings are unit-normalized; the default image is
+// trimmed. Other patterned strings (instance.name, MOTD) pass through
+// verbatim — auto-trimming a name field would be surprising.
 
 const memoryUnitMap: Record<string, string> = {
   ki: "Ki",
@@ -62,6 +62,10 @@ export function normalizeSettingValue(key: string, value: string): string {
       return normalizeMemory(value);
     case "workspace.defaultResources.cpu":
       return normalizeCPU(value);
+    case "workspace.defaultImage":
+      // Image refs tolerate no whitespace; trim before the server's
+      // pinning validation rejects them. Mirrors normalize.go.
+      return value.trim();
     default:
       return value;
   }

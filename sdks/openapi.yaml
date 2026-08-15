@@ -989,6 +989,31 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/input-snapshot:
+    post:
+      tags: [sessions]
+      summary: Request an input-snapshot flight
+      description: |
+        Triggers an input-snapshot attempt for the workspace: emits
+        `agent.input.snapshot_begin`, the pending question/permission
+        events, and `agent.input.snapshot_complete` (with `snapshot_ok`)
+        on the user event stream. Used by clients that need a fresh
+        authoritative pending-input snapshot without reconnecting an
+        SSE stream (e.g. arming reconnect mode after an in-workspace
+        session switch). Returns immediately with 202; the snapshot
+        outcome is delivered via the user stream.
+      operationId: requestInputSnapshot
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "202":
+          description: Snapshot flight scheduled; outcome arrives on the user event stream
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /workspaces/{id}/question/{requestID}/reply:
     post:
       tags: [sessions]

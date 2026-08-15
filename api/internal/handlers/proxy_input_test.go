@@ -882,6 +882,9 @@ func TestEmitPendingInputRequests_EmitsSnapshotCompleteMarker(t *testing.T) {
 	// but the defer must still emit the marker.
 	handler.emitPendingInputRequests(context.Background(), "ws-1")
 
+	// Drain the begin marker, then expect complete.
+	_ = recvWithTimeout(t, userSub, "agent.input.snapshot_begin")
+
 	// The marker must be delivered to the user stream
 	marker := recvWithTimeout(t, userSub, "agent.input.snapshot_complete")
 	assert.Equal(t, "agent.input.snapshot_complete", marker.Type)
@@ -903,8 +906,10 @@ func TestEmitPendingInputRequests_MarkerFiresOnTimeout(t *testing.T) {
 	defer handler.userBroker.UnsubscribeUser("user-1", userSub)
 
 	// k8s client returns an error from LlmsafespacesV1
-	// → emitPendingInputRequests returns early at line 95, but defer fires marker.
+	// → emitPendingInputRequests returns early, but defer fires marker.
 	handler.emitPendingInputRequests(context.Background(), "ws-1")
+
+	_ = recvWithTimeout(t, userSub, "agent.input.snapshot_begin")
 
 	marker := recvWithTimeout(t, userSub, "agent.input.snapshot_complete")
 	assert.Equal(t, "agent.input.snapshot_complete", marker.Type)
@@ -954,10 +959,121 @@ func TestSnapshotUserWorkspaces_FansOutPendingForActiveWorkspaces(t *testing.T) 
 	assert.Equal(t, "workspace.phase", phaseEvt.Type)
 	assert.Equal(t, "ws-1", phaseEvt.WorkspaceID)
 
+	// Drain the begin marker emitted by the fan-out before expecting complete.
+	_ = recvWithTimeout(t, userSub, "agent.input.snapshot_begin")
+
 	// Should receive the snapshot_complete marker for ws-1 (fan-out fired)
 	marker := recvWithTimeout(t, userSub, "agent.input.snapshot_complete")
 	assert.Equal(t, "agent.input.snapshot_complete", marker.Type)
 	assert.Equal(t, "ws-1", marker.WorkspaceID)
+}
+
+// ===== Snapshot begin/ok contract (false-interrupted-banner fixes) =====
+//
+// D10: the snapshot markers carry an ok flag so the frontend can distinguish
+// "pod answered, zero pending" (authoritative — safe to reconcile) from
+// "fetch failed/timed out" (keep existing pending state). A snapshot_begin
+// marker opens the staging window before the fetch so snapshot-emitted
+// question/permission events are staged separately from organic ones.
+
+func TestEmitPendingInputRequests_BeginAndOKMarkerOnSuccess(t *testing.T) {
+	env := newInputTestEnv(t)
+	// Backend returns empty arrays for /question and /permission — a
+	// successful fetch of an empty pending set.
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
+	env.setupPasswordWithT(t, "ws-1", "test-password")
+	env.handler.userBroker = eventbroker.NewUserEventBroker()
+	env.handler.userBroker.RecordWorkspaceOwner("ws-1", "user-1")
+
+	userSub, _ := env.handler.userBroker.SubscribeUser("user-1")
+	defer env.handler.userBroker.UnsubscribeUser("user-1", userSub)
+
+	env.handler.emitPendingInputRequests(context.Background(), "ws-1")
+
+	begin := recvWithTimeout(t, userSub, "agent.input.snapshot_begin")
+	assert.Equal(t, "agent.input.snapshot_begin", begin.Type)
+	assert.Equal(t, "ws-1", begin.WorkspaceID)
+
+	complete := recvWithTimeout(t, userSub, "agent.input.snapshot_complete")
+	assert.Equal(t, "agent.input.snapshot_complete", complete.Type)
+	require.NotNil(t, complete.SnapshotOK, "ok marker must be present on success")
+	assert.True(t, *complete.SnapshotOK)
+}
+
+func TestEmitPendingInputRequests_MarkerOKFalseOnBackendError(t *testing.T) {
+	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	})
+	env.handler.dialect = &agentoc.Dialect{}
+	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
+	env.setupPasswordWithT(t, "ws-1", "test-password")
+	env.handler.userBroker = eventbroker.NewUserEventBroker()
+	env.handler.userBroker.RecordWorkspaceOwner("ws-1", "user-1")
+
+	userSub, _ := env.handler.userBroker.SubscribeUser("user-1")
+	defer env.handler.userBroker.UnsubscribeUser("user-1", userSub)
+
+	env.handler.emitPendingInputRequests(context.Background(), "ws-1")
+
+	begin := recvWithTimeout(t, userSub, "agent.input.snapshot_begin")
+	assert.Equal(t, "agent.input.snapshot_begin", begin.Type)
+
+	complete := recvWithTimeout(t, userSub, "agent.input.snapshot_complete")
+	require.NotNil(t, complete.SnapshotOK, "ok marker must be present on failure")
+	assert.False(t, *complete.SnapshotOK)
+}
+
+func TestEmitPendingInputRequests_MarkerOKFalseOnK8sFailure(t *testing.T) {
+	k8sMock := k8smocks.NewMockKubernetesClient()
+	k8sMock.On("LlmsafespacesV1").Return(nil, fmt.Errorf("test: k8s unavailable")).Maybe()
+	handler, _ := NewProxyHandler(k8sMock, &testLogger{}, "default", nil, nil)
+	handler.userBroker = eventbroker.NewUserEventBroker()
+	handler.userBroker.RecordWorkspaceOwner("ws-1", "user-1")
+	handler.dialect = &agentoc.Dialect{}
+
+	userSub, _ := handler.userBroker.SubscribeUser("user-1")
+	defer handler.userBroker.UnsubscribeUser("user-1", userSub)
+
+	handler.emitPendingInputRequests(context.Background(), "ws-1")
+
+	begin := recvWithTimeout(t, userSub, "agent.input.snapshot_begin")
+	assert.Equal(t, "agent.input.snapshot_begin", begin.Type)
+
+	complete := recvWithTimeout(t, userSub, "agent.input.snapshot_complete")
+	require.NotNil(t, complete.SnapshotOK)
+	assert.False(t, *complete.SnapshotOK)
+}
+
+// TestSnapshotOK_WireContract asserts the raw JSON encoding of a FAILED
+// snapshot marker contains "snapshot_ok":false. The field is *bool +
+// omitempty by design — if it were ever changed to bool + omitempty, false
+// would silently vanish from the wire and every client would treat failed
+// fetches as authoritative. Unit-level (not HTTP) because the SSE writer
+// marshals this exact struct with encoding/json.
+func TestSnapshotOK_WireContract(t *testing.T) {
+	ok := false
+	evt := apitypes.WorkspaceSSEEvent{
+		Type:        "agent.input.snapshot_complete",
+		WorkspaceID: "ws-1",
+		SnapshotOK:  &ok,
+		SnapshotID:  "ws-1-123",
+	}
+	raw, err := json.Marshal(evt)
+	require.NoError(t, err)
+	assert.Contains(t, string(raw), `"snapshot_ok":false`,
+		"failed-snapshot markers MUST carry snapshot_ok:false on the wire")
+	assert.Contains(t, string(raw), `"snapshot_id":"ws-1-123"`)
+
+	// Success marker carries true; unrelated events carry neither field.
+	okTrue := true
+	evtOk := apitypes.WorkspaceSSEEvent{Type: "session.status", SnapshotOK: &okTrue}
+	rawOk, _ := json.Marshal(evtOk)
+	assert.Contains(t, string(rawOk), `"snapshot_ok":true`)
+
+	evtNone := apitypes.WorkspaceSSEEvent{Type: "session.status", Status: "busy"}
+	rawNone, _ := json.Marshal(evtNone)
+	assert.NotContains(t, string(rawNone), "snapshot_ok")
+	assert.NotContains(t, string(rawNone), "snapshot_id")
 }
 
 // ===== US-55.4: Regression Guards =====

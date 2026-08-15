@@ -14,9 +14,8 @@ import (
 // --- In-memory mocks ---
 
 type mockKeyStore struct {
-	mu                     sync.Mutex
-	records                map[string]*UserKeyRecord
-	updateWithSourceCalled bool
+	mu      sync.Mutex
+	records map[string]*UserKeyRecord
 }
 
 func newMockKeyStore() *mockKeyStore {
@@ -57,33 +56,6 @@ func (m *mockKeyStore) UpdateWrappedDEK(_ context.Context, userID string, wrappe
 	r.WrappedDEK = wrappedDEK
 	r.Salt = salt
 	r.KeyVersion = keyVersion
-	return nil
-}
-
-func (m *mockKeyStore) UpdateWrappedDEKAndSource(_ context.Context, userID string, wrappedDEK, salt []byte, keyVersion int, dekSource string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	r, ok := m.records[userID]
-	if !ok {
-		return errors.New("user key not found")
-	}
-	r.WrappedDEK = wrappedDEK
-	r.Salt = salt
-	r.KeyVersion = keyVersion
-	r.DEKSource = dekSource
-	m.updateWithSourceCalled = true
-	return nil
-}
-
-func (m *mockKeyStore) UpdateWrappedDEKRecovery(_ context.Context, userID string, wrappedDEKRecovery []byte, recoverySalt []byte) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	r, ok := m.records[userID]
-	if !ok {
-		return errors.New("user key not found")
-	}
-	r.WrappedDEKRecovery = wrappedDEKRecovery
-	r.RecoverySalt = recoverySalt
 	return nil
 }
 

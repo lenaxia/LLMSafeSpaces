@@ -4,6 +4,7 @@
 package middleware
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -136,6 +137,66 @@ func TestPerRouteRateLimit_BucketsAreIsolatedPerPath(t *testing.T) {
 	req, _ := http.NewRequest("POST", "/api/v1/secrets/reveal", nil)
 	router.ServeHTTP(w, req)
 	assert.Equal(t, http.StatusOK, w.Code, "secrets/reveal should have its own bucket")
+}
+
+// TestPerRouteRateLimit_429BodyContract pins the 429 response body to the
+// API-wide 429 error contract: {"error": "<string>", "limit": <int>,
+// "retryAfter": <int seconds>} — matching the global limiter, email.go, and
+// dev_preview.go (the other 429 emitters; some non-429 error paths still
+// emit object-shaped errors — tracked separately). The Go SDK's parseError
+// decodes "error" as a string; the previous object shape
+// {"error": {code, message, details}} broke it and the s-error-format
+// canary contract.
+func TestPerRouteRateLimit_429BodyContract(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	svc, cleanup := newMiniredisRateLimiter(t)
+	defer cleanup()
+
+	cfg := PerRouteRateLimitConfig{
+		Enabled: true,
+		Routes: map[string]RouteRateLimit{
+			"/api/v1/account/recover": {Limit: 2, Burst: 2, Window: time.Minute},
+		},
+	}
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) { c.Set("apiKey", "body-contract-key"); c.Next() })
+	router.Use(PerRouteRateLimitMiddleware(svc, perRouteTestLogger(), cfg))
+	router.POST("/api/v1/account/recover", func(c *gin.Context) { c.String(http.StatusOK, "ok") })
+
+	for i := 0; i < 2; i++ {
+		w := httptest.NewRecorder()
+		req, _ := http.NewRequest("POST", "/api/v1/account/recover", nil)
+		router.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusOK, w.Code, "request %d should pass", i+1)
+	}
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/v1/account/recover", nil)
+	router.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusTooManyRequests, w.Code)
+
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+
+	errStr, isString := body["error"].(string)
+	assert.True(t, isString, `body["error"] must be a string, got %T (%v)`, body["error"], body["error"])
+	assert.NotEmpty(t, errStr)
+
+	limitNum, isNumber := body["limit"].(float64)
+	assert.True(t, isNumber, `body["limit"] must be a number, got %T (%v)`, body["limit"], body["limit"])
+	assert.Equal(t, float64(2), limitNum)
+
+	retryAfter, isNumber := body["retryAfter"].(float64)
+	assert.True(t, isNumber, `body["retryAfter"] must be a number, got %T (%v)`, body["retryAfter"], body["retryAfter"])
+	assert.Greater(t, retryAfter, float64(0))
+
+	// The Retry-After header is new behavior added with this contract fix;
+	// assert it so a regression cannot silently drop it. Window=1min → 60s.
+	assert.Equal(t, "60", w.Header().Get("Retry-After"),
+		"Retry-After header must be the route window in seconds")
+	assert.Equal(t, "2", w.Header().Get("X-RateLimit-Limit"))
+	assert.Equal(t, "0", w.Header().Get("X-RateLimit-Remaining"))
 }
 
 // TestPerRouteRateLimit_DisabledWhenConfigDisabled confirms the

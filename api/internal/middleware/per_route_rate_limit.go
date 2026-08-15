@@ -125,9 +125,11 @@ func PerRouteRateLimitMiddleware(rl interfaces.RateLimiterService, log pkginterf
 				)
 			}
 			resetTime := time.Now().Add(routeCfg.Window).Unix()
+			retryAfter := int((routeCfg.Window + time.Second - 1) / time.Second)
 			c.Header("X-RateLimit-Limit", strconv.Itoa(routeCfg.Limit))
 			c.Header("X-RateLimit-Remaining", "0")
 			c.Header("X-RateLimit-Reset", strconv.FormatInt(resetTime, 10))
+			c.Header("Retry-After", strconv.Itoa(retryAfter))
 			apiErr := errors.NewRateLimitError(
 				fmt.Sprintf("Too many requests to %s", route),
 				routeCfg.Limit,
@@ -135,11 +137,9 @@ func PerRouteRateLimitMiddleware(rl interfaces.RateLimiterService, log pkginterf
 				nil,
 			)
 			c.AbortWithStatusJSON(apiErr.StatusCode(), gin.H{
-				"error": gin.H{
-					"code":    apiErr.Code,
-					"message": apiErr.Message,
-					"details": apiErr.Details,
-				},
+				"error":      apiErr.Message,
+				"limit":      routeCfg.Limit,
+				"retryAfter": retryAfter,
 			})
 			return
 		}

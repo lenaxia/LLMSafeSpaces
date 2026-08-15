@@ -116,7 +116,10 @@ func main() {
 	}
 
 	startBackgroundLoops(bgCtx, &bgWg, deps)
-	maybeStartRelayInjector(rootCtx, deps)
+	// bgCtx (not rootCtx): the session-aware deferred restart must be
+	// canceled by runShutdown's bgCancel so bgWg drains within its 5s wait —
+	// same context discipline as the credential-reload path (secrets.go).
+	maybeStartRelayInjector(rootCtx, bgCtx, &bgWg, deps)
 
 	adminSrv, userSrv, srvErr := wireHTTPServers(bgCtx, &bgWg, deps)
 
@@ -187,7 +190,7 @@ func startManagedProcess(supervise bool) *managedProcess {
 // and rewrite the config to use the self-hosted relay fleet. Runs at
 // most once per pod lifetime. Skipped if the user has a personal
 // opencode API key (paying Zen subscriber).
-func maybeStartRelayInjector(rootCtx context.Context, deps serverDeps) {
+func maybeStartRelayInjector(rootCtx, bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) {
 	relayURL := os.Getenv("INFERENCE_RELAY_BASEURL")
 	if relayURL == "" || deps.proc == nil {
 		return
@@ -198,6 +201,7 @@ func maybeStartRelayInjector(rootCtx context.Context, deps serverDeps) {
 	if xdgData != "" {
 		authJSONPath = filepath.Join(xdgData, "opencode", "auth.json")
 	}
+	liveSessions := liveSessionsLister(deps)
 	startRelayInjector(rootCtx, relayInjectorConfig{
 		RelayURL:          relayURL,
 		OpenCodeBaseURL:   getAgentAddr(),
@@ -206,8 +210,42 @@ func maybeStartRelayInjector(rootCtx context.Context, deps serverDeps) {
 		AuthJSONPath:      authJSONPath,
 		AgentConfigWriter: deps.agentConfigWriter,
 		HealthCheck:       func() bool { snap := deps.healthCache.Snapshot(); return snap.Initialized && snap.Healthy },
-		KillOpenCode:      func() { deps.proc.restart() }, //nolint:contextcheck // healthProbeAfterRestart intentionally uses context.Background() to outlive the triggering request
+		KillOpenCode:      relayKillFunc(bgCtx, bgWg, deps.proc, deps.sseTracker, liveSessions),
 	})
+}
+
+// liveSessionsLister returns the opencode /session probe used to prune stale
+// busy entries from the session tracker. Shared shape with the closure in
+// wireHTTPServers (server.go); kept as a function so both sites stay in sync.
+func liveSessionsLister(deps serverDeps) sessionLister {
+	return func(ctx context.Context) []string {
+		sessions, err := deps.client.ListSessions(ctx)
+		if err != nil {
+			return nil
+		}
+		ids := make([]string, len(sessions))
+		for i, s := range sessions {
+			ids[i] = s.ID
+		}
+		return ids
+	}
+}
+
+// relayKillFunc builds the relay injector's opencode-restart trigger.
+//
+// Session-aware kill (US-44.2 semantics): a direct proc.restart() here killed
+// any session waiting on a pending question/permission — the in-memory input
+// queue dies with the process while SQLite keeps toolState:"running",
+// permanently sticking the session. The restart is routed through the same
+// deferral the credential-reload path uses: restart now if no session is
+// busy, else poll until idle (bounded by defaultMaxDefer).
+func relayKillFunc(bgCtx context.Context, bgWg *sync.WaitGroup, proc restartableProcess, tracker *sessionStatusTracker, lister sessionLister) func() {
+	if proc == nil {
+		return func() {}
+	}
+	return func() {
+		makeSessionAwareRestartDecision(bgCtx, proc, tracker, restartIdleCheckInterval, defaultMaxDefer, lister, bgWg) //nolint:contextcheck // bgCtx is the agentd background lifecycle context — the deferred goroutine must outlive the relay injector and be canceled at shutdown
+	}
 }
 
 // runShutdown gracefully stops both HTTP servers, cancels the
