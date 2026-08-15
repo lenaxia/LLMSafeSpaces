@@ -254,3 +254,13 @@ US-65.2 (pkg/session types) ──┬── US-65.3 (opencode adapter) ──┐
 ```
 
 US-65.1 (AgentConfigWriter) is independent and can start immediately. US-65.2 is the foundation for the rest. US-65.8 (frontend) can lag the backend and proceed in parallel once the OpenAPI spec is regenerated.
+
+### US-65.9: Agent config render ownership (post-incident follow-up)
+
+Added 2026-08-15 from the stale-image incident chain (#856/#857): the agent
+config file becomes a rendered artifact of declared sources — materialize
+stages data only, the writer's `loadExisting` self-merge is deleted, and
+`AgentConfigInput` fully describes the sources. Increments 1-2 (unconditional
+boot normalize + mcp preservation; first-class AdminPrompt/AllowedDirs
+inputs) shipped with the incident fixes; the remaining work is tracked in
+issue #860.
