@@ -497,7 +497,7 @@ jobs:
       - name: Create kind cluster and install CRDs
         working-directory: ${{ github.workspace }}
         run: |
-          curl -sLo ./kind https://kind.sigs.k8s.io/dl/v0.27.0/kind-linux-amd64
+          curl -sLo ./kind https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64
           chmod +x ./kind
           ./kind create cluster --name llmsafespaces-canary
           # Point kubectl at the cluster and apply the CRDs.
