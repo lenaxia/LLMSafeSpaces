@@ -3152,7 +3152,7 @@ components:
           type: string
         phase:
           type: string
-          enum: [Pending, Active, Suspending, Suspended, Resuming, Terminating, Terminated, Failed]
+          enum: [Pending, Creating, Active, Suspending, Suspended, Resuming, Terminating, Terminated, Failed]
         pvcName:
           type: string
         labels:
@@ -3217,6 +3217,7 @@ components:
           type: string
         phase:
           type: string
+          enum: [Pending, Creating, Active, Suspending, Suspended, Resuming, Terminating, Terminated, Failed]
         imageTag:
           type: string
         agentVersion:
