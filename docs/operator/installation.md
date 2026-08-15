@@ -18,7 +18,7 @@ This page covers deploying LLMSafeSpaces into a production Kubernetes cluster wi
 
 ### Kubernetes
 
-A cluster running **Kubernetes 1.27 or later**. The chart uses `admissionregistration.k8s.io/v1` (validating webhooks) and `cert-manager.io/v1` (webhook TLS). Node operating systems must run **cgroup v2** — the workspace-agentd sidecar reads `/sys/fs/cgroup/memory.current` and `/sys/fs/cgroup/memory.max` to surface memory-pressure warnings and OOM attribution (see [Storage](storage.md#cgroup-v2) for why this matters). All modern node OSes (Debian 11+, Ubuntu 22.04+, RHEL 9, Flatcar, Bottlerocket, Talos) default to cgroup v2.
+A cluster running **Kubernetes 1.35 or later**. The chart uses `admissionregistration.k8s.io/v1` (validating webhooks), `cert-manager.io/v1` (webhook TLS), and image volumes (KEP-4639, GA in 1.35) for workspace-agentd delivery. Node operating systems must run **cgroup v2** — the workspace-agentd sidecar reads `/sys/fs/cgroup/memory.current` and `/sys/fs/cgroup/memory.max` to surface memory-pressure warnings and OOM attribution (see [Storage](storage.md#cgroup-v2) for why this matters). All modern node OSes (Debian 11+, Ubuntu 22.04+, RHEL 9, Flatcar, Bottlerocket, Talos) default to cgroup v2.
 
 ### Helm
 
@@ -332,7 +332,7 @@ kubectl -n llmsafespaces get workspace "$WS" -o yaml | grep -A5 conditions
 
 Before declaring the install production-ready:
 
-- [ ] **Kubernetes 1.27+** with cgroup v2 nodes.
+- [ ] **Kubernetes 1.35+** with cgroup v2 nodes.
 - [ ] **cert-manager** installed (or `webhooks.enabled=false` with the trade-off understood).
 - [ ] **Postgres** reachable, database + role created, TLS configured, backups scheduled.
 - [ ] **Redis** reachable, TLS in transit, at-rest encryption, NetworkPolicy restricting ingress.

@@ -7,7 +7,7 @@ controller, CRDs, ValidatingWebhookConfiguration, and database migrations.
 
 - Chart version: 0.2.2
 - App version: 0.2.2
-- Kubernetes: >= 1.27
+- Kubernetes: >= 1.35
 - Helm: >= 3.13 (also tested with Helm 4)
 - Tested locally with `helm lint` and `helm template`
 
@@ -82,7 +82,7 @@ fix. That is tracked as a follow-up to [#456](https://github.com/lenaxia/llmsafe
 
 ### Kubernetes
 
-A cluster running Kubernetes 1.27 or later. The webhook configuration uses
+A cluster running Kubernetes 1.35 or later. The webhook configuration uses
 `admissionregistration.k8s.io/v1` and `cert-manager.io/v1`.
 
 ### cert-manager
