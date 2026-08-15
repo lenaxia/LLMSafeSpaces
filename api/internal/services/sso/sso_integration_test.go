@@ -216,12 +216,6 @@ func (s *realKeyStore) CreateUserKey(_ context.Context, record *secrets.UserKeyR
 func (s *realKeyStore) UpdateWrappedDEK(_ context.Context, _ string, _ []byte, _ []byte, _ int) error {
 	return nil
 }
-func (s *realKeyStore) UpdateWrappedDEKAndSource(_ context.Context, _ string, _ []byte, _ []byte, _ int, _ string) error {
-	return nil
-}
-func (s *realKeyStore) UpdateWrappedDEKRecovery(_ context.Context, _ string, _ []byte, _ []byte) error {
-	return nil
-}
 
 // realDEKCache records the (sessionID → DEK) mapping so the test can recover
 // the DEK the login path cached and assert it round-trips a secret.

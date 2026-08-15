@@ -89,57 +89,6 @@ func GenerateSalt() ([]byte, error) {
 	return salt, nil
 }
 
-// GenerateRecoveryKey generates a 16-byte random recovery key. Retained for
-// the migration CLI and test fixtures.
-func GenerateRecoveryKey() ([]byte, error) {
-	key := make([]byte, 16)
-	if _, err := rand.Read(key); err != nil {
-		return nil, err
-	}
-	return key, nil
-}
-
-// WrapDEK wraps a DEK under a KEK via AES-256-GCM. Retained as a generic
-// primitive — the one-shot migrate-passkey-dek CLI uses it to unwrap legacy
-// password-wrapped DEKs during the tier cutover.
-func WrapDEK(kek, dek []byte) ([]byte, error) {
-	block, err := aes.NewCipher(kek)
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, err
-	}
-	return gcm.Seal(nonce, nonce, dek, nil), nil
-}
-
-// UnwrapDEK unwraps a DEK from a KEK via AES-256-GCM. See WrapDEK.
-func UnwrapDEK(kek, wrappedDEK []byte) ([]byte, error) {
-	block, err := aes.NewCipher(kek)
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-	nonceSize := gcm.NonceSize()
-	if len(wrappedDEK) < nonceSize {
-		return nil, ErrInvalidCiphertext
-	}
-	nonce, ciphertext := wrappedDEK[:nonceSize], wrappedDEK[nonceSize:]
-	dek, err := gcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return nil, ErrDecryptionFailed
-	}
-	return dek, nil
-}
-
 func EncryptSecret(dek, plaintext []byte) ([]byte, error) {
 	block, err := aes.NewCipher(dek)
 	if err != nil {

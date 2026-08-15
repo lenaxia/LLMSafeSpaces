@@ -263,8 +263,7 @@ func TestRotationCoordinator_AllTables_HappyPath(t *testing.T) {
 }
 
 // TestRotationCoordinator_UserKeys_RotatesServerKEKRows verifies the Epic 58
-// user_keys walk: server_kek rows re-wrap under the master-kek purpose. The
-// store contract is that password-tier rows are excluded upstream.
+// user_keys walk: server_kek rows re-wrap under the master-kek purpose.
 func TestRotationCoordinator_UserKeys_RotatesServerKEKRows(t *testing.T) {
 	store := newMockRotationStore()
 	oldKey := make([]byte, 32)
@@ -274,9 +273,6 @@ func TestRotationCoordinator_UserKeys_RotatesServerKEKRows(t *testing.T) {
 
 	// Server-KEK-wrapped user DEK — rotatable.
 	store.addRow("user_keys", "user-sso", "", encryptWithKey(t, oldKey, []byte("sso-user-dek")), 1)
-	row := store.rows["user_keys"][0]
-	row.DEKSource = "server_kek"
-	store.rows["user_keys"][0] = row
 
 	oldProv, newProv := buildProviderSets(t)
 	coord := NewRotationCoordinator(store, oldProv, newProv)
@@ -297,7 +293,6 @@ func TestRotationCoordinator_UserKeys_PurposeIsMasterKEK(t *testing.T) {
 		oldKey[i] = byte(i + 1)
 	}
 	store.addRow("user_keys", "u1", "", encryptWithKey(t, oldKey, []byte("dek")), 1)
-	store.rows["user_keys"][0].DEKSource = "server_kek"
 
 	// Old/new providers MISSING the master-kek purpose.
 	oldSP, err := NewStaticKeyProvider(oldKey)
