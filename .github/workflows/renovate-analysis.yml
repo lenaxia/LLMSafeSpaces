@@ -1,157 +1,47 @@
+# Renovate PR Analysis — thin caller delegating to the reusable
+# lenaxia/ai-workflows renovate-analysis workflow.
+#
+# Scheduled + manual batch analysis of Renovate PRs. The analysis logic,
+# prompt assembly, comment posting/verification, and safe-merge rules live in
+# the reusable workflow (lenaxia/ai-workflows/.github/workflows/renovate-analysis.yml)
+# and this repo's forked prompt (.github/prompts/renovate-analysis.md, which
+# carries the LLMSafeSpaces-specific exclusions).
+#
+# Why schedule/workflow_dispatch and NOT pull_request? The opencode action's
+# assertPermissions() requires the event actor (for pull_request events: the
+# PR author) to be a repo collaborator with write permission. renovate[bot]
+# is an app bot account and can never be a collaborator, so every
+# pull_request-triggered run failed with "User renovate[bot] does not have
+# write permissions" before the AI could analyze. schedule/workflow_dispatch
+# are repo events — no actor — so the permission assertion is skipped
+# entirely.
+#
+# The `uses:` ref MUST be a hardcoded tag (no vars context). propagate.yml in
+# ai-workflows bumps it on every release.
 name: Renovate PR Analysis
 
 on:
-  # Renovate creates branches inside this repo (not forks), so the
-  # plain `pull_request` event is sufficient and avoids the security
-  # pitfalls of `pull_request_target` (executing untrusted PR code with
-  # the base-branch token). The opencode action also explicitly does not
-  # support `pull_request_target` — its SUPPORTED_EVENTS list only
-  # includes `pull_request`, `issues`, `issue_comment`,
-  # `pull_request_review_comment`, `schedule`, and `workflow_dispatch`.
-  # See: anomalyco/opencode packages/opencode/src/cli/cmd/github.ts
-  pull_request:
-    types: [opened, synchronize, reopened]
+  schedule:
+    # Every 2 hours — picks up newly-opened Renovate PRs and re-analyzes any
+    # that have been updated since the last analysis comment.
+    - cron: "0 */2 * * *"
   workflow_dispatch:
     inputs:
       pr_number:
-        description: 'PR number to analyze (leave empty for all open Renovate PRs)'
+        description: "PR number to analyze (leave empty for all open Renovate PRs)"
         required: false
         type: string
 
-env:
-  OWNER: lenaxia
-  REPO: LLMSafeSpaces
+permissions:
+  id-token: write
+  contents: write
+  issues: write
+  pull-requests: write
 
 jobs:
   analyze-prs:
-    # Only run for Renovate PRs (when triggered via pull_request) or any
-    # manual / scheduled trigger (workflow_dispatch).
-    if: |
-      github.event_name != 'pull_request' ||
-      github.event.pull_request.user.login == 'renovate[bot]'
-    runs-on: ubuntu-latest
-    permissions:
-      id-token: write
-      contents: write
-      pull-requests: write
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          persist-credentials: false
-
-      - name: Configure git identity
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      # Skip analysis if the PR was already analyzed and hasn't been updated since
-      - name: Check if already analyzed
-        id: pre-check
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TRIGGERING_PR: ${{ github.event.pull_request.number || inputs.pr_number || '' }}
-          EVENT_NAME: ${{ github.event_name }}
-        run: |
-          # Only skip-check for single-PR pull_request events (not manual all-PR runs)
-          if [ "$EVENT_NAME" != "pull_request" ] || [ -z "$TRIGGERING_PR" ]; then
-            echo "skip=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          echo "Checking if PR #$TRIGGERING_PR was already analyzed..."
-          PR_DATA=$(gh pr view "$TRIGGERING_PR" --json updatedAt)
-          PR_UPDATED=$(echo "$PR_DATA" | jq -r '.updatedAt')
-          echo "PR last updated: $PR_UPDATED"
-
-          EXISTING_COMMENTS=$(gh pr view "$TRIGGERING_PR" --json comments \
-            --jq '.comments[] | select(.author.login == "github-actions" and (.body | startswith("## Renovate PR Analysis")))')
-
-          if [ -z "$EXISTING_COMMENTS" ]; then
-            echo "No existing analysis found. Proceeding."
-            echo "skip=false" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          echo "Found existing analysis comment(s)"
-          COMMENT_DATE=$(echo "$EXISTING_COMMENTS" | jq -r '.createdAt' | tail -1)
-          echo "Most recent analysis: $COMMENT_DATE"
-
-          PR_UPDATED_TS=$(date -d "$PR_UPDATED" +%s 2>/dev/null || echo "0")
-          COMMENT_DATE_TS=$(date -d "$COMMENT_DATE" +%s 2>/dev/null || echo "0")
-          COMMENT_BUFFER_TS=$((COMMENT_DATE_TS + 60))
-
-          if [ "$PR_UPDATED_TS" -le "$COMMENT_BUFFER_TS" ]; then
-            echo "PR #$TRIGGERING_PR already analyzed and not updated since. Skipping."
-            echo "skip=true" >> $GITHUB_OUTPUT
-          else
-            echo "PR #$TRIGGERING_PR updated after last analysis. Re-analyzing."
-            echo "skip=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Analyze with OpenCode
-        if: steps.pre-check.outputs.skip != 'true'
-        uses: anomalyco/opencode/github@0cf0294787322664c6d668fa5ab0a9ce26796f78 # github-v1.2.9
-        env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_API_BASE: ${{ secrets.OPENAI_API_BASE }}
-          OPENAI_MODEL: ${{ vars.OPENAI_MODEL }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          model: openai-compatible/default
-          use_github_token: "true"
-          share: "false"
-          prompt: |
-            You are an AI assistant that analyzes Renovatebot pull requests for LLMSafeSpaces, a Kubernetes-first platform (Go) for running AI agents securely in isolated sandboxes. Every sandbox runs `opencode serve` as a persistent HTTP server with a PVC-backed persistent workspace. Single maintainer: @lenaxia.
-
-            Target PR (empty = find and analyze all open Renovate PRs): ${{ inputs.pr_number }}
-
-            Task: Analyze Renovate PR(s) and post a detailed report as a PR comment. Do NOT merge any PRs.
-
-            For each PR to analyze:
-
-            1. Parse the PR title: identify the dependency, version range (old → new), update type (patch/minor/major/digest).
-
-            2. Identify the upstream repository:
-               - Go modules: pkg.go.dev or the module's GitHub repo
-               - GitHub Actions: the action's repository
-               - Helm chart deps: Chart.yaml repository URL
-               - Check the PR body for links
-
-            3. Fetch release notes from upstream for the new version(s). For minor/major, fetch all versions between old and new.
-
-            4. Analyze impact on this codebase:
-               - Go modules: check import usage in api/, controller/, pkg/, cmd/
-               - GitHub Actions: check .github/workflows/ usage
-               - Breaking changes? Deprecated APIs we use? New required params?
-
-            5. Post a comment on the PR using this exact structure:
-               ## Renovate PR Analysis
-               ### Update Summary
-               - Dependency: [name]
-               - Version: [old] → [new]
-               - Type: [patch/minor/major/digest]
-               ### Release Changes
-               [new features, bug fixes, security fixes]
-               ### Breaking Changes
-               [list, or "None affecting our usage"]
-               ### Code Changes Required
-               [specific changes needed, or "None"]
-               ### Security Impact
-               [security fixes and whether they affect our threat surface]
-               ### Recommendation
-               [Safe to merge / Needs manual review / Requires code changes] — [reason]
-
-            6. Act on the recommendation:
-               - Safe to merge: merge with squash method (github_merge_pull_request)
-               - Requires code changes: create branch config/renovate-pr-{number}-changes, make changes, open a PR, comment on the Renovate PR with the link
-               - Needs manual review: post comment only, do NOT merge
-
-            Special exclusions (always "Needs manual review", never auto-merge):
-            - sigs.k8s.io/controller-runtime — core Kubernetes operator reconcile loop framework
-            - k8s.io/* / sigs.k8s.io/* — Kubernetes API clients
-            - github.com/mark3labs/mcp-go — MCP server SDK used by the API
-            - Any LLM/AI SDK — affects agent prompt handling and response parsing
-            - github.com/bitnami/* — revoked open-source license
-
-            Skip PRs with "abandoned" in the title.
+    uses: lenaxia/ai-workflows/.github/workflows/renovate-analysis.yml@v0.2.10
+    secrets: inherit
+    with:
+      project_name: LLMSafeSpaces
+      pr_number: ${{ inputs.pr_number }}
