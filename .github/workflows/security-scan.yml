@@ -123,11 +123,15 @@ jobs:
       # root images, etc. Most false-positive-prone scanner of the three
       # — the .trivyignore.yaml has documented per-path scopes for the
       # development manifests in local/ and the audit fixtures.
+      # --kubernetes-version must match the chart floor (helm/Chart.yaml
+      # kubeVersion >=1.35); trivy's built-in default lags and makes the
+      # helm scanner refuse the chart as "incompatible".
       - name: Trivy config scan
         run: |
           trivy config \
             --severity HIGH,CRITICAL \
             --exit-code 1 \
+            --kubernetes-version 1.35.3 \
             --skip-dirs frontend/node_modules \
             --skip-dirs sdks/typescript/node_modules \
             --skip-dirs sdks/vscode-llmsafespaces/node_modules \

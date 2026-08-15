@@ -89,10 +89,10 @@ func TestAgentdOverlay_Enabled_WiresImageVolume(t *testing.T) {
 		}
 	}
 	require.NotNil(t, vol, "agentd image volume must exist when delivery is enabled")
-	require.NotNil(t, vol.VolumeSource.Image, "volume must use an Image volume source")
-	require.Equal(t, testAgentdImage, vol.VolumeSource.Image.Reference,
+	require.NotNil(t, vol.Image, "volume must use an Image volume source")
+	require.Equal(t, testAgentdImage, vol.Image.Reference,
 		"reference must be the digest-pinned image")
-	require.Equal(t, corev1.PullIfNotPresent, vol.VolumeSource.Image.PullPolicy,
+	require.Equal(t, corev1.PullIfNotPresent, vol.Image.PullPolicy,
 		"digest-pinned immutable content: IfNotPresent, never Always")
 }
 
@@ -188,44 +188,6 @@ func makeWorkspacePod(ws *v1.Workspace, waitingReason string, exit int32, termMs
 			ContainerStatuses: []corev1.ContainerStatus{cs},
 		},
 	}
-}
-
-func verifyFailedPodFor(t *testing.T, r *WorkspaceReconciler, ws *v1.Workspace, exitCode int32, termMsg string) *corev1.Pod {
-	t.Helper()
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      podName(ws.Name, string(ws.UID)),
-			Namespace: ws.Namespace,
-			OwnerReferences: []metav1.OwnerReference{
-				{APIVersion: "llmsafespaces.dev/v1", Kind: "Workspace", Name: ws.Name, UID: ws.UID},
-			},
-		},
-		Spec: corev1.PodSpec{
-			NodeName:   "node-1",
-			Containers: []corev1.Container{{Name: "workspace"}},
-		},
-		Status: corev1.PodStatus{
-			Phase: corev1.PodRunning,
-			PodIP: "10.0.0.5",
-			ContainerStatuses: []corev1.ContainerStatus{
-				{
-					Name: "workspace",
-					State: corev1.ContainerState{
-						Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"},
-					},
-					LastTerminationState: corev1.ContainerState{
-						Terminated: &corev1.ContainerStateTerminated{
-							ExitCode: exitCode,
-							Message:  termMsg,
-						},
-					},
-					RestartCount: 3,
-				},
-			},
-		},
-	}
-	require.NoError(t, r.Create(context.Background(), pod))
-	return pod
 }
 
 func TestAgentdVerify_Mismatch_SetsConditionEmitsEventAndMetric(t *testing.T) {
