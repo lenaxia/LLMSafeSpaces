@@ -7,7 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"testing"
+
+	"github.com/lenaxia/llmsafespaces/pkg/settings"
 )
 
 // TestCanary_SchemaVersion_TwinParity guards against the drift class seen in
@@ -15,7 +18,9 @@ import (
 // expectedSchemaVersion but the Python and TypeScript twins kept 10 — and
 // because the Python canary section had never executed in CI (bootstrap bug,
 // fixed in #861), the drift surfaced only as an intermittent canary failure
-// weeks later. All three twins must agree on the expected schema version.
+// weeks later. Each twin must equal the authority constant
+// (settings.SchemaVersion), so a bump that updates none — or only some — of
+// the twins fails here in blocking CI (worklog 0596 precedent).
 func TestCanary_SchemaVersion_TwinParity(t *testing.T) {
 	root := repoRoot(t)
 
@@ -31,7 +36,7 @@ func TestCanary_SchemaVersion_TwinParity(t *testing.T) {
 		"ts": regexp.MustCompile(`EXPECTED_SCHEMA_VERSION\s*=\s*(\d+)`),
 	}
 
-	versions := map[string]string{}
+	authority := strconv.Itoa(settings.SchemaVersion)
 	for name, path := range twins {
 		data, err := os.ReadFile(path)
 		if err != nil {
@@ -41,12 +46,8 @@ func TestCanary_SchemaVersion_TwinParity(t *testing.T) {
 		if m == nil {
 			t.Fatalf("%s twin %s: expected-schema-version pattern not found", name, path)
 		}
-		versions[name] = string(m[1])
-	}
-
-	for name, v := range versions {
-		if v != versions["go"] {
-			t.Errorf("canary twin drift: %s expects schema version %s, go expects %s (all twins must agree; update sdks/canary/{go,python,typescript} s-user-settings together)", name, v, versions["go"])
+		if string(m[1]) != authority {
+			t.Errorf("canary twin drift: %s expects schema version %s, authority settings.SchemaVersion is %s (update sdks/canary/{go,python,typescript} s-user-settings together with pkg/settings/schema.go)", name, m[1], authority)
 		}
 	}
 }
