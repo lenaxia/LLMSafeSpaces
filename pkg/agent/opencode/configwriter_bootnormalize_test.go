@@ -57,7 +57,7 @@ func TestConfigWriter_ApplyEmpty_StampsMissingBlocks(t *testing.T) {
 	require.NoError(t, err)
 
 	var cfg struct {
-		Schema   string `json:"$schema"`
+		Schema   string                     `json:"$schema"`
 		Provider map[string]json.RawMessage `json:"provider"`
 		Model    string                     `json:"model"`
 		Agent    struct {
