@@ -39,6 +39,18 @@ type mcpTool struct {
 
 func mcpHandler(password string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// #847: the proxy exposes session_list/session_read — the
+		// workspace's full conversation history. Without this gate any
+		// in-pod process could read it unauthenticated. The injected
+		// opencode MCP entry carries the same Basic credential
+		// (injectAgentdMCPServer); opencode applies remote-entry
+		// headers to every JSON-RPC request including initialize
+		// (verified against opencode v1.18.10 mcp/index.ts — headers
+		// flow into the transport requestInit).
+		if !checkBasicAuth(r, password) {
+			rejectUnauthorized(w)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 
 		var req mcpRequest
@@ -238,24 +250,36 @@ func writeMCPError(w http.ResponseWriter, id any, code int, msg string) {
 	})
 }
 
-func injectAgentdMCPServer(cfg map[string]json.RawMessage) {
-	mcpEntry := map[string]any{
-		"enabled": true,
-		"type":    "remote",
-		"url":     fmt.Sprintf("http://127.0.0.1:%d/v1/mcp", agentd.AgentdPort),
-	}
-	entryJSON, _ := json.Marshal(mcpEntry)
-
-	if existing, ok := cfg["mcp"]; ok {
-		var mcpMap map[string]json.RawMessage
-		if json.Unmarshal(existing, &mcpMap) == nil {
-			mcpMap["llmsafespaces"] = entryJSON
-			merged, _ := json.Marshal(mcpMap)
-			cfg["mcp"] = merged
-			return
+// injectAgentdMCPServer returns the pre-marshal hook that stamps the
+// platform's llmsafespaces MCP entry into agent-config.json. The entry
+// carries the Basic credential because /v1/mcp enforces auth (#847); an
+// empty password yields an entry without headers (agentd main fails fatal
+// on an unreadable password, so the distinction only matters in tests).
+func injectAgentdMCPServer(password string) func(map[string]json.RawMessage) {
+	return func(cfg map[string]json.RawMessage) {
+		mcpEntry := map[string]any{
+			"enabled": true,
+			"type":    "remote",
+			"url":     fmt.Sprintf("http://127.0.0.1:%d/v1/mcp", agentd.AgentdPort),
 		}
+		if password != "" {
+			mcpEntry["headers"] = map[string]string{
+				"Authorization": "Basic " + basicAuth(password),
+			}
+		}
+		entryJSON, _ := json.Marshal(mcpEntry)
+
+		if existing, ok := cfg["mcp"]; ok {
+			var mcpMap map[string]json.RawMessage
+			if json.Unmarshal(existing, &mcpMap) == nil {
+				mcpMap["llmsafespaces"] = entryJSON
+				merged, _ := json.Marshal(mcpMap)
+				cfg["mcp"] = merged
+				return
+			}
+		}
+		mcpMap := map[string]json.RawMessage{"llmsafespaces": entryJSON}
+		merged, _ := json.Marshal(mcpMap)
+		cfg["mcp"] = merged
 	}
-	mcpMap := map[string]json.RawMessage{"llmsafespaces": entryJSON}
-	merged, _ := json.Marshal(mcpMap)
-	cfg["mcp"] = merged
 }

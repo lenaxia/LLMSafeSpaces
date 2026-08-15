@@ -54,7 +54,7 @@ func TestApplyRelayConfigPreBoot_NoRelayURL_NoOp(t *testing.T) {
 	cfgPath := filepath.Join(dir, "agent-config.json")
 	require.NoError(t, os.WriteFile(cfgPath, []byte(`{"$schema":"x"}`), 0o600))
 
-	outcome, err := applyRelayConfigPreBoot("", authPath, cfgPath, nil)
+	outcome, err := applyRelayConfigPreBoot("", authPath, cfgPath, "pw", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "skipped_no_relay_url", outcome,
 		"empty relay URL must return skipped_no_relay_url and not touch the file")
@@ -77,7 +77,7 @@ func TestApplyRelayConfigPreBoot_NoCatalog_NoOp(t *testing.T) {
 	cfgPath := filepath.Join(dir, "agent-config.json")
 	require.NoError(t, os.WriteFile(cfgPath, []byte(`{}`), 0o600))
 
-	outcome, err := applyRelayConfigPreBoot("https://relay.test/", authPath, cfgPath, nil)
+	outcome, err := applyRelayConfigPreBoot("https://relay.test/", authPath, cfgPath, "pw", nil)
 	require.NoError(t, err,
 		"missing catalog file is normal pre-first-fetch; must not error")
 	assert.Equal(t, "skipped_no_catalog", outcome)
@@ -95,7 +95,7 @@ func TestApplyRelayConfigPreBoot_EmptyCatalog_NoOp(t *testing.T) {
 	cfgPath := filepath.Join(dir, "agent-config.json")
 	require.NoError(t, os.WriteFile(cfgPath, []byte(`{}`), 0o600))
 
-	outcome, err := applyRelayConfigPreBoot("https://relay.test/", authPath, cfgPath, nil)
+	outcome, err := applyRelayConfigPreBoot("https://relay.test/", authPath, cfgPath, "pw", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "skipped_empty_catalog", outcome,
 		"empty catalog must NOT write a no-model relay block — "+
@@ -115,7 +115,7 @@ func TestApplyRelayConfigPreBoot_PersonalKey_NoOp(t *testing.T) {
 	cfgPath := filepath.Join(dir, "agent-config.json")
 	require.NoError(t, os.WriteFile(cfgPath, []byte(`{}`), 0o600))
 
-	outcome, err := applyRelayConfigPreBoot("https://relay.test/", authPath, cfgPath, nil)
+	outcome, err := applyRelayConfigPreBoot("https://relay.test/", authPath, cfgPath, "pw", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "skipped_personal_key", outcome,
 		"personal opencode key must trigger the bypass — user is paying for direct Zen")
@@ -143,7 +143,7 @@ func TestApplyRelayConfigPreBoot_PublicKey_AppliesRelay(t *testing.T) {
 	// providers and the relay block will be the only entry.
 	require.NoError(t, os.WriteFile(cfgPath, []byte(`{}`), 0o600))
 
-	outcome, err := applyRelayConfigPreBoot("https://relay.test/secret", authPath, cfgPath, nil)
+	outcome, err := applyRelayConfigPreBoot("https://relay.test/secret", authPath, cfgPath, "pw", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "applied", outcome)
 
@@ -189,7 +189,7 @@ func TestApplyRelayConfigPreBoot_AbsentAuthJSON_AppliesRelay(t *testing.T) {
 	cfgPath := filepath.Join(dir, "agent-config.json")
 	require.NoError(t, os.WriteFile(cfgPath, []byte(`{}`), 0o600))
 
-	outcome, err := applyRelayConfigPreBoot("https://relay.test/", authPath, cfgPath, nil)
+	outcome, err := applyRelayConfigPreBoot("https://relay.test/", authPath, cfgPath, "pw", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "applied", outcome,
 		"missing auth.json must be treated as fresh-pod, NOT a bypass")
@@ -220,7 +220,7 @@ func TestApplyRelayConfigPreBoot_PreservesExistingProviders(t *testing.T) {
 		"model": "openai/gpt-4"
 	}`), 0o600))
 
-	outcome, err := applyRelayConfigPreBoot("https://relay.test/", authPath, cfgPath, nil)
+	outcome, err := applyRelayConfigPreBoot("https://relay.test/", authPath, cfgPath, "pw", nil)
 	require.NoError(t, err)
 	assert.Equal(t, "applied", outcome)
 
@@ -247,7 +247,7 @@ func TestApplyRelayConfigPreBoot_MalformedCatalog_Errors(t *testing.T) {
 	cfgPath := filepath.Join(dir, "agent-config.json")
 	require.NoError(t, os.WriteFile(cfgPath, []byte(`{}`), 0o600))
 
-	outcome, err := applyRelayConfigPreBoot("https://relay.test/", authPath, cfgPath, nil)
+	outcome, err := applyRelayConfigPreBoot("https://relay.test/", authPath, cfgPath, "pw", nil)
 	require.Error(t, err,
 		"malformed catalog is a controller-side bug; must surface as boot failure, "+
 			"not silent fallback to legacy injection (which would mask the bug)")
@@ -343,7 +343,7 @@ func TestApplyRelayConfigPreBoot_AuthJSONWriteFails(t *testing.T) {
 	})
 	authPath := filepath.Join(roDir, "auth.json")
 
-	outcome, err := applyRelayConfigPreBoot("https://relay.test/", authPath, cfgPath, nil)
+	outcome, err := applyRelayConfigPreBoot("https://relay.test/", authPath, cfgPath, "pw", nil)
 
 	require.NoError(t, err,
 		"auth.json write failure must NOT propagate as an error — graceful degradation requires "+
@@ -397,7 +397,7 @@ func TestApplyRelayConfigPreBoot_AppliesAllSourcesFromBootstrapFiles(t *testing.
 	cfgPath := filepath.Join(dir, "agent-config.json")
 	require.NoError(t, os.WriteFile(cfgPath, []byte(`{}`), 0o600))
 
-	outcome, err := applyRelayConfigPreBoot("https://relay.test/secret", authPath, cfgPath, nil)
+	outcome, err := applyRelayConfigPreBoot("https://relay.test/secret", authPath, cfgPath, "pw", nil)
 	require.NoError(t, err)
 	require.Equal(t, "applied", outcome)
 
