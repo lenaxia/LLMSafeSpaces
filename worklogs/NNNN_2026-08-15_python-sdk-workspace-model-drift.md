@@ -62,6 +62,10 @@ The CI canary advanced past s_secret_crud's metadata fix to reveal `SecretRespon
 - `s_ownership` N6 (py+ts): 403-or-404 access-denied contract (Go twin; CI-proven red at `2b01d700`'s run).
 - `s-rate-limit.ts`: 8 → 12 burst attempts (Python-twin parity — the login limit is 10/min, so 8 may not trip it).
 
+### Round 8: email-reset login 429
+
+First-ever full Python section run reached scenario 18/19 with everything green through `s_ownership`; `s_email_reset` then failed on `login: unexpected status: got 429` — the accumulated JWT logins from the six converted scenarios share the per-IP login bucket (10/min). The scenario's contract is the 200-vs-403 email-verification semantics, so the login now retries on 429 (up to 7 attempts, 10s apart — one bucket refill).
+
 ## Blockers
 
 None for this PR's diff. Open convergence risk: the TS canary section's first-ever CI execution may surface further twin drift (as the Python section's did); each is the same deterministic, source-verifiable class addressed iteratively here.
