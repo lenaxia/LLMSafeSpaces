@@ -15,7 +15,7 @@ Stabilize the Playwright e2e suite against two distinct flake sources: resource 
 ## Work Completed
 
 1. **`frontend/playwright.config.ts`** — pin `workers: 2`.
-   - Playwright's unset default is **50% of CPU cores** (pinned `@playwright/test` 1.60.0, `lib/common/index.js`: `Math.max(1, Math.floor(cpus * 0.5))`) — 2 on the 4-vCPU `ubuntu-latest` CI runners, 18 on a 36-core local host. The original revision of this branch used `workers: 4`, which would have **doubled** CI concurrency in three pipelines (`e2e-pr.yml:38`, `ci.yml:328`, `release.yml:217`) — the exact resource-contended-30s-timeout failure mode this PR set out to fix. Withdrawn per review; `workers: 2` preserves CI behaviour exactly while capping local oversubscription (the PR's legitimate goal).
+   - Playwright's unset default is **50% of CPU cores** (pinned `@playwright/test` 1.60.0, `lib/common/index.js`: `Math.max(1, Math.floor(cpus * 0.5))`) — 2 on the 4-vCPU `ubuntu-latest` CI runners, 18 on a 36-core local host. The original revision of this branch used `workers: 4`, which would have **doubled** CI concurrency in three pipelines (`e2e-pr.yml:38`, `ci.yml:416`, `release.yml:217`) — the exact resource-contended-30s-timeout failure mode this PR set out to fix. Withdrawn per review; `workers: 2` preserves CI behaviour exactly while capping local oversubscription (the PR's legitimate goal).
 2. **`frontend/tests/e2e/session-activity.spec.ts`** (test 46) — `getByText("Alpha")` substring-matched both the workspace header (`<button>`, accessible name = workspace name, `Sidebar.tsx:409-433`) and the `Task Alpha` session row → strict-mode violation passing only on retry timing. Now `getByRole("button", { name: "Alpha", exact: true })`, matching the click locator.
    - **Caveat:** main's `a348901d` marked tests 41/42/45/46/53 `test.fixme` (fetch-based SSE cannot be mocked by `route.fulfill` — tracked separately for an SSE-mock helper). The locator fix therefore does not currently execute in CI; it is correct by inspection and applies the moment the SSE helper revives the test. Review's live run confirmed: the new locator resolves; the test still fails later (line 260) for the documented SSE-wiring reasons.
 
@@ -28,7 +28,7 @@ Stabilize the Playwright e2e suite against two distinct flake sources: resource 
 
 ---
 
-## Verification
+## Tests Run
 
 - Full local suite at `workers: 2` (Chromium 1223): **109 passed / 1 flaky / 13 skipped / 0 failed** in 2.6m.
   - 1 flaky: `input-requests.spec.ts:118` (unrelated spec; passed on retry).
@@ -37,6 +37,11 @@ Stabilize the Playwright e2e suite against two distinct flake sources: resource 
 - CI run on this push is the authoritative CI-class number.
 
 ---
+
+## Next Steps
+
+- SSE-mock helper for Playwright (streaming route handler) — revives the 5 fixme'd `session-activity.spec.ts` tests; this PR's test-46 locator fix activates with it. Tracked separately on main (see `a348901d`).
+- Optional follow-up: the `input-requests.spec.ts:118` flake (permission-deny feedback) observed once locally at workers:2 — likely the same SSE-replay class; investigate when the helper lands.
 
 ## Blockers
 
