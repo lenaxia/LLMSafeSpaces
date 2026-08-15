@@ -13,6 +13,9 @@ package chart_test
 //     (entrypoint exit-81 storm).
 
 import (
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -35,7 +38,7 @@ func agentdFlags(t *testing.T, valuesYAML string) []string {
 		pod := spec["template"].(map[string]any)["spec"].(map[string]any)
 		for _, c := range pod["containers"].([]any) {
 			cm := c.(map[string]any)
-			if cm["name"] != "controller" {
+			if cm["name"] != "manager" {
 				continue
 			}
 			for _, a := range cm["args"].([]any) {
@@ -67,24 +70,20 @@ func TestAgentdDelivery_ConfiguredRendersAllFlags(t *testing.T) {
 }
 
 func TestAgentdDelivery_HalfConfiguredFailsRender(t *testing.T) {
-	// helmTemplate require-fails on a bad render; recover the failure and
-	// assert it carries the required-guard message for the missing pins.
-	var renderErr string
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				if s, ok := r.(string); ok {
-					renderErr = s
-				} else {
-					renderErr = "non-string failure"
-				}
-			}
-		}()
-		agentdFlags(t, `controller:
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not on PATH; skipping chart render test")
+	}
+	dir := t.TempDir()
+	valuesPath := filepath.Join(dir, "values.yaml")
+	require.NoError(t, os.WriteFile(valuesPath, []byte(`controller:
   agentdDelivery:
     image: ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-`)
-	}()
-	require.NotEmpty(t, renderErr,
-		"half-configured agentdDelivery must fail the render — install-time error beats an entrypoint exit-81 storm")
+`), 0o600))
+
+	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath)
+	out, err := cmd.CombinedOutput()
+	require.Error(t, err,
+		"half-configured agentdDelivery must fail the render — install-time error beats an entrypoint exit-81 storm; output: %s", out)
+	require.Contains(t, string(out), "binarySHA256Amd64 is required",
+		"the failure must be the required-guard, not an unrelated render error; output: %s", out)
 }
