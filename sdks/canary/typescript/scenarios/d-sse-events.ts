@@ -3,7 +3,7 @@
 // D-SSE-EVENTS canary — TypeScript SDK
 
 import http from 'http';
-import { LLMSafeSpaces } from '../../src/index.js';
+import { LLMSafeSpaces } from '../../../typescript/src/index.js';
 import { Runner, Config, configFromEnv, nodeFetch, rawDo, waitActive, sleep } from '../canary.js';
 
 async function run(r: Runner, cfg: Config): Promise<void> {

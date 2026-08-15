@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // S-USER-SETTINGS canary — TypeScript SDK
 
-import { LLMSafeSpaces } from '../../src/index.js';
+import { LLMSafeSpaces } from '../../../typescript/src/index.js';
 import { Runner, Config, configFromEnv, nodeFetch, rawDo } from '../canary.js';
 
 const EXPECTED_SCHEMA_VERSION = 11;

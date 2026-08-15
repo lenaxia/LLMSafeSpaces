@@ -2,13 +2,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // S-OWNERSHIP canary — TypeScript SDK
 
-import { LLMSafeSpaces } from '../../src/index.js';
-import { Runner, Config, configFromEnv, nodeFetch, rawDo } from '../canary.js';
+import { LLMSafeSpaces } from '../../../typescript/src/index.js';
+import { jwtLogin, Runner, Config, configFromEnv, nodeFetch, rawDo } from '../canary.js';
 
 async function run(r: Runner, cfg: Config): Promise<void> {
   if (!cfg.apiKeyUser2) { r.ok('ownership: skipped (no API_KEY_USER2)'); return; }
 
-  const c1 = new LLMSafeSpaces({ baseUrl: cfg.apiUrl, apiKey: cfg.apiKey, timeout: 20000, fetch: nodeFetch as any });
+  const c1 = new LLMSafeSpaces({ baseUrl: cfg.apiUrl, apiKey: await jwtLogin(cfg), timeout: 20000, fetch: nodeFetch as any });
   const c2 = new LLMSafeSpaces({ baseUrl: cfg.apiUrl, apiKey: cfg.apiKeyUser2, timeout: 20000, fetch: nodeFetch as any });
   let ws1Id: string | null = null, ws2Id: string | null = null, s1Id: string | null = null;
   try {

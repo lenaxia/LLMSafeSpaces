@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // S-APIKEY canary — TypeScript SDK
 
-import { LLMSafeSpaces } from '../../src/index.js';
+import { LLMSafeSpaces } from '../../../typescript/src/index.js';
 import { Runner, Config, configFromEnv, nodeFetch } from '../canary.js';
 
 async function run(r: Runner, cfg: Config): Promise<void> {

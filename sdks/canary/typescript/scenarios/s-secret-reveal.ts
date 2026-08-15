@@ -2,14 +2,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // S-SECRET-REVEAL canary — TypeScript SDK
 
-import { LLMSafeSpaces } from '../../src/index.js';
-import { Runner, Config, configFromEnv, nodeFetch, rawDo, hasField } from '../canary.js';
+import { LLMSafeSpaces } from '../../../typescript/src/index.js';
+import { jwtLogin, Runner, Config, configFromEnv, nodeFetch, rawDo, hasField } from '../canary.js';
 
 const SECRET_VALUE = 'canary-ts-reveal-test-val-xyz';
 
 async function run(r: Runner, cfg: Config): Promise<void> {
   if (!cfg.password) { r.ok('reveal: skipped (no password)'); return; }
-  const c = new LLMSafeSpaces({ baseUrl: cfg.apiUrl, apiKey: cfg.apiKey, timeout: 15000, fetch: nodeFetch as any });
+  const c = new LLMSafeSpaces({ baseUrl: cfg.apiUrl, apiKey: await jwtLogin(cfg), timeout: 15000, fetch: nodeFetch as any });
   let sid: string | null = null;
   try {
     const [ok, s] = await r.assertNoError(

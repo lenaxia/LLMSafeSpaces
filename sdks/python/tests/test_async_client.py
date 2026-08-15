@@ -394,3 +394,22 @@ async def test_async_workspace_list_full_payload_round_trip(client: AsyncLLMSafe
     assert item.agentVersion == "1.18.10"
     assert item.agentNeedsRefresh is False
     assert item.orgId == "org-9"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_secret_response_full_payload_round_trip(client: AsyncLLMSafeSpaces):
+    """Async twin of the SecretResponse round-trip — pins the duplicated
+    async parse path against the full server payload (globalDefault has
+    no omitempty and is always present)."""
+    respx.post(f"{BASE}/api/v1/secrets").mock(
+        return_value=httpx.Response(201, json={
+            "id": "sec-1", "name": "canary", "type": "env-secret",
+            "metadata": {"var_name": "CANARY_VAR"},
+            "globalDefault": False,
+            "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+        })
+    )
+    s = await client.secrets.create(name="canary", type="env-secret", value="v", metadata={"var_name": "CANARY_VAR"})
+    assert s.globalDefault is False
+    assert s.metadata == {"var_name": "CANARY_VAR"}

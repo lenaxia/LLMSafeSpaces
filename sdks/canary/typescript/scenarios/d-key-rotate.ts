@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // D-KEY-ROTATE canary — TypeScript SDK
 
-import { LLMSafeSpaces, AuthError } from '../../src/index.js';
+import { LLMSafeSpaces, AuthError } from '../../../typescript/src/index.js';
 import { Runner, Config, configFromEnv, nodeFetch } from '../canary.js';
 
 async function run(r: Runner, cfg: Config): Promise<void> {

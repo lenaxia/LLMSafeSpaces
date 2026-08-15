@@ -50,9 +50,16 @@ The CI canary advanced past s_secret_crud's metadata fix to reveal `SecretRespon
 - `s_secret_bindings` (py+ts): asserted `id`; the API's `BoundSecret` emits `secretId` (`pkg/secrets/types.go:170-178`) — the Go SDK passes only because its type remaps the tag. Fixed both twins to `secretId`.
 - `s_env_vars` (py+ts): asserted the raw var name; the API stores/returns mangled secret names `<wsId>-env-<lowercased_var>` (`workspace_env.go:121,185-193`), empirically confirmed by the Go twin's CI-passing suffix check. Fixed both twins to `endswith("-env-canary_var")` per Go-twin parity.
 
+### Round 6: TS bootstrap + DEK parity (2b01d700 follow-through)
+
+- **TS canary import-path break**: all 35 scenarios imported `'../../src/index.js'` (resolves to `sdks/canary/typescript/src/`, nonexistent); the SDK lives at `sdks/typescript/src/`. Repointed to `'../../../typescript/src/index.js'`. Like the Python `sys.path` bug, this was latent — the TS section had never executed in CI (earlier Python failures aborted the job first).
+- **Six TS secret scenarios → `await jwtLogin(cfg)`** (s-secret-crud, s-secret-reveal, s-secret-audit, s-secret-bindings, s-env-vars, s-ownership): the same DEK-gate 403 class fixed for the Python twins earlier; the `s-cred-crud.ts` pattern applied.
+- **Async `SecretResponse` round-trip twin** added — the duplicated async parse path is now pinned like every other model (87/87).
+- `sdks/typescript/src/client.ts:218` — `getBindings` type declares `secretId` (server shape).
+
 ## Blockers
 
-None.
+None for this PR. The TS canary section's first-ever CI execution may surface further twin drift (as the Python section's did); each is the same deterministic, source-verifiable class addressed iteratively here.
 
 ---
 
@@ -67,5 +74,8 @@ None.
 - sdks/python/llmsafespaces/types.py
 - sdks/python/tests/test_client.py
 - sdks/openapi.yaml
-- sdks/canary/python/scenarios/s_ws_crud.py
+- sdks/canary/python/scenarios/s_ws_crud.py, s_ws_status.py, s_secret_crud.py, s_secret_reveal.py, s_secret_audit.py, s_secret_bindings.py, s_env_vars.py, s_ownership.py, s_rate_limit.py, s_ws_quota.py, d_account_recover.py, d_change_password.py, d_key_rotate.py
+- sdks/canary/typescript/scenarios/*.ts (35 files: import repoint), s-secret-{crud,reveal,audit,bindings}.ts + s-env-vars.ts + s-ownership.ts (jwtLogin), s-ws-status.ts (phase relaxation), s-rate-limit.ts (strict 429 body check)
+- sdks/typescript/src/types.ts, sdks/typescript/src/client.ts
+- sdks/go/types.go
 - worklogs/NNNN_2026-08-15_python-sdk-workspace-model-drift.md (this file)
