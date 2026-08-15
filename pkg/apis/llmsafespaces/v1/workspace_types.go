@@ -270,6 +270,10 @@ const (
 	WorkspaceConditionProviderReady        WorkspaceConditionType = "ProviderReady"
 	WorkspaceConditionDiskPressure         WorkspaceConditionType = "DiskPressure"
 	WorkspaceConditionMemoryPressure       WorkspaceConditionType = "MemoryPressure"
+	// WorkspaceConditionAgentdVerified reports the integrity state of the
+	// image-volume-delivered workspace-agentd binary (#863). Only set when
+	// agentd overlay delivery is enabled; absent in legacy baked-in mode.
+	WorkspaceConditionAgentdVerified WorkspaceConditionType = "AgentdVerified"
 )
 
 const (
@@ -290,6 +294,10 @@ const (
 	ReasonProvidersNotConnected = "ProvidersNotConnected"
 	ReasonDiskPressure          = "DiskPressure"
 	ReasonMemoryPressure        = "MemoryPressure"
+	// #863 agentd overlay delivery: entrypoint sha256 verification outcomes.
+	ReasonAgentdVerificationFailed = "AgentdVerificationFailed"
+	ReasonAgentdOverlayMissing     = "AgentdOverlayMissing"
+	ReasonAgentdVerified           = "AgentdVerified"
 )
 
 // WorkspaceCondition describes a condition of a Workspace.

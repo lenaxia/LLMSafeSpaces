@@ -184,6 +184,19 @@ func (r *WorkspaceReconciler) handleActive(ctx context.Context, workspace *v1.Wo
 		return ctrl.Result{}, nil
 	}
 
+	// #863: agentd integrity check runs BEFORE the crashloop recovery
+	// branch. A verify failure (exit 81/82) cannot be fixed by restarting
+	// the pod — the same digest pin reproduces the same mismatch — so
+	// entering recovery would only burn the restart budget. Surface the
+	// condition/event/metric and requeue slowly for the operator.
+	if r.detectAgentdVerificationFailure(ctx, workspace, pod) {
+		if err := r.Status().Update(ctx, workspace); err != nil {
+			recordStatusUpdateConflictOnError("handleActive_agentd_verify", err)
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: agentdVerifyFailureRequeue}, nil
+	}
+
 	for _, cs := range pod.Status.ContainerStatuses {
 		if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" {
 			obs := observePod(pod)
@@ -198,6 +211,10 @@ func (r *WorkspaceReconciler) handleActive(ctx context.Context, workspace *v1.Wo
 			return result, err
 		}
 	}
+
+	// #863: overlay-mode pod observed running clean — publish the
+	// positive verification condition (idempotent).
+	r.markAgentdVerified(workspace)
 
 	// Pod running — check timeout.
 	if workspace.Spec.Timeout > 0 && workspace.Status.StartTime != nil {

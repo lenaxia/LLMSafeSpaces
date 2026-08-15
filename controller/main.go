@@ -27,6 +27,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/controller/internal/freemodels"
 	"github.com/lenaxia/llmsafespaces/controller/internal/metrics"
 	"github.com/lenaxia/llmsafespaces/controller/internal/webhooks"
+	"github.com/lenaxia/llmsafespaces/controller/internal/workspace"
 	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/version"
@@ -139,7 +140,29 @@ func main() {
 		"Override URL for the free-models catalog. Empty defaults to "+
 			"https://models.dev/api.json. Useful for air-gapped clusters that "+
 			"mirror the catalog internally.")
+	var agentdImage string
+	flag.StringVar(&agentdImage, "agentd-image", "",
+		"#863: digest-pinned agentd image (ghcr.io/.../agentd@sha256:...) delivered to "+
+			"workspace pods via a read-only image volume. Empty = legacy mode "+
+			"(binary baked into runtimes/base). Must be digest-pinned; the entrypoint "+
+			"verifies the binary's sha256 against the pins before exec.")
+	var agentdBinarySHA256AMD64 string
+	flag.StringVar(&agentdBinarySHA256AMD64, "agentd-binary-sha256-amd64", "",
+		"#863: sha256 (64 hex) of the amd64 workspace-agentd binary inside --agentd-image. "+
+			"Required together with --agentd-image.")
+	var agentdBinarySHA256ARM64 string
+	flag.StringVar(&agentdBinarySHA256ARM64, "agentd-binary-sha256-arm64", "",
+		"#863: sha256 (64 hex) of the arm64 workspace-agentd binary inside --agentd-image. "+
+			"Required together with --agentd-image.")
 	flag.Parse()
+
+	// #863: validate the all-or-nothing agentd delivery contract before
+	// anything starts — a half-configured overlay would build pods whose
+	// entrypoint cannot verify (exit 81 on every boot).
+	if err := workspace.ValidateAgentdDelivery(agentdImage, agentdBinarySHA256AMD64, agentdBinarySHA256ARM64); err != nil {
+		setupLog.Error(err, "invalid agentd delivery configuration")
+		os.Exit(1)
+	}
 
 	// US-43.19 / D20: the shared secret authenticating controller→API internal
 	// calls. Read from the same env var the API service uses
@@ -248,7 +271,11 @@ func main() {
 	}
 
 	// Set up controllers
-	if err := controller.SetupControllers(mgr, inferenceRelayURL, apiServiceURL, apiInternalToken, defaultRuntimeClass); err != nil {
+	if err := controller.SetupControllers(mgr, inferenceRelayURL, apiServiceURL, apiInternalToken, defaultRuntimeClass, controller.AgentdDelivery{
+		Image:             agentdImage,
+		BinarySHA256AMD64: agentdBinarySHA256AMD64,
+		BinarySHA256ARM64: agentdBinarySHA256ARM64,
+	}); err != nil {
 		setupLog.Error(err, "unable to set up controllers")
 		os.Exit(1)
 	}

@@ -213,6 +213,25 @@ controller:
   # clear internalToken — by default both are wired so D20 is functional.
   apiServiceURL: ""
 
+  # #863 agentd overlay delivery. When enabled, workspace pods receive the
+  # workspace-agentd binary via a digest-pinned read-only image volume
+  # (KEP-4639) instead of the copy baked into runtimes/base, and the
+  # entrypoint verifies its sha256 against the per-arch pins before exec.
+  # Platform agentd fixes then reach every workspace on any pod
+  # (re)creation without rebuilding the runtime base.
+  #
+  # Both directions of a half-configuration fail the Helm render (image
+  # without hashes, or hashes without image); leave everything empty for
+  # legacy baked-in mode. The image MUST be digest-pinned
+  # (ghcr.io/lenaxia/llmsafespaces/agentd@sha256:<manifest digest>). The
+  # sha256 values are of the BINARY inside the image for that architecture
+  # (not the manifest digest) — CI prints them at build time
+  # (`docker build && docker manifest inspect`, or extract per-arch).
+  agentdDelivery:
+    image: ""
+    binarySHA256Amd64: ""
+    binarySHA256Arm64: ""
+
   # F1.4.3 (Epic 17): pre-fix the controller bound /metrics on
   # 0.0.0.0:8080, reachable from any pod with route to the controller
   # IP. The default now binds to loopback so only same-pod sidecars

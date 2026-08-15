@@ -233,6 +233,20 @@ func (r *WorkspaceReconciler) handleCreating(ctx context.Context, workspace *v1.
 		}
 	}
 
+	// #863: agentd integrity check in Creating as well — a bad pin at
+	// first boot or resume exits 81/82 before the container is ever
+	// Ready, so the Running-ready branch above never fires and the
+	// fall-through 2s requeue below would spin forever without surfacing
+	// anything. Same semantics as the handleActive call site; the
+	// condition/event/metric fire once per failure episode.
+	if r.detectAgentdVerificationFailure(ctx, workspace, existingPod) {
+		if err := r.Status().Update(ctx, workspace); err != nil {
+			recordStatusUpdateConflictOnError("handleCreating_agentd_verify", err)
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: agentdVerifyFailureRequeue}, nil
+	}
+
 	// Persist any status changes (e.g. ObservedRestartGeneration bump) that
 	// were applied above but didn't fall into a branch that already calls
 	// Status().Update. Without this, the in-memory status is lost on the next

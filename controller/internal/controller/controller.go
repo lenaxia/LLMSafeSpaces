@@ -27,7 +27,14 @@ func RegisterAgentRuntime() {
 // status fetch per org per window).
 const orgStatusCacheTTL = 30 * time.Second
 
-func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiInternalToken, defaultRuntimeClass string) error {
+// AgentdDelivery is the #863 image-volume agentd delivery configuration.
+// Zero value (empty Image) = legacy baked-in mode. When set, every
+// workspace pod gets a digest-pinned image volume + RO mount + sha256
+// verify pins; validateAgentdDeliveryConfig enforces the all-or-nothing
+// contract at startup.
+type AgentdDelivery = workspace.AgentdDeliveryConfig
+
+func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiInternalToken, defaultRuntimeClass string, agentdDelivery AgentdDelivery) error {
 	logger := log.Log.WithName("controller")
 	logger.Info("Setting up controllers")
 
@@ -44,12 +51,16 @@ func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiInt
 	}
 
 	if err := (&workspace.WorkspaceReconciler{
-		Client:              mgr.GetClient(),
-		Scheme:              mgr.GetScheme(),
-		InferenceRelayURL:   inferenceRelayURL,
-		OrgStatusClient:     orgStatusClient,
-		DefaultRuntimeClass: defaultRuntimeClass,
-		APIServiceURL:       apiServiceURL,
+		Client:                  mgr.GetClient(),
+		Scheme:                  mgr.GetScheme(),
+		InferenceRelayURL:       inferenceRelayURL,
+		OrgStatusClient:         orgStatusClient,
+		DefaultRuntimeClass:     defaultRuntimeClass,
+		APIServiceURL:           apiServiceURL,
+		AgentdImage:             agentdDelivery.Image,
+		AgentdBinarySHA256AMD64: agentdDelivery.BinarySHA256AMD64,
+		AgentdBinarySHA256ARM64: agentdDelivery.BinarySHA256ARM64,
+		Recorder:                mgr.GetEventRecorderFor("workspace-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		logger.Error(err, "unable to create Workspace controller")
 		return err
