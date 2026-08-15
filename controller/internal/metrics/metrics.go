@@ -63,8 +63,8 @@ var (
 	// fire signal — a single occurrence indicates rollout drift, node
 	// corruption, or tampering. Page-on-any, not threshold.
 	WorkspaceAgentdVerifyFailuresTotal = prometheus.NewCounterVec(
-		prometheus.CounterOpts{Name: "llmsafespaces_workspace_agentd_verify_failures_total", Help: "Entrypoint agentd binary verification failures by outcome (verify_failed = sha256 mismatch, overlay_missing = pinned binary absent). Once per failure episode, not per restart"},
-		[]string{"outcome"},
+		prometheus.CounterOpts{Name: "llmsafespaces_workspace_agentd_verify_failures_total", Help: "Entrypoint agentd binary verification failures by outcome/node/agentd digest (verify_failed = sha256 mismatch, overlay_missing = pinned binary absent). Once per failure episode, not per restart"},
+		[]string{"outcome", "node", "agentd"},
 	)
 	WorkspaceRecoveryDurationSeconds = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{

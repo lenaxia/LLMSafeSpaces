@@ -198,7 +198,7 @@ func TestAgentdVerify_Mismatch_SetsConditionEmitsEventAndMetric(t *testing.T) {
 		"AgentdVerificationFailed: expected=aaaa got=cccc binary=/agentd/usr/local/bin/workspace-agentd")
 	require.NoError(t, r.Create(context.Background(), pod))
 
-	before := testutil.ToFloat64(metricsAgentdVerifyFailures.WithLabelValues("verify_failed"))
+	before := testutil.ToFloat64(metricsAgentdVerifyFailures.WithLabelValues("verify_failed", "node-1", "0123456789ab"))
 	_, err := r.handleActive(context.Background(), ws)
 	require.NoError(t, err)
 
@@ -209,7 +209,7 @@ func TestAgentdVerify_Mismatch_SetsConditionEmitsEventAndMetric(t *testing.T) {
 	require.Contains(t, cond.Message, "expected=aaaa")
 	require.Contains(t, cond.Message, "got=cccc")
 
-	require.Equal(t, before+1.0, testutil.ToFloat64(metricsAgentdVerifyFailures.WithLabelValues("verify_failed")),
+	require.Equal(t, before+1.0, testutil.ToFloat64(metricsAgentdVerifyFailures.WithLabelValues("verify_failed", "node-1", "0123456789ab")),
 		"verify-failure metric must increment on detection")
 
 	rec := r.Recorder.(*record.FakeRecorder)
@@ -230,7 +230,7 @@ func TestAgentdVerify_OverlayMissing_UsesOverlayReason(t *testing.T) {
 		"agentd-overlay: pinned binary missing at /agentd/usr/local/bin/workspace-agentd")
 	require.NoError(t, r.Create(context.Background(), pod))
 
-	before := testutil.ToFloat64(metricsAgentdVerifyFailures.WithLabelValues("overlay_missing"))
+	before := testutil.ToFloat64(metricsAgentdVerifyFailures.WithLabelValues("overlay_missing", "node-1", "0123456789ab"))
 	_, err := r.handleActive(context.Background(), ws)
 	require.NoError(t, err)
 
@@ -238,7 +238,7 @@ func TestAgentdVerify_OverlayMissing_UsesOverlayReason(t *testing.T) {
 	require.NotNil(t, cond)
 	require.Equal(t, "False", cond.Status)
 	require.Equal(t, string(v1.ReasonAgentdOverlayMissing), cond.Reason)
-	require.Equal(t, before+1.0, testutil.ToFloat64(metricsAgentdVerifyFailures.WithLabelValues("overlay_missing")))
+	require.Equal(t, before+1.0, testutil.ToFloat64(metricsAgentdVerifyFailures.WithLabelValues("overlay_missing", "node-1", "0123456789ab")))
 }
 
 func TestAgentdVerify_FailureIsIdempotentPerEpisode(t *testing.T) {
@@ -248,12 +248,12 @@ func TestAgentdVerify_FailureIsIdempotentPerEpisode(t *testing.T) {
 	pod := makeWorkspacePod(ws, "CrashLoopBackOff", agentdExitVerifyFailed, "AgentdVerificationFailed: expected=aaaa got=cccc")
 	require.NoError(t, r.Create(context.Background(), pod))
 
-	before := testutil.ToFloat64(metricsAgentdVerifyFailures.WithLabelValues("verify_failed"))
+	before := testutil.ToFloat64(metricsAgentdVerifyFailures.WithLabelValues("verify_failed", "node-1", "0123456789ab"))
 	for i := 0; i < 3; i++ {
 		_, err := r.handleActive(context.Background(), ws)
 		require.NoError(t, err)
 	}
-	after := testutil.ToFloat64(metricsAgentdVerifyFailures.WithLabelValues("verify_failed"))
+	after := testutil.ToFloat64(metricsAgentdVerifyFailures.WithLabelValues("verify_failed", "node-1", "0123456789ab"))
 	require.Equal(t, before+1.0, after,
 		"repeated reconciles of the same failure episode must not re-increment")
 }
@@ -298,6 +298,36 @@ func TestAgentdVerify_RecoveryNotEnteredOnVerifyFailure(t *testing.T) {
 	require.Equal(t, v1.WorkspacePhaseActive, ws.Status.Phase,
 		"a digest mismatch cannot be fixed by pod restarts — must not enter recovery/crashloop machinery")
 	require.Equal(t, int32(0), ws.Status.RestartCount, "no restart may be counted")
+}
+
+// TestAgentdVerify_CreatingPhase_FirstBootBadPinIsDetected is the
+// regression for the review finding that detection lived only in
+// handleActive: a bad pin at first boot/resume exits 81 before the
+// container is ever Ready, so the workspace sits in Creating with the
+// Running-not-ready fall-through requeueing every 2s forever — no
+// condition, no event, no metric, no page.
+func TestAgentdVerify_CreatingPhase_FirstBootBadPinIsDetected(t *testing.T) {
+	r := reconcilerWithAgentd(t)
+	ws := makeWorkspace("ws-creating", "default", v1.WorkspacePhaseCreating)
+	ws.Status.PVCName = "pvc-ws-creating"
+	require.NoError(t, r.Create(context.Background(), ws))
+
+	pod := makeWorkspacePod(ws, "CrashLoopBackOff", agentdExitVerifyFailed,
+		"AgentdVerificationFailed: expected=aaaa got=cccc")
+	require.NoError(t, r.Create(context.Background(), pod))
+
+	before := testutil.ToFloat64(metricsAgentdVerifyFailures.WithLabelValues("verify_failed", "node-1", "0123456789ab"))
+	res, err := r.handleCreating(context.Background(), ws)
+	require.NoError(t, err)
+	require.Equal(t, agentdVerifyFailureRequeue, res.RequeueAfter,
+		"verify failure in Creating must use the slow requeue, not the 2s fall-through")
+
+	cond := conditionOfType(ws, v1.WorkspaceConditionAgentdVerified)
+	require.NotNil(t, cond, "condition must fire from handleCreating")
+	require.Equal(t, "False", cond.Status)
+	require.Equal(t, string(v1.ReasonAgentdVerificationFailed), cond.Reason)
+	after := testutil.ToFloat64(metricsAgentdVerifyFailures.WithLabelValues("verify_failed", "node-1", "0123456789ab"))
+	require.Equal(t, before+1.0, after, "metric must fire from handleCreating")
 }
 
 // --- config validation ----------------------------------------------------

@@ -87,3 +87,26 @@ func TestAgentdDelivery_HalfConfiguredFailsRender(t *testing.T) {
 	require.Contains(t, string(out), "binarySHA256Amd64 is required",
 		"the failure must be the required-guard, not an unrelated render error; output: %s", out)
 }
+
+// TestAgentdDelivery_HashesWithoutImageFailsRender covers the REVERSE
+// half-configuration: the with-gate on image would silently skip all
+// flags (legacy mode) while the operator believes overlay mode is on.
+// The explicit fail makes it a render-time error.
+func TestAgentdDelivery_HashesWithoutImageFailsRender(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not on PATH; skipping chart render test")
+	}
+	dir := t.TempDir()
+	valuesPath := filepath.Join(dir, "values.yaml")
+	require.NoError(t, os.WriteFile(valuesPath, []byte(`controller:
+  agentdDelivery:
+    binarySHA256Amd64: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`), 0o600))
+
+	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath)
+	out, err := cmd.CombinedOutput()
+	require.Error(t, err,
+		"hashes-without-image must fail the render — silently running legacy while the operator believes overlay mode is on is the worst failure mode; output: %s", out)
+	require.Contains(t, string(out), "agentdDelivery.image is required",
+		"the failure must be the reverse-guard fail; output: %s", out)
+}

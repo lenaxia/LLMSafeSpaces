@@ -220,8 +220,9 @@ controller:
   # Platform agentd fixes then reach every workspace on any pod
   # (re)creation without rebuilding the runtime base.
   #
-  # All three fields are required together (the chart enforces it); leave
-  # image empty for legacy baked-in mode. The image MUST be digest-pinned
+  # Both directions of a half-configuration fail the Helm render (image
+  # without hashes, or hashes without image); leave everything empty for
+  # legacy baked-in mode. The image MUST be digest-pinned
   # (ghcr.io/lenaxia/llmsafespaces/agentd@sha256:<manifest digest>). The
   # sha256 values are of the BINARY inside the image for that architecture
   # (not the manifest digest) — CI prints them at build time

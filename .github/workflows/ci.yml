@@ -1556,7 +1556,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}
           tags: |
-            type=sha,prefix=sha-
+            type=sha,format=full,prefix=sha-
             type=raw,value=ts-${{ needs.prepare.outputs.timestamp }}
             type=raw,value=dev,enable={{is_default_branch}}
             type=semver,pattern={{version}}
@@ -1564,14 +1564,12 @@ jobs:
             type=semver,pattern={{major}}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
-      - name: Create manifest list and push
-        id: create
-        working-directory: /tmp/digests
-        run: |
-          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}@sha256:%s ' *)
-          digest="$(docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}:sha-${{ github.sha }} --format '{{ json .Manifest.Digest }}' | tr -d '"')"
-          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+      - name: Download digests
+        uses: actions/download-artifact@v8
+        with:
+          path: /tmp/digests
+          pattern: agentd-digests-*
+          merge-multiple: true
 
       - name: Download binary sha256s
         uses: actions/download-artifact@v8
@@ -1579,6 +1577,17 @@ jobs:
           path: /tmp/sha
           pattern: agentd-binary-sha256-*
           merge-multiple: true
+
+      - name: Create manifest list and push
+        id: create
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}@sha256:%s ' *)
+          # type=sha,format=full above emits the full-40-hex sha- tag the
+          # inspect below resolves (the 7-hex short default would 404).
+          digest="$(docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}:sha-${{ github.sha }} --format '{{ json .Manifest.Digest }}' | tr -d '"')"
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
       - name: Print Helm values block for agentdDelivery
         run: |

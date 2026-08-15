@@ -24,6 +24,7 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -167,10 +168,10 @@ func (r *WorkspaceReconciler) detectAgentdVerificationFailure(ctx context.Contex
 	r.setCondition(ws, v1.WorkspaceConditionAgentdVerified, "False", string(reason), msg)
 
 	if !alreadyReported {
-		metricsAgentdVerifyFailures.WithLabelValues(outcome).Inc()
+		metricsAgentdVerifyFailures.WithLabelValues(outcome, pod.Spec.NodeName, agentdVersionLabel(r.AgentdImage)).Inc()
 		if r.Recorder != nil {
 			r.Recorder.Eventf(ws, corev1.EventTypeWarning, string(reason),
-				"agentd verification failure (node %s, restart #%d): %s", pod.Spec.NodeName, termToRestartCount(pod, term), msg)
+				"agentd verification failure (node %s, image %s, restart #%d): %s", pod.Spec.NodeName, r.AgentdImage, termToRestartCount(pod, term), msg)
 		}
 		log.FromContext(ctx).Error(nil, "agentd verification failed — should-never-fire signal, page and investigate",
 			"workspace", ws.Name, "pod", pod.Name, "node", pod.Spec.NodeName, "exitCode", term.ExitCode, "detail", msg)
@@ -221,4 +222,15 @@ func conditionOfTypeLocal(ws *v1.Workspace, ct v1.WorkspaceConditionType) *v1.Wo
 		}
 	}
 	return nil
+}
+
+// agentdVersionLabel derives a stable, low-cardinality version identity
+// from the digest-pinned image ref (the 12 hex after "sha256:"). Used as
+// a metric label so failures can be grouped per rollout.
+func agentdVersionLabel(image string) string {
+	i := strings.LastIndex(image, "sha256:")
+	if i < 0 || len(image)-i-7 < 12 {
+		return "unknown"
+	}
+	return image[i+7 : i+7+12]
 }

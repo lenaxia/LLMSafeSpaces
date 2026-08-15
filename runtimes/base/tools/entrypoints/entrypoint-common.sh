@@ -74,24 +74,32 @@ verify_and_select_agentd() {
         *)       expected="" ;;
     esac
 
+    # log_fail writes the failure to stderr always, and to
+    # /dev/termination-log BEST-EFFORT: under `set -euo pipefail` a tee
+    # into an unwritable termination-log would exit 1 and mask the
+    # distinct 81/82 exit codes the controller keys on.
+    log_fail() {
+        echo "$1" >&2
+        echo "$1" > /dev/termination-log 2>/dev/null || true
+    }
+
     if [[ ! -f "${bin}" ]]; then
-        echo "agentd-overlay: pinned binary missing at ${bin} (exit ${agentd_exit_overlay_missing})" | tee /dev/termination-log >&2
+        log_fail "agentd-overlay: pinned binary missing at ${bin} (exit ${agentd_exit_overlay_missing})"
         exit "${agentd_exit_overlay_missing}"
     fi
     if [[ -z "${expected}" ]]; then
-        echo "agentd-overlay: no sha256 pin for arch ${arch} (exit ${agentd_exit_verify_failed})" | tee /dev/termination-log >&2
+        log_fail "agentd-overlay: no sha256 pin for arch ${arch} (exit ${agentd_exit_verify_failed})"
         exit "${agentd_exit_verify_failed}"
     fi
 
     local actual
     if ! actual="$(sha256sum "${bin}" 2>/dev/null | awk '{print $1}')"; then
-        echo "agentd-overlay: sha256sum failed for ${bin} (exit ${agentd_exit_verify_failed})" | tee /dev/termination-log >&2
+        log_fail "agentd-overlay: sha256sum failed for ${bin} (exit ${agentd_exit_verify_failed})"
         exit "${agentd_exit_verify_failed}"
     fi
     if [[ "${actual}" != "${expected}" ]]; then
         # The line format is parsed for the event message (expected=/got=).
-        echo "AgentdVerificationFailed: expected=${expected} got=${actual} binary=${bin} node_arch=${arch}" \
-            | tee /dev/termination-log >&2
+        log_fail "AgentdVerificationFailed: expected=${expected} got=${actual} binary=${bin} node_arch=${arch}"
         exit "${agentd_exit_verify_failed}"
     fi
     echo "agentd-overlay: verified ${bin} (sha256 ok, arch ${arch})"

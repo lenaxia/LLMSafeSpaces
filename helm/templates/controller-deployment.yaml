@@ -127,10 +127,18 @@ spec:
             {{- if .Values.gvisor.enabled }}
             - --default-runtime-class={{ .Values.gvisor.defaultRuntimeClass | default "gvisor" }}
             {{- end }}
-            {{- /* #863: agentd overlay delivery (image volume). All-or-nothing:
-                    the required guards fail the render when the contract is
-                    half-configured, and the controller re-validates at
-                    startup. Empty image (legacy mode) renders nothing. */}}
+            {{- /* #863: agentd overlay delivery (image volume). Both
+                    directions of a half-configuration fail the render:
+                    image-without-hashes trips the required guards below;
+                    hashes-without-image trips the fail here (the with-gate
+                    below would otherwise silently skip ALL flags and the
+                    controller would run legacy while the operator believes
+                    overlay mode is on). The controller re-validates at
+                    startup. Empty-everything (legacy mode) renders
+                    nothing. */}}
+            {{- if and (not .Values.controller.agentdDelivery.image) (or .Values.controller.agentdDelivery.binarySHA256Amd64 .Values.controller.agentdDelivery.binarySHA256Arm64) }}
+            {{- fail "controller.agentdDelivery.image is required when binarySHA256* values are set (half-configured agentdDelivery would silently run legacy mode)" }}
+            {{- end }}
             {{- with .Values.controller.agentdDelivery.image }}
             - --agentd-image={{ . }}
             - --agentd-binary-sha256-amd64={{ $.Values.controller.agentdDelivery.binarySHA256Amd64 | required "controller.agentdDelivery.binarySHA256Amd64 is required when agentdDelivery.image is set (64-hex sha256 of the amd64 workspace-agentd binary)" }}
