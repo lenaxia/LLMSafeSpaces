@@ -47,6 +47,13 @@ func TestValidateImageRefPinned(t *testing.T) {
 		{"digest with non-hex tail", "ghcr.io/x/y@sha256:" + strings.Repeat("a", 63) + "zz", false},
 		{"bare latest is not an rte name", "latest", false},
 		{"bare main is not an rte name", "main", false},
+		{"docker.io shorthand with latest", "ubuntu:latest", false},
+		{"docker.io shorthand with stable alias", "nginx:stable", false},
+		{"docker.io shorthand with dev", "myimage:dev", false},
+		{"docker.io shorthand empty tag", "ubuntu:", false},
+		{"docker.io shorthand pinned semver", "ubuntu:22.04", true},
+		{"docker.io shorthand pinned immutable ci tag", "myimage:sha-9cf7947", true},
+		{"tag starting with underscore (OCI-legal)", "ghcr.io/x/y:_private", true},
 	}
 
 	for _, tc := range cases {

@@ -208,6 +208,7 @@ func TestAdminSettings_PUT_WorkspaceDefaultImage_FloatingTagsRejected(t *testing
 		{"dev", "ghcr.io/lenaxia/llmsafespaces/base:dev"},
 		{"stable alias", "ghcr.io/lenaxia/llmsafespaces/base:stable"},
 		{"untagged implicit latest", "ghcr.io/lenaxia/llmsafespaces/base"},
+		{"docker.io shorthand latest", "ubuntu:latest"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

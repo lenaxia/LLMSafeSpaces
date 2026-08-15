@@ -70,6 +70,28 @@ func validateImageRefPinned(value string) error {
 	}
 	lastSlash := strings.LastIndex(value, "/")
 	if lastSlash < 0 {
+		// No slash: either a RuntimeEnvironment name or a docker.io
+		// library-image shorthand. Disambiguation is total — K8s object
+		// names cannot contain ':', so a colon means image ref. Apply
+		// the full tag checks to the post-colon segment (round-4 review:
+		// "ubuntu:latest"/"nginx:stable" previously bypassed the pinning
+		// check entirely via this branch).
+		if colon := strings.LastIndex(value, ":"); colon >= 0 {
+			tag := value[colon+1:]
+			if tag == "" {
+				return fmt.Errorf("image reference %q has an empty tag", value)
+			}
+			if len(tag) > maxTagLen {
+				return fmt.Errorf("image reference %q tag exceeds %d characters", value, maxTagLen)
+			}
+			if !validTagChars(tag) {
+				return fmt.Errorf("image reference %q tag %q contains invalid characters", value, tag)
+			}
+			if isMutableTag(tag) {
+				return fmt.Errorf("image reference %q uses mutable tag %q; pin to an immutable tag or digest instead", value, tag)
+			}
+			return nil
+		}
 		if isMutableTag(value) {
 			return fmt.Errorf("%q is a mutable tag, not a runtime environment name", value)
 		}
@@ -108,16 +130,17 @@ func validateImageRefPinned(value string) error {
 	return nil
 }
 
-// validTagChars enforces the OCI tag grammar: alphanumerics, underscores,
-// periods, and dashes, with an alphanumeric FIRST character (a leading
-// "." or "-" is invalid — it would only fail later at pull time).
+// validTagChars enforces the OCI tag grammar:
+// [a-zA-Z0-9_][a-zA-Z0-9._-]{0,127} — the first character may be
+// alphanumeric or an underscore; subsequent characters may also be
+// '.' and '-'. (A leading '.' or '-' is invalid.)
 func validTagChars(tag string) bool {
 	if len(tag) == 0 {
 		return false
 	}
 	c := tag[0]
-	isAlnum := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9'
-	if !isAlnum {
+	isFirst := c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '_'
+	if !isFirst {
 		return false
 	}
 	for i := 1; i < len(tag); i++ {
