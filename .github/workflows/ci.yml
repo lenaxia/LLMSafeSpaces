@@ -1493,13 +1493,15 @@ jobs:
           # The chart pins the BINARY sha256 (the entrypoint verifies the
           # file, not the image). Tag the arch image, copy the binary out
           # of a stopped container, hash it.
-          arch="${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}"
+          arch="${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}
           tag="${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}:sha-${{ github.sha }}-${arch}"
-          docker buildx imagetools create -t "$tag" \
-            # outputs.digest already carries the sha256: prefix — do not
-            # prepend @sha256: again (double prefix = invalid reference,
-            # caught on the first live non-PR run).
-            ${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}@${{ steps.build.outputs.digest }}
+          # outputs.digest already carries the sha256: prefix — reference
+          # it verbatim after @ (prepending @sha256: doubled the prefix;
+          # putting comments INSIDE the line continuation made bash eat
+          # the source arg — "no sources specified"). Comments stay above
+          # the command.
+          src="${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}@${{ steps.build.outputs.digest }}"
+          docker buildx imagetools create -t "$tag" "$src"
           docker pull --platform ${{ matrix.platform }} "$tag"
           cid="agentd-extract-$GITHUB_RUN_ID"
           docker create --platform ${{ matrix.platform }} --name "$cid" "$tag" >/dev/null
