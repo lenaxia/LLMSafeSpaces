@@ -128,19 +128,18 @@ func RateLimitMiddleware(rl interfaces.RateLimiterService, log pkginterfaces.Log
 		}
 
 		if err != nil {
-			if apiErr, ok := err.(*errors.APIError); ok && apiErr.Type == errors.ErrorTypeRateLimit {
-				c.Header("X-RateLimit-Limit", strconv.Itoa(limit))
-				c.Header("X-RateLimit-Remaining", "0")
-				c.Header("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(window).Unix(), 10))
-				c.AbortWithStatusJSON(apiErr.StatusCode(), gin.H{
-					"error": gin.H{
-						"code":    apiErr.Code,
-						"message": apiErr.Message,
-						"details": apiErr.Details,
-					},
-				})
-				return
-			}
+		if apiErr, ok := err.(*errors.APIError); ok && apiErr.Type == errors.ErrorTypeRateLimit {
+			c.Header("X-RateLimit-Limit", strconv.Itoa(limit))
+			c.Header("X-RateLimit-Remaining", "0")
+			c.Header("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(window).Unix(), 10))
+			c.Header("Retry-After", strconv.Itoa(int((window+time.Second-1)/time.Second)))
+			c.AbortWithStatusJSON(apiErr.StatusCode(), gin.H{
+				"error":      apiErr.Message,
+				"limit":      limit,
+				"retryAfter": int((window + time.Second - 1) / time.Second),
+			})
+			return
+		}
 			_ = c.AbortWithError(http.StatusInternalServerError, err)
 			return
 		}

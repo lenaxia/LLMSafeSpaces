@@ -9,7 +9,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -65,17 +64,11 @@ func runRateLimit(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 			break
 		}
 	}
-	run.Assert(got429, "P2: rapid burst triggers 429", "no 429 after 30 rapid login attempts")
+	run.Assert(got429, "P2: rapid burst triggers 429", "no 429 after 60 rapid login attempts")
 
 	if got429 && body429 != nil {
 		run.Assert(canary.HasErrorField(body429),
-			"P3: 429 body has error field", "")
-
-		var obj map[string]any
-		if jsonErr := json.Unmarshal(body429, &obj); jsonErr == nil {
-			_, hasError := obj["error"]
-			run.Assert(hasError, "P3: 429 body has error field", fmt.Sprintf("fields: %v", obj))
-		}
+			"P3: 429 body has error field", fmt.Sprintf("body: %.200s", body429))
 	}
 
 	for _, ep := range []struct {
