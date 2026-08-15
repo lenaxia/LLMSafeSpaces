@@ -97,7 +97,7 @@ func main() {
 	// its first read sees the completed config regardless of which
 	// conditional write paths later skip. See boot_config.go.
 	agentConfigPath := envOrDefault("LLMSAFESPACES_AGENT_CONFIG_PATH", agentd.AgentConfigPath)
-	agentConfigWriter := ensureBootAgentConfig(agentConfigPath, agentd.AdminPromptPath, agentd.AllowedDirsPath)
+	agentConfigWriter := ensureBootAgentConfig(agentConfigPath, agentd.AdminPromptPath, agentd.AllowedDirsPath, password)
 
 	proc := startManagedProcess(supervise)
 

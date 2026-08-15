@@ -35,11 +35,11 @@ import (
 // usable writer, because no agentd at all is strictly worse than a
 // degraded config that the next write path (credential reload, relay
 // injector) repairs.
-func ensureBootAgentConfig(agentConfigPath, adminPromptPath, allowedDirsPath string) *opencode.ConfigWriter {
+func ensureBootAgentConfig(agentConfigPath, adminPromptPath, allowedDirsPath, password string) *opencode.ConfigWriter {
 	w := opencode.NewConfigWriter(agentConfigPath,
 		opencode.WithAdminPromptPath(adminPromptPath),
 		opencode.WithAllowedDirsPath(allowedDirsPath),
-		opencode.WithPreMarshalHook(injectAgentdMCPServer),
+		opencode.WithPreMarshalHook(injectAgentdMCPServer(password)),
 	)
 	if _, err := w.Apply(agent.AgentConfigInput{}); err != nil {
 		if log != nil {
