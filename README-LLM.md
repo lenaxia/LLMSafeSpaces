@@ -581,10 +581,10 @@ The relay config subsystem uses a single `ConfigWriter` (`pkg/agent/opencode/con
 
 #### Agent-config.json write sequence (credential reload)
 
-1. `reloadMu.Lock()` → `Materializer.reset()` → `Materialize(batch)` → `Materializer.FormatProviders()` formats credentials → **`writeReloadSecretsCache()`** persists the batch to `/sandbox-runtime/last-reload-secrets.json` (tmpfs; survives container restart, wiped on pod death; written after Materialize succeeds, before the config write) → `deps.AgentConfigWriter.Apply(input)` (providers + staged MCP servers) merges with the captured model + relay sources → `reloadMu.Unlock()`
+1. `reloadMu.Lock()` → `Materializer.reset()` → `Materialize(batch)` → **`writeReloadSecretsCache()`** persists the batch to `/sandbox-runtime/last-reload-secrets.json` (tmpfs; survives container restart, wiped on pod death) → `Materializer.FormatProviders()` formats credentials → `deps.AgentConfigWriter.Apply(input)` (providers + staged MCP servers) merges with the captured model + relay sources → `reloadMu.Unlock()`
 2. `proc.restart()` reboots opencode with updated config
 
-The cache write (#443) is what lets user-DEK credentials (env-secrets like `GH_TOKEN`, SSH keys, user LLM providers) survive a main-container restart (OOM, panic, kubelet restart): without it, the next boot's `reset()` would wipe them and the base `secrets.json` (bootstrap, sessionless) never contained them. The cache is written after `Materialize` succeeds, is never written on a hard failure (500), and degrades to base-only on a corrupt read.
+The cache write (#443) is what lets user-DEK credentials (env-secrets like `GH_TOKEN`, SSH keys, user LLM providers) survive a main-container restart (OOM, panic, kubelet restart): without it, the next boot's `reset()` would wipe them and the base `secrets.json` (bootstrap, sessionless) never contained them. The cache is written immediately after `Materialize` succeeds — before provider formatting and the config write — so it reflects what was materialized even if a later step fails with a 500; it degrades to base-only on a corrupt read.
 
 #### RelayInjected signal flow
 
