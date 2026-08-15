@@ -71,11 +71,14 @@ prompt or dirs required reconstructing the writer.
 
 ## Verification
 
-- Twelve promptdirs tests: replace/clear/nil over rendered files, clear
+- Thirteen promptdirs tests: replace/clear/nil over rendered files, clear
   over the production side-car+rendered configuration (union
   semantics), sanitization, caller-slice isolation, failed-rebuild
   rollback (scalars + captured raws), null-external-directory panic
-  guard, and sibling-build-field preservation.
+  guard, three null-section panic guards (provider/agent/mode — Go's
+  encoding/json NILS even pre-initialized maps on JSON null, the
+  assumption that felled rounds 3-4), and sibling-build-field
+  preservation.
 - Round-2 additions: the side-car load UNIONs the recovered injected-dirs
   set (the first version overwrote it — a prior-lifetime /data/* would
   have resurrected on clear; mutation-verified); the preservation
