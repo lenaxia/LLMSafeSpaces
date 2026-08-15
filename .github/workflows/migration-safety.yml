@@ -44,6 +44,12 @@ on:
       - '.github/workflows/migration-safety.yml'
   workflow_dispatch:
 
+# Superseded PR runs are cancelled; a RUNNING main-push run is never
+# cancelled, a PENDING one is replaced by a newer push (newest-wins).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 

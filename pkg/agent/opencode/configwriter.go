@@ -113,6 +113,7 @@ type ConfigWriter struct {
 	modeRaw         json.RawMessage  // existing "mode" config from loadExisting, preserved across rebuilds
 	mcpRaw          json.RawMessage  // existing "mcp" object from loadExisting (e.g. user-staged servers written by materialize, Epic 53); re-emitted when no staged source. Non-object or null sections are NOT captured (dropped, not round-tripped)
 	allowedDirs     []string         // glob patterns, merged as external_directory allow-rules
+	injectedDirs    []string         // external_directory keys the writer last injected (or recovered from a prior render); stripped from modeRaw when the AllowedDirs source changes so replace/clear are authoritative over prior renders
 	adminPromptPath string           // path to admin-prompt file; "" = skip
 	allowedDirsPath string           // path to allowed-dirs JSON; "" = skip
 	preMarshalHook  func(map[string]json.RawMessage)
@@ -172,6 +173,30 @@ func (w *ConfigWriter) loadExisting() {
 		var mcpMap map[string]json.RawMessage
 		if json.Unmarshal(cfg.MCP, &mcpMap) == nil && mcpMap != nil {
 			w.mcpRaw = cfg.MCP
+		}
+	}
+
+	// Recover the writer-injected external_directory keys from a
+	// previously rendered mode block (the post-boot-normalize pod
+	// state). Fail-closed heuristic: every map-form entry valued
+	// "allow" is treated as writer-injected — a user-authored allow is
+	// indistinguishable from a writer-rendered one in the artifact, so
+	// a later AllowedDirs replace/clear sweeps it too. Deny/ask rules
+	// and bare-string policies are distinguishable and survive. The
+	// ambiguity dissolves in increment 3 (#860, pure render: injected
+	// keys tracked in writer state, not re-derived from the artifact).
+	if len(cfg.Mode) > 0 {
+		var mode struct {
+			Permissions struct {
+				ExternalDirectory map[string]string `json:"external_directory"`
+			} `json:"permissions"`
+		}
+		if json.Unmarshal(cfg.Mode, &mode) == nil {
+			for k, v := range mode.Permissions.ExternalDirectory {
+				if v == "allow" {
+					w.injectedDirs = append(w.injectedDirs, k)
+				}
+			}
 		}
 	}
 
@@ -242,17 +267,26 @@ func (w *ConfigWriter) loadAllowedDirs() {
 	if json.Unmarshal(data, &patterns) != nil {
 		return
 	}
-	seen := make(map[string]struct{}, len(patterns))
-	for _, p := range patterns {
-		if p == "" {
-			continue
+	w.allowedDirs = sanitizeAllowedDirs(patterns)
+	// The side-car patterns are what this writer will inject; UNION them
+	// with the injected-dirs set recovered from a previously rendered
+	// mode block (loadExisting ran first) — a restart must retain
+	// authority over entries a prior writer lifetime rendered (e.g. a
+	// runtime AllowedDirs Apply before the restart), or a later clear
+	// would resurrect them (round-2 review: the side-car load used to
+	// overwrite the recovered set wholesale).
+	seen := make(map[string]struct{}, len(w.injectedDirs)+len(w.allowedDirs))
+	union := make([]string, 0, len(w.injectedDirs)+len(w.allowedDirs))
+	for _, set := range [][]string{w.injectedDirs, w.allowedDirs} {
+		for _, p := range set {
+			if _, dup := seen[p]; dup {
+				continue
+			}
+			seen[p] = struct{}{}
+			union = append(union, p)
 		}
-		if _, dup := seen[p]; dup {
-			continue
-		}
-		seen[p] = struct{}{}
-		w.allowedDirs = append(w.allowedDirs, p)
 	}
+	w.injectedDirs = union
 }
 
 // parseRelayFromExisting extracts URL + models from a pre-injected
@@ -390,6 +424,11 @@ func (w *ConfigWriter) rebuildLocked() error {
 		if err := json.Unmarshal(w.providerRaw, &providers); err != nil {
 			return fmt.Errorf("agent-config writer: parse provider source: %w", err)
 		}
+		// JSON null nils even a pre-initialized map — re-arm before the
+		// relay merge writes into it (nil-map panic guard, round-4 review).
+		if providers == nil {
+			providers = map[string]json.RawMessage{}
+		}
 	}
 
 	// Merge relay provider if relay is set.
@@ -432,6 +471,11 @@ func (w *ConfigWriter) rebuildLocked() error {
 		agent := make(map[string]json.RawMessage)
 		if len(w.agentRaw) > 0 {
 			_ = json.Unmarshal(w.agentRaw, &agent)
+			// JSON null nils even a pre-initialized map — re-arm before
+			// the prompt merge writes into it (nil-map panic guard).
+			if agent == nil {
+				agent = map[string]json.RawMessage{}
+			}
 		}
 		if w.adminPrompt != "" {
 			// Deep-merge into any existing build agent config so we only
@@ -474,6 +518,11 @@ func (w *ConfigWriter) rebuildLocked() error {
 		mode := make(map[string]json.RawMessage)
 		if len(w.modeRaw) > 0 {
 			_ = json.Unmarshal(w.modeRaw, &mode)
+			// JSON null nils even a pre-initialized map — re-arm before
+			// the permissions merge writes into it (nil-map panic guard).
+			if mode == nil {
+				mode = map[string]json.RawMessage{}
+			}
 		}
 
 		// Only touch external_directory when we have patterns to inject.
@@ -495,9 +544,17 @@ func (w *ConfigWriter) rebuildLocked() error {
 			// a global policy (e.g. "allow" for all dirs → "allow" only for
 			// /tmp/*). Only merge our patterns when the value is absent or is
 			// already in the map form.
+			// JSON `null` decodes into a nil map WITHOUT error — writing
+			// into it would panic the whole agentd process (round-3
+			// review; reachable via agent self-tampering of
+			// /sandbox-runtime, RW in the main container). Null is
+			// treated as absent: a fresh map of the injected patterns
+			// replaces it.
 			if raw, ok := perms["external_directory"]; ok {
 				var existing map[string]string
-				if json.Unmarshal(raw, &existing) == nil {
+				unmarshalErr := json.Unmarshal(raw, &existing)
+				switch {
+				case unmarshalErr == nil && existing != nil:
 					for _, p := range w.allowedDirs {
 						existing[p] = "allow"
 					}
@@ -506,8 +563,19 @@ func (w *ConfigWriter) rebuildLocked() error {
 						return fmt.Errorf("agent-config writer: marshal external_directory: %w", err)
 					}
 					perms["external_directory"] = extDirJSON
+				case unmarshalErr == nil && existing == nil:
+					extDir := make(map[string]string, len(w.allowedDirs))
+					for _, p := range w.allowedDirs {
+						extDir[p] = "allow"
+					}
+					extDirJSON, err := json.Marshal(extDir)
+					if err != nil {
+						return fmt.Errorf("agent-config writer: marshal external_directory: %w", err)
+					}
+					perms["external_directory"] = extDirJSON
+				default:
+					// Bare-string branch: preserved as-is, no injection.
 				}
-				// Bare-string branch: preserved as-is, no injection.
 			} else {
 				extDir := make(map[string]string, len(w.allowedDirs))
 				for _, p := range w.allowedDirs {
@@ -662,12 +730,22 @@ func (w *ConfigWriter) Apply(in agent.AgentConfigInput) (bool, error) {
 	prevRelay := w.relay
 	prevMCPServers := w.mcpServers
 	prevMCPRaw := w.mcpRaw
+	prevAdminPrompt := w.adminPrompt
+	prevAllowedDirs := w.allowedDirs
+	prevAgentRaw := w.agentRaw
+	prevModeRaw := w.modeRaw
+	prevInjectedDirs := w.injectedDirs
 	rollback := func() {
 		w.providerRaw = prevProviderRaw
 		w.model = prevModel
 		w.relay = prevRelay
 		w.mcpServers = prevMCPServers
 		w.mcpRaw = prevMCPRaw
+		w.adminPrompt = prevAdminPrompt
+		w.allowedDirs = prevAllowedDirs
+		w.agentRaw = prevAgentRaw
+		w.modeRaw = prevModeRaw
+		w.injectedDirs = prevInjectedDirs
 	}
 
 	if in.Providers != nil {
@@ -712,6 +790,25 @@ func (w *ConfigWriter) Apply(in agent.AgentConfigInput) (bool, error) {
 			// MCP source entirely.
 			w.mcpServers = nil
 		}
+	}
+
+	// AdminPrompt / AllowedDirs are first-class sources (US-65.9
+	// increment 2): construction may seed them from the bootstrap
+	// side-car files; Apply updates them thereafter with the same
+	// pointer semantics as every other source. Non-nil input makes the
+	// source authoritative: keys the writer previously rendered are
+	// stripped from the captured raw sections first, so replace/clear
+	// take effect on the output even when this writer was constructed
+	// over an already-rendered file (the post-boot-normalize pod state).
+	if in.AdminPrompt != nil {
+		w.adminPrompt = in.AdminPrompt.Text
+		w.agentRaw = stripBuildPrompt(w.agentRaw)
+	}
+	if in.AllowedDirs != nil {
+		dirs := sanitizeAllowedDirs(in.AllowedDirs.Dirs)
+		w.modeRaw = stripInjectedExternalDirs(w.modeRaw, w.injectedDirs)
+		w.allowedDirs = dirs
+		w.injectedDirs = dirs
 	}
 
 	if err := w.rebuildLocked(); err != nil {

@@ -1,11 +1,11 @@
 # Epic 65: Agent Session Contract — Decouple the Platform from opencode
 
-**Status:** Definition (not yet in implementation)
+**Status:** Implementation — US-65.1–65.7 merged (PRs #691–#727, 2026-08-09→2026-08-11 UTC); US-65.8 in progress (history path done; SSE, OpenAPI/SDKs, mobile remain).
 **Created:** 2026-08-09
 **Priority:** High — eliminates the single largest source of hacks and jury-rigs in the codebase; unblocks mobile-first-class UX and multi-agent viability
 **Depends On:** The existing `pkg/agent/opencode/` seam (`AgentRuntime` + `Dialect`, folded into `Adapter` by US-65.3), Epic 30 (Unified Credential Model — `FormatProviderConfig` stays).
 
-> **Note on Epic 29:** Epic 29's interface-extraction goal (US-29.1 `AgentClient`) is superseded by this epic — `Adapter` (US-65.3, design 0049 §4.6) is a strict superset that folds `AgentRuntime` + `Dialect` + `AgentClient` into one seam. The seam Epic 65 depends on already exists today (`pkg/agent/agent.go:31`, `pkg/agent/dialect.go:10`, `pkg/agent/opencode/`); Epic 29 need not ship first. Only Epic 29's handler-decomposition stories (US-29.2–29.8) remain, and they are orthogonal cleanup, not a prerequisite.
+> **Note on Epic 29:** Epic 29's interface-extraction goal (US-29.1 `AgentClient`) is superseded by this epic — `Adapter` (US-65.3, design 0049 §4.6) is a strict superset that folds `AgentRuntime` + `Dialect` + `AgentClient` into one seam. The seam Epic 65 depends on already exists today (`pkg/agent/agent.go:91`, `pkg/agent/dialect.go:10`, `pkg/agent/opencode/`); Epic 29 need not ship first. Only Epic 29's handler-decomposition stories (US-29.2–29.8) remain, and they are orthogonal cleanup, not a prerequisite.
 **Authoritative for:** How the platform integrates any coding agent. The contract that web, mobile, SDK, and MCP all consume; the adapter seam that contains all agent-specific knowledge.
 
 **Design document:** [`design/0049_2026-08-09_agent-session-contract.md`](../../0049_2026-08-09_agent-session-contract.md)
@@ -254,3 +254,13 @@ US-65.2 (pkg/session types) ──┬── US-65.3 (opencode adapter) ──┐
 ```
 
 US-65.1 (AgentConfigWriter) is independent and can start immediately. US-65.2 is the foundation for the rest. US-65.8 (frontend) can lag the backend and proceed in parallel once the OpenAPI spec is regenerated.
+
+### US-65.9: Agent config render ownership (post-incident follow-up)
+
+Added 2026-08-15 from the stale-image incident chain (#856/#857): the agent
+config file becomes a rendered artifact of declared sources — materialize
+stages data only, the writer's `loadExisting` self-merge is deleted, and
+`AgentConfigInput` fully describes the sources. Increments 1-2 (unconditional
+boot normalize + mcp preservation; first-class AdminPrompt/AllowedDirs
+inputs) shipped with the incident fixes; the remaining work is tracked in
+issue #860.

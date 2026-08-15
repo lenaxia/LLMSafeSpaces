@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`AgentConfigInput` fully describes the agent config sources**. The
+  admin system prompt and allowed external directories are now
+  first-class `Apply` inputs (`AdminPrompt`, `AllowedDirs`) with the
+  same pointer semantics as providers/model/relay/MCP — previously
+  they were writer-construction options invisible to the seam contract,
+  requiring a writer rebuild to revise. Construction still seeds them
+  from the bootstrap side-car files; Apply updates thereafter; replace
+  and clear are authoritative over prior renders.
+
 ### Fixed
 
 - **Binding any MCP server crash-looped workspace boot.** The injection
@@ -36,6 +47,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   API `/livez`/`/v1/admin/platform-info`, and the relay healthz
   endpoints all surface the injected semver for tagged releases.
 
+### Fixed
 
 - **Workspace pods could boot with no platform MCP server, system
   prompt, or `/tmp` external-dir approval**. Those blocks are rendered
@@ -57,8 +69,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   written by materialize (Epic 53) until the next credential reload.
   The on-disk `mcp` section is now captured and re-emitted unless a
   staged source supersedes it.
-### Fixed
-
 - **Floating-tag default workspace image (`workspace.defaultImage`)**. The
   schema seeded `ghcr.io/lenaxia/llmsafespaces/base:latest` as the platform
   default. Floating tags resolve per-puller — registry mirrors (e.g. spegel)

@@ -27,17 +27,28 @@ on:
     - cron: '0 6 * * *'
   workflow_dispatch:
 
+# Superseded PR runs are cancelled (PR groups are per-PR refs). Push
+# runs to main: a RUNNING run is never cancelled (cancel-in-progress
+# is pull_request-only), a PENDING one is replaced by a newer push
+# (newest-wins). The nightly schedule gets its OWN group via the
+# event-name key: with cancel-in-progress: false GitHub still replaces
+# a *pending* run when a newer run joins the same group, so without
+# this key a nightly queued behind a long main-push run would be
+# silently dropped by the next push. Separate groups make the nightly
+# un-droppable.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   gitleaks:
     name: Gitleaks (secrets)
     runs-on: ubuntu-latest
     steps:
+      # Shallow checkout is sufficient: the scan below runs with
+      # --no-git (working tree only). The previous fetch-depth: 0 was
+      # vestigial — full history was fetched and then never walked.
       - uses: actions/checkout@v6
-        with:
-          # Full history so gitleaks can scan past commits, not just
-          # the working tree. New commits (PR) are scanned against
-          # base; pushes/scheduled scans cover the entire history.
-          fetch-depth: 0
 
       - name: Install gitleaks
         run: |

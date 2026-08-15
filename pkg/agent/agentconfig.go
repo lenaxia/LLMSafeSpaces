@@ -104,6 +104,37 @@ type AgentConfigInput struct {
 	// MCPServers updates the MCP server list. A non-nil pointer with
 	// an empty Servers slice clears the MCP source.
 	MCPServers *MCPServerChange
+
+	// AdminPrompt updates the platform-level system prompt rendered into
+	// the agent's build prompt (replace semantics: the new Text fully
+	// supersedes the prior source, side-car-loaded or rendered). A
+	// non-nil pointer with empty Text clears the prompt source
+	// (distinct from nil = leave unchanged).
+	//
+	// At bootstrap the writer loads this source from the side-car file
+	// (WithAdminPromptPath — the materialize staging contract); this
+	// field is the runtime update path so a caller can revise the
+	// prompt without recreating the writer. It does NOT watch files.
+	AdminPrompt *AdminPromptChange
+
+	// AllowedDirs updates the glob patterns auto-approved as the
+	// agent's external-directory allow rules. A non-nil pointer with an
+	// empty Dirs slice clears the source. Same bootstrap/runtime split
+	// as AdminPrompt: construction may load from the side-car file
+	// (WithAllowedDirsPath); this field updates thereafter.
+	AllowedDirs *AllowedDirsChange
+}
+
+// AdminPromptChange is the admin-prompt-source update payload. See
+// AgentConfigInput.AdminPrompt for semantics.
+type AdminPromptChange struct {
+	Text string
+}
+
+// AllowedDirsChange is the allowed-dirs-source update payload. See
+// AgentConfigInput.AllowedDirs for semantics.
+type AllowedDirsChange struct {
+	Dirs []string
 }
 
 // AgentProvidersChange is the provider-source update payload. See
