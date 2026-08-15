@@ -48,4 +48,4 @@ None.
 - sdks/canary/typescript/scenarios/s-user-settings.ts
 - sdks/canary/TESTPLAN.md
 - pkg/repolint/canary_twin_parity_test.go (new)
-- worklogs/NNNN_2026-08-15_canary-schema-twin-parity.md (this file)
+- worklogs/0761_2026-08-15_canary-schema-twin-parity.md (this file)
