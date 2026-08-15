@@ -1,7 +1,7 @@
 # Worklog: Epic-65 status truth fix (PR #858)
 
 **Date:** 2026-08-15
-**Session:** Docs-only truth sweep of epic-65 status claims and the agent-session-contract / relay-config sections of README-LLM.md, driven through 10 posted AI review rounds
+**Session:** Docs-only truth sweep of epic-65 status claims and the agent-session-contract / relay-config sections of README-LLM.md, driven through twelve posted AI review rounds (04:40Z→10:24Z)
 **Status:** Complete
 
 ---
@@ -21,32 +21,34 @@ While planning follow-up work during the 2026-08-15 incident review, the epic-65
 5. **Stories index row 89** — "Definition only" → "In implementation" with the merge window.
 6. **PR body** — re-synced with the final diff (it becomes the squash-merge message).
 
-### Review history (10 posted reviews 04:40Z→09:43Z, plus the self-description review of the first worklog that prompted this rewrite)
+### Review history (12 posted reviews, 04:40Z→10:24Z, timestamps UTC)
 
-| # | Blocking finding → resolution |
-|---|---|
-| 1 | date 2026-08-13 false; 2 stale sites unswept; "US-65.8 pending" imprecise; correction-history parenthetical → dates fixed, sweep, "in progress" wording, parenthetical dropped |
-| 2 | `:400` stale future tense ("when the contract lands") contradicted the corrected header → per-hack rewrite |
-| 3 | "backend hacks deleted in US-65.5" overstated → scoped to live request path |
-| 4 | question/permission translation is live (dialect-guarded), not adapter-nil fallback; relay attribution over-swept; PR body carried the wrong date → split per hack, body fixed |
-| 5 | history removal was US-65.4 not US-65.5; the linked subsystem section still documented the pre-`Apply` writer → attribution fixed, section rewritten |
-| 6 | #852 mis-scoped to the reload restart; pre-boot relay runs in the materialize process; cache-write arrow misplaced → all three fixed |
-| 7 | cache write precedes `FormatProviders` (design intent: survives later-step 500s); minors M1–M4 → arrows + `#443` paragraph; **all minors fixed same pass** (strategy change to stop round-promotion) |
-| 8 | restart presented as unconditional — `shouldRestart` gates to env-secret/api-key batches; writers-table "every credential reload" over-broad; boot `EnrichProviders` missing; phantom explicit `reset()` step → restart gating + `StageCredentials` path, table scoped, enrich added, reset folded into `Materialize` |
-| 9 | worklog mandatory (README-LLM:777–793; the earlier required/waived contradiction in the round-8-era reviews was adjudicated: no triviality exemption) → first worklog written |
-| 10 | that worklog's self-description carried the PR's own error class (stale CI claim, mis-citation, wrong counts) → this rewrite |
+| # | Posted | Blocking finding → resolution |
+|---|---|---|
+| 1 | 04:40 | date 2026-08-13 false; 2 stale sites unswept; "US-65.8 pending" imprecise; correction-history parenthetical → dates fixed, sweep, "in progress" wording, parenthetical dropped |
+| 2 | 05:23 | `:400` stale future tense ("when the contract lands"); PR body's date flagged → per-hack rewrite; body date fixed |
+| 3 | 05:54 | "backend hacks deleted in US-65.5" overstated → scoped to live request path |
+| 4 | 06:26 | question/permission translation is live (dialect-guarded), not adapter-nil fallback; relay attribution over-swept; PR body still said "already deleted" → split per hack, body reworded |
+| 5 | 06:51 | history removal was US-65.4 not US-65.5; the linked subsystem section still documented the pre-`Apply` writer → attribution fixed, section rewritten |
+| 6 | 07:42 | #852 mis-scoped to the reload restart; pre-boot relay runs in the materialize process; cache-write arrow misplaced → all three fixed |
+| 7 | 08:00 | cache write precedes `FormatProviders` (design intent: survives later-step 500s); minors M1–M4 noted → arrows + `#443` paragraph; **all minors fixed same pass** (strategy change to stop round-promotion) |
+| 8 | 08:18 | re-review of the arrow fix — all verified except the M1–M4 minors (landed in interim commit `97e25f87`, unreviewed at its checkout); **first worklog mandate** → minors confirmed landed next round |
+| 9 | 08:26 | restart presented as unconditional — `shouldRestart` gates to env-secret/api-key batches; writers-table "every credential reload" over-broad; boot `EnrichProviders` missing; phantom explicit `reset()` step; worklog waived as "exempt — trivial" → restart gating + `StageCredentials` path, table scoped, enrich added, reset folded into `Materialize` |
+| 10 | 08:45 | worklog re-mandated (the 08:26 waiver adjudicated incorrect: no triviality exemption, README-LLM:777–793) → first worklog written |
+| 11 | 09:43 | that worklog's self-description carried the PR's own error class (stale CI claim, #860 mis-citation, wrong counts, structure) → full rewrite (current file's predecessor) |
+| 12 | 10:24 | the canary claim "never ran on this branch" false (it ran and failed on six pre-#861 runs); numbering scheme inconsistent; sentinel-failure attribution conflated → this revision |
 
 ### CI events on this PR (all main-side, none caused by the docs diff)
 
-- `TestLive_Worklogs_NoDuplicates` failed on three commits: #852's unnumbered `NNNN_` sentinel on main (06:37–06:52Z, fixed by #865), then a double sentinel from #734 + #861 pre-renumber (failures at 08:59:53Z on `97e25f87` and 09:12:40Z on `b2cd8b47`); the renumber bot cleared main at 09:08:15Z (`e4f33bc9`) and later runs pass.
-- S-RATE-LIMIT canary: failed on **main's** runs pre-#861 (04:52/06:52/08:12Z); #861 merged 08:32:00Z; the canary never ran on this docs-only branch (and is `continue-on-error`, `ci.yml:423`).
-- Settings canary (`schema-version: equals 10: got 11`): broken on main by #856's schemaVersion bump (merged 09:01:33Z) — fails this PR's 09:50Z SDK run and every open PR's until the canary expectation is reconciled; follow-up needed on main.
+- `TestLive_Worklogs_NoDuplicates` failed on three commits, each from unnumbered `NNNN_` worklog sentinels on main: `dea9c12e` at 06:37:08Z (#852's sentinel; #865 numbered it 06:52:18Z); `97e25f87` at 08:59:53Z (**two** sentinels — #734's and #861's, both merged ~08:32–08:33Z pre-renumber); `b2cd8b47` at 09:12:40Z (#861's sentinel alone — stale checkout predating the renumber bot's `e4f33bc9` at 09:08:15Z, which renamed all three: 0755/#734, 0756/#861, 0757/#856). Later runs pass.
+- S-RATE-LIMIT canary (`FAIL P3: 429 body has error field` — the exact contract bug #861 fixed): failed on **main's** runs (04:52/06:52/08:12Z) **and on this branch's own runs** for the commits `1d753acc`→`367c24ce` (04:31–08:02Z pushes); skipped on the three runs whose Test job failed first (`dea9c12e`, `97e25f87`, `b2cd8b47`); after #861 merged (08:32:00Z) the 09:50Z run's rate-limit scenario passes. The SDK job is `continue-on-error` (`ci.yml:423`).
+- Settings canary (`schema-version: equals 10: got 11 — SCHEMA DRIFT DETECTED`, Python `s_user_settings`): broken on main by #856's `SchemaVersion` bump (merged 09:01:33Z — it updated only the Go canary scenario, not the Python one); fails this PR's 09:50Z SDK run and every open PR's until the Python expectation is reconciled; follow-up on main.
 
 ## Key Decisions
 
-- **Address every finding, not just blocking ones.** Rounds 1–6 fixed only the blocking item; minors were promoted to blocking next round. From round 7 on, minors landed in the same pass — round 8's whole review was "verified ✓" except one item.
-- **Verify every new sentence against the tree before pushing.** Each rewrite adds fresh review surface; claims were checked against `origin/main` line numbers pre-push from round 6 on.
-- **The first worklog (09:12:51Z) violated both rules** — its CI paragraph was stale at write time (claimed the never-run canary was the exception; #861 had merged 40m prior; the actual failures were main-side sentinel races), plus a mis-citation (#860 tracks US-65.9, not this drift — the provider-less-reload `Apply` skip is now tracked in **#868**, filed this session), a wrong file count ("10 source files"; actual: 4 non-test, 11 with tests), and round-count drift (10 posted reviews, not 11; the extra row described CI events, not a review). This entry is the correction — kept as a full rewrite rather than an appended note because the erroneous predecessor never merged.
+- **Address every finding, not just blocking ones.** The early reviews (1–6) fixed only the blocking item; minors were promoted to blocking next round. From review 7's M1–M4 minors on, minors landed in the same pass — later reviews were "verified ✓" except one item each.
+- **Verify every new sentence against the tree before pushing.** Each rewrite adds fresh review surface; claims were checked against `origin/main` line numbers pre-push from review 5 on. The same discipline applies to CI claims: check per-**job** conclusions across the branch's runs, not run-level conclusions or memory — both worklog failures (reviews 11 and 12) were CI-history claims written from stale context.
+- **The two worklog drafts violated both rules** — the first (09:12:51Z) had a stale CI paragraph, the #860 mis-citation (#860 tracks US-65.9; the provider-less-reload `Apply` skip is now tracked in **#868**, filed this session), a wrong file count, and round-count drift; its rewrite then repeated the CI-claim error ("canary never ran on this branch" — it ran and failed on six pre-#861 runs) and an inconsistent numbering scheme. This entry is the second correction — kept as a full rewrite rather than an appended note because neither predecessor merged.
 - **Truth-fix scope discipline:** out-of-scope staleness (stories index rows for epics 53/62/63/64, epic-66's own README) left for follow-up per review precedent; not folded in.
 
 ## Blockers
