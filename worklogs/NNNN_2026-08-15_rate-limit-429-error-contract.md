@@ -102,7 +102,8 @@ None.
 - api/internal/middleware/tests/rate_limit_429_body_test.go (new)
 - sdks/canary/go/scenarios/s-rate-limit/main.go
 - sdks/canary/typescript/scenarios/s-rate-limit.ts (string-typed hasErrorField — round 3)
-- sdks/canary/python/scenarios/*.py (40 files: sys.path depth fix — latent CI bootstrap bug)
+- sdks/canary/python/scenarios/*.py — 32 files: sys.path depth fix only (latent CI bootstrap bug)
+- sdks/canary/python/scenarios/ — 8 files behaviorally changed: s_secret_crud, s_secret_reveal, s_secret_audit, s_secret_bindings, s_env_vars, s_ownership (JWT clients), s_ws_quota (env-skip), s_rate_limit (strict 429 body check)
 - .gitignore (root node_modules/; stray lockfile artifact)
 - .github/workflows/ci.yml (Python canary loop: 3 d_* parked with rationale)
 - worklogs/NNNN_2026-08-15_rate-limit-429-error-contract.md (this file)

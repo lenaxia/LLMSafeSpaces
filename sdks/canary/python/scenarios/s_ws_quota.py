@@ -24,7 +24,11 @@ def run(r: Runner, cfg: Config) -> None:
     if not env_limit:
         r.ok("ws-quota: skipped (LLMSAFESPACES_MAX_WORKSPACES_PER_USER not set)")
         return
-    limit = int(env_limit)
+    try:
+        limit = int(env_limit)
+    except ValueError:
+        r.ok("ws-quota: skipped (LLMSAFESPACES_MAX_WORKSPACES_PER_USER not an integer)")
+        return
     if limit <= 0:
         r.ok("ws-quota: skipped (unlimited)")
         return
