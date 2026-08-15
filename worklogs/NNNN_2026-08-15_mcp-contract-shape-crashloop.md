@@ -21,7 +21,8 @@
 1. ~~The API only emits non-string metadata for mcp-server entries~~ **Corrected (review F2):** user secrets pass `UserSecret.Metadata` through verbatim and the API's validateMetadata checks only key PRESENCE — a client can persist `{"var_name":123}` for any type, which pre-fix crash-looped the workspace identically. The dual-shape reader is load-bearing for every secret type, not just mcp-server.
 2. JSON-encoded-string `args` is what the staging branch consumes — validated by the contract test asserting `json.Unmarshal` round-trip.
 3. Legacy all-string files parse identically — pinned by `TestLoadSecretsFile_LegacyStringMetadata`.
-4. Per-entry failure surfaces as `ErrPartialFailure`, which the materialize entrypoint treats as exit 0 — validated at cmd/workspace-agentd/secrets.go:415.
+4. ~~Per-entry failure surfaces as `ErrPartialFailure`, which the entrypoint treats as exit 0~~ **Corrected (review F1):** this was the exact misconception behind the round-1 bug — `ErrPartialFailure` fires only when `HasFailures()` is true, and those same failures exit 3 at the entrypoint's SECOND gate (cmd/workspace-agentd/secrets.go:477-482). Malformed metadata maps to `OutcomeSkipped` (not Failed), which trips neither gate; both the subcommand tests and the reviewer's real-binary runs pin exit 0.
+5. Known outcome flip (review round-2, low, no security impact): a metadata-invalid entry of a metadata-ignoring type (api-key, llm-provider) is Skipped on first boot but Materialized after cache replay heals it — same plaintext, same batch. Noted, not fixed (fixing requires verdict persistence for skipped-by-validation entries too; tracked with the #860 wiring-e2e work).
 
 ## Verification
 

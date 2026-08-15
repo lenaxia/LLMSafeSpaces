@@ -48,10 +48,12 @@ func TestLoadSecretsFile_ContractShapedMCPServer(t *testing.T) {
 		"the mcp staging branch's json.Unmarshal(argsStr) must receive valid JSON")
 }
 
-// One malformed entry must not take down the whole batch: LoadSecretsFile
-// skips undecodable entries with the failure recorded on the entry
-// (parse-tolerant, additive composition — same policy as the injection
-// pipeline's per-server decrypt skip, D4).
+// One malformed-metadata entry must not take down the whole batch:
+// tolerance lives in Secret.UnmarshalJSON — a non-object metadata value
+// sets MetadataInvalid on the entry instead of failing the file parse
+// (additive composition, same policy as the injection pipeline's
+// per-server decrypt skip, D4). Structural malformation of an entry
+// itself (non-object element) still fails the file — exit 2.
 func TestLoadSecretsFile_MalformedEntrySkippedNotFatal(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secrets.json")
