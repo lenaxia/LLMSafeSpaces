@@ -116,7 +116,12 @@ def run(run: Runner, cfg: Config) -> None:
             detail,
         )
         if ws_default is not None:
-            _ = c.workspaces.delete(ws_default.id)
+            # Best-effort cleanup — unlike Go's discarded error, an HTTP
+            # error here raises; don't let it abort N5/N6.
+            try:
+                c.workspaces.delete(ws_default.id)
+            except Exception:
+                pass
 
     # N5: Storage too large
     run.assert_error(

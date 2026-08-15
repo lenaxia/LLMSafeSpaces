@@ -3169,6 +3169,15 @@ components:
           type: boolean
           description: Whether the authenticated HTTP/WS dev-preview tunnel is enabled (Epic 66).
           default: false
+        defaultModel:
+          type: string
+        agentNeedsRefresh:
+          type: boolean
+          description: Agent credential state (Epic 27a); always present (no omitempty).
+        credentialsPendingSince:
+          type: string
+          format: date-time
+          nullable: true
     CreateWorkspaceRequest:
       type: object
       properties:
@@ -3208,6 +3217,12 @@ components:
           type: string
         phase:
           type: string
+        imageTag:
+          type: string
+        agentVersion:
+          type: string
+        defaultModel:
+          type: string
         maxActiveSessions:
           type: integer
         createdAt:
@@ -3216,6 +3231,17 @@ components:
         updatedAt:
           type: string
           format: date-time
+        agentNeedsRefresh:
+          type: boolean
+          description: Agent credential state (Epic 27a); always present (no omitempty).
+        credentialsPendingSince:
+          type: string
+          format: date-time
+          nullable: true
+        orgId:
+          type: string
+          nullable: true
+          description: Owning org for org-scoped workspaces (Epic 11); null for personal workspaces.
     PaginationMetadata:
       type: object
       properties:
