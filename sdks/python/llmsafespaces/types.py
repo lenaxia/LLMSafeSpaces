@@ -31,7 +31,17 @@ class WorkspaceListItem:
     createdAt: str
     updatedAt: str
     phase: str | None = None
+    imageTag: str | None = None
+    agentVersion: str | None = None
+    defaultModel: str | None = None
     maxActiveSessions: int | None = None
+    # The API always emits agentNeedsRefresh (no omitempty server-side);
+    # the rest above are omitempty. Field set mirrors pkg/types'
+    # WorkspaceListItem — drift here crashes list() with TypeError
+    # (issue #867).
+    agentNeedsRefresh: bool = False
+    credentialsPendingSince: str | None = None
+    orgId: str | None = None
 
 
 @dataclass

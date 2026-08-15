@@ -101,11 +101,25 @@ def run(run: Runner, cfg: Config) -> None:
         "get-nonexistent: NotFoundError",
     )
 
-    # N3: Empty runtime
-    run.assert_error(
+    # N3: Empty runtime — resolves via the default-image hierarchy (user
+    # preference → org policy → workspace.defaultImage → "base"
+    # RuntimeEnvironment), so it must SUCCEED with a non-empty runtime.
+    # Mirrors the Go twin (s-ws-crud); the old assert_error expectation
+    # was stale product behavior (issue #867).
+    ok_default, defaulted = run.assert_no_error(
         lambda: c.workspaces.create(name="x", runtime="", storage_size="1Gi"),
-        "create-empty-runtime: error",
+        "create-empty-runtime: defaults (no error)",
     )
+    if ok_default and defaulted is not None:
+        run.assert_(
+            bool(defaulted.runtime),
+            "create-empty-runtime: runtime defaulted",
+            defaulted.runtime or "(empty)",
+        )
+        try:
+            c.workspaces.delete(defaulted.id)
+        except Exception:
+            pass
 
     # N5: Storage too large
     run.assert_error(
