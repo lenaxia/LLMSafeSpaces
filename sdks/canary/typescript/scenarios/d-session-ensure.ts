@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // D-SESSION-ENSURE canary — TypeScript SDK
 
-import { LLMSafeSpaces } from '../../src/index.js';
+import { LLMSafeSpaces } from '../../../typescript/src/index.js';
 import { Runner, Config, configFromEnv, nodeFetch, waitActive, waitPhase, ensureSessionWithRetry, rawDo } from '../canary.js';
 
 async function run(r: Runner, cfg: Config): Promise<void> {

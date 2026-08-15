@@ -3152,7 +3152,7 @@ components:
           type: string
         phase:
           type: string
-          enum: [Pending, Active, Suspending, Suspended, Resuming, Terminating, Terminated, Failed]
+          enum: [Pending, Creating, Active, Suspending, Suspended, Resuming, Terminating, Terminated, Failed]
         pvcName:
           type: string
         labels:
@@ -3169,6 +3169,15 @@ components:
           type: boolean
           description: Whether the authenticated HTTP/WS dev-preview tunnel is enabled (Epic 66).
           default: false
+        defaultModel:
+          type: string
+        agentNeedsRefresh:
+          type: boolean
+          description: Agent credential state (Epic 27a); always present (no omitempty).
+        credentialsPendingSince:
+          type: string
+          format: date-time
+          nullable: true
     CreateWorkspaceRequest:
       type: object
       properties:
@@ -3208,6 +3217,13 @@ components:
           type: string
         phase:
           type: string
+          enum: [Pending, Creating, Active, Suspending, Suspended, Resuming, Terminating, Terminated, Failed]
+        imageTag:
+          type: string
+        agentVersion:
+          type: string
+        defaultModel:
+          type: string
         maxActiveSessions:
           type: integer
         createdAt:
@@ -3216,6 +3232,17 @@ components:
         updatedAt:
           type: string
           format: date-time
+        agentNeedsRefresh:
+          type: boolean
+          description: Agent credential state (Epic 27a); always present (no omitempty).
+        credentialsPendingSince:
+          type: string
+          format: date-time
+          nullable: true
+        orgId:
+          type: string
+          nullable: true
+          description: Owning org for org-scoped workspaces (Epic 11); null for personal workspaces.
     PaginationMetadata:
       type: object
       properties:
@@ -3426,6 +3453,9 @@ components:
           enum: [llm-provider, ssh-key, git-credential, secret-file, env-secret]
         metadata:
           type: object
+        globalDefault:
+          type: boolean
+          description: Whether the secret applies to all workspaces by default; always present (no omitempty).
         createdAt:
           type: string
           format: date-time

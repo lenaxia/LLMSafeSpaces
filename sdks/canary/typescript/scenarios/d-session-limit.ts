@@ -3,7 +3,7 @@
 // D-SESSION-LIMIT canary — TypeScript SDK
 
 import http from 'http';
-import { LLMSafeSpaces, RateLimitError } from '../../src/index.js';
+import { LLMSafeSpaces, RateLimitError } from '../../../typescript/src/index.js';
 import { Runner, Config, configFromEnv, nodeFetch, rawDo, waitActive, ensureSessionWithRetry, sleep } from '../canary.js';
 
 async function run(r: Runner, cfg: Config): Promise<void> {

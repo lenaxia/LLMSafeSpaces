@@ -22,7 +22,7 @@ def run(r: Runner, cfg: Config) -> None:
     try:
         ok, s = r.assert_no_error(
             lambda: c.secrets.create(
-                name="canary-py-reveal", type="env-secret", value=SECRET_VALUE
+                name="canary-py-reveal", type="env-secret", value=SECRET_VALUE, metadata={"var_name": "CANARY_PY_VAR"}
             ),
             "create: no error",
         )

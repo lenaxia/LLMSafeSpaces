@@ -828,11 +828,11 @@ jobs:
         run: go build -o /tmp/mcp-binary ./cmd/mcp/
 
       - name: MCP canary — S-MCP-TOOLS + S-MCP-AUTH-NEG + S-MCP-CRED + S-MCP-INPUT-NEG
-        working-directory: ${{ github.workspace }}
+        working-directory: sdks/canary/mcp
         env:
           LLMSAFESPACES_URL: http://localhost:8080
           MCP_BINARY: /tmp/mcp-binary
-        run: go run ./sdks/canary/mcp/
+        run: go run .
 
       - name: Stop API server
         if: always()

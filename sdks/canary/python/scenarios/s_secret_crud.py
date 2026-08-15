@@ -22,7 +22,7 @@ def run(run: Runner, cfg: Config) -> None:
         # P1: Create
         ok, secret = run.assert_no_error(
             lambda: c.secrets.create(
-                name="canary-py-secret", type="env-secret", value="canary-val"
+                name="canary-py-secret", type="env-secret", value="canary-val", metadata={"var_name": "CANARY_PY_VAR"}
             ),
             "create: no error",
         )
@@ -49,7 +49,7 @@ def run(run: Runner, cfg: Config) -> None:
         # P4: Update
         run.assert_no_error(
             lambda: c.secrets.create(
-                name="canary-py-secret2", type="env-secret", value="updated-val"
+                name="canary-py-secret2", type="env-secret", value="updated-val", metadata={"var_name": "CANARY_PY_VAR"}
             ),
             "update-via-create: no error",
         )
@@ -67,7 +67,7 @@ def run(run: Runner, cfg: Config) -> None:
         # P6: Re-create with same name after delete
         ok4, secret2 = run.assert_no_error(
             lambda: c.secrets.create(
-                name="canary-py-secret", type="env-secret", value="v2"
+                name="canary-py-secret", type="env-secret", value="v2", metadata={"var_name": "CANARY_PY_VAR"}
             ),
             "re-create-after-delete: no error",
         )
@@ -90,23 +90,24 @@ def run(run: Runner, cfg: Config) -> None:
 
     # N2: Invalid name (uppercase)
     run.assert_error(
-        lambda: c.secrets.create(name="My-Secret-UPPER", type="env-secret", value="x"),
+        lambda: c.secrets.create(name="My-Secret-UPPER", type="env-secret", value="x", metadata={"var_name": "CANARY_PY_VAR"}),
         "create-invalid-name: error",
     )
 
     # N3: Empty name
     run.assert_error(
-        lambda: c.secrets.create(name="", type="env-secret", value="x"),
+        lambda: c.secrets.create(name="", type="env-secret", value="x", metadata={"var_name": "CANARY_PY_VAR"}),
         "create-empty-name: error",
     )
 
     # N4: Duplicate name
     s1, s2 = None, None
     try:
-        s1 = c.secrets.create(name="canary-py-dup", type="env-secret", value="v1")
+        s1 = c.secrets.create(name="canary-py-dup", type="env-secret", value="v1", metadata={"var_name": "CANARY_PY_VAR"})
         run.assert_error(
             lambda: c.secrets.create(
-                name="canary-py-dup", type="env-secret", value="v2"
+                name="canary-py-dup", type="env-secret", value="v2",
+                metadata={"var_name": "CANARY_PY_VAR"},
             ),
             "create-duplicate: ConflictError",
         )

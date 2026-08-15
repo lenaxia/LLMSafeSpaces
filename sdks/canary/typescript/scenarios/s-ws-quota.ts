@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // S-WS-QUOTA canary — TypeScript SDK
 
-import { LLMSafeSpaces, RateLimitError } from '../../src/index.js';
+import { LLMSafeSpaces, RateLimitError } from '../../../typescript/src/index.js';
 import { Runner, Config, configFromEnv, nodeFetch, hasField } from '../canary.js';
 
 async function run(r: Runner, cfg: Config): Promise<void> {

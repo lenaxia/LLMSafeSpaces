@@ -343,3 +343,73 @@ async def test_async_admin_provider_credentials_update():
             "cred-1", UpdateProviderCredentialRequest(name="renamed")
         )
     assert result.id == "cred-1"
+
+
+# ── Workspace model round-trips, async twins (PR #870) ────────────────────
+# async_client.py duplicates the parse paths (Workspace(**...),
+# WorkspaceListItem(**...)); these pin the full server payload against the
+# async client exactly as the sync twins do in test_client.py.
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_workspace_get_full_payload_round_trip(client: AsyncLLMSafeSpaces):
+    respx.get(f"{BASE}/api/v1/workspaces/ws-1").mock(
+        return_value=httpx.Response(200, json={
+            "id": "ws-1", "name": "test", "userId": "u1",
+            "runtime": "python:3.11", "storageSize": "10Gi", "phase": "Active",
+            "pvcName": "pvc-1", "labels": {"env": "ci"}, "defaultModel": "gpt-test",
+            "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+            "agentNeedsRefresh": True,
+            "credentialsPendingSince": "2026-01-02T00:00:00Z",
+            "devPreviewEnabled": True,
+        })
+    )
+    ws = await client.workspaces.get("ws-1")
+    assert ws.agentNeedsRefresh is True
+    assert ws.devPreviewEnabled is True
+    assert ws.defaultModel == "gpt-test"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_workspace_list_full_payload_round_trip(client: AsyncLLMSafeSpaces):
+    respx.get(f"{BASE}/api/v1/workspaces").mock(
+        return_value=httpx.Response(200, json={
+            "items": [{
+                "id": "ws-1", "name": "test", "userId": "u1",
+                "runtime": "python:3.11", "storageSize": "10Gi", "phase": "Active",
+                "imageTag": "sha256:abc", "agentVersion": "1.18.10",
+                "defaultModel": "gpt-test", "maxActiveSessions": 3,
+                "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+                "agentNeedsRefresh": False, "credentialsPendingSince": None,
+                "orgId": "org-9",
+            }],
+            "pagination": None,
+        })
+    )
+    result = await client.workspaces.list()
+    item = result.items[0]
+    assert item.imageTag == "sha256:abc"
+    assert item.agentVersion == "1.18.10"
+    assert item.agentNeedsRefresh is False
+    assert item.orgId == "org-9"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_secret_response_full_payload_round_trip(client: AsyncLLMSafeSpaces):
+    """Async twin of the SecretResponse round-trip — pins the duplicated
+    async parse path against the full server payload (globalDefault has
+    no omitempty and is always present)."""
+    respx.post(f"{BASE}/api/v1/secrets").mock(
+        return_value=httpx.Response(201, json={
+            "id": "sec-1", "name": "canary", "type": "env-secret",
+            "metadata": {"var_name": "CANARY_VAR"},
+            "globalDefault": False,
+            "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-01T00:00:00Z",
+        })
+    )
+    s = await client.secrets.create(name="canary", type="env-secret", value="v", metadata={"var_name": "CANARY_VAR"})
+    assert s.globalDefault is False
+    assert s.metadata == {"var_name": "CANARY_VAR"}

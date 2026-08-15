@@ -28,7 +28,7 @@ def run(r: Runner, cfg: Config) -> None:
 
         ok, secret = r.assert_no_error(
             lambda: c.secrets.create(
-                name="canary-py-chpw", type="env-secret", value="chpw-test-value"
+                name="canary-py-chpw", type="env-secret", value="chpw-test-value", metadata={"var_name": "CANARY_PY_VAR"}
             ),
             "create-secret: no error",
         )

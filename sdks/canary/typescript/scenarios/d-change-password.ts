@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // D-CHANGE-PASSWORD canary — TypeScript SDK
 
-import { LLMSafeSpaces, AuthError } from '../../src/index.js';
+import { LLMSafeSpaces, AuthError } from '../../../typescript/src/index.js';
 import { Runner, Config, configFromEnv, nodeFetch, rawDo } from '../canary.js';
 
 async function run(r: Runner, cfg: Config): Promise<void> {
@@ -18,7 +18,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
   });
 
   const [ok, secret] = await r.assertNoError(
-    () => c.secrets.create({ name: 'canary-pw-change-test', type: 'env-secret', value: 'pw-change-secret' }),
+    () => c.secrets.create({ name: 'canary-pw-change-test', type: 'env-secret', value: 'pw-change-secret', metadata: { var_name: 'CANARY_TS_VAR' } }),
     'create-secret: no error');
   if (!ok || !secret) return;
 
