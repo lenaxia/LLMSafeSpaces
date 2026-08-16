@@ -285,18 +285,21 @@ func buildAgentd(t *testing.T) string {
 	modRoot := findModuleRoot(t)
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "workspace-agentd")
-	cmd := exec.Command("go", "build", "-o", bin, "./cmd/workspace-agentd")
+	// CommandContext keeps all *os.Process access inside the stdlib's own
+	// synchronized watcher goroutine. The previous shape (Run in a
+	// goroutine + cmd.Process.Kill from this one on timeout) raced on
+	// cmd.Process between exec.Start's write and the parent's read —
+	// caught by -race in CI (worklog: #892 follow-up).
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/workspace-agentd")
 	cmd.Dir = modRoot
 	cmd.Stderr = os.Stderr
-	done := make(chan error, 1)
-	go func() { done <- cmd.Run() }()
-	select {
-	case err := <-done:
-		require.NoError(t, err, "go build ./cmd/workspace-agentd failed (cwd=%s)", modRoot)
-	case <-time.After(120 * time.Second):
-		_ = cmd.Process.Kill()
+	err := cmd.Run()
+	if ctx.Err() != nil {
 		t.Fatal("go build ./cmd/workspace-agentd timed out after 120s")
 	}
+	require.NoError(t, err, "go build ./cmd/workspace-agentd failed (cwd=%s)", modRoot)
 	return bin
 }
 

@@ -83,6 +83,15 @@ type managedProcess struct {
 	stopRequested    bool
 	restartRequested bool
 
+	// onChildStarted, when non-nil, is invoked by the supervisor
+	// goroutine each time a fresh child has been successfully started —
+	// once per opencode generation (first boot, operator restarts, crash
+	// recovery). Invoked after Start() succeeds and before upCh closes,
+	// so the callback observes the generation boundary before the new
+	// child can serve any request. Production wires the tracker's
+	// busy-flag reset (design 0050 D2); nil = no callback.
+	onChildStarted func()
+
 	// probeWg tracks any in-flight healthProbeAfterRestart
 	// goroutines. stop() waits on it so the probe can no longer
 	// touch the package-level log after stop() returns. Without this
@@ -182,6 +191,15 @@ func (p *managedProcess) supervise() {
 		upCh := p.upCh
 		p.upCh = make(chan struct{})
 		p.mu.Unlock()
+
+		// Generation boundary (design 0050 D2): the previous child has
+		// been reaped (Wait returned before this iteration) and the new
+		// one is started but not yet announced — run the callback before
+		// upCh closes so it lands before any request reaches the new
+		// child.
+		if p.onChildStarted != nil {
+			p.onChildStarted()
+		}
 		close(upCh)
 
 		// Sole Wait() in the codebase. This is the contract that
