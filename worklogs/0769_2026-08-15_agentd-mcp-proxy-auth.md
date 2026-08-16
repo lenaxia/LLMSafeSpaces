@@ -77,4 +77,4 @@ None.
 - `cmd/workspace-agentd/auth.go` (doc comment: gated-endpoint list)
 - `controller/internal/workspace/pod_builder.go` (password install moved before materialize)
 - `controller/internal/workspace/health_test.go` (ordering assertion in TestInitContainerScript)
-- `worklogs/NNNN_2026-08-15_agentd-mcp-proxy-auth.md` (this file)
+- `worklogs/0769_2026-08-15_agentd-mcp-proxy-auth.md` (this file)
