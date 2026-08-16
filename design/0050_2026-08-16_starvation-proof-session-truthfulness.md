@@ -173,10 +173,25 @@ API + frontend design pass (gap G3).
 
 The starvation severity was self-inflicted oversubscription: build tools
 spun machine-sized thread pools (GOMAXPROCS-class defaults) inside a 2-CPU
-quota. Cap them at the workspace layer via env: `GOMAXPROCS=2`,
-`ESBUILD_WORKER_THREADS=2`, `npm config jobs`, etc. No limit raise; this
+quota. Cap them at the workspace layer via env. No limit raise; this
 converts 400 s CFS stalls into ordinary queueing. Needs a measurement pass
 to confirm the biggest levers (gap G6).
+
+*(Amended in the D7 PR, review round 1 on #897:)*
+- *The single shipped lever is `GOMAXPROCS` (set to the effective burst
+  limit). `ESBUILD_WORKER_THREADS` from the draft was verified against
+  esbuild's shipped source to have no numeric semantics — a `"0"`-disable
+  flag for exactly one sync-API worker thread — so setting it to any
+  number is a placebo; it is deliberately not set. esbuild is covered
+  transitively: it is a Go binary, so its pool follows GOMAXPROCS.*
+- *`npm config jobs` from the draft is dropped: npm has no effective
+  parallelism env knob; it rides the quota like any other process.*
+- *Order deviation recorded: the design ordered "G6 measurement → D7
+  caps"; D7 shipped first with G6 deferred to post-deploy (pre/post
+  throttle counters on a build-capable workspace). Rationale: the caps
+  are strictly no-worse (pools bounded by the quota the cgroup already
+  enforces), and the incident's usage-blocking severity justified not
+  waiting. G6 remains open to validate the effect and tune the cap.*
 
 ## Assumptions and where they fail
 
