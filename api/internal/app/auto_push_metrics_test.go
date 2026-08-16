@@ -35,6 +35,14 @@ func (s *stubResolverAdapter) GetWorkspacePodIP(_ context.Context, _, _ string) 
 	return s.ip, nil
 }
 
+// stubPasswordProviderAdapter satisfies agentpush.PasswordProvider —
+// agentd enforces Basic auth on reload-secrets (#848), so Push needs one.
+type stubPasswordProviderAdapter struct{}
+
+func (stubPasswordProviderAdapter) WorkspacePassword(_ context.Context, _ string) (string, error) {
+	return "pw", nil
+}
+
 // newLoopbackClient returns an *http.Client whose transport short-
 // circuits every request with the given status + body. Lets us drive
 // agentpush.Service.Push without a real HTTP server.
@@ -112,6 +120,7 @@ func TestWsAgentPusherAdapter_EmitsMetricOnEveryPush(t *testing.T) {
 	adapter := &wsAgentPusherAdapter{
 		pusher: agentpush.New(&stubInjector{payload: []byte("[]")},
 			agentpush.WithPodIPResolver(&stubResolverAdapter{ip: "10.0.0.5"}),
+			agentpush.WithPasswordProvider(stubPasswordProviderAdapter{}),
 			agentpush.WithHTTPClient(newLoopbackClient(200, `{"reloaded":0}`)),
 		),
 	}
@@ -149,6 +158,7 @@ func TestSharedPusher_DoesNotEmitAutoPushMetric(t *testing.T) {
 	// WithMetricsHook. Its Push must NOT touch the counter.
 	shared := agentpush.New(&stubInjector{payload: []byte("[]")},
 		agentpush.WithPodIPResolver(&stubResolverAdapter{ip: "10.0.0.5"}),
+		agentpush.WithPasswordProvider(stubPasswordProviderAdapter{}),
 		agentpush.WithHTTPClient(newLoopbackClient(200, `{"reloaded":1}`)),
 	)
 	_, err := shared.Push(context.Background(), "user", "ws")

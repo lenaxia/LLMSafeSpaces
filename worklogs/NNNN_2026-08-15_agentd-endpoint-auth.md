@@ -27,6 +27,13 @@ Close #848: unauthenticated in-pod access to control-plane surface on the agentd
 - `app.go`: `agentpush.New(...)` gets `WithPasswordProvider(proxyHandler)`.
 - Tests: `TestPush_SendsBasicAuth` (exact header), `TestPush_MissingPasswordProviderErrors`, `TestPush_PasswordProviderErrorSurfaces`; existing push tests wired with a fake provider; malformed-URL pin tests wired with `interfaces.PasswordFunc` stubs.
 
+### Review-round additions
+
+- **Fallback pusher provider path**: `SecretsHandler.SetPasswordProvider` + inclusion in `getPusher()`'s lazy construction — setter-style wiring previously produced a pusher that could only fail with `ErrNoPasswordProvider` (#848 enforcement made the fallback useless).
+- **E2E dispatch credential pinned**: `TestHandler_E2E_BindTriggersReloadSecrets` now captures the `Authorization` header at the mock agentd and asserts the exact Basic credential; the four setter-style E2E tests (`BindTriggersReloadSecrets`, both LLMProvider binds, `BindPushesOrgCredentialEvenWithAPIKeyAuth`) wire `staticPasswordProvider`.
+- **App tests fixed**: `TestWsAgentPusherAdapter_EmitsMetricOnEveryPush` / `TestSharedPusher_DoesNotEmitAutoPushMetric` construct `agentpush.New` with `stubPasswordProviderAdapter` (Push now requires a provider).
+- Duplicated `WithPasswordProvider` lines in `agentpush_test.go` deduplicated; `TestPush_SendsBasicAuth` uses `pw-7` consistently.
+
 ### Issue-scope note
 
 #848 also lists `/v1/workflow/node/cancel` — that endpoint was gated in the #762 fix (same PR series); this PR covers the remaining two endpoints.

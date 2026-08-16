@@ -96,7 +96,6 @@ func TestPush_HappyPath(t *testing.T) {
 		agentpush.WithModelCache(&fakeCache{}),
 		agentpush.WithHTTPClient(&http.Client{Transport: transport}),
 		agentpush.WithPasswordProvider(&fakePasswordProvider{password: "pw"}),
-		agentpush.WithPasswordProvider(&fakePasswordProvider{password: "pw"}),
 	)
 
 	result, err := svc.Push(context.Background(), "user-1", "ws-1")
@@ -307,8 +306,6 @@ func TestPush_SendsBasicAuth(t *testing.T) {
 		&fakeInjector{returnJSON: []byte(`[]`)},
 		agentpush.WithPodIPResolver(&fakeResolver{ip: "10.0.0.5"}),
 		agentpush.WithHTTPClient(&http.Client{Transport: transport}),
-		agentpush.WithPasswordProvider(&fakePasswordProvider{password: "pw"}),
-		agentpush.WithPasswordProvider(&fakePasswordProvider{password: "pw"}),
 		agentpush.WithPasswordProvider(&fakePasswordProvider{password: "pw-7"}),
 	)
 	_, err := svc.Push(context.Background(), "user-1", "ws-9")

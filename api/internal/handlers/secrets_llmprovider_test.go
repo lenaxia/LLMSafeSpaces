@@ -78,6 +78,7 @@ func TestHandler_E2E_LLMProvider_BindTriggersReloadWithFormattedConfig(t *testin
 
 	handler := NewSecretsHandler(svc)
 	handler.SetPodIPResolver(&staticPodIPResolver{addr: "127.0.0.1"})
+	handler.SetPasswordProvider(staticPasswordProvider{})
 
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
@@ -204,6 +205,7 @@ func TestHandler_E2E_LLMProvider_MultipleProviders_Bind(t *testing.T) {
 
 	handler := NewSecretsHandler(svc)
 	handler.SetPodIPResolver(&staticPodIPResolver{addr: "127.0.0.1"})
+	handler.SetPasswordProvider(staticPasswordProvider{})
 
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
