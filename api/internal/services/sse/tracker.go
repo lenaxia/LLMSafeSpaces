@@ -218,6 +218,22 @@ var (
 	connGaugesOnce sync.Once
 )
 
+// podIPUnavailable counts resolver-empty results for a watch attempt
+// (#901 G11): Active workspace, no IP — the resume race where
+// connectAndRead fails at Warn with "no pod IP". A rate on this label
+// means workspaces are armed but cannot connect yet.
+var podIPUnavailable = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "llmsafespaces_sse_tracker_pod_ip_unavailable_total",
+	Help: "Watch attempts where the workspace was Active but status.podIP was empty (resume race / stale status)",
+}, []string{"workspace_id"})
+
+var podIPCounterOnce sync.Once
+
+func recordPodIPUnavailable(workspaceID string) {
+	podIPCounterOnce.Do(func() { prometheus.MustRegister(podIPUnavailable) })
+	podIPUnavailable.WithLabelValues(workspaceID).Inc()
+}
+
 func setTrackerConnected(workspaceID string, up bool) {
 	connGaugesOnce.Do(func() {
 		prometheus.MustRegister(trackerConnectedGauge)
@@ -521,6 +537,7 @@ func (t *Tracker) connectAndRead(ctx context.Context, workspaceID string) error 
 
 	podIP := t.podIPResolver(workspaceID)
 	if podIP == "" {
+		recordPodIPUnavailable(workspaceID)
 		return fmt.Errorf("no pod IP for workspace %s", workspaceID)
 	}
 

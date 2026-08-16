@@ -124,6 +124,27 @@ spec:
               minutes. Either the workspace is idle (benign) or the tracker connection
               is dead-but-open (see #901 G11). Correlate with workspace activity.
 
+        # #901 G1: armed-but-failing — the watch exists but no /event
+        # stream is open (empty podIP, connectAndRead failing in backoff).
+        # The incident's invisible class: armed (counted by #903's gauge)
+        # yet serving nothing. connected==0 for 10m pages.
+        - alert: LLMSafeSpacesSSETrackerWatchFailing
+          expr: |
+            (max by (workspace_id) (llmsafespaces_sse_tracker_watched_workspaces{job=~"{{ $apiJob }}"}) > 0)
+            and on(workspace_id)
+            (max by (workspace_id) (llmsafespaces_sse_tracker_connected{job=~"{{ $apiJob }}"}) == 0)
+          for: 10m
+          labels:
+            severity: critical
+            component: api
+          annotations:
+            summary: "SSE watch armed but not connected for {{ `{{ $labels.workspace_id }}` }}"
+            description: >-
+              The tracker holds a watch for this workspace but has no open /event
+              stream for 10m — connectAndRead is failing in a backoff loop
+              (check Warn logs: empty podIP, refused connection). Users on this
+              replica are event-blind.
+
         # #892 D1: sustained watchdog suppression = chronic starvation or a
         # wedged-but-alive agent (policy: notify, never kill).
         - alert: LLMSafeSpacesWatchdogSuppressing
@@ -175,7 +196,7 @@ spec:
         # deadline exhausted — terminal for this agent generation).
         - alert: LLMSafeSpacesRelayInjectorDegraded
           expr: |
-            sum(increase(llmsafespaces_relay_injector_total{job=~"{{ $agentdJob }}", outcome="fetch_failed"}[10m])) > 0
+            sum(increase(llmsafespaces_relay_injector_total{job=~"{{ $agentdJob }}", outcome=~"fetch_failed|no_free_models"}[10m])) > 0
           for: 0m
           labels:
             severity: warning

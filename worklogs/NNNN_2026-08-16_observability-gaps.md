@@ -81,3 +81,24 @@
 - Full touched suites: sse, eventbroker, server, handlers, agentd
   (readyz/statusz), helm TestMonitoring_PrometheusRule — all green
 - New tests `-race` green
+
+---
+
+## Round 3 (review on #906): residuals
+
+- G7 completed: the user stream (`/api/v1/events`) gets the same
+  open/close lifecycle logs (duration + eventsSent) — both SSE
+  endpoints instrumented.
+- G1 paging signal: `LLMSafeSpacesSSETrackerWatchFailing` (watched ∧
+  ¬connected, 10m, critical) — the armed-but-failing class that was the
+  incident's invisible shape.
+- G8: `no_free_models` outcome counter alongside `fetch_failed`;
+  alert matches both; `relay_free_models` state machine tested
+  (defaults/transitions/statusz field).
+- G11: `sse_tracker_pod_ip_unavailable_total` counter on the
+  resolver-empty resume race.
+- G5/G10 dispositions corrected on the record (#901 comment): G5
+  wontfix with honest rationale; G10 tracked on #907. The phantom
+  close-out (signals claimed before any PR existed) corrected in the
+  same comment — per-workspace state landed in #906, not #903.
+- Chart test pins WatchFailing.

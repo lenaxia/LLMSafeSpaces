@@ -115,6 +115,19 @@ func (h *ProxyHandler) StreamUserEvents(c *gin.Context) {
 	// Start heartbeat goroutine (sends _heartbeat sentinels into s.Ch)
 	go heartbeatLoop(streamCtx, s)
 
+	// #901 G7: the user stream gets the same lifecycle visibility as the
+	// workspace stream (proxy_stream.go) — open with subscriber context,
+	// close with duration + event count.
+	h.logger.Info("SSE user stream opened", "userID", uid)
+	streamStarted := time.Now()
+	streamEvents := 0
+	defer func() {
+		h.logger.Info("SSE user stream closed",
+			"userID", uid,
+			"duration", time.Since(streamStarted).String(),
+			"eventsSent", streamEvents)
+	}()
+
 	// Live loop — sole writer to c.Writer from this point (F1)
 	for {
 		select {
@@ -130,6 +143,7 @@ func (h *ProxyHandler) StreamUserEvents(c *gin.Context) {
 					return
 				}
 				flusher.Flush()
+				streamEvents++
 				_ = rc.SetWriteDeadline(time.Now().Add(writeDeadlineWindow))
 				continue
 			}

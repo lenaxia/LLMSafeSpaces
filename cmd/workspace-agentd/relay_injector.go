@@ -383,6 +383,7 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 						zap.Error(fetchErr),
 						zap.Duration("deadline", effectiveDeadline))
 					relayInjectorOutcomes.WithLabelValues("fetch_failed").Inc()
+					relayInjectorOutcomes.WithLabelValues("no_free_models").Inc()
 					relayFreeModelsState.Store(2)
 					return
 				}

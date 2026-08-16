@@ -2523,6 +2523,7 @@ func TestMonitoring_PrometheusRule_ContainsAllAlerts(t *testing.T) {
 		"LLMSafeSpacesTrackerBusyResetRate",
 		"LLMSafeSpacesRestartMarkerWriteFailed",
 		"LLMSafeSpacesRelayInjectorDegraded",
+		"LLMSafeSpacesSSETrackerWatchFailing",
 	}
 	for _, expectedName := range expected {
 		require.True(t, alertNames[expectedName],
