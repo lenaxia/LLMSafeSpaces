@@ -46,7 +46,7 @@ Also round 2: context-cancel mid-sample now sets `pidGone` (a refused dial colle
 
 ## Assumptions (validated)
 
-1. `lastRestartAt` is set under mutex at every spawn (managed_process.go:191) — accessor is race-free.
+1. `lastRestartAt` is set under mutex at every spawn (managed_process.go:192) — accessor is race-free.
 2. 180s covers starved boot-to-listen: kubelet observed >120s; doubled for headroom and to match D4's 5s×36 startup budget (see Key Decisions).
 3. Kernel refuses (not drops) dials to unbound ports on loopback — verified empirically in the regression test.
 
@@ -70,24 +70,19 @@ None.
 
 ## Files Modified
 
+- cmd/workspace-agentd/healthz.go (build identity in healthz response)
+- cmd/workspace-agentd/healthz_cache.go (verdict switch, suppression accounting, marker-failure recording)
+- cmd/workspace-agentd/healthz_cache_test.go
+- cmd/workspace-agentd/healthz_test.go
+- cmd/workspace-agentd/main.go (build-identity wiring)
+- cmd/workspace-agentd/managed_process.go (childStartedAt accessor, stop-race loop-top check, marker-failure recording)
+- cmd/workspace-agentd/managed_process_generation_test.go (generation-hook tests, stop-race regression)
+- cmd/workspace-agentd/managed_process_test.go (fake harness: /global/health, FAKE_BIND_DELAY_MS)
+- cmd/workspace-agentd/oom_detection.go (marker-failure recording)
+- cmd/workspace-agentd/ops_metrics.go (suppression + marker-failure counters)
+- cmd/workspace-agentd/secrets.go (marker-failure recording)
+- cmd/workspace-agentd/server.go (buildVitalsGatherer)
 - cmd/workspace-agentd/watchdog_vitals.go (+watchdog_vitals_test.go)
-- cmd/workspace-agentd/healthz_cache.go
-- cmd/workspace-agentd/managed_process.go (+managed_process_test.go harness: /global/health, FAKE_BIND_DELAY_MS)
-- cmd/workspace-agentd/managed_process_generation_test.go
-- cmd/workspace-agentd/ops_metrics.go
-- cmd/workspace-agentd/server.go (buildVitalsGatherer)
-- cmd/workspace-agentd/version.go / pkg/version (build identity)
-- pkg/agentd/types.go (build-identity doc)
-
-## Obsolete sections below
-
-Classify matrix (7 verdicts incl. booting rows); gatherer refused/boot-window/past-grace/cancel; real-subprocess regression (red-without-fix verified); wiring smoke (`buildVitalsGatherer` addr/pid/bootAt shape); metric emission (suppression + marker-failure counters, label normalization); loop tests fire-on-refused+live+past-boot only, suppress on flat/unknown/respawn/starved incl. max-defer force paths; latch reset. Full agentd suite green incl. `-race`.
-
-## Files Modified
-
-- cmd/workspace-agentd/watchdog_vitals.go (+_test)
-- cmd/workspace-agentd/healthz_cache.go
-- cmd/workspace-agentd/managed_process.go (stop race, childStartedAt; +_test harness /global/health + FAKE_BIND_DELAY_MS)
-- cmd/workspace-agentd/ops_metrics.go
-- cmd/workspace-agentd/server.go (buildVitalsGatherer)
-- cmd/workspace-agentd/version.go / pkg/version (build identity)
+- pkg/agentd/types.go (build-identity fields + doc)
+- pkg/version/version.go (build identity source of truth)
+- pkg/version/version_test.go

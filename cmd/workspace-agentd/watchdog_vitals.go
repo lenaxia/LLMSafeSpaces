@@ -228,11 +228,11 @@ type procVitalsGatherer struct {
 // vitalsBootGraceWindow is how long after a child Start() a refused dial
 // is attributed to boot rather than hang. Sizing: the incident
 // documented opencode boot-to-listen exceeding 120s under a saturated
-// 2-CPU quota (kubelet startup-probe kills at the then-121s budget), and
-// the D4 PR (design 0050) ships a 5s×36 = 180s kubelet startup budget
-// for the same tail — the grace deliberately matches that number so the
-// watchdog never outlives the boot window kubelet itself tolerates.
-// Var for tests.
+// 2-CPU quota (kubelet startup-probe kills at the then-121s budget). The
+// D4 PR (#895) ships a 5s×36 = 180s kubelet startup budget for the same
+// tail — an amendment over design 0050's drafted 5s×30 = 150s — and this
+// grace deliberately matches the shipped 180s so the watchdog never
+// outlives the boot window kubelet itself tolerates. Var for tests.
 var vitalsBootGraceWindow = 180 * time.Second
 
 // newProcVitalsGatherer builds the production gatherer. pidFn returns the
