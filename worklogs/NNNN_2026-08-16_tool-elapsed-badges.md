@@ -48,3 +48,27 @@ None.
 - frontend/src/api/messages.ts
 - frontend/src/components/chat/MessagePart.tsx
 - frontend/src/components/chat/MessagePart.test.tsx
+
+---
+
+## Round 2 (review on #896): the live SSE path
+
+Round 1 threaded only `transformHistory` — the badge never rendered
+during a watched live turn (the incident's motivating scenario) because
+streamed parts arrive via SSE, not history. Round 2:
+
+- `ChatPage.parseToolStartedAt`: both opencode wire shapes — 1.18.10+
+  flat `state.time.start` (epoch millis, normalized to ISO) and ≤1.15.x
+  nested `state.startedAt` (ISO verbatim). Absent → undefined (badge
+  degrades to absent).
+- `parseStreamEvent` threads it into `StreamPart.toolStartedAt`;
+  same-callID updates preserve the original start when the update event
+  omits it (later status events often carry no time field).
+- `ChatView.partitionStreamPartsByMessage` carries it into the
+  streaming bubble's `MessagePart` — both render paths now show the
+  badge.
+- Tests: SSE envelope tests (both shapes, preservation, absent) through
+  the real ChatPage handler; streaming-bubble render tests through the
+  real ChatView; `transformHistory` threading tests (deleting the line
+  fails); NaN-guard on unparseable strings. Red-without-fix verified on
+  the SSE threading line.

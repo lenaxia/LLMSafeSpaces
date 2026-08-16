@@ -297,4 +297,37 @@ describe("ChatView", () => {
     fireEvent.click(screen.getByText("Submit answers"));
     await waitFor(() => expect(onResolved).toHaveBeenCalled());
   });
+// Design 0050 D5 (#896): a running streamed tool must reach the
+// streaming bubble WITH its start time so the elapsed badge renders
+// during a live watched turn (the incident's motivating scenario).
+describe("ChatView streaming tool start time (#892 D5)", () => {
+  it("renders the elapsed badge for a live running tool from SSE parts", async () => {
+    const started = new Date(Date.now() - 42_000).toISOString();
+    render(
+      <ChatView
+        {...defaultProps}
+        streaming={true}
+        streamParts={[
+          { type: "tool", text: "bash", toolState: "running", toolStartedAt: started, messageID: "msg-live" },
+        ] as never}
+      />,
+    );
+    await waitFor(() => {
+      expect(screen.getByLabelText("elapsed time").textContent).toMatch(/^4[12]s$/);
+    });
+  });
+
+  it("renders no badge for a streamed tool without a start time", () => {
+    render(
+      <ChatView
+        {...defaultProps}
+        streaming={true}
+        streamParts={[{ type: "tool", text: "bash", toolState: "running", messageID: "msg-live2" }] as never}
+      />,
+    );
+    expect(screen.queryByLabelText("elapsed time")).not.toBeInTheDocument();
+  });
 });
+
+});
+

@@ -176,3 +176,42 @@ describe("transformHistory", () => {
     expect(result[0]!.id).toBe("msg_1");
   });
 });
+
+// Design 0050 D5 (#896): the elapsed badge's start time must survive
+// history transformation — deleting the threading line in messages.ts
+// fails these tests (review round 1: the line had zero coverage).
+describe("transformHistory tool start time (#892 D5)", () => {
+  it("threads state.startedAt (legacy ≤1.15.x ISO shape) to toolStartedAt", () => {
+    const iso = "2026-08-15T21:35:25.000Z";
+    const raw = [
+      {
+        id: "msg_t1",
+        type: "assistant",
+        createdAt: "2026-08-15T21:35:00.000Z",
+        parts: [
+          {
+            type: "tool",
+            tool: { name: "bash", state: { status: "running", startedAt: iso } },
+          },
+        ],
+      },
+    ];
+    const result = transformHistory(raw as Parameters<typeof transformHistory>[0]);
+    const part = result[0]!.parts[0]!;
+    expect(part.type).toBe("tool_use");
+    expect(part.toolStartedAt).toEqual(iso);
+  });
+
+  it("omits toolStartedAt when the tool state has none (older API payloads)", () => {
+    const raw = [
+      {
+        id: "msg_t2",
+        type: "assistant",
+        createdAt: "2026-08-15T21:35:00.000Z",
+        parts: [{ type: "tool", tool: { name: "bash", state: { status: "running" } } }],
+      },
+    ];
+    const result = transformHistory(raw as Parameters<typeof transformHistory>[0]);
+    expect(result[0]!.parts[0]!.toolStartedAt).toBeUndefined();
+  });
+});

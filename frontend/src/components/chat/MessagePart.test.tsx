@@ -610,3 +610,15 @@ describe("MessagePart tool elapsed badge (#892 D5)", () => {
     expect(screen.queryByLabelText("elapsed time")).not.toBeInTheDocument();
   });
 });
+
+describe("MessagePart tool elapsed badge edge cases (#892 D5)", () => {
+  it("renders no badge when startedAt is an unparseable string (NaN guard)", () => {
+    render(
+      <MessagePart
+        part={{ type: "tool_use", name: "bash", toolState: "running", toolStartedAt: "not-a-timestamp", input: { command: "ls" } }}
+        isUser={false}
+      />,
+    );
+    expect(screen.queryByLabelText("elapsed time")).not.toBeInTheDocument();
+  });
+});
