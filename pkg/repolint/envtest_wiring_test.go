@@ -64,9 +64,7 @@ func TestEnvtestWorkflow_RunsAllRegisteredSuites(t *testing.T) {
 	var lines []string
 	for _, job := range wf.Jobs {
 		for _, step := range job.Steps {
-			for _, l := range strings.Split(step.Run, "\n") {
-				lines = append(lines, l)
-			}
+			lines = append(lines, strings.Split(step.Run, "\n")...)
 		}
 	}
 	require.NotEmpty(t, lines, "envtest.yml must have run steps")
