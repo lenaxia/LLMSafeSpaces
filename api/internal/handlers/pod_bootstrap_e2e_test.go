@@ -285,20 +285,20 @@ func buildAgentd(t *testing.T) string {
 	modRoot := findModuleRoot(t)
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "workspace-agentd")
-	cmd := exec.Command("go", "build", "-o", bin, "./cmd/workspace-agentd")
+	// 300s via CommandContext (#900 + PR #890 dispatch evidence): 120s
+	// was too tight on cold-cache runners (module downloads under -race);
+	// CommandContext kills the build on timeout instead of leaking it.
+	// Warm runs finish in ~10s.
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/workspace-agentd")
 	cmd.Dir = modRoot
 	cmd.Stderr = os.Stderr
-	done := make(chan error, 1)
-	go func() { done <- cmd.Run() }()
-	// 120s was too tight on cold-cache runners (issue #900: three-plus
-	// full-suite failures from module downloads under -race). 300s
-	// covers the observed worst case; warm runs finish in ~10s.
-	select {
-	case err := <-done:
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			t.Fatal("go build ./cmd/workspace-agentd timed out after 300s")
+		}
 		require.NoError(t, err, "go build ./cmd/workspace-agentd failed (cwd=%s)", modRoot)
-	case <-time.After(300 * time.Second):
-		_ = cmd.Process.Kill()
-		t.Fatal("go build ./cmd/workspace-agentd timed out after 300s")
 	}
 	return bin
 }

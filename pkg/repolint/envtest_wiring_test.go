@@ -58,18 +58,33 @@ func TestEnvtestWorkflow_RunsAllRegisteredSuites(t *testing.T) {
 	var wf envtestWorkflow
 	require.NoError(t, yaml.Unmarshal(raw, &wf), "envtest.yml must parse")
 
-	var runs string
+	// runsByLine keeps each step's run block as searchable lines so a
+	// flag preceding the package path (-tags envtest go test ... ./pkg)
+	// is still within the matched line.
+	var lines []string
 	for _, job := range wf.Jobs {
 		for _, step := range job.Steps {
-			runs += step.Run + "\n"
+			for _, l := range strings.Split(step.Run, "\n") {
+				lines = append(lines, l)
+			}
 		}
 	}
-	require.NotEmpty(t, runs, "envtest.yml must have run steps")
+	require.NotEmpty(t, lines, "envtest.yml must have run steps")
 
 	for pkg, pathPrefix := range envtestSuites {
-		m := regexp.MustCompile(regexp.QuoteMeta(pkg) + `[^\n]*`).FindString(runs)
+		m := ""
+		for _, l := range lines {
+			if strings.Contains(l, pkg) {
+				m = l
+				break
+			}
+		}
 		require.NotEmpty(t, m,
 			"envtest.yml must execute the %s suite — a tagged suite not wired into CI never runs (PR #890 round-4 finding)", pkg)
+		// The step must set -tags envtest — without it the tagged suite
+		// compiles to nothing and the step passes vacuously.
+		require.Contains(t, m, "-tags envtest",
+			"the %s step must run with -tags envtest (build-tagged files are invisible otherwise)", pkg)
 		// Non-vacuous step: the step's -run pattern must match a test
 		// function that exists in the package (catches renamed/deleted
 		// test funcs leaving a CI step that matches nothing and passes).

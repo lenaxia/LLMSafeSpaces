@@ -27,10 +27,14 @@ import (
 
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	rest "k8s.io/client-go/rest"
 )
@@ -151,6 +155,30 @@ func TestCachedPinResolver_ErrorsCarrySentinel(t *testing.T) {
 	res := &cachedPinResolver{Client: c, Namespace: "llmsafespaces", fetch: fakeIndexFetcher(nil, errors.New("connection refused"))}
 	_, err := res.Resolve(context.Background(), pinImage)
 	require.ErrorIs(t, err, ErrAgentdPinsUnavailable, "first-boot outage must carry the sentinel for the manual-pin hint")
+
+	// Malformed cache → sentinel.
+	c3 := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: AgentdPinsConfigMapName, Namespace: "llmsafespaces"},
+		Data: map[string]string{
+			"image":        pinImage,
+			"sha256-amd64": "garbage",
+			"sha256-arm64": pinARM64,
+		},
+	}).Build()
+	res3 := &cachedPinResolver{Client: c3, Namespace: "llmsafespaces", fetch: fakeIndexFetcher(nil, errors.New("connection refused"))}
+	_, err = res3.Resolve(context.Background(), pinImage)
+	require.ErrorIs(t, err, ErrAgentdPinsUnavailable, "malformed-cache refusal must carry the sentinel")
+
+	// RBAC-denied cache read → sentinel (the wrap names the ConfigMap).
+	c4 := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			return apierrors.NewForbidden(schema.GroupResource{Group: "", Resource: "configmaps"}, key.Name, errors.New("denied"))
+		},
+	}).Build()
+	res4 := &cachedPinResolver{Client: c4, Namespace: "llmsafespaces", fetch: fakeIndexFetcher(nil, errors.New("connection refused"))}
+	_, err = res4.Resolve(context.Background(), pinImage)
+	require.ErrorIs(t, err, ErrAgentdPinsUnavailable, "RBAC-denied cache read must carry the sentinel")
+	require.Contains(t, err.Error(), AgentdPinsConfigMapName, "the RBAC hint must name the ConfigMap")
 
 	// Stale-digest cache → sentinel (desync refusal is also an outage dead-end).
 	c2 := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&corev1.ConfigMap{

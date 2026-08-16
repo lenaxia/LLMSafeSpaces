@@ -1,8 +1,11 @@
-# Worklog NNNN — single-coordinate (Renovate-friendly) agentd pins
+# Worklog: single-coordinate (Renovate-friendly) agentd pins
 
 **Date:** 2026-08-16
 **PR:** #890
 **Issue:** #863 (follow-up to the image-volume delivery in #872)
+**Session:** agentd image-volume follow-up (PR #890 review rounds 1–7)
+**Status:** code complete; all review deltas landed; merge-agentd proven
+pre-merge via dispatch (run 31968003517)
 
 ---
 
@@ -221,3 +224,19 @@ agentd_overlay{,_test}.go, phase files unchanged this PR; helm
 agentd_delivery_chart_test.go); ci.yml merge-agentd annotations;
 envtest.yml step+paths; pkg/repolint/envtest_wiring_test.go;
 docs/operator/agentd-delivery.md; controller/main.go.
+
+## Round 6–7 addendum (final)
+
+Round 5's envtest-wiring guard initially asserted only suite presence —
+the round-6 extension added the vacuous `-run` match check, and round 7
+added the `-tags envtest` presence check (mutation-verified: stripping
+the flag → FAIL). The sentinel test grew from two paths to all four
+(no-cache, RBAC-denied, malformed, stale-digest) — each addition caught
+by review before this round, the last two added pre-emptively and
+verified red-first where mutation was applicable.
+
+The #900 fix took three forms across rounds (timeout raise → conflict
+with #903's independent 240s CommandContext fix → final: CommandContext
+at 300s per the dispatch evidence). The recurring worklog-bot race
+(NNNN_ sentinel visible on origin/main between merge and renumber) is
+pre-existing, observed three times today, self-heals within ~30 min.
