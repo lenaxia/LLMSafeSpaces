@@ -46,7 +46,7 @@ Also round 2: context-cancel mid-sample now sets `pidGone` (a refused dial colle
 
 ## Assumptions (validated)
 
-1. `lastRestartAt` is set under mutex at every spawn (managed_process.go:192) — accessor is race-free.
+1. `lastRestartAt` is set under mutex at every spawn (managed_process.go:194) — accessor is race-free.
 2. 180s covers starved boot-to-listen: kubelet observed >120s; doubled for headroom and to match D4's 5s×36 startup budget (see Key Decisions).
 3. Kernel refuses (not drops) dials to unbound ports on loopback — verified empirically in the regression test.
 
