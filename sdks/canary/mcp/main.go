@@ -509,17 +509,15 @@ func runDeepWorkspace(ctx context.Context, r *Runner, client *stdioClient, apiUR
 	defer func() { _ = sdkClient.Workspaces.Delete(context.Background(), wsID) }()
 
 	// CANARY_NO_CONTROLLER=1: the CI environment declares it runs no
-	// workspace controller (workspaces stay Pending forever — ci.yml
-	// "Start API server" comment). Environment-provided truth, not
-	// inferred from phase: in an environment WITH a controller, a
-	// stuck-Pending workspace is real drift and must fail (#905 review).
+	// workspace controller. Only the controller writes .status.phase
+	// (controller phase_active.go), so without one the phase is EMPTY —
+	// never "Pending" — and can never become Active. Environment-provided
+	// truth, no phase inference: with the flag set, the Active-gated tail
+	// (activate/stop) is skipped after creation verifies. In an
+	// environment WITH a controller, no flag: WaitActive must succeed
+	// (#905 review — a stuck workspace there is real drift and fails).
 	if os.Getenv("CANARY_NO_CONTROLLER") == "1" {
-		cur, err := sdkClient.Workspaces.Get(context.Background(), wsID)
-		if err == nil && cur.Phase == "Pending" {
-			r.ok("ws-wait-active: skipped (CANARY_NO_CONTROLLER=1 — no controller in CI)")
-			return
-		}
-		r.assert(false, "ws-wait-active", fmt.Sprintf("CANARY_NO_CONTROLLER=1 but phase=%q (expected Pending)", phaseOf(cur)))
+		r.ok("ws-wait-active: skipped (CANARY_NO_CONTROLLER=1 — no controller writes .status.phase in CI)")
 		return
 	}
 	phase := canary.WaitActive(ctx, sdkClient, wsID)
@@ -1000,11 +998,4 @@ func checkToolContract(tools []map[string]any) []contractFailure {
 		}
 	}
 	return failures
-}
-
-func phaseOf(ws *llm.Workspace) string {
-	if ws == nil {
-		return ""
-	}
-	return ws.Phase
 }
