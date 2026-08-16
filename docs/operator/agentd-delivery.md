@@ -104,7 +104,7 @@ pair fails the Helm render.
 
 ## Rollout / rollback
 
-Roll **forward** by updating the three values to a newer digest and
+Roll **forward** by updating the image line to a newer digest and
 running `helm upgrade`. The controller Deployment restarts; **existing
 pods keep their old pin** (pod specs are immutable) and pick up the new
 agentd the next time their pod is recreated.

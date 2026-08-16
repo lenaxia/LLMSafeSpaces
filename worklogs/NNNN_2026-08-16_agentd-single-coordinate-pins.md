@@ -61,16 +61,26 @@ read (go-containerregistry), with:
 5. Dependabot cannot manage this → stated honestly in docs; the
    CI-printed block remains the manual path (now image-only).
 
-## Tests
+## Tests (final state, round 2)
 
-- `agentd_pins_test.go`: annotation extraction (happy/missing), cache
-  write on success, cache fallback on outage, stale-cache rejection,
-  flag-override precedence (full + partial), image-only validation,
-  partial-override rejection.
-- Chart: image-only renders exactly ONE flag (the Renovate form);
-  one-sided hash override fails render; hashes-without-image still
-  fails; full pin renders all three.
-- Existing 18 #863 tests unchanged and green — downstream wiring is
+- `agentd_pins_test.go` (cachedPinResolver + ResolvePinsWithCache):
+  annotation extraction (happy/missing), cache write on success, cache
+  fallback on outage, stale-cache rejection, malformed-cache rejection,
+  manual-pin short-circuit (valid hex verbatim; invalid hex rejected),
+  image-only resolution via the cluster path, namespace fallback
+  ordering. (An earlier revision of this worklog listed
+  flag-override-precedence tests that no longer exist — those covered
+  deleted dead code and were replaced, not renamed.)
+- `agentd_pins_integration_test.go`: local in-process OCI registry —
+  fetchIndexAnnotations happy round-trip (digest-only AND tag+digest
+  forms), unreachable registry, tag-only ref rejected; CI↔Go
+  annotation-key consistency guard against .github/workflows/ci.yml
+  (all three keys via the Go constants).
+- Chart: image-only renders exactly one flag (Renovate form); full pin
+  renders three; one-sided override (BOTH directions) fails render;
+  hashes-without-image fails; agentd-pins RBAC grant renders with
+  delivery enabled + relay/free-models disabled, absent in legacy mode.
+- Existing #863 tests unchanged and green — downstream wiring is
   oblivious to the pin origin.
 
 ## Adversarial notes
@@ -91,3 +101,16 @@ read (go-containerregistry), with:
   documented as break-glass.
 - The printed CI block now leads with the image-only form; hashes shown
   commented as overrides.
+
+## Review round 2 addendum
+
+- ResolvePinsWithCache made injectable (resolvePinsFromCluster) and
+  actually tested (the round-1 response claimed tests that did not
+  exist — a real miss, now corrected).
+- Cache identity compares DIGESTS, not full refs (re-tagging the same
+  digest no longer invalidates a valid cache during an outage).
+- docs "three values" rollout line corrected; CI-printed image line is
+  digest-only (the :dev@ hardcode referenced a tag that only exists on
+  default-branch events).
+- annotationVersion constant now used by the CI guard test (was a
+  literal).

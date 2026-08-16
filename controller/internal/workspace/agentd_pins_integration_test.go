@@ -85,7 +85,7 @@ func TestAgentdAnnotationKeys_MatchCIWorkflow(t *testing.T) {
 		"ci.yml merge-agentd amd64 annotation key must match the Go constant exactly")
 	require.Equal(t, annotationKeyARM64, ciARM64,
 		"ci.yml merge-agentd arm64 annotation key must match the Go constant exactly")
-	require.Equal(t, "dev.llmsafespaces/version", ciVersion)
+	require.Equal(t, annotationVersion, ciVersion)
 }
 
 func extractAnnoKey(t *testing.T, body, pattern string) string {
@@ -101,4 +101,32 @@ func repeatChars(s string, n int) string {
 		out += s
 	}
 	return out
+}
+
+// TestFetchIndexAnnotations_TagPlusDigestForm exercises the production
+// Renovate reference form (repo:tag@sha256:digest) against the local
+// registry — the shape values.yaml carries after a bot bump.
+func TestFetchIndexAnnotations_TagPlusDigestForm(t *testing.T) {
+	reg := registry.New()
+	srv := httptest.NewServer(reg)
+	t.Cleanup(srv.Close)
+
+	repoName := "localhost" + srv.URL[len("http://127.0.0.1"):] + "/agentd/tagged"
+	amd64 := "a" + repeatChars("a", 63)
+	idx := mutate.Annotations(empty.Index, map[string]string{
+		annotationKeyAMD64: amd64,
+		annotationKeyARM64: "b" + repeatChars("b", 63),
+		annotationVersion:  "1.2.3",
+	}).(v1.ImageIndex)
+	tag, err := name.NewTag(repoName + ":dev")
+	require.NoError(t, err)
+	require.NoError(t, remote.WriteIndex(tag, idx))
+
+	head, err := remote.Head(tag)
+	require.NoError(t, err)
+	ref := repoName + ":dev@" + head.Digest.String()
+
+	ann, err := fetchIndexAnnotations(context.Background(), ref)
+	require.NoError(t, err)
+	require.Equal(t, amd64, ann[annotationKeyAMD64])
 }

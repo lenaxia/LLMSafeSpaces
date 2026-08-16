@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+	"sigs.k8s.io/yaml"
 )
 
 func agentdFlags(t *testing.T, valuesYAML string) []string {
@@ -164,4 +165,41 @@ func TestAgentdDelivery_OneSidedArm64OverrideFailsRender(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	require.Error(t, err, "one-sided arm64-only override must fail the render; output: %s", out)
 	require.Contains(t, string(out), "BOTH hashes or NEITHER", "output: %s", out)
+}
+
+// TestAgentdDelivery_PinsRBACGrantRenders guards the least-privilege
+// regression from PR review: the agentd-pins cache ConfigMap grant must
+// render when agentdDelivery.image is set (independent of relay /
+// free-models feature gates) and be absent otherwise.
+func TestAgentdDelivery_PinsRBACGrantRenders(t *testing.T) {
+	docs := helmTemplate(t, `controller:
+  agentdDelivery:
+    image: ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  inferenceRelay:
+    enabled: false
+  freeModelsRefresher:
+    enabled: false
+`)
+	found := false
+	for _, doc := range docs {
+		if doc["kind"] != "Role" {
+			continue
+		}
+		raw, err := yaml.Marshal(doc)
+		require.NoError(t, err)
+		if strings.Contains(string(raw), "llmsafespaces-agentd-pins") {
+			found = true
+		}
+	}
+	require.True(t, found, "agentd-pins resourceNames grant must render with agentdDelivery enabled and relay/free-models disabled")
+}
+
+func TestAgentdDelivery_PinsRBACGrantAbsentByDefault(t *testing.T) {
+	docs := helmTemplate(t, "")
+	for _, doc := range docs {
+		raw, err := yaml.Marshal(doc)
+		require.NoError(t, err)
+		require.NotContains(t, string(raw), "llmsafespaces-agentd-pins",
+			"legacy mode must not grant agentd-pins access")
+	}
 }

@@ -1611,11 +1611,15 @@ jobs:
         run: |
           amd64="$(cat /tmp/sha/agentd-binary-amd64.sha256)"
           arm64="$(cat /tmp/sha/agentd-binary-arm64.sha256)"
+          # Digest-only (pull-authoritative, tag-independent): the dev
+          # tag is default-branch-only, so a hardcoded :dev@ would
+          # reference a tag that does not point at this digest on other
+          # events. Paste into values as-is, or add your own tag.
           echo "::notice::agentdDelivery values for this commit (Renovate-friendly: image-only; hashes resolve from the index annotations):"
           cat <<EOF
           controller:
             agentdDelivery:
-              image: ${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}:dev@${{ steps.create.outputs.digest }}
+              image: ${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}@${{ steps.create.outputs.digest }}
               # break-glass overrides (both or neither):
               # binarySHA256Amd64: "${amd64}"
               # binarySHA256Arm64: "${arm64}"

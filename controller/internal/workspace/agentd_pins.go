@@ -42,6 +42,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	rest "k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	ctrlconfig "sigs.k8s.io/controller-runtime/pkg/client/config"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -71,6 +72,21 @@ type ociAnnotations map[string]string
 // boot timeout); without remote.WithContext ggcr uses
 // context.Background() and a stalled registry hangs startup forever.
 type remoteIndexFetcher func(ctx context.Context, imageRef string) (ociAnnotations, error)
+
+// sameDigest reports whether two image references pin the same
+// manifest digest (compares the sha256 suffix; refs without one never
+// match — resolution requires digest pinning).
+func sameDigest(a, b string) bool {
+	get := func(ref string) string {
+		i := strings.LastIndex(ref, "@sha256:")
+		if i < 0 {
+			return ""
+		}
+		return ref[i+len("@sha256:"):]
+	}
+	da, db := get(a), get(b)
+	return da != "" && da == db
+}
 
 // AgentdBinaryPins are the resolved per-arch binary sha256s.
 type AgentdBinaryPins struct {
@@ -108,7 +124,10 @@ func (r *cachedPinResolver) Resolve(ctx context.Context, image string) (AgentdBi
 		}
 		return AgentdBinaryPins{}, fmt.Errorf("agentd pins: registry fetch failed (%v) and pin cache read failed (%v) — check RBAC for configmaps get on %s/%s: %w", err, getErr, r.Namespace, AgentdPinsConfigMapName, errFetchUnavailable)
 	}
-	if cm.Data["image"] != image {
+	// Compare DIGESTS, not full refs: re-tagging the same digest
+	// (:dev@X → :v1.2.0@X) must not invalidate a valid same-content
+	// cache during an outage. The digest suffix is the content identity.
+	if !sameDigest(cm.Data["image"], image) {
 		return AgentdBinaryPins{}, fmt.Errorf("agentd pins: registry fetch failed (%v) and cache holds a different digest (%s) — refusing to desync", err, cm.Data["image"])
 	}
 	amd64, arm64 := cm.Data["sha256-amd64"], cm.Data["sha256-arm64"]
@@ -167,17 +186,27 @@ func fetchIndexAnnotations(ctx context.Context, imageRef string) (ociAnnotations
 }
 
 // ResolvePinsWithCache is the startup entrypoint used by controller
-// main. validateAgentdDeliveryConfig has already run: either both hash
-// flags are set (manual pin — returned verbatim, no registry access)
-// or neither is (the normal Renovate form — resolved from the image
-// index annotations, backed by the ConfigMap cache for registry
-// outages). Runs before the manager starts (raw client on the ambient
-// kubeconfig) so a broken pin fails fast.
+// main. validateAgentdDeliveryConfig has already run, guaranteeing
+// both-or-neither hash flags: the both-set form returns them verbatim
+// after hex validation (manual pin, no registry access); the neither
+// form (the normal Renovate pin) resolves from the image index
+// annotations via the ConfigMap-cached resolver. Runs before the
+// manager starts so a broken pin fails fast.
 func ResolvePinsWithCache(ctx context.Context, image, flagAMD64, flagARM64 string) (AgentdBinaryPins, error) {
 	if flagAMD64 != "" && flagARM64 != "" {
+		if !sha256HexRe.MatchString(flagAMD64) || !sha256HexRe.MatchString(flagARM64) {
+			return AgentdBinaryPins{}, fmt.Errorf("agentd pins: manual hash overrides must be 64 hex chars (validation should have caught this)")
+		}
 		return AgentdBinaryPins{SHA256AMD64: flagAMD64, SHA256ARM64: flagARM64}, nil
 	}
-	cfg, err := ctrlconfig.GetConfig()
+	return resolvePinsFromCluster(ctx, ctrlconfig.GetConfig, os.Getenv("POD_NAMESPACE"), fetchIndexAnnotations, image)
+}
+
+// resolvePinsFromCluster is the injectable core of ResolvePinsWithCache
+// (tests substitute the config loader and fetcher). A nil namespace
+// falls back to the release default.
+func resolvePinsFromCluster(ctx context.Context, loadConfig func() (*rest.Config, error), namespace string, fetcher remoteIndexFetcher, image string) (AgentdBinaryPins, error) {
+	cfg, err := loadConfig()
 	if err != nil {
 		return AgentdBinaryPins{}, fmt.Errorf("agentd pins: loading kubeconfig for cache access: %w", err)
 	}
@@ -189,9 +218,8 @@ func ResolvePinsWithCache(ctx context.Context, image, flagAMD64, flagARM64 strin
 	if err != nil {
 		return AgentdBinaryPins{}, fmt.Errorf("agentd pins: client setup: %w", err)
 	}
-	ns := os.Getenv("POD_NAMESPACE")
-	if ns == "" {
-		ns = "llmsafespaces"
+	if namespace == "" {
+		namespace = "llmsafespaces"
 	}
-	return (&cachedPinResolver{Client: c, Namespace: ns, fetch: fetchIndexAnnotations}).Resolve(ctx, image)
+	return (&cachedPinResolver{Client: c, Namespace: namespace, fetch: fetcher}).Resolve(ctx, image)
 }
