@@ -162,6 +162,15 @@ func (p *managedProcess) supervise() {
 
 	for {
 		p.mu.Lock()
+		// stop() may have run while we were in a crash backoff sleep:
+		// it signals the child it saw (possibly the dead one) and waits
+		// on doneCh. Without this check the supervisor would respawn a
+		// child nobody will ever signal, and stop() would hang forever
+		// (found by TestWatchdogRespawnBootWindow_NeverKills_RealSubprocess).
+		if p.stopRequested {
+			p.mu.Unlock()
+			return
+		}
 		// Build a fresh cmd. exec.Cmd is single-shot — one Start +
 		// one Wait per instance.
 		cmd := p.cmdFactory()
@@ -285,6 +294,18 @@ func (p *managedProcess) pid() int {
 		return p.cmd.Process.Pid
 	}
 	return 0
+}
+
+// childStartedAt returns the time the CURRENT child was started (zero
+// time when no child has been started yet). The health-watchdog's vitals
+// gatherer (watchdog_vitals.go) uses it to disarm the kill during the
+// respawn boot window: a freshly spawned child has not bound its port,
+// so a refused dial against a young pid is boot, not hang. Mutex-guarded
+// alongside pid(); the same staleness caveat applies.
+func (p *managedProcess) childStartedAt() time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lastRestartAt
 }
 
 // restart signals the current child to exit and blocks until the

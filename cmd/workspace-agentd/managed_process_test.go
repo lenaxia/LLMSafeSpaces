@@ -75,6 +75,15 @@ func runFakeOpencode() {
 		os.Exit(2)
 	}
 
+	// Optional pre-bind delay: simulates opencode's boot-to-listen window
+	// under CPU starvation (incident 2026-08-15/16: boot exceeded 120s on
+	// a saturated 2-CPU quota). The port stays refused while this sleeps.
+	if d := os.Getenv("FAKE_BIND_DELAY_MS"); d != "" {
+		if ms, err := strconv.Atoi(d); err == nil && ms > 0 {
+			time.Sleep(time.Duration(ms) * time.Millisecond)
+		}
+	}
+
 	ln, err := net.Listen("tcp", "127.0.0.1:"+port)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "fake-opencode: bind %s: %v\n", port, err)
@@ -82,10 +91,15 @@ func runFakeOpencode() {
 	}
 
 	// Serve a trivial /v1/readyz so the post-restart health check in
-	// managedProcess.restart() can succeed.
+	// managedProcess.restart() can succeed, and /global/health so the
+	// healthz-cache loop (refreshOnce) observes the child as healthy.
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/global/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"healthy":true,"version":"fake-test"}`))
 	})
 	srv := &http.Server{Handler: mux} //nolint:gosec // test fixture
 	go func() { _ = srv.Serve(ln) }()

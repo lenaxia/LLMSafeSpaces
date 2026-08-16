@@ -129,6 +129,12 @@ type vitalSigns struct {
 	// refused dial this means crash recovery is respawning opencode —
 	// the watchdog must not race it.
 	pidGone bool
+	// booting: the supervised pid is alive and within the boot grace
+	// window since the supervisor started it. A refused dial against a
+	// booting child is the respawn's port-not-yet-bound window — the
+	// exact shape that produced the incident's 6-restarts-in-11-minutes
+	// churn when the watchdog treated it as HUNG. Never lethal.
+	booting bool
 	// cpuKnown: cpuDeltaTicks is meaningful. False when the agent pid was
 	// unavailable, /proc was unreadable, or the pid changed mid-sample
 	// (restart in flight makes the delta meaningless).
@@ -148,9 +154,10 @@ type vitalSigns struct {
 //
 // Precedence (first match wins), per #892 / design 0050 D1:
 //
-//  1. tcpRefused && pidGone → RESPAWN (crash recovery owns it; suppress)
-//  2. tcpRefused            → HUNG    (no listener in a live process;
-//     the only kill verdict)
+//  1. tcpRefused && (pidGone || booting) → RESPAWN (crash recovery or a
+//     still-booting child owns it; suppress)
+//  2. tcpRefused            → HUNG    (no listener in a live, past-boot
+//     process; the only kill verdict)
 //  3. !cpuKnown             → UNKNOWN (no evidence → suppress + alert;
 //     killing without evidence is banned)
 //  4. cpuDelta < flat eps    → FLAT   (alive but blocked — blocked-IO
@@ -160,8 +167,10 @@ func (v vitalSigns) classify() (verdict, string) {
 	switch {
 	case v.tcpRefused && v.pidGone:
 		return verdictRespawn, "tcp dial refused and supervised pid is gone — crash recovery owns the respawn"
+	case v.tcpRefused && v.booting:
+		return verdictRespawn, "tcp dial refused but the supervised child is still within its boot grace window — port not yet bound; never the watchdog's to kill"
 	case v.tcpRefused:
-		return verdictHung, "tcp dial refused with supervised pid alive — nothing listening on the agent port"
+		return verdictHung, "tcp dial refused with supervised pid alive and past boot — nothing listening on the agent port"
 	case !v.cpuKnown:
 		reason := "cpu evidence unavailable"
 		if v.cpuErr != "" {
@@ -202,19 +211,40 @@ type vitalsGatherer interface {
 // procVitalsGatherer is the production gatherer: TCP-dials the agent port
 // and samples the supervised process's CPU counter from /proc.
 type procVitalsGatherer struct {
-	addr         string
-	pidFn        func() int
+	addr  string
+	pidFn func() int
+	// childBootAt, when non-nil, returns the time the supervisor started
+	// the CURRENT child (zero time when no child is supervised or the
+	// age is unknown). It exists to disarm the kill during the respawn
+	// boot window: a freshly spawned child has not bound its port yet,
+	// so a dial is refused while the pid is alive — without this signal
+	// classify() would read HUNG and SIGTERM the booting process,
+	// recreating the incident's kill-churn loop (review round 1 on #898).
+	childBootAt  func() time.Time
 	dialTimeout  time.Duration
 	sampleWindow time.Duration
 }
 
+// vitalsBootGraceWindow is how long after a child Start() a refused dial
+// is attributed to boot rather than hang. It deliberately matches the D4
+// kubelet startup budget (180s, pod_builder.go): the incident documented
+// opencode boot-to-listen exceeding 120s under a saturated 2-CPU quota,
+// so the grace must cover the same tail. Var for tests.
+var vitalsBootGraceWindow = 180 * time.Second
+
 // newProcVitalsGatherer builds the production gatherer. pidFn returns the
 // current agent pid (or 0 when no child is supervised); it is re-queried
 // after the sample window so a restart mid-sample invalidates the delta.
-func newProcVitalsGatherer(addr string, pidFn func() int) *procVitalsGatherer {
+// newProcVitalsGatherer builds the production gatherer. pidFn returns the
+// current agent pid (or 0 when no child is supervised); it is re-queried
+// after the sample window so a restart mid-sample invalidates the delta.
+// childBootAt may be nil (tests, partial wiring): then no boot grace is
+// applied and refused-dial-on-live-pid classifies as HUNG as before.
+func newProcVitalsGatherer(addr string, pidFn func() int, childBootAt func() time.Time) *procVitalsGatherer {
 	return &procVitalsGatherer{
 		addr:         addr,
 		pidFn:        pidFn,
+		childBootAt:  childBootAt,
 		dialTimeout:  vitalsDialTimeout,
 		sampleWindow: vitalsSampleWindow,
 	}
@@ -225,7 +255,7 @@ func newProcVitalsGatherer(addr string, pidFn func() int) *procVitalsGatherer {
 // suppressing verdict (#892: no kill without evidence).
 func (g *procVitalsGatherer) gather(ctx context.Context) vitalSigns {
 	var v vitalSigns
-	v.tcpOpen, v.tcpRefused = g.probeTCP()
+	v.tcpOpen, v.tcpRefused = g.probeTCP(ctx)
 
 	pid := g.pidFn()
 	if pid <= 0 {
@@ -242,12 +272,29 @@ func (g *procVitalsGatherer) gather(ctx context.Context) vitalSigns {
 		v.cpuErr = err.Error()
 		return v
 	}
+	// Refused dial against a live, young pid = the respawn's
+	// port-not-yet-bound window. Record it here (classify reads it) so
+	// the booting child is never HUNG.
+	// Refused dial against a live, young pid = the respawn's
+	// port-not-yet-bound window. Record it here (classify reads it) so
+	// the booting child is never HUNG.
+	if v.tcpRefused && g.childBootAt != nil {
+		if bootAt := g.childBootAt(); !bootAt.IsZero() && time.Since(bootAt) < vitalsBootGraceWindow {
+			v.booting = true
+		}
+	}
 	throttleBefore := readCgroupThrottledUS()
 
 	timer := time.NewTimer(g.sampleWindow)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
+		// Cancellation means agentd is shutting down: no evidence, no
+		// future in which acting on this sample helps. pidGone forces
+		// the suppressing path (a refused dial collected just before
+		// cancel must not classify HUNG and fire a restart during
+		// shutdown — review round 1 minor finding).
+		v.pidGone = true
 		v.cpuErr = "context canceled during sample"
 		return v
 	case <-timer.C:
@@ -280,9 +327,9 @@ func (g *procVitalsGatherer) gather(ctx context.Context) vitalSigns {
 //	refused=true — ECONNREFUSED: nothing listening, decisive
 //	both false  — other failure (typically timeout with a full accept
 //	              backlog, i.e. overload — falls through to CPU evidence)
-func (g *procVitalsGatherer) probeTCP() (open, refused bool) {
+func (g *procVitalsGatherer) probeTCP(ctx context.Context) (open, refused bool) {
 	dialer := &net.Dialer{Timeout: g.dialTimeout}
-	conn, err := dialer.DialContext(context.Background(), "tcp", g.addr)
+	conn, err := dialer.DialContext(ctx, "tcp", g.addr)
 	if err == nil {
 		_ = conn.Close()
 		return true, false
