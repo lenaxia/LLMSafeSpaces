@@ -110,3 +110,39 @@ func TestManagedProcess_OnChildStarted_FiresOnCrashRecovery(t *testing.T) {
 	}, 10*time.Second, 50*time.Millisecond,
 		"hook must fire for the crash-recovery generation and heal the orphaned busy flag")
 }
+
+// TestManagedProcess_StopDuringCrashBackoffReturns is the regression for
+// the stop() race fixed in this PR (review round 3 on #898): stop()
+// signaled the child it saw under the mutex; if that child had just
+// crashed and the supervisor was mid-backoff, the loop respawned a
+// fresh, never-signaled child and stop() blocked on doneCh forever —
+// hanging agentd shutdown and pod termination. The loop-top
+// stopRequested re-check closes the window. Pre-fix this test hangs
+// (verified: fails at the parent commit).
+func TestManagedProcess_StopDuringCrashBackoffReturns(t *testing.T) {
+	withTestLogger(t)
+	port := freeTCPPort(t)
+	p := newTestManagedProcess(t, port, 0)
+	p.start()
+	requireFakeReachable(t, port, 2*time.Second)
+
+	// Crash the child, then stop() from INSIDE the crash-backoff sleep —
+	// the exact window where p.cmd is the dead child.
+	p.mu.Lock()
+	pid := p.cmd.Process.Pid
+	p.mu.Unlock()
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+	time.Sleep(300 * time.Millisecond)
+
+	done := make(chan struct{})
+	go func() {
+		p.stop()
+		close(done)
+	}()
+	select {
+	case <-done:
+		// stop() returned without hanging on an unsignaled respawn.
+	case <-time.After(10 * time.Second):
+		t.Fatal("stop() hung: supervisor respawned an unsignaled child during crash backoff (stop-race regression)")
+	}
+}

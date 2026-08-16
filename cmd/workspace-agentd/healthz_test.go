@@ -237,7 +237,8 @@ func TestHealthzHandler_ContextCancellationIgnored(t *testing.T) {
 // commit_sha and build_time were added 2026-08-15 (incident follow-up): a
 // devel hash build stamped with a release VERSION was indistinguishable
 // from the real release, making deployed-code identification require
-// binary disassembly. Both are omitempty — an un-stamped build omits them.
+// binary disassembly. Un-stamped builds report "unknown" (pkg/version
+// defaults); the omitempty tags are inert by design.
 func TestHealthzHandler_ResponseShapeIsExactlyAgentdHealthzResponse(t *testing.T) {
 	handler := healthzHandler(time.Now(), "")
 

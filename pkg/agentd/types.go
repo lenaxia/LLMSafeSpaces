@@ -85,8 +85,11 @@ type HealthzResponse struct {
 	// (incident 2026-08-15) must be distinguishable from the real tag.
 	// "unknown" means neither ldflags nor vcs buildinfo could supply it.
 	CommitSHA string `json:"commit_sha,omitempty"`
-	// BuildTime is the UTC build timestamp (pkg/version). Same purpose as
-	// CommitSHA; empty when not stamped.
+	// BuildTime is the UTC build timestamp (pkg/version). Same purpose
+	// as CommitSHA; "unknown" when neither ldflags nor vcs buildinfo
+	// could supply it (unstamped builds never emit an empty string, so
+	// the omitempty tags on both fields are inert by design — kept for
+	// forward-compatibility if the defaults ever change).
 	BuildTime string `json:"build_time,omitempty"`
 }
 

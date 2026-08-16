@@ -40,15 +40,27 @@ Also round 2: context-cancel mid-sample now sets `pidGone` (a refused dial colle
 
 ## Key Decisions
 
-- Boot grace 180s tied to the D4 startup budget, not derived from observed bind time — both budgets must cover the same starved-boot tail.
+- Boot grace 180s sized from the incident evidence (>120s observed starved boot-to-listen, doubling for headroom) and aligned with D4's planned 5s×36=180s kubelet startup budget so the watchdog never outlives the boot window kubelet tolerates.
 - `childBootAt` from the supervisor (authoritative spawn time) rather than `/proc/<pid>/stat` starttime — no boot-time arithmetic, same file the gatherer already reads for ticks.
-- Grace applies ONLY to refused dials; a booting child that binds and then hangs-dead is past grace and lethal as designed.
+- Grace applies ONLY to refused dials. A child that binds and then loses its listener is lethal only after the grace expires (≤180s of tolerated suppression for a young child — the kubelet-startup-analogous trade-off); a listener-alive-but-wedged child is FLAT and suppressed forever per D1.
 
 ## Assumptions (validated)
 
 1. `lastRestartAt` is set under mutex at every spawn (managed_process.go:183) — accessor is race-free.
-2. 180s covers starved boot-to-listen: kubelet observed >120s; budget doubled for headroom (same number D4 chose; documented linkage).
+2. 180s covers starved boot-to-listen: kubelet observed >120s; doubled for headroom and to match D4's 5s×36 startup budget (see Key Decisions).
 3. Kernel refuses (not drops) dials to unbound ports on loopback — verified empirically in the regression test.
+
+## Accepted residuals
+
+- Pid-reuse during backoff (theoretical): if the reaped child's pid is recycled within the ≤30s backoff while the previous child ran >180s, the /proc read succeeds on the wrong pid → refused + live-pid + past-grace → HUNG → SIGTERM of the reused process. Requires pid-namespace wraparound in a ≤30s window; the same stale-pid signal semantics predate this PR. Closing it needs a starttime comparison — deferred.
+
+## Blockers
+
+None.
+
+## Next Steps
+
+- D4 probe truthfulness (#895), D5 badges (#896), D7 caps (#897) on this stack; G7 stress harness gates the merge train; post-deploy: watch workspace_watchdog_suppressions_total{reason} for a real hung verdict.
 
 ## Tests
 
