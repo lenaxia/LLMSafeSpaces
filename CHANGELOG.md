@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.8] - 2026-08-16
+
+### Fixed
+
+- **Starvation-proof session truthfulness (#892, design 0050)** — the
+  2026-08-15/16 repeated-session-halt incident chain, end to end:
+  - **Watchdog demotion (D1)**: the health-watchdog's kill set is
+    dead-listener-only — TCP dial refused AND supervised pid alive AND
+    past the 180s boot grace. Starved (CPU advancing), flat (blocked on
+    upstream I/O — alive), respawn-window (crash recovery owns it), and
+    unknown evidence (probe degraded) all suppress forever, counted in
+    `workspace_watchdog_suppressions_total{reason}`. No stand-down;
+    unknown no longer fails open to a kill. The max-defer force path
+    fires only on corroborated dead-listener evidence.
+  - **Orphaned busy-flag reset (D2)**: sessions whose busy state was
+    produced by a dead opencode generation — the phantom-busy
+    "busy with no progress for 20-30 min" class — clear at every
+    generation change; context meters survive. API-side reconcile fixed
+    for >55-session workspaces (statusz decode cap 16 KB → 1 MB).
+  - **Probe truthfulness (D4)**: `/v1/readyz` answers from agentd
+    liveness + a kernel-level TCP check on opencode's port — never
+    opencode responsiveness, and lock-free (atomic provider snapshot; a
+    concurrent statusz fetch can no longer block it past probe
+    timeouts). Probe budgets: readiness 5s/5s/×12, startup 5s/3s/×36
+    (180s — covers starved boot-to-listen), liveness 10s/10s/×8 on the
+    lock-free healthz.
+  - **Elapsed-time badges (D5)**: running tools show a live, coarse
+    elapsed time (history and live SSE paths, both opencode wire
+    shapes) — live-silent ("42s") vs dead state ("3h") at a glance.
+  - **Tool-parallelism caps (D7)**: `GOMAXPROCS` on workspace pods,
+    derived from the effective CPU burst limit — build-tool children no
+    longer oversubscribe the 2-CPU quota (the incident's CFS-stall
+    source). No quota change.
+  - Supervisor `stop()` race (hang on pod termination when a child
+    crashed during backoff) fixed; restart-reason marker write failures
+    now counted in `workspace_restart_marker_write_failures_total`
+    (incident: 9 attempted writes, 0 landed, stdout-only).
+
+### Changed
+
+- healthz reports `commit_sha`/`build_time` (build identity; "unknown"
+  when unstamped).
+
 ## [0.15.7] - 2026-08-15
 
 ### Changed
