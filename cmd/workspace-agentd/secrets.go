@@ -462,9 +462,13 @@ func runMaterializeCommand(args []string, stdout, stderr io.Writer) int {
 	// the agent-config write are returned as exit 3 (the same as a
 	// secrets I/O failure) so kubelet sees CrashLoop on a real bug.
 	// The MCP entry stamped by the pre-boot writer must carry the Basic
-	// credential (#847) — /v1/mcp rejects unauthenticated JSON-RPC. A
-	// failed read is non-fatal here: the entry lands without headers and
-	// agentd main fails fatal on the same unreadable password (G46).
+	// credential (#847) — /v1/mcp rejects unauthenticated JSON-RPC. The
+	// credential-setup init script installs /sandbox-cfg/password BEFORE
+	// invoking materialize (pod_builder.go, pinned by
+	// TestCredentialSetupScript_PasswordInstalledBeforeMaterialize), so
+	// this read succeeds in production. A failed read still stamps a
+	// disabled entry (not an unusable enabled one) and logs; agentd main
+	// fails fatal on the same unreadable password (G46).
 	preBootPW, pwErr := readAgentPasswordFromPath(agentd.PasswordPath)
 	if pwErr != nil {
 		_, _ = fmt.Fprintf(stderr, "materialize: password read failed, MCP entry stamped without headers: %v\n", pwErr)

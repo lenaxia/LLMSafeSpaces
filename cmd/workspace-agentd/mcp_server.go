@@ -255,9 +255,10 @@ func writeMCPError(w http.ResponseWriter, id any, code int, msg string) {
 // carries the Basic credential because /v1/mcp enforces auth (#847); an
 // empty password yields a DISABLED entry — an enabled-but-credential-less
 // entry would just 401 on every JSON-RPC call, so disabling keeps
-// opencode from retrying a provably unusable server. agentd main fails
-// fatal on an unreadable password (G46), so the empty branch only fires
-// in tests and the logged materialize fallback.
+// opencode from retrying a provably unusable server. In production the
+// password is never empty here: the credential-setup init script installs
+// it before invoking materialize (the pre-boot writer's only caller), and
+// agentd main fails fatal on an unreadable password (G46).
 func injectAgentdMCPServer(password string) func(map[string]json.RawMessage) {
 	return func(cfg map[string]json.RawMessage) {
 		mcpEntry := map[string]any{
