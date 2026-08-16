@@ -1504,7 +1504,11 @@ jobs:
           docker buildx imagetools create -t "$tag" "$src"
           docker pull --platform ${{ matrix.platform }} "$tag"
           cid="agentd-extract-$GITHUB_RUN_ID"
-          docker create --platform ${{ matrix.platform }} --name "$cid" "$tag" >/dev/null
+          # FROM scratch has no CMD — docker create demands a command arg
+          # even for a never-started container (it only records it; the
+          # binary is not invoked). Record the binary path itself.
+          docker create --platform ${{ matrix.platform }} --name "$cid" "$tag" \
+            /usr/local/bin/workspace-agentd >/dev/null
           docker cp "$cid":/usr/local/bin/workspace-agentd /tmp/workspace-agentd
           docker rm -f "$cid" >/dev/null
           sha256sum /tmp/workspace-agentd | awk '{print $1}' > "/tmp/agentd-binary-${arch}.sha256"
