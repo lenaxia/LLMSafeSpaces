@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.9] - 2026-08-16
+
+### Fixed
+
+- **SSE tracker watches never re-armed (#902)** — the halting-sessions
+  bug: sends succeeded and turns ran to completion, but client streams
+  received zero agent events whenever no API replica held an event
+  watch for the workspace. Watches were armed only on phase
+  *transitions* into Active; prior-phase state is Redis-backed and
+  survives API restarts, so post-restart seeds skipped arming and
+  watches that died later (workspace pod churn) had no re-arm path.
+  Now: every Active event arms the tracker (idempotent; transitions
+  still force a fresh connection), and a 60s reconciler re-arms watches
+  for all Active workspaces on every replica — permanently converting
+  event-blindness into at most one interval.
+- Observability that was missing during the incident: tracker arm/stop
+  at Info, tracker disconnects at Warn (was Debug — invisible),
+  `llmsafespaces_sse_tracker_watched_workspaces` gauge per API replica
+  (0 = that replica's user streams are event-blind). Full gap backlog:
+  #901.
+
+### Changed
+
+- `buildAgentd` e2e test timeout 120s → 240s (cold-cache go build under
+  `-race` on loaded CI runners exceeded it; spurious suite failures).
+
 ## [0.15.8] - 2026-08-16
 
 ### Fixed

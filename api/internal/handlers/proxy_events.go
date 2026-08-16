@@ -89,17 +89,15 @@ func (h *ProxyHandler) onPhaseChange(workspace *v1.Workspace) {
 		// was aware of it). prior != phaseActive means a real transition
 		// into Active (e.g. Creating → Active, Resuming → Active).
 		//
-		// #902: the no-transition case (prior == phaseActive) now ALSO
-		// calls EnsureWatching. The re-arm path is the only thing keeping
-		// user streams alive, and prior-phase state is Redis-backed and
-		// survives API restarts — so the post-restart seed took the
-		// else-branch (prior already "Active") and skipped arming the
-		// SSE watch entirely; watches that later died (pod churn, idle
-		// drops) had no re-arm path either, leaving workspaces silently
-		// event-blind: sends succeeded, turns ran, clients saw nothing.
-		// EnsureWatching is an idempotent map check — arming when
-		// already armed costs nothing; it must NOT be preceded by
-		// StopWatching here, or every activity-driven status update
+		// #902: arm on EVERY Active event, transition or not. Prior-phase
+		// state is Redis-backed and survives API restarts, so the
+		// post-restart seed used to take the no-transition path and skip
+		// arming entirely; watches that later died (pod churn, idle
+		// drops) had no re-arm path — workspaces went silently
+		// event-blind while sends and turns kept working. EnsureWatching
+		// is an idempotent map check — arming when already armed costs
+		// nothing, and it must NOT be preceded by StopWatching in the
+		// no-transition case or every activity-driven status update
 		// would tear down a healthy connection.
 		if !hadPrior || prior != string(phaseActive) {
 			// Real transition (or first sighting): full cache reset +
@@ -115,15 +113,6 @@ func (h *ProxyHandler) onPhaseChange(workspace *v1.Workspace) {
 			// caches on activity-driven status updates).
 			h.state().InvalidateWorkspaceConfig(context.Background(), workspace.Name)
 		}
-		// #902: arm on EVERY Active event. Prior-phase state is
-		// Redis-backed and survives API restarts, so the post-restart
-		// seed used to skip arming entirely (prior already "Active"),
-		// and watches that later died (pod churn, idle drops) had no
-		// re-arm path — workspaces went silently event-blind while
-		// sends and turns kept working. EnsureWatching is an idempotent
-		// map check; it must NOT be preceded by StopWatching in the
-		// no-transition case or every status update would tear down a
-		// healthy connection.
 		if h.sseTracker != nil {
 			h.sseTracker.EnsureWatching(workspace.Name)
 		}
