@@ -104,4 +104,4 @@ None.
 - `api/internal/handlers/secrets.go` (SetPasswordProvider + fallback wiring)
 - `api/internal/app/app.go` (WithPasswordProvider on the shared pusher)
 - `api/internal/app/auto_push_metrics_test.go` (stubPasswordProviderAdapter)
-- `worklogs/NNNN_2026-08-15_agentd-endpoint-auth.md` (this file)
+- `worklogs/0775_2026-08-15_agentd-endpoint-auth.md` (this file)
