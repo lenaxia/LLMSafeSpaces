@@ -123,7 +123,9 @@ networked API cannot share fate, so we copy the property — **accept-then-
 process** — and pay its taxes explicitly:
 
 - **Server-side accept.** `POST /prompt` validates, dedupes, persists to
-  the existing Redis queue, acks. The client can no longer lose a message
+  opencode's V2 `delivery:"queue"` (durable SessionInput rows in
+  opencode's SQLite — per the G4 audit above; the Redis structure is a
+  shadow tracker, not the queue), acks. The client can no longer lose a message
   by dying mid-flight. The direct-send client path is retired entirely;
   **the server decides queue-vs-deliver, always** (the client-decides path
   reintroduces both the FIFO race documented at `ChatPage.tsx:985` and the

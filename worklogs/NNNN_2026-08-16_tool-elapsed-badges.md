@@ -72,3 +72,29 @@ streamed parts arrive via SSE, not history. Round 2:
   real ChatView; `transformHistory` threading tests (deleting the line
   fails); NaN-guard on unparseable strings. Red-without-fix verified on
   the SSE threading line.
+
+
+---
+
+## Round 3 (review on #896): e2e level + hygiene
+
+- Playwright e2e added (the `frontend-test` CI job's established
+  pattern, `history-rendering.spec.ts`): happy — running tool with
+  `state.startedAt` renders `[aria-label="elapsed time"]` with coarse
+  growing text; unhappy — payload without `startedAt` renders the tool,
+  no badge, no crash.
+- Template sections completed: Tests Run and Next Steps headings added
+  (were absent); Files Modified updated with the round-2 files
+  (ChatPage.tsx, ChatView.tsx, ChatView.test.tsx,
+  ChatPage.toolbadge.test.tsx, messages.test.ts).
+
+## Tests Run
+
+- `npx vitest run src/pages/ChatPage.toolbadge.test.tsx src/api/messages.test.ts src/components/chat/MessagePart.test.tsx src/components/chat/ChatView.test.tsx` — 113 passed
+- `npx playwright test tests/e2e/history-rendering.spec.ts` — 5 passed (2 new)
+- `npx tsc --noEmit` — clean
+
+## Next Steps
+
+- Land behind D4 (#895); post-deploy, the badge's honest "3h" readout is
+  the user-visible half of D6's escalation design.
