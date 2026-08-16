@@ -108,12 +108,24 @@ before a generation change).
 
 ### D3 — Durable prompts: mimic the TUI's *property*, not its mechanism
 
+> **G4 audit amendment (2026-08-16, #892):** the durable queue already
+> exists — `EnqueueMessage` routes to opencode V2 `delivery:"queue"`,
+> which persists SessionInput rows in opencode's SQLite (survive
+> generation changes by construction) and drains on `execution.wake`;
+> `wakeStrandedV2Sessions` recovers stranded inputs on reconnect. The
+> incident's losses were all on the V1 direct path chosen by the client.
+> D3 therefore reduces to: retire client-decides routing, let the API
+> decide queue-vs-direct from authoritative busy, add clientMessageID
+> idempotency and a per-session count cap. No new durability machinery.
+
 The TUI never loses a compose because compose and execute share fate. A
 networked API cannot share fate, so we copy the property — **accept-then-
 process** — and pay its taxes explicitly:
 
 - **Server-side accept.** `POST /prompt` validates, dedupes, persists to
-  the existing Redis queue, acks. The client can no longer lose a message
+  opencode's V2 `delivery:"queue"` (durable SessionInput rows in
+  opencode's SQLite — per the G4 audit above; the Redis structure is a
+  shadow tracker, not the queue), acks. The client can no longer lose a message
   by dying mid-flight. The direct-send client path is retired entirely;
   **the server decides queue-vs-deliver, always** (the client-decides path
   reintroduces both the FIFO race documented at `ChatPage.tsx:985` and the

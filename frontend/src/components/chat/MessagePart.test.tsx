@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { render } from "../../test/utils";
 import { MessagePart, closeOpenFence } from "./MessagePart";
@@ -564,5 +564,88 @@ describe("streaming fence + CodeBlock integration", () => {
     expect(pre).toBeInTheDocument();
     expect(pre?.textContent).toContain("def foo():");
     expect(mockHighlight).not.toHaveBeenCalled();
+  });
+});
+
+// Design 0050 D5: running tools with a known start time show a live
+// elapsed badge; an orphaned tool honestly shows hours — the visible
+// signal that state is stale.
+describe("MessagePart tool elapsed badge (#892 D5)", () => {
+  it("renders elapsed badge on a running tool with startedAt", () => {
+    const started = new Date(Date.now() - 42_000).toISOString();
+    render(
+      <MessagePart
+        part={{ type: "tool_use", name: "bash", toolState: "running", toolStartedAt: started, input: { command: "sleep 100" } }}
+        isUser={false}
+      />,
+    );
+    expect(screen.getByLabelText("elapsed time").textContent).toMatch(/^4[12]s$/);
+  });
+
+  it("formats minutes and hours coarsely", () => {
+    const started = new Date(Date.now() - 3 * 3600_000 - 5 * 60_000).toISOString();
+    render(
+      <MessagePart
+        part={{ type: "tool_use", name: "bash", toolState: "running", toolStartedAt: started, input: { command: "sleep 720" } }}
+        isUser={false}
+      />,
+    );
+    expect(screen.getByLabelText("elapsed time").textContent).toMatch(/^3h (4|5)m$/);
+  });
+
+  it("renders no badge on a completed tool", () => {
+    render(
+      <MessagePart
+        part={{ type: "tool_use", name: "bash", toolState: "completed", toolStartedAt: new Date().toISOString(), input: { command: "ls" } }}
+        isUser={false}
+      />,
+    );
+    expect(screen.queryByLabelText("elapsed time")).not.toBeInTheDocument();
+  });
+
+  it("renders no badge on a running tool without startedAt (older API)", () => {
+    render(
+      <MessagePart part={{ type: "tool_use", name: "bash", toolState: "running", input: { command: "ls" } }} isUser={false} />,
+    );
+    expect(screen.queryByLabelText("elapsed time")).not.toBeInTheDocument();
+  });
+});
+
+describe("MessagePart tool elapsed badge edge cases (#892 D5)", () => {
+  it("renders no badge when startedAt is an unparseable string (NaN guard)", () => {
+    render(
+      <MessagePart
+        part={{ type: "tool_use", name: "bash", toolState: "running", toolStartedAt: "not-a-timestamp", input: { command: "ls" } }}
+        isUser={false}
+      />,
+    );
+    expect(screen.queryByLabelText("elapsed time")).not.toBeInTheDocument();
+  });
+});
+
+describe("MessagePart tool elapsed badge tick growth (#892 D5)", () => {
+  it("advances as the clock ticks while the tool runs", async () => {
+    vi.useFakeTimers();
+    try {
+      const started = new Date(Date.now() - 1000).toISOString();
+      render(
+        <MessagePart
+          part={{ type: "tool_use", name: "bash", toolState: "running", toolStartedAt: started, input: { command: "sleep 100" } }}
+          isUser={false}
+        />,
+      );
+      const badge = screen.getByLabelText("elapsed time");
+      const first = badge.textContent;
+      expect(first).toMatch(/^[12]s$/);
+      // Advance 61s: the badge must honestly grow (fake timers drive
+      // useNow's 1s interval).
+      act(() => {
+        vi.advanceTimersByTime(61_000);
+      });
+      expect(badge.textContent).toMatch(/^1m (0|1|2)s$/);
+      expect(badge.textContent).not.toEqual(first);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

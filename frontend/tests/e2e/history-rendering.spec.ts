@@ -140,3 +140,72 @@ test.describe("History rendering with realistic wire data (#752 F1/F2)", () => {
     await expect(page.locator('[data-testid="message-model"]')).toHaveCount(0);
   });
 });
+
+// Design 0050 D5 (#892): elapsed-time badges on running tools. The
+// incident's motivating scenario — distinguishing a live-silent tool
+// ("42s") from dead state ("3h") at a glance. Contract shape carries
+// state.startedAt (ISO); the badge renders for running tools and is
+// absent for completed tools or payloads without the field.
+test("running tool with startedAt renders the elapsed-time badge (#892 D5)", async ({ page }) => {
+  const messages = [
+    {
+      id: "msg_user_1",
+      type: "user",
+      parts: [{ type: "text", text: "run the build" }],
+    },
+    {
+      id: "msg_asst_1",
+      type: "assistant",
+      parts: [
+        {
+          type: "tool",
+          tool: {
+            name: "bash",
+            input: { command: "make build" },
+            state: {
+              status: "running",
+              startedAt: new Date(Date.now() - 42_000).toISOString(),
+            },
+          },
+        },
+      ],
+    },
+  ];
+
+  await setupAPIMocks(page, messages);
+  await page.goto(`/chat/${WORKSPACE_ID}/${SESSION_ID}`);
+
+  // Coarse elapsed text (tolerant to render timing): 4xs.
+  await expect(page.locator('[aria-label="elapsed time"]')).toHaveText(/^4[0-9]s$/, { timeout: 10000 });
+});
+
+test("history without startedAt degrades to today's UI — no badge, no crash (#892 D5)", async ({ page }) => {
+  const messages = [
+    {
+      id: "msg_user_1",
+      type: "user",
+      parts: [{ type: "text", text: "run the build" }],
+    },
+    {
+      id: "msg_asst_1",
+      type: "assistant",
+      parts: [
+        {
+          type: "tool",
+          tool: {
+            name: "bash",
+            input: { command: "make build" },
+            state: { status: "running" },
+          },
+        },
+      ],
+    },
+  ];
+
+  await setupAPIMocks(page, messages);
+  await page.goto(`/chat/${WORKSPACE_ID}/${SESSION_ID}`);
+
+  // The tool still renders; no badge appears; nothing crashes.
+  await expect(page.getByText("bash").first()).toBeVisible({ timeout: 10000 });
+  await expect(page.locator('[aria-label="elapsed time"]')).toHaveCount(0);
+});

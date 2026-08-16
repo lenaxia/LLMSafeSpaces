@@ -33,7 +33,23 @@ import { QuestionPrompt } from "../components/chat/QuestionPrompt";
 import { PermissionPrompt } from "../components/chat/PermissionPrompt";
 import { useClearPendingUnread, useAddPendingQuestion, useAddPendingPermission, useRemovePendingAction, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, useIsSessionBusy, useWorkspaceInputSnapshot } from "../providers/SessionActivityProvider";
 
-type StreamPart = { type: "text" | "thinking" | "tool"; text: string; toolState?: string; toolCallID?: string; toolInput?: unknown; toolOutput?: string; messageID?: string };
+type StreamPart = { type: "text" | "thinking" | "tool"; text: string; toolState?: string; toolStartedAt?: string; toolCallID?: string; toolInput?: unknown; toolOutput?: string; messageID?: string };
+
+// parseToolStartedAt extracts a tool call's start time from an opencode
+// SSE tool-part state, handling both wire shapes (design 0050 D5):
+// — 1.18.10+ flat: state.time.start, epoch millis (number)
+// — ≤1.15.x nested: state.startedAt, ISO-8601 string
+// Normalized to ISO so consumers (the elapsed badge) can Date.parse it.
+// Returns undefined when absent — the badge degrades to absent.
+function parseToolStartedAt(state: Record<string, unknown> | undefined): string | undefined {
+  if (!state) return undefined;
+  const nested = state.startedAt;
+  if (typeof nested === "string" && nested) return nested;
+  const time = state.time as { start?: unknown } | undefined;
+  const start = time?.start;
+  if (typeof start === "number" && start > 0) return new Date(start).toISOString();
+  return undefined;
+}
 
 // Reconnect-mode activation window. Reconnect mode ("mounted into an
 // in-progress run") may only ARM within this long of the page mounting into
@@ -698,6 +714,7 @@ export function ChatPage() {
         const callID = (part.callID as string) || undefined;
         const toolInput = state?.input;
         const toolOutput = (state?.output as string) || undefined;
+        const toolStartedAt = parseToolStartedAt(state);
         setSseStreamParts((prev) => {
           // If this is an update to an existing tool call (same callID), update in place
           if (callID) {
@@ -717,11 +734,15 @@ export function ChatPage() {
                 toolInput,
                 toolOutput,
                 messageID: partMessageID ?? prev[existingIdx]!.messageID,
+                // The start time arrives on the first event for a call;
+                // later updates may omit it — preserve the original so
+                // the elapsed badge anchors to when the tool began.
+                toolStartedAt: toolStartedAt ?? prev[existingIdx]!.toolStartedAt,
               };
               return updated;
             }
           }
-          return [...prev, { type: "tool", text: displayText, toolState, toolCallID: callID, toolInput, toolOutput, messageID: partMessageID }];
+          return [...prev, { type: "tool", text: displayText, toolState, toolStartedAt, toolCallID: callID, toolInput, toolOutput, messageID: partMessageID }];
         });
         activePartTypeRef.current = null;
       }
