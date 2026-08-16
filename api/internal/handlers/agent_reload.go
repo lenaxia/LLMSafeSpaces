@@ -567,6 +567,11 @@ func (h *BulkReloadHandler) reloadOne(ctx context.Context, userID, workspaceID s
 	if err != nil {
 		return map[string]any{"workspaceId": workspaceID, "disposed": true, "warning": "state could not be updated"}
 	}
+	if tx == nil {
+		// Mock-store BeginTx returns (nil, nil); a real *sql.DB never
+		// does. State row handling already ran — nothing to commit.
+		return map[string]any{"workspaceId": workspaceID, "disposed": true, "drained": drain, "lastDisposedAt": disposedAt.Format(time.RFC3339)}
+	}
 	if err := tx.Commit(); err != nil {
 		return map[string]any{"workspaceId": workspaceID, "disposed": true, "warning": "state could not be updated"}
 	}

@@ -34,6 +34,13 @@ Close #848: unauthenticated in-pod access to control-plane surface on the agentd
 - **App tests fixed**: `TestWsAgentPusherAdapter_EmitsMetricOnEveryPush` / `TestSharedPusher_DoesNotEmitAutoPushMetric` construct `agentpush.New` with `stubPasswordProviderAdapter` (Push now requires a provider).
 - Duplicated `WithPasswordProvider` lines in `agentpush_test.go` deduplicated; `TestPush_SendsBasicAuth` uses `pw-7` consistently; dead `sawWS` field removed.
 
+### Review-round 6 additions
+
+- **Bulk dispatch covered**: `TestE2E_BulkReload_DispatchDrivesAgentd` drives `reloadOne` end-to-end through the `agentdPort` override — asserts the exact Basic header at the mock agentd, exactly one dispatch, and a genuine `disposed:true` NDJSON row (previously every bulk test short-circuited at the nil-getter branch).
+- **Second nil-tx guard** mirrored at the bulk `reloadOne` Commit site (the single-reload guard from round 5 covered only one of the two sites).
+- `TestAgentReload_AgentdUnreachable_Returns500` now wires a password getter so its name is true (exercises the real dispatch dial failure, not the getter short-circuit).
+- Stale in-test comment at the partial-failure subtest corrected.
+
 ### Review-round 3 additions
 
 - **Stale doc comment fixed** (`agent_reload.go`): "Authentication: none at the application layer" — contradicted by the gate 10 lines below; now describes the Basic-auth gate + NetPol layering.

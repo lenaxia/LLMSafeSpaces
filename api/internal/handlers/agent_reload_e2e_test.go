@@ -354,7 +354,11 @@ func TestE2E_BulkReload_NDJSON(t *testing.T) {
 		var summary map[string]interface{}
 		require.NoError(t, json.Unmarshal([]byte(lines[len(lines)-1]), &summary))
 		summaryData := summary["summary"].(map[string]interface{})
-		// ws-1: agent_unreachable (pod timeout), ws-2: phase_not_active
+		// No password getter wired: ws-1 fails at the getter (wiring
+		// error), ws-2 fails at phase_not_active — both count as failed.
+		// (The real dispatch failure path is exercised in
+		// TestE2E_BulkReload_DispatchDrivesAgentd and
+		// TestAgentReload_AgentdUnreachable_Returns500.)
 		assert.Equal(t, float64(2), summaryData["failed"])
 		assert.Equal(t, float64(0), summaryData["succeeded"])
 	})
@@ -477,4 +481,72 @@ func TestE2E_EnrichChatError_NoPendingCredentials(t *testing.T) {
 	assert.Equal(t, "sess-1", result["sessionID"])
 	assert.Nil(t, result["agentNeedsRefresh"])
 	assert.Nil(t, result["hint"])
+}
+
+// TestE2E_BulkReload_DispatchDrivesAgentd exercises reloadOne's full
+// dispatch path (auth → phase → pod → password → agentd) against a real
+// mock agentd via the agentdPort override, asserting the Basic credential
+// reaches the wire and the NDJSON row reports a genuine dispose (#848).
+// Every pre-existing bulk test short-circuited before the dispatch.
+func TestE2E_BulkReload_DispatchDrivesAgentd(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	var (
+		mu       sync.Mutex
+		gotAuth  string
+		gotCount int
+	)
+	agentdListener, listenErr := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, listenErr)
+	port := agentdListener.Addr().(*net.TCPAddr).Port
+	agentdSrv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotCount++
+		gotAuth = r.Header.Get("Authorization")
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"disposed":true}`))
+	}))
+	agentdSrv.Listener = agentdListener
+	agentdSrv.Start()
+	defer agentdSrv.Close()
+
+	wsSvc := &e2eWorkspaceSvc{workspaces: map[string]*types.Workspace{
+		"ws-1": {ID: "ws-1", UserID: "user-1", Phase: "Active"},
+	}}
+	agentDB := &e2eAgentStateStore{states: map[string]*agentState{
+		"ws-1": {changedAt: time.Now().Add(-time.Hour), pending: true},
+	}}
+	pods := &e2ePodResolver{ips: map[string]string{"ws-1": "127.0.0.1"}}
+	pendingLister := &e2ePendingLister{pending: []*types.WorkspaceMetadata{
+		{ID: "ws-1", UserID: "user-1"},
+	}}
+
+	handler := NewBulkReloadHandler(pendingLister, wsSvc, agentDB, pods,
+		agentdSrv.Client(), nil)
+	handler.agentdPort = port
+	handler.SetPasswordGetter(interfaces.PasswordFunc(func(_ context.Context, _ string) (string, error) {
+		return "bulk-pw", nil
+	}))
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) { c.Set("userID", "user-1"); c.Next() })
+	router.POST("/users/me/agents/reload", handler.BulkReload)
+
+	req := httptest.NewRequest(http.MethodPost, "/users/me/agents/reload", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "body=%s", rec.Body.String())
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, 1, gotCount, "the dispatch must reach the mock agentd exactly once")
+	expected := "Basic " + base64.StdEncoding.EncodeToString([]byte("opencode:bulk-pw"))
+	assert.Equal(t, expected, gotAuth, "bulk reload dispatch must carry the workspace Basic credential (#848)")
+
+	var row map[string]any
+	require.NoError(t, json.Unmarshal([]byte(strings.SplitN(rec.Body.String(), "\n", 2)[0]), &row))
+	assert.Equal(t, "ws-1", row["workspaceId"])
+	assert.Equal(t, true, row["disposed"], "row must report a genuine dispose, body=%s", rec.Body.String())
 }
