@@ -78,4 +78,4 @@ None.
 - `api/internal/handlers/agent_reload.go`
 - `api/internal/handlers/proxy_send_logging_test.go`
 - `api/internal/app/app.go`
-- `worklogs/NNNN_2026-08-15_agentd-endpoint-auth.md` (this file)
+- `worklogs/0768_2026-08-15_agentd-endpoint-auth.md` (this file)

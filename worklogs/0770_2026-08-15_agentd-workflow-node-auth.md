@@ -83,4 +83,8 @@ None.
 - `api/internal/workflows/engine.go`
 - `api/internal/workflows/engine_test.go`
 - `api/internal/app/app.go`
-- `worklogs/NNNN_2026-08-15_agentd-workflow-node-auth.md` (this file)
+<<<<<<<< Updated upstream:worklogs/0770_2026-08-15_agentd-workflow-node-auth.md
+- `worklogs/0770_2026-08-15_agentd-workflow-node-auth.md` (this file)
+========
+- `worklogs/0769_2026-08-15_agentd-workflow-node-auth.md` (this file)
+>>>>>>>> Stashed changes:worklogs/0769_2026-08-15_agentd-workflow-node-auth.md

@@ -68,4 +68,8 @@ None.
 - `cmd/workspace-agentd/pre_boot_relay_test.go`
 - `cmd/workspace-agentd/secrets.go`
 - `cmd/workspace-agentd/main.go`
-- `worklogs/NNNN_2026-08-15_agentd-mcp-proxy-auth.md` (this file)
+<<<<<<<< Updated upstream:worklogs/0769_2026-08-15_agentd-mcp-proxy-auth.md
+- `worklogs/0769_2026-08-15_agentd-mcp-proxy-auth.md` (this file)
+========
+- `worklogs/0768_2026-08-15_agentd-mcp-proxy-auth.md` (this file)
+>>>>>>>> Stashed changes:worklogs/0768_2026-08-15_agentd-mcp-proxy-auth.md
