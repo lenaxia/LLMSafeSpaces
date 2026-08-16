@@ -75,3 +75,25 @@ None. G7 stress harness will exercise the probe budgets under a real CPU storm b
 - cmd/workspace-agentd/readyz_d4_test.go (new)
 - controller/internal/workspace/pod_builder.go
 - controller/internal/workspace/pod_builder_test.go
+
+---
+
+## Round 2 corrections (review on #895)
+
+- **Ship-blocker fixed:** `opencodeTCPReady()` dialed `getAgentAddr()` —
+  a URL (`http://localhost:4096`) — as a raw TCP address; `net.Dial` on
+  that form fails unconditionally ("too many colons"), so readyz would
+  have 503'd forever and the 180s startup probe would kill every
+  workspace container in a loop. The checker is now parametrized on a
+  host:port addr; production wires `127.0.0.1:<AgentPort>` (mirroring
+  watchdog_vitals.go). Regression: production-form dial against a live
+  listener returns true while the global agent addr holds the URL form
+  (and the URL-form dial is asserted to fail as a sanity on the bug
+  class).
+- **Admin-server wiring test added:** requireBearerToken + readyz +
+  opencodeTCPReady composed as production registers them — 401 on
+  missing/bad token, 200 + Ready against a never-accepting (starved)
+  listener.
+- **Design 0050 amended:** startup budget ×36/180 s (shipped) vs the
+  draft's ×30/150 s — deviation recorded in the doc per review.
+- gofmt clean.

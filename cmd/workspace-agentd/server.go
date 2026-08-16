@@ -173,9 +173,17 @@ func buildReadyzHandler(deps serverDeps, readyChecker func() bool) http.Handler 
 // (refused) from alive-but-slow (accepted) without involving either
 // event loop. Timeout is generous because nothing normal bounds it —
 // localhost handshakes complete in microseconds.
-func opencodeTCPReady() func() bool {
+//
+// addr is a raw host:port — production wires
+// fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort), NOT getAgentAddr():
+// the agent addr is a URL (http://localhost:4096) and net.Dial("tcp",
+// "http://...") fails on address form regardless of listeners (review
+// round 1 on #895: the URL-form dial made readyz 503 forever — a
+// deterministic startup-probe kill loop). Parametrized so the production
+// form is testable against an arbitrary listener.
+func opencodeTCPReady(addr string) func() bool {
 	return func() bool {
-		conn, err := net.DialTimeout("tcp", getAgentAddr(), 2*time.Second)
+		conn, err := net.DialTimeout("tcp", addr, 2*time.Second) //nolint:noctx // liveness probe, not a request
 		if err != nil {
 			return false
 		}
@@ -233,7 +241,7 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 
 	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt, agentd.ReloadSecretsCachePath))
 	adminMux.Handle("/v1/readyz", requireBearerToken(adminToken,
-		buildReadyzHandler(deps, opencodeTCPReady())))
+		buildReadyzHandler(deps, opencodeTCPReady(fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort)))))
 
 	// /v1/statusz is the EXPENSIVE deep-introspection endpoint. It makes
 	// multiple synchronous HTTP calls to opencode (IsHealthy,
