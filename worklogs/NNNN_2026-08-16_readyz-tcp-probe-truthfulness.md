@@ -97,3 +97,34 @@ None. G7 stress harness will exercise the probe budgets under a real CPU storm b
 - **Design 0050 amended:** startup budget ×36/180 s (shipped) vs the
   draft's ×30/150 s — deviation recorded in the doc per review.
 - gofmt clean.
+
+
+---
+
+## Round 3 corrections (review rounds 3–4 on #895)
+
+- **Round-2 worklog falsely claimed gofmt clean twice** — the branch
+  carried a `make fmt-check` violation (pod_builder_test.go string-concat
+  spacing) through four rounds. Corrected; `make fmt-check` now passes.
+- **"Starvation-immune by construction" was overclaimed:** `lastKnown()`
+  originally took `providerCache.mu` — the same mutex `cachedState`
+  holds across three synchronous opencode HTTP calls on TTL expiry (up
+  to ~15s under the exact starvation this PR targets, with the
+  controller's deep-status poll hitting statusz every ~60s). readyz could
+  block past the 5s readiness / 3s startup timeouts behind a concurrent
+  statusz fetch. Fix: `providerReadySnapshot` behind an
+  `atomic.Pointer` (mirroring healthzCache), written under mu on every
+  cache update, read lock-free by lastKnown. Regression:
+  `TestProviderCache_LastKnownNeverBlocksOnCacheMu` holds mu in another
+  goroutine and asserts lastKnown answers (deadlocks pre-fix).
+- **Healthy-decoupling pinned:** `TestReadyz_HealthyDecoupledFromChecker`
+  asserts 200 with Initialized=true, Healthy=false, checker=true — a
+  regression to `Initialized && Healthy && checker()` passed every prior
+  test and would reintroduce starvation flap through the back door.
+- **Probe timeouts pinned exactly** (startup 3s, liveness 10s + period
+  10s + threshold 8): the incident's literal failure mode was a probe
+  timeout; floors alone were satisfied by the old values.
+- Stale managed_process.go healthCheckURL comment updated to D4
+  semantics; the no-fetch test's mechanism comment corrected (raw
+  http.Get has no client timeout — the go-test binary deadline is the
+  backstop).

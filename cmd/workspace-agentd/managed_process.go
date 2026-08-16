@@ -105,8 +105,10 @@ const maxBackoffSec = 30
 // healthCheckURL targets agentd's own /v1/readyz on the admin port,
 // NOT opencode's :4096 (which serves the SPA and requires HTTP basic
 // auth on every endpoint — so the previous :4096 URL always failed).
-// agentd's readyz reflects opencode liveness (it polls opencode's
-// /global/health behind a cache). When AGENTD_ADMIN_TOKEN is set the
+// agentd's readyz reports agentd liveness plus a kernel-level TCP check
+// on opencode's port (design 0050 D4) — never opencode responsiveness,
+// so a CPU-starved-but-alive opencode does not fail this probe. When
+// AGENTD_ADMIN_TOKEN is set the
 // endpoint is Bearer-gated (server.go requireBearerToken); the probe
 // attaches the token from the same env var.
 //

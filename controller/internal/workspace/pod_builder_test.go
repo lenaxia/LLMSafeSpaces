@@ -127,10 +127,10 @@ func TestPodBuilder_ReadinessProbe_TightTiming(t *testing.T) {
 		"InitialDelaySeconds must be 2s — kubelet should start probing quickly so "+
 			"a cold-started agent transitions to Ready within one poll period")
 	assert.Equal(t, int32(5), probe.PeriodSeconds,
-		"PeriodSeconds must be 5s — cheap kernel-level readyz makes cadence " +
+		"PeriodSeconds must be 5s — cheap kernel-level readyz makes cadence "+
 			"irrelevant to load; 5s halves probe traffic vs the old 2s")
 	assert.Equal(t, int32(5), probe.TimeoutSeconds,
-		"TimeoutSeconds must be 5s — generous for a throttled agentd answering " +
+		"TimeoutSeconds must be 5s — generous for a throttled agentd answering "+
 			"a lock-free handler; timeout must never fire on slowness")
 	assert.Equal(t, int32(12), probe.FailureThreshold,
 		"FailureThreshold must be 12 — 60s total budget at 5s period")
@@ -160,6 +160,8 @@ func TestPodBuilder_StartupProbe_FastDetection(t *testing.T) {
 		"startup probe path must match readiness — same gate, faster cadence")
 	assert.Equal(t, int32(5), probe.PeriodSeconds,
 		"PeriodSeconds=5 — readyz is cheap; cadence only affects detection latency")
+	assert.Equal(t, int32(3), probe.TimeoutSeconds,
+		"startup TimeoutSeconds must be 3s — pinned: the startup probe is the only one that can kill during boot, and an unpinned timeout regression would pass the suite")
 	assert.GreaterOrEqual(t, probe.FailureThreshold*probe.PeriodSeconds, int32(180),
 		"startup budget must be >=180s to cover opencode boot-to-listen under a "+
 			"saturated 2-CPU quota (incident 2026-08-15/16 exceeded the old 120s)")
@@ -256,11 +258,14 @@ func TestPodBuilder_LivenessProbe_StableTiming(t *testing.T) {
 	require.NotNil(t, probe)
 	require.NotNil(t, probe.HTTPGet)
 	assert.Equal(t, "/v1/healthz", probe.HTTPGet.Path)
-	// Period and threshold are deliberately gentle — liveness failures
-	// kill the pod, so we want lots of slack against transient network
-	// or overload conditions.
-	assert.GreaterOrEqual(t, probe.PeriodSeconds, int32(10))
-	assert.GreaterOrEqual(t, probe.FailureThreshold, int32(3))
+	// Design 0050 D4 (#895): the incident's literal failure mode was a
+	// probe timeout on a healthy-but-throttled pod. Pin the shipped
+	// values exactly — floors alone are satisfied by the OLD (30/5/6)
+	// values, so a timeout regression would pass silently.
+	assert.Equal(t, int32(10), probe.PeriodSeconds, "liveness period: 10s")
+	assert.Equal(t, int32(10), probe.TimeoutSeconds,
+		"liveness timeout must be 10s — generous for a throttled agentd answering the lock-free healthz; a timeout here is a kill")
+	assert.Equal(t, int32(8), probe.FailureThreshold, "8×10s ≈ 80s grace before a real liveness kill")
 }
 
 // TestPodBuilder_TerminationGracePeriod_Tight verifies the pod's
