@@ -83,4 +83,4 @@ None.
 - `api/internal/workflows/engine.go`
 - `api/internal/workflows/engine_test.go`
 - `api/internal/app/app.go`
-- `worklogs/NNNN_2026-08-15_agentd-workflow-node-auth.md` (this file)
+- `worklogs/0768_2026-08-15_agentd-workflow-node-auth.md` (this file)
