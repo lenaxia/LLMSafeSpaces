@@ -550,10 +550,16 @@ func (c *HTTPClient) CreateCredential(ctx context.Context, req CreateCredentialR
 }
 
 func (c *HTTPClient) ListCredentials(ctx context.Context) ([]CredentialResp, error) {
-	var all []CredentialResp
-	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/secrets", nil, &all); err != nil {
+	// The API wraps the list: {"secrets": [...]} (SecretsHandler.
+	// ListSecrets). Decoding a bare array failed on every call once the
+	// wrapper landed — surfaced by the MCP canary (#880).
+	var resp struct {
+		Secrets []CredentialResp `json:"secrets"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/api/v1/secrets", nil, &resp); err != nil {
 		return nil, err
 	}
+	all := resp.Secrets
 	// Filter to llm-provider type.
 	var filtered []CredentialResp
 	for _, cr := range all {

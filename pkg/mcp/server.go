@@ -57,7 +57,10 @@ type handlers struct {
 var workspaceCreateTool = mcp.NewTool("workspace_create",
 	mcp.WithDescription("Create a new workspace with a persistent development environment"),
 	mcp.WithString("runtime", mcp.Required(), mcp.Description("Runtime (python:3.10, nodejs:18, go:1.21)")),
-	mcp.WithString("name", mcp.Description("Optional workspace name")),
+	// Required: the API's CreateWorkspace validation rejects empty names
+	// (422 "workspace name is required") — the schema previously called
+	// this optional, so omitting it produced a guaranteed 422 (#880).
+	mcp.WithString("name", mcp.Required(), mcp.Description("Workspace name")),
 )
 
 var workspaceActivateTool = mcp.NewTool("workspace_activate",
