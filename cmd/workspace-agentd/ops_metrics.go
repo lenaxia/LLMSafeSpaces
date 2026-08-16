@@ -16,11 +16,23 @@ import (
 // chart ships a PodMonitor that scrapes this endpoint on every workspace
 // pod — see helm/templates/podmonitor-agentd.yaml.
 type opsMetrics struct {
-	restartsTotal     *prometheus.CounterVec
-	trackerBusyResets *prometheus.CounterVec
-	memoryBytes       *prometheus.GaugeVec
-	activeSessions    *prometheus.GaugeVec
-	contextTokens     *prometheus.GaugeVec
+	restartsTotal  *prometheus.CounterVec
+	memoryBytes    *prometheus.GaugeVec
+	activeSessions *prometheus.GaugeVec
+	contextTokens  *prometheus.GaugeVec
+	// watchdogSuppressions counts would-fire moments the health-watchdog
+	// withheld because vitals corroboration (watchdog_vitals.go) showed a
+	// non-lethal state: starved (CPU advancing), flat (blocked on
+	// upstream I/O), respawn (crash recovery owns it), or unknown (probe
+	// degraded — killing without evidence is banned, #892). Sustained
+	// growth on a workspace is an operator signal (CPU quota vs load,
+	// probe breakage), not an opencode problem.
+	watchdogSuppressions *prometheus.CounterVec
+	// markerWriteFailures counts failed restart-reason marker writes. The
+	// 2026-08-15 incident had 9 attempted marker writes land 0 (only
+	// visible in container stdout); this counter makes that loss visible
+	// on /metrics.
+	markerWriteFailures *prometheus.CounterVec
 }
 
 // pkgOpsMetrics is the package-level singleton. Tests create their own
@@ -34,11 +46,6 @@ func newOpsMetrics() *opsMetrics {
 			Name: "workspace_restarts_total",
 			Help: "Total opencode restarts by reason (env_secrets, api_key, crash, oom, user_requested, health_watchdog)",
 		}, []string{"workspace_id", "reason"}),
-
-		trackerBusyResets: promauto.NewCounterVec(prometheus.CounterOpts{
-			Name: "workspace_tracker_busy_resets_total",
-			Help: "Orphaned busy flags cleared at opencode generation change (design 0050 D2); increments by the number of sessions healed per reset",
-		}, []string{"workspace_id"}),
 
 		memoryBytes: promauto.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "workspace_memory_bytes",
@@ -54,7 +61,41 @@ func newOpsMetrics() *opsMetrics {
 			Name: "workspace_context_tokens",
 			Help: "Sum of context tokens (input + cache) across all tracked sessions",
 		}, []string{"workspace_id"}),
+
+		watchdogSuppressions: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "workspace_watchdog_suppressions_total",
+			Help: "Health-watchdog restarts suppressed by vitals corroboration, by reason (starved, flat, respawn, unknown) — #892/design 0050 D1",
+		}, []string{"workspace_id", "reason"}),
+
+		markerWriteFailures: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "workspace_restart_marker_write_failures_total",
+			Help: "Failed restart-reason marker writes by restart reason (observability: the marker is the persistent incident record)",
+		}, []string{"workspace_id", "reason"}),
 	}
+}
+
+// RecordWatchdogSuppression increments the suppression counter for the
+// workspace with the verdict's reason label. See
+// opsMetrics.watchdogSuppressions.
+func (m *opsMetrics) RecordWatchdogSuppression(workspaceID, reason string) {
+	if workspaceID == "" {
+		workspaceID = "unknown"
+	}
+	if reason == "" {
+		reason = "unknown"
+	}
+	m.watchdogSuppressions.WithLabelValues(workspaceID, reason).Inc()
+}
+
+// RecordMarkerWriteFailure counts a failed restart-reason marker write.
+func (m *opsMetrics) RecordMarkerWriteFailure(workspaceID, reason string) {
+	if workspaceID == "" {
+		workspaceID = "unknown"
+	}
+	if reason == "" {
+		reason = "unknown"
+	}
+	m.markerWriteFailures.WithLabelValues(workspaceID, reason).Inc()
 }
 
 // RecordRestart increments the restart counter for the given reason.
@@ -64,15 +105,6 @@ func (m *opsMetrics) RecordRestart(workspaceID, reason string) {
 		workspaceID = "unknown"
 	}
 	m.restartsTotal.WithLabelValues(workspaceID, reason).Inc()
-}
-
-// RecordTrackerBusyReset adds n healed sessions to the busy-reset
-// counter (design 0050 D2 observability).
-func (m *opsMetrics) RecordTrackerBusyReset(workspaceID string, n int) {
-	if workspaceID == "" {
-		workspaceID = "unknown"
-	}
-	m.trackerBusyResets.WithLabelValues(workspaceID).Add(float64(n))
 }
 
 // SetMemoryUsage sets the current memory usage gauge.

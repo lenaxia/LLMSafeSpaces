@@ -56,6 +56,15 @@ var log *zap.Logger
 // purpose: "is this agentd binary alive and serving HTTP?".
 var buildVersion = version.Version
 
+// buildCommit and buildTime carry the rest of the build identity
+// (pkg/version). A bare Version string cannot distinguish a release tag
+// from a devel hash build stamped with the same VERSION arg — incident
+// 2026-08-15, where identifying the deployed code required binary
+// disassembly. Resolved via accessor funcs (not direct var reads) so the
+// buildinfo fallback in pkg/version runs.
+var buildCommit = func() string { return version.Commit() }()
+var buildTime = version.BuildTime
+
 func main() {
 	log = newLogger()
 	defer func() { _ = log.Sync() }()
