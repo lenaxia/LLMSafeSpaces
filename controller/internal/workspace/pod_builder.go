@@ -103,23 +103,19 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 					}(),
 				},
 			},
-			// Tight cadence (2026-06-23 perf audit, item #3). The startup
-			// probe below handles boot-time tightening; this readiness
-			// probe runs at steady-state and after startup completes.
-			// Period=2s means a Ready transition happens at most 2s after
-			// the agent's first /v1/readyz=200. Total ready budget is
-			// FailureThreshold * Period = 60s, generous against transient
-			// network issues.
-			InitialDelaySeconds: 2, PeriodSeconds: 2, TimeoutSeconds: 2, FailureThreshold: 30,
+			// Design 0050 D4 (#892): probes detect death, never slowness.
+			// readyz is now a kernel-level TCP-listener answer plus agentd
+			// liveness — microseconds under any load — so this cadence is
+			// safe even during CPU starvation (the 2026-08-15/16 incident
+			// had readyz timing out on synchronous opencode HTTP and
+			// dropping healthy pods). Budget 60s.
+			InitialDelaySeconds: 2, PeriodSeconds: 5, TimeoutSeconds: 5, FailureThreshold: 12,
 		},
-		// StartupProbe (2026-06-23 perf audit, item #4). When set,
-		// kubelet pauses readiness/liveness probes until startup
-		// succeeds (one HTTP 200 response from /v1/readyz). This lets
-		// us probe at 1s during boot without paying the cost on every
-		// steady-state liveness check. FailureThreshold=120 gives a
-		// 2-minute boot budget, comfortably covering the relay-injector
-		// restart cycle (~30s today, ~5s once item #1a lands) plus all
-		// other init work.
+		// StartupProbe (design 0050 D4): with readyz now cheap and
+		// starvation-immune, this only needs to cover boot-to-listen of
+		// opencode under a saturated 2-CPU quota (observed exceeding the
+		// old 120s budget mid-churn, causing kubelet container kills).
+		// period 5s × threshold 36 = 3-minute budget.
 		StartupProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
@@ -135,7 +131,7 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 					}(),
 				},
 			},
-			InitialDelaySeconds: 1, PeriodSeconds: 1, TimeoutSeconds: 2, FailureThreshold: 120,
+			InitialDelaySeconds: 2, PeriodSeconds: 5, TimeoutSeconds: 3, FailureThreshold: 36,
 		},
 		LivenessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
@@ -144,7 +140,10 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 					Port: intstr.FromInt(agentd.AgentdAdminPort),
 				},
 			},
-			InitialDelaySeconds: 15, PeriodSeconds: 30, TimeoutSeconds: 5, FailureThreshold: 6,
+			// healthz is process-only and lock-free (US-22.1) — safe under
+			// starvation. Timeout 10s accommodates a throttled agentd;
+			// threshold 8 × period 10s ≈ 80s grace before a real kill.
+			InitialDelaySeconds: 15, PeriodSeconds: 10, TimeoutSeconds: 10, FailureThreshold: 8,
 		},
 		SecurityContext: &corev1.SecurityContext{
 			ReadOnlyRootFilesystem:   &trueVal,

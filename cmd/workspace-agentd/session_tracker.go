@@ -423,6 +423,16 @@ func fillGaps(ctx context.Context, client *OpenCodeClient, tracker *sessionStatu
 
 const connectedCacheTTL = 15 * time.Second
 
+// lastKnown returns the provider cache's most recent connected/configured
+// values without ever fetching. Used by /v1/readyz (design 0050 D4):
+// readiness must be answerable in microseconds under any load, so it
+// reports stale-but-labelled data instead of blocking on opencode.
+func (c *providerCache) lastKnown() (connected []string, configured int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.connected, c.configured
+}
+
 func cachedState(ctx context.Context, client *OpenCodeClient, cache *providerCache, tracker *sessionStatusTracker) ([]string, int, []agentd.SessionInfo) {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
