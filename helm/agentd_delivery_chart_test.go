@@ -180,18 +180,46 @@ func TestAgentdDelivery_PinsRBACGrantRenders(t *testing.T) {
   freeModelsRefresher:
     enabled: false
 `)
-	found := false
+	type rule struct {
+		Verbs         []string `json:"verbs"`
+		Resources     []string `json:"resources"`
+		ResourceNames []string `json:"resourceNames,omitempty"`
+	}
+	var scoped, createRule bool
 	for _, doc := range docs {
 		if doc["kind"] != "Role" {
 			continue
 		}
 		raw, err := yaml.Marshal(doc)
 		require.NoError(t, err)
-		if strings.Contains(string(raw), "llmsafespaces-agentd-pins") {
-			found = true
+		if !strings.Contains(string(raw), "llmsafespaces-agentd-pins") {
+			continue
+		}
+		var role struct {
+			Rules []rule `json:"rules"`
+		}
+		require.NoError(t, yaml.Unmarshal(raw, &role))
+		for _, r := range role.Rules {
+			hasCM := false
+			for _, res := range r.Resources {
+				if res == "configmaps" {
+					hasCM = true
+				}
+			}
+			if !hasCM {
+				continue
+			}
+			if len(r.ResourceNames) == 1 && r.ResourceNames[0] == "llmsafespaces-agentd-pins" &&
+				len(r.Verbs) == 2 && r.Verbs[0] == "get" && r.Verbs[1] == "update" {
+				scoped = true
+			}
+			if len(r.ResourceNames) == 0 && len(r.Verbs) == 1 && r.Verbs[0] == "create" {
+				createRule = true // create cannot be resourceNames-scoped (object does not pre-exist)
+			}
 		}
 	}
-	require.True(t, found, "agentd-pins resourceNames grant must render with agentdDelivery enabled and relay/free-models disabled")
+	require.True(t, scoped, "exact scoped rule required: get+update on configmaps resourceNames=[llmsafespaces-agentd-pins]")
+	require.True(t, createRule, "separate unscoped create rule required (create cannot be resourceNames-scoped)")
 }
 
 func TestAgentdDelivery_PinsRBACGrantAbsentByDefault(t *testing.T) {

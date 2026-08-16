@@ -347,6 +347,7 @@ func TestAgentdValidateConfig(t *testing.T) {
 		{"image only (renovate form)", testAgentdImage, "", "", ""},
 		{"hashes only", "", testAgentdSHAAMD64, testAgentdSHAARM64, "image"},
 		{"partial hash override", testAgentdImage, testAgentdSHAAMD64, "", "BOTH"},
+		{"partial hash override (mirrored)", testAgentdImage, "", testAgentdSHAARM64, "BOTH"},
 		{"short hash", testAgentdImage, "abc", testAgentdSHAARM64, "64 hex"},
 		{"non-hex hash", testAgentdImage, strings.Repeat("z", 64), testAgentdSHAARM64, "64 hex"},
 		{"tag not digest", "ghcr.io/x/agentd:v1", testAgentdSHAAMD64, testAgentdSHAARM64, "@sha256:"},

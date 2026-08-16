@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -175,7 +176,11 @@ func main() {
 		pins, err := workspace.ResolvePinsWithCache(pinCtx, agentdImage, agentdBinarySHA256AMD64, agentdBinarySHA256ARM64)
 		pinCancel()
 		if err != nil {
-			setupLog.Error(err, "agentd delivery: unable to resolve binary pins from image index (annotations missing, registry unreachable, or no cache) — pin hashes manually via --agentd-binary-sha256-* to override")
+			if errors.Is(err, workspace.ErrAgentdPinsUnavailable) {
+				setupLog.Error(err, "agentd delivery: registry unreachable and no usable pin cache — either restore registry access or pin hashes manually via --agentd-binary-sha256-amd64/-arm64 (both)")
+			} else {
+				setupLog.Error(err, "agentd delivery: unable to resolve binary pins from image index (annotations missing or malformed) — the image is not agentd-delivery compatible, or pin hashes manually to override")
+			}
 			os.Exit(1)
 		}
 		agentdBinarySHA256AMD64 = pins.SHA256AMD64

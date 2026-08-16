@@ -104,13 +104,29 @@ read (go-containerregistry), with:
 
 ## Review round 2 addendum
 
-- ResolvePinsWithCache made injectable (resolvePinsFromCluster) and
-  actually tested (the round-1 response claimed tests that did not
-  exist — a real miss, now corrected).
-- Cache identity compares DIGESTS, not full refs (re-tagging the same
-  digest no longer invalidates a valid cache during an outage).
+- ResolvePinsWithCache made injectable (resolvePinsFromCluster).
+- Cache identity compares DIGESTS, not full refs.
 - docs "three values" rollout line corrected; CI-printed image line is
-  digest-only (the :dev@ hardcode referenced a tag that only exists on
-  default-branch events).
-- annotationVersion constant now used by the CI guard test (was a
-  literal).
+  digest-only.
+- annotationVersion constant now used by the CI guard test.
+
+## Review round 3 addendum (mutation findings)
+
+Round 2's test claims were partially FALSE — the reviewer's mutations
+proved the image-only cluster path, the ns fallback, and the sameDigest
+re-tag scenario were NOT covered despite claims. Corrected:
+
+- The misleading fake-client near-duplicate test DELETED (renamed
+  honestly: TestResolvePinsFromCluster_ConfigErrorSurfaces covers
+  ordering only). The cluster path is now covered by
+  agentd_pins_envtest_test.go (build tag envtest; drives the real
+  ResolvePinsWithCache against a real API server; POD_NAMESPACE
+  fallback proven by cache landing in the set namespace).
+- sameDigest: table test + re-tag-during-outage resolver test,
+  mutation-verified red/green locally before claiming.
+- Mirrored one-sided Go validation row added.
+- RBAC chart test pins exact verbs, resourceNames scoping, and the
+  separate unscoped create rule — not just the ConfigMap name.
+- errFetchUnavailable → exported ErrAgentdPinsUnavailable with a real
+  errors.Is consumer in main.go (targeted manual-pin hint on outage vs
+  broken-image messaging); import hack removed.

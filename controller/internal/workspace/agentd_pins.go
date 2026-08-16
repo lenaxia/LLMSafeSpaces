@@ -59,7 +59,13 @@ const (
 	AgentdPinsConfigMapName = "llmsafespaces-agentd-pins"
 )
 
-var errFetchUnavailable = errors.New("registry fetch unavailable")
+// ErrAgentdPinsUnavailable wraps every resolution failure where the
+// registry was unreachable AND no usable cache existed. Callers can
+// errors.Is this to offer the manual-pin hint.
+var ErrAgentdPinsUnavailable = errors.New("agentd pins unavailable (registry unreachable and no usable cache)")
+
+// errFetchUnavailable is the internal alias kept for test brevity.
+var errFetchUnavailable = ErrAgentdPinsUnavailable
 
 // ociAnnotations abstracts the annotation map of a fetched index so the
 // fetch step is fakeable in tests.
@@ -199,8 +205,17 @@ func ResolvePinsWithCache(ctx context.Context, image, flagAMD64, flagARM64 strin
 		}
 		return AgentdBinaryPins{SHA256AMD64: flagAMD64, SHA256ARM64: flagARM64}, nil
 	}
-	return resolvePinsFromCluster(ctx, ctrlconfig.GetConfig, os.Getenv("POD_NAMESPACE"), fetchIndexAnnotations, image)
+	// loadConfigForTest is substituted by envtest to route the cluster
+	// path at the test API server (see agentd_pins_envtest_test.go).
+	return resolvePinsFromCluster(ctx, loadConfig, os.Getenv("POD_NAMESPACE"), prodFetchIndexAnnotations, image)
 }
+
+// loadConfig loads the ambient kubeconfig; envtest swaps it.
+var loadConfig = ctrlconfig.GetConfig
+
+// prodFetchIndexAnnotations is the production registry fetcher; envtest
+// swaps it so the cluster path runs without network access.
+var prodFetchIndexAnnotations = fetchIndexAnnotations
 
 // resolvePinsFromCluster is the injectable core of ResolvePinsWithCache
 // (tests substitute the config loader and fetcher). A nil namespace

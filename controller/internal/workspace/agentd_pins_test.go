@@ -33,8 +33,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	rest "k8s.io/client-go/rest"
-
-	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 )
 
 const (
@@ -171,8 +169,6 @@ func TestValidateAgentdDeliveryConfig_ImageOnlyIsValid(t *testing.T) {
 	require.Error(t, validateAgentdDeliveryConfig(pinImage, pinAMD64, ""))
 }
 
-var _ = v1.WorkspaceConditionAgentdVerified // keep import aligned with package
-
 // --- ResolvePinsWithCache: the production boot path -----------------------
 
 func TestResolvePinsWithCache_FullFlagsShortCircuit(t *testing.T) {
@@ -190,30 +186,57 @@ func TestResolvePinsWithCache_FullFlagsInvalidHexRejected(t *testing.T) {
 	require.Error(t, err, "validation upstream notwithstanding, the short-circuit must not return garbage verbatim")
 }
 
-func TestResolvePinsWithCache_ImageOnlyResolvesViaCluster(t *testing.T) {
-	// Image-only (the Renovate form): resolves through the injectable
-	// cluster path — fake kubeconfig via envtest-style skip when no
-	// cluster is available in unit context; the injected fetcher proves
-	// the resolution wiring, cache write included.
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	c := fake.NewClientBuilder().WithScheme(scheme).Build()
-	res := &cachedPinResolver{Client: c, Namespace: "llmsafespaces", fetch: fakeIndexFetcher(goodAnnotations(), nil)}
-	pins, err := res.Resolve(context.Background(), pinImage)
-	require.NoError(t, err)
-	require.Equal(t, pinAMD64, pins.SHA256AMD64)
-	require.Equal(t, pinARM64, pins.SHA256ARM64)
-}
+// The image-only CLUSTER path (ResolvePinsWithCache → resolver → cache
+// write → ns fallback) is covered by agentd_pins_envtest_test.go — a
+// prior fake-client test here duplicated ExtractsAnnotations without
+// exercising the entrypoint (mutation-proven in review round 3).
 
-func TestResolvePinsFromCluster_NamespaceFallback(t *testing.T) {
-	// Empty POD_NAMESPACE falls back to the release default namespace
-	// for the cache lookup; proven by the resolver the injector builds
-	// (unit-level: assert the fallback logic via resolvePinsFromCluster
-	// with a loadConfig that fails — the error must be about kubeconfig,
-	// not namespace, proving ordering; the ns itself is exercised via
-	// the cachedPinResolver tests' Namespace field).
+func TestResolvePinsFromCluster_ConfigErrorSurfaces(t *testing.T) {
+	// Ordering proof only (config errors before any namespace use).
+	// The namespace fallback itself is envtest-covered
+	// (agentd_pins_envtest_test.go) — a unit test here cannot prove it.
 	_, err := resolvePinsFromCluster(context.Background(),
 		func() (*rest.Config, error) { return nil, errors.New("no kubeconfig") },
 		"", fakeIndexFetcher(goodAnnotations(), nil), pinImage)
 	require.ErrorContains(t, err, "kubeconfig")
+}
+
+// --- sameDigest: digest identity, not ref identity ------------------------
+
+func TestSameDigest(t *testing.T) {
+	d1 := "sha256:" + strings.Repeat("1", 64)
+	d2 := "sha256:" + strings.Repeat("2", 64)
+	require.True(t, sameDigest("ghcr.io/x/a:dev@"+d1, "ghcr.io/x/a:v1.2.0@"+d1),
+		"re-tagging the same digest is the same content")
+	require.False(t, sameDigest("ghcr.io/x/a:dev@"+d1, "ghcr.io/x/a:dev@"+d2))
+	require.False(t, sameDigest("ghcr.io/x/a:dev@"+d1, "ghcr.io/x/a:dev"),
+		"a ref without a digest never matches")
+	require.False(t, sameDigest("ghcr.io/x/a:dev", "ghcr.io/x/a:dev"))
+}
+
+// TestCachedPinResolver_RetaggedSameDigestServesDuringOutage is the
+// motivating scenario for digest-keyed caching: the cache was written
+// for :dev@X, the live ref is :v1.2.0@X (same digest, new tag — the
+// post-Renovate-bump shape), the registry is unreachable. The cache
+// must serve. Mutation-proof: reverting sameDigest to full-ref equality
+// makes this fail.
+func TestCachedPinResolver_RetaggedSameDigestServesDuringOutage(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: AgentdPinsConfigMapName, Namespace: "llmsafespaces"},
+		Data: map[string]string{
+			"image":        "ghcr.io/x/agentd:dev@sha256:" + strings.Repeat("1", 64),
+			"sha256-amd64": pinAMD64,
+			"sha256-arm64": pinARM64,
+		},
+	}).Build()
+	res := &cachedPinResolver{
+		Client:    c,
+		Namespace: "llmsafespaces",
+		fetch:     fakeIndexFetcher(nil, errFetchUnavailable),
+	}
+	pins, err := res.Resolve(context.Background(), "ghcr.io/x/agentd:v1.2.0@sha256:"+strings.Repeat("1", 64))
+	require.NoError(t, err, "same digest under a new tag must serve from cache during an outage")
+	require.Equal(t, pinAMD64, pins.SHA256AMD64)
 }
