@@ -268,6 +268,24 @@ func (p *managedProcess) applyBackoff() {
 	time.Sleep(backoff)
 }
 
+// pid returns the PID of the currently supervised opencode child, or 0
+// when no child process is attached (start never called, or the previous
+// child exited and the supervisor is between iterations). Used by the
+// health-watchdog's starvation corroboration (watchdog_vitals.go) to read
+// the child's CPU counter.
+//
+// Mutex-guarded: supervise() overwrites p.cmd under the same lock. The
+// returned pid may be stale by the time it is used — callers must treat
+// read failures as "no evidence" rather than retry.
+func (p *managedProcess) pid() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.cmd != nil && p.cmd.Process != nil {
+		return p.cmd.Process.Pid
+	}
+	return 0
+}
+
 // restart signals the current child to exit and blocks until the
 // supervisor has spawned and started a replacement. Safe to call from
 // HTTP handlers; bounded by SIGKILL fallback (5s) + Start() time.

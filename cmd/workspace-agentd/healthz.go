@@ -52,6 +52,8 @@ func healthzHandler(startedAt time.Time, reloadCachePath string) http.HandlerFun
 		_ = json.NewEncoder(w).Encode(agentd.HealthzResponse{
 			Healthy:          true,
 			Version:          buildVersion,
+			CommitSHA:        buildCommit,
+			BuildTime:        buildTime,
 			UptimeSeconds:    int(time.Since(startedAt).Seconds()),
 			UserCredsPresent: hasUserCreds(reloadCachePath),
 		})
