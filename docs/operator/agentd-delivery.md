@@ -51,10 +51,12 @@ Requirements (enforced at `helm template` and controller startup):
 Leave `image` empty for legacy mode (baked-in binary) — nothing renders,
 no volume is mounted, the entrypoint behaves exactly as before.
 
-**RBAC:** enabling agentdDelivery adds a `configmaps` grant scoped by
-`resourceNames` to the single `llmsafespaces-agentd-pins` ConfigMap
-(get/update + create) for the outage cache. It does not depend on any
-other feature's permissions.
+**RBAC:** enabling agentdDelivery adds two rules for the outage cache:
+`get`/`update` on configmaps scoped by `resourceNames` to the single
+`llmsafespaces-agentd-pins` ConfigMap, plus a separate unscoped
+`create` rule (Kubernetes cannot resourceNames-scope creation — the
+object does not exist yet). It does not depend on any other feature's
+permissions.
 
 ## Keeping it updated (Renovate / Dependabot)
 

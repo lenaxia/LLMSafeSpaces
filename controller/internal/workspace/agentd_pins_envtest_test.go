@@ -47,6 +47,12 @@ func startEnvtest(t *testing.T) *rest.Config {
 func TestEnvtestAgentdPins_ImageOnlyResolvesAndCaches(t *testing.T) {
 	cfg := startEnvtest(t)
 
+	// envtest provides only default/kube-* namespaces; the fallback
+	// namespace must exist before the cache write (round-4 finding).
+	dyn0, err := client.New(cfg, client.Options{})
+	require.NoError(t, err)
+	require.NoError(t, dyn0.Create(context.Background(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "llmsafespaces"}}))
+
 	// Route the production loader at the envtest API server and count
 	// fetcher calls (the production fetcher would hit a real registry).
 	calls := 0
@@ -89,10 +95,20 @@ func TestEnvtestAgentdPins_NamespaceFallbackProven(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, dyn.Create(context.Background(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "custom-ns"}}))
 
-	// Route the production loader at the envtest API server.
-	orig := loadConfig
+	// Route BOTH production seams at the test environment: the config
+	// loader at the envtest API server, and the registry fetcher at a
+	// fake (the production fetcher would hit real ghcr.io — the round-4
+	// finding that made this test non-hermetic and unpassable).
+	origLoad := loadConfig
 	loadConfig = func() (*rest.Config, error) { return cfg, nil }
-	t.Cleanup(func() { loadConfig = orig })
+	origFetch := prodFetchIndexAnnotations
+	prodFetchIndexAnnotations = func(context.Context, string) (ociAnnotations, error) {
+		return goodAnnotations(), nil
+	}
+	t.Cleanup(func() {
+		loadConfig = origLoad
+		prodFetchIndexAnnotations = origFetch
+	})
 
 	pins, err := ResolvePinsWithCache(context.Background(), pinImage, "", "")
 	require.NoError(t, err)

@@ -130,3 +130,22 @@ re-tag scenario were NOT covered despite claims. Corrected:
 - errFetchUnavailable → exported ErrAgentdPinsUnavailable with a real
   errors.Is consumer in main.go (targeted manual-pin hint on outage vs
   broken-image messaging); import hack removed.
+
+## Review round 4 addendum (claims vs execution — the recurring failure)
+
+Round 3 again shipped false claims: both envtest tests failed as
+written (test 1 never created the llmsafespaces namespace so the cache
+write no-op'd; test 2 swapped only loadConfig, sending the production
+fetcher to real ghcr.io — non-hermetic and unpassable anywhere), and
+"runs in the envtest workflow" was false (no step, and the paths
+filter excluded the directory entirely). The reviewer ran the tests;
+the author had not. Corrections:
+
+- Both envtest tests fixed as diagnosed and EXECUTED locally against
+  real envtest 1.31 assets before this commit (PASS 4.88s/4.35s).
+- envtest.yml: new step runs the suite; paths now includes
+  controller/internal/workspace/**.
+- The earlier "all suites green incl. go vet -tags envtest" statement
+  was meaningless (vet type-checks, never runs tests) — recorded here
+  so the pattern is explicit: never claim a test result without the
+  execution that produced it.
