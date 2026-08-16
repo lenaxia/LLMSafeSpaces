@@ -68,10 +68,7 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 	// validation (Epic 46) rejects empty names with a guaranteed 422, so
 	// an optional-name schema advises clients into an error. Catches a
 	// silent revert to optional.
-	var requiredNames []string
-	for _, r := range toolSchemas["workspace_create"].InputSchema.Required {
-		requiredNames = append(requiredNames, r)
-	}
+	requiredNames := append([]string(nil), toolSchemas["workspace_create"].InputSchema.Required...)
 	require.Contains(t, requiredNames, "name",
 		"workspace_create schema must require name (API validation 422s on empty)")
 	assert.True(t, toolNames["workspace_create"])
