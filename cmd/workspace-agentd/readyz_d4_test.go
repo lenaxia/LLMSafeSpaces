@@ -116,9 +116,11 @@ func TestReadyz_NoSynchronousOpencodeFetch(t *testing.T) {
 	withTestLogger(t)
 	deps := newReadyzDeps(t)
 	deps.healthCache.snapshot.Store(&healthzCacheSnapshot{Initialized: true, Healthy: true})
-	// A hanging opencode: if readyz ever dialed opencode HTTP, the request
-	// would stall past the test's client timeout. With D4 it must never
-	// be contacted at all.
+	// A hanging opencode bound as the agent addr: if readyz ever fetched
+	// opencode HTTP, the request would stall until the go-test binary
+	// deadline kills the suite (the raw http.Get has no client timeout).
+	// With D4 readyz answers without contacting opencode at all — the
+	// handler returns long before any such stall could matter.
 	hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		select {} //nolint:staticcheck // deliberate hang
 	}))
@@ -134,12 +136,47 @@ func TestReadyz_NoSynchronousOpencodeFetch(t *testing.T) {
 func TestProviderCache_LastKnownNoFetch(t *testing.T) {
 	withTestLogger(t)
 	c := &providerCache{}
-	c.connected = []string{"prov-a"}
-	c.configured = 2
+	c.readySnapshot.Store(&providerReadySnapshot{connected: []string{"prov-a"}, configured: 2})
 
 	connected, configured := c.lastKnown()
 	assert.Equal(t, []string{"prov-a"}, connected)
 	assert.Equal(t, 2, configured)
+}
+
+// TestProviderCache_LastKnownNeverBlocksOnCacheMu (review round 4 on
+// #895, the mutex-contention regression): cachedState holds providerCache.mu
+// across synchronous opencode HTTP on TTL expiry — under starvation that
+// is seconds. lastKnown must answer while mu is held by another
+// goroutine; pre-fix (mutex-read lastKnown) this test deadlocks past the
+// deadline.
+func TestProviderCache_LastKnownNeverBlocksOnCacheMu(t *testing.T) {
+	withTestLogger(t)
+	c := &providerCache{}
+	c.readySnapshot.Store(&providerReadySnapshot{connected: []string{"prov-x"}, configured: 1})
+
+	unblocked := make(chan struct{})
+	go func() {
+		c.mu.Lock()
+		<-unblocked // hold mu as a concurrent cachedState fetch would
+		c.mu.Unlock()
+	}()
+	// Ensure the holder has the lock before probing.
+	time.Sleep(50 * time.Millisecond)
+
+	done := make(chan struct{})
+	go func() {
+		conn, cfg := c.lastKnown()
+		assert.Equal(t, []string{"prov-x"}, conn)
+		assert.Equal(t, 1, cfg)
+		close(done)
+	}()
+	select {
+	case <-done:
+		// lastKnown answered while mu was held elsewhere.
+	case <-time.After(2 * time.Second):
+		t.Fatal("lastKnown blocked on providerCache.mu — readyz is not starvation-immune (regression)")
+	}
+	close(unblocked)
 }
 
 // TestOpencodeTCPReady_ProductionAddrForm (review round 1 on #895,
@@ -225,4 +262,23 @@ func TestReadyz_AdminServerWiring(t *testing.T) {
 	assert.Equal(t, http.StatusUnauthorized, get(""), "admin endpoints enforce bearer auth")
 	assert.Equal(t, http.StatusUnauthorized, get("wrong"), "admin endpoints reject bad tokens")
 	assert.Equal(t, http.StatusOK, get("tok"), "authorized request with live opencode port: ready")
+}
+
+// TestReadyz_HealthyDecoupledFromChecker (review round 4 on #895): the
+// D4 semantics are Ready = Initialized && TCP-checker — snap.Healthy (the
+// cached /global/health answer) must NOT gate readiness. A regression to
+// Initialized && Healthy && checker() passes every other test (they all
+// store Healthy:true) and reintroduces starvation flap via the back door.
+func TestReadyz_HealthyDecoupledFromChecker(t *testing.T) {
+	withTestLogger(t)
+	deps := newReadyzDeps(t)
+	// Initialized but UNhealthy: the healthz cache last saw opencode fail
+	// its HTTP check (e.g. CPU starvation). The kernel still answers
+	// handshakes — readyz must say ready.
+	deps.healthCache.snapshot.Store(&healthzCacheSnapshot{Initialized: true, Healthy: false})
+
+	code, body := doReadyz(t, deps, func() bool { return true })
+	assert.Equal(t, http.StatusOK, code,
+		"Ready must be Initialized && TCP-checker; the cached Healthy answer must not gate it")
+	assert.True(t, body.Ready)
 }
