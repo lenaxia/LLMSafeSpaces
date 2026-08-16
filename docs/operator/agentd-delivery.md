@@ -39,7 +39,8 @@ ConfigMap so a registry outage at controller boot does not brick
 startup. The entrypoint sha256 verify, exit codes, conditions, and
 alerts are unchanged from the original design.
 
-Requirements (enforced at `helm template` and controller startup):
+Requirements (enforced at the Helm render and again at controller
+startup):
 
 - `image` must be **digest-pinned** — a floating tag defeats both
   reproducibility and the verify contract,

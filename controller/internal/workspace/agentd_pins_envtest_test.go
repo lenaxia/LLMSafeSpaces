@@ -46,6 +46,7 @@ func startEnvtest(t *testing.T) *rest.Config {
 // namespace, and a subsequent outage resolve falls back to that cache.
 func TestEnvtestAgentdPins_ImageOnlyResolvesAndCaches(t *testing.T) {
 	cfg := startEnvtest(t)
+	t.Setenv("POD_NAMESPACE", "") // pin ambient env; exercises the default-ns fallback explicitly
 
 	// envtest provides only default/kube-* namespaces; the fallback
 	// namespace must exist before the cache write (round-4 finding).
@@ -117,4 +118,40 @@ func TestEnvtestAgentdPins_NamespaceFallbackProven(t *testing.T) {
 	cm := &corev1.ConfigMap{}
 	require.NoError(t, dyn.Get(context.Background(), client.ObjectKey{Name: AgentdPinsConfigMapName, Namespace: "custom-ns"}, cm),
 		"cache must be written to POD_NAMESPACE when set — this is the ns-fallback mutation proof")
+}
+
+// TestEnvtestAgentdPins_OutageFallsBackToCache proves the full boot
+// path under a registry outage: first resolve populates the cache,
+// then with the fetcher failing, resolution still succeeds from the
+// SAME digest's cache (round-5 requested leg).
+func TestEnvtestAgentdPins_OutageFallsBackToCache(t *testing.T) {
+	cfg := startEnvtest(t)
+	t.Setenv("POD_NAMESPACE", "llmsafespaces")
+
+	dyn, err := client.New(cfg, client.Options{})
+	require.NoError(t, err)
+	require.NoError(t, dyn.Create(context.Background(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "llmsafespaces"}}))
+
+	origLoad := loadConfig
+	loadConfig = func() (*rest.Config, error) { return cfg, nil }
+	origFetch := prodFetchIndexAnnotations
+	prodFetchIndexAnnotations = func(context.Context, string) (ociAnnotations, error) {
+		return goodAnnotations(), nil
+	}
+	t.Cleanup(func() {
+		loadConfig = origLoad
+		prodFetchIndexAnnotations = origFetch
+	})
+
+	pins, err := ResolvePinsWithCache(context.Background(), pinImage, "", "")
+	require.NoError(t, err)
+	require.Equal(t, pinAMD64, pins.SHA256AMD64)
+
+	// Registry goes down; the same digest must still resolve from cache.
+	prodFetchIndexAnnotations = func(context.Context, string) (ociAnnotations, error) {
+		return nil, errFetchUnavailable
+	}
+	pins, err = ResolvePinsWithCache(context.Background(), pinImage, "", "")
+	require.NoError(t, err, "outage + same-digest cache must satisfy startup")
+	require.Equal(t, pinAMD64, pins.SHA256AMD64)
 }

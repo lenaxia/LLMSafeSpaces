@@ -126,9 +126,9 @@ func (r *cachedPinResolver) Resolve(ctx context.Context, image string) (AgentdBi
 	getErr := r.Get(ctx, client.ObjectKey{Name: AgentdPinsConfigMapName, Namespace: r.Namespace}, cm)
 	if getErr != nil {
 		if apierrors.IsNotFound(getErr) {
-			return AgentdBinaryPins{}, fmt.Errorf("agentd pins: registry fetch failed (%v) and no pin cache exists (first boot with an unreachable registry): %w", err, errFetchUnavailable)
+			return AgentdBinaryPins{}, fmt.Errorf("%w: registry fetch failed (%v) and no cache exists (first boot with an unreachable registry)", ErrAgentdPinsUnavailable, err)
 		}
-		return AgentdBinaryPins{}, fmt.Errorf("agentd pins: registry fetch failed (%v) and pin cache read failed (%v) — check RBAC for configmaps get on %s/%s: %w", err, getErr, r.Namespace, AgentdPinsConfigMapName, errFetchUnavailable)
+		return AgentdBinaryPins{}, fmt.Errorf("%w: registry fetch failed (%v) and pin cache read failed (%v) — check RBAC for configmaps get on %s/%s", ErrAgentdPinsUnavailable, err, getErr, r.Namespace, AgentdPinsConfigMapName)
 	}
 	// Compare DIGESTS, not full refs: re-tagging the same digest
 	// (:dev@X → :v1.2.0@X) must not invalidate a valid same-content
@@ -205,17 +205,17 @@ func ResolvePinsWithCache(ctx context.Context, image, flagAMD64, flagARM64 strin
 		}
 		return AgentdBinaryPins{SHA256AMD64: flagAMD64, SHA256ARM64: flagARM64}, nil
 	}
-	// loadConfigForTest is substituted by envtest to route the cluster
-	// path at the test API server (see agentd_pins_envtest_test.go).
 	return resolvePinsFromCluster(ctx, loadConfig, os.Getenv("POD_NAMESPACE"), prodFetchIndexAnnotations, image)
 }
 
-// loadConfig loads the ambient kubeconfig; envtest swaps it.
-var loadConfig = ctrlconfig.GetConfig
-
-// prodFetchIndexAnnotations is the production registry fetcher; envtest
-// swaps it so the cluster path runs without network access.
-var prodFetchIndexAnnotations = fetchIndexAnnotations
+// loadConfig and prodFetchIndexAnnotations are the two production
+// seams: the ambient-kubeconfig loader and the real registry fetcher.
+// envtest swaps both to route the cluster path at the test API server
+// and a hermetic fetcher (agentd_pins_envtest_test.go).
+var (
+	loadConfig                = ctrlconfig.GetConfig
+	prodFetchIndexAnnotations = fetchIndexAnnotations
+)
 
 // resolvePinsFromCluster is the injectable core of ResolvePinsWithCache
 // (tests substitute the config loader and fetcher). A nil namespace

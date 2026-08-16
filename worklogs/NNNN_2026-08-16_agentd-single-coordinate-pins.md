@@ -1,8 +1,17 @@
-# Worklog NNNN — single-coordinate (Renovate-friendly) agentd pins (#863 follow-up)
+# Worklog NNNN — single-coordinate (Renovate-friendly) agentd pins
 
 **Date:** 2026-08-16
-**PR:** (this PR)
+**PR:** #890
 **Issue:** #863 (follow-up to the image-volume delivery in #872)
+
+---
+
+## Context
+
+PR #872 shipped image-volume agentd delivery with a three-value lockstep
+pin (digest image + two binary sha256s). Follow-up analysis showed this
+pin cannot be maintained by dependency bots and constitutes a
+desync-loaded-gun under the repo's own Renovate posture.
 
 ## Problem
 
@@ -104,7 +113,10 @@ read (go-containerregistry), with:
 
 ## Review round 2 addendum
 
-- ResolvePinsWithCache made injectable (resolvePinsFromCluster).
+- ResolvePinsWithCache made injectable (resolvePinsFromCluster);
+  unit-level coverage in that round covered only the short-circuit and
+  config-error ordering — the cluster path remained untested until the
+  round-3 envtest suite (below).
 - Cache identity compares DIGESTS, not full refs.
 - docs "three values" rollout line corrected; CI-printed image line is
   digest-only.
@@ -149,3 +161,20 @@ the author had not. Corrections:
   was meaningless (vet type-checks, never runs tests) — recorded here
   so the pattern is explicit: never claim a test result without the
   execution that produced it.
+
+## Review round 5 addendum
+
+- envtest.yml wiring is itself guarded: repolint
+  TestEnvtestWorkflow_RunsAllRegisteredSuites fails if any registered
+  suite loses its go-test step OR its pull_request paths entry
+  (mutation-verified locally: removing the workspace paths entry →
+  FAIL). "Deleting the envtest file fails CI" is now a true statement
+  because a test enforces it — previously it was aspiration.
+- Third envtest leg: OutageFallsBackToCache (populate → fetcher fails
+  → same digest resolves from cache through the REAL boot path).
+- Both cache-error wraps now use %w with ErrAgentdPinsUnavailable as
+  the leading token (errors.Is consumers see it directly).
+- Seam docs consolidated; POD_NAMESPACE pinned in test 1; docs wording
+  "Helm render and again at controller startup".
+- All three envtest legs executed locally against 1.31 assets before
+  commit: 5.10s / 5.35s / 4.89s PASS.
