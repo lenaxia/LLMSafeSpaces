@@ -1113,11 +1113,11 @@ func buildEnvFrom(path string) []string {
 	// is bound to $1 (positional argument), so even a path containing
 	// shell metachars cannot escape the script body. noctx: this runs
 	// at boot before context.Context is meaningful.
-	//nolint:gosec,noctx // G204/noctx: positional bind, boot-time call
-	out, err := exec.Command("bash", "-c",
+	//nolint:gosec,noctx // G204/noctx: positional bind, boot-time call; trackedOutput registers with the orphan reaper (#904)
+	out, err := trackedOutput(exec.Command("bash", "-c",
 		`set -a; source "$1"; env -0`,
 		"_", path,
-	).Output()
+	))
 	if err != nil {
 		log.Warn("buildEnvFrom: bash source failed; secrets env not loaded",
 			zap.String("path", path), zap.Error(err))

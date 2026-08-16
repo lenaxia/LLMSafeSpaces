@@ -399,6 +399,16 @@ func startBackgroundLoops(bgCtx context.Context, bgWg *sync.WaitGroup, deps serv
 		}
 		refreshIsHealthyLoop(bgCtx, deps.client, deps.healthCache, log, deps.gr, deps.proc, &busySessionChecker{tracker: deps.sseTracker}, vitals)
 	}()
+
+	// #904: orphan zombie reaper. agentd is PID 1 (and a subreaper),
+	// so descendants orphaned mid-execution reparent here and would
+	// otherwise accumulate as permanent zombies — the Go runtime reaps
+	// only children its own os/exec waiters block on.
+	bgWg.Add(1)
+	go func() {
+		defer bgWg.Done()
+		pkgOrphanReaper.run(bgCtx)
+	}()
 }
 
 // buildVitalsGatherer constructs the production vitals probe for the
