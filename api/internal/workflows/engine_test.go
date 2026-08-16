@@ -5,6 +5,7 @@ package workflows
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -146,7 +147,7 @@ func newMockAgentd() *mockAgentd {
 	}
 }
 
-func (m *mockAgentd) Execute(_ context.Context, _ string, req *NodeExecRequest) (*NodeExecResponse, error) {
+func (m *mockAgentd) Execute(_ context.Context, _, _ string, req *NodeExecRequest) (*NodeExecResponse, error) {
 	if m.sentSpecs != nil {
 		m.sentSpecs[req.NodeID] = req.Spec
 	}
@@ -739,10 +740,10 @@ func TestK8sWorkspaceActivator_PatchRefreshesLastActivity(t *testing.T) {
 // --- HTTPAgentExecutor tests ---
 
 func TestHTTPAgentExecutor_ContextCancellation(t *testing.T) {
-	exec := &HTTPAgentExecutor{Port: 9999} // nothing listening
+	exec := &HTTPAgentExecutor{Port: 9999, PasswordProvider: &stubPasswordProvider{password: "pw"}} // nothing listening
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	_, err := exec.Execute(ctx, "127.0.0.1", &NodeExecRequest{NodeID: "test", NodeType: "script"})
+	_, err := exec.Execute(ctx, "ws-1", "127.0.0.1", &NodeExecRequest{NodeID: "test", NodeType: "script"})
 	if err == nil {
 		t.Error("expected error connecting to non-existent server")
 	}
@@ -762,8 +763,8 @@ func TestHTTPAgentExecutor_SuccessfulCall(t *testing.T) {
 	host, portStr, _ := strings.Cut(addr, ":")
 	port, _ := strconv.Atoi(portStr)
 
-	exec := &HTTPAgentExecutor{Port: port, Client: srv.Client()}
-	resp, err := exec.Execute(context.Background(), host, &NodeExecRequest{
+	exec := &HTTPAgentExecutor{Port: port, Client: srv.Client(), PasswordProvider: &stubPasswordProvider{password: "pw"}}
+	resp, err := exec.Execute(context.Background(), "ws-1", host, &NodeExecRequest{
 		NodeID: "test", NodeType: "script", Spec: json.RawMessage(`{}`), Input: json.RawMessage(`{}`),
 	})
 	if err != nil {
@@ -773,6 +774,117 @@ func TestHTTPAgentExecutor_SuccessfulCall(t *testing.T) {
 		t.Errorf("expected output {\"result\":\"ok\"}, got %s", string(resp.Output))
 	}
 }
+
+// --- HTTPAgentExecutor auth tests (#762) ---
+
+// stubPasswordProvider returns a fixed password and records the workspaceID
+// it was asked for.
+type stubPasswordProvider struct {
+	password string
+	gotWS    []string
+	err      error
+}
+
+func (s *stubPasswordProvider) WorkspacePassword(_ context.Context, workspaceID string) (string, error) {
+	s.gotWS = append(s.gotWS, workspaceID)
+	return s.password, s.err
+}
+
+func testServerAddr(t *testing.T, srv *httptest.Server) (host string, port int) {
+	t.Helper()
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	h, portStr, _ := strings.Cut(addr, ":")
+	p, err := strconv.Atoi(portStr)
+	require.NoError(t, err)
+	return h, p
+}
+
+func TestHTTPAgentExecutor_SetsBasicAuthHeader(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(NodeExecResponse{Output: json.RawMessage(`{}`)})
+	}))
+	defer srv.Close()
+	host, port := testServerAddr(t, srv)
+
+	pw := &stubPasswordProvider{password: "pw-123"}
+	exec := &HTTPAgentExecutor{Port: port, Client: srv.Client(), PasswordProvider: pw}
+	_, err := exec.Execute(context.Background(), "ws-42", host, &NodeExecRequest{NodeID: "n", NodeType: "script"})
+	require.NoError(t, err)
+
+	expected := "Basic " + base64.StdEncoding.EncodeToString([]byte("opencode:pw-123"))
+	require.Equal(t, expected, gotAuth, "executor must send Basic auth on node dispatch")
+	require.Equal(t, []string{"ws-42"}, pw.gotWS, "executor must resolve password for the dispatched workspace")
+}
+
+func TestHTTPAgentExecutor_Non200ReturnsError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"errorCode":"unauthorized"}`))
+	}))
+	defer srv.Close()
+	host, port := testServerAddr(t, srv)
+
+	exec := &HTTPAgentExecutor{
+		Port: port, Client: srv.Client(),
+		PasswordProvider: &stubPasswordProvider{password: "pw"},
+	}
+	_, err := exec.Execute(context.Background(), "ws-1", host, &NodeExecRequest{NodeID: "n", NodeType: "script"})
+	require.Error(t, err, "a 401 from agentd must surface as an explicit error, not a JSON-parse failure")
+	require.Contains(t, err.Error(), "401")
+}
+
+func TestHTTPAgentExecutor_MissingPasswordProvider(t *testing.T) {
+	exec := &HTTPAgentExecutor{Port: 4097}
+	_, err := exec.Execute(context.Background(), "ws-1", "127.0.0.1", &NodeExecRequest{NodeID: "n", NodeType: "script"})
+	require.Error(t, err, "executor without a PasswordProvider must fail fast (agentd enforces Basic auth)")
+}
+
+func TestHTTPAgentExecutor_PasswordProviderError(t *testing.T) {
+	exec := &HTTPAgentExecutor{
+		Port:             4097,
+		PasswordProvider: &stubPasswordProvider{err: fmt.Errorf("secret gone")},
+	}
+	_, err := exec.Execute(context.Background(), "ws-1", "127.0.0.1", &NodeExecRequest{NodeID: "n", NodeType: "script"})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "secret gone")
+}
+
+func TestDeleteRoutineSession_SendsAuth(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	host, port := testServerAddr(t, srv)
+
+	ok := deleteRoutineSession(context.Background(), noopLogger{}, "pw-9", host, port, "ses_1")
+	require.True(t, ok)
+	expected := "Basic " + base64.StdEncoding.EncodeToString([]byte("opencode:pw-9"))
+	require.Equal(t, expected, gotAuth)
+}
+
+func TestDeleteRoutineSession_401IsNotDeleted(t *testing.T) {
+	var logged []string
+	capturingLogger := &captureLogger{logs: &logged}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	host, port := testServerAddr(t, srv)
+
+	ok := deleteRoutineSession(context.Background(), capturingLogger, "pw-9", host, port, "ses_1")
+	require.False(t, ok, "401 must not count as deleted")
+	require.NotEmpty(t, logged, "non-2xx delete responses must be logged, not silently swallowed")
+}
+
+type captureLogger struct{ logs *[]string }
+
+func (c *captureLogger) Info(msg string, _ ...any)           { *c.logs = append(*c.logs, msg) }
+func (c *captureLogger) Error(_ error, msg string, _ ...any) { *c.logs = append(*c.logs, msg) }
 
 // --- Condition branching test ---
 
@@ -827,9 +939,9 @@ type trackingExecutor struct {
 	called map[string]bool
 }
 
-func (t *trackingExecutor) Execute(ctx context.Context, podIP string, req *NodeExecRequest) (*NodeExecResponse, error) {
+func (t *trackingExecutor) Execute(ctx context.Context, workspaceID, podIP string, req *NodeExecRequest) (*NodeExecResponse, error) {
 	t.called[req.NodeID] = true
-	return t.inner.Execute(ctx, podIP, req)
+	return t.inner.Execute(ctx, workspaceID, podIP, req)
 }
 
 // --- Node retry test ---
@@ -876,7 +988,7 @@ type retryAgentdExecutor struct {
 	output     json.RawMessage
 }
 
-func (r *retryAgentdExecutor) Execute(_ context.Context, podIP string, req *NodeExecRequest) (*NodeExecResponse, error) {
+func (r *retryAgentdExecutor) Execute(_ context.Context, _, _ string, _ *NodeExecRequest) (*NodeExecResponse, error) {
 	*r.callCount++
 	if *r.callCount <= r.failFirstN {
 		return nil, fmt.Errorf("simulated transient failure")
@@ -1009,18 +1121,69 @@ func TestExecuteRoutine_PreserveOnFailure_DeleteFails_RecordsOrigin(t *testing.T
 	wsID := "ws-1"
 	trigger := &wf.TriggerRow{ID: "trig-orig3", WorkspaceID: &wsID, Prompt: "test", CaptureMode: types.CaptureFull, PreserveSession: types.PreserveOnFailure}
 	fire := &wf.TriggerFireRow{ID: "fire-orig3", TriggerID: "trig-orig3", InputEnvelope: json.RawMessage(`{}`)}
-	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: noopLogger{}}
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: noopLogger{},
+		PasswordProvider: &stubPasswordProvider{password: "pw"}}
 	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
 
 	if store.statuses["fire-orig3"] != "delivered" {
 		t.Fatalf("expected delivered, got %s", store.statuses["fire-orig3"])
 	}
-	// DELETE endpoint unreachable (mockActivator returns 10.0.0.1) → session
-	// still exists → origin IS recorded as a fallback. This documents the
-	// robustness fix: sessionDeleted only flips when DELETE succeeds.
+	// DELETE endpoint unreachable (mockActivator returns 10.0.0.1, the
+	// real dial fails) → session still exists → origin IS recorded as a
+	// fallback. This documents the robustness fix: sessionDeleted only
+	// flips when DELETE succeeds.
 	if len(store.sessionOrigins) != 1 {
 		t.Errorf("expected 1 session origin when DELETE fails (session still exists), got %d", len(store.sessionOrigins))
 	}
+}
+
+// TestExecuteRoutine_PreserveOnFailure_DeleteSucceeds_NoOrigin is the
+// happy-path counterpart: the authorized delete reaches agentd with the
+// workspace Basic credential, agentd returns 2xx, the session is deleted
+// and therefore NO session origin is recorded (#762 caller wiring).
+func TestExecuteRoutine_PreserveOnFailure_DeleteSucceeds_NoOrigin(t *testing.T) {
+	var gotAuth string
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	_, portStr, _ := strings.Cut(addr, ":")
+	port, err := strconv.Atoi(portStr)
+	require.NoError(t, err)
+
+	store := newMockSchedulerStore()
+	agentd := newMockAgentd()
+	agentd.outputs["routine-agent"] = json.RawMessage(`{"response":"ok","session_id":"ses_ok789"}`)
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{ID: "trig-ok", WorkspaceID: &wsID, Prompt: "test", CaptureMode: types.CaptureFull, PreserveSession: types.PreserveOnFailure}
+	fire := &wf.TriggerFireRow{ID: "fire-ok", TriggerID: "trig-ok", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{
+		Store: store, Activator: &loopbackActivator{}, AgentdClient: agentd, Logger: noopLogger{},
+		PasswordProvider: &stubPasswordProvider{password: "pw-ok"},
+		AgentdPort:       port,
+	}
+	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+
+	if store.statuses["fire-ok"] != "delivered" {
+		t.Fatalf("expected delivered, got %s", store.statuses["fire-ok"])
+	}
+	if len(store.sessionOrigins) != 0 {
+		t.Errorf("expected no session origin after successful delete, got %d", len(store.sessionOrigins))
+	}
+	require.Equal(t, "/v1/workflow/session/delete", gotPath)
+	expected := "Basic " + base64.StdEncoding.EncodeToString([]byte("opencode:pw-ok"))
+	require.Equal(t, expected, gotAuth, "PreserveOnFailure delete must authenticate against agentd")
+}
+
+// loopbackActivator points the delete dial at the test server.
+type loopbackActivator struct{}
+
+func (loopbackActivator) EnsureActive(_ context.Context, _ string, _ time.Duration) (string, error) {
+	return "127.0.0.1", nil
 }
 
 // TestExecuteRoutine_PreserveOnFailure_ControlCharSessionID_NoCrash pins

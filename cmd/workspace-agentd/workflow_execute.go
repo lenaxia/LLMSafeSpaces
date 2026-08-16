@@ -13,7 +13,6 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -79,6 +78,10 @@ var registry = newNodeExecRegistry()
 
 func workflowExecuteHandler(password string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !checkBasicAuth(r, password) {
+			rejectUnauthorized(w)
+			return
+		}
 		var req workflowExecuteRequest
 		if err := json.NewDecoder(io.LimitReader(r.Body, 16<<20)).Decode(&req); err != nil {
 			writeWorkflowError(w, http.StatusBadRequest, "invalid_request", fmt.Sprintf("cannot decode request: %v", err))
@@ -113,8 +116,12 @@ func workflowExecuteHandler(password string) http.HandlerFunc {
 	}
 }
 
-func workflowCancelHandler() http.HandlerFunc {
+func workflowCancelHandler(password string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if !checkBasicAuth(r, password) {
+			rejectUnauthorized(w)
+			return
+		}
 		nodeID := r.URL.Query().Get("nodeId")
 		if nodeID == "" {
 			writeWorkflowError(w, http.StatusBadRequest, "missing_node_id", "nodeId query parameter required")
@@ -127,8 +134,8 @@ func workflowCancelHandler() http.HandlerFunc {
 
 func workflowDeleteSessionHandler(password string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Basic "+basicAuth(password) {
-			w.WriteHeader(http.StatusUnauthorized)
+		if !checkBasicAuth(r, password) {
+			rejectUnauthorized(w)
 			return
 		}
 		sessionID := r.URL.Query().Get("sessionId")
@@ -139,10 +146,6 @@ func workflowDeleteSessionHandler(password string) http.HandlerFunc {
 		deleteOpencodeSession(r.Context(), password, sessionID)
 		w.WriteHeader(http.StatusNoContent)
 	}
-}
-
-func basicAuth(password string) string {
-	return base64.StdEncoding.EncodeToString([]byte(agentd.AuthUsername + ":" + password))
 }
 
 func execScriptNode(ctx context.Context, w http.ResponseWriter, req *workflowExecuteRequest) {

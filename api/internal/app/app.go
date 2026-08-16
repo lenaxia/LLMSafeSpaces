@@ -22,6 +22,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/config"
 	"github.com/lenaxia/llmsafespaces/api/internal/handlers"
 	"github.com/lenaxia/llmsafespaces/api/internal/imagefactory"
+	apiinterfaces "github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	"github.com/lenaxia/llmsafespaces/api/internal/logger"
 	"github.com/lenaxia/llmsafespaces/api/internal/server"
 	"github.com/lenaxia/llmsafespaces/api/internal/services"
@@ -551,7 +552,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		}
 		wfReconciler = &apiwf.Reconciler{
 			Store:        wfStore,
-			AgentdClient: &apiwf.HTTPAgentExecutor{Port: 4097},
+			AgentdClient: newWorkflowAgentdExecutor(proxyHandler),
 			Activator: &apiwf.K8sWorkspaceActivator{
 				K8sClient: k8sClient,
 				Namespace: cfg.Kubernetes.Namespace,
@@ -568,8 +569,9 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 				K8sClient: k8sClient,
 				Namespace: cfg.Kubernetes.Namespace,
 			},
-			AgentdClient: &apiwf.HTTPAgentExecutor{Port: 4097},
-			Logger:       engineLogger,
+			AgentdClient:     newWorkflowAgentdExecutor(proxyHandler),
+			Logger:           engineLogger,
+			PasswordProvider: proxyHandler,
 		}
 		// Wire pod-IP resolver so reload-secrets can reach in-pod agentd.
 		// Without this the SecretsHandler returns 503 for every reload
@@ -1784,6 +1786,14 @@ func (a *launchableConfigAdapter) GetLaunchableConfigByHash(ctx context.Context,
 type appWorkspaceCreator struct {
 	wsSvc   *workspace.Service
 	wfStore *workflows.Store
+}
+
+// newWorkflowAgentdExecutor builds the agentd node-dispatch client used by
+// both the workflow reconciler and the scheduler. Extracted from New so
+// the wiring — especially the PasswordProvider required for authenticated
+// dispatch (#762) — is testable without booting PostgreSQL/Redis.
+func newWorkflowAgentdExecutor(pw apiinterfaces.WorkspacePasswordProvider) *apiwf.HTTPAgentExecutor {
+	return &apiwf.HTTPAgentExecutor{Port: 4097, PasswordProvider: pw}
 }
 
 func (c *appWorkspaceCreator) CreateWorkspace(ctx context.Context, workflowID, ownerType, ownerID string) (string, error) {

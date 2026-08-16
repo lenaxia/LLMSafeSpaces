@@ -32,12 +32,9 @@ var devPreviewDeniedPorts = map[int]string{
 }
 
 func devPreviewHandler(password string) http.HandlerFunc {
-	expectedAuth := "Basic " + basicAuth(password)
-
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != expectedAuth {
-			w.Header().Set("WWW-Authenticate", `Basic realm="agentd"`)
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		if !checkBasicAuth(r, password) {
+			rejectUnauthorized(w)
 			return
 		}
 

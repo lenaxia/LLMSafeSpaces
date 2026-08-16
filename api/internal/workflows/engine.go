@@ -13,6 +13,7 @@ package workflows
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,6 +23,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	apiinterfaces "github.com/lenaxia/llmsafespaces/api/internal/interfaces"
+	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	k8stypes "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	pkgk8s "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
@@ -77,8 +80,11 @@ type SchedulerStore interface {
 
 // --- AgentdExecutor interface ---
 
+// AgentdExecutor dispatches a single node execution to the agentd user mux
+// on a workspace pod. workspaceID identifies the workspace whose agentd
+// Basic-auth password must accompany the dispatch.
 type AgentdExecutor interface {
-	Execute(ctx context.Context, podIP string, req *NodeExecRequest) (*NodeExecResponse, error)
+	Execute(ctx context.Context, workspaceID, podIP string, req *NodeExecRequest) (*NodeExecResponse, error)
 }
 
 type NodeExecRequest struct {
@@ -333,7 +339,7 @@ func (r *Reconciler) executeNode(ctx context.Context, logger Logger, run *wf.Wor
 			Spec: node.Data, Input: input, Timeout: node.Timeout,
 		}
 
-		resp, err := r.AgentdClient.Execute(ctx, podIP, req)
+		resp, err := r.AgentdClient.Execute(ctx, run.WorkspaceID, podIP, req)
 		if err != nil {
 			errMsg, _ := json.Marshal(map[string]string{"error": err.Error()})
 			ec := types.RunErrorCodeNodeFailed
@@ -410,6 +416,13 @@ type Scheduler struct {
 	AgentdClient AgentdExecutor
 	Logger       Logger
 	TickInterval time.Duration
+	// PasswordProvider resolves the per-workspace agentd Basic-auth
+	// password for the PreserveOnFailure session-delete call (#762).
+	PasswordProvider apiinterfaces.WorkspacePasswordProvider
+	// AgentdPort overrides the agentd user-mux port for the
+	// PreserveOnFailure session-delete call. Zero → default (4097).
+	// Tests inject an httptest server port; mirrors HTTPAgentExecutor.Port.
+	AgentdPort int
 }
 
 func (s *Scheduler) Start(ctx context.Context) error {
@@ -605,7 +618,7 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 			Spec: buildRoutineScriptSpec(trigger), Input: envelopeJSON,
 			Timeout: "5m",
 		}
-		scriptResp, err := s.AgentdClient.Execute(ctx, podIP, scriptReq)
+		scriptResp, err := s.AgentdClient.Execute(ctx, workspaceID, podIP, scriptReq)
 		if err != nil {
 			errMsg, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("script failed: %v", err)})
 			resultData = errMsg
@@ -627,7 +640,7 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		Spec: buildRoutineAgentSpec(trigger, prompt), Input: envelopeJSON,
 		Timeout: "10m",
 	}
-	agentResp, err := s.AgentdClient.Execute(ctx, podIP, agentReq)
+	agentResp, err := s.AgentdClient.Execute(ctx, workspaceID, podIP, agentReq)
 	if err != nil {
 		errMsg, _ := json.Marshal(map[string]string{"error": fmt.Sprintf("agent call failed: %v", err)})
 		resultData = errMsg
@@ -656,25 +669,7 @@ func (s *Scheduler) executeRoutine(ctx context.Context, logger Logger, trigger *
 		// PreserveOnFailure: delete session on success.
 		sessionDeleted := false
 		if trigger.PreserveSession == types.PreserveOnFailure && sessionID != "" {
-			deleteReq, deleteErr := http.NewRequestWithContext(ctx, "DELETE",
-				fmt.Sprintf("http://%s:%d/v1/workflow/session/delete?sessionId=%s", podIP, agentdExecPort(), sessionID), nil)
-			if deleteErr != nil {
-				// sessionID comes from the workspace agent's output JSON;
-				// a control character makes the URL unparseable. This
-				// routine runs in the scheduler outside gin's recovery
-				// middleware — Do(nil) would crash the API process.
-				logger.Error(deleteErr, "routine: invalid delete-session URL for PreserveOnFailure", "sessionId", sessionID, "triggerId", trigger.ID)
-			} else {
-				deleteResp, err := httpClient().Do(deleteReq)
-				if err != nil {
-					logger.Error(err, "routine: failed to delete session for PreserveOnFailure", "sessionId", sessionID, "triggerId", trigger.ID)
-				} else {
-					_ = deleteResp.Body.Close()
-					if deleteResp.StatusCode < 400 {
-						sessionDeleted = true
-					}
-				}
-			}
+			sessionDeleted = s.deleteRoutineSessionAuthorized(ctx, logger, workspaceID, podIP, sessionID)
 		}
 
 		// Record session origin so the sidebar can show the "routine"
@@ -753,6 +748,63 @@ func buildRoutineAgentSpec(trigger *wf.TriggerRow, prompt string) json.RawMessag
 }
 
 func agentdExecPort() int { return 4097 }
+
+// deleteRoutineSession deletes a finished routine's opencode session via
+// agentd's authenticated /v1/workflow/session/delete and reports whether the
+// session was deleted. Non-2xx responses are logged — before #762's caller
+// fix the 401s were silently swallowed and PreserveOnFailure sessions were
+// never deleted.
+func deleteRoutineSession(ctx context.Context, logger Logger, password, podIP string, port int, sessionID string) bool {
+	if logger == nil {
+		logger = noopLogger{}
+	}
+	// sessionID comes from the workspace agent's output JSON; a control
+	// character makes the URL unparseable. This routine runs in the
+	// scheduler outside gin's recovery middleware — Do(nil) would crash
+	// the API process, so bail on the unparseable URL instead.
+	deleteReq, err := http.NewRequestWithContext(ctx, http.MethodDelete,
+		fmt.Sprintf("http://%s:%d/v1/workflow/session/delete?sessionId=%s", podIP, port, sessionID), nil)
+	if err != nil {
+		logger.Error(err, "routine: invalid delete-session URL for PreserveOnFailure", "sessionId", sessionID)
+		return false
+	}
+	deleteReq.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(agentd.AuthUsername+":"+password)))
+
+	resp, err := httpClient().Do(deleteReq)
+	if err != nil {
+		logger.Error(err, "routine: failed to delete session for PreserveOnFailure", "sessionId", sessionID)
+		return false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode >= 400 {
+		logger.Error(fmt.Errorf("agentd returned %d", resp.StatusCode), "routine: delete session for PreserveOnFailure failed", "sessionId", sessionID)
+		return false
+	}
+	return true
+}
+
+// deleteRoutineSessionAuthorized resolves the workspace password and calls
+// deleteRoutineSession for the Scheduler's PreserveOnFailure path.
+func (s *Scheduler) deleteRoutineSessionAuthorized(ctx context.Context, logger Logger, workspaceID, podIP, sessionID string) bool {
+	if s.PasswordProvider == nil {
+		logger.Error(fmt.Errorf("no PasswordProvider configured"), "routine: cannot delete session for PreserveOnFailure", "sessionId", sessionID)
+		return false
+	}
+	password, err := s.PasswordProvider.WorkspacePassword(ctx, workspaceID)
+	if err != nil {
+		logger.Error(err, "routine: resolve workspace password for session delete", "sessionId", sessionID, "workspaceID", workspaceID)
+		return false
+	}
+	return deleteRoutineSession(ctx, logger, password, podIP, s.agentdPort(), sessionID)
+}
+
+// agentdPort returns the configured override or the production default.
+func (s *Scheduler) agentdPort() int {
+	if s.AgentdPort != 0 {
+		return s.AgentdPort
+	}
+	return agentdExecPort()
+}
 
 func httpClient() *http.Client {
 	return &http.Client{Timeout: 10 * time.Second}
@@ -898,9 +950,21 @@ func findNodeIndexByID(spec *wf.Spec, id string) (int, bool) {
 type HTTPAgentExecutor struct {
 	Port   int
 	Client *http.Client
+	// PasswordProvider resolves the per-workspace agentd Basic-auth
+	// password (US-46.11; *handlers.ProxyHandler satisfies it). Required —
+	// agentd rejects unauthenticated node dispatches (#762).
+	PasswordProvider apiinterfaces.WorkspacePasswordProvider
 }
 
-func (e *HTTPAgentExecutor) Execute(ctx context.Context, podIP string, req *NodeExecRequest) (*NodeExecResponse, error) {
+func (e *HTTPAgentExecutor) Execute(ctx context.Context, workspaceID, podIP string, req *NodeExecRequest) (*NodeExecResponse, error) {
+	if e.PasswordProvider == nil {
+		return nil, fmt.Errorf("HTTPAgentExecutor: no PasswordProvider configured (workspace %s)", workspaceID)
+	}
+	password, err := e.PasswordProvider.WorkspacePassword(ctx, workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("HTTPAgentExecutor: resolve workspace password for %s: %w", workspaceID, err)
+	}
+
 	body, _ := json.Marshal(req)
 	port := e.Port
 	if port == 0 {
@@ -913,6 +977,7 @@ func (e *HTTPAgentExecutor) Execute(ctx context.Context, podIP string, req *Node
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(agentd.AuthUsername+":"+password)))
 
 	client := e.Client
 	if client == nil {
@@ -928,6 +993,10 @@ func (e *HTTPAgentExecutor) Execute(ctx context.Context, podIP string, req *Node
 	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
 	if err != nil {
 		return nil, err
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("agentd node execute returned %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
 	}
 
 	var nodeResp NodeExecResponse
