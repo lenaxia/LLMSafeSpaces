@@ -167,12 +167,4 @@ func TestValidateAgentdDeliveryConfig_ImageOnlyIsValid(t *testing.T) {
 	require.Error(t, validateAgentdDeliveryConfig(pinImage, pinAMD64, ""))
 }
 
-func repeat(s string, n int) string {
-	out := ""
-	for i := 0; i < n; i++ {
-		out += s
-	}
-	return out
-}
-
 var _ = v1.WorkspaceConditionAgentdVerified // keep import aligned with package
