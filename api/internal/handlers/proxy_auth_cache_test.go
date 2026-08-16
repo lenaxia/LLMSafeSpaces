@@ -349,7 +349,7 @@ func TestSSEWatchReconciler_HealsMissingWatch(t *testing.T) {
 		"ws-susp":    "Suspended",
 		"ws-created": "Creating",
 	}
-	go env.handler.sseWatchReconciler()
+	go env.handler.sseWatchReconciler(sseWatchReconcileInterval)
 
 	require.Eventually(t, func() bool { return env.handler.GetSSETracker().IsWatching("ws-missed") },
 		2*time.Second, 10*time.Millisecond,

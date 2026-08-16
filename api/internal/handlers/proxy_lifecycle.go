@@ -63,19 +63,11 @@ func (h *ProxyHandler) Start() error {
 		}
 		h.watcher = watcher
 		h.phaseSource = watcher
-		// SSE subscriptions for already-Active workspaces are established
-		// by the watcher's seedResourceVersion(), which calls onPhaseChange
-		// for each Active workspace it discovers. No post-Start loop needed.
-		//
-		// #902: ...except when it IS needed: the seed's onPhaseChange skips
-		// arming when Redis-backed prior-phase already says "Active" (it
-		// survives API restarts), and watches that die later (pod churn,
-		// idle drops, network) have no transition event to re-arm them.
-		// The reconciler below re-arms every Active workspace on an
-		// interval — EnsureWatching is an idempotent map check, so this
-		// only ever ADDS missing watches; it never tears down healthy
-		// connections.
-		go h.sseWatchReconciler()
+		// #902: the seed path alone cannot keep watches alive — prior-phase
+		// is Redis-persisted, so post-restart seeds skip arming, and dead
+		// watches have no transition event to re-arm them. The reconciler
+		// heals missing watches; see its doc comment for scope limits.
+		go h.sseWatchReconciler(sseWatchReconcileInterval)
 	})
 	return startErr
 }
@@ -85,20 +77,32 @@ func (h *ProxyHandler) Start() error {
 var sseWatchReconcileInterval = 60 * time.Second
 
 // sseWatchReconciler periodically re-arms SSE tracker watches for every
-// Active workspace (#902). Belt-and-braces self-heal: converts any
-// silently-missing watch — seed skipped via Redis-persisted prior-phase,
-// goroutine exit, future bug — into at most sseWatchReconcileInterval of
-// event blindness instead of forever. EnsureWatching is an idempotent map
-// check: this only ever adds missing watches, never tears down healthy
-// connections.
-func (h *ProxyHandler) sseWatchReconciler() {
-	ticker := time.NewTicker(sseWatchReconcileInterval)
+// Active workspace (#902). It heals MISSING watches — a seed skipped via
+// Redis-persisted prior-phase, an armed watch whose subscribe goroutine
+// exited, a future bug — converting permanent event-blindness into at
+// most one interval. Scope limits, stated plainly (#903 review):
+//   - It only adds watches (EnsureWatching is an idempotent map check);
+//     it never tears down or resets connections.
+//   - It cannot see ARMED-BUT-FAILING watches (goroutine alive,
+//     connectAndRead failing forever at Warn with backoff — e.g. a stale
+//     podIP). That class needs the tracker-state signal from #901
+//     (G1/G11), not this reconciler.
+func (h *ProxyHandler) sseWatchReconciler(interval time.Duration) {
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-h.stopCh:
 			return
 		case <-ticker.C:
+			// Shutdown race (#903 review): the select above may pick
+			// ticker.C even when stopCh is already closed; arming after
+			// Stop() would leak a retry goroutine nobody will cancel.
+			select {
+			case <-h.stopCh:
+				return
+			default:
+			}
 			if h.sseTracker == nil || h.phaseSource == nil {
 				continue
 			}

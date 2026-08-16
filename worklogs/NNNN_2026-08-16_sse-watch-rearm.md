@@ -62,3 +62,51 @@ None.
 - api/internal/handlers/proxy.go
 - api/internal/handlers/proxy_auth_cache_test.go
 - api/internal/services/sse/tracker.go
+
+---
+
+## Round 2 (review on #903): wiring/e2e levels + item-3 slice
+
+- **Full-wiring e2e (real ProxyHandler.Start):** seed with Redis-persisted
+  prior=Active arms, CONNECTS to a fake opencode /event backend, and
+  relays an agent event to a workspace subscriber — the incident
+  scenario end to end. Deleting the seed path or the AlwaysArm change
+  fails it.
+- **Reconciler wiring e2e:** watch torn down (connection-death shape, no
+  transition) → the Start-launched reconciler re-arms within one
+  interval and events flow. Deleting the phaseSource assignment or the
+  goroutine launch in Start() fails it.
+- **Unhappy e2e:** Active workspace with empty podIP (resume race) —
+  watch arms, connectAndRead retries with growing backoff (asserted via
+  the new Warn logs), and connects once the IP appears; events flow.
+- **Transition fresh-connection pinned with a real cancel:**
+  ForceWatchingWithCancelForTest; transition into Active must cancel the
+  previous subscription.
+- **#902 fix item 3 (minimal slice):** Info logs on arm/stop; tracker
+  disconnect elevated Debug→Warn (workspace_id + error + backoff —
+  rate-limited by the backoff itself);
+  `llmsafespaces_sse_tracker_watched_workspaces` gauge (per-replica
+  watch count — the "this replica is blind" signal from #901 G1).
+- **Robustness (review round 1):** reconciler shutdown race fixed
+  (stopCh re-check after ticker fire — no arming after Stop);
+  reconciler/Start comments corrected (heals MISSING watches; cannot see
+  armed-but-failing — that's #901 G1/G11) and the duplicated Start
+  comment block removed.
+- Interval captured at reconciler launch (param) — the package var was
+  racy with the Start-launched goroutine under -race.
+- Harness notes recorded: testify re-On APPENDS (use a Get-flipping
+  wrapper for dynamic CRs); httptest backend teardown must run after
+  handler.Stop (cleanups LIFO); no client.Timeout on the SSE client
+  (kills streams; production wires transport-level timeouts only).
+
+## Tests Run (round 2)
+
+- `go test ./api/internal/handlers/ ./api/internal/services/sse/ -count=1 -race` — green (130s + 4.5s)
+- New e2e file passes standalone in <2s
+
+## Files Modified (round 2 additions)
+
+- api/internal/handlers/proxy_902_e2e_test.go (new)
+- api/internal/handlers/proxy_lifecycle.go (reconciler param + shutdown race + comments)
+- api/internal/handlers/proxy_auth_cache_test.go (reconciler launch arity)
+- api/internal/services/sse/tracker.go (logs, gauge, ForceWatchingWithCancelForTest)
