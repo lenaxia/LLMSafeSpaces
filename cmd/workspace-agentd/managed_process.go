@@ -234,6 +234,7 @@ func (p *managedProcess) supervise() {
 		} else {
 			if err := writeRestartReasonMarker(RestartReasonMarkerPath, "crash", nil); err != nil {
 				log.Error("failed to write restart-reason marker", zap.Error(err))
+				pkgOpsMetrics.RecordMarkerWriteFailure(workspaceIDFromEnv(), "crash")
 			} else {
 				logRestartReasonAtWrite("crash", nil, log.Core())
 			}

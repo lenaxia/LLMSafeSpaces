@@ -33,11 +33,15 @@ func TestVitalSigns_Classify(t *testing.T) {
 		v    vitalSigns
 		want verdict
 	}{
-		{"tcp refused is decisive hang", vitalSigns{tcpRefused: true, cpuKnown: true, cpuDeltaTicks: 50}, verdictHung},
+		{"tcp refused with live pid is the only hang", vitalSigns{tcpRefused: true, cpuKnown: true, cpuDeltaTicks: 50}, verdictHung},
+		{"tcp refused with live pid (no cpu evidence) is hang", vitalSigns{tcpRefused: true}, verdictHung},
+		{"tcp refused with pid gone is respawn (crash recovery owns it)", vitalSigns{tcpRefused: true, pidGone: true, cpuKnown: true, cpuDeltaTicks: 50}, verdictRespawn},
 		{"zero value is unknown", vitalSigns{}, verdictUnknown},
 		{"cpu unknown is unknown", vitalSigns{tcpOpen: true, cpuErr: "no agent pid available"}, verdictUnknown},
-		{"flat cpu over window is hang", vitalSigns{tcpOpen: true, cpuKnown: true, cpuDeltaTicks: 1}, verdictHung},
-		{"flat cpu below epsilon is hang", vitalSigns{tcpOpen: true, cpuKnown: true, cpuDeltaTicks: cpuFlatTicks - 0.5}, verdictHung},
+		{"pid gone without refused dial is unknown", vitalSigns{tcpOpen: true, pidGone: true, cpuErr: "read /proc/1/stat: no such file"}, verdictUnknown},
+		{"flat cpu over window is FLAT — blocked-IO is alive, not killable (#892)", vitalSigns{tcpOpen: true, cpuKnown: true, cpuDeltaTicks: 1}, verdictFlat},
+		{"flat cpu below epsilon is FLAT", vitalSigns{tcpOpen: true, cpuKnown: true, cpuDeltaTicks: cpuFlatTicks - 0.5}, verdictFlat},
+		{"flat cpu with dial timeout (backlog full) is FLAT", vitalSigns{cpuKnown: true, cpuDeltaTicks: 0}, verdictFlat},
 		{"cpu at or above epsilon is starved (boundary inclusive)", vitalSigns{tcpOpen: true, cpuKnown: true, cpuDeltaTicks: cpuFlatTicks}, verdictStarved},
 		{"advancing cpu is starved", vitalSigns{tcpOpen: true, cpuKnown: true, cpuDeltaTicks: cpuFlatTicks + 1}, verdictStarved},
 		{"advancing cpu without tcp open is starved (dial timeout → backlog full)", vitalSigns{cpuKnown: true, cpuDeltaTicks: 40}, verdictStarved},
@@ -48,6 +52,21 @@ func TestVitalSigns_Classify(t *testing.T) {
 			assert.Equal(t, tc.want, got)
 			assert.NotEmpty(t, why, "every verdict must carry evidence for logs")
 		})
+	}
+}
+
+func TestVitalSigns_SuppressionReason(t *testing.T) {
+	cases := []struct {
+		v    vitalSigns
+		want string
+	}{
+		{vitalSigns{cpuKnown: true, cpuDeltaTicks: 40}, "starved"},
+		{vitalSigns{tcpOpen: true, cpuKnown: true}, "flat"},
+		{vitalSigns{tcpRefused: true, pidGone: true}, "respawn"},
+		{vitalSigns{}, "unknown"},
+	}
+	for _, tc := range cases {
+		assert.Equal(t, tc.want, tc.v.suppressionReason())
 	}
 }
 
@@ -65,6 +84,16 @@ func TestProcVitalsGatherer_NoPID(t *testing.T) {
 	v := g.gather(context.Background())
 	assert.False(t, v.cpuKnown, "pid 0 must yield unknown cpu evidence")
 	assert.Contains(t, v.cpuErr, "no agent pid available")
+	assert.True(t, v.pidGone, "pid 0 must mark pidGone")
+	if v.tcpRefused {
+		// 127.0.0.1:1 is typically refused; refused + pidGone = respawn
+		// (crash recovery owns it), never a kill.
+		got, _ := v.classify()
+		assert.Equal(t, verdictRespawn, got)
+	} else {
+		got, _ := v.classify()
+		assert.Equal(t, verdictUnknown, got)
+	}
 }
 
 func TestProcVitalsGatherer_SelfAdvancing(t *testing.T) {
@@ -127,7 +156,8 @@ func TestProcVitalsGatherer_PIDChangeInvalidatesCPU(t *testing.T) {
 		addr: ln.Addr().String(),
 		// First pidFn call must return a REAL pid (this process) so the
 		// first /proc read succeeds; the post-window call returns a
-		// different pid, which must invalidate the delta.
+		// different pid, which must invalidate the delta AND mark the
+		// generation change (pidGone).
 		pidFn: func() int {
 			if calls.Add(1) == 1 {
 				return os.Getpid()
@@ -140,6 +170,7 @@ func TestProcVitalsGatherer_PIDChangeInvalidatesCPU(t *testing.T) {
 	v := g.gather(context.Background())
 	assert.False(t, v.cpuKnown, "a pid change mid-sample must invalidate the delta")
 	assert.Contains(t, v.cpuErr, "changed during sample")
+	assert.True(t, v.pidGone, "a pid change mid-sample must mark pidGone")
 	got, _ := v.classify()
 	assert.Equal(t, verdictUnknown, got, "invalidated evidence must be unknown, never guessed")
 }
@@ -189,13 +220,24 @@ func runWatchdogLoop(t *testing.T, srvURL string, timeout time.Duration, restart
 	t.Helper()
 	orig := getAgentAddr()
 	setAgentAddr(srvURL)
-	t.Cleanup(func() { setAgentAddr(orig) })
 
 	client := &OpenCodeClient{password: "test", client: &http.Client{Timeout: timeout}}
 	cache := newHealthzCache()
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, restarter, busy, vit)
+	// Join the loop goroutine on cleanup BEFORE earlier-registered
+	// cleanups (setWatchdogTiming) restore the timing vars the loop
+	// reads — otherwise the restore write races the loop's next tick
+	// (caught by -race in the suppression tests).
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, restarter, busy, vit)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+		setAgentAddr(orig)
+	})
 	return cache
 }
 
@@ -213,21 +255,39 @@ func TestRefreshIsHealthyLoop_WatchdogSuppressesWhenStarved(t *testing.T) {
 		"watchdog must NOT restart a process whose event loop is advancing (starved, not hung) — incident 2026-08-15")
 }
 
-func TestRefreshIsHealthyLoop_WatchdogFiresOnCorroboratedHang(t *testing.T) {
+func TestRefreshIsHealthyLoop_WatchdogFiresOnCorroboratedDeadListener(t *testing.T) {
 	setWatchdogTiming(t, 60*time.Millisecond, 40*time.Millisecond, 3)
 	srv := newHungServer(t, 500*time.Millisecond)
 	fr := &fakeRestarter{}
-	hung := &fakeVitals{v: vitalSigns{tcpOpen: true, cpuKnown: true, cpuDeltaTicks: 0}}
+	// The only lethal verdict: dial refused while the supervised pid is
+	// alive (#892 / design 0050 D1).
+	hung := &fakeVitals{v: vitalSigns{tcpRefused: true, cpuKnown: true, cpuDeltaTicks: 50}}
 
 	cache := runWatchdogLoop(t, srv.URL, 40*time.Millisecond, fr, nil, hung)
 
 	time.Sleep(1200 * time.Millisecond)
 	assert.False(t, cache.Snapshot().Healthy)
 	assert.Equal(t, 1, fr.callCount(),
-		"corroborated hang (loop idle while connections queue) must fire exactly once (latch)")
+		"corroborated dead-listener hang must fire exactly once (latch)")
 }
 
-func TestRefreshIsHealthyLoop_VitalsUnknownFires(t *testing.T) {
+func TestRefreshIsHealthyLoop_WatchdogSuppressesWhenFlat(t *testing.T) {
+	setWatchdogTiming(t, 60*time.Millisecond, 40*time.Millisecond, 3)
+	srv := newHungServer(t, 500*time.Millisecond)
+	fr := &fakeRestarter{}
+	// Listener accepts, CPU flat: a turn blocked on upstream I/O is ALIVE.
+	// #892 ruling: never kill on flat CPU.
+	flat := &fakeVitals{v: vitalSigns{tcpOpen: true, cpuKnown: true, cpuDeltaTicks: 0}}
+
+	cache := runWatchdogLoop(t, srv.URL, 40*time.Millisecond, fr, nil, flat)
+
+	time.Sleep(1200 * time.Millisecond)
+	assert.False(t, cache.Snapshot().Healthy)
+	assert.Zero(t, fr.callCount(),
+		"flat CPU (blocked-IO turn) must never be killed — recovery is honest state + informed Stop")
+}
+
+func TestRefreshIsHealthyLoop_VitalsUnknownSuppresses(t *testing.T) {
 	setWatchdogTiming(t, 60*time.Millisecond, 40*time.Millisecond, 3)
 	srv := newHungServer(t, 500*time.Millisecond)
 	fr := &fakeRestarter{}
@@ -237,8 +297,24 @@ func TestRefreshIsHealthyLoop_VitalsUnknownFires(t *testing.T) {
 
 	time.Sleep(1200 * time.Millisecond)
 	assert.False(t, cache.Snapshot().Healthy)
-	assert.Equal(t, 1, fr.callCount(),
-		"inconclusive vitals must preserve pre-corroboration behavior: fire. A bug in the probe must never make the watchdog toothless")
+	assert.Zero(t, fr.callCount(),
+		"killing without evidence is banned (#892); probe degradation must surface via metric/log, not a restart")
+}
+
+func TestRefreshIsHealthyLoop_VitalsRespawnSuppresses(t *testing.T) {
+	setWatchdogTiming(t, 60*time.Millisecond, 40*time.Millisecond, 3)
+	srv := newHungServer(t, 500*time.Millisecond)
+	fr := &fakeRestarter{}
+	// Dial refused AND pid gone: crash recovery is mid-restart. A kill
+	// here races the respawn (6-restarts-in-11-minutes incident shape).
+	respawn := &fakeVitals{v: vitalSigns{tcpRefused: true, pidGone: true}}
+
+	cache := runWatchdogLoop(t, srv.URL, 40*time.Millisecond, fr, nil, respawn)
+
+	time.Sleep(1200 * time.Millisecond)
+	assert.False(t, cache.Snapshot().Healthy)
+	assert.Zero(t, fr.callCount(),
+		"refused dial during respawn window must not race crash recovery's restart")
 }
 
 func TestRefreshIsHealthyLoop_MaxDeferForceSuppressedWhenStarved(t *testing.T) {
@@ -262,13 +338,33 @@ func TestRefreshIsHealthyLoop_MaxDeferForceSuppressedWhenStarved(t *testing.T) {
 		"max-defer force must not kill busy sessions when vitals prove opencode is progressing — the force exists for stale busy state on a HUNG process")
 }
 
-func TestHealthWatchdog_ResetClearsStarvationState(t *testing.T) {
+func TestRefreshIsHealthyLoop_MaxDeferForceSuppressedWhenFlat(t *testing.T) {
+	setWatchdogTiming(t, 60*time.Millisecond, 40*time.Millisecond, 3)
+	origMax := watchdogMaxDeferrals
+	watchdogMaxDeferrals = 2
+	t.Cleanup(func() { watchdogMaxDeferrals = origMax })
+
+	srv := newHungServer(t, 500*time.Millisecond)
+	fr := &fakeRestarter{}
+	flat := &fakeVitals{v: vitalSigns{tcpOpen: true, cpuKnown: true, cpuDeltaTicks: 0}}
+
+	cache := runWatchdogLoop(t, srv.URL, 40*time.Millisecond, fr, fakeBusy{}, flat)
+
+	// With maxDefers=2 and 60ms polls, the force path is reached ~4 times
+	// in 1.2s. Old behavior: restart fires at the first force. New: the
+	// flat verdict re-arms the deferral window every time — a busy
+	// blocked-IO turn must survive the force path.
+	time.Sleep(1200 * time.Millisecond)
+	assert.False(t, cache.Snapshot().Healthy)
+	assert.Zero(t, fr.callCount(),
+		"max-defer force must not kill busy sessions when the listener accepts — blocked-IO turns are alive (#892)")
+}
+
+func TestHealthWatchdog_ResetClearsSuppressionState(t *testing.T) {
 	wd := &healthWatchdog{}
-	wd.starvedCount = 42
-	wd.starvedLogged = true
-	wd.standDownLogged = true
+	wd.suppressedCount = 42
+	wd.suppressLogged = true
 	wd.reset()
-	assert.Zero(t, wd.starvedCount)
-	assert.False(t, wd.starvedLogged)
-	assert.False(t, wd.standDownLogged)
+	assert.Zero(t, wd.suppressedCount)
+	assert.False(t, wd.suppressLogged)
 }
