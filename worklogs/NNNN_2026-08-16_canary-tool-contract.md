@@ -9,7 +9,7 @@
 ## Work Completed
 
 - `sdks/canary/mcp/main.go`:
-  - Tools scenario rewritten per the issue's own fix direction: stable NAMED subset (13 base tools incl. `run_resolve`, documenting the collapse; 5 Epic-64 workflow/trigger tools) + minimum count (≥20, additive-tolerant). Removal detection preserved: a removed named tool fails `tool-present`; a net removal fails the floor. Exact-count pinning is gone — it broke on every additive change (15 → 24 when Epic 64 landed).
+  - Tools scenario rewritten per the issue's own fix direction: stable NAMED subset (13 base tools incl. `run_resolve`, documenting the collapse; 5 Epic-64 workflow/trigger tools) + minimum count (≥24, additive-tolerant; floor restored to the full current registry in round 2). Removal detection preserved: a removed named tool fails `tool-present`; a net removal fails the floor. Exact-count pinning is gone — it broke on every additive change (15 → 24 when Epic 64 landed).
   - `ws-create` deep scenario now passes `name` (the API's CreateWorkspace validation rejects empty names with 422 — Epic 46).
   - `credential_create`: DEK-unavailable (403 "encryption key not available; re-authenticate") is asserted as the documented API-key-auth limitation and skips the CRUD body — the canary authenticates with an API key, and credential writes require the per-session DEK that only interactive login unlocks. Previously this surfaced as unexplained failures.
 - `pkg/mcp/client.go` `ListCredentials`: decodes the API's actual response shape `{"secrets":[...]}` (SecretsHandler.ListSecrets) — was decoding a bare array, so **every** `credential_list` MCP call failed once the wrapper landed. Real product bug surfaced by the canary, not canary drift.
