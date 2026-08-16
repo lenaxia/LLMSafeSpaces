@@ -1589,7 +1589,18 @@ jobs:
         id: create
         working-directory: /tmp/digests
         run: |
-          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+          # The per-arch BINARY sha256s ride on the index as annotations,
+          # covered by the digest itself: one Renovate-updatable
+          # coordinate (repo:tag@sha256:digest) carries the whole verify
+          # contract — hashes can never desync from the digest. The
+          # controller resolves them at startup (agentd_pins.go).
+          amd64="$(cat /tmp/sha/agentd-binary-amd64.sha256)"
+          arm64="$(cat /tmp/sha/agentd-binary-arm64.sha256)"
+          docker buildx imagetools create \
+            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            --annotation "index:dev.llmsafespaces/agentd.sha256-amd64=${amd64}" \
+            --annotation "index:dev.llmsafespaces/agentd.sha256-arm64=${arm64}" \
+            --annotation "index:dev.llmsafespaces/version=${{ needs.prepare.outputs.version }}" \
             $(printf '${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}@sha256:%s ' *)
           # metadata emits the short sha tag (sha-<7hex>, same as every
           # sibling merge job); inspect that for the manifest digest.
@@ -1600,13 +1611,14 @@ jobs:
         run: |
           amd64="$(cat /tmp/sha/agentd-binary-amd64.sha256)"
           arm64="$(cat /tmp/sha/agentd-binary-arm64.sha256)"
-          echo "::notice::agentdDelivery values for this commit:"
+          echo "::notice::agentdDelivery values for this commit (Renovate-friendly: image-only; hashes resolve from the index annotations):"
           cat <<EOF
           controller:
             agentdDelivery:
-              image: ${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}@${{ steps.create.outputs.digest }}
-              binarySHA256Amd64: "${amd64}"
-              binarySHA256Arm64: "${arm64}"
+              image: ${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}:dev@${{ steps.create.outputs.digest }}
+              # break-glass overrides (both or neither):
+              # binarySHA256Amd64: "${amd64}"
+              # binarySHA256Arm64: "${arm64}"
           EOF
 
   build-frontend:

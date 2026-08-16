@@ -59,14 +59,46 @@ func TestAgentdDelivery_DefaultRendersNoFlags(t *testing.T) {
 func TestAgentdDelivery_ConfiguredRendersAllFlags(t *testing.T) {
 	flags := agentdFlags(t, `controller:
   agentdDelivery:
-    image: ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    image: ghcr.io/lenaxia/llmsafespaces/agentd:dev@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
     binarySHA256Amd64: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     binarySHA256Arm64: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 `)
-	require.Len(t, flags, 3, "image + both binary pins must render: %v", flags)
-	require.Contains(t, flags, "--agentd-image=ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	require.Len(t, flags, 3, "full manual pin renders image + both overrides: %v", flags)
+	require.Contains(t, flags, "--agentd-image=ghcr.io/lenaxia/llmsafespaces/agentd:dev@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 	require.Contains(t, flags, "--agentd-binary-sha256-amd64=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	require.Contains(t, flags, "--agentd-binary-sha256-arm64=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+}
+
+// TestAgentdDelivery_ImageOnlyRendersSingleFlag is the RENOVATE FORM:
+// repo:tag@sha256:digest with no hash overrides. The controller
+// resolves the hashes from the index annotations at startup — anything
+// more here would reintroduce the desync footgun this exists to fix.
+func TestAgentdDelivery_ImageOnlyRendersSingleFlag(t *testing.T) {
+	flags := agentdFlags(t, `controller:
+  agentdDelivery:
+    image: ghcr.io/lenaxia/llmsafespaces/agentd:dev@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+`)
+	require.Equal(t, []string{"--agentd-image=ghcr.io/lenaxia/llmsafespaces/agentd:dev@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}, flags,
+		"image-only must render exactly one flag — the Renovate-updatable coordinate")
+}
+
+// TestAgentdDelivery_OneSidedHashOverrideFailsRender guards the
+// both-or-neither override rule.
+func TestAgentdDelivery_OneSidedHashOverrideFailsRender(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not on PATH; skipping chart render test")
+	}
+	dir := t.TempDir()
+	valuesPath := filepath.Join(dir, "values.yaml")
+	require.NoError(t, os.WriteFile(valuesPath, []byte(`controller:
+  agentdDelivery:
+    image: ghcr.io/lenaxia/llmsafespaces/agentd:dev@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    binarySHA256Amd64: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+`), 0o600))
+	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath)
+	out, err := cmd.CombinedOutput()
+	require.Error(t, err, "one-sided hash override must fail the render; output: %s", out)
+	require.Contains(t, string(out), "BOTH hashes or NEITHER", "output: %s", out)
 }
 
 func TestAgentdDelivery_HalfConfiguredFailsRender(t *testing.T) {
@@ -83,9 +115,9 @@ func TestAgentdDelivery_HalfConfiguredFailsRender(t *testing.T) {
 	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath)
 	out, err := cmd.CombinedOutput()
 	require.Error(t, err,
-		"half-configured agentdDelivery must fail the render — install-time error beats an entrypoint exit-81 storm; output: %s", out)
-	require.Contains(t, string(out), "binarySHA256Amd64 is required",
-		"the failure must be the required-guard, not an unrelated render error; output: %s", out)
+		"hashes-without-image must fail the render (they are per-image overrides); output: %s", out)
+	require.Contains(t, string(out), "agentdDelivery.image is required",
+		"the failure must be the reverse-guard fail; output: %s", out)
 }
 
 // TestAgentdDelivery_HashesWithoutImageFailsRender covers the REVERSE

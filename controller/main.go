@@ -156,12 +156,31 @@ func main() {
 			"Required together with --agentd-image.")
 	flag.Parse()
 
-	// #863: validate the all-or-nothing agentd delivery contract before
-	// anything starts — a half-configured overlay would build pods whose
-	// entrypoint cannot verify (exit 81 on every boot).
+	// #863: validate the agentd delivery contract before anything
+	// starts. Image-only is the NORMAL (Renovate-friendly) form — the
+	// per-arch binary sha256s are resolved from the image index
+	// annotations, covered by the digest. Hash flags are optional
+	// per-image overrides (both or neither).
 	if err := workspace.ValidateAgentdDelivery(agentdImage, agentdBinarySHA256AMD64, agentdBinarySHA256ARM64); err != nil {
 		setupLog.Error(err, "invalid agentd delivery configuration")
 		os.Exit(1)
+	}
+	if agentdImage != "" && (agentdBinarySHA256AMD64 == "" || agentdBinarySHA256ARM64 == "") {
+		// Resolve the missing pins from the digest's index annotations
+		// (with the ConfigMap cache for registry outages). This happens
+		// BEFORE the manager starts so a broken pin fails fast at boot
+		// instead of at first pod build.
+		pinCtx, pinCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		pins, err := workspace.ResolvePinsWithCache(pinCtx, agentdImage, agentdBinarySHA256AMD64, agentdBinarySHA256ARM64)
+		pinCancel()
+		if err != nil {
+			setupLog.Error(err, "agentd delivery: unable to resolve binary pins from image index (annotations missing, registry unreachable, or no cache) — pin hashes manually via --agentd-binary-sha256-* to override")
+			os.Exit(1)
+		}
+		agentdBinarySHA256AMD64 = pins.SHA256AMD64
+		agentdBinarySHA256ARM64 = pins.SHA256ARM64
+		setupLog.Info("agentd delivery: binary pins resolved from image index annotations",
+			"image", agentdImage, "sha256Amd64", agentdBinarySHA256AMD64, "sha256Arm64", agentdBinarySHA256ARM64)
 	}
 
 	// US-43.19 / D20: the shared secret authenticating controller→API internal
