@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
@@ -150,6 +151,51 @@ func (t *Tracker) SetOnAgentDied(cb AgentDiedCallback) {
 func (t *Tracker) SetIdleTimeout(d time.Duration) {
 	t.idleTimeout = d
 }
+
+// lastEventMu guards lastEvent (workspace -> last upstream event time).
+// Backs llmsafespaces_sse_tracker_last_event_age_seconds (#901 G3):
+// receiving client heartbeats proves NOTHING about the upstream tracker
+// (they are generated per-subscriber in proxy_stream.go) — this gauge is
+// the upstream-liveness signal.
+var (
+	lastEventMu sync.Mutex
+	lastEvent   = map[string]time.Time{}
+
+	lastEventAgeGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llmsafespaces_sse_tracker_last_event_age_seconds",
+		Help: "Seconds since the tracker last received an upstream agent event per workspace (stale/large = connected-but-silent or dead upstream)",
+	}, []string{"workspace_id"})
+
+	lastEventGaugeOnce sync.Once
+)
+
+func recordLastEvent(workspaceID string) {
+	lastEventMu.Lock()
+	lastEvent[workspaceID] = time.Now()
+	lastEventMu.Unlock()
+}
+
+// RefreshLastEventGauges recomputes the age gauges for the given
+// workspaces (stale entries included — a workspace with no recent events
+// is exactly the signal). Called from the watch reconciler each tick.
+func RefreshLastEventGauges(workspaceIDs []string) {
+	lastEventGaugeOnce.Do(func() { prometheus.MustRegister(lastEventAgeGauge) })
+	lastEventMu.Lock()
+	defer lastEventMu.Unlock()
+	now := time.Now()
+	for _, id := range workspaceIDs {
+		t, ok := lastEvent[id]
+		if !ok {
+			// Watched but never received: report since process start so
+			// the silence is visible rather than absent.
+			lastEventAgeGauge.WithLabelValues(id).Set(math.Max(300, now.Sub(processStart).Seconds()))
+			continue
+		}
+		lastEventAgeGauge.WithLabelValues(id).Set(now.Sub(t).Seconds())
+	}
+}
+
+var processStart = time.Now()
 
 // watchedCount tracks live tracker subscriptions across all Tracker
 // instances in this process; exported as the
@@ -365,14 +411,23 @@ func (t *Tracker) subscribe(ctx context.Context, workspaceID string) {
 		default:
 		}
 
-		if err := t.connectAndRead(ctx, workspaceID); err != nil {
+		started := time.Now()
+		err := t.connectAndRead(ctx, workspaceID)
+		if err != nil {
 			// Warn, not Debug (#901 G2 / #902 fix item 3): a workspace whose
 			// tracker cannot connect is EVENT-BLIND — users halt while sends
 			// keep succeeding. Rate-limited by the backoff below (max one
 			// line per 30s per workspace).
 			t.Logger.Warn("SSE subscription ended; retrying", "error", err, "workspaceID", workspaceID, "backoff", backoff.String())
-		} else {
-			backoff = 2 * time.Second
+			// connectAndRead ALWAYS returns non-nil (even clean stream end
+			// is an error return), so resetting backoff on nil was dead
+			// code — a long-lived healthy connection that ended (pod
+			// restart) kept the maxed 30s backoff forever (#903 review,
+			// fixed here per #901). Reset when the connection genuinely
+			// lived: it earned a fast retry.
+			if time.Since(started) > 30*time.Second {
+				backoff = 2 * time.Second
+			}
 		}
 
 		select {
@@ -494,6 +549,7 @@ func (t *Tracker) processEvent(workspaceID, data string) {
 	if data == "" {
 		return
 	}
+	recordLastEvent(workspaceID)
 
 	var evt sseEvent
 	if err := json.Unmarshal([]byte(data), &evt); err != nil || evt.Type == "" {

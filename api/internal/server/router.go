@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"net/http/pprof" //nolint:gosec // admin-gated below
 	"os"
 	"strconv"
 	"time"
@@ -491,6 +492,21 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 	// Settings routes (admin + user)
 	if cfg.SettingsHandler != nil {
 		registerSettingsRoutes(router, services, cfg.SettingsHandler)
+	}
+
+	// Auth-gated pprof (#901 G6): goroutine/heap/trace dumps for live
+	// incident diagnosis (2026-08-16: stacks required SIGQUIT-ing a
+	// production replica). Admin-guarded like every other /admin surface —
+	// profile data leaks internals and is never public.
+	if services.GetAuth() != nil {
+		pprofMux := http.NewServeMux()
+		pprofMux.HandleFunc("/", pprof.Index)
+		pprofMux.HandleFunc("/cmdline", pprof.Cmdline)
+		pprofMux.HandleFunc("/profile", pprof.Profile)
+		pprofMux.HandleFunc("/symbol", pprof.Symbol)
+		pprofMux.HandleFunc("/trace", pprof.Trace)
+		debug := router.Group("/api/v1/admin/debug/pprof", services.GetAuth().AuthMiddleware(), middleware.AdminGuard())
+		debug.Any("/*path", gin.WrapH(http.StripPrefix("/api/v1/admin/debug/pprof", pprofMux)))
 	}
 
 	// Admin provider credentials routes (Epic 30)

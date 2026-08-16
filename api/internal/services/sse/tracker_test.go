@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1054,4 +1056,32 @@ func TestSSETracker_Subscribe_LargeEventDoesNotDropConnection(t *testing.T) {
 		"tracker must receive idle for sess-big AFTER the large event (scanner buffer regression)")
 
 	tracker.Stop()
+}
+
+// #901 G3: last-event-age gauge — never-received workspaces report a
+// large age (visible silence), recent events report near-zero.
+func TestRefreshLastEventGauges(t *testing.T) {
+	recordLastEvent("ws-recent")
+	RefreshLastEventGauges([]string{"ws-recent", "ws-never"})
+
+	age := promtestutil.ToFloat64(lastEventAgeGauge.WithLabelValues("ws-recent"))
+	assert.InDelta(t, 0.0, age, 5.0, "recent event: age ~0")
+
+	never := promtestutil.ToFloat64(lastEventAgeGauge.WithLabelValues("ws-never"))
+	assert.GreaterOrEqual(t, never, 300.0, "never-received: the silence must be visible, not absent")
+}
+
+// #902: processEvent records upstream liveness for every event.
+func TestProcessEvent_RecordsLastEvent(t *testing.T) {
+	tr := NewTracker(nil, &testLogger{}, nil)
+	lastEventMu.Lock()
+	delete(lastEvent, "ws-rec")
+	lastEventMu.Unlock()
+	tr.processEvent("ws-rec", `{"type":"server.connected"}`)
+	lastEventMu.Lock()
+	_, ok := lastEvent["ws-rec"]
+	ts := lastEvent["ws-rec"]
+	lastEventMu.Unlock()
+	assert.True(t, ok, "processEvent must record the event timestamp")
+	assert.WithinDuration(t, time.Now(), ts, 2*time.Second)
 }

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -522,4 +523,23 @@ func TestErrTooManySubscribers_IsAPIError(t *testing.T) {
 
 func TestErrTooManySubscribers_StatusCode(t *testing.T) {
 	assert.Equal(t, http.StatusTooManyRequests, ErrTooManySubscribers.StatusCode())
+}
+
+// #901 G4: delivered-events counter distinguishes zero-emitted /
+// zero-delivered / zero-subscribed.
+func TestPublishToWorkspace_DeliveredCounter(t *testing.T) {
+	b := NewUserEventBroker()
+	sub, err := b.SubscribeWorkspace("ws-metric")
+	require.NoError(t, err)
+	defer b.UnsubscribeWorkspace("ws-metric", sub)
+
+	before := promtestutil.ToFloat64(deliveredEvents.WithLabelValues("ws-metric", "agent.event"))
+	b.PublishToWorkspace("ws-metric", apitypes.WorkspaceSSEEvent{Type: "agent.event"})
+	<-sub.Ch
+	after := promtestutil.ToFloat64(deliveredEvents.WithLabelValues("ws-metric", "agent.event"))
+	assert.Equal(t, before+1, after)
+
+	// No subscriber: no delivery counted.
+	b.PublishToWorkspace("ws-nosub", apitypes.WorkspaceSSEEvent{Type: "agent.event"})
+	assert.Equal(t, 0.0, promtestutil.ToFloat64(deliveredEvents.WithLabelValues("ws-nosub", "agent.event")))
 }

@@ -5,6 +5,9 @@ package eventbroker
 
 import (
 	"hash/fnv"
+	"sync"
+
+	"github.com/prometheus/client_golang/prometheus"
 
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 )
@@ -145,6 +148,17 @@ func (b *UserEventBroker) PublishToUser(userID string, evt apitypes.WorkspaceSSE
 	}
 }
 
+// deliveredEvents counts events actually handed to workspace-stream
+// subscribers (#901 G4): distinguishes zero-emitted / zero-delivered /
+// zero-subscribed — during the 2026-08-16 incident the drop counter had
+// no series (never dropped) while users received nothing.
+var deliveredEvents = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "llmsafespaces_sse_broker_delivered_events_total",
+	Help: "Events delivered to workspace-stream subscribers, by workspace and event type",
+}, []string{"workspace_id", "type"})
+
+var registerDeliveredOnce sync.Once
+
 func (b *UserEventBroker) PublishToWorkspace(workspaceID string, evt apitypes.WorkspaceSSEEvent) {
 	sh := b.wsShard(workspaceID)
 	sh.mu.Lock()
@@ -152,8 +166,10 @@ func (b *UserEventBroker) PublishToWorkspace(workspaceID string, evt apitypes.Wo
 	copy(targets, sh.wsSubs[workspaceID])
 	sh.mu.Unlock()
 
+	registerDeliveredOnce.Do(func() { prometheus.MustRegister(deliveredEvents) })
 	for _, s := range targets {
 		s.Send(evt)
+		deliveredEvents.WithLabelValues(workspaceID, evt.Type).Inc()
 	}
 }
 

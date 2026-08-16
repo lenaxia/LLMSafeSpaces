@@ -106,11 +106,17 @@ func (h *ProxyHandler) sseWatchReconciler(interval time.Duration) {
 			if h.sseTracker == nil || h.phaseSource == nil {
 				continue
 			}
-			for id, phase := range h.phaseSource.GetAllKnownPhases() {
+			phases := h.phaseSource.GetAllKnownPhases()
+			watched := make([]string, 0, len(phases))
+			for id, phase := range phases {
 				if phase == string(phaseActive) {
 					h.sseTracker.EnsureWatching(id)
+					watched = append(watched, id)
 				}
 			}
+			// #901 G3: refresh upstream-liveness gauges while we're here
+			// (no second loop/ticker for the same data).
+			sse.RefreshLastEventGauges(watched)
 		}
 	}
 }
