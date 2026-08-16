@@ -205,7 +205,7 @@ func (t *Tracker) ForceWatchingForTest(workspaceID string) {
 
 // ForceWatchingWithCancelForTest is ForceWatchingForTest with an
 // caller-supplied cancel, so tests can observe StopWatching actually
-// cancelling a live subscription (the transition fresh-connection
+// canceling a live subscription (the transition fresh-connection
 // semantics, #903 review).
 func (t *Tracker) ForceWatchingWithCancelForTest(workspaceID string, cancel context.CancelFunc) {
 	t.subMu.Lock()

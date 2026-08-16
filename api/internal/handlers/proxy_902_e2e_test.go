@@ -340,10 +340,10 @@ func Test902_TransitionCancelsExistingWatch(t *testing.T) {
 	env := newTestEnv(t)
 	env.handler.sseTracker = sse.NewTracker(nil, &testLogger{}, env.handler.onSessionIdle)
 
-	cancelled := make(chan struct{}, 1)
+	canceled := make(chan struct{}, 1)
 	env.handler.GetSSETracker().ForceWatchingWithCancelForTest("ws-902t", func() {
 		select {
-		case cancelled <- struct{}{}:
+		case canceled <- struct{}{}:
 		default:
 		}
 	})
@@ -355,7 +355,7 @@ func Test902_TransitionCancelsExistingWatch(t *testing.T) {
 	env.handler.onPhaseChange(ws)
 
 	select {
-	case <-cancelled:
+	case <-canceled:
 	case <-time.After(2 * time.Second):
 		t.Fatal("transition into Active must cancel the previous watch (fresh connection to the new pod)")
 	}
