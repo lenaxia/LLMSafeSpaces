@@ -13,7 +13,10 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
@@ -96,6 +99,7 @@ func NewTracker(
 	logger pkginterfaces.LoggerInterface,
 	onSessionIdle SessionIdleCallback,
 ) *Tracker {
+	registerWatchedGauge()
 	return &Tracker{
 		HttpClient:       httpClient,
 		Logger:           logger,
@@ -147,6 +151,27 @@ func (t *Tracker) SetIdleTimeout(d time.Duration) {
 	t.idleTimeout = d
 }
 
+// watchedCount tracks live tracker subscriptions across all Tracker
+// instances in this process; exported as the
+// llmsafespaces_sse_tracker_watched_workspaces gauge (#902 fix item 3,
+// #901 G1 minimal slice — "how many workspaces does THIS API replica
+// actually watch" was tonight's blind spot).
+var watchedCount atomic.Int64
+
+var registerWatchedGaugeOnce sync.Once
+
+func registerWatchedGauge() {
+	registerWatchedGaugeOnce.Do(func() {
+		prometheus.MustRegister(prometheus.NewGaugeFunc(
+			prometheus.GaugeOpts{
+				Name: "llmsafespaces_sse_tracker_watched_workspaces",
+				Help: "Number of workspace SSE watches this API replica currently holds (0 for a replica means user streams on it are event-blind)",
+			},
+			func() float64 { return float64(watchedCount.Load()) },
+		))
+	})
+}
+
 func (t *Tracker) EnsureWatching(workspaceID string) {
 	t.subMu.Lock()
 	defer t.subMu.Unlock()
@@ -158,6 +183,8 @@ func (t *Tracker) EnsureWatching(workspaceID string) {
 	//nolint:gosec // G118 false positive; cancel stored in subscriptions map
 	ctx, cancel := context.WithCancel(context.Background())
 	t.subscriptions[workspaceID] = cancel
+	watchedCount.Add(1)
+	t.Logger.Info("SSE watch armed", "workspaceID", workspaceID)
 
 	wg := &sync.WaitGroup{}
 	wg.Add(1)
@@ -167,6 +194,26 @@ func (t *Tracker) EnsureWatching(workspaceID string) {
 		defer wg.Done()
 		t.subscribe(ctx, workspaceID)
 	}()
+}
+
+// ForceWatchingForTest arms a watch without connecting — tests use it to
+// simulate a pre-existing (possibly stale) subscription. The cancel
+// function is a no-op: StopWatching deletes the map entry regardless.
+func (t *Tracker) ForceWatchingForTest(workspaceID string) {
+	t.ForceWatchingWithCancelForTest(workspaceID, func() {})
+}
+
+// ForceWatchingWithCancelForTest is ForceWatchingForTest with an
+// caller-supplied cancel, so tests can observe StopWatching actually
+// canceling a live subscription (the transition fresh-connection
+// semantics, #903 review).
+func (t *Tracker) ForceWatchingWithCancelForTest(workspaceID string, cancel context.CancelFunc) {
+	t.subMu.Lock()
+	defer t.subMu.Unlock()
+	if _, exists := t.subscriptions[workspaceID]; !exists {
+		t.subscriptions[workspaceID] = cancel
+		watchedCount.Add(1)
+	}
 }
 
 // IsWatching returns true if the tracker has an active SSE subscription
@@ -184,6 +231,8 @@ func (t *Tracker) StopWatching(workspaceID string) {
 	if cancel, exists := t.subscriptions[workspaceID]; exists {
 		cancel()
 		delete(t.subscriptions, workspaceID)
+		watchedCount.Add(-1)
+		t.Logger.Info("SSE watch stopped", "workspaceID", workspaceID)
 	}
 	wg := t.goroutineWg[workspaceID]
 	delete(t.goroutineWg, workspaceID)
@@ -317,7 +366,11 @@ func (t *Tracker) subscribe(ctx context.Context, workspaceID string) {
 		}
 
 		if err := t.connectAndRead(ctx, workspaceID); err != nil {
-			t.Logger.Debug("SSE subscription ended", "error", err, "workspaceID", workspaceID)
+			// Warn, not Debug (#901 G2 / #902 fix item 3): a workspace whose
+			// tracker cannot connect is EVENT-BLIND — users halt while sends
+			// keep succeeding. Rate-limited by the backoff below (max one
+			// line per 30s per workspace).
+			t.Logger.Warn("SSE subscription ended; retrying", "error", err, "workspaceID", workspaceID, "backoff", backoff.String())
 		} else {
 			backoff = 2 * time.Second
 		}

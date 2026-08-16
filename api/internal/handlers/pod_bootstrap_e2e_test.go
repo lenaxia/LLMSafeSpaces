@@ -290,14 +290,18 @@ func buildAgentd(t *testing.T) string {
 	// goroutine + cmd.Process.Kill from this one on timeout) raced on
 	// cmd.Process between exec.Start's write and the parent's read —
 	// caught by -race in CI (worklog: #892 follow-up).
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	// 240s: the build itself is ~60-90s warm, but a cold module cache on
+	// a loaded CI runner (other suites building concurrently) has hit the
+	// old 120s budget — a timeout here fails the WHOLE e2e suite
+	// spuriously (seen: TestE2E_BootstrapMaterialize_* on #903's CI).
+	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/workspace-agentd")
 	cmd.Dir = modRoot
 	cmd.Stderr = os.Stderr
 	err := cmd.Run()
 	if ctx.Err() != nil {
-		t.Fatal("go build ./cmd/workspace-agentd timed out after 120s")
+		t.Fatal("go build ./cmd/workspace-agentd timed out after 240s")
 	}
 	require.NoError(t, err, "go build ./cmd/workspace-agentd failed (cwd=%s)", modRoot)
 	return bin
