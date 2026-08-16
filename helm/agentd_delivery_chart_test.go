@@ -109,7 +109,8 @@ func TestAgentdDelivery_HalfConfiguredFailsRender(t *testing.T) {
 	valuesPath := filepath.Join(dir, "values.yaml")
 	require.NoError(t, os.WriteFile(valuesPath, []byte(`controller:
   agentdDelivery:
-    image: ghcr.io/lenaxia/llmsafespaces/agentd@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    binarySHA256Amd64: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    binarySHA256Arm64: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 `), 0o600))
 
 	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath)
