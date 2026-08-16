@@ -141,3 +141,88 @@ func TestProviderCache_LastKnownNoFetch(t *testing.T) {
 	assert.Equal(t, []string{"prov-a"}, connected)
 	assert.Equal(t, 2, configured)
 }
+
+// TestOpencodeTCPReady_ProductionAddrForm (review round 1 on #895,
+// ship-blocker regression): the production checker dials a raw
+// host:port, NOT the URL-form getAgentAddr() — net.Dial("tcp",
+// "http://...") fails on address form regardless of listeners, which
+// made readyz 503 forever (a deterministic startup-probe kill loop).
+func TestOpencodeTCPReady_ProductionAddrForm(t *testing.T) {
+	withTestLogger(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	host, portStr, err := net.SplitHostPort(ln.Addr().String())
+	require.NoError(t, err)
+
+	// The production URL form is set as the global agent addr, exactly
+	// like main() does — the checker must IGNORE it.
+	orig := getAgentAddr()
+	setAgentAddr("http://" + host + ":" + portStr)
+	t.Cleanup(func() { setAgentAddr(orig) })
+
+	// The production wiring form (host:port, no scheme) against a live
+	// listener: must be ready.
+	ready := opencodeTCPReady(net.JoinHostPort(host, portStr))
+	assert.True(t, ready(), "host:port form against a live listener must be ready")
+
+	// And the URL form itself — what the pre-fix code dialed — can never
+	// work as a dial address, proving why the checker must not consult
+	// getAgentAddr().
+	conn, err := net.DialTimeout("tcp", getAgentAddr(), 2*time.Second)
+	if err == nil {
+		_ = conn.Close()
+	}
+	assert.Error(t, err, "URL-form addr must fail as a raw dial target (sanity: the pre-fix bug class)")
+}
+
+// TestOpencodeTCPReady_RefusedPort: nothing listening → not ready (the
+// boot window stays closed).
+func TestOpencodeTCPReady_RefusedPort(t *testing.T) {
+	withTestLogger(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := ln.Addr().String()
+	_ = ln.Close()
+
+	ready := opencodeTCPReady(addr)
+	assert.False(t, ready())
+}
+
+// TestReadyz_AdminServerWiring (review round 1: the admin-server wiring
+// was untested): requireBearerToken + buildReadyzHandler +
+// opencodeTCPReady composed as production registers them. Auth is
+// enforced; an authorized request against a live opencode-port listener
+// returns 200 with Ready=true.
+func TestReadyz_AdminServerWiring(t *testing.T) {
+	withTestLogger(t)
+	// "opencode": a listener that never accepts — kernel answers
+	// handshakes from the backlog regardless (the starved-opencode
+	// shape).
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+
+	deps := newReadyzDeps(t)
+	deps.healthCache.snapshot.Store(&healthzCacheSnapshot{Initialized: true, Healthy: true, Version: "vtest"})
+
+	mux := http.NewServeMux()
+	mux.Handle("/v1/readyz", requireBearerToken("tok", buildReadyzHandler(deps, opencodeTCPReady(ln.Addr().String()))))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	get := func(auth string) int {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/readyz", nil)
+		if auth != "" {
+			req.Header.Set("Authorization", "Bearer "+auth)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	assert.Equal(t, http.StatusUnauthorized, get(""), "admin endpoints enforce bearer auth")
+	assert.Equal(t, http.StatusUnauthorized, get("wrong"), "admin endpoints reject bad tokens")
+	assert.Equal(t, http.StatusOK, get("tok"), "authorized request with live opencode port: ready")
+}
