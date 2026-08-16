@@ -725,6 +725,11 @@ func TestSendMessage_AdapterPath_Error_Returns502(t *testing.T) {
 		sendFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (*session.Message, error) {
 			return nil, fmt.Errorf("pod unreachable")
 		},
+		// #817 recovery probe: session status unavailable → the 502 path
+		// must be preserved.
+		getSessionFn: func(_ context.Context, _, _, _ string) (*session.Session, error) {
+			return nil, fmt.Errorf("probe failed")
+		},
 	}
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -841,6 +846,10 @@ func TestSendPromptAsync_AdapterPath_Error_Returns502(t *testing.T) {
 		sendFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (*session.Message, error) {
 			return nil, fmt.Errorf("pod unreachable")
 		},
+		// #817 recovery probe unavailable → 502 preserved.
+		getSessionFn: func(_ context.Context, _, _, _ string) (*session.Session, error) {
+			return nil, fmt.Errorf("probe failed")
+		},
 	}
 
 	w := httptest.NewRecorder()
@@ -860,6 +869,10 @@ func TestSendPromptAsync_AdapterPath_SessionNotFound_Returns404(t *testing.T) {
 	h.adapter = &mockAdapter{
 		sendFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (*session.Message, error) {
 			return nil, fmt.Errorf("session not found: ses_missing")
+		},
+		// #817 recovery probe unavailable → 502 preserved.
+		getSessionFn: func(_ context.Context, _, _, _ string) (*session.Session, error) {
+			return nil, fmt.Errorf("probe failed")
 		},
 	}
 

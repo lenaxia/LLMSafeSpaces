@@ -112,6 +112,7 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 		}
 		h.adapterEnsureSSEWatch(wid)
 
+		sendSubmittedAt := time.Now()
 		msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{})
 		if err != nil {
 			// #817: log the underlying adapter error — without this the
@@ -120,6 +121,12 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 			// is invisible in production.
 			h.logger.Error("SendMessage: adapter failed", err,
 				"workspaceID", wid, "sessionID", sid)
+			// #817 self-healing: the turn may have completed server-side
+			// even though the send response was lost in transit. Verify
+			// and recover before failing — see proxy_send_recovery.go.
+			if h.attemptSendRecovery(c, workspace, wid, sid, sendSubmittedAt) {
+				return
+			}
 			if sid != "" {
 				h.removeActiveSession(c.Request.Context(), wid, sid)
 			}
@@ -232,11 +239,18 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 		// drifted (see #755, #739). The synchronous path works correctly
 		// on all versions. The frontend receives the assistant response
 		// via SSE events regardless of which send path is used.
+		sendSubmittedAt := time.Now()
 		msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{})
 		if err != nil {
 			// #817: log the underlying adapter error for this path too.
 			h.logger.Error("SendPromptAsync: adapter failed", err,
 				"workspaceID", wid, "sessionID", sid)
+			// #817 self-healing: the browser path's failure signature is
+			// "turn completed server-side, response lost in transit" —
+			// verify and recover before failing. See proxy_send_recovery.go.
+			if h.attemptSendRecovery(c, workspace, wid, sid, sendSubmittedAt) {
+				return
+			}
 			if sid != "" {
 				h.removeActiveSession(c.Request.Context(), wid, sid)
 			}
