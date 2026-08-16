@@ -70,10 +70,17 @@ type ProxyHandler struct {
 
 	activityTracker *activity.ActivityTracker
 	watcher         *workspace.Watcher
-	sseTracker      *sse.Tracker
-	sessionIndex    interfaces.SessionIndexService
-	userBroker      *eventbroker.UserEventBroker
-	sessionParents  *sessionParentCache
+	// phaseSource is how the SSE watch reconciler (#902) enumerates
+	// Active workspaces; production wires the CRD watcher
+	// (GetAllKnownPhases). Interface so tests can inject phases without
+	// a k8s informer.
+	phaseSource interface {
+		GetAllKnownPhases() map[string]string
+	}
+	sseTracker     *sse.Tracker
+	sessionIndex   interfaces.SessionIndexService
+	userBroker     *eventbroker.UserEventBroker
+	sessionParents *sessionParentCache
 
 	meteringSvc interfaces.MeteringService
 

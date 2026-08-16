@@ -62,11 +62,53 @@ func (h *ProxyHandler) Start() error {
 			return
 		}
 		h.watcher = watcher
+		h.phaseSource = watcher
 		// SSE subscriptions for already-Active workspaces are established
 		// by the watcher's seedResourceVersion(), which calls onPhaseChange
 		// for each Active workspace it discovers. No post-Start loop needed.
+		//
+		// #902: ...except when it IS needed: the seed's onPhaseChange skips
+		// arming when Redis-backed prior-phase already says "Active" (it
+		// survives API restarts), and watches that die later (pod churn,
+		// idle drops, network) have no transition event to re-arm them.
+		// The reconciler below re-arms every Active workspace on an
+		// interval — EnsureWatching is an idempotent map check, so this
+		// only ever ADDS missing watches; it never tears down healthy
+		// connections.
+		go h.sseWatchReconciler()
 	})
 	return startErr
+}
+
+// sseWatchReconcileInterval is how often the SSE watch reconciler re-arms
+// watches for Active workspaces. Var for tests.
+var sseWatchReconcileInterval = 60 * time.Second
+
+// sseWatchReconciler periodically re-arms SSE tracker watches for every
+// Active workspace (#902). Belt-and-braces self-heal: converts any
+// silently-missing watch — seed skipped via Redis-persisted prior-phase,
+// goroutine exit, future bug — into at most sseWatchReconcileInterval of
+// event blindness instead of forever. EnsureWatching is an idempotent map
+// check: this only ever adds missing watches, never tears down healthy
+// connections.
+func (h *ProxyHandler) sseWatchReconciler() {
+	ticker := time.NewTicker(sseWatchReconcileInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-h.stopCh:
+			return
+		case <-ticker.C:
+			if h.sseTracker == nil || h.phaseSource == nil {
+				continue
+			}
+			for id, phase := range h.phaseSource.GetAllKnownPhases() {
+				if phase == string(phaseActive) {
+					h.sseTracker.EnsureWatching(id)
+				}
+			}
+		}
+	}
 }
 
 func (h *ProxyHandler) Stop() error {

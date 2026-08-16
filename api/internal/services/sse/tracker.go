@@ -169,6 +169,17 @@ func (t *Tracker) EnsureWatching(workspaceID string) {
 	}()
 }
 
+// ForceWatchingForTest arms a watch without connecting — tests use it to
+// simulate a pre-existing (possibly stale) subscription. The cancel
+// function is a no-op: StopWatching deletes the map entry regardless.
+func (t *Tracker) ForceWatchingForTest(workspaceID string) {
+	t.subMu.Lock()
+	defer t.subMu.Unlock()
+	if _, exists := t.subscriptions[workspaceID]; !exists {
+		t.subscriptions[workspaceID] = func() {}
+	}
+}
+
 // IsWatching returns true if the tracker has an active SSE subscription
 // for the given workspace. Used by tests to verify that read-path
 // handlers trigger SSE watch (#755 stuck-busy regression).
