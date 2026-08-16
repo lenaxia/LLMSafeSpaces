@@ -142,9 +142,14 @@ Under starvation, timeouts are the *expected symptom of a healthy pod*.
 - **Readiness:** agentd up + opencode process exists — not responsiveness.
   Slow-but-alive pods must keep traffic; unready buys no CPU and
   disconnects the wrong thing.
-- **Startup:** periodSeconds 5, failureThreshold 30 (150 s incl. relay
+- **Startup:** periodSeconds 5, failureThreshold 36 (180 s incl. relay
   injection). The startup-probe kill of the 04:01 pod was churn, not
-  recovery. Chart/operator config change only.
+  recovery. Chart/operator config change only. *(Amended in the D4 PR:
+  the original draft said ×30/150 s; the incident log showed boot
+  exceeding 120 s under quota saturation — with a 3 s timeout, ×36/180 s
+  is the number actually shipped and covered by the pod-builder test's
+  ≥180 s budget assertion. Review round 1 on #895 flagged the
+  deviation; recorded here rather than silently diverging.)*
 
 ### D5 — Informed Stop + progress visibility
 

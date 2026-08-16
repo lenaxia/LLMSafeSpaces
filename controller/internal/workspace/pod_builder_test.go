@@ -104,18 +104,14 @@ func TestPodBuilder_ContainerEnv_OpenCodeExperimentalEventSystem(t *testing.T) {
 }
 
 // TestPodBuilder_ReadinessProbe_TightTiming verifies the readiness probe
-// is configured for fast pod-Ready detection (cold-start optimization,
-// 2026-06-23 perf audit).
+// is configured per design 0050 D4 (#892): probes detect death, never
+// slowness. readyz answers from a kernel-level TCP check plus agentd
+// liveness (microseconds under any load), so a generous timeout cannot
+// mask real death while starvation can no longer flap readiness.
 //
-// Pre-fix: InitialDelaySeconds=10, PeriodSeconds=15 — kubelet would wait
-// 10s before probing, then poll every 15s. The agent reaches /v1/readyz=200
-// at roughly T+22s after PodScheduled, so on a bad probe-phase alignment
-// the pod could remain "not Ready" for an additional 5–13s after the agent
-// was actually ready.
-//
-// Post-fix: InitialDelaySeconds=2, PeriodSeconds=2 — overall ready-detection
-// budget is similar (FailureThreshold raised to 30 → 60s tolerance) but
-// post-readyz-200 latency drops to a single 2s tick.
+// Incident 2026-08-15/16: the old 2s timeout on a readyz that did
+// synchronous opencode HTTP under cache.mu timed out under CPU
+// starvation, dropping healthy pods from traffic.
 func TestPodBuilder_ReadinessProbe_TightTiming(t *testing.T) {
 	ws := newWorkspaceForPodBuilder(t)
 	r := reconcilerFor(t)
@@ -130,25 +126,25 @@ func TestPodBuilder_ReadinessProbe_TightTiming(t *testing.T) {
 	assert.Equal(t, int32(2), probe.InitialDelaySeconds,
 		"InitialDelaySeconds must be 2s — kubelet should start probing quickly so "+
 			"a cold-started agent transitions to Ready within one poll period")
-	assert.Equal(t, int32(2), probe.PeriodSeconds,
-		"PeriodSeconds must be 2s — readiness checks must align tightly to "+
-			"agent /v1/readyz=200 to minimize post-ready dead time")
-	assert.Equal(t, int32(2), probe.TimeoutSeconds,
-		"TimeoutSeconds must be 2s — /v1/readyz is cache-backed, sub-50ms in "+
-			"the steady state, so 2s is a generous failure budget")
-	assert.Equal(t, int32(30), probe.FailureThreshold,
-		"FailureThreshold must be 30 — preserves 60s total ready budget at 2s period")
+	assert.Equal(t, int32(5), probe.PeriodSeconds,
+		"PeriodSeconds must be 5s — cheap kernel-level readyz makes cadence "+
+			"irrelevant to load; 5s halves probe traffic vs the old 2s")
+	assert.Equal(t, int32(5), probe.TimeoutSeconds,
+		"TimeoutSeconds must be 5s — generous for a throttled agentd answering "+
+			"a lock-free handler; timeout must never fire on slowness")
+	assert.Equal(t, int32(12), probe.FailureThreshold,
+		"FailureThreshold must be 12 — 60s total budget at 5s period")
 }
 
 // TestPodBuilder_StartupProbe_FastDetection verifies the startup probe
-// allows aggressive cold-start polling without affecting steady-state
-// liveness behavior (2026-06-23 perf audit).
+// budget covers boot-to-listen of opencode under a saturated 2-CPU quota
+// (design 0050 D4). The incident's 6-restart churn included kubelet
+// container kills after the old 120×1s budget expired mid-boot under
+// starvation.
 //
-// Why a separate startup probe: kubelet runs only one probe at a time
-// per container — when the startup probe is set, liveness and readiness
-// probes are paused until startup succeeds. This lets us probe at 1s
-// intervals during boot without paying the cost on every steady-state
-// liveness check.
+// Why a separate startup probe: kubelet pauses readiness/liveness until
+// startup succeeds, letting the boot budget be large without widening
+// the steady-state kill window.
 func TestPodBuilder_StartupProbe_FastDetection(t *testing.T) {
 	ws := newWorkspaceForPodBuilder(t)
 	r := reconcilerFor(t)
@@ -162,11 +158,13 @@ func TestPodBuilder_StartupProbe_FastDetection(t *testing.T) {
 	require.NotNil(t, probe.HTTPGet, "startup probe must use HTTP, matching readiness")
 	assert.Equal(t, "/v1/readyz", probe.HTTPGet.Path,
 		"startup probe path must match readiness — same gate, faster cadence")
-	assert.Equal(t, int32(1), probe.PeriodSeconds,
-		"PeriodSeconds=1 — probe every second during boot")
-	assert.GreaterOrEqual(t, probe.FailureThreshold, int32(60),
-		"FailureThreshold must be >=60 to give the relay-injector restart cycle (~30s) "+
-			"plus a safety margin before the pod is killed")
+	assert.Equal(t, int32(5), probe.PeriodSeconds,
+		"PeriodSeconds=5 — readyz is cheap; cadence only affects detection latency")
+	assert.Equal(t, int32(3), probe.TimeoutSeconds,
+		"startup TimeoutSeconds must be 3s — pinned: the startup probe is the only one that can kill during boot, and an unpinned timeout regression would pass the suite")
+	assert.GreaterOrEqual(t, probe.FailureThreshold*probe.PeriodSeconds, int32(180),
+		"startup budget must be >=180s to cover opencode boot-to-listen under a "+
+			"saturated 2-CPU quota (incident 2026-08-15/16 exceeded the old 120s)")
 }
 
 // TestPodBuilder_Probes_AuthHeader closes the test gap noted in the
@@ -260,11 +258,14 @@ func TestPodBuilder_LivenessProbe_StableTiming(t *testing.T) {
 	require.NotNil(t, probe)
 	require.NotNil(t, probe.HTTPGet)
 	assert.Equal(t, "/v1/healthz", probe.HTTPGet.Path)
-	// Period and threshold are deliberately gentle — liveness failures
-	// kill the pod, so we want lots of slack against transient network
-	// or overload conditions.
-	assert.GreaterOrEqual(t, probe.PeriodSeconds, int32(10))
-	assert.GreaterOrEqual(t, probe.FailureThreshold, int32(3))
+	// Design 0050 D4 (#895): the incident's literal failure mode was a
+	// probe timeout on a healthy-but-throttled pod. Pin the shipped
+	// values exactly — floors alone are satisfied by the OLD (30/5/6)
+	// values, so a timeout regression would pass silently.
+	assert.Equal(t, int32(10), probe.PeriodSeconds, "liveness period: 10s")
+	assert.Equal(t, int32(10), probe.TimeoutSeconds,
+		"liveness timeout must be 10s — generous for a throttled agentd answering the lock-free healthz; a timeout here is a kill")
+	assert.Equal(t, int32(8), probe.FailureThreshold, "8×10s ≈ 80s grace before a real liveness kill")
 }
 
 // TestPodBuilder_TerminationGracePeriod_Tight verifies the pod's

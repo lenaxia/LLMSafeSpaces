@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -25,6 +26,20 @@ type providerCache struct {
 	configured    int
 	sessions      []agentd.SessionInfo
 	lastFetchedAt time.Time
+	// readySnapshot mirrors connected/configured behind an atomic
+	// pointer so /v1/readyz never touches mu (design 0050 D4, review
+	// round 4 on #895): cachedState holds mu across three synchronous
+	// opencode HTTP calls on TTL expiry — up to ~15s under the exact
+	// starvation this PR targets — and readyz blocking on that mutex
+	// would defeat "probes detect death, never slowness". Written under
+	// mu on every cache update; read atomically by lastKnown.
+	readySnapshot atomic.Pointer[providerReadySnapshot]
+}
+
+// providerReadySnapshot is the lock-free readyz view of the cache.
+type providerReadySnapshot struct {
+	connected  []string
+	configured int
 }
 
 // sessionStatusTracker subscribes to opencode's SSE stream and tracks busy/idle per session
@@ -423,6 +438,19 @@ func fillGaps(ctx context.Context, client *OpenCodeClient, tracker *sessionStatu
 
 const connectedCacheTTL = 15 * time.Second
 
+// lastKnown returns the provider cache's most recent connected/configured
+// values without ever fetching and without taking providerCache.mu —
+// it reads an atomic snapshot, so a concurrent cachedState fetch (which
+// holds mu across synchronous opencode HTTP for up to its TTL-refresh
+// window under starvation) cannot block it. Used by /v1/readyz (design
+// 0050 D4): readiness must answer in microseconds under any load.
+func (c *providerCache) lastKnown() (connected []string, configured int) {
+	if snap := c.readySnapshot.Load(); snap != nil {
+		return snap.connected, snap.configured
+	}
+	return nil, 0
+}
+
 func cachedState(ctx context.Context, client *OpenCodeClient, cache *providerCache, tracker *sessionStatusTracker) ([]string, int, []agentd.SessionInfo) {
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
@@ -459,5 +487,6 @@ func cachedState(ctx context.Context, client *OpenCodeClient, cache *providerCac
 	cache.configured = configured
 	cache.sessions = sessions
 	cache.lastFetchedAt = time.Now()
+	cache.readySnapshot.Store(&providerReadySnapshot{connected: connected, configured: configured})
 	return connected, configured, sessions
 }

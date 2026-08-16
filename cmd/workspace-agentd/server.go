@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"sync"
@@ -102,23 +103,41 @@ func buildStatuszHandler(
 	})
 }
 
-// buildReadyzHandler returns the /v1/readyz HTTP handler. Ready requires:
-// cache initialized + opencode healthy. Provider connectivity is no
-// longer a readiness gate (S18.11): it is surfaced separately via
-// WorkspaceConditionProviderReady on the Workspace CRD. Provider info
-// is still included in the response body for observability.
+// buildReadyzHandler returns the /v1/readyz HTTP handler.
+//
+// Readiness semantics (design 0050 D4, #892): agentd up AND opencode's
+// port accepting TCP connections — NOT opencode responsiveness. Under
+// CPU starvation (incident 2026-08-15/16) an HTTP round-trip to
+// /global/health times out while opencode is alive and progressing;
+// readiness flapping on that signal dropped slow-but-alive pods for no
+// benefit, and the startup probe built on it killed containers mid-boot
+// (kubelet Killing events, restart churn). A TCP connect is answered by
+// the kernel for a listening socket regardless of the application's
+// event-loop health: refused = booting or dead, accepted = can take
+// traffic. It costs microseconds and involves no event-loop work, so it
+// is starvation-immune by construction.
+//
+// readyChecker, when non-nil, supplies that kernel-level answer. nil
+// (tests, partial wiring) preserves legacy semantics.
+//
+// Providers are reported from the provider cache's last-known values —
+// readiness never triggers a synchronous opencode fetch (the previous
+// cachedState call could block for seconds under load; see the statusz
+// comment below for that hazard).
 //
 // S18.10: providers_connected and readyz_first_200 startup gates are
 // recorded here on first observation.
-func buildReadyzHandler(deps serverDeps) http.Handler {
+func buildReadyzHandler(deps serverDeps, readyChecker func() bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		snap := deps.healthCache.Snapshot()
 
-		connected, configured, _ := cachedState(r.Context(), deps.client, deps.cache, deps.sseTracker)
 		ready := snap.Initialized && snap.Healthy
+		if readyChecker != nil {
+			ready = snap.Initialized && readyChecker()
+		}
 
-		// S18.10: Record providers_connected gate on first non-empty connected list.
+		connected, configured := deps.cache.lastKnown()
 		if len(connected) > 0 {
 			deps.gr.MaybeRecord(gateProvidersConnected)
 		}
@@ -145,6 +164,32 @@ func buildReadyzHandler(deps serverDeps) http.Handler {
 			deps.gr.MaybeRecord(gateReadyzFirst200)
 		}
 	})
+}
+
+// opencodeTCPReady is the production readiness answer (design 0050 D4):
+// can the kernel complete a TCP handshake with opencode's port? The
+// kernel services a listening socket's backlog irrespective of the
+// application's event-loop health, so this distinguishes booting/dead
+// (refused) from alive-but-slow (accepted) without involving either
+// event loop. Timeout is generous because nothing normal bounds it —
+// localhost handshakes complete in microseconds.
+//
+// addr is a raw host:port — production wires
+// fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort), NOT getAgentAddr():
+// the agent addr is a URL (http://localhost:4096) and net.Dial("tcp",
+// "http://...") fails on address form regardless of listeners (review
+// round 1 on #895: the URL-form dial made readyz 503 forever — a
+// deterministic startup-probe kill loop). Parametrized so the production
+// form is testable against an arbitrary listener.
+func opencodeTCPReady(addr string) func() bool {
+	return func() bool {
+		conn, err := net.DialTimeout("tcp", addr, 2*time.Second) //nolint:noctx // liveness probe, not a request
+		if err != nil {
+			return false
+		}
+		_ = conn.Close()
+		return true
+	}
 }
 
 // requireBearerToken wraps an http.Handler so that requests must carry
@@ -195,7 +240,8 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	adminToken := os.Getenv("AGENTD_ADMIN_TOKEN")
 
 	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt, agentd.ReloadSecretsCachePath))
-	adminMux.Handle("/v1/readyz", requireBearerToken(adminToken, buildReadyzHandler(deps)))
+	adminMux.Handle("/v1/readyz", requireBearerToken(adminToken,
+		buildReadyzHandler(deps, opencodeTCPReady(fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort)))))
 
 	// /v1/statusz is the EXPENSIVE deep-introspection endpoint. It makes
 	// multiple synchronous HTTP calls to opencode (IsHealthy,
