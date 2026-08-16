@@ -41,3 +41,43 @@
 - api/internal/handlers/proxy_stream.go
 - api/internal/handlers/proxy_lifecycle.go
 - helm/templates/prometheus-rules.yaml
+
+---
+
+## Round 2 (reviews 1-3 on #906): all blockers
+
+- **pprof mount actually fixed** (three rounds found two successive bugs):
+  round-1's StripPrefix+custom-mux served the HTML index for every named
+  profile; the round-2 DefaultServeMux rewrite silently 404'd everything
+  because import hygiene had stripped the blank net/http/pprof import
+  (verified: DefaultServeMux had no pprof routes). Final: self-contained
+  mux with explicit handlers (Index subtree covers all named profiles;
+  cmdline/profile/symbol/trace exact) — no import magic to strip.
+- **Backoff reset pinned**: logic extracted to `backoffAfterConnect(cur,
+  connDuration)` (threshold var for tests); `TestBackoffAfterConnect`
+  covers reset/keep/boundary.
+- **Delivered counter no longer counts drops**: `Subscriber.Send`
+  returns delivered; counter increments only on true delivery.
+  `TestPublishToWorkspace_FullBufferNotCountedDelivered` (fill buffer →
+  publish → counter unchanged).
+- **G1 per-workspace state** (the issue's actual ask): `llmsafespaces_sse_tracker_connected{workspace_id}` (1 while an /event stream is open — armed-but-failing reads 0) + `llmsafespaces_sse_tracker_reconnects_total{workspace_id}`. Stale series deleted on StopWatching
+  (`TestTrackerConnectedGauge_SeriesDeletedOnStop`).
+- **reconcileSessionState** all-Debug → Warn (4 sites).
+- **G8 statusz**: `relay_free_models` field (0 unknown/1 ok/2 degraded)
+  from the injector's terminal state; consequence-bearing Warn text.
+- **Alert exprs hardened**: WatchesZero guarded `and sum(...) > 0` (no
+  critical on empty fleets); UpstreamSilent joined `and on(workspace_id)
+  connected == 1` (no firing on suspended workspaces).
+- **subscribersIncludingSelf** off-by-one fixed (SubscribeWorkspace runs
+  before the count).
+- **pprof e2e tests**: unauthenticated 401; non-admin 404 (AdminGuard
+  deliberately hides route existence — admin_guard.go:13; initial 403
+  expectation was wrong); admin gets real goroutine/heap/cmdline data
+  (asserts not-HTML + contains stack data).
+- **chart_test pins** the six new alert names.
+
+## Tests Run (round 2)
+
+- Full touched suites: sse, eventbroker, server, handlers, agentd
+  (readyz/statusz), helm TestMonitoring_PrometheusRule — all green
+- New tests `-race` green

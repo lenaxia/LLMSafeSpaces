@@ -2516,6 +2516,13 @@ func TestMonitoring_PrometheusRule_ContainsAllAlerts(t *testing.T) {
 		"LLMSafeSpacesHighInferenceCostRate",
 		"LLMSafeSpacesWorkspaceDiskUsageHigh",
 		"LLMSafeSpacesLegacyAPIKeysRemaining",
+		// #901: the halting-sessions incident class.
+		"LLMSafeSpacesSSETrackerWatchesZero",
+		"LLMSafeSpacesSSETrackerUpstreamSilent",
+		"LLMSafeSpacesWatchdogSuppressing",
+		"LLMSafeSpacesTrackerBusyResetRate",
+		"LLMSafeSpacesRestartMarkerWriteFailed",
+		"LLMSafeSpacesRelayInjectorDegraded",
 	}
 	for _, expectedName := range expected {
 		require.True(t, alertNames[expectedName],

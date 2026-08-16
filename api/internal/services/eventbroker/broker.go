@@ -51,9 +51,13 @@ type Subscriber struct {
 	onDrop      func(eventType string)
 }
 
-func (s *Subscriber) Send(evt apitypes.WorkspaceSSEEvent) {
+// Send enqueues evt and reports whether it was delivered (buffered);
+// dropped-on-full returns false so callers can count deliveries
+// accurately (#906 review: the delivered counter previously incremented
+// after drops too).
+func (s *Subscriber) Send(evt apitypes.WorkspaceSSEEvent) (delivered bool) {
 	if s.closed.Load() {
-		return
+		return false
 	}
 	defer func() { _ = recover() }()
 	if s.missedEvent.Load() {
@@ -65,16 +69,18 @@ func (s *Subscriber) Send(evt apitypes.WorkspaceSSEEvent) {
 			if s.onDrop != nil {
 				s.onDrop("resync")
 			}
-			return
+			return false
 		}
 	}
 	select {
 	case s.Ch <- evt:
+		return true
 	default:
 		s.missedEvent.Store(true)
 		if s.onDrop != nil {
 			s.onDrop(evt.Type)
 		}
+		return false
 	}
 }
 

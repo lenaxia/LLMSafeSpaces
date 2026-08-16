@@ -197,6 +197,61 @@ func RefreshLastEventGauges(workspaceIDs []string) {
 
 var processStart = time.Now()
 
+// Per-workspace connection state (#901 G1 — the issue's actual ask; the
+// aggregate watched-count gauge from #903 cannot see armed-but-failing
+// watches): connected=1 while an /event stream is open (HTTP 200 read
+// loop active), 0 otherwise; reconnects counts successful (re)connects.
+var (
+	connStateMu sync.Mutex
+	connState   = map[string]bool{}
+
+	trackerConnectedGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llmsafespaces_sse_tracker_connected",
+		Help: "1 while this replica holds an open /event stream for the workspace (armed-but-failing watches read 0)",
+	}, []string{"workspace_id"})
+
+	trackerReconnects = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "llmsafespaces_sse_tracker_reconnects_total",
+		Help: "Successful (re)connections to a workspace /event stream",
+	}, []string{"workspace_id"})
+
+	connGaugesOnce sync.Once
+)
+
+func setTrackerConnected(workspaceID string, up bool) {
+	connGaugesOnce.Do(func() {
+		prometheus.MustRegister(trackerConnectedGauge)
+		prometheus.MustRegister(trackerReconnects)
+	})
+	connStateMu.Lock()
+	connState[workspaceID] = up
+	connStateMu.Unlock()
+	trackerConnectedGauge.WithLabelValues(workspaceID).Set(boolToFloat(up))
+	if up {
+		trackerReconnects.WithLabelValues(workspaceID).Inc()
+	}
+}
+
+// deleteTrackerSeries removes a workspace's gauge series (#906 review:
+// stale series fired UpstreamSilent forever on suspended workspaces).
+func deleteTrackerSeries(workspaceID string) {
+	connStateMu.Lock()
+	delete(connState, workspaceID)
+	connStateMu.Unlock()
+	lastEventMu.Lock()
+	delete(lastEvent, workspaceID)
+	lastEventMu.Unlock()
+	trackerConnectedGauge.DeleteLabelValues(workspaceID)
+	lastEventAgeGauge.DeleteLabelValues(workspaceID)
+}
+
+func boolToFloat(b bool) float64 {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 // watchedCount tracks live tracker subscriptions across all Tracker
 // instances in this process; exported as the
 // llmsafespaces_sse_tracker_watched_workspaces gauge (#902 fix item 3,
@@ -290,6 +345,10 @@ func (t *Tracker) StopWatching(workspaceID string) {
 	if wg != nil {
 		wg.Wait()
 	}
+
+	// #906 review: drop per-workspace gauge series so suspended workspaces
+	// stop emitting (permanently-firing UpstreamSilent).
+	deleteTrackerSeries(workspaceID)
 
 	prefix := workspaceID + ":"
 	t.tokensMu.Lock()
@@ -400,6 +459,23 @@ func (t *Tracker) SubscribeDrain(
 	}
 }
 
+// healthyConnBackoffReset is how long a connection must live before its
+// ending earns a backoff reset. Var for tests.
+var healthyConnBackoffReset = 30 * time.Second
+
+// backoffAfterConnect computes the next retry backoff after a
+// connectAndRead returned. connectAndRead ALWAYS returns non-nil (even a
+// clean stream end is an error return), so a reset-on-nil branch was dead
+// code and a long-lived healthy connection that ended (pod restart) kept
+// the maxed 30s backoff forever (#903 review; pinned by
+// TestBackoffAfterConnect).
+func backoffAfterConnect(cur time.Duration, connDuration time.Duration) time.Duration {
+	if connDuration > healthyConnBackoffReset {
+		return 2 * time.Second
+	}
+	return cur
+}
+
 func (t *Tracker) subscribe(ctx context.Context, workspaceID string) {
 	backoff := 2 * time.Second
 	maxBackoff := 30 * time.Second
@@ -413,21 +489,13 @@ func (t *Tracker) subscribe(ctx context.Context, workspaceID string) {
 
 		started := time.Now()
 		err := t.connectAndRead(ctx, workspaceID)
+		backoff = backoffAfterConnect(backoff, time.Since(started))
 		if err != nil {
 			// Warn, not Debug (#901 G2 / #902 fix item 3): a workspace whose
 			// tracker cannot connect is EVENT-BLIND — users halt while sends
 			// keep succeeding. Rate-limited by the backoff below (max one
 			// line per 30s per workspace).
 			t.Logger.Warn("SSE subscription ended; retrying", "error", err, "workspaceID", workspaceID, "backoff", backoff.String())
-			// connectAndRead ALWAYS returns non-nil (even clean stream end
-			// is an error return), so resetting backoff on nil was dead
-			// code — a long-lived healthy connection that ended (pod
-			// restart) kept the maxed 30s backoff forever (#903 review,
-			// fixed here per #901). Reset when the connection genuinely
-			// lived: it earned a fast retry.
-			if time.Since(started) > 30*time.Second {
-				backoff = 2 * time.Second
-			}
 		}
 
 		select {
@@ -491,6 +559,8 @@ func (t *Tracker) connectAndRead(ctx context.Context, workspaceID string) error 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("SSE endpoint returned status %d", resp.StatusCode)
 	}
+	setTrackerConnected(workspaceID, true)
+	defer setTrackerConnected(workspaceID, false)
 
 	scanner := bufio.NewScanner(resp.Body)
 	// 16 MB buffer per line (was 64 KB). Same root cause as the agentd

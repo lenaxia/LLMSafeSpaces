@@ -70,12 +70,14 @@ func (h *ProxyHandler) StreamEvents(c *gin.Context) {
 	// incident, stream logs only appeared at close and showed heartbeats
 	// only — open/close with subscriber context had to be reconstructed
 	// by hand from request-id joins.
+	// SubscribeWorkspace ran above, so the count already includes THIS
+	// stream — no +1 (#906 review: off-by-one double-counted).
 	subCount := 0
 	if h.userBroker != nil {
 		subCount = h.userBroker.WorkspaceSubscriberCount(workspaceID)
 	}
 	h.logger.Info("SSE client stream opened",
-		"workspaceID", workspaceID, "subscribersAfter", subCount+1)
+		"workspaceID", workspaceID, "subscribersIncludingSelf", subCount)
 	started := time.Now()
 	eventsSent := 0
 	defer func() {

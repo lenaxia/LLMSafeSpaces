@@ -93,7 +93,8 @@ spec:
         # streams (the 2026-08-16 halting-sessions incident shape).
         - alert: LLMSafeSpacesSSETrackerWatchesZero
           expr: |
-            min(llmsafespaces_sse_tracker_watched_workspaces{job=~"{{ $apiJob }}"}) == 0
+            (min(llmsafespaces_sse_tracker_watched_workspaces{job=~"{{ $apiJob }}"}) == 0)
+            and (sum(llmsafespaces_sse_tracker_watched_workspaces{job=~"{{ $apiJob }}"}) > 0)
           for: 5m
           labels:
             severity: critical
@@ -109,7 +110,9 @@ spec:
         # no agent events for 10m on an Active workspace.
         - alert: LLMSafeSpacesSSETrackerUpstreamSilent
           expr: |
-            max(llmsafespaces_sse_tracker_last_event_age_seconds{job=~"{{ $apiJob }}"}) > 600
+            max by (workspace_id) (llmsafespaces_sse_tracker_last_event_age_seconds{job=~"{{ $apiJob }}"}) > 600
+            and on(workspace_id)
+            max by (workspace_id) (llmsafespaces_sse_tracker_connected{job=~"{{ $apiJob }}"}) == 1
           for: 5m
           labels:
             severity: warning

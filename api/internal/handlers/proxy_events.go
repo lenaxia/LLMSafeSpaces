@@ -462,7 +462,7 @@ func (h *ProxyHandler) reconcileSessionState(workspaceID, podIP, password string
 	url := fmt.Sprintf("http://%s:%d/v1/statusz", podIP, agentd.AgentdAdminPort) //nolint:gosec // G107: internal pod
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		h.logger.Debug("reconcileSessionState: failed to build statusz request", "workspaceID", workspaceID, "error", err)
+		h.logger.Warn("reconcileSessionState: failed to build statusz request", "workspaceID", workspaceID, "error", err)
 		return
 	}
 	if password != "" {
@@ -471,13 +471,13 @@ func (h *ProxyHandler) reconcileSessionState(workspaceID, podIP, password string
 
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
-		h.logger.Debug("reconcileSessionState: statusz unavailable", "workspaceID", workspaceID, "error", err)
+		h.logger.Warn("reconcileSessionState: statusz unavailable", "workspaceID", workspaceID, "error", err)
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		h.logger.Debug("reconcileSessionState: unexpected statusz status", "workspaceID", workspaceID, "status", resp.StatusCode)
+		h.logger.Warn("reconcileSessionState: unexpected statusz status", "workspaceID", workspaceID, "status", resp.StatusCode)
 		return
 	}
 
@@ -487,7 +487,7 @@ func (h *ProxyHandler) reconcileSessionState(workspaceID, podIP, password string
 	// old 16 KB LimitReader, silently no-op'ing this reconcile (#892 D2 —
 	// stale activeSess entries persisted client-side as phantom-busy).
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&statusz); err != nil {
-		h.logger.Debug("reconcileSessionState: failed to decode statusz", "workspaceID", workspaceID, "error", err)
+		h.logger.Warn("reconcileSessionState: failed to decode statusz", "workspaceID", workspaceID, "error", err)
 		return
 	}
 

@@ -168,8 +168,9 @@ func (b *UserEventBroker) PublishToWorkspace(workspaceID string, evt apitypes.Wo
 
 	registerDeliveredOnce.Do(func() { prometheus.MustRegister(deliveredEvents) })
 	for _, s := range targets {
-		s.Send(evt)
-		deliveredEvents.WithLabelValues(workspaceID, evt.Type).Inc()
+		if s.Send(evt) {
+			deliveredEvents.WithLabelValues(workspaceID, evt.Type).Inc()
+		}
 	}
 }
 

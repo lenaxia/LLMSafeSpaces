@@ -8,9 +8,10 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"net/http/pprof" //nolint:gosec // admin-gated below
+	"net/http/pprof"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -499,14 +500,26 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 	// production replica). Admin-guarded like every other /admin surface —
 	// profile data leaks internals and is never public.
 	if services.GetAuth() != nil {
+		// Self-contained pprof mux (review rounds 1-3 on #906): a blank
+		// net/http/pprof import registers on http.DefaultServeMux at
+		// init — but import-hygiene tooling can (and did) strip the blank
+		// import, silently leaving DefaultServeMux empty and every
+		// profile 404ing. Registering explicitly on our own mux has no
+		// such failure mode. pprof.Index dispatches the named profiles
+		// (goroutine/heap/allocs/block/mutex/threadcreate) under its
+		// subtree; the four specials get their exact handlers.
 		pprofMux := http.NewServeMux()
-		pprofMux.HandleFunc("/", pprof.Index)
-		pprofMux.HandleFunc("/cmdline", pprof.Cmdline)
-		pprofMux.HandleFunc("/profile", pprof.Profile)
-		pprofMux.HandleFunc("/symbol", pprof.Symbol)
-		pprofMux.HandleFunc("/trace", pprof.Trace)
+		pprofMux.HandleFunc("/debug/pprof/", pprof.Index)
+		pprofMux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		pprofMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		pprofMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		pprofMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		pprofHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.URL.Path = "/debug/pprof" + strings.TrimPrefix(r.URL.Path, "/api/v1/admin/debug/pprof")
+			pprofMux.ServeHTTP(w, r)
+		})
 		debug := router.Group("/api/v1/admin/debug/pprof", services.GetAuth().AuthMiddleware(), middleware.AdminGuard())
-		debug.Any("/*path", gin.WrapH(http.StripPrefix("/api/v1/admin/debug/pprof", pprofMux)))
+		debug.Any("/*path", gin.WrapH(pprofHandler))
 	}
 
 	// Admin provider credentials routes (Epic 30)

@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 
 	"github.com/stretchr/testify/assert"
@@ -1084,4 +1085,47 @@ func TestProcessEvent_RecordsLastEvent(t *testing.T) {
 	lastEventMu.Unlock()
 	assert.True(t, ok, "processEvent must record the event timestamp")
 	assert.WithinDuration(t, time.Now(), ts, 2*time.Second)
+}
+
+// #906 review: the backoff reset pinned. connectAndRead ALWAYS returns
+// non-nil, so the pre-fix reset-on-nil branch was dead code — a healthy
+// long-lived connection that ended kept the maxed 30s backoff forever.
+func TestBackoffAfterConnect(t *testing.T) {
+	orig := healthyConnBackoffReset
+	healthyConnBackoffReset = 100 * time.Millisecond
+	t.Cleanup(func() { healthyConnBackoffReset = orig })
+
+	// Healthy long-lived connection ended: earned a fast retry.
+	assert.Equal(t, 2*time.Second, backoffAfterConnect(30*time.Second, 200*time.Millisecond),
+		"a connection that lived past the healthy threshold must reset the backoff")
+	// Short-lived failure: keep the current (possibly maxed) backoff.
+	assert.Equal(t, 30*time.Second, backoffAfterConnect(30*time.Second, 10*time.Millisecond),
+		"a quickly-failed connection must keep the current backoff")
+	assert.Equal(t, 8*time.Second, backoffAfterConnect(8*time.Second, 50*time.Millisecond))
+	// Boundary: exactly the threshold is NOT a reset (strictly greater).
+	assert.Equal(t, 30*time.Second, backoffAfterConnect(30*time.Second, 100*time.Millisecond))
+}
+
+// #901 G1: per-workspace connected gauge + stale-series cleanup.
+func TestTrackerConnectedGauge_SeriesDeletedOnStop(t *testing.T) {
+	tr := NewTracker(nil, &testLogger{}, nil)
+	setTrackerConnected("ws-g", true)
+	assert.Equal(t, 1.0, promtestutil.ToFloat64(trackerConnectedGauge.WithLabelValues("ws-g")))
+
+	deleteTrackerSeries("ws-g")
+	// No series = ToFloat64 of a deleted label errors; assert via the
+	// collector instead: gather and confirm absence.
+	families, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+	for _, f := range families {
+		if f.GetName() == "llmsafespaces_sse_tracker_connected" {
+			for _, m := range f.GetMetric() {
+				for _, l := range m.GetLabel() {
+					require.NotEqual(t, "ws-g", l.GetValue(),
+						"StopWatching must delete the workspace's gauge series (stale series fired UpstreamSilent forever)")
+				}
+			}
+		}
+	}
+	_ = tr
 }

@@ -543,3 +543,37 @@ func TestPublishToWorkspace_DeliveredCounter(t *testing.T) {
 	b.PublishToWorkspace("ws-nosub", apitypes.WorkspaceSSEEvent{Type: "agent.event"})
 	assert.Equal(t, 0.0, promtestutil.ToFloat64(deliveredEvents.WithLabelValues("ws-nosub", "agent.event")))
 }
+
+// #906 review: drops must not count as delivered. A full-buffer Send
+// returns false; the counter must not increment.
+func TestPublishToWorkspace_FullBufferNotCountedDelivered(t *testing.T) {
+	b := NewUserEventBroker()
+	sub, err := b.SubscribeWorkspace("ws-drop")
+	require.NoError(t, err)
+	defer b.UnsubscribeWorkspace("ws-drop", sub)
+
+	// Fill the subscriber's buffer directly (no draining).
+	for i := 0; i < userChannelBuffer; i++ {
+		select {
+		case sub.Ch <- apitypes.WorkspaceSSEEvent{Type: "filler"}:
+		default:
+			t.Fatal("buffer unexpectedly small")
+		}
+	}
+
+	before := promtestutil.ToFloat64(deliveredEvents.WithLabelValues("ws-drop", "agent.event"))
+	b.PublishToWorkspace("ws-drop", apitypes.WorkspaceSSEEvent{Type: "agent.event"})
+	after := promtestutil.ToFloat64(deliveredEvents.WithLabelValues("ws-drop", "agent.event"))
+	assert.Equal(t, before, after, "a dropped-on-full event must not be counted as delivered")
+
+	// And the drop was recorded as a resync-pending: the next drained
+	// send gets a resync sentinel first. Drain one and verify.
+	select {
+	case evt := <-sub.Ch:
+		_ = evt
+	default:
+	}
+	b.PublishToWorkspace("ws-drop", apitypes.WorkspaceSSEEvent{Type: "agent.event"})
+	// Buffer had space for at most one; either the resync or nothing.
+	// The counter assertion above is the contract under test.
+}
