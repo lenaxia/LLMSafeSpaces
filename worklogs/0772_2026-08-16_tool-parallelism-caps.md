@@ -55,7 +55,7 @@ The caps apply to the main workspace container. Init containers (credential setu
 - controller/internal/workspace/pod_builder_d7_test.go (round 2+)
 - controller/internal/workspace/pod_builder_test.go
 - design/0050_2026-08-16_starvation-proof-session-truthfulness.md (D7 amendment)
-- worklogs/NNNN_2026-08-16_tool-parallelism-caps.md
+- worklogs/0772_2026-08-16_tool-parallelism-caps.md
 
 ---
 
