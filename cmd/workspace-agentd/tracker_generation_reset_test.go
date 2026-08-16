@@ -6,6 +6,10 @@ package main
 import (
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -81,4 +85,19 @@ func TestOnOpencodeGenerationStart_ConcurrentWithSSEWrites(t *testing.T) {
 	<-done
 	// No deadlock/panic; final state is one of the written values.
 	require.Contains(t, []string{"busy", "idle"}, tr.get("ses-x"))
+}
+
+func TestRecordTrackerBusyReset_Metric(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	vec := promauto.With(reg).NewCounterVec(prometheus.CounterOpts{
+		Name: "workspace_tracker_busy_resets_total",
+	}, []string{"workspace_id"})
+	m := &opsMetrics{trackerBusyResets: vec}
+
+	m.RecordTrackerBusyReset("ws-metric", 3)
+	m.RecordTrackerBusyReset("ws-metric", 2)
+	m.RecordTrackerBusyReset("", 1) // empty ID normalizes to "unknown"
+
+	require.Equal(t, 5.0, testutil.ToFloat64(vec.WithLabelValues("ws-metric")))
+	require.Equal(t, 1.0, testutil.ToFloat64(vec.WithLabelValues("unknown")))
 }

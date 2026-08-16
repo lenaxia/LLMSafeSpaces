@@ -6,6 +6,7 @@ package main
 import (
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -74,4 +75,38 @@ func TestManagedProcess_OnChildStarted_NilIsSafe(t *testing.T) {
 	p.start()
 	defer p.stop()
 	requireFakeReachable(t, port, 2*time.Second)
+}
+
+func TestManagedProcess_OnChildStarted_FiresOnCrashRecovery(t *testing.T) {
+	withTestLogger(t)
+	port := freeTCPPort(t)
+	p := newTestManagedProcess(t, port, 0)
+
+	var calls atomic.Int64
+	tr := newSessionStatusTracker()
+	tr.set("ses-crash-orphan", "busy")
+	p.onChildStarted = func() {
+		calls.Add(1)
+		tr.onOpencodeGenerationStart()
+	}
+
+	p.start()
+	defer p.stop()
+	requireFakeReachable(t, port, 2*time.Second)
+	require.Eventually(t, func() bool { return calls.Load() == 1 },
+		2*time.Second, 10*time.Millisecond, "generation 1 hook must fire")
+
+	// Simulate the incident's trigger: opencode dies mid-turn (SIGKILL,
+	// no operator involvement). Crash recovery backs off (1s) and spawns
+	// the next generation — the hook must fire for it too, healing the
+	// orphaned busy flag the dead generation left behind.
+	p.mu.Lock()
+	pid := p.cmd.Process.Pid
+	p.mu.Unlock()
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+
+	require.Eventually(t, func() bool {
+		return calls.Load() >= 2 && tr.get("ses-crash-orphan") == "idle"
+	}, 10*time.Second, 50*time.Millisecond,
+		"hook must fire for the crash-recovery generation and heal the orphaned busy flag")
 }

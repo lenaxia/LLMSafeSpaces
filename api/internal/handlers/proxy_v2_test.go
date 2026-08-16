@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -578,3 +579,67 @@ func TestV2StrandedRecovery_PromptV2FailureContinuesToNextSession(t *testing.T) 
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+// TestReconcileSessionState_LargeStatuszDecodes (#892 D2 regression):
+// statusz embeds one entry per session in opencode's DB. The old
+// 16 KB io.LimitReader overflowed at >~55 sessions, silently no-op'ing
+// the reconcile — stale activeSess entries persisted as client-side
+// phantom-busy. Mirrors the #801 fix shape (proxy_connections.go).
+func TestReconcileSessionState_LargeStatuszDecodes(t *testing.T) {
+	// Build a statusz body comfortably over 16 KB (~120 sessions with
+	// realistic per-session metadata) but well under the 1 MB cap.
+	var sb strings.Builder
+	sb.WriteString(`{"sessions":[`)
+	for i := 0; i < 120; i++ {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		fmt.Fprintf(&sb,
+			`{"id":"ses-%03d-paddingpaddingpaddingpaddingpadding","title":"session %d with a realistic length title","status":"idle","model":"glm-5.3","contextUsed":%d}`,
+			i, i, 100000+i*7)
+	}
+	sb.WriteString(`]}`)
+	body := sb.String()
+	require.Greater(t, len(body), 16*1024, "fixture must overflow the old cap")
+	require.Less(t, len(body), 1<<20, "fixture must fit the new cap")
+
+	var wakeCount int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/statusz" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(body))
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/prompt") {
+			atomic.AddInt32(&wakeCount, 1)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":{"admittedSeq":1,"id":"msg_w","sessionID":"ses-000-paddingpaddingpaddingpaddingpadding"}}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	srvAddr := srv.Listener.Addr().String()
+	httpClient := &http.Client{
+		Transport: &routingTransport{eventHost: srvAddr, promptHost: srvAddr},
+		Timeout:   5 * time.Second,
+	}
+	k8sMock := newMockK8sWithWorkspace(t, "ws-1", srvAddr)
+	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient, nil)
+	require.NoError(t, err)
+	handler.SetCachedPasswordForTest("ws-1", "test-pw")
+	handler.userBroker = eventbroker.NewUserEventBroker()
+	handler.SetV2ClientFactory(func(ctx context.Context, workspaceID string) (V2SessionClient, error) {
+		return opencode.NewClient(srv.URL, "test-pw", nil), nil
+	})
+
+	handler.v2Pending.add("ws-1", "ses-000-paddingpaddingpaddingpaddingpadding")
+
+	host, _, err := net.SplitHostPort(srvAddr)
+	require.NoError(t, err)
+	handler.reconcileSessionState("ws-1", host, "test-pw")
+
+	assert.Equal(t, int32(1), atomic.LoadInt32(&wakeCount),
+		"a >16 KB statusz must still decode and wake the stranded session — pre-fix this silently no-op'd")
+}

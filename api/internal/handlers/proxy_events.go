@@ -465,7 +465,11 @@ func (h *ProxyHandler) reconcileSessionState(workspaceID, podIP, password string
 	}
 
 	var statusz agentd.StatuszResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 16*1024)).Decode(&statusz); err != nil {
+	// 1 MB cap mirrors the #801 fix (proxy_connections.go): statusz embeds
+	// one entry per session in opencode's DB; >~55 sessions overflowed the
+	// old 16 KB LimitReader, silently no-op'ing this reconcile (#892 D2 —
+	// stale activeSess entries persisted client-side as phantom-busy).
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&statusz); err != nil {
 		h.logger.Debug("reconcileSessionState: failed to decode statusz", "workspaceID", workspaceID, "error", err)
 		return
 	}
