@@ -23,7 +23,7 @@ Close #848: unauthenticated in-pod access to control-plane surface on the agentd
 ### API server (api/internal)
 
 - `services/agentpush`: new `PasswordProvider` interface + `WithPasswordProvider` option; `Push` resolves the workspace password and sends `Authorization: Basic opencode:<pw>` on the reload-secrets dispatch. Missing provider → `ErrNoPasswordProvider` (wiring bug, fails before HTTP); provider error → wrapped, `reload_failed` metric.
-- `handlers/agent_reload.go`: both dispatch sites (single `Reload` + bulk `reloadOne`) resolve the password via the already-wired `getPassword` (`SetPasswordGetter`, app.go:1075) and set the Basic header. Nil getter surfaces `password_getter_not_wired` instead of silently 401-ing against agentd.
+- `handlers/agent_reload.go`: both dispatch sites (single `Reload` + bulk `reloadOne`) resolve the password via the already-wired `getPassword` (`SetPasswordGetter`, wired in app.go's handler-construction block) and set the Basic header. Nil getter surfaces `password_getter_not_wired` instead of silently 401-ing against agentd.
 - `app.go`: `agentpush.New(...)` gets `WithPasswordProvider(proxyHandler)`.
 - Tests: `TestPush_SendsBasicAuth` (exact header), `TestPush_MissingPasswordProviderErrors`, `TestPush_PasswordProviderErrorSurfaces`; existing push tests wired with a fake provider; malformed-URL pin tests wired with `interfaces.PasswordFunc` stubs.
 
@@ -97,5 +97,12 @@ None.
 - `api/internal/services/agentpush/agentpush_test.go`
 - `api/internal/handlers/agent_reload.go`
 - `api/internal/handlers/proxy_send_logging_test.go`
-- `api/internal/app/app.go`
-- `worklogs/0769_2026-08-15_agentd-endpoint-auth.md` (this file)
+- `api/internal/handlers/secrets_integration_test.go` (E2E credential assertion + staticPasswordProvider)
+- `api/internal/handlers/secrets_llmprovider_test.go`, `secrets_push_session_test.go` (stub wiring)
+- `api/internal/handlers/agent_reload_e2e_test.go` (full-path + bulk dispatch-driving tests, header assertions)
+- `api/internal/handlers/agent_reload_test.go` (getter wired into the unreachable test)
+- `api/internal/handlers/secrets.go` (SetPasswordProvider + fallback wiring)
+- `api/internal/app/app.go` (WithPasswordProvider on the shared pusher)
+- `api/internal/app/auto_push_metrics_test.go` (stubPasswordProviderAdapter)
+- `cmd/workspace-agentd/auth.go` (doc comment: gated-endpoint list)
+- `worklogs/NNNN_2026-08-15_agentd-endpoint-auth.md` (this file)
