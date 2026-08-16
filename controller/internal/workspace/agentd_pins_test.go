@@ -140,6 +140,32 @@ func TestCachedPinResolver_StaleCacheRejected(t *testing.T) {
 	require.Error(t, err, "a cached pin for a DIFFERENT digest must never satisfy a new pin — that is the desync this design exists to prevent")
 }
 
+// TestCachedPinResolver_ErrorsCarrySentinel proves the outage paths
+// wrap ErrAgentdPinsUnavailable so main.go's errors.Is hint fires.
+func TestCachedPinResolver_ErrorsCarrySentinel(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	// No cache at all → sentinel.
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+	res := &cachedPinResolver{Client: c, Namespace: "llmsafespaces", fetch: fakeIndexFetcher(nil, errors.New("connection refused"))}
+	_, err := res.Resolve(context.Background(), pinImage)
+	require.ErrorIs(t, err, ErrAgentdPinsUnavailable, "first-boot outage must carry the sentinel for the manual-pin hint")
+
+	// Stale-digest cache → sentinel (desync refusal is also an outage dead-end).
+	c2 := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: AgentdPinsConfigMapName, Namespace: "llmsafespaces"},
+		Data: map[string]string{
+			"image":        "ghcr.io/x/a:dev@sha256:" + strings.Repeat("9", 64),
+			"sha256-amd64": pinAMD64,
+			"sha256-arm64": pinARM64,
+		},
+	}).Build()
+	res2 := &cachedPinResolver{Client: c2, Namespace: "llmsafespaces", fetch: fakeIndexFetcher(nil, errors.New("connection refused"))}
+	_, err = res2.Resolve(context.Background(), pinImage)
+	require.ErrorIs(t, err, ErrAgentdPinsUnavailable, "stale-cache refusal must carry the sentinel")
+}
+
 func TestCachedPinResolver_MalformedCacheRejected(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, corev1.AddToScheme(scheme))

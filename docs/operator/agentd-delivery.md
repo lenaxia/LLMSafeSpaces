@@ -42,8 +42,9 @@ alerts are unchanged from the original design.
 Requirements (enforced at the Helm render and again at controller
 startup):
 
-- `image` must be **digest-pinned** — a floating tag defeats both
-  reproducibility and the verify contract,
+- `image` must carry a **digest** (`repo:tag@sha256:…` — the tag may
+  move, the digest must not be dropped): the digest is what the
+  entrypoint trust chain resolves through,
 - `binarySHA256Amd64`/`binarySHA256Arm64` are OPTIONAL per-image
   overrides (break-glass): set BOTH or NEITHER,
 - the binary path inside the image is fixed:

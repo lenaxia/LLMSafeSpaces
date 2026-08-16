@@ -126,11 +126,10 @@ rules:
     resources: ["events"]
     verbs: ["create", "patch"]
 {{- if .Values.controller.agentdDelivery.image }}
-  # #863: the agentd-pins cache ConfigMap (registry-outage resilience
-  # for annotation-resolved binary pins). Scoped to the single
-  # ConfigMap by resourceNames — NOT free-riding on the relay/free-models
-  # configmaps grants, which are feature-gated and default-off for
-  # least-privilege operators.
+  # #863 (#890): the agentd-pins cache ConfigMap (registry-outage
+  # resilience for annotation-resolved binary pins). Guarded by
+  # helm/agentd_delivery_chart_test.go (exact verbs + resourceNames +
+  # separate unscoped create — create cannot be resourceNames-scoped).
   - apiGroups: [""]
     resources: ["configmaps"]
     resourceNames: ["llmsafespaces-agentd-pins"]

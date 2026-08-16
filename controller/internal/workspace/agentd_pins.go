@@ -134,11 +134,11 @@ func (r *cachedPinResolver) Resolve(ctx context.Context, image string) (AgentdBi
 	// (:dev@X → :v1.2.0@X) must not invalidate a valid same-content
 	// cache during an outage. The digest suffix is the content identity.
 	if !sameDigest(cm.Data["image"], image) {
-		return AgentdBinaryPins{}, fmt.Errorf("agentd pins: registry fetch failed (%v) and cache holds a different digest (%s) — refusing to desync", err, cm.Data["image"])
+		return AgentdBinaryPins{}, fmt.Errorf("%w: registry fetch failed (%v) and cache holds a different digest (%s) — refusing to desync", ErrAgentdPinsUnavailable, err, cm.Data["image"])
 	}
 	amd64, arm64 := cm.Data["sha256-amd64"], cm.Data["sha256-arm64"]
 	if !sha256HexRe.MatchString(amd64) || !sha256HexRe.MatchString(arm64) {
-		return AgentdBinaryPins{}, fmt.Errorf("agentd pins: cached pins for %s are malformed", image)
+		return AgentdBinaryPins{}, fmt.Errorf("%w: cached pins for %s are malformed", ErrAgentdPinsUnavailable, image)
 	}
 	log.FromContext(ctx).Info("agentd pins: registry unavailable, using cached pins for pinned digest", "image", image)
 	return AgentdBinaryPins{SHA256AMD64: amd64, SHA256ARM64: arm64}, nil

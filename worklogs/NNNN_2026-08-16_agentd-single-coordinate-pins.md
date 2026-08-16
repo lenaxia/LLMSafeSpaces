@@ -6,6 +6,12 @@
 
 ---
 
+## Objective
+
+Make the #872 agentd delivery pin maintainable by dependency bots
+(Renovate first-class, Dependabot honestly handled) without weakening
+the sha256 verify contract.
+
 ## Context
 
 PR #872 shipped image-volume agentd delivery with a three-value lockstep
@@ -51,7 +57,7 @@ read (go-containerregistry), with:
   and Helm render.
 - Entrypoint verify/exit codes/conditions/events/alerts: **unchanged**.
 
-## Assumptions → validation
+## Assumptions validated (Rule 7)
 
 1. buildx supports `--annotation index:key=value` on `imagetools
    create` → verified against buildx docs syntax used by the action
@@ -70,7 +76,7 @@ read (go-containerregistry), with:
 5. Dependabot cannot manage this → stated honestly in docs; the
    CI-printed block remains the manual path (now image-only).
 
-## Tests (final state, round 2)
+## Work Completed
 
 - `agentd_pins_test.go` (cachedPinResolver + ResolvePinsWithCache):
   annotation extraction (happy/missing), cache write on success, cache
@@ -92,7 +98,7 @@ read (go-containerregistry), with:
 - Existing #863 tests unchanged and green — downstream wiring is
   oblivious to the pin origin.
 
-## Adversarial notes
+## Key Decisions
 
 - Registry outage at FIRST-EVER boot (no cache): controller exits with
   a clear error telling the operator to pin hashes manually — fail
@@ -178,3 +184,40 @@ the author had not. Corrections:
   "Helm render and again at controller startup".
 - All three envtest legs executed locally against 1.31 assets before
   commit: 5.10s / 5.35s / 4.89s PASS.
+
+## Tests Run (executed, not claimed)
+
+- `go test ./controller/... ./helm/ ./pkg/repolint/` — green, every round.
+- envtest (executed locally vs 1.31 assets each round from round 4 on):
+  ImageOnlyResolvesAndCaches / NamespaceFallbackProven /
+  OutageFallsBackToCache — 5.10s / 5.35s / 4.89s PASS at final code.
+- Mutation proofs executed locally: sameDigest revert (round 3),
+  envtest paths-entry removal and vacuous -run pattern (rounds 5–6),
+  each red-then-green.
+- The recurring failure across rounds 1–4 was test claims without
+  execution; from round 4 on, every test statement in this worklog has
+  a local execution behind it.
+
+## Blockers
+
+None in code. Platform: Actions event loss on this branch (two pushes
++ reopen with zero runs, same signature as the #879 incident) delayed
+CI verification of rounds 5–6; resolved by re-push when the platform
+recovered.
+
+## Next Steps
+
+- Report merge-agentd dispatch result on PR #890 when a full-suite run
+  gets through (the #900 timeout ate two attempts; timeout raised in
+  f3e826a1).
+- #863 live legs (kind e2e overlay boot + tamper→alert, gVisor/latency)
+  remain the post-merge follow-ups.
+
+## Files Modified
+
+controller/internal/workspace/agentd_pins{,_test,_envtest_test,_integration_test}.go,
+agentd_overlay{,_test}.go, phase files unchanged this PR; helm
+(values, controller-deployment, rbac, prometheus-rules,
+agentd_delivery_chart_test.go); ci.yml merge-agentd annotations;
+envtest.yml step+paths; pkg/repolint/envtest_wiring_test.go;
+docs/operator/agentd-delivery.md; controller/main.go.

@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -66,8 +67,26 @@ func TestEnvtestWorkflow_RunsAllRegisteredSuites(t *testing.T) {
 	require.NotEmpty(t, runs, "envtest.yml must have run steps")
 
 	for pkg, pathPrefix := range envtestSuites {
-		require.Regexp(t, regexp.MustCompile(regexp.QuoteMeta(pkg)), runs,
+		m := regexp.MustCompile(regexp.QuoteMeta(pkg) + `[^\n]*`).FindString(runs)
+		require.NotEmpty(t, m,
 			"envtest.yml must execute the %s suite — a tagged suite not wired into CI never runs (PR #890 round-4 finding)", pkg)
+		// Non-vacuous step: the step's -run pattern must match a test
+		// function that exists in the package (catches renamed/deleted
+		// test funcs leaving a CI step that matches nothing and passes).
+		runPat := regexp.MustCompile(`-run (\S+)`).FindString(m)
+		require.NotEmpty(t, runPat, "the %s step must select tests via -run", pkg)
+		pattern := regexp.MustCompile(`-run (\S+)`).FindStringSubmatch(m)[1]
+		funcs := testFuncsIn(t, filepath.Join(root, filepath.FromSlash(pkg[2:])))
+		require.NotEmpty(t, funcs, "no test functions found under %s — is the package path right?", pkg)
+		matched := false
+		for _, f := range funcs {
+			if regexpMatch(pattern, f) {
+				matched = true
+				break
+			}
+		}
+		require.True(t, matched,
+			"envtest.yml step '-run %s' matches NO test function in %s (found %d funcs) — a vacuous step passes forever", pattern, pkg, len(funcs))
 
 		found := false
 		for _, p := range wf.On.PullRequest.Paths {
@@ -79,4 +98,35 @@ func TestEnvtestWorkflow_RunsAllRegisteredSuites(t *testing.T) {
 		require.True(t, found,
 			"envtest.yml pull_request paths must include %s** — without it, changes to %s never trigger the workflow that runs its suite", pathPrefix, pkg)
 	}
+}
+
+// testFuncsIn returns Test* function names declared in _test.go files
+// under dir (including build-tagged ones — the suite runs with tags).
+func testFuncsIn(t *testing.T, dir string) []string {
+	t.Helper()
+	var funcs []string
+	err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() || !strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		for _, m := range regexp.MustCompile(`(?m)^func (Test\w+)\(`).FindAllStringSubmatch(string(data), -1) {
+			funcs = append(funcs, m[1])
+		}
+		return nil
+	})
+	require.NoError(t, err)
+	return funcs
+}
+
+// regexpMatch: Go test -run patterns are anchored regexes over test
+// names; a simple substring+anchor approximation suffices for the
+// simple identifiers used here (TestEnvtest, TestEnvtestAgentdPins).
+func regexpMatch(pattern, name string) bool {
+	p := strings.TrimSuffix(pattern, "$")
+	p = strings.TrimPrefix(p, "^")
+	return strings.Contains(name, p)
 }

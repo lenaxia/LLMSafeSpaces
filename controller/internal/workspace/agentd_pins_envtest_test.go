@@ -54,8 +54,9 @@ func TestEnvtestAgentdPins_ImageOnlyResolvesAndCaches(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, dyn0.Create(context.Background(), &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "llmsafespaces"}}))
 
-	// Route the production loader at the envtest API server and count
-	// fetcher calls (the production fetcher would hit a real registry).
+	// Swap BOTH seams: config loader → envtest API server; registry
+	// fetcher → counting fake (the production fetcher would hit real
+	// ghcr.io — the round-4 hermeticity finding).
 	calls := 0
 	origLoad := loadConfig
 	loadConfig = func() (*rest.Config, error) { return cfg, nil }
