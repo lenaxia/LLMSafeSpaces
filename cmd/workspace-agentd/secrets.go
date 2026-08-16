@@ -465,13 +465,14 @@ func runMaterializeCommand(args []string, stdout, stderr io.Writer) int {
 	// credential (#847) — /v1/mcp rejects unauthenticated JSON-RPC. The
 	// credential-setup init script installs /sandbox-cfg/password BEFORE
 	// invoking materialize (pod_builder.go, pinned by
-	// TestCredentialSetupScript_PasswordInstalledBeforeMaterialize), so
-	// this read succeeds in production. A failed read still stamps a
-	// disabled entry (not an unusable enabled one) and logs; agentd main
-	// fails fatal on the same unreadable password (G46).
+	// TestInitContainerScript), so this read succeeds in production. A
+	// failed read stamps a DISABLED entry (never an enabled one that
+	// would 401) and logs; the unconditional boot-time re-stamp in
+	// ensureBootAgentConfig (before startManagedProcess) re-applies the
+	// credentialed entry, so the failure self-heals within the boot.
 	preBootPW, pwErr := readAgentPasswordFromPath(agentd.PasswordPath)
 	if pwErr != nil {
-		_, _ = fmt.Fprintf(stderr, "materialize: password read failed, MCP entry stamped without headers: %v\n", pwErr)
+		_, _ = fmt.Fprintf(stderr, "materialize: password read failed, MCP entry stamped disabled: %v\n", pwErr)
 	}
 	if outcome, err := applyRelayConfigPreBoot(
 		os.Getenv("INFERENCE_RELAY_BASEURL"),

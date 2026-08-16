@@ -16,9 +16,15 @@ Close #847. The proxy's only legitimate consumer is opencode, which connects to 
 
 - `mcp_server.go`:
   - `mcpHandler` gates at entry via the shared `checkBasicAuth`/`rejectUnauthorized` (from the #762 fix) — 401 + `WWW-Authenticate` before any JSON-RPC processing.
-  - `injectAgentdMCPServer` is now a hook **constructor** taking the workspace password and stamping `headers: {"Authorization": "Basic ..."}` on the injected entry. Empty password → entry without headers (agentd main fails fatal on an unreadable password per G46, so this only affects tests).
+  - `injectAgentdMCPServer` is now a hook **constructor** taking the workspace password and stamping `headers: {"Authorization": "Basic ..."}` on the injected entry. Empty password → entry stamped **disabled** (an enabled-but-credential-less entry would 401 on every JSON-RPC call; disabling stops opencode from retrying a provably unusable server).
 - `boot_config.go` / `ensureBootAgentConfig` + `main.go`: password threaded to the hook construction.
-- `pre_boot_relay.go` / `applyRelayConfigPreBoot`: password param added; `secrets.go` materialize subcommand reads it via `readAgentPasswordFromPath` (non-fatal on failure — logs to stderr, entry stamped without headers; the same unreadable password kills agentd main per G46, so no live window where opencode talks to a gated proxy without credentials other than the fatal-boot case).
+- `pre_boot_relay.go` / `applyRelayConfigPreBoot`: password param added; `secrets.go` materialize subcommand reads it via `readAgentPasswordFromPath` (read failure logs to stderr and stamps the disabled entry; the unconditional boot-time re-stamp in `ensureBootAgentConfig` self-heals before opencode starts).
+
+### Review-round additions
+
+- **Ordering bug fixed (review-validated)**: `pod_builder.go` ran `workspace-agentd materialize` BEFORE installing `/sandbox-cfg/password`, so the materialize-side read failed on **every** boot and the pre-boot entry always landed disabled. The `install -m 0600` now runs before materialize; ordering pinned by an assertion in `TestInitContainerScript` (line-anchored so comment mentions don't false-match).
+- Coupling test `TestInjectAgentdMCPServer_CredentialAcceptedByGate`: the header the hook stamps is driven through the actual `mcpHandler` gate (200, not 401) — catches stamp/gate divergence.
+- `TestInjectAgentdMCPServer_EmptyPassword_Disabled` pins the disable branch; the pre-boot relay test asserts the stamped credential matches the password param.
 
 ## Assumption validated (Rule 7)
 
@@ -42,7 +48,7 @@ None.
 
 ## Tests Run
 
-- New: `TestMCPHandler_RequiresAuth` (401 + challenge on unauthenticated JSON-RPC), `TestMCPHandler_WrongPassword`, `TestInjectAgentdMCPServer_EmptyConfig` extended to assert the `Authorization` header value, `TestEnsureBootAgentConfig_*` asserts headers on the stamped entry.
+- New: `TestMCPHandler_RequiresAuth` (401 + challenge on unauthenticated JSON-RPC), `TestMCPHandler_WrongPassword`, `TestInjectAgentdMCPServer_EmptyConfig` extended to assert the `Authorization` header value, `TestEnsureBootAgentConfig_*` asserts headers on the stamped entry, `TestInjectAgentdMCPServer_CredentialAcceptedByGate` (hook→gate round-trip), `TestInjectAgentdMCPServer_EmptyPassword_Disabled`, pre-boot relay credential assertion, `TestInitContainerScript` password-before-materialize ordering assertion.
 - Updated: all existing `/v1/mcp` handler tests send the Basic credential.
 - `go test -run 'TestMCP|TestInjectAgentdMCPServer|TestCallMCPTool|TestEnsureBootAgentConfig'` — ok (0.26s)
 - `go test -run 'TestMaterialize|TestPreBootRelay|TestRunMaterialize|TestSecrets|TestReload'` — ok (49s)
