@@ -133,3 +133,33 @@ func TestE2E_Reconcile_PodSpec_ToolParallelismDefaultShape(t *testing.T) {
 	require.True(t, ok, "persisted default-shape pod must carry GOMAXPROCS")
 	assert.Equal(t, "2", gomax, "500m default request bursts to a 2-core limit")
 }
+
+// TestE2E_Reconcile_PodSpec_ToolParallelismExplicitLimit (review round 3
+// on #897, the unhappy-path level): an explicit cpuLimit overrides the
+// 4× burst default, and an unparseable cpuLimit degrades to the burst
+// default rather than panicking — both must be visible on the PERSISTED
+// pod, not just buildPod output.
+func TestE2E_Reconcile_PodSpec_ToolParallelismExplicitLimit(t *testing.T) {
+	ws := makeWorkspace("ws-d7-explicit", "default", v1.WorkspacePhasePending)
+	ws.Spec.Resources = &v1.ResourceRequirements{CPU: "2", CPULimit: "3"}
+	const apiURL = "http://test-api.e2e:8080"
+	_, pod := reconcileToCreatingPod(t, ws, apiURL)
+
+	gomax, ok := envValue(pod.Spec.Containers[0].Env, "GOMAXPROCS")
+	require.True(t, ok, "persisted pod must carry GOMAXPROCS (explicit limit)")
+	assert.Equal(t, "3", gomax, "explicit cpuLimit=3 caps pools at 3, not the 4× burst default (8)")
+}
+
+func TestE2E_Reconcile_PodSpec_ToolParallelismInvalidLimitDegrades(t *testing.T) {
+	ws := makeWorkspace("ws-d7-invalid", "default", v1.WorkspacePhasePending)
+	// CRD patterns normally reject this; if validation is bypassed, the
+	// builder must degrade to the default rather than panic (the
+	// resourceRequirementsFor contract).
+	ws.Spec.Resources = &v1.ResourceRequirements{CPU: "2", CPULimit: "not-a-quantity"}
+	const apiURL = "http://test-api.e2e:8080"
+	_, pod := reconcileToCreatingPod(t, ws, apiURL)
+
+	gomax, ok := envValue(pod.Spec.Containers[0].Env, "GOMAXPROCS")
+	require.True(t, ok, "persisted pod must carry GOMAXPROCS even with an unparseable explicit limit")
+	assert.Equal(t, "8", gomax, "unparseable cpuLimit falls back to the 4× burst default (2 → 8)")
+}

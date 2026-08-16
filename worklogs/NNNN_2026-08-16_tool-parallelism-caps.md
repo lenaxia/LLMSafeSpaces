@@ -28,7 +28,7 @@ The starvation that drove the 2026-08-15/16 incident was self-inflicted oversubs
 ## Assumptions (validated)
 
 1. `GOMAXPROCS` caps `go build -p` (defaults to GOMAXPROCS) and test-binary parallelism — Go-documented.
-2. `ESBUILD_WORKER_THREADS` caps esbuild's worker pool — esbuild-documented env var.
+2. ~~`ESBUILD_WORKER_THREADS` caps esbuild's worker pool — esbuild-documented env var.~~ **DISPROVEN in review round 1** (see Round 2 corrections below): esbuild's shipped source treats it as a `"0"`-disable flag for exactly one sync-API worker thread — no numeric semantics. The var was removed; GOMAXPROCS covers esbuild transitively (a Go binary).
 3. Env vars reach tool children: opencode spawns bash-tool commands with the pod env (observed: zombies' env matched the container's).
 
 ## Blockers
@@ -40,10 +40,22 @@ None. Effect on real builds is G6's measurement pass (pre/post throttle counters
 - `go test ./controller/internal/workspace/ -count=1` — green
 - `go build ./controller/... && go vet ./controller/... && gofmt -l` — clean
 
+## Scope note
+
+The caps apply to the main workspace container. Init containers (credential setup) are short-lived and I/O-bound; they were not capped — a rollout gap to revisit if an init container ever spawns build-class work.
+
+## Tests Run
+
+- `go test ./controller/internal/workspace/ -run 'TestPodBuilder_ToolParallelism|TestToolParallelismEnv|TestE2E_Reconcile_PodSpec_ToolParallelism' -count=1` — green
+- `go build ./... && go vet ./controller/... && make fmt-check` — clean
+
 ## Files Modified
 
 - controller/internal/workspace/pod_builder.go
+- controller/internal/workspace/pod_builder_d7_test.go (round 2+)
 - controller/internal/workspace/pod_builder_test.go
+- design/0050_2026-08-16_starvation-proof-session-truthfulness.md (D7 amendment)
+- worklogs/NNNN_2026-08-16_tool-parallelism-caps.md
 
 ---
 

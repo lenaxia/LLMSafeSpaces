@@ -353,7 +353,7 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 //     panicking. The CRD pattern + (future) webhook caps protect
 //     against bad input; if both are bypassed (e.g. CRD validation
 //     disabled cluster-wide), we degrade gracefully.
-//
+
 // toolParallelismEnv caps the parallelism of the build tools the agent
 // spawns inside the workspace (design 0050 D7, #892). During the
 // 2026-08-15/16 incident, `go`/`esbuild`/`tsc` children spun
