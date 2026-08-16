@@ -112,6 +112,47 @@ func (t *sessionStatusTracker) snapshot() (busyCount int, totalTokens int64) {
 	return busyCount, totalTokens
 }
 
+// resetBusyFlags transitions every "busy" entry to "idle" and returns
+// the cleared session IDs. Entries and promptTokens are preserved —
+// prune() owns deletion and context meters are display state, not
+// liveness state.
+func (t *sessionStatusTracker) resetBusyFlags() []string {
+	t.mu.Lock()
+	var cleared []string
+	for id, s := range t.statuses {
+		if s == "busy" {
+			t.statuses[id] = "idle"
+			cleared = append(cleared, id)
+		}
+	}
+	t.mu.Unlock()
+	return cleared
+}
+
+// onOpencodeGenerationStart is the supervisor's generation-change hook
+// (design 0050 D2). Busy state produced by a dead opencode generation is
+// orphaned by definition — no idle event will ever arrive for it — so
+// every new generation starts from honest idle. Validated by the
+// 2026-08-15/16 incident: 8 tools stuck status:"running" across two
+// workspaces, each starting seconds before a generation change, keeping
+// sessions phantom-busy for 20-30+ minutes because /session returns DB
+// records (which survive death), not busyness.
+//
+// Theoretical micro-race, accepted: an SSE event already buffered from
+// the dying generation could be processed after this reset and re-mark a
+// session busy. It is mutex-protected (no corruption), strictly no worse
+// than pre-fix behavior, and self-heals on the next generation change.
+func (t *sessionStatusTracker) onOpencodeGenerationStart() {
+	cleared := t.resetBusyFlags()
+	if len(cleared) == 0 {
+		return
+	}
+	pkgOpsMetrics.RecordTrackerBusyReset(workspaceIDFromEnv(), len(cleared))
+	log.Info("cleared orphaned busy flags for new opencode generation",
+		zap.Strings("session_ids", cleared),
+		zap.Int("count", len(cleared)))
+}
+
 // prune removes entries for sessions that no longer exist.
 func (t *sessionStatusTracker) prune(activeIDs []string) {
 	active := make(map[string]struct{}, len(activeIDs))

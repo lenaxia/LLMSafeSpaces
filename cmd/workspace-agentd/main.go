@@ -99,13 +99,17 @@ func main() {
 	agentConfigPath := envOrDefault("LLMSAFESPACES_AGENT_CONFIG_PATH", agentd.AgentConfigPath)
 	agentConfigWriter := ensureBootAgentConfig(agentConfigPath, agentd.AdminPromptPath, agentd.AllowedDirsPath)
 
-	proc := startManagedProcess(supervise)
+	// The tracker must exist before the supervisor starts: its
+	// generation-change hook (design 0050 D2) clears orphaned busy flags
+	// at every child start.
+	sseTracker := newSessionStatusTracker()
+	proc := startManagedProcess(supervise, sseTracker)
 
 	startedAt := time.Now()
 	deps := serverDeps{
 		client:            client,
 		cache:             &providerCache{},
-		sseTracker:        newSessionStatusTracker(),
+		sseTracker:        sseTracker,
 		pressureMonitor:   newMemoryPressureMonitor(),
 		healthCache:       newHealthzCache(),
 		gr:                newGateRecorder(startedAt, agentdGateDurationSeconds, log),
@@ -174,12 +178,18 @@ func readAgentPasswordFromPath(path string) (string, error) {
 }
 
 // startManagedProcess builds and starts the opencode supervisor when
-// agentd is invoked with --supervise; returns nil otherwise.
-func startManagedProcess(supervise bool) *managedProcess {
+// agentd is invoked with --supervise; returns nil otherwise. The
+// tracker's generation hook is wired here so every child start (first
+// boot and each restart/crash recovery) clears orphaned busy flags
+// (design 0050 D2).
+func startManagedProcess(supervise bool, sseTracker *sessionStatusTracker) *managedProcess {
 	if !supervise {
 		return nil
 	}
 	proc := &managedProcess{}
+	if sseTracker != nil {
+		proc.onChildStarted = sseTracker.onOpencodeGenerationStart
+	}
 	proc.start()
 	return proc
 }

@@ -16,10 +16,11 @@ import (
 // chart ships a PodMonitor that scrapes this endpoint on every workspace
 // pod — see helm/templates/podmonitor-agentd.yaml.
 type opsMetrics struct {
-	restartsTotal  *prometheus.CounterVec
-	memoryBytes    *prometheus.GaugeVec
-	activeSessions *prometheus.GaugeVec
-	contextTokens  *prometheus.GaugeVec
+	restartsTotal     *prometheus.CounterVec
+	trackerBusyResets *prometheus.CounterVec
+	memoryBytes       *prometheus.GaugeVec
+	activeSessions    *prometheus.GaugeVec
+	contextTokens     *prometheus.GaugeVec
 }
 
 // pkgOpsMetrics is the package-level singleton. Tests create their own
@@ -33,6 +34,11 @@ func newOpsMetrics() *opsMetrics {
 			Name: "workspace_restarts_total",
 			Help: "Total opencode restarts by reason (env_secrets, api_key, crash, oom, user_requested, health_watchdog)",
 		}, []string{"workspace_id", "reason"}),
+
+		trackerBusyResets: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "workspace_tracker_busy_resets_total",
+			Help: "Orphaned busy flags cleared at opencode generation change (design 0050 D2); increments by the number of sessions healed per reset",
+		}, []string{"workspace_id"}),
 
 		memoryBytes: promauto.NewGaugeVec(prometheus.GaugeOpts{
 			Name: "workspace_memory_bytes",
@@ -58,6 +64,15 @@ func (m *opsMetrics) RecordRestart(workspaceID, reason string) {
 		workspaceID = "unknown"
 	}
 	m.restartsTotal.WithLabelValues(workspaceID, reason).Inc()
+}
+
+// RecordTrackerBusyReset adds n healed sessions to the busy-reset
+// counter (design 0050 D2 observability).
+func (m *opsMetrics) RecordTrackerBusyReset(workspaceID string, n int) {
+	if workspaceID == "" {
+		workspaceID = "unknown"
+	}
+	m.trackerBusyResets.WithLabelValues(workspaceID).Add(float64(n))
 }
 
 // SetMemoryUsage sets the current memory usage gauge.
