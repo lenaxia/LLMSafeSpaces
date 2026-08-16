@@ -161,10 +161,10 @@ test("running tool with startedAt renders the elapsed-time badge (#892 D5)", asy
           type: "tool",
           tool: {
             name: "bash",
+            input: { command: "make build" },
             state: {
               status: "running",
               startedAt: new Date(Date.now() - 42_000).toISOString(),
-              input: { command: "make build" },
             },
           },
         },
@@ -194,7 +194,8 @@ test("history without startedAt degrades to today's UI — no badge, no crash (#
           type: "tool",
           tool: {
             name: "bash",
-            state: { status: "running", input: { command: "make build" } },
+            input: { command: "make build" },
+            state: { status: "running" },
           },
         },
       ],

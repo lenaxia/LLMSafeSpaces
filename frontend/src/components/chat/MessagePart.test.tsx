@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { render } from "../../test/utils";
 import { MessagePart, closeOpenFence } from "./MessagePart";
@@ -620,5 +620,32 @@ describe("MessagePart tool elapsed badge edge cases (#892 D5)", () => {
       />,
     );
     expect(screen.queryByLabelText("elapsed time")).not.toBeInTheDocument();
+  });
+});
+
+describe("MessagePart tool elapsed badge tick growth (#892 D5)", () => {
+  it("advances as the clock ticks while the tool runs", async () => {
+    vi.useFakeTimers();
+    try {
+      const started = new Date(Date.now() - 1000).toISOString();
+      render(
+        <MessagePart
+          part={{ type: "tool_use", name: "bash", toolState: "running", toolStartedAt: started, input: { command: "sleep 100" } }}
+          isUser={false}
+        />,
+      );
+      const badge = screen.getByLabelText("elapsed time");
+      const first = badge.textContent;
+      expect(first).toMatch(/^[12]s$/);
+      // Advance 61s: the badge must honestly grow (fake timers drive
+      // useNow's 1s interval).
+      act(() => {
+        vi.advanceTimersByTime(61_000);
+      });
+      expect(badge.textContent).toMatch(/^1m (0|1|2)s$/);
+      expect(badge.textContent).not.toEqual(first);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

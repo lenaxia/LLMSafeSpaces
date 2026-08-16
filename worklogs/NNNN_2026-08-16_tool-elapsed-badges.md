@@ -45,9 +45,13 @@ None.
 ## Files Modified
 
 - frontend/src/api/types.ts
-- frontend/src/api/messages.ts
-- frontend/src/components/chat/MessagePart.tsx
-- frontend/src/components/chat/MessagePart.test.tsx
+- frontend/src/api/messages.ts (+messages.test.ts)
+- frontend/src/components/chat/MessagePart.tsx (+MessagePart.test.tsx)
+- frontend/src/components/chat/ChatView.tsx (+ChatView.test.tsx)
+- frontend/src/pages/ChatPage.tsx
+- frontend/src/pages/ChatPage.toolbadge.test.tsx (new)
+- frontend/tests/e2e/history-rendering.spec.ts (2 new specs)
+- design/0050_2026-08-16_starvation-proof-session-truthfulness.md (D3 body reconcile)
 
 ---
 
