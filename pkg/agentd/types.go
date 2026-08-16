@@ -78,6 +78,19 @@ type HealthzResponse struct {
 	Version          string `json:"version"`
 	UptimeSeconds    int    `json:"uptime_seconds"`
 	UserCredsPresent bool   `json:"userCredsPresent"`
+	// CommitSHA is the git commit this agentd binary was built from
+	// (pkg/version, -ldflags injected; buildinfo vcs fallback). Surfaced
+	// so a deployed agentd can be traced to source without binary
+	// forensics — a devel hash build reporting a clean release Version
+	// (incident 2026-08-15) must be distinguishable from the real tag.
+	// "unknown" means neither ldflags nor vcs buildinfo could supply it.
+	CommitSHA string `json:"commit_sha,omitempty"`
+	// BuildTime is the UTC build timestamp (pkg/version). Same purpose
+	// as CommitSHA; "unknown" when not stamped via ldflags (unstamped
+	// builds never emit an empty string, so the omitempty tags on both
+	// fields are inert by design — kept for forward-compatibility if the
+	// defaults ever change).
+	BuildTime string `json:"build_time,omitempty"`
 }
 
 // ReadyzResponse is the response for GET /v1/readyz.

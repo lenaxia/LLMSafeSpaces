@@ -339,9 +339,31 @@ func startBackgroundLoops(bgCtx context.Context, bgWg *sync.WaitGroup, deps serv
 	// US-22.2: Eager-refresh readiness cache. Background goroutine refreshes
 	// opencode's IsHealthy every 5s; /v1/readyz reads from this cache without
 	// making inline opencode calls.
+	//
+	// The refresh loop doubles as the health-watchdog; it receives the
+	// starvation-corroboration probe (watchdog_vitals.go) so would-fire
+	// moments check TCP + CPU evidence before killing opencode. Incident
+	// 2026-08-15: six watchdog kills of a healthy-but-throttled opencode.
 	bgWg.Add(1)
 	go func() {
 		defer bgWg.Done()
-		refreshIsHealthyLoop(bgCtx, deps.client, deps.healthCache, log, deps.gr, deps.proc, &busySessionChecker{tracker: deps.sseTracker})
+		var vitals vitalsGatherer
+		if deps.proc != nil {
+			vitals = buildVitalsGatherer(deps.proc)
+		}
+		refreshIsHealthyLoop(bgCtx, deps.client, deps.healthCache, log, deps.gr, deps.proc, &busySessionChecker{tracker: deps.sseTracker}, vitals)
 	}()
+}
+
+// buildVitalsGatherer constructs the production vitals probe for the
+// health-watchdog (watchdog_vitals.go). The childStartedAt wiring is the
+// respawn boot grace: a refused dial on a young pid classifies RESPAWN,
+// never HUNG (review round 1 on #898 — the boot window was the surviving
+// kill path of the incident's churn loop).
+func buildVitalsGatherer(proc *managedProcess) *procVitalsGatherer {
+	return newProcVitalsGatherer(
+		fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort),
+		proc.pid,
+		proc.childStartedAt,
+	)
 }

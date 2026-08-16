@@ -289,7 +289,7 @@ func TestRefreshIsHealthyLoop_ExitsOnContextCancel(t *testing.T) {
 
 	var done atomic.Bool
 	go func() {
-		refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, nil, nil)
+		refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, nil, nil, nil)
 		done.Store(true)
 	}()
 
@@ -318,7 +318,7 @@ func TestRefreshIsHealthyLoop_ImmediateFirstRefresh(t *testing.T) {
 	cache := newHealthzCache()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, nil, nil)
+	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, nil, nil, nil)
 
 	// The immediate refresh should fire within 100ms (not waiting for the 5s tick)
 	time.Sleep(200 * time.Millisecond)
@@ -347,7 +347,7 @@ func TestRefreshIsHealthyLoop_RefreshesOnTick(t *testing.T) {
 	cache := newHealthzCache()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, nil, nil)
+	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, nil, nil, nil)
 
 	// Wait for 2 ticks (5s each) + immediate = at least 3 calls
 	time.Sleep(11 * time.Second)
@@ -521,7 +521,7 @@ func TestRefreshIsHealthyLoop_WatchdogFiresOnHang(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, fr, nil)
+	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, fr, nil, nil)
 
 	// Wait long enough for: boot success → 3 consecutive timeout failures → watchdog fire.
 	// refreshInterval=5s, timeout=4s, threshold=3 → worst case ~27s.
@@ -549,7 +549,7 @@ func TestRefreshIsHealthyLoop_WatchdogDoesNotFireOnHealthy(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, fr, nil)
+	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, fr, nil, nil)
 
 	time.Sleep(12 * time.Second) // ~2-3 refresh cycles
 
@@ -585,7 +585,7 @@ func TestRefreshIsHealthyLoop_WatchdogDoesNotFireDuringBoot(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, fr, nil)
+	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, fr, nil, nil)
 
 	time.Sleep(35 * time.Second) // enough for boot failures + recovery
 
@@ -658,7 +658,7 @@ func TestRefreshIsHealthyLoop_WatchdogDefersWhenSessionsBusy(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, fr, bc)
+	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, fr, bc, nil)
 
 	// Wait long enough for: boot success → 3 consecutive timeout failures →
 	// watchdog would fire but sessions are busy → deferral.
@@ -698,7 +698,7 @@ func TestRefreshIsHealthyLoop_WatchdogFiresAfterSessionsGoIdle(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, fr, bc)
+	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, fr, bc, nil)
 
 	// Wait for boot + failures + deferral (sessions busy). Use Eventually
 	// instead of fixed Sleep so it works on slow CI runners.

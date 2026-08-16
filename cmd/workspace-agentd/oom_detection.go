@@ -93,6 +93,7 @@ func handleOOMExit(workspaceID, restartReasonMarkerPath string) {
 	// logRestartReason on the next boot.
 	if err := writeRestartReasonMarker(restartReasonMarkerPath, "oom", nil); err != nil {
 		log.Error("failed to write restart-reason marker", zap.Error(err))
+		pkgOpsMetrics.RecordMarkerWriteFailure(workspaceID, "oom")
 	} else {
 		logRestartReasonAtWrite("oom", nil, log.Core())
 	}

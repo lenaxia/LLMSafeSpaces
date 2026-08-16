@@ -162,6 +162,17 @@ func (p *managedProcess) supervise() {
 
 	for {
 		p.mu.Lock()
+		// stop() may have run while we were in a crash backoff sleep:
+		// it signals the child it saw (possibly the dead one) and waits
+		// on doneCh. Without this check the supervisor would respawn a
+		// child nobody will ever signal, and stop() would hang forever
+		// (found while building the real-subprocess regression harness
+		// for the respawn-boot window; pinned by
+		// TestManagedProcess_StopDuringCrashBackoffReturns).
+		if p.stopRequested {
+			p.mu.Unlock()
+			return
+		}
 		// Build a fresh cmd. exec.Cmd is single-shot — one Start +
 		// one Wait per instance.
 		cmd := p.cmdFactory()
@@ -234,6 +245,7 @@ func (p *managedProcess) supervise() {
 		} else {
 			if err := writeRestartReasonMarker(RestartReasonMarkerPath, "crash", nil); err != nil {
 				log.Error("failed to write restart-reason marker", zap.Error(err))
+				pkgOpsMetrics.RecordMarkerWriteFailure(workspaceIDFromEnv(), "crash")
 			} else {
 				logRestartReasonAtWrite("crash", nil, log.Core())
 			}
@@ -266,6 +278,36 @@ func (p *managedProcess) applyBackoff() {
 	p.mu.Unlock()
 	log.Info("restarting opencode", zap.Duration("backoff", backoff))
 	time.Sleep(backoff)
+}
+
+// pid returns the PID of the currently supervised opencode child, or 0
+// when no child process is attached (start never called, or the previous
+// child exited and the supervisor is between iterations). Used by the
+// health-watchdog's starvation corroboration (watchdog_vitals.go) to read
+// the child's CPU counter.
+//
+// Mutex-guarded: supervise() overwrites p.cmd under the same lock. The
+// returned pid may be stale by the time it is used — callers must treat
+// read failures as "no evidence" rather than retry.
+func (p *managedProcess) pid() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.cmd != nil && p.cmd.Process != nil {
+		return p.cmd.Process.Pid
+	}
+	return 0
+}
+
+// childStartedAt returns the time the CURRENT child was started (zero
+// time when no child has been started yet). The health-watchdog's vitals
+// gatherer (watchdog_vitals.go) uses it to disarm the kill during the
+// respawn boot window: a freshly spawned child has not bound its port,
+// so a refused dial against a young pid is boot, not hang. Mutex-guarded
+// alongside pid(); the same staleness caveat applies.
+func (p *managedProcess) childStartedAt() time.Time {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lastRestartAt
 }
 
 // restart signals the current child to exit and blocks until the

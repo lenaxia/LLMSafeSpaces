@@ -47,6 +47,8 @@ func TestHealthzHandler_ReturnsHealthyWithoutOpencode(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
 	assert.True(t, resp.Healthy, "process-only liveness must always report healthy when the handler runs")
 	assert.Equal(t, buildVersion, resp.Version, "version must be the workspace-agentd build version")
+	assert.Equal(t, buildCommit, resp.CommitSHA, "commit_sha must surface the build commit (incident 2026-08-15: deployed code was untraceable)")
+	assert.Equal(t, buildTime, resp.BuildTime, "build_time must surface the build timestamp")
 	assert.GreaterOrEqual(t, resp.UptimeSeconds, 42, "uptime must reflect time since startedAt")
 	assert.Less(t, resp.UptimeSeconds, 60, "uptime must not be unreasonably large")
 }
@@ -228,9 +230,15 @@ func TestHealthzHandler_ContextCancellationIgnored(t *testing.T) {
 }
 
 // TestHealthzHandler_ResponseShapeIsExactlyAgentdHealthzResponse asserts
-// the JSON body has exactly the three documented fields and no extras.
+// the JSON body has exactly the documented fields and no extras.
 // Any new fields require coordinated updates in pkg/agentd/types.go and
 // downstream consumers (kubelet, controller's probe).
+//
+// commit_sha and build_time were added 2026-08-15 (incident follow-up): a
+// devel hash build stamped with a release VERSION was indistinguishable
+// from the real release, making deployed-code identification require
+// binary disassembly. Un-stamped builds report "unknown" (pkg/version
+// defaults); the omitempty tags are inert by design.
 func TestHealthzHandler_ResponseShapeIsExactlyAgentdHealthzResponse(t *testing.T) {
 	handler := healthzHandler(time.Now(), "")
 
@@ -241,8 +249,8 @@ func TestHealthzHandler_ResponseShapeIsExactlyAgentdHealthzResponse(t *testing.T
 	var raw map[string]any
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &raw))
 
-	assert.ElementsMatch(t, []string{"healthy", "version", "uptime_seconds", "userCredsPresent"},
-		keys(raw), "response must contain exactly the four documented fields")
+	assert.ElementsMatch(t, []string{"healthy", "version", "uptime_seconds", "userCredsPresent", "commit_sha", "build_time"},
+		keys(raw), "response must contain exactly the six documented fields")
 }
 
 func keys(m map[string]any) []string {

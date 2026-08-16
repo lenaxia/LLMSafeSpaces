@@ -895,6 +895,7 @@ func reloadSecretsHandler(cfg materializeConfig, deps reloadSecretsDeps) http.Ha
 			if reason, names := classifySecretRestartReason(batch); reason != "" {
 				if err := writeRestartReasonMarker(markerPath, reason, names); err != nil {
 					log.Error("failed to write restart-reason marker", zap.Error(err))
+					pkgOpsMetrics.RecordMarkerWriteFailure(workspaceIDFromEnv(), reason)
 				} else {
 					logRestartReasonAtWrite(reason, names, log.Core())
 				}
