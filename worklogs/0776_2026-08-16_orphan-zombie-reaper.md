@@ -13,7 +13,7 @@ agentd is PID 1 in the workspace container. Descendants orphaned mid-execution (
 ## Work Completed
 
 - `orphan_reaper.go`: SIGCHLD + ticker-driven reaper. Each pass scans `/proc` for children of this process in `Z` state, skips pids in the owned registry, and reaps the rest with pid-specific `Wait4(WNOHANG)` only after they have been zombie longer than `orphanGrace` (5s). New metric `workspace_orphans_reaped_total{workspace_id}`.
-- Owned registry: `managedProcess.supervise` registers the opencode pid between `Start()` and `Wait()`; `trackedOutput` (new helper, `Output()` semantics: stdout captured, stderr inherited) replaces the direct `exec.Command(...).Output()` in `secrets.go buildEnvFrom`. These are the only two direct-exec sites in the package (validated by grep).
+- Owned registry: `managedProcess.supervise` registers the opencode pid between `Start()` and `Wait()`; `trackedOutput` (new helper, `Output()` semantics — stdout returned, stderr captured into `ExitError.Stderr`; corrected in the review round, was initially stderr-inherited) replaces the direct `exec.Command(...).Output()` in `secrets.go buildEnvFrom`. These are the only two direct-exec sites in the package (validated by grep).
 - `main()` calls `prctl(PR_SET_CHILD_SUBREAPER)` in `--supervise` mode (no-op in effect when agentd is already PID 1; keeps the fix effective under another init). The loop runs in `startBackgroundLoops` on `bgCtx`/`bgWg`.
 - `go.mod`: `golang.org/x/sys` promoted indirect → direct (prctl constant).
 - Tests (`orphan_reaper_test.go`): bug baseline (zombie persists without reaper), reaps adopted orphan (+ metric), tracked zombie never reaped even far past grace (late `Wait()` still sees exit 3), 40 concurrent untracked Start+Wait never stolen, `trackedOutput` semantics, Wait4 syscall plumbing. Red-without-fix verified by neutralizing `pass()` (`ReapsAdoptedOrphan` fails on metric 0); full package suite green under `-race` (381s); vet + golangci-lint clean.
@@ -38,8 +38,18 @@ agentd is PID 1 in the workspace container. Descendants orphaned mid-execution (
 - A future direct `exec.Command(...).Output()` caller in agentd would rely on grace + kernel handoff alone. `trackedOutput` exists for this; not mechanically enforced (a repolint grep rule would be the follow-up if it recurs).
 - Zombies appearing between `bgCtx` cancel and process exit (shutdown window) are not reaped — bounded by the shutdown path's own lifetime.
 - Orphans reparented to *opencode* (not agentd) are opencode's children; only when their chain parent dies do they reach agentd. Out of scope here.
-- The #904 "related observation" (phantom-busy clear took ~45 min with no reconcile path) is **not** addressed here: the API-side half was fixed by #903 (merged, deployed 0.15.9); the agentd-side SSE-gap reconciliation remains tracked under #892 — it needs a queryable busyness source opencode 1.18.10 does not expose.
+- The #904 "related observation" (phantom-busy clear took ~45 min with no reconcile path) is **not** addressed here: the API SSE-watch-blindness half was fixed by #903 (merged, deployed 0.15.9 — watch re-arming, not busy-reconciliation per se); the agentd-side SSE-gap busy reconciliation remains tracked under #892 — it needs a queryable busyness source opencode 1.18.10 does not expose.
 
 ## Blockers
 
 None.
+
+## Review round 2 (PR #908 REQUEST CHANGES → addressed)
+
+Findings and fixes:
+1. Wiring points mutation-deletable undetected → added `TestOrphanReaper_SupervisorRegistration_Wiring` (real `managedProcess` via the TestHelperProcess factory; asserts owns(pid) while alive, released after stop) and `TestOrphanReaper_StartupWiring_ReapsAndDoesNotSteal` (real `startBackgroundLoops`: adopted orphan reaped + metric counted; supervised child owned and released). Both re-verified mutation-red: deleting the track/untrack calls fails the former; no-op'ing the reaper goroutine fails the latter.
+2. `readProcStat` untested against hostile comm → split string parsing into `parseProcStat`; table-driven `TestReadProcStat` (spaces, parens, missing fields).
+3. `ReapsAdoptedOrphan` flake exposure → sawZombie no longer judged in a tight early window; single reaped-or-timeout assertion over 10s.
+4. Record accuracy: worklog line 16 "stderr inherited" corrected (capture into `ExitError.Stderr`); "#903 API-side half" softened to "API SSE-watch-blindness half (#903 is watch re-arming for #902, not busy-reconciliation)".
+
+Debugging note for posterity: the startup-wiring test initially failed because `RecordOrphanReap` normalizes the empty workspace ID to `"unknown"` while the test polled label `""` — the reap was working all along; the label was wrong.

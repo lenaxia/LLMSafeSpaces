@@ -5,9 +5,11 @@ package main
 
 import (
 	"context"
+	"net/http"
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -116,20 +118,24 @@ func TestOrphanReaper_ReapsAdoptedOrphan(t *testing.T) {
 	spawnOrphanedGrandchild(t)
 
 	// The zombie must appear (adoption worked) and then disappear
-	// (reaped) within grace + generous scan slack.
-	deadline := time.Now().Add(5 * time.Second)
+	// (reaped) within grace + generous scan slack. sawZombie is judged
+	// via the metric-or-scan polling below rather than a tight early
+	// window so a CI stall between exit and first scan cannot fail a
+	// working reaper (review round 2, test-case 4).
+	deadline := time.Now().Add(10 * time.Second)
 	sawZombie := false
+	reaped := false
 	for time.Now().Before(deadline) {
 		if len(scanZombieChildren()) > 0 {
 			sawZombie = true
 		}
 		if sawZombie && len(scanZombieChildren()) == 0 {
+			reaped = true
 			break
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond)
 	}
-	assert.True(t, sawZombie, "orphan should be observed as a zombie before reaping")
-	assert.Empty(t, scanZombieChildren(), "reaper must clear the zombie within grace+scan")
+	assert.True(t, reaped, "orphan should be observed as a zombie and then reaped within grace+scan")
 
 	assert.GreaterOrEqual(t, testutil.ToFloat64(pkgOpsMetrics.orphansReaped.WithLabelValues("ws-reap-test")), 1.0,
 		"each reaped orphan must be counted in workspace_orphans_reaped_total")
@@ -273,4 +279,133 @@ func TestOrphanReaper_Wait4Echo(t *testing.T) {
 	assert.Equal(t, pid, wpid)
 	assert.True(t, ws.Exited())
 	assert.Equal(t, 7, ws.ExitStatus())
+}
+
+// TestOrphanReaper_SupervisorRegistration_Wiring pins the production
+// wiring in managedProcess.supervise: while a real supervised child is
+// alive the reaper must own its pid, and after stop() the pid must be
+// released. Deleting the track/untrack calls in managed_process.go
+// fails this test — the mutation the review verified ships undetected.
+func TestOrphanReaper_SupervisorRegistration_Wiring(t *testing.T) {
+	withSubreaper(t)
+	withTestLogger(t)
+	port := freeTCPPort(t)
+	p := newTestManagedProcess(t, port, 0)
+	p.start()
+	defer p.stop()
+
+	requireFakeReachable(t, port, 5*time.Second)
+	p.mu.Lock()
+	pid := p.cmd.Process.Pid
+	p.mu.Unlock()
+	require.NotZero(t, pid)
+
+	assert.True(t, pkgOrphanReaper.owns(pid),
+		"supervisor must register its live child with the reaper")
+
+	p.stop()
+	assert.False(t, pkgOrphanReaper.owns(pid),
+		"registration must be released after the child exits and is waited")
+}
+
+// TestOrphanReaper_StartupWiring_ReapsAndDoesNotSteal pins the
+// production wiring in startBackgroundLoops: the reaper loop that
+// serves a real agentd startup (a) reaps an adopted orphan and counts
+// the metric, and (b) never steals a supervised child's exit — the
+// supervisor still observes the true status while the loop runs.
+// Deleting the reaper goroutine in server.go fails (a); deleting the
+// supervisor registration fails (b).
+func TestOrphanReaper_StartupWiring_ReapsAndDoesNotSteal(t *testing.T) {
+	withSubreaper(t)
+	withTestLogger(t)
+
+	// Real startBackgroundLoops wiring, minimal deps: the loops we do
+	// not care about (SSE subscribe, memory pressure, metrics, fillGaps,
+	// health cache) tolerate a nil-ish client because this test never
+	// exercises them past their idle paths; the reaper loop is the
+	// target. The supervised child comes from the standard fake factory.
+	deps := serverDeps{
+		client:          &OpenCodeClient{password: "t", client: httpTimeoutClient(t)},
+		cache:           &providerCache{},
+		sseTracker:      newSessionStatusTracker(),
+		pressureMonitor: newMemoryPressureMonitor(),
+		healthCache:     newHealthzCache(),
+		gr:              newGateRecorder(time.Now(), agentdGateDurationSeconds, log),
+		startedAt:       time.Now(),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var bgWg sync.WaitGroup
+	startBackgroundLoops(ctx, &bgWg, deps)
+	defer func() {
+		cancel()
+		done := make(chan struct{})
+		go func() { bgWg.Wait(); close(done) }()
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+		}
+	}()
+
+	// RecordOrphanReap normalizes an empty workspace ID to "unknown";
+	// mirror that here (pkgOrphanReaper's label is "" in tests).
+	reapLabel := pkgOrphanReaper.workspaceID
+	if reapLabel == "" {
+		reapLabel = "unknown"
+	}
+	before := testutil.ToFloat64(pkgOpsMetrics.orphansReaped.WithLabelValues(reapLabel))
+
+	// (a) orphaned grandchild must be reaped by the loop.
+	spawnOrphanedGrandchild(t)
+	require.Eventually(t, func() bool {
+		return testutil.ToFloat64(pkgOpsMetrics.orphansReaped.WithLabelValues(reapLabel)) > before
+	}, 30*time.Second, 200*time.Millisecond, "startup-wired reaper must reap the adopted orphan and count the metric (grace 5s + ticker 5s + slack)")
+
+	// (b) supervised child's exit must still reach its supervisor.
+	port := freeTCPPort(t)
+	p := newTestManagedProcess(t, port, 0)
+	p.start()
+	requireFakeReachable(t, port, 5*time.Second)
+	p.mu.Lock()
+	pid := p.cmd.Process.Pid
+	p.mu.Unlock()
+	require.True(t, pkgOrphanReaper.owns(pid), "supervised child must be owned while the loop runs")
+	p.stop()
+	assert.False(t, pkgOrphanReaper.owns(pid), "ownership released after exit")
+}
+
+func httpTimeoutClient(t *testing.T) *http.Client {
+	t.Helper()
+	return &http.Client{Timeout: 2 * time.Second}
+}
+
+// TestReadProcStat table-drives the /proc/<pid>/stat parser against
+// hostile comm fields (spaces, parens) — a naive strings.Fields
+// refactor must fail here, not in prod.
+func TestReadProcStat(t *testing.T) {
+	cases := []struct {
+		name  string
+		raw   string
+		state byte
+		ppid  int
+		ok    bool
+	}{
+		{"plain zombie", "41 (sh) Z 1 0 0", 'Z', 1, true},
+		{"spaces in comm", "42 (a b c) S 7 0 0", 'S', 7, true},
+		{"parens in comm", "43 (a) b (c)) Z 7 0 0", 'Z', 7, true},
+		{"no close paren", "44 (sh Z 1 0 0", 0, 0, false},
+		{"empty after comm", "45 (sh)", 0, 0, false},
+		{"missing ppid field", "46 (sh) Z", 0, 0, false},
+		{"non-numeric ppid", "47 (sh) Z x 0 0", 0, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			state, ppid, ok := parseProcStat(tc.raw)
+			require.Equal(t, tc.ok, ok)
+			if tc.ok {
+				assert.Equal(t, tc.state, state)
+				assert.Equal(t, tc.ppid, ppid)
+			}
+		})
+	}
 }

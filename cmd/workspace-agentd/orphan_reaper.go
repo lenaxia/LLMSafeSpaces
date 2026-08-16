@@ -115,6 +115,15 @@ func (r *orphanReaper) untrack(pid int) {
 	r.mu.Unlock()
 }
 
+// owns reports whether pid is currently registered as owned by an
+// os/exec waiter.
+func (r *orphanReaper) owns(pid int) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.own[pid]
+	return ok
+}
+
 // run reaps adopted orphans until ctx is done. One pass per SIGCHLD or
 // ticker tick.
 func (r *orphanReaper) run(ctx context.Context) {
@@ -226,15 +235,22 @@ func readProcStat(path string) (state byte, ppid int, ok bool) {
 	if err != nil {
 		return 0, 0, false
 	}
-	closeIdx := strings.LastIndexByte(string(raw), ')')
+	return parseProcStat(string(raw))
+}
+
+// parseProcStat parses the state character and parent pid from a
+// /proc/<pid>/stat record. Parsing starts after the final ')' so a
+// comm containing spaces or parens cannot shift the field indexes.
+func parseProcStat(raw string) (state byte, ppid int, ok bool) {
+	closeIdx := strings.LastIndexByte(raw, ')')
 	if closeIdx < 0 || closeIdx+2 >= len(raw) {
 		return 0, 0, false
 	}
-	fields := strings.Fields(string(raw[closeIdx+2:]))
+	fields := strings.Fields(raw[closeIdx+2:])
 	if len(fields) < 2 || len(fields[0]) != 1 {
 		return 0, 0, false
 	}
-	ppid, err = strconv.Atoi(fields[1])
+	ppid, err := strconv.Atoi(fields[1])
 	if err != nil {
 		return 0, 0, false
 	}
