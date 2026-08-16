@@ -23,18 +23,12 @@ var (
 	// watchdogMaxDeferrals caps how many polls the watchdog will defer
 	// when sessions are busy. At 5s intervals, 60 deferrals = ~5 minutes.
 	// After this, the restart is forced regardless of busy state — unless
-	// starvation corroboration (watchdog_vitals.go) says opencode is alive
-	// and making progress, in which case the deferral window is EXTENDED
-	// (the force exists for stale busy state on a hung process, which the
-	// vitals evidence rules out). Var for tests.
+	// vitals evidence (watchdog_vitals.go) says opencode is alive (starved
+	// or flat) or that crash recovery owns the respawn, in which case the
+	// deferral window is EXTENDED (the force exists for stale busy state
+	// on a dead-listener hang, which the vitals evidence rules out). Var
+	// for tests.
 	watchdogMaxDeferrals = 60
-
-	// watchdogStandDownAfter is the number of consecutive starvation
-	// suppressions after which the watchdog logs a one-time stand-down
-	// warning: sustained starvation is an operator problem (CPU quota,
-	// noisy neighbors), not something restarting opencode can fix.
-	// At 5s polls, 60 ≈ 5 minutes.
-	watchdogStandDownAfter = 60
 )
 
 const (
@@ -127,12 +121,16 @@ type healthWatchdog struct {
 	maxDeferrals   int // injectable for fast tests (default: watchdogMaxDeferrals)
 	window         time.Duration
 
-	// Starvation-corroboration state (watchdog_vitals.go). Suppressing a
-	// restart consumes neither the fired latch nor the rate-limit budget;
-	// starvedCount resets on recovery like every other episode latch.
-	starvedCount    int  // consecutive starvation suppressions this episode
-	starvedLogged   bool // latches: log the first suppression (then every 12th)
-	standDownLogged bool // latches: log sustained-starvation stand-down once
+	// Suppression state (watchdog_vitals.go, #892 / design 0050 D1).
+	// Suppressing a restart consumes neither the fired latch nor the
+	// rate-limit budget; suppressedCount resets on recovery like every
+	// other episode latch. There is deliberately NO stand-down: chronic
+	// starvation is expected under the fixed 2-CPU quota, and
+	// suppressing forever is the policy — visibility comes from
+	// workspace_watchdog_suppressions_total{reason} and the periodic
+	// Warn logs, not from re-arming the kill.
+	suppressedCount int  // consecutive suppressions this episode (any reason)
+	suppressLogged  bool // latches: log the first suppression (then every 12th)
 }
 
 func newHealthWatchdog() *healthWatchdog {
@@ -183,9 +181,8 @@ func (wd *healthWatchdog) reset() {
 	wd.giveUpLogged = false
 	wd.maxDeferLogged = false
 	wd.deferCount = 0
-	wd.starvedCount = 0
-	wd.starvedLogged = false
-	wd.standDownLogged = false
+	wd.suppressedCount = 0
+	wd.suppressLogged = false
 }
 
 // refreshIsHealthyLoop runs from agentd boot until ctx is canceled.
@@ -207,12 +204,13 @@ func (wd *healthWatchdog) reset() {
 // killing legitimate long-running turns (issue #807 Assumption #2).
 // The latch ensures we only log/defer once per episode.
 //
-// vitals, if non-nil, is the starvation corroboration probe (see
-// watchdog_vitals.go). It is consulted at every would-fire moment —
-// including the max-defer force path — and a verdict of verdictStarved
-// suppresses the restart WITHOUT consuming the latch or rate-limit
-// budget. nil disables corroboration (tests, partial wiring) and the
-// watchdog keeps its pre-corroboration semantics exactly.
+// vitals, if non-nil, is the corroboration probe (see watchdog_vitals.go).
+// It is consulted at every would-fire moment — including the max-defer
+// force path. Only a corroborated dead-listener hang (verdictHung: dial
+// refused, supervised pid alive) reaches the restart; every other verdict
+// suppresses without consuming the latch or rate-limit budget (#892 /
+// design 0050 D1). nil disables corroboration (tests, partial wiring) and
+// the watchdog keeps its pre-corroboration semantics exactly.
 func refreshIsHealthyLoop(ctx context.Context, client *OpenCodeClient, cache *healthzCache, logger *zap.Logger, gr *gateRecorder, restarter healthWatchdogRestarter, busyChecker sessionBusyChecker, vitals vitalsGatherer) {
 	wd := newHealthWatchdog()
 	watchdogLogger := logger.With(zap.String("component", "health_watchdog"))
@@ -305,56 +303,59 @@ func refreshIsHealthyLoop(ctx context.Context, client *OpenCodeClient, cache *he
 					forceDespiteBusy = true
 				}
 
-				// Starvation corroboration (incident 2026-08-15, see
+				// Vitals corroboration (#892 / design 0050 D1, see
 				// watchdog_vitals.go): timeout evidence alone cannot
-				// distinguish a hung event loop from a CPU-starved one.
-				// Before firing — including on the max-defer force path —
-				// gather one vital-signs sample. A STARVED verdict
-				// suppresses the restart entirely: killing a busy process
-				// is the exact harm this corroboration exists to prevent,
-				// and it also invalidates the "stale busy state" premise
-				// of the force path, so the busy window is extended. An
-				// UNKNOWN verdict (no pid, /proc failure, restart in
-				// flight) preserves pre-corroboration behavior: fire.
+				// distinguish a hung event loop from a starved, blocked,
+				// or respawning one. Before firing — including on the
+				// max-defer force path — gather one vital-signs sample.
+				//
+				// The kill set is DEAD-LISTENER ONLY: verdictHung (dial
+				// refused, supervised pid alive) is the sole verdict that
+				// reaches the restart. STARVED (advancing), FLAT (blocked
+				// on upstream I/O — alive), RESPAWN (crash recovery owns
+				// the respawn), and UNKNOWN (no evidence — killing
+				// without evidence is banned) all suppress, re-arm the
+				// busy-deferral window, and count in
+				// workspace_watchdog_suppressions_total{reason}.
 				if vitals != nil {
 					v := vitals.gather(ctx)
-					switch verdict, why := v.classify(); verdict {
-					case verdictStarved:
-						wd.starvedCount++
+					verdict, why := v.classify()
+					if verdict != verdictHung {
+						wd.suppressedCount++
 						if forceDespiteBusy {
-							// Evidence says the busy sessions are real and
-							// opencode is progressing: re-arm the deferral
-							// window instead of forcing a kill.
+							// Evidence says opencode is alive (or the
+							// respawn owns it): the busy sessions may be
+							// real, so re-arm the deferral window instead
+							// of forcing a kill.
 							wd.deferCount = 0
 							wd.maxDeferLogged = false
 							wd.deferredLogged = false
 						}
-						if !wd.starvedLogged || wd.starvedCount%12 == 0 {
-							watchdogLogger.Warn("health-watchdog suppressing restart — opencode is starved, not hung",
+						if !wd.suppressLogged || wd.suppressedCount%12 == 0 {
+							logFn := watchdogLogger.Warn
+							if verdict == verdictUnknown {
+								// Unknown = the probe itself is degraded
+								// (no pid, /proc failure). Raise the
+								// volume: this needs operator attention
+								// even though killing stays banned.
+								logFn = watchdogLogger.Error
+							}
+							logFn("health-watchdog suppressing restart — vitals say not a dead-listener hang",
+								zap.String("verdict", v.suppressionReason()),
 								zap.String("evidence", why),
 								zap.Float64("cgroupThrottledMS", v.throttleDeltaUS/1e6),
 								zap.Int("consecutiveFailures", snap.ConsecutiveFailures),
 								zap.String("lastError", snap.LastError),
-								zap.Int("suppressions", wd.starvedCount),
+								zap.Int("suppressions", wd.suppressedCount),
 							)
-							wd.starvedLogged = true
+							wd.suppressLogged = true
 						}
-						if wd.starvedCount >= watchdogStandDownAfter && !wd.standDownLogged {
-							wd.standDownLogged = true
-							watchdogLogger.Warn("health-watchdog standing down — sustained starvation; restart withheld, operator attention required (check CPU quota / throttling)",
-								zap.Int("suppressions", wd.starvedCount),
-							)
-						}
-						pkgOpsMetrics.RecordWatchdogSuppression(workspaceIDFromEnv())
+						pkgOpsMetrics.RecordWatchdogSuppression(workspaceIDFromEnv(), v.suppressionReason())
 						continue
-					case verdictHung:
-						watchdogLogger.Info("health-watchdog corroborated hang",
-							zap.String("evidence", why),
-							zap.Int("consecutiveFailures", snap.ConsecutiveFailures))
-					default:
-						watchdogLogger.Debug("health-watchdog vitals inconclusive — proceeding on timeout evidence",
-							zap.String("evidence", why))
 					}
+					watchdogLogger.Info("health-watchdog corroborated dead-listener hang",
+						zap.String("evidence", why),
+						zap.Int("consecutiveFailures", snap.ConsecutiveFailures))
 				}
 
 				if wd.maybeFire(time.Now()) {
@@ -366,6 +367,7 @@ func refreshIsHealthyLoop(ctx context.Context, client *OpenCodeClient, cache *he
 					)
 					if err := writeRestartReasonMarker(RestartReasonMarkerPath, RestartReasonHealthWatchdog, nil); err != nil {
 						watchdogLogger.Error("failed to write health-watchdog restart-reason marker", zap.Error(err))
+						pkgOpsMetrics.RecordMarkerWriteFailure(workspaceIDFromEnv(), RestartReasonHealthWatchdog)
 					}
 					logRestartReasonAtWrite(RestartReasonHealthWatchdog, nil, watchdogLogger.Core())
 					pkgOpsMetrics.RecordRestart(workspaceIDFromEnv(), RestartReasonHealthWatchdog)

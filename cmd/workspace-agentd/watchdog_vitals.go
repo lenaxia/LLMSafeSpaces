@@ -15,36 +15,47 @@ package main
 // the last turn: after watchdogMaxDeferrals polls the restart is FORCED
 // despite busy sessions, on timeout evidence alone.
 //
-// This file provides the missing discriminator between the two states that
-// probe timeouts cannot distinguish:
+// Rulings (#892, design 0050 D1 — they supersede this file's original
+// matrix): the kill set is DEAD-LISTENER ONLY. Every other evidence state
+// suppresses, because each previously-lethal state has an innocent
+// explanation that killing would destroy:
 //
-//	HUNG     — event loop deadlocked; it will never answer again. Restart
-//	           is the ONLY remedy. This is what issue #807 exists for.
-//	STARVED  — event loop alive and making progress, but CPU-starved by
-//           cgroup quota contention (builds, tests, parallel turns).
-//           Restart is strictly harmful: it kills live sessions AND adds
-//           restart load to an already saturated CPU budget.
+//	HUNG      — TCP dial refused AND the supervised pid is alive: the
+//	            server is gone from a live process. Restart is the remedy.
+//	            The ONLY lethal verdict.
+//	RESPAWN   — dial refused AND the supervised pid is gone/changed:
+//	            crash recovery is already restarting opencode; a watchdog
+//	            kill here races the respawn (the 6-restarts-in-11-minutes
+//	            incident shape). Suppress; cmd.Wait() owns lifecycle.
+//	STARVED   — CPU ticks advancing: the loop is making progress under
+//	            contention. Restart is strictly harmful.
+//	FLAT      — dial connects but CPU ticks are flat: a turn blocked on
+//	            upstream I/O (timeout-less LLM call) looks exactly like
+//	            this and is ALIVE (#892 ruling: never kill on flat CPU).
+//	            Recovery is honest state (tracker reset) + informed Stop.
+//	UNKNOWN   — evidence could not be gathered (probe bug, /proc
+//	            failure). Killing without evidence is banned by the same
+//	            policy; suppress + alert so probe degradation is visible.
 //
 // Evidence gathered (one ~3s sample):
 //
 //  1. TCP dial to the agent port. The kernel completes handshakes for a
 //     listening socket regardless of whether the application ever accepts,
-//     so "dial refused" is decisive (nothing is listening — server crashed
-//     or process gone) but "dial succeeded" is NOT proof of liveness.
+//     so "dial refused" is decisive (nothing is listening) but "dial
+//     succeeded" is NOT proof of liveness. Refused is lethal ONLY when the
+//     supervised pid is still alive — otherwise the respawn owns it.
 //  2. CPU ticks (utime+stime from /proc/<pid>/stat) across the sample
 //     window. A loop that is running — even at 1% of its fair share —
-//     accumulates scheduler ticks. A deadlocked loop accrues ~zero. This
-//     is the primary discriminator.
+//     accumulates scheduler ticks. Advancing = alive. Flat alone is NOT
+//     kill evidence (blocked-IO ruling).
 //  3. cgroup cpu.stat throttled_usec delta — informational corroboration
 //     for logs ("the box was throttling while this happened").
 //
 // Known limitation (accepted, documented): a hot infinite JS loop and a
 // genuinely busy loop are indistinguishable from inside the pod — both
-// advance CPU. We side with NOT killing: a false negative (hot-loop hang
-// persists until an operator intervenes) is recoverable; a false positive
-// (healthy busy process killed) is the incident this file prevents. The
-// watchdog logs a stand-down warning after sustained suppression so the
-// condition is visible in logs and metrics.
+// advance CPU. We side with NOT killing (#892): recovery for a hot-loop
+// hang is operator Stop / D6 escalation, and every suppression is counted
+// in workspace_watchdog_suppressions_total{reason} so patterns are visible.
 
 import (
 	"context"
@@ -77,21 +88,29 @@ var vitalsDialTimeout = 2 * time.Second
 // user_hz — the epsilon just needs to scale with the window.
 const cpuFlatTicks = 2.0
 
-// verdict is the outcome of classifying a vitalSigns sample.
+// verdict is the outcome of classifying a vitalSigns sample. Per #892 /
+// design 0050 D1, ONLY verdictHung may trigger a restart; every other
+// verdict suppresses.
 type verdict int
 
 const (
-	// verdictHung: evidence says opencode will not recover on its own —
-	// restart. Callers should fire the watchdog.
+	// verdictHung: TCP dial refused while the supervised pid is alive —
+	// the server is gone from a live process. The ONLY kill verdict.
 	verdictHung verdict = iota
-	// verdictStarved: evidence says opencode is alive and making progress
-	// under contention. Callers must NOT restart; restart is the harm the
-	// corroboration exists to prevent.
+	// verdictStarved: CPU ticks advancing — alive and making progress
+	// under contention. Suppress.
 	verdictStarved
-	// verdictUnknown: evidence could not be gathered (no pid, /proc read
-	// failure, pid churn mid-sample). Callers should proceed with the
-	// PRE-corroboration behavior (fire) so a bug in this file can never
-	// make the watchdog toothless.
+	// verdictFlat: listener answers but CPU ticks are flat — blocked on
+	// upstream I/O or wedged; either way the process is alive and killing
+	// is banned (#892: blocked-IO turns must not be killed). Suppress.
+	verdictFlat
+	// verdictRespawn: dial refused AND the supervised pid is gone or
+	// changed — crash recovery is mid-restart and owns lifecycle. A
+	// watchdog kill here races the respawn. Suppress.
+	verdictRespawn
+	// verdictUnknown: evidence could not be gathered (probe bug, /proc
+	// failure). Killing without evidence is banned by policy. Suppress
+	// and alert.
 	verdictUnknown
 )
 
@@ -103,8 +122,13 @@ type vitalSigns struct {
 	// listening sockets from the accept backlog.
 	tcpOpen bool
 	// tcpRefused: the dial got ECONNREFUSED — nothing is listening.
-	// Decisive: the server is gone even if the process lingers.
+	// Lethal only when combined with a live pid; see pidGone.
 	tcpRefused bool
+	// pidGone: the supervised pid is unavailable (0), unreadable in
+	// /proc (process exited, pidFn stale), or changed mid-sample. With a
+	// refused dial this means crash recovery is respawning opencode —
+	// the watchdog must not race it.
+	pidGone bool
 	// cpuKnown: cpuDeltaTicks is meaningful. False when the agent pid was
 	// unavailable, /proc was unreadable, or the pid changed mid-sample
 	// (restart in flight makes the delta meaningless).
@@ -122,21 +146,22 @@ type vitalSigns struct {
 
 // classify turns a vitalSigns sample into a watchdog decision.
 //
-// Precedence (first match wins):
+// Precedence (first match wins), per #892 / design 0050 D1:
 //
-//  1. tcpRefused           → HUNG   (nothing listening; server crashed or
-//     process gone — restart is the remedy)
-//  2. !cpuKnown            → UNKNOWN (fall back to pre-corroboration
-//     behavior: fire)
-//  3. cpuDelta < flat eps  → HUNG   (loop idle while the kernel queues
-//     connections — deadlock)
-//  4. otherwise            → STARVED (loop advancing: making progress or
-//     hot-looping; restart is harm, see
-//     file-doc "known limitation")
+//  1. tcpRefused && pidGone → RESPAWN (crash recovery owns it; suppress)
+//  2. tcpRefused            → HUNG    (no listener in a live process;
+//     the only kill verdict)
+//  3. !cpuKnown             → UNKNOWN (no evidence → suppress + alert;
+//     killing without evidence is banned)
+//  4. cpuDelta < flat eps    → FLAT   (alive but blocked — blocked-IO
+//     turns must not be killed)
+//  5. otherwise             → STARVED (loop advancing)
 func (v vitalSigns) classify() (verdict, string) {
 	switch {
+	case v.tcpRefused && v.pidGone:
+		return verdictRespawn, "tcp dial refused and supervised pid is gone — crash recovery owns the respawn"
 	case v.tcpRefused:
-		return verdictHung, "tcp dial refused — nothing listening on the agent port"
+		return verdictHung, "tcp dial refused with supervised pid alive — nothing listening on the agent port"
 	case !v.cpuKnown:
 		reason := "cpu evidence unavailable"
 		if v.cpuErr != "" {
@@ -144,9 +169,24 @@ func (v vitalSigns) classify() (verdict, string) {
 		}
 		return verdictUnknown, reason
 	case v.cpuDeltaTicks < cpuFlatTicks:
-		return verdictHung, fmt.Sprintf("event loop idle (+%.0f CPU ticks over the sample) while connections go unanswered — deadlock suspected", v.cpuDeltaTicks)
+		return verdictFlat, fmt.Sprintf("listener accepts but event loop idle (+%.0f CPU ticks over the sample) — blocked on upstream I/O or wedged; alive, not killable (#892)", v.cpuDeltaTicks)
 	default:
 		return verdictStarved, fmt.Sprintf("event loop advancing (+%.0f CPU ticks over the sample) — starved or busy, not hung", v.cpuDeltaTicks)
+	}
+}
+
+// suppressionReason is the metric/log label for a suppressed would-fire.
+func (v vitalSigns) suppressionReason() string {
+	verdict, _ := v.classify()
+	switch verdict {
+	case verdictStarved:
+		return "starved"
+	case verdictFlat:
+		return "flat"
+	case verdictRespawn:
+		return "respawn"
+	default:
+		return "unknown"
 	}
 }
 
@@ -181,19 +221,24 @@ func newProcVitalsGatherer(addr string, pidFn func() int) *procVitalsGatherer {
 }
 
 // gather implements vitalsGatherer. Errors never propagate — a vitalSigns
-// with cpuKnown=false is the error channel, and classify routes it to
-// verdictUnknown so the watchdog degrades to its old behavior.
+// with cpuKnown=false is the error channel, and classify routes it to a
+// suppressing verdict (#892: no kill without evidence).
 func (g *procVitalsGatherer) gather(ctx context.Context) vitalSigns {
 	var v vitalSigns
 	v.tcpOpen, v.tcpRefused = g.probeTCP()
 
 	pid := g.pidFn()
 	if pid <= 0 {
+		v.pidGone = true
 		v.cpuErr = "no agent pid available"
 		return v
 	}
 	t1, err := readProcCPUTicks(pid)
 	if err != nil {
+		// pidFn returned a pid but /proc has no such process: it exited
+		// (or the supervisor is between children). With a refused dial
+		// this is the respawn window — never the watchdog's to kill.
+		v.pidGone = true
 		v.cpuErr = err.Error()
 		return v
 	}
@@ -209,13 +254,16 @@ func (g *procVitalsGatherer) gather(ctx context.Context) vitalSigns {
 	}
 
 	// The supervisor may have replaced the child while we sampled. A delta
-	// across two different processes is garbage — invalidate instead.
+	// across two different processes is garbage — and a generation change
+	// means crash recovery owns lifecycle, not the watchdog.
 	if pidNow := g.pidFn(); pidNow != pid {
+		v.pidGone = true
 		v.cpuErr = fmt.Sprintf("agent pid changed during sample (%d → %d): restart in flight", pid, pidNow)
 		return v
 	}
 	t2, err := readProcCPUTicks(pid)
 	if err != nil {
+		v.pidGone = true
 		v.cpuErr = err.Error()
 		return v
 	}
