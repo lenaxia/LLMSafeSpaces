@@ -56,10 +56,12 @@
 2. run_resolve collapse intentional — US-65.7, documented in server.go:241-260.
 3. `{"secrets": [...]}` wrapper is the current API contract — SecretsHandler.ListSecrets (api/internal/handlers/secrets.go:147-166).
 
-## Tests Run
+## Tests Run (cumulative, rounds 1-2)
 
-- `go build ./... && go vet ./pkg/mcp/` — clean; `go test ./pkg/mcp/ -count=1` — green
-- `cd sdks/canary/mcp && go build ./...` — clean (canary is a separate module; exercised by the sdk-canary CI job)
+- `go build ./... && go vet ./pkg/mcp/` — clean; `go test ./pkg/mcp/ -count=1` (incl. the three new ListCredentials tests + schema pin) — green
+- `cd sdks/canary/mcp && go build ./... && go vet ./... && go test ./...` — clean/green (5 contract tests)
+- `go test ./pkg/repolint/ -run TestCanary_MCPTools_Parity` — green
+- Verified red: ListCredentials_WrapperDecode on the bare-array decode (reverted fix, test failed, restored)
 
 ## Files Modified
 

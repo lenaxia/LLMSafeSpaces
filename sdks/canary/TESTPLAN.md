@@ -901,7 +901,8 @@ Tests `GET /workspaces/:id/sessions/:sessionId` which proxies to opencode's `GET
 
 | # | Check |
 |---|---|
-| P1 | `credential_create` with placeholder key → result JSON has `id`. **API-key auth**: the DEK-gated positive CRUD is skipped with `dek_unavailable` asserted (403 "encryption key not available" — documented architecture); full CRUD requires an interactive-login canary | P2 | `credential_list` → array contains created credential |
+| P1 | `credential_create` with placeholder key → result JSON has `id`. **API-key auth**: the DEK-gated positive CRUD is skipped with `dek_unavailable` asserted (403 "encryption key not available" — documented architecture); full CRUD requires an interactive-login canary |
+| P2 | `credential_list` → array contains created credential |
 | P3 | `credential_delete` → result contains "deleted" |
 | N1 | `credential_create` missing `kind` → `isError=true` |
 | N2 | `credential_create` missing `slug` → `isError=true` |
