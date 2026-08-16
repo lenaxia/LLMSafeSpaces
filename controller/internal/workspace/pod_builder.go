@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -59,6 +60,10 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 	trueVal := true
 	falseVal := false
 
+	// Computed before the container literal so both Resources and the
+	// tool-parallelism env derive from the same quantities.
+	requirements := resourceRequirementsFor(workspace)
+
 	mainContainer := corev1.Container{
 		Name:    "workspace",
 		Image:   runtimeImage,
@@ -68,7 +73,7 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 			{ContainerPort: agentd.AgentdPort, Name: "agentd", Protocol: corev1.ProtocolTCP},
 			{ContainerPort: agentd.AgentdAdminPort, Name: "agentd-admin", Protocol: corev1.ProtocolTCP},
 		},
-		Env: []corev1.EnvVar{
+		Env: append([]corev1.EnvVar{
 			{Name: "WORKSPACE_ID", Value: workspace.Name},
 			{Name: "WORKSPACE_DIR", Value: agentd.WorkspacePath},
 			{Name: "AGENTD_ADMIN_TOKEN", ValueFrom: &corev1.EnvVarSource{
@@ -87,7 +92,7 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 			// caused context_used to be written within one second of the next LLM
 			// step completing. See worklog 0263.
 			{Name: "OPENCODE_EXPERIMENTAL_EVENT_SYSTEM", Value: "true"},
-		},
+		}, toolParallelismEnv(requirements)...),
 		ReadinessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
@@ -166,7 +171,7 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 			{Name: "workspace", MountPath: "/tmp", SubPath: "tmp"},
 			{Name: "workspace", MountPath: "/home/sandbox", SubPath: "home"},
 		},
-		Resources: resourceRequirementsFor(workspace),
+		Resources: requirements,
 	}
 
 	volumes := []corev1.Volume{
@@ -348,6 +353,35 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 //     panicking. The CRD pattern + (future) webhook caps protect
 //     against bad input; if both are bypassed (e.g. CRD validation
 //     disabled cluster-wide), we degrade gracefully.
+//
+// toolParallelismEnv caps the thread pools of the build tools the agent
+// spawns inside the workspace (design 0050 D7, #892). During the
+// 2026-08-15/16 incident, `go`/`esbuild`/`tsc` children spun
+// machine-sized thread pools inside a 2-CPU cgroup quota — pure
+// oversubscription, which is what turned ordinary build load into
+// hundreds of seconds of CFS stall and starved opencode's event loop past
+// the (then-lethal) health timeouts. The caps match the effective CPU
+// limit so tool parallelism competes within the quota instead of
+// thrashing against it. Values are inherited by every tool child via the
+// environment; a value the user or tool explicitly sets in its own
+// command still wins (per-invocation flags override env defaults).
+func toolParallelismEnv(reqs corev1.ResourceRequirements) []corev1.EnvVar {
+	cores := 1
+	if lim, ok := reqs.Limits[corev1.ResourceCPU]; ok {
+		milli := lim.MilliValue()
+		if milli > 0 {
+			cores = int((milli + 999) / 1000) // ceil; 500m→1, 2000m→2
+		}
+	}
+	s := strconv.Itoa(cores)
+	return []corev1.EnvVar{
+		// Go: caps `go build -p` and GOMAXPROCS of go tool + test binaries.
+		{Name: "GOMAXPROCS", Value: s},
+		// esbuild: caps its JS worker pool (defaults to host core count).
+		{Name: "ESBUILD_WORKER_THREADS", Value: s},
+	}
+}
+
 func resourceRequirementsFor(workspace *v1.Workspace) corev1.ResourceRequirements {
 	const (
 		defaultCPU    = "500m"

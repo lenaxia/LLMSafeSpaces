@@ -11,6 +11,7 @@ package workspace
 
 import (
 	"context"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -579,4 +580,53 @@ func TestPodBuilder_FSGroupChangePolicy_OnRootMismatch(t *testing.T) {
 		"fsGroupChangePolicy must be set explicitly")
 	assert.Equal(t, corev1.FSGroupChangeOnRootMismatch, *pod.Spec.SecurityContext.FSGroupChangePolicy,
 		"must be OnRootMismatch — OnWait/Always chowns every file on every pod start")
+}
+
+// Design 0050 D7 (#892): build-tool thread pools must be capped to the
+// workspace's effective CPU limit. The incident's starvation was
+// oversubscription — machine-sized pools inside a 2-CPU quota.
+func TestPodBuilder_ToolParallelismCappedToCPULimit(t *testing.T) {
+	ws := newWorkspaceForPodBuilder(t)
+	ws.Spec.Resources = &v1.ResourceRequirements{CPU: "2"}
+	r := reconcilerFor(t)
+
+	pod, err := r.buildPod(context.Background(), ws)
+	require.NoError(t, err)
+
+	env := pod.Spec.Containers[0].Env
+	get := func(name string) string {
+		for _, e := range env {
+			if e.Name == name {
+				return e.Value
+			}
+		}
+		return ""
+	}
+	assert.Equal(t, "8", get("GOMAXPROCS"),
+		"2 CPU request → 4× burst limit → 8 cores cap")
+	assert.Equal(t, "8", get("ESBUILD_WORKER_THREADS"))
+}
+
+func TestPodBuilder_ToolParallelism_DefaultSmallWorkspace(t *testing.T) {
+	ws := newWorkspaceForPodBuilder(t) // no Resources → 500m request → 2 (burst) cores
+	r := reconcilerFor(t)
+
+	pod, err := r.buildPod(context.Background(), ws)
+	require.NoError(t, err)
+
+	for _, e := range pod.Spec.Containers[0].Env {
+		if e.Name == "GOMAXPROCS" || e.Name == "ESBUILD_WORKER_THREADS" {
+			assert.Equal(t, "2", e.Value, "500m request bursts to 2 — pools cap at 2")
+		}
+	}
+}
+
+func TestToolParallelismEnv_ExplicitLimitRespected(t *testing.T) {
+	reqs := corev1.ResourceRequirements{Limits: corev1.ResourceList{
+		corev1.ResourceCPU: resource.MustParse("2500m"),
+	}}
+	env := toolParallelismEnv(reqs)
+	require.Len(t, env, 2)
+	assert.Equal(t, "3", env[0].Value, "2500m ceilings to 3")
+	assert.Equal(t, "3", env[1].Value)
 }
