@@ -154,7 +154,6 @@ func TestOrphanReaper_TrackedZombieNeverReaped(t *testing.T) {
 	cmd := exec.Command("sh", "-c", "sleep 0.2; exit 3")
 	require.NoError(t, cmd.Start())
 	reaper.track(cmd.Process.Pid)
-	t.Cleanup(func() { _ = cmd.Wait() })
 
 	awaitZombie(t, cmd.Process.Pid, 3*time.Second)
 	time.Sleep(600 * time.Millisecond) // >> grace while owned
@@ -210,17 +209,50 @@ func TestOrphanReaper_ConcurrentUntrackedWaitsNotStolen(t *testing.T) {
 }
 
 // TestTrackedOutput verifies the tracked exec helper used by callers
-// that need Output() semantics with reaper registration.
+// that need Output() semantics with reaper registration — including
+// stderr capture into ExitError.Stderr (parity with cmd.Output()).
 func TestTrackedOutput(t *testing.T) {
 	out, err := trackedOutput(exec.Command("sh", "-c", "printf hello"))
 	require.NoError(t, err)
 	assert.Equal(t, "hello", string(out))
 
-	_, err = trackedOutput(exec.Command("sh", "-c", "exit 4; printf no"))
+	_, err = trackedOutput(exec.Command("sh", "-c", "echo boom >&2; exit 4"))
 	require.Error(t, err)
 	ee, ok := err.(*exec.ExitError)
 	require.True(t, ok)
 	assert.Equal(t, 4, ee.ExitCode())
+	assert.Equal(t, "boom\n", string(ee.Stderr), "stderr must be captured like cmd.Output()")
+}
+
+// TestOrphanReaper_PendingPrunedForVanishedZombies pins the pending-map
+// prune: a zombie sighted once and then reaped by its own waiter must
+// not leave a pending entry (leak + pid-reuse grace bypass).
+func TestOrphanReaper_PendingPrunedForVanishedZombies(t *testing.T) {
+	withSubreaper(t)
+	reaper := newOrphanReaper()
+	reaper.grace = time.Hour // never reap in this test via aging
+
+	cmd := exec.Command("sh", "-c", "exit 0")
+	require.NoError(t, cmd.Start())
+	pid := cmd.Process.Pid
+	t.Cleanup(func() { _ = cmd.Wait() })
+
+	awaitZombie(t, pid, 3*time.Second)
+
+	// First pass sees it: pending entry added.
+	reaper.pass()
+	reaper.mu.Lock()
+	_, inPending := reaper.pending[pid]
+	reaper.mu.Unlock()
+	assert.True(t, inPending, "first pass records the unowned zombie")
+
+	// Its waiter reaps it; second pass must drop the stale entry.
+	require.NoError(t, cmd.Wait())
+	reaper.pass()
+	reaper.mu.Lock()
+	_, inPending = reaper.pending[pid]
+	reaper.mu.Unlock()
+	assert.False(t, inPending, "pending entry must be pruned once the zombie is gone")
 }
 
 // TestOrphanReaper_Wait4Echo covers the syscall plumbing on this

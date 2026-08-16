@@ -139,7 +139,8 @@ func (r *orphanReaper) run(ctx context.Context) {
 // pass scans for zombie children and reaps those past grace.
 func (r *orphanReaper) pass() {
 	now := time.Now()
-	for _, pid := range r.scan() {
+	zombies := r.scan()
+	for _, pid := range zombies {
 		r.mu.Lock()
 		if _, owned := r.own[pid]; owned {
 			delete(r.pending, pid)
@@ -176,6 +177,22 @@ func (r *orphanReaper) pass() {
 		// wpid == 0: still alive despite the Z sighting (state raced);
 		// the next pass re-adds it with a fresh grace clock.
 	}
+
+	// Prune pending entries for zombies no longer present: their waiter
+	// (reappeared) reaped them, or the pid vanished. Without this, a
+	// stale first-seen time would leak entries and — on pid reuse —
+	// admit a fresh zombie past grace without aging.
+	present := make(map[int]struct{}, len(zombies))
+	for _, pid := range zombies {
+		present[pid] = struct{}{}
+	}
+	r.mu.Lock()
+	for pid := range r.pending {
+		if _, still := present[pid]; !still {
+			delete(r.pending, pid)
+		}
+	}
+	r.mu.Unlock()
 }
 
 // scanZombieChildren returns the pids of this process's zombie
@@ -237,13 +254,15 @@ func becomeSubreaper() error {
 	return nil
 }
 
-// trackedOutput runs cmd to completion with Output() semantics (stdout
-// captured, stderr inherited) while registering it with the orphan
-// reaper so its exit is never stolen. Callers that need a command's
-// output must use this instead of cmd.Output().
+// trackedOutput runs cmd to completion with Output() semantics —
+// stdout returned, stderr captured into ExitError.Stderr — while
+// registering it with the orphan reaper so its exit is never stolen.
+// Callers that need a command's output must use this instead of
+// cmd.Output().
 func trackedOutput(cmd *exec.Cmd) ([]byte, error) {
-	var buf bytes.Buffer
-	cmd.Stdout = &buf
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
@@ -251,5 +270,8 @@ func trackedOutput(cmd *exec.Cmd) ([]byte, error) {
 	pkgOrphanReaper.track(pid)
 	err := cmd.Wait()
 	pkgOrphanReaper.untrack(pid)
-	return buf.Bytes(), err
+	if ee, ok := err.(*exec.ExitError); ok && stderr.Len() > 0 {
+		ee.Stderr = stderr.Bytes()
+	}
+	return stdout.Bytes(), err
 }
