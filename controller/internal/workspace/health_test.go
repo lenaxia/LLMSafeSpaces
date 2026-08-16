@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -570,6 +571,18 @@ func TestInitContainerScript_NoElseBranch(t *testing.T) {
 	// regardless of the source Secret's defaultMode.
 	assert.Contains(t, script, "install -m 0600 /mnt/secrets/password/password /sandbox-cfg/password",
 		"password should be installed with mode 0600 (G21: cp preserved source mode 0644)")
+
+	// #847: the password must be installed BEFORE `workspace-agentd
+	// materialize` — materialize stamps the llmsafespaces MCP entry with
+	// the Basic credential /v1/mcp requires (when the pre-boot relay
+	// applies). Installed after, the read fails on every boot and the
+	// entry is stamped disabled.
+	pwIdx := strings.Index(script, "\ninstall -m 0600 /mnt/secrets/password/password")
+	matIdx := strings.Index(script, "\nworkspace-agentd materialize")
+	require.GreaterOrEqual(t, pwIdx, 0, "password install command line must exist")
+	require.GreaterOrEqual(t, matIdx, 0, "materialize command line must exist")
+	assert.Less(t, pwIdx, matIdx,
+		"password must be installed before materialize so the pre-boot writer can stamp the MCP credential (#847)")
 
 	// Verify the credential-setup init container mounts bootstrap-token.
 	var bootstrapMount *corev1.VolumeMount

@@ -5,13 +5,12 @@ package main
 
 // Shared Basic-auth helpers for agentd HTTP handlers. Used by the gated
 // user-mux (port 4097) handlers — workflow execute/cancel/delete-session
-// (#762) and dev-preview — with /v1/mcp (#847), /v1/reload-secrets and
-// /v1/agent/reload (#848) gated in their follow-up PRs. The mux is
-// reachable from inside the workspace pod and — when the chart's
-// NetworkPolicy is misconfigured, the CNI is buggy, or an operator opted
-// out — from other pods. The auth check is the application-layer
-// defense-in-depth on top of the network control (the NetPol remains the
-// primary control).
+// and dev-preview (#762), the MCP proxy (#847), and reload-secrets +
+// agent/reload (#848). The mux is reachable from inside the workspace
+// pod and — when the chart's NetworkPolicy is misconfigured, the CNI is
+// buggy, or an operator opted out — from other pods. The auth check is
+// the application-layer defense-in-depth on top of the network control
+// (the NetPol remains the primary control).
 
 import (
 	"crypto/subtle"

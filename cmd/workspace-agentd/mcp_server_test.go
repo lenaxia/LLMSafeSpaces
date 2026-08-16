@@ -12,13 +12,47 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const mcpTestPassword = "test-password"
+
+// mcpAuthedRequest builds a /v1/mcp request carrying the agentd Basic-auth
+// credential required at handler entry.
+func mcpAuthedRequest(body []byte) *http.Request {
+	r := httptest.NewRequest("POST", "/v1/mcp", newBodyReader(body))
+	r.Header.Set("Authorization", "Basic "+basicAuth(mcpTestPassword))
+	return r
+}
+
+func TestMCPHandler_RequiresAuth(t *testing.T) {
+	req := mcpRequest{JSONRPC: "2.0", ID: 99, Method: "tools/list"}
+	body, _ := json.Marshal(req)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/v1/mcp", newBodyReader(body))
+	mcpHandler(mcpTestPassword)(w, r)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code, "unauthenticated JSON-RPC must be rejected")
+	assert.Equal(t, `Basic realm="agentd"`, w.Header().Get("WWW-Authenticate"))
+}
+
+func TestMCPHandler_WrongPassword(t *testing.T) {
+	req := mcpRequest{JSONRPC: "2.0", ID: 99, Method: "initialize"}
+	body, _ := json.Marshal(req)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest("POST", "/v1/mcp", newBodyReader(body))
+	r.Header.Set("Authorization", "Basic "+basicAuth("wrong"))
+	mcpHandler(mcpTestPassword)(w, r)
+
+	assert.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
 func TestMCPHandler_Initialize(t *testing.T) {
 	req := mcpRequest{JSONRPC: "2.0", ID: 1, Method: "initialize"}
 	body, _ := json.Marshal(req)
 
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest("POST", "/v1/mcp", newBodyReader(body))
-	mcpHandler("test-password")(w, r)
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
 
 	assert.Equal(t, 200, w.Code)
 	var resp mcpResponse
@@ -32,8 +66,8 @@ func TestMCPHandler_ToolsList(t *testing.T) {
 	body, _ := json.Marshal(req)
 
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest("POST", "/v1/mcp", newBodyReader(body))
-	mcpHandler("test-password")(w, r)
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
 
 	assert.Equal(t, 200, w.Code)
 	var resp mcpResponse
@@ -48,8 +82,8 @@ func TestMCPHandler_UnknownMethod(t *testing.T) {
 	body, _ := json.Marshal(req)
 
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest("POST", "/v1/mcp", newBodyReader(body))
-	mcpHandler("test-password")(w, r)
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
 
 	assert.Equal(t, 200, w.Code)
 	var resp mcpResponse
@@ -67,8 +101,8 @@ func TestMCPHandler_ToolsCall_UnknownTool(t *testing.T) {
 	body, _ := json.Marshal(req)
 
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest("POST", "/v1/mcp", newBodyReader(body))
-	mcpHandler("test-password")(w, r)
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
 
 	assert.Equal(t, 200, w.Code)
 	var resp mcpResponse
@@ -86,8 +120,8 @@ func TestMCPHandler_ToolsCall_SessionRead_MissingSessionID(t *testing.T) {
 	body, _ := json.Marshal(req)
 
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest("POST", "/v1/mcp", newBodyReader(body))
-	mcpHandler("test-password")(w, r)
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
 
 	assert.Equal(t, 200, w.Code)
 	var resp mcpResponse
@@ -98,7 +132,7 @@ func TestMCPHandler_ToolsCall_SessionRead_MissingSessionID(t *testing.T) {
 
 func TestInjectAgentdMCPServer_EmptyConfig(t *testing.T) {
 	cfg := map[string]json.RawMessage{}
-	injectAgentdMCPServer(cfg)
+	injectAgentdMCPServer(mcpTestPassword)(cfg)
 
 	mcpRaw, ok := cfg["mcp"]
 	require.True(t, ok, "mcp section should be present")
@@ -115,6 +149,9 @@ func TestInjectAgentdMCPServer_EmptyConfig(t *testing.T) {
 	assert.Equal(t, "remote", entry["type"])
 	assert.Contains(t, entry["url"].(string), "/v1/mcp")
 	assert.Contains(t, entry["url"].(string), ":4097", "MCP server must be injected on the user mux port (4097), not admin (4098)")
+	headers := entry["headers"].(map[string]any)
+	assert.Equal(t, "Basic "+basicAuth(mcpTestPassword), headers["Authorization"],
+		"entry must carry the Basic credential — /v1/mcp rejects unauthenticated JSON-RPC (#847)")
 }
 
 func TestInjectAgentdMCPServer_ExistingMCP(t *testing.T) {
@@ -126,7 +163,7 @@ func TestInjectAgentdMCPServer_ExistingMCP(t *testing.T) {
 		"mcp": existingJSON,
 	}
 
-	injectAgentdMCPServer(cfg)
+	injectAgentdMCPServer(mcpTestPassword)(cfg)
 
 	var mcpMap map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(cfg["mcp"], &mcpMap))
@@ -203,8 +240,8 @@ func TestMCPHandler_ToolsList_IncludesDevPreviewURL(t2 *testing.T) {
 	body, _ := json.Marshal(req)
 
 	w := httptest.NewRecorder()
-	r := httptest.NewRequest("POST", "/v1/mcp", newBodyReader(body))
-	mcpHandler("test-password")(w, r)
+	r := mcpAuthedRequest(body)
+	mcpHandler(mcpTestPassword)(w, r)
 
 	var resp mcpResponse
 	require.NoError(t2, json.Unmarshal(w.Body.Bytes(), &resp))
@@ -324,4 +361,50 @@ func TestMCPSessionList_MalformedAgentAddr_NoPanic(t *testing.T) {
 	})
 	assert.Error(t, got, "malformed agent addr must return a build error")
 	assert.Contains(t, got.Error(), "failed to build session list request")
+}
+
+// TestInjectAgentdMCPServer_EmptyPassword_Disabled pins the empty-password
+// branch: no credential is stamped and the entry is DISABLED — an enabled
+// entry without headers would 401 on every JSON-RPC call against the
+// gated /v1/mcp, so opencode would pointlessly retry an unusable server.
+func TestInjectAgentdMCPServer_EmptyPassword_Disabled(t *testing.T) {
+	cfg := map[string]json.RawMessage{}
+	injectAgentdMCPServer("")(cfg)
+
+	var mcpMap map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(cfg["mcp"], &mcpMap))
+	var entry map[string]any
+	require.NoError(t, json.Unmarshal(mcpMap["llmsafespaces"], &entry))
+	assert.Equal(t, false, entry["enabled"], "empty password must disable the entry, not stamp an unusable enabled one")
+	assert.NotContains(t, entry, "headers", "no credential exists to stamp")
+}
+
+// TestInjectAgentdMCPServer_CredentialAcceptedByGate is the coupling test
+// between the two sides of the credential: the header the hook stamps on
+// the opencode entry must be exactly what mcpHandler's gate accepts. Each
+// side is tested against the shared basicAuth helper in isolation; without
+// this round-trip, a divergent change to one side (header format, username)
+// would pass its own test while breaking the live agent.
+func TestInjectAgentdMCPServer_CredentialAcceptedByGate(t *testing.T) {
+	const pw = "coupling-test-pw"
+	cfg := map[string]json.RawMessage{}
+	injectAgentdMCPServer(pw)(cfg)
+
+	var mcpMap map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(cfg["mcp"], &mcpMap))
+	var entry struct {
+		Headers map[string]string `json:"headers"`
+	}
+	require.NoError(t, json.Unmarshal(mcpMap["llmsafespaces"], &entry))
+	require.Contains(t, entry.Headers, "Authorization")
+
+	// Drive the stamped credential through the actual handler gate with a
+	// minimal JSON-RPC request — 200, not 401.
+	body, _ := json.Marshal(mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/mcp", newBodyReader(body))
+	req.Header.Set("Authorization", entry.Headers["Authorization"])
+	w := httptest.NewRecorder()
+	mcpHandler(pw)(w, req)
+	require.Equal(t, http.StatusOK, w.Code,
+		"the credential stamped on the opencode entry must pass the /v1/mcp gate")
 }

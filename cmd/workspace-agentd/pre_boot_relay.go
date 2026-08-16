@@ -224,7 +224,7 @@ func readFreeModelsFile(path string) ([]opencode.RelayModel, bool, error) {
 // the resulting config is byte-identical to what the legacy path
 // would have produced — by design, so the two paths are
 // interchangeable.
-func applyRelayConfigPreBoot(relayURL, authJSONPath, agentConfigPath string, logger *zap.Logger) (string, error) {
+func applyRelayConfigPreBoot(relayURL, authJSONPath, agentConfigPath, password string, logger *zap.Logger) (string, error) {
 	if relayURL == "" {
 		return "skipped_no_relay_url", nil
 	}
@@ -268,7 +268,7 @@ func applyRelayConfigPreBoot(relayURL, authJSONPath, agentConfigPath string, log
 	writer := opencode.NewConfigWriter(agentConfigPath,
 		opencode.WithAdminPromptPath(effectiveAdminPromptPath()),
 		opencode.WithAllowedDirsPath(effectiveAllowedDirsPath()),
-		opencode.WithPreMarshalHook(injectAgentdMCPServer),
+		opencode.WithPreMarshalHook(injectAgentdMCPServer(password)),
 	)
 	if _, err := writer.Apply(agent.AgentConfigInput{
 		Relay: &agent.RelayState{

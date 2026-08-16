@@ -510,15 +510,22 @@ if [ -f /mnt/freemodels/models.json ]; then
   cp /mnt/freemodels/models.json /sandbox-cfg/free-models.json
 fi
 
-workspace-agentd bootstrap --workspace-id "$WORKSPACE_ID" --api-url "$LLMSAFESPACE_API_URL"
-workspace-agentd materialize
 # G21: install (not cp) so the password file is created with mode 0600
 # regardless of the source Secret's defaultMode. cp preserves the
 # source mode (0644 by default for K8s Secret projections), leaving
 # the password world-readable in the pod filesystem. install -m 0600
 # sets the mode atomically with the copy, so the file is never briefly
 # world-readable even on slow filesystems.
+#
+# #847: this must land BEFORE the materialize step below — that
+# subcommand stamps the llmsafespaces MCP entry (with the Basic
+# credential /v1/mcp requires) when the pre-boot relay applies.
+# Installed after materialize, the read fails on every boot and the
+# entry is stamped disabled.
 install -m 0600 /mnt/secrets/password/password /sandbox-cfg/password
+
+workspace-agentd bootstrap --workspace-id "$WORKSPACE_ID" --api-url "$LLMSAFESPACE_API_URL"
+workspace-agentd materialize
 `
 	pwVolume := corev1.Volume{
 		Name: "pw-secret",
