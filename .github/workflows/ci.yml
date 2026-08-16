@@ -1563,7 +1563,7 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}
           tags: |
-            type=sha,format=full,prefix=sha-
+            type=sha,prefix=sha-
             type=raw,value=ts-${{ needs.prepare.outputs.timestamp }}
             type=raw,value=dev,enable={{is_default_branch}}
             type=semver,pattern={{version}}
@@ -1591,9 +1591,9 @@ jobs:
         run: |
           docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf '${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}@sha256:%s ' *)
-          # type=sha,format=full above emits the full-40-hex sha- tag the
-          # inspect below resolves (the 7-hex short default would 404).
-          digest="$(docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}:sha-${{ github.sha }} --format '{{ json .Manifest.Digest }}' | tr -d '"')"
+          # metadata emits the short sha tag (sha-<7hex>, same as every
+          # sibling merge job); inspect that for the manifest digest.
+          digest="$(docker buildx imagetools inspect ${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}:sha-${GITHUB_SHA:0:7} --format '{{ json .Manifest.Digest }}' | tr -d '"')"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
       - name: Print Helm values block for agentdDelivery
