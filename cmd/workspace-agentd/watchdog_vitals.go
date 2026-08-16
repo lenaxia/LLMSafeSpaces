@@ -275,9 +275,6 @@ func (g *procVitalsGatherer) gather(ctx context.Context) vitalSigns {
 	// Refused dial against a live, young pid = the respawn's
 	// port-not-yet-bound window. Record it here (classify reads it) so
 	// the booting child is never HUNG.
-	// Refused dial against a live, young pid = the respawn's
-	// port-not-yet-bound window. Record it here (classify reads it) so
-	// the booting child is never HUNG.
 	if v.tcpRefused && g.childBootAt != nil {
 		if bootAt := g.childBootAt(); !bootAt.IsZero() && time.Since(bootAt) < vitalsBootGraceWindow {
 			v.booting = true

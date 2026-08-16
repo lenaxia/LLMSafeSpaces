@@ -46,7 +46,7 @@ Also round 2: context-cancel mid-sample now sets `pidGone` (a refused dial colle
 
 ## Assumptions (validated)
 
-1. `lastRestartAt` is set under mutex at every spawn (managed_process.go:183) — accessor is race-free.
+1. `lastRestartAt` is set under mutex at every spawn (managed_process.go:191) — accessor is race-free.
 2. 180s covers starved boot-to-listen: kubelet observed >120s; doubled for headroom and to match D4's 5s×36 startup budget (see Key Decisions).
 3. Kernel refuses (not drops) dials to unbound ports on loopback — verified empirically in the regression test.
 
@@ -62,7 +62,24 @@ None.
 
 - D4 probe truthfulness (#895), D5 badges (#896), D7 caps (#897) on this stack; G7 stress harness gates the merge train; post-deploy: watch workspace_watchdog_suppressions_total{reason} for a real hung verdict.
 
-## Tests
+## Tests Run
+
+- `go test ./cmd/workspace-agentd/ -run 'TestVitalSigns|TestProcVitals|TestWatchdogRespawnBootWindow|TestRefreshIsHealthyLoop_|TestManagedProcess_OnChildStarted|TestManagedProcess_StopDuringCrashBackoffReturns|TestBuildVitalsGatherer|TestRecord' -count=1 -race` — green
+- `go test ./cmd/workspace-agentd/ -count=1` — full suite green (423s)
+- `go build ./... && go vet ./cmd/workspace-agentd/ && gofmt -l && make fmt-check` — clean
+
+## Files Modified
+
+- cmd/workspace-agentd/watchdog_vitals.go (+watchdog_vitals_test.go)
+- cmd/workspace-agentd/healthz_cache.go
+- cmd/workspace-agentd/managed_process.go (+managed_process_test.go harness: /global/health, FAKE_BIND_DELAY_MS)
+- cmd/workspace-agentd/managed_process_generation_test.go
+- cmd/workspace-agentd/ops_metrics.go
+- cmd/workspace-agentd/server.go (buildVitalsGatherer)
+- cmd/workspace-agentd/version.go / pkg/version (build identity)
+- pkg/agentd/types.go (build-identity doc)
+
+## Obsolete sections below
 
 Classify matrix (7 verdicts incl. booting rows); gatherer refused/boot-window/past-grace/cancel; real-subprocess regression (red-without-fix verified); wiring smoke (`buildVitalsGatherer` addr/pid/bootAt shape); metric emission (suppression + marker-failure counters, label normalization); loop tests fire-on-refused+live+past-boot only, suppress on flat/unknown/respawn/starved incl. max-defer force paths; latch reset. Full agentd suite green incl. `-race`.
 

@@ -575,3 +575,30 @@ func TestRecordMarkerWriteFailure_Metric(t *testing.T) {
 	assert.Equal(t, 2.0, testutil.ToFloat64(vec.WithLabelValues("ws-b", "health_watchdog")))
 	assert.Equal(t, 1.0, testutil.ToFloat64(vec.WithLabelValues("unknown", "unknown")))
 }
+
+// TestRefreshIsHealthyLoop_MaxDeferForceFiresOnCorroboratedDeadListener
+// pins the force path's OTHER branch (review round 4 on #898, the last
+// unpinned behavior): past max-defer with busy sessions, a corroborated
+// HUNG verdict (refused dial, live past-boot pid) MUST fire. The force
+// exists precisely for stale busy state on a dead-listener hang; the
+// suppressing tests above prove it withholds for every other verdict,
+// this proves it acts on the lethal one.
+func TestRefreshIsHealthyLoop_MaxDeferForceFiresOnCorroboratedDeadListener(t *testing.T) {
+	setWatchdogTiming(t, 60*time.Millisecond, 40*time.Millisecond, 2)
+	origMax := watchdogMaxDeferrals
+	watchdogMaxDeferrals = 1
+	t.Cleanup(func() { watchdogMaxDeferrals = origMax })
+
+	srv := newHungServer(t, 500*time.Millisecond)
+	fr := &fakeRestarter{}
+	hung := &fakeVitals{v: vitalSigns{tcpRefused: true, cpuKnown: true, cpuDeltaTicks: 50}}
+
+	cache := runWatchdogLoop(t, srv.URL, 40*time.Millisecond, fr, fakeBusy{}, hung)
+
+	// threshold=2 + maxDefers=1 at 60ms polls: the force moment arrives
+	// within a few hundred ms; the HUNG verdict must reach the restarter.
+	require.Eventually(t, func() bool { return fr.callCount() >= 1 },
+		1500*time.Millisecond, 20*time.Millisecond,
+		"max-defer force with a corroborated dead-listener hang must fire despite busy sessions")
+	assert.False(t, cache.Snapshot().Healthy)
+}
