@@ -42,8 +42,9 @@ func startEnvtest(t *testing.T) *rest.Config {
 
 // TestEnvtestAgentdPins_ImageOnlyResolvesAndCaches drives the REAL
 // ResolvePinsWithCache image-only branch against a real API server: the
-// injected fetcher resolves, the ConfigMap cache is created in the
-// namespace, and a subsequent outage resolve falls back to that cache.
+// injected fetcher resolves and the ConfigMap cache is created in the
+// fallback namespace. (The outage fallback is the separate
+// OutageFallsBackToCache leg.)
 func TestEnvtestAgentdPins_ImageOnlyResolvesAndCaches(t *testing.T) {
 	cfg := startEnvtest(t)
 	t.Setenv("POD_NAMESPACE", "") // pin ambient env; exercises the default-ns fallback explicitly

@@ -260,9 +260,8 @@ rules:
   # wide ConfigMap informer on first Get; without this grant the
   # reflector fails with "configmaps is forbidden ... at the cluster
   # scope". Writes (create/update/patch) go through the namespace-scoped
-  # Role (rbac.yaml:133-141) which restricts them to the release
-  # namespace. Mirrors the read-only ClusterRole pattern used for
-  # pods/secrets/PVCs (line 234-236).
+  # Role, which restricts them to the release namespace. Mirrors the
+  # read-only ClusterRole pattern used for pods/secrets/PVCs.
   - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch"]

@@ -4,8 +4,9 @@
 **PR:** #890
 **Issue:** #863 (follow-up to the image-volume delivery in #872)
 **Session:** agentd image-volume follow-up (PR #890 review rounds 1–7)
-**Status:** code complete; all review deltas landed; merge-agentd proven
-pre-merge via dispatch (run 31968003517)
+**Status:** merged-pending (review rounds 1–8 complete; CI green except
+the tracked non-blocking canary drift; merge-agentd proven pre-merge via
+dispatch run 31968003517)
 
 ---
 
@@ -233,7 +234,7 @@ added the `-tags envtest` presence check (mutation-verified: stripping
 the flag → FAIL). The sentinel test grew from two paths to all four
 (no-cache, RBAC-denied, malformed, stale-digest) — each addition caught
 by review before this round, the last two added pre-emptively and
-verified red-first where mutation was applicable.
+each guard extension mutation-verified red before being claimed green.
 
 The #900 fix took three forms across rounds (timeout raise → conflict
 with #903's independent 240s CommandContext fix → final: CommandContext
