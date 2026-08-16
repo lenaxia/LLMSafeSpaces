@@ -419,6 +419,10 @@ type Scheduler struct {
 	// PasswordProvider resolves the per-workspace agentd Basic-auth
 	// password for the PreserveOnFailure session-delete call (#762).
 	PasswordProvider apiinterfaces.WorkspacePasswordProvider
+	// AgentdPort overrides the agentd user-mux port for the
+	// PreserveOnFailure session-delete call. Zero → default (4097).
+	// Tests inject an httptest server port; mirrors HTTPAgentExecutor.Port.
+	AgentdPort int
 }
 
 func (s *Scheduler) Start(ctx context.Context) error {
@@ -791,7 +795,15 @@ func (s *Scheduler) deleteRoutineSessionAuthorized(ctx context.Context, logger L
 		logger.Error(err, "routine: resolve workspace password for session delete", "sessionId", sessionID, "workspaceID", workspaceID)
 		return false
 	}
-	return deleteRoutineSession(ctx, logger, password, podIP, agentdExecPort(), sessionID)
+	return deleteRoutineSession(ctx, logger, password, podIP, s.agentdPort(), sessionID)
+}
+
+// agentdPort returns the configured override or the production default.
+func (s *Scheduler) agentdPort() int {
+	if s.AgentdPort != 0 {
+		return s.AgentdPort
+	}
+	return agentdExecPort()
 }
 
 func httpClient() *http.Client {
