@@ -594,4 +594,141 @@ describe("useChatStream", () => {
 
     vi.useRealTimers();
   });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // #818: reconcile on send failure when the turn completed server-side
+  // ─────────────────────────────────────────────────────────────────────
+
+  it("#818: 502 from sendAsync reconciles via history when the turn completed server-side", async () => {
+    // Production signature (#817/#818): prompt POST 502s after the proxy
+    // hang, but the LLM turn completed — messages persisted, session went
+    // idle. The UI must surface the response instead of an error.
+    const err502 = new ApiClientError(502, { error: "failed to send message" });
+    (messagesApi.sendAsync as ReturnType<typeof vi.fn>).mockRejectedValue(err502);
+    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: "user-1", role: "user" as const, parts: [{ type: "text", text: "hi" }] },
+      {
+        id: "asst-recovered",
+        role: "assistant" as const,
+        parts: [{ type: "text", text: "completed server-side" }],
+        createdAt: new Date().toISOString(), // after sendStartMs — this turn
+      },
+    ]);
+
+    const { result } = renderHook(() => useChatStream("sb-1", "sess-1"));
+    const onComplete = vi.fn();
+
+    let sendPromise!: Promise<void>;
+    act(() => { sendPromise = result.current.send("hi", onComplete); });
+    await vi.waitFor(() => expect(messagesApi.sendAsync).toHaveBeenCalled());
+
+    // The reconcile waits for idle — SSE recovered in the meantime.
+    act(() => { result.current.notifySessionIdle("sess-1"); });
+    await act(async () => { await sendPromise; });
+
+    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({
+      id: "asst-recovered",
+      role: "assistant",
+    }));
+    expect(result.current.error).toBeNull();
+    expect(result.current.streaming).toBe(false);
+  });
+
+  it("#818: 502 with only a stale assistant message keeps the error", async () => {
+    // No new turn completed — the newest assistant message predates this
+    // send. The user must see the error, not a replayed old response.
+    const err502 = new ApiClientError(502, { error: "failed to send message" });
+    (messagesApi.sendAsync as ReturnType<typeof vi.fn>).mockRejectedValue(err502);
+    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        id: "asst-old",
+        role: "assistant" as const,
+        parts: [{ type: "text", text: "previous turn" }],
+        createdAt: new Date(Date.now() - 120_000).toISOString(), // 2min ago — previous turn
+      },
+    ]);
+
+    const { result } = renderHook(() => useChatStream("sb-1", "sess-1"));
+    const onComplete = vi.fn();
+
+    let sendPromise!: Promise<void>;
+    act(() => { sendPromise = result.current.send("hi", onComplete); });
+    await vi.waitFor(() => expect(messagesApi.sendAsync).toHaveBeenCalled());
+
+    act(() => { result.current.notifySessionIdle("sess-1"); });
+    await act(async () => { await sendPromise; });
+
+    expect(onComplete).not.toHaveBeenCalled();
+    expect(result.current.error).toBe("failed to send message");
+    expect(result.current.streaming).toBe(false);
+  });
+
+  it("#818: 502 with no assistant message in history keeps the error", async () => {
+    const err502 = new ApiClientError(502, { error: "failed to send message" });
+    (messagesApi.sendAsync as ReturnType<typeof vi.fn>).mockRejectedValue(err502);
+    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+
+    const { result } = renderHook(() => useChatStream("sb-1", "sess-1"));
+    const onComplete = vi.fn();
+
+    let sendPromise!: Promise<void>;
+    act(() => { sendPromise = result.current.send("hi", onComplete); });
+    await vi.waitFor(() => expect(messagesApi.sendAsync).toHaveBeenCalled());
+
+    act(() => { result.current.notifySessionIdle("sess-1"); });
+    await act(async () => { await sendPromise; });
+
+    expect(onComplete).not.toHaveBeenCalled();
+    expect(result.current.error).toBe("failed to send message");
+  });
+
+  it("#818: 502 reconcile still waits out the idle timeout when SSE stays wedged", async () => {
+    // The #818 incident: SSE was ALSO wedged (hasUnread stuck). The
+    // reconcile must fall through to history after the 60s timeout, not
+    // hang forever or skip the fetch.
+    vi.useFakeTimers();
+    const err502 = new ApiClientError(502, { error: "failed to send message" });
+    (messagesApi.sendAsync as ReturnType<typeof vi.fn>).mockRejectedValue(err502);
+    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        id: "asst-late",
+        role: "assistant" as const,
+        parts: [{ type: "text", text: "late recovery" }],
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+
+    const { result } = renderHook(() => useChatStream("sb-1", "sess-1"));
+    const onComplete = vi.fn();
+
+    let sendPromise!: Promise<void>;
+    act(() => { sendPromise = result.current.send("hi", onComplete); });
+    await vi.waitFor(() => expect(messagesApi.sendAsync).toHaveBeenCalled());
+
+    // No idle notification — advance past the 60s idle-wait timeout.
+    await act(async () => { vi.advanceTimersByTime(61_000); });
+    await act(async () => { await sendPromise; });
+
+    expect(messagesApi.getHistory).toHaveBeenCalledWith("sb-1", "sess-1");
+    expect(onComplete).toHaveBeenCalledWith(expect.objectContaining({ id: "asst-late" }));
+    expect(result.current.error).toBeNull();
+
+    vi.useRealTimers();
+  });
+
+  it("#818: non-reconcilable errors (plain Error) surface immediately without a history fetch", async () => {
+    // Only 502/504/transport TypeErrors reconcile. A generic error must
+    // keep the original fail-fast behavior — no extra 60s wait.
+    (messagesApi.sendAsync as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("boom"));
+    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+
+    const { result } = renderHook(() => useChatStream("sb-1", "sess-1"));
+    const onComplete = vi.fn();
+
+    await act(async () => { await result.current.send("hi", onComplete); });
+
+    expect(messagesApi.getHistory).not.toHaveBeenCalled();
+    expect(result.current.error).toBe("boom");
+    expect(onComplete).not.toHaveBeenCalled();
+  });
 });

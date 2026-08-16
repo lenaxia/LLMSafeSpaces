@@ -22,7 +22,25 @@ const IDLE_WAIT_TIMEOUT_MS = 60_000;
 // the user's message instead of dropping it silently (issue 440's "hang").
 const SEND_MAX_503_RETRIES = 3;
 
+// #818 reconcile: tolerance when deciding whether a history message's
+// createdAt is "after this send started" (browser vs server pod clock
+// skew).
+const RECONCILE_CLOCK_SKEW_MS = 5_000;
+
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+// #818: errors worth reconciling — 502/504 from the prompt POST and raw
+// fetch transport failures. In both cases the turn may have completed
+// server-side while the response was lost in transit (#817's production
+// signature). 503 is excluded: the bounded retry loop above already
+// owns workspace-restart windows, and a 503 means the turn never
+// started. 429 is excluded: the turn never started (quota).
+function isReconcilableSendError(err: unknown): boolean {
+  if (err instanceof ApiClientError) {
+    return err.status === 502 || err.status === 504;
+  }
+  return err instanceof TypeError;
+}
 
 export function useChatStream(workspaceId: string | undefined, sessionId: string | undefined, serverBusy = false) {
   const [localStreaming, setLocalStreaming] = useState(false);
@@ -63,14 +81,71 @@ export function useChatStream(workspaceId: string | undefined, sessionId: string
       setError(null);
       setAtCapRetryAfter(null);
 
-      try {
-        let idleAlreadyFired = false;
-        idleResolverRef.current = (idleSessionId: string) => {
-          if (idleSessionId === capturedSessionId) {
-            idleAlreadyFired = true;
-          }
-        };
+      // Idle tracking + helpers live outside the try/catch so both the
+      // success path and the #818 failure reconcile (in catch) can reach
+      // them — function declarations are block-scoped in ESM.
+      let idleAlreadyFired = false;
+      idleResolverRef.current = (idleSessionId: string) => {
+        if (idleSessionId === capturedSessionId) {
+          idleAlreadyFired = true;
+        }
+      };
 
+      // #818: send start time — used by the failure-path reconcile to
+      // distinguish this turn's assistant message from a previous
+      // turn's.
+      const sendStartMs = Date.now();
+
+      // Wait for session.status=idle SSE OR the 60s timeout fallback,
+      // resolving true only when the idle signal arrived. Shared by
+      // the success path and the #818 failure reconcile.
+      function waitForIdleOrTimeout(): Promise<boolean> {
+        return new Promise<boolean>((resolve) => {
+          if (idleAlreadyFired) {
+            idleResolverRef.current = null;
+            resolve(true);
+            return;
+          }
+          const timeoutId = setTimeout(() => {
+            idleResolverRef.current = null;
+            // resolve(false) — timeout path
+            resolve(false);
+          }, IDLE_WAIT_TIMEOUT_MS);
+
+          idleResolverRef.current = (idleSessionId: string) => {
+            if (idleSessionId === capturedSessionId) {
+              clearTimeout(timeoutId);
+              idleResolverRef.current = null;
+              resolve(true);
+            }
+          };
+        });
+      }
+
+      // #818: after a reconcilable send failure, wait for idle (SSE
+      // recovery or timeout) then fetch history. Returns the
+      // assistant message only when it is NEWER than this send's
+      // start; null means "nothing recovered — surface the error".
+      async function reconcileFailedSend(sid: string): Promise<Message | null> {
+        await waitForIdleOrTimeout();
+        if (!workspaceId) return null;
+        try {
+          const history = await messagesApi.getHistory(workspaceId, sid);
+          const last = [...history].reverse().find((m) => m.role === "assistant");
+          if (!last) return null;
+          if (last.createdAt) {
+            const createdAt = Date.parse(last.createdAt);
+            if (!Number.isNaN(createdAt) && createdAt < sendStartMs - RECONCILE_CLOCK_SKEW_MS) {
+              return null; // previous turn's response — not a recovery
+            }
+          }
+          return last;
+        } catch {
+          return null;
+        }
+      }
+
+      try {
         // Retry loop: the proxy returns 503+retryAfter during an in-place
         // opencode restart (credential reload / OOM / crash / relay). The
         // window is transient; drop the user's message only if it persists
@@ -94,37 +169,12 @@ export function useChatStream(workspaceId: string | undefined, sessionId: string
         // Wait for session.status=idle SSE OR a timeout fallback.
         // The SSE path is preferred (real-time), but if the connection drops
         // before idle fires we still need to fetch the response.
-        // Note: only flag streamTimedOut when the server is NOT still busy —
-        // if serverBusyRef.current is true the agent is legitimately still
-        // running (slow response), not an interrupted connection.
-        let resolvedViaSSE = false;
-        await new Promise<void>((resolve) => {
-          if (idleAlreadyFired) {
-            resolvedViaSSE = true;
-            idleResolverRef.current = null;
-            resolve();
-            return;
-          }
-          const timeoutId = setTimeout(() => {
-            idleResolverRef.current = null;
-            resolve();
-            // resolvedViaSSE stays false — timeout path
-          }, IDLE_WAIT_TIMEOUT_MS);
-
-          idleResolverRef.current = (idleSessionId: string) => {
-            if (idleSessionId === capturedSessionId) {
-              resolvedViaSSE = true;
-              clearTimeout(timeoutId);
-              idleResolverRef.current = null;
-              resolve();
-            }
-          };
-        });
+        const viaSSE = await waitForIdleOrTimeout();
 
         // Only show the interrupted banner when:
         // 1. The idle SSE never arrived (resolvedViaSSE=false), AND
         // 2. The server is not still actively busy (would indicate slow response)
-        if (!resolvedViaSSE && !serverBusyRef.current && currentSessionRef.current === capturedSessionId) {
+        if (!viaSSE && !serverBusyRef.current && currentSessionRef.current === capturedSessionId) {
           setStreamTimedOut(true);
         }
 
@@ -138,6 +188,20 @@ export function useChatStream(workspaceId: string | undefined, sessionId: string
         };
         onComplete(msg);
       } catch (err: unknown) {
+        // #818: a 502/504 from the prompt POST frequently means the
+        // turn COMPLETED server-side but the response was lost in
+        // transit (#817's production signature: messageCount advanced,
+        // UI stuck until manual refresh). Before surfacing an error,
+        // reconcile: wait for idle (SSE recovery or timeout), then fetch
+        // history. If a new assistant message arrived after this send
+        // started, deliver it as the response instead of an error.
+        if (isReconcilableSendError(err) && currentSessionRef.current === capturedSessionId) {
+          const recovered = await reconcileFailedSend(capturedSessionId);
+          if (recovered) {
+            onComplete(recovered);
+            return;
+          }
+        }
         if (err instanceof ApiClientError && err.status === 429) {
           const retryAfter = Number(err.body.retryAfter ?? 60);
           setAtCapRetryAfter(isNaN(retryAfter) ? 60 : retryAfter);

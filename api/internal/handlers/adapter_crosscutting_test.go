@@ -140,6 +140,11 @@ func TestAdapterPath_SendMessage_AdapterError_CleansActiveSession(t *testing.T) 
 		sendFn: func(context.Context, string, string, string, string, session.SendOpts) (*session.Message, error) {
 			return nil, errors.New("upstream error")
 		},
+		// #817 recovery probe unavailable → falls through to the 502
+		// path so the active-session cleanup still runs.
+		getSessionFn: func(context.Context, string, string, string) (*session.Session, error) {
+			return nil, errors.New("probe failed")
+		},
 	}
 
 	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_request").Return(true, int64(10), nil)
@@ -259,6 +264,11 @@ func TestAdapterPath_SendPromptAsync_AdapterError_CleansActiveSession(t *testing
 	env.handler.adapter = &mockAdapter{
 		sendFn: func(context.Context, string, string, string, string, session.SendOpts) (*session.Message, error) {
 			return nil, errors.New("upstream not found")
+		},
+		// #817 recovery probe unavailable → falls through to the 502
+		// path so the active-session cleanup still runs.
+		getSessionFn: func(context.Context, string, string, string) (*session.Session, error) {
+			return nil, errors.New("probe failed")
 		},
 	}
 
