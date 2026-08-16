@@ -1493,7 +1493,7 @@ jobs:
           # The chart pins the BINARY sha256 (the entrypoint verifies the
           # file, not the image). Tag the arch image, copy the binary out
           # of a stopped container, hash it.
-          arch="${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}
+          arch="${{ matrix.platform == 'linux/arm64' && 'arm64' || 'amd64' }}"
           tag="${{ env.REGISTRY }}/${{ env.AGENTD_IMAGE }}:sha-${{ github.sha }}-${arch}"
           # outputs.digest already carries the sha256: prefix — reference
           # it verbatim after @ (prepending @sha256: doubled the prefix;
