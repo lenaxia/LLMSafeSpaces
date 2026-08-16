@@ -1121,18 +1121,69 @@ func TestExecuteRoutine_PreserveOnFailure_DeleteFails_RecordsOrigin(t *testing.T
 	wsID := "ws-1"
 	trigger := &wf.TriggerRow{ID: "trig-orig3", WorkspaceID: &wsID, Prompt: "test", CaptureMode: types.CaptureFull, PreserveSession: types.PreserveOnFailure}
 	fire := &wf.TriggerFireRow{ID: "fire-orig3", TriggerID: "trig-orig3", InputEnvelope: json.RawMessage(`{}`)}
-	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: noopLogger{}}
+	sched := &Scheduler{Store: store, Activator: &mockActivator{}, AgentdClient: agentd, Logger: noopLogger{},
+		PasswordProvider: &stubPasswordProvider{password: "pw"}}
 	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
 
 	if store.statuses["fire-orig3"] != "delivered" {
 		t.Fatalf("expected delivered, got %s", store.statuses["fire-orig3"])
 	}
-	// DELETE endpoint unreachable (mockActivator returns 10.0.0.1) → session
-	// still exists → origin IS recorded as a fallback. This documents the
-	// robustness fix: sessionDeleted only flips when DELETE succeeds.
+	// DELETE endpoint unreachable (mockActivator returns 10.0.0.1, the
+	// real dial fails) → session still exists → origin IS recorded as a
+	// fallback. This documents the robustness fix: sessionDeleted only
+	// flips when DELETE succeeds.
 	if len(store.sessionOrigins) != 1 {
 		t.Errorf("expected 1 session origin when DELETE fails (session still exists), got %d", len(store.sessionOrigins))
 	}
+}
+
+// TestExecuteRoutine_PreserveOnFailure_DeleteSucceeds_NoOrigin is the
+// happy-path counterpart: the authorized delete reaches agentd with the
+// workspace Basic credential, agentd returns 2xx, the session is deleted
+// and therefore NO session origin is recorded (#762 caller wiring).
+func TestExecuteRoutine_PreserveOnFailure_DeleteSucceeds_NoOrigin(t *testing.T) {
+	var gotAuth string
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	_, portStr, _ := strings.Cut(addr, ":")
+	port, err := strconv.Atoi(portStr)
+	require.NoError(t, err)
+
+	store := newMockSchedulerStore()
+	agentd := newMockAgentd()
+	agentd.outputs["routine-agent"] = json.RawMessage(`{"response":"ok","session_id":"ses_ok789"}`)
+	wsID := "ws-1"
+	trigger := &wf.TriggerRow{ID: "trig-ok", WorkspaceID: &wsID, Prompt: "test", CaptureMode: types.CaptureFull, PreserveSession: types.PreserveOnFailure}
+	fire := &wf.TriggerFireRow{ID: "fire-ok", TriggerID: "trig-ok", InputEnvelope: json.RawMessage(`{}`)}
+	sched := &Scheduler{
+		Store: store, Activator: &loopbackActivator{}, AgentdClient: agentd, Logger: noopLogger{},
+		PasswordProvider: &stubPasswordProvider{password: "pw-ok"},
+		AgentdPort:       port,
+	}
+	sched.executeRoutine(context.Background(), noopLogger{}, trigger, fire)
+
+	if store.statuses["fire-ok"] != "delivered" {
+		t.Fatalf("expected delivered, got %s", store.statuses["fire-ok"])
+	}
+	if len(store.sessionOrigins) != 0 {
+		t.Errorf("expected no session origin after successful delete, got %d", len(store.sessionOrigins))
+	}
+	require.Equal(t, "/v1/workflow/session/delete", gotPath)
+	expected := "Basic " + base64.StdEncoding.EncodeToString([]byte("opencode:pw-ok"))
+	require.Equal(t, expected, gotAuth, "PreserveOnFailure delete must authenticate against agentd")
+}
+
+// loopbackActivator points the delete dial at the test server.
+type loopbackActivator struct{}
+
+func (loopbackActivator) EnsureActive(_ context.Context, _ string, _ time.Duration) (string, error) {
+	return "127.0.0.1", nil
 }
 
 // TestExecuteRoutine_PreserveOnFailure_ControlCharSessionID_NoCrash pins
