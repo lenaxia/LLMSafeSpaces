@@ -40,7 +40,7 @@ const (
 )
 
 func fakeIndexFetcher(ann map[string]string, err error) remoteIndexFetcher {
-	return func(_ string) (ociAnnotations, error) {
+	return func(_ context.Context, _ string) (ociAnnotations, error) {
 		if err != nil {
 			return nil, err
 		}
@@ -56,16 +56,22 @@ func goodAnnotations() map[string]string {
 	}
 }
 
-func TestRegistryPinResolver_ExtractsAnnotations(t *testing.T) {
-	r := &registryPinResolver{fetch: fakeIndexFetcher(goodAnnotations(), nil)}
+func TestCachedPinResolver_ExtractsAnnotations(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &cachedPinResolver{Client: c, Namespace: "llmsafespaces", fetch: fakeIndexFetcher(goodAnnotations(), nil)}
 	pins, err := r.Resolve(context.Background(), pinImage)
 	require.NoError(t, err)
 	require.Equal(t, pinAMD64, pins.SHA256AMD64)
 	require.Equal(t, pinARM64, pins.SHA256ARM64)
 }
 
-func TestRegistryPinResolver_MissingAnnotationsFails(t *testing.T) {
-	r := &registryPinResolver{fetch: fakeIndexFetcher(map[string]string{}, nil)}
+func TestCachedPinResolver_MissingAnnotationsFails(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := &cachedPinResolver{Client: c, Namespace: "llmsafespaces", fetch: fakeIndexFetcher(map[string]string{}, nil)}
 	_, err := r.Resolve(context.Background(), pinImage)
 	require.Error(t, err, "an index without pin annotations is a broken pipeline — fail closed, never launch unverifiable pods")
 	require.Contains(t, err.Error(), "annotation")
@@ -132,18 +138,21 @@ func TestCachedPinResolver_StaleCacheRejected(t *testing.T) {
 	require.Error(t, err, "a cached pin for a DIFFERENT digest must never satisfy a new pin — that is the desync this design exists to prevent")
 }
 
-func TestResolveAgentdPins_FlagOverridesWin(t *testing.T) {
-	fetch := fakeIndexFetcher(goodAnnotations(), nil)
-	// Both overridden.
-	pins, err := resolveAgentdPins(context.Background(), fetch, pinImage, "c"+repeat("c", 63), "d"+repeat("d", 63))
-	require.NoError(t, err)
-	require.Equal(t, "c"+repeat("c", 63), pins.SHA256AMD64, "explicit flag must beat annotation")
-	require.Equal(t, "d"+repeat("d", 63), pins.SHA256ARM64)
-	// Partial override: only amd64 set; arm64 comes from annotations.
-	pins, err = resolveAgentdPins(context.Background(), fetch, pinImage, "e"+repeat("e", 63), "")
-	require.NoError(t, err)
-	require.Equal(t, "e"+repeat("e", 63), pins.SHA256AMD64)
-	require.Equal(t, pinARM64, pins.SHA256ARM64, "unset flag resolves from the digest's annotations")
+func TestCachedPinResolver_MalformedCacheRejected(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(&corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: AgentdPinsConfigMapName, Namespace: "llmsafespaces"},
+		Data: map[string]string{
+			"image":        pinImage,
+			"sha256-amd64": "not-hex",
+			"sha256-arm64": pinARM64,
+		},
+	}).Build()
+	res := &cachedPinResolver{Client: c, Namespace: "llmsafespaces", fetch: fakeIndexFetcher(nil, errFetchUnavailable)}
+	_, err := res.Resolve(context.Background(), pinImage)
+	require.Error(t, err, "a malformed cache entry must not satisfy the pin")
+	require.Contains(t, err.Error(), "malformed")
 }
 
 func TestValidateAgentdDeliveryConfig_ImageOnlyIsValid(t *testing.T) {

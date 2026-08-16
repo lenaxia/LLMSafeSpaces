@@ -32,7 +32,9 @@ hash is resolved from the index annotations via an anonymous registry
 read (go-containerregistry), with:
 
 - **ConfigMap cache** (`llmsafespaces-agentd-pins`, POD_NAMESPACE,
-  RBAC already granted for configmaps): on fetch failure the cache
+  own resourceNames-scoped RBAC grant added in the chart — the earlier
+  "already granted" claim was FALSE with relay + free-models disabled,
+  empirically confirmed by review): on fetch failure the cache
   satisfies startup ONLY if recorded for the SAME digest; a stale-digest
   cache is rejected (that rejection IS the desync guard).
 - **Flag overrides** (`--agentd-binary-sha256-*`): break-glass, per-arch,
@@ -77,6 +79,14 @@ read (go-containerregistry), with:
   a clear error telling the operator to pin hashes manually — fail
   closed, acceptable (no fleet can have been running overlay mode
   without a prior successful resolve).
+- Review round 1 majors fixed in the follow-up commit: ctx threaded
+  into remote.Index via remote.WithContext (30s boot timeout now bounds
+  the fetch; ggcr defaults to context.Background otherwise); dead
+  resolvers (registryPinResolver, resolveAgentdPins) deleted and their
+  tests rewritten against the production path; cache-read errors no
+  longer misreported as "no cache exists" (RBAC hint included); local
+  ggcr-registry integration test added for fetchIndexAnnotations; CI↔Go
+  annotation-key consistency guard added (fleet-wide-boot-failure class).
 - Annotation stripping by a mirror: overrides exist for exactly this;
   documented as break-glass.
 - The printed CI block now leads with the image-only form; hashes shown

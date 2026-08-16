@@ -125,6 +125,20 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["create", "patch"]
+{{- if .Values.controller.agentdDelivery.image }}
+  # #863: the agentd-pins cache ConfigMap (registry-outage resilience
+  # for annotation-resolved binary pins). Scoped to the single
+  # ConfigMap by resourceNames — NOT free-riding on the relay/free-models
+  # configmaps grants, which are feature-gated and default-off for
+  # least-privilege operators.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["llmsafespaces-agentd-pins"]
+    verbs: ["get", "update"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+{{- end }}
 {{- if .Values.controller.inferenceRelay.enabled }}
   # ConfigMaps + Secrets for relay router peers and WG keys
   - apiGroups: [""]

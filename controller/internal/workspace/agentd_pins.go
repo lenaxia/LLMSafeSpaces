@@ -67,30 +67,15 @@ type ociAnnotations map[string]string
 // remoteIndexFetcher fetches the annotation map for a digest-pinned
 // image reference. The production implementation uses
 // go-containerregistry against the registry named in the reference.
-type remoteIndexFetcher func(imageRef string) (ociAnnotations, error)
+// The context bounds the whole exchange (the caller wraps it in the
+// boot timeout); without remote.WithContext ggcr uses
+// context.Background() and a stalled registry hangs startup forever.
+type remoteIndexFetcher func(ctx context.Context, imageRef string) (ociAnnotations, error)
 
 // AgentdBinaryPins are the resolved per-arch binary sha256s.
 type AgentdBinaryPins struct {
 	SHA256AMD64 string
 	SHA256ARM64 string
-}
-
-// registryPinResolver reads pins from the image index annotations.
-type registryPinResolver struct {
-	fetch remoteIndexFetcher
-}
-
-func (r *registryPinResolver) Resolve(ctx context.Context, image string) (AgentdBinaryPins, error) {
-	ann, err := r.fetch(image)
-	if err != nil {
-		return AgentdBinaryPins{}, fmt.Errorf("agentd pins: fetching index for %s: %w", image, err)
-	}
-	amd64, okA := ann[annotationKeyAMD64]
-	arm64, okB := ann[annotationKeyARM64]
-	if !okA || !okB || !sha256HexRe.MatchString(amd64) || !sha256HexRe.MatchString(arm64) {
-		return AgentdBinaryPins{}, fmt.Errorf("agentd pins: index for %s is missing valid %s/%s annotations (broken merge-agentd pipeline?)", image, annotationKeyAMD64, annotationKeyARM64)
-	}
-	return AgentdBinaryPins{SHA256AMD64: amd64, SHA256ARM64: arm64}, nil
 }
 
 // cachedPinResolver wraps the registry resolver with a ConfigMap cache.
@@ -104,7 +89,7 @@ type cachedPinResolver struct {
 // cache; on failure it falls back to the cache only when the cache was
 // written for the SAME image reference (same digest ⇒ same content).
 func (r *cachedPinResolver) Resolve(ctx context.Context, image string) (AgentdBinaryPins, error) {
-	ann, err := r.fetch(image)
+	ann, err := r.fetch(ctx, image)
 	if err == nil {
 		amd64, okA := ann[annotationKeyAMD64]
 		arm64, okB := ann[annotationKeyARM64]
@@ -118,7 +103,10 @@ func (r *cachedPinResolver) Resolve(ctx context.Context, image string) (AgentdBi
 	cm := &corev1.ConfigMap{}
 	getErr := r.Get(ctx, client.ObjectKey{Name: AgentdPinsConfigMapName, Namespace: r.Namespace}, cm)
 	if getErr != nil {
-		return AgentdBinaryPins{}, fmt.Errorf("agentd pins: registry fetch failed (%v) and no pin cache exists: %w", err, errFetchUnavailable)
+		if apierrors.IsNotFound(getErr) {
+			return AgentdBinaryPins{}, fmt.Errorf("agentd pins: registry fetch failed (%v) and no pin cache exists (first boot with an unreachable registry): %w", err, errFetchUnavailable)
+		}
+		return AgentdBinaryPins{}, fmt.Errorf("agentd pins: registry fetch failed (%v) and pin cache read failed (%v) — check RBAC for configmaps get on %s/%s: %w", err, getErr, r.Namespace, AgentdPinsConfigMapName, errFetchUnavailable)
 	}
 	if cm.Data["image"] != image {
 		return AgentdBinaryPins{}, fmt.Errorf("agentd pins: registry fetch failed (%v) and cache holds a different digest (%s) — refusing to desync", err, cm.Data["image"])
@@ -157,37 +145,9 @@ func (r *cachedPinResolver) writeCache(ctx context.Context, image, amd64, arm64 
 	}
 }
 
-// resolveAgentdPins merges explicit flags (break-glass overrides, win
-// where set) with annotation-resolved pins for anything unset.
-func resolveAgentdPins(ctx context.Context, fetcher remoteIndexFetcher, image, flagAMD64, flagARM64 string) (AgentdBinaryPins, error) {
-	resolved := AgentdBinaryPins{SHA256AMD64: flagAMD64, SHA256ARM64: flagARM64}
-	if resolved.SHA256AMD64 != "" && resolved.SHA256ARM64 != "" {
-		return resolved, nil
-	}
-	ann, err := fetcher(image)
-	if err != nil {
-		return AgentdBinaryPins{}, fmt.Errorf("agentd pins: resolving %s: %w", image, err)
-	}
-	if resolved.SHA256AMD64 == "" {
-		v, ok := ann[annotationKeyAMD64]
-		if !ok || !sha256HexRe.MatchString(v) {
-			return AgentdBinaryPins{}, fmt.Errorf("agentd pins: no valid %s annotation and no --agentd-binary-sha256-amd64 override", annotationKeyAMD64)
-		}
-		resolved.SHA256AMD64 = v
-	}
-	if resolved.SHA256ARM64 == "" {
-		v, ok := ann[annotationKeyARM64]
-		if !ok || !sha256HexRe.MatchString(v) {
-			return AgentdBinaryPins{}, fmt.Errorf("agentd pins: no valid %s annotation and no --agentd-binary-sha256-arm64 override", annotationKeyARM64)
-		}
-		resolved.SHA256ARM64 = v
-	}
-	return resolved, nil
-}
-
 // fetchIndexAnnotations is the production remoteIndexFetcher: anonymous
 // registry read of the index annotations for a digest-pinned reference.
-func fetchIndexAnnotations(imageRef string) (ociAnnotations, error) {
+func fetchIndexAnnotations(ctx context.Context, imageRef string) (ociAnnotations, error) {
 	if !strings.Contains(imageRef, "@") {
 		return nil, fmt.Errorf("agentd pins: reference %q is not digest-pinned — annotation resolution requires an immutable digest", imageRef)
 	}
@@ -195,7 +155,7 @@ func fetchIndexAnnotations(imageRef string) (ociAnnotations, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parsing %q: %w", imageRef, err)
 	}
-	idx, err := remote.Index(ref)
+	idx, err := remote.Index(ref, remote.WithContext(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("fetching index: %w", err)
 	}
@@ -207,10 +167,12 @@ func fetchIndexAnnotations(imageRef string) (ociAnnotations, error) {
 }
 
 // ResolvePinsWithCache is the startup entrypoint used by controller
-// main: resolves any unset binary pins from the image's index
-// annotations, backed by the ConfigMap cache for registry outages.
-// Explicit flags always win. Runs before the manager starts (raw
-// client on the ambient kubeconfig) so a broken pin fails fast.
+// main. validateAgentdDeliveryConfig has already run: either both hash
+// flags are set (manual pin — returned verbatim, no registry access)
+// or neither is (the normal Renovate form — resolved from the image
+// index annotations, backed by the ConfigMap cache for registry
+// outages). Runs before the manager starts (raw client on the ambient
+// kubeconfig) so a broken pin fails fast.
 func ResolvePinsWithCache(ctx context.Context, image, flagAMD64, flagARM64 string) (AgentdBinaryPins, error) {
 	if flagAMD64 != "" && flagARM64 != "" {
 		return AgentdBinaryPins{SHA256AMD64: flagAMD64, SHA256ARM64: flagARM64}, nil
@@ -231,16 +193,5 @@ func ResolvePinsWithCache(ctx context.Context, image, flagAMD64, flagARM64 strin
 	if ns == "" {
 		ns = "llmsafespaces"
 	}
-	res := &cachedPinResolver{Client: c, Namespace: ns, fetch: fetchIndexAnnotations}
-	pins, err := res.Resolve(ctx, image)
-	if err != nil {
-		return AgentdBinaryPins{}, err
-	}
-	if flagAMD64 != "" {
-		pins.SHA256AMD64 = flagAMD64
-	}
-	if flagARM64 != "" {
-		pins.SHA256ARM64 = flagARM64
-	}
-	return pins, nil
+	return (&cachedPinResolver{Client: c, Namespace: ns, fetch: fetchIndexAnnotations}).Resolve(ctx, image)
 }

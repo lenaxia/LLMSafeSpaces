@@ -51,6 +51,11 @@ Requirements (enforced at `helm template` and controller startup):
 Leave `image` empty for legacy mode (baked-in binary) — nothing renders,
 no volume is mounted, the entrypoint behaves exactly as before.
 
+**RBAC:** enabling agentdDelivery adds a `configmaps` grant scoped by
+`resourceNames` to the single `llmsafespaces-agentd-pins` ConfigMap
+(get/update + create) for the outage cache. It does not depend on any
+other feature's permissions.
+
 ## Keeping it updated (Renovate / Dependabot)
 
 **Renovate — first-class.** Because the pin is one docker tag+digest

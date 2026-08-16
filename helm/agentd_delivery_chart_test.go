@@ -6,11 +6,13 @@ package chart_test
 // #863: agentdDelivery values gating.
 //
 //   - Default (empty image): no agentd flags on the controller Deployment.
-//   - Configured: all three flags render, exactly as pinned.
-//   - Half-configured (image set, hashes missing): the render FAILS —
-//     the required guards in controller-deployment.yaml turn operator
-//     error into an install-time error instead of a runtime one
-//     (entrypoint exit-81 storm).
+//   - Image-only (the RENOVATE FORM, repo:tag@sha256:digest): exactly
+//     one flag renders — hashes resolve from index annotations at
+//     controller startup.
+//   - Full manual pin: all three flags render.
+//   - Malformed configs FAIL the render: hashes without an image (they
+//     are per-image overrides), or a one-sided hash pair (both or
+//     neither) — install-time errors beat entrypoint exit-81 storms.
 
 import (
 	"os"
@@ -83,7 +85,7 @@ func TestAgentdDelivery_ImageOnlyRendersSingleFlag(t *testing.T) {
 }
 
 // TestAgentdDelivery_OneSidedHashOverrideFailsRender guards the
-// both-or-neither override rule.
+// both-or-neither override rule (amd64-set direction).
 func TestAgentdDelivery_OneSidedHashOverrideFailsRender(t *testing.T) {
 	if _, err := exec.LookPath("helm"); err != nil {
 		t.Skip("helm not on PATH; skipping chart render test")
@@ -142,4 +144,24 @@ func TestAgentdDelivery_HashesWithoutImageFailsRender(t *testing.T) {
 		"hashes-without-image must fail the render — silently running legacy while the operator believes overlay mode is on is the worst failure mode; output: %s", out)
 	require.Contains(t, string(out), "agentdDelivery.image is required",
 		"the failure must be the reverse-guard fail; output: %s", out)
+}
+
+// TestAgentdDelivery_OneSidedArm64OverrideFailsRender mirrors the
+// one-sided guard in the arm64-set direction (the Go validation table
+// and the amd64 chart test cover the other direction).
+func TestAgentdDelivery_OneSidedArm64OverrideFailsRender(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm not on PATH; skipping chart render test")
+	}
+	dir := t.TempDir()
+	valuesPath := filepath.Join(dir, "values.yaml")
+	require.NoError(t, os.WriteFile(valuesPath, []byte(`controller:
+  agentdDelivery:
+    image: ghcr.io/lenaxia/llmsafespaces/agentd:dev@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    binarySHA256Arm64: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+`), 0o600))
+	cmd := exec.Command("helm", "template", "test-release", chartDir(t), "-n", "test-ns", "-f", valuesPath)
+	out, err := cmd.CombinedOutput()
+	require.Error(t, err, "one-sided arm64-only override must fail the render; output: %s", out)
+	require.Contains(t, string(out), "BOTH hashes or NEITHER", "output: %s", out)
 }

@@ -148,12 +148,13 @@ func main() {
 			"verifies the binary's sha256 against the pins before exec.")
 	var agentdBinarySHA256AMD64 string
 	flag.StringVar(&agentdBinarySHA256AMD64, "agentd-binary-sha256-amd64", "",
-		"#863: sha256 (64 hex) of the amd64 workspace-agentd binary inside --agentd-image. "+
-			"Required together with --agentd-image.")
+		"#863: OPTIONAL per-image override — sha256 (64 hex) of the amd64 workspace-agentd "+
+			"binary inside --agentd-image. Normally unset: hashes resolve from the image index "+
+			"annotations at startup (single Renovate-updatable coordinate). Set BOTH hashes or NEITHER.")
 	var agentdBinarySHA256ARM64 string
 	flag.StringVar(&agentdBinarySHA256ARM64, "agentd-binary-sha256-arm64", "",
-		"#863: sha256 (64 hex) of the arm64 workspace-agentd binary inside --agentd-image. "+
-			"Required together with --agentd-image.")
+		"#863: OPTIONAL per-image override — sha256 (64 hex) of the arm64 workspace-agentd "+
+			"binary inside --agentd-image. Set BOTH hashes or NEITHER.")
 	flag.Parse()
 
 	// #863: validate the agentd delivery contract before anything
