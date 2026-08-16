@@ -362,3 +362,49 @@ func TestMCPSessionList_MalformedAgentAddr_NoPanic(t *testing.T) {
 	assert.Error(t, got, "malformed agent addr must return a build error")
 	assert.Contains(t, got.Error(), "failed to build session list request")
 }
+
+// TestInjectAgentdMCPServer_EmptyPassword_Disabled pins the empty-password
+// branch: no credential is stamped and the entry is DISABLED — an enabled
+// entry without headers would 401 on every JSON-RPC call against the
+// gated /v1/mcp, so opencode would pointlessly retry an unusable server.
+func TestInjectAgentdMCPServer_EmptyPassword_Disabled(t *testing.T) {
+	cfg := map[string]json.RawMessage{}
+	injectAgentdMCPServer("")(cfg)
+
+	var mcpMap map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(cfg["mcp"], &mcpMap))
+	var entry map[string]any
+	require.NoError(t, json.Unmarshal(mcpMap["llmsafespaces"], &entry))
+	assert.Equal(t, false, entry["enabled"], "empty password must disable the entry, not stamp an unusable enabled one")
+	assert.NotContains(t, entry, "headers", "no credential exists to stamp")
+}
+
+// TestInjectAgentdMCPServer_CredentialAcceptedByGate is the coupling test
+// between the two sides of the credential: the header the hook stamps on
+// the opencode entry must be exactly what mcpHandler's gate accepts. Each
+// side is tested against the shared basicAuth helper in isolation; without
+// this round-trip, a divergent change to one side (header format, username)
+// would pass its own test while breaking the live agent.
+func TestInjectAgentdMCPServer_CredentialAcceptedByGate(t *testing.T) {
+	const pw = "coupling-test-pw"
+	cfg := map[string]json.RawMessage{}
+	injectAgentdMCPServer(pw)(cfg)
+
+	var mcpMap map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(cfg["mcp"], &mcpMap))
+	var entry struct {
+		Headers map[string]string `json:"headers"`
+	}
+	require.NoError(t, json.Unmarshal(mcpMap["llmsafespaces"], &entry))
+	require.Contains(t, entry.Headers, "Authorization")
+
+	// Drive the stamped credential through the actual handler gate with a
+	// minimal JSON-RPC request — 200, not 401.
+	body, _ := json.Marshal(mcpRequest{JSONRPC: "2.0", ID: 1, Method: "tools/list"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/mcp", newBodyReader(body))
+	req.Header.Set("Authorization", entry.Headers["Authorization"])
+	w := httptest.NewRecorder()
+	mcpHandler(pw)(w, req)
+	require.Equal(t, http.StatusOK, w.Code,
+		"the credential stamped on the opencode entry must pass the /v1/mcp gate")
+}

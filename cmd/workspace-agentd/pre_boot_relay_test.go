@@ -427,10 +427,20 @@ func TestApplyRelayConfigPreBoot_AppliesAllSourcesFromBootstrapFiles(t *testing.
 	// 3. Built-in admin MCP server must be injected by the pre-marshal hook.
 	mcp, ok := cfg["mcp"].(map[string]any)
 	require.True(t, ok, "mcp section must be present (pre-marshal hook ran)")
-	_, hasBuiltin := mcp["llmsafespaces"]
-	assert.True(t, hasBuiltin,
+	builtin, hasBuiltin := mcp["llmsafespaces"].(map[string]any)
+	require.True(t, hasBuiltin,
 		"mcp.llmsafespaces must be present — the pre-boot writer must call "+
 			"injectAgentdMCPServer via the preMarshalHook option")
+
+	// #847: the injected entry must carry the Basic credential derived from
+	// the password passed to applyRelayConfigPreBoot — /v1/mcp rejects
+	// unauthenticated JSON-RPC, and this path runs before agentd's main
+	// writer exists. If the password param were dropped from the hook
+	// construction here, opencode would boot with an unusable MCP entry.
+	entryHeaders, ok := builtin["headers"].(map[string]any)
+	require.True(t, ok, "injected entry must carry a headers block")
+	assert.Equal(t, "Basic "+basicAuth("pw"), entryHeaders["Authorization"],
+		"pre-boot relay must stamp the workspace Basic credential on the MCP entry")
 
 	// Sanity: relay block still applied (the primary job of this path).
 	provider, _ := cfg["provider"].(map[string]any)

@@ -253,19 +253,24 @@ func writeMCPError(w http.ResponseWriter, id any, code int, msg string) {
 // injectAgentdMCPServer returns the pre-marshal hook that stamps the
 // platform's llmsafespaces MCP entry into agent-config.json. The entry
 // carries the Basic credential because /v1/mcp enforces auth (#847); an
-// empty password yields an entry without headers (agentd main fails fatal
-// on an unreadable password, so the distinction only matters in tests).
+// empty password yields a DISABLED entry — an enabled-but-credential-less
+// entry would just 401 on every JSON-RPC call, so disabling keeps
+// opencode from retrying a provably unusable server. agentd main fails
+// fatal on an unreadable password (G46), so the empty branch only fires
+// in tests and the logged materialize fallback.
 func injectAgentdMCPServer(password string) func(map[string]json.RawMessage) {
 	return func(cfg map[string]json.RawMessage) {
 		mcpEntry := map[string]any{
-			"enabled": true,
-			"type":    "remote",
-			"url":     fmt.Sprintf("http://127.0.0.1:%d/v1/mcp", agentd.AgentdPort),
+			"type": "remote",
+			"url":  fmt.Sprintf("http://127.0.0.1:%d/v1/mcp", agentd.AgentdPort),
 		}
 		if password != "" {
+			mcpEntry["enabled"] = true
 			mcpEntry["headers"] = map[string]string{
 				"Authorization": "Basic " + basicAuth(password),
 			}
+		} else {
+			mcpEntry["enabled"] = false
 		}
 		entryJSON, _ := json.Marshal(mcpEntry)
 
