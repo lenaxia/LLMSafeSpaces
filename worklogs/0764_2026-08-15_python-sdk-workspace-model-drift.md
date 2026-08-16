@@ -64,7 +64,7 @@ The CI canary advanced past s_secret_crud's metadata fix to reveal `SecretRespon
 
 ### Round 8: email-reset login 429
 
-First-ever full Python section run: scenarios 1-16 green through `s_ownership`; `s_email_reset` (17 of 19) then failed on `login: unexpected status: got 429` — the accumulated logins across the section (12 POSTs to /auth/login across 10 scenarios — s_auth, s_logout, the six JWT-converted scenarios (s_cred_crud already used jwt_login on main), and this one) share the per-IP login bucket (10/min). The scenario's contract is the 200-vs-403 email-verification semantics, so the login now retries on 429 (up to 7 attempts, 10s apart — one bucket refill), in both the Python and TS twins (the TS section's first-ever execution runs the same drained-bucket arithmetic).
+First-ever full Python section run: scenarios 1-16 green through `s_ownership`; `s_email_reset` (17 of 19) then failed on `login: unexpected status: got 429` — the accumulated logins across the section (12 POSTs to /auth/login across 10 scenarios — s_auth, s_logout, the seven JWT-authenticated scenarios (all seven already used jwt_login at this PR's base — the six were converted by #861, s_cred_crud earlier still; this PR converted only the TS twins), and this one) share the per-IP login bucket (10/min). The scenario's contract is the 200-vs-403 email-verification semantics, so the login now retries on 429 (up to 7 attempts, 10s apart — one bucket refill), in both the Python and TS twins (the TS section's first-ever execution runs the same drained-bucket arithmetic).
 
 ### Round 9: MCP canary bootstrap
 
@@ -72,7 +72,7 @@ With Python fully green and the TS section's first-ever execution also fully gre
 
 ## Blockers
 
-None for this PR's diff. The TS section's first-ever execution ran fully green (round 8 run), closing that risk. The remaining open item is the MCP section's first-ever execution, newly enabled by Round 9 — its four findings — tool-contract drift (24 vs 15, run_resolve collapse), ungated d-mcp-workspace, the DEK-gate 403 on credential_create, and the ListCredentials envelope-unmarshal bug — are tracked in #874 (out of #867 scope).
+None for this PR's diff. The TS section's first-ever execution ran fully green (round 8 run), closing that risk. The remaining open item is the MCP section's first-ever execution, newly enabled by Round 9 — its five findings — tool-contract drift (24 vs 15, run_resolve collapse), ungated d-mcp-workspace, the DEK-gate 403 on credential_create, the ListCredentials envelope-unmarshal bug, and the workspace_create name-contract mismatch (tool schema optional vs API-required, CI-observed 422) — are tracked in #874 (out of #867 scope).
 
 ---
 
