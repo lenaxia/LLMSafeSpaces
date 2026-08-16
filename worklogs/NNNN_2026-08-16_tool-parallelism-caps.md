@@ -44,3 +44,24 @@ None. Effect on real builds is G6's measurement pass (pre/post throttle counters
 
 - controller/internal/workspace/pod_builder.go
 - controller/internal/workspace/pod_builder_test.go
+
+---
+
+## Round 2 corrections (review on #897)
+
+- **Assumption 2 disproven (Rule 7 finding):** round 1's worklog listed
+  `ESBUILD_WORKER_THREADS` as a "validated, esbuild-documented env var".
+  Review verified against esbuild's shipped source (0.16.10 and 0.28.x
+  `lib/main.js`): the only use is `if (process.env.ESBUILD_WORKER_THREADS
+  !== "0")` — a disable-flag for the sync-API worker thread, of which the
+  JS wrapper spawns exactly one. No numeric semantics, no host-core-count
+  pool. The var is REMOVED; GOMAXPROCS alone remains (esbuild is a Go
+  binary — its pool follows GOMAXPROCS transitively; the incident's
+  `[esbuild]` zombies were the Go process).
+- Tests reworked: default-path test de-vacuousized (name lookup with
+  presence assertions); ceil-boundary and zero/missing-limit guard paths;
+  persisted-pod e2e per repo convention (`reconcileToCreatingPod`, custom
+  + default shapes) so a wiring drop between buildPod and persistence is
+  caught.
+- Design 0050 D7 amended: placebo var dropped, `npm config jobs` dropped,
+  G6-order inversion recorded with rationale.

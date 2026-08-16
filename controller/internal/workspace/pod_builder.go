@@ -354,17 +354,28 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 //     against bad input; if both are bypassed (e.g. CRD validation
 //     disabled cluster-wide), we degrade gracefully.
 //
-// toolParallelismEnv caps the thread pools of the build tools the agent
+// toolParallelismEnv caps the parallelism of the build tools the agent
 // spawns inside the workspace (design 0050 D7, #892). During the
 // 2026-08-15/16 incident, `go`/`esbuild`/`tsc` children spun
 // machine-sized thread pools inside a 2-CPU cgroup quota — pure
 // oversubscription, which is what turned ordinary build load into
 // hundreds of seconds of CFS stall and starved opencode's event loop past
-// the (then-lethal) health timeouts. The caps match the effective CPU
+// the (then-lethal) health timeouts. The cap matches the effective CPU
 // limit so tool parallelism competes within the quota instead of
 // thrashing against it. Values are inherited by every tool child via the
-// environment; a value the user or tool explicitly sets in its own
-// command still wins (per-invocation flags override env defaults).
+// environment; per-invocation flags the user or tool sets explicitly
+// still win.
+//
+// The single lever is GOMAXPROCS. It caps `go build -p`, Go test
+// parallelism, AND the esbuild CLI — esbuild is a Go binary, so its
+// internal goroutine pool follows GOMAXPROCS transitively (the incident's
+// `[esbuild]` zombies were the Go process). Design 0050's draft also
+// named ESBUILD_WORKER_THREADS; review round 1 on #897 verified against
+// esbuild's shipped source that the variable has no numeric semantics
+// (only a "0"-disable check for the sync-API worker thread, of which
+// there is exactly one) — it is a placebo and is deliberately NOT set.
+// tsc-native and npm have no effective env knobs; they ride the quota
+// like any other process.
 func toolParallelismEnv(reqs corev1.ResourceRequirements) []corev1.EnvVar {
 	cores := 1
 	if lim, ok := reqs.Limits[corev1.ResourceCPU]; ok {
@@ -373,12 +384,10 @@ func toolParallelismEnv(reqs corev1.ResourceRequirements) []corev1.EnvVar {
 			cores = int((milli + 999) / 1000) // ceil; 500m→1, 2000m→2
 		}
 	}
-	s := strconv.Itoa(cores)
 	return []corev1.EnvVar{
-		// Go: caps `go build -p` and GOMAXPROCS of go tool + test binaries.
-		{Name: "GOMAXPROCS", Value: s},
-		// esbuild: caps its JS worker pool (defaults to host core count).
-		{Name: "ESBUILD_WORKER_THREADS", Value: s},
+		// Go: caps `go build -p` and GOMAXPROCS of go tool + test
+		// binaries — and, transitively, the esbuild Go CLI.
+		{Name: "GOMAXPROCS", Value: strconv.Itoa(cores)},
 	}
 }
 
