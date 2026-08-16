@@ -14,7 +14,35 @@
   - `credential_create`: DEK-unavailable (403 "encryption key not available; re-authenticate") is asserted as the documented API-key-auth limitation and skips the CRUD body — the canary authenticates with an API key, and credential writes require the per-session DEK that only interactive login unlocks. Previously this surfaced as unexplained failures.
 - `pkg/mcp/client.go` `ListCredentials`: decodes the API's actual response shape `{"secrets":[...]}` (SecretsHandler.ListSecrets) — was decoding a bare array, so **every** `credential_list` MCP call failed once the wrapper landed. Real product bug surfaced by the canary, not canary drift.
 - `pkg/mcp/server.go` `workspace_create`: `name` schema updated Optional → Required, matching the API validation that guarantees a 422 when omitted — the schema was advising clients into a guaranteed error.
-- `sdks/canary/TESTPLAN.md`: stale references updated (collapse noted, min-count assertion).
+- `sdks/canary/TESTPLAN.md`: S-MCP-TOOLS row, P1–P18 subset, P14 floor, and S-MCP-CRED DEK-skip note updated. (Round-1 worklog claimed this file was updated when it was not — corrected here with the real edit landed in round 2.)
+
+## Round 2 (review on #905): all blockers
+
+- `.gitignore`: bare `mcp` anchored to `/mcp` — new files under
+  `sdks/canary/mcp/` are no longer silently untracked (this ate the
+  promised tests in round 1; root `/mcp` intent preserved).
+- `ListCredentials` regression tests (wrapper decode + filter, empty,
+  API error) — verified red on the bare-array decode, green after.
+- `workspace_create` schema pin in the integration test:
+  `inputSchema.required` must contain `name` (catches silent revert to
+  optional).
+- Canary `tools_test.go`: contract extracted to `checkToolContract` +
+  `canaryExpectedTools`/`canaryToolFloor`; tests cover
+  current-registry-passes, additive-passes, stale-#880-signature-fails
+  (both failure classes), missing-named-tool-fails, below-floor-fails.
+- Floor restored to 24 (the issue's on-record number; PR-body claim "a
+  net removal fails minCount" is now true).
+- `pkg/repolint TestCanary_MCPTools_Parity`: parses the canary's subset
+  + floor from source, validates against the REAL registry via an
+  in-process MCP client — the drift-class guard.
+- CI: `Canary module unit tests` step added (separate module; root
+  `./...` never covered it); `CANARY_NO_CONTROLLER=1` job env replaces
+  phase-inference for the ws-wait-active skip (honest env truth; no
+  150s burn; a stuck-Pending workspace in a controller environment
+  still fails).
+- DEK skip narrowed: only the CRUD positives skip; N1–N4
+  handler-validation negatives always run (extracted
+  `runCredNegatives`).
 
 ## Key Decisions
 
@@ -25,7 +53,7 @@
 ## Assumptions (validated)
 
 1. 24 tools is the authoritative current set — `pkg/mcp/server.go` AddTools (13) + AddWorkflowTools (11).
-2. run_replace collapse intentional — US-65.7, documented in server.go:241-260.
+2. run_resolve collapse intentional — US-65.7, documented in server.go:241-260.
 3. `{"secrets": [...]}` wrapper is the current API contract — SecretsHandler.ListSecrets (api/internal/handlers/secrets.go:147-166).
 
 ## Tests Run
@@ -35,7 +63,10 @@
 
 ## Files Modified
 
-- sdks/canary/mcp/main.go
+- sdks/canary/mcp/main.go (+tools_test.go, new)
 - sdks/canary/TESTPLAN.md
-- pkg/mcp/client.go
-- pkg/mcp/server.go
+- pkg/mcp/client.go (+client_test.go additions)
+- pkg/mcp/server.go (+integration_test.go schema pin)
+- pkg/repolint/canary_mcp_tools_parity_test.go (new)
+- .gitignore
+- .github/workflows/ci.yml

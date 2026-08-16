@@ -152,7 +152,7 @@ Running only shallow canaries would miss the most impactful class of failure: a 
 
 | ID | Name | Schedule | Tier |
 |---|---|---|---|
-| S-MCP-TOOLS | Tool registration completeness (exact count) | 1 min | Shallow |
+| S-MCP-TOOLS | Tool registration completeness (named subset + min count) | 1 min | Shallow |
 | S-MCP-AUTH-NEG | Invalid credentials → tool error (not JSON-RPC error) | 1 min | Shallow |
 | S-MCP-CRED | Credential tools CRUD | 1 min | Shallow |
 | S-MCP-INPUT-NEG | Input validation (missing args, oversized message, bad session ID) | 1 min | Shallow |
@@ -876,10 +876,10 @@ Tests `GET /workspaces/:id/sessions/:sessionId` which proxies to opencode's `GET
 
 | # | Check |
 |---|---|
-| P1–P11 | All 11 tools present: `workspace_create`, `workspace_activate`, `workspace_stop`, `session_create`, `session_message`, `session_history`, `credential_create`, `credential_list`, `credential_delete`, `model_list`, `model_set` |
+| P1–P18 | Stable named subset present: the 13 base tools (incl. `run_resolve`, which replaced `session_question_reply`/`session_question_reject`/`session_permission_reply` per US-65.7) + `workflow_create`, `workflow_list`, `workflow_run`, `trigger_create`, `trigger_list` |
 | P12 | All tools have non-empty `description` |
 | P13 | All tools have `inputSchema.type = "object"` |
-| P14 | **Exactly 11 tools** (registry drift detection — both additions and removals alert) |
+| P14 | **≥24 tools** (additive-tolerant floor; removals also caught by P1–P18 and pinned cross-module by `pkg/repolint` `TestCanary_MCPTools_Parity`) |
 
 ---
 
@@ -901,8 +901,7 @@ Tests `GET /workspaces/:id/sessions/:sessionId` which proxies to opencode's `GET
 
 | # | Check |
 |---|---|
-| P1 | `credential_create` with placeholder key → result JSON has `id` |
-| P2 | `credential_list` → array contains created credential |
+| P1 | `credential_create` with placeholder key → result JSON has `id`. **API-key auth**: the DEK-gated positive CRUD is skipped with `dek_unavailable` asserted (403 "encryption key not available" — documented architecture); full CRUD requires an interactive-login canary | P2 | `credential_list` → array contains created credential |
 | P3 | `credential_delete` → result contains "deleted" |
 | N1 | `credential_create` missing `kind` → `isError=true` |
 | N2 | `credential_create` missing `slug` → `isError=true` |

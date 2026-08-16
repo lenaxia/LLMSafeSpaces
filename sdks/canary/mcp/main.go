@@ -290,26 +290,6 @@ func (c *stdioClient) close() {
 // ── Scenario runners ───────────────────────────────────────────────────────
 
 func runMCPTools(ctx context.Context, r *Runner, client *stdioClient) {
-	// #880: exact-count pinning broke on every additive tool change (15 →
-	// 24 when Epic 64 workflow/trigger tools landed, and the three
-	// session_*_reply tools were collapsed into run_resolve by US-65.7).
-	// The contract now asserted: a stable NAMED subset (every base tool
-	// incl. the run_resolve collapse) plus a minimum count that tolerates
-	// additive changes without weakening removal detection — a removed
-	// named tool fails tool-present, and a net removal fails minCount.
-	const minCount = 20
-	expectedTools := []string{
-		"workspace_create", "workspace_activate", "workspace_stop",
-		"workspace_refresh_compute",
-		"session_create", "session_message", "session_history",
-		"run_resolve",
-		"credential_create", "credential_list", "credential_delete",
-		"model_list", "model_set",
-		// Epic 64 workflow + trigger surface (stable subset).
-		"workflow_create", "workflow_list", "workflow_run",
-		"trigger_create", "trigger_list",
-	}
-
 	tools, err := client.listTools()
 	if err != nil {
 		r.fail("tools/list: no error", err.Error())
@@ -317,20 +297,8 @@ func runMCPTools(ctx context.Context, r *Runner, client *stdioClient) {
 	}
 	r.ok("tools/list: no error")
 
-	// P14: minimum count (additive-tolerant; removals caught by
-	// tool-present + the floor).
-	r.assert(len(tools) >= minCount, "tools: min count",
-		fmt.Sprintf("expected >= %d, got %d", minCount, len(tools)))
-
-	// P1–P11: each expected tool present
-	toolMap := make(map[string]map[string]any, len(tools))
-	for _, t := range tools {
-		name, _ := t["name"].(string)
-		toolMap[name] = t
-	}
-	for _, name := range expectedTools {
-		_, found := toolMap[name]
-		r.assert(found, "tool-present: "+name, "")
+	for _, failure := range checkToolContract(tools) {
+		r.fail(failure.name, failure.detail)
 	}
 
 	// P12: non-empty description
@@ -443,12 +411,20 @@ func runMCPCredCRUD(ctx context.Context, r *Runner, client *stdioClient) {
 	// the per-session DEK that only an interactive login unlocks
 	// (ErrDEKUnavailable, 403 "encryption key not available;
 	// re-authenticate"). That is the documented auth architecture, not
-	// contract drift — assert the specific shape and skip the CRUD body.
+	// contract drift — assert the specific shape and skip ONLY the
+	// DEK-gated CRUD positives. The handler-level input-validation
+	// negatives (N1–N4, below) need no DEK and always run (#905 review).
+	dekGated := false
 	if tr.IsError && strings.Contains(toolResultText(tr), "encryption key not available") {
 		r.ok("credential_create: dek_unavailable (API-key auth — expected, CRUD skipped)")
+		dekGated = true
+	} else {
+		r.assert(!tr.IsError, "credential_create: isError=false", toolResultText(tr))
+	}
+	if dekGated {
+		runCredNegatives(r, client)
 		return
 	}
-	r.assert(!tr.IsError, "credential_create: isError=false", toolResultText(tr))
 
 	// Extract credential ID from result
 	text := toolResultText(tr)
@@ -482,27 +458,28 @@ func runMCPCredCRUD(ctx context.Context, r *Runner, client *stdioClient) {
 		}
 	}
 
+	runCredNegatives(r, client)
+}
+
+// runCredNegatives asserts the credential tools' handler-level input
+// validation — DEK-independent, so they run on EVERY auth shape
+// including API-key canaries (#905 review: the DEK skip must not bypass
+// them).
+func runCredNegatives(r *Runner, client *stdioClient) {
 	// N1: missing kind
-	trN1, _ := client.callTool("credential_create", map[string]any{"slug": "x", "api_key": "sk-x"})
-	if trN1 != nil {
+	if trN1, _ := client.callTool("credential_create", map[string]any{"slug": "x", "api_key": "sk-x"}); trN1 != nil {
 		r.assert(trN1.IsError, "cred_create-missing-kind: isError=true", "")
 	}
-
 	// N2: missing slug
-	trN1b, _ := client.callTool("credential_create", map[string]any{"kind": "anthropic", "api_key": "sk-x"})
-	if trN1b != nil {
+	if trN1b, _ := client.callTool("credential_create", map[string]any{"kind": "anthropic", "api_key": "sk-x"}); trN1b != nil {
 		r.assert(trN1b.IsError, "cred_create-missing-slug: isError=true", "")
 	}
-
 	// N3: missing api_key
-	trN2, _ := client.callTool("credential_create", map[string]any{"kind": "anthropic", "slug": "x"})
-	if trN2 != nil {
+	if trN2, _ := client.callTool("credential_create", map[string]any{"kind": "anthropic", "slug": "x"}); trN2 != nil {
 		r.assert(trN2.IsError, "cred_create-missing-key: isError=true", "")
 	}
-
 	// N4: delete nonexistent
-	trN4, _ := client.callTool("credential_delete", map[string]any{"credential_id": "00000000-0000-0000-0000-000000000099"})
-	if trN4 != nil {
+	if trN4, _ := client.callTool("credential_delete", map[string]any{"credential_id": "00000000-0000-0000-0000-000000000099"}); trN4 != nil {
 		r.assert(trN4.IsError, "cred_delete-nonexistent: isError=true", "")
 	}
 }
@@ -531,18 +508,23 @@ func runDeepWorkspace(ctx context.Context, r *Runner, client *stdioClient, apiUR
 	}
 	defer func() { _ = sdkClient.Workspaces.Delete(context.Background(), wsID) }()
 
-	phase := canary.WaitActive(ctx, sdkClient, wsID)
-	if phase != "Active" {
-		// The CI canary runs no workspace controller: CRs stay Pending
-		// forever (workflow comment, ci.yml "Start API server"). Distinguish
-		// that environment limitation from a genuine stuck workspace —
-		// Pending = no controller (skip the Active-gated tail honestly);
-		// anything else = real drift, fail.
-		if cur, err := sdkClient.Workspaces.Get(context.Background(), wsID); err == nil && cur.Phase == "Pending" {
-			r.ok("ws-wait-active: skipped (no controller in CI — workspace Pending)")
-		} else {
-			r.assert(false, "ws-wait-active", fmt.Sprintf("got %q", phase))
+	// CANARY_NO_CONTROLLER=1: the CI environment declares it runs no
+	// workspace controller (workspaces stay Pending forever — ci.yml
+	// "Start API server" comment). Environment-provided truth, not
+	// inferred from phase: in an environment WITH a controller, a
+	// stuck-Pending workspace is real drift and must fail (#905 review).
+	if os.Getenv("CANARY_NO_CONTROLLER") == "1" {
+		cur, err := sdkClient.Workspaces.Get(context.Background(), wsID)
+		if err == nil && cur.Phase == "Pending" {
+			r.ok("ws-wait-active: skipped (CANARY_NO_CONTROLLER=1 — no controller in CI)")
+			return
 		}
+		r.assert(false, "ws-wait-active", fmt.Sprintf("CANARY_NO_CONTROLLER=1 but phase=%q (expected Pending)", phaseOf(cur)))
+		return
+	}
+	phase := canary.WaitActive(ctx, sdkClient, wsID)
+	r.assert(phase == "Active", "ws-wait-active", fmt.Sprintf("got %q", phase))
+	if phase != "Active" {
 		return
 	}
 	r.ok("ws-wait-active")
@@ -969,4 +951,60 @@ func rawHTTPDo(ctx context.Context, method, url, apiKey string, body []byte) (in
 	defer resp.Body.Close()
 	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	return resp.StatusCode, b, err
+}
+
+// contractFailure is one tools/list contract violation.
+type contractFailure struct{ name, detail string }
+
+// canaryExpectedTools is the stable NAMED subset of the MCP tool
+// contract: every base tool (including run_resolve — US-65.7 collapsed
+// the three session_*_reply tools into it) plus a representative slice
+// of the Epic-64 workflow/trigger surface. Pinned against the real
+// registry by pkg/repolint (TestCanary_MCPTools_Parity) so this list
+// cannot silently drift from the server again (#880).
+var canaryExpectedTools = []string{
+	"workspace_create", "workspace_activate", "workspace_stop",
+	"workspace_refresh_compute",
+	"session_create", "session_message", "session_history",
+	"run_resolve",
+	"credential_create", "credential_list", "credential_delete",
+	"model_list", "model_set",
+	"workflow_create", "workflow_list", "workflow_run",
+	"trigger_create", "trigger_list",
+}
+
+// canaryToolFloor is the minimum tool count. Equals the full current
+// registry (24) so ANY net removal fails; additive changes pass without
+// canary edits (the #880 fix direction: no exact-count pinning).
+const canaryToolFloor = 24
+
+// checkToolContract validates a tools/list response: the named subset is
+// present and the count is at or above the floor. Extracted for unit
+// tests (sdks/canary/mcp/tools_test.go).
+func checkToolContract(tools []map[string]any) []contractFailure {
+	var failures []contractFailure
+	if len(tools) < canaryToolFloor {
+		failures = append(failures, contractFailure{
+			"tools: min count",
+			fmt.Sprintf("expected >= %d, got %d", canaryToolFloor, len(tools)),
+		})
+	}
+	toolMap := make(map[string]bool, len(tools))
+	for _, t := range tools {
+		name, _ := t["name"].(string)
+		toolMap[name] = true
+	}
+	for _, name := range canaryExpectedTools {
+		if !toolMap[name] {
+			failures = append(failures, contractFailure{"tool-present: " + name, ""})
+		}
+	}
+	return failures
+}
+
+func phaseOf(ws *llm.Workspace) string {
+	if ws == nil {
+		return ""
+	}
+	return ws.Phase
 }

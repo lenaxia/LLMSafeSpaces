@@ -663,3 +663,48 @@ func TestHTTPClient_SendMessage_PermissionAutoApproved(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	assert.True(t, permissionReplied.Load(), "permission should have been auto-approved")
 }
+
+// #880/#905: the API wraps the secrets list ({"secrets": [...]}); the
+// client previously decoded a bare array, failing EVERY credential_list
+// MCP call. Red on the pre-fix client (decode error), green after.
+func TestHTTPClient_ListCredentials_WrapperDecode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/api/v1/secrets", r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"secrets":[
+			{"id":"cred-1","type":"llm-provider","name":"a"},
+			{"id":"cred-2","type":"mcp","name":"b"}
+		]}`))
+	}))
+	defer srv.Close()
+	c := &HTTPClient{BaseURL: srv.URL, HTTPClient: srv.Client(), APIKey: "key"}
+
+	creds, err := c.ListCredentials(context.Background())
+	require.NoError(t, err, "wrapper decode must succeed (pre-fix: json cannot unmarshal object into []CredentialResp)")
+	require.Len(t, creds, 1, "non-llm-provider entries filtered")
+	assert.Equal(t, "cred-1", creds[0].ID)
+}
+
+func TestHTTPClient_ListCredentials_EmptyWrapper(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"secrets":[]}`))
+	}))
+	defer srv.Close()
+	c := &HTTPClient{BaseURL: srv.URL, HTTPClient: srv.Client(), APIKey: "key"}
+
+	creds, err := c.ListCredentials(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, creds)
+}
+
+func TestHTTPClient_ListCredentials_APIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"nope"}`))
+	}))
+	defer srv.Close()
+	c := &HTTPClient{BaseURL: srv.URL, HTTPClient: srv.Client(), APIKey: "key"}
+
+	_, err := c.ListCredentials(context.Background())
+	require.Error(t, err)
+}

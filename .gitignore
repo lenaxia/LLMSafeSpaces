@@ -89,7 +89,7 @@ sdks/java/target/
 
 # Local credentials and binaries
 .cf
-mcp
+/mcp
 
 # Cluster-specific helm overrides (redis host, disabled components, etc.)
 # Create helm/values.local.yaml to persist local deploy config.

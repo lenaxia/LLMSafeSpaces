@@ -58,9 +58,22 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 	assert.Len(t, toolsResp.Tools, 24)
 
 	toolNames := make(map[string]bool)
+	toolSchemas := make(map[string]mcp.Tool)
 	for _, tool := range toolsResp.Tools {
 		toolNames[tool.Name] = true
+		toolSchemas[tool.Name] = tool
 	}
+
+	// #880/#905 schema pin: workspace_create must REQUIRE name — the API
+	// validation (Epic 46) rejects empty names with a guaranteed 422, so
+	// an optional-name schema advises clients into an error. Catches a
+	// silent revert to optional.
+	var requiredNames []string
+	for _, r := range toolSchemas["workspace_create"].InputSchema.Required {
+		requiredNames = append(requiredNames, r)
+	}
+	require.Contains(t, requiredNames, "name",
+		"workspace_create schema must require name (API validation 422s on empty)")
 	assert.True(t, toolNames["workspace_create"])
 	assert.True(t, toolNames["workspace_activate"])
 	assert.True(t, toolNames["workspace_stop"])

@@ -505,6 +505,11 @@ jobs:
     name: SDK Integration (live API canaries)
     runs-on: ubuntu-latest
     needs: [sdk-contract]
+    # #905: environment truth consumed by the canary — no workspace
+    # controller runs in this job, so Active-gated tails skip honestly
+    # (CANARY_NO_CONTROLLER) instead of inferring from phase.
+    env:
+      CANARY_NO_CONTROLLER: "1"
     # Non-blocking while the workspace-creating scenarios (S-WS-CRUD,
     # S-WS-STATUS, S-WS-QUOTA, S-OWNERSHIP) are being fixed to run against
     # the kind cluster. Once all ci:fast scenarios pass consistently,
@@ -634,6 +639,13 @@ jobs:
             fi
             sleep 1
           done
+
+      # #880/#905: the canary is a separate Go module — root go test
+      # ./... never covers it. Its unit tests (tool-contract checks)
+      # run here and gate the job.
+      - name: Canary module unit tests
+        working-directory: sdks/canary/mcp
+        run: go test ./... -count=1
 
       # Seed test accounts
       - name: Seed canary test accounts
