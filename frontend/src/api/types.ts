@@ -147,6 +147,9 @@ export interface MessagePart {
   hash?: string;
   toolState?: string;
   toolOutput?: string;
+  // ISO timestamp when the tool call started (design 0050 D5): drives the
+  // elapsed badge on running tools. Absent on older API payloads.
+  toolStartedAt?: string;
 }
 
 export interface Message {

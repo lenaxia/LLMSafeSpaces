@@ -19,6 +19,7 @@ interface ContractMessage {
       state?: {
         status?: string;
         error?: string;
+        startedAt?: string;
       };
     };
     fileChange?: {
@@ -51,6 +52,7 @@ export function transformHistory(raw: ContractMessage[]): Message[] {
             toolState: p.tool.state?.status ?? "",
             input: p.tool.input,
             toolOutput: typeof p.tool.output === "string" ? p.tool.output : undefined,
+            toolStartedAt: p.tool.state?.startedAt,
           };
         }
         if (p.type === "reasoning") {

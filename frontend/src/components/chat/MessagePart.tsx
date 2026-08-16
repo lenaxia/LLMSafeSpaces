@@ -5,6 +5,7 @@ import rehypeSanitize from "rehype-sanitize";
 import { Brain, Check, Copy, Wrench, Server } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { useUserSetting } from "../../hooks/useUserSettings";
+import { useNow } from "../../hooks/useNow";
 import { useTheme } from "../../providers/ThemeProvider";
 import { highlight } from "../../lib/shiki";
 import { LazyDetails } from "../ui/LazyDetails";
@@ -191,8 +192,8 @@ function ToolInput({ input }: { input: unknown }) {
   return <pre className="text-xs text-muted-foreground font-mono whitespace-pre-wrap max-h-20 overflow-y-auto">{JSON.stringify(input, null, 2)}</pre>;
 }
 
-function ToolDetails({ borderColor, textColor, statusIcon, toolName, filePath, children }: {
-  borderColor: string; textColor: string; statusIcon: string; toolName: string; filePath: string; children: React.ReactNode;
+function ToolDetails({ borderColor, textColor, statusIcon, toolName, filePath, badge, children }: {
+  borderColor: string; textColor: string; statusIcon: string; toolName: string; filePath: string; badge?: React.ReactNode; children: React.ReactNode;
 }) {
   return (
     <LazyDetails
@@ -202,6 +203,7 @@ function ToolDetails({ borderColor, textColor, statusIcon, toolName, filePath, c
         <summary className={cn("flex cursor-pointer items-center gap-2 px-3 py-2 text-xs font-medium overflow-hidden", textColor)}>
           <Wrench className="h-3.5 w-3.5 flex-shrink-0" />
           <span className="truncate">{statusIcon} {toolName || "tool"}{filePath ? ` — ${filePath}` : ""}</span>
+          {badge}
         </summary>
       }
     >
@@ -237,9 +239,39 @@ interface Props {
   isStreaming?: boolean;
 }
 
+// formatElapsed renders a duration as "1m 12s" / "38s" / "1h 4m" — coarse
+// by design (design 0050 D5): the badge distinguishes live-silent ("38s")
+// from dead state ("3h"), not stopwatch precision.
+function formatElapsed(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ${s % 60}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
+// ToolElapsedBadge (design 0050 D5): a running tool with a known start
+// time shows live elapsed. An orphaned tool honestly shows "3h" — that is
+// the signal state is stale, surfaced without any protocol change. Ticks
+// only while something running is on screen (useNow's interval).
+function ToolElapsedBadge({ startedAt, now }: { startedAt: string; now: number }) {
+  const start = new Date(startedAt).getTime();
+  if (Number.isNaN(start)) return null;
+  return (
+    <span className="ml-auto flex-shrink-0 font-mono opacity-70 tabular-nums" aria-label="elapsed time">
+      {formatElapsed(now - start)}
+    </span>
+  );
+}
+
 export function MessagePart({ part, isUser, isStreaming }: Props) {
   const wordWrap = useUserSetting("codeBlockWordWrap", false);
   const { resolved } = useTheme();
+  // Tick only when this view shows a running tool with a start time —
+  // useNow's per-component interval means idle screens pay nothing.
+  const showsRunningTool = part.type === "tool_use" && part.toolState === "running" && !!part.toolStartedAt;
+  const now = useNow(showsRunningTool ? 1_000 : 3_600_000);
 
   if (part.type === "text" && part.text) {
     if (isUser) {
@@ -349,13 +381,23 @@ export function MessagePart({ part, isUser, isStreaming }: Props) {
           <div className={cn("flex items-center gap-2 text-xs font-medium overflow-hidden", textColor)}>
             <Wrench className="h-3.5 w-3.5 flex-shrink-0" />
             <span className="truncate">{statusIcon} {toolName || "tool"}</span>
+            {part.toolState === "running" && part.toolStartedAt && (
+              <ToolElapsedBadge startedAt={part.toolStartedAt} now={now} />
+            )}
           </div>
         </div>
       );
     }
 
     return (
-      <ToolDetails borderColor={borderColor} textColor={textColor} statusIcon={statusIcon} toolName={toolName} filePath={filePath}>
+      <ToolDetails
+        borderColor={borderColor}
+        textColor={textColor}
+        statusIcon={statusIcon}
+        toolName={toolName}
+        filePath={filePath}
+        badge={part.toolState === "running" && part.toolStartedAt ? <ToolElapsedBadge startedAt={part.toolStartedAt} now={now} /> : undefined}
+      >
         {isFileEdit ? (
           <ToolDiffView
             oldStr={String((input as Record<string, unknown>).oldString ?? (input as Record<string, unknown>).oldStr ?? "")}
