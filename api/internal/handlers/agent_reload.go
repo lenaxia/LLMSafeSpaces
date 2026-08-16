@@ -74,6 +74,18 @@ type AgentReloadHandler struct {
 	metricsService       MetricsRecorder
 	broker               BrokerPublisher
 	statusCheckerFactory func(podIP, password string) SessionStatusChecker
+	// agentdPort overrides the dispatch port. Zero → agentd.AgentdPort.
+	// Tests point this at an httptest server so the dispatch path (incl.
+	// the Basic-auth header, #848) is actually exercised.
+	agentdPort int
+}
+
+// agentdDispatchPort returns the override or the production default.
+func (h *AgentReloadHandler) agentdDispatchPort() int {
+	if h.agentdPort != 0 {
+		return h.agentdPort
+	}
+	return agentd.AgentdPort
 }
 
 // MetricsRecorder is the minimal metrics interface for reload handlers.
@@ -227,7 +239,7 @@ func (h *AgentReloadHandler) Reload(c *gin.Context) {
 		respondWithAPIError(c, apierrors.NewInternalError("get_opencode_password_failed", err))
 		return
 	}
-	agentdURL := fmt.Sprintf("http://%s:%d/v1/agent/reload", podIP, agentd.AgentdPort)
+	agentdURL := fmt.Sprintf("http://%s:%d/v1/agent/reload", podIP, h.agentdDispatchPort())
 	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, agentdURL, nil)
 	if err != nil {
 		// Malformed pod IP (empty, double-port, etc.) must not reach
@@ -291,6 +303,16 @@ func (h *AgentReloadHandler) Reload(c *gin.Context) {
 		})
 		return
 	}
+	if tx == nil {
+		// A store whose BeginTx returned (nil, nil) (mock stores; a real
+		// *sql.DB never does) — dispose succeeded, state row handling
+		// already ran in MarkAgentReloaded. Nothing to commit.
+		c.JSON(http.StatusOK, gin.H{
+			"disposed":       true,
+			"lastDisposedAt": time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
 	if err := tx.Commit(); err != nil {
 		if h.logger != nil {
 			h.logger.Warn("agent reload: tx commit failed", "error", err.Error())
@@ -328,6 +350,16 @@ type BulkReloadHandler struct {
 	metricsService       MetricsRecorder
 	broker               BrokerPublisher
 	statusCheckerFactory func(podIP, password string) SessionStatusChecker
+	// agentdPort overrides the dispatch port. Zero → agentd.AgentdPort.
+	agentdPort int
+}
+
+// agentdDispatchPort returns the override or the production default.
+func (h *BulkReloadHandler) agentdDispatchPort() int {
+	if h.agentdPort != 0 {
+		return h.agentdPort
+	}
+	return agentd.AgentdPort
 }
 
 // NewBulkReloadHandler constructs the bulk reload handler.
@@ -502,7 +534,7 @@ func (h *BulkReloadHandler) reloadOne(ctx context.Context, userID, workspaceID s
 	if err != nil {
 		return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "get_password_failed", "message": err.Error()}}
 	}
-	agentdURL := fmt.Sprintf("http://%s:%d/v1/agent/reload", podIP, agentd.AgentdPort)
+	agentdURL := fmt.Sprintf("http://%s:%d/v1/agent/reload", podIP, h.agentdDispatchPort())
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, agentdURL, nil)
 	if err != nil {
 		// Malformed pod IP must not reach Do(nil) — that panics (same

@@ -285,11 +285,9 @@ func (t *rewritingTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 type fakePasswordProvider struct {
 	password string
 	err      error
-	sawWS    []string
 }
 
-func (f *fakePasswordProvider) WorkspacePassword(_ context.Context, workspaceID string) (string, error) {
-	f.sawWS = append(f.sawWS, workspaceID)
+func (f *fakePasswordProvider) WorkspacePassword(_ context.Context, _ string) (string, error) {
 	return f.password, f.err
 }
 

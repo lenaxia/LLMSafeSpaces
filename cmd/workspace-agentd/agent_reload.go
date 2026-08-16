@@ -20,9 +20,10 @@ import (
 // only path in the system that calls dispose after Epic 27a ships.
 // In-flight LLM streams are aborted; sessions persist in SQLite.
 //
-// Authentication: none at the application layer. The trust boundary is
-// the Kubernetes NetworkPolicy which allows only the API server pod to
-// reach the workspace pod on port agentd.AgentdPort (4097).
+// Authentication: Basic auth against the workspace password at entry
+// (#848) — the dispose is a disruption primitive. Defense-in-depth on
+// top of the NetworkPolicy (which allows only the API server pod to
+// reach port 4097); see auth.go.
 //
 // Idempotent: opencode's InstanceStore short-circuits on already-disposed
 // entries; concurrent calls are safe.

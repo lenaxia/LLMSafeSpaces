@@ -6,11 +6,14 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +23,7 @@ import (
 	"go.uber.org/zap/zaptest"
 
 	apierrors "github.com/lenaxia/llmsafespaces/api/internal/errors"
+	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
 	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
@@ -98,17 +102,25 @@ func (l *e2ePendingLister) ListPendingReloadWorkspaces(_ context.Context, _ stri
 func TestE2E_ReloadWorkflow_FullPath(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	// Mock agentd that always succeeds dispose
-	agentdSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	// Mock agentd on a known port that always succeeds dispose. The
+	// handler's agentdPort override points the dispatch here so the full
+	// path (auth header included, #848) is genuinely exercised.
+	var (
+		gotAuth     string
+		gotAuthOnce sync.Once
+	)
+	agentdListener, listenErr := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, listenErr, "test agentd listener")
+	port := agentdListener.Addr().(*net.TCPAddr).Port
+	agentdSrv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuthOnce.Do(func() { gotAuth = r.Header.Get("Authorization") })
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"disposed":true}`))
 	}))
+	agentdSrv.Listener = agentdListener
+	agentdSrv.Start()
 	defer agentdSrv.Close()
-	// Bare host — Reload formats "http://%s:%d". Passing host:port would
-	// build a double-port URL (Go 1.26's stricter net/url rejects it at
-	// request-build time; 1.25 parsed it leniently).
-	host, _, _ := net.SplitHostPort(strings.TrimPrefix(agentdSrv.URL, "http://"))
-	agentdHost := host
+	agentdHost := "127.0.0.1"
 
 	wsSvc := &e2eWorkspaceSvc{workspaces: map[string]*types.Workspace{
 		"ws-1": {ID: "ws-1", UserID: "user-1", Phase: "Active", Name: "test-ws"},
@@ -125,6 +137,10 @@ func TestE2E_ReloadWorkflow_FullPath(t *testing.T) {
 	}}
 
 	handler := NewAgentReloadHandler(wsSvc, agentDB, pods, agentdSrv.Client(), nil)
+	handler.agentdPort = port
+	handler.SetPasswordGetter(interfaces.PasswordFunc(func(_ context.Context, _ string) (string, error) {
+		return "e2e-pw", nil
+	}))
 
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
@@ -134,18 +150,55 @@ func TestE2E_ReloadWorkflow_FullPath(t *testing.T) {
 	router.POST("/workspaces/:id/agent/reload", handler.Reload)
 
 	t.Run("happy_path_active_workspace", func(t *testing.T) {
-		// The dispatch targets agentd.AgentdPort (4097) while the mock listens
-		// on a random port — the request fails as agent_unreachable. This
-		// subtest exercises the full pre-dispatch logic and the dispatch
-		// error path (not the unreachable-URL-build path; see
-		// TestReload_MalformedPodIP_NoPanic_InvalidURL for that branch).
+		// Full path: auth → workspace → phase → pod → password → dispatch
+		// to the mock agentd (port override) → 200. The dispatch MUST
+		// carry the workspace Basic credential — agentd enforces it (#848).
 		req := httptest.NewRequest(http.MethodPost, "/workspaces/ws-1/agent/reload", nil)
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, req)
 
-		// Will get 500 (agent_unreachable) because port mismatch — validates the path
-		assert.True(t, rec.Code == http.StatusOK || rec.Code == http.StatusInternalServerError,
-			"expected 200 (if port matches) or 500 (port mismatch in test), got %d", rec.Code)
+		require.Equal(t, http.StatusOK, rec.Code, "full-path dispatch must succeed against the mock agentd, body=%s", rec.Body.String())
+		require.Equal(t, "127.0.0.1", pods.ips["ws-1"], "precondition: ws-1 pod IP must be the mock host")
+	})
+
+	t.Run("dispatch_carries_basic_auth", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/workspaces/ws-1/agent/reload", nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code, "body=%s", rec.Body.String())
+
+		expected := "Basic " + base64.StdEncoding.EncodeToString([]byte("opencode:e2e-pw"))
+		assert.Equal(t, expected, gotAuth,
+			"the agentd dispatch must carry the workspace Basic credential (#848)")
+	})
+
+	t.Run("password_getter_error_surfaces_as_500", func(t *testing.T) {
+		handler.SetPasswordGetter(interfaces.PasswordFunc(func(_ context.Context, _ string) (string, error) {
+			return "", errors.New("secret unreadable")
+		}))
+		defer handler.SetPasswordGetter(interfaces.PasswordFunc(func(_ context.Context, _ string) (string, error) {
+			return "e2e-pw", nil
+		}))
+
+		req := httptest.NewRequest(http.MethodPost, "/workspaces/ws-1/agent/reload", nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusInternalServerError, rec.Code)
+		assert.Contains(t, rec.Body.String(), "get_opencode_password_failed")
+	})
+
+	t.Run("nil_password_getter_surfaces_wiring_error", func(t *testing.T) {
+		saved := handler.getPassword
+		handler.SetPasswordGetter(nil)
+		defer func() { handler.getPassword = saved }()
+
+		req := httptest.NewRequest(http.MethodPost, "/workspaces/ws-1/agent/reload", nil)
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusInternalServerError, rec.Code)
+		assert.Contains(t, rec.Body.String(), "password_getter_not_wired")
 	})
 
 	t.Run("suspended_workspace_rejected", func(t *testing.T) {
@@ -187,20 +240,20 @@ func TestE2E_ReloadWorkflow_FullPath(t *testing.T) {
 	})
 
 	t.Run("no_agent_state_row_409", func(t *testing.T) {
-		// Remove the state row for ws-1
+		// Remove the state row for ws-1. With the dispatch port override
+		// the agentd call SUCCEEDS, so this genuinely exercises the
+		// no-state-row branch after a successful dispose.
 		delete(agentDB.states, "ws-1")
 		defer func() {
 			agentDB.states["ws-1"] = &agentState{changedAt: time.Now().Add(-time.Hour), pending: true}
 		}()
 
-		// This test will only reach MarkAgentReloaded if agentd succeeds
-		// Due to port mismatch, it hits agent_unreachable first
 		req := httptest.NewRequest(http.MethodPost, "/workspaces/ws-1/agent/reload", nil)
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, req)
 
-		// Expected: either 500 (agent unreachable due to port) or 409 (no state row)
-		assert.True(t, rec.Code == http.StatusInternalServerError || rec.Code == http.StatusConflict)
+		assert.Equal(t, http.StatusConflict, rec.Code,
+			"successful dispose + missing state row must 409, body=%s", rec.Body.String())
 	})
 }
 

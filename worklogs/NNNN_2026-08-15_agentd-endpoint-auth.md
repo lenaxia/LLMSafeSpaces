@@ -32,7 +32,13 @@ Close #848: unauthenticated in-pod access to control-plane surface on the agentd
 - **Fallback pusher provider path**: `SecretsHandler.SetPasswordProvider` + inclusion in `getPusher()`'s lazy construction — setter-style wiring previously produced a pusher that could only fail with `ErrNoPasswordProvider` (#848 enforcement made the fallback useless).
 - **E2E dispatch credential pinned**: `TestHandler_E2E_BindTriggersReloadSecrets` now captures the `Authorization` header at the mock agentd and asserts the exact Basic credential; the four setter-style E2E tests (`BindTriggersReloadSecrets`, both LLMProvider binds, `BindPushesOrgCredentialEvenWithAPIKeyAuth`) wire `staticPasswordProvider`.
 - **App tests fixed**: `TestWsAgentPusherAdapter_EmitsMetricOnEveryPush` / `TestSharedPusher_DoesNotEmitAutoPushMetric` construct `agentpush.New` with `stubPasswordProviderAdapter` (Push now requires a provider).
-- Duplicated `WithPasswordProvider` lines in `agentpush_test.go` deduplicated; `TestPush_SendsBasicAuth` uses `pw-7` consistently.
+- Duplicated `WithPasswordProvider` lines in `agentpush_test.go` deduplicated; `TestPush_SendsBasicAuth` uses `pw-7` consistently; dead `sawWS` field removed.
+
+### Review-round 3 additions
+
+- **Stale doc comment fixed** (`agent_reload.go`): "Authentication: none at the application layer" — contradicted by the gate 10 lines below; now describes the Basic-auth gate + NetPol layering.
+- **`TestE2E_ReloadWorkflow_FullPath` no longer vacuous**: `AgentReloadHandler`/`BulkReloadHandler` gain a test-only `agentdPort` override (mirrors `Scheduler.AgentdPort` from #883); the mock agentd now receives the dispatch. New subtests: `dispatch_carries_basic_auth` (exact header at the mock), `password_getter_error_surfaces_as_500`, `nil_password_getter_surfaces_wiring_error`; `no_agent_state_row_409` now genuinely reaches the 409 branch (previously short-circuited at unreachable-agentd).
+- **Nil-tx guard**: mock `BeginTx` returns `(nil, nil)`; the handler now nil-guards `tx.Commit()` (previously a latent SIGSEGV, unreachable only because the dispatch always failed in tests).
 
 ### Issue-scope note
 
