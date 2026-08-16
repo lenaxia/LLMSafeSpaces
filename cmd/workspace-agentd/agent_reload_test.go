@@ -56,6 +56,7 @@ func TestAgentdReloadHandler_DisposeSucceeds_Returns200(t *testing.T) {
 
 	// Test: method not POST → 405
 	req := httptest.NewRequest(http.MethodGet, "/v1/agent/reload", nil)
+	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
@@ -73,6 +74,7 @@ func TestAgentdReloadHandler_MethodNotPost_Returns405(t *testing.T) {
 	for _, m := range methods {
 		t.Run(m, func(t *testing.T) {
 			req := httptest.NewRequest(m, "/v1/agent/reload", nil)
+			req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 			assert.Equal(t, http.StatusMethodNotAllowed, rec.Code)
@@ -91,6 +93,7 @@ func TestAgentdReloadHandler_ConcurrentCalls_NoRace(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			req := httptest.NewRequest(http.MethodPost, "/v1/agent/reload", nil)
+			req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 			rec := httptest.NewRecorder()
 			handler.ServeHTTP(rec, req)
 			// Will fail to connect to localhost:AgentPort in test (no opencode running)
@@ -98,4 +101,14 @@ func TestAgentdReloadHandler_ConcurrentCalls_NoRace(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// --- #848: agent/reload auth enforcement ---
+
+func TestAgentReloadHandler_RequiresAuth(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "/v1/agent/reload", nil)
+	rec := httptest.NewRecorder()
+	agentReloadHandler("test-pw", zap.NewNop())(rec, req)
+	require.Equal(t, http.StatusUnauthorized, rec.Code, "unauthenticated agent reload must be rejected")
+	require.Equal(t, `Basic realm="agentd"`, rec.Header().Get("WWW-Authenticate"))
 }

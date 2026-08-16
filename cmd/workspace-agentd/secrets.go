@@ -737,6 +737,14 @@ func reloadSecretsHandler(cfg materializeConfig, deps reloadSecretsDeps) http.Ha
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
+		// #848: reload-secrets applies credential batches (provider
+		// config, env secrets) and can trigger an opencode restart —
+		// control-plane surface. Only the API server's agentpush calls
+		// this; it authenticates with the workspace Basic credential.
+		if !checkBasicAuth(r, opencodePassword) {
+			rejectUnauthorized(w)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method != http.MethodPost {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
