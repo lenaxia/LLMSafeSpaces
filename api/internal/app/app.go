@@ -602,6 +602,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		agentPusher := agentpush.New(
 			secretService,
 			agentpush.WithPodIPResolver(secretsPodResolver),
+			agentpush.WithPasswordProvider(proxyHandler),
 			agentpush.WithModelCache(sharedModelCache),
 			agentpush.WithLogger(log),
 		)

@@ -5,6 +5,7 @@ package agentpush_test
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -94,6 +95,7 @@ func TestPush_HappyPath(t *testing.T) {
 		agentpush.WithPodIPResolver(&fakeResolver{ip: "10.0.0.5"}),
 		agentpush.WithModelCache(&fakeCache{}),
 		agentpush.WithHTTPClient(&http.Client{Transport: transport}),
+		agentpush.WithPasswordProvider(&fakePasswordProvider{password: "pw"}),
 	)
 
 	result, err := svc.Push(context.Background(), "user-1", "ws-1")
@@ -120,6 +122,7 @@ func TestPush_PassesAuthFromContext(t *testing.T) {
 		injector,
 		agentpush.WithPodIPResolver(&fakeResolver{ip: "10.0.0.5"}),
 		agentpush.WithHTTPClient(&http.Client{Transport: &rewritingTransport{target: server.URL}}),
+		agentpush.WithPasswordProvider(&fakePasswordProvider{password: "pw"}),
 	)
 
 	ctx := agentpush.WithAuth(context.Background(), "sess-42", []byte("signing-key"))
@@ -186,6 +189,7 @@ func TestPush_ReloadHTTPFailureSurfacesAsReloadFailedMetric(t *testing.T) {
 		agentpush.WithPodIPResolver(&fakeResolver{ip: "10.0.0.5"}),
 		agentpush.WithMetricsHook(func(o string) { recordedOutcome = o }),
 		agentpush.WithHTTPClient(&http.Client{Transport: &rewritingTransport{target: server.URL}}),
+		agentpush.WithPasswordProvider(&fakePasswordProvider{password: "pw"}),
 	)
 
 	_, err := svc.Push(context.Background(), "user-1", "ws-1")
@@ -219,6 +223,7 @@ func TestPush_SuccessEvictsModelCache(t *testing.T) {
 		agentpush.WithPodIPResolver(&fakeResolver{ip: "10.0.0.5"}),
 		agentpush.WithModelCache(cache),
 		agentpush.WithHTTPClient(&http.Client{Transport: &rewritingTransport{target: server.URL}}),
+		agentpush.WithPasswordProvider(&fakePasswordProvider{password: "pw"}),
 	)
 
 	_, err := svc.Push(context.Background(), "user-1", "ws-42")
@@ -241,6 +246,7 @@ func TestPush_FailureDoesNotEvictModelCache(t *testing.T) {
 		agentpush.WithPodIPResolver(&fakeResolver{ip: "10.0.0.5"}),
 		agentpush.WithModelCache(cache),
 		agentpush.WithHTTPClient(&http.Client{Transport: &rewritingTransport{target: server.URL}}),
+		agentpush.WithPasswordProvider(&fakePasswordProvider{password: "pw"}),
 	)
 
 	_, _ = svc.Push(context.Background(), "user-1", "ws-42")
@@ -272,4 +278,56 @@ func (t *rewritingTransport) RoundTrip(r *http.Request) (*http.Response, error) 
 	r2.URL = &newURL
 	r2.Host = host
 	return http.DefaultTransport.RoundTrip(r2)
+}
+
+// --- #848: reload-secrets dispatch must authenticate ---
+
+type fakePasswordProvider struct {
+	password string
+	err      error
+}
+
+func (f *fakePasswordProvider) WorkspacePassword(_ context.Context, _ string) (string, error) {
+	return f.password, f.err
+}
+
+func TestPush_SendsBasicAuth(t *testing.T) {
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		_, _ = w.Write([]byte(`{"reloaded":0,"restarted":false}`))
+	}))
+	defer server.Close()
+	transport := &rewritingTransport{target: server.URL}
+
+	svc := agentpush.New(
+		&fakeInjector{returnJSON: []byte(`[]`)},
+		agentpush.WithPodIPResolver(&fakeResolver{ip: "10.0.0.5"}),
+		agentpush.WithHTTPClient(&http.Client{Transport: transport}),
+		agentpush.WithPasswordProvider(&fakePasswordProvider{password: "pw-7"}),
+	)
+	_, err := svc.Push(context.Background(), "user-1", "ws-9")
+	require.NoError(t, err)
+	assert.Equal(t, "Basic "+base64.StdEncoding.EncodeToString([]byte("opencode:pw-7")), gotAuth,
+		"reload-secrets dispatch must carry the workspace Basic credential")
+}
+
+func TestPush_MissingPasswordProviderErrors(t *testing.T) {
+	svc := agentpush.New(
+		&fakeInjector{returnJSON: []byte(`[]`)},
+		agentpush.WithPodIPResolver(&fakeResolver{ip: "10.0.0.5"}),
+	)
+	_, err := svc.Push(context.Background(), "user-1", "ws-9")
+	require.ErrorIs(t, err, agentpush.ErrNoPasswordProvider)
+}
+
+func TestPush_PasswordProviderErrorSurfaces(t *testing.T) {
+	svc := agentpush.New(
+		&fakeInjector{returnJSON: []byte(`[]`)},
+		agentpush.WithPodIPResolver(&fakeResolver{ip: "10.0.0.5"}),
+		agentpush.WithPasswordProvider(&fakePasswordProvider{err: errors.New("secret gone")}),
+	)
+	_, err := svc.Push(context.Background(), "user-1", "ws-9")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "secret gone")
 }

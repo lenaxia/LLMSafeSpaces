@@ -244,6 +244,7 @@ func TestHandler_BindPushesOrgCredentialEvenWithAPIKeyAuth(t *testing.T) {
 
 	handler := NewSecretsHandler(svc)
 	handler.SetPodIPResolver(&staticPodIPResolver{addr: "127.0.0.1"})
+	handler.SetPasswordProvider(staticPasswordProvider{})
 	logger := &recordingLogger{}
 	handler.SetLogger(logger)
 

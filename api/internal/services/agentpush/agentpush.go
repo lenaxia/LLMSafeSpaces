@@ -26,12 +26,14 @@ package agentpush
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 )
 
@@ -55,6 +57,13 @@ type ModelCache interface {
 	Evict(workspaceID string)
 }
 
+// PasswordProvider resolves the workspace's agentd Basic-auth password.
+// agentd rejects unauthenticated reload-secrets posts (#848); satisfied
+// by interfaces.WorkspacePasswordProvider (US-46.11).
+type PasswordProvider interface {
+	WorkspacePassword(ctx context.Context, workspaceID string) (string, error)
+}
+
 // Result summarizes what agentd did with the pushed payload.
 type Result struct {
 	Reloaded  int  `json:"reloaded"`
@@ -73,12 +82,17 @@ var (
 	// pod-recreation auto-push logs at info and increments the "no_pod"
 	// metric outcome (this is transient, expected during pod boot races).
 	ErrNoRunningPod = errors.New("agentpush: workspace has no running pod")
+	// ErrNoPasswordProvider — the service was constructed without a
+	// password provider. A wiring bug; agentd enforces Basic auth on
+	// reload-secrets (#848) so the dispatch cannot succeed.
+	ErrNoPasswordProvider = errors.New("agentpush: password provider not configured")
 )
 
 // Service is the concrete SecretPusher.
 type Service struct {
 	injector    SecretInjector
 	podResolver PodIPResolver
+	passwords   PasswordProvider
 	modelCache  ModelCache
 	logger      pkginterfaces.LoggerInterface
 	httpClient  *http.Client
@@ -105,6 +119,12 @@ type Option func(*Service)
 // WithPodIPResolver installs the pod-IP lookup.
 func WithPodIPResolver(r PodIPResolver) Option {
 	return func(s *Service) { s.podResolver = r }
+}
+
+// WithPasswordProvider installs the workspace-password lookup required
+// for the authenticated reload-secrets dispatch (#848).
+func WithPasswordProvider(p PasswordProvider) Option {
+	return func(s *Service) { s.passwords = p }
 }
 
 // WithModelCache installs the cache to evict after a successful push.
@@ -165,6 +185,18 @@ func (s *Service) Push(ctx context.Context, userID, workspaceID string) (Result,
 		return Result{}, ErrNoRunningPod
 	}
 
+	if s.passwords == nil {
+		s.emitMetric("reload_failed")
+		return Result{}, ErrNoPasswordProvider
+	}
+	password, err := s.passwords.WorkspacePassword(ctx, workspaceID)
+	if err != nil {
+		s.emitMetric("reload_failed")
+		s.warn("agentpush: resolve workspace password failed",
+			"workspaceID", workspaceID, "error", err.Error())
+		return Result{}, fmt.Errorf("resolve workspace password: %w", err)
+	}
+
 	agentdURL := fmt.Sprintf("http://%s:4097/v1/reload-secrets", podIP)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, agentdURL, bytes.NewReader(secretsJSON))
 	if err != nil {
@@ -172,6 +204,7 @@ func (s *Service) Push(ctx context.Context, userID, workspaceID string) (Result,
 		return Result{}, fmt.Errorf("build reload request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(agentd.AuthUsername+":"+password)))
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {

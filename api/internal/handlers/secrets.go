@@ -26,6 +26,7 @@ type SecretsHandler struct {
 	passwordVerifier PasswordVerifier
 	credStateWriter  CredentialStateWriter
 	modelCache       ModelCache
+	passwords        agentpush.PasswordProvider
 }
 
 // OrgPolicyChecker is the minimal interface needed to filter models
@@ -107,6 +108,16 @@ func (h *SecretsHandler) SetLogger(l pkginterfaces.LoggerInterface) {
 // former package-level global defaultModelCache).
 func (h *SecretsHandler) SetModelCache(c ModelCache) {
 	h.modelCache = c
+}
+
+// SetPasswordProvider installs the workspace-password lookup the lazy
+// fallback pusher needs — agentd enforces Basic auth on reload-secrets
+// (#848), so a fallback pusher without a provider can only ever fail
+// with ErrNoPasswordProvider. Production wiring uses SetAgentPusher with
+// a fully-constructed service; this setter keeps the setter-style
+// construction path (tests, non-app wiring) functional.
+func (h *SecretsHandler) SetPasswordProvider(p agentpush.PasswordProvider) {
+	h.passwords = p
 }
 
 // CreateSecret handles POST /api/v1/secrets
@@ -473,6 +484,9 @@ func (h *SecretsHandler) getPusher() *agentpush.Service {
 	opts := []agentpush.Option{}
 	if h.podIPResolver != nil {
 		opts = append(opts, agentpush.WithPodIPResolver(h.podIPResolver))
+	}
+	if h.passwords != nil {
+		opts = append(opts, agentpush.WithPasswordProvider(h.passwords))
 	}
 	if h.modelCache != nil {
 		opts = append(opts, agentpush.WithModelCache(h.modelCache))

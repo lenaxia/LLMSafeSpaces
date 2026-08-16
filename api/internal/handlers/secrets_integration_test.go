@@ -6,6 +6,7 @@ package handlers
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net"
@@ -288,6 +289,7 @@ func TestHandler_E2E_BindTriggersReloadSecrets(t *testing.T) {
 		mu           sync.Mutex
 		reloadCalled bool
 		reloadBody   []byte
+		reloadAuth   string
 	)
 
 	agentdListener, err := net.Listen("tcp", "127.0.0.1:4097")
@@ -304,6 +306,7 @@ func TestHandler_E2E_BindTriggersReloadSecrets(t *testing.T) {
 		mu.Lock()
 		reloadCalled = true
 		reloadBody = body
+		reloadAuth = r.Header.Get("Authorization")
 		mu.Unlock()
 
 		w.Header().Set("Content-Type", "application/json")
@@ -337,6 +340,7 @@ func TestHandler_E2E_BindTriggersReloadSecrets(t *testing.T) {
 
 	handler := NewSecretsHandler(svc)
 	handler.SetPodIPResolver(&staticPodIPResolver{addr: "127.0.0.1"})
+	handler.SetPasswordProvider(staticPasswordProvider{})
 
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
@@ -373,10 +377,15 @@ func TestHandler_E2E_BindTriggersReloadSecrets(t *testing.T) {
 	mu.Lock()
 	called := reloadCalled
 	body := reloadBody
+	authHeader := reloadAuth
 	mu.Unlock()
 
 	if !called {
 		t.Fatal("SetBindings did not trigger reload-secrets call to agentd")
+	}
+	expectedAuth := "Basic " + base64.StdEncoding.EncodeToString([]byte("opencode:pw"))
+	if authHeader != expectedAuth {
+		t.Errorf("reload-secrets dispatch missing Basic credential (#848): got %q, want %q", authHeader, expectedAuth)
 	}
 
 	var secrets []struct {
@@ -418,6 +427,7 @@ func TestHandler_E2E_BindNoReloadWhenNoPod(t *testing.T) {
 
 	handler := NewSecretsHandler(svc)
 	handler.SetPodIPResolver(&staticPodIPResolver{addr: ""})
+	handler.SetPasswordProvider(staticPasswordProvider{})
 
 	router := gin.New()
 	router.Use(func(c *gin.Context) {
@@ -458,6 +468,15 @@ type staticPodIPResolver struct {
 
 func (r *staticPodIPResolver) GetWorkspacePodIP(_ context.Context, _, _ string) (string, error) {
 	return r.addr, nil
+}
+
+// staticPasswordProvider satisfies agentpush.PasswordProvider — agentd
+// enforces Basic auth on reload-secrets (#848), so setter-style handler
+// construction must install a provider for the fallback pusher.
+type staticPasswordProvider struct{}
+
+func (staticPasswordProvider) WorkspacePassword(_ context.Context, _ string) (string, error) {
+	return "pw", nil
 }
 
 // recordingLogger captures Warn calls so tests can verify Bug 2 — that
@@ -528,6 +547,7 @@ func TestHandler_BindLogsReloadFailure(t *testing.T) {
 	handler.SetLogger(logger)
 	// Resolver returns an unreachable address so HTTP push fails.
 	handler.SetPodIPResolver(&staticPodIPResolver{addr: "127.0.0.1:1"})
+	handler.SetPasswordProvider(staticPasswordProvider{})
 
 	router := gin.New()
 	router.Use(func(c *gin.Context) {

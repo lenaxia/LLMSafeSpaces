@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	apierrors "github.com/lenaxia/llmsafespaces/api/internal/errors"
+	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
@@ -143,6 +144,11 @@ func TestAgentReload_AgentdUnreachable_Returns500(t *testing.T) {
 		&http.Client{Timeout: 100 * time.Millisecond},
 		nil,
 	)
+	// Password getter required — the dispatch must actually run (and fail
+	// at the dial) for the agent_unreachable path to be exercised (#848).
+	handler.SetPasswordGetter(interfaces.PasswordFunc(func(_ context.Context, _ string) (string, error) {
+		return "pw", nil
+	}))
 	router := gin.New()
 	router.Use(func(c *gin.Context) { c.Set("userID", "user-1"); c.Next() })
 	router.POST("/workspaces/:id/agent/reload", handler.Reload)

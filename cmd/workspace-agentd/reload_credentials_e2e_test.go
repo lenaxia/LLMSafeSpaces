@@ -231,8 +231,9 @@ func runReloadE2E(t *testing.T, bindings []reloadBinding, wireAdmin, wireOrg boo
 
 	// Real reloadSecretsHandler: materialize → enrich → flush → writer rebuild.
 	writer := opencode.NewConfigWriter(agentCfgPath)
-	deps := reloadSecretsDeps{AgentConfigWriter: writer}
+	deps := reloadSecretsDeps{OpencodePassword: "test-pw", AgentConfigWriter: writer}
 	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", bytes.NewReader(secretsJSON))
+	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec := httptest.NewRecorder()
 	reloadSecretsHandler(cfg, deps)(rec, req)
 	return agentCfgPath, rec.Code, rec.Body.String()
@@ -343,8 +344,9 @@ func TestE2E_ReloadSecrets_EmptyBindings_Returns200(t *testing.T) {
 	}
 	writer := opencode.NewConfigWriter(agentCfgPath)
 	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", bytes.NewReader(secretsJSON))
+	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec := httptest.NewRecorder()
-	reloadSecretsHandler(cfg, reloadSecretsDeps{AgentConfigWriter: writer})(rec, req)
+	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw", AgentConfigWriter: writer})(rec, req)
 	assert.Equal(t, http.StatusOK, rec.Code, "empty batch must return 200, not error; body=%s", rec.Body.String())
 }
 
@@ -355,7 +357,8 @@ func TestE2E_ReloadSecrets_BadJSON_Returns400(t *testing.T) {
 	dir := t.TempDir()
 	cfg := materializeConfig{agentConfigPath: filepath.Join(dir, "agent-config.json")}
 	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader("not json"))
+	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec := httptest.NewRecorder()
-	reloadSecretsHandler(cfg, reloadSecretsDeps{AgentConfigWriter: opencode.NewConfigWriter(cfg.agentConfigPath)})(rec, req)
+	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw", AgentConfigWriter: opencode.NewConfigWriter(cfg.agentConfigPath)})(rec, req)
 	assert.Equal(t, http.StatusBadRequest, rec.Code)
 }
