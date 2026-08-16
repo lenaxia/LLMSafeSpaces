@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	"github.com/lenaxia/llmsafespaces/api/internal/logger"
 	agentoc "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
@@ -150,6 +151,7 @@ func TestReload_MalformedPodIP_NoPanic_InvalidURL(t *testing.T) {
 	}}
 	pods := &e2ePodResolver{ips: map[string]string{"ws-bad": srvAddr}}
 	handler := NewAgentReloadHandler(wsSvc, agentDB, pods, srv.Client(), nil)
+	handler.SetPasswordGetter(interfaces.PasswordFunc(func(_ context.Context, _ string) (string, error) { return "pw", nil }))
 
 	router := gin.New()
 	router.Use(func(c *gin.Context) { c.Set("userID", "user-1"); c.Next() })
@@ -180,6 +182,7 @@ func TestBulkReloadOne_MalformedPodIP_NDJSONErrorRow(t *testing.T) {
 	}}
 	pods := &e2ePodResolver{ips: map[string]string{"ws-bad2": srvAddr}}
 	handler := NewBulkReloadHandler(nil, wsSvc, agentDB, pods, srv.Client(), nil)
+	handler.SetPasswordGetter(interfaces.PasswordFunc(func(_ context.Context, _ string) (string, error) { return "pw", nil }))
 
 	var row map[string]any
 	require.NotPanics(t, func() {

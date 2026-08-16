@@ -28,6 +28,13 @@ import (
 // entries; concurrent calls are safe.
 func agentReloadHandler(opencodePassword string, log *zap.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// #848: dispose is a disruption primitive — gate it with the
+		// workspace Basic credential like every other user-mux endpoint.
+		// The API server's AgentReloadHandler sends the same credential.
+		if !checkBasicAuth(r, opencodePassword) {
+			rejectUnauthorized(w)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)

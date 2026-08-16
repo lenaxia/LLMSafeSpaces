@@ -254,8 +254,9 @@ func TestReloadSecretsHandler_PersistsCacheAfterMaterialize(t *testing.T) {
 
 	body := `[{"type":"env-secret","name":"gh","metadata":{"var_name":"GH_TOKEN"},"plaintext":"tok"}]`
 	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(body))
+	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec := httptest.NewRecorder()
-	reloadSecretsHandler(cfg, reloadSecretsDeps{})(rec, req)
+	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw"})(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code, "rec=%s", rec.Body.String())
 
@@ -288,8 +289,9 @@ func TestReloadSecretsHandler_DoesNotPersistOnFailure(t *testing.T) {
 
 	body := `[{"type":"env-secret","name":"gh","metadata":{"var_name":"GH_TOKEN"},"plaintext":"tok"}]`
 	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(body))
+	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec := httptest.NewRecorder()
-	reloadSecretsHandler(cfg, reloadSecretsDeps{})(rec, req)
+	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw"})(rec, req)
 
 	assert.Equal(t, http.StatusInternalServerError, rec.Code)
 

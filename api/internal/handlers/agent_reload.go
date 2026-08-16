@@ -6,6 +6,7 @@ package handlers
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -214,6 +215,18 @@ func (h *AgentReloadHandler) Reload(c *gin.Context) {
 	}
 
 	// Dispatch to agentd (which calls opencode dispose locally).
+	// agentd enforces Basic auth on /v1/agent/reload (#848) — resolve
+	// the workspace password and send the credential.
+	if h.getPassword == nil {
+		respondWithAPIError(c, apierrors.NewInternalError("password_getter_not_wired",
+			errors.New("agent reload: password getter not configured")))
+		return
+	}
+	agentdPassword, err := h.getPassword.WorkspacePassword(c.Request.Context(), workspaceID)
+	if err != nil {
+		respondWithAPIError(c, apierrors.NewInternalError("get_opencode_password_failed", err))
+		return
+	}
 	agentdURL := fmt.Sprintf("http://%s:%d/v1/agent/reload", podIP, agentd.AgentdPort)
 	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodPost, agentdURL, nil)
 	if err != nil {
@@ -225,6 +238,7 @@ func (h *AgentReloadHandler) Reload(c *gin.Context) {
 		respondWithAPIError(c, apierrors.NewInternalError("agent_reload_url_invalid", err))
 		return
 	}
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(agentd.AuthUsername+":"+agentdPassword)))
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
 		if h.logger != nil {
@@ -480,6 +494,14 @@ func (h *BulkReloadHandler) reloadOne(ctx context.Context, userID, workspaceID s
 		return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "state_read_failed", "message": err.Error()}}
 	}
 
+	// agentd enforces Basic auth on /v1/agent/reload (#848).
+	if h.getPassword == nil {
+		return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "password_getter_not_wired", "message": "password getter not configured"}}
+	}
+	bulkPassword, err := h.getPassword.WorkspacePassword(ctx, workspaceID)
+	if err != nil {
+		return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "get_password_failed", "message": err.Error()}}
+	}
 	agentdURL := fmt.Sprintf("http://%s:%d/v1/agent/reload", podIP, agentd.AgentdPort)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, agentdURL, nil)
 	if err != nil {
@@ -487,6 +509,7 @@ func (h *BulkReloadHandler) reloadOne(ctx context.Context, userID, workspaceID s
 		// class as the single-reload fix above).
 		return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "agent_reload_url_invalid", "message": err.Error()}}
 	}
+	req.Header.Set("Authorization", "Basic "+base64.StdEncoding.EncodeToString([]byte(agentd.AuthUsername+":"+bulkPassword)))
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
 		return map[string]any{"workspaceId": workspaceID, "error": map[string]any{"code": "agent_unreachable", "message": err.Error()}}

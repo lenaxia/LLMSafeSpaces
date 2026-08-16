@@ -195,8 +195,9 @@ func TestContainerRestart_ReplaysUserDEKCreds(t *testing.T) {
 	}
 	reloadBody := `[{"type":"env-secret","name":"gh","metadata":{"var_name":"GH_TOKEN"},"plaintext":"tok-12345"}]`
 	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(reloadBody))
+	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec := httptest.NewRecorder()
-	reloadSecretsHandler(cfg, reloadSecretsDeps{})(rec, req)
+	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw"})(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code, "reload failed: %s", rec.Body.String())
 
 	// The reload is a full-replace: its cache represents the complete live
@@ -352,8 +353,9 @@ func TestContainerRestart_SSHKeySurvivesRestart(t *testing.T) {
 	}
 	reloadBody := `[{"type":"ssh-key","name":"id_ed25519","metadata":{"key_type":"ed25519"},"plaintext":"ssh-ed25519 AAAA..."}]`
 	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(reloadBody))
+	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec := httptest.NewRecorder()
-	reloadSecretsHandler(cfg, reloadSecretsDeps{})(rec, req)
+	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw"})(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 
 	// Wipe ssh dir (simulating reset() on restart).
@@ -400,16 +402,18 @@ func TestContainerRestart_CredentialRemoval_NotReplayed(t *testing.T) {
 	// Initial live state: two env-secrets bound.
 	first := `[{"type":"env-secret","name":"keep","metadata":{"var_name":"KEEP"},"plaintext":"1"},{"type":"env-secret","name":"remove","metadata":{"var_name":"REMOVE"},"plaintext":"2"}]`
 	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(first))
+	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec := httptest.NewRecorder()
-	reloadSecretsHandler(cfg, reloadSecretsDeps{})(rec, req)
+	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw"})(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 
 	// User unbinds "remove": the new reload batch omits it. The cache must now
 	// reflect ONLY "keep" — reload is a full-replace, so the cache is overwritten.
 	second := `[{"type":"env-secret","name":"keep","metadata":{"var_name":"KEEP"},"plaintext":"1"}]`
 	req = httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader(second))
+	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec = httptest.NewRecorder()
-	reloadSecretsHandler(cfg, reloadSecretsDeps{})(rec, req)
+	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw"})(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 
 	// Simulate the container restart: reset() wipes the env file.
@@ -455,8 +459,9 @@ func TestContainerRestart_LLMProviderSurvivesRestart(t *testing.T) {
 	// from base secrets.json and only present via the reload push).
 	provider := `{"type":"llm-provider","name":"user-openai","plaintext":"{\"kind\":\"openai\",\"slug\":\"user-openai\",\"apiKey\":\"sk-user-123\"}"}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", strings.NewReader("["+provider+"]"))
+	req.Header.Set("Authorization", "Basic "+basicAuth("test-pw"))
 	rec := httptest.NewRecorder()
-	reloadSecretsHandler(cfg, reloadSecretsDeps{})(rec, req)
+	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw"})(rec, req)
 	require.Equal(t, http.StatusOK, rec.Code, rec.Body.String())
 
 	// Simulate the restart: reset() would wipe agent-config.json. In this test
