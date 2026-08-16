@@ -166,7 +166,9 @@ func (p *managedProcess) supervise() {
 		// it signals the child it saw (possibly the dead one) and waits
 		// on doneCh. Without this check the supervisor would respawn a
 		// child nobody will ever signal, and stop() would hang forever
-		// (found by TestWatchdogRespawnBootWindow_NeverKills_RealSubprocess).
+		// (found while building the real-subprocess regression harness
+		// for the respawn-boot window; pinned by
+		// TestManagedProcess_StopDuringCrashBackoffReturns).
 		if p.stopRequested {
 			p.mu.Unlock()
 			return

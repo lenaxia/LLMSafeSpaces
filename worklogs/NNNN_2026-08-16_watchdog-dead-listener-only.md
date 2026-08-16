@@ -34,7 +34,7 @@ Also round 2: context-cancel mid-sample now sets `pidGone` (a refused dial colle
 - Stand-down removed: suppression is forever; visibility via `workspace_watchdog_suppressions_total{reason=starved|flat|respawn|unknown}`.
 - Marker-failure observability: `workspace_restart_marker_write_failures_total` at all four write sites (incident: 9 attempted marker writes, 0 landed, stdout-only).
 - `buildVitalsGatherer` extracted from `startBackgroundLoops` (wiring now smoke-tested).
-- Supervisor `stop()` race fixed: crash-backoff path re-checks `stopRequested` at loop top — previously stop() signaled the child it saw (possibly dead), the supervisor respawned an unsignaled child, and stop() hung forever (found by the regression test's choreography).
+- Supervisor `stop()` race fixed: crash-backoff path re-checks `stopRequested` at loop top — previously stop() signaled the child it saw (possibly dead), the supervisor respawned an unsignaled child, and stop() hung forever (surfaced while building the real-subprocess respawn-boot harness; pinned by `TestManagedProcess_StopDuringCrashBackoffReturns`).
 - healthz reports `commit_sha`/`build_time` (build identity; ldflags already stamp them).
 - Harness: `runWatchdogLoop` joins the loop goroutine before timing-var restore (`-race`).
 
