@@ -1018,7 +1018,7 @@ Every 15 min  →  D-SESSION-SUBTASK, D-KEY-ROTATE, D-CHANGE-PASSWORD, D-ACCOUNT
 
 **Job name:** `sdk-canary` in `.github/workflows/ci.yml`
 
-All `ci:fast` (Tier 1 shallow) scenarios run in CI. They do not wait for pod scheduling and do not require `LLMSAFESPACES_LLM_API_KEY`. They run against a real kind cluster (CRDs installed, no controller — workspaces stay Pending) so workspace-creating scenarios (S-WS-CRUD, S-WS-STATUS, S-WS-QUOTA, S-OWNERSHIP) can exercise the full CRUD path against the K8s API.
+All `ci:fast` (Tier 1 shallow) scenarios run in CI. They do not wait for pod scheduling and do not require `LLMSAFESPACES_LLM_API_KEY`. They run against a real kind cluster (CRDs installed, no controller — and only the controller writes .status.phase, so workspace CRs have an EMPTY phase; CANARY_NO_CONTROLLER=1 is the honest env signal) so workspace-creating scenarios (S-WS-CRUD, S-WS-STATUS, S-WS-QUOTA, S-OWNERSHIP) can exercise the full CRUD path against the K8s API.
 
 **ci:fast scenario list:** S-HEALTH, S-AUTH, S-AUTH-CONFIG, S-LOGOUT, S-APIKEY, S-USER-SETTINGS, S-WS-CRUD, S-WS-STATUS, S-WS-QUOTA, S-SECRET-CRUD, S-SECRET-REVEAL, S-SECRET-AUDIT, S-CRED-CRUD, S-OWNERSHIP, S-ERROR-FORMAT, S-MCP-TOOLS, S-MCP-AUTH-NEG, S-MCP-CRED, S-MCP-INPUT-NEG
 

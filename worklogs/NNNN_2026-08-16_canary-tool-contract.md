@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-16
 **Session:** Close #880 — SDK canary tools scenario pinned an obsolete contract (15 tools, three session_*_reply tools collapsed into run_resolve by US-65.7); the same canary run exposed two real MCP-surface bugs.
-**Status:** Complete
+**Status:** Complete (4 review rounds)
 
 ---
 
@@ -72,3 +72,25 @@
 - pkg/repolint/canary_mcp_tools_parity_test.go (new)
 - .gitignore
 - .github/workflows/ci.yml
+
+
+## Round 4 (reviews 3-4 on #905)
+
+- Round-3 record fixes: TESTPLAN S-MCP-CRED table row split at the P1/P2
+  boundary; worklog floor "≥20" (round-1 text) corrected to the round-2
+  value 24; Tests Run refreshed with the round-2 suite.
+- `104c5909` — the round-2 skip was itself wrong: it asserted
+  phase=="Pending", but **Pending is also controller-written**
+  (controller phase_active.go); with no controller the field is EMPTY,
+  so the skip failed in CI (phase=""). With CANARY_NO_CONTROLLER=1 the
+  Active-gated tail now skips on the env flag alone — no phase
+  inference at all. This corrects the round-2 bullet above, which
+  described the skip as "no phase inference" while still keying on
+  Pending.
+- Assumption disproof recorded (this belongs in Assumptions, not just
+  the commit): **"workspaces stay Pending without a controller" was
+  false** — the assumption round 2 was built on, inherited from
+  ci.yml's own stale comment. The three stale comments (ci.yml ×2,
+  TESTPLAN ×1) corrected at HEAD so the next reader cannot rebuild
+  phase inference on them — the drift class #880 exists to close.
+- `cbed6ca2`: staticcheck S1011 lint fix (append spread).

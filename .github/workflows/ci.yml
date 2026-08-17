@@ -583,7 +583,9 @@ jobs:
       # (pointing at a non-existent server on :19999) only worked for
       # scenarios that never touch workspace endpoints.
       #
-      # No controller is deployed — workspaces stay in Pending phase
+      # No controller is deployed — and only the controller writes
+      # .status.phase, so workspace CRs here have an EMPTY phase field
+      # (never "Pending"; discovered in #905 round 4)
       # (no reconciler to advance them), but all CRUD operations succeed,
       # which is all the canaries assert on. Avoids the full Helm install
       # + cert-manager + image load that e2e-nightly does (~10min setup);
