@@ -502,10 +502,11 @@ func (f *fakeRestarter) callCount() int {
 // runRefreshLoop sets the agent addr to the mock, starts refreshIsHealthyLoop
 // against it, and returns the cache. The addr restore and goroutine join live
 // in ONE cleanup registered AFTER setWatchdogTiming's — LIFO order means the
-// join+restore run before the timing-vars restore, and the addr is restored
-// only after the loop has exited (a body `defer setAgentAddr(orig)` would run
-// before the cleanup join and let a stray tick poll a stale address — caught
-// by -race in the suppression tests). Mirrors runWatchdogLoop in
+// join+restore run before the timing-vars restore, so the restore write never
+// races the live loop's per-tick read (caught by -race; a body
+// `defer setAgentAddr(orig)` would run before the cleanup join and, while
+// agentAddrAtomic is an atomic.Value, a stray tick would poll a stale address
+// — test contamination invisible to -race). Mirrors runWatchdogLoop in
 // watchdog_vitals_test.go.
 func runRefreshLoop(t *testing.T, mockURL string, client *OpenCodeClient, cache *healthzCache, restarter healthWatchdogRestarter, busy sessionBusyChecker) {
 	t.Helper()
@@ -558,8 +559,8 @@ func TestRefreshIsHealthyLoop_WatchdogFiresOnHang(t *testing.T) {
 		"watchdog must fire once (latch) after threshold consecutive timeout failures")
 
 	// Settle ≥2 ticks after the fire so a latch regression (re-firing per
-	// tick) would land and be caught — the old 40s sleep gave ~7 post-fire
-	// ticks of latch scrutiny; a sub-second test needs an explicit settle.
+	// tick) would land and be caught — ~5 ticks at the 60ms cadence,
+	// comparable to the old production-cadence test's post-fire scrutiny.
 	time.Sleep(300 * time.Millisecond)
 
 	assert.False(t, cache.Snapshot().Healthy, "cache must be unhealthy after failures")
