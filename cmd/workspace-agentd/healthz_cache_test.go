@@ -183,11 +183,7 @@ func TestRefreshOnce_Timeout_TreatedAsFailure(t *testing.T) {
 	// Shrunk timeout so the test runs in milliseconds, not the production
 	// 4s — under -race + -coverpkg the 10s hang blew up CI's package
 	// timeout on loaded runners.
-	oi, ot, oth := readinessRefreshInterval, readinessRefreshTimeout, readinessFailureThreshold
-	readinessRefreshInterval, readinessRefreshTimeout, readinessFailureThreshold = 60*time.Millisecond, 40*time.Millisecond, 3
-	t.Cleanup(func() {
-		readinessRefreshInterval, readinessRefreshTimeout, readinessFailureThreshold = oi, ot, oth
-	})
+	setWatchdogTiming(t, 60*time.Millisecond, 40*time.Millisecond, 3)
 	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(500 * time.Millisecond) // longer than the shrunk timeout
 	}))
@@ -561,6 +557,11 @@ func TestRefreshIsHealthyLoop_WatchdogFiresOnHang(t *testing.T) {
 	}, 20*time.Second, 50*time.Millisecond,
 		"watchdog must fire once (latch) after threshold consecutive timeout failures")
 
+	// Settle ≥2 ticks after the fire so a latch regression (re-firing per
+	// tick) would land and be caught — the old 40s sleep gave ~7 post-fire
+	// ticks of latch scrutiny; a sub-second test needs an explicit settle.
+	time.Sleep(300 * time.Millisecond)
+
 	assert.False(t, cache.Snapshot().Healthy, "cache must be unhealthy after failures")
 	assert.Equal(t, 1, fr.callCount(), "watchdog must call restart exactly once on the edge, not on subsequent polls (latch)")
 }
@@ -747,6 +748,11 @@ func TestRefreshIsHealthyLoop_WatchdogFiresAfterSessionsGoIdle(t *testing.T) {
 		return fr.callCount() == 1
 	}, 20*time.Second, 50*time.Millisecond,
 		"watchdog must fire after sessions go idle — latch must NOT be consumed by deferral")
+
+	// Settle ≥2 ticks after the fire so a latch regression (re-firing per
+	// tick after deferral) would land and be caught.
+	time.Sleep(300 * time.Millisecond)
+	assert.Equal(t, 1, fr.callCount(), "watchdog must fire exactly once (latch), not re-fire per tick")
 }
 
 // TestRefreshIsHealthyLoop_WatchdogMaxDeferForcesRestart verifies that when

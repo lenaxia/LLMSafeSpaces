@@ -94,3 +94,34 @@ None.
 
 - `cmd/workspace-agentd/healthz_cache_test.go`
 - `worklogs/NNNN_2026-08-17_agentd-health-watchdog-test-timeout.md` (this entry)
+
+---
+
+## Correction (round-1 review, 2026-08-17)
+
+The round-1 review verified the fix but corrected the race narrative in the
+"Two additional bugs" section above:
+
+1. **The addr store was never the race.** `setAgentAddr` writes
+   `agentAddrAtomic`, an `atomic.Value` (`main.go:30`), so a body
+   `defer setAgentAddr(orig)` racing the loop goroutine was never
+   `-race`-detectable. The real hazard is the one `runWatchdogLoop`'s
+   comment describes (`watchdog_vitals_test.go:316-319`): the
+   **timing-var cleanup restore** (`healthz_cache.go:19-21`) racing the
+   live loop's per-tick read (`:268`) — which only exists once
+   `setWatchdogTiming` is introduced (i.e. this PR's intermediate state).
+   The implemented fix (single cleanup doing `cancel(); <-done;
+   setAgentAddr(orig)` so the join runs before any restore) is correct and
+   necessary; the mechanism description above was inaccurate.
+2. The loop-level latch assertion (`== 1` immediately after
+   `require.Eventually`) was near-vacuous without a post-fire settle.
+   Added a 300ms settle (≥2 ticks) to `WatchdogFiresOnHang` and
+   `FiresAfterSessionsGoIdle` before the `== 1` asserts.
+3. `TestRefreshOnce_Timeout_TreatedAsFailure` now uses `setWatchdogTiming`
+   instead of an inline copy of the shrink/restore (DRY).
+
+## Tests Run (round 2)
+
+- Full package under exact CI flags re-run after the settle + helper
+  changes → PASS (~139s), stable across runs.
+- All six converted tests pass under `-race` (0.25-1.1s each).
