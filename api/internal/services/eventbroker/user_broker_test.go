@@ -577,3 +577,22 @@ func TestPublishToWorkspace_FullBufferNotCountedDelivered(t *testing.T) {
 	// Buffer had space for at most one; either the resync or nothing.
 	// The counter assertion above is the contract under test.
 }
+
+// #906 r5: heartbeats keep streams alive but must NOT inflate the
+// delivered-events counter (the signal counts AGENT events).
+func TestPublishToWorkspace_HeartbeatsNotCountedDelivered(t *testing.T) {
+	b := NewUserEventBroker()
+	sub, err := b.SubscribeWorkspace("ws-hb")
+	require.NoError(t, err)
+	defer b.UnsubscribeWorkspace("ws-hb", sub)
+
+	before := promtestutil.ToFloat64(deliveredEvents.WithLabelValues("ws-hb", HeartbeatSentinelType))
+	b.PublishToWorkspace("ws-hb", apitypes.WorkspaceSSEEvent{Type: HeartbeatSentinelType})
+	select {
+	case <-sub.Ch:
+	default:
+		t.Fatal("heartbeat must reach the subscriber")
+	}
+	assert.Equal(t, before, promtestutil.ToFloat64(deliveredEvents.WithLabelValues("ws-hb", HeartbeatSentinelType)),
+		"heartbeat sentinels are not counted as delivered agent events")
+}

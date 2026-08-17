@@ -12,10 +12,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -630,4 +632,116 @@ func TestStreamEvents_OnSessionActive_PublishesToBroker(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("expected session.status busy event from onSessionActive")
 	}
+}
+
+// --- #906 r5: stream-lifecycle logs (G7) on both SSE endpoints ---
+
+// captureStreamLogger records Info lines for the stream lifecycle tests.
+type captureStreamLogger struct {
+	mu    sync.Mutex
+	lines []string
+	testLogger
+}
+
+func (l *captureStreamLogger) Info(msg string, kv ...interface{}) {
+	l.mu.Lock()
+	l.lines = append(l.lines, msg+" "+fmt.Sprint(kv...))
+	l.mu.Unlock()
+}
+
+func (l *captureStreamLogger) With(kv ...interface{}) pkginterfaces.LoggerInterface { return l }
+
+func (l *captureStreamLogger) infos(filter string) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []string
+	for _, s := range l.lines {
+		if strings.Contains(s, filter) {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// TestStreamEvents_LifecycleLogs pins the G7 contract on the workspace
+// stream: open logs the subscriber count WITHOUT double-counting this
+// stream (SubscribeWorkspace ran before the count), close logs
+// duration + eventsSent (NOT counting heartbeats).
+func TestStreamEvents_LifecycleLogs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	env := newTestEnv(t)
+	broker := eventbroker.NewUserEventBroker()
+	env.handler.userBroker = broker
+	logger := &captureStreamLogger{}
+	env.handler.logger = logger
+	env.wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).
+		Return(makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1"), nil).Maybe()
+
+	cancel, body, _, _ := doStreamingRequest(newStreamEventsRouter(env.handler), "/api/v1/workspaces/ws-1/events")
+	defer cancel()
+	defer body.Close()
+
+	require.Eventually(t, func() bool { return len(logger.infos("SSE client stream opened")) == 1 },
+		2*time.Second, 5*time.Millisecond, "open must log exactly once")
+	openLine := logger.infos("SSE client stream opened")[0]
+	assert.Contains(t, openLine, "1", "subscribersIncludingSelf=1 (this stream only — no +1 double-count)")
+
+	// Deliver one real event; then close and assert eventsSent==1.
+	require.Eventually(t, func() bool { return broker.WorkspaceSubscriberCount("ws-1") > 0 },
+		time.Second, 5*time.Millisecond)
+	broker.PublishToWorkspace("ws-1", apitypes.WorkspaceSSEEvent{Type: "workspace.phase", Phase: "Active"})
+	evt := readNextSSEDataLine(t, bufio.NewReader(body))
+	assert.Equal(t, "workspace.phase", evt["type"])
+
+	cancel()
+	require.Eventually(t, func() bool { return len(logger.infos("SSE client stream closed")) == 1 },
+		2*time.Second, 5*time.Millisecond, "close must log exactly once")
+	closed := logger.infos("SSE client stream closed")[0]
+	assert.Contains(t, closed, "eventsSent", "close logs the event count")
+	assert.Contains(t, closed, "eventsSent1", "exactly one data event sent (heartbeats are comment frames, not counted)")
+}
+
+// TestStreamEvents_429DoesNotLogLifecycle: a rejected (429) connection
+// must not produce open/close lifecycle logs — the count semantics only
+// apply to established streams. Uses the same rate-limit seam as
+// production (sseConnAllowed).
+func TestStreamEvents_429DoesNotLogLifecycle(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	env := newTestEnv(t)
+	logger := &captureStreamLogger{}
+	env.handler.logger = logger
+	env.wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).
+		Return(makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1"), nil).Maybe()
+
+	// Exhaust the per-IP connection budget.
+	sseConnMu.Lock()
+	for k := range sseConnCounts {
+		delete(sseConnCounts, k)
+	}
+	sseConnCounts["192.0.2.1"] = &sseConnAttempt{count: sseConnRateLimit, resetAt: time.Now().Add(time.Minute)}
+	sseConnMu.Unlock()
+	t.Cleanup(func() {
+		sseConnMu.Lock()
+		delete(sseConnCounts, "192.0.2.1")
+		sseConnMu.Unlock()
+	})
+
+	// The workspace-stream endpoint (StreamEvents) has no 429 rate gate
+	// itself (its cap is subscriber-count based); the USER endpoint does
+	// (sseConnAllowed at stream_user_events.go:46). Drive that one.
+	router := gin.New()
+	router.GET("/api/v1/events", func(c *gin.Context) {
+		c.Set("userID", "u-1")
+		env.handler.StreamUserEvents(c)
+	})
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("GET", "/api/v1/events", nil)
+	req.RemoteAddr = "192.0.2.1:1234"
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusTooManyRequests, w.Code, "rate-limited attempt rejected")
+	assert.Empty(t, logger.infos("SSE user stream opened"),
+		"a rejected connection must not log stream-open (it never opened)")
 }

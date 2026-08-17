@@ -441,6 +441,7 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 		if !restartRequired {
 			lg.Info("relay injector: agent reports no restart required; skipping kill")
 			relayInjectorOutcomes.WithLabelValues("success_no_restart").Inc()
+			relayFreeModelsState.Store(1)
 			return
 		}
 		lg.Info("relay injector: wrote relay config",

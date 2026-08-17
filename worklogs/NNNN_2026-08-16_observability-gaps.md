@@ -141,3 +141,23 @@
   CI installs promtool (pinned v3.4.1) in both test jobs. The harness
   proved itself during development (caught the job-label mismatch and
   the annotation-exactness requirement).
+
+---
+
+## Round 5 (review on #906): hard gates closed
+
+- **Stream-lifecycle tests (G7)**: TestStreamEvents_LifecycleLogs drives
+  the real StreamEvents handler — open logs exactly once with
+  subscribersIncludingSelf=1 (no +1 double-count; SubscribeWorkspace
+  precedes the count), one delivered event, close logs
+  duration+eventsSent=1 (heartbeats are comment frames, not counted).
+  TestStreamEvents_429DoesNotLogLifecycle pins the rejected-connection
+  semantics: rate-limited (429, sseConnAllowed seam) never logs
+  stream-open.
+- **statusz through the real handler**: TestStatuszEndpoint_RelayFreeModels
+  serializes all three injector states through
+  buildStatuszHandler (round-4's struct-field test retained for the
+  state machine).
+- **One-liners**: success_no_restart now Stores(1) (that path IS a
+  successful injection); heartbeat sentinels excluded from the
+  delivered counter (TestPublishToWorkspace_HeartbeatsNotCountedDelivered).
