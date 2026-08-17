@@ -269,8 +269,12 @@ func modelOverride(m *session.ModelRef) (modelID, providerID string, ok bool) {
 	}
 	if m.Provider != "" {
 		tail := strings.TrimPrefix(m.ID, m.Provider+"/")
-		if tail == "" {
-			return "", "", false // "prov/" — empty model, unexpressible
+		// Empty-tail forms are unexpressible regardless of whether the
+		// provider matches: "prov/" (matching) strips to "", and "x/" with
+		// a non-matching provider keeps the degenerate empty modelID. Both
+		// must be omitted so the session default applies.
+		if tail == "" || strings.HasSuffix(tail, "/") {
+			return "", "", false
 		}
 		return tail, m.Provider, true
 	}

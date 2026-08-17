@@ -560,7 +560,8 @@ func TestE2E_Adapter_SendPromptAsync_ModelForwarding(t *testing.T) {
 // TestE2E_Adapter_SendMessage_ModelForwarding is the /message leg of the
 // full-pipeline forwarding pin (review round 2): the SDK-documented
 // synchronous path must deliver the object selector to opencode just
-// like /prompt.
+// like /prompt — including the unhappy degrade paths, symmetric with the
+// /prompt leg.
 func TestE2E_Adapter_SendMessage_ModelForwarding(t *testing.T) {
 	var gotModel any
 	var modelPresent bool
@@ -580,12 +581,31 @@ func TestE2E_Adapter_SendMessage_ModelForwarding(t *testing.T) {
 
 	env := newE2EEnv(t, backend)
 
-	w := env.do(http.MethodPost, "/api/v1/workspaces/ws-1/sessions/ses_1/message",
-		strings.NewReader(`{"model":{"modelID":"glm-5.3","providerID":"thekaocloud"},"parts":[{"type":"text","text":"hi"}]}`))
-	require.Equal(t, http.StatusOK, w.Code)
-	assert.True(t, modelPresent, "/message must forward the selector to the backend")
-	m, ok := gotModel.(map[string]any)
-	require.True(t, ok, "backend model must be the object wire form (opencode 1.18.10 schema)")
-	assert.Equal(t, "glm-5.3", m["modelID"])
-	assert.Equal(t, "thekaocloud", m["providerID"])
+	t.Run("qualified override reaches backend as object", func(t *testing.T) {
+		gotModel, modelPresent = nil, false
+		w := env.do(http.MethodPost, "/api/v1/workspaces/ws-1/sessions/ses_1/message",
+			strings.NewReader(`{"model":{"modelID":"glm-5.3","providerID":"thekaocloud"},"parts":[{"type":"text","text":"hi"}]}`))
+		require.Equal(t, http.StatusOK, w.Code)
+		assert.True(t, modelPresent, "/message must forward the selector to the backend")
+		m, ok := gotModel.(map[string]any)
+		require.True(t, ok, "backend model must be the object wire form (opencode 1.18.10 schema)")
+		assert.Equal(t, "glm-5.3", m["modelID"])
+		assert.Equal(t, "thekaocloud", m["providerID"])
+	})
+
+	t.Run("no selector sends no model key", func(t *testing.T) {
+		gotModel, modelPresent = nil, false
+		w := env.do(http.MethodPost, "/api/v1/workspaces/ws-1/sessions/ses_1/message",
+			strings.NewReader(`{"parts":[{"type":"text","text":"hi"}]}`))
+		require.Equal(t, http.StatusOK, w.Code)
+		assert.False(t, modelPresent, "absent selector must omit the model key (session default)")
+	})
+
+	t.Run("malformed selector degrades to session default", func(t *testing.T) {
+		gotModel, modelPresent = nil, false
+		w := env.do(http.MethodPost, "/api/v1/workspaces/ws-1/sessions/ses_1/message",
+			strings.NewReader(`{"model":{"providerID":"thekaocloud"},"parts":[{"type":"text","text":"hi"}]}`))
+		require.Equal(t, http.StatusOK, w.Code)
+		assert.False(t, modelPresent, "empty modelID must degrade to default, not fail the message")
+	})
 }

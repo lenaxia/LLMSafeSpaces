@@ -82,13 +82,18 @@ func newFakeOpencode(t *testing.T) *fakeOpencode {
 		f.requests = append(f.requests, key)
 		if reqBody, err := io.ReadAll(r.Body); err == nil {
 			f.bodies[key] = reqBody
-			// #911 regression net (structural): POST /session/:id/message
-			// and the V2 prompt endpoint mirror opencode 1.18.10's schema
-			// — model must be an OBJECT (modelID+providerID) or absent,
-			// NEVER the "providerID/modelID" string, which real opencode
-			// rejects with this exact error. A reverted string-form send
-			// fails the adapter's error path here, not just a shape
-			// assertion.
+			// #909 regression net (structural): POST /session/:id/message
+			// mirrors opencode 1.18.10's schema — model must be an OBJECT
+			// (modelID+providerID) or absent, NEVER the
+			// "providerID/modelID" string, which real opencode rejects
+			// with this exact error. A reverted string-form send fails the
+			// adapter's error path here, not just a shape assertion. (The
+			// V2 prompt endpoint is NOT covered by this net — it posts to
+			// /api/session/{sid}/prompt with model nested under
+			// prompt.model, and its own OpenAPI at 1.18.10 exposes no
+			// model property at all — the object form there is a
+			// revival-safety mirror of V1, pinned by the explicit
+			// assertions in TestAdapter_SendAsync_ModelReferenceForm.)
 			if r.Method == http.MethodPost &&
 				(strings.HasPrefix(r.URL.Path, "/session/") && strings.HasSuffix(r.URL.Path, "/message")) {
 				var payload map[string]any
@@ -1100,6 +1105,15 @@ func TestAdapter_Send_ModelReferenceForm(t *testing.T) {
 		sent := sendAndInspect(t, session.SendOpts{Model: &session.ModelRef{ID: "thekaocloud/", Provider: "thekaocloud"}})
 		_, present := sent["model"]
 		assert.False(t, present, "provider + empty tail leaves no modelID — omit")
+	})
+
+	t.Run("empty tail with non-matching provider is omitted", func(t *testing.T) {
+		// TrimPrefix("x/","y/") does not match, so the degenerate empty
+		// modelID would otherwise be forwarded verbatim — the empty-tail
+		// contract must hold regardless of provider match.
+		sent := sendAndInspect(t, session.SendOpts{Model: &session.ModelRef{ID: "thekaocloud/", Provider: "openrouter"}})
+		_, present := sent["model"]
+		assert.False(t, present, "any empty-tail ID is unexpressible, even with a non-matching provider")
 	})
 
 	t.Run("no model sends no model key", func(t *testing.T) {

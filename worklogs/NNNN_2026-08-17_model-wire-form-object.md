@@ -119,4 +119,5 @@ None.
 - `pkg/agent/opencode/client_v2.go`
 - `pkg/agent/opencode/adapter_test.go`
 - `api/internal/handlers/e2e_adapter_test.go`
+- `api/internal/handlers/proxy_handlers.go` (comment: stale qualifiedModelID reference)
 - `worklogs/NNNN_2026-08-17_model-wire-form-object.md`

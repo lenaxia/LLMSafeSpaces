@@ -390,10 +390,11 @@ func (h *ProxyHandler) modelOverrideAllowed(ctx context.Context, workspace *v1.W
 		}
 	}
 	// Provider axis: m.Provider is AUTHORITATIVE when present — the
-	// adapter prefixes it onto the ID, so it is the provider routing
-	// actually uses. The embedded first-segment prefix is checked only for
-	// provider-less slashed IDs (round 3's bypass shape); checking it when
-	// Provider is set would false-deny the frontend's double form
+	// adapter uses it as the routing providerID (modelOverride), so it is
+	// the provider routing actually uses. The embedded first-segment
+	// prefix is checked only for provider-less slashed IDs (round 3's
+	// bypass shape); checking it when Provider is set would false-deny
+	// the frontend's double form
 	// ({modelID:"vendor/model", providerID:"openrouter"} — the first
 	// segment is a vendor namespace, not the routing provider).
 	if m.Provider != "" {
