@@ -93,7 +93,7 @@ None.
 ## Files Modified
 
 - `cmd/workspace-agentd/healthz_cache_test.go`
-- `worklogs/NNNN_2026-08-17_agentd-health-watchdog-test-timeout.md` (this entry)
+- `worklogs/0786_2026-08-17_agentd-health-watchdog-test-timeout.md` (this entry)
 
 ---
 
