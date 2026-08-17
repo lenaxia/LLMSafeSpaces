@@ -238,33 +238,55 @@ func (a *Adapter) DeleteSession(ctx context.Context, userID, workspaceID, sessio
 
 // --- Messaging ---
 
-// qualifiedModelID renders a contract ModelRef in opencode's wire form:
-// the "providerID/modelID" string. opencode splits the string on "/" to
-// resolve the provider — a bare ID is parsed as a providerID with an EMPTY
-// modelID and fails every prompt in the session ("ProviderModelNotFoundError:
-// Model not found: <bare>/.", incident 2026-08-16).
+// modelOverride splits a contract ModelRef into opencode 1.18.10's
+// per-prompt model wire form: the OBJECT {"modelID": ..., "providerID": ...}.
+// Schema (packages/sdk/openapi.json @v1.18.10, POST /session/{id}/message):
+// model is type object, properties modelID+providerID (both required
+// strings), additionalProperties false — a "providerID/modelID" STRING fails
+// schema decode ("Expected object | null, got string"): the 2026-08-17
+// all-sessions-502 regression introduced by #909, where mocked tests
+// asserted the string form and no real-schema validation existed.
+// (PATCH /config is the exception — its Config.model IS a string; SetModel
+// keeps the joined form.)
 //
-// m.Provider is authoritative whenever present (the frontend's per-send
-// selector carries both the catalog-advertised model ID — which may itself
-// contain slashes, OpenRouter-style — and the routing providerID): the
-// result is Provider-prefixed unless the ID already carries that exact
-// prefix. Without a provider, a slash-bearing ID is already qualified
-// (first segment = provider, opencode's routing rule); a bare flat ID is
-// unexpressible and returns "" so the session default applies.
-func qualifiedModelID(m *session.ModelRef) string {
+// Split rules (per #913 round-5, Provider-authoritative):
+//   - Provider present: it is the routing providerID. An ID already
+//     carrying that exact prefix is stripped of it (never "x/x/y"); a
+//     slashed ID with a different first segment (the frontend double
+//     form: advertised "vendor/model" + routing providerID) keeps the
+//     full ID as modelID — the explicit Provider carries routing and the
+//     vendor namespace is never treated as the provider.
+//   - Provider absent: FIRST-segment split (opencode's own routing rule,
+//     proven by the 2026-08-16 incident) — "a/b/c" routes via "a".
+//   - Unexpressible shapes return ok=false and the caller omits the
+//     field so the session default applies: bare flat IDs (opencode
+//     parses them as provider-with-empty-model —
+//     "ProviderModelNotFoundError: <bare>/."), and empty-tail forms
+//     ("a/", "a/b/" — the incident's own parse shape; the trailing
+//     slash leaves a degenerate empty modelID segment after any split).
+func modelOverride(m *session.ModelRef) (modelID, providerID string, ok bool) {
 	if m == nil || m.ID == "" {
-		return ""
+		return "", "", false
+	}
+	if strings.HasSuffix(m.ID, "/") {
+		// Empty-tail forms are unexpressible on EVERY branch: "prov/"
+		// (matching provider) strips to "", "x/" with a non-matching
+		// provider keeps the degenerate empty modelID, and the
+		// provider-less split of "a/b/" yields modelID "b/". All must be
+		// omitted so the session default applies.
+		return "", "", false
 	}
 	if m.Provider != "" {
-		if strings.HasPrefix(m.ID, m.Provider+"/") {
-			return m.ID // already carries the authoritative prefix
+		tail := strings.TrimPrefix(m.ID, m.Provider+"/")
+		if tail == "" {
+			return "", "", false
 		}
-		return m.Provider + "/" + m.ID
+		return tail, m.Provider, true
 	}
-	if strings.Contains(m.ID, "/") {
-		return m.ID // already qualified; never double-prefix
+	if idx := strings.Index(m.ID, "/"); idx > 0 && idx < len(m.ID)-1 {
+		return m.ID[idx+1:], m.ID[:idx], true
 	}
-	return "" // bare ID is unexpressible — degrade to session default
+	return "", "", false // bare flat
 }
 
 func (a *Adapter) Send(ctx context.Context, userID, workspaceID, sessionID, text string, opts session.SendOpts) (*session.Message, error) {
@@ -280,8 +302,13 @@ func (a *Adapter) Send(ctx context.Context, userID, workspaceID, sessionID, text
 			{"type": "text", "text": text},
 		},
 	}
-	if qualified := qualifiedModelID(opts.Model); qualified != "" {
-		body["model"] = qualified
+	if mid, prov, ok := modelOverride(opts.Model); ok {
+		// Object wire form (see modelOverride): a string here 400s every
+		// per-prompt override on opencode 1.18.10.
+		body["model"] = map[string]string{
+			"modelID":    mid,
+			"providerID": prov,
+		}
 	}
 	resp, err := a.doPost(ctx, c, "/session/"+sessionID+"/message", body)
 	if err != nil {
@@ -325,8 +352,13 @@ func (a *Adapter) SendAsync(ctx context.Context, userID, workspaceID, sessionID,
 	}
 	// The V2 path is currently dormant on opencode 1.18.10 (#755: queue
 	// never drained) but stays wired for revival — it must honor the same
-	// model-form contract as Send: qualified or omitted, never bare.
-	resp, err := c.PromptV2WithModel(ctx, sessionID, text, delivery, qualifiedModelID(opts.Model))
+	// model-form contract as Send: the object wire form or omitted, never
+	// a bare ID or a string.
+	var mo *V2ModelRef
+	if mid, prov, ok := modelOverride(opts.Model); ok {
+		mo = &V2ModelRef{ModelID: mid, ProviderID: prov}
+	}
+	resp, err := c.PromptV2WithModel(ctx, sessionID, text, delivery, mo)
 	if err != nil {
 		return "", err
 	}
