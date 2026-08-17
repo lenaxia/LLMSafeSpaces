@@ -159,7 +159,7 @@ retry before the verify gate fails.
 - `tests/gharouter/route_test.go` (deleted; dir removed)
 - `.github/prompts/pr-review.md` (verdict format: SHA line, no COMMENT)
 - `.github/prompts/merge.md` (head-SHA-pinned approval gate)
-- `worklogs/NNNN_2026-08-17_onboard-ai-workflows-review-cycle.md` (this entry)
+- `worklogs/0782_2026-08-17_onboard-ai-workflows-review-cycle.md` (this entry)
 
 ---
 
