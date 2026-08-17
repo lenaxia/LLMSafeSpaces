@@ -62,4 +62,4 @@ stated count was wrong.
 - `.github/workflows/renovate-analysis.yml`
 - `tests/ghaworkflows/gha_callers_test.go`
 - `tests/renovateanalysis/renovate_analysis_test.go`
-- `worklogs/NNNN_2026-08-17_bump-ai-workflows-v0.2.11.md`
+- `worklogs/0783_2026-08-17_bump-ai-workflows-v0.2.11.md`
