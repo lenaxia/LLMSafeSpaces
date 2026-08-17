@@ -373,21 +373,29 @@ func (h *ProxyHandler) modelOverrideAllowed(ctx context.Context, workspace *v1.W
 		return true
 	}
 	if !pol.IsModelAllowed(m.ID) {
-		return false
-	}
-	// Check the explicit providerID and any provider embedded in the ID.
-	// opencode routes slash-bearing IDs by their FIRST segment (proven by
-	// the incident itself: bare "deepseek-v4-flash-free" parsed as
-	// provider + empty modelID), so the first segment is the provider the
-	// policy must check — "openrouter/anthropic/claude" routes via
-	// provider "openrouter", not "openrouter/anthropic".
-	if m.Provider != "" && !pol.IsProviderAllowed(m.Provider) {
-		return false
-	}
-	if idx := strings.Index(m.ID, "/"); idx > 0 {
-		if embedded := m.ID[:idx]; embedded != m.Provider && !pol.IsProviderAllowed(embedded) {
+		// Slashed catalog IDs: an org may allowlist either the advertised
+		// full ID ("anthropic/claude-sonnet-4.5") or the bare tail
+		// ("claude-sonnet-4.5") — accept both, matching SetModel's axis.
+		tailAllowed := false
+		if idx := strings.Index(m.ID, "/"); idx >= 0 && idx < len(m.ID)-1 {
+			tailAllowed = pol.IsModelAllowed(m.ID[idx+1:])
+		}
+		if !tailAllowed {
 			return false
 		}
+	}
+	// Provider axis: m.Provider is AUTHORITATIVE when present — the
+	// adapter prefixes it onto the ID, so it is the provider routing
+	// actually uses. The embedded first-segment prefix is checked only for
+	// provider-less slashed IDs (round 3's bypass shape); checking it when
+	// Provider is set would false-deny the frontend's double form
+	// ({modelID:"vendor/model", providerID:"openrouter"} — the first
+	// segment is a vendor namespace, not the routing provider).
+	if m.Provider != "" {
+		return pol.IsProviderAllowed(m.Provider)
+	}
+	if idx := strings.Index(m.ID, "/"); idx > 0 && idx < len(m.ID)-1 {
+		return pol.IsProviderAllowed(m.ID[:idx])
 	}
 	return true
 }

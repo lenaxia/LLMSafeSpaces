@@ -994,6 +994,16 @@ func TestAdapter_Send_ModelReferenceForm(t *testing.T) {
 			"a slash-bearing ID is already qualified; prefixing again poisons the send")
 	})
 
+	t.Run("provider prefixes a slashed catalog id (frontend double form)", func(t *testing.T) {
+		// Round 5: the frontend sends the advertised (slashed) catalog ID
+		// plus the routing providerID. Provider is authoritative: without
+		// prefixing, opencode would route via the vendor namespace
+		// "anthropic" — a nonexistent provider.
+		sent := sendAndInspect(t, session.SendOpts{Model: &session.ModelRef{ID: "anthropic/claude-sonnet-4.5", Provider: "openrouter"}})
+		assert.Equal(t, "openrouter/anthropic/claude-sonnet-4.5", sent["model"],
+			"the explicit provider must prefix the advertised slashed ID")
+	})
+
 	t.Run("bare id without provider is omitted", func(t *testing.T) {
 		sent := sendAndInspect(t, session.SendOpts{Model: &session.ModelRef{ID: "glm-5.3"}})
 		_, present := sent["model"]

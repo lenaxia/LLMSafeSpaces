@@ -1354,17 +1354,18 @@ func TestSendPromptAsync_ModelOverride_NoProvider_SkipsProviderAxis(t *testing.T
 	assert.True(t, called)
 }
 
-// TestSendPromptAsync_SlashBearingOverride_EmbeddedPrefixChecked is the
-// regression pin for the round-3 blocker: a slash-bearing modelID embeds
-// the provider opencode will actually route by (the adapter forwards it
-// verbatim), so {"modelID":"deniedprov/x","providerID":"openai"} must be
-// denied under allowed_providers=["openai"] — previously it returned 200
-// with the denied provider forwarded.
+// TestSendPromptAsync_SlashBearingOverride_EmbeddedPrefixChecked guards
+// the remaining bypass vector (rounds 3+5): a PROVIDER-LESS slash-bearing
+// modelID — the adapter forwards it verbatim, so opencode routes via the
+// embedded first segment. {"modelID":"deniedprov/gpt-5.5"} must be denied
+// under allowed_providers=["openai"].
 //
-// Shape note (round 4): AllowedModels is deliberately UNSET — with an
-// exact-match model allowlist the model axis denies first and the test
-// passes with or without the embedded-prefix fix. The provider axis alone
-// must carry the denial.
+// Round 5 note: when providerID IS present it is authoritative (the
+// adapter prefixes it; routing uses it and the policy checks it — see
+// TestSendPromptAsync_FrontendDoubleForm_SlashedCatalogID_ForwardsAndAllows),
+// so {"modelID":"deniedprov/x","providerID":"openai"} legitimately routes
+// via openai and is NOT a bypass. AllowedModels is deliberately unset so
+// the provider axis alone carries the denial.
 func TestSendPromptAsync_SlashBearingOverride_EmbeddedPrefixChecked(t *testing.T) {
 	h := newProxyHandlerForAdapterTest(t)
 	called := false
@@ -1387,12 +1388,12 @@ func TestSendPromptAsync_SlashBearingOverride_EmbeddedPrefixChecked(t *testing.T
 		Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive, PodIP: "10.0.0.1", PodName: "p"},
 	})
 	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(
-		`{"model":{"modelID":"deniedprov/gpt-5.5","providerID":"openai"},"parts":[{"type":"text","text":"hi"}]}`))
+		`{"model":{"modelID":"deniedprov/gpt-5.5"},"parts":[{"type":"text","text":"hi"}]}`))
 
 	h.SendPromptAsync(c)
 
 	assert.Equal(t, http.StatusForbidden, w.Code,
-		"the provider embedded in a slash-bearing modelID is the routing provider and must be policy-checked")
+		"a provider-less slash-bearing ID routes via its embedded first segment — that provider must be policy-checked")
 	assert.False(t, called)
 }
 
@@ -1425,5 +1426,80 @@ func TestSendPromptAsync_SlashBearingOverride_AllowedEmbeddedProvider_Forwards(t
 	h.SendPromptAsync(c)
 
 	require.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, called)
+}
+
+// TestSendPromptAsync_FrontendDoubleForm_SlashedCatalogID_ForwardsAndAllows
+// pins round 5's major finding: the frontend builds its per-send selector
+// from ListModels output — {modelID: "anthropic/claude-sonnet-4.5",
+// providerID: "openrouter"} (advertised slashed ID + routing provider).
+// The policy must allow it under allowed_providers=["openrouter"] (the
+// first segment "anthropic" is a vendor namespace, NOT the routing
+// provider), and the adapter must forward the provider-prefixed form.
+func TestSendPromptAsync_FrontendDoubleForm_SlashedCatalogID_ForwardsAndAllows(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	var gotOpts session.SendOpts
+	h.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _, _ string, opts session.SendOpts) (*session.Message, error) {
+			gotOpts = opts
+			return &session.Message{ID: "msg_1", Type: session.MessageAssistant}, nil
+		},
+	}
+	h.SetModelPolicyChecker(&mockPolicyChecker{policy: &types.OrgPolicyValues{
+		AllowedModels:    &[]string{"anthropic/claude-sonnet-4.5"},
+		AllowedProviders: &[]string{"openrouter"},
+	}})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses_1"}}
+	c.Set("workspace", &v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "default"},
+		Spec:       v1.WorkspaceSpec{Owner: v1.WorkspaceOwner{UserID: "user-1", OrgID: "org-1"}},
+		Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive, PodIP: "10.0.0.1", PodName: "p"},
+	})
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(
+		`{"model":{"modelID":"anthropic/claude-sonnet-4.5","providerID":"openrouter"},"parts":[{"type":"text","text":"hi"}]}`))
+
+	h.SendPromptAsync(c)
+
+	require.Equal(t, http.StatusOK, w.Code,
+		"the frontend's double form must not be denied: providerID is the routing provider and is allowed")
+	require.NotNil(t, gotOpts.Model)
+	assert.Equal(t, "anthropic/claude-sonnet-4.5", gotOpts.Model.ID)
+	assert.Equal(t, "openrouter", gotOpts.Model.Provider)
+}
+
+// TestSendPromptAsync_ModelAxis_TailAccepted aligns the prompt path's
+// model axis with SetModel's: an org allowlisting the bare tail of a
+// slashed catalog ID permits the override (deny-direction consistency
+// across the three enforcement points).
+func TestSendPromptAsync_ModelAxis_TailAccepted(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	called := false
+	h.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (*session.Message, error) {
+			called = true
+			return &session.Message{ID: "msg_1", Type: session.MessageAssistant}, nil
+		},
+	}
+	h.SetModelPolicyChecker(&mockPolicyChecker{policy: &types.OrgPolicyValues{
+		AllowedModels: &[]string{"claude-sonnet-4.5"},
+	}})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses_1"}}
+	c.Set("workspace", &v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "default"},
+		Spec:       v1.WorkspaceSpec{Owner: v1.WorkspaceOwner{UserID: "user-1", OrgID: "org-1"}},
+		Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive, PodIP: "10.0.0.1", PodName: "p"},
+	})
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(
+		`{"model":{"modelID":"anthropic/claude-sonnet-4.5","providerID":"openrouter"},"parts":[{"type":"text","text":"hi"}]}`))
+
+	h.SendPromptAsync(c)
+
+	require.Equal(t, http.StatusOK, w.Code, "tail-allowlisted model must be permitted like SetModel permits it")
 	assert.True(t, called)
 }

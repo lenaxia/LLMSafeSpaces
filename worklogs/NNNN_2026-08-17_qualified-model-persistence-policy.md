@@ -22,16 +22,16 @@
   - Accepts both request forms: flat (`gpt-5.5`) and qualified (`openai/gpt-5.5` — round-trip compatibility once the DB stores qualified; catalog remains ground truth for the provider, request prefix is advisory). Slashed CATALOG model IDs (OpenRouter-style `vendor/model`) are accepted verbatim — validation and resolution key on the full value when the catalog lists it (`modelExists` discriminator; round 3, finding 2).
   - Persistence rule: the **catalog-resolved** qualified form is persisted when the catalog resolves (the same value policy-checked and live-pushed); a qualified request on the degraded path (catalog unavailable) persists verbatim (its prefix is policy-checked); flat+catalog-unavailable degrades to flat (unchanged optimistic behavior).
   - Response contract unchanged (`model` echoes the request); new `persistedModel` field exposes the stored form.
-  - `ListModels`: `GetDefaultModel` may return qualified or legacy flat — the qualified prefix is split (LastIndex) to derive `currentModelProviderID`, `currentModel` response stays flat for client compatibility, `markSelected` matches flat.
+  - `ListModels`: `GetDefaultModel` may return qualified or legacy flat — the qualified prefix is split (FIRST `/`, the universal convention — see the round-3 section) to derive `currentModelProviderID`; `currentModel` returns the model ID (the catalog-advertised form, so slashed catalog IDs round-trip to the frontend's selector); `markSelected` matches it.
 - `cmd/workspace-agentd/secrets.go`:
-  - `resolveModelWithProvider` → `(string, bool)`. Qualified input: provider-entry-presence check (deterministic; `LastIndex` split). Flat input: provider scan as before. Unresolvable in ANY form (flat unclaimed, qualified-absent, missing/malformed provider map) → `("", false)` — fail-safe: unverifiable means do-not-write.
+  - `resolveModelWithProvider` → `(string, bool)`. Qualified input: FIRST-segment provider-entry-presence check (deterministic; empty-tail `"a/"` rejected). Flat input: provider scan as before. Unresolvable in ANY form (flat unclaimed, qualified-absent, missing/malformed provider map) → `("", false)` — fail-safe: unverifiable means do-not-write.
   - `applyWorkspaceConfig` now omits+warns for qualified-but-absent defaults too (was: passthrough — the same poison as the bare ID).
   - **Materialize order on BOTH paths** (round 2: the zero-credential early path — the incident's exact user shape — was caught by the reorder e2e still resolving before the relay block; `applyPreBootRelay` extracted and shared). New order: providers → MCP → pre-boot relay → model. NOTE: the early path now also fail-fasts (exit 3) on a hard catalog/write failure, matching the main path — acknowledged as newly coupling zero-credential boots to catalog health (round 3, finding 5).
 - No DB migration: existing flat rows keep working through the omit+warn path and convert to qualified lazily on the next SetModel.
 
 ### B. Org policy on SetModel
 
-- `modelAllowedByOrgPolicy(ctx, workspaceID, flatModelID, providerID)` on ModelsHandler: nil deps → allow; no org → allow; policy-infra error → fail open + warn (matches `filterByOrgPolicy`); else `IsModelAllowed(flat) && IsProviderAllowed(provider)`. Denial → 403 before persistence or live push.
+- `modelSelectionAllowedByOrgPolicy(ctx, workspaceID, rawReq, flatModel, resolved)` on ModelsHandler (renamed and generalized in round 2): nil deps → allow; no org → allow; policy-infra error → fail open + warn (matches `filterByOrgPolicy`). Model axis: full advertised ID and flat tail both accepted. Provider axis: the resolution's provider on every path; the raw request's prefix ONLY on the degraded path (where rawReq persists). Denial → 403 before persistence or live push.
 
 ### C. Org policy on per-prompt override
 
@@ -59,7 +59,7 @@
 ## Assumptions (stated)
 
 1. `SetModel`'s PATCH `/global/config` and the DB both receiving the qualified form is consistent: agentd's `applyWorkspaceConfig` already required `providerID/modelID` in agent-config.json (pinned since Epic 35).
-2. Model IDs do not legitimately contain `/` in a way that breaks `LastIndex` splitting (opencode's own wire format is `provider/model`, so this is its convention too).
+2. Catalog model IDs MAY contain `/` (OpenRouter-style `vendor/model`). Convention everywhere: the FIRST `/` separates provider from model ID (opencode's own routing split — the incident proved bare IDs parse as first-segment provider + empty modelID). Supersedes this worklog's earlier LastIndex wording.
 3. Frontend ignores unknown response fields (additive `persistedModel`) and uses `currentModel`+`currentModelProviderID` (flat) as today.
 4. The materialize reorder is safe because the pre-boot relay writer preserves foreign keys in agent-config.json (`loadExisting` captures providers+model+mcp as initial sources) — verified by reading `pre_boot_relay.go` and by the existing pre-boot relay e2e tests still passing.
 
@@ -73,7 +73,7 @@
 
 **Bonus (e2e caught a real bug):** the materialize-reorder e2e (`TestMaterializeSubcommand_RelayQualifiedDefault_ResolvesAfterRelayBoot`, real subcommand binary + `INFERENCE_RELAY_BASEURL` + free-models catalog via new `LLMSAFESPACES_FREE_MODELS_PATH` env override) revealed the ZERO-CREDENTIAL early path still resolved the model before the pre-boot relay — exactly the incident's user shape (free models, no own providers). Fixed: `applyPreBootRelay` extracted and run on both paths before `applyWorkspaceConfig`.
 
-Also: stale "flat catalog ID" doc comment replaced; API qualified-ID splits aligned to LastIndex (agentd's convention); SetModel policy fail-open pinned.
+Also: stale "flat catalog ID" doc comment replaced; API qualified-ID splits aligned to the first-segment convention (agentd's convention, refined in rounds 3–5 — see below); SetModel policy fail-open pinned.
 
 ## Review round 3 (#913 → addressed) — convention: FIRST-segment splits everywhere
 

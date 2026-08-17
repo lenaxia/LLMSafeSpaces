@@ -819,6 +819,15 @@ func TestResolveModelWithProvider(t *testing.T) {
 		assert.False(t, ok)
 	})
 
+	t.Run("empty-tail qualified form is unresolvable", func(t *testing.T) {
+		// Round 5: "a/" is the incident's own parse shape (provider +
+		// EMPTY modelID). Reachable via pod-down persistence; must be
+		// rejected by the resolver, never written.
+		cfg := buildCfg(`{"a": {"models": {"x": {}}}}`)
+		_, ok := resolveModelWithProvider(cfg, "a/")
+		assert.False(t, ok, "empty-tail 'a/' must never resolve even when provider 'a' exists")
+	})
+
 	t.Run("empty model ID is unresolvable", func(t *testing.T) {
 		cfg := buildCfg(`{"thekao": {"models": {"glm-5.1": {}}}}`)
 		got, ok := resolveModelWithProvider(cfg, "")

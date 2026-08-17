@@ -761,7 +761,9 @@ func resolveModelWithProvider(cfg map[string]json.RawMessage, modelID string) (s
 	// catalog-sourced value like "openrouter/anthropic/claude-sonnet"
 	// means provider "openrouter", model "anthropic/claude-sonnet". The
 	// full value is passed through verbatim once its provider exists.
-	if idx := strings.Index(modelID, "/"); idx > 0 {
+	// The empty-tail guard ("a/") rejects the incident's own parse shape
+	// (provider + EMPTY modelID) rather than passing it downstream.
+	if idx := strings.Index(modelID, "/"); idx > 0 && idx < len(modelID)-1 {
 		if _, exists := providers[modelID[:idx]]; exists {
 			return modelID, true
 		}
