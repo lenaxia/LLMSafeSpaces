@@ -1353,3 +1353,73 @@ func TestSendPromptAsync_ModelOverride_NoProvider_SkipsProviderAxis(t *testing.T
 		"provider-less selector must not be denied on the provider axis")
 	assert.True(t, called)
 }
+
+// TestSendPromptAsync_SlashBearingOverride_EmbeddedPrefixChecked is the
+// regression pin for the round-3 blocker: a slash-bearing modelID embeds
+// the provider opencode will actually route by (the adapter forwards it
+// verbatim), so {"modelID":"deniedprov/x","providerID":"openai"} must be
+// denied under allowed_providers=["openai"] — previously it returned 200
+// with the denied provider forwarded.
+func TestSendPromptAsync_SlashBearingOverride_EmbeddedPrefixChecked(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	called := false
+	h.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (*session.Message, error) {
+			called = true
+			return &session.Message{ID: "msg_1", Type: session.MessageAssistant}, nil
+		},
+	}
+	h.SetModelPolicyChecker(&mockPolicyChecker{policy: &types.OrgPolicyValues{
+		AllowedModels:    &[]string{"gpt-5.5"},
+		AllowedProviders: &[]string{"openai"},
+	}})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses_1"}}
+	c.Set("workspace", &v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "default"},
+		Spec:       v1.WorkspaceSpec{Owner: v1.WorkspaceOwner{UserID: "user-1", OrgID: "org-1"}},
+		Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive, PodIP: "10.0.0.1", PodName: "p"},
+	})
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(
+		`{"model":{"modelID":"deniedprov/gpt-5.5","providerID":"openai"},"parts":[{"type":"text","text":"hi"}]}`))
+
+	h.SendPromptAsync(c)
+
+	assert.Equal(t, http.StatusForbidden, w.Code,
+		"the provider embedded in a slash-bearing modelID is the routing provider and must be policy-checked")
+	assert.False(t, called)
+}
+
+// TestSendPromptAsync_SlashBearingOverride_AllowedEmbeddedProvider_Forwards
+// pins the positive case: slashed ID with an allowed embedded provider routes.
+func TestSendPromptAsync_SlashBearingOverride_AllowedEmbeddedProvider_Forwards(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	called := false
+	h.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (*session.Message, error) {
+			called = true
+			return &session.Message{ID: "msg_1", Type: session.MessageAssistant}, nil
+		},
+	}
+	h.SetModelPolicyChecker(&mockPolicyChecker{policy: &types.OrgPolicyValues{
+		AllowedProviders: &[]string{"openrouter"},
+	}})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses_1"}}
+	c.Set("workspace", &v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "default"},
+		Spec:       v1.WorkspaceSpec{Owner: v1.WorkspaceOwner{UserID: "user-1", OrgID: "org-1"}},
+		Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive, PodIP: "10.0.0.1", PodName: "p"},
+	})
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(
+		`{"model":{"modelID":"openrouter/anthropic/claude-sonnet-4.5"},"parts":[{"type":"text","text":"hi"}]}`))
+
+	h.SendPromptAsync(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, called)
+}

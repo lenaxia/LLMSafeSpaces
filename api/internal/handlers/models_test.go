@@ -2008,3 +2008,91 @@ func TestSetModel_PolicyError_FailsOpen(t *testing.T) {
 }
 
 var errPolicyUnavailable = errors.New("policy backend unavailable")
+
+// TestSetModel_SlashedCatalogModelID_Selectable pins round-3 finding 2:
+// OpenRouter-style catalogs advertise model IDs containing "/" (e.g.
+// "anthropic/claude-sonnet-4.5" under provider "openrouter"). ListModels
+// advertises the ID verbatim; SetModel must accept it (the flat-split
+// regression 400'd on the API's own advertised ID).
+func TestSetModel_SlashedCatalogModelID_Selectable(t *testing.T) {
+	clearModelCache()
+	gin.SetMode(gin.TestMode)
+
+	const testPassword = "slashed-pw"
+	listener, err := net.Listen("tcp", "127.0.0.1:4096")
+	if err != nil {
+		t.Skip("port 4096 not available")
+	}
+	var receivedModel string
+	srv := httptest.NewUnstartedServer(authEnforcingHandler(testPassword, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/provider":
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"connected":["openrouter"],"all":[{"id":"openrouter","models":{
+				"anthropic/claude-sonnet-4.5":{"id":"anthropic/claude-sonnet-4.5","name":"Claude Sonnet 4.5","cost":{"input":3,"output":15}}
+			}}]}`))
+		case r.Method == http.MethodPatch && r.URL.Path == "/global/config":
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			receivedModel = body["model"]
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	srv.Listener = listener
+	srv.Start()
+	defer srv.Close()
+
+	updater := &mockWSUpdater{ownerUserID: "user-1"}
+	handler := newTestModelsHandler(testPassword)
+	handler.SetModelStore(updater)
+
+	w := putModel(t, handler, `{"model":"anthropic/claude-sonnet-4.5"}`)
+	require.Equal(t, http.StatusOK, w.Code,
+		"a model ID the catalog advertises must be selectable")
+
+	require.Len(t, updater.calls, 1)
+	assert.Equal(t, "openrouter/anthropic/claude-sonnet-4.5", *updater.calls[0].DefaultModel,
+		"persistence must carry the catalog resolution: provider + slashed model ID")
+	assert.Equal(t, "openrouter/anthropic/claude-sonnet-4.5", receivedModel)
+}
+
+// TestSetModel_SlashedCatalogModelID_OrgPolicy provider axis for the
+// slashed-catalog shape: the RESOLVED provider (first segment) is checked.
+func TestSetModel_SlashedCatalogModelID_OrgPolicy(t *testing.T) {
+	clearModelCache()
+	gin.SetMode(gin.TestMode)
+
+	const testPassword = "slashed-pol-pw"
+	listener, err := net.Listen("tcp", "127.0.0.1:4096")
+	if err != nil {
+		t.Skip("port 4096 not available")
+	}
+	srv := httptest.NewUnstartedServer(authEnforcingHandler(testPassword, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/provider" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"connected":["openrouter"],"all":[{"id":"openrouter","models":{
+				"anthropic/claude-sonnet-4.5":{"id":"anthropic/claude-sonnet-4.5","name":"x","cost":{"input":1,"output":1}}
+			}}]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	srv.Listener = listener
+	srv.Start()
+	defer srv.Close()
+
+	updater := &mockWSUpdater{ownerUserID: "user-1", orgID: "org-1"}
+	handler := newTestModelsHandler(testPassword)
+	handler.SetModelStore(updater)
+	handler.SetPolicyChecker(&mockPolicyChecker{policy: &types.OrgPolicyValues{
+		AllowedModels:    &[]string{"anthropic/claude-sonnet-4.5"},
+		AllowedProviders: &[]string{"openai"},
+	}})
+
+	w := putModel(t, handler, `{"model":"anthropic/claude-sonnet-4.5"}`)
+	assert.Equal(t, http.StatusForbidden, w.Code,
+		"model allowed by name but the resolution routes via openrouter, which the org denies")
+	assert.Empty(t, updater.calls)
+}

@@ -234,11 +234,16 @@ func (h *ModelsHandler) SetModel(c *gin.Context) {
 
 	// Accept both the flat catalog form ("gpt-5.5") and the qualified form
 	// ("openai/gpt-5.5") that SetModel itself persists — clients echoing a
-	// previously persisted selection must round-trip. The catalog is ground
-	// truth for the provider, so the prefix is advisory only. Split on the
-	// LAST "/" — agentd's resolveModelWithProvider uses LastIndex too, so a
-	// slashed model ID ("a/b/c" = provider "a/b", model "c") parses
-	// identically on both sides.
+	// previously persisted selection must round-trip. Split on the LAST "/"
+	// — agentd's resolveModelWithProvider uses LastIndex too, so a slashed
+	// model ID ("a/b/c" = provider "a/b", model "c") parses identically on
+	// both sides.
+	//
+	// Catalog model IDs may themselves contain slashes (OpenRouter-style
+	// "vendor/model" — the EnrichProviders path). Such an ID advertised by
+	// ListModels is ALSO accepted verbatim as the request value; the flat
+	// form is only used for axis-independent checks, and catalog matching
+	// tries the full ID first (modelExists(flat) fails for slashed IDs).
 	flatModel := req.Model
 	if idx := strings.LastIndex(req.Model, "/"); idx >= 0 {
 		flatModel = req.Model[idx+1:]
@@ -262,7 +267,7 @@ func (h *ModelsHandler) SetModel(c *gin.Context) {
 			catalog = parsed
 		}
 	}
-	if catalog != nil && !catalog.modelExists(flatModel) {
+	if catalog != nil && !catalog.modelExists(req.Model) && !catalog.modelExists(flatModel) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "model not found in workspace catalog"})
 		return
 	}
@@ -270,13 +275,22 @@ func (h *ModelsHandler) SetModel(c *gin.Context) {
 
 	// Resolve the routing target once: the qualified "providerID/modelID"
 	// the catalog maps this selection to (includes the relay remap).
+	// Lookup key: the FULL request value when the catalog lists it as a
+	// model ID (slashed catalog IDs — OpenRouter-style "vendor/model" —
+	// match on their whole ID); otherwise the flat form. resolveModel
+	// passes unfindable values through unchanged, so keying on
+	// modelExists keeps resolution unambiguous.
 	var resolved string
 	if catalog != nil {
 		relayInjected := false
 		if h.relayActive && h.relayChecker != nil {
 			relayInjected = h.relayChecker(c.Request.Context(), userID, workspaceID)
 		}
-		resolved = catalog.resolveModel(flatModel, h.relayActive, relayInjected)
+		lookup := flatModel
+		if catalog.modelExists(req.Model) {
+			lookup = req.Model
+		}
+		resolved = catalog.resolveModel(lookup, h.relayActive, relayInjected)
 	}
 
 	// Org policy enforcement (PR #912). Runs on EVERY path — not only when
@@ -356,13 +370,18 @@ func (h *ModelsHandler) SetModel(c *gin.Context) {
 // modelSelectionAllowedByOrgPolicy checks an explicit SetModel selection
 // against the org's allowed-models/allowed-providers policy on every path.
 //
-// The model axis (flatModel) is always enforceable — it is known
-// regardless of catalog state. The provider axis is enforced against
-// every provider the selection can route through:
+// The model axis is always enforceable — it is known regardless of catalog
+// state. Both the full request value and its flat tail are checked: the
+// full value is the catalog-advertised ID for slashed catalog models
+// (OpenRouter-style "vendor/model"), the tail is the historical flat form.
+// The provider axis is enforced against every provider the selection can
+// route through (FIRST-segment split — opencode's own routing convention,
+// proven by the incident: bare "deepseek-v4-flash-free" parsed as provider
+// + empty modelID; so "a/b/c" routes via provider "a"):
 //   - the catalog-resolved target (resolved, "provider/model") — what
 //     live routing and (now) persistence use;
-//   - the request's own qualified prefix (rawReq) — what would be
-//     persisted verbatim on the degraded catalog-unavailable path.
+//   - the request's own embedded prefix — what would be persisted
+//     verbatim on the degraded catalog-unavailable path.
 //
 // A provider is skipped when it cannot be determined (flat request,
 // unresolved catalog) — matching the axis-availability rule, not a
@@ -383,7 +402,7 @@ func (h *ModelsHandler) modelSelectionAllowedByOrgPolicy(ctx context.Context, wo
 		h.warn("SetModel: policy check unavailable, failing open", "workspaceID", workspaceID, "error", fmt.Sprint(polErr))
 		return true
 	}
-	if !pol.IsModelAllowed(flatModel) {
+	if !pol.IsModelAllowed(flatModel) && !pol.IsModelAllowed(rawReq) {
 		return false
 	}
 	providerAllowed := func(providerID string) bool {

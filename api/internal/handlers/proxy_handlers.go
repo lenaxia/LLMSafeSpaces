@@ -117,6 +117,13 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 		// synchronous send path and must honor the same override).
 		modelOverride := extractPromptModel(bodyBytes)
 		if modelOverride != nil && !h.modelOverrideAllowed(c.Request.Context(), workspace, modelOverride) {
+			// Release the slot checkAdapterSessionLimit reserved — the
+			// quota and adapter-error paths do the same (#913 review
+			// round 3, finding 4: a leaked slot would count against the
+			// session limit without an active send).
+			if sid != "" {
+				h.removeActiveSession(c.Request.Context(), wid, sid)
+			}
 			c.JSON(http.StatusForbidden, gin.H{"error": "model not allowed by organization policy"})
 			return
 		}
@@ -245,8 +252,13 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 		// Org policy enforcement on the explicit override (2026-08-16
 		// follow-up): ListModels hides and SetModel rejects disallowed
 		// models; the prompt override must not be the remaining bypass.
-		// No override → session default routing → not consulted.
+		// No override → session default routing → not consulted. The
+		// session slot reserved above is released on denial (#913 review
+		// round 3, finding 4).
 		if modelOverride != nil && !h.modelOverrideAllowed(c.Request.Context(), workspace, modelOverride) {
+			if sid != "" {
+				h.removeActiveSession(c.Request.Context(), wid, sid)
+			}
 			c.JSON(http.StatusForbidden, gin.H{"error": "model not allowed by organization policy"})
 			return
 		}
@@ -334,13 +346,18 @@ func extractPromptText(body []byte) (string, error) {
 
 // modelOverrideAllowed enforces the org's allowed-models/allowed-providers
 // policy on an explicit per-prompt model override. The workspace CRD already
-// carries the org (Spec.Owner.OrgID), so no DB round-trip. A selector with
-// no providerID skips the provider axis — the adapter degrades it to the
-// session default (which SetModel already screened); applying the provider
-// axis to an undeterminable provider would 403 requests that route exactly
-// like provider-less session defaults (review round 2, finding 4). Fails
-// open on policy-infra errors and for personal workspaces — same semantics
-// as ListModels' filter and SetModel's check (governance filter, not an
+// carries the org (Spec.Owner.OrgID), so no DB round-trip.
+//
+// Provider axis inputs — a slash-bearing modelID embeds a provider prefix
+// that opencode routes by (qualifiedModelID forwards it verbatim), so it is
+// a policy input even without providerID (#913 review round 3, finding 1:
+// {"modelID":"deniedprov/x","providerID":"openai"} previously bypassed
+// allowed_providers entirely). Both the explicit providerID and any embedded
+// prefix are checked. An empty provider axis (no providerID, no embedded
+// prefix) skips the axis — the adapter degrades such refs to the session
+// default, which SetModel already screened (round 2, finding 4). Fails open
+// on policy-infra errors and for personal workspaces — same semantics as
+// ListModels' filter and SetModel's check (governance filter, not an
 // availability gate).
 func (h *ProxyHandler) modelOverrideAllowed(ctx context.Context, workspace *v1.Workspace, m *session.ModelRef) bool {
 	if h.modelPolicyChecker == nil || m == nil {
@@ -358,8 +375,19 @@ func (h *ProxyHandler) modelOverrideAllowed(ctx context.Context, workspace *v1.W
 	if !pol.IsModelAllowed(m.ID) {
 		return false
 	}
+	// Check the explicit providerID and any provider embedded in the ID.
+	// opencode routes slash-bearing IDs by their FIRST segment (proven by
+	// the incident itself: bare "deepseek-v4-flash-free" parsed as
+	// provider + empty modelID), so the first segment is the provider the
+	// policy must check — "openrouter/anthropic/claude" routes via
+	// provider "openrouter", not "openrouter/anthropic".
 	if m.Provider != "" && !pol.IsProviderAllowed(m.Provider) {
 		return false
+	}
+	if idx := strings.Index(m.ID, "/"); idx > 0 {
+		if embedded := m.ID[:idx]; embedded != m.Provider && !pol.IsProviderAllowed(embedded) {
+			return false
+		}
 	}
 	return true
 }

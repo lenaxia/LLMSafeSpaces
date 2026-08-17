@@ -19,14 +19,14 @@
 ### A. Qualified persistence
 
 - `api/internal/handlers/models_handler.go` `SetModel`:
-  - Accepts both request forms: flat (`gpt-5.5`) and qualified (`openai/gpt-5.5` — round-trip compatibility once the DB stores qualified; catalog remains ground truth for the provider, request prefix is advisory).
-  - Persistence rule: qualified request persists verbatim; flat request persists `catalog.resolveModel(...)` output when resolvable; flat+catalog-unavailable degrades to flat (unchanged optimistic behavior).
+  - Accepts both request forms: flat (`gpt-5.5`) and qualified (`openai/gpt-5.5` — round-trip compatibility once the DB stores qualified; catalog remains ground truth for the provider, request prefix is advisory). Slashed CATALOG model IDs (OpenRouter-style `vendor/model`) are accepted verbatim — validation and resolution key on the full value when the catalog lists it (`modelExists` discriminator; round 3, finding 2).
+  - Persistence rule: the **catalog-resolved** qualified form is persisted when the catalog resolves (the same value policy-checked and live-pushed); a qualified request on the degraded path (catalog unavailable) persists verbatim (its prefix is policy-checked); flat+catalog-unavailable degrades to flat (unchanged optimistic behavior).
   - Response contract unchanged (`model` echoes the request); new `persistedModel` field exposes the stored form.
-  - `ListModels`: `GetDefaultModel` may return qualified or legacy flat — the qualified prefix is split to derive `currentModelProviderID` (beats flat-scan resolution and is deterministic for colliding model IDs), `currentModel` response stays flat for client compatibility, `markSelected` matches flat.
+  - `ListModels`: `GetDefaultModel` may return qualified or legacy flat — the qualified prefix is split (LastIndex) to derive `currentModelProviderID`, `currentModel` response stays flat for client compatibility, `markSelected` matches flat.
 - `cmd/workspace-agentd/secrets.go`:
-  - `resolveModelWithProvider` → `(string, bool)`. Qualified input: provider-entry-presence check (deterministic; `LastIndex` split so model IDs containing `/` still work). Flat input: provider scan as before. Unresolvable in ANY form (flat unclaimed, qualified-absent, missing/malformed provider map) → `("", false)` — fail-safe: unverifiable means do-not-write.
+  - `resolveModelWithProvider` → `(string, bool)`. Qualified input: provider-entry-presence check (deterministic; `LastIndex` split). Flat input: provider scan as before. Unresolvable in ANY form (flat unclaimed, qualified-absent, missing/malformed provider map) → `("", false)` — fail-safe: unverifiable means do-not-write.
   - `applyWorkspaceConfig` now omits+warns for qualified-but-absent defaults too (was: passthrough — the same poison as the bare ID).
-  - **Materialize reorder**: `applyWorkspaceConfig` now runs AFTER `applyRelayConfigPreBoot`. Reason: a relay-qualified default (`opencode-relay/x`) must be checked against a provider map that already includes the relay block, or every HEALTHY relay boot would omit+warn. New order: FlushProviders → MCP → pre-boot relay → model. Zero-secrets early path unchanged (no providers → any default correctly omits+warns).
+  - **Materialize order on BOTH paths** (round 2: the zero-credential early path — the incident's exact user shape — was caught by the reorder e2e still resolving before the relay block; `applyPreBootRelay` extracted and shared). New order: providers → MCP → pre-boot relay → model. NOTE: the early path now also fail-fasts (exit 3) on a hard catalog/write failure, matching the main path — acknowledged as newly coupling zero-credential boots to catalog health (round 3, finding 5).
 - No DB migration: existing flat rows keep working through the omit+warn path and convert to qualified lazily on the next SetModel.
 
 ### B. Org policy on SetModel
@@ -73,7 +73,17 @@
 
 **Bonus (e2e caught a real bug):** the materialize-reorder e2e (`TestMaterializeSubcommand_RelayQualifiedDefault_ResolvesAfterRelayBoot`, real subcommand binary + `INFERENCE_RELAY_BASEURL` + free-models catalog via new `LLMSAFESPACES_FREE_MODELS_PATH` env override) revealed the ZERO-CREDENTIAL early path still resolved the model before the pre-boot relay — exactly the incident's user shape (free models, no own providers). Fixed: `applyPreBootRelay` extracted and run on both paths before `applyWorkspaceConfig`.
 
-Also: stale "flat catalog ID" doc comment replaced; API qualified-ID splits aligned to LastIndex (agentd's convention); SetModel policy fail-open pinned; slash-divergence note resolved.
+Also: stale "flat catalog ID" doc comment replaced; API qualified-ID splits aligned to LastIndex (agentd's convention); SetModel policy fail-open pinned.
+
+## Review round 3 (#913 → addressed)
+
+1. **Slash-bearing modelID provider bypass on the prompt path (blocker, empirically confirmed by the reviewer)** — `{"modelID":"deniedprov/x","providerID":"openai"}` passed allowed_providers because the embedded prefix was never checked while the adapter forwards slash-bearing IDs verbatim. Fixed in `modelOverrideAllowed`: the embedded prefix (LastIndex) is policy-checked alongside the explicit providerID. Regression test added.
+2. **Slashed catalog model IDs unselectable (major)** — SetModel's flat split made ListModels-advertised `vendor/model` IDs 400. Fixed: catalog validation and resolution key on the FULL request value when `modelExists` matches it; policy model axis checks both forms. Tests added.
+3. **Index/LastIndex divergence inside the policy check (minor)** — aligned to LastIndex (same convention as boot resolution and request parsing).
+4. **403 denial leaked an active-session slot (minor)** — both prompt paths now `removeActiveSession` on denial, matching the quota and adapter-error paths. Test added.
+5. **Zero-credential boots newly fail-fast on hard catalog failure (low)** — acknowledged: the early path now shares `applyPreBootRelay`'s exit-3-on-hard-failure semantics with the main path (correct: a corrupt catalog or unwritable config is a real bug worth CrashLoop-ing on, for every user class; acknowledged in the PR body).
+6. **Worklog inaccuracies** — section A corrected (persistence prefers the catalog resolution on the healthy path; the early path is no longer unchanged; slashed catalog IDs are handled, not broken).
+7. **`LLMSAFESPACES_FREE_MODELS_PATH` env seam** — documented in-code as controller-controlled operator/test surface (pod env is never user-settable).
 
 ## Tests Run (round 2)
 

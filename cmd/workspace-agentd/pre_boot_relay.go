@@ -115,6 +115,10 @@ func effectiveAllowedDirsPath() string {
 // materialize SUBCOMMAND can be exercised end-to-end as a subprocess
 // (secrets_test.go's relay-reorder e2e) without writing the production
 // /sandbox-cfg path.
+//
+// Security note (#913 review): pod env is fully controller-controlled
+// (pod_builder), never user-controlled, so this override is not an
+// exploitable seam; it is operator/test surface only.
 func effectiveFreeModelsPath() string {
 	if freeModelsTestPath != "" {
 		return freeModelsTestPath
