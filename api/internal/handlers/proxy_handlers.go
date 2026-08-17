@@ -115,8 +115,21 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 		// Per-prompt model selector: symmetric with SendPromptAsync
 		// (PR #909 review round — /message is the SDK-documented
 		// synchronous send path and must honor the same override).
+		modelOverride := extractPromptModel(bodyBytes)
+		if modelOverride != nil && !h.modelOverrideAllowed(c.Request.Context(), workspace, modelOverride) {
+			// Release the slot checkAdapterSessionLimit reserved — the
+			// quota and adapter-error paths do the same (#913 review
+			// round 3, finding 4: a leaked slot would count against the
+			// session limit without an active send).
+			if sid != "" {
+				h.removeActiveSession(c.Request.Context(), wid, sid)
+			}
+			c.JSON(http.StatusForbidden, gin.H{"error": "model not allowed by organization policy"})
+			return
+		}
+
 		msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{
-			Model: extractPromptModel(bodyBytes),
+			Model: modelOverride,
 		})
 		if err != nil {
 			// #817: log the underlying adapter error — without this the
@@ -230,6 +243,26 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 		}
 		h.adapterEnsureSSEWatch(wid)
 
+		// Per-prompt model selector (contract type session.ModelRef);
+		// the adapter owns any agent-specific wire form. Forwarding it is
+		// what keeps a workspace usable when its persisted default model
+		// is unresolvable (incident 2026-08-16).
+		modelOverride := extractPromptModel(bodyBytes)
+
+		// Org policy enforcement on the explicit override (2026-08-16
+		// follow-up): ListModels hides and SetModel rejects disallowed
+		// models; the prompt override must not be the remaining bypass.
+		// No override → session default routing → not consulted. The
+		// session slot reserved above is released on denial (#913 review
+		// round 3, finding 4).
+		if modelOverride != nil && !h.modelOverrideAllowed(c.Request.Context(), workspace, modelOverride) {
+			if sid != "" {
+				h.removeActiveSession(c.Request.Context(), wid, sid)
+			}
+			c.JSON(http.StatusForbidden, gin.H{"error": "model not allowed by organization policy"})
+			return
+		}
+
 		// Use synchronous Send (V1 POST /session/:id/message) instead
 		// of V2 queue (POST /api/session/:id/prompt delivery:queue).
 		// The V2 queue is admitted but never drained on opencode 1.18.10
@@ -237,13 +270,8 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 		// drifted (see #755, #739). The synchronous path works correctly
 		// on all versions. The frontend receives the assistant response
 		// via SSE events regardless of which send path is used.
-		//
-		// The model selector travels with the prompt (contract type
-		// session.ModelRef); the adapter owns any agent-specific wire
-		// form. Forwarding it is what keeps a workspace usable when its
-		// persisted default model is unresolvable (incident 2026-08-16).
 		msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{
-			Model: extractPromptModel(bodyBytes),
+			Model: modelOverride,
 		})
 		if err != nil {
 			// #817: log the underlying adapter error for this path too.
@@ -314,6 +342,67 @@ func extractPromptText(body []byte) (string, error) {
 		}
 	}
 	return sb.String(), nil
+}
+
+// modelOverrideAllowed enforces the org's allowed-models/allowed-providers
+// policy on an explicit per-prompt model override. The workspace CRD already
+// carries the org (Spec.Owner.OrgID), so no DB round-trip.
+//
+// Model axis: the client-sent modelID (the catalog-advertised form) or its
+// bare tail — SetModel and ListModels accept the same two forms.
+//
+// Provider axis: m.Provider is AUTHORITATIVE when present — qualifiedModelID
+// prefixes it onto the ID, so it is the provider routing actually uses and
+// the only provider-axis check. For provider-less slashed IDs (forwarded
+// verbatim by the adapter), the embedded FIRST-segment prefix is the
+// routing provider (opencode's split — the incident proved bare IDs parse
+// as first-segment provider + empty modelID) and is checked instead. An
+// empty provider axis (flat ID, no providerID) skips the axis — the
+// adapter degrades such refs to the session default, which SetModel
+// already screened.
+//
+// Fails open on policy-infra errors and for personal workspaces — same
+// semantics as ListModels' filter and SetModel's check (governance filter,
+// not an availability gate).
+func (h *ProxyHandler) modelOverrideAllowed(ctx context.Context, workspace *v1.Workspace, m *session.ModelRef) bool {
+	if h.modelPolicyChecker == nil || m == nil {
+		return true
+	}
+	if workspace == nil || workspace.Spec.Owner.OrgID == "" {
+		return true // personal workspace — no org policy dimension
+	}
+	pol, err := h.modelPolicyChecker.GetEffectivePolicy(ctx, workspace.Spec.Owner.OrgID)
+	if err != nil || pol == nil {
+		h.logger.Warn("prompt model-override policy check unavailable, failing open",
+			"error", err, "orgID", workspace.Spec.Owner.OrgID)
+		return true
+	}
+	if !pol.IsModelAllowed(m.ID) {
+		// Slashed catalog IDs: an org may allowlist either the advertised
+		// full ID ("anthropic/claude-sonnet-4.5") or the bare tail
+		// ("claude-sonnet-4.5") — accept both, matching SetModel's axis.
+		tailAllowed := false
+		if idx := strings.Index(m.ID, "/"); idx >= 0 && idx < len(m.ID)-1 {
+			tailAllowed = pol.IsModelAllowed(m.ID[idx+1:])
+		}
+		if !tailAllowed {
+			return false
+		}
+	}
+	// Provider axis: m.Provider is AUTHORITATIVE when present — the
+	// adapter prefixes it onto the ID, so it is the provider routing
+	// actually uses. The embedded first-segment prefix is checked only for
+	// provider-less slashed IDs (round 3's bypass shape); checking it when
+	// Provider is set would false-deny the frontend's double form
+	// ({modelID:"vendor/model", providerID:"openrouter"} — the first
+	// segment is a vendor namespace, not the routing provider).
+	if m.Provider != "" {
+		return pol.IsProviderAllowed(m.Provider)
+	}
+	if idx := strings.Index(m.ID, "/"); idx > 0 && idx < len(m.ID)-1 {
+		return pol.IsProviderAllowed(m.ID[:idx])
+	}
+	return true
 }
 
 // extractPromptModel parses the per-prompt model selector

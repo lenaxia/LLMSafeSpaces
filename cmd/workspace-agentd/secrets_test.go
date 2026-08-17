@@ -59,7 +59,7 @@ func buildAgentdBinary(t *testing.T) string {
 
 // runMaterializeSubcommand runs `workspace-agentd materialize --from <path>`
 // and returns exit code, stdout, stderr.
-func runMaterializeSubcommand(t *testing.T, bin, secretsPath, secretsBase, sshDir, agentCfg, envPath, gitCreds string) (int, string, string) {
+func runMaterializeSubcommand(t *testing.T, bin, secretsPath, secretsBase, sshDir, agentCfg, envPath, gitCreds string, extraEnv ...string) (int, string, string) {
 	t.Helper()
 	cmd := exec.Command(bin, "materialize", "--from", secretsPath)
 	// Override paths via env so we don't need root or to write into
@@ -73,6 +73,7 @@ func runMaterializeSubcommand(t *testing.T, bin, secretsPath, secretsBase, sshDi
 		"LLMSAFESPACES_RELOAD_CACHE_PATH="+filepath.Join(filepath.Dir(secretsBase), "nonexistent-reload-cache.json"),
 		"HOME="+filepath.Dir(sshDir),
 	)
+	cmd.Env = append(cmd.Env, extraEnv...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -747,7 +748,10 @@ func TestReloadSecretsHandler_NoRelay_NoDisabledProviders(t *testing.T) {
 }
 
 // TestResolveModelWithProvider validates providerID resolution from the
-// agent config's provider map.
+// agent config's provider map. Contract (incident 2026-08-16 follow-up):
+// ok=false means "no provider in THIS boot's config can serve the model" —
+// the caller must omit the model key, never write the value bare or
+// qualified-but-unverifiable.
 func TestResolveModelWithProvider(t *testing.T) {
 	buildCfg := func(providerJSON string) map[string]json.RawMessage {
 		cfg := map[string]json.RawMessage{}
@@ -760,38 +764,89 @@ func TestResolveModelWithProvider(t *testing.T) {
 			"thekao": {"models": {"glm-5.1": {}, "gpt-5.4": {}}},
 			"opencode-relay": {"models": {"big-pickle": {}}}
 		}`)
-		got := resolveModelWithProvider(cfg, "glm-5.1")
+		got, ok := resolveModelWithProvider(cfg, "glm-5.1")
+		assert.True(t, ok)
 		assert.Equal(t, "thekao/glm-5.1", got)
 	})
 
-	t.Run("returns flat ID unchanged when no provider claims it", func(t *testing.T) {
+	t.Run("flat ID no provider claims it is unresolvable", func(t *testing.T) {
 		cfg := buildCfg(`{"thekao": {"models": {"gpt-5.4": {}}}}`)
-		got := resolveModelWithProvider(cfg, "glm-5.1")
-		assert.Equal(t, "glm-5.1", got, "fallback must not panic or mangle the ID")
+		got, ok := resolveModelWithProvider(cfg, "glm-5.1")
+		assert.False(t, ok)
+		assert.Empty(t, got)
 	})
 
-	t.Run("already-qualified IDs are passed through unchanged", func(t *testing.T) {
+	t.Run("already-qualified with provider present passes through", func(t *testing.T) {
 		cfg := buildCfg(`{"thekao": {"models": {"glm-5.1": {}}}}`)
-		got := resolveModelWithProvider(cfg, "thekao/glm-5.1")
+		got, ok := resolveModelWithProvider(cfg, "thekao/glm-5.1")
+		assert.True(t, ok)
 		assert.Equal(t, "thekao/glm-5.1", got)
 	})
 
-	t.Run("empty model ID returns empty string", func(t *testing.T) {
+	t.Run("qualified with provider absent is unresolvable", func(t *testing.T) {
+		// The exact incident shape, one boot later, with qualified
+		// persistence: default "opencode-relay/x", relay injector failed.
+		// Passthrough would poison opencode the same way the bare ID did.
+		cfg := buildCfg(`{"thekao": {"models": {"glm-5.3": {}}}}`)
+		got, ok := resolveModelWithProvider(cfg, "opencode-relay/deepseek-v4-flash-free")
+		assert.False(t, ok)
+		assert.Empty(t, got)
+	})
+
+	t.Run("qualified relay model with relay provider present resolves", func(t *testing.T) {
+		cfg := buildCfg(`{"thekao": {"models": {"glm-5.3": {}}}, "opencode-relay": {"models": {"deepseek-v4-flash-free": {}}}}`)
+		got, ok := resolveModelWithProvider(cfg, "opencode-relay/deepseek-v4-flash-free")
+		assert.True(t, ok)
+		assert.Equal(t, "opencode-relay/deepseek-v4-flash-free", got)
+	})
+
+	t.Run("two-slash qualified resolves via first-segment provider", func(t *testing.T) {
+		// Round 4, finding 2: SetModel persists slashed-catalog selections
+		// as "provider/vendor/model" (e.g. openrouter + "anthropic/
+		// claude-sonnet-4.5"). The boot check must verify the FIRST
+		// segment (opencode's routing split) — the previous LastIndex
+		// split looked for a provider entry literally named
+		// "openrouter/anthropic" and omit+warned on every reboot.
+		cfg := buildCfg(`{"openrouter": {"models": {"anthropic/claude-sonnet-4.5": {}}}}`)
+		got, ok := resolveModelWithProvider(cfg, "openrouter/anthropic/claude-sonnet-4.5")
+		assert.True(t, ok, "first-segment provider presence must resolve multi-slash defaults")
+		assert.Equal(t, "openrouter/anthropic/claude-sonnet-4.5", got)
+	})
+
+	t.Run("two-slash qualified first-segment provider absent is unresolvable", func(t *testing.T) {
+		cfg := buildCfg(`{"openrouter": {"models": {"anthropic/claude-sonnet-4.5": {}}}}`)
+		_, ok := resolveModelWithProvider(cfg, "otherprov/anthropic/claude-sonnet-4.5")
+		assert.False(t, ok)
+	})
+
+	t.Run("empty-tail qualified form is unresolvable", func(t *testing.T) {
+		// Round 5: "a/" is the incident's own parse shape (provider +
+		// EMPTY modelID). Reachable via pod-down persistence; must be
+		// rejected by the resolver, never written.
+		cfg := buildCfg(`{"a": {"models": {"x": {}}}}`)
+		_, ok := resolveModelWithProvider(cfg, "a/")
+		assert.False(t, ok, "empty-tail 'a/' must never resolve even when provider 'a' exists")
+	})
+
+	t.Run("empty model ID is unresolvable", func(t *testing.T) {
 		cfg := buildCfg(`{"thekao": {"models": {"glm-5.1": {}}}}`)
-		got := resolveModelWithProvider(cfg, "")
-		assert.Equal(t, "", got)
+		got, ok := resolveModelWithProvider(cfg, "")
+		assert.False(t, ok)
+		assert.Empty(t, got)
 	})
 
-	t.Run("no provider key in cfg returns flat ID", func(t *testing.T) {
+	t.Run("no provider key in cfg is unresolvable", func(t *testing.T) {
 		cfg := map[string]json.RawMessage{} // no "provider" key
-		got := resolveModelWithProvider(cfg, "glm-5.1")
-		assert.Equal(t, "glm-5.1", got)
+		got, ok := resolveModelWithProvider(cfg, "glm-5.1")
+		assert.False(t, ok)
+		assert.Empty(t, got)
 	})
 
-	t.Run("malformed provider JSON returns flat ID", func(t *testing.T) {
+	t.Run("malformed provider JSON is unresolvable", func(t *testing.T) {
 		cfg := map[string]json.RawMessage{"provider": json.RawMessage(`not-json`)}
-		got := resolveModelWithProvider(cfg, "glm-5.1")
-		assert.Equal(t, "glm-5.1", got)
+		got, ok := resolveModelWithProvider(cfg, "glm-5.1")
+		assert.False(t, ok, "fail safe: unverifiable means do not write")
+		assert.Empty(t, got)
 	})
 }
 
@@ -878,6 +933,38 @@ func TestApplyWorkspaceConfig_UnresolvableModel_OmittedWithWarning(t *testing.T)
 	assert.Equal(t, "deepseek-v4-flash-free", warn.DefaultModel)
 }
 
+// TestApplyWorkspaceConfig_QualifiedDefault_ProviderAbsent_Omitted pins the
+// follow-up to the 2026-08-16 incident once SetModel persists qualified
+// defaults: a default like "opencode-relay/deepseek-v4-flash-free" on a boot
+// where the relay provider was not written must be omitted (passthrough
+// would poison opencode exactly like the bare ID did) and warned.
+func TestApplyWorkspaceConfig_QualifiedDefault_ProviderAbsent_Omitted(t *testing.T) {
+	dir := t.TempDir()
+	agentCfg := filepath.Join(dir, "agent-config.json")
+	secretsJSON := filepath.Join(dir, "secrets.json")
+
+	wsCfgPath := filepath.Join(dir, "workspace-config.json")
+	require.NoError(t, os.WriteFile(wsCfgPath, []byte(`{"defaultModel":"opencode-relay/deepseek-v4-flash-free"}`), 0o600))
+	require.NoError(t, os.WriteFile(agentCfg, []byte(`{"model": "opencode-relay/deepseek-v4-flash-free", "provider": {"thekao": {"models": {"glm-5.3": {}}}}}`), 0o600))
+
+	applyWorkspaceConfig(agentCfg, secretsJSON)
+
+	raw, err := os.ReadFile(agentCfg)
+	require.NoError(t, err)
+	var out map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(raw, &out))
+	_, hasModel := out["model"]
+	assert.False(t, hasModel, "qualified-but-absent provider must be omitted, not passed through")
+
+	warnRaw, err := os.ReadFile(modelResolutionWarningPath(dir))
+	require.NoError(t, err)
+	var warn struct {
+		DefaultModel string `json:"defaultModel"`
+	}
+	require.NoError(t, json.Unmarshal(warnRaw, &warn))
+	assert.Equal(t, "opencode-relay/deepseek-v4-flash-free", warn.DefaultModel)
+}
+
 // TestApplyWorkspaceConfig_Resolvable_RemovesStaleWarning verifies that a
 // successful resolution clears any warning marker left by a previous boot.
 // Without this, a workspace that recovers (credential bound, relay back)
@@ -913,10 +1000,11 @@ func TestApplyWorkspaceConfig_Resolvable_RemovesStaleWarning(t *testing.T) {
 // TestResolveModelWithProvider_Collision documents the behavior when two
 // providers in agent-config.json expose the same model ID. Go map iteration
 // is non-deterministic, so the function may return either "provider-a/shared"
-// or "provider-b/shared". The contract is: the result is always a valid
-// "providerID/modelID" string (never the flat ID, never empty, never a panic).
-// The boot-time path accepts this non-determinism because the per-prompt
-// frontend override routes correctly regardless of the boot default model.
+// or "provider-b/shared". The contract is: ok=true with a valid
+// "providerID/modelID" string (never the flat ID, never a panic). The
+// non-determinism is acceptable at boot: SetModel persists the qualified
+// form, so collision ambiguity only affects legacy flat defaults, and the
+// per-prompt override routes regardless.
 func TestResolveModelWithProvider_Collision(t *testing.T) {
 	cfg := map[string]json.RawMessage{
 		"provider": json.RawMessage(`{
@@ -924,8 +1012,9 @@ func TestResolveModelWithProvider_Collision(t *testing.T) {
 			"provider-b": {"models": {"shared": {}}}
 		}`),
 	}
-	got := resolveModelWithProvider(cfg, "shared")
+	got, ok := resolveModelWithProvider(cfg, "shared")
 
+	assert.True(t, ok, "a claimed model must resolve even under collision")
 	// Must be one of the two valid qualified forms — never the flat ID.
 	assert.True(t,
 		got == "provider-a/shared" || got == "provider-b/shared",
@@ -1147,4 +1236,63 @@ func TestReloadSecrets_WrongPassword(t *testing.T) {
 	rec := httptest.NewRecorder()
 	reloadSecretsHandler(cfg, reloadSecretsDeps{OpencodePassword: "test-pw"})(rec, req)
 	require.Equal(t, http.StatusUnauthorized, rec.Code)
+}
+
+// TestMaterializeSubcommand_RelayQualifiedDefault_ResolvesAfterRelayBoot is
+// the e2e pin for the materialize REORDER (PR #912): applyWorkspaceConfig
+// must run AFTER applyRelayConfigPreBoot, because a relay-qualified default
+// ("opencode-relay/<model>", what SetModel persists for free models) can
+// only resolve against a provider map that already includes the relay
+// block. Runs the REAL subcommand binary with INFERENCE_RELAY_BASEURL set
+// and a free-models catalog on disk; reverting the call order makes the
+// model key vanish (omit+warn) and fails this test.
+func TestMaterializeSubcommand_RelayQualifiedDefault_ResolvesAfterRelayBoot(t *testing.T) {
+	bin := buildAgentdBinary(t)
+	dir := t.TempDir()
+
+	secretsPath := filepath.Join(dir, "does-not-exist.json") // zero-credential user
+	agentCfgPath := filepath.Join(dir, "agent-config.json")
+	// Empty provider map — as FlushProviders leaves it for a zero-credential
+	// user. The relay block must be merged in by the pre-boot step.
+	require.NoError(t, os.WriteFile(agentCfgPath, []byte(`{"$schema":"https://opencode.ai/config.json"}`), 0o600))
+
+	// Relay-qualified default — SetModel persists this form when the user
+	// picks a free model while relay is injected.
+	wsCfgPath := filepath.Join(dir, "workspace-config.json")
+	require.NoError(t, os.WriteFile(wsCfgPath, []byte(`{"defaultModel":"opencode-relay/deepseek-v4-flash-free"}`), 0o600))
+
+	// Free-models catalog (credential-setup init container's copy).
+	freeModelsPath := filepath.Join(dir, "free-models.json")
+	require.NoError(t, os.WriteFile(freeModelsPath, []byte(`{"models":[
+		{"id":"deepseek-v4-flash-free","name":"DeepSeek V4 Flash (Free)","context_limit":128000,"output_limit":32768}
+	]}`), 0o600))
+
+	exit, stdout, stderr := runMaterializeSubcommand(t, bin, secretsPath,
+		filepath.Join(dir, "secrets"),
+		filepath.Join(dir, ".ssh"),
+		agentCfgPath,
+		filepath.Join(dir, "env"),
+		filepath.Join(dir, ".git-credentials"),
+		"INFERENCE_RELAY_BASEURL=http://relay.example.invalid/secret-path",
+		"LLMSAFESPACES_FREE_MODELS_PATH="+freeModelsPath,
+	)
+	require.Equal(t, 0, exit, "materialize must succeed; stderr=%q stdout=%q", stderr, stdout)
+	assert.Contains(t, stderr, "pre-boot relay outcome=applied",
+		"the pre-boot relay step must have applied (sanity for the reorder premise)")
+
+	raw, err := os.ReadFile(agentCfgPath)
+	require.NoError(t, err)
+	var cfg map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(raw, &cfg))
+
+	require.Contains(t, cfg, "model",
+		"relay-qualified default must resolve — the relay provider block is written before the model check")
+	var model string
+	require.NoError(t, json.Unmarshal(cfg["model"], &model))
+	assert.Equal(t, "opencode-relay/deepseek-v4-flash-free", model)
+
+	// And no warning marker: nothing was substituted.
+	if _, err := os.Stat(modelResolutionWarningPath(dir)); !os.IsNotExist(err) {
+		t.Fatalf("no warning marker may exist when the relay-qualified default resolves; stat err=%v", err)
+	}
 }

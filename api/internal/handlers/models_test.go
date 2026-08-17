@@ -7,9 +7,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -55,6 +57,7 @@ type mockWSUpdater struct {
 	failErr error
 	// WorkspaceOwnerChecker support
 	ownerUserID string // if set, GetWorkspace returns a workspace owned by this user
+	orgID       string // if set, GetWorkspace returns a workspace in this org (policy path)
 }
 
 func (m *mockWSUpdater) UpdateWorkspace(_ context.Context, _ string, updates types.WorkspaceUpdates) error {
@@ -65,11 +68,14 @@ func (m *mockWSUpdater) UpdateWorkspace(_ context.Context, _ string, updates typ
 }
 
 func (m *mockWSUpdater) GetWorkspace(_ context.Context, workspaceID string) (*types.WorkspaceMetadata, error) {
-	if m.ownerUserID == "" {
-		// Default: workspace owned by "user-1" (matches test auth middleware)
-		return &types.WorkspaceMetadata{ID: workspaceID, UserID: "user-1"}, nil
+	meta := &types.WorkspaceMetadata{ID: workspaceID, UserID: "user-1"}
+	if m.ownerUserID != "" {
+		meta.UserID = m.ownerUserID
 	}
-	return &types.WorkspaceMetadata{ID: workspaceID, UserID: m.ownerUserID}, nil
+	if m.orgID != "" {
+		meta.OrgID = &m.orgID
+	}
+	return meta, nil
 }
 
 func (m *mockWSUpdater) GetDefaultModel(_ context.Context, _ string) (string, error) {
@@ -1656,3 +1662,483 @@ func TestListModels_CacheInvalidatedOnReverseTransition(t *testing.T) {
 // api/internal/services/agentpush/agentpush_test.go, at the level of
 // the shared implementation both this handler and the workspace
 // service consume.)
+
+// --- SetModel qualified persistence + org-policy enforcement (2026-08-16 follow-up) ---
+
+// mockPolicyChecker stubs OrgPolicyChecker for SetModel policy tests.
+type mockPolicyChecker struct {
+	policy *types.OrgPolicyValues
+	err    error
+}
+
+func (m *mockPolicyChecker) GetEffectivePolicy(_ context.Context, _ string) (*types.OrgPolicyValues, error) {
+	return m.policy, m.err
+}
+
+// newSetModelCatalogServer stands up the opencode mock (port 4096) serving a
+// single-provider catalog and capturing PATCH /global/config bodies.
+func newSetModelCatalogServer(t *testing.T, password string) (*httptest.Server, *string) {
+	t.Helper()
+	var receivedModel string
+	listener, err := net.Listen("tcp", "127.0.0.1:4096")
+	if err != nil {
+		t.Skip("port 4096 not available")
+	}
+	srv := httptest.NewUnstartedServer(authEnforcingHandler(password, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/provider":
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"connected":["openai"],"all":[{"id":"openai","models":{"gpt-5.5":{"id":"gpt-5.5","name":"GPT-5.5","cost":{"input":5,"output":15}}}}]}`))
+		case r.Method == http.MethodPatch && r.URL.Path == "/global/config":
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			receivedModel = body["model"]
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	srv.Listener = listener
+	srv.Start()
+	t.Cleanup(srv.Close)
+	return srv, &receivedModel
+}
+
+func putModel(t *testing.T, handler *ModelsHandler, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	router := gin.New()
+	router.Use(func(c *gin.Context) { c.Set("userID", "user-1"); c.Next() })
+	router.PUT("/api/v1/workspaces/:id/model", handler.SetModel)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/workspaces/ws-1/model", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	return w
+}
+
+// TestSetModel_PersistsQualifiedForm pins the qualified-persistence fix: when
+// the catalog resolves the selection, the DB must store "providerID/modelID"
+// so boot-time resolution is deterministic (incident 2026-08-16 follow-up —
+// flat persistence is what made boot re-resolution fragile).
+func TestSetModel_PersistsQualifiedForm(t *testing.T) {
+	clearModelCache()
+	gin.SetMode(gin.TestMode)
+
+	_, received := newSetModelCatalogServer(t, "qual-pw")
+	updater := &mockWSUpdater{ownerUserID: "user-1"}
+	handler := newTestModelsHandler("qual-pw")
+	handler.SetModelStore(updater)
+
+	w := putModel(t, handler, `{"model":"gpt-5.5"}`)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	require.Len(t, updater.calls, 1)
+	require.NotNil(t, updater.calls[0].DefaultModel)
+	assert.Equal(t, "openai/gpt-5.5", *updater.calls[0].DefaultModel,
+		"catalog-resolvable selections must persist qualified")
+	assert.Equal(t, "openai/gpt-5.5", *received, "live push unchanged")
+}
+
+// TestSetModel_AcceptsQualifiedRequest verifies round-trip compatibility once
+// the DB stores qualified values: a client echoing a previously persisted
+// "provider/model" selection must be accepted, validated, and re-resolved.
+func TestSetModel_AcceptsQualifiedRequest(t *testing.T) {
+	clearModelCache()
+	gin.SetMode(gin.TestMode)
+
+	_, received := newSetModelCatalogServer(t, "qual-req-pw")
+	updater := &mockWSUpdater{ownerUserID: "user-1"}
+	handler := newTestModelsHandler("qual-req-pw")
+	handler.SetModelStore(updater)
+
+	w := putModel(t, handler, `{"model":"openai/gpt-5.5"}`)
+	require.Equal(t, http.StatusOK, w.Code, "qualified request must be accepted")
+
+	require.Len(t, updater.calls, 1)
+	assert.Equal(t, "openai/gpt-5.5", *updater.calls[0].DefaultModel)
+	assert.Equal(t, "openai/gpt-5.5", *received)
+}
+
+// TestSetModel_PersistsFlat_WhenCatalogUnavailable pins the degraded path:
+// pod down (catalog nil) → optimistic flat persistence, exactly as before.
+func TestSetModel_PersistsFlat_WhenCatalogUnavailable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	updater := &mockWSUpdater{ownerUserID: "user-1"}
+	handler := newTestModelsHandlerNoPod() // catalog fetch fails → nil
+	handler.SetModelStore(updater)
+
+	w := putModel(t, handler, `{"model":"glm-5.3"}`)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	require.Len(t, updater.calls, 1)
+	assert.Equal(t, "glm-5.3", *updater.calls[0].DefaultModel)
+}
+
+// TestSetModel_OrgPolicyDenied_Returns403 closes the enforcement gap: policy
+// was checked only in ListModels (hide-by-filtering); SetModel accepted and
+// persisted anything catalog-valid. Denied model → 403, nothing persisted.
+func TestSetModel_OrgPolicyDenied_Returns403(t *testing.T) {
+	clearModelCache()
+	gin.SetMode(gin.TestMode)
+
+	newSetModelCatalogServer(t, "policy-pw")
+	updater := &mockWSUpdater{ownerUserID: "user-1", orgID: "org-1"}
+	handler := newTestModelsHandler("policy-pw")
+	handler.SetModelStore(updater)
+	handler.SetPolicyChecker(&mockPolicyChecker{policy: &types.OrgPolicyValues{
+		AllowedModels: &[]string{"glm-5.3"},
+	}})
+
+	w := putModel(t, handler, `{"model":"gpt-5.5"}`)
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.Empty(t, updater.calls, "denied selection must not be persisted")
+}
+
+// TestSetModel_OrgPolicyProviderDenied_Returns403 covers the provider axis.
+func TestSetModel_OrgPolicyProviderDenied_Returns403(t *testing.T) {
+	clearModelCache()
+	gin.SetMode(gin.TestMode)
+
+	newSetModelCatalogServer(t, "policy-prov-pw")
+	updater := &mockWSUpdater{ownerUserID: "user-1", orgID: "org-1"}
+	handler := newTestModelsHandler("policy-prov-pw")
+	handler.SetModelStore(updater)
+	handler.SetPolicyChecker(&mockPolicyChecker{policy: &types.OrgPolicyValues{
+		AllowedModels:    &[]string{"gpt-5.5"},
+		AllowedProviders: &[]string{"anthropic"},
+	}})
+
+	w := putModel(t, handler, `{"model":"gpt-5.5"}`)
+	assert.Equal(t, http.StatusForbidden, w.Code, "model allowed but provider openai is not")
+	assert.Empty(t, updater.calls)
+}
+
+// TestSetModel_OrgPolicyAllowed_Proceeds covers the positive path.
+func TestSetModel_OrgPolicyAllowed_Proceeds(t *testing.T) {
+	clearModelCache()
+	gin.SetMode(gin.TestMode)
+
+	newSetModelCatalogServer(t, "policy-ok-pw")
+	updater := &mockWSUpdater{ownerUserID: "user-1", orgID: "org-1"}
+	handler := newTestModelsHandler("policy-ok-pw")
+	handler.SetModelStore(updater)
+	handler.SetPolicyChecker(&mockPolicyChecker{policy: &types.OrgPolicyValues{
+		AllowedModels:    &[]string{"gpt-5.5"},
+		AllowedProviders: &[]string{"openai"},
+	}})
+
+	w := putModel(t, handler, `{"model":"gpt-5.5"}`)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Len(t, updater.calls, 1)
+	assert.Equal(t, "openai/gpt-5.5", *updater.calls[0].DefaultModel)
+}
+
+// TestListModels_CurrentModelQualifiedInDB verifies backward compatibility of
+// the read path once SetModel persists qualified: currentModel is still
+// returned flat, the provider is resolved, and the row is marked Selected.
+func TestListModels_CurrentModelQualifiedInDB(t *testing.T) {
+	clearModelCache()
+	gin.SetMode(gin.TestMode)
+
+	const testPassword = "qual-current-pw"
+	listener, err := net.Listen("tcp", "127.0.0.1:4096")
+	if err != nil {
+		t.Skip("port 4096 not available")
+	}
+	models := `{"connected":["thekao"],"all":[{"id":"thekao","models":{
+		"glm-5.1":{"id":"glm-5.1","name":"GLM 5.1","cost":{"input":1,"output":2}},
+		"gpt-5.4":{"id":"gpt-5.4","name":"GPT 5.4","cost":{"input":1,"output":2}}
+	}}]}`
+	srv := httptest.NewUnstartedServer(authEnforcingHandler(testPassword, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(models))
+	}))
+	srv.Listener = listener
+	srv.Start()
+	defer srv.Close()
+
+	handler := newTestModelsHandler(testPassword)
+	handler.SetModelStore(&mockModelReader{model: "thekao/glm-5.1"})
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) { c.Set("userID", "user-1"); c.Next() })
+	router.GET("/api/v1/workspaces/:id/models", handler.ListModels)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/ws-1/models", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp struct {
+		Models                 []annotatedModel `json:"models"`
+		CurrentModel           string           `json:"currentModel"`
+		CurrentModelProviderID string           `json:"currentModelProviderID"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, "glm-5.1", resp.CurrentModel,
+		"response stays flat for client compatibility; qualified is a storage detail")
+	assert.Equal(t, "thekao", resp.CurrentModelProviderID)
+	selected := 0
+	for _, m := range resp.Models {
+		if m.Selected {
+			selected++
+			assert.Equal(t, "glm-5.1", m.ID)
+		}
+	}
+	assert.Equal(t, 1, selected, "the DB-selected model must be marked Selected exactly once")
+}
+
+// --- #912 review round 2: enforcement-path coverage ---
+
+// TestSetModel_PodDown_OrgPolicyStillEnforcesModelAxis pins finding 2: the
+// policy check previously nested inside `if catalog != nil`, so a down pod
+// (or a catalog parse failure) bypassed org policy entirely while still
+// persisting the selection. The model axis does not depend on the catalog
+// and must always be enforced.
+func TestSetModel_PodDown_OrgPolicyStillEnforcesModelAxis(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	updater := &mockWSUpdater{ownerUserID: "user-1", orgID: "org-1"}
+	handler := newTestModelsHandlerNoPod() // catalog fetch fails → nil
+	handler.SetModelStore(updater)
+	handler.SetPolicyChecker(&mockPolicyChecker{policy: &types.OrgPolicyValues{
+		AllowedModels: &[]string{"glm-5.3"},
+	}})
+
+	w := putModel(t, handler, `{"model":"gpt-5.5"}`)
+	assert.Equal(t, http.StatusForbidden, w.Code,
+		"pod-down must not bypass the org allowed-models policy")
+	assert.Empty(t, updater.calls)
+}
+
+// TestSetModel_PodDown_QualifiedRequest_ProviderAxisEnforced covers the
+// degraded path's provider axis: a qualified request persists verbatim
+// when the catalog is unavailable, so its prefix must be policy-checked.
+func TestSetModel_PodDown_QualifiedRequest_ProviderAxisEnforced(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	updater := &mockWSUpdater{ownerUserID: "user-1", orgID: "org-1"}
+	handler := newTestModelsHandlerNoPod()
+	handler.SetModelStore(updater)
+	handler.SetPolicyChecker(&mockPolicyChecker{policy: &types.OrgPolicyValues{
+		AllowedModels:    &[]string{"gpt-5.5"},
+		AllowedProviders: &[]string{"openai"},
+	}})
+
+	w := putModel(t, handler, `{"model":"evil/gpt-5.5"}`)
+	assert.Equal(t, http.StatusForbidden, w.Code,
+		"the degraded path persists the request prefix verbatim — it must be policy-checked")
+	assert.Empty(t, updater.calls)
+}
+
+// TestSetModel_PodDown_QualifiedRequest_AllowedPrefix_Persists the
+// positive degraded path: allowed model + allowed prefix persists verbatim.
+func TestSetModel_PodDown_QualifiedRequest_AllowedPrefix_Persists(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	updater := &mockWSUpdater{ownerUserID: "user-1", orgID: "org-1"}
+	handler := newTestModelsHandlerNoPod()
+	handler.SetModelStore(updater)
+	handler.SetPolicyChecker(&mockPolicyChecker{policy: &types.OrgPolicyValues{
+		AllowedModels:    &[]string{"gpt-5.5"},
+		AllowedProviders: &[]string{"openai"},
+	}})
+
+	w := putModel(t, handler, `{"model":"openai/gpt-5.5"}`)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Len(t, updater.calls, 1)
+	assert.Equal(t, "openai/gpt-5.5", *updater.calls[0].DefaultModel)
+}
+
+// TestSetModel_RequestPrefixDiffersFromResolution pins finding 3: for a
+// qualified request whose prefix differs from the catalog resolution, the
+// persisted value must be the catalog-resolved form — the same provider
+// the policy checked and the live push routes. Persisting the unchecked
+// request prefix made pod-restart routing flip to a never-checked provider.
+func TestSetModel_RequestPrefixDiffersFromResolution(t *testing.T) {
+	clearModelCache()
+	gin.SetMode(gin.TestMode)
+
+	_, received := newSetModelCatalogServer(t, "mismatch-pw")
+	updater := &mockWSUpdater{ownerUserID: "user-1", orgID: "org-1"}
+	handler := newTestModelsHandler("mismatch-pw")
+	handler.SetModelStore(updater)
+	// openai allowed (it's the resolved provider); "evil" not listed.
+	handler.SetPolicyChecker(&mockPolicyChecker{policy: &types.OrgPolicyValues{
+		AllowedModels:    &[]string{"gpt-5.5"},
+		AllowedProviders: &[]string{"openai"},
+	}})
+
+	// Request carries a mismatched prefix ("evil") the org denies. On the
+	// HEALTHY path this is ALLOWED (round 4, finding 3): the catalog
+	// resolution ("openai/gpt-5.5") is both what routes and what persists,
+	// so the "evil" prefix never reaches routing or the DB — denying here
+	// would false-deny slashed catalog IDs whose first segment is a vendor
+	// namespace. The degraded-path prefix check is pinned separately by
+	// TestSetModel_PodDown_QualifiedRequest_ProviderAxisEnforced.
+	w := putModel(t, handler, `{"model":"evil/gpt-5.5"}`)
+	require.Equal(t, http.StatusOK, w.Code,
+		"healthy path: the resolution routes and persists; the advisory prefix is never load-bearing")
+	require.Len(t, updater.calls, 1)
+	assert.Equal(t, "openai/gpt-5.5", *updater.calls[0].DefaultModel,
+		"persistence must follow the catalog resolution, not the request prefix")
+	assert.Equal(t, "openai/gpt-5.5", *received)
+}
+
+// TestSetModel_PolicyError_FailsOpen pins the fail-open semantics of the
+// SetModel policy check on GetEffectivePolicy errors (governance filter,
+// not an availability gate — matches ListModels).
+func TestSetModel_PolicyError_FailsOpen(t *testing.T) {
+	clearModelCache()
+	gin.SetMode(gin.TestMode)
+
+	newSetModelCatalogServer(t, "failopen-pw")
+	updater := &mockWSUpdater{ownerUserID: "user-1", orgID: "org-1"}
+	handler := newTestModelsHandler("failopen-pw")
+	handler.SetModelStore(updater)
+	handler.SetPolicyChecker(&mockPolicyChecker{err: errPolicyUnavailable})
+
+	w := putModel(t, handler, `{"model":"gpt-5.5"}`)
+	require.Equal(t, http.StatusOK, w.Code, "policy-infra error must fail open")
+	require.Len(t, updater.calls, 1)
+}
+
+var errPolicyUnavailable = errors.New("policy backend unavailable")
+
+// TestSetModel_SlashedCatalogModelID_Selectable pins round-3 finding 2:
+// OpenRouter-style catalogs advertise model IDs containing "/" (e.g.
+// "anthropic/claude-sonnet-4.5" under provider "openrouter"). ListModels
+// advertises the ID verbatim; SetModel must accept it (the flat-split
+// regression 400'd on the API's own advertised ID).
+func TestSetModel_SlashedCatalogModelID_Selectable(t *testing.T) {
+	clearModelCache()
+	gin.SetMode(gin.TestMode)
+
+	const testPassword = "slashed-pw"
+	listener, err := net.Listen("tcp", "127.0.0.1:4096")
+	if err != nil {
+		t.Skip("port 4096 not available")
+	}
+	var receivedModel string
+	srv := httptest.NewUnstartedServer(authEnforcingHandler(testPassword, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/provider":
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"connected":["openrouter"],"all":[{"id":"openrouter","models":{
+				"anthropic/claude-sonnet-4.5":{"id":"anthropic/claude-sonnet-4.5","name":"Claude Sonnet 4.5","cost":{"input":3,"output":15}}
+			}}]}`))
+		case r.Method == http.MethodPatch && r.URL.Path == "/global/config":
+			var body map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			receivedModel = body["model"]
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	srv.Listener = listener
+	srv.Start()
+	defer srv.Close()
+
+	updater := &mockWSUpdater{ownerUserID: "user-1"}
+	handler := newTestModelsHandler(testPassword)
+	handler.SetModelStore(updater)
+
+	w := putModel(t, handler, `{"model":"anthropic/claude-sonnet-4.5"}`)
+	require.Equal(t, http.StatusOK, w.Code,
+		"a model ID the catalog advertises must be selectable")
+
+	require.Len(t, updater.calls, 1)
+	assert.Equal(t, "openrouter/anthropic/claude-sonnet-4.5", *updater.calls[0].DefaultModel,
+		"persistence must carry the catalog resolution: provider + slashed model ID")
+	assert.Equal(t, "openrouter/anthropic/claude-sonnet-4.5", receivedModel)
+}
+
+// TestSetModel_SlashedCatalogModelID_OrgPolicy provider axis for the
+// slashed-catalog shape: the RESOLVED provider (first segment) is checked.
+func TestSetModel_SlashedCatalogModelID_OrgPolicy(t *testing.T) {
+	clearModelCache()
+	gin.SetMode(gin.TestMode)
+
+	const testPassword = "slashed-pol-pw"
+	listener, err := net.Listen("tcp", "127.0.0.1:4096")
+	if err != nil {
+		t.Skip("port 4096 not available")
+	}
+	srv := httptest.NewUnstartedServer(authEnforcingHandler(testPassword, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/provider" {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"connected":["openrouter"],"all":[{"id":"openrouter","models":{
+				"anthropic/claude-sonnet-4.5":{"id":"anthropic/claude-sonnet-4.5","name":"x","cost":{"input":1,"output":1}}
+			}}]}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	srv.Listener = listener
+	srv.Start()
+	defer srv.Close()
+
+	updater := &mockWSUpdater{ownerUserID: "user-1", orgID: "org-1"}
+	handler := newTestModelsHandler(testPassword)
+	handler.SetModelStore(updater)
+	handler.SetPolicyChecker(&mockPolicyChecker{policy: &types.OrgPolicyValues{
+		AllowedModels:    &[]string{"anthropic/claude-sonnet-4.5"},
+		AllowedProviders: &[]string{"openai"},
+	}})
+
+	w := putModel(t, handler, `{"model":"anthropic/claude-sonnet-4.5"}`)
+	assert.Equal(t, http.StatusForbidden, w.Code,
+		"model allowed by name but the resolution routes via openrouter, which the org denies")
+	assert.Empty(t, updater.calls)
+}
+
+// TestListModels_TailAllowlist_ShowsSlashedCatalogModel pins the round-6
+// alignment: an org allowlisting only the bare tail of a slashed catalog ID
+// must see the model in ListModels — SetModel and the prompt path accept
+// the tail, so hiding it here created a hidden-but-selectable ambiguity.
+func TestListModels_TailAllowlist_ShowsSlashedCatalogModel(t *testing.T) {
+	clearModelCache()
+	gin.SetMode(gin.TestMode)
+
+	const testPassword = "taillist-pw"
+	listener, err := net.Listen("tcp", "127.0.0.1:4096")
+	if err != nil {
+		t.Skip("port 4096 not available")
+	}
+	models := `{"connected":["openrouter"],"all":[{"id":"openrouter","models":{
+		"anthropic/claude-sonnet-4.5":{"id":"anthropic/claude-sonnet-4.5","name":"Claude","cost":{"input":3,"output":15}}
+	}}]}`
+	srv := httptest.NewUnstartedServer(authEnforcingHandler(testPassword, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(models))
+	}))
+	srv.Listener = listener
+	srv.Start()
+	defer srv.Close()
+
+	handler := newTestModelsHandler(testPassword)
+	handler.SetModelStore(&mockWSUpdater{ownerUserID: "user-1", orgID: "org-1"})
+	handler.SetPolicyChecker(&mockPolicyChecker{policy: &types.OrgPolicyValues{
+		AllowedModels:    &[]string{"claude-sonnet-4.5"},
+		AllowedProviders: &[]string{"openrouter"},
+	}})
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) { c.Set("userID", "user-1"); c.Next() })
+	router.GET("/api/v1/workspaces/:id/models", handler.ListModels)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/ws-1/models", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp struct {
+		Models []annotatedModel `json:"models"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Len(t, resp.Models, 1,
+		"a tail-allowlisted slashed catalog model must be visible (aligned with SetModel/prompt acceptance)")
+	assert.Equal(t, "anthropic/claude-sonnet-4.5", resp.Models[0].ID)
+}

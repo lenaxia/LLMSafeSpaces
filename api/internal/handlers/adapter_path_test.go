@@ -6,6 +6,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,7 @@ import (
 	agentoc "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -1157,4 +1159,347 @@ func TestSendMessage_NoModelInBody_NilOptsModel(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Nil(t, gotOpts.Model)
+}
+
+// --- Per-prompt model override: org policy enforcement (2026-08-16 follow-up) ---
+
+// promptPolicyEnv wires a SendPromptAsync request against a mock adapter,
+// with the gin-context workspace (OrgID) and optional policy checker set.
+// Returns the response recorder and whether the adapter was reached.
+func promptPolicyEnv(t *testing.T, orgID string, policy *types.OrgPolicyValues, body string) (*httptest.ResponseRecorder, bool) {
+	t.Helper()
+	h := newProxyHandlerForAdapterTest(t)
+	adapterCalled := false
+	h.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (*session.Message, error) {
+			adapterCalled = true
+			return &session.Message{ID: "msg_1", Type: session.MessageAssistant}, nil
+		},
+	}
+	if policy != nil || orgID != "" {
+		h.SetModelPolicyChecker(&mockPolicyChecker{policy: policy})
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Set("workspace", &v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "default"},
+		Spec:       v1.WorkspaceSpec{Owner: v1.WorkspaceOwner{UserID: "user-1", OrgID: orgID}},
+		Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive, PodIP: "10.0.0.1", PodName: "p"},
+	})
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	h.SendPromptAsync(c)
+	return w, adapterCalled
+}
+
+// TestSendPromptAsync_ModelOverride_OrgPolicyDenied verifies the prompt-path
+// enforcement gap: ListModels filters and SetModel now rejects, but the
+// per-prompt override could select any model id. Explicit denied override →
+// 403, adapter never called.
+func TestSendPromptAsync_ModelOverride_OrgPolicyDenied(t *testing.T) {
+	w, called := promptPolicyEnv(t, "org-1", &types.OrgPolicyValues{
+		AllowedModels: &[]string{"glm-5.3"},
+	}, `{"model":{"modelID":"gpt-5.5","providerID":"openai"},"parts":[{"type":"text","text":"hi"}]}`)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.False(t, called, "denied override must not reach the adapter")
+	assert.Contains(t, w.Body.String(), "not allowed by organization policy")
+}
+
+// TestSendPromptAsync_ModelOverride_OrgPolicyProviderDenied covers the
+// provider axis on the prompt path.
+func TestSendPromptAsync_ModelOverride_OrgPolicyProviderDenied(t *testing.T) {
+	w, called := promptPolicyEnv(t, "org-1", &types.OrgPolicyValues{
+		AllowedModels:    &[]string{"gpt-5.5"},
+		AllowedProviders: &[]string{"anthropic"},
+	}, `{"model":{"modelID":"gpt-5.5","providerID":"openai"},"parts":[{"type":"text","text":"hi"}]}`)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.False(t, called)
+}
+
+// TestSendPromptAsync_ModelOverride_PolicyAllowed_Bytes flow: allowed
+// override forwards and returns 200.
+func TestSendPromptAsync_ModelOverride_PolicyAllowed_Forwards(t *testing.T) {
+	w, called := promptPolicyEnv(t, "org-1", &types.OrgPolicyValues{
+		AllowedModels:    &[]string{"gpt-5.5"},
+		AllowedProviders: &[]string{"openai"},
+	}, `{"model":{"modelID":"gpt-5.5","providerID":"openai"},"parts":[{"type":"text","text":"hi"}]}`)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, called)
+}
+
+// TestSendPromptAsync_ModelOverride_PersonalWorkspace_NoCheck: no org → no
+// policy dimension; override forwards without a checker round-trip.
+func TestSendPromptAsync_ModelOverride_PersonalWorkspace_NoCheck(t *testing.T) {
+	w, called := promptPolicyEnv(t, "", nil,
+		`{"model":{"modelID":"gpt-5.5","providerID":"openai"},"parts":[{"type":"text","text":"hi"}]}`)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, called)
+}
+
+// TestSendPromptAsync_ModelOverride_PolicyError_FailsOpen: policy infra
+// error must degrade to allow (matches ListModels/SetModel fail-open) —
+// governance filter, not availability gate.
+func TestSendPromptAsync_ModelOverride_PolicyError_FailsOpen(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	called := false
+	h.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (*session.Message, error) {
+			called = true
+			return &session.Message{ID: "msg_1", Type: session.MessageAssistant}, nil
+		},
+	}
+	h.SetModelPolicyChecker(&mockPolicyChecker{err: errors.New("policy db down")})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses_1"}}
+	c.Set("workspace", &v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "default"},
+		Spec:       v1.WorkspaceSpec{Owner: v1.WorkspaceOwner{UserID: "user-1", OrgID: "org-1"}},
+		Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive, PodIP: "10.0.0.1", PodName: "p"},
+	})
+	c.Request = httptest.NewRequest(http.MethodPost, "/",
+		strings.NewReader(`{"model":{"modelID":"gpt-5.5","providerID":"openai"},"parts":[{"type":"text","text":"hi"}]}`))
+	h.SendPromptAsync(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, called)
+}
+
+// TestSendPromptAsync_NoOverride_UnaffectedByPolicy: prompts without a model
+// selector never hit the policy path even for restricted orgs.
+func TestSendPromptAsync_NoOverride_UnaffectedByPolicy(t *testing.T) {
+	w, called := promptPolicyEnv(t, "org-1", &types.OrgPolicyValues{
+		AllowedModels: &[]string{"glm-5.3"},
+	}, `{"parts":[{"type":"text","text":"hi"}]}`)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, called, "no override = session default routing, policy not consulted")
+}
+
+// TestSendMessage_ModelOverride_OrgPolicyDenied pins the /message leg of
+// the org-policy enforcement (same gap class the round-2 review flagged
+// for forwarding: wired behavior must be pinned).
+func TestSendMessage_ModelOverride_OrgPolicyDenied(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	called := false
+	h.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (*session.Message, error) {
+			called = true
+			return &session.Message{ID: "msg_1", Type: session.MessageAssistant}, nil
+		},
+	}
+	h.SetModelPolicyChecker(&mockPolicyChecker{policy: &types.OrgPolicyValues{
+		AllowedModels: &[]string{"glm-5.3"},
+	}})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses_1"}}
+	c.Set("workspace", &v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "default"},
+		Spec:       v1.WorkspaceSpec{Owner: v1.WorkspaceOwner{UserID: "user-1", OrgID: "org-1"}},
+		Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive, PodIP: "10.0.0.1", PodName: "p"},
+	})
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(
+		`{"model":{"modelID":"gpt-5.5","providerID":"openai"},"parts":[{"type":"text","text":"hi"}]}`))
+
+	h.SendMessage(c)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	assert.False(t, called, "denied /message override must not reach the adapter")
+}
+
+// TestSendPromptAsync_ModelOverride_NoProvider_SkipsProviderAxis pins
+// round-2 finding 4: a provider-less selector routes exactly like a
+// session default (adapter degrades it), so the provider axis must not
+// 403 it — only the model axis applies.
+func TestSendPromptAsync_ModelOverride_NoProvider_SkipsProviderAxis(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	called := false
+	h.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (*session.Message, error) {
+			called = true
+			return &session.Message{ID: "msg_1", Type: session.MessageAssistant}, nil
+		},
+	}
+	h.SetModelPolicyChecker(&mockPolicyChecker{policy: &types.OrgPolicyValues{
+		AllowedModels:    &[]string{"glm-5.3"},
+		AllowedProviders: &[]string{"thekaocloud"},
+	}})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses_1"}}
+	c.Set("workspace", &v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "default"},
+		Spec:       v1.WorkspaceSpec{Owner: v1.WorkspaceOwner{UserID: "user-1", OrgID: "org-1"}},
+		Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive, PodIP: "10.0.0.1", PodName: "p"},
+	})
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(
+		`{"model":{"modelID":"glm-5.3"},"parts":[{"type":"text","text":"hi"}]}`))
+
+	h.SendPromptAsync(c)
+
+	require.Equal(t, http.StatusOK, w.Code,
+		"provider-less selector must not be denied on the provider axis")
+	assert.True(t, called)
+}
+
+// TestSendPromptAsync_SlashBearingOverride_EmbeddedPrefixChecked guards
+// the remaining bypass vector (rounds 3+5): a PROVIDER-LESS slash-bearing
+// modelID — the adapter forwards it verbatim, so opencode routes via the
+// embedded first segment. {"modelID":"deniedprov/gpt-5.5"} must be denied
+// under allowed_providers=["openai"].
+//
+// Round 5 note: when providerID IS present it is authoritative (the
+// adapter prefixes it; routing uses it and the policy checks it — see
+// TestSendPromptAsync_FrontendDoubleForm_SlashedCatalogID_ForwardsAndAllows),
+// so {"modelID":"deniedprov/x","providerID":"openai"} legitimately routes
+// via openai and is NOT a bypass. AllowedModels is deliberately unset so
+// the provider axis alone carries the denial.
+func TestSendPromptAsync_SlashBearingOverride_EmbeddedPrefixChecked(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	called := false
+	h.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (*session.Message, error) {
+			called = true
+			return &session.Message{ID: "msg_1", Type: session.MessageAssistant}, nil
+		},
+	}
+	h.SetModelPolicyChecker(&mockPolicyChecker{policy: &types.OrgPolicyValues{
+		AllowedProviders: &[]string{"openai"},
+	}})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses_1"}}
+	c.Set("workspace", &v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "default"},
+		Spec:       v1.WorkspaceSpec{Owner: v1.WorkspaceOwner{UserID: "user-1", OrgID: "org-1"}},
+		Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive, PodIP: "10.0.0.1", PodName: "p"},
+	})
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(
+		`{"model":{"modelID":"deniedprov/gpt-5.5"},"parts":[{"type":"text","text":"hi"}]}`))
+
+	h.SendPromptAsync(c)
+
+	assert.Equal(t, http.StatusForbidden, w.Code,
+		"a provider-less slash-bearing ID routes via its embedded first segment — that provider must be policy-checked")
+	assert.False(t, called)
+}
+
+// TestSendPromptAsync_SlashBearingOverride_AllowedEmbeddedProvider_Forwards
+// pins the positive case: slashed ID with an allowed embedded provider routes.
+func TestSendPromptAsync_SlashBearingOverride_AllowedEmbeddedProvider_Forwards(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	called := false
+	h.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (*session.Message, error) {
+			called = true
+			return &session.Message{ID: "msg_1", Type: session.MessageAssistant}, nil
+		},
+	}
+	h.SetModelPolicyChecker(&mockPolicyChecker{policy: &types.OrgPolicyValues{
+		AllowedProviders: &[]string{"openrouter"},
+	}})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses_1"}}
+	c.Set("workspace", &v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "default"},
+		Spec:       v1.WorkspaceSpec{Owner: v1.WorkspaceOwner{UserID: "user-1", OrgID: "org-1"}},
+		Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive, PodIP: "10.0.0.1", PodName: "p"},
+	})
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(
+		`{"model":{"modelID":"openrouter/anthropic/claude-sonnet-4.5"},"parts":[{"type":"text","text":"hi"}]}`))
+
+	h.SendPromptAsync(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, called)
+}
+
+// TestSendPromptAsync_FrontendDoubleForm_SlashedCatalogID_ForwardsAndAllows
+// pins round 5's major finding: the frontend builds its per-send selector
+// from ListModels output — {modelID: "anthropic/claude-sonnet-4.5",
+// providerID: "openrouter"} (advertised slashed ID + routing provider).
+// The policy must allow it under allowed_providers=["openrouter"] (the
+// first segment "anthropic" is a vendor namespace, NOT the routing
+// provider), and the adapter must forward the provider-prefixed form.
+func TestSendPromptAsync_FrontendDoubleForm_SlashedCatalogID_ForwardsAndAllows(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	var gotOpts session.SendOpts
+	h.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _, _ string, opts session.SendOpts) (*session.Message, error) {
+			gotOpts = opts
+			return &session.Message{ID: "msg_1", Type: session.MessageAssistant}, nil
+		},
+	}
+	h.SetModelPolicyChecker(&mockPolicyChecker{policy: &types.OrgPolicyValues{
+		AllowedModels:    &[]string{"anthropic/claude-sonnet-4.5"},
+		AllowedProviders: &[]string{"openrouter"},
+	}})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses_1"}}
+	c.Set("workspace", &v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "default"},
+		Spec:       v1.WorkspaceSpec{Owner: v1.WorkspaceOwner{UserID: "user-1", OrgID: "org-1"}},
+		Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive, PodIP: "10.0.0.1", PodName: "p"},
+	})
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(
+		`{"model":{"modelID":"anthropic/claude-sonnet-4.5","providerID":"openrouter"},"parts":[{"type":"text","text":"hi"}]}`))
+
+	h.SendPromptAsync(c)
+
+	require.Equal(t, http.StatusOK, w.Code,
+		"the frontend's double form must not be denied: providerID is the routing provider and is allowed")
+	require.NotNil(t, gotOpts.Model)
+	assert.Equal(t, "anthropic/claude-sonnet-4.5", gotOpts.Model.ID)
+	assert.Equal(t, "openrouter", gotOpts.Model.Provider)
+}
+
+// TestSendPromptAsync_ModelAxis_TailAccepted aligns the prompt path's
+// model axis with SetModel's: an org allowlisting the bare tail of a
+// slashed catalog ID permits the override (deny-direction consistency
+// across the three enforcement points).
+func TestSendPromptAsync_ModelAxis_TailAccepted(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	called := false
+	h.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _, _ string, _ session.SendOpts) (*session.Message, error) {
+			called = true
+			return &session.Message{ID: "msg_1", Type: session.MessageAssistant}, nil
+		},
+	}
+	h.SetModelPolicyChecker(&mockPolicyChecker{policy: &types.OrgPolicyValues{
+		AllowedModels: &[]string{"claude-sonnet-4.5"},
+	}})
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-1"}, {Key: "sessionId", Value: "ses_1"}}
+	c.Set("workspace", &v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "default"},
+		Spec:       v1.WorkspaceSpec{Owner: v1.WorkspaceOwner{UserID: "user-1", OrgID: "org-1"}},
+		Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive, PodIP: "10.0.0.1", PodName: "p"},
+	})
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(
+		`{"model":{"modelID":"anthropic/claude-sonnet-4.5","providerID":"openrouter"},"parts":[{"type":"text","text":"hi"}]}`))
+
+	h.SendPromptAsync(c)
+
+	require.Equal(t, http.StatusOK, w.Code, "tail-allowlisted model must be permitted like SetModel permits it")
+	assert.True(t, called)
 }

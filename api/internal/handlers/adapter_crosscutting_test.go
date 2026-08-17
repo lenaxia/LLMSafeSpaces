@@ -18,6 +18,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -391,4 +392,50 @@ func TestAdapterPath_ListSessions_TriggersSSEWatch(t *testing.T) {
 
 	assert.True(t, env.handler.sseTracker.IsWatching("ws-ready"),
 		"ListSessions must trigger SSE watch")
+}
+
+// TestAdapterPath_SendPromptAsync_PolicyDenied_ReleasesSessionSlot pins
+// round-3 finding 4: the 403 policy denial must release the active-session
+// slot that checkAdapterSessionLimit reserved — the quota and adapter-error
+// paths already did; a leaked slot would count against MaxActiveSessions
+// with no active send.
+func TestAdapterPath_SendPromptAsync_PolicyDenied_ReleasesSessionSlot(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	env, ms := setupAdapterSendMessageEnv(t, "ws-pol-403", 5)
+
+	env.handler.adapter = &mockAdapter{
+		sendFn: func(context.Context, string, string, string, string, session.SendOpts) (*session.Message, error) {
+			t.Error("denied override must not reach the adapter")
+			return nil, nil
+		},
+	}
+	env.handler.SetModelPolicyChecker(&mockPolicyChecker{policy: &types.OrgPolicyValues{
+		AllowedModels: &[]string{"glm-5.3"},
+	}})
+
+	ms.On("CheckQuota", mock.Anything, mock.Anything, "llm_request").Return(true, int64(10), nil)
+	env.handler.activityTracker = newTestTracker(env.wsMock)
+
+	wasActive := env.handler.checkAndAddActiveSession(context.Background(), "ws-pol-403", "ses_cleanup", 5)
+	assert.True(t, wasActive)
+
+	body := strings.NewReader(`{"model":{"modelID":"gpt-5.5","providerID":"openai"},"parts":[{"type":"text","text":"hello"}]}`)
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/api/v1/workspaces/ws-pol-403/sessions/ses_cleanup/prompt", body)
+	req.Header.Set("Content-Type", "application/json")
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{{Key: "id", Value: "ws-pol-403"}, {Key: "sessionId", Value: "ses_cleanup"}}
+	c.Request = req
+	c.Set("userID", "user-1")
+	c.Set("workspace", &v1.Workspace{
+		ObjectMeta: metav1.ObjectMeta{Name: "ws-pol-403", Namespace: "default"},
+		Spec:       v1.WorkspaceSpec{Owner: v1.WorkspaceOwner{UserID: "user-1", OrgID: "org-1"}, MaxActiveSessions: 5},
+		Status:     v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive, PodIP: "10.0.0.1", PodName: "p"},
+	})
+
+	env.handler.SendPromptAsync(c)
+
+	assert.Equal(t, http.StatusForbidden, w.Code)
+	stillActive := env.handler.isSessionActive(context.Background(), "ws-pol-403", "ses_cleanup")
+	assert.False(t, stillActive, "403 policy denial must release the reserved session slot")
 }

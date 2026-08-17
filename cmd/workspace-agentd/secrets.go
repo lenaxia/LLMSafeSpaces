@@ -402,9 +402,16 @@ func runMaterializeCommand(args []string, stdout, stderr io.Writer) int {
 
 	if len(secretsList) == 0 {
 		// No credentials at all (first boot, zero-credential user, and no
-		// prior reload). Still apply workspace-config.json so the default
-		// model is written to agent-config.json even when no LLM credentials
-		// are configured.
+		// prior reload). The pre-boot relay step still applies — a
+		// zero-credential user is exactly the relay audience (free models,
+		// no own providers) and their default may be relay-qualified. Then
+		// workspace-config.json is applied so the default model is written
+		// to agent-config.json (resolved against the now-complete provider
+		// map — same order as the main path below; the #912 review e2e
+		// caught the early path resolving BEFORE the relay block).
+		if !applyPreBootRelay(stderr, cfg, log) {
+			return 3
+		}
 		applyWorkspaceConfig(cfg.toPaths().AgentConfigPath, *from)
 		return 0
 	}
@@ -438,55 +445,27 @@ func runMaterializeCommand(args []string, stdout, stderr io.Writer) int {
 	// servers were staged by applyMCPServer during Materialize above.
 	applyMCPServersToConfig(cfg.toPaths().AgentConfigPath, m.StagedMCPServers())
 
-	// Apply workspace-level default model if present. This file is
-	// written by the API server alongside secrets.json.
-	applyWorkspaceConfig(cfg.toPaths().AgentConfigPath, *from)
-
-	// 2026-06-23 cold-start optimization (item #1a, Phase C): pre-render
-	// the relay-provider block in agent-config.json BEFORE opencode is
-	// started. This eliminates the in-pod opencode-restart cycle that
-	// startRelayInjector imposes when called after opencode is running
-	// (saves ~6-8s per cold start AND every resume).
+	// NOTE: applyWorkspaceConfig deliberately runs AFTER applyRelayConfigPreBoot
+	// (via applyPreBootRelay below). The default model may be qualified
+	// against the relay provider ("opencode-relay/<model>" — SetModel
+	// persists that form when the user picks a free model while relay is
+	// injected). The relay block is written by the pre-boot step; resolving
+	// the default against a provider map that does not yet include it would
+	// omit the model and warn on every HEALTHY relay boot. Order:
+	// providers (FlushProviders) → MCP → relay → model.
 	//
-	// Inputs (all controlled by the controller's pod_builder):
-	//   - $INFERENCE_RELAY_BASEURL: relay URL with embedded path-secret.
-	//     Empty → no-op (relay disabled cluster-wide).
-	//   - /sandbox-cfg/free-models.json: cluster-wide free-models catalog
-	//     dropped by the credential-setup init container. Absent → no-op
-	//     (Phase A refresher hasn't published yet, or it's disabled);
-	//     the in-pod startRelayInjector will run after opencode boots.
-	//   - $HOME/.local/opencode/auth.json: bypass check for personal
-	//     opencode key. Skipped if the user is paying for direct Zen.
-	//
-	// Outcome is logged but not fatal. Failures of the catalog read or
-	// the agent-config write are returned as exit 3 (the same as a
-	// secrets I/O failure) so kubelet sees CrashLoop on a real bug.
-	// The MCP entry stamped by the pre-boot writer must carry the Basic
-	// credential (#847) — /v1/mcp rejects unauthenticated JSON-RPC. The
-	// credential-setup init script installs /sandbox-cfg/password BEFORE
-	// invoking materialize (pod_builder.go, pinned by
-	// TestInitContainerScript), so this read succeeds in production. A
-	// failed read stamps a DISABLED entry (never an enabled one that
-	// would 401) and logs; the unconditional boot-time re-stamp in
-	// ensureBootAgentConfig (before startManagedProcess) re-applies the
-	// credentialed entry, so the failure self-heals within the boot.
-	preBootPW, pwErr := readAgentPasswordFromPath(agentd.PasswordPath)
-	if pwErr != nil {
-		_, _ = fmt.Fprintf(stderr, "materialize: password read failed, MCP entry stamped disabled: %v\n", pwErr)
-	}
-	if outcome, err := applyRelayConfigPreBoot(
-		os.Getenv("INFERENCE_RELAY_BASEURL"),
-		preBootAuthJSONPath(cfg.home),
-		cfg.toPaths().AgentConfigPath,
-		preBootPW,
-		log,
-	); err != nil {
-		_, _ = fmt.Fprintf(stderr, "materialize: pre-boot relay (%s): %v\n", outcome, err)
+	// The password read and relay-apply steps are shared with the
+	// zero-credential early path above — see applyPreBootRelay.
+	if !applyPreBootRelay(stderr, cfg, log) {
 		return 3
-	} else if outcome != "skipped_no_relay_url" && outcome != "skipped_no_catalog" {
-		// Useful operability signal in pod logs.
-		_, _ = fmt.Fprintf(stderr, "materialize: pre-boot relay outcome=%s\n", outcome)
 	}
+
+	// Apply workspace-level default model if present. This file is
+	// written by the API server alongside secrets.json. Runs AFTER the
+	// pre-boot relay step so the provider map already includes the relay
+	// provider when the default is relay-qualified (see the ordering note
+	// above applyMCPServersToConfig).
+	applyWorkspaceConfig(cfg.toPaths().AgentConfigPath, *from)
 
 	if result != nil && result.HasFailures() {
 		// Some I/O failure already logged via reportResult; exit 3 so the
@@ -550,10 +529,11 @@ func reportResult(w io.Writer, r *secrets.MaterializeResult) {
 // and merges the default model into the agent config file. This ensures the
 // workspace's model selection survives pod restarts.
 //
-// DefaultModel is stored as a flat catalog ID (e.g. "glm-5.1"). opencode
-// requires the fully-qualified "providerID/modelID" form in agent-config.json.
-// We resolve the providerID by scanning the provider map already written to
-// agent-config.json by FlushProviders (which runs before this function).
+// DefaultModel is stored as either the qualified form ("providerID/modelID"
+// — what SetModel persists when the catalog resolves the selection) or the
+// legacy flat form ("glm-5.1"). opencode requires the fully-qualified form
+// in agent-config.json; the qualified form is verified against the provider
+// map (deterministic), the flat form is resolved by scan.
 //
 // If no provider claims the model, the model key is OMITTED entirely and a
 // warning marker is written beside agent-config.json (ModelResolutionWarningPath)
@@ -564,6 +544,58 @@ func reportResult(w io.Writer, r *secrets.MaterializeResult) {
 // rebuilt. Omitted, opencode applies its own default and prompts keep working;
 // the selection self-heals on the next boot where the provider exists again
 // (e.g. the relay injector succeeds).
+// applyPreBootRelay runs the 2026-06-23 cold-start optimization (item #1a,
+// Phase C): pre-render the relay-provider block in agent-config.json BEFORE
+// opencode is started, eliminating the in-pod opencode-restart cycle that
+// startRelayInjector imposes when called after opencode is running (saves
+// ~6-8s per cold start AND every resume). Shared by the main materialize
+// path and the zero-credential early path — both must write the relay
+// provider before applyWorkspaceConfig resolves a possibly relay-qualified
+// default against the provider map (#912 review e2e).
+//
+// Inputs (all controlled by the controller's pod_builder):
+//   - $INFERENCE_RELAY_BASEURL: relay URL with embedded path-secret.
+//     Empty → no-op (relay disabled cluster-wide).
+//   - /sandbox-cfg/free-models.json: cluster-wide free-models catalog
+//     dropped by the credential-setup init container. Absent → no-op
+//     (Phase A refresher hasn't published yet, or it's disabled);
+//     the in-pod startRelayInjector will run after opencode boots.
+//   - $HOME/.local/opencode/auth.json: bypass check for personal
+//     opencode key. Skipped if the user is paying for direct Zen.
+//
+// Outcome is logged but not fatal; returns false ONLY on a hard failure
+// (catalog read or agent-config write), which the caller turns into exit 3
+// (the same as a secrets I/O failure) so kubelet sees CrashLoop on a real
+// bug. The MCP entry stamped by the pre-boot writer must carry the Basic
+// credential (#847) — /v1/mcp rejects unauthenticated JSON-RPC. The
+// credential-setup init script installs /sandbox-cfg/password BEFORE
+// invoking materialize (pod_builder.go, pinned by TestInitContainerScript),
+// so the read succeeds in production. A failed read stamps a DISABLED
+// entry (never an enabled one that would 401) and logs; the unconditional
+// boot-time re-stamp in ensureBootAgentConfig (before startManagedProcess)
+// re-applies the credentialed entry, so the failure self-heals within the
+// boot.
+func applyPreBootRelay(stderr io.Writer, cfg materializeConfig, log *zap.Logger) bool {
+	preBootPW, pwErr := readAgentPasswordFromPath(agentd.PasswordPath)
+	if pwErr != nil {
+		_, _ = fmt.Fprintf(stderr, "materialize: password read failed, MCP entry stamped disabled: %v\n", pwErr)
+	}
+	if outcome, err := applyRelayConfigPreBoot(
+		os.Getenv("INFERENCE_RELAY_BASEURL"),
+		preBootAuthJSONPath(cfg.home),
+		cfg.toPaths().AgentConfigPath,
+		preBootPW,
+		log,
+	); err != nil {
+		_, _ = fmt.Fprintf(stderr, "materialize: pre-boot relay (%s): %v\n", outcome, err)
+		return false
+	} else if outcome != "skipped_no_relay_url" && outcome != "skipped_no_catalog" {
+		// Useful operability signal in pod logs.
+		_, _ = fmt.Fprintf(stderr, "materialize: pre-boot relay outcome=%s\n", outcome)
+	}
+	return true
+}
+
 func applyWorkspaceConfig(agentConfigPath, secretsPath string) {
 	// workspace-config.json lives alongside secrets.json in /sandbox-cfg/
 	dir := filepath.Dir(secretsPath)
@@ -603,14 +635,16 @@ func applyWorkspaceConfig(agentConfigPath, secretsPath string) {
 	// qualified "providerID/modelID" form it requires. The provider map is
 	// written by FlushProviders (called just before this function), so all
 	// user-configured providers are already present.
-	model := resolveModelWithProvider(cfg, wsCfg.DefaultModel)
+	model, ok := resolveModelWithProvider(cfg, wsCfg.DefaultModel)
 
 	warnPath := modelResolutionWarningPath(filepath.Dir(agentConfigPath))
-	if model == wsCfg.DefaultModel && !strings.Contains(model, "/") {
-		// Unresolvable: no provider in this boot's config claims the model.
-		// Omit the key (opencode falls back to its default) and record the
-		// warning for the health endpoints. Delete any stale model key —
-		// a bare value here is guaranteed poison (incident 2026-08-16).
+	if !ok {
+		// Unresolvable against THIS boot's provider set (flat unclaimed, or
+		// qualified with an absent provider — e.g. relay-only default while
+		// the injector failed). Omit the key (opencode falls back to its
+		// default) and record the warning for the health endpoints. Delete
+		// any stale model key — an unverifiable value here is guaranteed
+		// poison (incident 2026-08-16 and its qualified follow-up).
 		delete(cfg, "model")
 		writeModelResolutionWarning(warnPath, wsCfg.DefaultModel)
 	} else {
@@ -686,22 +720,30 @@ func applyMCPServersToConfig(agentConfigPath string, servers []secrets.StagedMCP
 	_ = os.WriteFile(agentConfigPath, merged, 0o600)
 }
 
-// returns "providerID/modelID" when the flat modelID is found in any provider's
-// models map. Returns the flat modelID unchanged if no provider claims it
-// (e.g. when the provider list hasn't been written yet, or the model was
-// removed from the catalog since it was last selected).
-func resolveModelWithProvider(cfg map[string]json.RawMessage, flatModelID string) string {
-	if flatModelID == "" {
-		return ""
-	}
-	// Already qualified — nothing to do.
-	if strings.Contains(flatModelID, "/") {
-		return flatModelID
+// resolveModelWithProvider resolves the workspace default model against the
+// provider map in agent-config.json.
+//
+// Returns ("providerID/modelID", true) when the model can be served this
+// boot:
+//   - a flat modelID claimed by some provider's models map → qualified,
+//   - an already-qualified "providerID/modelID" whose provider entry exists
+//     → passed through (provider presence is the check we can actually make;
+//     SetModel persisted this form precisely so boot resolution is
+//     deterministic).
+//
+// Returns ("", false) when NO provider in this boot's config can serve the
+// model — flat unclaimed, qualified with an absent provider entry, missing
+// or malformed provider map. The caller must OMIT the model key in that
+// case: writing either form unverifiable poisons opencode's model
+// resolution (incident 2026-08-16 and its qualified follow-up).
+func resolveModelWithProvider(cfg map[string]json.RawMessage, modelID string) (string, bool) {
+	if modelID == "" {
+		return "", false
 	}
 
 	providerRaw, ok := cfg["provider"]
 	if !ok {
-		return flatModelID
+		return "", false
 	}
 
 	// provider map shape: {"providerID": {"models": {"modelID": {...}, ...}, ...}, ...}
@@ -709,15 +751,32 @@ func resolveModelWithProvider(cfg map[string]json.RawMessage, flatModelID string
 		Models map[string]json.RawMessage `json:"models"`
 	}
 	if json.Unmarshal(providerRaw, &providers) != nil {
-		return flatModelID
+		return "", false
 	}
 
+	// Already qualified: deterministic — the provider entry either exists
+	// in this boot's config or the default is unusable this boot. Split on
+	// the FIRST "/" — opencode's own routing convention (a bare ID parses
+	// as first-segment provider + empty modelID, per the incident), so a
+	// catalog-sourced value like "openrouter/anthropic/claude-sonnet"
+	// means provider "openrouter", model "anthropic/claude-sonnet". The
+	// full value is passed through verbatim once its provider exists.
+	// The empty-tail guard ("a/") rejects the incident's own parse shape
+	// (provider + EMPTY modelID) rather than passing it downstream.
+	if idx := strings.Index(modelID, "/"); idx > 0 && idx < len(modelID)-1 {
+		if _, exists := providers[modelID[:idx]]; exists {
+			return modelID, true
+		}
+		return "", false
+	}
+
+	// Flat: scan providers for one that claims the model.
 	for providerID, p := range providers {
-		if _, found := p.Models[flatModelID]; found {
-			return providerID + "/" + flatModelID
+		if _, found := p.Models[modelID]; found {
+			return providerID + "/" + modelID, true
 		}
 	}
-	return flatModelID
+	return "", false
 }
 
 // reloadSecretsDeps bundles the runtime dependencies that

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
@@ -188,8 +189,15 @@ func (h *ModelsHandler) ListModels(c *gin.Context) {
 		annotated = h.filterByOrgPolicy(c.Request.Context(), workspaceID, annotated)
 	}
 
-	// Include current model selection + resolve providerID.
+	// Include current model selection + resolve providerID. The DB may hold
+	// the qualified form ("providerID/modelID", what SetModel persists) or
+	// the legacy flat form; the response is always the model ID for client
+	// compatibility — qualified is a storage detail. Split on the FIRST
+	// "/" (opencode's routing convention): "openrouter/anthropic/claude"
+	// → provider "openrouter", model ID "anthropic/claude" — the exact ID
+	// ListModels advertises, so markSelected matches.
 	currentModel := ""
+	currentModelProviderID := ""
 	if h.wsUpdater != nil {
 		var err error
 		currentModel, err = h.wsUpdater.GetDefaultModel(c.Request.Context(), workspaceID)
@@ -197,7 +205,12 @@ func (h *ModelsHandler) ListModels(c *gin.Context) {
 			h.logger.Warn("Failed to get default model", "error", err, "workspaceID", workspaceID)
 		}
 	}
-	currentModelProviderID := resolveProviderID(annotated, currentModel)
+	if idx := strings.Index(currentModel, "/"); idx >= 0 {
+		currentModel, currentModelProviderID = currentModel[idx+1:], currentModel[:idx]
+	}
+	if currentModelProviderID == "" {
+		currentModelProviderID = resolveProviderID(annotated, currentModel)
+	}
 	markSelected(annotated, currentModel)
 
 	c.JSON(http.StatusOK, gin.H{
@@ -222,6 +235,19 @@ func (h *ModelsHandler) SetModel(c *gin.Context) {
 		return
 	}
 
+	// Accept both the flat catalog form ("gpt-5.5") and the qualified form
+	// ("openai/gpt-5.5") that SetModel itself persists — clients echoing a
+	// previously persisted selection must round-trip. Split on the FIRST
+	// "/" (opencode's routing convention — the same split agentd's boot
+	// resolver uses): "a/b/c" is provider "a", model "b/c". Catalog model
+	// IDs may themselves contain slashes (OpenRouter-style "vendor/model");
+	// such IDs are accepted verbatim — catalog matching tries the full
+	// value first, and the flat form only feeds axis checks and fallbacks.
+	flatModel := req.Model
+	if idx := strings.Index(req.Model, "/"); idx >= 0 {
+		flatModel = req.Model[idx+1:]
+	}
+
 	if h.wsUpdater == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "model selection unavailable"})
 		return
@@ -240,15 +266,67 @@ func (h *ModelsHandler) SetModel(c *gin.Context) {
 			catalog = parsed
 		}
 	}
-	if catalog != nil && !catalog.modelExists(req.Model) {
+	if catalog != nil && !catalog.modelExists(req.Model) && !catalog.modelExists(flatModel) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "model not found in workspace catalog"})
 		return
 	}
 	// If pod not running, skip validation (store optimistically).
 
-	// Persist to workspace metadata.
+	// Resolve the routing target once: the qualified "providerID/modelID"
+	// the catalog maps this selection to (includes the relay remap).
+	// Lookup key: the FULL request value when the catalog lists it as a
+	// model ID (slashed catalog IDs — OpenRouter-style "vendor/model" —
+	// match on their whole ID); otherwise the flat form. resolveModel
+	// passes unfindable values through unchanged, so keying on
+	// modelExists keeps resolution unambiguous.
+	var resolved string
+	if catalog != nil {
+		relayInjected := false
+		if h.relayActive && h.relayChecker != nil {
+			relayInjected = h.relayChecker(c.Request.Context(), userID, workspaceID)
+		}
+		lookup := flatModel
+		if catalog.modelExists(req.Model) {
+			lookup = req.Model
+		}
+		resolved = catalog.resolveModel(lookup, h.relayActive, relayInjected)
+	}
+
+	// Org policy enforcement (PR #912). Runs on EVERY path — not only when
+	// the catalog resolved (review round 2: pod-down or catalog-parse
+	// failure previously bypassed the check entirely while still
+	// persisting the selection).
+	//   - Model axis: always enforceable — the flat ID is known regardless
+	//     of catalog state.
+	//   - Provider axis: enforced against every provider the selection can
+	//     route through — the catalog-resolved target (what live routing
+	//     uses) AND, on the degraded path, the request's own prefix (what
+	//     gets persisted verbatim). Checking only the resolved provider
+	//     while persisting the request prefix left an unchecked provider
+	//     in the DB (review round 2, finding 3).
+	if !h.modelSelectionAllowedByOrgPolicy(c.Request.Context(), workspaceID, req.Model, flatModel, resolved) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "model not allowed by organization policy"})
+		return
+	}
+
+	// Persist to workspace metadata. Catalog-resolvable selections persist
+	// the CATALOG-RESOLVED qualified form ("providerID/modelID") — the same
+	// value policy checked and the live push routes, so pod-restart
+	// routing matches live routing (review round 2 finding 3: a qualified
+	// request whose prefix differs from the resolution previously
+	// persisted its unchecked prefix verbatim). Agentd checks the provider
+	// entry at boot and omits+warns when absent (incident 2026-08-16
+	// follow-up). Catalog unavailable + qualified request persists the
+	// request verbatim (prefix was policy-checked above); catalog
+	// unavailable + flat request degrades to flat persistence, as before.
+	persisted := flatModel
+	if strings.Contains(resolved, "/") {
+		persisted = resolved
+	} else if strings.Contains(req.Model, "/") {
+		persisted = req.Model
+	}
 	if err := h.wsUpdater.UpdateWorkspace(c.Request.Context(), workspaceID, types.WorkspaceUpdates{
-		DefaultModel: &req.Model,
+		DefaultModel: &persisted,
 	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update workspace"})
 		return
@@ -266,13 +344,7 @@ func (h *ModelsHandler) SetModel(c *gin.Context) {
 	applied := false
 	var resolvedModel string
 	if catalog != nil {
-		// Pre-resolve relay state once (M3-a: pure resolveModel, no I/O inside).
-		relayInjected := false
-		if h.relayActive && h.relayChecker != nil {
-			relayInjected = h.relayChecker(c.Request.Context(), userID, workspaceID)
-		}
-		resolved := catalog.resolveModel(req.Model, h.relayActive, relayInjected)
-		if resolved != "" {
+		if resolved != "" && strings.Contains(resolved, "/") {
 			config := map[string]any{"model": resolved}
 			if patchErr := h.agentClient.PatchConfig(c.Request.Context(), userID, workspaceID, config); patchErr != nil {
 				h.warn("PATCH model to agent failed", "error", patchErr.Error())
@@ -289,9 +361,71 @@ func (h *ModelsHandler) SetModel(c *gin.Context) {
 		if idx := strings.Index(resolvedModel, "/"); idx >= 0 {
 			providerID = resolvedModel[:idx]
 		}
-		h.metricsRecorder.RecordModelSelection(req.Model, providerID)
+		h.metricsRecorder.RecordModelSelection(flatModel, providerID)
 	}
-	c.JSON(http.StatusOK, gin.H{"model": req.Model, "applied": applied})
+	c.JSON(http.StatusOK, gin.H{"model": req.Model, "persistedModel": persisted, "applied": applied})
+}
+
+// modelSelectionAllowedByOrgPolicy checks an explicit SetModel selection
+// against the org's allowed-models/allowed-providers policy on every path.
+//
+// The model axis is always enforceable — it is known regardless of catalog
+// state. Both the full request value and its flat tail are checked: the
+// full value is the catalog-advertised ID for slashed catalog models
+// (OpenRouter-style "vendor/model"), the tail is the historical flat form.
+// The provider axis is enforced against every provider the selection can
+// route through (FIRST-segment split — opencode's own routing convention,
+// proven by the incident: bare "deepseek-v4-flash-free" parsed as provider
+// + empty modelID; so "a/b/c" routes via provider "a"):
+//   - the catalog-resolved target (resolved, "provider/model") — what
+//     live routing and (on the healthy path) persistence use;
+//   - the request's own embedded prefix — ONLY on the degraded path
+//     (catalog unresolved), where rawReq is what gets persisted verbatim.
+//
+// A provider is skipped when it cannot be determined (flat request,
+// unresolved catalog) — matching the axis-availability rule, not a
+// fail-open for a known-denied provider. Fails open on policy-infra
+// errors and for personal workspaces — matching ListModels'
+// filterByOrgPolicy semantics; the policy is an org governance filter,
+// and an infra hiccup must not brick model selection.
+func (h *ModelsHandler) modelSelectionAllowedByOrgPolicy(ctx context.Context, workspaceID, rawReq, flatModel, resolved string) bool {
+	if h.policyChecker == nil || h.wsUpdater == nil {
+		return true
+	}
+	meta, err := h.wsUpdater.GetWorkspace(ctx, workspaceID)
+	if err != nil || meta == nil || meta.OrgID == nil || *meta.OrgID == "" {
+		return true // personal workspace — no org policy
+	}
+	pol, polErr := h.policyChecker.GetEffectivePolicy(ctx, *meta.OrgID)
+	if polErr != nil || pol == nil {
+		h.warn("SetModel: policy check unavailable, failing open", "workspaceID", workspaceID, "error", fmt.Sprint(polErr))
+		return true
+	}
+	if !pol.IsModelAllowed(flatModel) && !pol.IsModelAllowed(rawReq) {
+		return false
+	}
+	providerAllowed := func(providerID string) bool {
+		if providerID == "" {
+			return true // axis undeterminable on this path
+		}
+		return pol.IsProviderAllowed(providerID)
+	}
+	if idx := strings.Index(resolved, "/"); idx >= 0 {
+		if !providerAllowed(resolved[:idx]) {
+			return false
+		}
+	} else if idx := strings.Index(rawReq, "/"); idx >= 0 {
+		// Degraded path only (catalog unresolved): rawReq is what gets
+		// persisted verbatim, so its prefix is load-bearing here. On the
+		// healthy path the resolution is what routes AND persists —
+		// checking rawReq's prefix there would false-deny slashed catalog
+		// IDs whose first segment is a vendor namespace, not the routing
+		// provider (round 4, finding 3).
+		if !providerAllowed(rawReq[:idx]) {
+			return false
+		}
+	}
+	return true
 }
 
 // filterByOrgPolicy applies org allowed_models / allowed_providers.
@@ -306,7 +440,19 @@ func (h *ModelsHandler) filterByOrgPolicy(ctx context.Context, workspaceID strin
 	}
 	filtered := make([]annotatedModel, 0, len(models))
 	for _, m := range models {
-		if pol.IsModelAllowed(m.ID) && pol.IsProviderAllowed(m.ProviderID) {
+		// Model axis: the advertised ID (which may itself contain "/",
+		// OpenRouter-style) or its bare tail — the same both-forms rule
+		// SetModel and the prompt path enforce, so an org allowlisting
+		// either form shows AND permits the model everywhere (round 6
+		// alignment; previously tail-only allowlists hid the model from
+		// ListModels while SetModel still accepted it).
+		modelOK := pol.IsModelAllowed(m.ID)
+		if !modelOK {
+			if idx := strings.Index(m.ID, "/"); idx >= 0 && idx < len(m.ID)-1 {
+				modelOK = pol.IsModelAllowed(m.ID[idx+1:])
+			}
+		}
+		if modelOK && pol.IsProviderAllowed(m.ProviderID) {
 			filtered = append(filtered, m)
 		}
 	}

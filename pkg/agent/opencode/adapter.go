@@ -242,21 +242,29 @@ func (a *Adapter) DeleteSession(ctx context.Context, userID, workspaceID, sessio
 // the "providerID/modelID" string. opencode splits the string on "/" to
 // resolve the provider — a bare ID is parsed as a providerID with an EMPTY
 // modelID and fails every prompt in the session ("ProviderModelNotFoundError:
-// Model not found: <bare>/.", incident 2026-08-16). A ref without a provider
-// cannot be expressed safely, so it returns "" and the session default
-// applies. A slash-bearing ID is treated as already qualified regardless of
-// Provider — prefixing it would produce "x/x/y" and a guaranteed failure.
+// Model not found: <bare>/.", incident 2026-08-16).
+//
+// m.Provider is authoritative whenever present (the frontend's per-send
+// selector carries both the catalog-advertised model ID — which may itself
+// contain slashes, OpenRouter-style — and the routing providerID): the
+// result is Provider-prefixed unless the ID already carries that exact
+// prefix. Without a provider, a slash-bearing ID is already qualified
+// (first segment = provider, opencode's routing rule); a bare flat ID is
+// unexpressible and returns "" so the session default applies.
 func qualifiedModelID(m *session.ModelRef) string {
 	if m == nil || m.ID == "" {
 		return ""
 	}
+	if m.Provider != "" {
+		if strings.HasPrefix(m.ID, m.Provider+"/") {
+			return m.ID // already carries the authoritative prefix
+		}
+		return m.Provider + "/" + m.ID
+	}
 	if strings.Contains(m.ID, "/") {
 		return m.ID // already qualified; never double-prefix
 	}
-	if m.Provider == "" {
-		return "" // bare ID is unexpressible — degrade to session default
-	}
-	return m.Provider + "/" + m.ID
+	return "" // bare ID is unexpressible — degrade to session default
 }
 
 func (a *Adapter) Send(ctx context.Context, userID, workspaceID, sessionID, text string, opts session.SendOpts) (*session.Message, error) {
@@ -315,7 +323,10 @@ func (a *Adapter) SendAsync(ctx context.Context, userID, workspaceID, sessionID,
 	if opts.Admission == session.AdmissionSteer {
 		delivery = V2DeliverySteer
 	}
-	resp, err := c.PromptV2(ctx, sessionID, text, delivery)
+	// The V2 path is currently dormant on opencode 1.18.10 (#755: queue
+	// never drained) but stays wired for revival — it must honor the same
+	// model-form contract as Send: qualified or omitted, never bare.
+	resp, err := c.PromptV2WithModel(ctx, sessionID, text, delivery, qualifiedModelID(opts.Model))
 	if err != nil {
 		return "", err
 	}

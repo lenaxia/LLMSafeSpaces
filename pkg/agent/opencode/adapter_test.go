@@ -326,6 +326,47 @@ func TestAdapter_SendAsync_SteerDelivery(t *testing.T) {
 	// verification would need a custom handler.
 }
 
+// TestAdapter_SendAsync_ModelReferenceForm extends the model-form contract
+// (see TestAdapter_Send_ModelReferenceForm) to the V2 prompt path: a
+// qualified override must reach the V2 body in "providerID/modelID" form;
+// bare/unqualified is omitted. The V2 path is dead on opencode 1.18.10
+// (queue never drained, #755) but remains wired for revival — leaving it
+// model-blind would replay the incident the day it comes back.
+func TestAdapter_SendAsync_ModelReferenceForm(t *testing.T) {
+	t.Run("qualified override is forwarded", func(t *testing.T) {
+		srv := newFakeOpencode(t)
+		srv.register("POST", "/api/session/ses_1/prompt", `{"data":{"admittedSeq":1,"id":"m1","sessionID":"ses_1"}}`, 0)
+
+		a := newTestAdapter(t, srv.Server)
+		_, err := a.SendAsync(context.Background(), "u-1", "ws-1", "ses_1", "hi",
+			session.SendOpts{Model: &session.ModelRef{ID: "glm-5.3", Provider: "thekaocloud"}})
+		require.NoError(t, err)
+
+		var sent map[string]any
+		require.NoError(t, json.Unmarshal(srv.bodies["POST /api/session/ses_1/prompt"], &sent))
+		prompt, ok := sent["prompt"].(map[string]any)
+		require.True(t, ok, "V2 body nests fields under prompt")
+		assert.Equal(t, "thekaocloud/glm-5.3", prompt["model"])
+	})
+
+	t.Run("bare override omitted", func(t *testing.T) {
+		srv := newFakeOpencode(t)
+		srv.register("POST", "/api/session/ses_1/prompt", `{"data":{"admittedSeq":1,"id":"m1","sessionID":"ses_1"}}`, 0)
+
+		a := newTestAdapter(t, srv.Server)
+		_, err := a.SendAsync(context.Background(), "u-1", "ws-1", "ses_1", "hi",
+			session.SendOpts{Model: &session.ModelRef{ID: "glm-5.3"}})
+		require.NoError(t, err)
+
+		var sent map[string]any
+		require.NoError(t, json.Unmarshal(srv.bodies["POST /api/session/ses_1/prompt"], &sent))
+		prompt, ok := sent["prompt"].(map[string]any)
+		require.True(t, ok)
+		_, hasModel := prompt["model"]
+		assert.False(t, hasModel)
+	})
+}
+
 func TestAdapter_Abort_UsesV1AbortEndpoint(t *testing.T) {
 	// Abort must use V1 POST /session/:id/abort, not the V2 interrupt
 	// endpoint which was removed in opencode 1.18.10. Register both
@@ -951,6 +992,16 @@ func TestAdapter_Send_ModelReferenceForm(t *testing.T) {
 		sent := sendAndInspect(t, session.SendOpts{Model: &session.ModelRef{ID: "thekaocloud/glm-5.3", Provider: "thekaocloud"}})
 		assert.Equal(t, "thekaocloud/glm-5.3", sent["model"],
 			"a slash-bearing ID is already qualified; prefixing again poisons the send")
+	})
+
+	t.Run("provider prefixes a slashed catalog id (frontend double form)", func(t *testing.T) {
+		// Round 5: the frontend sends the advertised (slashed) catalog ID
+		// plus the routing providerID. Provider is authoritative: without
+		// prefixing, opencode would route via the vendor namespace
+		// "anthropic" — a nonexistent provider.
+		sent := sendAndInspect(t, session.SendOpts{Model: &session.ModelRef{ID: "anthropic/claude-sonnet-4.5", Provider: "openrouter"}})
+		assert.Equal(t, "openrouter/anthropic/claude-sonnet-4.5", sent["model"],
+			"the explicit provider must prefix the advertised slashed ID")
 	})
 
 	t.Run("bare id without provider is omitted", func(t *testing.T) {
