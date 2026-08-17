@@ -17,7 +17,12 @@ import (
 )
 
 func TestRelayFreeModelsStateDefaultsUnknown(t *testing.T) {
-	assert.EqualValues(t, 0, relayFreeModelsState.Load(),
+	// Package-level state: other tests may have transitioned it. Save,
+	// reset, verify the fresh-generation value, restore — the default is
+	// what a NEW process reports, which is the alert-relevant contract.
+	orig := relayFreeModelsState.Swap(0)
+	t.Cleanup(func() { relayFreeModelsState.Store(orig) })
+	assert.EqualValues(t, 0, RelayFreeModelsState(),
 		"a fresh agent generation reports unknown (0)")
 }
 
