@@ -232,7 +232,14 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 		// drifted (see #755, #739). The synchronous path works correctly
 		// on all versions. The frontend receives the assistant response
 		// via SSE events regardless of which send path is used.
-		msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{})
+		//
+		// The model selector travels with the prompt (contract type
+		// session.ModelRef); the adapter owns any agent-specific wire
+		// form. Forwarding it is what keeps a workspace usable when its
+		// persisted default model is unresolvable (incident 2026-08-16).
+		msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{
+			Model: extractPromptModel(bodyBytes),
+		})
 		if err != nil {
 			// #817: log the underlying adapter error for this path too.
 			h.logger.Error("SendPromptAsync: adapter failed", err,
@@ -296,6 +303,28 @@ func extractPromptText(body []byte) (string, error) {
 		}
 	}
 	return sb.String(), nil
+}
+
+// extractPromptModel parses the per-prompt model selector
+// ({"model":{"modelID":...,"providerID":...}}) from a prompt body into the
+// contract's ModelRef. Returns nil when absent, empty, or malformed — the
+// agent's session default applies. Malformed bodies never fail the prompt:
+// text extraction has already validated the JSON, and a bad selector should
+// degrade to default-model routing, not reject the user's message.
+func extractPromptModel(body []byte) *session.ModelRef {
+	var parsed struct {
+		Model *struct {
+			ModelID    string `json:"modelID"`
+			ProviderID string `json:"providerID"`
+		} `json:"model"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil
+	}
+	if parsed.Model == nil || parsed.Model.ModelID == "" {
+		return nil
+	}
+	return &session.ModelRef{ID: parsed.Model.ModelID, Provider: parsed.Model.ProviderID}
 }
 
 // historyPageDefaultLimit is the default page size when ?limit= is omitted.

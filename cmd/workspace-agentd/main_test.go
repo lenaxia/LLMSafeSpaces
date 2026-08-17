@@ -234,7 +234,7 @@ func TestStatuszEndpoint_ContextUsage_PerSessionContextUsed(t *testing.T) {
 	client, cache, tracker := newStatuszTestFixture(t, opencodeSrv)
 	tracker.setPromptTokens("ses_1", 15000)
 	tracker.setPromptTokens("ses_2", 80000)
-	handler := buildStatuszHandler(client, cache, tracker, newMemoryPressureMonitor(), time.Now())
+	handler := buildStatuszHandler(client, cache, tracker, newMemoryPressureMonitor(), time.Now(), "")
 
 	req := httptest.NewRequest("GET", "/v1/statusz", nil)
 	w := httptest.NewRecorder()
@@ -262,7 +262,7 @@ func TestStatuszEndpoint_ContextUsage_EmptySessions(t *testing.T) {
 	defer opencodeSrv.Close()
 
 	client, cache, tracker := newStatuszTestFixture(t, opencodeSrv)
-	handler := buildStatuszHandler(client, cache, tracker, newMemoryPressureMonitor(), time.Now())
+	handler := buildStatuszHandler(client, cache, tracker, newMemoryPressureMonitor(), time.Now(), "")
 
 	req := httptest.NewRequest("GET", "/v1/statusz", nil)
 	w := httptest.NewRecorder()
@@ -303,7 +303,7 @@ func TestStatuszEndpoint_ContextUsage_ColdStart(t *testing.T) {
 	defer opencodeSrv.Close()
 
 	client, cache, tracker := newStatuszTestFixture(t, opencodeSrv)
-	handler := buildStatuszHandler(client, cache, tracker, newMemoryPressureMonitor(), time.Now())
+	handler := buildStatuszHandler(client, cache, tracker, newMemoryPressureMonitor(), time.Now(), "")
 
 	req := httptest.NewRequest("GET", "/v1/statusz", nil)
 	w := httptest.NewRecorder()
@@ -344,7 +344,7 @@ func TestStatuszEndpoint_OldFieldsUnchanged(t *testing.T) {
 	tracker := newSessionStatusTracker()
 	startedAt := time.Now()
 
-	handler := buildStatuszHandler(client, cache, tracker, newMemoryPressureMonitor(), startedAt)
+	handler := buildStatuszHandler(client, cache, tracker, newMemoryPressureMonitor(), startedAt, "")
 
 	req := httptest.NewRequest("GET", "/v1/statusz", nil)
 	w := httptest.NewRecorder()
@@ -468,7 +468,7 @@ func TestBuildStatuszHandler_ContextUsed_PerSession(t *testing.T) {
 	startedAt := time.Now()
 
 	// Use the real buildStatuszHandler, not a hand-rolled copy.
-	handler := buildStatuszHandler(client, cache, tracker, newMemoryPressureMonitor(), startedAt)
+	handler := buildStatuszHandler(client, cache, tracker, newMemoryPressureMonitor(), startedAt, "")
 
 	req := httptest.NewRequest("GET", "/v1/statusz", nil)
 	w := httptest.NewRecorder()
@@ -515,7 +515,7 @@ func TestBuildStatuszHandler_NoContextUsed_WhenTrackerEmpty(t *testing.T) {
 	tracker := newSessionStatusTracker() // empty — no SSE data yet
 	startedAt := time.Now()
 
-	handler := buildStatuszHandler(client, cache, tracker, newMemoryPressureMonitor(), startedAt)
+	handler := buildStatuszHandler(client, cache, tracker, newMemoryPressureMonitor(), startedAt, "")
 
 	req := httptest.NewRequest("GET", "/v1/statusz", nil)
 	w := httptest.NewRecorder()
@@ -1146,4 +1146,30 @@ func TestReadAgentPasswordFromPath_MissingFileReturnsError(t *testing.T) {
 	got, err := readAgentPasswordFromPath(pwPath)
 	require.Error(t, err, "G46: missing password file must return an error (pre-fix: returned empty string + nil error)")
 	assert.Empty(t, got, "error path must not return a partial password")
+}
+
+// TestBuildStatuszHandler_SurfacesModelResolutionWarning pins the statusz
+// leg of the user-warning pipeline (2026-08-16 incident): the deep-status
+// scrape feeds the controller's AgentHealthy condition message, so the
+// model-resolution warning must appear here too — otherwise enrichAgentStatus
+// would intermittently overwrite the liveness-path warning between scrapes.
+func TestBuildStatuszHandler_SurfacesModelResolutionWarning(t *testing.T) {
+	srv := newOpenCodeTestServer()
+	t.Cleanup(srv.Close)
+	client, cache, tracker := newStatuszTestFixture(t, srv)
+	dir := t.TempDir()
+	warnPath := modelResolutionWarningPath(dir)
+	require.NoError(t, os.WriteFile(warnPath, []byte(`{"defaultModel":"deepseek-v4-flash-free"}`), 0o600))
+
+	handler := buildStatuszHandler(client, cache, tracker, newMemoryPressureMonitor(), time.Now(), warnPath)
+
+	req := httptest.NewRequest("GET", "/v1/statusz", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusOK, w.Code)
+	var resp agentd.StatuszResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Len(t, resp.Warnings, 1)
+	assert.Contains(t, resp.Warnings[0], "deepseek-v4-flash-free")
 }

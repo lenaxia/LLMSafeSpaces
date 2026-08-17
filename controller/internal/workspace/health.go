@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -157,7 +158,21 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 	ucp := healthResp.UserCredsPresent
 	ws.Status.UserCredsPresent = &ucp
 	r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "True",
-		v1.ReasonAgentHealthy, fmt.Sprintf("agentd alive, uptime=%ds", healthResp.UptimeSeconds))
+		v1.ReasonAgentHealthy, appendAgentWarnings(
+			fmt.Sprintf("agentd alive, uptime=%ds", healthResp.UptimeSeconds), healthResp.Warnings))
+}
+
+// appendAgentWarnings suffixes agentd's boot-time degradation notices to a
+// condition message so users see them via the API's agentHealth.message
+// (e.g. an unresolvable default model — incident 2026-08-16). Deliberately
+// string-formatted: the API's regex parsers (connectedRe/versionRe/
+// configuredRe) match anywhere in the message, and warning text contains
+// no "key=value" tokens, so parsing is unaffected.
+func appendAgentWarnings(msg string, warnings []string) string {
+	if len(warnings) == 0 {
+		return msg
+	}
+	return msg + "; warnings: " + strings.Join(warnings, "; ")
 }
 
 // controllerRestartSafeModeThreshold is the ControllerRestartCount above
@@ -366,8 +381,10 @@ func (r *WorkspaceReconciler) enrichAgentStatus(ctx context.Context, ws *v1.Work
 	}
 
 	r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "True",
-		v1.ReasonAgentHealthy, fmt.Sprintf("connected=%v configured=%d sessions=%d version=%s",
-			status.Connected, status.ProvidersConfigured, status.SessionsActive, status.AgentVersion))
+		v1.ReasonAgentHealthy, appendAgentWarnings(
+			fmt.Sprintf("connected=%v configured=%d sessions=%d version=%s",
+				status.Connected, status.ProvidersConfigured, status.SessionsActive, status.AgentVersion),
+			status.Warnings))
 	// S18.11: Surface provider connectivity as a dedicated condition so
 	// operators can `kubectl wait --for=condition=ProviderReady` without
 	// regex-parsing the AgentHealthy message.

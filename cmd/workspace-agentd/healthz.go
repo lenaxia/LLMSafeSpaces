@@ -5,6 +5,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"time"
@@ -46,7 +47,14 @@ import (
 // reloadCachePath is the path to agentd's last-reload-secrets.json.
 // Production wires this to agentd.ReloadSecretsCachePath; tests pass
 // a t.TempDir path for isolation.
-func healthzHandler(startedAt time.Time, reloadCachePath string) http.HandlerFunc {
+//
+// modelWarnPath is the path to the model-resolution warning marker
+// (agentd.ModelResolutionWarningPath). When present, the persisted default
+// model could not be resolved to a provider at materialize time; the
+// warning is surfaced so the controller can relay it into the AgentHealthy
+// condition message the user sees. Absent or corrupt marker → no warnings;
+// liveness is never affected.
+func healthzHandler(startedAt time.Time, reloadCachePath, modelWarnPath string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(agentd.HealthzResponse{
@@ -56,8 +64,26 @@ func healthzHandler(startedAt time.Time, reloadCachePath string) http.HandlerFun
 			BuildTime:        buildTime,
 			UptimeSeconds:    int(time.Since(startedAt).Seconds()),
 			UserCredsPresent: hasUserCreds(reloadCachePath),
+			Warnings:         modelResolutionWarnings(modelWarnPath),
 		})
 	}
+}
+
+// modelResolutionWarnings reads the model-resolution warning marker and
+// renders the user-facing warning strings. Absent or corrupt marker → nil
+// (degrades to no warning; the next materialize rewrites the marker).
+func modelResolutionWarnings(path string) []string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var marker struct {
+		DefaultModel string `json:"defaultModel"`
+	}
+	if json.Unmarshal(data, &marker) != nil || marker.DefaultModel == "" {
+		return nil
+	}
+	return []string{fmt.Sprintf("default model %q unavailable — using the agent default model", marker.DefaultModel)}
 }
 
 // hasUserCreds reports whether the given last-reload-secrets.json

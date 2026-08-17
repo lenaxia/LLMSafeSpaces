@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -54,6 +55,8 @@ type fakeOpencode struct {
 	password string
 	// requests records method+path for assertion at the end of a test.
 	requests []string
+	// bodies records the last request body per "METHOD /path".
+	bodies map[string][]byte
 	// responses maps "METHOD /path" → canned response body.
 	responses map[string]string
 	// statusCodes maps "METHOD /path" → status code (default 200).
@@ -64,6 +67,7 @@ func newFakeOpencode(t *testing.T) *fakeOpencode {
 	t.Helper()
 	f := &fakeOpencode{
 		password:    testPassword,
+		bodies:      map[string][]byte{},
 		responses:   map[string]string{},
 		statusCodes: map[string]int{},
 	}
@@ -76,6 +80,9 @@ func newFakeOpencode(t *testing.T) *fakeOpencode {
 		}
 		key := r.Method + " " + r.URL.Path
 		f.requests = append(f.requests, key)
+		if reqBody, err := io.ReadAll(r.Body); err == nil {
+			f.bodies[key] = reqBody
+		}
 		body, ok := f.responses[key]
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
@@ -899,4 +906,54 @@ func TestAdapter_ListPending_NotImplemented404_ReturnsEmptyNoError(t *testing.T)
 	reqs, err := a.ListPending(context.Background(), "u-1", "ws-1", "ses_1")
 	require.NoError(t, err, "404 not-implemented is an authoritative empty, not a failure")
 	assert.Empty(t, reqs)
+}
+
+// TestAdapter_Send_ModelReferenceForm pins the 2026-08-16 incident fix at
+// the adapter seam: opencode's POST /session/:id/message expects the model
+// field in fully-qualified "providerID/modelID" form. A bare ID is parsed
+// by opencode as a providerID with an empty modelID and fails EVERY prompt
+// in the session ("ProviderModelNotFoundError: Model not found:
+// deepseek-v4-flash-free/."). The adapter must qualify, pass through, or
+// omit — never send a bare ID.
+func TestAdapter_Send_ModelReferenceForm(t *testing.T) {
+	sendAndInspect := func(t *testing.T, opts session.SendOpts) map[string]any {
+		t.Helper()
+		srv := newFakeOpencode(t)
+		srv.register("POST", "/session/ses_1/message", `{
+			"info":{"role":"assistant","id":"msg_1"},
+			"parts":[{"type":"text","text":"ok"}]
+		}`, 0)
+
+		a := newTestAdapter(t, srv.Server)
+		_, err := a.Send(context.Background(), "u-1", "ws-1", "ses_1", "hi", opts)
+		require.NoError(t, err)
+
+		var sent map[string]any
+		require.NoError(t, json.Unmarshal(srv.bodies["POST /session/ses_1/message"], &sent))
+		return sent
+	}
+
+	t.Run("provider and id are qualified", func(t *testing.T) {
+		sent := sendAndInspect(t, session.SendOpts{Model: &session.ModelRef{ID: "glm-5.3", Provider: "thekaocloud"}})
+		assert.Equal(t, "thekaocloud/glm-5.3", sent["model"],
+			"model must be sent as providerID/modelID")
+	})
+
+	t.Run("already qualified passes through", func(t *testing.T) {
+		sent := sendAndInspect(t, session.SendOpts{Model: &session.ModelRef{ID: "thekaocloud/glm-5.3"}})
+		assert.Equal(t, "thekaocloud/glm-5.3", sent["model"])
+	})
+
+	t.Run("bare id without provider is omitted", func(t *testing.T) {
+		sent := sendAndInspect(t, session.SendOpts{Model: &session.ModelRef{ID: "glm-5.3"}})
+		_, present := sent["model"]
+		assert.False(t, present,
+			"a bare ID cannot be expressed in opencode form and must be omitted so the session default applies")
+	})
+
+	t.Run("no model sends no model key", func(t *testing.T) {
+		sent := sendAndInspect(t, session.SendOpts{})
+		_, present := sent["model"]
+		assert.False(t, present)
+	})
 }
