@@ -193,6 +193,9 @@ func (p *managedProcess) supervise() {
 			continue
 		}
 		p.cmd = cmd
+		// Register with the orphan reaper from Start to Wait: the
+		// reaper must never steal this child's exit status (#904).
+		pkgOrphanReaper.track(cmd.Process.Pid)
 		p.lastRestartAt = time.Now()
 		log.Info("opencode started",
 			zap.Int("pid", cmd.Process.Pid),
@@ -218,6 +221,7 @@ func (p *managedProcess) supervise() {
 		// Sole Wait() in the codebase. This is the contract that
 		// Bug 2 broke.
 		waitErr := cmd.Wait()
+		pkgOrphanReaper.untrack(cmd.Process.Pid)
 
 		p.mu.Lock()
 		stopReq := p.stopRequested

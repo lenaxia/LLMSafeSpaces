@@ -34,6 +34,11 @@ type opsMetrics struct {
 	// visible in container stdout); this counter makes that loss visible
 	// on /metrics.
 	markerWriteFailures *prometheus.CounterVec
+	// orphansReaped counts zombie children reaped by the orphan reaper
+	// (#904). Steady low-rate noise on a healthy workspace; sustained
+	// growth points at a tool population being orphaned mid-execution
+	// (the #892 stuck-running correlation).
+	orphansReaped *prometheus.CounterVec
 }
 
 // pkgOpsMetrics is the package-level singleton. Tests create their own
@@ -77,6 +82,11 @@ func newOpsMetrics() *opsMetrics {
 			Name: "workspace_restart_marker_write_failures_total",
 			Help: "Failed restart-reason marker writes by restart reason (observability: the marker is the persistent incident record)",
 		}, []string{"workspace_id", "reason"}),
+
+		orphansReaped: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "workspace_orphans_reaped_total",
+			Help: "Zombie children reaped by the orphan reaper (adopted grandchildren of agentd, #904)",
+		}, []string{"workspace_id"}),
 	}
 }
 
@@ -111,6 +121,15 @@ func (m *opsMetrics) RecordMarkerWriteFailure(workspaceID, reason string) {
 		reason = "unknown"
 	}
 	m.markerWriteFailures.WithLabelValues(workspaceID, reason).Inc()
+}
+
+// RecordOrphanReap counts one zombie reaped by the orphan reaper
+// (#904 observability).
+func (m *opsMetrics) RecordOrphanReap(workspaceID string) {
+	if workspaceID == "" {
+		workspaceID = "unknown"
+	}
+	m.orphansReaped.WithLabelValues(workspaceID).Inc()
 }
 
 // RecordRestart increments the restart counter for the given reason.

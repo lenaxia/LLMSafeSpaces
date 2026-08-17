@@ -88,6 +88,14 @@ func main() {
 
 	supervise := len(os.Args) > 1 && os.Args[1] == "--supervise"
 
+	// #904: agentd is the container's PID 1 (or a subreaper when run
+	// under another init), so orphaned descendants reparent here. The
+	// reaper loop is started with the other background loops; this
+	// prctl only widens the reparenting set when PID 1 is not us.
+	if supervise {
+		_ = becomeSubreaper()
+	}
+
 	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 	bgCtx, bgCancel := context.WithCancel(rootCtx)
