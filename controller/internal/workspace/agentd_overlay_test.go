@@ -179,8 +179,14 @@ func makeWorkspacePod(ws *v1.Workspace, waitingReason string, exit int32, termMs
 			},
 		},
 		Spec: corev1.PodSpec{
-			NodeName:   "node-1",
-			Containers: []corev1.Container{{Name: "workspace"}},
+			NodeName: "node-1",
+			// The overlay wiring the real pod builder adds in the same
+			// branch as the volume; detection/verification are gated on
+			// it (see the legacy-pod regression tests below).
+			Containers: []corev1.Container{{
+				Name: "workspace",
+				Env:  []corev1.EnvVar{{Name: "AGENTD_IMAGE_VOLUME", Value: "1"}},
+			}},
 		},
 		Status: corev1.PodStatus{
 			Phase:             corev1.PodRunning,
@@ -374,4 +380,46 @@ func conditionOfType(ws *v1.Workspace, ct v1.WorkspaceConditionType) *v1.Workspa
 		}
 	}
 	return nil
+}
+
+// TestAgentdVerify_LegacyPodNeverVerified is the live-cluster regression
+// (#863 validation finding 2): during a rollout window the controller
+// flag is on but pre-existing pods still run the baked binary. A
+// healthy legacy pod must NOT get AgentdVerified=True — nothing about it
+// was ever verified, and the condition is security-relevant.
+func TestAgentdVerify_LegacyPodNeverVerified(t *testing.T) {
+	r := reconcilerWithAgentd(t)
+	ws := activeOverlayWorkspace(t, r, "ws-legacy-ok")
+	pod := makeWorkspacePod(ws, "", -1, "")
+	// Strip the overlay wiring: pre-enable pod.
+	for i := range pod.Spec.Containers[0].Env {
+		if pod.Spec.Containers[0].Env[i].Name == "AGENTD_IMAGE_VOLUME" {
+			pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env[:i], pod.Spec.Containers[0].Env[i+1:]...)
+			break
+		}
+	}
+	require.NoError(t, r.Create(context.Background(), pod))
+
+	_, err := r.handleActive(context.Background(), ws)
+	require.NoError(t, err)
+	require.Nil(t, conditionOfType(ws, v1.WorkspaceConditionAgentdVerified),
+		"legacy pod must not be marked verified — the entrypoint never ran the overlay check")
+}
+
+// TestAgentdVerify_LegacyPodExit81NotMisread: an unrelated process on a
+// legacy pod exiting 81 must not be classified as an agentd verify
+// failure (the gate keys on the pod, not the exit code).
+func TestAgentdVerify_LegacyPodExit81NotMisread(t *testing.T) {
+	r := reconcilerWithAgentd(t)
+	ws := activeOverlayWorkspace(t, r, "ws-legacy-81")
+	pod := makeWorkspacePod(ws, "CrashLoopBackOff", agentdExitVerifyFailed, "unrelated crash")
+	pod.Spec.Containers[0].Env = nil
+	require.NoError(t, r.Create(context.Background(), pod))
+
+	before := testutil.ToFloat64(metricsAgentdVerifyFailures.WithLabelValues("verify_failed", "node-1", "0123456789ab"))
+	_, err := r.handleActive(context.Background(), ws)
+	require.NoError(t, err)
+	after := testutil.ToFloat64(metricsAgentdVerifyFailures.WithLabelValues("verify_failed", "node-1", "0123456789ab"))
+	require.Equal(t, before, after, "legacy-pod exit-81 must not fire the verify-failure metric")
+	require.Nil(t, conditionOfType(ws, v1.WorkspaceConditionAgentdVerified))
 }

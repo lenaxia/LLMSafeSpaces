@@ -45,7 +45,26 @@ const (
 	agentdVolumeName    = "agentd"
 	agentdMountPath     = "/agentd"
 	agentdBinaryRelPath = "/usr/local/bin/workspace-agentd"
+	agentdOverlayEnvKey = "AGENTD_IMAGE_VOLUME"
 )
+
+// podHasAgentdOverlay reports whether this specific pod was built with
+// the overlay wiring (the controller sets AGENTD_IMAGE_VOLUME=1 only in
+// the same branch that adds the volume + verify pins). Pre-existing
+// pods from before delivery was enabled do not carry it.
+func podHasAgentdOverlay(pod *corev1.Pod) bool {
+	for _, c := range pod.Spec.Containers {
+		if c.Name != "workspace" {
+			continue
+		}
+		for _, e := range c.Env {
+			if e.Name == agentdOverlayEnvKey && e.Value == "1" {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 var (
 	metricsAgentdVerifyFailures = metrics.WorkspaceAgentdVerifyFailuresTotal
@@ -143,7 +162,7 @@ func validateAgentdDeliveryConfig(image, amd64, arm64 string) error {
 // the failure reason (pod recreated with a good binary or a corrected
 // pin). Repeated reconciles of the same episode do not re-emit.
 func (r *WorkspaceReconciler) detectAgentdVerificationFailure(ctx context.Context, ws *v1.Workspace, pod *corev1.Pod) bool {
-	if !r.agentdOverlayEnabled() {
+	if !r.agentdOverlayEnabled() || !podHasAgentdOverlay(pod) {
 		return false
 	}
 
@@ -189,8 +208,15 @@ func (r *WorkspaceReconciler) detectAgentdVerificationFailure(ctx context.Contex
 
 // markAgentdVerified sets the positive condition once a pod in overlay
 // mode is observed running without a verify failure. Cheap and idempotent.
-func (r *WorkspaceReconciler) markAgentdVerified(ws *v1.Workspace) {
-	if !r.agentdOverlayEnabled() {
+// Gated on the POD carrying the overlay, not just the controller flag:
+// during a rollout window (delivery enabled, pre-existing pods still on
+// the baked binary), flag-only gating stamped AgentdVerified=True on
+// pods that never ran the entrypoint verification — a false positive on
+// a security-relevant condition (live-cluster finding, #863 validation).
+// Same gate protects detection below from misreading an unrelated
+// exit-81 on a legacy pod.
+func (r *WorkspaceReconciler) markAgentdVerified(pod *corev1.Pod, ws *v1.Workspace) {
+	if !r.agentdOverlayEnabled() || !podHasAgentdOverlay(pod) {
 		return
 	}
 	if prev := conditionOfTypeLocal(ws, v1.WorkspaceConditionAgentdVerified); prev != nil && prev.Status == "True" {
