@@ -180,8 +180,12 @@ func TestRefreshOnce_OpencodeReportsUnhealthy(t *testing.T) {
 }
 
 func TestRefreshOnce_Timeout_TreatedAsFailure(t *testing.T) {
+	// Shrunk timeout so the test runs in milliseconds, not the production
+	// 4s — under -race + -coverpkg the 10s hang blew up CI's package
+	// timeout on loaded runners.
+	setWatchdogTiming(t, 60*time.Millisecond, 40*time.Millisecond, 3)
 	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(10 * time.Second) // longer than readinessRefreshTimeout
+		time.Sleep(500 * time.Millisecond) // longer than the shrunk timeout
 	}))
 	defer mock.Close()
 
@@ -495,7 +499,39 @@ func (f *fakeRestarter) callCount() int {
 	return f.calls
 }
 
+// runRefreshLoop sets the agent addr to the mock, starts refreshIsHealthyLoop
+// against it, and returns the cache. The addr restore and goroutine join live
+// in ONE cleanup registered AFTER setWatchdogTiming's — LIFO order means the
+// join+restore run before the timing-vars restore, so the restore write never
+// races the live loop's per-tick read (caught by -race; a body
+// `defer setAgentAddr(orig)` would run before the cleanup join and, while
+// agentAddrAtomic is an atomic.Value, a stray tick would poll a stale address
+// — test contamination invisible to -race). Mirrors runWatchdogLoop in
+// watchdog_vitals_test.go.
+func runRefreshLoop(t *testing.T, mockURL string, client *OpenCodeClient, cache *healthzCache, restarter healthWatchdogRestarter, busy sessionBusyChecker) {
+	t.Helper()
+	orig := getAgentAddr()
+	setAgentAddr(mockURL)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, restarter, busy, nil)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+		setAgentAddr(orig)
+	})
+}
+
 func TestRefreshIsHealthyLoop_WatchdogFiresOnHang(t *testing.T) {
+	// Shrink the loop timing vars so this runs in milliseconds, not the
+	// production 5s/4s cadence — under -race + -coverpkg the production
+	// wall-clock variant took ~45s and blew CI's 5-minute package timeout
+	// on loaded runners.
+	setWatchdogTiming(t, 60*time.Millisecond, 40*time.Millisecond, 3)
 	// Simulate an opencode hang: first response is healthy, then all
 	// subsequent responses hang until timeout (triggering failures).
 	var callCount atomic.Int32
@@ -504,60 +540,61 @@ func TestRefreshIsHealthyLoop_WatchdogFiresOnHang(t *testing.T) {
 		if n == 1 {
 			_ = json.NewEncoder(w).Encode(map[string]any{"healthy": true, "version": "v1.0"})
 		} else {
-			// Simulate hang — sleep longer than the timeout.
-			time.Sleep(10 * time.Second)
+			// Simulate hang — sleep longer than the (shrunk) timeout.
+			time.Sleep(500 * time.Millisecond)
 		}
 	}))
 	defer mock.Close()
-
-	origAddr := getAgentAddr()
-	defer func() { setAgentAddr(origAddr) }()
-	setAgentAddr(mock.URL)
 
 	client := &OpenCodeClient{password: "test", client: &http.Client{Timeout: readinessRefreshTimeout}}
 	cache := newHealthzCache()
 	fr := &fakeRestarter{}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	runRefreshLoop(t, mock.URL, client, cache, fr, nil)
 
-	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, fr, nil, nil)
+	// Wait for: boot success → threshold timeout failures → watchdog fire.
+	require.Eventually(t, func() bool {
+		return fr.callCount() == 1
+	}, 20*time.Second, 50*time.Millisecond,
+		"watchdog must fire once (latch) after threshold consecutive timeout failures")
 
-	// Wait long enough for: boot success → 3 consecutive timeout failures → watchdog fire.
-	// refreshInterval=5s, timeout=4s, threshold=3 → worst case ~27s.
-	// Give it 40s.
-	time.Sleep(40 * time.Second)
+	// Settle ≥2 ticks after the fire so a latch regression (re-firing per
+	// tick) would land and be caught — ~5 ticks at the 60ms cadence,
+	// comparable to the old production-cadence test's post-fire scrutiny.
+	time.Sleep(300 * time.Millisecond)
 
 	assert.False(t, cache.Snapshot().Healthy, "cache must be unhealthy after failures")
 	assert.Equal(t, 1, fr.callCount(), "watchdog must call restart exactly once on the edge, not on subsequent polls (latch)")
 }
 
 func TestRefreshIsHealthyLoop_WatchdogDoesNotFireOnHealthy(t *testing.T) {
+	setWatchdogTiming(t, 60*time.Millisecond, 40*time.Millisecond, 3)
 	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"healthy": true, "version": "v1.0"})
 	}))
 	defer mock.Close()
 
-	origAddr := getAgentAddr()
-	defer func() { setAgentAddr(origAddr) }()
-	setAgentAddr(mock.URL)
-
 	client := &OpenCodeClient{password: "test", client: &http.Client{Timeout: 2 * time.Second}}
 	cache := newHealthzCache()
 	fr := &fakeRestarter{}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	runRefreshLoop(t, mock.URL, client, cache, fr, nil)
 
-	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, fr, nil, nil)
-
-	time.Sleep(12 * time.Second) // ~2-3 refresh cycles
+	// Let several refresh cycles elapse; the watchdog must stay quiet.
+	require.Eventually(t, func() bool {
+		return cache.Snapshot().ConsecutiveFailures > 0 || cache.Snapshot().Healthy
+	}, 5*time.Second, 50*time.Millisecond, "loop must run its first refresh")
+	time.Sleep(500 * time.Millisecond) // several more cycles at the 60ms cadence
 
 	assert.True(t, cache.Snapshot().Healthy, "cache must be healthy")
 	assert.Equal(t, 0, fr.callCount(), "watchdog must not fire when healthy")
 }
 
 func TestRefreshIsHealthyLoop_WatchdogDoesNotFireDuringBoot(t *testing.T) {
+	// Shrunk cadence (60ms/40ms/3) — see WatchdogFiresOnHang for the
+	// rationale (production wall-clock variant exceeded CI's package
+	// timeout under race+coverage).
+	setWatchdogTiming(t, 60*time.Millisecond, 40*time.Millisecond, 3)
 	// Simulate a slow-booting opencode: first several calls fail (boot in
 	// progress), then it becomes healthy. The watchdog must NOT fire
 	// during the boot failure window — it only arms after the first
@@ -574,22 +611,21 @@ func TestRefreshIsHealthyLoop_WatchdogDoesNotFireDuringBoot(t *testing.T) {
 	}))
 	defer mock.Close()
 
-	origAddr := getAgentAddr()
-	defer func() { setAgentAddr(origAddr) }()
-	setAgentAddr(mock.URL)
-
 	client := &OpenCodeClient{password: "test", client: &http.Client{Timeout: 2 * time.Second}}
 	cache := newHealthzCache()
 	fr := &fakeRestarter{}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	runRefreshLoop(t, mock.URL, client, cache, fr, nil)
 
-	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, fr, nil, nil)
+	// Boot failures (503s) must accumulate WITHOUT arming the watchdog;
+	// once healthy, the loop must stay quiet.
+	require.Eventually(t, func() bool {
+		return callCount.Load() >= 4 // all boot failures issued
+	}, 10*time.Second, 50*time.Millisecond, "loop must issue the boot failure probes")
+	require.Eventually(t, func() bool {
+		return cache.Snapshot().Healthy
+	}, 10*time.Second, 50*time.Millisecond, "cache must recover once opencode responds healthy")
 
-	time.Sleep(35 * time.Second) // enough for boot failures + recovery
-
-	assert.True(t, cache.Snapshot().Healthy, "cache must be healthy after slow boot recovers")
 	assert.Equal(t, 0, fr.callCount(),
 		"watchdog must not fire during legitimate slow boot — it only arms after first healthy check")
 }
@@ -632,6 +668,10 @@ type fakeBusyChecker struct {
 func (f *fakeBusyChecker) anyBusy() bool { return f.busy.Load() }
 
 func TestRefreshIsHealthyLoop_WatchdogDefersWhenSessionsBusy(t *testing.T) {
+	// Shrunk cadence (60ms/40ms/3) — see WatchdogFiresOnHang for the
+	// rationale (production wall-clock variant exceeded CI's package
+	// timeout under race+coverage).
+	setWatchdogTiming(t, 60*time.Millisecond, 40*time.Millisecond, 3)
 	// Simulate: opencode boots healthy, then hangs. Sessions are busy
 	// (LLM turn in progress). The watchdog must NOT fire — it must defer.
 	var callCount atomic.Int32
@@ -640,14 +680,10 @@ func TestRefreshIsHealthyLoop_WatchdogDefersWhenSessionsBusy(t *testing.T) {
 		if n == 1 {
 			_ = json.NewEncoder(w).Encode(map[string]any{"healthy": true, "version": "v1.0"})
 		} else {
-			time.Sleep(10 * time.Second)
+			time.Sleep(500 * time.Millisecond)
 		}
 	}))
 	defer mock.Close()
-
-	origAddr := getAgentAddr()
-	defer func() { setAgentAddr(origAddr) }()
-	setAgentAddr(mock.URL)
 
 	client := &OpenCodeClient{password: "test", client: &http.Client{Timeout: readinessRefreshTimeout}}
 	cache := newHealthzCache()
@@ -655,15 +691,15 @@ func TestRefreshIsHealthyLoop_WatchdogDefersWhenSessionsBusy(t *testing.T) {
 	bc := &fakeBusyChecker{}
 	bc.busy.Store(true) // sessions are busy
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	runRefreshLoop(t, mock.URL, client, cache, fr, bc)
 
-	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, fr, bc, nil)
-
-	// Wait long enough for: boot success → 3 consecutive timeout failures →
-	// watchdog would fire but sessions are busy → deferral.
-	time.Sleep(40 * time.Second)
-
+	// Boot success → threshold consecutive timeout failures while sessions
+	// stay busy → the watchdog defers (never fires). Wait on the CACHE's
+	// failure counter (the observable that flips Healthy), not the mock's
+	// request count (which increments on entry, before the hang resolves).
+	require.Eventually(t, func() bool {
+		return cache.Snapshot().ConsecutiveFailures >= 3
+	}, 20*time.Second, 50*time.Millisecond, "must accumulate threshold failures while sessions busy")
 	assert.False(t, cache.Snapshot().Healthy, "cache must be unhealthy")
 	assert.Equal(t, 0, fr.callCount(),
 		"watchdog must NOT fire when sessions are busy — must defer restart")
@@ -672,22 +708,22 @@ func TestRefreshIsHealthyLoop_WatchdogDefersWhenSessionsBusy(t *testing.T) {
 func TestRefreshIsHealthyLoop_WatchdogFiresAfterSessionsGoIdle(t *testing.T) {
 	// Simulate: opencode boots healthy, then hangs. Sessions start busy,
 	// then go idle. The watchdog must fire AFTER sessions clear.
+	// Shrunk cadence (60ms/40ms/3) — see WatchdogFiresOnHang for the
+	// rationale (production wall-clock variant exceeded CI's package
+	// timeout under race+coverage).
+	setWatchdogTiming(t, 60*time.Millisecond, 40*time.Millisecond, 3)
 	var callCount atomic.Int32
 	mock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := callCount.Add(1)
 		if n == 1 {
 			_ = json.NewEncoder(w).Encode(map[string]any{"healthy": true, "version": "v1.0"})
 		} else {
-			// Block long enough to trigger the readiness timeout (4s)
-			// but not so long that it eats the entire poll window.
-			time.Sleep(readinessRefreshTimeout + 1*time.Second)
+			// Block longer than the (shrunk) readiness timeout so the
+			// probe fails, but bounded so the mock closes promptly.
+			time.Sleep(500 * time.Millisecond)
 		}
 	}))
 	defer mock.Close()
-
-	origAddr := getAgentAddr()
-	defer func() { setAgentAddr(origAddr) }()
-	setAgentAddr(mock.URL)
 
 	client := &OpenCodeClient{password: "test", client: &http.Client{Timeout: readinessRefreshTimeout}}
 	cache := newHealthzCache()
@@ -695,16 +731,14 @@ func TestRefreshIsHealthyLoop_WatchdogFiresAfterSessionsGoIdle(t *testing.T) {
 	bc := &fakeBusyChecker{}
 	bc.busy.Store(true) // start busy
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	go refreshIsHealthyLoop(ctx, client, cache, testLogger(), nil, fr, bc, nil)
+	runRefreshLoop(t, mock.URL, client, cache, fr, bc)
 
 	// Wait for boot + failures + deferral (sessions busy). Use Eventually
-	// instead of fixed Sleep so it works on slow CI runners.
+	// on the CACHE's failure counter (the observable that gates the
+	// deferral), not the mock's request count (entry-time increment).
 	require.Eventually(t, func() bool {
-		return callCount.Load() >= 4 // 1 boot + 3 failed health checks
-	}, 60*time.Second, 500*time.Millisecond, "must accumulate failures while sessions busy")
+		return cache.Snapshot().ConsecutiveFailures >= 3
+	}, 20*time.Second, 50*time.Millisecond, "must accumulate threshold failures while sessions busy")
 	assert.Equal(t, 0, fr.callCount(), "must not fire while sessions busy")
 
 	// Sessions go idle.
@@ -713,8 +747,13 @@ func TestRefreshIsHealthyLoop_WatchdogFiresAfterSessionsGoIdle(t *testing.T) {
 	// Watchdog should fire now that sessions are idle.
 	require.Eventually(t, func() bool {
 		return fr.callCount() == 1
-	}, 30*time.Second, 500*time.Millisecond,
+	}, 20*time.Second, 50*time.Millisecond,
 		"watchdog must fire after sessions go idle — latch must NOT be consumed by deferral")
+
+	// Settle ≥2 ticks after the fire so a latch regression (re-firing per
+	// tick after deferral) would land and be caught.
+	time.Sleep(300 * time.Millisecond)
+	assert.Equal(t, 1, fr.callCount(), "watchdog must fire exactly once (latch), not re-fire per tick")
 }
 
 // TestRefreshIsHealthyLoop_WatchdogMaxDeferForcesRestart verifies that when
