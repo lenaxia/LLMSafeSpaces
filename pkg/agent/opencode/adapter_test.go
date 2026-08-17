@@ -105,7 +105,7 @@ func newFakeOpencode(t *testing.T) *fakeOpencode {
 							}
 						default:
 							w.WriteHeader(http.StatusBadRequest)
-							_, _ = w.Write([]byte(fmt.Sprintf(`{"name":"BadRequest","data":{"message":"Expected object | null, got %q at [\"model\"]","kind":"Payload"}}`, fmt.Sprint(v))))
+							_, _ = fmt.Fprintf(w, `{"name":"BadRequest","data":{"message":"Expected object | null, got %q at [\"model\"]","kind":"Payload"}}`, fmt.Sprint(v))
 							return
 						}
 					}
