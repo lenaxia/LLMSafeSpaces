@@ -496,6 +496,9 @@ func (f *fakeRestarter) callCount() int {
 }
 
 func TestRefreshIsHealthyLoop_WatchdogFiresOnHang(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time watchdog test (~35-40s wall clock); skipped in -short coverage runs — full execution in the race-detector job (release CI timeout class, #906 follow-up)")
+	}
 	// Simulate an opencode hang: first response is healthy, then all
 	// subsequent responses hang until timeout (triggering failures).
 	var callCount atomic.Int32
@@ -558,6 +561,9 @@ func TestRefreshIsHealthyLoop_WatchdogDoesNotFireOnHealthy(t *testing.T) {
 }
 
 func TestRefreshIsHealthyLoop_WatchdogDoesNotFireDuringBoot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time watchdog test (~35-40s wall clock); skipped in -short coverage runs — full execution in the race-detector job (release CI timeout class, #906 follow-up)")
+	}
 	// Simulate a slow-booting opencode: first several calls fail (boot in
 	// progress), then it becomes healthy. The watchdog must NOT fire
 	// during the boot failure window — it only arms after the first
@@ -632,6 +638,9 @@ type fakeBusyChecker struct {
 func (f *fakeBusyChecker) anyBusy() bool { return f.busy.Load() }
 
 func TestRefreshIsHealthyLoop_WatchdogDefersWhenSessionsBusy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("real-time watchdog test (~35-40s wall clock); skipped in -short coverage runs — full execution in the race-detector job (release CI timeout class, #906 follow-up)")
+	}
 	// Simulate: opencode boots healthy, then hangs. Sessions are busy
 	// (LLM turn in progress). The watchdog must NOT fire — it must defer.
 	var callCount atomic.Int32

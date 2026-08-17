@@ -89,6 +89,9 @@ func TestHealthzHandler_NeverCallsOpencode(t *testing.T) {
 // 30 seconds; the handler must still return < 100ms because it doesn't
 // touch opencode.
 func TestHealthzHandler_LatencyUnderOpencodeStarvation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("30s starvation mock; skipped in -short coverage runs — full execution in the race-detector job")
+	}
 	opencodeMock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(30 * time.Second) // hang
 	}))
