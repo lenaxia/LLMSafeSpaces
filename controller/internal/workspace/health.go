@@ -297,8 +297,10 @@ func (r *WorkspaceReconciler) enrichAgentStatus(ctx context.Context, ws *v1.Work
 
 	if !status.Ready || len(status.Connected) == 0 {
 		r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "False",
-			v1.ReasonAgentDegraded, fmt.Sprintf("no providers connected (configured=%d, connected=%v)",
-				status.ProvidersConfigured, status.Connected))
+			v1.ReasonAgentDegraded, appendAgentWarnings(
+				fmt.Sprintf("no providers connected (configured=%d, connected=%v)",
+					status.ProvidersConfigured, status.Connected),
+				status.Warnings))
 		r.setCondition(ws, v1.WorkspaceConditionProviderReady, "False",
 			v1.ReasonProvidersNotConnected, fmt.Sprintf("no providers connected (configured=%d, connected=%v)",
 				status.ProvidersConfigured, status.Connected))

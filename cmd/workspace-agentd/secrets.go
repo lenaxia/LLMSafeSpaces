@@ -571,6 +571,10 @@ func applyWorkspaceConfig(agentConfigPath, secretsPath string) {
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
+		// Absent config: nothing is substituted, so a marker from an
+		// earlier run is stale — remove it (same reasoning as the
+		// empty-default early return below).
+		_ = os.Remove(modelResolutionWarningPath(filepath.Dir(agentConfigPath)))
 		return // absent = no workspace config to apply
 	}
 
@@ -578,6 +582,10 @@ func applyWorkspaceConfig(agentConfigPath, secretsPath string) {
 		DefaultModel string `json:"defaultModel"`
 	}
 	if json.Unmarshal(data, &wsCfg) != nil || wsCfg.DefaultModel == "" {
+		// No default selected (or config unreadable as JSON): any warning
+		// marker from an earlier boot is stale — nothing is being
+		// substituted, so it must not keep rendering (review round 2).
+		_ = os.Remove(modelResolutionWarningPath(filepath.Dir(agentConfigPath)))
 		return
 	}
 

@@ -715,3 +715,27 @@ func TestCheckAgentHealth_WarningsAppendedToCondition(t *testing.T) {
 	assert.Contains(t, deepMsg, warning,
 		"deep-status rewrite must not erase the warning")
 }
+
+// TestCheckAgentHealth_DegradedKeepsWarnings pins the review-round-2 fix:
+// the Degraded message site also carries agentd warnings (a workspace can
+// be provider-less AND have an unresolvable default — both must render).
+func TestCheckAgentHealth_DegradedKeepsWarnings(t *testing.T) {
+	const warning = `default model "glm-5.3" unavailable — using the agent default model`
+	r, ws, server := setupHealthTest(t, agentd.StatuszResponse{
+		Healthy: true, Ready: false, Connected: []string{},
+		ProvidersConfigured: 1, AgentVersion: "1.18.10",
+		Warnings: []string{warning},
+	})
+	defer server.Close()
+
+	r.checkAgentHealth(context.Background(), ws)
+	r.enrichAgentStatus(context.Background(), ws, 60*time.Second)
+
+	for _, c := range ws.Status.Conditions {
+		if c.Type == v1.WorkspaceConditionAgentHealthy {
+			assert.Contains(t, c.Message, "no providers connected")
+			assert.Contains(t, c.Message, warning,
+				"degraded site must keep the appended warning")
+		}
+	}
+}

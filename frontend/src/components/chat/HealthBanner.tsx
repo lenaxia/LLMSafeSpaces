@@ -46,21 +46,34 @@ function agentLabel(health?: AgentHealth) {
     // degraded, and silently substituting the model breaks user intent.
     return health.warnings?.length ? health.warnings : null;
   }
+  // The backend appends "; warnings: ..." to the condition message; the
+  // structured warnings render as their own rows (warningRows below), so
+  // strip the suffix here to avoid duplication.
+  const message = health.message?.split("; warnings: ")[0];
   const labels: Record<string, string> = {
-    Degraded: health.message || "Agent degraded — no providers connected",
-    Unhealthy: health.message || "Agent is unhealthy",
+    Degraded: message || "Agent degraded — no providers connected",
+    Unhealthy: message || "Agent is unhealthy",
     Unknown: "Agent health unknown",
   };
-  return labels[health.status] ?? health.message ?? null;
+  return labels[health.status] ?? message ?? null;
+}
+
+// Warning rows render for ANY status: the API parses the structured
+// warnings field from the condition regardless of health state (a
+// Degraded agent can also carry a model-resolution warning). The status
+// label itself comes from agentLabel.
+function warningRows(health?: AgentHealth): string[] {
+  return health?.warnings ?? [];
 }
 
 export function HealthBanner({ credentialState, agentHealth }: Props) {
   const credIssue = credentialLabel(credentialState);
   const agentIssues = agentLabel(agentHealth);
   const agentNodes = Array.isArray(agentIssues) ? agentIssues : agentIssues ? [agentIssues] : [];
+  const warnings = warningRows(agentHealth);
   const degraded = agentHealth?.status === "Degraded";
 
-  if (!credIssue && agentNodes.length === 0) return null;
+  if (!credIssue && agentNodes.length === 0 && warnings.length === 0) return null;
 
   return (
     <div className="flex flex-col gap-1 border-b border-border bg-yellow-500/5 px-4 py-2 text-sm">
@@ -83,6 +96,17 @@ export function HealthBanner({ credentialState, agentHealth }: Props) {
           <span>{node}</span>
         </div>
       ))}
+      {warnings
+        .filter((w) => !agentNodes.includes(w))
+        .map((w) => (
+          <div
+            key={`warn-${w}`}
+            className="flex items-center gap-2 text-yellow-600 dark:text-yellow-400"
+          >
+            <AlertTriangle className="h-3.5 w-3.5 flex-shrink-0" />
+            <span>{w}</span>
+          </div>
+        ))}
     </div>
   );
 }

@@ -1102,3 +1102,59 @@ func TestExtractPromptModel(t *testing.T) {
 		})
 	}
 }
+
+// TestSendMessage_ForwardsModelOverride mirrors
+// TestSendPromptAsync_ForwardsModelOverride for the SDK-documented
+// synchronous /message path (review round 2: the forwarding was wired but
+// unpinned — dropping extractPromptModel from SendMessage would pass CI).
+func TestSendMessage_ForwardsModelOverride(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	var gotOpts session.SendOpts
+	h.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _, _ string, opts session.SendOpts) (*session.Message, error) {
+			gotOpts = opts
+			return &session.Message{ID: "msg_1", Type: session.MessageAssistant}, nil
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(
+		`{"model":{"modelID":"glm-5.3","providerID":"thekaocloud"},"parts":[{"type":"text","text":"hi"}]}`))
+
+	h.SendMessage(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.NotNil(t, gotOpts.Model, "/message must forward the model selector like /prompt")
+	assert.Equal(t, "glm-5.3", gotOpts.Model.ID)
+	assert.Equal(t, "thekaocloud", gotOpts.Model.Provider)
+}
+
+// TestSendMessage_NoModelInBody_NilOptsModel pins the /message default.
+func TestSendMessage_NoModelInBody_NilOptsModel(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	var gotOpts session.SendOpts
+	h.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _, _ string, opts session.SendOpts) (*session.Message, error) {
+			gotOpts = opts
+			return &session.Message{ID: "msg_1", Type: session.MessageAssistant}, nil
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"parts":[{"type":"text","text":"hi"}]}`))
+
+	h.SendMessage(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Nil(t, gotOpts.Model)
+}

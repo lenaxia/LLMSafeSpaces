@@ -94,3 +94,11 @@ Suspend → resume to force a fresh materialize with the current image; with rel
 6. **Round-trip pin**: `TestModelResolutionWarning_RoundTrip` (write→read, no-semicolon contract).
 
 Verification after round 1: full Go suites green (handlers 116s, workspace-agentd, controller, pkg/...), golangci-lint 0 issues, frontend tsc + 1664 vitest tests green.
+
+## Review round 2 (REQUEST CHANGES → addressed; commit "review round 2")
+
+1. **gofmt violation in workspace_service.go (CI-blocking)** — the round-1 cherry-pick dedented the configuredRe/warningsRe block. Fixed via `gofmt -w`. The round-1 worklog claim "gofmt clean" was false at that commit; this round re-ran `gofmt -l .` → clean.
+2. **`/message` forwarding unpinned** — added `TestSendMessage_ForwardsModelOverride` + `TestSendMessage_NoModelInBody_NilOptsModel` (unit) and `TestE2E_Adapter_SendMessage_ModelForwarding` (full pipeline, asserts `"model":"thekaocloud/glm-5.3"` on the backend body).
+3. **Degraded erases the warning (non-blocking, adopted)** — the deep-status Degraded site now appends warnings via `appendAgentWarnings` too (the API parses `warningsRe` regardless of condition status).
+4. **Stale marker on cleared default (non-blocking, adopted)** — `applyWorkspaceConfig` removes the marker on both early returns (absent config file, empty `DefaultModel`): nothing is being substituted, so no warning may render.
+5. **openapi (non-blocking, adopted)** — documented the optional `model` selector (`ModelSelector` schema) on `/message` and `/prompt`, plus the 403 policy response.

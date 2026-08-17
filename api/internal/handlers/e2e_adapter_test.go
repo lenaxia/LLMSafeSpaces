@@ -550,3 +550,33 @@ func TestE2E_Adapter_SendPromptAsync_ModelForwarding(t *testing.T) {
 		assert.False(t, present, "empty modelID must degrade to default, not fail the prompt")
 	})
 }
+
+// TestE2E_Adapter_SendMessage_ModelForwarding is the /message leg of the
+// full-pipeline forwarding pin (review round 2): the SDK-documented
+// synchronous path must deliver the qualified selector to opencode just
+// like /prompt.
+func TestE2E_Adapter_SendMessage_ModelForwarding(t *testing.T) {
+	var gotModel any
+	var modelPresent bool
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/message"):
+			var body map[string]any
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+			gotModel, modelPresent = body["model"]
+			w.Header().Set("Content-Type", "application/json")
+			w.Write([]byte(`{"info":{"role":"assistant","id":"msg_mf_1","time":{"created":1786400000000}},"parts":[{"type":"text","text":"ok"}]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(backend.Close)
+
+	env := newE2EEnv(t, backend)
+
+	w := env.do(http.MethodPost, "/api/v1/workspaces/ws-1/sessions/ses_1/message",
+		strings.NewReader(`{"model":{"modelID":"glm-5.3","providerID":"thekaocloud"},"parts":[{"type":"text","text":"hi"}]}`))
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.True(t, modelPresent, "/message must forward the selector to the backend")
+	assert.Equal(t, "thekaocloud/glm-5.3", gotModel)
+}
