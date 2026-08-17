@@ -158,11 +158,24 @@ func main() {
 			"binary inside --agentd-image. Set BOTH hashes or NEITHER.")
 	flag.Parse()
 
-	// #863: validate the agentd delivery contract before anything
-	// starts. Image-only is the NORMAL (Renovate-friendly) form — the
-	// per-arch binary sha256s are resolved from the image index
-	// annotations, covered by the digest. Hash flags are optional
-	// per-image overrides (both or neither).
+	// US-43.19 / D20: the shared secret authenticating controller→API internal
+	// calls. Read from the same env var the API service uses
+	// (LLMSAFESPACES_INTERNAL_TOKEN) so a single mounted Secret configures both
+	// sides. Empty means no X-Internal-Token header is sent; the API endpoint
+	// fails closed (403) in that case, so org-suspension is non-functional
+	// until both sides are configured (the chart wires both by default).
+	apiInternalToken := os.Getenv("LLMSAFESPACES_INTERNAL_TOKEN")
+
+	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
+	// #863: validate the agentd delivery contract and resolve pins.
+	// Runs AFTER SetLogger (live-cluster finding: logging this block
+	// earlier sent both the resolved-pins Info and the fatal
+	// validation/resolution Error lines into controller-runtime's
+	// pre-SetLogger delegating sink, which discards them — a silent
+	// os.Exit(1)) and BEFORE SetupControllers (which needs the resolved
+	// pins). Image-only is the NORMAL (Renovate-friendly) form — hashes
+	// resolve from the image index annotations, covered by the digest.
+	// Hash flags are optional per-image overrides (both or neither).
 	if err := workspace.ValidateAgentdDelivery(agentdImage, agentdBinarySHA256AMD64, agentdBinarySHA256ARM64); err != nil {
 		setupLog.Error(err, "invalid agentd delivery configuration")
 		os.Exit(1)
@@ -189,15 +202,6 @@ func main() {
 			"image", agentdImage, "sha256Amd64", agentdBinarySHA256AMD64, "sha256Arm64", agentdBinarySHA256ARM64)
 	}
 
-	// US-43.19 / D20: the shared secret authenticating controller→API internal
-	// calls. Read from the same env var the API service uses
-	// (LLMSAFESPACES_INTERNAL_TOKEN) so a single mounted Secret configures both
-	// sides. Empty means no X-Internal-Token header is sent; the API endpoint
-	// fails closed (403) in that case, so org-suspension is non-functional
-	// until both sides are configured (the chart wires both by default).
-	apiInternalToken := os.Getenv("LLMSAFESPACES_INTERNAL_TOKEN")
-
-	ctrl.SetLogger(zap.New(zap.UseDevMode(true)))
 	setupLog.Info("starting controller", "version", version.Version, "commit", version.CommitSHA, "built", version.BuildTime)
 
 	// Register custom metrics with the controller-runtime metrics registry

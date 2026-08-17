@@ -214,7 +214,7 @@ func (r *WorkspaceReconciler) handleActive(ctx context.Context, workspace *v1.Wo
 
 	// #863: overlay-mode pod observed running clean — publish the
 	// positive verification condition (idempotent).
-	r.markAgentdVerified(workspace)
+	r.markAgentdVerified(pod, workspace)
 
 	// Pod running — check timeout.
 	if workspace.Spec.Timeout > 0 && workspace.Status.StartTime != nil {
