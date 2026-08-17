@@ -104,3 +104,10 @@ Split convention adopted across the whole model pipeline (round 4 refined round 
 - `api/internal/handlers/models_handler.go`, `proxy_handlers.go`, `proxy.go`, `models_test.go`, `adapter_path_test.go`
 - `cmd/workspace-agentd/secrets.go`, `secrets_test.go`, `pre_boot_relay.go` (round 2)
 - `pkg/agent/opencode/client_v2.go`, `adapter.go`, `adapter_test.go`
+
+## Review round 5 (#913 → addressed)
+
+1. **Frontend double-form false denial + mis-forwarding (major)** — the frontend's per-send selector is `{modelID: <advertised ID>, providerID: <routing provider>}`; for slashed catalog IDs the advertised ID itself contains "/", so (a) the policy's embedded-prefix check denied the vendor namespace ("anthropic" ≠ "openrouter") on every message, and (b) `qualifiedModelID` forwarded the double form verbatim → opencode would route via the nonexistent provider "anthropic". Fixed by making `m.Provider` AUTHORITATIVE end-to-end: the adapter prefixes it onto the ID unless already present; the policy checks it as the routing provider. The embedded first-segment check now applies ONLY to provider-less slashed IDs (the remaining bypass vector — the round-3 regression test was reshaped to that vector, since the with-provider shape now legitimately routes via the named-and-checked provider). New tests: frontend double form allowed + forwarded prefixed (adapter + handler), provider-less bypass denied.
+2. **Empty-tail `"a/"` (minor)** — the resolver's qualified branch rejects empty tails (the incident's own parse shape) even when the provider exists; subtest added.
+3. **Model-axis allowlist consistency (minor)** — the prompt path accepts the advertised full ID OR the bare tail (matching SetModel; ListModels filters on the advertised ID). Deny/allow directions align across all three enforcement points; tail-acceptance test added.
+4. **Worklog body sections A/B + Assumption 2 corrected** — first-segment convention wording throughout; B section describes the generalized check; Assumption 2 now states slashed catalog IDs exist and the first-`/` convention governs.
