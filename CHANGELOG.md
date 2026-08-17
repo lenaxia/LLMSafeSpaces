@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.11] - 2026-08-17
+
+### Fixed
+
+- **All-sessions 502 on chat (hotfix, #917)**: the per-prompt model
+  selector was sent to opencode's POST /session/:id/message as the
+  "providerID/modelID" STRING, but opencode 1.18.10's schema requires the
+  OBJECT `{"modelID","providerID"}` — every prompt 400'd and surfaced as
+  a 502 (reported as a CORS failure in the browser, since the error page
+  carries no CORS headers). Regression from #909, where mocked tests
+  asserted the string form with no real-schema validation. The adapter
+  (V1 Send and V2 prompt) now sends the object; the test fake validates
+  the body against opencode's schema so a string-form revert fails the
+  suite structurally, and a full-pipeline e2e pins the object through
+  handler → adapter → backend.
+
 ## [0.15.10] - 2026-08-17
 
 ### Fixed
