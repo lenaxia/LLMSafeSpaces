@@ -1173,3 +1173,32 @@ func TestBuildStatuszHandler_SurfacesModelResolutionWarning(t *testing.T) {
 	require.Len(t, resp.Warnings, 1)
 	assert.Contains(t, resp.Warnings[0], "deepseek-v4-flash-free")
 }
+
+// TestStatuszEndpoint_RelayFreeModelsField (#906 r5): the REAL handler
+// must surface the injector's state — not just the struct field (the
+// tautological round-4 test is retained for the state machine itself).
+func TestStatuszEndpoint_RelayFreeModelsField(t *testing.T) {
+	opencodeSrv := newOpenCodeTestServer()
+	defer opencodeSrv.Close()
+
+	client, cache, tracker := newStatuszTestFixture(t, opencodeSrv)
+	handler := buildStatuszHandler(client, cache, tracker, newMemoryPressureMonitor(), time.Now(), "")
+
+	orig := relayFreeModelsState.Load()
+	t.Cleanup(func() { relayFreeModelsState.Store(orig) })
+
+	for _, state := range []struct {
+		v    int32
+		want int32
+	}{{0, 0}, {1, 1}, {2, 2}} {
+		relayFreeModelsState.Store(state.v)
+		req := httptest.NewRequest("GET", "/v1/statusz", nil)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code)
+		var resp agentd.StatuszResponse
+		require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+		assert.EqualValues(t, state.want, resp.RelayFreeModels,
+			"statusz must serialize the injector state %d", state.v)
+	}
+}

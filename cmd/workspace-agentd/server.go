@@ -98,6 +98,7 @@ func buildStatuszHandler(
 			Disk:                getDiskUsage(),
 			Memory:              getMemoryUsage(),
 			CPU:                 getCPUUsage(),
+			RelayFreeModels:     RelayFreeModelsState(),
 			Context:             contextUsage,
 			MemoryPressure:      pressure,
 			Warnings:            modelResolutionWarnings(modelWarnPath),

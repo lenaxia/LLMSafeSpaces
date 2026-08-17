@@ -15,6 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -1054,4 +1057,120 @@ func TestSSETracker_Subscribe_LargeEventDoesNotDropConnection(t *testing.T) {
 		"tracker must receive idle for sess-big AFTER the large event (scanner buffer regression)")
 
 	tracker.Stop()
+}
+
+// #901 G3: last-event-age gauge — never-received workspaces report a
+// large age (visible silence), recent events report near-zero.
+func TestRefreshLastEventGauges(t *testing.T) {
+	recordLastEvent("ws-recent")
+	RefreshLastEventGauges([]string{"ws-recent", "ws-never"})
+
+	age := promtestutil.ToFloat64(lastEventAgeGauge.WithLabelValues("ws-recent"))
+	assert.InDelta(t, 0.0, age, 5.0, "recent event: age ~0")
+
+	never := promtestutil.ToFloat64(lastEventAgeGauge.WithLabelValues("ws-never"))
+	assert.GreaterOrEqual(t, never, 300.0, "never-received: the silence must be visible, not absent")
+}
+
+// #902: processEvent records upstream liveness for every event.
+func TestProcessEvent_RecordsLastEvent(t *testing.T) {
+	tr := NewTracker(nil, &testLogger{}, nil)
+	lastEventMu.Lock()
+	delete(lastEvent, "ws-rec")
+	lastEventMu.Unlock()
+	tr.processEvent("ws-rec", `{"type":"server.connected"}`)
+	lastEventMu.Lock()
+	_, ok := lastEvent["ws-rec"]
+	ts := lastEvent["ws-rec"]
+	lastEventMu.Unlock()
+	assert.True(t, ok, "processEvent must record the event timestamp")
+	assert.WithinDuration(t, time.Now(), ts, 2*time.Second)
+}
+
+// #906 review: the backoff reset pinned. connectAndRead ALWAYS returns
+// non-nil, so the pre-fix reset-on-nil branch was dead code — a healthy
+// long-lived connection that ended kept the maxed 30s backoff forever.
+func TestBackoffAfterConnect(t *testing.T) {
+	orig := healthyConnBackoffReset
+	healthyConnBackoffReset = 100 * time.Millisecond
+	t.Cleanup(func() { healthyConnBackoffReset = orig })
+
+	// Healthy long-lived connection ended: earned a fast retry.
+	assert.Equal(t, 2*time.Second, backoffAfterConnect(30*time.Second, 200*time.Millisecond),
+		"a connection that lived past the healthy threshold must reset the backoff")
+	// Short-lived failure: keep the current (possibly maxed) backoff.
+	assert.Equal(t, 30*time.Second, backoffAfterConnect(30*time.Second, 10*time.Millisecond),
+		"a quickly-failed connection must keep the current backoff")
+	assert.Equal(t, 8*time.Second, backoffAfterConnect(8*time.Second, 50*time.Millisecond))
+	// Boundary: exactly the threshold is NOT a reset (strictly greater).
+	assert.Equal(t, 30*time.Second, backoffAfterConnect(30*time.Second, 100*time.Millisecond))
+}
+
+// #901 G1: per-workspace connected gauge + stale-series cleanup.
+func TestTrackerConnectedGauge_SeriesDeletedOnStop(t *testing.T) {
+	tr := NewTracker(nil, &testLogger{}, nil)
+	setTrackerConnected("ws-g", true)
+	assert.Equal(t, 1.0, promtestutil.ToFloat64(trackerConnectedGauge.WithLabelValues("ws-g")))
+
+	deleteTrackerSeries("ws-g")
+	// No series = ToFloat64 of a deleted label errors; assert via the
+	// collector instead: gather and confirm absence.
+	families, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+	for _, f := range families {
+		if f.GetName() == "llmsafespaces_sse_tracker_connected" {
+			for _, m := range f.GetMetric() {
+				for _, l := range m.GetLabel() {
+					require.NotEqual(t, "ws-g", l.GetValue(),
+						"StopWatching must delete the workspace's gauge series (stale series fired UpstreamSilent forever)")
+				}
+			}
+		}
+	}
+	_ = tr
+}
+
+// TestTrackerConnectedGauge_InitializedAtArmTime (#906 review F2): a
+// watch that has NEVER connected must already emit a connected series
+// reading 0 — absent ≠ 0 in PromQL, and the never-connected class was
+// the incident's alert-invisible shape. With init-at-arm + deletion on
+// StopWatching, a PRESENT series implies armed.
+func TestTrackerConnectedGauge_InitializedAtArmTime(t *testing.T) {
+	tr := NewTracker(nil, &testLogger{}, nil)
+	tr.EnsureWatching("ws-never-conn")
+
+	require.Eventually(t, func() bool {
+		return promtestutil.ToFloat64(trackerConnectedGauge.WithLabelValues("ws-never-conn")) == 0
+	}, 2*time.Second, 10*time.Millisecond,
+		"the connected series must exist at 0 the moment the watch is armed — before any connection attempt")
+
+	// StopWatching removes it again (armed-implies-present invariant).
+	tr.StopWatching("ws-never-conn")
+	families, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+	for _, f := range families {
+		if f.GetName() == "llmsafespaces_sse_tracker_connected" {
+			for _, m := range f.GetMetric() {
+				for _, l := range m.GetLabel() {
+					require.NotEqual(t, "ws-never-conn", l.GetValue(),
+						"stopped watch must delete its series")
+				}
+			}
+		}
+	}
+}
+
+// TestTracker_PodIPUnavailableCounter (#901 G11 / #906 r6): a watch
+// whose workspace has no podIP (resume race) must tick the counter on
+// every connect attempt — the resume-race visibility signal.
+func TestTracker_PodIPUnavailableCounter(t *testing.T) {
+	tr := NewTracker(nil, &testLogger{}, nil)
+	tr.SetPodIPResolver(func(string) string { return "" })
+	tr.SetPasswordGetter(fakePWProvider{})
+	tr.EnsureWatching("ws-noip")
+
+	require.Eventually(t, func() bool {
+		return promtestutil.ToFloat64(podIPUnavailable.WithLabelValues("ws-noip")) >= 1
+	}, 3*time.Second, 10*time.Millisecond,
+		"empty-podIP connect attempts must tick pod_ip_unavailable_total")
 }

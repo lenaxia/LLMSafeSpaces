@@ -8,8 +8,10 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -491,6 +493,33 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 	// Settings routes (admin + user)
 	if cfg.SettingsHandler != nil {
 		registerSettingsRoutes(router, services, cfg.SettingsHandler)
+	}
+
+	// Auth-gated pprof (#901 G6): goroutine/heap/trace dumps for live
+	// incident diagnosis (2026-08-16: stacks required SIGQUIT-ing a
+	// production replica). Admin-guarded like every other /admin surface —
+	// profile data leaks internals and is never public.
+	if services.GetAuth() != nil {
+		// Self-contained pprof mux (review rounds 1-3 on #906): a blank
+		// net/http/pprof import registers on http.DefaultServeMux at
+		// init — but import-hygiene tooling can (and did) strip the blank
+		// import, silently leaving DefaultServeMux empty and every
+		// profile 404ing. Registering explicitly on our own mux has no
+		// such failure mode. pprof.Index dispatches the named profiles
+		// (goroutine/heap/allocs/block/mutex/threadcreate) under its
+		// subtree; the four specials get their exact handlers.
+		pprofMux := http.NewServeMux()
+		pprofMux.HandleFunc("/debug/pprof/", pprof.Index)
+		pprofMux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		pprofMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		pprofMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		pprofMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		pprofHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.URL.Path = "/debug/pprof" + strings.TrimPrefix(r.URL.Path, "/api/v1/admin/debug/pprof")
+			pprofMux.ServeHTTP(w, r)
+		})
+		debug := router.Group("/api/v1/admin/debug/pprof", services.GetAuth().AuthMiddleware(), middleware.AdminGuard())
+		debug.Any("/*path", gin.WrapH(pprofHandler))
 	}
 
 	// Admin provider credentials routes (Epic 30)

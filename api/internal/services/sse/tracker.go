@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
@@ -151,6 +152,122 @@ func (t *Tracker) SetIdleTimeout(d time.Duration) {
 	t.idleTimeout = d
 }
 
+// lastEventMu guards lastEvent (workspace -> last upstream event time).
+// Backs llmsafespaces_sse_tracker_last_event_age_seconds (#901 G3):
+// receiving client heartbeats proves NOTHING about the upstream tracker
+// (they are generated per-subscriber in proxy_stream.go) — this gauge is
+// the upstream-liveness signal.
+var (
+	lastEventMu sync.Mutex
+	lastEvent   = map[string]time.Time{}
+
+	lastEventAgeGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llmsafespaces_sse_tracker_last_event_age_seconds",
+		Help: "Seconds since the tracker last received an upstream agent event per workspace (stale/large = connected-but-silent or dead upstream)",
+	}, []string{"workspace_id"})
+
+	lastEventGaugeOnce sync.Once
+)
+
+func recordLastEvent(workspaceID string) {
+	lastEventMu.Lock()
+	lastEvent[workspaceID] = time.Now()
+	lastEventMu.Unlock()
+}
+
+// RefreshLastEventGauges recomputes the age gauges for the given
+// workspaces (stale entries included — a workspace with no recent events
+// is exactly the signal). Called from the watch reconciler each tick.
+func RefreshLastEventGauges(workspaceIDs []string) {
+	lastEventGaugeOnce.Do(func() { prometheus.MustRegister(lastEventAgeGauge) })
+	lastEventMu.Lock()
+	defer lastEventMu.Unlock()
+	now := time.Now()
+	for _, id := range workspaceIDs {
+		t, ok := lastEvent[id]
+		if !ok {
+			// Watched but never received: report since process start so
+			// the silence is visible rather than absent.
+			lastEventAgeGauge.WithLabelValues(id).Set(math.Max(300, now.Sub(processStart).Seconds()))
+			continue
+		}
+		lastEventAgeGauge.WithLabelValues(id).Set(now.Sub(t).Seconds())
+	}
+}
+
+var processStart = time.Now()
+
+// Per-workspace connection state (#901 G1 — the issue's actual ask; the
+// aggregate watched-count gauge from #903 cannot see armed-but-failing
+// watches): connected=1 while an /event stream is open (HTTP 200 read
+// loop active), 0 otherwise; reconnects counts successful (re)connects.
+var (
+	connStateMu sync.Mutex
+	connState   = map[string]bool{}
+
+	trackerConnectedGauge = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "llmsafespaces_sse_tracker_connected",
+		Help: "1 while this replica holds an open /event stream for the workspace (armed-but-failing watches read 0)",
+	}, []string{"workspace_id"})
+
+	trackerReconnects = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "llmsafespaces_sse_tracker_reconnects_total",
+		Help: "Successful (re)connections to a workspace /event stream",
+	}, []string{"workspace_id"})
+
+	connGaugesOnce sync.Once
+)
+
+// podIPUnavailable counts resolver-empty results for a watch attempt
+// (#901 G11): Active workspace, no IP — the resume race where
+// connectAndRead fails at Warn with "no pod IP". A rate on this label
+// means workspaces are armed but cannot connect yet.
+var podIPUnavailable = prometheus.NewCounterVec(prometheus.CounterOpts{
+	Name: "llmsafespaces_sse_tracker_pod_ip_unavailable_total",
+	Help: "Watch attempts where the workspace was Active but status.podIP was empty (resume race / stale status)",
+}, []string{"workspace_id"})
+
+var podIPCounterOnce sync.Once
+
+func recordPodIPUnavailable(workspaceID string) {
+	podIPCounterOnce.Do(func() { prometheus.MustRegister(podIPUnavailable) })
+	podIPUnavailable.WithLabelValues(workspaceID).Inc()
+}
+
+func setTrackerConnected(workspaceID string, up bool) {
+	connGaugesOnce.Do(func() {
+		prometheus.MustRegister(trackerConnectedGauge)
+		prometheus.MustRegister(trackerReconnects)
+	})
+	connStateMu.Lock()
+	connState[workspaceID] = up
+	connStateMu.Unlock()
+	trackerConnectedGauge.WithLabelValues(workspaceID).Set(boolToFloat(up))
+	if up {
+		trackerReconnects.WithLabelValues(workspaceID).Inc()
+	}
+}
+
+// deleteTrackerSeries removes a workspace's gauge series (#906 review:
+// stale series fired UpstreamSilent forever on suspended workspaces).
+func deleteTrackerSeries(workspaceID string) {
+	connStateMu.Lock()
+	delete(connState, workspaceID)
+	connStateMu.Unlock()
+	lastEventMu.Lock()
+	delete(lastEvent, workspaceID)
+	lastEventMu.Unlock()
+	trackerConnectedGauge.DeleteLabelValues(workspaceID)
+	lastEventAgeGauge.DeleteLabelValues(workspaceID)
+}
+
+func boolToFloat(b bool) float64 {
+	if b {
+		return 1
+	}
+	return 0
+}
+
 // watchedCount tracks live tracker subscriptions across all Tracker
 // instances in this process; exported as the
 // llmsafespaces_sse_tracker_watched_workspaces gauge (#902 fix item 3,
@@ -184,6 +301,14 @@ func (t *Tracker) EnsureWatching(workspaceID string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.subscriptions[workspaceID] = cancel
 	watchedCount.Add(1)
+	// #906 review F2: initialize the per-workspace connected series at
+	// arm time. A watch failing since arm (empty podIP, refused dial —
+	// connectAndRead returns before any connection) otherwise emits NO
+	// series, and absent ≠ 0 in PromQL: the never-connected incident
+	// class was alert-invisible. With init-at-arm + series deletion on
+	// StopWatching, a PRESENT connected series implies armed, and
+	// connected == 0 is the complete failing-watch signal.
+	setTrackerConnected(workspaceID, false)
 	t.Logger.Info("SSE watch armed", "workspaceID", workspaceID)
 
 	wg := &sync.WaitGroup{}
@@ -244,6 +369,10 @@ func (t *Tracker) StopWatching(workspaceID string) {
 	if wg != nil {
 		wg.Wait()
 	}
+
+	// #906 review: drop per-workspace gauge series so suspended workspaces
+	// stop emitting (permanently-firing UpstreamSilent).
+	deleteTrackerSeries(workspaceID)
 
 	prefix := workspaceID + ":"
 	t.tokensMu.Lock()
@@ -354,6 +483,23 @@ func (t *Tracker) SubscribeDrain(
 	}
 }
 
+// healthyConnBackoffReset is how long a connection must live before its
+// ending earns a backoff reset. Var for tests.
+var healthyConnBackoffReset = 30 * time.Second
+
+// backoffAfterConnect computes the next retry backoff after a
+// connectAndRead returned. connectAndRead ALWAYS returns non-nil (even a
+// clean stream end is an error return), so a reset-on-nil branch was dead
+// code and a long-lived healthy connection that ended (pod restart) kept
+// the maxed 30s backoff forever (#903 review; pinned by
+// TestBackoffAfterConnect).
+func backoffAfterConnect(cur time.Duration, connDuration time.Duration) time.Duration {
+	if connDuration > healthyConnBackoffReset {
+		return 2 * time.Second
+	}
+	return cur
+}
+
 func (t *Tracker) subscribe(ctx context.Context, workspaceID string) {
 	backoff := 2 * time.Second
 	maxBackoff := 30 * time.Second
@@ -365,14 +511,15 @@ func (t *Tracker) subscribe(ctx context.Context, workspaceID string) {
 		default:
 		}
 
-		if err := t.connectAndRead(ctx, workspaceID); err != nil {
+		started := time.Now()
+		err := t.connectAndRead(ctx, workspaceID)
+		backoff = backoffAfterConnect(backoff, time.Since(started))
+		if err != nil {
 			// Warn, not Debug (#901 G2 / #902 fix item 3): a workspace whose
 			// tracker cannot connect is EVENT-BLIND — users halt while sends
 			// keep succeeding. Rate-limited by the backoff below (max one
 			// line per 30s per workspace).
 			t.Logger.Warn("SSE subscription ended; retrying", "error", err, "workspaceID", workspaceID, "backoff", backoff.String())
-		} else {
-			backoff = 2 * time.Second
 		}
 
 		select {
@@ -398,6 +545,7 @@ func (t *Tracker) connectAndRead(ctx context.Context, workspaceID string) error 
 
 	podIP := t.podIPResolver(workspaceID)
 	if podIP == "" {
+		recordPodIPUnavailable(workspaceID)
 		return fmt.Errorf("no pod IP for workspace %s", workspaceID)
 	}
 
@@ -436,6 +584,8 @@ func (t *Tracker) connectAndRead(ctx context.Context, workspaceID string) error 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("SSE endpoint returned status %d", resp.StatusCode)
 	}
+	setTrackerConnected(workspaceID, true)
+	defer setTrackerConnected(workspaceID, false)
 
 	scanner := bufio.NewScanner(resp.Body)
 	// 16 MB buffer per line (was 64 KB). Same root cause as the agentd
@@ -494,6 +644,7 @@ func (t *Tracker) processEvent(workspaceID, data string) {
 	if data == "" {
 		return
 	}
+	recordLastEvent(workspaceID)
 
 	var evt sseEvent
 	if err := json.Unmarshal([]byte(data), &evt); err != nil || evt.Type == "" {

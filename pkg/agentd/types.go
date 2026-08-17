@@ -192,7 +192,11 @@ type StatuszResponse struct {
 	Disk                *DiskUsage    `json:"disk,omitempty"`
 	Memory              *MemoryUsage  `json:"memory,omitempty"`
 	CPU                 *CPUUsage     `json:"cpu,omitempty"`
-	Context             *ContextUsage `json:"context,omitempty"`
+	// RelayFreeModels: 0 unknown, 1 ok, 2 degraded (injector deadline
+	// exhausted — free-tier routing unavailable until the next agent
+	// restart; #901 G8).
+	RelayFreeModels int32         `json:"relay_free_models"`
+	Context         *ContextUsage `json:"context,omitempty"`
 	// MemoryPressure is true when memory usage exceeds the warning
 	// threshold (85% of cgroup limit). Set by agentd's periodic memory
 	// check (US-44.5). The controller reads this to set the

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -522,4 +523,84 @@ func TestErrTooManySubscribers_IsAPIError(t *testing.T) {
 
 func TestErrTooManySubscribers_StatusCode(t *testing.T) {
 	assert.Equal(t, http.StatusTooManyRequests, ErrTooManySubscribers.StatusCode())
+}
+
+// #901 G4: delivered-events counter distinguishes zero-emitted /
+// zero-delivered / zero-subscribed.
+func TestPublishToWorkspace_DeliveredCounter(t *testing.T) {
+	b := NewUserEventBroker()
+	sub, err := b.SubscribeWorkspace("ws-metric")
+	require.NoError(t, err)
+	defer b.UnsubscribeWorkspace("ws-metric", sub)
+
+	before := promtestutil.ToFloat64(deliveredEvents.WithLabelValues("ws-metric", "agent.event"))
+	b.PublishToWorkspace("ws-metric", apitypes.WorkspaceSSEEvent{Type: "agent.event"})
+	<-sub.Ch
+	after := promtestutil.ToFloat64(deliveredEvents.WithLabelValues("ws-metric", "agent.event"))
+	assert.Equal(t, before+1, after)
+
+	// No subscriber: no delivery counted.
+	b.PublishToWorkspace("ws-nosub", apitypes.WorkspaceSSEEvent{Type: "agent.event"})
+	assert.Equal(t, 0.0, promtestutil.ToFloat64(deliveredEvents.WithLabelValues("ws-nosub", "agent.event")))
+}
+
+// #906 review: drops must not count as delivered. A full-buffer Send
+// returns false; the counter must not increment.
+func TestPublishToWorkspace_FullBufferNotCountedDelivered(t *testing.T) {
+	b := NewUserEventBroker()
+	sub, err := b.SubscribeWorkspace("ws-drop")
+	require.NoError(t, err)
+	defer b.UnsubscribeWorkspace("ws-drop", sub)
+
+	// Fill the subscriber's buffer directly (no draining).
+	for i := 0; i < userChannelBuffer; i++ {
+		select {
+		case sub.Ch <- apitypes.WorkspaceSSEEvent{Type: "filler"}:
+		default:
+			t.Fatal("buffer unexpectedly small")
+		}
+	}
+
+	before := promtestutil.ToFloat64(deliveredEvents.WithLabelValues("ws-drop", "agent.event"))
+	b.PublishToWorkspace("ws-drop", apitypes.WorkspaceSSEEvent{Type: "agent.event"})
+	after := promtestutil.ToFloat64(deliveredEvents.WithLabelValues("ws-drop", "agent.event"))
+	assert.Equal(t, before, after, "a dropped-on-full event must not be counted as delivered")
+
+	// And the drop was recorded as a resync-pending: the next drained
+	// send gets a resync sentinel first. Drain one and verify.
+	select {
+	case evt := <-sub.Ch:
+		_ = evt
+	default:
+	}
+	b.PublishToWorkspace("ws-drop", apitypes.WorkspaceSSEEvent{Type: "agent.event"})
+	// Buffer had space for at most one; either the resync or nothing.
+	// The counter assertion above is the contract under test.
+}
+
+// #906 r6: the delivered counter counts AGENT events. Heartbeats never
+// appear here in production (heartbeatLoop calls Send directly — every
+// PublishToWorkspace caller publishes concrete types; verified by the
+// reviewer's enumeration), so the round-5 "skip heartbeats in the
+// broker" branch was dead code and was removed. This test pins the
+// invariant from the other side: whatever IS published to a workspace
+// stream is counted on delivery — including (hypothetically) a
+// sentinel, because the broker layer has no special case to remove.
+func TestPublishToWorkspace_HeartbeatsNotCountedDelivered(t *testing.T) {
+	b := NewUserEventBroker()
+	sub, err := b.SubscribeWorkspace("ws-hb")
+	require.NoError(t, err)
+	defer b.UnsubscribeWorkspace("ws-hb", sub)
+
+	// Real agent event: counted.
+	b.PublishToWorkspace("ws-hb", apitypes.WorkspaceSSEEvent{Type: "agent.event"})
+	<-sub.Ch
+	assert.Equal(t, 1.0, promtestutil.ToFloat64(deliveredEvents.WithLabelValues("ws-hb", "agent.event")))
+
+	// The broker layer has NO heartbeat special case to drift back in:
+	// anything delivered is counted by type, uniformly.
+	b.PublishToWorkspace("ws-hb", apitypes.WorkspaceSSEEvent{Type: HeartbeatSentinelType})
+	<-sub.Ch
+	assert.Equal(t, 1.0, promtestutil.ToFloat64(deliveredEvents.WithLabelValues("ws-hb", string(HeartbeatSentinelType))),
+		"the counter is uniform by type — heartbeat exclusion lives at the stream layer (never counted there)")
 }

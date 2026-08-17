@@ -1,5 +1,6 @@
 {{- if and .Values.monitoring.enabled .Values.monitoring.prometheusRules.enabled }}
 {{- $apiJob := printf "%s-api.*" (include "llmsafespaces.fullname" .) -}}
+{{- $agentdJob := printf ".*agentd.*" -}}
 {{- $ctrlJob := printf "%s-controller.*" (include "llmsafespaces.fullname" .) -}}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
@@ -87,6 +88,138 @@ spec:
             description: >-
               The SSE event broker has dropped {{ `{{ $value | humanize }}` }} events/s over the
               last 5 minutes. Subscribers may not be consuming fast enough.
+
+        # #901 G1: a replica watching zero workspaces serves event-blind
+        # streams (the 2026-08-16 halting-sessions incident shape).
+        - alert: LLMSafeSpacesSSETrackerWatchesZero
+          expr: |
+            (min(llmsafespaces_sse_tracker_watched_workspaces{job=~"{{ $apiJob }}"}) == 0)
+            and (sum(llmsafespaces_sse_tracker_watched_workspaces{job=~"{{ $apiJob }}"}) > 0)
+          for: 5m
+          labels:
+            severity: critical
+            component: api
+          annotations:
+            summary: "An API replica holds zero SSE tracker watches"
+            description: >-
+              At least one API replica has watched zero workspaces for 5m — its client
+              streams are event-blind (users halt while sends succeed). Check tracker
+              Warn logs and the watch reconciler.
+
+        # #901 G3: connected-but-silent upstream — tracker watch alive but
+        # no agent events for 10m on an Active workspace.
+        - alert: LLMSafeSpacesSSETrackerUpstreamSilent
+          expr: |
+            max by (workspace_id) (llmsafespaces_sse_tracker_last_event_age_seconds{job=~"{{ $apiJob }}"}) > 600
+            and on(workspace_id)
+            max by (workspace_id) (llmsafespaces_sse_tracker_connected{job=~"{{ $apiJob }}"}) == 1
+          for: 5m
+          labels:
+            severity: warning
+            component: api
+          annotations:
+            summary: "SSE tracker upstream silent >10m on a watched workspace"
+            description: >-
+              A watched workspace has received no upstream agent events for over 10
+              minutes. Either the workspace is idle (benign) or the tracker connection
+              is dead-but-open (see #901 G11). Correlate with workspace activity.
+
+        # #901 G1: armed-but-failing — the watch exists but no /event
+        # stream is open (empty podIP, connectAndRead failing in backoff;
+        # or never-connected since arm). The connected series is
+        # initialized AT ARM TIME and deleted on StopWatching, so a
+        # PRESENT series implies armed — connected == 0 is the complete
+        # failing-watch signal (absent series = not watched = correctly
+        # not alerting). min by (workspace_id), NOT max: series are
+        # per-replica and the default topology runs 2 API replicas — max
+        # would let a healthy replica mask a dead watch on its sibling
+        # (the partial-failure variant of the incident class; #906 r7).
+        # min fires when ANY replica's armed watch is dead; absent series
+        # don't participate; boot jitter is absorbed by for: 10m.
+        # Guarded by the unlabeled watched-count > 0 so an idle replica
+        # with zero watches cannot fire it. Verified by promtool rule
+        # tests incl. a two-instance split scenario — earlier versions
+        # joined an unlabeled gauge against labeled series (could never
+        # fire) and aggregated max (replica-blind); both caught by the
+        # harness (#906 review F1, r7).
+        - alert: LLMSafeSpacesSSETrackerWatchFailing
+          expr: |
+            (min by (workspace_id) (llmsafespaces_sse_tracker_connected{job=~"{{ $apiJob }}"}) == 0)
+            and on() (max(llmsafespaces_sse_tracker_watched_workspaces{job=~"{{ $apiJob }}"}) > 0)
+          for: 10m
+          labels:
+            severity: critical
+            component: api
+          annotations:
+            summary: "SSE watch armed but not connected for {{ `{{ $labels.workspace_id }}` }}"
+            description: >-
+              The tracker holds a watch for this workspace but has no open /event
+              stream for 10m — connectAndRead is failing in a backoff loop or has
+              never connected since arm (check Warn logs: empty podIP, refused
+              connection). Users on this replica are event-blind.
+
+        # #892 D1: sustained watchdog suppression = chronic starvation or a
+        # wedged-but-alive agent (policy: notify, never kill).
+        - alert: LLMSafeSpacesWatchdogSuppressing
+          expr: |
+            sum by (workspace_id) (rate(workspace_watchdog_suppressions_total{job=~"{{ $agentdJob }}"}[5m])) > 0
+          for: 10m
+          labels:
+            severity: warning
+            component: agentd
+          annotations:
+            summary: "Health-watchdog suppressing restarts for {{ `{{ $labels.workspace_id }}` }}"
+            description: >-
+              The watchdog keeps withholding restarts (starved/flat/respawn/unknown) —
+              a turn may be hung-but-alive. Check CPU throttling and the suppression
+              reason label; per design 0050 D6, escalate to the session owner.
+
+        # #892 D2: busy-flag resets should be rare (orphan healing at
+        # generation changes); sustained rate means restart churn.
+        - alert: LLMSafeSpacesTrackerBusyResetRate
+          expr: |
+            sum by (workspace_id) (rate(workspace_tracker_busy_resets_total{job=~"{{ $agentdJob }}"}[10m])) > 0.1
+          for: 10m
+          labels:
+            severity: warning
+            component: agentd
+          annotations:
+            summary: "Frequent orphaned busy-flag resets on {{ `{{ $labels.workspace_id }}` }}"
+            description: >-
+              Busy flags are being cleared at generation changes repeatedly — the
+              workspace is restarting often enough to orphan sessions routinely.
+              Correlate with workspace_restarts_total.
+
+        # Incident evidence (9 marker writes, 0 landed, stdout-only): any
+        # failure is the persistent incident record going dark.
+        - alert: LLMSafeSpacesRestartMarkerWriteFailed
+          expr: |
+            sum(increase(workspace_restart_marker_write_failures_total{job=~"{{ $agentdJob }}"}[10m])) > 0
+          for: 0m
+          labels:
+            severity: warning
+            component: agentd
+          annotations:
+            summary: "Restart-reason marker write failed"
+            description: >-
+              A restart-reason marker failed to persist — post-mortem evidence for
+              that restart is lost. Check the workspace PVC and agentd logs.
+
+        # #901 G8: relay injector permanently degraded (free-model fetch
+        # deadline exhausted — terminal for this agent generation).
+        - alert: LLMSafeSpacesRelayInjectorDegraded
+          expr: |
+            sum(increase(llmsafespaces_relay_injector_total{job=~"{{ $agentdJob }}", outcome=~"fetch_failed|no_free_models"}[10m])) > 0
+          for: 0m
+          labels:
+            severity: warning
+            component: agentd
+          annotations:
+            summary: "Relay injector free-model fetch exhausted"
+            description: >-
+              The relay injector gave up fetching free models for this agent
+              generation — free-tier model routing is unavailable until the next
+              agent restart. Check opencode /provider health.
 
     - name: llmsafespaces.controller
       rules:

@@ -66,6 +66,27 @@ func (h *ProxyHandler) StreamEvents(c *gin.Context) {
 		h.sseTracker.EnsureWatching(workspaceID)
 	}
 
+	// #901 G7: stream lifecycle visibility. During the 2026-08-16
+	// incident, stream logs only appeared at close and showed heartbeats
+	// only — open/close with subscriber context had to be reconstructed
+	// by hand from request-id joins.
+	// SubscribeWorkspace ran above, so the count already includes THIS
+	// stream — no +1 (#906 review: off-by-one double-counted).
+	subCount := 0
+	if h.userBroker != nil {
+		subCount = h.userBroker.WorkspaceSubscriberCount(workspaceID)
+	}
+	h.logger.Info("SSE client stream opened",
+		"workspaceID", workspaceID, "subscribersIncludingSelf", subCount)
+	started := time.Now()
+	eventsSent := 0
+	defer func() {
+		h.logger.Info("SSE client stream closed",
+			"workspaceID", workspaceID,
+			"duration", time.Since(started).String(),
+			"eventsSent", eventsSent)
+	}()
+
 	streamCtx, streamCancel := context.WithCancel(c.Request.Context())
 	defer streamCancel()
 
@@ -126,6 +147,7 @@ func (h *ProxyHandler) StreamEvents(c *gin.Context) {
 				streamCancel()
 				return
 			}
+			eventsSent++
 			flusher.Flush()
 			_ = rc.SetWriteDeadline(time.Now().Add(writeDeadlineWindow))
 		}

@@ -160,6 +160,14 @@ jobs:
       - name: Install helm
         run: curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
+      # promtool is required by helm/promtool_rules_test.go — the alert
+      # EXPRESSION tests (#906: a dead join shipped twice behind
+      # name-only checks). Without it they skip like the helm tests.
+      - name: Install promtool
+        run: |
+          curl -sL https://github.com/prometheus/prometheus/releases/download/v3.4.1/prometheus-3.4.1.linux-amd64.tar.gz | tar xz -C /tmp prometheus-3.4.1.linux-amd64/promtool
+          sudo mv /tmp/prometheus-3.4.1.linux-amd64/promtool /usr/local/bin/promtool
+
       # Coverage-instrumented test run. -coverpkg=./... means we count
       # coverage for ALL packages, even those without their own _test.go
       # (so a function in pkg/utilities that's exercised by an
@@ -378,6 +386,12 @@ jobs:
       # helm is required by chart_test.go — without it the tests skip silently.
       - name: Install helm
         run: curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      # promtool for the alert-expression tests (#906).
+      - name: Install promtool
+        run: |
+          curl -sL https://github.com/prometheus/prometheus/releases/download/v3.4.1/prometheus-3.4.1.linux-amd64.tar.gz | tar xz -C /tmp prometheus-3.4.1.linux-amd64/promtool
+          sudo mv /tmp/prometheus-3.4.1.linux-amd64/promtool /usr/local/bin/promtool
 
       - name: Run full test suite with race detector
         run: |

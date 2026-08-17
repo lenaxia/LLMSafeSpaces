@@ -317,6 +317,20 @@ var implOnlyAllowlist = map[route]bool{
 	// in-cluster monitoring stack. Not part of the public API.
 	{method: "GET", path: "/metrics"}: true,
 
+	// #901 G6: auth-gated pprof mounts. The catch-all wildcard registers
+	// one route per method; the surface is a single admin diagnostic
+	// endpoint (Go runtime profiles), deliberately not part of the
+	// public API contract.
+	{method: "GET", path: "/api/v1/admin/debug/pprof/*path"}:     true,
+	{method: "POST", path: "/api/v1/admin/debug/pprof/*path"}:    true,
+	{method: "PUT", path: "/api/v1/admin/debug/pprof/*path"}:     true,
+	{method: "DELETE", path: "/api/v1/admin/debug/pprof/*path"}:  true,
+	{method: "PATCH", path: "/api/v1/admin/debug/pprof/*path"}:   true,
+	{method: "HEAD", path: "/api/v1/admin/debug/pprof/*path"}:    true,
+	{method: "OPTIONS", path: "/api/v1/admin/debug/pprof/*path"}: true,
+	{method: "TRACE", path: "/api/v1/admin/debug/pprof/*path"}:   true,
+	{method: "CONNECT", path: "/api/v1/admin/debug/pprof/*path"}: true,
+
 	// /health (no prefix) — legacy alias for /livez. Documented in
 	// OpenAPI under the root path. The router also serves an
 	// unprefixed /health for backward compat with existing dashboards

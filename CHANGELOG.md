@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Observability for the event-delivery pipeline (#901, #902 follow-ups):
+  per-workspace `llmsafespaces_sse_tracker_connected` /
+  `..._reconnects_total` / `..._last_event_age_seconds` /
+  `..._pod_ip_unavailable_total` gauges and counters;
+  `llmsafespaces_sse_broker_delivered_events_total` (drop-accurate);
+  admin-auth-gated `/api/v1/admin/debug/pprof/*` (self-contained mux);
+  open/close lifecycle logs on both SSE endpoints;
+  `relay_free_models` in agentd statusz (free-tier routing degradation
+  visible); seven alert rules incl. SSETrackerWatchesZero (critical) and
+  SSETrackerWatchFailing (armed-but-not-connected paging).
+- Fixed dead SSE-subscription backoff reset: `connectAndRead` always
+  returns non-nil, so healthy long-lived connections that ended kept the
+  maxed 30s retry backoff forever.
+- Fixed MCP `credential_list` for all clients (decoded the API's
+  `{"secrets":[...]}` wrapper incorrectly → every call failed) and made
+  the `workspace_create` tool schema require `name` (#880).
+- SDK canary: tools contract now a stable named subset + ≥24 floor with
+  cross-module parity guard (pkg/repolint) and canary-module unit tests
+  in CI; `CANARY_NO_CONTROLLER=1` env truth replaces phase inference.
+
 ## [0.15.9] - 2026-08-16
 
 ### Fixed

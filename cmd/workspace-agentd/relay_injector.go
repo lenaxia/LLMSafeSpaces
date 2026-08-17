@@ -40,6 +40,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -79,6 +80,15 @@ func relayURLHost(rawURL string) string {
 	}
 	return u.Scheme + "://" + u.Host
 }
+
+// relayFreeModelsState tracks the injector's terminal fetch state for
+// this agent generation (#901 G8): 0 = not attempted/unknown, 1 = ok,
+// 2 = degraded (deadline exhausted — free-tier routing unavailable until
+// the next agent restart). Surfaced in /v1/statusz.
+var relayFreeModelsState atomic.Int32
+
+// RelayFreeModelsState reports the injector state (0 unknown, 1 ok, 2 degraded).
+func RelayFreeModelsState() int32 { return relayFreeModelsState.Load() }
 
 var relayInjectorOutcomes = promauto.NewCounterVec(prometheus.CounterOpts{
 	Name: "llmsafespaces_relay_injector_total",
@@ -328,6 +338,7 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 		if !cfg.HealthCheck() {
 			lg.Warn("relay injector: opencode did not become healthy in time, skipping relay config")
 			relayInjectorOutcomes.WithLabelValues("unhealthy_timeout").Inc()
+			relayFreeModelsState.Store(2)
 			return
 		}
 
@@ -365,10 +376,15 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 			models, fetchErr = fetchFreeModels(ctx, cfg.OpenCodeBaseURL, cfg.OpenCodePassword)
 			if fetchErr != nil {
 				if time.Now().After(fetchDeadline) {
-					lg.Warn("relay injector: failed to fetch free models, deadline exhausted, skipping",
+					// #901 G8: terminal for this generation — one-time
+					// Warn + state surfaced in statusz + alert (fetch_failed
+					// counter) so the degraded state is visible instead of
+					// silence.
+					lg.Warn("relay injector: free models UNAVAILABLE for this agent generation - free-tier routing degraded until next agent restart",
 						zap.Error(fetchErr),
 						zap.Duration("deadline", effectiveDeadline))
 					relayInjectorOutcomes.WithLabelValues("fetch_failed").Inc()
+					relayFreeModelsState.Store(2)
 					return
 				}
 				lg.Warn("relay injector: transient error fetching free models, retrying",
@@ -377,9 +393,15 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 			} else if len(models) > 0 {
 				break
 			}
-			if time.Now().After(fetchDeadline) {
+			// Catalog-empty terminal — ONLY for a clean fetch with an
+			// empty catalog (#906 F3: fetch ERRORS are fetch_failed, fired
+			// in the fetchErr branch above; without this guard a final-
+			// iteration error could tick both outcomes and conflate the
+			// two failure modes the counter exists to distinguish).
+			if fetchErr == nil && time.Now().After(fetchDeadline) {
 				lg.Warn("relay injector: no free opencode models found after deadline, skipping relay config")
 				relayInjectorOutcomes.WithLabelValues("no_free_models").Inc()
+				relayFreeModelsState.Store(2)
 				return
 			}
 			if fetchErr == nil {
@@ -409,6 +431,7 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 		if err != nil {
 			lg.Warn("relay injector: failed to write agent config", zap.Error(err))
 			relayInjectorOutcomes.WithLabelValues("config_write_failed").Inc()
+			relayFreeModelsState.Store(2)
 			return
 		}
 		// restartRequired is always true for the opencode adapter
@@ -418,6 +441,7 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 		if !restartRequired {
 			lg.Info("relay injector: agent reports no restart required; skipping kill")
 			relayInjectorOutcomes.WithLabelValues("success_no_restart").Inc()
+			relayFreeModelsState.Store(1)
 			return
 		}
 		lg.Info("relay injector: wrote relay config",
@@ -429,6 +453,7 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 		if err := updateAuthJSONForRelay(cfg.AuthJSONPath); err != nil {
 			lg.Warn("relay injector: failed to update auth.json", zap.Error(err))
 			relayInjectorOutcomes.WithLabelValues("auth_write_failed").Inc()
+			relayFreeModelsState.Store(2)
 			return
 		}
 		lg.Info("relay injector: updated auth.json with opencode-relay entry")
@@ -443,6 +468,7 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 		// while sessions are busy — the config takes effect at that restart.
 		cfg.KillOpenCode()
 		relayInjectorOutcomes.WithLabelValues("success").Inc()
+		relayFreeModelsState.Store(1)
 		lg.Info("relay injector: triggered opencode restart to apply relay config")
 	}()
 }
