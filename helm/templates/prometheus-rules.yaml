@@ -130,14 +130,21 @@ spec:
         # initialized AT ARM TIME and deleted on StopWatching, so a
         # PRESENT series implies armed — connected == 0 is the complete
         # failing-watch signal (absent series = not watched = correctly
-        # not alerting). Guarded by the unlabeled watched-count > 0 so an
-        # idle replica with zero watches cannot fire it. Verified by
-        # promtool rule tests (helm/tests) — a previous version joined an
-        # unlabeled gauge against labeled series and could never fire
-        # (#906 review F1).
+        # not alerting). min by (workspace_id), NOT max: series are
+        # per-replica and the default topology runs 2 API replicas — max
+        # would let a healthy replica mask a dead watch on its sibling
+        # (the partial-failure variant of the incident class; #906 r7).
+        # min fires when ANY replica's armed watch is dead; absent series
+        # don't participate; boot jitter is absorbed by for: 10m.
+        # Guarded by the unlabeled watched-count > 0 so an idle replica
+        # with zero watches cannot fire it. Verified by promtool rule
+        # tests incl. a two-instance split scenario — earlier versions
+        # joined an unlabeled gauge against labeled series (could never
+        # fire) and aggregated max (replica-blind); both caught by the
+        # harness (#906 review F1, r7).
         - alert: LLMSafeSpacesSSETrackerWatchFailing
           expr: |
-            (max by (workspace_id) (llmsafespaces_sse_tracker_connected{job=~"{{ $apiJob }}"}) == 0)
+            (min by (workspace_id) (llmsafespaces_sse_tracker_connected{job=~"{{ $apiJob }}"}) == 0)
             and on() (max(llmsafespaces_sse_tracker_watched_workspaces{job=~"{{ $apiJob }}"}) > 0)
           for: 10m
           labels:

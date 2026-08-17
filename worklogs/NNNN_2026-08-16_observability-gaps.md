@@ -175,7 +175,9 @@
   code: heartbeatLoop calls Send directly; branch removed). While
   there: the round-3 streamEvents++ increments had been lost to a block
   restructure — BOTH data-write branches (snapshot no-id + live id:)
-  now increment, pinned by the new user-stream test.
+  now increment. [Round-7 correction: at round-6 HEAD only the LIVE
+  branch was pinned; the snapshot branch is now pinned by
+  TestStreamUserEvents_SnapshotBranchCounted.]
 - **User-stream positive lifecycle test**: open/close logs; a real
   event counts (eventsSent1) while an injected heartbeat sentinel does
   not.
@@ -184,3 +186,17 @@
 - HeartbeatsNotCountedDelivered rewritten to pin the true invariant:
   the broker counts uniformly by type (no special case to drift back);
   heartbeat exclusion lives at the stream layer.
+
+## Round 7 (review on #906)
+
+- **WatchFailing replica-blindness fixed**: `max by (workspace_id)` →
+  `min by` — series are per-replica and the default topology is 2 API
+  replicas; max let a healthy replica mask a dead watch on its sibling
+  (the partial-failure variant of the incident class). Two-instance
+  promtool scenarios added (A=1/B=0 fires; both healthy doesn't).
+- **G7 record alignment**: user-stream open log now carries
+  subscribersIncludingSelf; `bytes_written` dispositioned wontfix on
+  #901 with rationale (round-7 comment).
+- Snapshot-branch increment pinned (real watcher wired so the
+  snapshot's F4 phase check passes).
+- Round-6 worklog overstatement corrected in place (above).

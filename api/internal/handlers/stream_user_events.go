@@ -118,7 +118,8 @@ func (h *ProxyHandler) StreamUserEvents(c *gin.Context) {
 	// #901 G7: the user stream gets the same lifecycle visibility as the
 	// workspace stream (proxy_stream.go) — open with subscriber context,
 	// close with duration + event count.
-	h.logger.Info("SSE user stream opened", "userID", uid)
+	h.logger.Info("SSE user stream opened", "userID", uid,
+		"subscribersIncludingSelf", h.userBroker.UserSubscriberCount(uid))
 	streamStarted := time.Now()
 	streamEvents := 0
 	defer func() {

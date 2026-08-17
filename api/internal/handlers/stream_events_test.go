@@ -8,7 +8,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
 	"io"
+	k8swatch "k8s.io/apimachinery/pkg/watch"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -794,4 +796,59 @@ func TestStreamUserEvents_LifecycleLogs(t *testing.T) {
 	closed := logger.infos("SSE user stream closed")[0]
 	assert.Contains(t, closed, "eventsSent1",
 		"exactly one data event counted; the heartbeat sentinel is excluded on the user stream too")
+}
+
+// TestStreamUserEvents_SnapshotBranchCounted (#906 r7): snapshot frames
+// (EventID == 0 — no id: line) go through their own increment branch.
+// Wires a real watcher so the snapshot goroutine sees a non-empty phase
+// (F4 skips empty phases), then asserts the snapshot frame is written
+// AND counted in eventsSent.
+func TestStreamUserEvents_SnapshotBranchCounted(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	env := newTestEnv(t)
+	broker := eventbroker.NewUserEventBroker()
+	env.handler.userBroker = broker
+	logger := &captureStreamLogger{}
+	env.handler.logger = logger
+
+	wsList := &llmv1.WorkspaceList{}
+	wsList.Items = []llmv1.Workspace{{}}
+	wsList.Items[0].Name = "ws-snap"
+	wsList.Items[0].Status.Phase = llmv1.WorkspacePhaseActive
+	env.wsMock.On("List", mock.Anything, mock.Anything).Return(wsList, nil).Maybe()
+	env.wsMock.On("Watch", mock.Anything, mock.Anything).Return(k8swatch.NewFake(), nil).Maybe()
+
+	// Real watcher: its seed populates knownPhases[ws-snap]=Active, which
+	// the snapshot path requires (empty-phase workspaces are skipped, F4).
+	w, err := workspace.NewWatcher(env.k8sMock, &testLogger{}, "default", func(*llmv1.Workspace) {})
+	require.NoError(t, err)
+	require.NoError(t, w.Start())
+	t.Cleanup(w.Stop)
+	require.Eventually(t, func() bool {
+		return w.GetAllKnownPhases()["ws-snap"] == "Active"
+	}, 3*time.Second, 10*time.Millisecond, "watcher seed must populate the phase")
+	env.handler.watcher = w
+
+	router := gin.New()
+	router.GET("/api/v1/events", func(c *gin.Context) {
+		c.Set("userID", "u-snap")
+		env.handler.StreamUserEvents(c)
+	})
+
+	cancel, body, _, _ := doStreamingRequest(router, "/api/v1/events")
+	defer cancel()
+	defer body.Close()
+
+	// The snapshot frame is a data event without an id: line.
+	evt := readNextSSEDataLine(t, bufio.NewReader(body))
+	assert.Equal(t, "workspace.phase", evt["type"], "snapshot phase event delivered")
+	assert.Equal(t, "Active", evt["phase"])
+
+	cancel()
+	require.Eventually(t, func() bool { return len(logger.infos("SSE user stream closed")) == 1 },
+		2*time.Second, 5*time.Millisecond)
+	closed := logger.infos("SSE user stream closed")[0]
+	assert.Contains(t, closed, "eventsSent1",
+		"the snapshot branch's increment is pinned (round-7 coverage gap)")
 }

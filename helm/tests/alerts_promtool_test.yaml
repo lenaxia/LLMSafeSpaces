@@ -31,6 +31,42 @@ tests:
               summary: "SSE watch armed but not connected for ws-blind"
               description: 'The tracker holds a watch for this workspace but has no open /event stream for 10m — connectAndRead is failing in a backoff loop or has never connected since arm (check Warn logs: empty podIP, refused connection). Users on this replica are event-blind.'
 
+  # Two-instance split (#906 r7 finding 4): replica A connected, replica
+  # B's armed watch dead — max would mask B (== 1); min must fire.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_sse_tracker_watched_workspaces{job="test-release-llmsafespaces-api",instance="a"}'
+        values: '1+0x20'
+      - series: 'llmsafespaces_sse_tracker_watched_workspaces{job="test-release-llmsafespaces-api",instance="b"}'
+        values: '1+0x20'
+      - series: 'llmsafespaces_sse_tracker_connected{job="test-release-llmsafespaces-api",workspace_id="ws-split",instance="a"}'
+        values: '1+0x20'
+      - series: 'llmsafespaces_sse_tracker_connected{job="test-release-llmsafespaces-api",workspace_id="ws-split",instance="b"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: LLMSafeSpacesSSETrackerWatchFailing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              component: api
+              workspace_id: ws-split
+            exp_annotations:
+              summary: "SSE watch armed but not connected for ws-split"
+              description: 'The tracker holds a watch for this workspace but has no open /event stream for 10m — connectAndRead is failing in a backoff loop or has never connected since arm (check Warn logs: empty podIP, refused connection). Users on this replica are event-blind.'
+
+  # Two instances, both healthy: min == 1, must not fire.
+  - interval: 1m
+    input_series:
+      - series: 'llmsafespaces_sse_tracker_connected{job="test-release-llmsafespaces-api",workspace_id="ws-both-ok",instance="a"}'
+        values: '1+0x20'
+      - series: 'llmsafespaces_sse_tracker_connected{job="test-release-llmsafespaces-api",workspace_id="ws-both-ok",instance="b"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: LLMSafeSpacesSSETrackerWatchFailing
+        exp_alerts: []
+
   # connected == 1: healthy, must not fire.
   - interval: 1m
     input_series:
