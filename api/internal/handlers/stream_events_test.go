@@ -8,15 +8,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
 	"io"
-	k8swatch "k8s.io/apimachinery/pkg/watch"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
+	k8swatch "k8s.io/apimachinery/pkg/watch"
 
 	"github.com/gin-gonic/gin"
 	llmv1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
