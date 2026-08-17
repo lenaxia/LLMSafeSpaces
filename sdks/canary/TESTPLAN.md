@@ -193,7 +193,6 @@ Running only shallow canaries would miss the most impactful class of failure: a 
 | N1 | Invalid API key (`lsp_invalid_canary_key`) → 401, `AuthError` |
 | N2 | Empty auth header → 401 |
 | N3 | Malformed bearer value (no `lsp_` prefix, not a JWT) → 401 |
-
 | N4 | Wrong password for valid email → 401 (same error shape as N5; no enumeration) |
 | N5 | Login with nonexistent email → same 401 shape as N4 |
 
