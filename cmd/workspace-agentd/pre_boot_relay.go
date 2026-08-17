@@ -110,10 +110,17 @@ func effectiveAllowedDirsPath() string {
 }
 
 // effectiveFreeModelsPath returns the path to read the catalog from,
-// honoring the test override.
+// honoring (in order) the in-process test override and the
+// LLMSAFESPACES_FREE_MODELS_PATH env — the env override exists so the
+// materialize SUBCOMMAND can be exercised end-to-end as a subprocess
+// (secrets_test.go's relay-reorder e2e) without writing the production
+// /sandbox-cfg path.
 func effectiveFreeModelsPath() string {
 	if freeModelsTestPath != "" {
 		return freeModelsTestPath
+	}
+	if p := os.Getenv("LLMSAFESPACES_FREE_MODELS_PATH"); p != "" {
+		return p
 	}
 	return freeModelsFilePath
 }

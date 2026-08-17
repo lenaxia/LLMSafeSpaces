@@ -143,6 +143,14 @@ type ProxyHandler struct {
 	// Set via SetAdapter before Start(). Once all handlers migrate,
 	// the dialect field retires and this becomes required.
 	adapter agent.Adapter
+
+	// modelPolicyChecker enforces org allowed-models/allowed-providers on
+	// explicit per-prompt model overrides (2026-08-16 follow-up: policy was
+	// enforced only by hiding models in ListModels). nil = no enforcement
+	// (personal deployments). Read on the prompt path after Start, so it is
+	// set once via SetModelPolicyChecker before Start — same invariant as
+	// SetAdapter.
+	modelPolicyChecker OrgPolicyChecker
 }
 
 func NewProxyHandler(
@@ -198,6 +206,28 @@ func (h *ProxyHandler) SetAdapter(a agent.Adapter) {
 		panic("SetAdapter called after Start — request goroutines may already be reading h.adapter")
 	}
 	h.adapter = a
+}
+
+// SetModelPolicyChecker wires the org-policy checker for per-prompt model
+// override enforcement. Optional (nil = unenforced). Panics after Start for
+// the same race-safety reason as SetAdapter.
+func (h *ProxyHandler) SetModelPolicyChecker(p OrgPolicyChecker) {
+	if p == nil {
+		return
+	}
+	if h.started {
+		panic("SetModelPolicyChecker called after Start — request goroutines may already be reading h.modelPolicyChecker")
+	}
+	h.modelPolicyChecker = p
+}
+
+// HasModelPolicyChecker reports whether org-policy enforcement is wired on
+// the prompt paths. Exists for wiring tests (app-level): the enforcement is
+// fail-open when nil, so an unwired deployment looks identical to a
+// disabled one at runtime — only an explicit probe distinguishes them
+// (the #912 round-2 review found exactly this gap).
+func (h *ProxyHandler) HasModelPolicyChecker() bool {
+	return h.modelPolicyChecker != nil
 }
 
 // SetStateStore overrides the per-workspace state store. By default the

@@ -315,7 +315,10 @@ func (a *Adapter) SendAsync(ctx context.Context, userID, workspaceID, sessionID,
 	if opts.Admission == session.AdmissionSteer {
 		delivery = V2DeliverySteer
 	}
-	resp, err := c.PromptV2(ctx, sessionID, text, delivery)
+	// The V2 path is currently dormant on opencode 1.18.10 (#755: queue
+	// never drained) but stays wired for revival — it must honor the same
+	// model-form contract as Send: qualified or omitted, never bare.
+	resp, err := c.PromptV2WithModel(ctx, sessionID, text, delivery, qualifiedModelID(opts.Model))
 	if err != nil {
 		return "", err
 	}
