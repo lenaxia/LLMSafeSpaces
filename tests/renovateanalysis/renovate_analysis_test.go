@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package renovateanalysis exercises the Renovate-PR onboarding contract for
-// the reusable lenaxia/ai-workflows renovate-analysis workflow (v0.2.10).
+// the reusable lenaxia/ai-workflows renovate-analysis workflow (v0.2.11).
 //
 // The caller (.github/workflows/renovate-analysis.yml), the forked prompt
 // (.github/prompts/renovate-analysis.md), and the Renovate config
@@ -77,7 +77,7 @@ func TestCallerTriggersAreScheduleAndDispatchOnly(t *testing.T) {
 }
 
 // TestCallerPinsReusableWorkflow asserts the caller delegates to the reusable
-// workflow at a pinned v0.2.10 ref with the documented contract: four write
+// workflow at a pinned v0.2.11 ref with the documented contract: four write
 // permissions, secrets: inherit, and the project_name/pr_number inputs.
 func TestCallerPinsReusableWorkflow(t *testing.T) {
 	body := readFile(t, filepath.Join(repoRoot(t), renovateCaller))
@@ -87,8 +87,8 @@ func TestCallerPinsReusableWorkflow(t *testing.T) {
 		t.Fatal("caller does not use lenaxia/ai-workflows/.github/workflows/renovate-analysis.yml")
 	}
 	pin := ref[1]
-	if pin != "v0.2.10" && !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(strings.Fields(pin)[0]) {
-		t.Errorf("reusable ref must be the v0.2.10 tag or a 40-hex SHA pin, got %q", pin)
+	if pin != "v0.2.11" && !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(strings.Fields(pin)[0]) {
+		t.Errorf("reusable ref must be the v0.2.11 tag or a 40-hex SHA pin, got %q", pin)
 	}
 
 	for _, perm := range []string{"id-token: write", "contents: write", "issues: write", "pull-requests: write"} {

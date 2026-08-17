@@ -3,7 +3,7 @@
 
 // Package ghaworkflows exercises the ai-workflows onboarding contract for
 // the reusable lenaxia/ai-workflows PR-review and AI-commands workflows
-// (v0.2.10).
+// (v0.2.11).
 //
 // The two thin callers (.github/workflows/pr-review.yml, ai-comment.yml)
 // delegate review execution and command routing to centrally-pinned
@@ -123,7 +123,7 @@ func callerPin(t *testing.T, caller string) (ref, version string) {
 		t.Fatalf("%s does not delegate to lenaxia/ai-workflows", caller)
 	}
 	ref = m[1]
-	if ref != "v0.2.10" && !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(ref) {
+	if ref != "v0.2.11" && !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(ref) {
 		t.Errorf("%s reusable ref must be a vX.Y.Z tag or 40-hex SHA pin, got %q", caller, ref)
 	}
 	m = regexp.MustCompile(`version:\s*(\S+)`).FindStringSubmatch(body)
@@ -214,7 +214,7 @@ func TestPromptContractFilesExist(t *testing.T) {
 
 // TestLocalRouterIsGone asserts the superseded local router stays deleted.
 // The central route-command.sh at the pinned tag is the single source of
-// routing truth; a resurrected local copy guarantees drift (the v0.2.10
+// routing truth; a resurrected local copy guarantees drift (the v0.2.11
 // central script is a strict superset — POSIX classes + SHA stamping).
 func TestLocalRouterIsGone(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(repoRoot(t), ".github", "scripts", "route-command.sh")); err == nil {
