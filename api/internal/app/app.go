@@ -1212,10 +1212,10 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		auditHandler = handlers.NewAuditHandler(pgOrgStore)
 	}
 
-	// US-43.8: Wire policy checker into secrets handler for model filtering.
-	if policySvc != nil && modelsHandler != nil {
-		modelsHandler.SetPolicyChecker(policySvc)
-	}
+	// US-43.8 + PR #912: org-policy enforcement wiring (ListModels filter,
+	// SetModel gate, per-prompt override gate). Extracted so the wiring is
+	// unit-testable (see policy_enforcement_wiring_test.go).
+	wirePolicyEnforcement(policySvc, modelsHandler, proxyHandler)
 
 	relayRouterSvcURL := os.Getenv("RELAY_ROUTER_SVC_URL")
 	if relayRouterSvcURL == "" {

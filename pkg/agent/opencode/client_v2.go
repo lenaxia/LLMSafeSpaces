@@ -37,6 +37,12 @@ var (
 
 type v2PromptBody struct {
 	Text string `json:"text"`
+	// Model is the fully-qualified "providerID/modelID" selector; omitted
+	// (omitempty) when the send carries no override so the session default
+	// applies. Callers must never pass a bare ID — opencode splits on "/"
+	// and a bare value parses as provider-with-empty-model (incident
+	// 2026-08-16). Use qualifiedModelID to build it.
+	Model string `json:"model,omitempty"`
 }
 
 // v2PromptRequest is the body for POST /api/session/:sid/prompt.
@@ -60,8 +66,14 @@ type V2PromptResponse = agent.V2PromptResponse
 // unconditionally. F18: the prompt body is {text:"..."} (plain string),
 // not the parts-based contract shape; see the v2PromptRequest doc comment.
 func (c *Client) PromptV2(ctx context.Context, sessionID, text string, delivery V2Delivery) (*V2PromptResponse, error) {
+	return c.PromptV2WithModel(ctx, sessionID, text, delivery, "")
+}
+
+// PromptV2WithModel is PromptV2 with an optional model override in
+// fully-qualified "providerID/modelID" form ("" = session default).
+func (c *Client) PromptV2WithModel(ctx context.Context, sessionID, text string, delivery V2Delivery, model string) (*V2PromptResponse, error) {
 	body, err := json.Marshal(v2PromptRequest{
-		Prompt:   v2PromptBody{Text: text},
+		Prompt:   v2PromptBody{Text: text, Model: model},
 		Delivery: delivery,
 	})
 	if err != nil {
