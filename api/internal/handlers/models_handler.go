@@ -440,7 +440,19 @@ func (h *ModelsHandler) filterByOrgPolicy(ctx context.Context, workspaceID strin
 	}
 	filtered := make([]annotatedModel, 0, len(models))
 	for _, m := range models {
-		if pol.IsModelAllowed(m.ID) && pol.IsProviderAllowed(m.ProviderID) {
+		// Model axis: the advertised ID (which may itself contain "/",
+		// OpenRouter-style) or its bare tail — the same both-forms rule
+		// SetModel and the prompt path enforce, so an org allowlisting
+		// either form shows AND permits the model everywhere (round 6
+		// alignment; previously tail-only allowlists hid the model from
+		// ListModels while SetModel still accepted it).
+		modelOK := pol.IsModelAllowed(m.ID)
+		if !modelOK {
+			if idx := strings.Index(m.ID, "/"); idx >= 0 && idx < len(m.ID)-1 {
+				modelOK = pol.IsModelAllowed(m.ID[idx+1:])
+			}
+		}
+		if modelOK && pol.IsProviderAllowed(m.ProviderID) {
 			filtered = append(filtered, m)
 		}
 	}

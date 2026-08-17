@@ -2093,3 +2093,52 @@ func TestSetModel_SlashedCatalogModelID_OrgPolicy(t *testing.T) {
 		"model allowed by name but the resolution routes via openrouter, which the org denies")
 	assert.Empty(t, updater.calls)
 }
+
+// TestListModels_TailAllowlist_ShowsSlashedCatalogModel pins the round-6
+// alignment: an org allowlisting only the bare tail of a slashed catalog ID
+// must see the model in ListModels — SetModel and the prompt path accept
+// the tail, so hiding it here created a hidden-but-selectable ambiguity.
+func TestListModels_TailAllowlist_ShowsSlashedCatalogModel(t *testing.T) {
+	clearModelCache()
+	gin.SetMode(gin.TestMode)
+
+	const testPassword = "taillist-pw"
+	listener, err := net.Listen("tcp", "127.0.0.1:4096")
+	if err != nil {
+		t.Skip("port 4096 not available")
+	}
+	models := `{"connected":["openrouter"],"all":[{"id":"openrouter","models":{
+		"anthropic/claude-sonnet-4.5":{"id":"anthropic/claude-sonnet-4.5","name":"Claude","cost":{"input":3,"output":15}}
+	}}]}`
+	srv := httptest.NewUnstartedServer(authEnforcingHandler(testPassword, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(models))
+	}))
+	srv.Listener = listener
+	srv.Start()
+	defer srv.Close()
+
+	handler := newTestModelsHandler(testPassword)
+	handler.SetModelStore(&mockWSUpdater{ownerUserID: "user-1", orgID: "org-1"})
+	handler.SetPolicyChecker(&mockPolicyChecker{policy: &types.OrgPolicyValues{
+		AllowedModels:    &[]string{"claude-sonnet-4.5"},
+		AllowedProviders: &[]string{"openrouter"},
+	}})
+
+	router := gin.New()
+	router.Use(func(c *gin.Context) { c.Set("userID", "user-1"); c.Next() })
+	router.GET("/api/v1/workspaces/:id/models", handler.ListModels)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/workspaces/ws-1/models", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp struct {
+		Models []annotatedModel `json:"models"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Len(t, resp.Models, 1,
+		"a tail-allowlisted slashed catalog model must be visible (aligned with SetModel/prompt acceptance)")
+	assert.Equal(t, "anthropic/claude-sonnet-4.5", resp.Models[0].ID)
+}

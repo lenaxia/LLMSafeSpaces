@@ -348,17 +348,22 @@ func extractPromptText(body []byte) (string, error) {
 // policy on an explicit per-prompt model override. The workspace CRD already
 // carries the org (Spec.Owner.OrgID), so no DB round-trip.
 //
-// Provider axis inputs — a slash-bearing modelID embeds a provider prefix
-// that opencode routes by (qualifiedModelID forwards it verbatim), so it is
-// a policy input even without providerID (#913 review round 3, finding 1:
-// {"modelID":"deniedprov/x","providerID":"openai"} previously bypassed
-// allowed_providers entirely). Both the explicit providerID and any embedded
-// prefix are checked. An empty provider axis (no providerID, no embedded
-// prefix) skips the axis — the adapter degrades such refs to the session
-// default, which SetModel already screened (round 2, finding 4). Fails open
-// on policy-infra errors and for personal workspaces — same semantics as
-// ListModels' filter and SetModel's check (governance filter, not an
-// availability gate).
+// Model axis: the client-sent modelID (the catalog-advertised form) or its
+// bare tail — SetModel and ListModels accept the same two forms.
+//
+// Provider axis: m.Provider is AUTHORITATIVE when present — qualifiedModelID
+// prefixes it onto the ID, so it is the provider routing actually uses and
+// the only provider-axis check. For provider-less slashed IDs (forwarded
+// verbatim by the adapter), the embedded FIRST-segment prefix is the
+// routing provider (opencode's split — the incident proved bare IDs parse
+// as first-segment provider + empty modelID) and is checked instead. An
+// empty provider axis (flat ID, no providerID) skips the axis — the
+// adapter degrades such refs to the session default, which SetModel
+// already screened.
+//
+// Fails open on policy-infra errors and for personal workspaces — same
+// semantics as ListModels' filter and SetModel's check (governance filter,
+// not an availability gate).
 func (h *ProxyHandler) modelOverrideAllowed(ctx context.Context, workspace *v1.Workspace, m *session.ModelRef) bool {
 	if h.modelPolicyChecker == nil || m == nil {
 		return true

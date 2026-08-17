@@ -33,7 +33,7 @@
 
 - `modelSelectionAllowedByOrgPolicy(ctx, workspaceID, rawReq, flatModel, resolved)` on ModelsHandler (renamed and generalized in round 2): nil deps → allow; no org → allow; policy-infra error → fail open + warn (matches `filterByOrgPolicy`). Model axis: full advertised ID and flat tail both accepted. Provider axis: the resolution's provider on every path; the raw request's prefix ONLY on the degraded path (where rawReq persists). Denial → 403 before persistence or live push.
 
-### C. Org policy on per-prompt override
+### C. Org policy on per-prompt override (/prompt AND /message)
 
 - `ProxyHandler.modelPolicyChecker` + `SetModelPolicyChecker` (pre-Start setter, same race invariant as `SetAdapter`). Org ID comes from the already-resolved workspace CRD (`Spec.Owner.OrgID`) — zero extra round-trips on the prompt path.
 - `SendPromptAsync`: override extracted first, policy-checked before `adapter.Send`; denial → 403 `model not allowed by organization policy` (adapter never called). No override → policy not consulted (session default already screened by SetModel).
@@ -60,7 +60,7 @@
 
 1. `SetModel`'s PATCH `/global/config` and the DB both receiving the qualified form is consistent: agentd's `applyWorkspaceConfig` already required `providerID/modelID` in agent-config.json (pinned since Epic 35).
 2. Catalog model IDs MAY contain `/` (OpenRouter-style `vendor/model`). Convention everywhere: the FIRST `/` separates provider from model ID (opencode's own routing split — the incident proved bare IDs parse as first-segment provider + empty modelID). Supersedes this worklog's earlier LastIndex wording.
-3. Frontend ignores unknown response fields (additive `persistedModel`) and uses `currentModel`+`currentModelProviderID` (flat) as today.
+3. Frontend ignores unknown response fields (additive `persistedModel`) and uses `currentModel` (the catalog-advertised model ID — possibly slashed for OpenRouter-style catalogs) + `currentModelProviderID` as today; its per-send selector is `{modelID: currentModel, providerID: currentModelProviderID}` (round-5's double form).
 4. The materialize reorder is safe because the pre-boot relay writer preserves foreign keys in agent-config.json (`loadExisting` captures providers+model+mcp as initial sources) — verified by reading `pre_boot_relay.go` and by the existing pre-boot relay e2e tests still passing.
 
 ## Review round 2 (4 findings → all addressed)
@@ -101,7 +101,7 @@ Split convention adopted across the whole model pipeline (round 4 refined round 
 ## Files Modified
 
 - `api/internal/app/app.go`, `policy_enforcement.go`, `policy_enforcement_wiring_test.go` (round 2)
-- `api/internal/handlers/models_handler.go`, `proxy_handlers.go`, `proxy.go`, `models_test.go`, `adapter_path_test.go`
+- `api/internal/handlers/models_handler.go`, `proxy_handlers.go`, `proxy.go`, `models_test.go`, `adapter_path_test.go`, `adapter_crosscutting_test.go` (slot-release pin)
 - `cmd/workspace-agentd/secrets.go`, `secrets_test.go`, `pre_boot_relay.go` (round 2)
 - `pkg/agent/opencode/client_v2.go`, `adapter.go`, `adapter_test.go`
 
@@ -111,3 +111,11 @@ Split convention adopted across the whole model pipeline (round 4 refined round 
 2. **Empty-tail `"a/"` (minor)** — the resolver's qualified branch rejects empty tails (the incident's own parse shape) even when the provider exists; subtest added.
 3. **Model-axis allowlist consistency (minor)** — the prompt path accepts the advertised full ID OR the bare tail (matching SetModel; ListModels filters on the advertised ID). Deny/allow directions align across all three enforcement points; tail-acceptance test added.
 4. **Worklog body sections A/B + Assumption 2 corrected** — first-segment convention wording throughout; B section describes the generalized check; Assumption 2 now states slashed catalog IDs exist and the first-`/` convention governs.
+
+## Review round 6 (#913 → addressed)
+
+1. **ListModels model-axis aligned (minor)** — `filterByOrgPolicy` now accepts the advertised full ID OR its bare tail, matching SetModel and the prompt path; a tail-only allowlist no longer hides a model those endpoints accept. `TestListModels_TailAllowlist_ShowsSlashedCatalogModel` pins it.
+2. **`modelOverrideAllowed` doc comment rewritten** to the round-5 semantics (Provider authoritative; embedded first-segment only for provider-less slashed IDs; model axis both forms).
+3. **Worklog nits** — Assumption 3 updated (currentModel is the possibly-slashed advertised form; the frontend's double-form selector documented); Files Modified gains `adapter_crosscutting_test.go`; section C covers both endpoints.
+4. **Degraded-path flat persistence policy implication (noted, pre-existing class)** — pod-down + flat request skips the provider axis (nothing derivable), persists flat, and boot's flat scan picks whichever provider claims the model — possibly outside `allowed_providers`. Known trade-off of the "flat+catalog-unavailable degrades as before" behavior: rejecting flat selections for provider-restricted orgs when the catalog is down would trade availability for strictness. Documented here as the accepted direction; revisit if an org needs strict degraded-path enforcement.
+5. Round-5 worklog section: landed in the follow-up `docs(worklog)` commit (02f8530f) — the round-6 review snapshot predated it.
