@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.10] - 2026-08-17
+
+### Fixed
+
+- **MCP surface** (#880/#905): `credential_list` decoded the API's
+  `{"secrets":[...]}` wrapper incorrectly — every MCP call failed; the
+  `workspace_create` tool schema advertised `name` as optional while the
+  API 422s on empty names.
+- **SSE observability** (#901/#906): per-workspace tracker state
+  (`connected` — initialized at arm time, deleted on stop —
+  `reconnects_total`, `last_event_age_seconds`, `pod_ip_unavailable_total`),
+  drop-accurate delivered-events counter, admin-auth-gated pprof with a
+  self-contained mux, open/close lifecycle logs on both SSE endpoints
+  (heartbeat frames excluded from event counts), `relay_free_models` in
+  statusz with all terminal paths driving it, seven alert rules —
+  including the incident-shaped `SSETrackerWatchesZero` and the
+  replica-aware (`min by`) `SSETrackerWatchFailing` — every expression
+  executed by promtool rule tests in CI. Dead SSE-subscription backoff
+  reset fixed (healthy long-lived connections kept the maxed 30s retry).
+- **SDK canary**: tools contract now a stable named subset + ≥24 floor
+  with a cross-module parity guard, canary-module unit tests in CI, and
+  `CANARY_NO_CONTROLLER=1` environment truth replacing phase inference.
+
 ### Added
 
 - Observability for the event-delivery pipeline (#901, #902 follow-ups):
