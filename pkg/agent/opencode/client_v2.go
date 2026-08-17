@@ -35,14 +35,27 @@ var (
 	ErrV2SessionNotFound = agent.ErrV2SessionNotFound
 )
 
+// V2ModelRef is the per-prompt model override in opencode's OBJECT wire
+// form ({"modelID", "providerID"}), matching the V1 /message schema
+// (packages/sdk/openapi.json @v1.18.10: model is an object, both fields
+// required, additionalProperties false). The V2 prompt endpoint's route
+// group is dormant on 1.18.10, but the body must not carry the legacy
+// string form on revival — it fails schema decode exactly as V1 did
+// (2026-08-17 all-sessions-502 regression, #909).
+type V2ModelRef struct {
+	ModelID    string `json:"modelID"`
+	ProviderID string `json:"providerID"`
+}
+
 type v2PromptBody struct {
 	Text string `json:"text"`
-	// Model is the fully-qualified "providerID/modelID" selector; omitted
-	// (omitempty) when the send carries no override so the session default
-	// applies. Callers must never pass a bare ID — opencode splits on "/"
-	// and a bare value parses as provider-with-empty-model (incident
-	// 2026-08-16). Use qualifiedModelID to build it.
-	Model string `json:"model,omitempty"`
+	// Model is the per-prompt override in object form; omitted
+	// (omitempty on the pointer) when the send carries no override so the
+	// session default applies. Callers must never send a bare ID or a
+	// "provider/model" string — build it via modelOverride, which applies
+	// the Provider-authoritative split rules and rejects unexpressible
+	// shapes.
+	Model *V2ModelRef `json:"model,omitempty"`
 }
 
 // v2PromptRequest is the body for POST /api/session/:sid/prompt.
@@ -66,12 +79,12 @@ type V2PromptResponse = agent.V2PromptResponse
 // unconditionally. F18: the prompt body is {text:"..."} (plain string),
 // not the parts-based contract shape; see the v2PromptRequest doc comment.
 func (c *Client) PromptV2(ctx context.Context, sessionID, text string, delivery V2Delivery) (*V2PromptResponse, error) {
-	return c.PromptV2WithModel(ctx, sessionID, text, delivery, "")
+	return c.PromptV2WithModel(ctx, sessionID, text, delivery, nil)
 }
 
-// PromptV2WithModel is PromptV2 with an optional model override in
-// fully-qualified "providerID/modelID" form ("" = session default).
-func (c *Client) PromptV2WithModel(ctx context.Context, sessionID, text string, delivery V2Delivery, model string) (*V2PromptResponse, error) {
+// PromptV2WithModel is PromptV2 with an optional per-prompt model override
+// in object form (nil = session default).
+func (c *Client) PromptV2WithModel(ctx context.Context, sessionID, text string, delivery V2Delivery, model *V2ModelRef) (*V2PromptResponse, error) {
 	body, err := json.Marshal(v2PromptRequest{
 		Prompt:   v2PromptBody{Text: text, Model: model},
 		Delivery: delivery,

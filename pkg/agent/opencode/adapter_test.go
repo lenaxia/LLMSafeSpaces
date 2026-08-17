@@ -82,6 +82,35 @@ func newFakeOpencode(t *testing.T) *fakeOpencode {
 		f.requests = append(f.requests, key)
 		if reqBody, err := io.ReadAll(r.Body); err == nil {
 			f.bodies[key] = reqBody
+			// #911 regression net (structural): POST /session/:id/message
+			// and the V2 prompt endpoint mirror opencode 1.18.10's schema
+			// — model must be an OBJECT (modelID+providerID) or absent,
+			// NEVER the "providerID/modelID" string, which real opencode
+			// rejects with this exact error. A reverted string-form send
+			// fails the adapter's error path here, not just a shape
+			// assertion.
+			if r.Method == http.MethodPost &&
+				(strings.HasPrefix(r.URL.Path, "/session/") && strings.HasSuffix(r.URL.Path, "/message")) {
+				var payload map[string]any
+				if err := json.Unmarshal(reqBody, &payload); err == nil {
+					if m, exists := payload["model"]; exists {
+						switch v := m.(type) {
+						case map[string]any:
+							_, hasID := v["modelID"]
+							_, hasProv := v["providerID"]
+							if !hasID || !hasProv {
+								w.WriteHeader(http.StatusBadRequest)
+								_, _ = w.Write([]byte(`{"name":"BadRequest","data":{"message":"Expected object with modelID+providerID","kind":"Payload"}}`))
+								return
+							}
+						default:
+							w.WriteHeader(http.StatusBadRequest)
+							_, _ = w.Write([]byte(fmt.Sprintf(`{"name":"BadRequest","data":{"message":"Expected object | null, got %q at [\"model\"]","kind":"Payload"}}`, fmt.Sprint(v))))
+							return
+						}
+					}
+				}
+			}
 		}
 		body, ok := f.responses[key]
 		if !ok {
@@ -328,10 +357,11 @@ func TestAdapter_SendAsync_SteerDelivery(t *testing.T) {
 
 // TestAdapter_SendAsync_ModelReferenceForm extends the model-form contract
 // (see TestAdapter_Send_ModelReferenceForm) to the V2 prompt path: a
-// qualified override must reach the V2 body in "providerID/modelID" form;
-// bare/unqualified is omitted. The V2 path is dead on opencode 1.18.10
-// (queue never drained, #755) but remains wired for revival — leaving it
-// model-blind would replay the incident the day it comes back.
+// qualified override must reach the V2 body in the OBJECT form
+// {"modelID","providerID"}; bare/unqualified is omitted. The V2 path is
+// dead on opencode 1.18.10 (queue never drained, #755) but remains wired
+// for revival — leaving it model-blind would replay the incident the day
+// it comes back.
 func TestAdapter_SendAsync_ModelReferenceForm(t *testing.T) {
 	t.Run("qualified override is forwarded", func(t *testing.T) {
 		srv := newFakeOpencode(t)
@@ -346,7 +376,10 @@ func TestAdapter_SendAsync_ModelReferenceForm(t *testing.T) {
 		require.NoError(t, json.Unmarshal(srv.bodies["POST /api/session/ses_1/prompt"], &sent))
 		prompt, ok := sent["prompt"].(map[string]any)
 		require.True(t, ok, "V2 body nests fields under prompt")
-		assert.Equal(t, "thekaocloud/glm-5.3", prompt["model"])
+		m, ok := prompt["model"].(map[string]any)
+		require.True(t, ok, "V2 model must be the OBJECT wire form, matching V1 (opencode 1.18.10 schema)")
+		assert.Equal(t, "glm-5.3", m["modelID"])
+		assert.Equal(t, "thekaocloud", m["providerID"])
 	})
 
 	t.Run("bare override omitted", func(t *testing.T) {
@@ -949,13 +982,22 @@ func TestAdapter_ListPending_NotImplemented404_ReturnsEmptyNoError(t *testing.T)
 	assert.Empty(t, reqs)
 }
 
-// TestAdapter_Send_ModelReferenceForm pins the 2026-08-16 incident fix at
-// the adapter seam: opencode's POST /session/:id/message expects the model
-// field in fully-qualified "providerID/modelID" form. A bare ID is parsed
-// by opencode as a providerID with an empty modelID and fails EVERY prompt
-// in the session ("ProviderModelNotFoundError: Model not found:
-// deepseek-v4-flash-free/."). The adapter must qualify, pass through, or
-// omit — never send a bare ID.
+// TestAdapter_Send_ModelReferenceForm pins the model wire form at the
+// adapter seam across both incidents:
+//
+//   - 2026-08-16: a bare ID parses as providerID-with-empty-modelID and
+//     fails EVERY prompt ("ProviderModelNotFoundError: <bare>/.").
+//   - 2026-08-17: the "providerID/modelID" STRING form fails opencode
+//     1.18.10's schema decode ("Expected object | null, got string") —
+//     the all-sessions-502 regression from #909, missed because mocked
+//     tests asserted the string shape. The per-prompt model field is the
+//     OBJECT {"modelID", "providerID"} (both required,
+//     additionalProperties false — packages/sdk/openapi.json @v1.18.10,
+//     POST /session/{id}/message).
+//
+// The adapter must send the object (Provider-authoritative split rules per
+// #913 round-5), or omit the field entirely for unexpressible shapes —
+// never a bare ID, never a string.
 func TestAdapter_Send_ModelReferenceForm(t *testing.T) {
 	sendAndInspect := func(t *testing.T, opts session.SendOpts) map[string]any {
 		t.Helper()
@@ -971,18 +1013,47 @@ func TestAdapter_Send_ModelReferenceForm(t *testing.T) {
 
 		var sent map[string]any
 		require.NoError(t, json.Unmarshal(srv.bodies["POST /session/ses_1/message"], &sent))
+
+		// Schema-shape guard (upstream openapi @v1.18.10): when present,
+		// model is an object with EXACTLY modelID+providerID, both
+		// strings. Fails on any regression to the string form — the
+		// failure mode that let #909 ship.
+		if raw, present := sent["model"]; present {
+			m, ok := raw.(map[string]any)
+			require.True(t, ok,
+				"model must be the OBJECT wire form ({modelID, providerID}) — a string fails opencode 1.18.10 schema decode")
+			require.Len(t, m, 2, "additionalProperties: false — exactly modelID+providerID")
+			mid, midOK := m["modelID"].(string)
+			prov, provOK := m["providerID"].(string)
+			require.True(t, midOK && provOK, "modelID+providerID are required strings")
+			require.NotEmpty(t, mid, "empty modelID is the incident parse shape (<bare>/.)")
+			require.NotEmpty(t, prov, "empty providerID routes nowhere")
+		}
 		return sent
 	}
 
-	t.Run("provider and id are qualified", func(t *testing.T) {
+	modelObj := func(t *testing.T, sent map[string]any) (modelID, providerID string) {
+		t.Helper()
+		raw, present := sent["model"]
+		require.True(t, present, "expressible override must send the model object")
+		m := raw.(map[string]any) // shape already enforced by the helper guard
+		return m["modelID"].(string), m["providerID"].(string)
+	}
+
+	t.Run("provider and id form the object", func(t *testing.T) {
 		sent := sendAndInspect(t, session.SendOpts{Model: &session.ModelRef{ID: "glm-5.3", Provider: "thekaocloud"}})
-		assert.Equal(t, "thekaocloud/glm-5.3", sent["model"],
-			"model must be sent as providerID/modelID")
+		mid, prov := modelObj(t, sent)
+		assert.Equal(t, "glm-5.3", mid)
+		assert.Equal(t, "thekaocloud", prov)
 	})
 
-	t.Run("already qualified passes through", func(t *testing.T) {
+	t.Run("provider-less slashed id splits first segment", func(t *testing.T) {
+		// opencode's own routing rule (proven by the 2026-08-16
+		// incident): the FIRST '/' separates provider from model.
 		sent := sendAndInspect(t, session.SendOpts{Model: &session.ModelRef{ID: "thekaocloud/glm-5.3"}})
-		assert.Equal(t, "thekaocloud/glm-5.3", sent["model"])
+		mid, prov := modelObj(t, sent)
+		assert.Equal(t, "glm-5.3", mid)
+		assert.Equal(t, "thekaocloud", prov)
 	})
 
 	t.Run("slash-bearing id with provider is never double-prefixed", func(t *testing.T) {
@@ -990,18 +1061,24 @@ func TestAdapter_Send_ModelReferenceForm(t *testing.T) {
 		// produced "x/x/y" — a guaranteed per-prompt failure reachable
 		// via hand-crafted /prompt bodies.
 		sent := sendAndInspect(t, session.SendOpts{Model: &session.ModelRef{ID: "thekaocloud/glm-5.3", Provider: "thekaocloud"}})
-		assert.Equal(t, "thekaocloud/glm-5.3", sent["model"],
-			"a slash-bearing ID is already qualified; prefixing again poisons the send")
+		mid, prov := modelObj(t, sent)
+		assert.Equal(t, "glm-5.3", mid)
+		assert.Equal(t, "thekaocloud", prov,
+			"a slash-bearing ID already carrying the authoritative prefix is stripped, never re-prefixed")
 	})
 
-	t.Run("provider prefixes a slashed catalog id (frontend double form)", func(t *testing.T) {
+	t.Run("provider is authoritative for the frontend double form", func(t *testing.T) {
 		// Round 5: the frontend sends the advertised (slashed) catalog ID
-		// plus the routing providerID. Provider is authoritative: without
-		// prefixing, opencode would route via the vendor namespace
-		// "anthropic" — a nonexistent provider.
+		// plus the routing providerID. Provider is authoritative: the
+		// vendor namespace ("anthropic") must land in modelID, never in
+		// providerID — opencode would otherwise route via a nonexistent
+		// provider.
 		sent := sendAndInspect(t, session.SendOpts{Model: &session.ModelRef{ID: "anthropic/claude-sonnet-4.5", Provider: "openrouter"}})
-		assert.Equal(t, "openrouter/anthropic/claude-sonnet-4.5", sent["model"],
-			"the explicit provider must prefix the advertised slashed ID")
+		mid, prov := modelObj(t, sent)
+		assert.Equal(t, "anthropic/claude-sonnet-4.5", mid,
+			"the advertised slashed catalog ID is the modelID verbatim")
+		assert.Equal(t, "openrouter", prov,
+			"the explicit routing provider prefixes routing; the vendor namespace is never the provider")
 	})
 
 	t.Run("bare id without provider is omitted", func(t *testing.T) {
@@ -1009,6 +1086,20 @@ func TestAdapter_Send_ModelReferenceForm(t *testing.T) {
 		_, present := sent["model"]
 		assert.False(t, present,
 			"a bare ID cannot be expressed in opencode form and must be omitted so the session default applies")
+	})
+
+	t.Run("empty tail without provider is omitted", func(t *testing.T) {
+		// "a/" is the 2026-08-16 incident's own parse shape: provider "a"
+		// with an empty modelID.
+		sent := sendAndInspect(t, session.SendOpts{Model: &session.ModelRef{ID: "thekaocloud/"}})
+		_, present := sent["model"]
+		assert.False(t, present, "an empty-tail ID is unexpressible")
+	})
+
+	t.Run("empty tail with matching provider is omitted", func(t *testing.T) {
+		sent := sendAndInspect(t, session.SendOpts{Model: &session.ModelRef{ID: "thekaocloud/", Provider: "thekaocloud"}})
+		_, present := sent["model"]
+		assert.False(t, present, "provider + empty tail leaves no modelID — omit")
 	})
 
 	t.Run("no model sends no model key", func(t *testing.T) {
