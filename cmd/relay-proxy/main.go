@@ -91,7 +91,15 @@ func defaultHTTPClient() *http.Client {
 				Timeout:   10 * time.Second,
 				KeepAlive: 30 * time.Second,
 			}).DialContext,
-			TLSHandshakeTimeout:   10 * time.Second,
+			TLSHandshakeTimeout: 10 * time.Second,
+			// Bound the phase before response headers arrive (issue #911:
+			// a stalled upstream left the relay's proxy handler hanging with
+			// no response and no log). The upstream is reached over public
+			// egress (opencode.ai/zen) where a blackholed peer is possible;
+			// 30s is generous while still bounding a dead endpoint. Body
+			// streaming stays unbounded (no total client Timeout) so long
+			// chat/SSE generations are never truncated.
+			ResponseHeaderTimeout: 30 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
 			MaxIdleConns:          10,
 			IdleConnTimeout:       90 * time.Second,

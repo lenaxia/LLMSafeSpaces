@@ -897,3 +897,57 @@ func TestFallbackProxy_DoesNotSetRelayToken(t *testing.T) {
 	assert.Empty(t, seenToken,
 		"fallback path must NOT set X-Relay-Token — the token is per-VM and the fallback hits the upstream directly")
 }
+
+// TestRouterClientsHaveHeadTimeouts locks the #911 fix: the forwarding and
+// fallback clients must bound the pre-body phases (dial + response header)
+// so a stalled upstream returns a bounded error instead of hanging a handler
+// goroutine forever with no response and an empty log. A total body Timeout
+// must NOT be set — chat/SSE streams run minutes and would be truncated.
+func TestRouterClientsHaveHeadTimeouts(t *testing.T) {
+	c := defaultRouterClient()
+	tr, ok := c.Transport.(*http.Transport)
+	require.True(t, ok, "router client must use a configured *http.Transport")
+	assert.Zero(t, c.Timeout, "no total body timeout — long streams must never be cut")
+	require.NotNil(t, tr.ResponseHeaderTimeout, "ResponseHeaderTimeout must be set")
+	assert.Positive(t, tr.ResponseHeaderTimeout, "ResponseHeaderTimeout must be non-zero")
+}
+
+// TestRouterProxy_StalledUpstreamTimesOutHead is the behavioral half of #911:
+// the router's forwarding client must give up on an upstream that accepts the
+// connection but never writes response headers (the ResponseHeaderTimeout
+// fires) instead of hanging. Pre-fix (http.Client{Timeout:0} + default
+// transport, no ResponseHeaderTimeout) this test would hang until the test's
+// own client timeout.
+func TestRouterProxy_StalledUpstreamTimesOutHead(t *testing.T) {
+	// A server that accepts and then stalls without writing any header. The
+	// stall releases on cleanup so httptest.Server.Close (which waits for
+	// in-flight requests) does not itself block forever.
+	release := make(chan struct{})
+	stalled := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release // never writes a response header until cleanup
+	}))
+	t.Cleanup(func() {
+		close(release)
+		stalled.Close()
+	})
+
+	// Drive the router's forwarding client directly against the stalled
+	// server: the same httpClient the proxy uses for relay forwarding. If
+	// ResponseHeaderTimeout is absent this blocks past the assert window.
+	client := defaultRouterClient()
+	client.Timeout = 0 // force the transport's head timeout to be the only bound
+
+	start := time.Now()
+	req, err := http.NewRequest(http.MethodGet, stalled.URL+"/v1/data", nil)
+	require.NoError(t, err)
+	resp, err := client.Do(req)
+	elapsed := time.Since(start)
+	if err != nil {
+		// Head-timeout error is the expected outcome, bounded by the
+		// configured ResponseHeaderTimeout (30s) plus dial slop.
+		assert.Less(t, elapsed, 40*time.Second, "head timeout must fire near the configured 30s bound, not hang")
+		return
+	}
+	defer resp.Body.Close()
+	t.Fatalf("stalled upstream must not return a response; got %s after %s", resp.Status, elapsed)
+}

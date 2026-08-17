@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -73,6 +74,46 @@ var routerHopHeaders = map[string]struct{}{
 	"X-Workspace-Id":      {},
 }
 
+// defaultRouterClient returns the http.Client used for forwarding requests
+// (routerProxy) and for the direct fallback path (fallbackProxy).
+//
+// The Client must NOT set a total Timeout — chat/SSE responses stream for
+// minutes and a wall-clock deadline would truncate generations mid-stream.
+// Instead the transport bounds the phases BEFORE the body streams:
+//
+//   - DialContext: connecting to a relay VM over WireGuard (or the fallback's
+//     upstream) hangs indefinitely without this; a blackholed peer would
+//     otherwise pin a handler goroutine forever with no response and no log
+//     (issue #911: /provider timed out cluster-wide with an empty router log
+//     because the request reached the upstream/relay but no headers ever
+//     came back, and Timeout: 0 never fired).
+//   - ResponseHeaderTimeout: the upstream accepted the connection but stalled
+//     before writing response headers — the exact /provider symptom. A small
+//     JSON response (provider catalog) must produce headers promptly; 30s is
+//     generous while still bounding a dead peer. The relay→upstream hop is
+//     the likeliest staller and this timeout covers the full relay round
+//     trip on the router's side.
+//
+// The 504/502 surfaced here is a head-timeout, distinct from mid-body stalls,
+// which intentionally remain unbounded so long generations are never cut.
+func defaultRouterClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   5 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+			MaxIdleConns:          50,
+			MaxIdleConnsPerHost:   10,
+			IdleConnTimeout:       90 * time.Second,
+			DisableCompression:    true,
+		},
+	}
+}
+
 // routerProxy is the HTTP handler that selects a relay and forwards
 // the request. If no relays are healthy, it enters fallback mode.
 type routerProxy struct {
@@ -93,7 +134,7 @@ func newRouterProxy(fleet *relayFleet, detector *detector429, metrics *routerMet
 		fleet:      fleet,
 		detector:   detector,
 		metrics:    metrics,
-		httpClient: &http.Client{Timeout: 0},
+		httpClient: defaultRouterClient(),
 		fallback:   fallback,
 	}
 }
@@ -238,7 +279,7 @@ func newFallbackProxy(upstreamURL string, rate float64, maxConcurrent int) (*fal
 
 	return &fallbackProxy{
 		upstreamURL:   upstreamURL,
-		httpClient:    &http.Client{Timeout: 0},
+		httpClient:    defaultRouterClient(),
 		rateInterval:  interval,
 		maxConcurrent: maxConcurrent,
 	}, nil
