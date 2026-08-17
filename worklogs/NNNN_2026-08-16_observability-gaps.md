@@ -161,3 +161,26 @@
 - **One-liners**: success_no_restart now Stores(1) (that path IS a
   successful injection); heartbeat sentinels excluded from the
   delivered counter (TestPublishToWorkspace_HeartbeatsNotCountedDelivered).
+
+---
+
+## Round 6 (review on #906): the last inch
+
+- **Off-by-one pin de-vacuousized**: exact-equality on the capture-logger
+  line (mutation-verified: +1 reintroduced → test fails; the round-5
+  "contains 1" matched "[2 1]" — the reviewer proved it vacuous).
+- **Heartbeat counting actually fixed, in the right place**: the
+  user stream's heartbeat branch no longer increments streamEvents
+  (round-5 had added the skip in PublishToWorkspace — production-dead
+  code: heartbeatLoop calls Send directly; branch removed). While
+  there: the round-3 streamEvents++ increments had been lost to a block
+  restructure — BOTH data-write branches (snapshot no-id + live id:)
+  now increment, pinned by the new user-stream test.
+- **User-stream positive lifecycle test**: open/close logs; a real
+  event counts (eventsSent1) while an injected heartbeat sentinel does
+  not.
+- **G11 counter test**: empty-podIP watch ticks
+  pod_ip_unavailable_total.
+- HeartbeatsNotCountedDelivered rewritten to pin the true invariant:
+  the broker counts uniformly by type (no special case to drift back);
+  heartbeat exclusion lives at the stream layer.

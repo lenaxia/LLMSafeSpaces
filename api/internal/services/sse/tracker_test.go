@@ -1159,3 +1159,18 @@ func TestTrackerConnectedGauge_InitializedAtArmTime(t *testing.T) {
 		}
 	}
 }
+
+// TestTracker_PodIPUnavailableCounter (#901 G11 / #906 r6): a watch
+// whose workspace has no podIP (resume race) must tick the counter on
+// every connect attempt — the resume-race visibility signal.
+func TestTracker_PodIPUnavailableCounter(t *testing.T) {
+	tr := NewTracker(nil, &testLogger{}, nil)
+	tr.SetPodIPResolver(func(string) string { return "" })
+	tr.SetPasswordGetter(fakePWProvider{})
+	tr.EnsureWatching("ws-noip")
+
+	require.Eventually(t, func() bool {
+		return promtestutil.ToFloat64(podIPUnavailable.WithLabelValues("ws-noip")) >= 1
+	}, 3*time.Second, 10*time.Millisecond,
+		"empty-podIP connect attempts must tick pod_ip_unavailable_total")
+}

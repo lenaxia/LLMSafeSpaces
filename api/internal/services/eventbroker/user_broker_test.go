@@ -578,21 +578,29 @@ func TestPublishToWorkspace_FullBufferNotCountedDelivered(t *testing.T) {
 	// The counter assertion above is the contract under test.
 }
 
-// #906 r5: heartbeats keep streams alive but must NOT inflate the
-// delivered-events counter (the signal counts AGENT events).
+// #906 r6: the delivered counter counts AGENT events. Heartbeats never
+// appear here in production (heartbeatLoop calls Send directly — every
+// PublishToWorkspace caller publishes concrete types; verified by the
+// reviewer's enumeration), so the round-5 "skip heartbeats in the
+// broker" branch was dead code and was removed. This test pins the
+// invariant from the other side: whatever IS published to a workspace
+// stream is counted on delivery — including (hypothetically) a
+// sentinel, because the broker layer has no special case to remove.
 func TestPublishToWorkspace_HeartbeatsNotCountedDelivered(t *testing.T) {
 	b := NewUserEventBroker()
 	sub, err := b.SubscribeWorkspace("ws-hb")
 	require.NoError(t, err)
 	defer b.UnsubscribeWorkspace("ws-hb", sub)
 
-	before := promtestutil.ToFloat64(deliveredEvents.WithLabelValues("ws-hb", HeartbeatSentinelType))
+	// Real agent event: counted.
+	b.PublishToWorkspace("ws-hb", apitypes.WorkspaceSSEEvent{Type: "agent.event"})
+	<-sub.Ch
+	assert.Equal(t, 1.0, promtestutil.ToFloat64(deliveredEvents.WithLabelValues("ws-hb", "agent.event")))
+
+	// The broker layer has NO heartbeat special case to drift back in:
+	// anything delivered is counted by type, uniformly.
 	b.PublishToWorkspace("ws-hb", apitypes.WorkspaceSSEEvent{Type: HeartbeatSentinelType})
-	select {
-	case <-sub.Ch:
-	default:
-		t.Fatal("heartbeat must reach the subscriber")
-	}
-	assert.Equal(t, before, promtestutil.ToFloat64(deliveredEvents.WithLabelValues("ws-hb", HeartbeatSentinelType)),
-		"heartbeat sentinels are not counted as delivered agent events")
+	<-sub.Ch
+	assert.Equal(t, 1.0, promtestutil.ToFloat64(deliveredEvents.WithLabelValues("ws-hb", string(HeartbeatSentinelType))),
+		"the counter is uniform by type — heartbeat exclusion lives at the stream layer (never counted there)")
 }

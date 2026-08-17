@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	llmv1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	pkginterfaces "github.com/lenaxia/llmsafespaces/pkg/interfaces"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -29,7 +30,6 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
-	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 )
 
 func newStreamEventsRouter(h *ProxyHandler) *gin.Engine {
@@ -129,7 +129,7 @@ func TestStreamEvents_SetsSSEHeaders(t *testing.T) {
 	env := newTestEnv(t)
 	env.handler.userBroker = eventbroker.NewUserEventBroker()
 	env.wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).
-		Return(makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1"), nil).Maybe()
+		Return(makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(llmv1.WorkspacePhaseActive), "ws-1"), nil).Maybe()
 
 	cancel, body, header, _ := doStreamingRequest(newStreamEventsRouter(env.handler), "/api/v1/workspaces/ws-1/events")
 	defer body.Close()
@@ -178,7 +178,7 @@ func TestStreamEvents_EnsuresWatchingOnOpen(t *testing.T) {
 	require.NoError(t, err)
 
 	wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).Return(
-		makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1"), nil,
+		makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(llmv1.WorkspacePhaseActive), "ws-1"), nil,
 	).Maybe()
 
 	handler, err := NewProxyHandler(k8sMock, &testLogger{}, "default", httpClient, nil)
@@ -208,7 +208,7 @@ func TestStreamEvents_PhaseEventDeliveredToClient(t *testing.T) {
 	broker := eventbroker.NewUserEventBroker()
 	env.handler.userBroker = broker
 	env.wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).
-		Return(makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1"), nil).Maybe()
+		Return(makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(llmv1.WorkspacePhaseActive), "ws-1"), nil).Maybe()
 
 	cancel, body, _, _ := doStreamingRequest(newStreamEventsRouter(env.handler), "/api/v1/workspaces/ws-1/events")
 	defer cancel()
@@ -232,7 +232,7 @@ func TestStreamEvents_SessionStatusEventDeliveredToClient(t *testing.T) {
 	broker := eventbroker.NewUserEventBroker()
 	env.handler.userBroker = broker
 	env.wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).
-		Return(makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1"), nil).Maybe()
+		Return(makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(llmv1.WorkspacePhaseActive), "ws-1"), nil).Maybe()
 
 	cancel, body, _, _ := doStreamingRequest(newStreamEventsRouter(env.handler), "/api/v1/workspaces/ws-1/events")
 	defer cancel()
@@ -261,7 +261,7 @@ func TestStreamEvents_ClientDisconnectUnsubscribes(t *testing.T) {
 	broker := eventbroker.NewUserEventBroker()
 	env.handler.userBroker = broker
 	env.wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).
-		Return(makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1"), nil).Maybe()
+		Return(makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(llmv1.WorkspacePhaseActive), "ws-1"), nil).Maybe()
 
 	cancel, body, _, _ := doStreamingRequest(newStreamEventsRouter(env.handler), "/api/v1/workspaces/ws-1/events")
 	defer body.Close()
@@ -287,7 +287,7 @@ func TestStreamEvents_TooManySubscribers_Returns429(t *testing.T) {
 	broker := eventbroker.NewUserEventBroker()
 	env.handler.userBroker = broker
 	env.wsMock.On("Get", mock.Anything, "ws-limit", metav1.GetOptions{}).
-		Return(makeWorkspaceCRDWithStatus("ws-limit", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-limit"), nil).Maybe()
+		Return(makeWorkspaceCRDWithStatus("ws-limit", "10.0.0.1", string(llmv1.WorkspacePhaseActive), "ws-limit"), nil).Maybe()
 
 	// Exhaust the subscriber limit.
 	for i := 0; i < eventbroker.MaxSubscribersPerUser; i++ {
@@ -322,7 +322,7 @@ func TestStreamEvents_OnPhaseChange_PublishesToBroker(t *testing.T) {
 	defer userBroker.UnsubscribeUser("user-1", s)
 
 	phases := []string{
-		string(v1.WorkspacePhaseActive),
+		string(llmv1.WorkspacePhaseActive),
 		"Suspending",
 		"Suspended",
 		"Terminating",
@@ -540,7 +540,7 @@ func TestStreamEvents_OpenCodeEventDeliveredToSSEClient(t *testing.T) {
 	broker := eventbroker.NewUserEventBroker()
 	env.handler.userBroker = broker
 	env.wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).
-		Return(makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1"), nil).Maybe()
+		Return(makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(llmv1.WorkspacePhaseActive), "ws-1"), nil).Maybe()
 
 	cancel, body, _, _ := doStreamingRequest(newStreamEventsRouter(env.handler), "/api/v1/workspaces/ws-1/events")
 	defer cancel()
@@ -676,7 +676,7 @@ func TestStreamEvents_LifecycleLogs(t *testing.T) {
 	logger := &captureStreamLogger{}
 	env.handler.logger = logger
 	env.wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).
-		Return(makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1"), nil).Maybe()
+		Return(makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(llmv1.WorkspacePhaseActive), "ws-1"), nil).Maybe()
 
 	cancel, body, _, _ := doStreamingRequest(newStreamEventsRouter(env.handler), "/api/v1/workspaces/ws-1/events")
 	defer cancel()
@@ -685,7 +685,10 @@ func TestStreamEvents_LifecycleLogs(t *testing.T) {
 	require.Eventually(t, func() bool { return len(logger.infos("SSE client stream opened")) == 1 },
 		2*time.Second, 5*time.Millisecond, "open must log exactly once")
 	openLine := logger.infos("SSE client stream opened")[0]
-	assert.Contains(t, openLine, "1", "subscribersIncludingSelf=1 (this stream only — no +1 double-count)")
+	// Exact literal against the capture-logger rendering — a reintroduced
+	// +1 yields "[2 1]" here and fails (round-5's loose "contains 1"
+	// matched "[2 1]" and was mutation-proven vacuous).
+	assert.Equal(t, "SSE client stream opened workspaceIDws-1subscribersIncludingSelf1", openLine, "no +1 double-count (+1 renders ...Self2; exact match is mutation-proof)")
 
 	// Deliver one real event; then close and assert eventsSent==1.
 	require.Eventually(t, func() bool { return broker.WorkspaceSubscriberCount("ws-1") > 0 },
@@ -713,7 +716,7 @@ func TestStreamEvents_429DoesNotLogLifecycle(t *testing.T) {
 	logger := &captureStreamLogger{}
 	env.handler.logger = logger
 	env.wsMock.On("Get", mock.Anything, "ws-1", metav1.GetOptions{}).
-		Return(makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1"), nil).Maybe()
+		Return(makeWorkspaceCRDWithStatus("ws-1", "10.0.0.1", string(llmv1.WorkspacePhaseActive), "ws-1"), nil).Maybe()
 
 	// Exhaust the per-IP connection budget.
 	sseConnMu.Lock()
@@ -744,4 +747,51 @@ func TestStreamEvents_429DoesNotLogLifecycle(t *testing.T) {
 	assert.Equal(t, http.StatusTooManyRequests, w.Code, "rate-limited attempt rejected")
 	assert.Empty(t, logger.infos("SSE user stream opened"),
 		"a rejected connection must not log stream-open (it never opened)")
+}
+
+// TestStreamUserEvents_LifecycleLogs (#906 r6): the USER stream gets
+// the same open/close lifecycle logs, and its eventsSent EXCLUDES
+// heartbeats (they are keepalive comment frames — the round-5
+// inconsistency between the two endpoints, pinned by injecting a
+// sentinel directly, since the 25s ticker cannot fire in a test).
+func TestStreamUserEvents_LifecycleLogs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	env := newTestEnv(t)
+	broker := eventbroker.NewUserEventBroker()
+	env.handler.userBroker = broker
+	logger := &captureStreamLogger{}
+	env.handler.logger = logger
+
+	env.wsMock.On("List", mock.Anything, mock.Anything).
+		Return(&llmv1.WorkspaceList{}, nil).Maybe() // snapshot goroutine
+	router := gin.New()
+	router.GET("/api/v1/events", func(c *gin.Context) {
+		c.Set("userID", "u-lifecycle")
+		env.handler.StreamUserEvents(c)
+	})
+
+	cancel, body, _, _ := doStreamingRequest(router, "/api/v1/events")
+	defer cancel()
+	defer body.Close()
+
+	require.Eventually(t, func() bool { return len(logger.infos("SSE user stream opened")) == 1 },
+		2*time.Second, 5*time.Millisecond, "user-stream open logs once")
+
+	// A heartbeat sentinel (injected as heartbeatLoop would) must NOT be
+	// counted; a real event must be.
+	require.Eventually(t, func() bool { return broker.UserSubscriberCount("u-lifecycle") > 0 },
+		time.Second, 5*time.Millisecond)
+	broker.PublishToUser("u-lifecycle", apitypes.WorkspaceSSEEvent{Type: eventbroker.HeartbeatSentinelType})
+	broker.PublishToUser("u-lifecycle", apitypes.WorkspaceSSEEvent{Type: "workspace.phase", Phase: "Active", WorkspaceID: "ws-x"})
+
+	evt := readNextSSEDataLine(t, bufio.NewReader(body))
+	assert.Equal(t, "workspace.phase", evt["type"], "the data event arrives (heartbeat is a comment frame)")
+
+	cancel()
+	require.Eventually(t, func() bool { return len(logger.infos("SSE user stream closed")) == 1 },
+		2*time.Second, 5*time.Millisecond)
+	closed := logger.infos("SSE user stream closed")[0]
+	assert.Contains(t, closed, "eventsSent1",
+		"exactly one data event counted; the heartbeat sentinel is excluded on the user stream too")
 }

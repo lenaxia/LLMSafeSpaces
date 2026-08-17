@@ -168,12 +168,6 @@ func (b *UserEventBroker) PublishToWorkspace(workspaceID string, evt apitypes.Wo
 
 	registerDeliveredOnce.Do(func() { prometheus.MustRegister(deliveredEvents) })
 	for _, s := range targets {
-		// Heartbeat sentinels keep streams alive; counting them as
-		// delivered AGENT events would swamp the signal (#906 r5).
-		if evt.Type == HeartbeatSentinelType {
-			s.Send(evt)
-			continue
-		}
 		if s.Send(evt) {
 			deliveredEvents.WithLabelValues(workspaceID, evt.Type).Inc()
 		}

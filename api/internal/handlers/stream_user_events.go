@@ -143,7 +143,10 @@ func (h *ProxyHandler) StreamUserEvents(c *gin.Context) {
 					return
 				}
 				flusher.Flush()
-				streamEvents++
+				// NOT counted in streamEvents: heartbeats are keepalive
+				// comment frames, not data events — matching the
+				// workspace stream's semantics (proxy_stream.go), which
+				// never counted them (#906 r6).
 				_ = rc.SetWriteDeadline(time.Now().Add(writeDeadlineWindow))
 				continue
 			}
@@ -162,6 +165,7 @@ func (h *ProxyHandler) StreamUserEvents(c *gin.Context) {
 					streamCancel()
 					return
 				}
+				streamEvents++
 			} else {
 				// Live event with id: line
 				data, marshalErr := json.Marshal(evt)
@@ -177,6 +181,7 @@ func (h *ProxyHandler) StreamUserEvents(c *gin.Context) {
 					streamCancel()
 					return
 				}
+				streamEvents++
 			}
 		}
 		flusher.Flush()
