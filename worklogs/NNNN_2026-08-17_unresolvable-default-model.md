@@ -83,3 +83,14 @@ A default model already stored QUALIFIED (`provider/model`) whose provider is ab
 ## Remediation (live workspace 946a442f)
 
 Suspend → resume to force a fresh materialize with the current image; with relay-router healthy since 20:48 the free-models fetch is expected to succeed, `opencode-relay` gets written, `deepseek-v4-flash-free` resolves qualified, prompts work. Verified post-resume in-pod.
+
+## Review round 1 (AI reviewer, REQUEST CHANGES → addressed)
+
+1. **`versionRe` regression (validated by reviewer)**: appending `"; warnings: …"` right after `version=%s` made `version=(\S+)` capture `"1.18.10;"` into DB + frontend. Fixed: regex anchored to `[^\s;]+`; my comment claiming parsers were unaffected was wrong and is replaced; new parse test with warnings-suffixed message pins exact AgentVersion AND the structured field.
+2. **Warning never reached the user (validated)**: the only `agentHealth.message` consumer (`HealthBanner.agentLabel`) returns null when status "Healthy" — and warnings ride `AgentHealthy=True` only. My "validated from live /status" validated consumption, not rendering. Fixed end-to-end: `AgentHealthResult.Warnings` (structured, parsed from the suffix) + `AgentHealth.warnings` frontend type + HealthBanner renders warnings when Healthy (3 new tests). The banner now shows e.g. `default model "deepseek-v4-flash-free" unavailable — using the agent default model`.
+3. **E2E model forwarding (checklist-mandatory)**: `TestE2E_Adapter_SendPromptAsync_ModelForwarding` through the real handler→adapter→fake-opencode pipeline — asserts `"model":"thekaocloud/glm-5.3"` on the backend body (a swapped-field mapping at any seam now fails), plus absent-selector and malformed-selector degradation subtests.
+4. **`/message` asymmetry**: `SendMessage` now forwards the same selector (extractMessageText returns body bytes; same policy check). SDK bodies today carry no model — symmetric and future-proof.
+5. **`qualifiedModelID` double-prefix**: slash-bearing IDs are treated as already qualified regardless of Provider (was `"x/x/y"`, a hand-crafted-body reachable failure). New subtest.
+6. **Round-trip pin**: `TestModelResolutionWarning_RoundTrip` (write→read, no-semicolon contract).
+
+Verification after round 1: full Go suites green (handlers 116s, workspace-agentd, controller, pkg/...), golangci-lint 0 issues, frontend tsc + 1664 vitest tests green.

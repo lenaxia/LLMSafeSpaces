@@ -244,15 +244,16 @@ func (a *Adapter) DeleteSession(ctx context.Context, userID, workspaceID, sessio
 // modelID and fails every prompt in the session ("ProviderModelNotFoundError:
 // Model not found: <bare>/.", incident 2026-08-16). A ref without a provider
 // cannot be expressed safely, so it returns "" and the session default
-// applies.
+// applies. A slash-bearing ID is treated as already qualified regardless of
+// Provider — prefixing it would produce "x/x/y" and a guaranteed failure.
 func qualifiedModelID(m *session.ModelRef) string {
 	if m == nil || m.ID == "" {
 		return ""
 	}
+	if strings.Contains(m.ID, "/") {
+		return m.ID // already qualified; never double-prefix
+	}
 	if m.Provider == "" {
-		if strings.Contains(m.ID, "/") {
-			return m.ID // already qualified
-		}
 		return "" // bare ID is unexpressible — degrade to session default
 	}
 	return m.Provider + "/" + m.ID

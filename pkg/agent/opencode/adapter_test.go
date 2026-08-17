@@ -944,6 +944,15 @@ func TestAdapter_Send_ModelReferenceForm(t *testing.T) {
 		assert.Equal(t, "thekaocloud/glm-5.3", sent["model"])
 	})
 
+	t.Run("slash-bearing id with provider is never double-prefixed", func(t *testing.T) {
+		// PR #909 review round: Provider="x" + ID="x/y" previously
+		// produced "x/x/y" — a guaranteed per-prompt failure reachable
+		// via hand-crafted /prompt bodies.
+		sent := sendAndInspect(t, session.SendOpts{Model: &session.ModelRef{ID: "thekaocloud/glm-5.3", Provider: "thekaocloud"}})
+		assert.Equal(t, "thekaocloud/glm-5.3", sent["model"],
+			"a slash-bearing ID is already qualified; prefixing again poisons the send")
+	})
+
 	t.Run("bare id without provider is omitted", func(t *testing.T) {
 		sent := sendAndInspect(t, session.SendOpts{Model: &session.ModelRef{ID: "glm-5.3"}})
 		_, present := sent["model"]

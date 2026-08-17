@@ -1191,6 +1191,12 @@ func TestAgentHealthFromConditions(t *testing.T) {
 		{"unhealthy", []v1.WorkspaceCondition{{Type: v1.WorkspaceConditionAgentHealthy, Status: "False", Reason: v1.ReasonAgentUnhealthy, Message: "agent dead"}}, nil, types.AgentHealthResult{Status: "Unhealthy", Message: "agent dead"}},
 		{"check failed", []v1.WorkspaceCondition{{Type: v1.WorkspaceConditionAgentHealthy, Status: "Unknown", Reason: v1.ReasonHealthCheckFailed, Message: "refused"}}, nil, types.AgentHealthResult{Status: "Unknown", Message: "refused"}},
 		{"no condition", nil, nil, types.AgentHealthResult{Status: "Unknown"}},
+		// PR #909 review round: a warnings-suffixed message must parse
+		// cleanly — AgentVersion must NOT capture the ";" separator
+		// (the old `\S+` regex captured "1.18.10;") and the warnings
+		// must surface as a structured field. Copy matches the agentd
+		// renderer's format (cmd/workspace-agentd healthz.go).
+		{"healthy with warnings", []v1.WorkspaceCondition{{Type: v1.WorkspaceConditionAgentHealthy, Status: "True", Reason: v1.ReasonAgentHealthy, Message: "connected=[thekaocloud] configured=1 sessions=0 version=1.18.10; warnings: default model \"deepseek-v4-flash-free\" unavailable — using the agent default model"}}, &past, types.AgentHealthResult{Status: "Healthy", Message: "connected=[thekaocloud] configured=1 sessions=0 version=1.18.10; warnings: default model \"deepseek-v4-flash-free\" unavailable — using the agent default model", Connected: []string{"thekaocloud"}, ProvidersConfigured: 1, AgentVersion: "1.18.10", Warnings: []string{"default model \"deepseek-v4-flash-free\" unavailable — using the agent default model"}, LastCheckedAt: past.Format(time.RFC3339)}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

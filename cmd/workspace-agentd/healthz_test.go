@@ -341,3 +341,20 @@ func TestHealthzHandler_SurfacesModelResolutionWarning(t *testing.T) {
 		assert.True(t, resp.Healthy)
 	})
 }
+
+// TestModelResolutionWarning_RoundTrip pins that the marker written by the
+// materialize subcommand parses back through the health-endpoint renderer
+// with the exact model name intact (PR #909 review round: the two shapes
+// were previously pinned only by divergent literals in separate tests).
+func TestModelResolutionWarning_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	warnPath := modelResolutionWarningPath(dir)
+	writeModelResolutionWarning(warnPath, "deepseek-v4-flash-free")
+
+	warnings := modelResolutionWarnings(warnPath)
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], `"deepseek-v4-flash-free"`,
+		"the written model name must survive the write→read round trip quoted")
+	assert.NotContains(t, warnings[0], ";",
+		"warning copy must never contain semicolons — the API splits the structured suffix on \"; \"")
+}

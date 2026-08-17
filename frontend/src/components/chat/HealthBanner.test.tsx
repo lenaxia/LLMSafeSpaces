@@ -13,6 +13,40 @@ describe("HealthBanner", () => {
     expect(container.innerHTML).toBe("");
   });
 
+  // PR #909 review round: Healthy-with-warnings must render — the agent is
+  // fine but running degraded (e.g. default model unresolvable, incident
+  // 2026-08-16) and silently substituting the model breaks user intent.
+  it("renders warnings when healthy with warnings", () => {
+    render(
+      <HealthBanner
+        agentHealth={{
+          status: "Healthy",
+          warnings: ['default model "deepseek-v4-flash-free" unavailable — using the agent default model'],
+        }}
+      />,
+    );
+    expect(
+      screen.getByText(/deepseek-v4-flash-free.*unavailable/),
+    ).toBeInTheDocument();
+  });
+
+  it("renders every warning as its own row", () => {
+    render(
+      <HealthBanner
+        agentHealth={{ status: "Healthy", warnings: ["warning one", "warning two"] }}
+      />,
+    );
+    expect(screen.getByText("warning one")).toBeInTheDocument();
+    expect(screen.getByText("warning two")).toBeInTheDocument();
+  });
+
+  it("renders nothing when healthy with empty warnings array", () => {
+    const { container } = render(
+      <HealthBanner agentHealth={{ status: "Healthy", warnings: [] }} />,
+    );
+    expect(container.innerHTML).toBe("");
+  });
+
   it("renders nothing when props are undefined", () => {
     const { container } = render(<HealthBanner />);
     expect(container.innerHTML).toBe("");

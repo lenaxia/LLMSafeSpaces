@@ -163,11 +163,12 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 }
 
 // appendAgentWarnings suffixes agentd's boot-time degradation notices to a
-// condition message so users see them via the API's agentHealth.message
-// (e.g. an unresolvable default model — incident 2026-08-16). Deliberately
-// string-formatted: the API's regex parsers (connectedRe/versionRe/
-// configuredRe) match anywhere in the message, and warning text contains
-// no "key=value" tokens, so parsing is unaffected.
+// condition message so users see them via the API's agentHealth.message and
+// the structured warnings field (e.g. an unresolvable default model —
+// incident 2026-08-16). The API's parsers are pinned against this suffix:
+// versionRe excludes ";" (PR #909 review round — `\S+` captured "1.18.10;")
+// and warningsRe extracts the suffix as structured data. Warning copy MUST
+// NOT contain semicolons (agentd-side renderer contract).
 func appendAgentWarnings(msg string, warnings []string) string {
 	if len(warnings) == 0 {
 		return msg

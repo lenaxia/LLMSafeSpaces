@@ -81,7 +81,7 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 	// session.Message with contract-shaped parts. The response is
 	// contract JSON, not raw opencode bytes.
 	if h.adapter != nil {
-		text, err := extractMessageText(c)
+		text, bodyBytes, err := extractMessageText(c)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
@@ -112,7 +112,12 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 		}
 		h.adapterEnsureSSEWatch(wid)
 
-		msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{})
+		// Per-prompt model selector: symmetric with SendPromptAsync
+		// (PR #909 review round — /message is the SDK-documented
+		// synchronous send path and must honor the same override).
+		msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{
+			Model: extractPromptModel(bodyBytes),
+		})
 		if err != nil {
 			// #817: log the underlying adapter error — without this the
 			// 502 body says only "failed to send message" and the root
@@ -271,15 +276,21 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 
 // extractMessageText reads the request body and extracts the
 // concatenated text from opencode's {parts:[{type:"text",text:"..."}]}
-// shape. Caps at 100KB to match the SendPromptAsync body limit.
-func extractMessageText(c *gin.Context) (string, error) {
+// shape. Caps at 100KB to match the SendPromptAsync body limit. Returns
+// the raw body bytes alongside the text so callers can also extract the
+// per-prompt model selector without a second read.
+func extractMessageText(c *gin.Context) (string, []byte, error) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 100_000+1024)
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		return "", fmt.Errorf("failed to read request body: %w", err)
+		return "", nil, fmt.Errorf("failed to read request body: %w", err)
 	}
 	_ = c.Request.Body.Close()
-	return extractPromptText(body)
+	text, perr := extractPromptText(body)
+	if perr != nil {
+		return "", nil, perr
+	}
+	return text, body, nil
 }
 
 // extractPromptText parses a prompt body and returns the

@@ -100,6 +100,12 @@ type AgentHealthResult struct {
 	Connected           []string `json:"connected,omitempty"`
 	Message             string   `json:"message,omitempty"`
 	LastCheckedAt       string   `json:"lastCheckedAt,omitempty"`
+	// Warnings are boot-time degradation notices relayed from agentd
+	// (e.g. the default model could not be resolved — incident
+	// 2026-08-16). Present with Status "Healthy": the agent is fine but
+	// running degraded, and the user must see why. Structured form of
+	// the "; warnings: ..." condition-message suffix.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // WorkspaceConditionResult carries a single workspace condition.
