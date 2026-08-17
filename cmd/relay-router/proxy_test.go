@@ -332,6 +332,29 @@ func TestFallbackProxy_UpstreamError(t *testing.T) {
 	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
 }
 
+// TestFallbackProxy_UpstreamErrorRecordedInMetrics is the issue #911
+// observability pin: a fallback upstream failure must be visible in
+// relay_router_requests_total{relay="fallback",status="502"} so an outage
+// (which previously ran 47 days invisible) is now discoverable in /metrics.
+func TestFallbackProxy_UpstreamErrorRecordedInMetrics(t *testing.T) {
+	metrics := newRouterMetrics()
+	fp, err := newFallbackProxy("http://127.0.0.1:1", 1000.0, 5)
+	require.NoError(t, err)
+	fp.withFallbackMetrics(metrics)
+	server := httptest.NewServer(fp)
+	t.Cleanup(server.Close)
+
+	resp, err := http.Get(server.URL + "/test")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+
+	var sb strings.Builder
+	metrics.writePrometheus(&sb)
+	assert.Contains(t, sb.String(), `relay_router_requests_total{relay="fallback",status="502"} 1`,
+		"fallback upstream failures must be visible in metrics (issue #911)")
+}
+
 // ---------------------------------------------------------------------------
 // Health checker tests
 // ---------------------------------------------------------------------------
@@ -904,21 +927,35 @@ func TestFallbackProxy_DoesNotSetRelayToken(t *testing.T) {
 // goroutine forever with no response and an empty log. A total body Timeout
 // must NOT be set — chat/SSE streams run minutes and would be truncated.
 func TestRouterClientsHaveHeadTimeouts(t *testing.T) {
-	c := defaultRouterClient()
-	tr, ok := c.Transport.(*http.Transport)
-	require.True(t, ok, "router client must use a configured *http.Transport")
-	assert.Zero(t, c.Timeout, "no total body timeout — long streams must never be cut")
-	require.NotNil(t, tr.ResponseHeaderTimeout, "ResponseHeaderTimeout must be set")
-	assert.Positive(t, tr.ResponseHeaderTimeout, "ResponseHeaderTimeout must be non-zero")
+	// Wiring-level pin: the PROXY constructors must attach the bounded client
+	// (a regression that reverts newRouterProxy/newFallbackProxy to
+	// &http.Client{Timeout: 0} fails here even if defaultRouterClient stays
+	// correct).
+	proxy := newRouterProxy(newRelayFleet(3, 5*time.Minute), newDetector429(newRelayFleet(3, 5*time.Minute), 0.5, 1), newRouterMetrics(), 1, nil)
+	tr, ok := proxy.httpClient.Transport.(*http.Transport)
+	require.True(t, ok, "routerProxy must use a configured *http.Transport")
+	assert.Zero(t, proxy.httpClient.Timeout, "no total body timeout — long streams must never be cut")
+	require.NotNil(t, tr.ResponseHeaderTimeout, "routerProxy: ResponseHeaderTimeout must be set")
+	assert.Positive(t, tr.ResponseHeaderTimeout, "routerProxy: ResponseHeaderTimeout must be non-zero")
+
+	fb, err := newFallbackProxy("https://upstream.example.com", 0.5, 1)
+	require.NoError(t, err)
+	fbtr, ok := fb.httpClient.Transport.(*http.Transport)
+	require.True(t, ok, "fallbackProxy must use a configured *http.Transport")
+	assert.Zero(t, fb.httpClient.Timeout, "fallbackProxy: no total body timeout")
+	require.NotNil(t, fbtr.ResponseHeaderTimeout, "fallbackProxy: ResponseHeaderTimeout must be set")
+	assert.Positive(t, fbtr.ResponseHeaderTimeout, "fallbackProxy: ResponseHeaderTimeout must be non-zero")
 }
 
-// TestRouterProxy_StalledUpstreamTimesOutHead is the behavioral half of #911:
-// the router's forwarding client must give up on an upstream that accepts the
-// connection but never writes response headers (the ResponseHeaderTimeout
-// fires) instead of hanging. Pre-fix (http.Client{Timeout:0} + default
-// transport, no ResponseHeaderTimeout) this test would hang until the test's
-// own client timeout.
-func TestRouterProxy_StalledUpstreamTimesOutHead(t *testing.T) {
+// TestRouterProxy_StalledRelayBounded502 is the handler-level e2e half of
+// #911: a relay that accepts the connection but never writes response headers
+// must yield a bounded 502 to a real client (the ResponseHeaderTimeout fires)
+// instead of hanging. The proxy's client is given a small test-scaled
+// ResponseHeaderTimeout so the test completes in milliseconds, not 5 minutes.
+// Pre-fix (http.Client{Timeout:0} + default transport, no
+// ResponseHeaderTimeout) this test would hang until the test's own client
+// timeout.
+func TestRouterProxy_StalledRelayBounded502(t *testing.T) {
 	// A server that accepts and then stalls without writing any header. The
 	// stall releases on cleanup so httptest.Server.Close (which waits for
 	// in-flight requests) does not itself block forever.
@@ -931,23 +968,27 @@ func TestRouterProxy_StalledUpstreamTimesOutHead(t *testing.T) {
 		stalled.Close()
 	})
 
-	// Drive the router's forwarding client directly against the stalled
-	// server: the same httpClient the proxy uses for relay forwarding. If
-	// ResponseHeaderTimeout is absent this blocks past the assert window.
-	client := defaultRouterClient()
-	client.Timeout = 0 // force the transport's head timeout to be the only bound
+	fleet := newRelayFleet(3, 5*time.Minute)
+	metrics := newRouterMetrics()
+	fleet.UpdatePeers([]PeerEntry{
+		{ID: "stalled-relay", Endpoint: extractEndpoint(stalled.URL), Provider: "oci", State: "healthy"},
+	})
 
-	start := time.Now()
-	req, err := http.NewRequest(http.MethodGet, stalled.URL+"/v1/data", nil)
+	fb, err := newFallbackProxy("https://upstream.example.com", 0.5, 1)
 	require.NoError(t, err)
-	resp, err := client.Do(req)
+	proxy := newRouterProxy(fleet, newDetector429(fleet, 0.5, extractPort(stalled.URL)), metrics, extractPort(stalled.URL), fb)
+	// Test-scaled head timeout: bounded failure must land quickly.
+	proxy.httpClient = newRouterClient(300 * time.Millisecond)
+
+	router := httptest.NewServer(proxy)
+	t.Cleanup(router.Close)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	start := time.Now()
+	resp, err := client.Get(router.URL + "/v1/data")
 	elapsed := time.Since(start)
-	if err != nil {
-		// Head-timeout error is the expected outcome, bounded by the
-		// configured ResponseHeaderTimeout (30s) plus dial slop.
-		assert.Less(t, elapsed, 40*time.Second, "head timeout must fire near the configured 30s bound, not hang")
-		return
-	}
+	require.NoError(t, err)
 	defer resp.Body.Close()
-	t.Fatalf("stalled upstream must not return a response; got %s after %s", resp.Status, elapsed)
+	assert.Less(t, elapsed, 5*time.Second, "a stalled relay must produce a bounded response, not hang until the client timeout")
+	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
 }

@@ -86,14 +86,63 @@ None.
 
 1. PR + review through the onboarded pipeline.
 2. After merge: redeploy the relay-router + relay-proxy images so the
-   running clusters pick up the timeouts. Verify `/provider` returns
-   promptly (the issue's repro: `curl -m 10 .../provider`).
-3. Consider raising `ResponseHeaderTimeout` if any legitimate upstream ever
-   exceeds 30s to first header (monitor for 504s on slow-model cold starts).
+   running clusters pick up the timeouts and observability.
+3. The issue's confirmed root cause (Zen removed `/provider`; helm
+   `freeModelsRefresher.enabled=false` drift) is operator-side and tracked
+   separately (#910 re-arm redesign). This PR is the defensive hardening —
+   bounded head phase + loud failure signaling — not the endpoint fix.
+4. Monitor for 504s on slow-model cold starts; raise `ResponseHeaderTimeout`
+   if any legitimate upstream ever exceeds 5m to first header.
 
 ## Files Modified
 
 - `cmd/relay-router/proxy.go`
 - `cmd/relay-router/proxy_test.go`
 - `cmd/relay-proxy/main.go`
+- `cmd/relay-proxy/coverage_test.go`
+- `cmd/relay-router/main.go`
 - `worklogs/NNNN_2026-08-17_relay-router-provider-timeout.md` (this entry)
+
+---
+
+## Correction (round-1 review, 2026-08-17)
+
+The round-1 review found the initial 30s fix overclaimed and under-delivered
+on the issue's observability findings. This section records the corrections:
+
+1. **ResponseHeaderTimeout raised 30s → 5m.** 30s would break non-streaming
+   completions (`stream:false` sends headers only after the FULL generation;
+   long generations routinely exceed 30s). The router is a generic
+   openai-compatible forwarder, not a streaming-only path. 5m is the value
+   the issue-thread's own analysis chose, with the stated assumption that no
+   legitimate request needs >5m to deliver headers. Stated assumption now
+   documented in the code.
+2. **Silent-failure branches now log.** The `Do()`-error branches in
+   `routerProxy.forwardToRelay`, `fallbackProxy`, and the relay-proxy
+   `proxyHandler` returned without logging — the "zero errors in its own
+   log" signature that hid the outage for 47 days. All three now `log.Printf`
+   the error BEFORE the client-context check (which was the silent path),
+   without logging the request path/query (path-segment secret protection).
+3. **Fallback outcomes now recorded in metrics.** `fallbackProxy` previously
+   recorded nothing, so an outage was invisible in `/metrics`. It now has an
+   optional `withFallbackMetrics` hook recording requests under
+   `relay_router_requests_total{relay="fallback",status="..."}` (502 on
+   error, the real status otherwise), wired in `main.go`.
+4. **Test-scaled timeouts.** `newRouterClient(d)` makes the
+   response-header bound injectable; production uses 5m via
+   `defaultRouterClient()`, the stalled-relay handler test uses 300ms so CI
+   completes in milliseconds.
+5. **Wiring tests added** (round-1 gap): `TestRouterClientsHaveHeadTimeouts`
+   now asserts the PROXY CONSTRUCTORS attach the bounded client (a revert to
+   `&http.Client{Timeout: 0}` fails it, red/green verified), plus
+   `TestDefaultHTTPClientHeadTimeout` (relay-proxy) and
+   `TestFallbackProxy_UpstreamErrorRecordedInMetrics` (fallback visibility).
+   The handler-level `TestRouterProxy_StalledRelayBounded502` drives the
+   real `routerProxy` → relay path (a stalled relay yields a bounded 502).
+6. **Honest closure scope.** The issue's confirmed root cause was operator-
+   side (Zen removed `/provider`; helm `freeModelsRefresher.enabled=false`);
+   the relay-router was never the culprit. This PR is defensive hardening
+   (bounded head phase + observability), not a claim to fix the removed
+   endpoint. Issue #911 is referenced as the motivation, not claimed closed.
+7. **WireGuard comment corrected** — the router→relay path is plaintext HTTP
+   with per-VM tokens (WireGuard removed, worklog 0447).

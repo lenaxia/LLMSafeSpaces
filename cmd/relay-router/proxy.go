@@ -5,6 +5,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -75,28 +76,40 @@ var routerHopHeaders = map[string]struct{}{
 }
 
 // defaultRouterClient returns the http.Client used for forwarding requests
-// (routerProxy) and for the direct fallback path (fallbackProxy).
+// (routerProxy) and for the direct fallback path (fallbackProxy) with the
+// production 5-minute response-header bound.
+func defaultRouterClient() *http.Client {
+	return newRouterClient(5 * time.Minute)
+}
+
+// newRouterClient builds the router's http.Client with the given
+// response-header timeout. The production value is 5m (see defaultRouterClient
+// for the full rationale); tests pass a small value so the stalled-upstream
+// scenario completes quickly instead of burning 5 minutes of wall clock.
 //
 // The Client must NOT set a total Timeout — chat/SSE responses stream for
 // minutes and a wall-clock deadline would truncate generations mid-stream.
-// Instead the transport bounds the phases BEFORE the body streams:
+// The transport bounds the phases BEFORE the body streams:
 //
-//   - DialContext: connecting to a relay VM over WireGuard (or the fallback's
-//     upstream) hangs indefinitely without this; a blackholed peer would
-//     otherwise pin a handler goroutine forever with no response and no log
-//     (issue #911: /provider timed out cluster-wide with an empty router log
-//     because the request reached the upstream/relay but no headers ever
-//     came back, and Timeout: 0 never fired).
-//   - ResponseHeaderTimeout: the upstream accepted the connection but stalled
-//     before writing response headers — the exact /provider symptom. A small
-//     JSON response (provider catalog) must produce headers promptly; 30s is
-//     generous while still bounding a dead peer. The relay→upstream hop is
-//     the likeliest staller and this timeout covers the full relay round
-//     trip on the router's side.
+//   - DialContext (5s): a blackholed peer (egress SYNs dropped) would
+//     otherwise stall the dial past every caller's deadline, pinning a
+//     handler goroutine with no response and no log (issue #911). 5s lands
+//     inside the workspace injector's 10s client window so the failure
+//     surfaces as a bounded 502 instead of a hang. The router→relay path is
+//     plaintext HTTP with per-VM tokens (WireGuard was removed, worklog
+//     0447); the fallback path is direct public egress.
+//   - ResponseHeaderTimeout: bounds time-to-first-header. 5m in production
+//     (not a few seconds) is deliberate: the router is a generic
+//     openai-compatible forwarder, and a non-streaming completion
+//     (`stream:false`) receives response headers only after the FULL
+//     generation — long generations routinely exceed 30s. Stated assumption
+//     (per the issue-thread analysis): no legitimate request needs >5m to
+//     deliver headers. Streaming responses get headers immediately, so
+//     chat/SSE are unaffected.
 //
-// The 504/502 surfaced here is a head-timeout, distinct from mid-body stalls,
+// The 502/504 surfaced here is a head-timeout, distinct from mid-body stalls,
 // which intentionally remain unbounded so long generations are never cut.
-func defaultRouterClient() *http.Client {
+func newRouterClient(responseHeaderTimeout time.Duration) *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
 			DialContext: (&net.Dialer{
@@ -104,7 +117,7 @@ func defaultRouterClient() *http.Client {
 				KeepAlive: 30 * time.Second,
 			}).DialContext,
 			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 30 * time.Second,
+			ResponseHeaderTimeout: responseHeaderTimeout,
 			ExpectContinueTimeout: 1 * time.Second,
 			MaxIdleConns:          50,
 			MaxIdleConnsPerHost:   10,
@@ -181,6 +194,12 @@ func (rp *routerProxy) forwardToRelay(w http.ResponseWriter, r *http.Request, re
 
 	resp, err := rp.httpClient.Do(upstreamReq) //nolint:gosec // target is trusted WG IP
 	if err != nil {
+		// Log BEFORE the client-context check (issue #911 finding: the
+		// silent-error signature "zero errors in its own log"). Never log
+		// the request path/query — a forwarded path may carry path-segment
+		// secrets; the error string from net/http already omits them for
+		// URL errors, and we add nothing more than the relay + status.
+		log.Printf("relay-router: forward to relay %s failed: %v", relayID, err)
 		if r.Context().Err() != nil {
 			return
 		}
@@ -251,7 +270,16 @@ type fallbackProxy struct {
 	lastRequest   time.Time
 	inFlight      int
 
-	auth upstreamAuth
+	auth    upstreamAuth
+	metrics *routerMetrics // optional; records fallback outcomes under relay="fallback" (issue #911: outage was invisible in /metrics)
+}
+
+// withFallbackMetrics wires the shared metrics so fallback requests appear in
+// relay_router_requests_total{relay="fallback",...}. Builder so existing
+// callers/tests are unchanged when unconfigured.
+func (fp *fallbackProxy) withFallbackMetrics(m *routerMetrics) *fallbackProxy {
+	fp.metrics = m
+	return fp
 }
 
 func newFallbackProxy(upstreamURL string, rate float64, maxConcurrent int) (*fallbackProxy, error) {
@@ -340,6 +368,13 @@ func (fp *fallbackProxy) forward(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := fp.httpClient.Do(upstreamReq) //nolint:gosec // target is configured upstream
 	if err != nil {
+		// Log BEFORE the client-context check (issue #911: the silent-error
+		// signature). Never log the request path/query (path-segment secret
+		// protection) — the net/http error string omits them for URL errors.
+		log.Printf("relay-router: fallback upstream request failed: %v", err)
+		if fp.metrics != nil {
+			fp.metrics.recordRequest("fallback", http.StatusBadGateway)
+		}
 		if r.Context().Err() != nil {
 			return
 		}
@@ -347,6 +382,10 @@ func (fp *fallbackProxy) forward(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
+
+	if fp.metrics != nil {
+		fp.metrics.recordRequest("fallback", resp.StatusCode)
+	}
 
 	copyRouterHeaders(w.Header(), resp.Header)
 	w.Header().Set(fallbackHeader, fallbackHeaderValue)

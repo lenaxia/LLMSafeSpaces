@@ -94,12 +94,12 @@ func defaultHTTPClient() *http.Client {
 			TLSHandshakeTimeout: 10 * time.Second,
 			// Bound the phase before response headers arrive (issue #911:
 			// a stalled upstream left the relay's proxy handler hanging with
-			// no response and no log). The upstream is reached over public
-			// egress (opencode.ai/zen) where a blackholed peer is possible;
-			// 30s is generous while still bounding a dead endpoint. Body
+			// no response and no log). 5m covers slow non-streaming
+			// completions (`stream:false` sends headers only after the full
+			// generation); streaming chat/SSE get headers immediately. Body
 			// streaming stays unbounded (no total client Timeout) so long
-			// chat/SSE generations are never truncated.
-			ResponseHeaderTimeout: 30 * time.Second,
+			// generations are never truncated.
+			ResponseHeaderTimeout: 5 * time.Minute,
 			ExpectContinueTimeout: 1 * time.Second,
 			MaxIdleConns:          10,
 			IdleConnTimeout:       90 * time.Second,
