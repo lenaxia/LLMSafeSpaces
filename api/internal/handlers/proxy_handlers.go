@@ -351,12 +351,12 @@ func extractPromptText(body []byte) (string, error) {
 // Model axis: the client-sent modelID (the catalog-advertised form) or its
 // bare tail — SetModel and ListModels accept the same two forms.
 //
-// Provider axis: m.Provider is AUTHORITATIVE when present — qualifiedModelID
-// prefixes it onto the ID, so it is the provider routing actually uses and
-// the only provider-axis check. For provider-less slashed IDs (forwarded
-// verbatim by the adapter), the embedded FIRST-segment prefix is the
-// routing provider (opencode's split — the incident proved bare IDs parse
-// as first-segment provider + empty modelID) and is checked instead. An
+// Provider axis: m.Provider is AUTHORITATIVE when present — modelOverride
+// (pkg/agent/opencode) uses it as the routing providerID, so it is the
+// only provider-axis check. For provider-less slashed IDs, the embedded
+// FIRST-segment prefix is the routing provider (opencode's split — the
+// incident proved bare IDs parse as first-segment provider + empty
+// modelID) and is checked instead. An
 // empty provider axis (flat ID, no providerID) skips the axis — the
 // adapter degrades such refs to the session default, which SetModel
 // already screened.

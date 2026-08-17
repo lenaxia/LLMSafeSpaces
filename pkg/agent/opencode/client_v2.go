@@ -39,9 +39,10 @@ var (
 // form ({"modelID", "providerID"}), matching the V1 /message schema
 // (packages/sdk/openapi.json @v1.18.10: model is an object, both fields
 // required, additionalProperties false). The V2 prompt endpoint's route
-// group is dormant on 1.18.10, but the body must not carry the legacy
-// string form on revival — it fails schema decode exactly as V1 did
-// (2026-08-17 all-sessions-502 regression, #909).
+// group is dormant on 1.18.10 (its OpenAPI exposes no model property at
+// all), but the override still uses the object form — it mirrors V1's
+// schema so the send does not replay the string-form regression
+// (2026-08-17 all-sessions-502, #909) on revival.
 type V2ModelRef struct {
 	ModelID    string `json:"modelID"`
 	ProviderID string `json:"providerID"`

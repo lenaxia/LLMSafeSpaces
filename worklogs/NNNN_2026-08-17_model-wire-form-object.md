@@ -1,6 +1,7 @@
 # Worklog: OpenCode message endpoint — model must be the object wire form
 
 **Date:** 2026-08-17
+**Status:** Complete
 **Session:** Fix opencode per-prompt model wire form (object, not string)
 **PR:** (this change)
 **Issue:** #911 (relay-router /provider timeout — related incident class);
