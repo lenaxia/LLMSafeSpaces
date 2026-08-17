@@ -53,3 +53,10 @@ Findings and fixes:
 4. Record accuracy: worklog line 16 "stderr inherited" corrected (capture into `ExitError.Stderr`); "#903 API-side half" softened to "API SSE-watch-blindness half (#903 is watch re-arming for #902, not busy-reconciliation)".
 
 Debugging note for posterity: the startup-wiring test initially failed because `RecordOrphanReap` normalizes the empty workspace ID to `"unknown"` while the test polled label `""` — the reap was working all along; the label was wrong.
+
+## Review round 3 (APPROVE + two nits and one robustness note — all addressed)
+
+Round 3 verdict was APPROVE with non-blocking observations; addressed in one pass:
+1. `ReapsAdoptedOrphan` residual flake (a VM stall spanning exit→reap could hide the zombie from every poll) → metric-only assertion: a counted reap proves a zombie existed.
+2. `StartupWiring` part (b) comment overclaimed ("supervisor still observes the true status") → rewritten to state exactly what is asserted (registry transitions) and where the status-preservation property is pinned.
+3. Robustness note: `scanZombieChildren` returned nil on /proc walk failure, indistinguishable from "no zombies" — a transient failure wiped pending grace clocks. Now returns `([]int, error)`; `pass()` aborts on scan error before any state mutation. Pinned by `TestOrphanReaper_ScanErrorPreservesPendingClocks` (clock preserved, no prune, recovery reaps + metric delta — delta-based, not cumulative, so it stays vacuity-proof).

@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os/exec"
 	"strconv"
@@ -46,7 +47,8 @@ func awaitZombie(t *testing.T, pid int, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		for _, z := range scanZombieChildren() {
+		zs, _ := scanZombieChildren()
+		for _, z := range zs {
 			if z == pid {
 				return
 			}
@@ -90,8 +92,9 @@ func TestOrphanReaper_ZombiePersistsWithoutReaper(t *testing.T) {
 	// Well past any grace the reaper would use: the zombie must STILL be
 	// there — nothing is reaping it.
 	time.Sleep(500 * time.Millisecond)
+	zs, _ := scanZombieChildren()
 	found := false
-	for _, z := range scanZombieChildren() {
+	for _, z := range zs {
 		if z == orphanPid {
 			found = true
 		}
@@ -117,28 +120,15 @@ func TestOrphanReaper_ReapsAdoptedOrphan(t *testing.T) {
 
 	spawnOrphanedGrandchild(t)
 
-	// The zombie must appear (adoption worked) and then disappear
-	// (reaped) within grace + generous scan slack. sawZombie is judged
-	// via the metric-or-scan polling below rather than a tight early
-	// window so a CI stall between exit and first scan cannot fail a
-	// working reaper (review round 2, test-case 4).
-	deadline := time.Now().Add(10 * time.Second)
-	sawZombie := false
-	reaped := false
-	for time.Now().Before(deadline) {
-		if len(scanZombieChildren()) > 0 {
-			sawZombie = true
-		}
-		if sawZombie && len(scanZombieChildren()) == 0 {
-			reaped = true
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	assert.True(t, reaped, "orphan should be observed as a zombie and then reaped within grace+scan")
-
-	assert.GreaterOrEqual(t, testutil.ToFloat64(pkgOpsMetrics.orphansReaped.WithLabelValues("ws-reap-test")), 1.0,
-		"each reaped orphan must be counted in workspace_orphans_reaped_total")
+	// Metric-only assertion (review round 3): a counted reap proves a
+	// zombie existed and was reaped — immune to a CI stall spanning the
+	// exit→reap window, which could previously hide the zombie from
+	// every poll while the reaper worked correctly. The zombie-becomes-
+	// zombie baseline is pinned separately by ZombiePersistsWithoutReaper.
+	require.Eventually(t, func() bool {
+		return testutil.ToFloat64(pkgOpsMetrics.orphansReaped.WithLabelValues("ws-reap-test")) >= 1.0
+	}, 10*time.Second, 50*time.Millisecond,
+		"reaper must reap the adopted orphan within grace+scan and count it in workspace_orphans_reaped_total")
 }
 
 // TestOrphanReaper_TrackedZombieNeverReaped proves the reaper never
@@ -165,7 +155,8 @@ func TestOrphanReaper_TrackedZombieNeverReaped(t *testing.T) {
 	time.Sleep(600 * time.Millisecond) // >> grace while owned
 
 	stillZombie := false
-	for _, z := range scanZombieChildren() {
+	zs, _ := scanZombieChildren()
+	for _, z := range zs {
 		if z == cmd.Process.Pid {
 			stillZombie = true
 		}
@@ -361,7 +352,12 @@ func TestOrphanReaper_StartupWiring_ReapsAndDoesNotSteal(t *testing.T) {
 		return testutil.ToFloat64(pkgOpsMetrics.orphansReaped.WithLabelValues(reapLabel)) > before
 	}, 30*time.Second, 200*time.Millisecond, "startup-wired reaper must reap the adopted orphan and count the metric (grace 5s + ticker 5s + slack)")
 
-	// (b) supervised child's exit must still reach its supervisor.
+	// (b) ownership discipline through the real startup wiring: the
+	// supervised child is owned while alive and released after exit.
+	// (The status-preservation property itself — an owned child's exit
+	// status always reaching its waiter — is pinned by
+	// TrackedZombieNeverReaped; here we assert the registry
+	// transitions, i.e. that this wiring stays registered.)
 	port := freeTCPPort(t)
 	p := newTestManagedProcess(t, port, 0)
 	p.start()
@@ -408,4 +404,60 @@ func TestReadProcStat(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestOrphanReaper_ScanErrorPreservesPendingClocks pins the round-3
+// robustness fix: a failed /proc walk aborts the pass before touching
+// state — pending grace clocks survive (a transient scan failure must
+// not delay in-flight reaps by resetting their aging) and nothing is
+// reaped.
+func TestOrphanReaper_ScanErrorPreservesPendingClocks(t *testing.T) {
+	reaper := newOrphanReaper()
+	reaper.grace = 10 * time.Millisecond
+
+	calls := 0
+	reaper.scan = func() ([]int, error) {
+		calls++
+		if calls == 1 {
+			return []int{4242}, nil // healthy scan: pending clock starts
+		}
+		return nil, errors.New("transient /proc failure")
+	}
+
+	// Never actually reap anything: Wait4 on 4242 would ECHILD anyway;
+	// the point is that the error pass must not reach Wait4 or prune.
+	reaper.pass() // first pass records pending[4242]
+	reaper.mu.Lock()
+	firstSeen := reaper.pending[4242]
+	reaper.mu.Unlock()
+	require.False(t, firstSeen.IsZero(), "healthy scan must start the grace clock")
+
+	time.Sleep(30 * time.Millisecond) // past grace
+	reaper.pass()                     // scan error pass
+
+	reaper.mu.Lock()
+	still, kept := reaper.pending[4242]
+	reaper.mu.Unlock()
+	assert.True(t, kept, "scan error must not prune pending entries")
+	assert.Equal(t, firstSeen, still, "scan error must not reset the grace clock")
+
+	// Recovery: after the error pass, a healthy scan still reaps.
+	withSubreaper(t)
+	real := newOrphanReaper()
+	real.grace = 50 * time.Millisecond
+	reapLabel := real.workspaceID
+	if reapLabel == "" {
+		reapLabel = "unknown"
+	}
+	before := testutil.ToFloat64(pkgOpsMetrics.orphansReaped.WithLabelValues(reapLabel))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); real.run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+
+	spawnOrphanedGrandchild(t)
+	require.Eventually(t, func() bool {
+		return testutil.ToFloat64(pkgOpsMetrics.orphansReaped.WithLabelValues(reapLabel)) > before
+	}, 10*time.Second, 50*time.Millisecond, "recovery scan after error must still reap and count the metric delta")
 }

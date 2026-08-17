@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -69,8 +70,9 @@ type orphanReaper struct {
 
 	grace    time.Duration
 	interval time.Duration
-	// scan returns the current zombie-children pids. Indirect for tests.
-	scan func() []int
+	// scan returns the current zombie-children pids, or an error when
+	// the /proc walk itself failed. Indirect for tests.
+	scan func() ([]int, error)
 
 	workspaceID string
 	metrics     *opsMetrics
@@ -145,10 +147,17 @@ func (r *orphanReaper) run(ctx context.Context) {
 	}
 }
 
-// pass scans for zombie children and reaps those past grace.
+// pass scans for zombie children and reaps those past grace. A failed
+// scan aborts the pass before any state mutation — a transient /proc
+// failure must not wipe pending grace clocks (which would delay every
+// in-flight reap by a fresh grace cycle) or prune owned/pending state.
 func (r *orphanReaper) pass() {
 	now := time.Now()
-	zombies := r.scan()
+	zombies, err := r.scan()
+	if err != nil {
+		log.Warn("orphan reaper: zombie scan failed; keeping pending grace clocks", zap.Error(err))
+		return
+	}
 	for _, pid := range zombies {
 		r.mu.Lock()
 		if _, owned := r.own[pid]; owned {
@@ -206,11 +215,13 @@ func (r *orphanReaper) pass() {
 
 // scanZombieChildren returns the pids of this process's zombie
 // children by walking /proc. Entries racing exit/reap are skipped.
-func scanZombieChildren() []int {
+// A /proc walk failure returns the error distinct from "no zombies"
+// so the caller can preserve in-flight grace clocks.
+func scanZombieChildren() ([]int, error) {
 	self := os.Getpid()
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("read /proc: %w", err)
 	}
 	var zombies []int
 	for _, e := range entries {
@@ -224,7 +235,7 @@ func scanZombieChildren() []int {
 		}
 		zombies = append(zombies, pid)
 	}
-	return zombies
+	return zombies, nil
 }
 
 // readProcStat parses the state character and parent pid from a
