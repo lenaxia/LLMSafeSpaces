@@ -1010,6 +1010,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#keeping-it-updated-renovate-dependabot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Keeping it updated (Renovate / Dependabot)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#rollout-rollback" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2038,6 +2049,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#keeping-it-updated-renovate-dependabot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Keeping it updated (Renovate / Dependabot)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#rollout-rollback" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2120,28 +2142,76 @@ any pod (re)creation — launch, resume-from-suspend, controller-initiated
 restart — pulls the <strong>currently pinned</strong> agentd. "The image is the
 workspace" is preserved.</p>
 <h2 id="enabling">Enabling<a class="headerlink" href="#enabling" title="Permanent link">&para;</a></h2>
-<p>CI prints the exact values block on every push to main (the
-<code>merge-agentd</code> job's "Print Helm values block for agentdDelivery" step).
-Paste it into your values:</p>
+<p>Set ONE value — the image, in the canonical tag+digest form every
+digest-aware dependency bot manages:</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">controller</span><span class="p">:</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">agentdDelivery</span><span class="p">:</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ghcr.io/lenaxia/llmsafespaces/agentd@sha256:&lt;manifest-digest&gt;</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">    </span><span class="nt">binarySHA256Amd64</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&lt;64-hex</span><span class="nv"> </span><span class="s">sha256</span><span class="nv"> </span><span class="s">of</span><span class="nv"> </span><span class="s">the</span><span class="nv"> </span><span class="s">amd64</span><span class="nv"> </span><span class="s">binary&gt;&quot;</span>
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="nt">binarySHA256Arm64</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&lt;64-hex</span><span class="nv"> </span><span class="s">sha256</span><span class="nv"> </span><span class="s">of</span><span class="nv"> </span><span class="s">the</span><span class="nv"> </span><span class="s">arm64</span><span class="nv"> </span><span class="s">binary&gt;&quot;</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ghcr.io/lenaxia/llmsafespaces/agentd:dev@sha256:&lt;manifest-digest&gt;</span>
 </span></code></pre></div>
-<p>Requirements (enforced at both <code>helm template</code> and controller startup):</p>
+<p>That single coordinate carries the whole verify contract: CI stamps the
+per-arch binary sha256s onto the image index as OCI annotations (covered
+by the digest — they cannot desync), and the controller resolves them at
+startup, caching the result in the <code>llmsafespaces-agentd-pins</code>
+ConfigMap so a registry outage at controller boot does not brick
+startup. The entrypoint sha256 verify, exit codes, conditions, and
+alerts are unchanged from the original design.</p>
+<p>Requirements (enforced at the Helm render and again at controller
+startup):</p>
 <ul>
-<li><code>image</code> must be <strong>digest-pinned</strong> — a floating tag defeats both
-  reproducibility and the verify contract,</li>
-<li>both binary hashes must be present (the manifest list carries
-  different binaries per arch),</li>
+<li><code>image</code> must carry a <strong>digest</strong> (<code>repo:tag@sha256:…</code> — the tag may
+  move, the digest must not be dropped): the digest is what the
+  entrypoint trust chain resolves through,</li>
+<li><code>binarySHA256Amd64</code>/<code>binarySHA256Arm64</code> are OPTIONAL per-image
+  overrides (break-glass): set BOTH or NEITHER,</li>
 <li>the binary path inside the image is fixed:
   <code>/usr/local/bin/workspace-agentd</code>.</li>
 </ul>
 <p>Leave <code>image</code> empty for legacy mode (baked-in binary) — nothing renders,
 no volume is mounted, the entrypoint behaves exactly as before.</p>
+<p><strong>RBAC:</strong> enabling agentdDelivery adds two rules for the outage cache:
+<code>get</code>/<code>update</code> on configmaps scoped by <code>resourceNames</code> to the single
+<code>llmsafespaces-agentd-pins</code> ConfigMap, plus a separate unscoped
+<code>create</code> rule (Kubernetes cannot resourceNames-scope creation — the
+object does not exist yet). It does not depend on any other feature's
+permissions.</p>
+<h2 id="keeping-it-updated-renovate-dependabot">Keeping it updated (Renovate / Dependabot)<a class="headerlink" href="#keeping-it-updated-renovate-dependabot" title="Permanent link">&para;</a></h2>
+<p><strong>Renovate — first-class.</strong> Because the pin is one docker tag+digest
+line, Renovate's <code>helm-values</code> manager maintains it automatically. In
+the repo holding your Helm values:</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">&quot;extends&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;config:recommended&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;docker:pinDigests&quot;</span><span class="p">],</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">&quot;packageRules&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="p">{</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">      </span><span class="nt">&quot;description&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;agentdDelivery digest bumps are self-contained&quot;</span><span class="p">,</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">      </span><span class="nt">&quot;matchManagers&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;helm-values&quot;</span><span class="p">],</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">      </span><span class="nt">&quot;matchDepNames&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;ghcr.io/lenaxia/llmsafespaces/agentd&quot;</span><span class="p">],</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">      </span><span class="nt">&quot;automerge&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">      </span><span class="nt">&quot;automergeType&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;pr&quot;</span>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">  </span><span class="p">]</span>
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>A digest bump is SAFE BY CONSTRUCTION: the binary hashes are derived
+from the new digest's annotations at controller startup, never
+independently updated. There is deliberately nothing else for a bot to
+touch.</p>
+<p><strong>Dependabot — not applicable.</strong> Dependabot has no manager for Helm
+values files or generic image digests. For manual updates, the
+<code>merge-agentd</code> CI job prints the exact image line for its commit (its
+"Print Helm values block" step); copy that single line.</p>
+<p><strong>Break-glass override.</strong> If you must pin hashes explicitly (e.g. an
+air-gapped mirror stripping annotations), set both:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">controller</span><span class="p">:</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">agentdDelivery</span><span class="p">:</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">&lt;mirror&gt;/agentd:dev@sha256:&lt;digest&gt;</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="nt">binarySHA256Amd64</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&lt;64-hex&gt;&quot;</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">    </span><span class="nt">binarySHA256Arm64</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;&lt;64-hex&gt;&quot;</span>
+</span></code></pre></div>
+<p>CI's merge job output includes the current binary hashes alongside the
+digest. An override pair overrides annotations per-arch; a one-sided
+pair fails the Helm render.</p>
 <h2 id="rollout-rollback">Rollout / rollback<a class="headerlink" href="#rollout-rollback" title="Permanent link">&para;</a></h2>
-<p>Roll <strong>forward</strong> by updating the three values to a newer digest and
+<p>Roll <strong>forward</strong> by updating the image line to a newer digest and
 running <code>helm upgrade</code>. The controller Deployment restarts; <strong>existing
 pods keep their old pin</strong> (pod specs are immutable) and pick up the new
 agentd the next time their pod is recreated.</p>
@@ -2239,7 +2309,7 @@ built until measured — see #863).</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 15, 2026 20:29:51 UTC"><span class="timeago" datetime="2026-08-15T20:29:51+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 15, 2026 20:29:51 UTC">2026-08-15</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 17, 2026 00:20:45 UTC"><span class="timeago" datetime="2026-08-17T00:20:45+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 17, 2026 00:20:45 UTC">2026-08-17</span>
   </span>
 
     
