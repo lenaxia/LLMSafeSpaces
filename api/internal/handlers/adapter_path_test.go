@@ -1360,6 +1360,11 @@ func TestSendPromptAsync_ModelOverride_NoProvider_SkipsProviderAxis(t *testing.T
 // verbatim), so {"modelID":"deniedprov/x","providerID":"openai"} must be
 // denied under allowed_providers=["openai"] — previously it returned 200
 // with the denied provider forwarded.
+//
+// Shape note (round 4): AllowedModels is deliberately UNSET — with an
+// exact-match model allowlist the model axis denies first and the test
+// passes with or without the embedded-prefix fix. The provider axis alone
+// must carry the denial.
 func TestSendPromptAsync_SlashBearingOverride_EmbeddedPrefixChecked(t *testing.T) {
 	h := newProxyHandlerForAdapterTest(t)
 	called := false
@@ -1370,7 +1375,6 @@ func TestSendPromptAsync_SlashBearingOverride_EmbeddedPrefixChecked(t *testing.T
 		},
 	}
 	h.SetModelPolicyChecker(&mockPolicyChecker{policy: &types.OrgPolicyValues{
-		AllowedModels:    &[]string{"gpt-5.5"},
 		AllowedProviders: &[]string{"openai"},
 	}})
 

@@ -1970,19 +1970,16 @@ func TestSetModel_RequestPrefixDiffersFromResolution(t *testing.T) {
 		AllowedProviders: &[]string{"openai"},
 	}})
 
-	// Request carries a wrong-but-allowed... no: prefix "evil" is NOT
-	// allowed → must 403 (both axes are checked).
+	// Request carries a mismatched prefix ("evil") the org denies. On the
+	// HEALTHY path this is ALLOWED (round 4, finding 3): the catalog
+	// resolution ("openai/gpt-5.5") is both what routes and what persists,
+	// so the "evil" prefix never reaches routing or the DB — denying here
+	// would false-deny slashed catalog IDs whose first segment is a vendor
+	// namespace. The degraded-path prefix check is pinned separately by
+	// TestSetModel_PodDown_QualifiedRequest_ProviderAxisEnforced.
 	w := putModel(t, handler, `{"model":"evil/gpt-5.5"}`)
-	assert.Equal(t, http.StatusForbidden, w.Code)
-
-	// And with no provider restriction: a mismatched prefix is tolerated
-	// for routing (catalog is ground truth) but must not be PERSISTED —
-	// persistence follows the resolution.
-	handler2 := newTestModelsHandler("mismatch-pw")
-	handler2.SetModelStore(updater)
-	updater.calls = nil
-	w = putModel(t, handler2, `{"model":"evil/gpt-5.5"}`)
-	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, http.StatusOK, w.Code,
+		"healthy path: the resolution routes and persists; the advisory prefix is never load-bearing")
 	require.Len(t, updater.calls, 1)
 	assert.Equal(t, "openai/gpt-5.5", *updater.calls[0].DefaultModel,
 		"persistence must follow the catalog resolution, not the request prefix")

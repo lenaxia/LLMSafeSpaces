@@ -191,8 +191,11 @@ func (h *ModelsHandler) ListModels(c *gin.Context) {
 
 	// Include current model selection + resolve providerID. The DB may hold
 	// the qualified form ("providerID/modelID", what SetModel persists) or
-	// the legacy flat form; the response is always flat for client
-	// compatibility — qualified is a storage detail.
+	// the legacy flat form; the response is always the model ID for client
+	// compatibility — qualified is a storage detail. Split on the FIRST
+	// "/" (opencode's routing convention): "openrouter/anthropic/claude"
+	// → provider "openrouter", model ID "anthropic/claude" — the exact ID
+	// ListModels advertises, so markSelected matches.
 	currentModel := ""
 	currentModelProviderID := ""
 	if h.wsUpdater != nil {
@@ -202,7 +205,7 @@ func (h *ModelsHandler) ListModels(c *gin.Context) {
 			h.logger.Warn("Failed to get default model", "error", err, "workspaceID", workspaceID)
 		}
 	}
-	if idx := strings.LastIndex(currentModel, "/"); idx >= 0 {
+	if idx := strings.Index(currentModel, "/"); idx >= 0 {
 		currentModel, currentModelProviderID = currentModel[idx+1:], currentModel[:idx]
 	}
 	if currentModelProviderID == "" {
@@ -234,18 +237,14 @@ func (h *ModelsHandler) SetModel(c *gin.Context) {
 
 	// Accept both the flat catalog form ("gpt-5.5") and the qualified form
 	// ("openai/gpt-5.5") that SetModel itself persists — clients echoing a
-	// previously persisted selection must round-trip. Split on the LAST "/"
-	// — agentd's resolveModelWithProvider uses LastIndex too, so a slashed
-	// model ID ("a/b/c" = provider "a/b", model "c") parses identically on
-	// both sides.
-	//
-	// Catalog model IDs may themselves contain slashes (OpenRouter-style
-	// "vendor/model" — the EnrichProviders path). Such an ID advertised by
-	// ListModels is ALSO accepted verbatim as the request value; the flat
-	// form is only used for axis-independent checks, and catalog matching
-	// tries the full ID first (modelExists(flat) fails for slashed IDs).
+	// previously persisted selection must round-trip. Split on the FIRST
+	// "/" (opencode's routing convention — the same split agentd's boot
+	// resolver uses): "a/b/c" is provider "a", model "b/c". Catalog model
+	// IDs may themselves contain slashes (OpenRouter-style "vendor/model");
+	// such IDs are accepted verbatim — catalog matching tries the full
+	// value first, and the flat form only feeds axis checks and fallbacks.
 	flatModel := req.Model
-	if idx := strings.LastIndex(req.Model, "/"); idx >= 0 {
+	if idx := strings.Index(req.Model, "/"); idx >= 0 {
 		flatModel = req.Model[idx+1:]
 	}
 
@@ -379,9 +378,9 @@ func (h *ModelsHandler) SetModel(c *gin.Context) {
 // proven by the incident: bare "deepseek-v4-flash-free" parsed as provider
 // + empty modelID; so "a/b/c" routes via provider "a"):
 //   - the catalog-resolved target (resolved, "provider/model") — what
-//     live routing and (now) persistence use;
-//   - the request's own embedded prefix — what would be persisted
-//     verbatim on the degraded catalog-unavailable path.
+//     live routing and (on the healthy path) persistence use;
+//   - the request's own embedded prefix — ONLY on the degraded path
+//     (catalog unresolved), where rawReq is what gets persisted verbatim.
 //
 // A provider is skipped when it cannot be determined (flat request,
 // unresolved catalog) — matching the axis-availability rule, not a
@@ -415,8 +414,13 @@ func (h *ModelsHandler) modelSelectionAllowedByOrgPolicy(ctx context.Context, wo
 		if !providerAllowed(resolved[:idx]) {
 			return false
 		}
-	}
-	if idx := strings.Index(rawReq, "/"); idx >= 0 {
+	} else if idx := strings.Index(rawReq, "/"); idx >= 0 {
+		// Degraded path only (catalog unresolved): rawReq is what gets
+		// persisted verbatim, so its prefix is load-bearing here. On the
+		// healthy path the resolution is what routes AND persists —
+		// checking rawReq's prefix there would false-deny slashed catalog
+		// IDs whose first segment is a vendor namespace, not the routing
+		// provider (round 4, finding 3).
 		if !providerAllowed(rawReq[:idx]) {
 			return false
 		}

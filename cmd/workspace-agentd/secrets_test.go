@@ -800,6 +800,25 @@ func TestResolveModelWithProvider(t *testing.T) {
 		assert.Equal(t, "opencode-relay/deepseek-v4-flash-free", got)
 	})
 
+	t.Run("two-slash qualified resolves via first-segment provider", func(t *testing.T) {
+		// Round 4, finding 2: SetModel persists slashed-catalog selections
+		// as "provider/vendor/model" (e.g. openrouter + "anthropic/
+		// claude-sonnet-4.5"). The boot check must verify the FIRST
+		// segment (opencode's routing split) — the previous LastIndex
+		// split looked for a provider entry literally named
+		// "openrouter/anthropic" and omit+warned on every reboot.
+		cfg := buildCfg(`{"openrouter": {"models": {"anthropic/claude-sonnet-4.5": {}}}}`)
+		got, ok := resolveModelWithProvider(cfg, "openrouter/anthropic/claude-sonnet-4.5")
+		assert.True(t, ok, "first-segment provider presence must resolve multi-slash defaults")
+		assert.Equal(t, "openrouter/anthropic/claude-sonnet-4.5", got)
+	})
+
+	t.Run("two-slash qualified first-segment provider absent is unresolvable", func(t *testing.T) {
+		cfg := buildCfg(`{"openrouter": {"models": {"anthropic/claude-sonnet-4.5": {}}}}`)
+		_, ok := resolveModelWithProvider(cfg, "otherprov/anthropic/claude-sonnet-4.5")
+		assert.False(t, ok)
+	})
+
 	t.Run("empty model ID is unresolvable", func(t *testing.T) {
 		cfg := buildCfg(`{"thekao": {"models": {"glm-5.1": {}}}}`)
 		got, ok := resolveModelWithProvider(cfg, "")

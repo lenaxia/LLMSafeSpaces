@@ -755,8 +755,13 @@ func resolveModelWithProvider(cfg map[string]json.RawMessage, modelID string) (s
 	}
 
 	// Already qualified: deterministic — the provider entry either exists
-	// in this boot's config or the default is unusable this boot.
-	if idx := strings.LastIndex(modelID, "/"); idx > 0 {
+	// in this boot's config or the default is unusable this boot. Split on
+	// the FIRST "/" — opencode's own routing convention (a bare ID parses
+	// as first-segment provider + empty modelID, per the incident), so a
+	// catalog-sourced value like "openrouter/anthropic/claude-sonnet"
+	// means provider "openrouter", model "anthropic/claude-sonnet". The
+	// full value is passed through verbatim once its provider exists.
+	if idx := strings.Index(modelID, "/"); idx > 0 {
 		if _, exists := providers[modelID[:idx]]; exists {
 			return modelID, true
 		}
