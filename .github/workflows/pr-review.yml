@@ -32,8 +32,8 @@ jobs:
     # Automation-bot PRs (renovate, dependabot, release-please, mergify,
     # github-merge-queue) are skipped at the job level inside the reusable
     # workflow — no local `if:` needed.
-    uses: lenaxia/ai-workflows/.github/workflows/pr-review.yml@v0.2.10
+    uses: lenaxia/ai-workflows/.github/workflows/pr-review.yml@v0.2.11
     secrets: inherit
     with:
-      version: v0.2.10
+      version: v0.2.11
       project_name: LLMSafeSpaces
