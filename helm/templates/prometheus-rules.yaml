@@ -125,14 +125,20 @@ spec:
               is dead-but-open (see #901 G11). Correlate with workspace activity.
 
         # #901 G1: armed-but-failing — the watch exists but no /event
-        # stream is open (empty podIP, connectAndRead failing in backoff).
-        # The incident's invisible class: armed (counted by #903's gauge)
-        # yet serving nothing. connected==0 for 10m pages.
+        # stream is open (empty podIP, connectAndRead failing in backoff;
+        # or never-connected since arm). The connected series is
+        # initialized AT ARM TIME and deleted on StopWatching, so a
+        # PRESENT series implies armed — connected == 0 is the complete
+        # failing-watch signal (absent series = not watched = correctly
+        # not alerting). Guarded by the unlabeled watched-count > 0 so an
+        # idle replica with zero watches cannot fire it. Verified by
+        # promtool rule tests (helm/tests) — a previous version joined an
+        # unlabeled gauge against labeled series and could never fire
+        # (#906 review F1).
         - alert: LLMSafeSpacesSSETrackerWatchFailing
           expr: |
-            (max by (workspace_id) (llmsafespaces_sse_tracker_watched_workspaces{job=~"{{ $apiJob }}"}) > 0)
-            and on(workspace_id)
             (max by (workspace_id) (llmsafespaces_sse_tracker_connected{job=~"{{ $apiJob }}"}) == 0)
+            and on() (max(llmsafespaces_sse_tracker_watched_workspaces{job=~"{{ $apiJob }}"}) > 0)
           for: 10m
           labels:
             severity: critical
@@ -141,9 +147,9 @@ spec:
             summary: "SSE watch armed but not connected for {{ `{{ $labels.workspace_id }}` }}"
             description: >-
               The tracker holds a watch for this workspace but has no open /event
-              stream for 10m — connectAndRead is failing in a backoff loop
-              (check Warn logs: empty podIP, refused connection). Users on this
-              replica are event-blind.
+              stream for 10m — connectAndRead is failing in a backoff loop or has
+              never connected since arm (check Warn logs: empty podIP, refused
+              connection). Users on this replica are event-blind.
 
         # #892 D1: sustained watchdog suppression = chronic starvation or a
         # wedged-but-alive agent (policy: notify, never kill).

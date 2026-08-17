@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	promtestutil "github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -577,4 +578,113 @@ func TestStartRelayInjector_SkipsWhenPreBootApplied(t *testing.T) {
 		"HealthCheck must not be called — the goroutine must short-circuit before starting")
 	assert.False(t, killed,
 		"KillOpenCode must not be called — opencode is already booting with the right config")
+}
+
+// --- #906 review F3/F4: terminal paths drive state + exactly one outcome ---
+
+// counter deltas (package counters accumulate across tests)
+var fetchFailedDelta, noFreeDelta float64
+
+// resetRelayState restores the injector state after a test mutates it.
+func resetRelayState(t *testing.T) {
+	t.Helper()
+	relayFreeModelsState.Store(0)
+	t.Cleanup(func() { relayFreeModelsState.Store(0) })
+}
+
+// TestStartRelayInjector_FetchFailedTerminal: a permanently erroring
+// /provider ends at the deadline-exhausted terminal — state 2 (degraded),
+// exactly ONE fetch_failed tick, and NO no_free_models tick (the double-Inc
+// bug #906 F3 pinned).
+func TestStartRelayInjector_FetchFailedTerminal(t *testing.T) {
+	resetRelayState(t)
+	fetchFailedDelta = -promtestutil.ToFloat64(relayInjectorOutcomes.WithLabelValues("fetch_failed"))
+	noFreeDelta = -promtestutil.ToFloat64(relayInjectorOutcomes.WithLabelValues("no_free_models"))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+
+	startRelayInjector(context.Background(), relayInjectorConfig{
+		RelayURL:          "https://relay.example.test/path",
+		OpenCodeBaseURL:   srv.URL,
+		AuthJSONPath:      filepath.Join(dir, "auth.json"), // absent → no personal-key skip
+		AgentConfigWriter: opencode.NewConfigWriter(filepath.Join(dir, "agent-config.json")),
+		KillOpenCode:      func() {},
+		HealthCheck:       func() bool { return true },
+		FetchRetryDelay:   10 * time.Millisecond,
+		FetchDeadline:     150 * time.Millisecond,
+	})
+
+	require.Eventually(t, func() bool { return RelayFreeModelsState() == 2 },
+		2*time.Second, 10*time.Millisecond,
+		"deadline-exhausted fetch must mark the generation degraded (state 2)")
+	// Package-level counters accumulate across tests — assert DELTAS.
+	fetchFailedDelta += promtestutil.ToFloat64(relayInjectorOutcomes.WithLabelValues("fetch_failed"))
+	noFreeDelta += promtestutil.ToFloat64(relayInjectorOutcomes.WithLabelValues("no_free_models"))
+	assert.InDelta(t, 1.0, fetchFailedDelta, 0,
+		"exactly one fetch_failed tick")
+	assert.InDelta(t, 0.0, noFreeDelta, 0,
+		"fetch_failed must NOT also tick no_free_models (F3: one outcome, one tick)")
+}
+
+// TestStartRelayInjector_CatalogEmptyTerminal: a healthy but EMPTY
+// catalog ends at the no_free_models terminal — state 2, one
+// no_free_models tick.
+func TestStartRelayInjector_CatalogEmptyTerminal(t *testing.T) {
+	resetRelayState(t)
+	fetchFailedDelta = -promtestutil.ToFloat64(relayInjectorOutcomes.WithLabelValues("fetch_failed"))
+	noFreeDelta = -promtestutil.ToFloat64(relayInjectorOutcomes.WithLabelValues("no_free_models"))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+
+	startRelayInjector(context.Background(), relayInjectorConfig{
+		RelayURL:          "https://relay.example.test/path",
+		OpenCodeBaseURL:   srv.URL,
+		AuthJSONPath:      filepath.Join(dir, "auth.json"),
+		AgentConfigWriter: opencode.NewConfigWriter(filepath.Join(dir, "agent-config.json")),
+		KillOpenCode:      func() {},
+		HealthCheck:       func() bool { return true },
+		FetchRetryDelay:   10 * time.Millisecond,
+		FetchDeadline:     150 * time.Millisecond,
+	})
+
+	require.Eventually(t, func() bool { return RelayFreeModelsState() == 2 },
+		2*time.Second, 10*time.Millisecond,
+		"empty catalog past deadline must mark the generation degraded (state 2)")
+	noFreeDelta += promtestutil.ToFloat64(relayInjectorOutcomes.WithLabelValues("no_free_models"))
+	fetchFailedDelta += promtestutil.ToFloat64(relayInjectorOutcomes.WithLabelValues("fetch_failed"))
+	assert.InDelta(t, 1.0, noFreeDelta, 0, "one no_free_models tick")
+	assert.InDelta(t, 0.0, fetchFailedDelta, 0, "the two failure modes stay distinct (F3)")
+}
+
+// TestStartRelayInjector_SuccessTerminal: a catalog with a free model
+// completes the injection — state 1 (ok).
+func TestStartRelayInjector_SuccessTerminal(t *testing.T) {
+	resetRelayState(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"connected":["opencode"],"all":[{"id":"opencode","models":{"free-model":{"id":"free-model","name":"Free Model","cost":{"input":0,"output":0},"limit":{"context":100000,"output":10000}}}}]}`))
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+
+	startRelayInjector(context.Background(), relayInjectorConfig{
+		RelayURL:          "https://relay.example.test/path",
+		OpenCodeBaseURL:   srv.URL,
+		OpenCodePassword:  "pw",
+		AuthJSONPath:      filepath.Join(dir, "auth.json"),
+		AgentConfigWriter: opencode.NewConfigWriter(filepath.Join(dir, "agent-config.json")),
+		KillOpenCode:      func() {},
+		HealthCheck:       func() bool { return true },
+	})
+
+	require.Eventually(t, func() bool { return RelayFreeModelsState() == 1 },
+		2*time.Second, 10*time.Millisecond,
+		"successful injection must mark the generation ok (state 1)")
 }

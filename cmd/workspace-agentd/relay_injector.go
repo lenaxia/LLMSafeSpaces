@@ -338,6 +338,7 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 		if !cfg.HealthCheck() {
 			lg.Warn("relay injector: opencode did not become healthy in time, skipping relay config")
 			relayInjectorOutcomes.WithLabelValues("unhealthy_timeout").Inc()
+			relayFreeModelsState.Store(2)
 			return
 		}
 
@@ -383,7 +384,6 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 						zap.Error(fetchErr),
 						zap.Duration("deadline", effectiveDeadline))
 					relayInjectorOutcomes.WithLabelValues("fetch_failed").Inc()
-					relayInjectorOutcomes.WithLabelValues("no_free_models").Inc()
 					relayFreeModelsState.Store(2)
 					return
 				}
@@ -393,9 +393,15 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 			} else if len(models) > 0 {
 				break
 			}
-			if time.Now().After(fetchDeadline) {
+			// Catalog-empty terminal — ONLY for a clean fetch with an
+			// empty catalog (#906 F3: fetch ERRORS are fetch_failed, fired
+			// in the fetchErr branch above; without this guard a final-
+			// iteration error could tick both outcomes and conflate the
+			// two failure modes the counter exists to distinguish).
+			if fetchErr == nil && time.Now().After(fetchDeadline) {
 				lg.Warn("relay injector: no free opencode models found after deadline, skipping relay config")
 				relayInjectorOutcomes.WithLabelValues("no_free_models").Inc()
+				relayFreeModelsState.Store(2)
 				return
 			}
 			if fetchErr == nil {
@@ -425,6 +431,7 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 		if err != nil {
 			lg.Warn("relay injector: failed to write agent config", zap.Error(err))
 			relayInjectorOutcomes.WithLabelValues("config_write_failed").Inc()
+			relayFreeModelsState.Store(2)
 			return
 		}
 		// restartRequired is always true for the opencode adapter
@@ -445,6 +452,7 @@ func startRelayInjector(ctx context.Context, cfg relayInjectorConfig) {
 		if err := updateAuthJSONForRelay(cfg.AuthJSONPath); err != nil {
 			lg.Warn("relay injector: failed to update auth.json", zap.Error(err))
 			relayInjectorOutcomes.WithLabelValues("auth_write_failed").Inc()
+			relayFreeModelsState.Store(2)
 			return
 		}
 		lg.Info("relay injector: updated auth.json with opencode-relay entry")

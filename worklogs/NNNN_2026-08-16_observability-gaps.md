@@ -102,3 +102,42 @@
   close-out (signals claimed before any PR existed) corrected in the
   same comment — per-workspace state landed in #906, not #903.
 - Chart test pins WatchFailing.
+
+---
+
+## Round 4 (review on #906): the four carried code blockers
+
+- **F1 — dead WatchFailing expression**: the join aggregated the
+  UNLABELED watched-count gauge by (workspace_id) — producing a single
+  {workspace_id=""} series that can never match labeled RHS series; dead
+  a second way via F2. Fixed per the reviewer's simpler construction:
+  connected series is initialized AT ARM TIME (F2) and deleted on
+  StopWatching, so a PRESENT series implies armed — the alert is now
+  `connected == 0` guarded by unlabeled `and on() (max(watched) > 0)`.
+- **F2 — never-connected emitted no series**: `setTrackerConnected(id,
+  false)` at arm time in EnsureWatching; pinned by
+  TestTrackerConnectedGauge_InitializedAtArmTime (series exists at 0
+  immediately; deleted on stop).
+- **F3 — outcome counter double-tick**: the fetch-deadline terminal
+  incremented BOTH fetch_failed and no_free_models (one event, two
+  ticks). The catalog-empty terminal now also guards on `fetchErr ==
+  nil` — fetch ERRORS are fetch_failed; an empty catalog on a clean
+  fetch is no_free_models. (The round-3 fix script for this aborted
+  mid-file before writing — the duplicate survived two rounds; this
+  round's scripts assert on write.)
+- **F4 — statusz "unknown" on terminal paths**: all four additional
+  terminal-failure sites (catalog-empty, unhealthy_timeout,
+  config_write_failed, auth_write_failed) now Store(2).
+- **Injector terminal-path tests** (real startRelayInjector against
+  httptest /provider fakes): fetch-failed (exactly one tick, no
+  conflation), catalog-empty (state 2, distinct outcome), success
+  (state 1). Counter assertions are cross-test-safe deltas.
+- **promtool rule tests** (the "would have caught it twice" ask):
+  helm/tests/alerts_promtool_test.yaml + TestPromtoolRules renders the
+  chart, extracts the PrometheusRule, and executes the REAL expressions
+  — WatchFailing fires (ws-blind), connected==1 doesn't, absent series
+  doesn't, WatchesZero empty-fleet guard, UpstreamSilent
+  connected-guard both ways, RelayInjectorDegraded on both outcomes.
+  CI installs promtool (pinned v3.4.1) in both test jobs. The harness
+  proved itself during development (caught the job-label mismatch and
+  the annotation-exactness requirement).

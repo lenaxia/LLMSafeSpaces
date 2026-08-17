@@ -1129,3 +1129,33 @@ func TestTrackerConnectedGauge_SeriesDeletedOnStop(t *testing.T) {
 	}
 	_ = tr
 }
+
+// TestTrackerConnectedGauge_InitializedAtArmTime (#906 review F2): a
+// watch that has NEVER connected must already emit a connected series
+// reading 0 — absent ≠ 0 in PromQL, and the never-connected class was
+// the incident's alert-invisible shape. With init-at-arm + deletion on
+// StopWatching, a PRESENT series implies armed.
+func TestTrackerConnectedGauge_InitializedAtArmTime(t *testing.T) {
+	tr := NewTracker(nil, &testLogger{}, nil)
+	tr.EnsureWatching("ws-never-conn")
+
+	require.Eventually(t, func() bool {
+		return promtestutil.ToFloat64(trackerConnectedGauge.WithLabelValues("ws-never-conn")) == 0
+	}, 2*time.Second, 10*time.Millisecond,
+		"the connected series must exist at 0 the moment the watch is armed — before any connection attempt")
+
+	// StopWatching removes it again (armed-implies-present invariant).
+	tr.StopWatching("ws-never-conn")
+	families, err := prometheus.DefaultGatherer.Gather()
+	require.NoError(t, err)
+	for _, f := range families {
+		if f.GetName() == "llmsafespaces_sse_tracker_connected" {
+			for _, m := range f.GetMetric() {
+				for _, l := range m.GetLabel() {
+					require.NotEqual(t, "ws-never-conn", l.GetValue(),
+						"stopped watch must delete its series")
+				}
+			}
+		}
+	}
+}

@@ -301,6 +301,14 @@ func (t *Tracker) EnsureWatching(workspaceID string) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.subscriptions[workspaceID] = cancel
 	watchedCount.Add(1)
+	// #906 review F2: initialize the per-workspace connected series at
+	// arm time. A watch failing since arm (empty podIP, refused dial —
+	// connectAndRead returns before any connection) otherwise emits NO
+	// series, and absent ≠ 0 in PromQL: the never-connected incident
+	// class was alert-invisible. With init-at-arm + series deletion on
+	// StopWatching, a PRESENT connected series implies armed, and
+	// connected == 0 is the complete failing-watch signal.
+	setTrackerConnected(workspaceID, false)
 	t.Logger.Info("SSE watch armed", "workspaceID", workspaceID)
 
 	wg := &sync.WaitGroup{}
