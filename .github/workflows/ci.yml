@@ -584,10 +584,10 @@ jobs:
       # scenarios that never touch workspace endpoints.
       #
       # No controller is deployed — and only the controller writes
-      # .status.phase, so workspace CRs here have an EMPTY phase field
-      # (never "Pending"; discovered in #905 round 4)
-      # (no reconciler to advance them), but all CRUD operations succeed,
-      # which is all the canaries assert on. Avoids the full Helm install
+      # .status.phase — so workspace CRs here have an EMPTY phase field
+      # (never "Pending"; discovered in #905 round 4) and no reconciler
+      # to advance them. All CRUD operations still succeed, which is all
+      # the canaries assert on. Avoids the full Helm install
       # + cert-manager + image load that e2e-nightly does (~10min setup);
       # this adds ~30s.
       - name: Create kind cluster and install CRDs
@@ -606,8 +606,10 @@ jobs:
 
       # Start the API server in the background.
       # The kubeconfig now points at the real kind cluster — workspace
-      # CRUD scenarios create real Workspace CRDs (in Pending phase,
-      # since no controller runs).
+      # CRUD scenarios create real Workspace CRs. No controller runs
+      # here and only the controller writes .status.phase, so the phase
+      # field stays EMPTY (never "Pending"); CANARY_NO_CONTROLLER=1 (job
+      # env) is the canary's honest signal for this.
       - name: Start API server
         working-directory: ${{ github.workspace }}
         env:

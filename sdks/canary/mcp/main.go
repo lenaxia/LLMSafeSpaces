@@ -508,14 +508,20 @@ func runDeepWorkspace(ctx context.Context, r *Runner, client *stdioClient, apiUR
 	}
 	defer func() { _ = sdkClient.Workspaces.Delete(context.Background(), wsID) }()
 
+	// Controller-independent negatives ALWAYS run (handler validation —
+	// the runCredNegatives pattern from round 2): schema-required args
+	// and nonexistent-ID errors need no controller and no Active phase.
+	runWsNegatives(r, client)
+
 	// CANARY_NO_CONTROLLER=1: the CI environment declares it runs no
 	// workspace controller. Only the controller writes .status.phase
 	// (controller phase_active.go), so without one the phase is EMPTY —
 	// never "Pending" — and can never become Active. Environment-provided
-	// truth, no phase inference: with the flag set, the Active-gated tail
-	// (activate/stop) is skipped after creation verifies. In an
-	// environment WITH a controller, no flag: WaitActive must succeed
-	// (#905 review — a stuck workspace there is real drift and fails).
+	// truth, no phase inference: with the flag set, only the
+	// Active-gated POSITIVES (wait-active/activate/stop) are skipped —
+	// the negatives above already ran. In an environment WITH a
+	// controller, no flag: WaitActive must succeed (#905 review — a
+	// stuck workspace there is real drift and fails).
 	if os.Getenv("CANARY_NO_CONTROLLER") == "1" {
 		r.ok("ws-wait-active: skipped (CANARY_NO_CONTROLLER=1 — no controller writes .status.phase in CI)")
 		return
@@ -544,19 +550,23 @@ func runDeepWorkspace(ctx context.Context, r *Runner, client *stdioClient, apiUR
 		text4 := toolResultText(tr4)
 		r.assert(strings.Contains(text4, wsID), "ws-stop: contains workspace ID", text4[:min(len(text4), 200)])
 	}
+}
 
-	trN1, _ := client.callTool("workspace_create", map[string]any{})
-	if trN1 != nil {
+// runWsNegatives asserts the workspace tools' handler-level input
+// validation — controller-independent, so they run on EVERY environment
+// including CANARY_NO_CONTROLLER CI (#905 review rounds 5-7: the early
+// return previously made them unreachable there).
+func runWsNegatives(r *Runner, client *stdioClient) {
+	// N1: workspace_create missing required runtime+name (schema validation)
+	if trN1, _ := client.callTool("workspace_create", map[string]any{}); trN1 != nil {
 		r.assert(trN1.IsError, "ws-create-no-runtime: isError=true", "")
 	}
-
-	trN2, _ := client.callTool("workspace_activate", map[string]any{"workspace_id": "00000000-0000-0000-0000-000000009999"})
-	if trN2 != nil {
+	// N2: activate nonexistent
+	if trN2, _ := client.callTool("workspace_activate", map[string]any{"workspace_id": "00000000-0000-0000-0000-000000009999"}); trN2 != nil {
 		r.assert(trN2.IsError, "ws-activate-nonexistent: isError=true", "")
 	}
-
-	trN3, _ := client.callTool("workspace_stop", map[string]any{"workspace_id": "00000000-0000-0000-0000-000000009999"})
-	if trN3 != nil {
+	// N3: stop nonexistent
+	if trN3, _ := client.callTool("workspace_stop", map[string]any{"workspace_id": "00000000-0000-0000-0000-000000009999"}); trN3 != nil {
 		r.assert(trN3.IsError, "ws-stop-nonexistent: isError=true", "")
 	}
 }

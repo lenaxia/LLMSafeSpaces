@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-16
 **Session:** Close #880 — SDK canary tools scenario pinned an obsolete contract (15 tools, three session_*_reply tools collapsed into run_resolve by US-65.7); the same canary run exposed two real MCP-surface bugs.
-**Status:** Complete (4 review rounds)
+**Status:** Complete (7 review rounds)
 
 ---
 
@@ -94,3 +94,26 @@
   TESTPLAN ×1) corrected at HEAD so the next reader cannot rebuild
   phase inference on them — the drift class #880 exists to close.
 - `cbed6ca2`: staticcheck S1011 lint fix (append spread).
+
+
+## Rounds 5-7 (reviews on #905)
+
+- Round 5 (`38fcd86c`): TESTPLAN row split, worklog floor 24, Tests Run
+  refresh — landed 2 of 3 comment fixes; the ci.yml 607-10 replace
+  silently no-op'd (targeted "CRs", file said "CRDs" — no assert).
+- Round 6-7 findings, ALL landed this round:
+  - **runWsNegatives extracted**: the three workspace-tool negatives
+    (N1 schema, N2/N3 nonexistent-ID) were unreachable under
+    CANARY_NO_CONTROLLER's early return. They now run BEFORE the flag
+    branch — every environment, exactly once. The skip comment's scope
+    claim corrected ("only the Active-gated positives are skipped").
+  - **The surviving falsified comment** (ci.yml "Start API server"
+    block) corrected — and this worklog's earlier claim "ci.yml ×2
+    corrected" was itself false at that HEAD (one replace had
+    no-op'd); recorded here rather than edited away.
+  - ci.yml 586-92 mangled double-parenthetical reworded.
+  - TESTPLAN D-MCP-WORKSPACE: CI note on N1-N3 (controller-independent,
+    always run) vs Active-gated positives.
+  - `118c6afd`: .gitignore /mcp dedupe (round-2 optional).
+- Root cause of the round-5 miss, stated plainly: string replaces
+  without asserts. Both this round's ci.yml edits assert.
