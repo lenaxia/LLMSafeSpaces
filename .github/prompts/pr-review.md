@@ -116,7 +116,11 @@ STYLE
 - No unnecessary complexity, dead code, or commented-out blocks?
 - Type safety: no map[string]interface{} for structured data, no untyped interface{}?
 
-Output format — post a PR review with this structure:
+Output format — submit this as a formal GitHub pull request review via `gh pr review`
+(never a plain PR comment, never a COMMENT-only review):
+
+**Commit reviewed:** `<the head SHA this review was triggered for — copy it exactly from the prompt>`
+
 ## Code Review
 
 ### Summary
@@ -165,8 +169,11 @@ If any issue is PARTIALLY ADDRESSED or NOT ADDRESSED, this is a hard REQUEST CHA
 [findings or ✓ No issues]
 
 ### Verdict
-[APPROVE / REQUEST CHANGES / COMMENT] — [one sentence reason]
+[APPROVE / REQUEST CHANGES] — [one sentence reason]
 NOTE: REQUEST CHANGES is mandatory if any required test level (unit / integration / e2e
 happy / e2e unhappy) is missing or thin for the changed behaviour, OR if this is a bug-fix
 PR without a reproducing regression test, OR if any cited issue is partially or not
-addressed. Do not APPROVE in those cases regardless of correctness.
+addressed. Do not APPROVE in those cases regardless of correctness. APPROVE only when
+there are zero findings. The verdict MUST be submitted as a formal review (APPROVE or
+REQUEST_CHANGES via `gh pr review`) against the head SHA recorded above — never as a
+plain PR comment and never as a COMMENT-only review.

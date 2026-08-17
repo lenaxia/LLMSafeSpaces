@@ -4,6 +4,7 @@ Rules:
 1. This command runs on a PR thread. Identify the current PR (e.g. `gh pr view`).
 2. **Verify approval before merging — no exceptions:**
    - Check the latest automated review state. The most recent review from the AI reviewer MUST be **APPROVE**. If the latest review is `REQUEST_CHANGES`, `COMMENT` with open findings, or there is no review yet, DO NOT merge.
+   - **The approving review must be for the CURRENT head.** Fetch the PR's head SHA (`gh pr view <N> --json headRefOid`) and the latest bot APPROVE's `commit_id` (`gh api repos/{owner}/{repo}/pulls/<N>/reviews` — or the `**Commit reviewed:**` line in the review body). If they differ, the approval is stale: a commit was pushed after the review. DO NOT merge — request a re-review of the new head and stop.
    - If not approved: post a comment stating the current review state and what remains (e.g. "Latest review is REQUEST_CHANGES — resolve the open findings and re-review before /merge"). Stop. Do not merge.
 3. Confirm the PR branch is not `main` and that all required CI checks are green (or note any non-blocking skipped checks). If a required check is failing, DO NOT merge — report it and stop.
 4. Merge with the **squash** method: `gh pr merge <N> --squash --delete-branch` (delete the remote branch to keep the repo tidy, matching the repo's squash-merge convention).
