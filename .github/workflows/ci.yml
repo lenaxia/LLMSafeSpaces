@@ -505,6 +505,11 @@ jobs:
     name: SDK Integration (live API canaries)
     runs-on: ubuntu-latest
     needs: [sdk-contract]
+    # #905: environment truth consumed by the canary — no workspace
+    # controller runs in this job, so Active-gated tails skip honestly
+    # (CANARY_NO_CONTROLLER) instead of inferring from phase.
+    env:
+      CANARY_NO_CONTROLLER: "1"
     # Non-blocking while the workspace-creating scenarios (S-WS-CRUD,
     # S-WS-STATUS, S-WS-QUOTA, S-OWNERSHIP) are being fixed to run against
     # the kind cluster. Once all ci:fast scenarios pass consistently,
@@ -578,9 +583,11 @@ jobs:
       # (pointing at a non-existent server on :19999) only worked for
       # scenarios that never touch workspace endpoints.
       #
-      # No controller is deployed — workspaces stay in Pending phase
-      # (no reconciler to advance them), but all CRUD operations succeed,
-      # which is all the canaries assert on. Avoids the full Helm install
+      # No controller is deployed — and only the controller writes
+      # .status.phase — so workspace CRs here have an EMPTY phase field
+      # (never "Pending"; discovered in #905 round 4) and no reconciler
+      # to advance them. All CRUD operations still succeed, which is all
+      # the canaries assert on. Avoids the full Helm install
       # + cert-manager + image load that e2e-nightly does (~10min setup);
       # this adds ~30s.
       - name: Create kind cluster and install CRDs
@@ -599,8 +606,10 @@ jobs:
 
       # Start the API server in the background.
       # The kubeconfig now points at the real kind cluster — workspace
-      # CRUD scenarios create real Workspace CRDs (in Pending phase,
-      # since no controller runs).
+      # CRUD scenarios create real Workspace CRs. No controller runs
+      # here and only the controller writes .status.phase, so the phase
+      # field stays EMPTY (never "Pending"); CANARY_NO_CONTROLLER=1 (job
+      # env) is the canary's honest signal for this.
       - name: Start API server
         working-directory: ${{ github.workspace }}
         env:
@@ -634,6 +643,13 @@ jobs:
             fi
             sleep 1
           done
+
+      # #880/#905: the canary is a separate Go module — root go test
+      # ./... never covers it. Its unit tests (tool-contract checks)
+      # run here and gate the job.
+      - name: Canary module unit tests
+        working-directory: sdks/canary/mcp
+        run: go test ./... -count=1
 
       # Seed test accounts
       - name: Seed canary test accounts

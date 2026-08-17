@@ -290,17 +290,6 @@ func (c *stdioClient) close() {
 // ── Scenario runners ───────────────────────────────────────────────────────
 
 func runMCPTools(ctx context.Context, r *Runner, client *stdioClient) {
-	const expectedCount = 15
-	expectedTools := []string{
-		"workspace_create", "workspace_activate", "workspace_stop",
-		"workspace_refresh_compute",
-		"session_create", "session_message", "session_history",
-		"session_question_reply", "session_question_reject",
-		"session_permission_reply",
-		"credential_create", "credential_list", "credential_delete",
-		"model_list", "model_set",
-	}
-
 	tools, err := client.listTools()
 	if err != nil {
 		r.fail("tools/list: no error", err.Error())
@@ -308,19 +297,8 @@ func runMCPTools(ctx context.Context, r *Runner, client *stdioClient) {
 	}
 	r.ok("tools/list: no error")
 
-	// P14: exact count
-	r.assert(len(tools) == expectedCount, "tools: exact count",
-		fmt.Sprintf("expected %d, got %d", expectedCount, len(tools)))
-
-	// P1–P11: each expected tool present
-	toolMap := make(map[string]map[string]any, len(tools))
-	for _, t := range tools {
-		name, _ := t["name"].(string)
-		toolMap[name] = t
-	}
-	for _, name := range expectedTools {
-		_, found := toolMap[name]
-		r.assert(found, "tool-present: "+name, "")
+	for _, failure := range checkToolContract(tools) {
+		r.fail(failure.name, failure.detail)
 	}
 
 	// P12: non-empty description
@@ -429,7 +407,24 @@ func runMCPCredCRUD(ctx context.Context, r *Runner, client *stdioClient) {
 		r.fail("credential_create: no rpc error", err.Error())
 		return
 	}
-	r.assert(!tr.IsError, "credential_create: isError=false", toolResultText(tr))
+	// The canary authenticates with an API key; credential writes require
+	// the per-session DEK that only an interactive login unlocks
+	// (ErrDEKUnavailable, 403 "encryption key not available;
+	// re-authenticate"). That is the documented auth architecture, not
+	// contract drift — assert the specific shape and skip ONLY the
+	// DEK-gated CRUD positives. The handler-level input-validation
+	// negatives (N1–N4, below) need no DEK and always run (#905 review).
+	dekGated := false
+	if tr.IsError && strings.Contains(toolResultText(tr), "encryption key not available") {
+		r.ok("credential_create: dek_unavailable (API-key auth — expected, CRUD skipped)")
+		dekGated = true
+	} else {
+		r.assert(!tr.IsError, "credential_create: isError=false", toolResultText(tr))
+	}
+	if dekGated {
+		runCredNegatives(r, client)
+		return
+	}
 
 	// Extract credential ID from result
 	text := toolResultText(tr)
@@ -463,27 +458,28 @@ func runMCPCredCRUD(ctx context.Context, r *Runner, client *stdioClient) {
 		}
 	}
 
+	runCredNegatives(r, client)
+}
+
+// runCredNegatives asserts the credential tools' handler-level input
+// validation — DEK-independent, so they run on EVERY auth shape
+// including API-key canaries (#905 review: the DEK skip must not bypass
+// them).
+func runCredNegatives(r *Runner, client *stdioClient) {
 	// N1: missing kind
-	trN1, _ := client.callTool("credential_create", map[string]any{"slug": "x", "api_key": "sk-x"})
-	if trN1 != nil {
+	if trN1, _ := client.callTool("credential_create", map[string]any{"slug": "x", "api_key": "sk-x"}); trN1 != nil {
 		r.assert(trN1.IsError, "cred_create-missing-kind: isError=true", "")
 	}
-
 	// N2: missing slug
-	trN1b, _ := client.callTool("credential_create", map[string]any{"kind": "anthropic", "api_key": "sk-x"})
-	if trN1b != nil {
+	if trN1b, _ := client.callTool("credential_create", map[string]any{"kind": "anthropic", "api_key": "sk-x"}); trN1b != nil {
 		r.assert(trN1b.IsError, "cred_create-missing-slug: isError=true", "")
 	}
-
 	// N3: missing api_key
-	trN2, _ := client.callTool("credential_create", map[string]any{"kind": "anthropic", "slug": "x"})
-	if trN2 != nil {
+	if trN2, _ := client.callTool("credential_create", map[string]any{"kind": "anthropic", "slug": "x"}); trN2 != nil {
 		r.assert(trN2.IsError, "cred_create-missing-key: isError=true", "")
 	}
-
 	// N4: delete nonexistent
-	trN4, _ := client.callTool("credential_delete", map[string]any{"credential_id": "00000000-0000-0000-0000-000000000099"})
-	if trN4 != nil {
+	if trN4, _ := client.callTool("credential_delete", map[string]any{"credential_id": "00000000-0000-0000-0000-000000000099"}); trN4 != nil {
 		r.assert(trN4.IsError, "cred_delete-nonexistent: isError=true", "")
 	}
 }
@@ -491,7 +487,10 @@ func runMCPCredCRUD(ctx context.Context, r *Runner, client *stdioClient) {
 func runDeepWorkspace(ctx context.Context, r *Runner, client *stdioClient, apiURL, apiKey string) {
 	sdkClient := llm.New(apiURL, llm.WithAPIKey(apiKey), llm.WithTimeout(60*time.Second))
 
-	tr, err := client.callTool("workspace_create", map[string]any{"runtime": "base"})
+	tr, err := client.callTool("workspace_create", map[string]any{
+		"runtime": "base",
+		"name":    "canary-mcp-deep",
+	})
 	if err != nil {
 		r.fail("ws-create: call failed", err.Error())
 		return
@@ -509,11 +508,30 @@ func runDeepWorkspace(ctx context.Context, r *Runner, client *stdioClient, apiUR
 	}
 	defer func() { _ = sdkClient.Workspaces.Delete(context.Background(), wsID) }()
 
+	// Controller-independent negatives ALWAYS run (handler validation —
+	// the runCredNegatives pattern from round 2): schema-required args
+	// and nonexistent-ID errors need no controller and no Active phase.
+	runWsNegatives(r, client)
+
+	// CANARY_NO_CONTROLLER=1: the CI environment declares it runs no
+	// workspace controller. Only the controller writes .status.phase
+	// (controller phase_active.go), so without one the phase is EMPTY —
+	// never "Pending" — and can never become Active. Environment-provided
+	// truth, no phase inference: with the flag set, only the
+	// Active-gated POSITIVES (wait-active/activate/stop) are skipped —
+	// the negatives above already ran. In an environment WITH a
+	// controller, no flag: WaitActive must succeed (#905 review — a
+	// stuck workspace there is real drift and fails).
+	if os.Getenv("CANARY_NO_CONTROLLER") == "1" {
+		r.ok("ws-wait-active: skipped (CANARY_NO_CONTROLLER=1 — no controller writes .status.phase in CI)")
+		return
+	}
 	phase := canary.WaitActive(ctx, sdkClient, wsID)
 	r.assert(phase == "Active", "ws-wait-active", fmt.Sprintf("got %q", phase))
 	if phase != "Active" {
 		return
 	}
+	r.ok("ws-wait-active")
 
 	tr3, err3 := client.callTool("workspace_activate", map[string]any{"workspace_id": wsID})
 	if err3 != nil {
@@ -532,19 +550,23 @@ func runDeepWorkspace(ctx context.Context, r *Runner, client *stdioClient, apiUR
 		text4 := toolResultText(tr4)
 		r.assert(strings.Contains(text4, wsID), "ws-stop: contains workspace ID", text4[:min(len(text4), 200)])
 	}
+}
 
-	trN1, _ := client.callTool("workspace_create", map[string]any{})
-	if trN1 != nil {
+// runWsNegatives asserts the workspace tools' handler-level input
+// validation — controller-independent, so they run on EVERY environment
+// including CANARY_NO_CONTROLLER CI (#905 review rounds 5-7: the early
+// return previously made them unreachable there).
+func runWsNegatives(r *Runner, client *stdioClient) {
+	// N1: workspace_create missing required runtime+name (schema validation)
+	if trN1, _ := client.callTool("workspace_create", map[string]any{}); trN1 != nil {
 		r.assert(trN1.IsError, "ws-create-no-runtime: isError=true", "")
 	}
-
-	trN2, _ := client.callTool("workspace_activate", map[string]any{"workspace_id": "00000000-0000-0000-0000-000000009999"})
-	if trN2 != nil {
+	// N2: activate nonexistent
+	if trN2, _ := client.callTool("workspace_activate", map[string]any{"workspace_id": "00000000-0000-0000-0000-000000009999"}); trN2 != nil {
 		r.assert(trN2.IsError, "ws-activate-nonexistent: isError=true", "")
 	}
-
-	trN3, _ := client.callTool("workspace_stop", map[string]any{"workspace_id": "00000000-0000-0000-0000-000000009999"})
-	if trN3 != nil {
+	// N3: stop nonexistent
+	if trN3, _ := client.callTool("workspace_stop", map[string]any{"workspace_id": "00000000-0000-0000-0000-000000009999"}); trN3 != nil {
 		r.assert(trN3.IsError, "ws-stop-nonexistent: isError=true", "")
 	}
 }
@@ -937,4 +959,53 @@ func rawHTTPDo(ctx context.Context, method, url, apiKey string, body []byte) (in
 	defer resp.Body.Close()
 	b, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	return resp.StatusCode, b, err
+}
+
+// contractFailure is one tools/list contract violation.
+type contractFailure struct{ name, detail string }
+
+// canaryExpectedTools is the stable NAMED subset of the MCP tool
+// contract: every base tool (including run_resolve — US-65.7 collapsed
+// the three session_*_reply tools into it) plus a representative slice
+// of the Epic-64 workflow/trigger surface. Pinned against the real
+// registry by pkg/repolint (TestCanary_MCPTools_Parity) so this list
+// cannot silently drift from the server again (#880).
+var canaryExpectedTools = []string{
+	"workspace_create", "workspace_activate", "workspace_stop",
+	"workspace_refresh_compute",
+	"session_create", "session_message", "session_history",
+	"run_resolve",
+	"credential_create", "credential_list", "credential_delete",
+	"model_list", "model_set",
+	"workflow_create", "workflow_list", "workflow_run",
+	"trigger_create", "trigger_list",
+}
+
+// canaryToolFloor is the minimum tool count. Equals the full current
+// registry (24) so ANY net removal fails; additive changes pass without
+// canary edits (the #880 fix direction: no exact-count pinning).
+const canaryToolFloor = 24
+
+// checkToolContract validates a tools/list response: the named subset is
+// present and the count is at or above the floor. Extracted for unit
+// tests (sdks/canary/mcp/tools_test.go).
+func checkToolContract(tools []map[string]any) []contractFailure {
+	var failures []contractFailure
+	if len(tools) < canaryToolFloor {
+		failures = append(failures, contractFailure{
+			"tools: min count",
+			fmt.Sprintf("expected >= %d, got %d", canaryToolFloor, len(tools)),
+		})
+	}
+	toolMap := make(map[string]bool, len(tools))
+	for _, t := range tools {
+		name, _ := t["name"].(string)
+		toolMap[name] = true
+	}
+	for _, name := range canaryExpectedTools {
+		if !toolMap[name] {
+			failures = append(failures, contractFailure{"tool-present: " + name, ""})
+		}
+	}
+	return failures
 }
