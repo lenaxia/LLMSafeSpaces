@@ -262,18 +262,23 @@ func (a *Adapter) DeleteSession(ctx context.Context, userID, workspaceID, sessio
 //     field so the session default applies: bare flat IDs (opencode
 //     parses them as provider-with-empty-model —
 //     "ProviderModelNotFoundError: <bare>/."), and empty-tail forms
-//     ("a/" — the incident's own parse shape).
+//     ("a/", "a/b/" — the incident's own parse shape; the trailing
+//     slash leaves a degenerate empty modelID segment after any split).
 func modelOverride(m *session.ModelRef) (modelID, providerID string, ok bool) {
 	if m == nil || m.ID == "" {
 		return "", "", false
 	}
+	if strings.HasSuffix(m.ID, "/") {
+		// Empty-tail forms are unexpressible on EVERY branch: "prov/"
+		// (matching provider) strips to "", "x/" with a non-matching
+		// provider keeps the degenerate empty modelID, and the
+		// provider-less split of "a/b/" yields modelID "b/". All must be
+		// omitted so the session default applies.
+		return "", "", false
+	}
 	if m.Provider != "" {
 		tail := strings.TrimPrefix(m.ID, m.Provider+"/")
-		// Empty-tail forms are unexpressible regardless of whether the
-		// provider matches: "prov/" (matching) strips to "", and "x/" with
-		// a non-matching provider keeps the degenerate empty modelID. Both
-		// must be omitted so the session default applies.
-		if tail == "" || strings.HasSuffix(tail, "/") {
+		if tail == "" {
 			return "", "", false
 		}
 		return tail, m.Provider, true
@@ -281,7 +286,7 @@ func modelOverride(m *session.ModelRef) (modelID, providerID string, ok bool) {
 	if idx := strings.Index(m.ID, "/"); idx > 0 && idx < len(m.ID)-1 {
 		return m.ID[idx+1:], m.ID[:idx], true
 	}
-	return "", "", false // bare flat or empty tail
+	return "", "", false // bare flat
 }
 
 func (a *Adapter) Send(ctx context.Context, userID, workspaceID, sessionID, text string, opts session.SendOpts) (*session.Message, error) {

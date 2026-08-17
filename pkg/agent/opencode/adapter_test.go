@@ -1101,6 +1101,15 @@ func TestAdapter_Send_ModelReferenceForm(t *testing.T) {
 		assert.False(t, present, "an empty-tail ID is unexpressible")
 	})
 
+	t.Run("provider-less multi-segment empty tail is omitted", func(t *testing.T) {
+		// "a/b/" splits at the first "/" into modelID "b/" — a degenerate
+		// empty tail again. The empty-tail contract must hold after any
+		// split, not just for the single-segment "a/" shape.
+		sent := sendAndInspect(t, session.SendOpts{Model: &session.ModelRef{ID: "thekaocloud/glm/"}})
+		_, present := sent["model"]
+		assert.False(t, present, "a trailing slash leaves a degenerate empty modelID after the split — omit")
+	})
+
 	t.Run("empty tail with matching provider is omitted", func(t *testing.T) {
 		sent := sendAndInspect(t, session.SendOpts{Model: &session.ModelRef{ID: "thekaocloud/", Provider: "thekaocloud"}})
 		_, present := sent["model"]
