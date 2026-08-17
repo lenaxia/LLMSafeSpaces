@@ -2926,8 +2926,8 @@
 <h2 id="pod-security-context">Pod security context<a class="headerlink" href="#pod-security-context" title="Permanent link">&para;</a></h2>
 <p>Every chart-shipped pod (API, controller, MCP, frontend) and every workspace pod complies with the Kubernetes <code>restricted</code> Pod Security profile. The chart applies PSA labels to the namespace at all three levels (enforce, audit, warn):</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">namespace</span><span class="p">:</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">podSecurityEnforce</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;restricted&quot;</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span><span class="nt">podSecurityVersion</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;latest&quot;</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">podSecurityEnforce</span><span class="p">:</span><span class="w"> </span><span class="s">"restricted"</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span><span class="nt">podSecurityVersion</span><span class="p">:</span><span class="w"> </span><span class="s">"latest"</span>
 </span></code></pre></div>
 <p>The container security context for workspace pods (and all chart pods):</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">podSecurityContext</span><span class="p">:</span>
@@ -2969,7 +2969,7 @@
 <p>Then enable in the chart:</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">gvisor</span><span class="p">:</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="nt">defaultRuntimeClass</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;gvisor&quot;</span><span class="w">   </span><span class="c1"># change if you have a custom class</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="nt">defaultRuntimeClass</span><span class="p">:</span><span class="w"> </span><span class="s">"gvisor"</span><span class="w">   </span><span class="c1"># change if you have a custom class</span>
 </span></code></pre></div>
 <p>This creates a <code>RuntimeClass</code> named <code>gvisor</code> (handler: <code>runsc</code>) and sets <code>--default-runtime-class=gvisor</code> on the controller. Workspace pods then run under gVisor by default.</p>
 <div class="admonition tip">
@@ -2980,7 +2980,7 @@
 <p>Some workloads are gVisor-incompatible (e.g. <code>ptrace</code> debuggers). Individual workspaces can opt out via <code>spec.runtimeClass: "runc"</code>, but this is <strong>admin-gated</strong>: the workspace validating webhook rejects <code>spec.runtimeClass</code> (to any value, including the empty-string opt-out) unless the workspace object carries:</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">metadata</span><span class="p">:</span>
 </span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="nt">annotations</span><span class="p">:</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="nt">llmsafespaces.dev/allow-runtime-class-override</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;true&quot;</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">    </span><span class="nt">llmsafespaces.dev/allow-runtime-class-override</span><span class="p">:</span><span class="w"> </span><span class="s">"true"</span>
 </span></code></pre></div>
 <p>Operators apply that annotation via direct <code>kubectl</code> / cluster-admin RBAC. Tenant API users (without cluster RBAC) cannot. This keeps the gVisor default enforced for tenants while allowing operator exceptions.</p>
 <hr />
@@ -2999,12 +2999,12 @@
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nt">kms</span><span class="p">:</span>
 </span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="nt">aws</span><span class="p">:</span>
 </span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">    </span><span class="nt">region</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;us-east-1&quot;</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">    </span><span class="nt">credentialsSecret</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;aws-kms-creds&quot;</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">    </span><span class="nt">region</span><span class="p">:</span><span class="w"> </span><span class="s">"us-east-1"</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">    </span><span class="nt">credentialsSecret</span><span class="p">:</span><span class="w"> </span><span class="s">"aws-kms-creds"</span>
 </span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">    </span><span class="nt">keyArns</span><span class="p">:</span>
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="w">      </span><span class="nt">providerCredentials</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;arn:aws:kms:...&quot;</span>
-</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="w">      </span><span class="nt">orgCredentials</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;arn:aws:kms:...&quot;</span>
-</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="w">      </span><span class="nt">masterKek</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;arn:aws:kms:...&quot;</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="w">      </span><span class="nt">providerCredentials</span><span class="p">:</span><span class="w"> </span><span class="s">"arn:aws:kms:..."</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="w">      </span><span class="nt">orgCredentials</span><span class="p">:</span><span class="w"> </span><span class="s">"arn:aws:kms:..."</span>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="w">      </span><span class="nt">masterKek</span><span class="p">:</span><span class="w"> </span><span class="s">"arn:aws:kms:..."</span>
 </span></code></pre></div>
 <p>Three KMS keys are required (per-purpose domain separation). The KEK never leaves the cloud service — an API-pod RCE can call <code>Decrypt</code> while running but cannot exfiltrate the key for offline use after eviction. The master-secret file mount is <strong>retained</strong> under KMS to protect the Redis DEK cache (volatile, regenerable). Sustained KMS unavailability causes all KEK-dependent decrypts to fail simultaneously — use multi-region KMS keys for HA.</p>
 <h3 id="rotation-via-rotate-kek">Rotation via <code>rotate-kek</code><a class="headerlink" href="#rotation-via-rotate-kek" title="Permanent link">&para;</a></h3>
@@ -3077,8 +3077,8 @@
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nt">api</span><span class="p">:</span>
 </span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span><span class="nt">config</span><span class="p">:</span>
 </span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">    </span><span class="nt">auth</span><span class="p">:</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">      </span><span class="nt">jwtIssuer</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;llmsafespaces-prod-use1&quot;</span>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">      </span><span class="nt">jwtAudience</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;llmsafespaces-prod-use1&quot;</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">      </span><span class="nt">jwtIssuer</span><span class="p">:</span><span class="w"> </span><span class="s">"llmsafespaces-prod-use1"</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">      </span><span class="nt">jwtAudience</span><span class="p">:</span><span class="w"> </span><span class="s">"llmsafespaces-prod-use1"</span>
 </span></code></pre></div>
 <p>Set these when running multiple instances that should not accept each other's tokens.</p>
 <h3 id="rotating-the-jwt-secret">Rotating the JWT secret<a class="headerlink" href="#rotating-the-jwt-secret" title="Permanent link">&para;</a></h3>
@@ -3091,7 +3091,7 @@
 </span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="nt">config</span><span class="p">:</span>
 </span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">    </span><span class="nt">security</span><span class="p">:</span>
 </span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">      </span><span class="nt">allowedOrigins</span><span class="p">:</span>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;https://app.example.com&quot;</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"https://app.example.com"</span>
 </span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">      </span><span class="nt">allowCredentials</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
 </span></code></pre></div>
 <p>When credentials are needed (cross-origin frontend), list each origin explicitly — wildcards are rejected.</p>
@@ -3104,7 +3104,7 @@
 </ul>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="nt">terminal</span><span class="p">:</span>
 </span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span><span class="nt">allowedOrigins</span><span class="p">:</span>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;https://app.example.com&quot;</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"https://app.example.com"</span>
 </span></code></pre></div>
 <p>A single entry of <code>"*"</code> disables Origin checking entirely (the historical behavior) — use only if you understand the cross-site WebSocket hijacking risk.</p>
 <hr />
@@ -3118,7 +3118,7 @@
 </ul>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a><span class="nt">webhooks</span><span class="p">:</span>
 </span><span id="__span-9-2"><a id="__codelineno-9-2" name="__codelineno-9-2" href="#__codelineno-9-2"></a><span class="w">  </span><span class="nt">allowedImageRegistries</span><span class="p">:</span>
-</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;ghcr.io/lenaxia/&quot;</span>
+</span><span id="__span-9-3"><a id="__codelineno-9-3" name="__codelineno-9-3" href="#__codelineno-9-3"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"ghcr.io/lenaxia/"</span>
 </span><span id="__span-9-4"><a id="__codelineno-9-4" name="__codelineno-9-4" href="#__codelineno-9-4"></a><span class="w">  </span><span class="nt">allowedStorageClassNames</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[]</span>
 </span><span id="__span-9-5"><a id="__codelineno-9-5" name="__codelineno-9-5" href="#__codelineno-9-5"></a><span class="w">  </span><span class="nt">maxWorkspaceStorageGi</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">1024</span>
 </span><span id="__span-9-6"><a id="__codelineno-9-6" name="__codelineno-9-6" href="#__codelineno-9-6"></a><span class="w">  </span><span class="nt">maxWorkspaceCPUMillicores</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">16000</span>
@@ -3129,8 +3129,8 @@
 <h2 id="pod-security-admission">Pod Security Admission<a class="headerlink" href="#pod-security-admission" title="Permanent link">&para;</a></h2>
 <p>The chart applies Pod Security Admission labels to the release namespace at all three levels:</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nt">namespace</span><span class="p">:</span>
-</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="nt">podSecurityEnforce</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;restricted&quot;</span>
-</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">  </span><span class="nt">podSecurityVersion</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;latest&quot;</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="nt">podSecurityEnforce</span><span class="p">:</span><span class="w"> </span><span class="s">"restricted"</span>
+</span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a><span class="w">  </span><span class="nt">podSecurityVersion</span><span class="p">:</span><span class="w"> </span><span class="s">"latest"</span>
 </span></code></pre></div>
 <p>This enforces the <code>restricted</code> profile (G11). All chart-shipped pods comply. Workspace pods comply by construction (the controller generates the spec). Set <code>podSecurityEnforce: ""</code> to opt out — only if you have an equivalent control (Kyverno, OPA Gatekeeper).</p>
 <h3 id="kyverno-deferred">Kyverno (deferred)<a class="headerlink" href="#kyverno-deferred" title="Permanent link">&para;</a></h3>
@@ -3154,8 +3154,8 @@
 <p>All release images (<code>ghcr.io/lenaxia/llmsafespaces/*</code>) are signed with <a href="https://github.com/sigstore/cosign">cosign</a> keyless signing via GitHub Actions OIDC. Signatures are recorded in the public <a href="https://github.com/sigstore/rekor">Rekor</a> transparency log.</p>
 <p><strong>Verify an image before deploying:</strong></p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>cosign<span class="w"> </span>verify<span class="w"> </span>ghcr.io/lenaxia/llmsafespaces/api:0.5.1<span class="w"> </span><span class="se">\</span>
-</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s2">&quot;https://github.com/lenaxia/LLMSafeSpaces&quot;</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">  </span>--certificate-oidc-issuer<span class="w"> </span><span class="s2">&quot;https://token.actions.githubusercontent.com&quot;</span>
+</span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a><span class="w">  </span>--certificate-identity-regexp<span class="w"> </span><span class="s2">"https://github.com/lenaxia/LLMSafeSpaces"</span><span class="w"> </span><span class="se">\</span>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a><span class="w">  </span>--certificate-oidc-issuer<span class="w"> </span><span class="s2">"https://token.actions.githubusercontent.com"</span>
 </span></code></pre></div>
 <p>If the command succeeds, the image was built by the project's release workflow. If it fails, the image may be tampered or from an untrusted source.</p>
 <h3 id="image-scanning">Image scanning<a class="headerlink" href="#image-scanning" title="Permanent link">&para;</a></h3>

@@ -2262,7 +2262,7 @@ the <code>runc</code> baseline. Median, not mean — a single slow PVC attach on
 noisy neighbor should not flip the decision. Compute the per-phase numbers
 with <code>awk</code>/<code>datamash</code>/a spreadsheet:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># Per-phase median per runtime.</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>datamash<span class="w"> </span>-H<span class="w"> </span>--delimiter<span class="w"> </span><span class="s1">$&#39;\t&#39;</span><span class="w"> </span>median:4<span class="w"> </span><span class="se">\</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>datamash<span class="w"> </span>-H<span class="w"> </span>--delimiter<span class="w"> </span><span class="s1">$'\t'</span><span class="w"> </span>median:4<span class="w"> </span><span class="se">\</span>
 </span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span>groupby<span class="w"> </span><span class="m">1</span>,2<span class="w"> </span>&lt;<span class="w"> </span>gvisor-bench.tsv
 </span></code></pre></div>
 <p>Output (illustrative — your numbers will differ):</p>

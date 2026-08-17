@@ -2654,7 +2654,7 @@
 </ul>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">metadata</span><span class="p">:</span>
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">labels</span><span class="p">:</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">llmsafespaces.dev/tenant</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;org-abc123&quot;</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">    </span><span class="nt">llmsafespaces.dev/tenant</span><span class="p">:</span><span class="w"> </span><span class="s">"org-abc123"</span>
 </span></code></pre></div>
 <p>This label is the key for:</p>
 <ul>
@@ -2665,8 +2665,8 @@
 <p>The CRD also carries structured ownership:</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">spec</span><span class="p">:</span>
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">owner</span><span class="p">:</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">userID</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;user-xyz&quot;</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">orgID</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;org-abc123&quot;</span><span class="w">   </span><span class="c1"># present for org-owned workspaces</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">userID</span><span class="p">:</span><span class="w"> </span><span class="s">"user-xyz"</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">orgID</span><span class="p">:</span><span class="w"> </span><span class="s">"org-abc123"</span><span class="w">   </span><span class="c1"># present for org-owned workspaces</span>
 </span></code></pre></div>
 <p>This is authoritative for API-level ownership checks (<code>WorkspaceAccessMiddleware</code>).</p>
 <hr />
@@ -2721,7 +2721,7 @@
 <h3 id="enabling">Enabling<a class="headerlink" href="#enabling" title="Permanent link">&para;</a></h3>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">gvisor</span><span class="p">:</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="nt">defaultRuntimeClass</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;gvisor&quot;</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="nt">defaultRuntimeClass</span><span class="p">:</span><span class="w"> </span><span class="s">"gvisor"</span>
 </span></code></pre></div>
 <p>This creates a <code>RuntimeClass</code> named <code>gvisor</code> and sets <code>--default-runtime-class=gvisor</code> on the controller. All workspace pods then run under gVisor by default. See <a href="../security/#gvisor-kernel-isolation">Security Hardening</a> for prerequisites and the admin-gated opt-out.</p>
 <h3 id="when-gvisor-is-essential">When gVisor is essential<a class="headerlink" href="#when-gvisor-is-essential" title="Permanent link">&para;</a></h3>
@@ -2810,9 +2810,9 @@
 <p>A workspace can be owned by a user or an org:</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nt">spec</span><span class="p">:</span>
 </span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="nt">owner</span><span class="p">:</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span><span class="nt">userID</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;user-xyz&quot;</span><span class="w">          </span><span class="c1"># personal workspace</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span><span class="nt">userID</span><span class="p">:</span><span class="w"> </span><span class="s">"user-xyz"</span><span class="w">          </span><span class="c1"># personal workspace</span>
 </span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">    </span><span class="c1"># OR</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">    </span><span class="nt">orgID</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;org-abc123&quot;</span><span class="w">          </span><span class="c1"># org workspace</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">    </span><span class="nt">orgID</span><span class="p">:</span><span class="w"> </span><span class="s">"org-abc123"</span><span class="w">          </span><span class="c1"># org workspace</span>
 </span></code></pre></div>
 <p>Org workspaces are accessible to org members per their role. The <code>WorkspaceAccessMiddleware</code> checks <code>WorkspaceOwner{UserID, OrgID}</code> against the caller's identity on every <code>:id</code> route.</p>
 <h3 id="org-isolation-within-a-shared-namespace">Org isolation within a shared namespace<a class="headerlink" href="#org-isolation-within-a-shared-namespace" title="Permanent link">&para;</a></h3>
@@ -2850,15 +2850,15 @@
 </tbody>
 </table>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nt">rbac</span><span class="p">:</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span><span class="nt">scope</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;namespace&quot;</span><span class="w">   </span><span class="c1"># default</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span><span class="nt">scope</span><span class="p">:</span><span class="w"> </span><span class="s">"namespace"</span><span class="w">   </span><span class="c1"># default</span>
 </span></code></pre></div>
 <p>Even in <code>cluster</code> mode, Pods, Secrets, PVCs, and NetworkPolicies remain namespace-scoped. Operators running multi-namespace deployments must per-namespace-bind the workspace Role themselves. The default flipped from <code>cluster</code> to <code>namespace</code> in worklog 0107 — pre-flip, the chart-default install gave the controller cluster-wide secrets+pods access, which was a blast-radius hazard for a single-namespace deployment.</p>
 <h3 id="combining-with-watchnamespaces">Combining with <code>watchNamespaces</code><a class="headerlink" href="#combining-with-watchnamespaces" title="Permanent link">&para;</a></h3>
 <p>For tightest isolation in a multi-namespace deployment, combine <code>rbac.scope=namespace</code> with explicit <code>controller.watchNamespaces</code>:</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nt">controller</span><span class="p">:</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="nt">watchNamespaces</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tenant-acme,tenant-globex&quot;</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="nt">watchNamespaces</span><span class="p">:</span><span class="w"> </span><span class="s">"tenant-acme,tenant-globex"</span>
 </span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="nt">rbac</span><span class="p">:</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span><span class="nt">scope</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;namespace&quot;</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span><span class="nt">scope</span><span class="p">:</span><span class="w"> </span><span class="s">"namespace"</span>
 </span></code></pre></div>
 <p>The controller's <code>--watch-namespaces</code> flag narrows what it actually reconciles, and <code>cache.DefaultNamespaces</code> further narrows the informer cache. This is defense-in-depth: even if the controller is granted cluster-wide RBAC elsewhere, it only watches the listed namespaces.</p>
 <hr />
@@ -2866,14 +2866,14 @@
 <p>A reference values file for a multi-tenant SaaS deployment:</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># Multi-tenant hardening</span>
 </span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="nt">namespace</span><span class="p">:</span>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span><span class="nt">podSecurityEnforce</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;restricted&quot;</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span><span class="nt">podSecurityEnforce</span><span class="p">:</span><span class="w"> </span><span class="s">"restricted"</span>
 </span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>
 </span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="nt">rbac</span><span class="p">:</span>
-</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">  </span><span class="nt">scope</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;namespace&quot;</span><span class="w">   </span><span class="c1"># single namespace; flip to cluster for multi-namespace</span>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">  </span><span class="nt">scope</span><span class="p">:</span><span class="w"> </span><span class="s">"namespace"</span><span class="w">   </span><span class="c1"># single namespace; flip to cluster for multi-namespace</span>
 </span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>
 </span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="nt">gvisor</span><span class="p">:</span>
 </span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="w">  </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w">                 </span><span class="c1"># REQUIRED for untrusted tenants</span>
-</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a><span class="w">  </span><span class="nt">defaultRuntimeClass</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;gvisor&quot;</span>
+</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a><span class="w">  </span><span class="nt">defaultRuntimeClass</span><span class="p">:</span><span class="w"> </span><span class="s">"gvisor"</span>
 </span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>
 </span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a><span class="nt">networkPolicy</span><span class="p">:</span>
 </span><span id="__span-8-13"><a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a><span class="w">  </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
@@ -2882,31 +2882,31 @@
 </span><span id="__span-8-16"><a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a>
 </span><span id="__span-8-17"><a id="__codelineno-8-17" name="__codelineno-8-17" href="#__codelineno-8-17"></a><span class="nt">webhooks</span><span class="p">:</span>
 </span><span id="__span-8-18"><a id="__codelineno-8-18" name="__codelineno-8-18" href="#__codelineno-8-18"></a><span class="w">  </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-</span><span id="__span-8-19"><a id="__codelineno-8-19" name="__codelineno-8-19" href="#__codelineno-8-19"></a><span class="w">  </span><span class="nt">failurePolicy</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Fail&quot;</span>
+</span><span id="__span-8-19"><a id="__codelineno-8-19" name="__codelineno-8-19" href="#__codelineno-8-19"></a><span class="w">  </span><span class="nt">failurePolicy</span><span class="p">:</span><span class="w"> </span><span class="s">"Fail"</span>
 </span><span id="__span-8-20"><a id="__codelineno-8-20" name="__codelineno-8-20" href="#__codelineno-8-20"></a><span class="w">  </span><span class="nt">tenantQuota</span><span class="p">:</span>
 </span><span id="__span-8-21"><a id="__codelineno-8-21" name="__codelineno-8-21" href="#__codelineno-8-21"></a><span class="w">    </span><span class="nt">maxWorkspacesPerTenant</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">15</span>
 </span><span id="__span-8-22"><a id="__codelineno-8-22" name="__codelineno-8-22" href="#__codelineno-8-22"></a><span class="w">    </span><span class="nt">maxCPUMillisPerTenant</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">8000</span>
 </span><span id="__span-8-23"><a id="__codelineno-8-23" name="__codelineno-8-23" href="#__codelineno-8-23"></a><span class="w">    </span><span class="nt">maxMemoryMiPerTenant</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">16384</span>
 </span><span id="__span-8-24"><a id="__codelineno-8-24" name="__codelineno-8-24" href="#__codelineno-8-24"></a><span class="w">  </span><span class="nt">allowedImageRegistries</span><span class="p">:</span>
-</span><span id="__span-8-25"><a id="__codelineno-8-25" name="__codelineno-8-25" href="#__codelineno-8-25"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;ghcr.io/lenaxia/&quot;</span>
+</span><span id="__span-8-25"><a id="__codelineno-8-25" name="__codelineno-8-25" href="#__codelineno-8-25"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"ghcr.io/lenaxia/"</span>
 </span><span id="__span-8-26"><a id="__codelineno-8-26" name="__codelineno-8-26" href="#__codelineno-8-26"></a><span class="w">  </span><span class="nt">maxWorkspaceStorageGi</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50</span><span class="w">      </span><span class="c1"># tighten from 1024 default</span>
 </span><span id="__span-8-27"><a id="__codelineno-8-27" name="__codelineno-8-27" href="#__codelineno-8-27"></a>
 </span><span id="__span-8-28"><a id="__codelineno-8-28" name="__codelineno-8-28" href="#__codelineno-8-28"></a><span class="nt">masterSecret</span><span class="p">:</span>
-</span><span id="__span-8-29"><a id="__codelineno-8-29" name="__codelineno-8-29" href="#__codelineno-8-29"></a><span class="w">  </span><span class="nt">deliveryMethod</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;file&quot;</span><span class="w">         </span><span class="c1"># default; never use env in multi-tenant</span>
+</span><span id="__span-8-29"><a id="__codelineno-8-29" name="__codelineno-8-29" href="#__codelineno-8-29"></a><span class="w">  </span><span class="nt">deliveryMethod</span><span class="p">:</span><span class="w"> </span><span class="s">"file"</span><span class="w">         </span><span class="c1"># default; never use env in multi-tenant</span>
 </span><span id="__span-8-30"><a id="__codelineno-8-30" name="__codelineno-8-30" href="#__codelineno-8-30"></a>
 </span><span id="__span-8-31"><a id="__codelineno-8-31" name="__codelineno-8-31" href="#__codelineno-8-31"></a><span class="nt">api</span><span class="p">:</span>
 </span><span id="__span-8-32"><a id="__codelineno-8-32" name="__codelineno-8-32" href="#__codelineno-8-32"></a><span class="w">  </span><span class="nt">config</span><span class="p">:</span>
 </span><span id="__span-8-33"><a id="__codelineno-8-33" name="__codelineno-8-33" href="#__codelineno-8-33"></a><span class="w">    </span><span class="nt">auth</span><span class="p">:</span>
-</span><span id="__span-8-34"><a id="__codelineno-8-34" name="__codelineno-8-34" href="#__codelineno-8-34"></a><span class="w">      </span><span class="nt">jwtIssuer</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;llmsafespaces-prod&quot;</span>
-</span><span id="__span-8-35"><a id="__codelineno-8-35" name="__codelineno-8-35" href="#__codelineno-8-35"></a><span class="w">      </span><span class="nt">jwtAudience</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;llmsafespaces-prod&quot;</span>
+</span><span id="__span-8-34"><a id="__codelineno-8-34" name="__codelineno-8-34" href="#__codelineno-8-34"></a><span class="w">      </span><span class="nt">jwtIssuer</span><span class="p">:</span><span class="w"> </span><span class="s">"llmsafespaces-prod"</span>
+</span><span id="__span-8-35"><a id="__codelineno-8-35" name="__codelineno-8-35" href="#__codelineno-8-35"></a><span class="w">      </span><span class="nt">jwtAudience</span><span class="p">:</span><span class="w"> </span><span class="s">"llmsafespaces-prod"</span>
 </span><span id="__span-8-36"><a id="__codelineno-8-36" name="__codelineno-8-36" href="#__codelineno-8-36"></a><span class="w">    </span><span class="nt">security</span><span class="p">:</span>
 </span><span id="__span-8-37"><a id="__codelineno-8-37" name="__codelineno-8-37" href="#__codelineno-8-37"></a><span class="w">      </span><span class="nt">allowedOrigins</span><span class="p">:</span>
-</span><span id="__span-8-38"><a id="__codelineno-8-38" name="__codelineno-8-38" href="#__codelineno-8-38"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;https://app.example.com&quot;</span>
+</span><span id="__span-8-38"><a id="__codelineno-8-38" name="__codelineno-8-38" href="#__codelineno-8-38"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">"https://app.example.com"</span>
 </span><span id="__span-8-39"><a id="__codelineno-8-39" name="__codelineno-8-39" href="#__codelineno-8-39"></a><span class="w">      </span><span class="nt">allowCredentials</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
 </span><span id="__span-8-40"><a id="__codelineno-8-40" name="__codelineno-8-40" href="#__codelineno-8-40"></a>
 </span><span id="__span-8-41"><a id="__codelineno-8-41" name="__codelineno-8-41" href="#__codelineno-8-41"></a><span class="nt">oidc</span><span class="p">:</span>
-</span><span id="__span-8-42"><a id="__codelineno-8-42" name="__codelineno-8-42" href="#__codelineno-8-42"></a><span class="w">  </span><span class="nt">redirectBaseUrl</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;https://app.example.com&quot;</span>
-</span><span id="__span-8-43"><a id="__codelineno-8-43" name="__codelineno-8-43" href="#__codelineno-8-43"></a><span class="w">  </span><span class="nt">frontendRedirectUrl</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;https://app.example.com&quot;</span>
+</span><span id="__span-8-42"><a id="__codelineno-8-42" name="__codelineno-8-42" href="#__codelineno-8-42"></a><span class="w">  </span><span class="nt">redirectBaseUrl</span><span class="p">:</span><span class="w"> </span><span class="s">"https://app.example.com"</span>
+</span><span id="__span-8-43"><a id="__codelineno-8-43" name="__codelineno-8-43" href="#__codelineno-8-43"></a><span class="w">  </span><span class="nt">frontendRedirectUrl</span><span class="p">:</span><span class="w"> </span><span class="s">"https://app.example.com"</span>
 </span></code></pre></div>
 <h3 id="what-this-configuration-enforces">What this configuration enforces<a class="headerlink" href="#what-this-configuration-enforces" title="Permanent link">&para;</a></h3>
 <ul>
@@ -2982,10 +2982,10 @@
 <h3 id="how-to-deploy-per-tenant-namespaces">How to deploy per-tenant namespaces<a class="headerlink" href="#how-to-deploy-per-tenant-namespaces" title="Permanent link">&para;</a></h3>
 <p>If you do need per-tenant namespaces, the controller supports watching specific namespaces:</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-10-1"><a id="__codelineno-10-1" name="__codelineno-10-1" href="#__codelineno-10-1"></a><span class="nt">controller</span><span class="p">:</span>
-</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="nt">watchNamespaces</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;tenant-acme,tenant-globex&quot;</span>
+</span><span id="__span-10-2"><a id="__codelineno-10-2" name="__codelineno-10-2" href="#__codelineno-10-2"></a><span class="w">  </span><span class="nt">watchNamespaces</span><span class="p">:</span><span class="w"> </span><span class="s">"tenant-acme,tenant-globex"</span>
 </span><span id="__span-10-3"><a id="__codelineno-10-3" name="__codelineno-10-3" href="#__codelineno-10-3"></a>
 </span><span id="__span-10-4"><a id="__codelineno-10-4" name="__codelineno-10-4" href="#__codelineno-10-4"></a><span class="nt">rbac</span><span class="p">:</span>
-</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">  </span><span class="nt">scope</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;namespace&quot;</span>
+</span><span id="__span-10-5"><a id="__codelineno-10-5" name="__codelineno-10-5" href="#__codelineno-10-5"></a><span class="w">  </span><span class="nt">scope</span><span class="p">:</span><span class="w"> </span><span class="s">"namespace"</span>
 </span></code></pre></div>
 <p>The controller's <code>--watch-namespaces</code> flag narrows what it reconciles. Combine with namespace-scoped RoleBindings for least-privilege. Resources in unwatched namespaces will not be reconciled.</p>
 <div class="admonition note">
