@@ -112,11 +112,19 @@ func validateAgentdDeliveryConfig(image, amd64, arm64 string) error {
 	if image == "" {
 		return fmt.Errorf("agentd delivery: --agentd-image is required when binary sha256 flags are set")
 	}
-	if amd64 == "" || arm64 == "" {
-		return fmt.Errorf("agentd delivery: both --agentd-binary-sha256-amd64 and --agentd-binary-sha256-arm64 are required when --agentd-image is set (the manifest list carries different binaries per arch)")
-	}
 	if !digestRe.MatchString(image) {
 		return fmt.Errorf("agentd delivery: --agentd-image must be digest-pinned (@sha256:<64 hex>), got %q — a floating tag defeats both reproducibility and the entrypoint verify contract", image)
+	}
+	// Hashes are OPTIONAL overrides (break-glass). The normal path is
+	// image-only: the per-arch binary sha256s are resolved from the
+	// image index annotations at startup (single Renovate-updatable
+	// coordinate — see agentd_pins.go). If ANY hash flag is given, both
+	// must be given and well-formed, so a manual pin is always complete.
+	if amd64 == "" && arm64 == "" {
+		return nil
+	}
+	if amd64 == "" || arm64 == "" {
+		return fmt.Errorf("agentd delivery: binary sha256 flags are per-image overrides — set BOTH --agentd-binary-sha256-amd64 and --agentd-binary-sha256-arm64, or neither (annotations resolve them)")
 	}
 	if !sha256HexRe.MatchString(amd64) || !sha256HexRe.MatchString(arm64) {
 		return fmt.Errorf("agentd delivery: binary sha256 flags must be exactly 64 hex characters")

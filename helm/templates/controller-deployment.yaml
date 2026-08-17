@@ -127,22 +127,32 @@ spec:
             {{- if .Values.gvisor.enabled }}
             - --default-runtime-class={{ .Values.gvisor.defaultRuntimeClass | default "gvisor" }}
             {{- end }}
-            {{- /* #863: agentd overlay delivery (image volume). Both
-                    directions of a half-configuration fail the render:
-                    image-without-hashes trips the required guards below;
-                    hashes-without-image trips the fail here (the with-gate
-                    below would otherwise silently skip ALL flags and the
-                    controller would run legacy while the operator believes
-                    overlay mode is on). The controller re-validates at
-                    startup. Empty-everything (legacy mode) renders
-                    nothing. */}}
+            {{- /* #863: agentd overlay delivery (image volume).
+                    The NORMAL pin is image-only (repo:tag@sha256:digest —
+                    the single Renovate-updatable coordinate; the binary
+                    sha256s resolve from the image index annotations at
+                    controller startup). binarySHA256* are optional
+                    per-image overrides: set BOTH or NEITHER — one-sided
+                    renders fail below. Hashes without an image fail
+                    (they are overrides). Empty-everything (legacy mode)
+                    renders nothing. */}}
             {{- if and (not .Values.controller.agentdDelivery.image) (or .Values.controller.agentdDelivery.binarySHA256Amd64 .Values.controller.agentdDelivery.binarySHA256Arm64) }}
-            {{- fail "controller.agentdDelivery.image is required when binarySHA256* values are set (half-configured agentdDelivery would silently run legacy mode)" }}
+            {{- fail "controller.agentdDelivery.image is required when binarySHA256* values are set (they are per-image overrides)" }}
+            {{- end }}
+            {{- if and .Values.controller.agentdDelivery.image (ne (len .Values.controller.agentdDelivery.binarySHA256Amd64) 0) (eq (len .Values.controller.agentdDelivery.binarySHA256Arm64) 0) }}
+            {{- fail "controller.agentdDelivery.binarySHA256*: set BOTH hashes or NEITHER (image-only resolves them from the index annotations)" }}
+            {{- end }}
+            {{- if and .Values.controller.agentdDelivery.image (ne (len .Values.controller.agentdDelivery.binarySHA256Arm64) 0) (eq (len .Values.controller.agentdDelivery.binarySHA256Amd64) 0) }}
+            {{- fail "controller.agentdDelivery.binarySHA256*: set BOTH hashes or NEITHER (image-only resolves them from the index annotations)" }}
             {{- end }}
             {{- with .Values.controller.agentdDelivery.image }}
             - --agentd-image={{ . }}
-            - --agentd-binary-sha256-amd64={{ $.Values.controller.agentdDelivery.binarySHA256Amd64 | required "controller.agentdDelivery.binarySHA256Amd64 is required when agentdDelivery.image is set (64-hex sha256 of the amd64 workspace-agentd binary)" }}
-            - --agentd-binary-sha256-arm64={{ $.Values.controller.agentdDelivery.binarySHA256Arm64 | required "controller.agentdDelivery.binarySHA256Arm64 is required when agentdDelivery.image is set (64-hex sha256 of the arm64 workspace-agentd binary)" }}
+            {{- with $.Values.controller.agentdDelivery.binarySHA256Amd64 }}
+            - --agentd-binary-sha256-amd64={{ . }}
+            {{- end }}
+            {{- with $.Values.controller.agentdDelivery.binarySHA256Arm64 }}
+            - --agentd-binary-sha256-arm64={{ . }}
+            {{- end }}
             {{- end }}
             {{- /* Epic 51 S51.2: per-tenant resource quotas. Only wired when
                     any limit is > 0; the webhook registration is conditional

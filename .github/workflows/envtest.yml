@@ -22,6 +22,7 @@ on:
       - 'pkg/apis/**'
       - 'helm/crds/**'
       - 'controller/internal/webhooks/**'
+      - 'controller/internal/workspace/**'
       - '.github/workflows/envtest.yml'
   schedule:
     # Nightly at 04:00 UTC — catches upstream envtest binary regressions.
@@ -72,3 +73,9 @@ jobs:
 
       - name: Run envtest webhook integration tests
         run: go test -timeout 120s -race -tags envtest ./controller/internal/webhooks/ -run TestEnvtest -v
+
+      # #863/#890: agentd pin resolution cluster path (ResolvePinsWithCache
+      # → cachedPinResolver → ConfigMap cache). Unit tests cannot cover it
+      # (mutation-proven, review round 3); this is the only CI execution.
+      - name: Run envtest agentd pin-resolution tests
+        run: go test -timeout 120s -race -tags envtest ./controller/internal/workspace/ -run TestEnvtestAgentdPins -v

@@ -220,13 +220,23 @@ controller:
   # Platform agentd fixes then reach every workspace on any pod
   # (re)creation without rebuilding the runtime base.
   #
-  # Both directions of a half-configuration fail the Helm render (image
-  # without hashes, or hashes without image); leave everything empty for
-  # legacy baked-in mode. The image MUST be digest-pinned
-  # (ghcr.io/lenaxia/llmsafespaces/agentd@sha256:<manifest digest>). The
-  # sha256 values are of the BINARY inside the image for that architecture
-  # (not the manifest digest) — CI prints them at build time
-  # (`docker build && docker manifest inspect`, or extract per-arch).
+  # RENOVATE-FRIENDLY PIN (the normal form): set ONLY the image, in the
+  # canonical tag+digest form dependency bots manage natively:
+  #
+  #   image: ghcr.io/lenaxia/llmsafespaces/agentd:dev@sha256:<manifest-digest>
+  #
+  # The per-arch BINARY sha256s are stamped onto the image index as OCI
+  # annotations by CI and resolved by the controller at startup (cached
+  # in the llmsafespaces-agentd-pins ConfigMap for registry outages) —
+  # they can never desync from the digest, so a Renovate digest bump is
+  # safe. Renovate: the helm-values manager updates this line in your
+  # values files automatically. Dependabot does not manage helm values /
+  # image digests — use the CI-printed values block (merge-agentd job)
+  # for manual updates in that case.
+  #
+  # binarySHA256* are optional per-image overrides (break-glass): set
+  # BOTH or NEITHER. Hashes without an image, or a one-sided pair, fail
+  # the Helm render. Leave everything empty for legacy baked-in mode.
   agentdDelivery:
     image: ""
     binarySHA256Amd64: ""

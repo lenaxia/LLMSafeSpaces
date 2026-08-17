@@ -285,25 +285,21 @@ func buildAgentd(t *testing.T) string {
 	modRoot := findModuleRoot(t)
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "workspace-agentd")
-	// CommandContext keeps all *os.Process access inside the stdlib's own
-	// synchronized watcher goroutine. The previous shape (Run in a
-	// goroutine + cmd.Process.Kill from this one on timeout) raced on
-	// cmd.Process between exec.Start's write and the parent's read —
-	// caught by -race in CI (worklog: #892 follow-up).
-	// 240s: the build itself is ~60-90s warm, but a cold module cache on
-	// a loaded CI runner (other suites building concurrently) has hit the
-	// old 120s budget — a timeout here fails the WHOLE e2e suite
-	// spuriously (seen: TestE2E_BootstrapMaterialize_* on #903's CI).
-	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
+	// 300s via CommandContext (#900 + PR #890 dispatch evidence): 120s
+	// was too tight on cold-cache runners (module downloads under -race);
+	// CommandContext kills the build on timeout instead of leaking it.
+	// Warm runs finish in ~10s.
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "go", "build", "-o", bin, "./cmd/workspace-agentd")
 	cmd.Dir = modRoot
 	cmd.Stderr = os.Stderr
-	err := cmd.Run()
-	if ctx.Err() != nil {
-		t.Fatal("go build ./cmd/workspace-agentd timed out after 240s")
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			t.Fatal("go build ./cmd/workspace-agentd timed out after 300s")
+		}
+		require.NoError(t, err, "go build ./cmd/workspace-agentd failed (cwd=%s)", modRoot)
 	}
-	require.NoError(t, err, "go build ./cmd/workspace-agentd failed (cwd=%s)", modRoot)
 	return bin
 }
 

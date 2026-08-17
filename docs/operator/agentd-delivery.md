@@ -22,33 +22,93 @@ workspace" is preserved.
 
 ## Enabling
 
-CI prints the exact values block on every push to main (the
-`merge-agentd` job's "Print Helm values block for agentdDelivery" step).
-Paste it into your values:
+Set ONE value — the image, in the canonical tag+digest form every
+digest-aware dependency bot manages:
 
 ```yaml
 controller:
   agentdDelivery:
-    image: ghcr.io/lenaxia/llmsafespaces/agentd@sha256:<manifest-digest>
-    binarySHA256Amd64: "<64-hex sha256 of the amd64 binary>"
-    binarySHA256Arm64: "<64-hex sha256 of the arm64 binary>"
+    image: ghcr.io/lenaxia/llmsafespaces/agentd:dev@sha256:<manifest-digest>
 ```
 
-Requirements (enforced at both `helm template` and controller startup):
+That single coordinate carries the whole verify contract: CI stamps the
+per-arch binary sha256s onto the image index as OCI annotations (covered
+by the digest — they cannot desync), and the controller resolves them at
+startup, caching the result in the `llmsafespaces-agentd-pins`
+ConfigMap so a registry outage at controller boot does not brick
+startup. The entrypoint sha256 verify, exit codes, conditions, and
+alerts are unchanged from the original design.
 
-- `image` must be **digest-pinned** — a floating tag defeats both
-  reproducibility and the verify contract,
-- both binary hashes must be present (the manifest list carries
-  different binaries per arch),
+Requirements (enforced at the Helm render and again at controller
+startup):
+
+- `image` must carry a **digest** (`repo:tag@sha256:…` — the tag may
+  move, the digest must not be dropped): the digest is what the
+  entrypoint trust chain resolves through,
+- `binarySHA256Amd64`/`binarySHA256Arm64` are OPTIONAL per-image
+  overrides (break-glass): set BOTH or NEITHER,
 - the binary path inside the image is fixed:
   `/usr/local/bin/workspace-agentd`.
 
 Leave `image` empty for legacy mode (baked-in binary) — nothing renders,
 no volume is mounted, the entrypoint behaves exactly as before.
 
+**RBAC:** enabling agentdDelivery adds two rules for the outage cache:
+`get`/`update` on configmaps scoped by `resourceNames` to the single
+`llmsafespaces-agentd-pins` ConfigMap, plus a separate unscoped
+`create` rule (Kubernetes cannot resourceNames-scope creation — the
+object does not exist yet). It does not depend on any other feature's
+permissions.
+
+## Keeping it updated (Renovate / Dependabot)
+
+**Renovate — first-class.** Because the pin is one docker tag+digest
+line, Renovate's `helm-values` manager maintains it automatically. In
+the repo holding your Helm values:
+
+```json
+{
+  "extends": ["config:recommended", "docker:pinDigests"],
+  "packageRules": [
+    {
+      "description": "agentdDelivery digest bumps are self-contained",
+      "matchManagers": ["helm-values"],
+      "matchDepNames": ["ghcr.io/lenaxia/llmsafespaces/agentd"],
+      "automerge": true,
+      "automergeType": "pr"
+    }
+  ]
+}
+```
+
+A digest bump is SAFE BY CONSTRUCTION: the binary hashes are derived
+from the new digest's annotations at controller startup, never
+independently updated. There is deliberately nothing else for a bot to
+touch.
+
+**Dependabot — not applicable.** Dependabot has no manager for Helm
+values files or generic image digests. For manual updates, the
+`merge-agentd` CI job prints the exact image line for its commit (its
+"Print Helm values block" step); copy that single line.
+
+**Break-glass override.** If you must pin hashes explicitly (e.g. an
+air-gapped mirror stripping annotations), set both:
+
+```yaml
+controller:
+  agentdDelivery:
+    image: <mirror>/agentd:dev@sha256:<digest>
+    binarySHA256Amd64: "<64-hex>"
+    binarySHA256Arm64: "<64-hex>"
+```
+
+CI's merge job output includes the current binary hashes alongside the
+digest. An override pair overrides annotations per-arch; a one-sided
+pair fails the Helm render.
+
 ## Rollout / rollback
 
-Roll **forward** by updating the three values to a newer digest and
+Roll **forward** by updating the image line to a newer digest and
 running `helm upgrade`. The controller Deployment restarts; **existing
 pods keep their old pin** (pod specs are immutable) and pick up the new
 agentd the next time their pod is recreated.
