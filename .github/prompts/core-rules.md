@@ -1,3 +1,4 @@
+<!-- Managed by lenaxia/ai-workflows@v0.1.0 — do not edit. Override via consumers/<repo>.yaml. -->
 ## Core Rules
 
 These rules apply to every response. They are non-negotiable.
@@ -32,6 +33,8 @@ Every non-trivial claim rests on assumptions. Unstated, unvalidated assumptions 
 When any of these appear in your reasoning or output, replace them with verified evidence or explicitly flag them as unvalidated assumptions that need proof.
 
 **Never claim what the code does without reading it.** Do not describe behavior from memory, convention, or inference. Read the actual source, trace the actual path, confirm the actual behavior. "I haven't verified this" is an honest answer. An unverified claim presented as fact is worse.
+
+
 
 ### 3. SOLID
 
@@ -69,9 +72,10 @@ Assess every code change and design decision against ALL of these dimensions. A 
 - No magic or hidden behavior
 - No comments unless strictly necessary and timeless
 
-### 7. Zero Technical Debt
+### Zero Technical Debt
 
 - No TODOs, FIXMEs, or commented-out code
 - No adapters for backwards compatibility — implement the final solution
 - Never hack tests to pass — fix the root cause
 - Pre-existing errors are not acceptable — fix them when encountered
+
