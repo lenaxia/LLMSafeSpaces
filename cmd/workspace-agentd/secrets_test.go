@@ -835,21 +835,65 @@ func TestApplyWorkspaceConfig(t *testing.T) {
 		"model must be written as providerID/modelID, not a flat ID")
 }
 
-// TestApplyWorkspaceConfig_FallsBackToFlatIDWhenProviderAbsent verifies that
-// when the provider map has no entry for the model (e.g. agent-config.json
-// was not yet written by FlushProviders), the flat ID is preserved rather
-// than silently omitting the model field.
-func TestApplyWorkspaceConfig_FallsBackToFlatIDWhenProviderAbsent(t *testing.T) {
+// TestApplyWorkspaceConfig_UnresolvableModel_OmittedWithWarning is the
+// regression test for the 2026-08-16 incident (session ses_ff31324…, refs
+// err_661e326d/err_de616758): when the workspace's persisted default model
+// cannot be resolved to a provider, the flat ID must NOT be written to
+// agent-config.json. opencode parses a bare ID as providerID with an empty
+// modelID ("Model not found: deepseek-v4-flash-free/.") and every prompt in
+// every session 500s until the pod is rebuilt. The model key is omitted
+// (opencode applies its own default) and a warning marker is written so
+// agentd can surface the condition to the user.
+func TestApplyWorkspaceConfig_UnresolvableModel_OmittedWithWarning(t *testing.T) {
 	dir := t.TempDir()
 	agentCfg := filepath.Join(dir, "agent-config.json")
 	secretsJSON := filepath.Join(dir, "secrets.json")
 
 	wsCfgPath := filepath.Join(dir, "workspace-config.json")
-	require.NoError(t, os.WriteFile(wsCfgPath, []byte(`{"defaultModel":"unknown-model"}`), 0o600))
+	require.NoError(t, os.WriteFile(wsCfgPath, []byte(`{"defaultModel":"deepseek-v4-flash-free"}`), 0o600))
 
-	// agent-config.json has a provider but it does not list "unknown-model".
-	agentCfgContent := `{"provider": {"thekao": {"models": {"gpt-5.4": {}}}}}`
+	// agent-config.json has a provider but it does not list the model —
+	// the exact production state (relay provider absent because the
+	// free-models fetch failed at boot).
+	agentCfgContent := `{"model": "deepseek-v4-flash-free", "provider": {"thekao": {"models": {"glm-5.3": {}}}}}`
 	require.NoError(t, os.WriteFile(agentCfg, []byte(agentCfgContent), 0o600))
+
+	applyWorkspaceConfig(agentCfg, secretsJSON)
+
+	raw, err := os.ReadFile(agentCfg)
+	require.NoError(t, err)
+	var out map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(raw, &out))
+	_, hasModel := out["model"]
+	assert.False(t, hasModel,
+		"unresolvable flat model must be omitted, not written bare — a bare ID poisons opencode model resolution")
+	assert.Contains(t, string(raw), `"thekao"`, "providers must survive the rewrite")
+
+	warnRaw, err := os.ReadFile(modelResolutionWarningPath(filepath.Dir(agentCfg)))
+	require.NoError(t, err, "a warning marker must be written when the model is unresolvable")
+	var warn struct {
+		DefaultModel string `json:"defaultModel"`
+	}
+	require.NoError(t, json.Unmarshal(warnRaw, &warn))
+	assert.Equal(t, "deepseek-v4-flash-free", warn.DefaultModel)
+}
+
+// TestApplyWorkspaceConfig_Resolvable_RemovesStaleWarning verifies that a
+// successful resolution clears any warning marker left by a previous boot.
+// Without this, a workspace that recovers (credential bound, relay back)
+// would display the warning forever.
+func TestApplyWorkspaceConfig_Resolvable_RemovesStaleWarning(t *testing.T) {
+	dir := t.TempDir()
+	agentCfg := filepath.Join(dir, "agent-config.json")
+	secretsJSON := filepath.Join(dir, "secrets.json")
+
+	wsCfgPath := filepath.Join(dir, "workspace-config.json")
+	require.NoError(t, os.WriteFile(wsCfgPath, []byte(`{"defaultModel":"glm-5.1"}`), 0o600))
+
+	require.NoError(t, os.WriteFile(agentCfg, []byte(`{"provider": {"thekao": {"models": {"glm-5.1": {}}}}}`), 0o600))
+
+	warnPath := modelResolutionWarningPath(filepath.Dir(agentCfg))
+	require.NoError(t, os.WriteFile(warnPath, []byte(`{"defaultModel":"glm-5.1"}`), 0o600))
 
 	applyWorkspaceConfig(agentCfg, secretsJSON)
 
@@ -859,7 +903,11 @@ func TestApplyWorkspaceConfig_FallsBackToFlatIDWhenProviderAbsent(t *testing.T) 
 	require.NoError(t, json.Unmarshal(raw, &out))
 	var model string
 	require.NoError(t, json.Unmarshal(out["model"], &model))
-	assert.Equal(t, "unknown-model", model, "flat fallback must be preserved")
+	assert.Equal(t, "thekao/glm-5.1", model)
+
+	if _, err := os.Stat(warnPath); !os.IsNotExist(err) {
+		t.Fatalf("stale warning marker must be removed after successful resolution, stat err=%v", err)
+	}
 }
 
 // TestResolveModelWithProvider_Collision documents the behavior when two

@@ -238,6 +238,27 @@ func (a *Adapter) DeleteSession(ctx context.Context, userID, workspaceID, sessio
 
 // --- Messaging ---
 
+// qualifiedModelID renders a contract ModelRef in opencode's wire form:
+// the "providerID/modelID" string. opencode splits the string on "/" to
+// resolve the provider — a bare ID is parsed as a providerID with an EMPTY
+// modelID and fails every prompt in the session ("ProviderModelNotFoundError:
+// Model not found: <bare>/.", incident 2026-08-16). A ref without a provider
+// cannot be expressed safely, so it returns "" and the session default
+// applies. A slash-bearing ID is treated as already qualified regardless of
+// Provider — prefixing it would produce "x/x/y" and a guaranteed failure.
+func qualifiedModelID(m *session.ModelRef) string {
+	if m == nil || m.ID == "" {
+		return ""
+	}
+	if strings.Contains(m.ID, "/") {
+		return m.ID // already qualified; never double-prefix
+	}
+	if m.Provider == "" {
+		return "" // bare ID is unexpressible — degrade to session default
+	}
+	return m.Provider + "/" + m.ID
+}
+
 func (a *Adapter) Send(ctx context.Context, userID, workspaceID, sessionID, text string, opts session.SendOpts) (*session.Message, error) {
 	// Send is synchronous: deliver via /session/:id/message (the V1
 	// endpoint opencode uses for synchronous send). The response is
@@ -251,8 +272,8 @@ func (a *Adapter) Send(ctx context.Context, userID, workspaceID, sessionID, text
 			{"type": "text", "text": text},
 		},
 	}
-	if opts.Model != nil {
-		body["model"] = opts.Model.ID
+	if qualified := qualifiedModelID(opts.Model); qualified != "" {
+		body["model"] = qualified
 	}
 	resp, err := a.doPost(ctx, c, "/session/"+sessionID+"/message", body)
 	if err != nil {

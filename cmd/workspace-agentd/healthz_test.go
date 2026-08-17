@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -34,7 +36,7 @@ import (
 // reflects the supplied startedAt.
 func TestHealthzHandler_ReturnsHealthyWithoutOpencode(t *testing.T) {
 	startedAt := time.Now().Add(-42 * time.Second)
-	handler := healthzHandler(startedAt, "")
+	handler := healthzHandler(startedAt, "", "")
 
 	req := httptest.NewRequest("GET", "/v1/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -70,7 +72,7 @@ func TestHealthzHandler_NeverCallsOpencode(t *testing.T) {
 	defer func() { setAgentAddr(origAddr) }()
 	setAgentAddr(opencodeMock.URL)
 
-	handler := healthzHandler(time.Now(), "")
+	handler := healthzHandler(time.Now(), "", "")
 
 	req := httptest.NewRequest("GET", "/v1/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -96,7 +98,7 @@ func TestHealthzHandler_LatencyUnderOpencodeStarvation(t *testing.T) {
 	defer func() { setAgentAddr(origAddr) }()
 	setAgentAddr(opencodeMock.URL)
 
-	handler := healthzHandler(time.Now(), "")
+	handler := healthzHandler(time.Now(), "", "")
 
 	const probes = 50
 	maxLatency := time.Duration(0)
@@ -120,7 +122,7 @@ func TestHealthzHandler_LatencyUnderOpencodeStarvation(t *testing.T) {
 // kubelet + the controller's frequent probe + arbitrary diagnostic clients
 // produce in practice). Run with -race to catch data races.
 func TestHealthzHandler_ConcurrentRequestsAreRaceFree(t *testing.T) {
-	handler := healthzHandler(time.Now(), "")
+	handler := healthzHandler(time.Now(), "", "")
 
 	const concurrent = 100
 	var wg sync.WaitGroup
@@ -144,7 +146,7 @@ func TestHealthzHandler_ConcurrentRequestsAreRaceFree(t *testing.T) {
 // fixtures may probe with POST or with a body. The handler should
 // respond identically.
 func TestHealthzHandler_IgnoresRequestBodyAndMethod(t *testing.T) {
-	handler := healthzHandler(time.Now(), "")
+	handler := healthzHandler(time.Now(), "", "")
 
 	for _, method := range []string{"GET", "POST", "HEAD", "PUT", "DELETE"} {
 		t.Run(method, func(t *testing.T) {
@@ -161,7 +163,7 @@ func TestHealthzHandler_IgnoresRequestBodyAndMethod(t *testing.T) {
 // must show uptime advancing by at least 1 second.
 func TestHealthzHandler_UptimeAdvances(t *testing.T) {
 	startedAt := time.Now()
-	handler := healthzHandler(startedAt, "")
+	handler := healthzHandler(startedAt, "", "")
 
 	rec1 := httptest.NewRecorder()
 	handler.ServeHTTP(rec1, httptest.NewRequest("GET", "/v1/healthz", nil))
@@ -188,7 +190,7 @@ func TestHealthzHandler_DoesNotConstructOpenCodeClient(t *testing.T) {
 	// healthzHandler takes (startedAt time.Time). It MUST NOT take an
 	// *OpenCodeClient. If a future change adds the dependency, the
 	// signature changes and this test fails to compile — also acceptable.
-	handler := healthzHandler(time.Now(), "")
+	handler := healthzHandler(time.Now(), "", "")
 	require.NotNil(t, handler)
 
 	req := httptest.NewRequest("GET", "/v1/healthz", nil)
@@ -202,7 +204,7 @@ func TestHealthzHandler_DoesNotConstructOpenCodeClient(t *testing.T) {
 // ./cmd/workspace-agentd/
 
 func BenchmarkHealthzHandler(b *testing.B) {
-	handler := healthzHandler(time.Now(), "")
+	handler := healthzHandler(time.Now(), "", "")
 	req := httptest.NewRequest("GET", "/v1/healthz", nil)
 
 	b.ResetTimer()
@@ -216,7 +218,7 @@ func BenchmarkHealthzHandler(b *testing.B) {
 // not consult ctx (it has no opencode call to cancel, no goroutine to
 // cancel). A canceled context must still produce a 200 response.
 func TestHealthzHandler_ContextCancellationIgnored(t *testing.T) {
-	handler := healthzHandler(time.Now(), "")
+	handler := healthzHandler(time.Now(), "", "")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // already canceled
@@ -240,7 +242,7 @@ func TestHealthzHandler_ContextCancellationIgnored(t *testing.T) {
 // binary disassembly. Un-stamped builds report "unknown" (pkg/version
 // defaults); the omitempty tags are inert by design.
 func TestHealthzHandler_ResponseShapeIsExactlyAgentdHealthzResponse(t *testing.T) {
-	handler := healthzHandler(time.Now(), "")
+	handler := healthzHandler(time.Now(), "", "")
 
 	req := httptest.NewRequest("GET", "/v1/healthz", nil)
 	rec := httptest.NewRecorder()
@@ -265,7 +267,7 @@ func keys(m map[string]any) []string {
 // high request rate without leaking goroutines. This is a regression
 // test for the implicit assumption that /v1/healthz is essentially free.
 func TestHealthzHandler_BurstThroughput(t *testing.T) {
-	handler := healthzHandler(time.Now(), "")
+	handler := healthzHandler(time.Now(), "", "")
 
 	const requests = 10_000
 	deadline := time.Now().Add(2 * time.Second)
@@ -287,4 +289,72 @@ func TestHealthzHandler_BurstThroughput(t *testing.T) {
 	assert.LessOrEqual(t, time.Now().UnixNano(), deadline.UnixNano(),
 		fmt.Sprintf("expected to process %d requests within 2s; processed=%d", requests, processed.Load()))
 	assert.Equal(t, int64(requests), processed.Load())
+}
+
+// TestHealthzHandler_SurfacesModelResolutionWarning pins the user-warning
+// pipeline for the 2026-08-16 unresolvable-default-model incident: the
+// materialize subcommand writes a warning marker beside agent-config.json;
+// healthz must surface it so the controller can relay it into the
+// AgentHealthy condition the frontend renders. A read failure or absent
+// marker must yield NO warnings (liveness is unaffected).
+func TestHealthzHandler_SurfacesModelResolutionWarning(t *testing.T) {
+	dir := t.TempDir()
+	warnPath := modelResolutionWarningPath(dir)
+
+	t.Run("marker present", func(t *testing.T) {
+		require.NoError(t, os.WriteFile(warnPath, []byte(`{"defaultModel":"deepseek-v4-flash-free"}`), 0o600))
+		handler := healthzHandler(time.Now(), "", warnPath)
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/healthz", nil))
+
+		var resp agentd.HealthzResponse
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		require.Len(t, resp.Warnings, 1)
+		assert.Contains(t, resp.Warnings[0], "deepseek-v4-flash-free",
+			"warning must name the unavailable model")
+		assert.True(t, resp.Healthy, "warning is observability, never a liveness failure")
+	})
+
+	t.Run("marker absent", func(t *testing.T) {
+		handler := healthzHandler(time.Now(), "", filepath.Join(dir, "nonexistent.json"))
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/healthz", nil))
+
+		var resp agentd.HealthzResponse
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		assert.Empty(t, resp.Warnings)
+		assert.True(t, resp.Healthy)
+	})
+
+	t.Run("marker corrupt", func(t *testing.T) {
+		require.NoError(t, os.WriteFile(warnPath, []byte("not-json"), 0o600))
+		handler := healthzHandler(time.Now(), "", warnPath)
+
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/healthz", nil))
+
+		var resp agentd.HealthzResponse
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		assert.Empty(t, resp.Warnings, "corrupt marker degrades to no-warning, not an error")
+		assert.True(t, resp.Healthy)
+	})
+}
+
+// TestModelResolutionWarning_RoundTrip pins that the marker written by the
+// materialize subcommand parses back through the health-endpoint renderer
+// with the exact model name intact (PR #909 review round: the two shapes
+// were previously pinned only by divergent literals in separate tests).
+func TestModelResolutionWarning_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	warnPath := modelResolutionWarningPath(dir)
+	writeModelResolutionWarning(warnPath, "deepseek-v4-flash-free")
+
+	warnings := modelResolutionWarnings(warnPath)
+	require.Len(t, warnings, 1)
+	assert.Contains(t, warnings[0], `"deepseek-v4-flash-free"`,
+		"the written model name must survive the write→read round trip quoted")
+	assert.NotContains(t, warnings[0], ";",
+		"warning copy must never contain semicolons — the API splits the structured suffix on \"; \"")
 }

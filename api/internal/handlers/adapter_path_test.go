@@ -1014,3 +1014,147 @@ func TestDeleteSession_AdapterPath_RunsAllSideEffects(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	// Session parent cache invalidated (no panic = success).
 }
+
+// TestSendPromptAsync_ForwardsModelOverride is the handler leg of the
+// 2026-08-16 incident fix: the frontend already sends the selected model
+// with every prompt ({"model":{"modelID":...,"providerID":...}}), but the
+// handler dropped it, so a workspace whose persisted default model is
+// unresolvable could not be interacted with at all. The model must reach
+// adapter.Send via SendOpts.
+func TestSendPromptAsync_ForwardsModelOverride(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	var gotOpts session.SendOpts
+	h.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _, _ string, opts session.SendOpts) (*session.Message, error) {
+			gotOpts = opts
+			return &session.Message{ID: "msg_1", Type: session.MessageAssistant}, nil
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(
+		`{"model":{"modelID":"glm-5.3","providerID":"thekaocloud"},"parts":[{"type":"text","text":"hi"}]}`))
+
+	h.SendPromptAsync(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.NotNil(t, gotOpts.Model, "request model must be forwarded to the adapter")
+	assert.Equal(t, "glm-5.3", gotOpts.Model.ID)
+	assert.Equal(t, "thekaocloud", gotOpts.Model.Provider)
+}
+
+// TestSendPromptAsync_NoModelInBody_NilOptsModel pins the default: bodies
+// without a model selector (older clients, SDK prompts) must send nil model
+// opts — the agent's session default applies.
+func TestSendPromptAsync_NoModelInBody_NilOptsModel(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	var gotOpts session.SendOpts
+	h.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _, _ string, opts session.SendOpts) (*session.Message, error) {
+			gotOpts = opts
+			return &session.Message{ID: "msg_1", Type: session.MessageAssistant}, nil
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"parts":[{"type":"text","text":"hi"}]}`))
+
+	h.SendPromptAsync(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Nil(t, gotOpts.Model)
+}
+
+// TestExtractPromptModel covers the model-selector parsing edge cases.
+func TestExtractPromptModel(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want *session.ModelRef
+	}{
+		{"model present", `{"model":{"modelID":"glm-5.3","providerID":"thekaocloud"},"parts":[]}`, &session.ModelRef{ID: "glm-5.3", Provider: "thekaocloud"}},
+		{"model without provider", `{"model":{"modelID":"glm-5.3"}}`, &session.ModelRef{ID: "glm-5.3"}},
+		{"model object empty modelID", `{"model":{"modelID":"","providerID":"x"},"parts":[]}`, nil},
+		{"no model key", `{"parts":[{"type":"text","text":"hi"}]}`, nil},
+		{"model null", `{"model":null}`, nil},
+		{"malformed json", `not-json`, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractPromptModel([]byte(tc.body))
+			if tc.want == nil {
+				assert.Nil(t, got)
+				return
+			}
+			require.NotNil(t, got)
+			assert.Equal(t, tc.want.ID, got.ID)
+			assert.Equal(t, tc.want.Provider, got.Provider)
+		})
+	}
+}
+
+// TestSendMessage_ForwardsModelOverride mirrors
+// TestSendPromptAsync_ForwardsModelOverride for the SDK-documented
+// synchronous /message path (review round 2: the forwarding was wired but
+// unpinned — dropping extractPromptModel from SendMessage would pass CI).
+func TestSendMessage_ForwardsModelOverride(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	var gotOpts session.SendOpts
+	h.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _, _ string, opts session.SendOpts) (*session.Message, error) {
+			gotOpts = opts
+			return &session.Message{ID: "msg_1", Type: session.MessageAssistant}, nil
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(
+		`{"model":{"modelID":"glm-5.3","providerID":"thekaocloud"},"parts":[{"type":"text","text":"hi"}]}`))
+
+	h.SendMessage(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	require.NotNil(t, gotOpts.Model, "/message must forward the model selector like /prompt")
+	assert.Equal(t, "glm-5.3", gotOpts.Model.ID)
+	assert.Equal(t, "thekaocloud", gotOpts.Model.Provider)
+}
+
+// TestSendMessage_NoModelInBody_NilOptsModel pins the /message default.
+func TestSendMessage_NoModelInBody_NilOptsModel(t *testing.T) {
+	h := newProxyHandlerForAdapterTest(t)
+	var gotOpts session.SendOpts
+	h.adapter = &mockAdapter{
+		sendFn: func(_ context.Context, _, _, _, _ string, opts session.SendOpts) (*session.Message, error) {
+			gotOpts = opts
+			return &session.Message{ID: "msg_1", Type: session.MessageAssistant}, nil
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Params = gin.Params{
+		{Key: "id", Value: "ws-1"},
+		{Key: "sessionId", Value: "ses_1"},
+	}
+	c.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"parts":[{"type":"text","text":"hi"}]}`))
+
+	h.SendMessage(c)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Nil(t, gotOpts.Model)
+}

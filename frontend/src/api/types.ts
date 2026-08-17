@@ -135,6 +135,8 @@ export interface AgentHealth {
   connected?: string[];
   message?: string;
   lastCheckedAt?: string;
+  /** Boot-time degradation notices (e.g. default model unavailable). Present with status "Healthy". */
+  warnings?: string[];
 }
 
 export interface MessagePart {

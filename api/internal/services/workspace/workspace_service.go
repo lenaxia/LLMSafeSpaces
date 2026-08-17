@@ -1928,8 +1928,17 @@ func credStateFromConditions(conditions []v1.WorkspaceCondition) types.Credentia
 }
 
 var connectedRe = regexp.MustCompile(`connected=\[([^\]]*)\]`)
-var versionRe = regexp.MustCompile(`version=(\S+)`)
+
+// versionRe deliberately excludes ";" so appended condition suffixes
+// ("... version=1.18.10; warnings: ...") do not leak into the captured
+// version (review of PR #909: `\S+` greedily captured "1.18.10;").
+var versionRe = regexp.MustCompile(`version=([^\s;]+)`)
 var configuredRe = regexp.MustCompile(`configured=(\d+)`)
+
+// warningsRe extracts the warning suffix appended by the controller's
+// appendAgentWarnings: "<base>; warnings: w1; w2". Warning copy must not
+// contain semicolons (pinned by the agentd-side renderer contract).
+var warningsRe = regexp.MustCompile(`; warnings: (.+)$`)
 
 func agentHealthFromConditions(conditions []v1.WorkspaceCondition, lastCheckAt *metav1.Time) types.AgentHealthResult {
 	for _, c := range conditions {
@@ -1964,6 +1973,9 @@ func agentHealthFromConditions(conditions []v1.WorkspaceCondition, lastCheckAt *
 			}
 			if m := configuredRe.FindStringSubmatch(c.Message); len(m) > 1 {
 				_, _ = fmt.Sscanf(m[1], "%d", &result.ProvidersConfigured)
+			}
+			if m := warningsRe.FindStringSubmatch(c.Message); len(m) > 1 {
+				result.Warnings = strings.Split(m[1], "; ")
 			}
 			if lastCheckAt != nil {
 				result.LastCheckedAt = lastCheckAt.Format(time.RFC3339)

@@ -708,6 +708,8 @@ paths:
                 content:
                   type: string
                   description: The message text to send to the agent
+                model:
+                  $ref: "#/components/schemas/ModelSelector"
       responses:
         "200":
           description: Agent response
@@ -717,6 +719,8 @@ paths:
                 $ref: "#/components/schemas/MessageResponse"
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Model selector not allowed by organization policy
         "404":
           $ref: "#/components/responses/NotFound"
     get:
@@ -765,11 +769,15 @@ paths:
               properties:
                 content:
                   type: string
+                model:
+                  $ref: "#/components/schemas/ModelSelector"
       responses:
         "202":
           description: Prompt accepted
         "401":
           $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Model selector not allowed by organization policy
         "404":
           $ref: "#/components/responses/NotFound"
   /workspaces/{id}/sessions/{sessionId}:
@@ -3039,6 +3047,20 @@ components:
       required: [error]
       properties:
         error:
+          type: string
+    ModelSelector:
+      type: object
+      description: |
+        Optional per-prompt model override. When present the request is
+        routed to the specified model for this single send; when absent
+        the session's default model applies. A selector denied by the
+        organization's allowed-models/allowed-providers policy is
+        rejected with 403. A malformed selector (missing modelID)
+        degrades to the session default.
+      properties:
+        modelID:
+          type: string
+        providerID:
           type: string
     AuthConfig:
       type: object

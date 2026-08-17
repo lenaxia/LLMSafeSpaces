@@ -81,7 +81,7 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 	// session.Message with contract-shaped parts. The response is
 	// contract JSON, not raw opencode bytes.
 	if h.adapter != nil {
-		text, err := extractMessageText(c)
+		text, bodyBytes, err := extractMessageText(c)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
@@ -112,7 +112,12 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 		}
 		h.adapterEnsureSSEWatch(wid)
 
-		msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{})
+		// Per-prompt model selector: symmetric with SendPromptAsync
+		// (PR #909 review round — /message is the SDK-documented
+		// synchronous send path and must honor the same override).
+		msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{
+			Model: extractPromptModel(bodyBytes),
+		})
 		if err != nil {
 			// #817: log the underlying adapter error — without this the
 			// 502 body says only "failed to send message" and the root
@@ -232,7 +237,14 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 		// drifted (see #755, #739). The synchronous path works correctly
 		// on all versions. The frontend receives the assistant response
 		// via SSE events regardless of which send path is used.
-		msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{})
+		//
+		// The model selector travels with the prompt (contract type
+		// session.ModelRef); the adapter owns any agent-specific wire
+		// form. Forwarding it is what keeps a workspace usable when its
+		// persisted default model is unresolvable (incident 2026-08-16).
+		msg, err := h.adapter.Send(c.Request.Context(), "", wid, sid, text, session.SendOpts{
+			Model: extractPromptModel(bodyBytes),
+		})
 		if err != nil {
 			// #817: log the underlying adapter error for this path too.
 			h.logger.Error("SendPromptAsync: adapter failed", err,
@@ -264,15 +276,21 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 
 // extractMessageText reads the request body and extracts the
 // concatenated text from opencode's {parts:[{type:"text",text:"..."}]}
-// shape. Caps at 100KB to match the SendPromptAsync body limit.
-func extractMessageText(c *gin.Context) (string, error) {
+// shape. Caps at 100KB to match the SendPromptAsync body limit. Returns
+// the raw body bytes alongside the text so callers can also extract the
+// per-prompt model selector without a second read.
+func extractMessageText(c *gin.Context) (string, []byte, error) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 100_000+1024)
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		return "", fmt.Errorf("failed to read request body: %w", err)
+		return "", nil, fmt.Errorf("failed to read request body: %w", err)
 	}
 	_ = c.Request.Body.Close()
-	return extractPromptText(body)
+	text, perr := extractPromptText(body)
+	if perr != nil {
+		return "", nil, perr
+	}
+	return text, body, nil
 }
 
 // extractPromptText parses a prompt body and returns the
@@ -296,6 +314,28 @@ func extractPromptText(body []byte) (string, error) {
 		}
 	}
 	return sb.String(), nil
+}
+
+// extractPromptModel parses the per-prompt model selector
+// ({"model":{"modelID":...,"providerID":...}}) from a prompt body into the
+// contract's ModelRef. Returns nil when absent, empty, or malformed — the
+// agent's session default applies. Malformed bodies never fail the prompt:
+// text extraction has already validated the JSON, and a bad selector should
+// degrade to default-model routing, not reject the user's message.
+func extractPromptModel(body []byte) *session.ModelRef {
+	var parsed struct {
+		Model *struct {
+			ModelID    string `json:"modelID"`
+			ProviderID string `json:"providerID"`
+		} `json:"model"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil
+	}
+	if parsed.Model == nil || parsed.Model.ModelID == "" {
+		return nil
+	}
+	return &session.ModelRef{ID: parsed.Model.ModelID, Provider: parsed.Model.ProviderID}
 }
 
 // historyPageDefaultLimit is the default page size when ?limit= is omitted.

@@ -45,6 +45,18 @@ const (
 	// survives container restart, wiped on pod death, no plaintext-on-PVC
 	// concern (it's a list of public path globs, not secrets).
 	AllowedDirsPath = "/sandbox-runtime/allowed-dirs.json"
+	// ModelResolutionWarningPath is where the materialize subcommand records
+	// that the workspace's persisted default model could not be resolved to
+	// any provider in agent-config.json (e.g. a relay-only model selected
+	// while the relay injector failed at boot — incident 2026-08-16). The
+	// model key is deliberately omitted from agent-config.json in that case
+	// (a bare ID poisons opencode's model resolution: every prompt in every
+	// session fails with ProviderModelNotFoundError until the pod rebuilds).
+	// agentd's healthz/statusz read this marker so the controller can relay
+	// the condition into the AgentHealthy condition message the user sees.
+	// Same tmpfs lifecycle as ReloadSecretsCachePath; removed by the next
+	// successful resolution.
+	ModelResolutionWarningPath = "/sandbox-runtime/model-resolution-warning.json"
 )
 
 // Ports and network constants shared between agentd and the controller.
@@ -91,6 +103,12 @@ type HealthzResponse struct {
 	// fields are inert by design — kept for forward-compatibility if the
 	// defaults ever change).
 	BuildTime string `json:"build_time,omitempty"`
+	// Warnings are boot-time degradation notices (e.g. the persisted
+	// default model could not be resolved — ModelResolutionWarningPath).
+	// Observability only: never affects Healthy, never gates liveness.
+	// The controller relays them into the AgentHealthy condition message
+	// so users see why their selected model is not in use.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // ReadyzResponse is the response for GET /v1/readyz.
@@ -180,4 +198,9 @@ type StatuszResponse struct {
 	// check (US-44.5). The controller reads this to set the
 	// WorkspaceConditionMemoryPressure condition.
 	MemoryPressure bool `json:"memory_pressure,omitempty"`
+	// Warnings mirrors HealthzResponse.Warnings: boot-time degradation
+	// notices (ModelResolutionWarningPath). The deep-status scrape feeds
+	// the controller's AgentHealthy condition message, so the warning
+	// must appear here too or it would be erased between scrapes.
+	Warnings []string `json:"warnings,omitempty"`
 }

@@ -13,6 +13,63 @@ describe("HealthBanner", () => {
     expect(container.innerHTML).toBe("");
   });
 
+  // PR #909 review round: Healthy-with-warnings must render — the agent is
+  // fine but running degraded (e.g. default model unresolvable, incident
+  // 2026-08-16) and silently substituting the model breaks user intent.
+  it("renders warnings when healthy with warnings", () => {
+    render(
+      <HealthBanner
+        agentHealth={{
+          status: "Healthy",
+          warnings: ['default model "deepseek-v4-flash-free" unavailable — using the agent default model'],
+        }}
+      />,
+    );
+    expect(
+      screen.getByText(/deepseek-v4-flash-free.*unavailable/),
+    ).toBeInTheDocument();
+  });
+
+  it("renders every warning as its own row", () => {
+    render(
+      <HealthBanner
+        agentHealth={{ status: "Healthy", warnings: ["warning one", "warning two"] }}
+      />,
+    );
+    expect(screen.getByText("warning one")).toBeInTheDocument();
+    expect(screen.getByText("warning two")).toBeInTheDocument();
+  });
+
+  it("renders nothing when healthy with empty warnings array", () => {
+    const { container } = render(
+      <HealthBanner agentHealth={{ status: "Healthy", warnings: [] }} />,
+    );
+    expect(container.innerHTML).toBe("");
+  });
+
+  // Review round 2: warnings can ride Degraded conditions too (the
+  // controller appends on both sites). The status label shows WITHOUT the
+  // raw "; warnings: ..." suffix, and warnings render as separate rows.
+  it("renders degraded message without raw suffix plus structured warning rows", () => {
+    render(
+      <HealthBanner
+        agentHealth={{
+          status: "Degraded",
+          message:
+            'no providers connected (configured=1, connected=[]); warnings: default model "glm-5.3" unavailable — using the agent default model',
+          warnings: ['default model "glm-5.3" unavailable — using the agent default model'],
+        }}
+      />,
+    );
+    expect(
+      screen.getByText(/no providers connected \(configured=1/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/; warnings:/)).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/glm-5.3.*unavailable/),
+    ).toBeInTheDocument();
+  });
+
   it("renders nothing when props are undefined", () => {
     const { container } = render(<HealthBanner />);
     expect(container.innerHTML).toBe("");

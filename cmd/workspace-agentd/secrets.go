@@ -554,9 +554,16 @@ func reportResult(w io.Writer, r *secrets.MaterializeResult) {
 // requires the fully-qualified "providerID/modelID" form in agent-config.json.
 // We resolve the providerID by scanning the provider map already written to
 // agent-config.json by FlushProviders (which runs before this function).
-// If no provider claims the model, the flat ID is written as a best-effort
-// fallback (opencode will reject it at startup, but the per-prompt model
-// override in the frontend still routes correctly for interactive sessions).
+//
+// If no provider claims the model, the model key is OMITTED entirely and a
+// warning marker is written beside agent-config.json (ModelResolutionWarningPath)
+// so agentd's health endpoints can tell the user. Writing the flat ID was the
+// 2026-08-16 incident: opencode parses a bare ID as providerID with an EMPTY
+// modelID, and every prompt in every session failed with
+// "ProviderModelNotFoundError: Model not found: <flat>/." until the pod was
+// rebuilt. Omitted, opencode applies its own default and prompts keep working;
+// the selection self-heals on the next boot where the provider exists again
+// (e.g. the relay injector succeeds).
 func applyWorkspaceConfig(agentConfigPath, secretsPath string) {
 	// workspace-config.json lives alongside secrets.json in /sandbox-cfg/
 	dir := filepath.Dir(secretsPath)
@@ -564,6 +571,10 @@ func applyWorkspaceConfig(agentConfigPath, secretsPath string) {
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
+		// Absent config: nothing is substituted, so a marker from an
+		// earlier run is stale — remove it (same reasoning as the
+		// empty-default early return below).
+		_ = os.Remove(modelResolutionWarningPath(filepath.Dir(agentConfigPath)))
 		return // absent = no workspace config to apply
 	}
 
@@ -571,6 +582,10 @@ func applyWorkspaceConfig(agentConfigPath, secretsPath string) {
 		DefaultModel string `json:"defaultModel"`
 	}
 	if json.Unmarshal(data, &wsCfg) != nil || wsCfg.DefaultModel == "" {
+		// No default selected (or config unreadable as JSON): any warning
+		// marker from an earlier boot is stale — nothing is being
+		// substituted, so it must not keep rendering (review round 2).
+		_ = os.Remove(modelResolutionWarningPath(filepath.Dir(agentConfigPath)))
 		return
 	}
 
@@ -589,8 +604,21 @@ func applyWorkspaceConfig(agentConfigPath, secretsPath string) {
 	// written by FlushProviders (called just before this function), so all
 	// user-configured providers are already present.
 	model := resolveModelWithProvider(cfg, wsCfg.DefaultModel)
-	modelJSON, _ := json.Marshal(model)
-	cfg["model"] = modelJSON
+
+	warnPath := modelResolutionWarningPath(filepath.Dir(agentConfigPath))
+	if model == wsCfg.DefaultModel && !strings.Contains(model, "/") {
+		// Unresolvable: no provider in this boot's config claims the model.
+		// Omit the key (opencode falls back to its default) and record the
+		// warning for the health endpoints. Delete any stale model key —
+		// a bare value here is guaranteed poison (incident 2026-08-16).
+		delete(cfg, "model")
+		writeModelResolutionWarning(warnPath, wsCfg.DefaultModel)
+	} else {
+		modelJSON, _ := json.Marshal(model)
+		cfg["model"] = modelJSON
+		// Clear any warning from a previous boot: the default resolved.
+		_ = os.Remove(warnPath)
+	}
 
 	if _, ok := cfg["$schema"]; !ok {
 		schemaJSON, _ := json.Marshal("https://opencode.ai/config.json")
@@ -599,6 +627,28 @@ func applyWorkspaceConfig(agentConfigPath, secretsPath string) {
 
 	merged, _ := json.MarshalIndent(cfg, "", "  ")
 	_ = os.WriteFile(agentConfigPath, merged, 0o600)
+}
+
+// modelResolutionWarningPath places the marker beside agent-config.json on
+// the /sandbox-runtime tmpfs (same directory convention as the config itself).
+func modelResolutionWarningPath(agentConfigDir string) string {
+	return filepath.Join(agentConfigDir, filepath.Base(agentd.ModelResolutionWarningPath))
+}
+
+// writeModelResolutionWarning records the unresolvable default model. The
+// marker survives container restarts (tmpfs emptyDir) and is wiped on pod
+// death — exactly the lifetime of the agent-config.json it describes. A
+// write failure is non-fatal: the config was still written correctly; only
+// the user-visible warning is lost.
+func writeModelResolutionWarning(path, defaultModel string) {
+	payload := struct {
+		DefaultModel string `json:"defaultModel"`
+	}{DefaultModel: defaultModel}
+	merged, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	_ = os.WriteFile(path, merged, 0o600)
 }
 
 // applyMCPServersToConfig reads the current agent-config.json (written by

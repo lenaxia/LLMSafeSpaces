@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -157,7 +158,22 @@ func (r *WorkspaceReconciler) checkAgentHealth(ctx context.Context, ws *v1.Works
 	ucp := healthResp.UserCredsPresent
 	ws.Status.UserCredsPresent = &ucp
 	r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "True",
-		v1.ReasonAgentHealthy, fmt.Sprintf("agentd alive, uptime=%ds", healthResp.UptimeSeconds))
+		v1.ReasonAgentHealthy, appendAgentWarnings(
+			fmt.Sprintf("agentd alive, uptime=%ds", healthResp.UptimeSeconds), healthResp.Warnings))
+}
+
+// appendAgentWarnings suffixes agentd's boot-time degradation notices to a
+// condition message so users see them via the API's agentHealth.message and
+// the structured warnings field (e.g. an unresolvable default model —
+// incident 2026-08-16). The API's parsers are pinned against this suffix:
+// versionRe excludes ";" (PR #909 review round — `\S+` captured "1.18.10;")
+// and warningsRe extracts the suffix as structured data. Warning copy MUST
+// NOT contain semicolons (agentd-side renderer contract).
+func appendAgentWarnings(msg string, warnings []string) string {
+	if len(warnings) == 0 {
+		return msg
+	}
+	return msg + "; warnings: " + strings.Join(warnings, "; ")
 }
 
 // controllerRestartSafeModeThreshold is the ControllerRestartCount above
@@ -281,8 +297,10 @@ func (r *WorkspaceReconciler) enrichAgentStatus(ctx context.Context, ws *v1.Work
 
 	if !status.Ready || len(status.Connected) == 0 {
 		r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "False",
-			v1.ReasonAgentDegraded, fmt.Sprintf("no providers connected (configured=%d, connected=%v)",
-				status.ProvidersConfigured, status.Connected))
+			v1.ReasonAgentDegraded, appendAgentWarnings(
+				fmt.Sprintf("no providers connected (configured=%d, connected=%v)",
+					status.ProvidersConfigured, status.Connected),
+				status.Warnings))
 		r.setCondition(ws, v1.WorkspaceConditionProviderReady, "False",
 			v1.ReasonProvidersNotConnected, fmt.Sprintf("no providers connected (configured=%d, connected=%v)",
 				status.ProvidersConfigured, status.Connected))
@@ -366,8 +384,10 @@ func (r *WorkspaceReconciler) enrichAgentStatus(ctx context.Context, ws *v1.Work
 	}
 
 	r.setCondition(ws, v1.WorkspaceConditionAgentHealthy, "True",
-		v1.ReasonAgentHealthy, fmt.Sprintf("connected=%v configured=%d sessions=%d version=%s",
-			status.Connected, status.ProvidersConfigured, status.SessionsActive, status.AgentVersion))
+		v1.ReasonAgentHealthy, appendAgentWarnings(
+			fmt.Sprintf("connected=%v configured=%d sessions=%d version=%s",
+				status.Connected, status.ProvidersConfigured, status.SessionsActive, status.AgentVersion),
+			status.Warnings))
 	// S18.11: Surface provider connectivity as a dedicated condition so
 	// operators can `kubectl wait --for=condition=ProviderReady` without
 	// regex-parsing the AgentHealthy message.

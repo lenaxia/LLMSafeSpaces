@@ -46,6 +46,7 @@ func buildStatuszHandler(
 	tracker *sessionStatusTracker,
 	pressureMon *memoryPressureMonitor,
 	startedAt time.Time,
+	modelWarnPath string,
 ) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -99,6 +100,7 @@ func buildStatuszHandler(
 			CPU:                 getCPUUsage(),
 			Context:             contextUsage,
 			MemoryPressure:      pressure,
+			Warnings:            modelResolutionWarnings(modelWarnPath),
 		})
 	})
 }
@@ -239,7 +241,7 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 
 	adminToken := os.Getenv("AGENTD_ADMIN_TOKEN")
 
-	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt, agentd.ReloadSecretsCachePath))
+	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt, agentd.ReloadSecretsCachePath, agentd.ModelResolutionWarningPath))
 	adminMux.Handle("/v1/readyz", requireBearerToken(adminToken,
 		buildReadyzHandler(deps, opencodeTCPReady(fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort)))))
 
@@ -252,7 +254,7 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	// callers must use a generous timeout (controller uses 30s). Do NOT
 	// use this endpoint for liveness or readiness probes.
 	adminMux.Handle("/v1/statusz", requireBearerToken(adminToken,
-		buildStatuszHandler(deps.client, deps.cache, deps.sseTracker, deps.pressureMonitor, deps.startedAt)))
+		buildStatuszHandler(deps.client, deps.cache, deps.sseTracker, deps.pressureMonitor, deps.startedAt, agentd.ModelResolutionWarningPath)))
 
 	// S18.10: Expose Prometheus metrics on admin port so the cluster-level
 	// Prometheus scraper can collect per-pod agentd gate timings.
