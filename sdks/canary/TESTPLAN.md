@@ -194,7 +194,6 @@ Running only shallow canaries would miss the most impactful class of failure: a 
 | N2 | Empty auth header → 401 |
 | N3 | Malformed bearer value (no `lsp_` prefix, not a JWT) → 401 |
 
-> **CI note (#905):** the N1–N3 negatives are controller-independent and run in every environment (including `CANARY_NO_CONTROLLER=1` CI, via `runWsNegatives`); only the Active-gated positives (wait-active → activate/stop) are skipped there.
 | N4 | Wrong password for valid email → 401 (same error shape as N5; no enumeration) |
 | N5 | Login with nonexistent email → same 401 shape as N4 |
 
@@ -943,6 +942,8 @@ Tests `GET /workspaces/:id/sessions/:sessionId` which proxies to opencode's `GET
 | N1 | `workspace_create` missing `runtime` → `isError=true` |
 | N2 | `workspace_activate` nonexistent ID → `isError=true` |
 | N3 | `workspace_stop` nonexistent ID → `isError=true` |
+
+> **CI note (#905):** the N1–N3 negatives above are controller-independent and run in every environment (including `CANARY_NO_CONTROLLER=1` CI, via `runWsNegatives`); only the Active-gated positives (wait-active → activate/stop) are skipped there.
 
 ---
 

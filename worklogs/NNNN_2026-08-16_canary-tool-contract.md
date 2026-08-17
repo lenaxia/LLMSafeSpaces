@@ -2,7 +2,7 @@
 
 **Date:** 2026-08-16
 **Session:** Close #880 — SDK canary tools scenario pinned an obsolete contract (15 tools, three session_*_reply tools collapsed into run_resolve by US-65.7); the same canary run exposed two real MCP-surface bugs.
-**Status:** Complete (7 review rounds)
+**Status:** Complete (8 review rounds)
 
 ---
 
@@ -117,3 +117,16 @@
   - `118c6afd`: .gitignore /mcp dedupe (round-2 optional).
 - Root cause of the round-5 miss, stated plainly: string replaces
   without asserts. Both this round's ci.yml edits assert.
+
+
+## Round 8
+
+- The round-7 TESTPLAN note landed in the WRONG table (S-AUTH's N1–N3,
+  mid-table, splitting it) — a regex keyed on "N1–N3 rows" matched the
+  first occurrence. Moved to the D-MCP-WORKSPACE N3 row it describes.
+
+## Tests Run (round 8)
+
+- `cd sdks/canary/mcp && go build ./... && go vet ./... && go test ./...` — green
+- `go test ./pkg/mcp/ ./pkg/repolint/ -count=1` — green
+- grep: the CI note appears exactly once, in D-MCP-WORKSPACE
