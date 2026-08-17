@@ -5,9 +5,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	cryptosubtle "crypto/subtle"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -991,4 +993,73 @@ func TestRouterProxy_StalledRelayBounded502(t *testing.T) {
 	defer resp.Body.Close()
 	assert.Less(t, elapsed, 5*time.Second, "a stalled relay must produce a bounded response, not hang until the client timeout")
 	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+}
+
+// TestForwardFailureLogOmitsPathAndQuery is the log content-safety pin for
+// the router's forwarding failure path: when a forward to a relay fails, the
+// logged line must NOT contain the caller's forwarded path or query (which
+// may carry path-segment secrets and api_key-style parameters). *url.Error
+// includes them; logUpstreamError unwraps to the inner error.
+func TestForwardFailureLogOmitsPathAndQuery(t *testing.T) {
+	release := make(chan struct{})
+	stalled := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	}))
+	t.Cleanup(func() { close(release); stalled.Close() })
+
+	fleet := newRelayFleet(3, 5*time.Minute)
+	fleet.UpdatePeers([]PeerEntry{
+		{ID: "stalled-relay", Endpoint: extractEndpoint(stalled.URL), Provider: "oci", State: "healthy"},
+	})
+	metrics := newRouterMetrics()
+	fb, err := newFallbackProxy("https://upstream.example.com", 0.5, 1)
+	require.NoError(t, err)
+	proxy := newRouterProxy(fleet, newDetector429(fleet, 0.5, extractPort(stalled.URL)), metrics, extractPort(stalled.URL), fb)
+	proxy.httpClient = newRouterClient(200 * time.Millisecond)
+
+	router := httptest.NewServer(proxy)
+	t.Cleanup(router.Close)
+
+	// Capture the package logger output.
+	var buf bytes.Buffer
+	prevOut := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prevOut)
+
+	resp, err := http.Get(router.URL + "/v1/secret-path-segment?api_key=SUPERSECRETVALUE")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+
+	logged := buf.String()
+	assert.NotContains(t, logged, "secret-path-segment", "log must not contain the forwarded path")
+	assert.NotContains(t, logged, "SUPERSECRETVALUE", "log must not contain the forwarded query")
+	assert.NotEmpty(t, logged, "the failure must be logged (loud, not silent)")
+}
+
+// TestFallbackFailureLogOmitsPathAndQuery is the content-safety pin for the
+// fallback path.
+func TestFallbackFailureLogOmitsPathAndQuery(t *testing.T) {
+	metrics := newRouterMetrics()
+	fp, err := newFallbackProxy("http://127.0.0.1:1", 1000.0, 5)
+	require.NoError(t, err)
+	fp.withFallbackMetrics(metrics)
+	fp.httpClient = newRouterClient(200 * time.Millisecond)
+	server := httptest.NewServer(fp)
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	prevOut := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prevOut)
+
+	resp, err := http.Get(server.URL + "/v1/fallback-secret-path?token=SENTINELQUERY")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+
+	logged := buf.String()
+	assert.NotContains(t, logged, "fallback-secret-path", "log must not contain the forwarded path")
+	assert.NotContains(t, logged, "SENTINELQUERY", "log must not contain the forwarded query")
+	assert.NotEmpty(t, logged, "the failure must be logged (loud, not silent)")
 }

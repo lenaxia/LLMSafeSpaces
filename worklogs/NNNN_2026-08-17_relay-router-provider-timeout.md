@@ -26,32 +26,43 @@ client had **no timeout on the pre-body phase**:
   transport with dial/TLS timeouts but NO `ResponseHeaderTimeout`.
 
 `http.Client{Timeout: 0}` means no deadline at all. When the upstream
-(relay VM over WireGuard, or the fallback's direct opencode.ai egress)
-accepted the connection but stalled before writing response headers, the
-proxy's `resp.Body.Read()` loop blocked forever: no response, no error in
-the log, handler goroutine leaked. The `/provider` endpoint returns a small
-JSON catalog that should produce headers in milliseconds — a 30s stall means
-a dead peer.
+(relay VM, or the fallback's direct opencode.ai egress) accepted the
+connection but stalled before writing response headers, the proxy's
+`resp.Body.Read()` loop blocked forever: no response, no error in the log,
+handler goroutine leaked. Worse, the failure branches returned silently
+(no log, no fallback metric), which is why the outage ran 47 days
+invisible.
 
 A total body `Timeout` is deliberately NOT used: chat/SSE responses stream
 for minutes and a wall-clock deadline would truncate generations mid-stream.
 
 ## Fix
 
-Added `defaultRouterClient()` in `cmd/relay-router/proxy.go` and applied
-`ResponseHeaderTimeout` to `cmd/relay-proxy/main.go`'s transport:
+Added `newRouterClient(d)` in `cmd/relay-router/proxy.go` (production 5m via
+`defaultRouterClient()`) and `ResponseHeaderTimeout` on
+`cmd/relay-proxy/main.go`'s transport:
 
-- `DialContext` timeout: 5s (router→relay over WireGuard; 10s for the
-  relay→opencode.ai public egress).
+- `DialContext` timeout: 5s (router→relay plaintext HTTP with per-VM tokens;
+   WireGuard was removed, worklog 0447). 5s lands inside the workspace
+   injector's 10s client window so a blackholed peer surfaces as a bounded
+   502, not a hang.
 - `TLSHandshakeTimeout`: 10s.
-- **`ResponseHeaderTimeout`: 30s** — bounds the phase between request-send
-  and response-headers; exactly the `/provider` symptom. Generous for the
-  relay→upstream hop yet bounded.
-- `ExpectContinueTimeout`, `MaxIdleConns(PerHost)`, `IdleConnTimeout`,
-  `DisableCompression` — same defaults as the relay-proxy's existing client.
+- **`ResponseHeaderTimeout`: 5m** — bounds time-to-first-header. 5m (not 30s)
+   because the router is a generic openai-compatible forwarder and a
+   non-streaming completion (`stream:false`) sends headers only after the
+   FULL generation, which routinely exceeds 30s. Stated assumption (per the
+   issue-thread analysis): no legitimate request needs >5m to deliver
+   headers; streaming responses get headers immediately.
+- **Logging** on the router's forwarding + fallback `Do()`-error branches
+   (`logUpstreamError`, which unwraps `*url.Error` so the forwarded
+   path/query — which may carry secrets — is never logged). The relay-proxy
+   already logged on main; its log is likewise corrected to unwrap.
+- **Fallback metrics**: `fallbackProxy.withFallbackMetrics()` records
+   outcomes under `relay_router_requests_total{relay="fallback",status=...}`,
+   wired in `main.go`.
 - No total `Client.Timeout` — body streaming stays unbounded.
 
-Both `routerProxy` and `fallbackProxy` now use `defaultRouterClient()`.
+Both `routerProxy` and `fallbackProxy` use the bounded client.
 
 ## Key Decisions
 
@@ -59,11 +70,14 @@ Both `routerProxy` and `fallbackProxy` now use `defaultRouterClient()`.
    dead-peer case (accept-then-stall) without ever cutting a long
    generation. This is the correct granularity for a streaming reverse
    proxy.
-2. **Both hops fixed**: the router→relay leg (router's client) AND the
-   relay→opencode.ai leg (relay-proxy's client) — the `/provider` hang could
-   originate at either, and both had the defect.
-3. 30s value: the relay round-trip over WireGuard plus the relay's own
-   upstream head latency; generous headroom, still bounded.
+2. **Both hops bounded**: the router→relay leg (router's client) AND the
+   relay→opencode.ai leg (relay-proxy's client).
+3. **5m, not 30s**: chosen per the issue-thread analysis — a `stream:false`
+   completion sends headers only after the full generation. Assumption
+   stated in-code per Rule 7.
+4. **Loud failures**: log (URL-redacted) + fallback metric, so an outage is
+   visible in both the log and `/metrics` — the 47-day-invisible signature
+   is gone.
 
 ## Blockers
 
@@ -71,13 +85,20 @@ None.
 
 ## Tests Run
 
-- `TestRouterClientsHaveHeadTimeouts` (new): asserts the router client has a
-  configured transport with a non-zero `ResponseHeaderTimeout` and NO total
-  `Timeout` — locks the config against regressing to `Timeout: 0`.
-  Red/green verified (reverting to `Timeout: 0` fails it).
-- `TestRouterProxy_StalledUpstreamTimesOutHead` (new): a server that accepts
-  and never writes headers → the router client returns a bounded error in
-  ~30s (the ResponseHeaderTimeout), not a hang. Pre-fix this blocks forever.
+- `TestRouterClientsHaveHeadTimeouts` (new): asserts the PROXY CONSTRUCTORS
+  attach a bounded client (transport with non-zero `ResponseHeaderTimeout`,
+  no total `Timeout`). Red/green verified against `&http.Client{Timeout: 0}`.
+- `TestRouterProxy_StalledRelayBounded502` (new): real `routerProxy` → stalled
+  relay → bounded 502 in ~300ms (test-scaled bound), not a hang.
+- `TestFallbackProxy_UpstreamErrorRecordedInMetrics` (new): fallback 502 is
+  visible as `relay_router_requests_total{relay="fallback",status="502"} 1`.
+- `TestForwardFailureLogOmitsPathAndQuery` +
+  `TestFallbackFailureLogOmitsPathAndQuery` (new): captured router log during
+  a failed forward/fallback must NOT contain a sentinel path/query
+  (path-segment secret protection) and must NOT be empty (loud failure).
+  Red/green verified against logging the wrapped `url.Error`.
+- `TestDefaultHTTPClientHeadTimeout` (new, relay-proxy): transport pins
+  `ResponseHeaderTimeout` and no total `Timeout`. Red/green verified.
 - `go test -count=1 ./cmd/relay-router/ ./cmd/relay-proxy/` → PASS.
 - `go build ./cmd/relay-router/ ./cmd/relay-proxy/` PASS; `go vet` clean;
   `golangci-lint` 0 issues; `gofmt` clean.

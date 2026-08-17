@@ -127,6 +127,20 @@ func newRouterClient(responseHeaderTimeout time.Duration) *http.Client {
 	}
 }
 
+// logUpstreamError logs an upstream forwarding failure WITHOUT the request
+// URL. *url.Error.Error() includes the full URL (path + query) — a forwarded
+// path may carry path-segment secrets and the query may carry api_key-style
+// parameters, so logging the wrapped error would leak them. Unwrap to the
+// inner error (e.g. "net/http: timeout awaiting response headers" or
+// "dial tcp 10.0.0.1:443: i/o timeout"), which contains neither.
+func logUpstreamError(component, relayID string, err error) {
+	inner := err
+	if ue, ok := err.(*url.Error); ok {
+		inner = ue.Err
+	}
+	log.Printf("%s: %s upstream request failed: %v", component, relayID, inner)
+}
+
 // routerProxy is the HTTP handler that selects a relay and forwards
 // the request. If no relays are healthy, it enters fallback mode.
 type routerProxy struct {
@@ -196,10 +210,9 @@ func (rp *routerProxy) forwardToRelay(w http.ResponseWriter, r *http.Request, re
 	if err != nil {
 		// Log BEFORE the client-context check (issue #911 finding: the
 		// silent-error signature "zero errors in its own log"). Never log
-		// the request path/query — a forwarded path may carry path-segment
-		// secrets; the error string from net/http already omits them for
-		// URL errors, and we add nothing more than the relay + status.
-		log.Printf("relay-router: forward to relay %s failed: %v", relayID, err)
+		// the request URL — the forwarded path/query may carry secrets;
+		// logUpstreamError unwraps *url.Error to the inner error.
+		logUpstreamError("relay-router", relayID, err)
 		if r.Context().Err() != nil {
 			return
 		}
@@ -369,9 +382,9 @@ func (fp *fallbackProxy) forward(w http.ResponseWriter, r *http.Request) {
 	resp, err := fp.httpClient.Do(upstreamReq) //nolint:gosec // target is configured upstream
 	if err != nil {
 		// Log BEFORE the client-context check (issue #911: the silent-error
-		// signature). Never log the request path/query (path-segment secret
-		// protection) — the net/http error string omits them for URL errors.
-		log.Printf("relay-router: fallback upstream request failed: %v", err)
+		// signature). logUpstreamError never logs the request URL (the
+		// forwarded path/query may carry secrets).
+		logUpstreamError("relay-router", "fallback", err)
 		if fp.metrics != nil {
 			fp.metrics.recordRequest("fallback", http.StatusBadGateway)
 		}
