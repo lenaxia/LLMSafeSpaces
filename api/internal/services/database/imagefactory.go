@@ -12,8 +12,9 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/lenaxia/llmsafespaces/api/internal/imagefactory"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/database/pgarray"
+	"github.com/lenaxia/llmsafespaces/pkg/pgarray"
 )
 
 // ImageFactoryStore is the data-access interface for the image factory
@@ -32,10 +33,6 @@ type ImageFactoryStore interface {
 	ListBases(ctx context.Context) ([]imagefactory.Base, error)
 	GetBase(ctx context.Context, name, version string) (imagefactory.Base, error)
 	UpsertBase(ctx context.Context, b imagefactory.Base) error
-	// SeedUpsertBase is the boot-seed upsert: unlike the admin-path
-	// UpsertBase it never clears other defaults and never overwrites an
-	// existing row's is_default (#936).
-	SeedUpsertBase(ctx context.Context, b imagefactory.Base) error
 	DeleteBase(ctx context.Context, name, version string) error
 
 	// ── Extensions ────────────────────────────────────────────────────
@@ -101,7 +98,7 @@ func (s *Service) GetPlatformConfig(ctx context.Context) (imagefactory.PlatformC
 	var archs []string
 	err := s.DB.QueryRowContext(ctx,
 		`SELECT architectures FROM image_factory_platform_config WHERE id = 1`,
-	).Scan(pgarray.New(&archs))
+	).Scan(pgarray.Array(&archs))
 	if err != nil {
 		return imagefactory.PlatformConfig{}, fmt.Errorf("get platform config: %w", err)
 	}
@@ -111,7 +108,7 @@ func (s *Service) GetPlatformConfig(ctx context.Context) (imagefactory.PlatformC
 func (s *Service) SetPlatformConfig(ctx context.Context, pc imagefactory.PlatformConfig) error {
 	_, err := s.DB.ExecContext(ctx,
 		`UPDATE image_factory_platform_config SET architectures = $1, updated_at = now() WHERE id = 1`,
-		pgarray.New(pc.Architectures),
+		pgarray.Array(pc.Architectures),
 	)
 	if err != nil {
 		return fmt.Errorf("set platform config: %w", err)
@@ -155,61 +152,7 @@ func (s *Service) GetBase(ctx context.Context, name, version string) (imagefacto
 }
 
 func (s *Service) UpsertBase(ctx context.Context, b imagefactory.Base) error {
-	// #936: a default=true upsert clears every other default in the same
-	// transaction — moving the platform default is ONE call, and the
-	// two-default state (pills resolve highest-sorted, the create form's
-	// picker takes the first — visibly divergent) cannot persist.
-	if b.IsDefault {
-		tx, err := s.DB.BeginTx(ctx, nil)
-		if err != nil {
-			return fmt.Errorf("upsert base: begin tx: %w", err)
-		}
-		defer func() { _ = tx.Rollback() }()
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE image_factory_bases SET is_default = FALSE, updated_at = now() WHERE is_default`); err != nil {
-			return fmt.Errorf("upsert base: clear prior defaults: %w", err)
-		}
-		if err := upsertBaseOn(ctx, tx, b); err != nil {
-			return err
-		}
-		if err := tx.Commit(); err != nil {
-			return fmt.Errorf("upsert base: commit: %w", err)
-		}
-		return nil
-	}
-	return upsertBaseOn(ctx, s.DB, b)
-}
-
-// SeedUpsertBase is the seed path (#936): the default applies only to
-// rows the seed INSERTS — an existing base keeps its runtime is_default,
-// so a boot-time seed never reverts an operator's default move.
-func (s *Service) SeedUpsertBase(ctx context.Context, b imagefactory.Base) error {
-	// The seed's is_default applies only when it INSERTS the row AND no
-	// default exists yet — seed-after-delete (the operator removed the
-	// default row; the runtime default may live on another base) must not
-	// mint a second default. The partial unique index
-	// (000025) enforces this structurally; the NOT EXISTS guard keeps the
-	// intent readable at the store layer and gives a better error than
-	// the index violation would.
 	_, err := s.DB.ExecContext(ctx,
-		`INSERT INTO image_factory_bases (name, version, image, tag, digest, is_default, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6 AND NOT EXISTS (SELECT 1 FROM image_factory_bases WHERE is_default), now())
-		 ON CONFLICT (name, version) DO UPDATE SET
-		     image = EXCLUDED.image,
-		     tag = EXCLUDED.tag,
-		     digest = EXCLUDED.digest,
-		     updated_at = now()`,
-		b.Name, b.Version, b.Image, b.Tag, b.Digest, b.IsDefault,
-	)
-	if err != nil {
-		return fmt.Errorf("seed upsert base: %w", err)
-	}
-	return nil
-}
-
-// upsertBaseOn is the plain (non-seed) upsert on the given executor.
-func upsertBaseOn(ctx context.Context, db queryExecer, b imagefactory.Base) error {
-	_, err := db.ExecContext(ctx,
 		`INSERT INTO image_factory_bases (name, version, image, tag, digest, is_default, updated_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, now())
 		 ON CONFLICT (name, version) DO UPDATE SET
@@ -221,19 +164,9 @@ func upsertBaseOn(ctx context.Context, db queryExecer, b imagefactory.Base) erro
 		b.Name, b.Version, b.Image, b.Tag, b.Digest, b.IsDefault,
 	)
 	if err != nil {
-		// A concurrent default-move loser hits the partial unique index —
-		// typed conflict, not an opaque 500 (the invariant itself holds).
-		if isUniqueViolation(err) {
-			return ErrConflict
-		}
 		return fmt.Errorf("upsert base: %w", err)
 	}
 	return nil
-}
-
-// queryExecer abstracts *sql.DB vs *sql.Tx for shared upsert SQL.
-type queryExecer interface {
-	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
 }
 
 func (s *Service) DeleteBase(ctx context.Context, name, version string) error {
@@ -305,7 +238,7 @@ func (s *Service) PublishExtension(ctx context.Context, e imagefactory.Extension
 		     review_requested = EXCLUDED.review_requested,
 		     description = EXCLUDED.description,
 		     updated_at = now()`,
-		e.ID, string(e.Type), e.Value, fileSpecJSON, pgarray.New(e.SupportedBases),
+		e.ID, string(e.Type), e.Value, fileSpecJSON, pgarray.Array(e.SupportedBases),
 		e.Retired, e.ReviewRequested, e.Description,
 	)
 	if err != nil {
@@ -350,7 +283,7 @@ func (s *Service) ListKnownFailures(ctx context.Context) ([]imagefactory.KnownFa
 	for rows.Next() {
 		var kf imagefactory.KnownFailure
 		kfSel := (*[]string)(&kf.Selection)
-		if err := rows.Scan(&kf.SelectionHash, pgarray.New(kfSel), &kf.BaseName,
+		if err := rows.Scan(&kf.SelectionHash, pgarray.Array(kfSel), &kf.BaseName,
 			&kf.Explanation, &kf.FailureReason, &kf.DetectedAt, &kf.Retriable); err != nil {
 			return nil, fmt.Errorf("list known failures scan: %w", err)
 		}
@@ -365,7 +298,7 @@ func (s *Service) GetKnownFailure(ctx context.Context, selectionHash, baseName s
 		`SELECT selection_hash, selection, base_name, explanation, failure_reason, detected_at, retriable
 		 FROM image_factory_known_failures WHERE selection_hash = $1 AND base_name = $2`,
 		selectionHash, baseName,
-	).Scan(&kf.SelectionHash, pgarray.New((*[]string)(&kf.Selection)), &kf.BaseName,
+	).Scan(&kf.SelectionHash, pgarray.Array((*[]string)(&kf.Selection)), &kf.BaseName,
 		&kf.Explanation, &kf.FailureReason, &kf.DetectedAt, &kf.Retriable)
 	if errors.Is(err, sql.ErrNoRows) {
 		return imagefactory.KnownFailure{}, ErrNotFound
@@ -386,7 +319,7 @@ func (s *Service) RecordKnownFailure(ctx context.Context, kf imagefactory.KnownF
 		     failure_reason = EXCLUDED.failure_reason,
 		     detected_at = now(),
 		     retriable = EXCLUDED.retriable`,
-		kf.SelectionHash, pgarray.New(kf.Selection), kf.BaseName, kf.Explanation, kf.FailureReason, kf.Retriable,
+		kf.SelectionHash, pgarray.Array(kf.Selection), kf.BaseName, kf.Explanation, kf.FailureReason, kf.Retriable,
 	)
 	if err != nil {
 		return fmt.Errorf("record known failure: %w", err)
@@ -468,13 +401,10 @@ func (s *Service) CreateConfigAndBuild(ctx context.Context, c *imagefactory.Conf
 		`INSERT INTO image_factory_configs (hash, name, selection, resolved_values, base_name, base_version, scope, owner_id, org_id, status)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		 RETURNING id`,
-		c.Hash, c.Name, pgarray.New(c.Selection), rvJSONCfg, c.BaseName, c.BaseVersion,
+		c.Hash, c.Name, pgarray.Array(c.Selection), rvJSONCfg, c.BaseName, c.BaseVersion,
 		string(c.Scope), ownerID, orgID, string(c.Status),
 	).Scan(&c.ID)
 	if err != nil {
-		if isUniqueViolation(err) {
-			return ErrConflict
-		}
 		return fmt.Errorf("create config+build: insert config: %w", err)
 	}
 
@@ -496,7 +426,7 @@ func (s *Service) CreateConfigAndBuild(ctx context.Context, c *imagefactory.Conf
 		     (id, config_id, hash, base_name, base_version, resolved_values, architectures,
 		      status, gh_run_id, callback_token, triggered_by, scope, org_id)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-		b.ID, b.ConfigID, b.Hash, b.BaseName, b.BaseVersion, rvJSONBuild, pgarray.New(b.Architectures),
+		b.ID, b.ConfigID, b.Hash, b.BaseName, b.BaseVersion, rvJSONBuild, pgarray.Array(b.Architectures),
 		string(b.Status), b.GHRunID, b.CallbackToken, triggeredBy, string(b.Scope), buildOrgID,
 	)
 	if err != nil {
@@ -525,15 +455,10 @@ func (s *Service) CreateConfig(ctx context.Context, c *imagefactory.Config) erro
 		`INSERT INTO image_factory_configs (hash, name, selection, resolved_values, base_name, base_version, scope, owner_id, org_id, status)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		 RETURNING id`,
-		c.Hash, c.Name, pgarray.New(c.Selection), rvJSON, c.BaseName, c.BaseVersion,
+		c.Hash, c.Name, pgarray.Array(c.Selection), rvJSON, c.BaseName, c.BaseVersion,
 		string(c.Scope), ownerID, orgID, string(c.Status),
 	).Scan(&c.ID)
 	if err != nil {
-		// #936: scoped-name uniqueness violation maps to the typed
-		// conflict so the handler returns 409 instead of an opaque 500.
-		if isUniqueViolation(err) {
-			return ErrConflict
-		}
 		return fmt.Errorf("create config: %w", err)
 	}
 	return nil
@@ -628,7 +553,7 @@ func (s *Service) GetLaunchableConfigByHash(ctx context.Context, hash string, sc
 
 // scanConfigWithImageRef scans a (config, image_ref) pair produced by the
 // GetLaunchableConfigByHash join. Mirrors scanConfig exactly for the config
-// columns (pgarray.New for selection, json for resolved_values), then reads the
+// columns (pq.Array for selection, json for resolved_values), then reads the
 // extra b.image_ref column into *out.
 func scanConfigWithImageRef(sc rowScanner, out *string) (imagefactory.Config, error) {
 	var c imagefactory.Config
@@ -636,7 +561,7 @@ func scanConfigWithImageRef(sc rowScanner, out *string) (imagefactory.Config, er
 	var scopeStr, statusStr string
 	var ownerID, orgID sql.NullString
 	sel := (*[]string)(&c.Selection)
-	if err := sc.Scan(&c.ID, &c.Hash, &c.Name, pgarray.New(sel), &rvRaw,
+	if err := sc.Scan(&c.ID, &c.Hash, &c.Name, pgarray.Array(sel), &rvRaw,
 		&c.BaseName, &c.BaseVersion, &scopeStr, &ownerID, &orgID, &statusStr,
 		out); err != nil {
 		return imagefactory.Config{}, err
@@ -749,7 +674,11 @@ func (s *Service) RenameConfig(ctx context.Context, id, newName string) error {
 		`UPDATE image_factory_configs SET name = $1, updated_at = now() WHERE id = $2`,
 		newName, id)
 	if err != nil {
-		if isUniqueViolation(err) {
+		// pgx driver errors surface *pgconn.PgError (database/sql
+		// wraps; errors.As unwraps). The prior *pq.Error assertion could
+		// never match under pgx — the conflict path was dead code.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return ErrConflict
 		}
 		return fmt.Errorf("rename config: %w", err)
@@ -828,7 +757,7 @@ func (s *Service) CreateBuild(ctx context.Context, b *imagefactory.Build) error 
 		      status, gh_run_id, callback_token, triggered_by)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		 RETURNING id, started_at`,
-		b.ConfigID, b.Hash, b.BaseName, b.BaseVersion, rvJSON, pgarray.New(b.Architectures),
+		b.ConfigID, b.Hash, b.BaseName, b.BaseVersion, rvJSON, pgarray.Array(b.Architectures),
 		string(b.Status), b.GHRunID, b.CallbackToken, triggeredBy,
 	).Scan(&b.ID, &b.StartedAt)
 	if err != nil {
@@ -901,7 +830,7 @@ func (s *Service) TransitionBuildFailed(ctx context.Context, buildID, configID s
 		 VALUES ($1, $2, $3, $4, $5, now(), $6)
 		 ON CONFLICT (selection_hash, base_name) DO UPDATE SET
 		     explanation = EXCLUDED.explanation, failure_reason = EXCLUDED.failure_reason, detected_at = now(), retriable = EXCLUDED.retriable`,
-		kf.SelectionHash, pgarray.New(kf.Selection), kf.BaseName, kf.Explanation, kf.FailureReason, kf.Retriable); err != nil {
+		kf.SelectionHash, pgarray.Array(kf.Selection), kf.BaseName, kf.Explanation, kf.FailureReason, kf.Retriable); err != nil {
 		return fmt.Errorf("transition failed: insert known failure: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx,
@@ -923,8 +852,8 @@ func scanExtension(sc rowScanner) (imagefactory.Extension, error) {
 	var e imagefactory.Extension
 	var typeStr string
 	var fileSpecRaw []byte
-	var supportedBases []string
-	if err := sc.Scan(&e.ID, &typeStr, &e.Value, &fileSpecRaw, pgarray.New(&supportedBases),
+	var supportedBases pgarray.StringArray
+	if err := sc.Scan(&e.ID, &typeStr, &e.Value, &fileSpecRaw, &supportedBases,
 		&e.Retired, &e.ReviewRequested, &e.Description); err != nil {
 		return imagefactory.Extension{}, err
 	}
@@ -945,10 +874,10 @@ func scanConfig(sc rowScanner) (imagefactory.Config, error) {
 	var rvRaw []byte
 	var scopeStr, statusStr string
 	var ownerID, orgID sql.NullString
-	// Selection is a named slice type (type Selection []string); pgarray.New
+	// Selection is a named slice type (type Selection []string); pq.Array
 	// only special-cases *[]string, so cast at the scan boundary.
 	sel := (*[]string)(&c.Selection)
-	if err := sc.Scan(&c.ID, &c.Hash, &c.Name, pgarray.New(sel), &rvRaw,
+	if err := sc.Scan(&c.ID, &c.Hash, &c.Name, pgarray.Array(sel), &rvRaw,
 		&c.BaseName, &c.BaseVersion, &scopeStr, &ownerID, &orgID, &statusStr); err != nil {
 		return imagefactory.Config{}, err
 	}
@@ -990,7 +919,7 @@ func scanBuild(sc rowScanner) (imagefactory.Build, error) {
 	var finishedAt sql.NullTime
 	var scope, buildOrgID sql.NullString
 	if err := sc.Scan(&b.ID, &b.ConfigID, &b.Hash, &b.BaseName, &b.BaseVersion,
-		&rvRaw, pgarray.New(&b.Architectures), &imageRef, &digest, &statusStr,
+		&rvRaw, pgarray.Array(&b.Architectures), &imageRef, &digest, &statusStr,
 		&ghRunID, &callbackToken, &failureReason, &explanation, &triggeredBy,
 		&b.StartedAt, &finishedAt, &scope, &buildOrgID); err != nil {
 		return imagefactory.Build{}, err
@@ -1022,20 +951,4 @@ func scanBuild(sc rowScanner) (imagefactory.Build, error) {
 		return imagefactory.Build{}, fmt.Errorf("scan build: unmarshal resolved_values: %w", err)
 	}
 	return b, nil
-}
-
-// sqlStateError is satisfied by both Postgres drivers' error types
-// (*pgconn.PgError and any legacy shape exposing SQLState).
-type sqlStateError interface {
-	SQLState() string
-}
-
-// isUniqueViolation reports a 23505 unique-constraint violation from
-// either Postgres driver (#936).
-func isUniqueViolation(err error) bool {
-	var se sqlStateError
-	if errors.As(err, &se) {
-		return se.SQLState() == "23505"
-	}
-	return false
 }

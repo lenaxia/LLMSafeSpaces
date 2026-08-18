@@ -11,13 +11,12 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
-
 	"github.com/lenaxia/llmsafespaces/api/internal/config"
 	apierrors "github.com/lenaxia/llmsafespaces/api/internal/errors"
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	"github.com/lenaxia/llmsafespaces/api/internal/logger"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/database/pgarray"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/metrics"
+	"github.com/lenaxia/llmsafespaces/pkg/pgarray"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
@@ -886,7 +885,7 @@ func (s *Service) ListAPIKeys(ctx context.Context, userID string) ([]*types.APIK
 		var k types.APIKey
 		var keyStr string
 		var expiresAt sql.NullTime
-		if err := rows.Scan(&k.ID, new(string), &keyStr, &k.Name, &k.Active, &k.CreatedAt, &expiresAt, &k.DecryptAccess, &k.DekSynced, pgarray.New(&k.AllowedCIDRs)); err != nil {
+		if err := rows.Scan(&k.ID, new(string), &keyStr, &k.Name, &k.Active, &k.CreatedAt, &expiresAt, &k.DecryptAccess, &k.DekSynced, pgarray.Array(&k.AllowedCIDRs)); err != nil {
 			return nil, fmt.Errorf("failed to scan api key: %w", err)
 		}
 		k.Prefix = "lsp_"
@@ -950,7 +949,7 @@ func (s *Service) GetAPIKeyRecordByHash(ctx context.Context, keyHash string) (*t
 	err := s.DB.QueryRowContext(ctx, query, keyHash).Scan(
 		&k.ID, &k.UserID, new(string), &k.Name, &k.Active, &k.CreatedAt, &expiresAt,
 		&decryptAccess, &kekSalt, &wrappedDEK, &dekSynced, &keyCiphertext,
-		pgarray.New(&k.AllowedCIDRs),
+		pgarray.Array(&k.AllowedCIDRs),
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -1114,7 +1113,7 @@ func (s *Service) UpsertSessionTitle(ctx context.Context, workspaceID, sessionID
 
 // UpsertSessionContextUsed persists the prompt token count for the most recent
 // LLM step in this session. Called by the API proxy on every
-// adapter-declared usage event. Idempotent: concurrent writes of the same
+// session.next.step.ended SSE event. Idempotent: concurrent writes of the same
 // value are safe (both replicas receive the same event and write the same data).
 func (s *Service) UpsertSessionContextUsed(ctx context.Context, workspaceID, sessionID string, contextUsed int64) error {
 	_, err := s.DB.ExecContext(ctx,
@@ -1290,7 +1289,7 @@ func toNullableStringArray(s []string) interface{} {
 	if len(s) == 0 {
 		return nil
 	}
-	return pgarray.New(s)
+	return pgarray.Array(s)
 }
 
 func (s *Service) ListAllWorkspaceOwners(ctx context.Context) (map[string]string, error) {

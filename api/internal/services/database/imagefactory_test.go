@@ -13,10 +13,10 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/lenaxia/llmsafespaces/api/internal/imagefactory"
 )
 
@@ -678,7 +678,9 @@ func TestRenameConfig_Conflict(t *testing.T) {
 	t.Parallel()
 	svc, mock := newMockService(t)
 
-	// Simulate a pq unique violation (SQLSTATE 23505)
+	// Simulate the REAL runtime error shape: pgx surfaces *pgconn.PgError
+	// (the prior *pq.Error test paired with an equally dead *pq.Error
+	// production check — both unreachable under the pgx driver).
 	pgErr := &pgconn.PgError{Code: "23505", Message: "duplicate key"}
 	mock.ExpectExec(`UPDATE image_factory_configs SET name`).
 		WithArgs("Dup", "cfg-1").
