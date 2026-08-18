@@ -56,7 +56,9 @@ Added `newRouterClient(d)` in `cmd/relay-router/proxy.go` (production 5m via
 - **Logging** on the router's forwarding + fallback `Do()`-error branches
    (`logUpstreamError`, which unwraps `*url.Error` so the forwarded
    path/query — which may carry secrets — is never logged). The relay-proxy
-   already logged on main; its log is likewise corrected to unwrap.
+   error branch is ALSO logged by this PR (it was silent on main; the
+   round-3 correction records that this PR introduces that logging
+   wholesale), with the same url.Error unwrap.
 - **Fallback metrics**: `fallbackProxy.withFallbackMetrics()` records
    outcomes under `relay_router_requests_total{relay="fallback",status=...}`,
    wired in `main.go`.

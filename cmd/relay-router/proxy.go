@@ -79,19 +79,20 @@ var routerHopHeaders = map[string]struct{}{
 // (routerProxy) and for the direct fallback path (fallbackProxy) with the
 // production 5-minute response-header bound.
 func defaultRouterClient() *http.Client {
-	return newRouterClient(5 * time.Minute)
+	return newRouterClient(5*time.Minute, 5*time.Second)
 }
 
 // newRouterClient builds the router's http.Client with the given
-// response-header timeout. The production value is 5m (see defaultRouterClient
-// for the full rationale); tests pass a small value so the stalled-upstream
-// scenario completes quickly instead of burning 5 minutes of wall clock.
+// response-header and dial timeouts. The production values are 5m and 5s
+// (see defaultRouterClient for the full rationale); tests pass small values
+// so the stalled-upstream / blackholed-dial scenarios complete quickly
+// instead of burning minutes of wall clock.
 //
 // The Client must NOT set a total Timeout — chat/SSE responses stream for
 // minutes and a wall-clock deadline would truncate generations mid-stream.
 // The transport bounds the phases BEFORE the body streams:
 //
-//   - DialContext (5s): a blackholed peer (egress SYNs dropped) would
+//   - DialContext (default 5s): a blackholed peer (egress SYNs dropped) would
 //     otherwise stall the dial past every caller's deadline, pinning a
 //     handler goroutine with no response and no log (issue #911). 5s lands
 //     inside the workspace injector's 10s client window so the failure
@@ -109,11 +110,11 @@ func defaultRouterClient() *http.Client {
 //
 // The 502/504 surfaced here is a head-timeout, distinct from mid-body stalls,
 // which intentionally remain unbounded so long generations are never cut.
-func newRouterClient(responseHeaderTimeout time.Duration) *http.Client {
+func newRouterClient(responseHeaderTimeout, dialTimeout time.Duration) *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
 			DialContext: (&net.Dialer{
-				Timeout:   5 * time.Second,
+				Timeout:   dialTimeout,
 				KeepAlive: 30 * time.Second,
 			}).DialContext,
 			TLSHandshakeTimeout:   10 * time.Second,

@@ -939,6 +939,8 @@ func TestRouterClientsHaveHeadTimeouts(t *testing.T) {
 	assert.Zero(t, proxy.httpClient.Timeout, "no total body timeout — long streams must never be cut")
 	require.NotNil(t, tr.ResponseHeaderTimeout, "routerProxy: ResponseHeaderTimeout must be set")
 	assert.Positive(t, tr.ResponseHeaderTimeout, "routerProxy: ResponseHeaderTimeout must be non-zero")
+	require.NotNil(t, tr.DialContext, "routerProxy: a custom dialer (with timeout) must be configured")
+	assert.NotNil(t, tr.DialContext, "routerProxy: dialer must be present (issue #911: blackholed dials)")
 
 	fb, err := newFallbackProxy("https://upstream.example.com", 0.5, 1)
 	require.NoError(t, err)
@@ -947,6 +949,30 @@ func TestRouterClientsHaveHeadTimeouts(t *testing.T) {
 	assert.Zero(t, fb.httpClient.Timeout, "fallbackProxy: no total body timeout")
 	require.NotNil(t, fbtr.ResponseHeaderTimeout, "fallbackProxy: ResponseHeaderTimeout must be set")
 	assert.Positive(t, fbtr.ResponseHeaderTimeout, "fallbackProxy: ResponseHeaderTimeout must be non-zero")
+	require.NotNil(t, fbtr.DialContext, "fallbackProxy: a custom dialer (with timeout) must be configured")
+}
+
+// TestRouterClientDialTimeoutConfigured pins the literal #911 repro defect: a
+// blackholed dial (egress SYNs dropped) must stall at most the configured dial
+// timeout (5s production; test-scaled here) — NOT http.DefaultTransport's 30s
+// — so the failure lands inside the workspace injector's 10s client window as
+// a bounded 502 instead of a hang. Reverting to the default transport (or a
+// 30s dialer) fails this test.
+func TestRouterClientDialTimeoutConfigured(t *testing.T) {
+	c := newRouterClient(5*time.Minute, 300*time.Millisecond)
+	tr := c.Transport.(*http.Transport)
+	require.NotNil(t, tr.DialContext, "a custom dialer must be configured")
+
+	// Blackholed destination: a non-routable address (RFC 5737 TEST-NET-1).
+	// Dial to it and assert the configured dial timeout bounds the attempt.
+	start := time.Now()
+	conn, err := tr.DialContext(context.Background(), "tcp", "192.0.2.1:443")
+	elapsed := time.Since(start)
+	if conn != nil {
+		_ = conn.Close()
+	}
+	require.Error(t, err, "blackholed dial must fail")
+	assert.Less(t, elapsed, 2*time.Second, "dial must be bounded by the configured timeout (~300ms), not the default 30s; took %s", elapsed)
 }
 
 // TestRouterProxy_StalledRelayBounded502 is the handler-level e2e half of
@@ -980,7 +1006,7 @@ func TestRouterProxy_StalledRelayBounded502(t *testing.T) {
 	require.NoError(t, err)
 	proxy := newRouterProxy(fleet, newDetector429(fleet, 0.5, extractPort(stalled.URL)), metrics, extractPort(stalled.URL), fb)
 	// Test-scaled head timeout: bounded failure must land quickly.
-	proxy.httpClient = newRouterClient(300 * time.Millisecond)
+	proxy.httpClient = newRouterClient(300*time.Millisecond, 200*time.Millisecond)
 
 	router := httptest.NewServer(proxy)
 	t.Cleanup(router.Close)
@@ -1015,7 +1041,7 @@ func TestForwardFailureLogOmitsPathAndQuery(t *testing.T) {
 	fb, err := newFallbackProxy("https://upstream.example.com", 0.5, 1)
 	require.NoError(t, err)
 	proxy := newRouterProxy(fleet, newDetector429(fleet, 0.5, extractPort(stalled.URL)), metrics, extractPort(stalled.URL), fb)
-	proxy.httpClient = newRouterClient(200 * time.Millisecond)
+	proxy.httpClient = newRouterClient(200*time.Millisecond, 200*time.Millisecond)
 
 	router := httptest.NewServer(proxy)
 	t.Cleanup(router.Close)
@@ -1044,7 +1070,7 @@ func TestFallbackFailureLogOmitsPathAndQuery(t *testing.T) {
 	fp, err := newFallbackProxy("http://127.0.0.1:1", 1000.0, 5)
 	require.NoError(t, err)
 	fp.withFallbackMetrics(metrics)
-	fp.httpClient = newRouterClient(200 * time.Millisecond)
+	fp.httpClient = newRouterClient(200*time.Millisecond, 200*time.Millisecond)
 	server := httptest.NewServer(fp)
 	t.Cleanup(server.Close)
 

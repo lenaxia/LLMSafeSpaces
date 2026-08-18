@@ -5,8 +5,10 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -798,5 +800,42 @@ func TestE2E_HealthzNotProxied(t *testing.T) {
 
 	if upstreamHits != 0 {
 		t.Errorf("/healthz should not be proxied to upstream, got %d upstream hits", upstreamHits)
+	}
+}
+
+// TestProxyHandler_UpstreamErrorLogOmitsPathAndQuery is the content-safety +
+// presence pin for the relay-proxy's failure log (issue #911, round-3
+// finding): when the upstream fails, the logged line must be non-empty (loud)
+// and must NOT contain the caller's forwarded path or query (which may carry
+// api_key-style secrets). The unwrap of *url.Error strips the URL from the
+// error; this test fails red both if the log is removed and if it reverts to
+// logging the wrapped error.
+func TestProxyHandler_UpstreamErrorLogOmitsPathAndQuery(t *testing.T) {
+	// Unreachable upstream (port 1 refuses) — the failure branch logs.
+	_, relay := newTestProxy(t, "http://127.0.0.1:1")
+
+	var buf bytes.Buffer
+	prevOut := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prevOut)
+
+	resp, err := http.Get(relay.URL + "/v1/secret-path?api_key=SUPERSECRETRELAYPARAM")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+
+	logged := buf.String()
+	if !strings.Contains(logged, "relay-proxy: upstream request failed") {
+		t.Errorf("failure must be logged (loud, not silent); got:\n%s", logged)
+	}
+	if strings.Contains(logged, "secret-path") {
+		t.Errorf("log must not contain the forwarded path; got:\n%s", logged)
+	}
+	if strings.Contains(logged, "SUPERSECRETRELAYPARAM") {
+		t.Errorf("log must not contain the forwarded query; got:\n%s", logged)
 	}
 }
