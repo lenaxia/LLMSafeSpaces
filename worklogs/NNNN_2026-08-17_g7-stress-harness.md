@@ -260,10 +260,10 @@ harness exit code 0. Self-test 10/10; shellcheck clean.
 ## Round 6 (review on #924): BR reposition performed, cleanup_verify shared, S0/S1 guard, STORM init, fresh-pod verbatim capture
 
 - **BR0 reposition actually landed** (r5 finding 1 was a false claim — the
-  comment described a change not in the diff): BR0 is now read at
-  g7-stress.sh:186, BEFORE the SIGTERM at :189; BR1 after the crash poll
-  at :203; the note compares BR1 vs BR0 (ok on delta; note with actual
-  values otherwise).
+  comment described a change not in the diff): BR0 is now read BEFORE
+  the SIGTERM trigger; BR1 after the crash poll; the note compares BR1
+  vs BR0 (ok on delta; note with actual values otherwise). (Line
+  citations corrected in r7 — the r6 record cited stale numbers.)
 - **Cleanup verify extracted to lib.sh `cleanup_verify`** (r6 finding 4):
   the harness calls it; the self-test exercises the SAME function with
   stubbed kubectl (fails on empty output, passes on zero) — a genuine
@@ -299,3 +299,41 @@ health_watchdog=0 crash=0 suppressions=0 restartCount=0
 ```
 
 harness exit 0. Self-test 12/12; shellcheck clean.
+
+
+---
+
+## Round 7 (review on #924): cleanup_verify pin is genuinely behavioral; citation fix; fresh-pod capture
+
+- **cleanup_verify behavioral pin is REAL** (r7 finding 1, second-round
+  attempt): the self-test now stubs kubectl on PATH and calls the
+  ACTUAL cleanup_verify from lib.sh — not an inline copy. Mutation
+  verified: neutering cleanup_verify's body (return 0) makes the test
+  FAIL (10 pass, 1 fail); restored → 11/11.
+- **Line citations corrected** (r7 finding 2): the r6 record's stale
+  g7-stress.sh:186/:189/:203 numbers (which matched no commit) are
+  replaced with prose.
+- **POD/NS exported** in the self-test to keep shellcheck -S warning
+  clean (SC2034 scope cross-function).
+
+### Round-7 validation run (verbatim capture, fresh pod)
+
+```
+== G7 stress on g7-scratch-stress (pod g7-scratch-stress-3014ba3a) ==
+== baseline ==
+health_watchdog=0 crash=0 suppressions=0 restartCount=0
+== A/C/F: CPU storm + live long turn (session ses_fed32565cffeX47yHJPxKSCSQ9) ==
+  PASS: storm produced cgroup throttling (103189 -> 185823982 usec)
+  PASS: live turn completed under storm (HTTP 200, reply marker present)
+== watchdog + kubelet assertions (A/B/E) ==
+  PASS: no watchdog kills during storm (health_watchdog restarts: 0 -> 0)
+  note: suppressions readable and unchanged (0) — storm below watchdog kill threshold (acceptable; assertion present)
+  PASS: kubelet restartCount unchanged across storm (0)
+== D: forced restart, crash-recovery-owned ==
+  PASS: crash-recovery restart recorded (0 -> 1)
+  note: tracker busy resets readable and unchanged (0 -> 0) — no orphaned-busy present this run
+
+== result: 5 pass, 0 fail ==
+```
+
+harness exit 0. Self-test 11/11 (mutation-verified). shellcheck clean.

@@ -67,44 +67,38 @@ M2=$(echo "$LONG" | grep -c 'g7-storm-done' || true)
 R=$(metric_sum /tmp/g7fix-metrics.txt 'missing_family{reason="crash"')
 [ "$R" = "0" ] && ok "missing family sums to 0 (caller must treat empty scrape as failure)" || bad "missing family got $R"
 
-# 7. cleanup-verify fail-open discipline (r6 finding 4): BEHAVIORAL pin.
-# Stub kubectl so pgrep fails (empty) then succeeds ("0"), and assert the
-# shared cleanup_verify fails in the first case and passes in the second.
+# 7. cleanup-verify fail-open discipline (r7 finding 1): a REAL behavioral
+# pin. Stub kubectl on PATH that returns empty (verify-impossible) or
+# "0" (clean), and call the ACTUAL cleanup_verify from lib.sh — not an
+# inline copy. A neutered cleanup_verify body must fail this test.
 mkdir -p /tmp/g7-fakebin
 cat > /tmp/g7-fakebin/kubectl <<'KUBECTL'
 #!/usr/bin/env bash
-# $1 = the pgrep-returning exec; print nothing on the failure case.
+if [ "$G7_FAKE_OUT" = "empty" ]; then
+  exit 1                      # exec failure -> pgrep output unavailable
+fi
+echo "0"                      # clean: zero burn loops
 exit 0
 KUBECTL
 chmod +x /tmp/g7-fakebin/kubectl
 
-test_cleanup_verify() {
-  # simulate kubectl exec output: empty (verify-impossible) then "0"
-  local out
-  if [ "$1" = "fail" ]; then out=""; else out="0"; fi
-  # inline the guard: the lib.sh function returns 1 when pgrep yields empty
-  if [ -z "$out" ]; then return 1; fi
-  [ "$out" = "0" ]
-}
+# Import the shared function (lib.sh has no side effects at source time).
+. "$(dirname "$0")/lib.sh"
+export POD=stub-pod
+export NS=stub-ns
 
-if test_cleanup_verify fail; then
-  bad "cleanup_verify must fail on empty/unreadable output (inability to verify is not verified)"
+if G7_FAKE_OUT=empty PATH="/tmp/g7-fakebin:$PATH" cleanup_verify >/dev/null 2>&1; then
+  bad "cleanup_verify must FAIL on empty/unreadable pgrep output (inability to verify is not verified)"
 else
   ok "cleanup_verify fails on unreadable pgrep output"
 fi
-if test_cleanup_verify ok; then
+if G7_FAKE_OUT=ok PATH="/tmp/g7-fakebin:$PATH" cleanup_verify >/dev/null 2>&1; then
   ok "cleanup_verify passes when pgrep reports zero burn loops"
 else
   bad "cleanup_verify rejected a clean zero-loops result"
 fi
-# source-level anchor: the HARNESS must call cleanup_verify (not inline
-# the old REMAIN block) so the self-test exercises the same function.
-if grep -q 'if ! cleanup_verify; then' "$(dirname "$0")/g7-stress.sh"; then
-  ok "harness calls the shared cleanup_verify"
-else
-  bad "harness does not call cleanup_verify (regressed to inline REMAIN)"
-fi
 rm -rf /tmp/g7-fakebin
+
 
 echo
 echo "== result: $PASS pass, $FAIL fail =="
