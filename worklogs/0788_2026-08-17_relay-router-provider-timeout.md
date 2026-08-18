@@ -136,7 +136,7 @@ None.
 - `cmd/relay-proxy/proxy.go`
 - `cmd/relay-proxy/coverage_test.go`
 - `cmd/relay-proxy/proxy_test.go`
-- `worklogs/NNNN_2026-08-17_relay-router-provider-timeout.md` (this entry)
+- `worklogs/0788_2026-08-17_relay-router-provider-timeout.md` (this entry)
 
 ---
 
