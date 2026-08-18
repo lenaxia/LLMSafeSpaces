@@ -108,15 +108,58 @@ before a generation change).
 
 ### D3 — Durable prompts: mimic the TUI's *property*, not its mechanism
 
-> **G4 audit amendment (2026-08-16, #892):** the durable queue already
-> exists — `EnqueueMessage` routes to opencode V2 `delivery:"queue"`,
-> which persists SessionInput rows in opencode's SQLite (survive
-> generation changes by construction) and drains on `execution.wake`;
-> `wakeStrandedV2Sessions` recovers stranded inputs on reconnect. The
-> incident's losses were all on the V1 direct path chosen by the client.
-> D3 therefore reduces to: retire client-decides routing, let the API
-> decide queue-vs-direct from authoritative busy, add clientMessageID
-> idempotency and a per-session count cap. No new durability machinery.
+> **G4 audit amendment (2026-08-16, #892) — VOIDED (2026-08-18, #907):**
+> the audit's premise ("the durable queue already exists") was wrong:
+> #755 documents that V2 `delivery:"queue"` is admitted but NEVER
+> drained on opencode 1.18.10 (SEV1 message loss), and #924's G7 audit
+> confirmed the queue UI reads a shadow fed by that dead path. The API's
+> `SendPromptAsync` already routes everything through synchronous V1
+> `adapter.Send` (correct), but binds delivery to the CLIENT'S request
+> context — an iOS mid-send disconnect cancels delivery and loses the
+> message (the incident's 6× `context canceled` class, still live), and
+> the frontend 503-retry loop has no idempotency (double-send risk).
+> D3 therefore needs a **platform-side outbox** after all — the original
+> design, re-scoped below.
+
+**D3 final spec (2026-08-18 — implementation gate: G7 merged as #924).**
+
+- **Storage: Valkey stream per session** (`outbox:{ws}:{ses}`), consumer
+  group `deliver`. Valkey runs with AOF (`--appendonly yes` in the
+  chart) — accepted-but-undelivered messages survive API restarts AND
+  Valkey restarts. Per-entry fields: id (Valkey entry ID), text,
+  clientMessageID, model override JSON, acceptedAt, status
+  (pending|delivering|delivered|error), attempts, lastError.
+- **Accept path (`POST /prompt` rework):** existing validation (100KB,
+  session cap) + `clientMessageID` dedupe (Valkey SET NX marker with
+  TTL) + per-session outbox length cap (25; 429 with queue position) →
+  XADD → **202 Accepted** `{messageID, clientMessageID, status:"queued"}`
+  immediately. The HTTP request no longer carries the turn. Response
+  rendering is already SSE-driven (`useChatStream` waits for idle and
+  fetches — no frontend change needed for the happy path).
+- **Delivery worker (per API, #903-reconciler pattern):** a single
+  goroutine scans sessions with pending entries (Valkey keyspace
+  pattern) every second; for each, deliver via `adapter.Send` with a
+  DETACHED context (survives client disconnects; bounded by its own
+  10-min timeout), one in flight per session (ordering), retry with
+  capped backoff (5 attempts), terminal `error` status surfaced to the
+  queue UI with the last error. Redelivery after an API crash mid-
+  delivery is possible (at-least-once); the render-side dedupe below
+  collapses it.
+- **Idempotency:** `clientMessageID` is deduped at ACCEPT (retries of
+  the same ID return the original messageID, 200-not-202). Double-taps
+  and iOS reconnect retries are covered. At-least-once delivery +
+  render dedupe is the stated semantics (unchanged from the original
+  ruling).
+- **Queue UI reads the outbox** (`ListQueue` → outbox stream entries
+  with status): pending entries are REAL (they will deliver); error
+  entries expose retry. The dead V2-shadow listing is deleted. The
+  client-side `enqueue` path (client-decides) is retired — `send`
+  always POSTs to the outbox; the queue section renders outbox state.
+- **Deliberately out of scope:** multi-API-replica delivery races (two
+  replicas may both scan; consumer-group claiming makes duplicate
+  delivery safe — at-least-once + render dedupe), cross-workspace
+  fairness, and replacing the 503-retry loop (it becomes harmless:
+  retries hit the dedupe marker).
 
 The TUI never loses a compose because compose and execute share fate. A
 networked API cannot share fate, so we copy the property — **accept-then-
