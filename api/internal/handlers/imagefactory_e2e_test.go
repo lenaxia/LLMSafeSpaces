@@ -27,7 +27,7 @@ import (
 // behavior for image-factory e2e tests. It tracks configs, builds, and
 // known failures with realistic semantics (atomic transitions, coalescing).
 type e2eImageFactoryStore struct {
-	e2eBase               imagefactory.Base
+	e2eBase imagefactory.Base
 	// e2eExtraBases, when non-nil, REPLACES the single-base return of
 	// ListBases (multi-base catalog scenarios, e.g. base-update pill).
 	e2eExtraBases         []imagefactory.Base
