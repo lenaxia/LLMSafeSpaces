@@ -265,9 +265,11 @@ harness exit code 0. Self-test 10/10; shellcheck clean.
   vs BR0 (ok on delta; note with actual values otherwise). (Line
   citations corrected in r7 — the r6 record cited stale numbers.)
 - **Cleanup verify extracted to lib.sh `cleanup_verify`** (r6 finding 4):
-  the harness calls it; the self-test exercises the SAME function with
-  stubbed kubectl (fails on empty output, passes on zero) — a genuine
-  behavioral pin, not a tautology or source-grep.
+  the harness calls it. (CORRECTED in r7/r8: the r6-era self-test NEVER
+  called the shared function — it was an inline copy proven vacuous in
+  r7 when neutering the guard left the suite green. The real behavioral
+  pin, calling the actual cleanup_verify with a stubbed kubectl across
+  all four verification modes, landed in r8 and is mutation-verified.)
 - **S0/S1 guard** (r6 finding 3): the suppressions branch now requires
   BOTH reads non-empty before it can report "counted" — an unreadable
   baseline can no longer false-green.
@@ -379,5 +381,7 @@ Fix: `metric_sum` now excludes lines starting with `#`
 (HELP "...counting 42" + a series of 5 → must sum 5, not 47/42).
 Mutation-verified: removing the comment-exclusion → 13/1; intact → 14/0.
 
-Harness code unchanged from r7; the r7 fresh-pod capture remains valid.
+lib.sh changed only to exclude comment lines from metric_sum; output
+is identical for real exposition (all real HELP tokens end
+non-numerically), so the r7 fresh-pod capture remains valid.
 Self-test 14/14; shellcheck clean.
