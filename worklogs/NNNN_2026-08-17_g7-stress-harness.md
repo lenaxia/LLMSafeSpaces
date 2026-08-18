@@ -74,3 +74,37 @@ forced generation change, live turns completing under a CPU storm.
 ## Files Modified
 
 - tests/stress/g7-stress.sh (new)
+
+
+---
+
+## Round 2 (review on #924): all three blockers + test-gap
+
+- **Recorded round-2 validation** (blocker 1): actual run on throwaway
+  0.15.11 workspace, captured below — the worklog now carries the real
+  output, not commit-message claims.
+- **F enforced** (blocker 2): no-throttle-delta with both reads
+  succeeding is now a `bad`, not a `note`; the storm exec's start is
+  checked (`kill -0`).
+- **Spanning live turn restored** (blocker 3): the turn now issues a
+  `sleep 10` tool call so it spans the storm window.
+- **Shared parsing helper** (test-gap): `tests/stress/lib.sh` sources
+  `metric_sum`; both the harness and the self-test use it — no copy to
+  drift (the round-1 head-1 defect survived into round 2 precisely
+  because the self-test re-implemented the logic).
+- Guarded `WH1/S1` reads (fail-closed, no silent `set -e` exit).
+
+### Round-2 validation run (recorded live)
+
+```
+== G7 stress on g7-scratch-stress (pod g7-scratch-stress-ae4799fb) ==
+  PASS: storm produced cgroup throttling (255579 -> 155720347 usec)
+  PASS: live turn completed under storm (HTTP 200, reply marker present)
+  PASS: no watchdog kills during storm (health_watchdog restarts: 0 -> 0)
+  note: suppressions unchanged (0) — storm below watchdog kill threshold
+  PASS: kubelet restartCount unchanged across storm (0)
+  PASS: crash-recovery restart recorded (0 -> 1)
+== result: 5 pass, 0 fail ==
+```
+
+Self-test 8/8. shellcheck -S warning clean on all three scripts.

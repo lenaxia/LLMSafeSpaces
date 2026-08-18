@@ -34,16 +34,19 @@ bad()  { echo "  FAIL: $1"; FAIL=$((FAIL+1)); }
 # "0" when the counter is absent — counters are promauto-lazy and a
 # healthy pod that never restarted has NO series, which is a valid zero.
 # The scrape-unreachable case is checked separately (metric_endpoint).
+# shellcheck source=tests/stress/lib.sh
+. "$(dirname "$0")/lib.sh"
+
 ad_metric() {
-  # Copy the exposition OUT and parse locally: metric label patterns
-  # ({reason="crash"}) break when interpolated through kubectl exec sh -c
-  # at any quoting depth (reproduced live across grep -E/-F, awk, and
-  # base64 variants). Local awk with $NF is unambiguous and the parsing
-  # is covered by the self-test.
+  # Copy the exposition OUT and parse locally via the shared metric_sum:
+  # metric label patterns break when interpolated through kubectl exec
+  # sh -c at any quoting depth (reproduced live); local awk with $NF is
+  # unambiguous and the parsing is covered by the self-test, which
+  # sources the SAME helper (no copy to drift).
   local f
   f=$(mktemp)
   kubectl exec "$POD" -n "$NS" -c workspace -- sh -c 'curl -s -m 5 http://localhost:4098/metrics' > "$f" 2>/dev/null || { rm -f "$f"; return 1; }
-  awk -v fam="$1" 'index($0, fam) { sum+=$NF } END { print sum+0 }' "$f"
+  metric_sum "$f" "$1"
   rm -f "$f"
 }
 # metric_endpoint: fails hard (and loudly) if the metrics scrape itself
@@ -102,12 +105,13 @@ kubectl exec "$POD" -n "$NS" -c workspace -- sh -c '
   for i in 1 2 3 4 5 6 7 8; do
     ( G7LOAD burn_$i; n=0; while :; do n=$((n+1)); [ $((n % 10000)) -eq 0 ] && :; done ) &
   done
-  wait' 2>/dev/null &
+  wait' >/dev/null 2>&1 &
 STORM=$!
 sleep 2
+if ! kill -0 $STORM 2>/dev/null; then echo "FAIL: storm exec did not start"; exit 2; fi
 
 TURN=$(curl -s -m 120 -X POST -u "$OC" -H 'Content-Type: application/json' \
-  -d '{"parts":[{"type":"text","text":"reply with exactly g7-storm-done"}]}' \
+  -d '{"parts":[{"type":"text","text":"run: sleep 10; echo done then reply with exactly g7-storm-done"}]}' \
   "http://localhost:$PORT_OC/session/$SID/message" -w '\n%{http_code}') || true
 CODE=$(echo "$TURN" | tail -1)
 MARKER=$(echo "$TURN" | head -c 4000 | grep -c 'g7-storm-done' || true)
@@ -123,7 +127,7 @@ TH1=$(kubectl exec "$POD" -n "$NS" -c workspace -- sh -c 'cat /sys/fs/cgroup/cpu
 if [ -n "$TH0" ] && [ -n "$TH1" ] && [ "$TH1" -gt "$TH0" ]; then
   ok "storm produced cgroup throttling ($TH0 -> $TH1 usec)"
 else
-  echo "  note: no measurable throttle delta ($TH0 -> $TH1) — load may have been below quota; assertions A/C still valid for the load that ran"
+  bad "storm ran but produced NO throttle delta ($TH0 -> $TH1) — load did not materialize"
 fi
 
 if [ "$CODE" = "200" ] && [ "$MARKER" -ge 1 ]; then
@@ -133,8 +137,8 @@ else
 fi
 
 echo "== watchdog + kubelet assertions (A/B/E) =="
-WH1=$(ad_metric 'workspace_restarts_total{reason="health_watchdog"')
-S1=$(ad_metric 'workspace_watchdog_suppressions_total')
+WH1=$(ad_metric 'workspace_restarts_total{reason="health_watchdog"') || true
+S1=$(ad_metric 'workspace_watchdog_suppressions_total') || true
 RC1=$(kubectl get pod "$POD" -n "$NS" -o jsonpath='{.status.containerStatuses[?(@.name=="workspace")].restartCount}' 2>/dev/null | tr -d ' ') || true
 
 if [ -n "$WH1" ] && [ "$WH1" = "$WH0" ]; then
