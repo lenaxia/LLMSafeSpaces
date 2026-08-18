@@ -30,6 +30,10 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
   const [expandedConfig, setExpandedConfig] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  // #928 phase 2: refresh-flow prefill source. When set, the create form
+  // is pre-filled from this config and the base is pre-targeted at the
+  // update (bump or migration) so a re-save produces the new-hash config.
+  const [refreshSource, setRefreshSource] = useState<Config | null>(null);
 
   // Track whether the default base has been auto-selected on first load.
   // Using a ref (not state) avoids re-creating the `load` callback when
@@ -91,6 +95,36 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
     }
   };
 
+  // #928 refresh flow: prefill the create form from a stale config with
+  // the base pre-targeted at the update. The form IS the diff review —
+  // same extension selection, new base visible in the Base Image select;
+  // saving creates a NEW config (new hash, new build; coalesced if the
+  // combo exists). The original config is left untouched — migration is
+  // explicit consent per ruling #29, never a mutation.
+  const handleRefreshPrefill = (cfg: Config) => {
+    if (!cfg.updatesAvailable) return;
+    const u = cfg.updatesAvailable;
+    const targetName = u.kind === "base_migration" && u.defaultBaseName ? u.defaultBaseName : u.currentBaseName;
+    const targetVersion = u.kind === "base_migration" && u.defaultBaseVersion
+      ? u.defaultBaseVersion
+      : u.latestBaseVersion || u.currentBaseVersion;
+    // Only pre-target if the catalog actually offers that base (retired
+    // bases can't be re-targeted; the pill wouldn't show for them, but
+    // be defensive).
+    const target = catalog?.bases.find((b) => b.name === targetName && b.version === targetVersion)
+      ?? catalog?.bases.find((b) => b.name === targetName);
+    if (!target) {
+      toast("Update target base not found in catalog", "error");
+      return;
+    }
+    setRefreshSource(cfg);
+    setName(cfg.name);
+    setSelected(new Set(cfg.selection));
+    setBaseName(target.name);
+    setBaseVersion(target.version);
+    setExpandedConfig(null);
+  };
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -138,7 +172,13 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
       setConfigs((prev) => [...prev, cfg]);
       setName("");
       setSelected(new Set());
-      toast(`Image config created: ${cfg.name} is building`, "success");
+      setRefreshSource(null);
+      toast(
+        refreshSource
+          ? `Refreshed ${refreshSource.name} onto ${baseName} ${baseVersion}: new config is building (the original is unchanged)`
+          : `Image config created: ${cfg.name} is building`,
+        "success",
+      );
     } catch (e: unknown) {
       toast(e instanceof Error ? e.message : "Failed to create config", "error");
     }
@@ -253,6 +293,14 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
             </div>
             {editable && cfg.status !== "building" && (
               <div className="mt-3 flex gap-2">
+                {cfg.updatesAvailable && (
+                  <button
+                    onClick={() => handleRefreshPrefill(cfg)}
+                    className="rounded-md bg-amber-600 px-3 py-1 text-xs font-medium text-white hover:bg-amber-700"
+                  >
+                    Refresh to {cfg.updatesAvailable.kind === "base_migration" ? cfg.updatesAvailable.defaultBaseName : `${cfg.baseName} ${cfg.updatesAvailable.latestBaseVersion}`}
+                  </button>
+                )}
                 {renamingId === cfg.id ? (
                   <>
                     <input
@@ -286,6 +334,26 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
         Create {createScopeLabel} Image
       </h3>
       <div className="space-y-4 rounded-md border border-border p-4">
+        {refreshSource && (
+          <div className="flex items-start justify-between gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
+            <div>
+              <span className="font-medium">Refreshing “{refreshSource.name}”</span> — same extensions, new base.
+              Saving creates a NEW config; the original stays untouched and launchable.
+              {refreshSource.updatesAvailable?.kind === "base_migration" && (
+                <div className="mt-1 text-muted-foreground">
+                  Package versions follow the Debian suite: {refreshSource.baseName} → {refreshSource.updatesAvailable.defaultBaseName} may change system-package versions.
+                </div>
+              )}
+            </div>
+            <button
+              onClick={() => { setRefreshSource(null); setName(""); setSelected(new Set()); }}
+              className="shrink-0 rounded px-2 py-0.5 text-muted-foreground hover:bg-accent"
+              aria-label="Cancel refresh"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
         <div>
           <label className="block text-sm font-medium mb-1">Name</label>
           <input

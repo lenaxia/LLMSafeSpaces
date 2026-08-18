@@ -155,6 +155,49 @@ describe("WorkspaceImagesTab", () => {
   });
 });
 
+describe("refresh flow (#928 phase 2)", () => {
+  const staleCfg = {
+    ...defaultConfigs[0],
+    updatesAvailable: {
+      kind: "base_migration" as const,
+      currentBaseName: "bookworm",
+      currentBaseVersion: "0.6.0",
+      latestBaseVersion: "0.9.0",
+      defaultBaseName: "trixie",
+      defaultBaseVersion: "0.1.0",
+    },
+  };
+
+  it("shows a Refresh button on stale configs and prefills the form on click", async () => {
+    mockGetCatalog.mockResolvedValue(defaultCatalog);
+    mockListConfigs.mockResolvedValue([staleCfg]);
+    render(<WorkspaceImagesTab />);
+    await waitFor(() => expect(screen.getByText("ml-stack")).toBeInTheDocument());
+
+    // Expand the card and find the refresh button
+    fireEvent.click(screen.getByText("ml-stack"));
+    const refreshBtn = await screen.findByRole("button", { name: /Refresh to trixie/i });
+    fireEvent.click(refreshBtn);
+
+    // Name prefilled, refresh banner visible
+    expect(await screen.findByText(/Refreshing “ml-stack”/i)).toBeInTheDocument();
+    expect((screen.getByPlaceholderText("e.g. ml-stack") as HTMLInputElement).value).toBe("ml-stack");
+  });
+
+  it("cancel returns the form to empty", async () => {
+    mockGetCatalog.mockResolvedValue(defaultCatalog);
+    mockListConfigs.mockResolvedValue([staleCfg]);
+    render(<WorkspaceImagesTab />);
+    await waitFor(() => expect(screen.getByText("ml-stack")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("ml-stack"));
+    fireEvent.click(await screen.findByRole("button", { name: /Refresh to trixie/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel refresh" }));
+    expect(screen.queryByText(/Refreshing/i)).toBeNull();
+    expect((screen.getByPlaceholderText("e.g. ml-stack") as HTMLInputElement).value).toBe("");
+  });
+
+  it("no Refresh button on fresh configs", async () => {
+
 describe("base-update pill (#928)", () => {
   it("shows a migration pill when the default base moved", async () => {
     mockGetCatalog.mockResolvedValue(defaultCatalog);
@@ -199,6 +242,9 @@ describe("base-update pill (#928)", () => {
     mockListConfigs.mockResolvedValue(defaultConfigs);
     render(<WorkspaceImagesTab />);
     await waitFor(() => expect(screen.getByText("ml-stack")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("ml-stack"));
+    expect(screen.queryByRole("button", { name: /Refresh to/i })).toBeNull();
+
     expect(screen.queryByText(/available/i)).toBeNull();
     expect(screen.queryByText(/new base/i)).toBeNull();
   });
