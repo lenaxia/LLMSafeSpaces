@@ -337,3 +337,29 @@ health_watchdog=0 crash=0 suppressions=0 restartCount=0
 ```
 
 harness exit 0. Self-test 11/11 (mutation-verified). shellcheck clean.
+
+
+---
+
+## Round 8 (review on #924): cleanup_verify pin covers all four modes
+
+The r7 pin tested 2 of cleanup_verify's 4 verification modes (the
+reviewer proved the other two — empty-output and loops-remain — could
+be neutered with the test still green). Now all four are pinned via a
+4-mode kubectl stub:
+
+- execfail (rc 1): pinned
+- empty (rc 1, "pgrep absent, swallowed by || true" — the r5/r7
+  etiology): pinned
+- count (rc 2, "3 burn loops remain"): pinned
+- zero (rc 0, clean): pinned as the pass case
+
+Mutation-verified: neutering the empty-guard → 11/2; neutering the
+count-guard → 12/1; intact → 13/0. Self-test 13/13; shellcheck clean.
+
+### Round-8 validation
+
+The harness itself (g7-stress.sh, lib.sh) is unchanged from r7 — the r7
+fresh-pod capture (pod 3014ba3a, TH0=103189us, crash 0->1, exit 0)
+remains valid for the head code. Self-test grew 11 -> 13 (two more
+cleanup-verify modes).

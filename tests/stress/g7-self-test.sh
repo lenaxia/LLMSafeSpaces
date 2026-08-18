@@ -74,11 +74,13 @@ R=$(metric_sum /tmp/g7fix-metrics.txt 'missing_family{reason="crash"')
 mkdir -p /tmp/g7-fakebin
 cat > /tmp/g7-fakebin/kubectl <<'KUBECTL'
 #!/usr/bin/env bash
-if [ "$G7_FAKE_OUT" = "empty" ]; then
-  exit 1                      # exec failure -> pgrep output unavailable
-fi
-echo "0"                      # clean: zero burn loops
-exit 0
+case "$G7_FAKE_OUT" in
+  execfail) exit 1 ;;                              # exec failure
+  empty)    exit 0 ;;                              # pgrep absent -> no output
+  count)    echo "3"; exit 0 ;;                    # 3 burn loops remain
+  zero)     echo "0"; exit 0 ;;                    # clean
+esac
+exit 1
 KUBECTL
 chmod +x /tmp/g7-fakebin/kubectl
 
@@ -87,12 +89,14 @@ chmod +x /tmp/g7-fakebin/kubectl
 export POD=stub-pod
 export NS=stub-ns
 
-if G7_FAKE_OUT=empty PATH="/tmp/g7-fakebin:$PATH" cleanup_verify >/dev/null 2>&1; then
-  bad "cleanup_verify must FAIL on empty/unreadable pgrep output (inability to verify is not verified)"
-else
-  ok "cleanup_verify fails on unreadable pgrep output"
-fi
-if G7_FAKE_OUT=ok PATH="/tmp/g7-fakebin:$PATH" cleanup_verify >/dev/null 2>&1; then
+for mode in execfail empty count; do
+  if G7_FAKE_OUT="$mode" PATH="/tmp/g7-fakebin:$PATH" cleanup_verify >/dev/null 2>&1; then
+    bad "cleanup_verify must FAIL on mode=$mode (unverifiable/incomplete cleanup)"
+  else
+    ok "cleanup_verify fails on mode=$mode (rc nonzero)"
+  fi
+done
+if G7_FAKE_OUT=zero PATH="/tmp/g7-fakebin:$PATH" cleanup_verify >/dev/null 2>&1; then
   ok "cleanup_verify passes when pgrep reports zero burn loops"
 else
   bad "cleanup_verify rejected a clean zero-loops result"
