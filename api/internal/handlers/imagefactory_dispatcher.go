@@ -122,6 +122,39 @@ func (d *ghActionsDispatcher) Dispatch(ctx context.Context, req dispatchRequest)
 	return 0, nil
 }
 
+// Cancel aborts a dispatched workflow run (#936). The workflow_dispatch
+// API does not return the run ID (Dispatch returns 0 until GitHub's API
+// grows a synchronous-ID variant), so callers pass the build's recorded
+// ID; runID <= 0 is a logged no-op. Best-effort by contract.
+func (d *ghActionsDispatcher) Cancel(ctx context.Context, ghRunID int64) error {
+	if ghRunID <= 0 {
+		return nil
+	}
+	token, err := d.getInstallationToken(ctx)
+	if err != nil {
+		return fmt.Errorf("gh cancel: get token: %w", err)
+	}
+	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/actions/runs/%d/cancel", d.owner, d.repo, ghRunID)
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, nil)
+	if err != nil {
+		return fmt.Errorf("gh cancel: request: %w", err)
+	}
+	httpReq.Header.Set("Authorization", "Bearer "+token)
+	httpReq.Header.Set("Accept", "application/vnd.github+json")
+	httpReq.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	resp, err := d.client.Do(httpReq)
+	if err != nil {
+		return fmt.Errorf("gh cancel: call: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	// 202 Accepted = cancellation queued; 409 = already completed.
+	if resp.StatusCode != http.StatusAccepted && resp.StatusCode != http.StatusConflict {
+		raw, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("gh cancel: unexpected status %d: %s", resp.StatusCode, string(raw))
+	}
+	return nil
+}
+
 // getInstallationToken returns a cached installation token or mints a
 // new one. Tokens last 1 hour; we cache for 50 minutes to avoid edge
 // cases near expiry.

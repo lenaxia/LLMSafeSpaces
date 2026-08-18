@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/database"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -23,16 +24,22 @@ import (
 // fakeDispatcher scripts the Dispatch outcome. Records calls so tests
 // assert whether dispatch was invoked.
 type fakeDispatcher struct {
-	ghRunID int64
-	err     error
-	called  bool
-	lastReq dispatchRequest
+	ghRunID     int64
+	err         error
+	called      bool
+	lastReq     dispatchRequest
+	cancelCalls []int64
 }
 
 func (f *fakeDispatcher) Dispatch(_ context.Context, req dispatchRequest) (int64, error) {
 	f.called = true
 	f.lastReq = req
 	return f.ghRunID, f.err
+}
+
+func (f *fakeDispatcher) Cancel(_ context.Context, ghRunID int64) error {
+	f.cancelCalls = append(f.cancelCalls, ghRunID)
+	return nil
 }
 
 func s4Store() *fakeIFStore {
@@ -266,4 +273,36 @@ func newIFRouterForHandler(t *testing.T, h *ImageFactoryHandler) *gin.Engine {
 	g.GET("/configs/:hash", h.GetConfig)
 	g.POST("/configs", h.CreateConfig)
 	return r
+}
+
+// ── #936: scoped-name collisions surface as 409, not opaque 500s ──────
+
+func TestIF_CreateConfig_NameConflict_CoalescedPath_409(t *testing.T) {
+	t.Parallel()
+	store := s4Store()
+	store.existingBuild = &imagefactory.Build{Status: imagefactory.BuildSucceeded}
+	store.createConfigErr = database.ErrConflict
+	disp := &fakeDispatcher{ghRunID: 999}
+	r := newIFRouterWithDispatcher(t, store, &fakeOrgResolver{}, disp)
+
+	w := postConfigs(t, r, s4Body("dup-name", "ffmpeg"))
+	require.Equal(t, http.StatusConflict, w.Code, "coalesced-path collision must 409; body: %s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "dup-name", "the error names the colliding config")
+	assert.Empty(t, disp.cancelCalls, "no dispatch fired on the coalesced path — nothing to cancel")
+}
+
+func TestIF_CreateConfig_NameConflict_FreshPath_409_AndCancelsDispatch(t *testing.T) {
+	t.Parallel()
+	store := s4Store() // no existingBuild → fresh path
+	store.createBuildErr = database.ErrConflict
+	disp := &fakeDispatcher{ghRunID: 4242}
+	r := newIFRouterWithDispatcher(t, store, &fakeOrgResolver{}, disp)
+
+	w := postConfigs(t, r, s4Body("dup-name", "ffmpeg"))
+	require.Equal(t, http.StatusConflict, w.Code, "fresh-path collision must 409; body: %s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "dup-name")
+	assert.True(t, disp.called, "dispatch fired before the failing insert (dispatch-before-commit)")
+	// The recorded run ID (4242 from the fake) must be cancelled.
+	require.NotEmpty(t, disp.cancelCalls)
+	assert.Equal(t, int64(4242), disp.cancelCalls[0])
 }

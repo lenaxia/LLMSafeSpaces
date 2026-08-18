@@ -49,6 +49,7 @@ func (s SeedExtensionEntry) ToExtension() Extension {
 type SeedCatalogStore interface {
 	SetPlatformConfig(ctx context.Context, pc PlatformConfig) error
 	UpsertBase(ctx context.Context, b Base) error
+	SeedUpsertBase(ctx context.Context, b Base) error
 	GetExtension(ctx context.Context, id string) (Extension, error)
 	PublishExtension(ctx context.Context, e Extension) error
 }
@@ -95,7 +96,10 @@ func SeedCatalog(ctx context.Context, store SeedCatalogStore) error {
 		return fmt.Errorf("seed: platform config: %w", err)
 	}
 	for _, b := range seed.Bases {
-		if err := store.UpsertBase(ctx, b); err != nil {
+		// SeedUpsertBase (#936): the seed's is_default applies only to
+		// rows it inserts — a boot-time seed never reverts an operator's
+		// runtime default move.
+		if err := store.SeedUpsertBase(ctx, b); err != nil {
 			return fmt.Errorf("seed: base %s/%s: %w", b.Name, b.Version, err)
 		}
 	}

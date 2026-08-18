@@ -30,6 +30,21 @@ func (f *fakeSeedStore) UpsertBase(_ context.Context, b Base) error {
 	f.bases[b.Name+"/"+b.Version] = b
 	return nil
 }
+func (f *fakeSeedStore) SeedUpsertBase(_ context.Context, b Base) error {
+	// Mirrors the store contract: insert-only is_default — an existing
+	// row keeps its runtime default (#936).
+	key := b.Name + "/" + b.Version
+	if existing, ok := f.bases[key]; ok {
+		keepDefault := existing.IsDefault
+		f.bases[key] = Base{Name: b.Name, Version: b.Version, Image: b.Image, Tag: b.Tag, Digest: b.Digest, IsDefault: keepDefault}
+		return nil
+	}
+	if f.bases == nil {
+		f.bases = map[string]Base{}
+	}
+	f.bases[key] = b
+	return nil
+}
 func (f *fakeSeedStore) GetExtension(_ context.Context, id string) (Extension, error) {
 	if f.getExtensionError != nil {
 		return Extension{}, f.getExtensionError

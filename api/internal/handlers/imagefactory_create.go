@@ -27,6 +27,11 @@ import (
 // outcome; the production implementation calls the GH Actions API.
 type buildDispatcher interface {
 	Dispatch(ctx context.Context, req dispatchRequest) (ghRunID int64, err error)
+	// Cancel aborts a dispatched workflow run (#936): when a config save
+	// fails AFTER dispatch (scoped-name conflict), the already-fired run
+	// must not churn as an orphan. Best-effort — cancellation failure is
+	// logged by the caller, never fatal.
+	Cancel(ctx context.Context, ghRunID int64) error
 }
 
 // dispatchRequest is the input to the GH Actions workflow_dispatch. Mirrors
@@ -211,6 +216,13 @@ func (h *ImageFactoryHandler) createConfigAtScope(
 			Status:         status,
 		}
 		if err := h.store.CreateConfig(ctx, &cfg); err != nil {
+			if errors.Is(err, database.ErrConflict) {
+				// #936: scoped-name collision — 409 with the shape named.
+				c.JSON(http.StatusConflict, gin.H{
+					"error": fmt.Sprintf("a config named %q already exists in this scope — pick another name", cfg.Name),
+				})
+				return
+			}
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save config"})
 			return
 		}
@@ -283,6 +295,25 @@ func (h *ImageFactoryHandler) createConfigAtScope(
 		OrgID:          orgID,
 	}
 	if err := h.store.CreateConfigAndBuild(ctx, &cfg, &build); err != nil {
+		// #936: the dispatch already fired (dispatch-before-commit, by
+		// design) — a colliding name must cancel the run so the conflict
+		// doesn't leave an orphaned GH workflow churning, then 409.
+		if errors.Is(err, database.ErrConflict) {
+			// Dispatch returns the GH run ID only when the dispatch API
+			// provides one; the workflow_dispatch endpoint does NOT (the
+			// ID arrives via the callback), so this is 0 today and Cancel
+			// no-ops with a log. The orphan is bounded: the run finishes,
+			// its callback 404s (no build row), nothing retries.
+			if build.GHRunID != nil {
+				if cerr := h.dispatcher.Cancel(ctx, *build.GHRunID); cerr != nil {
+					h.logger.Warn("image-factory: conflict cleanup — cancel dispatched run failed", "error", cerr.Error())
+				}
+			}
+			c.JSON(http.StatusConflict, gin.H{
+				"error": fmt.Sprintf("a config named %q already exists in this scope — pick another name", cfg.Name),
+			})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save config and build"})
 		return
 	}

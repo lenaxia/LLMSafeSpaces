@@ -32,6 +32,10 @@ type ImageFactoryStore interface {
 	ListBases(ctx context.Context) ([]imagefactory.Base, error)
 	GetBase(ctx context.Context, name, version string) (imagefactory.Base, error)
 	UpsertBase(ctx context.Context, b imagefactory.Base) error
+	// SeedUpsertBase is the boot-seed upsert: unlike UpsertBase it never
+	// clears other defaults and never overwrites an existing row's
+	// is_default (#936).
+	SeedUpsertBase(ctx context.Context, b imagefactory.Base) error
 	DeleteBase(ctx context.Context, name, version string) error
 
 	// ── Extensions ────────────────────────────────────────────────────
@@ -151,7 +155,54 @@ func (s *Service) GetBase(ctx context.Context, name, version string) (imagefacto
 }
 
 func (s *Service) UpsertBase(ctx context.Context, b imagefactory.Base) error {
+	// #936: a default=true upsert clears every other default in the same
+	// transaction — moving the platform default is ONE call, and the
+	// two-default state (pills resolve highest-sorted, the create form's
+	// picker takes the first — visibly divergent) cannot persist.
+	if b.IsDefault {
+		tx, err := s.DB.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("upsert base: begin tx: %w", err)
+		}
+		defer func() { _ = tx.Rollback() }()
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE image_factory_bases SET is_default = FALSE, updated_at = now() WHERE is_default`); err != nil {
+			return fmt.Errorf("upsert base: clear prior defaults: %w", err)
+		}
+		if err := upsertBaseOn(ctx, tx, b); err != nil {
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("upsert base: commit: %w", err)
+		}
+		return nil
+	}
+	return upsertBaseOn(ctx, s.DB, b)
+}
+
+// SeedUpsertBase is the seed path (#936): the default applies only to
+// rows the seed INSERTS — an existing base keeps its runtime is_default,
+// so a boot-time seed never reverts an operator's default move.
+func (s *Service) SeedUpsertBase(ctx context.Context, b imagefactory.Base) error {
 	_, err := s.DB.ExecContext(ctx,
+		`INSERT INTO image_factory_bases (name, version, image, tag, digest, is_default, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, now())
+		 ON CONFLICT (name, version) DO UPDATE SET
+		     image = EXCLUDED.image,
+		     tag = EXCLUDED.tag,
+		     digest = EXCLUDED.digest,
+		     updated_at = now()`,
+		b.Name, b.Version, b.Image, b.Tag, b.Digest, b.IsDefault,
+	)
+	if err != nil {
+		return fmt.Errorf("seed upsert base: %w", err)
+	}
+	return nil
+}
+
+// upsertBaseOn is the plain (non-seed) upsert on the given executor.
+func upsertBaseOn(ctx context.Context, db queryExecer, b imagefactory.Base) error {
+	_, err := db.ExecContext(ctx,
 		`INSERT INTO image_factory_bases (name, version, image, tag, digest, is_default, updated_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, now())
 		 ON CONFLICT (name, version) DO UPDATE SET
@@ -166,6 +217,11 @@ func (s *Service) UpsertBase(ctx context.Context, b imagefactory.Base) error {
 		return fmt.Errorf("upsert base: %w", err)
 	}
 	return nil
+}
+
+// queryExecer abstracts *sql.DB vs *sql.Tx for shared upsert SQL.
+type queryExecer interface {
+	ExecContext(ctx context.Context, query string, args ...interface{}) (sql.Result, error)
 }
 
 func (s *Service) DeleteBase(ctx context.Context, name, version string) error {
@@ -404,6 +460,9 @@ func (s *Service) CreateConfigAndBuild(ctx context.Context, c *imagefactory.Conf
 		string(c.Scope), ownerID, orgID, string(c.Status),
 	).Scan(&c.ID)
 	if err != nil {
+		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
+			return ErrConflict
+		}
 		return fmt.Errorf("create config+build: insert config: %w", err)
 	}
 
@@ -458,6 +517,11 @@ func (s *Service) CreateConfig(ctx context.Context, c *imagefactory.Config) erro
 		string(c.Scope), ownerID, orgID, string(c.Status),
 	).Scan(&c.ID)
 	if err != nil {
+		// #936: scoped-name uniqueness violation maps to the typed
+		// conflict so the handler returns 409 instead of an opaque 500.
+		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
+			return ErrConflict
+		}
 		return fmt.Errorf("create config: %w", err)
 	}
 	return nil
