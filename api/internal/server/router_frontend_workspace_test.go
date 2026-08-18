@@ -25,6 +25,7 @@ import (
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
 )
 
 // --- POST /api/v1/workspaces/:id/activate ---
@@ -365,6 +366,9 @@ func newRouterFixtureWithProxy(t *testing.T) (*gin.Engine, *mockServices, *handl
 	// GetAuthoritativeActiveSessions calls LlmsafespacesV1 — return nil
 	// so it falls back to the in-memory activeSess map in tests.
 	k8sMock.On("LlmsafespacesV1").Return(nil, nil).Maybe()
+	// #887 D5.1: adminBearerCandidates reads the pw Secret for the
+	// distinct admin token via Clientset when the statusz path runs.
+	k8sMock.On("Clientset").Return(k8sfake.NewSimpleClientset()).Maybe()
 	proxyHandler, err := handlers.NewProxyHandler(k8sMock, log, "default", nil, nil)
 	require.NoError(t, err)
 
@@ -467,6 +471,10 @@ func TestListWorkspaceSessions_StatuszGroundTruth_StaleActiveShowsIdle(t *testin
 	llmMock := k8smocks.NewMockLLMSafespacesV1Interface()
 	wsInterface := k8smocks.NewMockWorkspaceInterface()
 	k8sMock.On("LlmsafespacesV1").Return(llmMock, nil).Maybe()
+	// #887 D5.1: GetAuthoritativeActiveSessions resolves admin Bearer
+	// candidates via Clientset (empty fake → no admin-token key →
+	// falls back to the cached password, exactly the pre-D5.1 behavior).
+	k8sMock.On("Clientset").Return(k8sfake.NewSimpleClientset()).Maybe()
 	llmMock.On("Workspaces", "default").Return(wsInterface)
 	wsInterface.On("Get", mock.Anything, "ws-1", mock.Anything).Return(&v1.Workspace{
 		ObjectMeta: metav1.ObjectMeta{Name: "ws-1", Namespace: "default"},
