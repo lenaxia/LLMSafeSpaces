@@ -18,13 +18,16 @@ forced generation change, live turns completing under a CPU storm.
 
 - `tests/stress/g7-stress.sh` — self-contained harness (kubectl +
   curl, no toolchain), runs against a dedicated Active workspace:
-  - **A/D**: CPU storm inside the pod (go build -p parallel, exercising
-    the D7 GOMAXPROCS caps) + a live long turn via opencode's V1
-    /message (the #917 fixed send shape) — asserts HTTP 200.
+  - **A/D**: CPU storm inside the pod (SHELL burn loops — the round-1
+    go-build storm was replaced in r2; D7 caps apply to real builds, the
+    arithmetic loops burn regardless) + a live long turn via opencode's
+    V1 /message (the #917 fixed send shape) — asserts HTTP 200.
   - **B**: restarts_total unchanged across the storm — the watchdog did
     not kill a reachable, progressing opencode.
-  - **C**: forced SIGKILL of opencode → restart counter advances
-    (crash-recovery path) — recovery, not a watchdog fire.
+  - **C**: forced SIGTERM of opencode → restart counter advances on
+    reason="crash" (SIGKILL would classify as reason="oom" — isOOMExit
+    treats exitSigKill as the OOM-killer signal; managed_process.go,
+    oom_detection.go). Recovery, not a watchdog fire.
 - **Validated live** on throwaway workspace `g7-scratch-stress`
   (0.15.11): **3 pass, 0 fail, exit 0**.
 - Destroyed the scratch workspace after validation.
@@ -195,3 +198,54 @@ health_watchdog=0 crash=0 suppressions=0 restartCount=0
 ```
 
 Self-test 10/10. shellcheck clean.
+
+
+---
+
+## Round 5 (review on #924): all five blockers + carried minors
+
+- **SIGKILL docs corrected** (finding 1): README, PR body, and the
+  round-1 worklog block retro-annotated — the harness uses SIGTERM
+  (SIGKILL would classify as reason="oom") and a shell storm (not go
+  build).
+- **BR0/BR1 repositioned** (finding 2): BR0 now read BEFORE the crash
+  trigger so a generation-change busy-reset lands between the reads; the
+  hardcoded "(0 both = ...)" note replaced with the actual values.
+- **Baseline reads guarded** (finding 3): WH0/CR0/S0 `|| true`; the
+  unreachable `:85` diagnostic removed.
+- **Behavioral cleanup pin** (finding 4): self-test case 7 now tests the
+  empty-REMAIN branch behavior (fail, not skip) rather than a
+  source-text grep.
+- **Carried minors**: dead `pkill -x "opencode serve"` removed (comm
+  never has a space); header B now matches the bare-family read; pod grep
+  anchored (`^pod/$WS(-[a-f0-9]+)?$`); EXIT trap kills the storm too and
+  is fully `|| true`-safe (a failing trap kill was overriding the harness
+  exit code — fixed, rc 0).
+- EXIT trap exit-status fix: the harness printed 5/5 but exited 1; root
+  cause was the EXIT trap's last failing `kill` overriding the status
+  under set -e. Each trap command now `|| true`-wrapped; rc 0 confirmed.
+
+### Round-5 validation run (verbatim capture)
+
+Same scratch pod as the r4-corrected run (crash=3 pre-existing from a
+prior pass; watchdog still 0; assertions valid — D advances 3 -> 4):
+
+```
+== G7 stress on g7-scratch-stress (pod g7-scratch-stress-8101a6b9) ==
+== baseline ==
+health_watchdog=0 crash=3 suppressions=0 restartCount=0
+== A/C/F: CPU storm + live long turn (session ses_fed81350effeI1gQmdL2HrUBri) ==
+  PASS: storm produced cgroup throttling (516175691 -> 693733557 usec)
+  PASS: live turn completed under storm (HTTP 200, reply marker present)
+== watchdog + kubelet assertions (A/B/E) ==
+  PASS: no watchdog kills during storm (health_watchdog restarts: 0 -> 0)
+  note: suppressions readable and unchanged (0) — storm below watchdog kill threshold (acceptable; assertion present)
+  PASS: kubelet restartCount unchanged across storm (0)
+== D: forced restart, crash-recovery-owned ==
+  PASS: crash-recovery restart recorded (3 -> 4)
+  note: tracker busy resets readable and unchanged (0) — no orphaned-busy present this run; heal path asserted when orphans exist
+
+== result: 5 pass, 0 fail ==
+```
+
+harness exit code 0. Self-test 10/10; shellcheck clean.

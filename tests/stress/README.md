@@ -4,9 +4,9 @@ Stress harness for the session-truthfulness incident class (design 0050, issue #
 
 ## Files
 
-- `g7-stress.sh` — the G7 harness: drives CPU storm + live turn + forced
-  restart against a real workspace and asserts the acceptance criteria
-  against agentd metrics and kubelet state.
+- `g7-stress.sh` — the G7 harness: drives CPU storm (shell burn loops) +
+  live turn + forced SIGTERM restart against a real workspace and asserts
+  the acceptance criteria against agentd metrics and kubelet state.
 - `g7-self-test.sh` — self-test for the harness's own parsing logic
   (series-sum extraction, session-id field, marker detection, empty-scrape
   behavior). Run before trusting a harness run.
@@ -15,7 +15,7 @@ Stress harness for the session-truthfulness incident class (design 0050, issue #
 
 - **Always run a dedicated throwaway workspace.** The harness uses only
   the workspace named by `WORKSPACE_ID` and refuses to guess; it performs
-  a CPU storm and SIGKILLs opencode inside that workspace. Never point it
+  a CPU storm and SIGTERMs opencode inside that workspace. Never point it
   at a workspace with live user work.
 - **No admin credentials.** agentd `/metrics` is unauthenticated on the
   admin port (the PodMonitor scrapes it that way); the harness reads it
