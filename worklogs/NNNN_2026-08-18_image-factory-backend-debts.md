@@ -108,3 +108,30 @@ api/internal/handlers/imagefactory_create.go,
 imagefactory_dispatcher.go, imagefactory_create_test.go,
 imagefactory_test.go; api/internal/imagefactory/seed.go,
 seed_test.go; store integration tests; docs/operator/image-factory.md.
+
+---
+
+## Addendum: GO-2026-6173 (lib/pq) — removed the module from all live paths
+
+Mid-PR, govulncheck began failing on a same-day advisory
+(GO-2026-6173, lib/pq pre-protocol unbounded read; NO fixed version).
+The CI integration failures also exposed that the original pq-only
+23505 type assertion never matched the production driver (pgx) —
+two birds:
+
+- isUniqueViolation: driver-agnostic SQLState() interface (pgx
+  *pgconn.PgError + any legacy shape); unit-pinned with both drivers'
+  error types (pgx direct, errors.Join-wrapped, stub, non-23505, nil).
+  RenameConfig's latent same-bug fixed too.
+- pq.Array (last live pq use, 25+ sites) replaced by a local
+  stringArray Valuer/Scanner (canonical array-literal encoding,
+  escape-safe, NULL-preserving); round-trip tests cover nil/empty/
+  plain/quote/backslash/comma elements.
+- testharness migrations: golang-migrate database/postgres →
+  database/pgx/v5 (the v3 'pgx' driver still links lib/pq).
+- Result (verified locally, govulncheck ./...): **0 affected
+  vulnerabilities** — pq remains only as an uncalled transitive of
+  golang-migrate, which symbol-level analysis correctly ignores.
+
+Also fixed the seed test's fresh-install isolation (seed never clears
+defaults; fresh-install semantics need an empty-default start).

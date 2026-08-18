@@ -8,12 +8,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
-	"github.com/lib/pq"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -678,11 +679,15 @@ func TestRenameConfig_Conflict(t *testing.T) {
 	t.Parallel()
 	svc, mock := newMockService(t)
 
-	// Simulate a pq unique violation (SQLSTATE 23505)
-	pqErr := &pq.Error{Code: "23505", Message: "duplicate key"}
+	// Simulate a unique violation (SQLSTATE 23505) from a driver error —
+	// the pgx shape (production driver); the interface also accepts the
+	// legacy pq shape, pinned in imagefactory_unit_test.go.
+	type stateErr struct{ code string }
+	err23505 := fmt.Errorf("wrapped: %w", &pgconn.PgError{Code: "23505", Message: "duplicate key"})
+	_ = stateErr{}
 	mock.ExpectExec(`UPDATE image_factory_configs SET name`).
 		WithArgs("Dup", "cfg-1").
-		WillReturnError(pqErr)
+		WillReturnError(err23505)
 
 	err := svc.RenameConfig(context.Background(), "cfg-1", "Dup")
 	assert.ErrorIs(t, err, ErrConflict)

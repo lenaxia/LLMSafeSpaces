@@ -17,7 +17,6 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/logger"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/metrics"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
-	"github.com/lib/pq"
 )
 
 // Service handles database operations
@@ -885,7 +884,7 @@ func (s *Service) ListAPIKeys(ctx context.Context, userID string) ([]*types.APIK
 		var k types.APIKey
 		var keyStr string
 		var expiresAt sql.NullTime
-		if err := rows.Scan(&k.ID, new(string), &keyStr, &k.Name, &k.Active, &k.CreatedAt, &expiresAt, &k.DecryptAccess, &k.DekSynced, pq.Array(&k.AllowedCIDRs)); err != nil {
+		if err := rows.Scan(&k.ID, new(string), &keyStr, &k.Name, &k.Active, &k.CreatedAt, &expiresAt, &k.DecryptAccess, &k.DekSynced, stringArrayScan(&k.AllowedCIDRs)); err != nil {
 			return nil, fmt.Errorf("failed to scan api key: %w", err)
 		}
 		k.Prefix = "lsp_"
@@ -949,7 +948,7 @@ func (s *Service) GetAPIKeyRecordByHash(ctx context.Context, keyHash string) (*t
 	err := s.DB.QueryRowContext(ctx, query, keyHash).Scan(
 		&k.ID, &k.UserID, new(string), &k.Name, &k.Active, &k.CreatedAt, &expiresAt,
 		&decryptAccess, &kekSalt, &wrappedDEK, &dekSynced, &keyCiphertext,
-		pq.Array(&k.AllowedCIDRs),
+		stringArrayScan(&k.AllowedCIDRs),
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -1289,7 +1288,7 @@ func toNullableStringArray(s []string) interface{} {
 	if len(s) == 0 {
 		return nil
 	}
-	return pq.Array(s)
+	return pgStringArray(s)
 }
 
 func (s *Service) ListAllWorkspaceOwners(ctx context.Context) (map[string]string, error) {
