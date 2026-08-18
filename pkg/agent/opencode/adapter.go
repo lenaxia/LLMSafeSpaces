@@ -17,6 +17,8 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode/wire"
+
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode/filediff"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
@@ -872,6 +874,23 @@ func (a *Adapter) SetModel(ctx context.Context, userID, workspaceID, sessionID s
 		fullID = model.Provider + "/" + model.ID
 	}
 	return c.PatchConfig(ctx, map[string]any{"model": fullID})
+}
+
+// ContextUsageFromEvent implements agent.Adapter. The opencode semantic:
+// live prompt occupancy = input + cache.read + cache.write for the step
+// that just finished (wire.Tokens.PromptTokens). Window is left unset —
+// per-model windows come from ListAvailableModels, not usage events.
+func (a *Adapter) ContextUsageFromEvent(eventType string, rawData string) (string, *session.ContextUsage, bool) {
+	u, ok, err := wire.ParseStepUsage(eventType, rawData)
+	if err != nil {
+		a.logger.Warn("opencode usage event claims tokens but fails to decode — wire drift?",
+			zap.Error(err), zap.String("eventType", eventType))
+		return "", nil, false
+	}
+	if !ok {
+		return "", nil, false
+	}
+	return u.SessionID, &session.ContextUsage{Used: u.Tokens.PromptTokens()}, true
 }
 
 // --- Capabilities ---

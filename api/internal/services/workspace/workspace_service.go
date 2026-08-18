@@ -1801,7 +1801,7 @@ func (s *Service) ListWorkspaceSessions(ctx context.Context, userID, workspaceID
 // the controller).
 //
 // The session_index DB is populated by live SSE events
-// (persistContextFromEvent on session.next.step.ended). When the API
+// (persistContextFromEvent on adapter-declared usage events). When the API
 // pod restarts (deploy, crash), the SSE tracker reconnects but events
 // during the downtime are missed — leaving context_used NULL for any
 // session whose last LLM step completed before the reconnection.

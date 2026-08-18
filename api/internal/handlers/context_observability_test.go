@@ -3,15 +3,18 @@ package handlers
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	k8sfake "k8s.io/client-go/kubernetes/fake"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
 	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/interfaces"
-	k8sfake "k8s.io/client-go/kubernetes/fake"
+	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
 
 type ctxCapturingLogger struct {
@@ -78,12 +81,17 @@ func newCtxTestEnv(t *testing.T, log *ctxCapturingLogger) *testEnv {
 	}
 }
 
-func TestPersistContextFromEvent_MissingTokens_LogsWarn(t *testing.T) {
+func TestPersistContextFromEvent_AdapterDrift_NoWriteNoHandlerWarn(t *testing.T) {
+	// A usage-shaped event without decodable tokens is ADAPTER-level wire
+	// drift: the adapter logs it and reports ok=false. The handler treats
+	// ok=false as normal non-usage traffic — no write, no warn of its own.
+	// (Adapter drift logging is pinned in pkg/agent/opencode tests.)
 	si := newContextUsedSessionIndex()
 	log := &ctxCapturingLogger{}
 	env := newCtxTestEnv(t, log)
 	env.handler.SetSessionIndex(si)
 	env.handler.userBroker = eventbroker.NewUserEventBroker()
+	env.handler.SetAdapter(newUsageStubAdapter(nil))
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 5)
@@ -97,33 +105,26 @@ func TestPersistContextFromEvent_MissingTokens_LogsWarn(t *testing.T) {
 
 	_, ok := si.get("ws-1", "ses_abc")
 	if ok {
-		t.Fatal("UpsertContextUsed must NOT be called when tokens are missing")
+		t.Fatal("UpsertContextUsed must NOT be called when the adapter reports no usage")
 	}
-
-	warns := log.getWarns()
-	found := false
-	for _, w := range warns {
-		if w.msg == "persistContextFromEvent: step.ended event missing tokens — opencode wire shape may have changed" {
-			found = true
-			break
+	for _, w := range log.getWarns() {
+		if strings.Contains(w.msg, "persistContextFromEvent") {
+			t.Fatalf("handler must not warn on adapter ok=false: %+v", w)
 		}
-	}
-	if !found {
-		t.Fatalf("expected warn about missing tokens, got: %+v", warns)
 	}
 }
 
-func TestPersistContextFromEvent_UnparseableEvent_LogsWarn(t *testing.T) {
+func TestPersistContextFromEvent_UnparseableEvent_NoWrite(t *testing.T) {
 	si := newContextUsedSessionIndex()
-	log := &ctxCapturingLogger{}
-	env := newCtxTestEnv(t, log)
+	env := newCtxTestEnv(t, &ctxCapturingLogger{})
 	env.handler.SetSessionIndex(si)
+	env.handler.SetAdapter(newUsageStubAdapter(map[string]int64{"ses_x": 1}))
 
-	env.handler.persistContextFromEvent("ws-1", "not valid json {{{")
+	env.handler.persistContextFromEvent("ws-1", "session.next.step.ended", "not valid json {{{")
 
-	warns := log.getWarns()
-	if len(warns) == 0 {
-		t.Fatal("expected a warn log for unparseable event, got none")
+	_, ok := si.get("ws-1", "ses_x")
+	if ok {
+		t.Fatal("malformed event must not write")
 	}
 }
 
@@ -133,6 +134,9 @@ func TestPersistContextFromEvent_EmptySessionID_LogsWarn(t *testing.T) {
 	env := newCtxTestEnv(t, log)
 	env.handler.SetSessionIndex(si)
 	env.handler.userBroker = eventbroker.NewUserEventBroker()
+	env.handler.SetAdapter(&mockAdapter{contextUsageFn: func(string, string) (string, *session.ContextUsage, bool) {
+		return "", &session.ContextUsage{Used: 100}, true
+	}})
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	env.setupPasswordWithT(t, "ws-1", "test-password")
 	env.setupWorkspaceWithT(t, "ws-1", 5)

@@ -2193,9 +2193,10 @@ func TestProxy_PersistContextFromEvent_SkipsDeletedSession(t *testing.T) {
 	env.handler.SetSessionIndex(si)
 
 	env.handler.MarkSessionDeletedForTest("ws-1", "s1")
+	env.handler.SetAdapter(newUsageStubAdapter(map[string]int64{"s1": 100}))
 
 	rawData := `{"properties":{"sessionID":"s1","tokens":{"input":100,"cache":{"read":0,"write":0}}}}`
-	env.handler.persistContextFromEvent("ws-1", rawData)
+	env.handler.persistContextFromEvent("ws-1", "session.next.step.ended", rawData)
 
 	si.mu.Lock()
 	assert.Empty(t, si.contextUpserts, "UpsertContextUsed should be skipped for deleted session")
