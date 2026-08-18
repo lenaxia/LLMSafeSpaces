@@ -48,28 +48,36 @@ So the goal is narrow: **make agentd's credential and the platform-materialized 
 by uid-1000 code, to the extent structurally possible.** Everything else same-uid code can read is either
 yours by design or already yours through opencode.
 
-## 4. The env-channel pivot
+## 4. The env-channel pivot — corrected after source verification (v2 of this doc)
 
-Hiding the password *file* from uid 1000 is easy. Hiding the password *from uid 1000* is not, because
-opencode requires it in its environment (`OPENCODE_SERVER_PASSWORD` — opencode's mechanism, not ours;
-Rule 12: external constraint), and user code runs as opencode's uid.
+> **v1 of this section framed the env channel as a `/proc/<pid>/environ` read gated by Yama
+> `ptrace_scope`. That was wrong.** Verified against the pinned opencode v1.18.10 source: the actual
+> channel is **spawn-time inheritance** — opencode's shell tool spawns tool processes with
+> `extendEnv: true` (`session/prompt.ts:559-562`), passing its **full parent environment** to every
+> bash/child process. No ptrace, no Yama, no conditional. Two secrets ride this chain today:
 
-The one thing standing between user code and `cat /proc/<opencode-pid>/environ` is **ptrace policy**:
+| Secret | How it enters opencode's env | In every tool's env today? | Evidence |
+|---|---|---|---|
+| `OPENCODE_SERVER_PASSWORD` | entrypoint export → agentd → `buildEnvFrom(os.Environ())` | **Yes** | `entrypoint-opencode.sh:17-19`; `secrets.go:1203-1205`; `prompt.ts:559` (`extendEnv: true`) |
+| `AGENTD_ADMIN_TOKEN` | **pod-spec env on the main container** | **Yes** | `pod_builder.go:78-85` (SecretKeyRef → env); same inheritance chain |
 
-- Reading `/proc/<pid>/environ` requires `PTRACE_MODE_READ`; same-uid normally grants it.
-- With `kernel.yama.ptrace_scope = 1` (default on most modern distros), a process may only read the
-  `/proc` of its **descendants**. User code is a *descendant* of opencode — but reading opencode's environ
-  is reading a **parent**, which scope=1 **denies**. Sibling bash processes cannot read each other's
-  parents either.
-- With `ptrace_scope = 0` (permissive), a same-uid process reads any same-uid process's environ → the
-  password falls, regardless of file modes.
+**Implication A — the admin token is the worst-kept secret in the pod.** It authenticates the admin mux
+(`:4098` — statusz session lists, provider introspection, `/metrics`), the mux is loopback-reachable from
+in-pod code, and the token sits in every tool's env. This is a **live finding**, worse than #887's
+theoretical premise, and — critically — fixable **without upstream**: opencode does not need this token.
 
-**This is the linchpin validation item, not an implementation detail.** `ptrace_scope` is host-wide
-(not namespaced) — on Talos it is a node/AMI property; under gVisor (runsc) the semantics are the
-runtime's, not the host kernel's. If the fleet standardizes on scope ≥ 1 (or gVisor proves equivalent),
-the env channel closes and uid separation delivers full value. If any node runs scope=0, the design
-degrades to "raises the bar, does not close" for the *credential*, while the file/lockdown wins below
-still hold unconditionally.
+**Implication B — the password cannot be file-injected by us alone.** opencode reads the server password
+**env-only** (`cli/cmd/serve.ts:15`, `server/auth.ts:18` — no file option exists) and hands its whole env
+to children. So: no uid split, file mode, or ptrace policy protects the password from same-uid code under
+the current opencode. Basic auth on `:4097` is honestly **network-boundary-only** defense until opencode
+either supports a file-based password or scrubs its child env. Both are upstream asks.
+
+**What Yama still governs** (demoted from linchpin to footnote): cross-process `/proc/<pid>/environ` reads
+of *non-descendants* (e.g. one tool reading another agent session's process). Relevant only if opencode
+ever scrubs the two platform secrets — then it becomes the residual gate. No longer a design dependency.
+
+**User env-secrets are explicitly out of scope of any "remove from env" work**: they are the product
+feature (bound for the user's builds/tools). File-vs-env for them is UX, not a security boundary.
 
 ## 5. Design
 
@@ -118,14 +126,27 @@ strictly narrower than today (always-readable).
 
 ### D5 — Fail-closed fixes that ship regardless of the uid work (Phase 1)
 
-Independent of §4's validation outcome; each closes a hole found during the #886 review rounds:
+Independent of §4's outcome; each closes a hole found during the #886 review rounds **or this doc's v2
+env-channel verification**:
 
-1. **`AGENTD_ADMIN_TOKEN` required**: agentd refuses to start when unset (env-driven wiring gap today is
-   silent pass-through). Chart always sets it. Dev/kind escape hatch: explicit `AGENTD_ALLOW_NO_ADMIN_TOKEN=1`.
-2. **Empty-password boot reject**: `readAgentPassword` treats a readable-but-empty file as fatal (G46
+1. **`AGENTD_ADMIN_TOKEN` leaves the environment entirely** (highest priority — live leak):
+   - Controller stops setting it as pod env; mounts the Secret subPath to a file (e.g.
+     `/sandbox-cfg/admin-token`, mode 0400) and sets `AGENTD_ADMIN_TOKEN_FILE` instead.
+   - agentd reads the token from the file (env var kept only as a deprecated local-dev fallback).
+   - **agentd scrubs agentd-only credentials from the env it passes opencode** (`buildEnvFrom` drops
+     `AGENTD_ADMIN_TOKEN` regardless of source) — closes the tool-env leak **today**, no uid split, no
+     upstream, no image rebuild.
+2. **`AGENTD_ADMIN_TOKEN` required**: agentd refuses to start when unset/unreadable (env-driven wiring
+   gap today is silent pass-through). Dev/kind escape hatch: explicit `AGENTD_ALLOW_NO_ADMIN_TOKEN=1`.
+3. **Empty-password boot reject**: `readAgentPassword` treats a readable-but-empty file as fatal (G46
    path) instead of arming a guessable credential.
-3. **`/metrics` off the admin mux's unauthenticated path**: bind to the token-gated handler (or
+4. **`/metrics` off the admin mux's unauthenticated path**: bind to the token-gated handler (or
    loopback + kube-rbac-proxy per the existing values.yaml guidance).
+
+The password's env leak (`OPENCODE_SERVER_PASSWORD` → tools) is **not** in Phase 1 — it is
+upstream-gated (§4 Implication B): opencode must add file-based server auth or child-env scrubbing.
+Tracked as the upstream dependency below; until it lands, docs and issue threads must describe `:4097`
+Basic auth as network-boundary defense only.
 
 ### D6 — Rollout: chart-gated, canary-first, reversible
 
@@ -149,26 +170,31 @@ purely additive wiring: runAsUser, file modes, setpriv spawn). Enable on TEST fo
 
 | # | Check | PASS criterion |
 |---|---|---|
-| V1 | `cat /proc/sys/kernel/yama/ptrace_scope` on every node class (Talos runc; runsc node) | `>= 1` on runc nodes; document runsc equivalent behavior. Any `0` → D2/D3 downgraded to hardening, residual documented |
-| V2 | uid-1000 shell (bash tool) cannot read `/sandbox-cfg/password`, `agent-config.json` (post-ready), `secrets-env` | EACCES on all three |
-| V3 | uid-1000 shell attempt `cat /proc/<opencode>/environ` | EACCES under V1-pass; if not, recorded as open residual |
+| V1 | **(Phase 1)** After D5: `printenv AGENTD_ADMIN_TOKEN` in a bash tool | empty — token gone from tool env |
+| V2 | uid-1000 shell cannot read `/sandbox-cfg/password`, `agent-config.json` (post-ready), `secrets-env`, `/sandbox-cfg/admin-token` | EACCES on all four |
+| V3 | `printenv OPENCODE_SERVER_PASSWORD` in a bash tool | **Expected non-empty under current opencode** (upstream-gated residual — record, don't fail) |
 | V4 | opencode boots, agent reaches Active, one full agent turn (config read at boot unaffected) | End-to-end works |
 | V5 | Relay injector + reload-secrets path: config rebuild → opencode session-aware restart cycle | Works; post-restart re-lock observed |
 | V6 | Dev-preview tunnel + MCP proxy loopback (`127.0.0.1:4097`) | Unaffected (network namespace unchanged) |
 | V7 | Suspend → resume (~22s budget) and cold boot | No regression vs. baseline |
-| V8 | Watchdog SIGTERM path (agentd 65532 signaling opencode 1000) | Signal delivery works (same-uid-signaling rules: parent→child unaffected by uids) |
+| V8 | Watchdog SIGTERM path (agentd 65532 signaling opencode 1000) | Signal delivery works (parent→child unaffected by uids) |
 | V9 | Zombie reaping (#908 path) under uid split | Unchanged (agentd is reaper as PID 1) |
 | V10 | Phase-1 items: no-token boot fails; empty-password boot fails; `/metrics` gated | Fail-closed observed |
+| V11 | Yama footnote (informational): `cat /proc/sys/kernel/yama/ptrace_scope` per node class | Document values; only security-relevant if/when the upstream password fix lands |
 
 ## 8. Phasing
 
-- **Phase 1 (D5) — small, independent PR**: fail-closed trio. No uid changes, no rollout risk. Closes two
-  review-flagged gaps + one observability hole immediately.
+- **Phase 1 (D5.1 first) — small, independent PRs, no uid changes, no rollout risk**:
+  1. agentd env-scrub + admin-token file read (controller + agentd; closes the tool-env leak of the
+     admin-mux bearer token **today**)
+  2. the remaining fail-closed trio (required token, empty-password reject, gated metrics)
 - **Phase 2 (D1–D4, D6) — chart-gated pilot**: controller wiring, entrypoint changes, ConfigWriter lock,
   runtime image entrypoint rework. TEST validation matrix → canary workspaces → default flip decision.
-- **Upstream note**: opencode file-based server password (closes D2 residual); opencode per-tool uid drop
-  (would enable a third tier where tool code runs below even the workspace uid — out of scope until it
-  exists).
+  Note: with D5.1 shipped, Phase 2's uid split protects the admin token, provider keys (D3), and the
+  secret files — but NOT the workspace password (§4 Implication B).
+- **Upstream asks (blockers for closing the password residual)**: (a) opencode file-based server
+  password, or (b) opencode child-env scrubbing of designated secrets; also per-tool uid drop (would
+  enable a third tier where tool code runs below even the workspace uid — out of scope until it exists).
 
 ## 9. Open questions (resolved before Phase 2 implementation)
 
@@ -176,12 +202,9 @@ purely additive wiring: runAsUser, file modes, setpriv spawn). Enable on TEST fo
    container (cleaner) or a bounded `setpriv` wrapper inside the existing script (fewer moving parts)?
    Lean: separate init container, ordered first — init containers are cheap and the ordering is already
    explicit in the pod spec.
-2. **Q2 — gVisor interplay**: confirm runsc's `/proc/<pid>/environ` read policy for same-uid processes
-   (V1's runsc leg). If gVisor already denies cross-process environ reads, gVisor-enabled workspaces get
-   the full guarantee regardless of host Yama.
-3. **Q3 — Windows-service-style uid**: is 65532 free across all runtime images (base/python/nodejs/go)?
+2. **Q3 — Windows-service-style uid**: is 65532 free across all runtime images (base/python/nodejs/go)?
    Verified for base in this doc's drafting; the others need the same one-line check during Phase 2.
-4. **Q4 — `docker run` local-dev story**: the split must not break non-K8s local runs of the runtime
+3. **Q4 — `docker run` local-dev story**: the split must not break non-K8s local runs of the runtime
    image (where uid 1000 may be the only human-mapped uid). Escape hatch: env `AGENTD_NO_UID_SPLIT=1`
    for local dev only, loudly logged.
 
