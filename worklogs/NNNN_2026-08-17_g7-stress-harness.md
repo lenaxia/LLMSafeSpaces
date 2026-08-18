@@ -94,7 +94,7 @@ forced generation change, live turns completing under a CPU storm.
   because the self-test re-implemented the logic).
 - Guarded `WH1/S1` reads (fail-closed, no silent `set -e` exit).
 
-### Round-2 validation run (recorded live)
+### Round-2 validation run (reconstruction — superseded by the r3/r4 verbatim capture below)
 
 ```
 == G7 stress on g7-scratch-stress (pod g7-scratch-stress-ae4799fb) ==
@@ -115,18 +115,26 @@ Self-test 8/8. shellcheck -S warning clean on all three scripts.
 ## Round 3 (review on #924): all five blockers, verbatim validation
 
 1. **Verbatim capture** (blocker 1): the round-3 run output below is the
-   UNEDITED terminal output of the committed harness against a fresh
-   throwaway 0.15.11 workspace — no reconstruction, no filtering. The
-   r2 record was trimmed (a reconstruction), which the reviewer proved
-   forensically; this one is a raw capture.
+   UNEDITED terminal output of the committed harness against a throwaway
+   0.15.11 workspace — no reconstruction, no filtering. The r2 record was
+   trimmed (a reconstruction), which the reviewer proved forensically;
+   this one is a raw capture.
+   Accuracy correction (r4): the pod was NOT fresh for the storm phase —
+   TH0 = 148,869,368 µs of throttling was already present, left by an
+   earlier harness attempt on that pod that exited at the cleanup check
+   before phase D (the same run that produced the "self-match counted 1"
+   finding). All counters were zero (no restarts had ever occurred), so
+   the A/B/D/E assertions remain valid; the record now states what
+   actually happened instead of claiming a clean baseline.
 2. **Marker window** (blocker 2): `head -c 4000` removed — the reply is
    bounded by curl `-m 120`; self-test adds a long-reply case (marker
    beyond 4000 bytes) that the old truncating pipeline false-failed.
 3. **D `!=` → `-gt`** (blocker 3): a kubelet counter reset can no longer
    green-light "advances".
-4. **Unreadable vs unchanged** (blocker 4): empty S1/WH1 scapes are
+4. **Unreadable vs unchanged** (blocker 4): empty S1 scapes are
    reported as "unreadable — measurement unavailable", not as an
-   acceptable measurement.
+   acceptable measurement. (WH1 was fixed to the same three-way branch
+   in r4 — the r3 commit claim covered only S1.)
 5. **Storm cleanup verified** (blocker 5): post-cleanup `pgrep` check;
    the pattern is concatenated (`"G7""LOAD"`) so the check cannot
    self-match its own invoking sh -c (found live: self-match counted 1).
@@ -152,3 +160,38 @@ health_watchdog=0 crash=0 suppressions=0 restartCount=0
 ```
 
 Self-test 9/9 (incl. the long-reply marker case). shellcheck clean.
+
+
+---
+
+## Round 4 (review on #924): clean-baseline verbatim run
+
+Round 4 fixes: cleanup-verify fails open (empty REMAIN → FAIL, not
+skip — pinned by self-test case 7); WH1 gets the three-way unreadable/
+unchanged/changed branch (the r3 commit claim covered only S1 — the
+record now says so); the r2 "reconstruction" block is relabeled; the r3
+capture's "fresh" claim corrected (that pod had prior throttling from
+an aborted attempt — counters were still zero, assertions valid).
+
+The r4 run below is a GENUINELY fresh workspace (TH0 = 188,181 µs ≈
+0.19 s baseline, confirming the prior pod's throttling was a leftover):
+
+```
+== G7 stress on g7-scratch-stress (pod g7-scratch-stress-9c6c725f) ==
+== baseline ==
+health_watchdog=0 crash=0 suppressions=0 restartCount=0
+== A/C/F: CPU storm + live long turn (session ses_feda184b3ffeRX07YzkL0R4wZA) ==
+  PASS: storm produced cgroup throttling (188181 -> 186561803 usec)
+  PASS: live turn completed under storm (HTTP 200, reply marker present)
+== watchdog + kubelet assertions (A/B/E) ==
+  PASS: no watchdog kills during storm (health_watchdog restarts: 0 -> 0)
+  note: suppressions readable and unchanged (0) — storm below watchdog kill threshold (acceptable; assertion present)
+  PASS: kubelet restartCount unchanged across storm (0)
+== D: forced restart, crash-recovery-owned ==
+  PASS: crash-recovery restart recorded (0 -> 1)
+  note: tracker busy resets 0 -> 0 (0 both = no orphaned-busy present; the heal path is exercised only when orphans exist)
+
+== result: 5 pass, 0 fail ==
+```
+
+Self-test 10/10. shellcheck clean.

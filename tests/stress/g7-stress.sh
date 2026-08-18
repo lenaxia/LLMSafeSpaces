@@ -126,7 +126,11 @@ sleep 3
 # own invoking sh -c (whose argv contains the literal string) — that
 # self-match made the count 1 on a clean system.
 REMAIN=$(kubectl exec "$POD" -n "$NS" -c workspace -- sh -c 'pgrep -fc "G7""LOAD" || true' 2>/dev/null | tr -d ' ') || true
-if [ -n "$REMAIN" ] && [ "$REMAIN" != "0" ]; then
+if [ -z "$REMAIN" ]; then
+  echo "FAIL: storm cleanup could not be verified (pgrep exec failed — inability to verify is not verified)"
+  exit 2
+fi
+if [ "$REMAIN" != "0" ]; then
   echo "FAIL: storm cleanup incomplete ($REMAIN burn loops still running)"
   exit 2
 fi
@@ -149,7 +153,9 @@ WH1=$(ad_metric 'workspace_restarts_total{reason="health_watchdog"') || true
 S1=$(ad_metric 'workspace_watchdog_suppressions_total') || true
 RC1=$(kubectl get pod "$POD" -n "$NS" -o jsonpath='{.status.containerStatuses[?(@.name=="workspace")].restartCount}' 2>/dev/null | tr -d ' ') || true
 
-if [ -n "$WH1" ] && [ "$WH1" = "$WH0" ]; then
+if [ -z "$WH1" ]; then
+  bad "health_watchdog restarts unreadable after storm (WH1 empty) — measurement unavailable"
+elif [ "$WH1" = "$WH0" ]; then
   ok "no watchdog kills during storm (health_watchdog restarts: $WH0 -> $WH1)"
 else
   bad "health_watchdog restarts changed $WH0 -> $WH1 during storm"

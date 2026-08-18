@@ -67,6 +67,15 @@ M2=$(echo "$LONG" | grep -c 'g7-storm-done' || true)
 R=$(metric_sum /tmp/g7fix-metrics.txt 'missing_family{reason="crash"')
 [ "$R" = "0" ] && ok "missing family sums to 0 (caller must treat empty scrape as failure)" || bad "missing family got $R"
 
+# 7. cleanup-verify fail-open discipline (r4 finding 1): an unreadable
+# REMAIN must FAIL, never skip — the harness README forbids treating
+# inability-to-verify as verified.
+if grep -q 'if \[ -z "\$REMAIN" \]; then' "$(dirname "$0")/g7-stress.sh"; then
+  ok "cleanup-verify fails open (empty REMAIN -> FAIL, not skip)"
+else
+  bad "cleanup-verify fail-open guard absent from g7-stress.sh"
+fi
+
 echo
 echo "== result: $PASS pass, $FAIL fail =="
 [ "$FAIL" = "0" ]
