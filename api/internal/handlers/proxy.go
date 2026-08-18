@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -21,6 +22,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/activity"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/metrics"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
@@ -135,6 +137,15 @@ type ProxyHandler struct {
 	// (e.g. the stranded-queue sweep) to shut down.
 	stopCh chan struct{}
 
+	// outboxCancel stops the outbox delivery worker on Stop().
+	outboxCancel context.CancelFunc
+
+	// outbox is the D3 durable-prompt outbox (design 0050, #907). nil
+	// means the outbox is disabled (dev/test) and the legacy synchronous
+	// send path is used; when set, POST /prompt accepts into the outbox
+	// and a detached worker delivers via the adapter.
+	outbox *outbox.Service
+
 	// adapter is the US-65.3 Agent Adapter seam. nil means the handler
 	// uses the legacy dialect + proxyToWorkspace path (every handler
 	// today). US-65.4 migrates handlers one-by-one to call adapter
@@ -206,6 +217,39 @@ func (h *ProxyHandler) SetAdapter(a agent.Adapter) {
 		panic("SetAdapter called after Start — request goroutines may already be reading h.adapter")
 	}
 	h.adapter = a
+}
+
+// SetOutbox wires the D3 durable-prompt outbox (design 0050 §D3, #907).
+// Also starts the delivery worker if the handler is already started;
+// otherwise Start() launches it (nil outbox = legacy sync path).
+// SetOutboxForTest wires the outbox after Start (tests only; production
+// wires via SetOutbox before Start).
+func (h *ProxyHandler) SetOutboxForTest(o *outbox.Service) {
+	h.outbox = o
+}
+
+// GetOutboxForTest exposes the outbox for assertions.
+func (h *ProxyHandler) GetOutboxForTest() *outbox.Service {
+	return h.outbox
+}
+
+// DeliverOutboxOnceForTest drives one delivery tick through the
+// production bridge (h.outboxDeliver) for one session.
+func (h *ProxyHandler) DeliverOutboxOnceForTest(ws, ses string) bool {
+	if h.outbox == nil {
+		return false
+	}
+	return h.outbox.DeliverOnce(context.Background(), ws, ses, h.outboxDeliver)
+}
+
+func (h *ProxyHandler) SetOutbox(o *outbox.Service) {
+	if o == nil {
+		return
+	}
+	if h.started {
+		panic("SetOutbox called after Start — request goroutines may already be reading h.outbox")
+	}
+	h.outbox = o
 }
 
 // SetModelPolicyChecker wires the org-policy checker for per-prompt model

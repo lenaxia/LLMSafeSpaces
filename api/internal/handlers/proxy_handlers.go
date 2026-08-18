@@ -20,6 +20,7 @@ import (
 	"github.com/gin-gonic/gin"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
@@ -218,6 +219,67 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 	}
 	if len(text) > 100_000 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "text exceeds 100KB limit"})
+		return
+	}
+
+	// D3 outbox path (design 0050 §D3, #907): accept into the Valkey
+	// outbox and 202 immediately — delivery happens in a detached worker
+	// so a client disconnect (iOS killing an in-flight POST, the
+	// 2026-08-15/16 incident's 6× context-canceled loss class) can never
+	// lose an accepted message. The synchronous adapter path below is the
+	// legacy fallback when the outbox is unset (dev/test).
+	if h.outbox != nil && h.adapter != nil {
+		workspace, ok := h.resolveWorkspaceForAdapter(c, wid)
+		if !ok {
+			return
+		}
+		defer h.releaseConnection(wid)
+
+		if !h.checkAdapterSessionLimit(c, workspace, wid, sid) {
+			return
+		}
+		if !h.checkAdapterQuota(c, workspace) {
+			if sid != "" {
+				h.removeActiveSession(c.Request.Context(), wid, sid)
+			}
+			return
+		}
+		h.adapterEnsureSSEWatch(wid)
+
+		var cmid string
+		if req := struct {
+			ClientMessageID string `json:"clientMessageID"`
+		}{}; json.Unmarshal(bodyBytes, &req) == nil {
+			cmid = req.ClientMessageID
+		}
+		modelOverride := extractPromptModel(bodyBytes)
+		var modelJSON json.RawMessage
+		if modelOverride != nil {
+			modelJSON, _ = json.Marshal(modelOverride)
+		}
+
+		e, err := h.outbox.Accept(c.Request.Context(), wid, sid, cmid, text, modelJSON)
+		if err != nil {
+			var dup *outbox.Duplicate
+			if errors.As(err, &dup) {
+				// Retry of an accepted message: 200 with the original ID
+				// (idempotent accept), not an error.
+				c.JSON(http.StatusOK, gin.H{"messageID": "", "clientMessageID": cmid, "status": "duplicate"})
+				return
+			}
+			if errors.Is(err, outbox.ErrCapped) {
+				c.JSON(http.StatusTooManyRequests, gin.H{"error": "session queue is full", "retryAfter": 10})
+				return
+			}
+			h.logger.Error("outbox accept failed", err, "workspaceID", wid, "sessionID", sid)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to accept message"})
+			return
+		}
+		c.JSON(http.StatusAccepted, gin.H{
+			"messageID":       e.ID,
+			"clientMessageID": e.ClientMessageID,
+			"status":          "queued",
+		})
 		return
 	}
 
@@ -1135,7 +1197,8 @@ func (h *ProxyHandler) getPodIPAndPassword(ctx context.Context, workspaceID stri
 }
 
 type enqueueRequest struct {
-	Text string `json:"text" binding:"required"`
+	ClientMessageID string `json:"clientMessageID,omitempty"`
+	Text            string `json:"text" binding:"required"`
 }
 
 // queuedMessageResponse is the typed JSON shape for a queue list entry.
@@ -1179,7 +1242,42 @@ func (h *ProxyHandler) EnqueueMessage(c *gin.Context) {
 		return
 	}
 
-	// V2 path (Epic 63): send via PromptV2 with delivery:"queue".
+	// D3 (#907): with the outbox wired, enqueue and prompt are the SAME
+	// accept (single path — client-decides routing is retired). The
+	// clientMessageID field rides the same body.
+	if h.outbox != nil && h.adapter != nil {
+		workspace, ok := h.resolveWorkspaceForAdapter(c, wid)
+		if !ok {
+			return
+		}
+		defer h.releaseConnection(wid)
+		if !h.checkAdapterSessionLimit(c, workspace, wid, sid) {
+			return
+		}
+		if !h.checkAdapterQuota(c, workspace) {
+			return
+		}
+		h.adapterEnsureSSEWatch(wid)
+		var modelJSON json.RawMessage
+		e, err := h.outbox.Accept(c.Request.Context(), wid, sid, req.ClientMessageID, req.Text, modelJSON)
+		if err != nil {
+			var dup *outbox.Duplicate
+			if errors.As(err, &dup) {
+				c.JSON(http.StatusOK, gin.H{"messageID": "", "status": "duplicate"})
+				return
+			}
+			if errors.Is(err, outbox.ErrCapped) {
+				c.JSON(http.StatusTooManyRequests, gin.H{"error": "session queue is full", "retryAfter": 10})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enqueue"})
+			return
+		}
+		c.JSON(http.StatusAccepted, gin.H{"messageID": e.ID, "status": "queued"})
+		return
+	}
+
+	// Legacy V2 path (Epic 63): send via PromptV2 with delivery:"queue".
 	h.enqueueV2(c, wid, sid, req.Text)
 }
 
@@ -1191,9 +1289,31 @@ func (h *ProxyHandler) ListQueue(c *gin.Context) {
 	}
 	wid := c.Param("id")
 
-	// US-63.10: read from the Redis-backed shadow marker. The shadow is
-	// populated by the SSE bridge on PromptAdmitted events and cleared on
-	// Prompted events.
+	// D3 (#907): the outbox is the real queue — entries listed here ARE
+	// pending delivery (or parked error with retry context). The V2
+	// shadow below is the legacy fallback: a view of the V2 queue that
+	// opencode 1.18.10 never drains (#755) — entries there will never
+	// deliver, which is exactly why it is no longer the primary source.
+	if h.outbox != nil {
+		entries, err := h.outbox.List(c.Request.Context(), wid, sid)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list queue"})
+			return
+		}
+		result := make([]queuedMessageResponse, 0, len(entries))
+		for _, e := range entries {
+			result = append(result, queuedMessageResponse{
+				ID:          e.ID,
+				Text:        e.Text,
+				SessionID:   sid,
+				WorkspaceID: wid,
+			})
+		}
+		c.JSON(http.StatusOK, queueListResponse{Messages: result})
+		return
+	}
+
+	// Legacy: Redis-backed V2 shadow marker.
 	if h.v2Shadow != nil {
 		entries := h.v2Shadow.List(c.Request.Context(), wid, sid)
 		result := make([]queuedMessageResponse, 0, len(entries))

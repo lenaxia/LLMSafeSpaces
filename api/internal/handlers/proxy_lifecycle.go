@@ -4,7 +4,11 @@
 package handlers
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
+	"github.com/lenaxia/llmsafespaces/pkg/session"
 	"time"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
@@ -62,6 +66,20 @@ func (h *ProxyHandler) Start() error {
 		// watches have no transition event to re-arm them. The reconciler
 		// heals missing watches; see its doc comment for scope limits.
 		go h.sseWatchReconciler(sseWatchReconcileInterval)
+
+		// D3 (#907): the outbox delivery worker — detached from any
+		// request context; survives client disconnects (the incident's
+		// message-loss class). The bridge re-resolves the workspace and
+		// re-checks quota per delivery.
+		if h.outbox != nil {
+			wctx, wcancel := context.WithCancel(context.Background())
+			h.outboxCancel = wcancel
+			go func() {
+				<-h.stopCh
+				wcancel()
+			}()
+			go h.outbox.Run(wctx, h.outboxDeliver, outboxTick)
+		}
 	})
 	return startErr
 }
@@ -255,4 +273,23 @@ func (h *ProxyHandler) newSSETracker() *sse.Tracker {
 	t.SetOnAgentDied(h.onAgentDied)
 	t.SetOnReconnect(h.reconcileSessionState)
 	return t
+}
+
+// outboxTick is the outbox delivery scan interval. Var for tests.
+var outboxTick = 1 * time.Second
+
+// outboxDeliver bridges the outbox worker to the adapter: detached
+// context and D3 model-selector forwarding (the accepted entry carries
+// the raw selector JSON). Session-limit/quota were checked at accept;
+// quota is enforced per-turn by metering regardless.
+func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID string, e outbox.Entry) error {
+	var model *session.ModelRef
+	if len(e.Model) > 0 {
+		var m session.ModelRef
+		if json.Unmarshal(e.Model, &m) == nil && m.ID != "" {
+			model = &m
+		}
+	}
+	_, err := h.adapter.Send(ctx, "", workspaceID, sessionID, e.Text, session.SendOpts{Model: model})
+	return err
 }

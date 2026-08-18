@@ -34,6 +34,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/health"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/metering"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/metrics"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/passkey"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/policy"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/prompt"
@@ -248,6 +249,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			log.With("component", "wsstate"),
 		)
 		proxyHandler.SetStateStore(redisStateStore)
+
+		// D3 (design 0050 §D3, #907): the durable-prompt outbox — same
+		// Valkey instance (AOF-persisted); accepts survive client
+		// disconnects and API restarts.
+		proxyHandler.SetOutbox(outbox.New(cacheSvc.GetClient()))
 	} else {
 		// M4 (worklog 371): surface the silent fallback to InMemoryStore.
 		// Without this warning, a future refactor that wraps the cache

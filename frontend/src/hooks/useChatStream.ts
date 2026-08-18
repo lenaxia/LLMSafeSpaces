@@ -76,11 +76,16 @@ export function useChatStream(workspaceId: string | undefined, sessionId: string
         // window is transient; drop the user's message only if it persists
         // across the bounded retry count. The loop exits only via `break`
         // (success) or `throw` (non-503 error, or retries exhausted).
+        // D3 (#907): one clientMessageID per user message, stable across
+        // retries — the API's outbox dedupes on it, so a retried POST can
+        // never double-send.
+        const clientMessageID = crypto.randomUUID();
         for (let attempt = 0; attempt <= SEND_MAX_503_RETRIES; attempt++) {
           try {
             await messagesApi.sendAsync(workspaceId, sessionId, {
               parts: [{ type: "text", text }],
               ...(model && { model }),
+              clientMessageID,
             });
             break;
           } catch (err: unknown) {
