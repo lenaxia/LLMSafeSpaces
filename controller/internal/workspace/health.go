@@ -254,29 +254,63 @@ func (r *WorkspaceReconciler) maybeEnrichAgentStatus(ctx context.Context, ws *v1
 // enrichAgentStatus polls /v1/statusz for session/disk/provider metadata.
 // It runs on a slower cadence (deepStatusInterval) and its failures are
 // informational only — they never trigger pod restarts.
+// statuszWithBearers GETs the admin-mux endpoint trying each Bearer
+// credential in order; a 401 advances to the next candidate (#887 D5.1
+// mixed fleet: distinct admin token first, workspace password fallback
+// for legacy pods). Transport errors surface immediately; an empty
+// candidate list or all-401 outcome is an error.
+func statuszWithBearers(ctx context.Context, client *http.Client, url string, bearers []string) (*http.Response, error) {
+	if len(bearers) == 0 {
+		// No candidates (missing Secret / dev cluster with un-gated
+		// agentd) — one unauthenticated attempt, matching the pre-#887
+		// behavior for Secret-less environments.
+		bearers = []string{""}
+	}
+	for _, b := range bearers {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, err
+		}
+		if b != "" {
+			req.Header.Set("Authorization", "Bearer "+b)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusUnauthorized {
+			return resp, nil
+		}
+		_ = resp.Body.Close()
+	}
+	return nil, fmt.Errorf("all %d bearer candidates rejected (401) for %s", len(bearers), url)
+}
+
 func (r *WorkspaceReconciler) enrichAgentStatus(ctx context.Context, ws *v1.Workspace, elapsed time.Duration) {
 	if ws.Status.PodIP == "" {
 		return
 	}
 
 	endpoint := fmt.Sprintf("http://%s:%d/v1/statusz", ws.Status.PodIP, agentdAdminPort)
-	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
-	if err != nil {
-		return
-	}
 
-	// F1.4.2 (Epic 17): /v1/statusz now requires a Bearer token sourced
-	// from the per-workspace password Secret. Read it best-effort —
-	// missing Secret means failed auth on the request, which is logged
-	// at V(1) like any other deep-status failure (informational only).
+	// F1.4.2 (Epic 17) + #887 D5.1: /v1/statusz requires a Bearer token.
+	// Candidates in try-order: the DISTINCT admin token (file-delivery
+	// pods), then the workspace password (legacy pods whose agentd still
+	// authenticates with it). Read best-effort — a missing Secret means
+	// failed auth, logged at V(1) like any other deep-status failure
+	// (informational only).
+	bearers := []string{}
 	pwSec := &corev1.Secret{}
 	if pwErr := r.Get(ctx, types.NamespacedName{Name: passwordSecretName(ws.Name), Namespace: ws.Namespace}, pwSec); pwErr == nil {
+		if v, ok := pwSec.Data["admin-token"]; ok && len(v) > 0 {
+			bearers = append(bearers, string(v))
+		}
 		if v, ok := pwSec.Data["password"]; ok {
-			req.Header.Set("Authorization", "Bearer "+string(v))
+			bearers = append(bearers, string(v))
 		}
 	}
 
-	resp, err := deepStatusHTTPClient.Do(req)
+	resp, err := statuszWithBearers(ctx, deepStatusHTTPClient, endpoint, bearers)
 	if err != nil {
 		// Deep-status failure is informational only. Log at debug level.
 		log.FromContext(ctx).V(1).Info("deep-status poll failed (informational only)", "error", err.Error())

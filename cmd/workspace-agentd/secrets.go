@@ -1250,5 +1250,9 @@ func buildEnvFrom(path string) []string {
 		}
 		added = append(added, key+"="+val)
 	}
-	return append(parent, added...)
+	// #887 D5.1: agentd-only credentials must never ride the opencode
+	// spawn env (opencode passes its full env to every tool process).
+	// Applied after the merge so a user-staged env-secret with a banned
+	// name cannot smuggle one back in.
+	return scrubAdminEnv(append(parent, added...))
 }

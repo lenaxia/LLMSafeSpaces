@@ -51,7 +51,15 @@ func (r *WorkspaceReconciler) ensurePasswordSecret(ctx context.Context, workspac
 	name := passwordSecretName(workspace.Name)
 	secret := &corev1.Secret{}
 	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: workspace.Namespace}, secret); err == nil {
-		return nil
+		// #887 D5.1: converge legacy Secrets onto the DISTINCT admin
+		// token key. Generated once, never rotated in place — running
+		// pods hold the accepted value in agentd memory while rebuilt
+		// probe specs read the Secret; in-place rotation desyncs them.
+		if _, ok := secret.Data["admin-token"]; ok {
+			return nil
+		}
+		secret.Data["admin-token"] = []byte(common.GenerateRandomString(32))
+		return r.Update(ctx, secret)
 	}
 	password := common.GenerateRandomString(32)
 	newSecret := &corev1.Secret{
@@ -59,7 +67,10 @@ func (r *WorkspaceReconciler) ensurePasswordSecret(ctx context.Context, workspac
 			Name:      name,
 			Namespace: workspace.Namespace,
 		},
-		Data: map[string][]byte{"password": []byte(password)},
+		Data: map[string][]byte{
+			"password":    []byte(password),
+			"admin-token": []byte(common.GenerateRandomString(32)),
+		},
 	}
 	if err := controllerutil.SetControllerReference(workspace, newSecret, r.Scheme); err != nil {
 		return err

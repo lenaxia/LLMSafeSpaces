@@ -443,7 +443,7 @@ func (p *managedProcess) healthProbeAfterRestart() {
 		}
 		// readyz is Bearer-gated when AGENTD_ADMIN_TOKEN is set (server.go
 		// requireBearerToken). Empty token = no auth required (dev/kind).
-		if tok := os.Getenv("AGENTD_ADMIN_TOKEN"); tok != "" {
+		if tok := adminToken(); tok != "" {
 			req.Header.Set("Authorization", "Bearer "+tok)
 		}
 		resp, err := client.Do(req)

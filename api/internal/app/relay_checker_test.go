@@ -55,7 +55,7 @@ func TestNewRelayChecker_RelayInjected(t *testing.T) {
 			defer srv.Close()
 
 			ipRes := &stubPodIPResolver{ip: "127.0.0.1"}
-			pw := func(_ context.Context, _ string) (string, error) { return "pw", nil }
+			pw := func(_ context.Context, _ string) ([]string, error) { return []string{"pw"}, nil }
 			checker := newRelayChecker(srv.Client(), relayCheckerPort(t, srv), ipRes, pw)
 
 			got := checker(context.Background(), "u1", "ws-1")
@@ -88,7 +88,7 @@ func TestNewRelayChecker_OversizedBody_DecodeFails(t *testing.T) {
 
 	checker := newRelayChecker(srv.Client(), relayCheckerPort(t, srv),
 		&stubPodIPResolver{ip: "127.0.0.1"},
-		func(_ context.Context, _ string) (string, error) { return "pw", nil })
+		func(_ context.Context, _ string) ([]string, error) { return []string{"pw"}, nil })
 
 	if got := checker(context.Background(), "u1", "ws-1"); got {
 		t.Fatalf("expected false for oversized body exceeding 16 KiB read limit, got true")
@@ -104,7 +104,7 @@ func TestNewRelayChecker_NonOKStatus(t *testing.T) {
 
 	checker := newRelayChecker(srv.Client(), relayCheckerPort(t, srv),
 		&stubPodIPResolver{ip: "127.0.0.1"},
-		func(_ context.Context, _ string) (string, error) { return "pw", nil })
+		func(_ context.Context, _ string) ([]string, error) { return []string{"pw"}, nil })
 
 	if got := checker(context.Background(), "u1", "ws-1"); got {
 		t.Fatalf("expected false for 503, got true")
@@ -123,27 +123,27 @@ func TestNewRelayChecker_ResolveFailures(t *testing.T) {
 	tests := []struct {
 		name   string
 		ipRes  handlers.PodIPResolver
-		pwFunc func(context.Context, string) (string, error)
+		pwFunc func(context.Context, string) ([]string, error)
 	}{
 		{
 			"empty pod ip",
 			&stubPodIPResolver{ip: ""},
-			func(_ context.Context, _ string) (string, error) { return "pw", nil },
+			func(_ context.Context, _ string) ([]string, error) { return []string{"pw"}, nil },
 		},
 		{
 			"resolver error",
 			&stubPodIPResolver{err: errors.New("no pod")},
-			func(_ context.Context, _ string) (string, error) { return "pw", nil },
+			func(_ context.Context, _ string) ([]string, error) { return []string{"pw"}, nil },
 		},
 		{
 			"empty password",
 			&stubPodIPResolver{ip: "127.0.0.1"},
-			func(_ context.Context, _ string) (string, error) { return "", nil },
+			func(_ context.Context, _ string) ([]string, error) { return nil, nil },
 		},
 		{
 			"password error",
 			&stubPodIPResolver{ip: "127.0.0.1"},
-			func(_ context.Context, _ string) (string, error) { return "", errors.New("no secret") },
+			func(_ context.Context, _ string) ([]string, error) { return nil, errors.New("no secret") },
 		},
 	}
 	for _, tt := range tests {
@@ -169,7 +169,7 @@ func TestBuildRelayChecker_WiresResolverAndPassword(t *testing.T) {
 		t.Fatalf("buildRelayChecker returned nil checker")
 	}
 	checker := buildRelayChecker(&stubPodIPResolver{ip: ""},
-		func(_ context.Context, _ string) (string, error) { return "pw", nil })
+		func(_ context.Context, _ string) ([]string, error) { return []string{"pw"}, nil })
 	if got := checker(context.Background(), "u1", "ws-1"); got {
 		t.Fatalf("expected false when pod IP resolves empty, got true")
 	}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -20,6 +21,63 @@ import (
 // WorkspacePassword implements interfaces.WorkspacePasswordProvider (US-46.11).
 func (h *ProxyHandler) WorkspacePassword(ctx context.Context, workspaceID string) (string, error) {
 	return h.getPassword(ctx, workspaceID)
+}
+
+// GetWithBearers GETs an admin-mux endpoint trying each Bearer credential
+// in order; 401 advances to the next candidate (#887 D5.1 mixed fleet:
+// distinct admin token first, workspace password fallback). Non-401
+// responses (including errors) return immediately. Empty candidates means
+// one unauthenticated attempt (pre-#887 behavior for Secret-less dev
+// environments).
+// GetWithBearers is the exported form used by app.relayChecker (same
+// package would be fine, but the checker lives in app).
+func GetWithBearers(ctx context.Context, client *http.Client, url string, bearers []string) (*http.Response, error) {
+	if len(bearers) == 0 {
+		// No candidates — one unauthenticated attempt (pre-#887
+		// behavior for Secret-less dev environments).
+		bearers = []string{""}
+	}
+	for _, b := range bearers {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return nil, err
+		}
+		if b != "" {
+			req.Header.Set("Authorization", "Bearer "+b)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusUnauthorized {
+			return resp, nil
+		}
+		_ = resp.Body.Close()
+	}
+	return nil, fmt.Errorf("all %d bearer candidates rejected (401) for %s", len(bearers), url)
+}
+
+// adminBearerCandidates returns credentials to try against a workspace
+// pod's admin mux, in order: the DISTINCT admin token (#887 D5.1
+// file-delivery pods; read from the Secret's admin-token key, uncached —
+// these calls are reconnect/poll-path, not hot) then the supplied
+// fallback (the workspace password, for legacy pods). Tolerates a nil k8s
+// client (unit-test handlers) by returning just the fallback.
+func (h *ProxyHandler) adminBearerCandidates(ctx context.Context, workspaceID, fallbackPassword string) []string {
+	candidates := []string{}
+	if h.k8sClient != nil {
+		secretName := fmt.Sprintf("workspace-pw-%s", workspaceID)
+		secret, err := h.k8sClient.Clientset().CoreV1().Secrets(h.namespace).Get(ctx, secretName, metav1.GetOptions{})
+		if err == nil {
+			if tok := strings.TrimSpace(string(secret.Data["admin-token"])); tok != "" {
+				candidates = append(candidates, tok)
+			}
+		}
+	}
+	if fallbackPassword != "" {
+		candidates = append(candidates, fallbackPassword)
+	}
+	return candidates
 }
 
 func (h *ProxyHandler) getPassword(ctx context.Context, workspaceID string) (string, error) {
@@ -146,15 +204,8 @@ func (h *ProxyHandler) GetAuthoritativeActiveSessions(ctx context.Context, works
 	defer cancel()
 
 	url := fmt.Sprintf("http://%s:%d/v1/statusz", ws.Status.PodIP, agentd.AgentdAdminPort) //nolint:gosec // G107: internal pod
-	req, err := http.NewRequestWithContext(statuszCtx, http.MethodGet, url, nil)
-	if err != nil {
-		return map[string]bool{}
-	}
-	if password != "" {
-		req.Header.Set("Authorization", "Bearer "+password)
-	}
-
-	resp, err := h.httpClient.Do(req)
+	bearers := h.adminBearerCandidates(statuszCtx, workspaceID, password)
+	resp, err := GetWithBearers(statuszCtx, h.httpClient, url, bearers)
 	if err != nil {
 		h.logger.Debug("GetAuthoritativeActiveSessions: statusz unavailable",
 			"workspaceID", workspaceID, "error", err)

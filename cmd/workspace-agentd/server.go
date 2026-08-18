@@ -240,7 +240,10 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	adminMux := http.NewServeMux()
 	userMux := http.NewServeMux()
 
-	adminToken := os.Getenv("AGENTD_ADMIN_TOKEN")
+	// #887 D5.1: file-delivered (AGENTD_ADMIN_TOKEN_FILE) with env
+	// fallback for legacy pods — keeps the token out of the environment
+	// opencode inherits.
+	adminToken := adminToken()
 
 	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt, agentd.ReloadSecretsCachePath, agentd.ModelResolutionWarningPath))
 	adminMux.Handle("/v1/readyz", requireBearerToken(adminToken,
