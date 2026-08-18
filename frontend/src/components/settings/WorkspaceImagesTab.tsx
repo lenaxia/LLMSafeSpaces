@@ -118,7 +118,10 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
       return;
     }
     setRefreshSource(cfg);
-    setName(cfg.name);
+    // Scoped name uniqueness (same scope+owner) means the original name
+    // is taken — default to a de-conflicted name carrying the update
+    // target; the user can edit before saving.
+    setName(`${cfg.name} (${target.name} ${target.version})`);
     setSelected(new Set(cfg.selection));
     setBaseName(target.name);
     setBaseVersion(target.version);
@@ -189,6 +192,14 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
   if (!catalog) return <p>No catalog data</p>;
 
   const currentSelection = Array.from(selected).sort();
+  // #928 refresh (C4): selected extensions that don't support the CURRENT
+  // target base. ResolveSelection 422s on these at save; surfacing them
+  // before the save — especially when a refresh prefill moved the base —
+  // is the difference between "why did it fail" and seeing it coming.
+  const unsupportedOnBase = currentSelection.filter((id) => {
+    const ext = catalog?.extensions.find((e) => e.id === id);
+    return ext && !ext.retired && !ext.supportedBases.includes(baseName);
+  });
   const isCurrentSelectionBlocked = (): boolean => {
     if (currentSelection.length === 0) return false;
     if (!catalog.knownFailures || catalog.knownFailures.length === 0) return false;
@@ -346,7 +357,16 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
               )}
             </div>
             <button
-              onClick={() => { setRefreshSource(null); setName(""); setSelected(new Set()); }}
+              onClick={() => {
+                setRefreshSource(null);
+                setName("");
+                setSelected(new Set());
+                // Restore the default base — the prefill re-targeted it;
+                // leaving it would silently aim the next manual create
+                // at the migration base (review round 2, C5).
+                const def = catalog?.bases.find((b) => b.isDefault) ?? catalog?.bases[0];
+                if (def) { setBaseName(def.name); setBaseVersion(def.version); }
+              }}
               className="shrink-0 rounded px-2 py-0.5 text-muted-foreground hover:bg-accent"
               aria-label="Cancel refresh"
             >
@@ -382,6 +402,11 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
               </option>
             ))}
           </select>
+          {unsupportedOnBase.length > 0 && (
+            <div className="mt-1 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-xs text-red-600 dark:text-red-400">
+              Not available on {baseName}: {unsupportedOnBase.join(", ")} — deselect them or pick a base that supports them. Saving with them selected will fail.
+            </div>
+          )}
         </div>
         <div>
           <label className="block text-sm font-medium mb-1">Extensions</label>

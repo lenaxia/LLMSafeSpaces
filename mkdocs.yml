@@ -111,6 +111,7 @@ nav:
       - OIDC SSO: operator/oidc-sso.md
       - Inference Relay Fleet: operator/inference-relay.md
       - Agentd Delivery (Image Volume): operator/agentd-delivery.md
+      - Image Factory (Base Lifecycle): operator/image-factory.md
       - Monitoring: operator/monitoring.md
       - Upgrading: operator/upgrading.md
       - Troubleshooting: operator/troubleshooting.md
