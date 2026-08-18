@@ -197,6 +197,14 @@ describe("refresh flow (#928 phase 2)", () => {
   });
 
   it("no Refresh button on fresh configs", async () => {
+    mockGetCatalog.mockResolvedValue(defaultCatalog);
+    mockListConfigs.mockResolvedValue(defaultConfigs);
+    render(<WorkspaceImagesTab />);
+    await waitFor(() => expect(screen.getByText("ml-stack")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("ml-stack"));
+    expect(screen.queryByRole("button", { name: /Refresh to/i })).toBeNull();
+  });
+});
 
 describe("base-update pill (#928)", () => {
   it("shows a migration pill when the default base moved", async () => {
@@ -242,9 +250,6 @@ describe("base-update pill (#928)", () => {
     mockListConfigs.mockResolvedValue(defaultConfigs);
     render(<WorkspaceImagesTab />);
     await waitFor(() => expect(screen.getByText("ml-stack")).toBeInTheDocument());
-    fireEvent.click(screen.getByText("ml-stack"));
-    expect(screen.queryByRole("button", { name: /Refresh to/i })).toBeNull();
-
     expect(screen.queryByText(/available/i)).toBeNull();
     expect(screen.queryByText(/new base/i)).toBeNull();
   });
