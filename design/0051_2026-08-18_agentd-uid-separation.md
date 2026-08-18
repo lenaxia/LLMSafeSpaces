@@ -151,8 +151,15 @@ env-channel verification**:
    gap today is silent pass-through). Dev/kind escape hatch: explicit `AGENTD_ALLOW_NO_ADMIN_TOKEN=1`.
 3. **Empty-password boot reject**: `readAgentPassword` treats a readable-but-empty file as fatal (G46
    path) instead of arming a guessable credential.
-4. **`/metrics` off the admin mux's unauthenticated path**: bind to the token-gated handler (or
-   loopback + kube-rbac-proxy per the existing values.yaml guidance).
+4. **`/metrics` on the admin mux — RULING: no change, NetworkPolicy is the control.** Studied during
+   D5.1 implementation: the chart's `agentdPodMonitor` scrapes per-pod `:4098/metrics`, and Prometheus
+   PodMonitors carry ONE static bearer secret per monitor — per-pod tokens (D5.1's distinct value) are
+   structurally incompatible with that scrape model, so token-gating would break the documented metrics
+   pipeline (US-44.8 gauges vanish). Exposure audit: metric labels are `workspaceID` + operational
+   counts only (`ops_metrics.go`) — no session content, no credentials. In-pod readability is not a
+   boundary (§3); cross-pod ingress on 4098 is already NetPol-admitted only to the Prometheus pod
+   selector when the PodMonitor is enabled. If per-pod auth ever becomes a requirement, the option is a
+   kube-rbac-proxy sidecar per workspace pod — noted, disproportionate today.
 
 The password's env leak (`OPENCODE_SERVER_PASSWORD` → tools) is **not** in Phase 1 — it is
 upstream-gated (§4 Implication B): opencode must add file-based server auth or child-env scrubbing.
