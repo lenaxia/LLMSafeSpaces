@@ -12,3 +12,14 @@ metric_sum() {
   local file="$1" fam="$2"
   awk -v fam="$fam" 'index($0, fam) { sum+=$NF } END { print sum+0 }' "$file"
 }
+
+# cleanup_verify STORM_PID: check that the burn loops are actually gone.
+# Fails (nonzero) when the verification is impossible or loops remain —
+# inability to verify is NOT verified (harness README rule).
+cleanup_verify() {
+  local remain
+  remain=$(kubectl exec "$POD" -n "$NS" -c workspace -- sh -c 'pgrep -fc "G7""LOAD" || true' 2>/dev/null | tr -d ' ') || return 1
+  [ -n "$remain" ] || return 1
+  [ "$remain" = "0" ] || return 2
+  return 0
+}

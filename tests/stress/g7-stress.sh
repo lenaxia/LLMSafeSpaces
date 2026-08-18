@@ -67,6 +67,7 @@ if [ -z "$PW" ]; then PW=$(kubectl exec "$POD" -n "$NS" -c workspace -- sh -c 'c
 OC="opencode:$PW"
 PORT_OC=14096
 kubectl port-forward -n "$NS" pod/"$POD" $PORT_OC:4096 >/dev/null 2>&1 & PFO=$!
+STORM=""
 trap 'kill $PFO 2>/dev/null || true; kill $STORM 2>/dev/null || true; kubectl exec "$POD" -n "$NS" -c workspace -- sh -c "pkill -9 -f G7LOAD 2>/dev/null; true" 2>/dev/null || true' EXIT
 sleep 2
 
@@ -122,16 +123,8 @@ kubectl exec "$POD" -n "$NS" -c workspace -- sh -c \
   'pkill -9 -f G7LOAD 2>/dev/null; true' 2>/dev/null || true
 kill $STORM 2>/dev/null || true
 sleep 3
-# The pattern is concatenated ("G7""LOAD") so pgrep does not match its
-# own invoking sh -c (whose argv contains the literal string) — that
-# self-match made the count 1 on a clean system.
-REMAIN=$(kubectl exec "$POD" -n "$NS" -c workspace -- sh -c 'pgrep -fc "G7""LOAD" || true' 2>/dev/null | tr -d ' ') || true
-if [ -z "$REMAIN" ]; then
-  echo "FAIL: storm cleanup could not be verified (pgrep exec failed — inability to verify is not verified)"
-  exit 2
-fi
-if [ "$REMAIN" != "0" ]; then
-  echo "FAIL: storm cleanup incomplete ($REMAIN burn loops still running)"
+if ! cleanup_verify; then
+  echo "FAIL: storm cleanup could not be verified or incomplete (inability to verify is not verified)"
   exit 2
 fi
 
@@ -160,8 +153,8 @@ elif [ "$WH1" = "$WH0" ]; then
 else
   bad "health_watchdog restarts changed $WH0 -> $WH1 during storm"
 fi
-if [ -z "$S1" ]; then
-  echo "  note: suppressions scrape unreadable (S1 empty) — measurement unavailable, not unchanged"
+if [ -z "$S0" ] || [ -z "$S1" ]; then
+  echo "  note: suppressions scrape incomplete (S0=$S0 S1=$S1) — measurement unavailable, never a green"
 elif [ "$S1" != "$S0" ]; then
   ok "suppressions counted ($S0 -> $S1)"
 else
@@ -182,6 +175,7 @@ echo "== D: forced restart, crash-recovery-owned =="
 # Read the tracker busy-reset BEFORE the crash trigger so a reset at the
 # generation change lands between BR0 and BR1 (a consecutive read after
 # the trigger would capture it in BOTH and show no delta).
+BR0=$(ad_metric 'workspace_tracker_busy_resets_total') || true
 kubectl exec "$POD" -n "$NS" -c workspace -- sh -c 'pkill -TERM -x opencode 2>/dev/null; true' 2>/dev/null || true
 # Poll for the crash counter to advance (bounded), not a fixed sleep.
 CR1=""
@@ -195,13 +189,18 @@ if [ -n "$CR1" ] && [ "$CR1" -gt "$CR0" ]; then
 else
   bad "crash restart counter did not advance ($CR0 -> $CR1)"
 fi
-# Tracker busy-reset across the generation change (design criterion 4).
-BR0=$(ad_metric 'workspace_tracker_busy_resets_total') || true
+# Tracker busy-reset across the generation change (design criterion 4):
+# BR0 was read before the SIGTERM; BR1 after. A reset at the generation
+# change now lands between them and is observable.
 BR1=$(ad_metric 'workspace_tracker_busy_resets_total') || true
 if [ -n "$BR0" ] && [ -n "$BR1" ]; then
-  echo "  note: tracker busy resets readable and unchanged ($BR0) — no orphaned-busy present this run; heal path asserted when orphans exist"
+  if [ "$BR1" -gt "$BR0" ]; then
+    ok "tracker busy-reset observed across generation change ($BR0 -> $BR1)"
+  else
+    echo "  note: tracker busy resets readable and unchanged ($BR0 -> $BR1) — no orphaned-busy present this run"
+  fi
 else
-  echo "  note: tracker busy-reset metric unreadable (scrape failed)"
+  echo "  note: tracker busy-reset metric unreadable (BR0=$BR0 BR1=$BR1)"
 fi
 
 echo

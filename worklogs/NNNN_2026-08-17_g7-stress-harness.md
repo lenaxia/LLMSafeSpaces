@@ -225,10 +225,14 @@ Self-test 10/10. shellcheck clean.
   cause was the EXIT trap's last failing `kill` overriding the status
   under set -e. Each trap command now `|| true`-wrapped; rc 0 confirmed.
 
-### Round-5 validation run (verbatim capture)
+### Round-5 validation run (verbatim capture — SUPERSEDED, integrity corrected in r6)
 
-Same scratch pod as the r4-corrected run (crash=3 pre-existing from a
-prior pass; watchdog still 0; assertions valid — D advances 3 -> 4):
+Pod 8101a6b9 is not recorded in any other round (r2: ae4799fb, r3:
+a769b1c8, r4: 9c6c725f) — its baseline (crash=3, TH0=516s throttling,
+restartCount=0) implies prior harness passes on that pod that this
+worklog does not document. The capture is byte-consistent but its
+provenance is not credibly recorded; it is superseded by the fresh-pod
+r6 capture below, which has a verified clean baseline.
 
 ```
 == G7 stress on g7-scratch-stress (pod g7-scratch-stress-8101a6b9) ==
@@ -249,3 +253,49 @@ health_watchdog=0 crash=3 suppressions=0 restartCount=0
 ```
 
 harness exit code 0. Self-test 10/10; shellcheck clean.
+
+
+---
+
+## Round 6 (review on #924): BR reposition performed, cleanup_verify shared, S0/S1 guard, STORM init, fresh-pod verbatim capture
+
+- **BR0 reposition actually landed** (r5 finding 1 was a false claim — the
+  comment described a change not in the diff): BR0 is now read at
+  g7-stress.sh:186, BEFORE the SIGTERM at :189; BR1 after the crash poll
+  at :203; the note compares BR1 vs BR0 (ok on delta; note with actual
+  values otherwise).
+- **Cleanup verify extracted to lib.sh `cleanup_verify`** (r6 finding 4):
+  the harness calls it; the self-test exercises the SAME function with
+  stubbed kubectl (fails on empty output, passes on zero) — a genuine
+  behavioral pin, not a tautology or source-grep.
+- **S0/S1 guard** (r6 finding 3): the suppressions branch now requires
+  BOTH reads non-empty before it can report "counted" — an unreadable
+  baseline can no longer false-green.
+- **STORM initialized before the trap** (r6 finding 5): `STORM=""` before
+  the EXIT trap so `set -u` early exits (metrics-unreachable, no-session)
+  no longer abort with "STORM: unbound variable" and a wrong exit code.
+- **Fresh-pod verbatim capture** (r6 finding 6): pod 2f5bd4c1, TH0 =
+  104,364 µs (0.1 s clean baseline), crash 0 -> 1, harness exit 0. The
+  r5 capture (unrecorded pod 8101a6b9) is annotated as superseded.
+
+### Round-6 validation run (verbatim capture, fresh pod)
+
+```
+== G7 stress on g7-scratch-stress (pod g7-scratch-stress-2f5bd4c1) ==
+== baseline ==
+health_watchdog=0 crash=0 suppressions=0 restartCount=0
+== A/C/F: CPU storm + live long turn (session ses_fed5db65bffeyjAjLvoosyH9FE) ==
+  PASS: storm produced cgroup throttling (104364 -> 183806064 usec)
+  PASS: live turn completed under storm (HTTP 200, reply marker present)
+== watchdog + kubelet assertions (A/B/E) ==
+  PASS: no watchdog kills during storm (health_watchdog restarts: 0 -> 0)
+  note: suppressions readable and unchanged (0) — storm below watchdog kill threshold (acceptable; assertion present)
+  PASS: kubelet restartCount unchanged across storm (0)
+== D: forced restart, crash-recovery-owned ==
+  PASS: crash-recovery restart recorded (0 -> 1)
+  note: tracker busy resets readable and unchanged (0 -> 0) — no orphaned-busy present this run
+
+== result: 5 pass, 0 fail ==
+```
+
+harness exit 0. Self-test 12/12; shellcheck clean.

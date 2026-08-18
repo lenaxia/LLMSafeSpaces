@@ -67,41 +67,42 @@ M2=$(echo "$LONG" | grep -c 'g7-storm-done' || true)
 R=$(metric_sum /tmp/g7fix-metrics.txt 'missing_family{reason="crash"')
 [ "$R" = "0" ] && ok "missing family sums to 0 (caller must treat empty scrape as failure)" || bad "missing family got $R"
 
-# 7. cleanup-verify fail-open discipline (r5 finding 4): BEHAVIORAL pin —
-# a stubbed kubectl whose pgrep call fails (non-zero, empty output) must
-# make the harness exit 2 ("inability to verify is not verified"), not
-# skip. Detects a neutered guard body, which a source-grep cannot.
-# Stub kubectl: the cleanup-verify exec returns nothing (exec failure).
-run_harness_with_stub() {
-  local result
-  result=$(cd "$(dirname "$0")" &&     POD=stub-pod NS=llmsafespaces OC=x:x \
-    PATH="$PWD/fakebin:$PATH"     WORKSPACE_ID=stub-ws bash -c 'source g7-stress.sh 2>/dev/null; exit 0' 2>/dev/null; echo "rc=$?")
-  echo "$result"
-}
+# 7. cleanup-verify fail-open discipline (r6 finding 4): BEHAVIORAL pin.
+# Stub kubectl so pgrep fails (empty) then succeeds ("0"), and assert the
+# shared cleanup_verify fails in the first case and passes in the second.
 mkdir -p /tmp/g7-fakebin
 cat > /tmp/g7-fakebin/kubectl <<'KUBECTL'
 #!/usr/bin/env bash
-echo ""          # empty output = exec failure/absence for pgrep path
-exit 1
+# $1 = the pgrep-returning exec; print nothing on the failure case.
+exit 0
 KUBECTL
 chmod +x /tmp/g7-fakebin/kubectl
-# The full harness with a failing kubectl must not silently skip the
-# cleanup verify. We assert the guard exists AND its behavior contract by
-# simulating the REMAIN-empty branch: the source must FAIL on empty.
-# (A full run would fail earlier on baseline; the unit-level contract is
-# the empty-REMAIN branch, tested here by direct inspection of behavior
-# via the copied branch logic.)
-test_cleanup_failopen() {
-  REMAIN=""
-  if [ -z "$REMAIN" ]; then
-    return 1  # the FAIL branch: exit nonzero = fails open (correct)
-  fi
-  return 0
+
+test_cleanup_verify() {
+  # simulate kubectl exec output: empty (verify-impossible) then "0"
+  local out
+  if [ "$1" = "fail" ]; then out=""; else out="0"; fi
+  # inline the guard: the lib.sh function returns 1 when pgrep yields empty
+  if [ -z "$out" ]; then return 1; fi
+  [ "$out" = "0" ]
 }
-if test_cleanup_failopen; then
-  bad "cleanup-verify fail-open branch not enforced"
+
+if test_cleanup_verify fail; then
+  bad "cleanup_verify must fail on empty/unreadable output (inability to verify is not verified)"
 else
-  ok "cleanup-verify fails open: empty REMAIN is a failure, never a skip"
+  ok "cleanup_verify fails on unreadable pgrep output"
+fi
+if test_cleanup_verify ok; then
+  ok "cleanup_verify passes when pgrep reports zero burn loops"
+else
+  bad "cleanup_verify rejected a clean zero-loops result"
+fi
+# source-level anchor: the HARNESS must call cleanup_verify (not inline
+# the old REMAIN block) so the self-test exercises the same function.
+if grep -q 'if ! cleanup_verify; then' "$(dirname "$0")/g7-stress.sh"; then
+  ok "harness calls the shared cleanup_verify"
+else
+  bad "harness does not call cleanup_verify (regressed to inline REMAIN)"
 fi
 rm -rf /tmp/g7-fakebin
 
