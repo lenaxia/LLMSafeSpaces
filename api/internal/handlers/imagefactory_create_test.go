@@ -303,7 +303,7 @@ func TestIF_CreateConfig_NameConflict_FreshPath_409_AndCancelsDispatch(t *testin
 	require.Equal(t, http.StatusConflict, w.Code, "fresh-path collision must 409; body: %s", w.Body.String())
 	assert.Contains(t, w.Body.String(), "dup-name")
 	assert.True(t, disp.called, "dispatch fired before the failing insert (dispatch-before-commit)")
-	// The recorded run ID (4242 from the fake) must be cancelled.
+	// The recorded run ID (4242 from the fake) must be canceled.
 	require.NotEmpty(t, disp.cancelCalls)
 	assert.Equal(t, int64(4242), disp.cancelCalls[0])
 }
