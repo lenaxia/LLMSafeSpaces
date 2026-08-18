@@ -940,7 +940,6 @@ func TestRouterClientsHaveHeadTimeouts(t *testing.T) {
 	require.NotNil(t, tr.ResponseHeaderTimeout, "routerProxy: ResponseHeaderTimeout must be set")
 	assert.Positive(t, tr.ResponseHeaderTimeout, "routerProxy: ResponseHeaderTimeout must be non-zero")
 	require.NotNil(t, tr.DialContext, "routerProxy: a custom dialer (with timeout) must be configured")
-	assert.NotNil(t, tr.DialContext, "routerProxy: dialer must be present (issue #911: blackholed dials)")
 
 	fb, err := newFallbackProxy("https://upstream.example.com", 0.5, 1)
 	require.NoError(t, err)

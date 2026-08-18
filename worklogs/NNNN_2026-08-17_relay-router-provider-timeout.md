@@ -28,19 +28,20 @@ client had **no timeout on the pre-body phase**:
 `http.Client{Timeout: 0}` means no deadline at all. When the upstream
 (relay VM, or the fallback's direct opencode.ai egress) accepted the
 connection but stalled before writing response headers, the proxy's
-`resp.Body.Read()` loop blocked forever: no response, no error in the log,
-handler goroutine leaked. Worse, the failure branches returned silently
-(no log, no fallback metric), which is why the outage ran 47 days
-invisible.
+`client.Do()` blocked forever awaiting response headers: no response, no
+error in the log, handler goroutine leaked. (Mid-body stalls are separate
+and intentionally stay unbounded — that is the streaming case.) Worse, the
+failure branches returned silently (no log, no fallback metric), which is
+why the outage ran 47 days invisible.
 
 A total body `Timeout` is deliberately NOT used: chat/SSE responses stream
 for minutes and a wall-clock deadline would truncate generations mid-stream.
 
 ## Fix
 
-Added `newRouterClient(d)` in `cmd/relay-router/proxy.go` (production 5m via
-`defaultRouterClient()`) and `ResponseHeaderTimeout` on
-`cmd/relay-proxy/main.go`'s transport:
+Added `newRouterClient(responseHeaderTimeout, dialTimeout)` in
+`cmd/relay-router/proxy.go` (production 5m/5s via `defaultRouterClient()`)
+and `ResponseHeaderTimeout` on `cmd/relay-proxy/main.go`'s transport:
 
 - `DialContext` timeout: 5s (router→relay plaintext HTTP with per-VM tokens;
    WireGuard was removed, worklog 0447). 5s lands inside the workspace
@@ -101,6 +102,15 @@ None.
   Red/green verified against logging the wrapped `url.Error`.
 - `TestDefaultHTTPClientHeadTimeout` (new, relay-proxy): transport pins
   `ResponseHeaderTimeout` and no total `Timeout`. Red/green verified.
+- `TestProxyHandler_UpstreamErrorLogOmitsPathAndQuery` (new, relay-proxy,
+  round 4): unreachable upstream + sentinel path/query → captured log must
+  be non-empty (loud) and must not contain either sentinel. Red/green
+  verified both against log removal and against logging the wrapped
+  `url.Error`.
+- `TestRouterClientDialTimeoutConfigured` (new, round 4): real dial through
+  the configured `DialContext` to a blackholed address (RFC 5737 TEST-NET-1)
+  with a 300ms test-scaled bound; asserts the dial fails fast (red against a
+  30s dialer — the literal #911 repro defect).
 - `go test -count=1 ./cmd/relay-router/ ./cmd/relay-proxy/` → PASS.
 - `go build ./cmd/relay-router/ ./cmd/relay-proxy/` PASS; `go vet` clean;
   `golangci-lint` 0 issues; `gofmt` clean.
@@ -121,9 +131,11 @@ None.
 
 - `cmd/relay-router/proxy.go`
 - `cmd/relay-router/proxy_test.go`
-- `cmd/relay-proxy/main.go`
-- `cmd/relay-proxy/coverage_test.go`
 - `cmd/relay-router/main.go`
+- `cmd/relay-proxy/main.go`
+- `cmd/relay-proxy/proxy.go`
+- `cmd/relay-proxy/coverage_test.go`
+- `cmd/relay-proxy/proxy_test.go`
 - `worklogs/NNNN_2026-08-17_relay-router-provider-timeout.md` (this entry)
 
 ---
@@ -151,10 +163,10 @@ on the issue's observability findings. This section records the corrections:
    optional `withFallbackMetrics` hook recording requests under
    `relay_router_requests_total{relay="fallback",status="..."}` (502 on
    error, the real status otherwise), wired in `main.go`.
-4. **Test-scaled timeouts.** `newRouterClient(d)` makes the
-   response-header bound injectable; production uses 5m via
-   `defaultRouterClient()`, the stalled-relay handler test uses 300ms so CI
-   completes in milliseconds.
+ 4. **Test-scaled timeouts.** `newRouterClient(responseHeaderTimeout,
+    dialTimeout)` makes the response-header and dial bounds injectable;
+    production uses 5m/5s via `defaultRouterClient()`, the stalled-relay
+    handler test uses 300ms/200ms so CI completes in milliseconds.
 5. **Wiring tests added** (round-1 gap): `TestRouterClientsHaveHeadTimeouts`
    now asserts the PROXY CONSTRUCTORS attach the bounded client (a revert to
    `&http.Client{Timeout: 0}` fails it, red/green verified), plus
