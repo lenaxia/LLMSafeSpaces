@@ -168,8 +168,18 @@ describe("refresh flow (#928 phase 2)", () => {
     },
   };
 
+  // The refresh prefill only targets bases present in the catalog —
+  // the stale config points at trixie, so the catalog must offer it.
+  const refreshCatalog = {
+    ...defaultCatalog,
+    bases: [
+      ...defaultCatalog.bases,
+      { name: "trixie", version: "0.1.0", image: "img-trixie", tag: "0.1.0", isDefault: true },
+    ],
+  };
+
   it("shows a Refresh button on stale configs and prefills the form on click", async () => {
-    mockGetCatalog.mockResolvedValue(defaultCatalog);
+    mockGetCatalog.mockResolvedValue(refreshCatalog);
     mockListConfigs.mockResolvedValue([staleCfg]);
     render(<WorkspaceImagesTab />);
     await waitFor(() => expect(screen.getByText("ml-stack")).toBeInTheDocument());
@@ -185,7 +195,7 @@ describe("refresh flow (#928 phase 2)", () => {
   });
 
   it("cancel returns the form to empty", async () => {
-    mockGetCatalog.mockResolvedValue(defaultCatalog);
+    mockGetCatalog.mockResolvedValue(refreshCatalog);
     mockListConfigs.mockResolvedValue([staleCfg]);
     render(<WorkspaceImagesTab />);
     await waitFor(() => expect(screen.getByText("ml-stack")).toBeInTheDocument());
