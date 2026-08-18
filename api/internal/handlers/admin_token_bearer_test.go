@@ -13,6 +13,11 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	k8smocks "github.com/lenaxia/llmsafespaces/mocks/kubernetes"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
 )
 
 // #887 D5.1: admin-mux (:4098) Bearer consumers must try the distinct
@@ -107,4 +112,68 @@ func TestReconcileSessionState_BearerFallback(t *testing.T) {
 		h.reconcileSessionState("ws-1", host, "legacy-pw")
 	})
 	assert.False(t, accepted.Load(), "without a k8s client the distinct token is undiscoverable; 401 path must no-op, not panic")
+}
+
+// Review-round-2 scenarios: adminBearerCandidates behaviors.
+
+func TestAdminBearerCandidates_TryOrderAndDedup(t *testing.T) {
+	// Fake clientset carrying the workspace-pw Secret with BOTH keys.
+	fakeClientset := k8sfake.NewSimpleClientset(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "workspace-pw-ws-cand", Namespace: "default"},
+		Data: map[string][]byte{
+			"password":    []byte("the-password"),
+			"admin-token": []byte("distinct-token"),
+		},
+	})
+	k8sMock := k8smocks.NewMockKubernetesClient()
+	k8sMock.On("Clientset").Return(fakeClientset).Maybe()
+
+	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{}, nil)
+	require.NoError(t, err)
+
+	got := h.adminBearerCandidates(context.Background(), "ws-cand", "the-password")
+	require.Len(t, got, 2, "candidates = [admin-token, password]")
+	assert.Equal(t, "distinct-token", got[0])
+	assert.Equal(t, "the-password", got[1])
+}
+
+// Equal admin-token and password values (hand-made Secret) collapse to one
+// candidate — no duplicate 401 attempts.
+func TestAdminBearerCandidates_DedupEqualValues(t *testing.T) {
+	fakeClientset := k8sfake.NewSimpleClientset(&corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "workspace-pw-ws-dup", Namespace: "default"},
+		Data: map[string][]byte{
+			"password":    []byte("same-value"),
+			"admin-token": []byte("same-value"),
+		},
+	})
+	k8sMock := k8smocks.NewMockKubernetesClient()
+	k8sMock.On("Clientset").Return(fakeClientset).Maybe()
+
+	h, err := NewProxyHandler(k8sMock, &testLogger{}, "default", &http.Client{}, nil)
+	require.NoError(t, err)
+
+	got := h.adminBearerCandidates(context.Background(), "ws-dup", "same-value")
+	assert.Equal(t, []string{"same-value"}, got)
+}
+
+func TestAdminBearerCandidates_NilClientFallsBackToPassword(t *testing.T) {
+	h, err := NewProxyHandler(newMockK8sWithWorkspace(t, "ws-nil", "127.0.0.1"), &testLogger{}, "default", &http.Client{}, nil)
+	require.NoError(t, err)
+	h.k8sClient = nil // unit handlers construct without k8s
+
+	got := h.adminBearerCandidates(context.Background(), "ws-nil", "pw-only")
+	assert.Equal(t, []string{"pw-only"}, got)
+}
+
+func TestAdminBearerCandidates_MissingSecretUsesFallback(t *testing.T) {
+	h, err := NewProxyHandler(newMockK8sWithWorkspace(t, "ws-nosec", "127.0.0.1"), &testLogger{}, "default", &http.Client{}, nil)
+	require.NoError(t, err)
+	h.k8sClient = nil
+
+	// No k8s → only the fallback. With k8s but Secret missing, the Get
+	// errors and is swallowed — same outcome, covered by the nil path
+	// plus the reconcile degrade test.
+	got := h.adminBearerCandidates(context.Background(), "ws-nosec", "")
+	assert.Empty(t, got, "no candidates discoverable → empty (GetWithBearers sends one unauthenticated attempt, pre-#887 behavior)")
 }

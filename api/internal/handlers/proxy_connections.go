@@ -75,7 +75,18 @@ func (h *ProxyHandler) adminBearerCandidates(ctx context.Context, workspaceID, f
 		}
 	}
 	if fallbackPassword != "" {
-		candidates = append(candidates, fallbackPassword)
+		// Hand-made Secrets can carry equal values; a duplicate candidate
+		// would only burn a second 401.
+		dup := false
+		for _, c := range candidates {
+			if c == fallbackPassword {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			candidates = append(candidates, fallbackPassword)
+		}
 	}
 	return candidates
 }

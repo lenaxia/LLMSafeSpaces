@@ -592,7 +592,9 @@ install -m 0600 /mnt/secrets/password/password /sandbox-cfg/password
 # presence; the guard covers legacy Secrets during the upsert convergence
 # window. agentd resolves AGENTD_ADMIN_TOKEN_FILE first, so an installed
 # but unreferenced file is inert in legacy pods.
-if [[ -f /mnt/secrets/password/admin-token ]]; then
+# POSIX test only — this script runs under /bin/sh (dash), where [[ ]]
+# is a silent no-op (F1, review round 2).
+if [ -f /mnt/secrets/password/admin-token ]; then
   install -m 0400 /mnt/secrets/password/admin-token /sandbox-cfg/admin-token
 fi
 

@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // #887 D5.1: the admin-mux bearer token must be deliverable file-only
@@ -95,5 +97,37 @@ func TestBuildEnvFrom_ScrubsAdminTokenVars(t *testing.T) {
 	}
 	if !sawProbe || !sawHarmless {
 		t.Errorf("scrub must be surgical: probe=%v HARMLESS_VAR=%v (both should be present)", sawProbe, sawHarmless)
+	}
+}
+
+// F2 regression: the no-secrets-env early-return path must ALSO scrub —
+// a pod with no user env-secrets is the common case, and the unscrubbed
+// parent env leaked both admin vars on it.
+func TestBuildEnvFrom_NoSecretsFile_StillScrubs(t *testing.T) {
+	t.Setenv("AGENTD_ADMIN_TOKEN", "leak-me")
+	t.Setenv("AGENTD_ADMIN_TOKEN_FILE", "/sandbox-cfg/admin-token")
+
+	env := buildEnvFrom("/nonexistent/secrets-env")
+	for _, e := range env {
+		if e == "AGENTD_ADMIN_TOKEN=leak-me" || e == "AGENTD_ADMIN_TOKEN_FILE=/sandbox-cfg/admin-token" {
+			t.Fatalf("admin var leaked via the no-file early-return path: %s", e)
+		}
+	}
+}
+
+// F2 regression: the bash-source-failure path must ALSO scrub.
+func TestBuildEnvFrom_SourceFailure_StillScrubs(t *testing.T) {
+	dir := t.TempDir()
+	bad := filepath.Join(dir, "secrets-env")
+	// Valid file but the bash spawn will fail: SecretsEnvPath is bound to
+	// a directory instead of a file so `source` errors.
+	require.NoError(t, os.MkdirAll(bad, 0o600))
+	t.Setenv("AGENTD_ADMIN_TOKEN", "leak-me")
+
+	env := buildEnvFrom(bad)
+	for _, e := range env {
+		if e == "AGENTD_ADMIN_TOKEN=leak-me" {
+			t.Fatalf("admin var leaked via the source-failure path: %s", e)
+		}
 	}
 }
