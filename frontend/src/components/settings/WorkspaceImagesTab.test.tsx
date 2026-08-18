@@ -178,6 +178,15 @@ describe("WorkspaceImagesTab", () => {
     },
   };
 
+const staleCfgUpdates = {
+  kind: "base_migration" as const,
+  currentBaseName: "bookworm",
+  currentBaseVersion: "0.6.0",
+  latestBaseVersion: "0.9.0",
+  defaultBaseName: "trixie",
+  defaultBaseVersion: "0.1.0",
+};
+
 describe("refresh flow (#928 phase 2)", () => {
 
 
@@ -377,5 +386,62 @@ describe("base-update pill (#928)", () => {
     fireEvent.click(screen.getByText("ml-stack"));
     fireEvent.click(await screen.findByRole("button", { name: /Refresh to trixie/i }));
     expect(await screen.findByText(/Not available on trixie: ffmpeg/i)).toBeInTheDocument();
+  });
+
+  it("auto-drops retired extensions from the prefill and reports it (#928 r3 R2)", async () => {
+    // Catalog WITHOUT ffmpeg (retired since save); python313 widened to
+    // support trixie so the live remainder is clean on the target base.
+    const retiredGone = {
+      ...refreshCatalog,
+      extensions: refreshCatalog.extensions
+        .filter((e: { id: string }) => e.id !== "ffmpeg")
+        .map((e: { id: string; supportedBases: string[] }) =>
+          e.id === "python313" ? { ...e, supportedBases: ["bookworm", "trixie"] } : e,
+        ),
+    };
+    mockGetCatalog.mockResolvedValue(retiredGone);
+    const staleTwo = {
+      ...defaultConfigs[0],
+      selection: ["ffmpeg", "python313"],
+      updatesAvailable: staleCfgUpdates,
+    };
+    mockListConfigs.mockResolvedValue([staleTwo]);
+    render(<WorkspaceImagesTab />);
+    await waitFor(() => expect(screen.getByText("ml-stack")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("ml-stack"));
+    fireEvent.click(await screen.findByRole("button", { name: /Refresh to trixie/i }));
+    // Info toast: one retired extension dropped; prefill still lands with the live one.
+    await waitFor(() => expect(mockToast).toHaveBeenCalledWith(expect.stringMatching(/1 retired extension dropped/), "success"));
+    expect(await screen.findByText(/Refreshing “ml-stack”/i)).toBeInTheDocument();
+    // python313 (live, supports trixie) is not flagged as unsupported —
+    // the hint area may legitimately mention nothing at all.
+    expect(screen.queryByText(/Not available on trixie: python313/i)).toBeNull();
+  });
+
+  it("fully-retired selection aborts the refresh with an actionable error (#928 r3 R2)", async () => {
+    const retiredGone = {
+      ...refreshCatalog,
+      extensions: refreshCatalog.extensions.filter((e: { id: string }) => e.id !== "ffmpeg"),
+    };
+    mockGetCatalog.mockResolvedValue(retiredGone);
+    mockListConfigs.mockResolvedValue([staleCfg]); // selection: ["ffmpeg"] only
+    render(<WorkspaceImagesTab />);
+    await waitFor(() => expect(screen.getByText("ml-stack")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("ml-stack"));
+    fireEvent.click(await screen.findByRole("button", { name: /Refresh to trixie/i }));
+    await waitFor(() => expect(mockToast).toHaveBeenCalledWith(expect.stringMatching(/Every extension.*retired.*create a new config/), "error"));
+    expect(screen.queryByText(/Refreshing/i)).toBeNull();
+  });
+
+  it("second refresh of the same original dedups the suggested name (#928 r3 R3)", async () => {
+    mockGetCatalog.mockResolvedValue(refreshCatalog);
+    // The list already contains the FIRST refresh's config.
+    const firstRefresh = { ...defaultConfigs[0], id: "c-first", name: "ml-stack (trixie 0.1.0)", hash: "s-first", baseName: "trixie", baseVersion: "0.1.0", status: "ready" };
+    mockListConfigs.mockResolvedValue([staleCfg, firstRefresh]);
+    render(<WorkspaceImagesTab />);
+    await waitFor(() => expect(screen.getByText("ml-stack")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("ml-stack"));
+    fireEvent.click(await screen.findByRole("button", { name: /Refresh to trixie/i }));
+    expect((await screen.findByPlaceholderText("e.g. ml-stack") as HTMLInputElement).value).toBe("ml-stack (trixie 0.1.0) 2");
   });
 });

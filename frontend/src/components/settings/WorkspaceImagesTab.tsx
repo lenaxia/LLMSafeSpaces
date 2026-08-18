@@ -117,12 +117,37 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
       toast("Update target base not found in catalog", "error");
       return;
     }
+    // R2 (#928 review r3): extensions retired since this config was saved
+    // are absent from the catalog — invisible checkboxes, unsaveable
+    // selection (save 422s "extension is retired"). Auto-drop them from
+    // the prefill and say so; an empty remainder aborts BEFORE any state
+    // mutation so no banner/prefill half-lands.
+    const liveSelection = cfg.selection.filter((id) =>
+      catalog?.extensions.some((e) => e.id === id && !e.retired),
+    );
+    const dropped = cfg.selection.length - liveSelection.length;
+    if (liveSelection.length === 0) {
+      toast("Every extension in this config has been retired — nothing to refresh; create a new config instead", "error");
+      return;
+    }
     setRefreshSource(cfg);
     // Scoped name uniqueness (same scope+owner) means the original name
     // is taken — default to a de-conflicted name carrying the update
-    // target; the user can edit before saving.
-    setName(`${cfg.name} (${target.name} ${target.version})`);
-    setSelected(new Set(cfg.selection));
+    // target; the user can edit before saving. R3 (#928 review r3):
+    // a SECOND refresh of the same original deterministically collides
+    // with the first refresh's config — dedup against the in-hand list.
+    let suggested = `${cfg.name} (${target.name} ${target.version})`;
+    if (configs.some((c) => c.name === suggested)) {
+      for (let n = 2; ; n++) {
+        const candidate = `${suggested} ${n}`;
+        if (!configs.some((c) => c.name === candidate)) { suggested = candidate; break; }
+      }
+    }
+    setName(suggested);
+    if (dropped > 0) {
+      toast(`${dropped} retired extension${dropped > 1 ? "s" : ""} dropped from the refresh (no longer in the catalog)`, "success");
+    }
+    setSelected(new Set(liveSelection));
     setBaseName(target.name);
     setBaseVersion(target.version);
     setExpandedConfig(null);
@@ -198,7 +223,12 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
   // is the difference between "why did it fail" and seeing it coming.
   const unsupportedOnBase = currentSelection.filter((id) => {
     const ext = catalog?.extensions.find((e) => e.id === id);
-    return ext && !ext.retired && !ext.supportedBases.includes(baseName);
+    // Absent-from-catalog = retired (the endpoint excludes retired) —
+    // R2: flag those too; they can never save and their checkbox is
+    // invisible. ext.retired is belt-and-suspenders if the endpoint
+    // ever includes retired entries.
+    if (!ext) return true;
+    return !ext.retired && !ext.supportedBases.includes(baseName);
   });
   const isCurrentSelectionBlocked = (): boolean => {
     if (currentSelection.length === 0) return false;

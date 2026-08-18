@@ -25,8 +25,12 @@ unrelated; this page is about the image factory (design/0046).
 ## Moving the default base (e.g. bookworm → trixie)
 
 1. Publish the new base's versions first; then set `isDefault` on the
-   intended row (PUT the bases resource). Exactly ONE default row —
-   multiple defaults make pill computation ambiguous (first wins).
+   intended row (POST-upsert the bases resource — there is no PUT; the
+   upsert keys on name+version). Exactly ONE default row — with
+   multiple `isDefault` rows, pill computation resolves to the
+   highest-sorted name/version (ListBases orders ascending and the
+   resolver keeps the last IsDefault row it sees), so treat extra
+   defaults as operator error.
 2. Configs on other base names gain the `new base: trixie` pill with
    the migration tooltip (package versions follow the Debian suite).
 3. **Before flipping the default**, verify extension coverage: the pill
@@ -51,9 +55,17 @@ staleness is information, never a lockout.
 
 ## Failure modes
 
-- **Refresh save 409/422**: duplicate scoped name (user edited the
-  prefilled name back to the original) or an extension unsupported on
-  the target base — both surface in the form; the prefill's default
-  name is de-conflicted (`name (base version)`) to avoid the common case.
+- **Refresh save 500 "failed to save config"**: duplicate scoped name.
+  The create paths currently return 500 (not 409) on the scoped-unique
+  violation; the prefill avoids the common cases by de-conflicting the
+  suggested name against existing configs (`name (base version)`, with
+  numeric suffix on repeat refreshes). If the user hand-edits back into
+  a collision, the error surfaces as a toast — a 4xx mapping for this
+  case is a known backend debt item.
+- **Refresh save 422 per-extension**: an extension in the selection is
+  unsupported on the target base, or was retired after the config was
+  saved. Both surface in the form before save ("Not available on …");
+  retired extensions are auto-dropped from the prefill with an info
+  toast (a fully-retired selection aborts the refresh).
 - **Pill absent after a publish**: check the config is `ready` (pills
   are Ready-only) and the bases table actually lists the new version.

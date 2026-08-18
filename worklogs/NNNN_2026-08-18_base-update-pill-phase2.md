@@ -120,6 +120,30 @@ None.
 
 ---
 
+## Review round 3 addendum
+
+- R2 (retired extensions): prefill auto-drops selection IDs absent from
+  the catalog (retired), reports via toast; fully-retired selection
+  aborts BEFORE any state mutation (no half-landed banner). The
+  unsupported hint also flags absent-from-catalog IDs (manual path).
+- R3 (repeat refresh): suggested name deduped against the in-hand
+  configs list with numeric suffix — second refresh of the same
+  original no longer deterministically 500s on the unique constraint.
+- Operator doc's three factual errors corrected: 500 (not 409) on
+  scoped-name collision with the 4xx mapping noted as backend debt;
+  POST-upsert (no PUT) for isDefault; multiple defaults resolve
+  highest-sorted (not first). Added retired-extension and
+  repeat-refresh failure-mode entries.
+- E2E: tests/e2e/image-factory-refresh.spec.ts — 3 legs (happy
+  save-and-toast with original intact; save-500 retains prefill;
+  retired-base race errors loudly). Playwright browser can't launch in
+  this sandbox (missing system libs); CI's runner executes the suite —
+  the specs follow the established platform-image-factory mock pattern.
+- Component tests for R2/R3 added (auto-drop+report, fully-retired
+  abort, name dedup): file 26/26, full suite 1681/1681, tsc clean.
+
+---
+
 ## Files Modified
 
 frontend/src/components/settings/WorkspaceImagesTab{.tsx,.test.tsx};
