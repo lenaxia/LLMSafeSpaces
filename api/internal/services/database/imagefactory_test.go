@@ -682,9 +682,7 @@ func TestRenameConfig_Conflict(t *testing.T) {
 	// Simulate a unique violation (SQLSTATE 23505) from a driver error —
 	// the pgx shape (production driver); the interface also accepts the
 	// legacy pq shape, pinned in imagefactory_unit_test.go.
-	type stateErr struct{ code string }
 	err23505 := fmt.Errorf("wrapped: %w", &pgconn.PgError{Code: "23505", Message: "duplicate key"})
-	_ = stateErr{}
 	mock.ExpectExec(`UPDATE image_factory_configs SET name`).
 		WithArgs("Dup", "cfg-1").
 		WillReturnError(err23505)
