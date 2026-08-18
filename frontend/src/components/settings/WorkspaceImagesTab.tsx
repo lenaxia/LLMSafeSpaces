@@ -201,6 +201,14 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
       setName("");
       setSelected(new Set());
       setRefreshSource(null);
+      // N3 (#931 review r5): a refresh-save leaves the base pre-targeted
+      // at the update — the cancel-side twin of round-2's C5. Restore
+      // the default so the next manual create doesn't silently target
+      // the migration base.
+      if (refreshSource) {
+        const def = catalog?.bases.find((b) => b.isDefault) ?? catalog?.bases[0];
+        if (def) { setBaseName(def.name); setBaseVersion(def.version); }
+      }
       toast(
         refreshSource
           ? `Refreshed ${refreshSource.name} onto ${baseName} ${baseVersion}: new config is building (the original is unchanged)`
@@ -225,10 +233,11 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
     const ext = catalog?.extensions.find((e) => e.id === id);
     // Absent-from-catalog = retired (the endpoint excludes retired) —
     // R2: flag those too; they can never save and their checkbox is
-    // invisible. ext.retired is belt-and-suspenders if the endpoint
-    // ever includes retired entries.
+    // invisible. If the endpoint ever INCLUDES retired entries, flag
+    // them as well (retired can never save either way).
     if (!ext) return true;
-    return !ext.retired && !ext.supportedBases.includes(baseName);
+    if (ext.retired) return true;
+    return !ext.supportedBases.includes(baseName);
   });
   const isCurrentSelectionBlocked = (): boolean => {
     if (currentSelection.length === 0) return false;

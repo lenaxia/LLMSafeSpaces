@@ -24,13 +24,28 @@ unrelated; this page is about the image factory (design/0046).
 
 ## Moving the default base (e.g. bookworm → trixie)
 
-1. Publish the new base's versions first; then set `isDefault` on the
-   intended row (POST-upsert the bases resource — there is no PUT; the
-   upsert keys on name+version). Exactly ONE default row — with
-   multiple `isDefault` rows, pill computation resolves to the
-   highest-sorted name/version (ListBases orders ascending and the
-   resolver keeps the last IsDefault row it sees), so treat extra
-   defaults as operator error.
+**The upsert does not clear other defaults.** `POST /bases` upserts the
+one row you send (`ON CONFLICT (name,version)` — nothing else is
+touched). Setting trixie default leaves bookworm default TOO: a
+two-default state where pills resolve to the highest-sorted base while
+the create form's default picker takes the first — signals diverge.
+Move the default as TWO upserts, in this order:
+
+1. Publish the new base's versions and their extension coverage first
+   (see below).
+2. POST-upsert the OLD default row with `isDefault: false`.
+3. POST-upsert the NEW row with `isDefault: true`.
+
+**API restarts re-apply the seed's default.** The catalog seed runs at
+every API boot and upserts `isDefault` from `catalog.seed.yaml`
+(currently bookworm=true). If your moved default diverges from the
+seed, the next API restart silently re-defaults the seed's base —
+leaving the two-default state above. Until the seed-default behavior
+gains a "don't fight the operator" mode (backend debt), EITHER keep the
+seed as the source of truth and move the default by PR-editing
+`catalog.seed.yaml` (the intended flow — the seed is reviewable in
+git), OR accept that manual moves need re-applying after restarts.
+Prefer the seed PR.
 2. Configs on other base names gain the `new base: trixie` pill with
    the migration tooltip (package versions follow the Debian suite).
 3. **Before flipping the default**, verify extension coverage: the pill
@@ -55,7 +70,9 @@ staleness is information, never a lockout.
 
 ## Failure modes
 
-- **Refresh save 500 "failed to save config"**: duplicate scoped name.
+- **Refresh save 500 "failed to save config" / "failed to save config
+  and build"** (coalesced vs fresh dispatch path respectively):
+  duplicate scoped name.
   The create paths currently return 500 (not 409) on the scoped-unique
   violation; the prefill avoids the common cases by de-conflicting the
   suggested name against existing configs (`name (base version)`, with

@@ -444,4 +444,24 @@ describe("base-update pill (#928)", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Refresh to trixie/i }));
     expect((await screen.findByPlaceholderText("e.g. ml-stack") as HTMLInputElement).value).toBe("ml-stack (trixie 0.1.0) 2");
   });
+
+  it("save from a refresh prefill restores the DEFAULT base afterward (#931 r5 N3)", async () => {
+    const catalogDefaultBookworm = {
+      ...refreshCatalog,
+      bases: refreshCatalog.bases.map((b: { name: string; isDefault?: boolean }) => ({ ...b, isDefault: b.name === "bookworm" })),
+    };
+    mockGetCatalog.mockResolvedValue(catalogDefaultBookworm);
+    mockListConfigs.mockResolvedValue([staleCfg]);
+    const created = { id: "c-new", hash: "s-new", name: "ml-stack (trixie 0.1.0)", selection: staleCfg.selection, resolvedValues: {}, baseName: "trixie", baseVersion: "0.1.0", scope: "member", status: "building" };
+    mockCreateConfig.mockResolvedValueOnce(created);
+    render(<WorkspaceImagesTab />);
+    await waitFor(() => expect(screen.getByText("ml-stack")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("ml-stack"));
+    fireEvent.click(await screen.findByRole("button", { name: /Refresh to trixie/i }));
+    const baseSelect = screen.getAllByRole("combobox")[0] as HTMLSelectElement;
+    expect(baseSelect.value).toBe("trixie/0.1.0");
+    fireEvent.click(screen.getByRole("button", { name: /Create Personal Image & Build/i }));
+    // Save succeeded → the select returns to the default (bookworm).
+    await waitFor(() => expect(baseSelect.value).toBe("bookworm/0.6.0"));
+  });
 });

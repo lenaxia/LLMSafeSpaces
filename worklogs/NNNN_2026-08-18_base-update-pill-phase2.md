@@ -95,7 +95,8 @@ previous "sandbox lacks node_modules" claim was stale):
   cancel-restores-default-base, unsupported-on-base hint)
 - `npx vitest run src/components/workspace/NewWorkspaceSplitButton.test.tsx`
   → pass (incl. launch-picker pill test)
-- `npx vitest run` (full) → 1678/1678 pass
+- `npx vitest run` (full) → 1681/1681 pass (round-3 addendum runs;
+  1678 at the round-2 commit — numbers are per-run, see addenda)
 - `tsc --noEmit` → clean
 
 Integration/e2e levels: NOT added this round — handler/store paths are
@@ -149,3 +150,21 @@ None.
 frontend/src/components/settings/WorkspaceImagesTab{.tsx,.test.tsx};
 frontend/src/components/workspace/NewWorkspaceSplitButton{.tsx,.test.tsx};
 docs/operator/image-factory.md; mkdocs.yml.
+
+---
+
+## Review round 5 addendum
+
+- N3: successful refresh-save now restores the default base (mirror of
+  the cancel fix; test drives the select trixie→bookworm through
+  refresh→save).
+- N5: the hint's ext.retired direction corrected (retired entries are
+  flagged, not suppressed); the retired-drop toast stays "success"
+  severity (the provider's only kinds are success/error; the message
+  text carries the informational tone).
+- N1/N2: the move-default runbook now states what the API actually
+  does — the upsert never clears other defaults (two-step move
+  procedure) and the boot seed re-applies its isDefault on every API
+  restart (seed-PR as the intended flow until the backend grows an
+  operator-preserving mode, recorded as debt). Fresh-path error message
+  named. File 27/27.
