@@ -70,15 +70,13 @@ staleness is information, never a lockout.
 
 ## Failure modes
 
-- **Refresh save 500 "failed to save config" / "failed to save config
-  and build"** (coalesced vs fresh dispatch path respectively):
-  duplicate scoped name.
-  The create paths currently return 500 (not 409) on the scoped-unique
-  violation; the prefill avoids the common cases by de-conflicting the
-  suggested name against existing configs (`name (base version)`, with
-  numeric suffix on repeat refreshes). If the user hand-edits back into
-  a collision, the error surfaces as a toast — a 4xx mapping for this
-  case is a known backend debt item.
+- **Refresh save 409**: duplicate scoped name. The API returns 409
+  naming the colliding config (#936); the form surfaces it directly.
+  The prefill avoids the common cases by de-conflicting the suggested
+  name against existing configs (`name (base version)`, with numeric
+  suffix on repeat refreshes). The fresh-dispatch path also cancels the
+  already-fired GH run on conflict (bounded orphan even when the run ID
+  is not yet known).
 - **Refresh save 422 per-extension**: an extension in the selection is
   unsupported on the target base, or was retired after the config was
   saved. Both surface in the form before save ("Not available on …");
