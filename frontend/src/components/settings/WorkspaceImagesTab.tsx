@@ -220,6 +220,20 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
             </span>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            {cfg.updatesAvailable && (
+              <span
+                title={
+                  cfg.updatesAvailable.kind === "base_migration"
+                    ? `New base available: ${cfg.updatesAvailable.defaultBaseName} ${cfg.updatesAvailable.defaultBaseVersion} (current: ${cfg.updatesAvailable.currentBaseName} ${cfg.updatesAvailable.currentBaseVersion}). Package versions follow the Debian suite — re-save on the new base to migrate.`
+                    : `Base update available: ${cfg.updatesAvailable.currentBaseName} ${cfg.updatesAvailable.latestBaseVersion} (current: ${cfg.updatesAvailable.currentBaseVersion}). Re-save to pick it up.`
+                }
+                className="rounded-full px-2 py-0.5 text-xs font-medium bg-amber-500/15 text-amber-600 dark:text-amber-400"
+              >
+                {cfg.updatesAvailable.kind === "base_migration"
+                  ? `new base: ${cfg.updatesAvailable.defaultBaseName}`
+                  : `base ${cfg.updatesAvailable.latestBaseVersion} available`}
+              </span>
+            )}
             <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${statusPill(cfg.status)}`}>
               {cfg.status}
             </span>

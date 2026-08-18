@@ -154,3 +154,52 @@ describe("WorkspaceImagesTab", () => {
     });
   });
 });
+
+describe("base-update pill (#928)", () => {
+  it("shows a migration pill when the default base moved", async () => {
+    mockGetCatalog.mockResolvedValue(defaultCatalog);
+    mockListConfigs.mockResolvedValue([
+      {
+        ...defaultConfigs[0],
+        updatesAvailable: {
+          kind: "base_migration",
+          currentBaseName: "bookworm",
+          currentBaseVersion: "0.6.0",
+          latestBaseVersion: "0.9.0",
+          defaultBaseName: "trixie",
+          defaultBaseVersion: "0.1.0",
+        },
+      },
+    ]);
+    render(<WorkspaceImagesTab />);
+    await waitFor(() => expect(screen.getByText("ml-stack")).toBeInTheDocument());
+    expect(screen.getByText("new base: trixie")).toBeInTheDocument();
+  });
+
+  it("shows a version-bump pill when the same base has a newer version", async () => {
+    mockGetCatalog.mockResolvedValue(defaultCatalog);
+    mockListConfigs.mockResolvedValue([
+      {
+        ...defaultConfigs[0],
+        updatesAvailable: {
+          kind: "version_bump",
+          currentBaseName: "bookworm",
+          currentBaseVersion: "0.6.0",
+          latestBaseVersion: "0.9.0",
+        },
+      },
+    ]);
+    render(<WorkspaceImagesTab />);
+    await waitFor(() => expect(screen.getByText("ml-stack")).toBeInTheDocument());
+    expect(screen.getByText("base 0.9.0 available")).toBeInTheDocument();
+  });
+
+  it("renders no pill when fresh (field absent)", async () => {
+    mockGetCatalog.mockResolvedValue(defaultCatalog);
+    mockListConfigs.mockResolvedValue(defaultConfigs);
+    render(<WorkspaceImagesTab />);
+    await waitFor(() => expect(screen.getByText("ml-stack")).toBeInTheDocument());
+    expect(screen.queryByText(/available/i)).toBeNull();
+    expect(screen.queryByText(/new base/i)).toBeNull();
+  });
+});

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,7 +28,13 @@ import (
 // behavior for image-factory e2e tests. It tracks configs, builds, and
 // known failures with realistic semantics (atomic transitions, coalescing).
 type e2eImageFactoryStore struct {
-	e2eBase               imagefactory.Base
+	e2eBase imagefactory.Base
+	// e2eExtraBases, when non-nil, REPLACES the single-base return of
+	// ListBases (multi-base catalog scenarios, e.g. base-update pill).
+	e2eExtraBases []imagefactory.Base
+	// e2eListBasesErr, when non-nil, makes ListBases fail (pill
+	// enrichment unhappy path).
+	e2eListBasesErr       error
 	e2eExtensions         map[string]imagefactory.Extension
 	e2ePlatformCfg        imagefactory.PlatformConfig
 	e2eConfigs            map[string]*imagefactory.Config
@@ -57,6 +64,12 @@ func (s *e2eImageFactoryStore) GetPlatformConfig(ctx context.Context) (imagefact
 	return s.e2ePlatformCfg, nil
 }
 func (s *e2eImageFactoryStore) ListBases(ctx context.Context) ([]imagefactory.Base, error) {
+	if s.e2eListBasesErr != nil {
+		return nil, s.e2eListBasesErr
+	}
+	if s.e2eExtraBases != nil {
+		return s.e2eExtraBases, nil
+	}
 	return []imagefactory.Base{s.e2eBase}, nil
 }
 func (s *e2eImageFactoryStore) GetBase(ctx context.Context, name, version string) (imagefactory.Base, error) {
@@ -651,3 +664,154 @@ func TestE2E_RenameConfig_PlatformScope_Forbidden(t *testing.T) {
 var _ imageFactoryStore = (*e2eImageFactoryStore)(nil)
 var _ buildStore = (*e2eImageFactoryStore)(nil)
 var _ extensionReviewer = (*e2eImageFactoryStore)(nil)
+
+// ── Base-update pill enrichment (#928) ──────────────────────────────────
+
+// TestListConfigs_BaseUpdatesEnriched: a stale config (bookworm 0.6.0
+// with 0.9.0 published, default moved to trixie) must surface
+// updatesAvailable with kind=base_migration on the list endpoint; a
+// fresh config must omit the field entirely.
+func TestListConfigs_BaseUpdatesEnriched(t *testing.T) {
+	store := newE2EStore()
+	store.e2eExtraBases = []imagefactory.Base{
+		{Name: "bookworm", Version: "0.6.0", Image: "ghcr.io/acme/base", Tag: "0.6.0"},
+		{Name: "bookworm", Version: "0.9.0", Image: "ghcr.io/acme/base", Tag: "0.9.0"},
+		{Name: "trixie", Version: "0.1.0", Image: "ghcr.io/acme/base-trixie", Tag: "0.1.0", IsDefault: true},
+	}
+	uid := "user-1"
+	stale := &imagefactory.Config{
+		ID: "cfg-stale", Hash: "s-stale", Name: "stale", Scope: imagefactory.ScopeMember, OwnerID: &uid,
+		BaseName: "bookworm", BaseVersion: "0.6.0", Status: imagefactory.StatusReady,
+	}
+	fresh := &imagefactory.Config{
+		ID: "cfg-fresh", Hash: "s-fresh", Name: "fresh", Scope: imagefactory.ScopeMember, OwnerID: &uid,
+		BaseName: "trixie", BaseVersion: "0.1.0", Status: imagefactory.StatusReady,
+	}
+	store.e2eConfigs["s-stale"] = stale
+	store.e2eConfigs["s-fresh"] = fresh
+
+	r := newE2ERouter(t, store, &fakeDispatcher{ghRunID: 1})
+	req := httptest.NewRequest("GET", "/api/v1/image-factory/configs", nil)
+	req.Header.Set("X-Test-UserID", "user-1")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp ListConfigsResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	byName := map[string]imagefactory.Config{}
+	for _, c := range resp.Configs {
+		byName[c.Name] = c
+	}
+	require.NotNil(t, byName["stale"].UpdatesAvailable, "stale config must carry the pill payload")
+	require.Equal(t, imagefactory.BaseUpdateBaseMigration, byName["stale"].UpdatesAvailable.Kind)
+	require.Equal(t, "trixie", byName["stale"].UpdatesAvailable.DefaultBaseName)
+	require.Equal(t, "0.9.0", byName["stale"].UpdatesAvailable.LatestBaseVersion)
+	require.Nil(t, byName["fresh"].UpdatesAvailable, "fresh config must omit the field")
+}
+
+// TestGetConfig_BaseUpdatesEnriched: same signal on the decode endpoint.
+func TestGetConfig_BaseUpdatesEnriched(t *testing.T) {
+	store := newE2EStore()
+	store.e2eExtraBases = []imagefactory.Base{
+		{Name: "bookworm", Version: "0.6.0", Image: "ghcr.io/acme/base", Tag: "0.6.0"},
+		{Name: "bookworm", Version: "0.9.0", Image: "ghcr.io/acme/base", Tag: "0.9.0", IsDefault: true},
+	}
+	uid := "user-1"
+	store.e2eConfigs["s-old"] = &imagefactory.Config{
+		ID: "cfg-old", Hash: "s-old", Name: "old", Scope: imagefactory.ScopeMember, OwnerID: &uid,
+		BaseName: "bookworm", BaseVersion: "0.6.0", Status: imagefactory.StatusReady,
+	}
+
+	r := newE2ERouter(t, store, &fakeDispatcher{ghRunID: 1})
+	req := httptest.NewRequest("GET", "/api/v1/image-factory/configs/s-old", nil)
+	req.Header.Set("X-Test-UserID", "user-1")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var cfg imagefactory.Config
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &cfg))
+	require.NotNil(t, cfg.UpdatesAvailable)
+	require.Equal(t, imagefactory.BaseUpdateVersionBump, cfg.UpdatesAvailable.Kind)
+	require.Equal(t, "0.9.0", cfg.UpdatesAvailable.LatestBaseVersion)
+}
+
+// TestListConfigs_BaseUpdateEnrichmentFailsOpen: a catalog-read failure
+// must NOT fail the configs read (the pill is advisory), and must not
+// panic when no logger is installed (SetLogger is optional per its own
+// doc; review round 1 proved the unguarded Warn dereferenced nil).
+func TestListConfigs_BaseUpdateEnrichmentFailsOpen(t *testing.T) {
+	store := newE2EStore()
+	store.e2eListBasesErr = errors.New("transient db error")
+	uid := "user-1"
+	store.e2eConfigs["s-x"] = &imagefactory.Config{
+		ID: "cfg-x", Hash: "s-x", Name: "x", Scope: imagefactory.ScopeMember, OwnerID: &uid,
+		BaseName: "bookworm", BaseVersion: "0.6.0", Status: imagefactory.StatusReady,
+	}
+
+	r := newE2ERouter(t, store, &fakeDispatcher{ghRunID: 1}) // no SetLogger — nil logger
+	req := httptest.NewRequest("GET", "/api/v1/image-factory/configs", nil)
+	req.Header.Set("X-Test-UserID", "user-1")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code, "catalog failure must not fail the configs read")
+
+	var resp ListConfigsResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	require.Len(t, resp.Configs, 1)
+	require.Nil(t, resp.Configs[0].UpdatesAvailable, "advisory field absent on enrichment failure")
+}
+
+// TestGetConfig_BaseUpdateEnrichmentFailsOpen: same contract on the
+// decode endpoint.
+func TestGetConfig_BaseUpdateEnrichmentFailsOpen(t *testing.T) {
+	store := newE2EStore()
+	store.e2eListBasesErr = errors.New("transient db error")
+	uid := "user-1"
+	store.e2eConfigs["s-y"] = &imagefactory.Config{
+		ID: "cfg-y", Hash: "s-y", Name: "y", Scope: imagefactory.ScopeMember, OwnerID: &uid,
+		BaseName: "bookworm", BaseVersion: "0.6.0", Status: imagefactory.StatusReady,
+	}
+
+	r := newE2ERouter(t, store, &fakeDispatcher{ghRunID: 1})
+	req := httptest.NewRequest("GET", "/api/v1/image-factory/configs/s-y", nil)
+	req.Header.Set("X-Test-UserID", "user-1")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	var cfg imagefactory.Config
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &cfg))
+	require.Nil(t, cfg.UpdatesAvailable)
+}
+
+// TestListConfigs_PillGatedToReadyConfigs: building and rejected
+// configs must not carry the pill (issue #928 scopes it to Ready).
+func TestListConfigs_PillGatedToReadyConfigs(t *testing.T) {
+	store := newE2EStore()
+	store.e2eExtraBases = []imagefactory.Base{
+		{Name: "bookworm", Version: "0.9.0", Image: "img", Tag: "0.9.0", IsDefault: true},
+	}
+	uid := "user-1"
+	store.e2eConfigs["s-b"] = &imagefactory.Config{
+		ID: "cfg-b", Hash: "s-b", Name: "building", Scope: imagefactory.ScopeMember, OwnerID: &uid,
+		BaseName: "bookworm", BaseVersion: "0.6.0", Status: imagefactory.StatusBuilding,
+	}
+	store.e2eConfigs["s-r"] = &imagefactory.Config{
+		ID: "cfg-r", Hash: "s-r", Name: "rejected", Scope: imagefactory.ScopeMember, OwnerID: &uid,
+		BaseName: "bookworm", BaseVersion: "0.6.0", Status: imagefactory.StatusRejected,
+	}
+
+	r := newE2ERouter(t, store, &fakeDispatcher{ghRunID: 1})
+	req := httptest.NewRequest("GET", "/api/v1/image-factory/configs", nil)
+	req.Header.Set("X-Test-UserID", "user-1")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var resp ListConfigsResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	for _, c := range resp.Configs {
+		require.Nil(t, c.UpdatesAvailable, "config %q (%s) must not carry the pill", c.Name, c.Status)
+	}
+}

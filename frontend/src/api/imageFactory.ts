@@ -53,6 +53,19 @@ export interface Config {
   ownerId?: string;
   orgId?: string;
   status: "building" | "ready" | "rejected";
+  updatesAvailable?: BaseUpdates;
+}
+
+// Base-update pill payload (#928). Absent = fresh. Per ruling #29 the
+// base is the version axis for apt-track packages, so a base migration
+// is THE version migration for system packages.
+export interface BaseUpdates {
+  kind: "version_bump" | "base_migration";
+  currentBaseName: string;
+  currentBaseVersion: string;
+  latestBaseVersion?: string;
+  defaultBaseName?: string;
+  defaultBaseVersion?: string;
 }
 
 export const imageFactoryApi = {

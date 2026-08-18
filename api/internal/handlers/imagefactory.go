@@ -202,7 +202,35 @@ func (h *ImageFactoryHandler) ListConfigs(c *gin.Context) {
 	if cfgs == nil {
 		cfgs = []imagefactory.Config{}
 	}
+	h.enrichWithBaseUpdates(ctx, cfgs)
 	c.JSON(http.StatusOK, ListConfigsResponse{Configs: cfgs})
+}
+
+// enrichWithBaseUpdates stamps Config.UpdatesAvailable on each config
+// (#928) from ONE catalog read regardless of config count. Failures are
+// logged-and-skipped: the pill is advisory, never worth failing the
+// read path over (a nil field simply renders no pill).
+func (h *ImageFactoryHandler) enrichWithBaseUpdates(ctx context.Context, cfgs []imagefactory.Config) {
+	if len(cfgs) == 0 {
+		return
+	}
+	bases, err := h.store.ListBases(ctx)
+	if err != nil {
+		if h.logger != nil { // logger is optional (SetLogger doc); every other call site guards
+			h.logger.Warn("image-factory: base-update enrichment skipped (catalog read failed)", "error", err.Error())
+		}
+		return
+	}
+	for i := range cfgs {
+		// Issue #928 scope: the pill is for READY configs — building
+		// ones haven't finished their first build, rejected ones can't
+		// launch, and neither should suggest a re-save.
+		if cfgs[i].Status != imagefactory.StatusReady {
+			cfgs[i].UpdatesAvailable = nil
+			continue
+		}
+		cfgs[i].UpdatesAvailable = imagefactory.ComputeBaseUpdates(cfgs[i], bases)
+	}
 }
 
 // GetConfig handles GET /configs/:hash. Uses resolveConfigByHash (shared
@@ -212,5 +240,9 @@ func (h *ImageFactoryHandler) GetConfig(c *gin.Context) {
 	if !ok {
 		return
 	}
-	c.JSON(http.StatusOK, cfg)
+	// Box-and-read-back: the slice element is a copy of cfg; enrich
+	// mutates slice elements, so take the enriched one back out.
+	boxed := []imagefactory.Config{cfg}
+	h.enrichWithBaseUpdates(c.Request.Context(), boxed)
+	c.JSON(http.StatusOK, boxed[0])
 }

@@ -128,6 +128,9 @@ type Config struct {
 	OwnerID        *string        `json:"ownerId,omitempty"`
 	OrgID          *string        `json:"orgId,omitempty"`
 	Status         ConfigStatus   `json:"status"`
+	// UpdatesAvailable is computed on read (never stored): the
+	// base-update pill payload (#928). nil/absent = fresh.
+	UpdatesAvailable *BaseUpdates `json:"updatesAvailable,omitempty"`
 }
 
 // KnownFailure is a row of image_factory_known_failures — the blocklist.
