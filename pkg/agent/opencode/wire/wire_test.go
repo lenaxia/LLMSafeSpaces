@@ -117,20 +117,23 @@ func TestParseStepUsageMalformed(t *testing.T) {
 	}
 }
 
-// TestGoldenFixtureTaxonomy pins the CURRENT (1.18.10) event taxonomy from
-// the persisted event store of a live 1.18.10 agent (reconstructed into the
-// /event envelope shape cross-checked against live captures; see the
-// fixture's worklog): no session.next.step.ended, usage in step-finish
-// parts, and version-suffixed event type names in the store. If opencode
-// changes any of this, this test fails and the fixture must be re-captured
-// (upgrade runbook).
-func TestGoldenFixtureTaxonomy(t *testing.T) {
-	data, err := os.ReadFile("../testdata/sse_events_1_18_10.jsonl")
+// Two golden fixtures pin the CURRENT (1.18.10) event surfaces — see
+// testdata/REFRESH.md for provenance and refresh procedure. The same
+// logical event type carries different names on the two surfaces; that
+// dual reality is why the decoder is suffix-tolerant:
+//
+//   - LIVE /event SSE stream: unsuffixed types (message.part.updated),
+//     session.status present (never persisted), no session.next.step.ended
+//   - persisted event store: version-suffixed types (message.part.updated.1)
+//
+// If either test fails on main without a seam change, opencode drifted —
+// re-capture the fixture before touching the parser.
+func TestGoldenFixtureTaxonomy_LiveWire(t *testing.T) {
+	data, err := os.ReadFile("../testdata/sse_events_1_18_10_live.jsonl")
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
-	var stepEnded, partUpdates, stepFinishParts, sessionUpdates int
-	var suffixed int
+	var stepEnded, partUpdates, stepFinishParts, sessionUpdates, suffixed, sessionStatus int
 	decoded := 0
 	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
 		var env Envelope
@@ -172,17 +175,78 @@ func TestGoldenFixtureTaxonomy(t *testing.T) {
 				}
 				decoded++
 			}
+		case env.Type == "session.updated":
+			sessionUpdates++
+		case env.Type == "session.status":
+			sessionStatus++
+		}
+	}
+	if stepEnded != 0 {
+		t.Fatalf("legacy session.next.step.ended must be absent; got %d", stepEnded)
+	}
+	if suffixed != 0 {
+		t.Fatalf("live /event wire types are UNSUFFIXED (verified by verbatim capture); got %d suffixed — wrong fixture?", suffixed)
+	}
+	if partUpdates == 0 || stepFinishParts == 0 || sessionUpdates == 0 || sessionStatus == 0 {
+		t.Fatalf("live fixture must contain part-updates (%d), step-finish parts (%d), session.updates (%d), session.status (%d)",
+			partUpdates, stepFinishParts, sessionUpdates, sessionStatus)
+	}
+	t.Logf("live fixture: %d part-updates, %d step-finish (all decoded), %d session.updates, %d session.status",
+		partUpdates, stepFinishParts, sessionUpdates, sessionStatus)
+}
+
+func TestGoldenFixtureTaxonomy_EventStore(t *testing.T) {
+	data, err := os.ReadFile("../testdata/event_store_1_18_10.jsonl")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	var stepEnded, partUpdates, stepFinishParts, sessionUpdates, suffixed int
+	decoded := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var env Envelope
+		if err := json.Unmarshal([]byte(line), &env); err != nil {
+			t.Fatalf("fixture line is not a valid envelope: %v — %s", err, line[:80])
+		}
+		if IsStepEnded(env.Type) {
+			stepEnded++
+		}
+		if strings.HasSuffix(env.Type, ".1") {
+			suffixed++
+		}
+		switch {
+		case IsPartUpdated(env.Type):
+			partUpdates++
+			var p struct {
+				Part struct {
+					Type   string  `json:"type"`
+					Tokens *Tokens `json:"tokens"`
+				} `json:"part"`
+				SessionID string `json:"sessionID"`
+			}
+			if err := json.Unmarshal(env.Properties, &p); err != nil {
+				t.Fatalf("part-update properties undecodable: %v", err)
+			}
+			if p.Part.Type == "step-finish" {
+				stepFinishParts++
+				if p.Part.Tokens == nil || p.SessionID == "" {
+					t.Fatalf("step-finish store row without tokens/sessionID — shape drifted")
+				}
+				if _, ok, err := ParseStepUsage(env.Type, line); err != nil || !ok {
+					t.Fatalf("ParseStepUsage must decode suffixed store events too: err=%v ok=%v", err, ok)
+				}
+				decoded++
+			}
 		case env.Type == "session.updated.1":
 			sessionUpdates++
 		}
 	}
 	if stepEnded != 0 {
-		t.Fatalf("legacy session.next.step.ended must be absent from the 1.18.10 fixture; got %d", stepEnded)
+		t.Fatalf("legacy session.next.step.ended must be absent from the 1.18.10 store; got %d", stepEnded)
 	}
 	if partUpdates == 0 || stepFinishParts == 0 || sessionUpdates == 0 || suffixed == 0 {
-		t.Fatalf("fixture must contain part-updates (%d), step-finish parts (%d), session.updates (%d), suffixed types (%d)",
+		t.Fatalf("store fixture must contain part-updates (%d), step-finish parts (%d), session.updates (%d), suffixed types (%d)",
 			partUpdates, stepFinishParts, sessionUpdates, suffixed)
 	}
-	t.Logf("fixture: %d part-updates, %d step-finish (all decoded), %d session.updates",
-		partUpdates, stepFinishParts, sessionUpdates)
+	t.Logf("store fixture: %d part-updates, %d step-finish (all decoded), %d session.updates, %d suffixed",
+		partUpdates, stepFinishParts, sessionUpdates, suffixed)
 }

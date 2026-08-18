@@ -1175,37 +1175,39 @@ func TestAdapterContextUsageFromEvent(t *testing.T) {
 	})
 
 	t.Run("golden fixture step-finish events all decode", func(t *testing.T) {
-		data, err := os.ReadFile("testdata/sse_events_1_18_10.jsonl")
-		require.NoError(t, err)
-		decoded, total := 0, 0
-		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
-			var env struct {
-				Type string `json:"type"`
-			}
-			require.NoError(t, json.Unmarshal([]byte(line), &env))
-			if !strings.HasPrefix(env.Type, "message.part.updated") {
-				continue
-			}
-			var probe struct {
-				Part struct {
+		for _, fixture := range []string{"testdata/sse_events_1_18_10_live.jsonl", "testdata/event_store_1_18_10.jsonl"} {
+			data, err := os.ReadFile(fixture)
+			require.NoError(t, err)
+			decoded, total := 0, 0
+			for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+				var env struct {
 					Type string `json:"type"`
-				} `json:"part"`
+				}
+				require.NoError(t, json.Unmarshal([]byte(line), &env))
+				if !strings.HasPrefix(env.Type, "message.part.updated") {
+					continue
+				}
+				var probe struct {
+					Part struct {
+						Type string `json:"type"`
+					} `json:"part"`
+				}
+				var wrapper struct {
+					Properties json.RawMessage `json:"properties"`
+				}
+				_ = json.Unmarshal([]byte(line), &wrapper)
+				if json.Unmarshal(wrapper.Properties, &probe) == nil && probe.Part.Type == "step-finish" {
+					total++
+					sid, usage, ok := a.ContextUsageFromEvent(env.Type, line)
+					assert.True(t, ok, "%s: golden step-finish must decode: %s", fixture, line[:min(80, len(line))])
+					assert.NotEmpty(t, sid)
+					assert.NotNil(t, usage)
+					assert.Positive(t, usage.Used)
+					decoded++
+				}
 			}
-			var wrapper struct {
-				Properties json.RawMessage `json:"properties"`
-			}
-			_ = json.Unmarshal([]byte(line), &wrapper)
-			if json.Unmarshal(wrapper.Properties, &probe) == nil && probe.Part.Type == "step-finish" {
-				total++
-				sid, usage, ok := a.ContextUsageFromEvent(env.Type, line)
-				assert.True(t, ok, "golden step-finish must decode: %s", line[:min(80, len(line))])
-				assert.NotEmpty(t, sid)
-				assert.NotNil(t, usage)
-				assert.Positive(t, usage.Used)
-				decoded++
-			}
+			assert.Positive(t, decoded, "%s must contain decodable step-finish events", fixture)
+			assert.Equal(t, total, decoded, "%s: every golden step-finish must decode", fixture)
 		}
-		assert.Positive(t, decoded)
-		assert.Equal(t, total, decoded)
 	})
 }

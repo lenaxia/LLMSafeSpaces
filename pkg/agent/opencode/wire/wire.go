@@ -7,10 +7,14 @@
 // deferred follow-up work. Nothing else may import it. Shapes are pinned
 // by golden fixtures in ../testdata — see the opencode upgrade runbook.
 //
-// Parsing is dual-shape tolerant by design: the fleet runs mixed opencode
-// versions during image rollouts, so decoders accept every supported
-// version's shape (e.g. both unsuffixed and version-suffixed event type
-// names) rather than branching on versions at runtime.
+// Parsing is dual-shape tolerant by design. Two reasons with live-capture
+// evidence (see testdata/REFRESH.md): (1) the same logical event type is
+// named differently on different surfaces — the /event SSE stream emits
+// unsuffixed types ("message.part.updated") while the persisted event
+// store emits version-suffixed types ("message.part.updated.1"); (2) the
+// fleet runs mixed opencode versions during image rollouts. Decoders
+// accept every supported shape rather than branching on versions at
+// runtime.
 package wire
 
 import (
@@ -46,8 +50,9 @@ type Envelope struct {
 	Properties json.RawMessage `json:"properties"`
 }
 
-// IsPartUpdated reports whether eventType is a message-part update,
-// tolerating version suffixes ("message.part.updated.1").
+// IsPartUpdated reports whether eventType is a message-part update. The
+// live /event stream emits "message.part.updated"; the persisted event
+// store emits "message.part.updated.N" — both must match (see REFRESH.md).
 func IsPartUpdated(eventType string) bool {
 	return eventType == "message.part.updated" || isSuffixed(eventType, "message.part.updated")
 }

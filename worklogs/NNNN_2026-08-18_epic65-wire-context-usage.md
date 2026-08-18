@@ -124,3 +124,18 @@ Three claims in this worklog were wrong; corrected here rather than rewritten (a
 Also addressed from the review: nil-usage guard + explicit interface guarantee (`ok=true` ⇒ non-empty sessionID, non-nil usage); `TestE2E_ContextUsed_JSONWireFormatThroughRouter` renamed to `...JSONWireShape` (it never went through a router).
 
 **Open from review, resolved by evidence next:** the `session.updated` exact-match literals (title persistence `proxy_events.go:199`, billing `tracker.go:672`) vs the version-suffixed store types — a live /event SSE capture is running and will settle suffixed-vs-unsuffixed on the wire; decision (tolerant matching vs fixture regeneration) follows the evidence.
+
+---
+
+## Live-wire verification round (PR #938, review round 1 follow-up)
+
+Captured a **verbatim live `/event` SSE stream** (3,832 events, 1.2MB) from the real workspace agent during a full LLM turn (queued V2 prompt to a scratch session; the capture includes my own turn's full cycle; the scratch turn failed at the relay with HTTP 401 — its `session.next.step.failed` event is itself useful fixture data).
+
+**Findings (all now landed):**
+
+1. **The live wire is UNSUFFIXED.** SSE types: `message.part.updated`, `session.updated`, `session.status`... — no `.1` suffixes. The suffixed names exist ONLY in the persisted `opencode.db` event store. Two surfaces, two namings for the same logical types → the seam's suffix tolerance is now evidence-backed (wire.go doc updated), and the reviewer-flagged `session.updated` exact-match literals (title/billing) are **correct today on the wire** — no silent-drift bug; the taxonomy test now pins wire-unsuffixed so future suffix migration of the wire itself fails loudly.
+2. **`session.status` EXISTS on the wire** (38 events; never persisted). The open verification item from this worklog resolves: agentd's busy/idle tracker is NOT starved; worklog 0743's "session.idle unhandled" observation is about a different type (`session.idle` = 1 event, global idle signal).
+3. **The seam works on live wire**: `wire.ParseStepUsage` decoded 19/19 usage events from the capture (my session's occupancy, monotonically growing 209K→225K — consistent with the per-step semantics), zero drift errors.
+4. **Fixtures restructured for honest provenance**: `sse_events_1_18_10_live.jsonl` (NEW — verbatim SSE capture, redacted, deltas subsampled 1-in-50, 499 events) + `event_store_1_18_10.jsonl` (RENAMED from sse_events_1_18_10.jsonl — store-reconstructed). Taxonomy tests split per surface. Capture procedure documented in testdata/REFRESH.md (the #942 upgrade-runbook hook).
+
+**Also observed in the capture** (for #942's taxonomy work): `file.edited`, `session.diff` (19), `session.idle`, `catalog.updated`, `reference.updated`, `integration.updated`, `plugin.added` (45), `file.watcher.updated` — all currently unhandled by the platform (matches 0743).
