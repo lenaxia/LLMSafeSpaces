@@ -4,6 +4,9 @@
 **PR:** #929
 **Issue:** #928 (follow-up implementation tracker)
 **Session:** image-factory version-model evaluation with maintainer
+("option E" below = the deferred "update available" affordance named in
+design/0046's original open items — later canonicalized as the
+"base-update pill", #928)
 **Status:** ruling recorded in design/0046; implementation deferred to #928
 
 ## Objective
@@ -61,7 +64,9 @@ install 7 via the base and build 6 themselves."
 - Hash preimage includes base name: verified selection.go:60-66 +
    selection_test.go pin (also independently verified by PR review).
 - Debian-per-suite single-version constraint for apt packages:
-   well-known apt semantics; per-suite version tables consulted.
+   well-known apt semantics — bookworm ships ffmpeg 5.1.x, trixie 7.x
+   (Debian package tracker, stable/oldstable suites; spot-checked via
+   packages.debian.org at evaluation time).
 
 ## Tests Run
 
