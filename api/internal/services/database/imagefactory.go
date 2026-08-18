@@ -460,7 +460,7 @@ func (s *Service) CreateConfigAndBuild(ctx context.Context, c *imagefactory.Conf
 		string(c.Scope), ownerID, orgID, string(c.Status),
 	).Scan(&c.ID)
 	if err != nil {
-		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
+		if isUniqueViolation(err) {
 			return ErrConflict
 		}
 		return fmt.Errorf("create config+build: insert config: %w", err)
@@ -519,7 +519,7 @@ func (s *Service) CreateConfig(ctx context.Context, c *imagefactory.Config) erro
 	if err != nil {
 		// #936: scoped-name uniqueness violation maps to the typed
 		// conflict so the handler returns 409 instead of an opaque 500.
-		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
+		if isUniqueViolation(err) {
 			return ErrConflict
 		}
 		return fmt.Errorf("create config: %w", err)
@@ -737,7 +737,7 @@ func (s *Service) RenameConfig(ctx context.Context, id, newName string) error {
 		`UPDATE image_factory_configs SET name = $1, updated_at = now() WHERE id = $2`,
 		newName, id)
 	if err != nil {
-		if pqErr, ok := err.(*pq.Error); ok && pqErr.Code == "23505" {
+		if isUniqueViolation(err) {
 			return ErrConflict
 		}
 		return fmt.Errorf("rename config: %w", err)
@@ -1010,4 +1010,20 @@ func scanBuild(sc rowScanner) (imagefactory.Build, error) {
 		return imagefactory.Build{}, fmt.Errorf("scan build: unmarshal resolved_values: %w", err)
 	}
 	return b, nil
+}
+
+// sqlStateError is satisfied by both drivers' error types (*pq.Error,
+// *pgconn.PgError).
+type sqlStateError interface {
+	SQLState() string
+}
+
+// isUniqueViolation reports a 23505 unique-constraint violation from
+// either Postgres driver (#936).
+func isUniqueViolation(err error) bool {
+	var se sqlStateError
+	if errors.As(err, &se) {
+		return se.SQLState() == "23505"
+	}
+	return false
 }

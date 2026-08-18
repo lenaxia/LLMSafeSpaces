@@ -533,8 +533,12 @@ func TestIntegration_IF_Seed_DoesNotRevertRuntimeDefault(t *testing.T) {
 	}
 	assert.Equal(t, "tx", defName, "seed re-upsert of an existing base must NOT revert the runtime default")
 
-	// Fresh install shape: seed inserts bw as default when absent.
+	// Fresh install shape: seed inserts bw as default when absent — in a
+	// catalog with no existing default. (The seed never CLEARS defaults;
+	// seeding bw alongside the still-defaulted tx would legitimately
+	// leave two. Fresh-install semantics need the empty-default start.)
 	require.NoError(t, svc.DeleteBase(ctx, "bw", "1.0"))
+	require.NoError(t, svc.UpsertBase(ctx, imagefactory.Base{Name: "tx", Version: "1.0", Image: "i2", IsDefault: false}))
 	require.NoError(t, seedUpsertBase(ctx, svc, seedBase))
 	bases, err = svc.ListBases(ctx)
 	require.NoError(t, err)
@@ -544,7 +548,7 @@ func TestIntegration_IF_Seed_DoesNotRevertRuntimeDefault(t *testing.T) {
 			defName = b.Name
 		}
 	}
-	assert.Equal(t, "bw", defName, "seed INSERT of a new base still carries its default")
+	assert.Equal(t, "bw", defName, "seed INSERT of a new base still carries its default when no other default exists")
 }
 
 // seedUpsertBase mirrors seed.go's call — kept here so the test pins
