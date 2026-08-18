@@ -110,3 +110,17 @@ None for this slice. Open verification item for S5: whether `/event` emits `sess
 - `api/internal/handlers/context_usage_e2e_test.go`, `opencode_upgrade_test.go`, `context_observability_test.go`, `proxy_test.go` — test conversion
 - `api/internal/handlers/pod_bootstrap_e2e_test.go` — env scrub fix
 - `api/internal/services/sessionindex/service.go`, `api/internal/services/database/database.go`, `api/internal/services/workspace/workspace_service.go` — comment corrections only
+
+---
+
+## Corrections (PR #938 review round 1)
+
+Three claims in this worklog were wrong; corrected here rather than rewritten (append-only discipline):
+
+1. **"Repolint forbids handlers tests importing the opencode package" — FALSE.** Repolint's agent-import rule excludes `_test.go` files (`pkg/repolint/agent_import.go`), and 15 handler test files already import `pkg/agent/opencode`. The stub-adapter approach was a choice, not a constraint — and it left the handler↔adapter seam untested against the real adapter. Fixed: `context_usage_adapter_e2e_test.go` drives real captured 1.18.10 wire shapes through `onRawEvent` with the REAL adapter wired (both type namings, legacy shape, drift path with warn assertion via zap observer, non-usage traffic).
+2. **"The event-name literal is gone from platform code" — overreach.** True for `api/` only; `cmd/workspace-agentd/session_tracker.go:320,336` still switches on `session.next.step.ended` (the documented deferred agentd migration). Corrected claim: gone from `api/`.
+3. **Fixture taxonomy test said "from a live capture"** — the fixture is reconstructed from the persisted 1.18.10 event store into the /event envelope shape (cross-checked against two live captures). Comment corrected.
+
+Also addressed from the review: nil-usage guard + explicit interface guarantee (`ok=true` ⇒ non-empty sessionID, non-nil usage); `TestE2E_ContextUsed_JSONWireFormatThroughRouter` renamed to `...JSONWireShape` (it never went through a router).
+
+**Open from review, resolved by evidence next:** the `session.updated` exact-match literals (title persistence `proxy_events.go:199`, billing `tracker.go:672`) vs the version-suffixed store types — a live /event SSE capture is running and will settle suffixed-vs-unsuffixed on the wire; decision (tolerant matching vs fixture regeneration) follows the evidence.

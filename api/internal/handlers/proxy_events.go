@@ -372,7 +372,10 @@ func (h *ProxyHandler) persistContextFromEvent(workspaceID, eventType, rawData s
 	if !ok {
 		return
 	}
-	if sessionID == "" {
+	if sessionID == "" || usage == nil {
+		// Non-conforming adapter return (interface doc guarantees both
+		// non-empty/non-nil on ok=true). Guard the SSE event path against
+		// a panic and surface it — a silent skip would hide a seam bug.
 		h.logger.Warn("persistContextFromEvent: usage event missing sessionID",
 			"workspaceID", workspaceID, "eventType", eventType)
 		return

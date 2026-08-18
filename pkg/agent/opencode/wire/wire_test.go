@@ -117,10 +117,13 @@ func TestParseStepUsageMalformed(t *testing.T) {
 	}
 }
 
-// TestGoldenFixtureTaxonomy pins the CURRENT (1.18.10) event taxonomy from a
-// live capture: no session.next.step.ended, usage in step-finish parts, and
-// version-suffixed event type names. If opencode changes any of this, this
-// test fails and the fixture must be re-captured (upgrade runbook).
+// TestGoldenFixtureTaxonomy pins the CURRENT (1.18.10) event taxonomy from
+// the persisted event store of a live 1.18.10 agent (reconstructed into the
+// /event envelope shape cross-checked against live captures; see the
+// fixture's worklog): no session.next.step.ended, usage in step-finish
+// parts, and version-suffixed event type names in the store. If opencode
+// changes any of this, this test fails and the fixture must be re-captured
+// (upgrade runbook).
 func TestGoldenFixtureTaxonomy(t *testing.T) {
 	data, err := os.ReadFile("../testdata/sse_events_1_18_10.jsonl")
 	if err != nil {

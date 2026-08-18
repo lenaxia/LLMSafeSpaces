@@ -237,7 +237,7 @@ func TestE2E_StepEndedEvent_EmptySessionID_NoPersistence(t *testing.T) {
 	assert.Empty(t, si.contextUsed, "empty sessionID → no persistence")
 }
 
-func TestE2E_ContextUsed_JSONWireFormatThroughRouter(t *testing.T) {
+func TestE2E_ContextUsed_JSONWireShape(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	si := newContextUsedSessionIndex()

@@ -122,7 +122,9 @@ type Adapter interface {
 	// ContextUsageFromEvent translates one raw agent SSE event into the
 	// session's live context occupancy. ok=false when the event carries
 	// no usage signal (most events don't); callers skip silently — that
-	// is normal traffic, not drift. The adapter owns both the wire
+	// is normal traffic, not drift. When ok=true, sessionID is non-empty
+	// and usage is non-nil (implementations must uphold this; the SSE
+	// event path dereferences both). The adapter owns both the wire
 	// shapes and the semantic mapping to ContextUsage.Used; platform
 	// code never inspects the raw bytes.
 	ContextUsageFromEvent(eventType string, rawData string) (sessionID string, usage *session.ContextUsage, ok bool)
