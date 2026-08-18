@@ -62,3 +62,22 @@ func TestEnsurePasswordSecret_LegacySecretWithoutKeyGainsOne(t *testing.T) {
 	require.NotEmpty(t, tok, "legacy Secrets must converge onto the admin-token key")
 	assert.NotEqual(t, "test-password", tok)
 }
+
+// F4 regression: an existing Secret with nil Data (created without keys)
+// must not panic the upsert.
+func TestEnsurePasswordSecret_NilDataSecretNoPanic(t *testing.T) {
+	ws := makeWorkspace("ws-nildata", "default", v1.WorkspacePhasePending)
+	nilData := makePasswordSecret("ws-nildata", "default")
+	nilData.Data = nil
+	r := reconcilerFor(t, nilData)
+
+	var err error
+	require.NotPanics(t, func() {
+		err = r.ensurePasswordSecret(context.Background(), ws)
+	})
+	require.NoError(t, err)
+
+	sec := &corev1.Secret{}
+	require.NoError(t, r.Get(context.Background(), types.NamespacedName{Name: passwordSecretName("ws-nildata"), Namespace: "default"}, sec))
+	assert.NotEmpty(t, sec.Data["admin-token"], "nil-Data Secret must converge onto the admin-token key")
+}

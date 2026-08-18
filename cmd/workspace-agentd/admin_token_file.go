@@ -21,6 +21,8 @@ package main
 import (
 	"os"
 	"strings"
+
+	"go.uber.org/zap"
 )
 
 // adminTokenFileEnv / adminTokenEnv name the delivery variables.
@@ -39,14 +41,18 @@ var adminOnlyEnvKeys = []string{adminTokenEnv, adminTokenFileEnv}
 // that a boot failure separately).
 func adminToken() string {
 	if path := os.Getenv(adminTokenFileEnv); path != "" {
-		if tok, err := readAdminTokenFile(path); err == nil {
+		tok, err := readAdminTokenFile(path)
+		if err == nil {
 			return tok
 		}
 		// Unreadable file with the path explicitly set is a wiring bug —
 		// fall through to env rather than silently disabling the gate,
-		// but make the degradation visible.
-		if tok := os.Getenv(adminTokenEnv); tok != "" {
-			return tok
+		// and LOG the degradation (fail-closed boot per D5.2 catches the
+		// no-token case; this covers env-fallback).
+		log.Warn("admin token file unreadable — falling back to env delivery (#887 D5.1)",
+			zap.String("path", path), zap.Error(err))
+		if envTok := os.Getenv(adminTokenEnv); envTok != "" {
+			return envTok
 		}
 		return ""
 	}

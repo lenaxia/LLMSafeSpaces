@@ -58,6 +58,11 @@ func (r *WorkspaceReconciler) ensurePasswordSecret(ctx context.Context, workspac
 		if _, ok := secret.Data["admin-token"]; ok {
 			return nil
 		}
+		if secret.Data == nil {
+			// A Secret created without any data carries a nil map;
+			// assignment would panic (F4, review round 1).
+			secret.Data = map[string][]byte{}
+		}
 		secret.Data["admin-token"] = []byte(common.GenerateRandomString(32))
 		return r.Update(ctx, secret)
 	}

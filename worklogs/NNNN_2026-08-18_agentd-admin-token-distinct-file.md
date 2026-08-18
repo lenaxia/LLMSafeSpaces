@@ -32,7 +32,15 @@
 - `app.go` `newRelayChecker`/`buildRelayChecker`: `pwGetter` → `bearerGetter func(ctx, wsID) ([]string, error)`; call site composes [admin-token, password].
 
 ### Helper semantics (both sides)
-Empty candidates = one **unauthenticated** attempt (pre-#887 behavior for Secret-less dev clusters / missing-Secret poll paths) — pinned by test. 401 advances; transport error surfaces; all-401 errors.
+Empty candidates = one **unauthenticated** attempt (pre-#887 behavior for Secret-less dev clusters / missing-Secret poll paths) — pinned by test. 401 advances; transport error surfaces; all-401 errors. Equal admin-token/password values (hand-made Secrets) dedup to one candidate.
+
+### Review-round corrections (rounds 2-3)
+
+- **F1 (CRITICAL, round 2)**: the admin-token install guard shipped as `[[ -f … ]]` — a bashism that under `/bin/sh`→dash prints "not found" and SILENTLY skips the branch, so every file-mode pod would have booted with an un-gated admin mux while string-assertion tests stayed green. Fixed to POSIX `[ -f ]`. Pinned by `TestCredentialScript_ExecutesUnderRealSh` (executes the generated block under the system /bin/sh, hermetic path rewrite; mutation-verified red under the bashism) + `TestCredentialScript_NoBashisms` (mechanical guard, all init scripts, comments excluded) + `TestCredentialScript_LegacySecretSkipsInstallUnderRealSh`.
+- **F2 (MAJOR, round 2)**: `buildEnvFrom`'s early returns (no secrets-env file — the common case; bash spawn failure) handed opencode the unscrubbed parent env. Both paths now scrub. The source-failure test triggers the path for real via `PATH=""` (a bad file does NOT — bash's `source` failure doesn't abort the `-c` script, `env -0` still runs, exit 0; verified before writing the test).
+- **F3 (round 1 minor)**: `adminToken()`'s "made visible" comment was false — no logging existed. Now logs a Warn with path + error on file-read fallback.
+- **F4 (round 1 minor)**: `ensurePasswordSecret` panicked on an existing Secret with nil `Data` (assignment to nil map). Guarded; `TestEnsurePasswordSecret_NilDataSecretNoPanic` pins it.
+- `adminBearerCandidates` dedups equal values; try-order/nil-client/empty-candidates behaviors pinned by tests.
 
 ---
 
@@ -74,6 +82,7 @@ None. Two e2e test failures in this sandbox (`TestE2E_BootstrapMaterialize_Token
 - `cmd/workspace-agentd/admin_token_file.go` (new) + `admin_token_file_test.go` (new)
 - `cmd/workspace-agentd/secrets.go`, `server.go`, `managed_process.go`
 - `controller/internal/workspace/secrets.go`, `pod_builder.go`, `health.go`
+- `controller/internal/workspace/cred_script_exec_test.go` (new — exec-level init-script tests, round 2)
 - `controller/internal/workspace/admin_token_secret_test.go` (new), `admin_token_delivery_test.go` (new), `admin_token_bearer_test.go` (new), `pod_spec_consistency_test.go`
 - `api/internal/handlers/proxy_connections.go`, `proxy_events.go`, `admin_token_bearer_test.go` (new)
 - `api/internal/app/app.go`, `relay_checker_test.go`

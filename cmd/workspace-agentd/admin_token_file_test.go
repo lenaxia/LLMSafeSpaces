@@ -115,19 +115,34 @@ func TestBuildEnvFrom_NoSecretsFile_StillScrubs(t *testing.T) {
 	}
 }
 
-// F2 regression: the bash-source-failure path must ALSO scrub.
+// F2 regression: the bash-spawn-failure path must ALSO scrub. A mere bad
+// file does NOT reach it (bash's `source` failure doesn't abort the -c
+// script; `env -0` still runs and bash exits 0 — verified). The genuine
+// trigger is exec-level failure: PATH lookup fails for bash itself.
 func TestBuildEnvFrom_SourceFailure_StillScrubs(t *testing.T) {
 	dir := t.TempDir()
-	bad := filepath.Join(dir, "secrets-env")
-	// Valid file but the bash spawn will fail: SecretsEnvPath is bound to
-	// a directory instead of a file so `source` errors.
-	require.NoError(t, os.MkdirAll(bad, 0o600))
+	envFile := filepath.Join(dir, "secrets-env")
+	require.NoError(t, os.WriteFile(envFile, []byte("export X=1\n"), 0o600))
 	t.Setenv("AGENTD_ADMIN_TOKEN", "leak-me")
+	realPath := os.Getenv("PATH")
+	t.Setenv("PATH", "") // bash unresolvable → Start error → failure return
 
-	env := buildEnvFrom(bad)
-	for _, e := range env {
+	scrubbed := buildEnvFrom(envFile)
+	for _, e := range scrubbed {
 		if e == "AGENTD_ADMIN_TOKEN=leak-me" {
-			t.Fatalf("admin var leaked via the source-failure path: %s", e)
+			t.Fatalf("admin var leaked via the spawn-failure path: %s", e)
 		}
 	}
+
+	// Sanity that we actually took the failure path: with PATH restored,
+	// the same file sources fine and yields the secret var.
+	t.Setenv("PATH", realPath)
+	ok := buildEnvFrom(envFile)
+	sawX := false
+	for _, e := range ok {
+		if e == "X=1" {
+			sawX = true
+		}
+	}
+	require.True(t, sawX, "control: with PATH restored the file must source (proves the first call took the failure path)")
 }
