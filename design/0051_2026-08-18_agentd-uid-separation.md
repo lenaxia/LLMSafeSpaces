@@ -129,13 +129,24 @@ strictly narrower than today (always-readable).
 Independent of §4's outcome; each closes a hole found during the #886 review rounds **or this doc's v2
 env-channel verification**:
 
-1. **`AGENTD_ADMIN_TOKEN` leaves the environment entirely** (highest priority — live leak):
-   - Controller stops setting it as pod env; mounts the Secret subPath to a file (e.g.
-     `/sandbox-cfg/admin-token`, mode 0400) and sets `AGENTD_ADMIN_TOKEN_FILE` instead.
-   - agentd reads the token from the file (env var kept only as a deprecated local-dev fallback).
-   - **agentd scrubs agentd-only credentials from the env it passes opencode** (`buildEnvFrom` drops
-     `AGENTD_ADMIN_TOKEN` regardless of source) — closes the tool-env leak **today**, no uid split, no
-     upstream, no image rebuild.
+1. **`AGENTD_ADMIN_TOKEN` becomes a DISTINCT secret and leaves the environment entirely** (highest
+   priority — live leak). *Correction from this doc's own v2: token==password today (both sourced from
+   the same Secret key), so a mere scrub/file move would be theater — `OPENCODE_SERVER_PASSWORD` (same
+   value) rides the same chain. The fix only delivers value if the admin token is regenerated as a
+   separate 32-char value:*
+   - `ensurePasswordSecret` upserts a distinct `admin-token` key (generated once; **never rotated in
+     place** — running pods hold the accepted value in agentd memory while rebuilt probe specs read the
+     Secret; in-place rotation desyncs them).
+   - Controller delivery: init installs `/sandbox-cfg/admin-token` mode 0400 (runtime-guarded on key
+     presence); main container gets `AGENTD_ADMIN_TOKEN_FILE` only — **no `AGENTD_ADMIN_TOKEN` env in
+     file mode**. Legacy Secrets (pre-upsert) keep the env path for the transition; no NEW pod is built
+     in legacy mode once upsert converges.
+   - agentd reads the token file-first (`AGENTD_ADMIN_TOKEN_FILE`), env fallback for legacy pods.
+   - **agentd scrubs `AGENTD_ADMIN_TOKEN`/`AGENTD_ADMIN_TOKEN_FILE` from the env it passes opencode**
+     (`buildEnvFrom`) — applied post-merge so a user-staged env-secret cannot smuggle one back.
+   - Bearer consumers of `:4098` (kubelet probes, controller deep-status, API relayChecker + statusz
+     sites) try the distinct admin token first and fall back to the password on 401 — self-healing
+     across the mixed fleet while pods rebuild.
 2. **`AGENTD_ADMIN_TOKEN` required**: agentd refuses to start when unset/unreadable (env-driven wiring
    gap today is silent pass-through). Dev/kind escape hatch: explicit `AGENTD_ALLOW_NO_ADMIN_TOKEN=1`.
 3. **Empty-password boot reject**: `readAgentPassword` treats a readable-but-empty file as fatal (G46
