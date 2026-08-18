@@ -8,10 +8,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/lenaxia/llmsafespaces/api/internal/services/database"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/lenaxia/llmsafespaces/api/internal/services/database"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
