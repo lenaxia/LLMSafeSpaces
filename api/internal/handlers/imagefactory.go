@@ -216,10 +216,19 @@ func (h *ImageFactoryHandler) enrichWithBaseUpdates(ctx context.Context, cfgs []
 	}
 	bases, err := h.store.ListBases(ctx)
 	if err != nil {
-		h.logger.Warn("image-factory: base-update enrichment skipped (catalog read failed)", "error", err.Error())
+		if h.logger != nil { // logger is optional (SetLogger doc); every other call site guards
+			h.logger.Warn("image-factory: base-update enrichment skipped (catalog read failed)", "error", err.Error())
+		}
 		return
 	}
 	for i := range cfgs {
+		// Issue #928 scope: the pill is for READY configs — building
+		// ones haven't finished their first build, rejected ones can't
+		// launch, and neither should suggest a re-save.
+		if cfgs[i].Status != imagefactory.StatusReady {
+			cfgs[i].UpdatesAvailable = nil
+			continue
+		}
 		cfgs[i].UpdatesAvailable = imagefactory.ComputeBaseUpdates(cfgs[i], bases)
 	}
 }

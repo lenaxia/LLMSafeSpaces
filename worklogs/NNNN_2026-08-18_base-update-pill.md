@@ -41,10 +41,13 @@ version-migration path).
 ## Tests Run
 
 - 7 pure ComputeBaseUpdates table tests (fresh/bump/migration/
-  retired/semver/no-default/no-downgrade) — all pass.
-- 2 handler e2e tests (list + decode enrichment, fresh field omitted)
-  — pass; caught a real copy-semantics bug during development
-  (slice-literal boxing didn't write back; fixed with box-and-read-back).
+  retired/semver/no-default/no-downgrade) + comparator edge-pinning
+  (segment mismatch, rc-suffix lexical behavior) — all pass.
+- 5 handler e2e tests: list + decode enrichment, fresh-omitted,
+  fail-open on catalog error (BOTH endpoints, nil-logger router —
+  review round 1 proved the unguarded Warn panicked), Ready-gating
+  (building/rejected carry no pill). One caught a real copy-semantics
+  bug during development (slice-literal boxing didn't write back).
 - Frontend: 3 pill render tests added (migration/bump/absent) —
   vitest runs in CI (no node_modules in this sandbox).
 - Full api handlers + imagefactory suites green.
@@ -65,3 +68,13 @@ api/internal/imagefactory/base_updates{,_test}.go, types.go;
 api/internal/handlers/imagefactory.go, imagefactory_e2e_test.go;
 frontend/src/api/imageFactory.ts;
 frontend/src/components/settings/WorkspaceImagesTab{.tsx,.test.tsx}.
+
+## Review round 1 addendum
+
+- enrichWithBaseUpdates: nil-logger guard (the handler's own optional-
+  logger convention; review proved the panic with a SetLogger-less
+  router + failing ListBases).
+- Pill gated to StatusReady configs per #928's stated scope (building
+  and rejected configs carry no pill).
+- Comparator edges pinned by test with documented semantics (segment
+  mismatch, rc-suffix lexical).

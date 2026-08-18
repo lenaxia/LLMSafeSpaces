@@ -120,3 +120,28 @@ func TestComputeBaseUpdates_NoDefaultBase_NilForCurrent(t *testing.T) {
 	require.Equal(t, BaseUpdateVersionBump, got.Kind)
 	require.Nil(t, ComputeBaseUpdates(cfg("bookworm", "0.8.0"), bases))
 }
+
+// TestCompareVersions_PinnedEdges pins the comparator's documented
+// behavior at its edges (review round 1: the comparator advertises
+// arbitrary segment counts; these tests make the semantics explicit
+// rather than accidental). Catalog discipline today is 3-segment
+// dot-numeric; if rc-suffixes ever enter the catalog, revisit — a
+// pre-release currently sorts ABOVE its final release via the lexical
+// fallback, which would suggest "downgrading" rc→final as an update.
+func TestCompareVersions_PinnedEdges(t *testing.T) {
+	// Fewer segments = less, even when the shared prefix ties: "0.9" <
+	// "0.9.0". A config pinned "0.9" against catalog "0.9.0" therefore
+	// gets a version_bump pill — same version in spirit, harmless
+	// (re-save reconciles), pinned here so a change is deliberate.
+	require.Negative(t, compareVersions("0.9", "0.9.0"))
+	require.Positive(t, compareVersions("0.9.0", "0.9"))
+
+	// Non-numeric suffix compares lexically: "-rc1" > "" so rc sorts
+	// above final. Pinned; see the doc comment above.
+	require.Positive(t, compareVersions("0.9.0-rc1", "0.9.0"))
+	require.Negative(t, compareVersions("0.9.0-rc1", "0.9.0-rc2"), "rc1 < rc2 lexically")
+
+	// Identical inputs.
+	require.Zero(t, compareVersions("1.2.3", "1.2.3"))
+	require.Zero(t, compareVersions("", ""))
+}
