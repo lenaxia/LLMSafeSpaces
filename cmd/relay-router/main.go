@@ -80,7 +80,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("relay-router: fallback init: %v", err)
 	}
-	fallback.withUpstreamAuth(cfg.upstreamAuth)
+	fallback.withUpstreamAuth(cfg.upstreamAuth).withFallbackMetrics(metrics)
 
 	proxy := newRouterProxy(fleet, detector, metrics, 0, fallback).withUpstreamAuth(cfg.upstreamAuth)
 

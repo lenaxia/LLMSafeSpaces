@@ -5,9 +5,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	cryptosubtle "crypto/subtle"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -330,6 +332,29 @@ func TestFallbackProxy_UpstreamError(t *testing.T) {
 	require.NoError(t, err)
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+}
+
+// TestFallbackProxy_UpstreamErrorRecordedInMetrics is the issue #911
+// observability pin: a fallback upstream failure must be visible in
+// relay_router_requests_total{relay="fallback",status="502"} so an outage
+// (which previously ran 47 days invisible) is now discoverable in /metrics.
+func TestFallbackProxy_UpstreamErrorRecordedInMetrics(t *testing.T) {
+	metrics := newRouterMetrics()
+	fp, err := newFallbackProxy("http://127.0.0.1:1", 1000.0, 5)
+	require.NoError(t, err)
+	fp.withFallbackMetrics(metrics)
+	server := httptest.NewServer(fp)
+	t.Cleanup(server.Close)
+
+	resp, err := http.Get(server.URL + "/test")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+
+	var sb strings.Builder
+	metrics.writePrometheus(&sb)
+	assert.Contains(t, sb.String(), `relay_router_requests_total{relay="fallback",status="502"} 1`,
+		"fallback upstream failures must be visible in metrics (issue #911)")
 }
 
 // ---------------------------------------------------------------------------
@@ -896,4 +921,170 @@ func TestFallbackProxy_DoesNotSetRelayToken(t *testing.T) {
 	require.Equal(t, http.StatusOK, rec.Code)
 	assert.Empty(t, seenToken,
 		"fallback path must NOT set X-Relay-Token — the token is per-VM and the fallback hits the upstream directly")
+}
+
+// TestRouterClientsHaveHeadTimeouts locks the #911 fix: the forwarding and
+// fallback clients must bound the pre-body phases (dial + response header)
+// so a stalled upstream returns a bounded error instead of hanging a handler
+// goroutine forever with no response and an empty log. A total body Timeout
+// must NOT be set — chat/SSE streams run minutes and would be truncated.
+func TestRouterClientsHaveHeadTimeouts(t *testing.T) {
+	// Wiring-level pin: the PROXY constructors must attach the bounded client
+	// (a regression that reverts newRouterProxy/newFallbackProxy to
+	// &http.Client{Timeout: 0} fails here even if defaultRouterClient stays
+	// correct).
+	proxy := newRouterProxy(newRelayFleet(3, 5*time.Minute), newDetector429(newRelayFleet(3, 5*time.Minute), 0.5, 1), newRouterMetrics(), 1, nil)
+	tr, ok := proxy.httpClient.Transport.(*http.Transport)
+	require.True(t, ok, "routerProxy must use a configured *http.Transport")
+	assert.Zero(t, proxy.httpClient.Timeout, "no total body timeout — long streams must never be cut")
+	require.NotNil(t, tr.ResponseHeaderTimeout, "routerProxy: ResponseHeaderTimeout must be set")
+	assert.Positive(t, tr.ResponseHeaderTimeout, "routerProxy: ResponseHeaderTimeout must be non-zero")
+	require.NotNil(t, tr.DialContext, "routerProxy: a custom dialer (with timeout) must be configured")
+
+	fb, err := newFallbackProxy("https://upstream.example.com", 0.5, 1)
+	require.NoError(t, err)
+	fbtr, ok := fb.httpClient.Transport.(*http.Transport)
+	require.True(t, ok, "fallbackProxy must use a configured *http.Transport")
+	assert.Zero(t, fb.httpClient.Timeout, "fallbackProxy: no total body timeout")
+	require.NotNil(t, fbtr.ResponseHeaderTimeout, "fallbackProxy: ResponseHeaderTimeout must be set")
+	assert.Positive(t, fbtr.ResponseHeaderTimeout, "fallbackProxy: ResponseHeaderTimeout must be non-zero")
+	require.NotNil(t, fbtr.DialContext, "fallbackProxy: a custom dialer (with timeout) must be configured")
+}
+
+// TestRouterClientDialTimeoutConfigured pins the literal #911 repro defect: a
+// blackholed dial (egress SYNs dropped) must stall at most the configured dial
+// timeout (5s production; test-scaled here) — NOT http.DefaultTransport's 30s
+// — so the failure lands inside the workspace injector's 10s client window as
+// a bounded 502 instead of a hang. Reverting to the default transport (or a
+// 30s dialer) fails this test.
+func TestRouterClientDialTimeoutConfigured(t *testing.T) {
+	c := newRouterClient(5*time.Minute, 300*time.Millisecond)
+	tr := c.Transport.(*http.Transport)
+	require.NotNil(t, tr.DialContext, "a custom dialer must be configured")
+
+	// Blackholed destination: a non-routable address (RFC 5737 TEST-NET-1).
+	// Dial to it and assert the configured dial timeout bounds the attempt.
+	start := time.Now()
+	conn, err := tr.DialContext(context.Background(), "tcp", "192.0.2.1:443")
+	elapsed := time.Since(start)
+	if conn != nil {
+		_ = conn.Close()
+	}
+	require.Error(t, err, "blackholed dial must fail")
+	assert.Less(t, elapsed, 2*time.Second, "dial must be bounded by the configured timeout (~300ms), not the default 30s; took %s", elapsed)
+}
+
+// TestRouterProxy_StalledRelayBounded502 is the handler-level e2e half of
+// #911: a relay that accepts the connection but never writes response headers
+// must yield a bounded 502 to a real client (the ResponseHeaderTimeout fires)
+// instead of hanging. The proxy's client is given a small test-scaled
+// ResponseHeaderTimeout so the test completes in milliseconds, not 5 minutes.
+// Pre-fix (http.Client{Timeout:0} + default transport, no
+// ResponseHeaderTimeout) this test would hang until the test's own client
+// timeout.
+func TestRouterProxy_StalledRelayBounded502(t *testing.T) {
+	// A server that accepts and then stalls without writing any header. The
+	// stall releases on cleanup so httptest.Server.Close (which waits for
+	// in-flight requests) does not itself block forever.
+	release := make(chan struct{})
+	stalled := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release // never writes a response header until cleanup
+	}))
+	t.Cleanup(func() {
+		close(release)
+		stalled.Close()
+	})
+
+	fleet := newRelayFleet(3, 5*time.Minute)
+	metrics := newRouterMetrics()
+	fleet.UpdatePeers([]PeerEntry{
+		{ID: "stalled-relay", Endpoint: extractEndpoint(stalled.URL), Provider: "oci", State: "healthy"},
+	})
+
+	fb, err := newFallbackProxy("https://upstream.example.com", 0.5, 1)
+	require.NoError(t, err)
+	proxy := newRouterProxy(fleet, newDetector429(fleet, 0.5, extractPort(stalled.URL)), metrics, extractPort(stalled.URL), fb)
+	// Test-scaled head timeout: bounded failure must land quickly.
+	proxy.httpClient = newRouterClient(300*time.Millisecond, 200*time.Millisecond)
+
+	router := httptest.NewServer(proxy)
+	t.Cleanup(router.Close)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	start := time.Now()
+	resp, err := client.Get(router.URL + "/v1/data")
+	elapsed := time.Since(start)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Less(t, elapsed, 5*time.Second, "a stalled relay must produce a bounded response, not hang until the client timeout")
+	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+}
+
+// TestForwardFailureLogOmitsPathAndQuery is the log content-safety pin for
+// the router's forwarding failure path: when a forward to a relay fails, the
+// logged line must NOT contain the caller's forwarded path or query (which
+// may carry path-segment secrets and api_key-style parameters). *url.Error
+// includes them; logUpstreamError unwraps to the inner error.
+func TestForwardFailureLogOmitsPathAndQuery(t *testing.T) {
+	release := make(chan struct{})
+	stalled := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+	}))
+	t.Cleanup(func() { close(release); stalled.Close() })
+
+	fleet := newRelayFleet(3, 5*time.Minute)
+	fleet.UpdatePeers([]PeerEntry{
+		{ID: "stalled-relay", Endpoint: extractEndpoint(stalled.URL), Provider: "oci", State: "healthy"},
+	})
+	metrics := newRouterMetrics()
+	fb, err := newFallbackProxy("https://upstream.example.com", 0.5, 1)
+	require.NoError(t, err)
+	proxy := newRouterProxy(fleet, newDetector429(fleet, 0.5, extractPort(stalled.URL)), metrics, extractPort(stalled.URL), fb)
+	proxy.httpClient = newRouterClient(200*time.Millisecond, 200*time.Millisecond)
+
+	router := httptest.NewServer(proxy)
+	t.Cleanup(router.Close)
+
+	// Capture the package logger output.
+	var buf bytes.Buffer
+	prevOut := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prevOut)
+
+	resp, err := http.Get(router.URL + "/v1/secret-path-segment?api_key=SUPERSECRETVALUE")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+
+	logged := buf.String()
+	assert.NotContains(t, logged, "secret-path-segment", "log must not contain the forwarded path")
+	assert.NotContains(t, logged, "SUPERSECRETVALUE", "log must not contain the forwarded query")
+	assert.NotEmpty(t, logged, "the failure must be logged (loud, not silent)")
+}
+
+// TestFallbackFailureLogOmitsPathAndQuery is the content-safety pin for the
+// fallback path.
+func TestFallbackFailureLogOmitsPathAndQuery(t *testing.T) {
+	metrics := newRouterMetrics()
+	fp, err := newFallbackProxy("http://127.0.0.1:1", 1000.0, 5)
+	require.NoError(t, err)
+	fp.withFallbackMetrics(metrics)
+	fp.httpClient = newRouterClient(200*time.Millisecond, 200*time.Millisecond)
+	server := httptest.NewServer(fp)
+	t.Cleanup(server.Close)
+
+	var buf bytes.Buffer
+	prevOut := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(prevOut)
+
+	resp, err := http.Get(server.URL + "/v1/fallback-secret-path?token=SENTINELQUERY")
+	require.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, http.StatusBadGateway, resp.StatusCode)
+
+	logged := buf.String()
+	assert.NotContains(t, logged, "fallback-secret-path", "log must not contain the forwarded path")
+	assert.NotContains(t, logged, "SENTINELQUERY", "log must not contain the forwarded query")
+	assert.NotEmpty(t, logged, "the failure must be logged (loud, not silent)")
 }

@@ -6,6 +6,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"sort"
@@ -135,6 +136,15 @@ func (p *proxyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := p.client.Do(upstreamReq) //nolint:gosec // proxy by design
 	if err != nil {
+		// Log BEFORE the client-context check (issue #911: the silent-error
+		// signature "zero errors in its own log"). Never log the request URL:
+		// *url.Error.Error() includes the full path+query, which may carry
+		// secrets — unwrap to the inner error (contains neither).
+		inner := err
+		if ue, ok := err.(*url.Error); ok {
+			inner = ue.Err
+		}
+		log.Printf("relay-proxy: upstream request failed: %v", inner)
 		if r.Context().Err() != nil {
 			return
 		}

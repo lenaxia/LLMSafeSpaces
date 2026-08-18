@@ -4,10 +4,12 @@
 package main
 
 import (
+	"net/http"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestGetEnvDuration_InvalidValue verifies the fallback when the env var holds
@@ -51,4 +53,19 @@ func TestDefaultHTTPClient(t *testing.T) {
 	if assert.NotNil(t, c) {
 		assert.NotNil(t, c.Transport, "client must have a transport configured")
 	}
+}
+
+// TestDefaultHTTPClientHeadTimeout is the #911 regression pin for the
+// relay-proxy half of the fix: the upstream transport must bound the
+// response-header phase so a stalled upstream returns a bounded error instead
+// of hanging the proxy handler with no response and no log. The test asserts
+// ResponseHeaderTimeout is configured and that no total body Timeout is set
+// (long streaming generations must never be truncated).
+func TestDefaultHTTPClientHeadTimeout(t *testing.T) {
+	c := defaultHTTPClient()
+	tr, ok := c.Transport.(*http.Transport)
+	require.True(t, ok, "defaultHTTPClient must use a configured *http.Transport")
+	assert.Zero(t, c.Timeout, "no total body timeout — long streams must never be cut")
+	require.NotNil(t, tr.ResponseHeaderTimeout, "ResponseHeaderTimeout must be set (issue #911)")
+	assert.Positive(t, tr.ResponseHeaderTimeout, "ResponseHeaderTimeout must be non-zero")
 }
