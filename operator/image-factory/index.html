@@ -10,13 +10,13 @@
       
       
       
-        <link rel="canonical" href="https://lenaxia.github.io/LLMSafeSpaces/getting-started/quickstart/">
+        <link rel="canonical" href="https://lenaxia.github.io/LLMSafeSpaces/operator/image-factory/">
       
       
-        <link rel="prev" href="../">
+        <link rel="prev" href="../agentd-delivery/">
       
       
-        <link rel="next" href="../concepts/">
+        <link rel="next" href="../monitoring/">
       
       
         
@@ -27,7 +27,7 @@
     
     
       
-        <title>Quickstart - LLMSafeSpaces</title>
+        <title>Image Factory (Base Lifecycle) - LLMSafeSpaces</title>
       
     
     
@@ -80,7 +80,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#quickstart" class="md-skip">
+        <a href="#image-factory-operations-base-lifecycle" class="md-skip">
           Skip to content
         </a>
       
@@ -114,7 +114,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Quickstart
+              Image Factory (Base Lifecycle)
             
           </span>
         </div>
@@ -244,13 +244,11 @@
   
   
   
-    
-  
   
     
     
-      <li class="md-tabs__item md-tabs__item--active">
-        <a href="../" class="md-tabs__link">
+      <li class="md-tabs__item">
+        <a href="../../getting-started/" class="md-tabs__link">
           
   
   
@@ -268,11 +266,13 @@
   
   
   
+    
+  
   
     
     
-      <li class="md-tabs__item">
-        <a href="../../operator/installation/" class="md-tabs__link">
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../installation/" class="md-tabs__link">
           
   
   
@@ -450,8 +450,6 @@
       
   
   
-    
-  
   
   
     
@@ -469,23 +467,20 @@
     
     
       
-        
-        
-      
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" checked>
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
         
           
           <div class="md-nav__link md-nav__container">
-            <a href="../" class="md-nav__link ">
+            <a href="../../getting-started/" class="md-nav__link ">
               
   
   
@@ -503,13 +498,13 @@
             </a>
             
               
-              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="">
+              <label class="md-nav__link " for="__nav_2" id="__nav_2_label" tabindex="0">
                 <span class="md-nav__icon md-icon"></span>
               </label>
             
           </div>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="true">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
           <label class="md-nav__title" for="__nav_2">
             <span class="md-nav__icon md-icon"></span>
             
@@ -526,37 +521,10 @@
                 
   
   
-    
   
   
-  
-    <li class="md-nav__item md-nav__item--active">
-      
-      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
-      
-      
-        
-      
-      
-        <label class="md-nav__link md-nav__link--active" for="__toc">
-          
-  
-  
-  <span class="md-ellipsis">
-    
-  
-    Quickstart
-  
-
-    
-  </span>
-  
-  
-
-          <span class="md-nav__icon md-icon"></span>
-        </label>
-      
-      <a href="./" class="md-nav__link md-nav__link--active">
+    <li class="md-nav__item">
+      <a href="../../getting-started/quickstart/" class="md-nav__link">
         
   
   
@@ -572,136 +540,6 @@
   
 
       </a>
-      
-        
-
-<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
-  
-  
-  
-    
-  
-  
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#prerequisites" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Prerequisites
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#1-clone-and-bootstrap" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        1. Clone and bootstrap
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#2-port-forward-the-api" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        2. Port-forward the API
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#3-register-and-authenticate" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        3. Register and authenticate
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#4-create-a-workspace" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        4. Create a workspace
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#5-store-an-llm-provider-credential" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        5. Store an LLM provider credential
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#6-drive-a-session" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        6. Drive a session
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#7-suspend-and-resume" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        7. Suspend and resume
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#tear-down" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Tear down
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#next" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Next
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
-</nav>
-      
     </li>
   
 
@@ -714,7 +552,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../concepts/" class="md-nav__link">
+      <a href="../../getting-started/concepts/" class="md-nav__link">
         
   
   
@@ -746,8 +584,10 @@
       
   
   
+    
   
   
+  
     
     
       
@@ -787,19 +627,22 @@
     
     
       
+        
+        
+      
       
         
       
     
     
-    <li class="md-nav__item md-nav__item--nested">
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
       
         
         
-        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" checked>
         
           
-          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="">
             
   
   
@@ -817,7 +660,7 @@
             <span class="md-nav__icon md-icon"></span>
           </label>
         
-        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="true">
           <label class="md-nav__title" for="__nav_3">
             <span class="md-nav__icon md-icon"></span>
             
@@ -835,7 +678,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../operator/installation/" class="md-nav__link">
+      <a href="../installation/" class="md-nav__link">
         
   
   
@@ -863,7 +706,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../operator/configuration/" class="md-nav__link">
+      <a href="../configuration/" class="md-nav__link">
         
   
   
@@ -891,7 +734,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../operator/storage/" class="md-nav__link">
+      <a href="../storage/" class="md-nav__link">
         
   
   
@@ -919,7 +762,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../operator/networking/" class="md-nav__link">
+      <a href="../networking/" class="md-nav__link">
         
   
   
@@ -947,7 +790,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../operator/security/" class="md-nav__link">
+      <a href="../security/" class="md-nav__link">
         
   
   
@@ -975,7 +818,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../operator/runtime-environments/" class="md-nav__link">
+      <a href="../runtime-environments/" class="md-nav__link">
         
   
   
@@ -1003,7 +846,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../operator/multi-tenant/" class="md-nav__link">
+      <a href="../multi-tenant/" class="md-nav__link">
         
   
   
@@ -1031,7 +874,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../operator/oidc-sso/" class="md-nav__link">
+      <a href="../oidc-sso/" class="md-nav__link">
         
   
   
@@ -1059,7 +902,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../operator/inference-relay/" class="md-nav__link">
+      <a href="../inference-relay/" class="md-nav__link">
         
   
   
@@ -1087,7 +930,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../operator/agentd-delivery/" class="md-nav__link">
+      <a href="../agentd-delivery/" class="md-nav__link">
         
   
   
@@ -1112,10 +955,37 @@
                 
   
   
+    
   
   
-    <li class="md-nav__item">
-      <a href="../../operator/image-factory/" class="md-nav__link">
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Image Factory (Base Lifecycle)
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
         
   
   
@@ -1131,6 +1001,81 @@
   
 
       </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-model-ruling-29" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The model (ruling #29)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#publishing-a-base-version" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Publishing a base version
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#moving-the-default-base-eg-bookworm-trixie" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Moving the default base (e.g. bookworm → trixie)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-users-see" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What users see
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#failure-modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Failure modes
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
     </li>
   
 
@@ -1143,7 +1088,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../operator/monitoring/" class="md-nav__link">
+      <a href="../monitoring/" class="md-nav__link">
         
   
   
@@ -1171,7 +1116,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../operator/upgrading/" class="md-nav__link">
+      <a href="../upgrading/" class="md-nav__link">
         
   
   
@@ -1199,7 +1144,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../operator/troubleshooting/" class="md-nav__link">
+      <a href="../troubleshooting/" class="md-nav__link">
         
   
   
@@ -1227,7 +1172,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../operator/runbook/" class="md-nav__link">
+      <a href="../runbook/" class="md-nav__link">
         
   
   
@@ -1255,7 +1200,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../operator/gvisor-benchmark/" class="md-nav__link">
+      <a href="../gvisor-benchmark/" class="md-nav__link">
         
   
   
@@ -2090,10 +2035,10 @@
     <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
       
         <li class="md-nav__item">
-  <a href="#prerequisites" class="md-nav__link">
+  <a href="#the-model-ruling-29" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Prerequisites
+        The model (ruling #29)
       
     </span>
   </a>
@@ -2101,10 +2046,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#1-clone-and-bootstrap" class="md-nav__link">
+  <a href="#publishing-a-base-version" class="md-nav__link">
     <span class="md-ellipsis">
       
-        1. Clone and bootstrap
+        Publishing a base version
       
     </span>
   </a>
@@ -2112,10 +2057,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#2-port-forward-the-api" class="md-nav__link">
+  <a href="#moving-the-default-base-eg-bookworm-trixie" class="md-nav__link">
     <span class="md-ellipsis">
       
-        2. Port-forward the API
+        Moving the default base (e.g. bookworm → trixie)
       
     </span>
   </a>
@@ -2123,10 +2068,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#3-register-and-authenticate" class="md-nav__link">
+  <a href="#what-users-see" class="md-nav__link">
     <span class="md-ellipsis">
       
-        3. Register and authenticate
+        What users see
       
     </span>
   </a>
@@ -2134,65 +2079,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#4-create-a-workspace" class="md-nav__link">
+  <a href="#failure-modes" class="md-nav__link">
     <span class="md-ellipsis">
       
-        4. Create a workspace
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#5-store-an-llm-provider-credential" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        5. Store an LLM provider credential
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#6-drive-a-session" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        6. Drive a session
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#7-suspend-and-resume" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        7. Suspend and resume
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#tear-down" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Tear down
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#next" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Next
+        Failure modes
       
     </span>
   </a>
@@ -2219,168 +2109,112 @@
   
 
 
-<h1 id="quickstart">Quickstart<a class="headerlink" href="#quickstart" title="Permanent link">&para;</a></h1>
-<p>Get LLMSafeSpaces running on a local <a href="https://kind.sigs.k8s.io/"><code>kind</code></a> cluster in ~10 minutes. You'll register a user, create a workspace, bind an LLM credential, and drive an agent session end-to-end.</p>
-<h2 id="prerequisites">Prerequisites<a class="headerlink" href="#prerequisites" title="Permanent link">&para;</a></h2>
+<h1 id="image-factory-operations-base-lifecycle">Image Factory Operations (Base Lifecycle)<a class="headerlink" href="#image-factory-operations-base-lifecycle" title="Permanent link">&para;</a></h1>
+<p>Operator guide for managing the workspace-image base lifecycle: how base
+publishes and default moves reach (and never silently change) user
+configs. User-facing behavior: <code>docs/operator/agentd-delivery.md</code> is
+unrelated; this page is about the image factory (design/0046).</p>
+<h2 id="the-model-ruling-29">The model (ruling #29)<a class="headerlink" href="#the-model-ruling-29" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Extension IDs are immutable catalog entries; <strong>the base is the version
+  axis for apt-track system packages</strong> (ffmpeg on bookworm = 5.1, on
+  trixie = 7.x — same ID, different bytes, by design).</li>
+<li>A config pins <code>(hash, base_name, base_version)</code> at save and launches
+  that image <strong>forever</strong>. New base versions never touch existing configs.</li>
+</ul>
+<h2 id="publishing-a-base-version">Publishing a base version<a class="headerlink" href="#publishing-a-base-version" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Add the row (admin API <code>POST /v1/admin/image-factory/bases</code> or the
+   seed): name, version, image ref (digest preferred), <code>isDefault: false</code>.</li>
+<li>Existing configs on that base name gain a <code>base 0.9.0 available</code>
+   pill (computed on read: same-name, newer version). Nothing rebuilds.</li>
+<li>Users refresh explicitly: prefill → review (same extensions, new
+   base) → save → NEW config/hash/build. The original stays launchable.</li>
+</ol>
+<h2 id="moving-the-default-base-eg-bookworm-trixie">Moving the default base (e.g. bookworm → trixie)<a class="headerlink" href="#moving-the-default-base-eg-bookworm-trixie" title="Permanent link">&para;</a></h2>
+<p><strong>The upsert does not clear other defaults.</strong> <code>POST /bases</code> upserts the
+one row you send (<code>ON CONFLICT (name,version)</code> — nothing else is
+touched). Setting trixie default leaves bookworm default TOO: a
+two-default state where pills resolve to the highest-sorted base while
+the create form's default picker takes the first — signals diverge.
+Move the default as TWO upserts, in this order:</p>
+<ol>
+<li>Publish the new base's versions and their extension coverage first
+   (see below).</li>
+<li>POST-upsert the OLD default row with <code>isDefault: false</code>.</li>
+<li>POST-upsert the NEW row with <code>isDefault: true</code>.</li>
+</ol>
+<p><strong>API restarts re-apply the seed's default.</strong> The catalog seed runs at
+every API boot and upserts <code>isDefault</code> from <code>catalog.seed.yaml</code>
+(currently bookworm=true). If your moved default diverges from the
+seed, the next API restart silently re-defaults the seed's base —
+leaving the two-default state above. Until the seed-default behavior
+gains a "don't fight the operator" mode (backend debt), EITHER keep the
+seed as the source of truth and move the default by PR-editing
+<code>catalog.seed.yaml</code> (the intended flow — the seed is reviewable in
+git), OR accept that manual moves need re-applying after restarts.
+Prefer the seed PR.
+2. Configs on other base names gain the <code>new base: trixie</code> pill with
+   the migration tooltip (package versions follow the Debian suite).
+3. <strong>Before flipping the default</strong>, verify extension coverage: the pill
+   offers a refresh to the new base, and save validates every selected
+   extension's <code>supportedBases</code>. With a catalog where extensions only
+   list the old base, every migration refresh fails validation —
+   publish <code>supportedBases</code> updates for the new base first.
+4. Old base versions stay in the catalog (configs pin them). Retiring a
+   base name entirely removes the pill for its configs (nothing to
+   suggest) but never blocks launching existing Ready configs.</p>
+<h2 id="what-users-see">What users see<a class="headerlink" href="#what-users-see" title="Permanent link">&para;</a></h2>
 <table>
 <thead>
 <tr>
-<th>Tool</th>
-<th>Version</th>
-<th>Why</th>
+<th>Event</th>
+<th>Settings pill</th>
+<th>Launch picker</th>
+<th>Action</th>
 </tr>
 </thead>
 <tbody>
 <tr>
-<td><code>go</code></td>
-<td>1.26+</td>
-<td>Build the API and controller</td>
+<td>New version of their base</td>
+<td><code>base 0.9.0 available</code></td>
+<td>↻</td>
+<td>Refresh → review → save new config</td>
 </tr>
 <tr>
-<td><code>docker</code></td>
-<td>any recent</td>
-<td>kind runs on it</td>
+<td>Default base moved</td>
+<td><code>new base: trixie</code></td>
+<td>↻</td>
+<td>Same; banner adds the Debian-suite caveat</td>
 </tr>
 <tr>
-<td><code>kind</code></td>
-<td>0.32+</td>
-<td>Local Kubernetes cluster (must support the pinned 1.35 node image; see <code>local/kind-cluster.yaml</code>)</td>
-</tr>
-<tr>
-<td><code>kubectl</code></td>
-<td>1.34+</td>
-<td>Talk to the cluster (±1 skew vs the 1.35 nodes)</td>
-</tr>
-<tr>
-<td><code>helm</code></td>
-<td>3.21+</td>
-<td>Deploy the chart (older binaries' built-in kubeVersion defaults predate 1.35 and refuse the chart offline)</td>
-</tr>
-<tr>
-<td><code>curl</code> + <code>jq</code></td>
-<td>any</td>
-<td>API requests</td>
+<td>Nothing new</td>
+<td>(none)</td>
+<td>(none)</td>
+<td>—</td>
 </tr>
 </tbody>
 </table>
-<p>Verify:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>go<span class="w"> </span>version<span class="w">          </span><span class="c1"># go1.26+</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>docker<span class="w"> </span>version<span class="w">     </span><span class="c1"># any</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>kind<span class="w"> </span>version<span class="w">       </span><span class="c1"># kind v0.32+</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>kubectl<span class="w"> </span>version<span class="w"> </span>--client<span class="w"> </span>--short
-</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>helm<span class="w"> </span>version<span class="w"> </span>--short
-</span></code></pre></div>
-<h2 id="1-clone-and-bootstrap">1. Clone and bootstrap<a class="headerlink" href="#1-clone-and-bootstrap" title="Permanent link">&para;</a></h2>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>git<span class="w"> </span>clone<span class="w"> </span>https://github.com/lenaxia/LLMSafeSpaces.git
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="nb">cd</span><span class="w"> </span>LLMSafeSpaces
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="c1"># Creates a kind cluster, builds all images, deploys the chart</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>./local/bootstrap.sh
-</span></code></pre></div>
-<p>This takes ~5 minutes the first time (image builds dominate). When it finishes you should see:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>$<span class="w"> </span>kubectl<span class="w"> </span>get<span class="w"> </span>pods<span class="w"> </span>-n<span class="w"> </span>llmsafespaces
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>NAME<span class="w">                                </span>READY<span class="w">   </span>STATUS<span class="w">    </span>RESTARTS<span class="w">   </span>AGE
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>llmsafespaces-api-xxx<span class="w">               </span><span class="m">1</span>/1<span class="w">     </span>Running<span class="w">   </span><span class="m">0</span><span class="w">          </span>2m
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>llmsafespaces-controller-xxx<span class="w">        </span><span class="m">1</span>/1<span class="w">     </span>Running<span class="w">   </span><span class="m">0</span><span class="w">          </span>2m
-</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>llmsafespaces-frontend-xxx<span class="w">          </span><span class="m">1</span>/1<span class="w">     </span>Running<span class="w">   </span><span class="m">0</span><span class="w">          </span>2m
-</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>postgres-xxx<span class="w">                        </span><span class="m">1</span>/1<span class="w">     </span>Running<span class="w">   </span><span class="m">0</span><span class="w">          </span>2m
-</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>redis-xxx<span class="w">                           </span><span class="m">1</span>/1<span class="w">     </span>Running<span class="w">   </span><span class="m">0</span><span class="w">          </span>2m
-</span></code></pre></div>
-<h2 id="2-port-forward-the-api">2. Port-forward the API<a class="headerlink" href="#2-port-forward-the-api" title="Permanent link">&para;</a></h2>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>kubectl<span class="w"> </span>port-forward<span class="w"> </span>-n<span class="w"> </span>llmsafespaces<span class="w"> </span>svc/llmsafespaces-api<span class="w"> </span><span class="m">8080</span>:8080<span class="w"> </span><span class="p">&amp;</span>
-</span></code></pre></div>
-<p>The API is now at <code>http://localhost:8080</code>.</p>
-<h2 id="3-register-and-authenticate">3. Register and authenticate<a class="headerlink" href="#3-register-and-authenticate" title="Permanent link">&para;</a></h2>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nv">API</span><span class="o">=</span>http://localhost:8080
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="c1"># Register a user (returns a JWT)</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>curl<span class="w"> </span>-sX<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/auth/register"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">'{"email":"alice@example.com","password":"hunter2hunter2","username":"alice"}'</span>
-</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>
-</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="c1"># Login to get a token you'll reuse</span>
-</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="nv">TOKEN</span><span class="o">=</span><span class="k">$(</span>curl<span class="w"> </span>-sX<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/auth/login"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">'{"email":"alice@example.com","password":"hunter2hunter2"}'</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="w">  </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-r<span class="w"> </span><span class="s1">'.token'</span><span class="k">)</span>
-</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a>
-</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a><span class="nb">echo</span><span class="w"> </span><span class="s2">"Token: </span><span class="si">${</span><span class="nv">TOKEN</span><span class="p">:</span><span class="nv">0</span><span class="p">:</span><span class="nv">20</span><span class="si">}</span><span class="s2">..."</span>
-</span></code></pre></div>
-<h2 id="4-create-a-workspace">4. Create a workspace<a class="headerlink" href="#4-create-a-workspace" title="Permanent link">&para;</a></h2>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nv">WS</span><span class="o">=</span><span class="k">$(</span>curl<span class="w"> </span>-sX<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">'{"name":"my-workspace","runtime":"base","storageSize":"1Gi"}'</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">  </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-r<span class="w"> </span><span class="s1">'.id'</span><span class="k">)</span>
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="nb">echo</span><span class="w"> </span><span class="s2">"workspace: </span><span class="nv">$WS</span><span class="s2">"</span>
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>
-</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="c1"># Activate it (creates the pod)</span>
-</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>curl<span class="w"> </span>-sX<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces/</span><span class="nv">$WS</span><span class="s2">/activate"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">"</span>
-</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>
-</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="c1"># Wait for it to come up</span>
-</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="k">while</span><span class="w"> </span><span class="o">[</span><span class="w"> </span><span class="s2">"</span><span class="k">$(</span>curl<span class="w"> </span>-s<span class="w"> </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a><span class="w">    </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces/</span><span class="nv">$WS</span><span class="s2">/status"</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-r<span class="w"> </span>.phase<span class="k">)</span><span class="s2">"</span><span class="w"> </span>!<span class="o">=</span><span class="w"> </span><span class="s2">"Active"</span><span class="w"> </span><span class="o">]</span><span class="p">;</span><span class="w"> </span><span class="k">do</span>
-</span><span id="__span-5-15"><a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a><span class="w">  </span>sleep<span class="w"> </span><span class="m">2</span>
-</span><span id="__span-5-16"><a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a><span class="k">done</span>
-</span><span id="__span-5-17"><a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a><span class="nb">echo</span><span class="w"> </span><span class="s2">"workspace active"</span>
-</span></code></pre></div>
-<h2 id="5-store-an-llm-provider-credential">5. Store an LLM provider credential<a class="headerlink" href="#5-store-an-llm-provider-credential" title="Permanent link">&para;</a></h2>
-<p>The platform doesn't ship API keys — you bring your own. Create a secret holding your LLM gateway credentials and bind it to the workspace:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nv">SECRET_ID</span><span class="o">=</span><span class="k">$(</span>curl<span class="w"> </span>-sX<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/secrets"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
-</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="s1">    "name": "my-llm-key",</span>
-</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="s1">    "type": "llm-provider",</span>
-</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="s1">    "value": "{\"providerID\":\"litellm\",\"apiKey\":\"sk-...\",\"baseURL\":\"https://your-llm-gateway/v1\"}"</span>
-</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="s1">  }'</span><span class="w"> </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-r<span class="w"> </span><span class="s1">'.id'</span><span class="k">)</span>
-</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>
-</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>curl<span class="w"> </span>-sX<span class="w"> </span>PUT<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces/</span><span class="nv">$WS</span><span class="s2">/bindings"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="w">  </span>-d<span class="w"> </span><span class="s2">"{\"secretIds\":[\"</span><span class="nv">$SECRET_ID</span><span class="s2">\"]}"</span>
-</span></code></pre></div>
-<p>The credential is encrypted client-side with your password-derived DEK, stored in PostgreSQL, and only decrypted into tmpfs at <code>/sandbox-runtime</code> when the workspace pod boots. See <a href="../../architecture/secrets/">Secret Management</a> for the crypto details.</p>
-<h2 id="6-drive-a-session">6. Drive a session<a class="headerlink" href="#6-drive-a-session" title="Permanent link">&para;</a></h2>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Create a session</span>
-</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="nv">SID</span><span class="o">=</span><span class="k">$(</span>curl<span class="w"> </span>-sX<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces/</span><span class="nv">$WS</span><span class="s2">/sessions/new"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span>-r<span class="w"> </span><span class="s1">'.sessionId'</span><span class="k">)</span>
-</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>
-</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="c1"># Send a prompt</span>
-</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces/</span><span class="nv">$WS</span><span class="s2">/sessions/</span><span class="nv">$SID</span><span class="s2">/message"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">"Content-Type: application/json"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="w">  </span>-d<span class="w"> </span><span class="s1">'{</span>
-</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="s1">    "model":   {"providerID":"litellm","modelID":"default"},</span>
-</span><span id="__span-7-13"><a id="__codelineno-7-13" name="__codelineno-7-13" href="#__codelineno-7-13"></a><span class="s1">    "parts":   [{"type":"text","text":"Reply with exactly the word: PONG"}]</span>
-</span><span id="__span-7-14"><a id="__codelineno-7-14" name="__codelineno-7-14" href="#__codelineno-7-14"></a><span class="s1">  }'</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-7-15"><a id="__codelineno-7-15" name="__codelineno-7-15" href="#__codelineno-7-15"></a><span class="w">  </span><span class="p">|</span><span class="w"> </span>jq<span class="w"> </span><span class="s1">'.parts[] | select(.type=="text") | .text'</span>
-</span><span id="__span-7-16"><a id="__codelineno-7-16" name="__codelineno-7-16" href="#__codelineno-7-16"></a>
-</span><span id="__span-7-17"><a id="__codelineno-7-17" name="__codelineno-7-17" href="#__codelineno-7-17"></a><span class="c1"># → "PONG"</span>
-</span></code></pre></div>
-<p>You now have a working agent workspace. The agent has a shell, can write to <code>/workspace</code>, and persists its session history in the PVC across suspend/resume cycles.</p>
-<h2 id="7-suspend-and-resume">7. Suspend and resume<a class="headerlink" href="#7-suspend-and-resume" title="Permanent link">&para;</a></h2>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># Suspend (deletes pod, keeps PVC)</span>
-</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces/</span><span class="nv">$WS</span><span class="s2">/suspend"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">"</span>
-</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>
-</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="c1"># Resume (re-creates pod, re-attaches PVC)</span>
-</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>curl<span class="w"> </span>-X<span class="w"> </span>POST<span class="w"> </span><span class="s2">"</span><span class="nv">$API</span><span class="s2">/api/v1/workspaces/</span><span class="nv">$WS</span><span class="s2">/activate"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="w">  </span>-H<span class="w"> </span><span class="s2">"Authorization: Bearer </span><span class="nv">$TOKEN</span><span class="s2">"</span>
-</span></code></pre></div>
-<p>Session history in the PVC survives. The whole cycle takes ~22 seconds.</p>
-<h2 id="tear-down">Tear down<a class="headerlink" href="#tear-down" title="Permanent link">&para;</a></h2>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-9-1"><a id="__codelineno-9-1" name="__codelineno-9-1" href="#__codelineno-9-1"></a>./local/teardown.sh
-</span></code></pre></div>
-<p>Removes the kind cluster and all resources.</p>
-<h2 id="next">Next<a class="headerlink" href="#next" title="Permanent link">&para;</a></h2>
+<p>Launching a stale config is always allowed — the frozen image is valid;
+staleness is information, never a lockout.</p>
+<h2 id="failure-modes">Failure modes<a class="headerlink" href="#failure-modes" title="Permanent link">&para;</a></h2>
 <ul>
-<li><a href="../concepts/">Concepts</a> — the data model in depth</li>
-<li><a href="../../operator/installation/">Installation</a> — production deployment</li>
-<li><a href="../../api/rest/">REST API</a> — full endpoint reference</li>
+<li><strong>Refresh save 500 "failed to save config" / "failed to save config
+  and build"</strong> (coalesced vs fresh dispatch path respectively):
+  duplicate scoped name.
+  The create paths currently return 500 (not 409) on the scoped-unique
+  violation; the prefill avoids the common cases by de-conflicting the
+  suggested name against existing configs (<code>name (base version)</code>, with
+  numeric suffix on repeat refreshes). If the user hand-edits back into
+  a collision, the error surfaces as a toast — a 4xx mapping for this
+  case is a known backend debt item.</li>
+<li><strong>Refresh save 422 per-extension</strong>: an extension in the selection is
+  unsupported on the target base, or was retired after the config was
+  saved. Both surface in the form before save ("Not available on …");
+  retired extensions are auto-dropped from the prefill with an info
+  toast (a fully-retired selection aborts the refresh).</li>
+<li><strong>Pill absent after a publish</strong>: check the config is <code>ready</code> (pills
+  are Ready-only) and the bases table actually lists the new version.</li>
 </ul>
 
 
@@ -2404,7 +2238,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 15, 2026 08:35:04 UTC"><span class="timeago" datetime="2026-08-15T08:35:04+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 15, 2026 08:35:04 UTC">2026-08-15</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 18, 2026 07:44:29 UTC"><span class="timeago" datetime="2026-08-18T07:44:29+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 18, 2026 07:44:29 UTC">2026-08-18</span>
   </span>
 
     
@@ -2414,7 +2248,7 @@
     <span class="md-icon" title="Created">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14.47 15.08 11 13V7h1.5v5.25l3.08 1.83c-.41.28-.79.62-1.11 1m-1.39 4.84c-.36.05-.71.08-1.08.08-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8c0 .37-.03.72-.08 1.08.69.1 1.33.32 1.92.64.1-.56.16-1.13.16-1.72 0-5.5-4.5-10-10-10S2 6.5 2 12s4.47 10 10 10c.59 0 1.16-.06 1.72-.16-.32-.59-.54-1.23-.64-1.92M18 15v3h-3v2h3v3h2v-3h3v-2h-3v-3z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="July 11, 2026 06:44:10 UTC"><span class="timeago" datetime="2026-07-11T06:44:10+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="July 11, 2026 06:44:10 UTC">2026-07-11</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 18, 2026 07:44:29 UTC"><span class="timeago" datetime="2026-08-18T07:44:29+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 18, 2026 07:44:29 UTC">2026-08-18</span>
   </span>
 
     
