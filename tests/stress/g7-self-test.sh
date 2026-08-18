@@ -50,10 +50,18 @@ FIX3
 SID=$(grep -o '"id":"ses_[^"]*' /tmp/g7fix-session.json | head -1 | cut -d'"' -f4)
 [ "$SID" = "ses_abcdef0123XYZ" ] && ok "session-id extraction (f4 of \"-split)" || bad "session-id extraction got '$SID'"
 
-# 5. marker detection
-TURN='{"info":{"role":"assistant"},"parts":[{"type":"text","text":"g7-storm-done"}]}'
-M=$(echo "$TURN" | head -c 4000 | grep -c 'g7-storm-done' || true)
-[ "$M" -ge 1 ] && ok "reply marker detected" || bad "marker not detected"
+# 5. marker detection — no truncation window (the r3 finding: a verbose
+# tool-bearing reply puts the marker past any head -c N and false-fails
+# a successful turn).
+TURN='{"info":{"role":"assistant"},"parts":[{"type":"tool","tool":"bash","input":{"command":"sleep 10"},"output":"done"},{"type":"text","text":"g7-storm-done"}]}'
+M=$(echo "$TURN" | grep -c 'g7-storm-done' || true)
+[ "$M" -ge 1 ] && ok "reply marker detected past a long tool part" || bad "marker not detected"
+
+# 5b. a LONG reply (marker beyond 4000 bytes) must still match — the old
+# head -c 4000 pipeline false-failed this.
+LONG='{"parts":[{"type":"tool","tool":"bash","input":{"command":"sleep 10"},"output":"'"$(printf 'x%.0s' {1..4200})"'"},{"type":"text","text":"g7-storm-done"}]}'
+M2=$(echo "$LONG" | grep -c 'g7-storm-done' || true)
+[ "$M2" -ge 1 ] && ok "reply marker detected beyond 4000 bytes (no truncation)" || bad "long-reply marker missed (truncation regression)"
 
 # 6. empty-scrape fail-open guard: metric_sum on a missing family prints 0
 R=$(metric_sum /tmp/g7fix-metrics.txt 'missing_family{reason="crash"')

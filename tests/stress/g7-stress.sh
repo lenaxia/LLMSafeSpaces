@@ -114,14 +114,22 @@ TURN=$(curl -s -m 120 -X POST -u "$OC" -H 'Content-Type: application/json' \
   -d '{"parts":[{"type":"text","text":"run: sleep 10; echo done then reply with exactly g7-storm-done"}]}' \
   "http://localhost:$PORT_OC/session/$SID/message" -w '\n%{http_code}') || true
 CODE=$(echo "$TURN" | tail -1)
-MARKER=$(echo "$TURN" | head -c 4000 | grep -c 'g7-storm-done' || true)
+MARKER=$(echo "$TURN" | grep -c 'g7-storm-done' || true)
 
 # stop the storm: the wrapper argv carries G7LOAD, so one pkill removes
 # all burn loops (and any child process inheriting the marker).
 kubectl exec "$POD" -n "$NS" -c workspace -- sh -c \
   'pkill -9 -f G7LOAD 2>/dev/null; true' 2>/dev/null || true
 kill $STORM 2>/dev/null || true
-sleep 2
+sleep 3
+# The pattern is concatenated ("G7""LOAD") so pgrep does not match its
+# own invoking sh -c (whose argv contains the literal string) — that
+# self-match made the count 1 on a clean system.
+REMAIN=$(kubectl exec "$POD" -n "$NS" -c workspace -- sh -c 'pgrep -fc "G7""LOAD" || true' 2>/dev/null | tr -d ' ') || true
+if [ -n "$REMAIN" ] && [ "$REMAIN" != "0" ]; then
+  echo "FAIL: storm cleanup incomplete ($REMAIN burn loops still running)"
+  exit 2
+fi
 
 TH1=$(kubectl exec "$POD" -n "$NS" -c workspace -- sh -c 'cat /sys/fs/cgroup/cpu.stat 2>/dev/null | awk "/throttled_usec/{print \$2}"') || true
 if [ -n "$TH0" ] && [ -n "$TH1" ] && [ "$TH1" -gt "$TH0" ]; then
@@ -146,8 +154,13 @@ if [ -n "$WH1" ] && [ "$WH1" = "$WH0" ]; then
 else
   bad "health_watchdog restarts changed $WH0 -> $WH1 during storm"
 fi
-[ -n "$S1" ] && [ "$S1" != "$S0" ] && ok "suppressions counted ($S0 -> $S1)" \
-  || echo "  note: suppressions unchanged ($S0) — storm below watchdog kill threshold (acceptable; assertion present)"
+if [ -z "$S1" ]; then
+  echo "  note: suppressions scrape unreadable (S1 empty) — measurement unavailable, not unchanged"
+elif [ "$S1" != "$S0" ]; then
+  ok "suppressions counted ($S0 -> $S1)"
+else
+  echo "  note: suppressions readable and unchanged ($S0) — storm below watchdog kill threshold (acceptable; assertion present)"
+fi
 if [ -n "$RC0" ] && [ -n "$RC1" ] && [ "$RC1" = "$RC0" ]; then
   ok "kubelet restartCount unchanged across storm ($RC0)"
 else
@@ -166,9 +179,9 @@ CR1=""
 for _ in $(seq 1 20); do
   sleep 2
   CR1=$(ad_metric 'workspace_restarts_total{reason="crash"') || true
-  [ -n "$CR1" ] && [ "$CR1" != "$CR0" ] && break
+  [ -n "$CR1" ] && [ "$CR1" -gt "$CR0" ] && break
 done
-if [ -n "$CR1" ] && [ "$CR1" != "$CR0" ]; then
+if [ -n "$CR1" ] && [ "$CR1" -gt "$CR0" ]; then
   ok "crash-recovery restart recorded ($CR0 -> $CR1)"
 else
   bad "crash restart counter did not advance ($CR0 -> $CR1)"

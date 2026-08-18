@@ -108,3 +108,47 @@ forced generation change, live turns completing under a CPU storm.
 ```
 
 Self-test 8/8. shellcheck -S warning clean on all three scripts.
+
+
+---
+
+## Round 3 (review on #924): all five blockers, verbatim validation
+
+1. **Verbatim capture** (blocker 1): the round-3 run output below is the
+   UNEDITED terminal output of the committed harness against a fresh
+   throwaway 0.15.11 workspace — no reconstruction, no filtering. The
+   r2 record was trimmed (a reconstruction), which the reviewer proved
+   forensically; this one is a raw capture.
+2. **Marker window** (blocker 2): `head -c 4000` removed — the reply is
+   bounded by curl `-m 120`; self-test adds a long-reply case (marker
+   beyond 4000 bytes) that the old truncating pipeline false-failed.
+3. **D `!=` → `-gt`** (blocker 3): a kubelet counter reset can no longer
+   green-light "advances".
+4. **Unreadable vs unchanged** (blocker 4): empty S1/WH1 scapes are
+   reported as "unreadable — measurement unavailable", not as an
+   acceptable measurement.
+5. **Storm cleanup verified** (blocker 5): post-cleanup `pgrep` check;
+   the pattern is concatenated (`"G7""LOAD"`) so the check cannot
+   self-match its own invoking sh -c (found live: self-match counted 1).
+
+### Round-3 validation run (verbatim capture)
+
+```
+== G7 stress on g7-scratch-stress (pod g7-scratch-stress-a769b1c8) ==
+== baseline ==
+health_watchdog=0 crash=0 suppressions=0 restartCount=0
+== A/C/F: CPU storm + live long turn (session ses_fedc08147ffeX3mHBIAyMoW8CX) ==
+  PASS: storm produced cgroup throttling (148869368 -> 243510585 usec)
+  PASS: live turn completed under storm (HTTP 200, reply marker present)
+== watchdog + kubelet assertions (A/B/E) ==
+  PASS: no watchdog kills during storm (health_watchdog restarts: 0 -> 0)
+  note: suppressions readable and unchanged (0) — storm below watchdog kill threshold (acceptable; assertion present)
+  PASS: kubelet restartCount unchanged across storm (0)
+== D: forced restart, crash-recovery-owned ==
+  PASS: crash-recovery restart recorded (0 -> 1)
+  note: tracker busy resets 0 -> 0 (0 both = no orphaned-busy present; the heal path is exercised only when orphans exist)
+
+== result: 5 pass, 0 fail ==
+```
+
+Self-test 9/9 (incl. the long-reply marker case). shellcheck clean.
