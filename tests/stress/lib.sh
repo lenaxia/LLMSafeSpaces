@@ -10,7 +10,13 @@
 # exposition continues ",workspace_id=...}" — a trailing } never matches).
 metric_sum() {
   local file="$1" fam="$2"
-  awk -v fam="$fam" 'index($0, fam) { sum+=$NF } END { print sum+0 }' "$file"
+  # Anchor the match to LINE START: a bare family name (no {reason=...})
+  # would otherwise also match the # HELP/# TYPE comment lines, whose
+  # last token (the help text) can be numeric and would be summed into
+  # the result (r9 finding: latent, real HELP strings happen to end
+  # non-numerically today). Lines matching the family prefix but
+  # starting with '#' are excluded.
+  awk -v fam="$fam" 'index($0, fam) && $0 !~ /^#/ { sum+=$NF } END { print sum+0 }' "$file"
 }
 
 # cleanup_verify STORM_PID: check that the burn loops are actually gone.

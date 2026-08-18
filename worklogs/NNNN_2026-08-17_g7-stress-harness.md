@@ -363,3 +363,21 @@ The harness itself (g7-stress.sh, lib.sh) is unchanged from r7 — the r7
 fresh-pod capture (pod 3014ba3a, TH0=103189us, crash 0->1, exit 0)
 remains valid for the head code. Self-test grew 11 -> 13 (two more
 cleanup-verify modes).
+
+
+---
+
+## Round 9 (review on #924): metric_sum excludes comment lines + pinned
+
+The r9 finding: bare-family `metric_sum` reads (S0/S1/BR0/BR1) also
+matched # HELP/# TYPE comment lines, whose last token (help text) can be
+numeric and would leak into the sum — latent today only because the real
+HELP strings end non-numerically.
+
+Fix: `metric_sum` now excludes lines starting with `#`
+(`index($0, fam) && $0 !~ /^#/`). Pinned by a numeric-HELP fixture
+(HELP "...counting 42" + a series of 5 → must sum 5, not 47/42).
+Mutation-verified: removing the comment-exclusion → 13/1; intact → 14/0.
+
+Harness code unchanged from r7; the r7 fresh-pod capture remains valid.
+Self-test 14/14; shellcheck clean.

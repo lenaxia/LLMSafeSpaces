@@ -67,6 +67,17 @@ M2=$(echo "$LONG" | grep -c 'g7-storm-done' || true)
 R=$(metric_sum /tmp/g7fix-metrics.txt 'missing_family{reason="crash"')
 [ "$R" = "0" ] && ok "missing family sums to 0 (caller must treat empty scrape as failure)" || bad "missing family got $R"
 
+# 6b. metric_sum must NOT sum comment/HELP lines (r9 finding): a HELP
+# line whose description ends in a numeric token previously leaked its
+# last field into the total via the bare-family match.
+cat > /tmp/g7fix-numhelp.txt <<'FIXH'
+# HELP workspace_numeric_total Some counter counting 42
+# TYPE workspace_numeric_total counter
+workspace_numeric_total{reason="x",workspace_id="w"} 5
+FIXH
+R=$(metric_sum /tmp/g7fix-numhelp.txt 'workspace_numeric_total')
+[ "$R" = "5" ] && ok "metric_sum ignores numeric HELP lines (=5)" || bad "metric_sum leaked HELP token (got $R)"
+
 # 7. cleanup-verify fail-open discipline (r7 finding 1): a REAL behavioral
 # pin. Stub kubectl on PATH that returns empty (verify-impossible) or
 # "0" (clean), and call the ACTUAL cleanup_verify from lib.sh — not an
