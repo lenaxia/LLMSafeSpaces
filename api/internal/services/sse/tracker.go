@@ -18,7 +18,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode/wire"
+	"github.com/lenaxia/llmsafespaces/pkg/agent"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
@@ -72,6 +72,7 @@ type Tracker struct {
 	onSessionActive  SessionIdleCallback
 	onRawEvent       RawEventCallback
 	onInference      InferenceCallback
+	metering         MeteringDecoder
 	onReconnect      ReconnectCallback
 	onAgentDied      AgentDiedCallback
 	idleTimeout      time.Duration
@@ -129,6 +130,17 @@ func (t *Tracker) SetOnSessionActive(callback SessionIdleCallback) {
 
 func (t *Tracker) SetOnReconnect(callback ReconnectCallback) {
 	t.onReconnect = callback
+}
+
+// MeteringDecoder translates one envelope-stripped agent event into
+// session-level cumulative usage and model attribution. Implemented by
+// the agent Adapter (injected at wiring) so the tracker holds no agent
+// wire knowledge — design 0049's boundary: platform code imports
+// pkg/agent, never an agent implementation package.
+type MeteringDecoder func(eventType string, props []byte) (*agent.SessionUsage, bool, error)
+
+func (t *Tracker) SetMeteringDecoder(d MeteringDecoder) {
+	t.metering = d
 }
 
 func (t *Tracker) SetOnInference(cb InferenceCallback) {
@@ -670,8 +682,8 @@ func (t *Tracker) DispatchProperties(workspaceID, eventType string, props json.R
 }
 
 func (t *Tracker) dispatchProperties(workspaceID, eventType string, props json.RawMessage) {
-	if wire.IsSessionUpdated(eventType) && len(props) > 0 && t.onInference != nil {
-		t.handleSessionUpdated(workspaceID, props)
+	if t.onInference != nil && t.metering != nil && len(props) > 0 {
+		t.handleSessionUpdated(workspaceID, eventType, props)
 	}
 	if eventType != "session.status" || len(props) == 0 {
 		return
@@ -734,19 +746,20 @@ func (t *Tracker) dispatchProperties(workspaceID, eventType string, props json.R
 	}
 }
 
-func (t *Tracker) handleSessionUpdated(workspaceID string, props []byte) {
-	// Decode is the wire seam's job (opencode shape knowledge); the
-	// dedup/delta computation below is billing POLICY and stays here.
-	u, ok, err := wire.ParseSessionUpdatedProps(props)
+func (t *Tracker) handleSessionUpdated(workspaceID, eventType string, props []byte) {
+	// Decode is the injected adapter's job (agent wire knowledge stays
+	// behind the seam); the dedup/delta computation below is billing
+	// POLICY and stays here.
+	u, ok, err := t.metering(eventType, props)
 	if err != nil {
 		t.Logger.Warn("handleSessionUpdated: usage-bearing event failed to decode — wire drift?",
 			"workspaceID", workspaceID, "error", err)
 		return
 	}
-	if !ok || u.SessionID == "" || u.OutputTokens == 0 || u.ModelID == "" {
-		t.Logger.Warn("handleSessionUpdated: dropping session.updated with incomplete billing fields",
-			"workspaceID", workspaceID, "sessionID", u.SessionID,
-			"hasModel", u.ModelID != "", "outputTokens", u.OutputTokens)
+	if !ok || u == nil || u.SessionID == "" || u.OutputTokens == 0 || u.ModelID == "" {
+		t.Logger.Warn("handleSessionUpdated: dropping usage event with incomplete billing fields",
+			"workspaceID", workspaceID, "sessionID", sessionIDOrEmpty(u),
+			"hasModel", u != nil && u.ModelID != "", "outputTokens", outputOrZero(u))
 		return
 	}
 	if u.CostMalformed {
@@ -776,4 +789,18 @@ func (t *Tracker) handleSessionUpdated(workspaceID string, props []byte) {
 		costDelta = 0
 	}
 	t.onInference(workspaceID, u.ModelID, u.ProviderID, inputTokens, outputDelta, costDelta)
+}
+
+func sessionIDOrEmpty(u *agent.SessionUsage) string {
+	if u == nil {
+		return ""
+	}
+	return u.SessionID
+}
+
+func outputOrZero(u *agent.SessionUsage) int64 {
+	if u == nil {
+		return 0
+	}
+	return u.OutputTokens
 }

@@ -129,6 +129,17 @@ type Adapter interface {
 	// code never inspects the raw bytes.
 	ContextUsageFromEvent(eventType string, rawData string) (sessionID string, usage *session.ContextUsage, ok bool)
 
+	// MeteringFromEvent translates one raw agent SSE event (already
+	// envelope-stripped: eventType + properties) into the session's
+	// CUMULATIVE usage and model attribution — the metering/billing
+	// decode. ok=false when the event carries no metering signal (most
+	// events); err is non-nil only for metering-bearing payloads that
+	// fail to decode (wire drift). Delta/dedup computation is the
+	// caller's policy, never the adapter's. Like ContextUsageFromEvent,
+	// this keeps agent wire shapes behind the seam so platform code
+	// never imports an agent implementation package (design 0049 §91).
+	MeteringFromEvent(eventType string, props []byte) (usage *SessionUsage, ok bool, err error)
+
 	// SetModel changes the session's active model. Subsequent Send
 	// calls use the new model.
 	SetModel(ctx context.Context, userID, workspaceID, sessionID string, model session.ModelRef) error
@@ -157,4 +168,20 @@ type Adapter interface {
 	// otherwise. Used at bind time to reject malformed credentials
 	// before they reach the workspace.
 	ValidateCredentials(rawConfig []byte) (*CredentialCheckResult, error)
+}
+
+// SessionUsage is session-level CUMULATIVE token usage and model
+// attribution decoded from one agent event — the metering signal.
+// Counters only grow within a session; delta computation is caller
+// policy. CostMalformed reports a cost field that decoded to 0 because
+// its shape was unrecognized — billing proceeds at 0 but the caller
+// should warn (wire-drift signal).
+type SessionUsage struct {
+	SessionID     string
+	ModelID       string
+	ProviderID    string
+	InputTokens   int64
+	OutputTokens  int64
+	CostUSD       float64
+	CostMalformed bool
 }

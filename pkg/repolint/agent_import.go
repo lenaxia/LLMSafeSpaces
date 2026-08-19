@@ -20,6 +20,10 @@ import (
 // (design/0049 §4.6) and Rule 12 (Containment Before Abstraction).
 const AgentImportForbiddenPath = "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 
+// agentSelfPrefix is the on-disk prefix of the seam itself; files inside
+// it may import their own subpackages.
+const agentSelfPrefix = "pkg/agent/opencode/"
+
 // agentImportAllowedPrefixes lists the only directory prefixes permitted to
 // import AgentImportForbiddenPath. These are the construction/wiring layer
 // (api/internal/app builds the adapter; controller and workspace_service
@@ -122,18 +126,26 @@ func AgentImportCheck(root string) (AgentImportReport, error) {
 		if isExcludedPath(root, path) {
 			return nil
 		}
-		imports, err := importsOf(path)
-		if err != nil {
-			return nil
-		}
-		if !containsString(imports, AgentImportForbiddenPath) {
-			return nil
-		}
 		rel, rerr := filepath.Rel(root, path)
 		if rerr != nil {
 			rel = path
 		}
 		norm := filepath.ToSlash(rel)
+		// The seam itself may import its own subpackages.
+		if strings.HasPrefix(norm, agentSelfPrefix) {
+			return nil
+		}
+		imports, err := importsOf(path)
+		if err != nil {
+			return nil
+		}
+		// Prefix-match, not exact: subpackages of the implementation
+		// (e.g. pkg/agent/opencode/wire) are the same boundary — an
+		// exact match here let platform code import the wire subpackage
+		// untouched (found in #947 review).
+		if !importsForbiddenAgentPath(imports) {
+			return nil
+		}
 		if anyPrefix(norm, agentImportAllowedPrefixes) {
 			return nil
 		}
@@ -154,6 +166,17 @@ func AgentImportCheck(root string) (AgentImportReport, error) {
 		return violations[i].File < violations[j].File
 	})
 	return AgentImportReport{Violations: violations}, nil
+}
+
+// importsForbiddenAgentPath reports whether any import is the forbidden
+// agent implementation package or a subpackage of it.
+func importsForbiddenAgentPath(imports []string) bool {
+	for _, imp := range imports {
+		if imp == AgentImportForbiddenPath || strings.HasPrefix(imp, AgentImportForbiddenPath+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // importsOf parses path's import declarations. Returns the union of every

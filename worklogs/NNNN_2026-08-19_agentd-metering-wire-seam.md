@@ -83,3 +83,14 @@ None. Stacked on #938 (wire package); merge after it.
 - `cmd/workspace-agentd/session_tracker.go` — processEvent migration; handleStepEnded deleted
 - `cmd/workspace-agentd/main_test.go` — step-finish shape tests
 - `api/internal/services/sse/tracker.go` — metering decode via seam; suffix-tolerant dispatch; malformed-cost warn
+
+---
+
+## Corrections + review round 1 (#947)
+
+The reviewer's blocking finding was correct and important: routing `api/internal/services/sse` directly into `pkg/agent/opencode/wire` violated design 0049's boundary (platform code must import `pkg/agent`, never an implementation package) and escaped repolint only through an exact-match gap — the same gap a previous #939 attempt had already identified and hardened. Fixed by adopting that pattern:
+
+1. **`Adapter.MeteringFromEvent(eventType, props []byte) (*agent.SessionUsage, bool, error)`** added to the seam; `agent.SessionUsage` is platform-owned (the struct moved out of wire's types into the interface package). The opencode adapter implements it via wire. The sse tracker now takes an injected `MeteringDecoder` (wired in app.go from the adapter via `GetAdapter()`); its last agent event-name knowledge is gone.
+2. **Repolint prefix-match hardening**: the agent-import rule now flags subpackages of the implementation (`pkg/agent/opencode/wire` et al.), with the seam itself exempt from self-imports. Pinned by two new tests (subpackage-escape caught, seam self-import allowed).
+3. **Tracker-layer pins for both behavior changes** (the reviewer's missing-test findings): table-driven suffixed-dispatch test (unsuffixed fires, suffixed fires, `.foo` and status don't) and the CostMalformed policy test (warn + onInference fires with cost 0, never drops).
+4. Test helpers (`newTestSSETracker`, `newCapturingTracker`, the billing e2e trackers) now inject the REAL adapter's decoder — existing inference tests exercise the production decode path, not stubs.

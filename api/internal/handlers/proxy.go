@@ -198,6 +198,11 @@ func NewProxyHandler(
 // behavior). Panics if called after Start() — same invariant as
 // SetStateStore, preventing a data race on the interface field once
 // handler goroutines begin reading h.adapter.
+// GetAdapter returns the wired Agent Adapter (nil if none). Callers use
+// this to route agent-specific decodes through the seam instead of
+// importing an agent implementation package.
+func (h *ProxyHandler) GetAdapter() agent.Adapter { return h.adapter }
+
 func (h *ProxyHandler) SetAdapter(a agent.Adapter) {
 	if a == nil {
 		return

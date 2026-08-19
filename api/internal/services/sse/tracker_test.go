@@ -4,6 +4,10 @@
 package sse
 
 import (
+	"go.uber.org/zap"
+
+	agentoc "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
+
 	"context"
 	"encoding/json"
 	"fmt"
@@ -23,7 +27,12 @@ import (
 )
 
 func newTestSSETracker(onIdle SessionIdleCallback) *Tracker {
-	return NewTracker(&http.Client{Timeout: 2 * time.Second}, &testLogger{}, onIdle)
+	tr := NewTracker(&http.Client{Timeout: 2 * time.Second}, &testLogger{}, onIdle)
+	// Real adapter decode — inference tests exercise the production
+	// seam, not a stub (test files may import the implementation;
+	// production code never does).
+	tr.SetMeteringDecoder(agentoc.NewAdapter(nil, nil, zap.NewNop()).MeteringFromEvent)
+	return tr
 }
 
 // --- Nested format (opencode /event format) ---

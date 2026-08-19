@@ -4,6 +4,13 @@
 package sse
 
 import (
+	"encoding/json"
+	"strings"
+
+	"go.uber.org/zap"
+
+	agentoc "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
+
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -147,6 +154,7 @@ func TestSSETracker_Inference_MalformedEvent_NoPanic(t *testing.T) {
 func newCapturingTracker() (*Tracker, *capturingLogger) {
 	log := &capturingLogger{}
 	tracker := NewTracker(&http.Client{Timeout: 2 * time.Second}, log, func(_, _ string) {})
+	tracker.SetMeteringDecoder(agentoc.NewAdapter(nil, nil, zap.NewNop()).MeteringFromEvent)
 	return tracker, log
 }
 
@@ -349,4 +357,82 @@ func TestSSETracker_RealWire_1_18_10_NonZeroCostAsFloat(t *testing.T) {
 	mu.Lock()
 	assert.Equal(t, 0.042, costVal, "cost must parse correctly as plain float64")
 	mu.Unlock()
+}
+
+// TestSSETracker_Inference_SuffixedEventTypeDispatch pins the drift-fragile
+// dispatch behavior at the TRACKER layer: metering events must fire
+// regardless of type-name surface (live wire unsuffixed, event store
+// version-suffixed), and near-miss types must not fire. Reverting the
+// decoder routing to an exact "session.updated" string match would fail here.
+func TestSSETracker_Inference_SuffixedEventTypeDispatch(t *testing.T) {
+	tests := []struct {
+		name      string
+		eventType string
+		fires     bool
+	}{
+		{"unsuffixed (live wire)", "session.updated", true},
+		{"version-suffixed (store surface)", "session.updated.1", true},
+		{"non-numeric suffix is not a version", "session.updated.foo", false},
+		{"status is not metering", "session.status", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tracker, _ := newCapturingTracker()
+			var fired bool
+			tracker.SetOnInference(func(_, _, _ string, _, _ int64, _ float64) { fired = true })
+
+			props, _ := json.Marshal(map[string]interface{}{
+				"sessionID": "ses_x",
+				"info": map[string]interface{}{
+					"id":     "ses_x",
+					"cost":   0.01,
+					"tokens": map[string]interface{}{"input": 100, "output": 50},
+					"model":  map[string]interface{}{"id": "m", "providerID": "p"},
+				},
+			})
+			data, _ := json.Marshal(map[string]interface{}{
+				"id":         "evt_t",
+				"type":       tt.eventType,
+				"properties": json.RawMessage(props),
+			})
+			tracker.processEvent("ws-1", string(data))
+
+			assert.Equal(t, tt.fires, fired, "eventType %q", tt.eventType)
+		})
+	}
+}
+
+// TestSSETracker_Inference_MalformedCost_WarnsAndBillsAtZero pins the
+// CostMalformed POLICY at the tracker layer: warn + onInference fires with
+// cost 0 — never silently dropped, never a decode error.
+func TestSSETracker_Inference_MalformedCost_WarnsAndBillsAtZero(t *testing.T) {
+	tracker, log := newCapturingTracker()
+	var mu sync.Mutex
+	var cost float64
+	var fired bool
+	tracker.SetOnInference(func(_, _, _ string, _, _ int64, costDollars float64) {
+		mu.Lock()
+		fired, cost = true, costDollars
+		mu.Unlock()
+	})
+
+	tracker.processEvent("ws-1", makeSessionUpdatedEvent("ses_badcost", map[string]interface{}{
+		"id":     "ses_badcost",
+		"cost":   "not-a-number",
+		"tokens": map[string]interface{}{"input": 1000, "output": 500},
+		"model":  map[string]interface{}{"id": "gpt-4o", "providerID": "openai"},
+	}))
+
+	mu.Lock()
+	assert.True(t, fired, "malformed cost must NOT drop the billing event")
+	assert.Zero(t, cost, "malformed cost bills at 0")
+	mu.Unlock()
+
+	var found bool
+	for _, w := range log.Warns() {
+		if strings.Contains(w, "cost field is neither number nor object") {
+			found = true
+		}
+	}
+	assert.True(t, found, "malformed cost must warn (drift signal)")
 }
