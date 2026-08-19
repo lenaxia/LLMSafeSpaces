@@ -233,10 +233,14 @@ func TestOutbox_RetrySkipsAlreadyDelivered(t *testing.T) {
 	ob := env.handler.GetOutboxForTest()
 	_, err := ob.Accept(context.Background(), "ws-1", "ses_1", "u-1", "cm-r", "already ran", nil)
 	require.NoError(t, err)
-	time.Sleep(2 * time.Millisecond)
 	_ = ob.DeliverOnce(context.Background(), "ws-1", "ses_1", func(ctx context.Context, _, _ string, _ outbox.Entry) error {
 		return errors.New("simulated timeout")
 	})
+	// Let the (shrunk) backoff gate elapse AFTER the failed attempt —
+	// before the fix this slept before the seeding, and the bridge pass
+	// raced the 1ms NextAttemptAt (passed standalone on wall-clock luck,
+	// failed under full-suite load).
+	time.Sleep(10 * time.Millisecond)
 
 	// Now the handler-bridge delivery: attempts=1 AND the transcript
 	// holds the text — must NOT hit /message again.
