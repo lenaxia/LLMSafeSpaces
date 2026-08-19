@@ -592,12 +592,12 @@ func TestIntegration_IF_CreateConfigAndBuild_FailureLeavesNoBuildRow(t *testing.
 	uid := "33333333-3333-3333-3333-333333333333"
 
 	cfg := imagefactory.Config{Hash: "s-orp", Name: "orphan-test", Selection: []string{"e"}, BaseName: "b", BaseVersion: "1", Scope: imagefactory.ScopeMember, OwnerID: &uid, Status: imagefactory.StatusBuilding}
-	build := imagefactory.Build{ID: "bld-orp", Hash: "s-orp", BaseName: "b", BaseVersion: "1", Status: imagefactory.BuildDispatched}
+	build := imagefactory.Build{ID: "44444444-4444-4444-4444-444444444444", Hash: "s-orp", BaseName: "b", BaseVersion: "1", Status: imagefactory.BuildDispatched}
 	// Collision on the config insert → whole tx must roll back.
 	require.NoError(t, svc.CreateConfig(ctx, &imagefactory.Config{Hash: "s-orp2", Name: "orphan-test", Selection: []string{"e"}, BaseName: "b", BaseVersion: "1", Scope: imagefactory.ScopeMember, OwnerID: &uid, Status: imagefactory.StatusReady}))
 	err := svc.CreateConfigAndBuild(ctx, &cfg, &build)
 	require.ErrorIs(t, err, ErrConflict)
 
-	_, gerr := svc.GetBuild(ctx, "bld-orp")
+	_, gerr := svc.GetBuild(ctx, "44444444-4444-4444-4444-444444444444")
 	assert.ErrorIs(t, gerr, ErrNotFound, "no build row may survive the rolled-back config insert")
 }
