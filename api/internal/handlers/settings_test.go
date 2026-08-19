@@ -374,6 +374,7 @@ func TestAdminSettings_SCHEMA_ContainsDevPreviewKeys(t *testing.T) {
 			Key      string `json:"key"`
 			Type     string `json:"type"`
 			Category string `json:"category"`
+			Label    string `json:"label"`
 			ReadOnly bool   `json:"readOnly"`
 			Default  any    `json:"default"`
 			Min      *int   `json:"min"`
@@ -387,13 +388,17 @@ func TestAdminSettings_SCHEMA_ContainsDevPreviewKeys(t *testing.T) {
 	want := map[string]struct {
 		typ      string
 		category string
+		label    string
 		def      any
 		min      *int
 		max      *int
 	}{
-		"devPreview.enabled":              {typ: "bool", category: "Dev Preview", def: true},
-		"devPreview.maxResponseBytes":     {typ: "int", category: "Dev Preview", def: float64(52428800), min: ptr(1024), max: ptr(1073741824)},
-		"devPreview.maxConnsPerWorkspace": {typ: "int", category: "Dev Preview", def: float64(50), min: ptr(1), max: ptr(1000)},
+		// The label is pinned deliberately: "Enable Dev Preview" reads as an
+		// enable-toggle (ON = feature available). The original "Dev Preview" +
+		// "Kill-switch" description read as ON = feature killed.
+		"devPreview.enabled":              {typ: "bool", category: "Dev Preview", label: "Enable Dev Preview", def: true},
+		"devPreview.maxResponseBytes":     {typ: "int", category: "Dev Preview", label: "Max Response (bytes)", def: float64(52428800), min: ptr(1024), max: ptr(1073741824)},
+		"devPreview.maxConnsPerWorkspace": {typ: "int", category: "Dev Preview", label: "Max Conns Per Workspace", def: float64(50), min: ptr(1), max: ptr(1000)},
 	}
 
 	served := map[string]bool{}
@@ -408,6 +413,9 @@ func TestAdminSettings_SCHEMA_ContainsDevPreviewKeys(t *testing.T) {
 		}
 		if s.Category != w.category {
 			t.Errorf("%s: category = %q, want %q", s.Key, s.Category, w.category)
+		}
+		if s.Label != w.label {
+			t.Errorf("%s: label = %q, want %q", s.Key, s.Label, w.label)
 		}
 		if s.ReadOnly {
 			t.Errorf("%s: must be admin-mutable (Tier 2), got readOnly", s.Key)

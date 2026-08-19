@@ -49,7 +49,12 @@ package settings
 // Set rejection). Same change class as v10. New keys; admin UI schema cache
 // must refresh. Canary twins updated in lockstep
 // (TestCanary_SchemaVersion_TwinParity).
-const SchemaVersion = 12
+// Bumped to 13 (2026-08-19): devPreview.enabled Label/Description rewritten
+// (property modification of an existing key, same class as v6) — "Dev
+// Preview"/"Kill-switch…" read as ON = feature killed; the toggle is an
+// enable-flag. Now "Enable Dev Preview" with explicit ON/OFF semantics.
+// Admin UI schema caches must refresh to show the new copy.
+const SchemaVersion = 13
 
 // SettingType defines the data type of a setting.
 type SettingType string
@@ -176,7 +181,7 @@ func InstanceSettings() []SettingDef {
 		// section (schema-driven), a boot-time GetBool index-miss error that
 		// app.go swallowed (hard-disable), and Set rejecting the key (no
 		// remediation). Defaults mirror registry.go (issue #946).
-		{Key: "devPreview.enabled", Tier: 2, Type: TypeBool, Default: true, Category: "Dev Preview", Label: "Dev Preview", Description: "Kill-switch for the authenticated dev-preview tunnel (requires API restart to take effect)"},
+		{Key: "devPreview.enabled", Tier: 2, Type: TypeBool, Default: true, Category: "Dev Preview", Label: "Enable Dev Preview", Description: "ON: workspaces that also enable Dev Preview in their own settings can serve live previews of in-workspace dev servers. OFF: every preview URL returns 503 platform-wide. Takes effect after an API restart."},
 		{Key: "devPreview.maxResponseBytes", Tier: 2, Type: TypeInt, Default: 52428800, Min: intPtr(1024), Max: intPtr(1073741824), Category: "Dev Preview", Label: "Max Response (bytes)", Description: "Per-response body cap on the dev-preview proxy (default 50 MiB)"},
 		{Key: "devPreview.maxConnsPerWorkspace", Tier: 2, Type: TypeInt, Default: 50, Min: intPtr(1), Max: intPtr(1000), Category: "Dev Preview", Label: "Max Conns Per Workspace", Description: "Concurrent dev-preview connections per workspace (separate from the agent-session budget)"},
 	}
