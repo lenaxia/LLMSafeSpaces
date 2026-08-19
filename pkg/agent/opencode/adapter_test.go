@@ -1131,3 +1131,83 @@ func TestAdapter_Send_ModelReferenceForm(t *testing.T) {
 		assert.False(t, present)
 	})
 }
+
+// --- ContextUsageFromEvent (epic 65 S3: live context occupancy) ---
+
+func TestAdapterContextUsageFromEvent(t *testing.T) {
+	a := NewAdapter(nil, nil, zap.NewNop())
+
+	t.Run("step-finish part event maps to prompt occupancy", func(t *testing.T) {
+		raw := `{"id":"evt1","type":"message.part.updated.1","properties":{"sessionID":"ses_a","part":{"type":"step-finish","reason":"tool-calls","cost":0,"tokens":{"total":3950,"input":2310,"output":285,"reasoning":75,"cache":{"read":1280,"write":0}}}}}`
+		sid, usage, ok := a.ContextUsageFromEvent("message.part.updated.1", raw)
+		assert.True(t, ok)
+		assert.Equal(t, "ses_a", sid)
+		require.NotNil(t, usage)
+		assert.Equal(t, int64(2310+1280+0), usage.Used, "Used = input + cache.read + cache.write")
+		assert.Zero(t, usage.Window, "Window comes from ListAvailableModels, not usage events")
+	})
+
+	t.Run("legacy step.ended event still decodes (mixed fleet)", func(t *testing.T) {
+		raw := `{"type":"session.next.step.ended","properties":{"sessionID":"ses_old","tokens":{"input":800,"output":400,"reasoning":100,"cache":{"read":200,"write":50}}}}`
+		sid, usage, ok := a.ContextUsageFromEvent("session.next.step.ended", raw)
+		assert.True(t, ok)
+		assert.Equal(t, "ses_old", sid)
+		require.NotNil(t, usage)
+		assert.Equal(t, int64(1050), usage.Used)
+	})
+
+	t.Run("text part events carry no usage", func(t *testing.T) {
+		raw := `{"id":"evt1","type":"message.part.updated.1","properties":{"sessionID":"ses_a","part":{"type":"text","text":"hi"}}}`
+		_, _, ok := a.ContextUsageFromEvent("message.part.updated.1", raw)
+		assert.False(t, ok)
+	})
+
+	t.Run("delta events are not usage", func(t *testing.T) {
+		raw := `{"type":"message.part.delta","properties":{"sessionID":"ses_a","part":{"type":"text"}}}`
+		_, _, ok := a.ContextUsageFromEvent("message.part.delta", raw)
+		assert.False(t, ok)
+	})
+
+	t.Run("step-finish without tokens is drift, not usage", func(t *testing.T) {
+		raw := `{"id":"evt1","type":"message.part.updated.1","properties":{"sessionID":"ses_a","part":{"type":"step-finish"}}}`
+		_, _, ok := a.ContextUsageFromEvent("message.part.updated.1", raw)
+		assert.False(t, ok, "claims-usage-but-undecodable must surface as ok=false (logged as drift)")
+	})
+
+	t.Run("golden fixture step-finish events all decode", func(t *testing.T) {
+		for _, fixture := range []string{"testdata/sse_events_1_18_10_live.jsonl", "testdata/event_store_1_18_10.jsonl"} {
+			data, err := os.ReadFile(fixture)
+			require.NoError(t, err)
+			decoded, total := 0, 0
+			for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+				var env struct {
+					Type string `json:"type"`
+				}
+				require.NoError(t, json.Unmarshal([]byte(line), &env))
+				if !strings.HasPrefix(env.Type, "message.part.updated") {
+					continue
+				}
+				var probe struct {
+					Part struct {
+						Type string `json:"type"`
+					} `json:"part"`
+				}
+				var wrapper struct {
+					Properties json.RawMessage `json:"properties"`
+				}
+				_ = json.Unmarshal([]byte(line), &wrapper)
+				if json.Unmarshal(wrapper.Properties, &probe) == nil && probe.Part.Type == "step-finish" {
+					total++
+					sid, usage, ok := a.ContextUsageFromEvent(env.Type, line)
+					assert.True(t, ok, "%s: golden step-finish must decode: %s", fixture, line[:min(80, len(line))])
+					assert.NotEmpty(t, sid)
+					assert.NotNil(t, usage)
+					assert.Positive(t, usage.Used)
+					decoded++
+				}
+			}
+			assert.Positive(t, decoded, "%s must contain decodable step-finish events", fixture)
+			assert.Equal(t, total, decoded, "%s: every golden step-finish must decode", fixture)
+		}
+	})
+}

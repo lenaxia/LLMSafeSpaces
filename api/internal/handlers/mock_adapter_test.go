@@ -5,6 +5,7 @@ package handlers
 
 import (
 	"context"
+	"strings"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
@@ -13,7 +14,10 @@ import (
 // mockAdapter is a test double for agent.Adapter. Each method is a
 // configurable function field; tests set only the methods they exercise.
 // Unset fields panic — tests that call unconfigured methods fail loudly
-// rather than silently returning zero values.
+// rather than silently returning zero values. Exceptions: Capabilities and
+// ContextUsageFromEvent default to zero-value answers, because both are on
+// the unconditional onRawEvent path and a panic default would break every
+// SSE test that doesn't configure them.
 type mockAdapter struct {
 	getSessionFn        func(ctx context.Context, userID, workspaceID, sessionID string) (*session.Session, error)
 	createSessionFn     func(ctx context.Context, userID, workspaceID, title string) (*session.Session, error)
@@ -28,6 +32,7 @@ type mockAdapter struct {
 	getHistoryFn        func(ctx context.Context, userID, workspaceID, sessionID string) ([]session.Message, error)
 	formatProviderCfgFn func(providers []agent.LLMProviderData) ([]byte, error)
 	validateCredsFn     func(rawConfig []byte) (*agent.CredentialCheckResult, error)
+	contextUsageFn      func(eventType string, rawData string) (string, *session.ContextUsage, bool)
 }
 
 func (m *mockAdapter) CreateSession(ctx context.Context, uid, wid, title string) (*session.Session, error) {
@@ -104,6 +109,27 @@ func (m *mockAdapter) ListAvailableModels(_ context.Context, _, _ string) ([]ses
 }
 func (m *mockAdapter) SetModel(_ context.Context, _, _, _ string, _ session.ModelRef) error {
 	panic("mockAdapter.SetModel not configured")
+}
+func (m *mockAdapter) ContextUsageFromEvent(eventType string, rawData string) (string, *session.ContextUsage, bool) {
+	if m.contextUsageFn != nil {
+		return m.contextUsageFn(eventType, rawData)
+	}
+	return "", nil, false
+}
+
+// newUsageStubAdapter returns an adapter stub whose ContextUsageFromEvent
+// answers with fixed values keyed by sessionID substring in the raw payload.
+// Handler-level wiring tests use it; the real wire→usage translation (both
+// opencode shapes and its math) is pinned in pkg/agent/opencode tests.
+func newUsageStubAdapter(mapping map[string]int64) *mockAdapter {
+	return &mockAdapter{contextUsageFn: func(eventType string, rawData string) (string, *session.ContextUsage, bool) {
+		for sid, used := range mapping {
+			if strings.Contains(string(rawData), sid) {
+				return sid, &session.ContextUsage{Used: used}, true
+			}
+		}
+		return "", nil, false
+	}}
 }
 func (m *mockAdapter) Capabilities() []session.Capability { return nil }
 func (m *mockAdapter) FormatProviderConfig(p []agent.LLMProviderData) ([]byte, error) {

@@ -53,6 +53,9 @@ func (f *fakeAdapter) SetModel(_ context.Context, _, _, _ string, _ session.Mode
 	return nil
 }
 func (f *fakeAdapter) Capabilities() []session.Capability { return nil }
+func (f *fakeAdapter) ContextUsageFromEvent(_ string, _ string) (string, *session.ContextUsage, bool) {
+	return "", nil, false
+}
 func (f *fakeAdapter) FormatProviderConfig(_ []LLMProviderData) ([]byte, error) {
 	return nil, nil
 }

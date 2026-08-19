@@ -36,17 +36,18 @@ const (
 // client lists, opens, and renders. Agent/model switches and compaction are
 // carried as Message transcript entries, not side-band fields here.
 type Session struct {
-	ID          string     `json:"id"`
-	WorkspaceID string     `json:"workspaceId"`
-	ParentID    string     `json:"parentId,omitempty"`
-	Title       string     `json:"title,omitempty"`
-	AgentID     string     `json:"agentId,omitempty"`
-	Model       *ModelRef  `json:"model,omitempty"`
-	Status      Status     `json:"status"`
-	Cost        *Cost      `json:"cost,omitempty"`
-	Time        *TimeRange `json:"time,omitempty"`
-	Summary     string     `json:"summary,omitempty"`
-	Archived    bool       `json:"archived,omitempty"`
+	ID           string        `json:"id"`
+	WorkspaceID  string        `json:"workspaceId"`
+	ParentID     string        `json:"parentId,omitempty"`
+	Title        string        `json:"title,omitempty"`
+	AgentID      string        `json:"agentId,omitempty"`
+	Model        *ModelRef     `json:"model,omitempty"`
+	Status       Status        `json:"status"`
+	Cost         *Cost         `json:"cost,omitempty"`
+	ContextUsage *ContextUsage `json:"contextUsage,omitempty"`
+	Time         *TimeRange    `json:"time,omitempty"`
+	Summary      string        `json:"summary,omitempty"`
+	Archived     bool          `json:"archived,omitempty"`
 }
 
 // TimeRange bounds a session or message. CompletedAt is nil while busy.
@@ -65,6 +66,16 @@ type Cost struct {
 	CacheWriteTokens int64   `json:"cacheWriteTokens,omitempty"`
 	TotalTokens      int64   `json:"totalTokens,omitempty"`
 	CostUSD          float64 `json:"costUsd,omitempty"`
+}
+
+// ContextUsage is the session's live context occupancy — the numerator for
+// the "context: 45% used" display that ModelInfo.ContextWindow denominates.
+// Used is semantic (tokens of window currently occupied), computed by the
+// adapter from the agent's own accounting conventions; raw token ledgers
+// live in Cost. Non-monotonic by design: compaction resets it.
+type ContextUsage struct {
+	Used   int64 `json:"used"`
+	Window int64 `json:"window,omitempty"`
 }
 
 // ModelRef identifies a model an adapter selected for a session or message.

@@ -14,6 +14,7 @@ import (
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
+	"github.com/lenaxia/llmsafespaces/pkg/session"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
@@ -91,6 +92,7 @@ func TestE2E_StepEndedEvent_PersistsContextUsed(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	env.handler.SetSessionIndex(si)
+	env.handler.SetAdapter(newUsageStubAdapter(map[string]int64{"ses_abc": 1050}))
 	env.handler.userBroker = eventbroker.NewUserEventBroker()
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	env.setupPasswordWithT(t, "ws-1", "test-password")
@@ -131,6 +133,7 @@ func TestE2E_StepEndedEvent_MultipleSessions_TrackedIndependently(t *testing.T) 
 		w.WriteHeader(http.StatusOK)
 	})
 	env.handler.SetSessionIndex(si)
+	env.handler.SetAdapter(newUsageStubAdapter(map[string]int64{"ses_1": 5000, "ses_2": 80000}))
 	env.handler.userBroker = eventbroker.NewUserEventBroker()
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	env.setupPasswordWithT(t, "ws-1", "test-password")
@@ -165,6 +168,7 @@ func TestE2E_StepEndedEvent_OverwritesPreviousValue(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	env.handler.SetSessionIndex(si)
+	env.handler.SetAdapter(newUsageStubAdapter(map[string]int64{"ses_1": 61500}))
 	env.handler.userBroker = eventbroker.NewUserEventBroker()
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	env.setupPasswordWithT(t, "ws-1", "test-password")
@@ -197,6 +201,9 @@ func TestE2E_StepEndedEvent_MissingTokens_NoPersistence(t *testing.T) {
 	})
 	env.handler.SetSessionIndex(si)
 	env.handler.userBroker = eventbroker.NewUserEventBroker()
+	// No stub mapping matches ses_abc without tokens: the adapter reports
+	// no usage (ok=false) — matching the real adapter's drift behavior.
+	env.handler.SetAdapter(newUsageStubAdapter(nil))
 
 	env.handler.onRawEvent("ws-1", "session.next.step.ended", `{
 		"type": "session.next.step.ended",
@@ -215,6 +222,9 @@ func TestE2E_StepEndedEvent_EmptySessionID_NoPersistence(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	env.handler.SetSessionIndex(si)
+	env.handler.SetAdapter(&mockAdapter{contextUsageFn: func(string, string) (string, *session.ContextUsage, bool) {
+		return "", &session.ContextUsage{Used: 100}, true // adapter decoded usage but no sessionID
+	}})
 
 	env.handler.onRawEvent("ws-1", "session.next.step.ended", `{
 		"type": "session.next.step.ended",
@@ -227,7 +237,7 @@ func TestE2E_StepEndedEvent_EmptySessionID_NoPersistence(t *testing.T) {
 	assert.Empty(t, si.contextUsed, "empty sessionID → no persistence")
 }
 
-func TestE2E_ContextUsed_JSONWireFormatThroughRouter(t *testing.T) {
+func TestE2E_ContextUsed_JSONWireShape(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	si := newContextUsedSessionIndex()
@@ -235,6 +245,7 @@ func TestE2E_ContextUsed_JSONWireFormatThroughRouter(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	env.handler.SetSessionIndex(si)
+	env.handler.SetAdapter(newUsageStubAdapter(map[string]int64{"ses_rt": 45000}))
 	env.handler.userBroker = eventbroker.NewUserEventBroker()
 	env.setupWorkspacePodWithT(t, "ws-1", "10.0.0.1", string(v1.WorkspacePhaseActive), "ws-1")
 	env.setupPasswordWithT(t, "ws-1", "test-password")

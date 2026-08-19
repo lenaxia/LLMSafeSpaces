@@ -106,7 +106,7 @@ func (s *Service) UpsertParent(ctx context.Context, workspaceID, sessionID, pare
 
 // UpsertContextUsed persists the prompt token count from the most recent LLM
 // step for this session. Called synchronously from the proxy's onRawEvent
-// handler on every session.next.step.ended SSE event. Low frequency (at most
+// handler on every adapter-declared usage event. Low frequency (at most
 // once per LLM call), so a direct synchronous write is appropriate.
 func (s *Service) UpsertContextUsed(ctx context.Context, workspaceID, sessionID string, contextUsed int64) error {
 	return s.db.UpsertSessionContextUsed(ctx, workspaceID, sessionID, contextUsed)

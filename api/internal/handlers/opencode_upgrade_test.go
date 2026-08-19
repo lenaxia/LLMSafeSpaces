@@ -241,79 +241,104 @@ func TestSSETracker_ProcessEvent_V115Format_HeartbeatIgnored(t *testing.T) {
 	assert.Equal(t, "server.heartbeat", eventTypes[0])
 }
 
-// --- persistContextFromEvent tests ---
+// --- persistContextFromEvent wiring tests ---
+//
+// Translation (wire shapes → ContextUsage math) is owned by the opencode
+// adapter and pinned in pkg/agent/opencode tests, including golden-fixture
+// coverage. These tests pin the HANDLER contract: adapter-provided usage
+// reaches the session index; everything else is skipped.
 
-func TestPersistContextFromEvent_HappyPath(t *testing.T) {
-	// session.next.step.ended flat format: input=800, cache.read=200, cache.write=50 → 1050
-	event := `{"type":"session.next.step.ended","properties":{"sessionID":"ses_abc","tokens":{"input":800,"output":400,"reasoning":100,"cache":{"read":200,"write":50}}}}`
-
+func TestPersistContextFromEvent_AdapterUsage_Persisted(t *testing.T) {
 	mock := newMockSessionIndex()
 	h := &ProxyHandler{sessionIndex: mock, logger: &testLogger{}}
-	h.persistContextFromEvent("ws-1", event)
+	h.SetAdapter(newUsageStubAdapter(map[string]int64{"ses_abc": 1050}))
+
+	event := `{"type":"session.next.step.ended","properties":{"sessionID":"ses_abc","tokens":{"input":800,"output":400,"reasoning":100,"cache":{"read":200,"write":50}}}}`
+	h.persistContextFromEvent("ws-1", "session.next.step.ended", event)
 
 	v := mock.contextUsed["ws-1/ses_abc"]
-	require.NotNil(t, v, "context_used must be stored")
-	assert.Equal(t, int64(1050), *v, "promptTokens = input + cache.read + cache.write")
+	require.NotNil(t, v, "adapter-provided usage must be stored")
+	assert.Equal(t, int64(1050), *v)
 }
 
-func TestPersistContextFromEvent_ZeroTokens(t *testing.T) {
-	event := `{"type":"session.next.step.ended","properties":{"sessionID":"ses_xyz","tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}}}`
-
+func TestPersistContextFromEvent_NewShapeEvent_Persisted(t *testing.T) {
+	// The 1.18.x wire shape: usage inside step-finish parts of
+	// message.part.updated events (suffixed). The handler must not care —
+	// the adapter decides what carries usage.
 	mock := newMockSessionIndex()
 	h := &ProxyHandler{sessionIndex: mock, logger: &testLogger{}}
-	h.persistContextFromEvent("ws-1", event)
+	h.SetAdapter(newUsageStubAdapter(map[string]int64{"ses_new": 3590}))
+
+	event := `{"id":"evt1","type":"message.part.updated.1","properties":{"sessionID":"ses_new","part":{"type":"step-finish","tokens":{"input":2310,"cache":{"read":1280,"write":0}}}}}`
+	h.persistContextFromEvent("ws-1", "message.part.updated.1", event)
+
+	v := mock.contextUsed["ws-1/ses_new"]
+	require.NotNil(t, v)
+	assert.Equal(t, int64(3590), *v)
+}
+
+func TestPersistContextFromEvent_ZeroUsage_Persisted(t *testing.T) {
+	mock := newMockSessionIndex()
+	h := &ProxyHandler{sessionIndex: mock, logger: &testLogger{}}
+	h.SetAdapter(newUsageStubAdapter(map[string]int64{"ses_xyz": 0}))
+
+	event := `{"type":"session.next.step.ended","properties":{"sessionID":"ses_xyz","tokens":{"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}}}`
+	h.persistContextFromEvent("ws-1", "session.next.step.ended", event)
 
 	v := mock.contextUsed["ws-1/ses_xyz"]
-	require.NotNil(t, v, "zero tokens must still be stored")
+	require.NotNil(t, v, "zero usage is real usage — must be stored")
 	assert.Equal(t, int64(0), *v)
 }
 
-func TestPersistContextFromEvent_MissingTokens_NoWrite(t *testing.T) {
+func TestPersistContextFromEvent_AdapterSaysNoUsage_NoWrite(t *testing.T) {
+	mock := newMockSessionIndex()
+	h := &ProxyHandler{sessionIndex: mock, logger: &testLogger{}}
+	h.SetAdapter(newUsageStubAdapter(nil))
+
 	event := `{"type":"session.next.step.ended","properties":{"sessionID":"ses_abc"}}`
+	h.persistContextFromEvent("ws-1", "session.next.step.ended", event)
 
-	mock := newMockSessionIndex()
-	h := &ProxyHandler{sessionIndex: mock, logger: &testLogger{}}
-	h.persistContextFromEvent("ws-1", event)
-
-	assert.Nil(t, mock.contextUsed["ws-1/ses_abc"], "missing tokens must not write")
-}
-
-func TestPersistContextFromEvent_EmptySessionID_NoWrite(t *testing.T) {
-	event := `{"type":"session.next.step.ended","properties":{"sessionID":"","tokens":{"input":100,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}}}`
-
-	mock := newMockSessionIndex()
-	h := &ProxyHandler{sessionIndex: mock, logger: &testLogger{}}
-	h.persistContextFromEvent("ws-1", event)
-
-	assert.Empty(t, mock.contextUsed, "empty sessionID must not write")
+	assert.Nil(t, mock.contextUsed["ws-1/ses_abc"], "ok=false must not write")
 }
 
 func TestPersistContextFromEvent_MalformedJSON_NoWrite(t *testing.T) {
 	mock := newMockSessionIndex()
 	h := &ProxyHandler{sessionIndex: mock, logger: &testLogger{}}
-	h.persistContextFromEvent("ws-1", "not json at all")
+	h.SetAdapter(newUsageStubAdapter(map[string]int64{"ses_abc": 1}))
+
+	h.persistContextFromEvent("ws-1", "session.next.step.ended", "not json at all")
 
 	assert.Empty(t, mock.contextUsed, "malformed JSON must not write")
 }
 
-func TestPersistContextFromEvent_NilSessionIndex_NoPanic(t *testing.T) {
-	// sessionIndex is nil — must not panic
-	event := `{"type":"session.next.step.ended","properties":{"sessionID":"ses_abc","tokens":{"input":800,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}}}`
+func TestPersistContextFromEvent_NilAdapter_NoWriteNoPanic(t *testing.T) {
+	mock := newMockSessionIndex()
+	h := &ProxyHandler{sessionIndex: mock, logger: &testLogger{}}
 
-	h := &ProxyHandler{sessionIndex: nil}
-	assert.NotPanics(t, func() { h.persistContextFromEvent("ws-1", event) })
+	event := `{"type":"session.next.step.ended","properties":{"sessionID":"ses_abc","tokens":{"input":800}}}`
+	assert.NotPanics(t, func() { h.persistContextFromEvent("ws-1", "session.next.step.ended", event) })
+	assert.Empty(t, mock.contextUsed)
 }
 
-func TestOnRawEvent_StepEnded_CallsPersistContext(t *testing.T) {
-	// Integration: onRawEvent with step.ended wires through to persistContextFromEvent
-	event := `{"type":"session.next.step.ended","properties":{"sessionID":"ses_abc","tokens":{"input":500,"output":200,"reasoning":0,"cache":{"read":100,"write":25}}}}`
+func TestPersistContextFromEvent_NilSessionIndex_NoPanic(t *testing.T) {
+	h := &ProxyHandler{sessionIndex: nil}
+	event := `{"type":"session.next.step.ended","properties":{"sessionID":"ses_abc","tokens":{"input":800}}}`
+	assert.NotPanics(t, func() { h.persistContextFromEvent("ws-1", "session.next.step.ended", event) })
+}
+
+func TestOnRawEvent_UsageEvent_PersistsThroughFullPath(t *testing.T) {
+	// Integration: onRawEvent → persistContextFromEvent → session index,
+	// for BOTH wire generations (legacy standalone event and part-update).
+	legacy := `{"type":"session.next.step.ended","properties":{"sessionID":"ses_old","tokens":{"input":500,"cache":{"read":100,"write":25}}}}`
+	modern := `{"id":"evt1","type":"message.part.updated.1","properties":{"sessionID":"ses_new","part":{"type":"step-finish","tokens":{"input":900,"cache":{"read":100,"write":0}}}}}`
 
 	mock := newMockSessionIndex()
 	h := &ProxyHandler{sessionIndex: mock, logger: &testLogger{}}
-	// broker is nil — onRawEvent must handle nil broker gracefully
-	h.onRawEvent("ws-1", "session.next.step.ended", event)
+	h.SetAdapter(newUsageStubAdapter(map[string]int64{"ses_old": 625, "ses_new": 1000}))
 
-	v := mock.contextUsed["ws-1/ses_abc"]
-	require.NotNil(t, v, "onRawEvent must persist context on step.ended")
-	assert.Equal(t, int64(625), *v, "500+100+25=625")
+	h.onRawEvent("ws-1", "session.next.step.ended", legacy)
+	h.onRawEvent("ws-1", "message.part.updated.1", modern)
+
+	assert.Equal(t, int64(625), *mock.contextUsed["ws-1/ses_old"])
+	assert.Equal(t, int64(1000), *mock.contextUsed["ws-1/ses_new"])
 }

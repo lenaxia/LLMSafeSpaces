@@ -200,11 +200,11 @@ func (h *ProxyHandler) onRawEvent(workspaceID, eventType, rawData string) {
 		h.persistTitleFromEvent(workspaceID, rawData)
 	}
 
-	if eventType == "session.next.step.ended" {
-		h.logger.Debug("onRawEvent: dispatching to persistContextFromEvent",
-			"workspaceID", workspaceID, "eventType", eventType)
-		h.persistContextFromEvent(workspaceID, rawData)
-	}
+	// Live context-usage persistence: the adapter decides which raw agent
+	// events carry usage. Non-usage events cost string compares inside the
+	// seam — onRawEvent already JSON-parses every event for the broker
+	// relay above, so no new per-event parse is introduced for them.
+	h.persistContextFromEvent(workspaceID, eventType, rawData)
 
 	// Epic 63 V2 session-queue bridge: synthesize queue.update SSE events
 	// from V2 PromptAdmitted/Prompted events. Unconditional under V2.
@@ -359,45 +359,32 @@ func (h *ProxyHandler) persistTitleFromEvent(workspaceID, rawData string) {
 	}
 }
 
-func (h *ProxyHandler) persistContextFromEvent(workspaceID, rawData string) {
+func (h *ProxyHandler) persistContextFromEvent(workspaceID, eventType, rawData string) {
 	if h.sessionIndex == nil {
 		return
 	}
-	var evt struct {
-		Properties struct {
-			SessionID string `json:"sessionID"`
-			Tokens    *struct {
-				Input int64 `json:"input"`
-				Cache struct {
-					Read  int64 `json:"read"`
-					Write int64 `json:"write"`
-				} `json:"cache"`
-			} `json:"tokens"`
-		} `json:"properties"`
-	}
-	if err := json.Unmarshal([]byte(rawData), &evt); err != nil {
-		h.logger.Warn("persistContextFromEvent: failed to parse step.ended event",
-			"error", err, "workspaceID", workspaceID)
-		return
-	}
-	if evt.Properties.SessionID == "" {
-		h.logger.Warn("persistContextFromEvent: step.ended event missing sessionID",
+	if h.adapter == nil {
+		h.logger.Debug("persistContextFromEvent: no adapter configured — context usage not persisted",
 			"workspaceID", workspaceID)
 		return
 	}
-	if evt.Properties.Tokens == nil {
-		h.logger.Warn("persistContextFromEvent: step.ended event missing tokens — opencode wire shape may have changed",
-			"workspaceID", workspaceID, "sessionID", evt.Properties.SessionID)
+	sessionID, usage, ok := h.adapter.ContextUsageFromEvent(eventType, rawData)
+	if !ok {
 		return
 	}
-	if h.isSessionDeleted(workspaceID, evt.Properties.SessionID) {
+	if sessionID == "" || usage == nil {
+		// Non-conforming adapter return (interface doc guarantees both
+		// non-empty/non-nil on ok=true). Guard the SSE event path against
+		// a panic and surface it — a silent skip would hide a seam bug.
+		h.logger.Warn("persistContextFromEvent: usage event missing sessionID",
+			"workspaceID", workspaceID, "eventType", eventType)
 		return
 	}
-	promptTokens := evt.Properties.Tokens.Input +
-		evt.Properties.Tokens.Cache.Read +
-		evt.Properties.Tokens.Cache.Write
-	if err := h.sessionIndex.UpsertContextUsed(context.Background(), workspaceID, evt.Properties.SessionID, promptTokens); err != nil {
-		h.logger.Warn("Failed to upsert session context usage", "error", err, "workspaceID", workspaceID, "sessionID", evt.Properties.SessionID)
+	if h.isSessionDeleted(workspaceID, sessionID) {
+		return
+	}
+	if err := h.sessionIndex.UpsertContextUsed(context.Background(), workspaceID, sessionID, usage.Used); err != nil {
+		h.logger.Warn("Failed to upsert session context usage", "error", err, "workspaceID", workspaceID, "sessionID", sessionID)
 	}
 }
 

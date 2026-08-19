@@ -1114,7 +1114,7 @@ func (s *Service) UpsertSessionTitle(ctx context.Context, workspaceID, sessionID
 
 // UpsertSessionContextUsed persists the prompt token count for the most recent
 // LLM step in this session. Called by the API proxy on every
-// session.next.step.ended SSE event. Idempotent: concurrent writes of the same
+// adapter-declared usage event. Idempotent: concurrent writes of the same
 // value are safe (both replicas receive the same event and write the same data).
 func (s *Service) UpsertSessionContextUsed(ctx context.Context, workspaceID, sessionID string, contextUsed int64) error {
 	_, err := s.DB.ExecContext(ctx,
