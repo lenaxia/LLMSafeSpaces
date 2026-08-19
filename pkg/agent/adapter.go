@@ -132,12 +132,16 @@ type Adapter interface {
 	// MeteringFromEvent translates one raw agent SSE event (already
 	// envelope-stripped: eventType + properties) into the session's
 	// CUMULATIVE usage and model attribution — the metering/billing
-	// decode. ok=false when the event carries no metering signal (most
-	// events); err is non-nil only for metering-bearing payloads that
-	// fail to decode (wire drift). Delta/dedup computation is the
-	// caller's policy, never the adapter's. Like ContextUsageFromEvent,
-	// this keeps agent wire shapes behind the seam so platform code
-	// never imports an agent implementation package (design 0049 §91).
+	// decode. ok=false means strictly "not a metering event" — callers
+	// skip silently; that is the majority of stream traffic, never a
+	// warn. A metering-TYPED event with incomplete fields (missing info
+	// block) returns ok=true with a zero-value usage so the caller's
+	// incomplete-fields handling fires. err is non-nil only for
+	// metering-bearing payloads that fail to decode (wire drift).
+	// Delta/dedup computation is the caller's policy, never the
+	// adapter's. Like ContextUsageFromEvent, this keeps agent wire
+	// shapes behind the seam so platform code never imports an agent
+	// implementation package (design 0049 §91).
 	MeteringFromEvent(eventType string, props []byte) (usage *SessionUsage, ok bool, err error)
 
 	// SetModel changes the session's active model. Subsequent Send

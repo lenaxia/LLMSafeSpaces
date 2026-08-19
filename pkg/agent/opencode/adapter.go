@@ -907,7 +907,12 @@ func (a *Adapter) MeteringFromEvent(eventType string, props []byte) (*agent.Sess
 		return nil, false, err
 	}
 	if !ok {
-		return nil, false, nil
+		// A session.updated-typed event without an info block is a
+		// METERING event with incomplete fields, not a non-metering
+		// event. ok=false is reserved for "not a metering event"
+		// (silent skip); returning a zero value here routes it to the
+		// caller's incomplete-fields warn instead.
+		return &agent.SessionUsage{}, true, nil
 	}
 	return &agent.SessionUsage{
 		SessionID:     u.SessionID,

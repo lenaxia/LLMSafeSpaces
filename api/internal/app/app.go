@@ -1455,11 +1455,6 @@ func (a *App) Run() error {
 	// workspace service type assertion failed (or the handler wasn't created),
 	// SetOnInference was never called and inference metrics remained permanently zero.
 	if tracker := a.proxyHandler.GetSSETracker(); tracker != nil {
-		// Metering decode rides the Adapter seam — the tracker holds no
-		// agent wire knowledge (design 0049 boundary).
-		if adapter := a.proxyHandler.GetAdapter(); adapter != nil {
-			tracker.SetMeteringDecoder(adapter.MeteringFromEvent)
-		}
 		if metricsSvc, ok := a.services.Metrics.(*metrics.Service); ok {
 			meteringSvc := a.services.Metering
 			ph := a.proxyHandler

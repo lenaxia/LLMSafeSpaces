@@ -111,3 +111,27 @@ func TestE2E_RealAdapter_TextPartsAndDeltas_NeverPersist(t *testing.T) {
 	assert.Empty(t, si.contextUsed, "non-usage events must never persist")
 	assert.Empty(t, logs.All(), "non-usage events are normal traffic — no drift warns")
 }
+
+// TestNewSSETracker_MeteringDecoderWiredAtConstruction pins the production
+// wiring: once an adapter is set, the constructed tracker carries the
+// metering decoder — behaviorally (a session.updated event fires
+// inference). Deleting the construction-site wiring silently zeroes all
+// billing while every other suite stays green (the exact failure class
+// app.go's SetOnInference comment documents).
+func TestNewSSETracker_MeteringDecoderWiredAtConstruction(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(backend.Close)
+	env := newE2EEnv(t, backend) // real adapter wired into env.handler
+
+	tracker := env.handler.newSSETracker()
+	var fired bool
+	tracker.SetOnInference(func(_, _, _ string, _, outputTokens int64, _ float64) {
+		fired = outputTokens == 500
+	})
+
+	tracker.ProcessEvent("ws-wiring", `{"id":"evt_t","type":"session.updated","properties":{"sessionID":"ses_w","info":{"id":"ses_w","cost":0.01,"tokens":{"input":1000,"output":500},"model":{"id":"gpt-4o","providerID":"openai"}}}}`)
+
+	assert.True(t, fired, "construction-site decoder wiring must make billing inference work end-to-end")
+}

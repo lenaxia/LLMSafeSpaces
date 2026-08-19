@@ -752,11 +752,17 @@ func (t *Tracker) handleSessionUpdated(workspaceID, eventType string, props []by
 	// POLICY and stays here.
 	u, ok, err := t.metering(eventType, props)
 	if err != nil {
-		t.Logger.Warn("handleSessionUpdated: usage-bearing event failed to decode — wire drift?",
-			"workspaceID", workspaceID, "error", err)
+		// Already warned inside the seam with the eventType (the
+		// adapter owns wire-drift context); nothing to add here.
 		return
 	}
-	if !ok || u == nil || u.SessionID == "" || u.OutputTokens == 0 || u.ModelID == "" {
+	if !ok {
+		// Not a metering event — the majority of stream traffic. Never
+		// a warn (a per-event warn here floods logs and drowns the real
+		// drift signals; pinned by the non-usage-no-warn test).
+		return
+	}
+	if u == nil || u.SessionID == "" || u.OutputTokens == 0 || u.ModelID == "" {
 		t.Logger.Warn("handleSessionUpdated: dropping usage event with incomplete billing fields",
 			"workspaceID", workspaceID, "sessionID", sessionIDOrEmpty(u),
 			"hasModel", u != nil && u.ModelID != "", "outputTokens", outputOrZero(u))

@@ -436,3 +436,37 @@ func TestSSETracker_Inference_MalformedCost_WarnsAndBillsAtZero(t *testing.T) {
 	}
 	assert.True(t, found, "malformed cost must warn (drift signal)")
 }
+
+// TestSSETracker_NonUsageEvents_NoWarnNoFire pins the dispatch contract
+// that a5ba84be regressed: non-usage events (the majority of stream
+// traffic — part-updates are dominant) must neither fire inference nor
+// emit any warn. A spurious warn per event floods logs and drowns the
+// real drift signals (empty-ID, undecodable, malformed-cost).
+func TestSSETracker_NonUsageEvents_NoWarnNoFire(t *testing.T) {
+	events := []struct {
+		name      string
+		eventType string
+		body      string
+	}{
+		{"part update", "message.part.updated", `{"sessionID":"ses_x","part":{"type":"text","text":"hi"}}`},
+		{"suffixed part update", "message.part.updated.1", `{"sessionID":"ses_x","part":{"type":"step-finish","tokens":{"input":10,"cache":{"read":0,"write":0}}}}`},
+		{"session status", "session.status", `{"sessionID":"ses_x","status":{"type":"busy"}}`},
+		{"message updated", "message.updated", `{"sessionID":"ses_x","info":{"id":"msg_1"}}`},
+	}
+	for _, tt := range events {
+		t.Run(tt.name, func(t *testing.T) {
+			tracker, log := newCapturingTracker() // real adapter decoder
+			var fired bool
+			tracker.SetOnInference(func(_, _, _ string, _, _ int64, _ float64) { fired = true })
+
+			props, _ := json.Marshal(json.RawMessage(tt.body))
+			data, _ := json.Marshal(map[string]interface{}{
+				"id": "evt_t", "type": tt.eventType, "properties": props,
+			})
+			tracker.processEvent("ws-1", string(data))
+
+			assert.False(t, fired, "non-usage event must not fire inference")
+			assert.Empty(t, log.Warns(), "non-usage event must not warn (regression: a5ba84be)")
+		})
+	}
+}

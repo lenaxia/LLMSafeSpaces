@@ -94,3 +94,13 @@ The reviewer's blocking finding was correct and important: routing `api/internal
 2. **Repolint prefix-match hardening**: the agent-import rule now flags subpackages of the implementation (`pkg/agent/opencode/wire` et al.), with the seam itself exempt from self-imports. Pinned by two new tests (subpackage-escape caught, seam self-import allowed).
 3. **Tracker-layer pins for both behavior changes** (the reviewer's missing-test findings): table-driven suffixed-dispatch test (unsuffixed fires, suffixed fires, `.foo` and status don't) and the CostMalformed policy test (warn + onInference fires with cost 0, never drops).
 4. Test helpers (`newTestSSETracker`, `newCapturingTracker`, the billing e2e trackers) now inject the REAL adapter's decoder — existing inference tests exercise the production decode path, not stubs.
+
+### Round 2 (review on a5ba84be): regression I introduced + wiring hardening
+
+The reviewer probe-verified a real regression in my round-1 fix: moving the `IsSessionUpdated` filter inside the adapter made `ok=false` mean both "not a metering event" AND "metering event, no info" — the tracker warned "incomplete billing fields" for **every non-usage event** (4/4 spurious warns vs 0/4 before; part-updates are the dominant stream type). Fixed by making the contract strict:
+- `ok=false` ⇒ strictly "not a metering event" → tracker returns silently (pinned by `TestSSETracker_NonUsageEvents_NoWarnNoFire`, table over 4 event types).
+- Info-less `session.updated` ⇒ adapter returns `ok=true` + zero-value `*agent.SessionUsage` → routes to the incomplete-fields warn (EmptyID/EmptyModel/ZeroOutput pins survive unchanged).
+
+Wiring pin (the silent-billing-death gap): the decoder wiring moved from a separate app.go step INTO tracker construction (`newSSETracker` — cannot be forgotten at a call site), pinned behaviorally by `TestNewSSETracker_MeteringDecoderWiredAtConstruction`. `GetAdapter` (added round 1 for the app.go wiring) removed — unused, and its placement broke `SetAdapter`'s godoc. Double-warn on decode drift deduplicated (adapter warns with eventType; tracker returns).
+
+Files added/changed in rounds 1-2 beyond the original list: pkg/agent/adapter.go (+SessionUsage, +MeteringFromEvent), pkg/agent/opencode/adapter.go (impl), api/internal/services/sse/tracker.go (decoder injection, contract split), api/internal/handlers/proxy_lifecycle.go (newSSETracker), api/internal/app/app.go (round-1 wiring, removed in round 2), api/internal/handlers/proxy.go (GetAdapter added then removed), pkg/repolint/agent_import.go (prefix-match + self-exemption) + tests, tracker_regression_test.go, sse_billing_e2e_test.go, tracker_test.go helpers, adapter_crosscutting-side helpers.
