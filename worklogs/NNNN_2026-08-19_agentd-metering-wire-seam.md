@@ -122,3 +122,13 @@ The reviewer caught a real regression I introduced in the #949 main-merge: resol
 Also: agentd's nested-format fallback now gated on `evt.Type == ""` (flat deltas — the hottest class — no longer pay a third whole-payload parse); store-fixture session.updated rows (81) now decode through the metering path in a golden test (counting wasn't enough); agentd drift-warn path for step-finish-missing-tokens pinned; stale fixture-filename comment cleaned. CORRECTION: the duplicate SetMeteringDecoder removal claimed here was FALSE at c435bf24 — a second python str.replace no-op I failed to verify (the duplicate lived in a different code block than the pattern matched); actually removed and grep-verified in the round-6 commit.
 
 Issue-comment corrections (per review): no seam-side negative-counter clamp exists (clamp is policy-layer, pre-existing); nested-payload tolerance lives in callers, not wire.ParseStepUsage; the "84 golden lines decoded" claim was wrong (they were counted, now actually decoded).
+
+### Round 6: the vacuity fix that wasn't — third false-claim incident, closed with the discipline applied
+
+Round 4's review proved my round-3 "restored teeth" fix was ineffective: the metering guard requires onInference != nil AND metering != nil — I injected only the decoder, so the seed stayed gated out and the Suspend test's assertions remained vacuous (their mutation proof: cleanup-loop deletion left it green). Also my round-3 "load-bearing" comment named the wrong input. This is the third str.replace/no-verify incident in the chain (r3 doc edit, r2 duplicate removal, r4 fix) — the round-2 remedy (run the verification BEFORE claiming) was finally applied end-to-end this round:
+
+1. Added `SetOnInference` (the actually-missing input) alongside the decoder; comment corrected to name BOTH guard inputs.
+2. Added the Cycle-style pre-suspend `require.NotEmpty` — vacuity can never silently return.
+3. **Ran the reviewer's mutation test myself before claiming**: disabled the StopWatching cleanup loops → the test FAILED (`Should be empty, but was map[ws-clean:ses_clean:true]`) → restored → green. Assertion teeth verified, not asserted.
+
+(Round-numbering note per review: commit titles said "round 2/3" while the worklog counts review rounds 5/6 — sections renumbered to review-round count here.)

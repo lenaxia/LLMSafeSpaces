@@ -164,15 +164,17 @@ func TestE2E_PhaseChangeSuspend_CleansBillingMaps(t *testing.T) {
 
 	tracker := sse.NewTracker(env.handler.httpClient, env.log, func(_, _ string) {})
 	env.handler.sseTracker = tracker
+	// BOTH of the next two calls are load-bearing for the seed below:
+	// the metering dispatch guard requires onInference != nil AND
+	// metering != nil. Missing either gates the seed out, the maps start
+	// empty, and the post-suspend emptiness assertions pass vacuously
+	// (mutation-verified #949 r3/r4).
+	tracker.SetOnInference(func(_, _, _ string, _, _ int64, _ float64) {})
 	tracker.SetMeteringDecoder(agentoc.NewAdapter(nil, nil, zap.NewNop()).MeteringFromEvent)
 	tracker.SetPasswordGetter(env.handler)
 	tracker.SetPodIPResolver(func(string) string { return "10.0.0.1" })
 
 	// Seed billing state by sending a session.updated event.
-	// The decoder above is load-bearing: without it the metering guard
-	// gates the seed out, the maps start empty, and the post-suspend
-	// emptiness assertions below pass vacuously (mutation-verified in
-	// #949 round 3).
 	tracker.ProcessEvent("ws-clean", `{
 		"type": "session.updated",
 		"properties": {
@@ -186,7 +188,11 @@ func TestE2E_PhaseChangeSuspend_CleansBillingMaps(t *testing.T) {
 		}
 	}`)
 
-	// Verify maps are populated.
+	// Verify maps are populated — BEFORE the suspend, so the post-suspend
+	// emptiness assertions below can never pass vacuously (Cycle-style).
+	preTokens, _, _ := tracker.GetBillingState("ws-clean")
+	require.NotEmpty(t, preTokens, "seed must populate sessionTokenSeen — if empty, the guard gated the seed out and the cleanup assertions below are vacuous")
+
 	tracker.ProcessEvent("ws-clean", `{
 		"type": "session.status",
 		"properties": {
