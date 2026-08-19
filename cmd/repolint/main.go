@@ -313,6 +313,15 @@ func runClusterDrift(root string) int {
 // Originating incident: worklog 0663 (2026-08-02) — Image Factory tests
 // raced on gin's mode global, red CI blocked the v0.7.1 release gate.
 func runGinSetMode(root string) int {
+	fbRep, fbErr := repolint.ForbiddenPathsCheck(root)
+	if fbErr != nil {
+		fmt.Fprintf(os.Stderr, "forbidden-paths check failed: %v\n", fbErr)
+		os.Exit(exitInternal)
+	}
+	if !fbRep.OK() {
+		fmt.Fprintln(os.Stderr, fbRep.String())
+		os.Exit(exitFailures)
+	}
 	rep, err := repolint.GinSetModeCheck(root)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "FAIL  gin.SetMode parallel-race check: %v\n", err)
