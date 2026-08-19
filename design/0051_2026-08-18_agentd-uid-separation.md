@@ -1,6 +1,6 @@
 # 0051 — agentd uid separation: in-workspace privilege tiers
 
-**Status:** Draft — under review (holds; never auto-merges)
+**Status:** Phase 1 SHIPPED (#933 D5.1 + #934 D5.2/D5.3, merged 2026-08-19); Phase 2 (uid tiers) under review (holds; never auto-merges)
 **Date:** 2026-08-18
 **Issue:** #887
 **Supersedes:** none. Refines the residual risk documented in PRs #883/#884/#886 (Epic 67).
@@ -188,7 +188,7 @@ purely additive wiring: runAsUser, file modes, setpriv spawn). Enable on TEST fo
 
 | # | Check | PASS criterion |
 |---|---|---|
-| V1 | **(Phase 1)** After D5: `printenv AGENTD_ADMIN_TOKEN` in a bash tool | empty — token gone from tool env |
+| V1 | **(Phase 1 — SHIPPED, runnable now)** After pod rebuild: `printenv AGENTD_ADMIN_TOKEN` in a bash tool | empty — token gone from tool env |
 | V2 | uid-1000 shell cannot read `/sandbox-cfg/password`, `agent-config.json` (post-ready), `secrets-env`, `/sandbox-cfg/admin-token` | EACCES on all four |
 | V3 | `printenv OPENCODE_SERVER_PASSWORD` in a bash tool | **Expected non-empty under current opencode** (upstream-gated residual — record, don't fail) |
 | V4 | opencode boots, agent reaches Active, one full agent turn (config read at boot unaffected) | End-to-end works |
@@ -197,15 +197,25 @@ purely additive wiring: runAsUser, file modes, setpriv spawn). Enable on TEST fo
 | V7 | Suspend → resume (~22s budget) and cold boot | No regression vs. baseline |
 | V8 | Watchdog SIGTERM path (agentd 65532 signaling opencode 1000) | Signal delivery works (parent→child unaffected by uids) |
 | V9 | Zombie reaping (#908 path) under uid split | Unchanged (agentd is reaper as PID 1) |
-| V10 | Phase-1 items: no-token boot fails; empty-password boot fails; `/metrics` gated | Fail-closed observed |
+| V10 | **(SHIPPED — pinned by #934's integration tests)** no-token boot fails; empty-password boot fails; `/metrics` per D5.4 ruling | Fail-closed observed in CI |
 | V11 | Yama footnote (informational): `cat /proc/sys/kernel/yama/ptrace_scope` per node class | Document values; only security-relevant if/when the upstream password fix lands |
 
 ## 8. Phasing
 
-- **Phase 1 (D5.1 first) — small, independent PRs, no uid changes, no rollout risk**:
-  1. agentd env-scrub + admin-token file read (controller + agentd; closes the tool-env leak of the
-     admin-mux bearer token **today**)
-  2. the remaining fail-closed trio (required token, empty-password reject, gated metrics)
+- **Phase 1 — SHIPPED (#933, #934; merged 2026-08-19). No uid changes, no rollout risk:**
+  1. ✅ **#933 (D5.1)**: distinct `admin-token` Secret key (upsert, never rotated in place) + file-only
+     delivery (`/sandbox-cfg/admin-token` 0400, `AGENTD_ADMIN_TOKEN_FILE`; legacy env mode for
+     pre-upsert Secrets) + scrub of both admin vars from the opencode spawn env on every
+     `buildEnvFrom` path + `[admin-token, password]` try-order on every `:4098` Bearer consumer.
+     Review round 2 caught a CRITICAL dash-silent `[[ ]]` bashism in the init guard (would have
+     shipped an un-gated mux fleet-wide) — fixed POSIX + exec-level init-script tests,
+     mutation-verified. GO-2026-6173 (lib/pq) cleared as a side effect.
+  2. ✅ **#934 (D5.2+D5.3)**: `resolveAdminTokenForBoot` (no token → fatal boot; explicit
+     `AGENTD_ALLOW_NO_ADMIN_TOKEN=1` dev escape), empty-password file → fatal, token resolved once
+     at boot and threaded to mux wrap + health probe (TOCTOU closed). Real-binary integration boot
+     tests pin gate ordering and escape-hatch narrowness.
+  3. ✅ **D5.4 ruling (this doc, §5)**: `/metrics` unchanged — per-pod scrape secrets are
+     structurally unavailable to PodMonitor; labels audited (workspaceID + counts only).
 - **Phase 2 (D1–D4, D6) — chart-gated pilot**: controller wiring, entrypoint changes, ConfigWriter lock,
   runtime image entrypoint rework. TEST validation matrix → canary workspaces → default flip decision.
   Note: with D5.1 shipped, Phase 2's uid split protects the admin token, provider keys (D3), and the
