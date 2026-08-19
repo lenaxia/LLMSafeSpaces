@@ -42,10 +42,9 @@ Empty candidates = one **unauthenticated** attempt (pre-#887 behavior for Secret
 - **F4 (round 1 minor)**: `ensurePasswordSecret` panicked on an existing Secret with nil `Data` (assignment to nil map). Guarded; `TestEnsurePasswordSecret_NilDataSecretNoPanic` pins it.
 - `adminBearerCandidates` dedups equal values; try-order/nil-client/empty-candidates behaviors pinned by tests.
 
-### govulncheck GO-2026-6173 (lib/pq) — dependency removed
+### govulncheck GO-2026-6173 (lib/pq)
 
-The advisory (pre-protocol unbounded read in lib/pq's driver; published 2026-08-18, **no upstream fix**) failed CI mid-review. lib/pq was used only for `pq.Array`/`pq.StringArray` (25 call sites) — pgx is the actual driver. Replaced with `pkg/pgarray` (new): wire-compatible semantics **probe-pinned against lib/pq v1.12.3 before writing** (nil→NULL, {} vs nil-slice scan distinction, quoting/escaping, NULL-element error, round-trip), plus native named-type Scan (removing the `(*[]string)` casts pq forced). The test harness's migrate driver moved `database/postgres` → `database/pgx` (same WithInstance shape) — pq survives only as migrate's QuoteIdentifier dependency, no vulnerable symbols reachable. govulncheck clean. **Latent bug fixed along the way**: `RenameConfig`'s `*pq.Error` 23505 check could never match under pgx (runtime type is `*pgconn.PgError`) — the conflict path was dead code; now `errors.As` + `*pgconn.PgError`, test updated to the real error shape.
-
+The advisory (pre-protocol unbounded read in lib/pq's driver; published 2026-08-18, no upstream fix) failed CI mid-review. This branch swapped the 25 `pq.Array` sites to a `pkg/pgarray`, switched the harness migrate driver to pgx/v5, and fixed the dead `*pq.Error` 23505 assertion (pgx surfaces `*pgconn.PgError`). During a later rebase, main landed its own equivalent (#950's `api/internal/services/database/pgarray` with a `New` API + pgx/v5 harness + a generalized SQLState-based unique-violation check), so this branch now takes main's version wholesale; our pkg/pgarray was dropped as a duplicate. Outcome identical: `go list -deps ./...` shows zero packages from lib/pq / pgx/v4 / pgproto3/v2 — all three advisories unreachable.
 ---
 
 ## Key Decisions
