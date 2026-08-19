@@ -1493,6 +1493,7 @@ func registerProxyRoutes(idGroup *gin.RouterGroup, proxyHandler *handlers.ProxyH
 
 	idGroup.GET("/sessions/:sessionId/queue", proxyHandler.ListQueue)
 	idGroup.DELETE("/sessions/:sessionId/queue/:messageId", proxyHandler.DeleteQueueMessage)
+	idGroup.POST("/sessions/:sessionId/queue/:messageId/retry", proxyHandler.RetryQueueMessage)
 	idGroup.GET("/sessions/:sessionId/message", proxyHandler.GetHistory)
 	idGroup.GET("/sessions/:sessionId", proxyHandler.GetSession)
 	idGroup.POST("/sessions/:sessionId/abort", proxyHandler.AbortSession)

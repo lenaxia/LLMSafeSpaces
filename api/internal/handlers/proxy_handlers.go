@@ -252,19 +252,32 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 		}{}; json.Unmarshal(bodyBytes, &req) == nil {
 			cmid = req.ClientMessageID
 		}
+		userID, _ := extractAuth(c)
 		modelOverride := extractPromptModel(bodyBytes)
+
+		// Org model-policy enforcement on the explicit override — the
+		// SAME check the sync path applies (r1 finding 1: the outbox must
+		// not become the policy bypass).
+		if !h.modelOverrideAllowed(c.Request.Context(), workspace, modelOverride) {
+			if sid != "" {
+				h.removeActiveSession(c.Request.Context(), wid, sid)
+			}
+			c.JSON(http.StatusForbidden, gin.H{"error": "model not allowed by organization policy"})
+			return
+		}
+
 		var modelJSON json.RawMessage
 		if modelOverride != nil {
 			modelJSON, _ = json.Marshal(modelOverride)
 		}
 
-		e, err := h.outbox.Accept(c.Request.Context(), wid, sid, cmid, text, modelJSON)
+		e, err := h.outbox.Accept(c.Request.Context(), wid, sid, userID, cmid, text, modelJSON)
 		if err != nil {
 			var dup *outbox.Duplicate
 			if errors.As(err, &dup) {
-				// Retry of an accepted message: 200 with the original ID
-				// (idempotent accept), not an error.
-				c.JSON(http.StatusOK, gin.H{"messageID": "", "clientMessageID": cmid, "status": "duplicate"})
+				// Retry of an accepted message: 200 with the ORIGINAL ID
+				// (idempotent accept), not an error (r1 finding 7).
+				c.JSON(http.StatusOK, gin.H{"messageID": dup.AcceptedID, "clientMessageID": cmid, "status": "duplicate"})
 				return
 			}
 			if errors.Is(err, outbox.ErrCapped) {
@@ -1255,15 +1268,19 @@ func (h *ProxyHandler) EnqueueMessage(c *gin.Context) {
 			return
 		}
 		if !h.checkAdapterQuota(c, workspace) {
+			if sid != "" {
+				h.removeActiveSession(c.Request.Context(), wid, sid)
+			}
 			return
 		}
 		h.adapterEnsureSSEWatch(wid)
+		userID, _ := extractAuth(c)
 		var modelJSON json.RawMessage
-		e, err := h.outbox.Accept(c.Request.Context(), wid, sid, req.ClientMessageID, req.Text, modelJSON)
+		e, err := h.outbox.Accept(c.Request.Context(), wid, sid, userID, req.ClientMessageID, req.Text, modelJSON)
 		if err != nil {
 			var dup *outbox.Duplicate
 			if errors.As(err, &dup) {
-				c.JSON(http.StatusOK, gin.H{"messageID": "", "status": "duplicate"})
+				c.JSON(http.StatusOK, gin.H{"messageID": dup.AcceptedID, "status": "duplicate"})
 				return
 			}
 			if errors.Is(err, outbox.ErrCapped) {
@@ -1307,6 +1324,7 @@ func (h *ProxyHandler) ListQueue(c *gin.Context) {
 				Text:        e.Text,
 				SessionID:   sid,
 				WorkspaceID: wid,
+				EnqueuedAt:  e.AcceptedAt.UTC().Format(time.RFC3339),
 			})
 		}
 		c.JSON(http.StatusOK, queueListResponse{Messages: result})
@@ -1346,11 +1364,48 @@ func (h *ProxyHandler) DeleteQueueMessage(c *gin.Context) {
 		return
 	}
 
-	// US-63.10: remove from the shadow marker. Dismissed messages must not
+	// D3 (#907): with the outbox wired, dismissal targets the REAL queue
+	// — the entry is removed and will not deliver. The V2 shadow below is
+	// the legacy path.
+	if h.outbox != nil {
+		if h.outbox.Dismiss(c.Request.Context(), wid, sid, msgID) {
+			c.Status(http.StatusNoContent)
+		} else {
+			c.JSON(http.StatusNotFound, gin.H{"error": "queue message not found"})
+		}
+		return
+	}
+
+	// US-63.10// US-63.10: remove from the shadow marker. Dismissed messages must not
 	// reappear on fresh load.
 	if h.v2Shadow != nil {
 		h.v2Shadow.Remove(c.Request.Context(), wid, sid, msgID)
 	}
 	h.publishQueueEvent(wid, sid, "dismissed", msgID, "")
 	c.Status(http.StatusNoContent)
+}
+
+// RetryQueueMessage clears an error entry back to pending (the queue
+// UI's retry action). Outbox path only.
+func (h *ProxyHandler) RetryQueueMessage(c *gin.Context) {
+	sid := c.Param("sessionId")
+	if err := validateSessionID(sid); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid sessionId: " + err.Error()})
+		return
+	}
+	wid := c.Param("id")
+	msgID := c.Param("messageId")
+	if msgID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "messageId required"})
+		return
+	}
+	if h.outbox == nil {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "queue retry requires the outbox"})
+		return
+	}
+	if h.outbox.Retry(c.Request.Context(), wid, sid, msgID) {
+		c.Status(http.StatusNoContent)
+	} else {
+		c.JSON(http.StatusNotFound, gin.H{"error": "error entry not found (retry targets error entries only)"})
+	}
 }

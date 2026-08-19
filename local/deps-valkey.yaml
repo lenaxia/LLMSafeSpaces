@@ -39,7 +39,7 @@ spec:
           command: ["/bin/sh"]
           args:
             - "-c"
-            - 'exec valkey-server --requirepass "$REDIS_PASSWORD"'
+            - 'exec valkey-server --requirepass "$REDIS_PASSWORD" --appendonly yes'
           env:
             - name: REDIS_PASSWORD
               valueFrom:

@@ -18,6 +18,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 func (h *ProxyHandler) EnableSessionParentResolution() {
@@ -281,8 +282,12 @@ var outboxTick = 1 * time.Second
 
 // outboxDeliver bridges the outbox worker to the adapter: detached
 // context and D3 model-selector forwarding (the accepted entry carries
-// the raw selector JSON). Session-limit/quota were checked at accept;
-// quota is enforced per-turn by metering regardless.
+// the raw selector JSON). On success it records the SAME cross-cutting
+// events as the synchronous path (r1 finding 2): activity, session-index
+// message, and the llm_request usage event — without which the quota
+// never depletes and billing undercounts every outbox-delivered prompt.
+// The accepting userID rides the entry (the accepting request is long
+// gone by delivery time).
 func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID string, e outbox.Entry) error {
 	var model *session.ModelRef
 	if len(e.Model) > 0 {
@@ -292,5 +297,40 @@ func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID
 		}
 	}
 	_, err := h.adapter.Send(ctx, "", workspaceID, sessionID, e.Text, session.SendOpts{Model: model})
-	return err
+	if err != nil {
+		return err
+	}
+	h.postOutboxDeliverSuccess(workspaceID, sessionID, e)
+	return nil
+}
+
+// postOutboxDeliverSuccess mirrors postAdapterSuccess for the detached
+// delivery path (no gin context: the accept-time userID and a synthetic
+// request id ride the entry).
+func (h *ProxyHandler) postOutboxDeliverSuccess(workspaceID, sessionID string, e outbox.Entry) {
+	if h.activityTracker != nil {
+		h.activityTracker.Record(workspaceID)
+	}
+	if h.sessionIndex != nil && sessionID != "" {
+		h.sessionIndex.RecordMessage(workspaceID, sessionID, "", time.Now())
+	}
+	if h.meteringSvc != nil && workspaceID != "" {
+		if e.UserID != "" {
+			h.meteringSvc.Record(types.UsageEvent{
+				IdempotencyKey: fmt.Sprintf("llmreq:%s:%d", workspaceID, time.Now().UnixNano()),
+				Owner:          types.BillingOwner{ID: e.UserID, Type: types.OwnerTypeUser},
+				ActorID:        e.UserID,
+				WorkspaceID:    workspaceID,
+				EventType:      "llm_request",
+				EventSubtype:   "message",
+				Quantity:       1,
+				Source:         "api",
+				EventTime:      time.Now(),
+				RequestContext: map[string]any{
+					"request_id": "outbox:" + e.ID,
+					"session_id": sessionID,
+				},
+			})
+		}
+	}
 }

@@ -99,3 +99,61 @@ queue that opencode 1.18.10 never drains (#755) — entries displayed as
 - api/internal/app/app.go (outbox wiring)
 - frontend/src/api/types.ts, frontend/src/hooks/useChatStream.ts (+test)
 - design/0050 (D3 final spec — separate commit on this branch)
+
+
+---
+
+## Round 1 (review on #943): all eleven blockers
+
+1. **Org model-policy bypass fixed**: the outbox branch of both
+   SendPromptAsync and EnqueueMessage now runs modelOverrideAllowed on
+   the explicit override (403 + slot cleanup on disallowed) — the same
+   check as the sync path.
+2. **Metering fixed**: outboxDeliver records the same cross-cutting
+   events as postAdapterSuccess on delivery success (activity,
+   session-index message, llm_request usage event with the accept-time
+   userID riding the entry + "outbox:<id>" request id).
+3. **Dedupe marker ordered AFTER persistence**: Accept pushes the entry
+   first and only then SetNX's the marker (value = entry ID). Capped /
+   marshal / push failures leave NO marker — a retry after drain
+   accepts. A concurrent same-cmid race resolves to the first acceptor's
+   entry (the loser's entry is removed). Pinned by
+   TestAccept_CappedWritesNoDedupeMarker.
+4. **Staging windows made loss-proof**: stage-out is RPUSH-staging THEN
+   LREM-main (crash → both → duplicate, never zero); failure restore is
+   main-first THEN staging-LREM; Recover is LRANGE + ID-dedupe against
+   main + DEL. Pinned by TestDeliver_CrashWindowBothLists_NoLoss.
+5. **Lock fixed**: LockTTL = DeliveryTimeout + 2min (pinned by
+   TestDeliver_LockOutlivesLongTurn); owner-token lock with
+   compare-and-del release (Lua).
+6. **Backoff implemented**: exponential (10s base, doubling, 2min cap),
+   NextAttemptAt gate — deliverOne SKIPS future entries rather than
+   consuming them; 5 attempts span ~3.5min, covering opencode restart
+   cycles. Pinned by TestDeliver_BackoffGateSkipsFutureEntries.
+7. **Duplicate carries the original ID**: the marker VALUE is the entry
+   ID; Duplicate.AcceptedID flows to the 200 response. Pinned by
+   TestAccept_DuplicateCarriesOriginalID.
+8. **Dismiss/Retry wired**: DeleteQueueMessage targets the outbox first
+   (real removal — the entry will not deliver); POST
+   /queue/:messageId/retry re-arms error entries.
+9. **Enqueue slot leak fixed**: removeActiveSession on the quota-fail
+   path (the #913 class).
+10. **AOF honest**: prod already ran --appendonly yes
+    (talos-ops-prod valkey helm-release args — verified by file, not
+    assumption this time); the repo-local dev dep now does too
+    (local/deps-valkey.yaml). The original worklog's "checked, not
+    assumed" was FALSE — the check I performed was against the prod
+    repo, while the in-repo dev dependency lacked the flag and the
+    design text said "in the chart". Both corrected.
+11. **Head-of-line starvation fixed**: Run dispatches sessions
+    concurrently (bounded semaphore 32; per-session lock serializes
+    same-session). Pinned by TestRun_ConcurrentSessionsNoHeadOfLine
+    (fast session delivers while a slow turn is in flight).
+
+Non-blocking addressed: dedupe key scoped per (ws,ses,cmid);
+ListQueue fills enqueued_at from AcceptedAt. TOCTOU cap and List
+unmarshal-swallowing documented as accepted (cap overshoot by a few
+entries under concurrent accepts; malformed entries skipped in List).
+
+Service tests: 16 (-race). Handler tests updated for the new Accept
+signature + duplicate-with-ID.

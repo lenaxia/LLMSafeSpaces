@@ -123,10 +123,13 @@ before a generation change).
 
 **D3 final spec (2026-08-18 — implementation gate: G7 merged as #924).**
 
-- **Storage: Valkey stream per session** (`outbox:{ws}:{ses}`), consumer
-  group `deliver`. Valkey runs with AOF (`--appendonly yes` in the
-  chart) — accepted-but-undelivered messages survive API restarts AND
-  Valkey restarts. Per-entry fields: id (Valkey entry ID), text,
+- **Storage: Valkey per-session lists.** Durability requires AOF
+  (`--appendonly yes`): configured in the PROD deployment
+  (talos-ops-prod .../valkey/helm-release.yaml args) and, since D3 r1,
+  in the repo-local dev dependency (local/deps-valkey.yaml). With AOF,
+  accepted-but-undelivered messages survive API restarts AND Valkey
+  restarts; without it (default RDB), recent accepts can be lost on a
+  Valkey restart — deployments MUST verify the flag. Per-entry fields: id (Valkey entry ID), text,
   clientMessageID, model override JSON, acceptedAt, status
   (pending|delivering|delivered|error), attempts, lastError.
 - **Accept path (`POST /prompt` rework):** existing validation (100KB,

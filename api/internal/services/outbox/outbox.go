@@ -8,20 +8,32 @@
 // The incident (2026-08-15/16) lost six messages to iOS killing in-flight
 // POSTs — the synchronous adapter.Send bound delivery to the client's
 // request context, so a disconnect canceled it mid-flight. The outbox
-// accepts into Valkey (AOF-persisted) and a detached worker delivers.
+// accepts into Valkey and a detached worker delivers.
 //
 // Storage layout (per session):
 //
 //	outboxq:{ws}:{ses}  LIST — FIFO of JSON entries (the durable queue)
 //	outboxd:{ws}:{ses}  LIST — staging: entries currently being delivered
 //	                          (crash recovery requeues these on start)
-//	outboxdedupe:{cmid} STRING — clientMessageID dedupe marker (SET NX, TTL)
-//	outboxlock:{ws}:{ses} STRING — per-session delivery lock (reduces
-//	                          cross-replica duplicate delivery)
+//	outboxdedupe:{ws}:{ses}:{cmid} STRING — dedupe marker; VALUE is the
+//	                          accepted entry ID (set only AFTER a successful
+//	                          push — a marker with no entry is a false
+//	                          "duplicate" that silently drops retries)
+//	outboxlock:{ws}:{ses} STRING — per-session delivery lock; value is a
+//	                          random owner token, released only by the owner
+//	                          (compare-and-del), TTL > DeliveryTimeout so a
+//	                          long turn cannot expire its own lock
 //
-// Delivery semantics: at-least-once (a crash after opencode persists but
-// before the entry is removed can redeliver); duplicates collapse at
-// render via clientMessageID — the stated D3 decision, do not revisit.
+// Crash-safety: every multi-step transition is ordered so the worst case
+// is DUPLICATE delivery (at-least-once, collapsed at render via
+// clientMessageID), never LOSS:
+//   - stage-out: RPUSH staging BEFORE LREM main (crash between → entry in
+//     both → delivered possibly twice, never zero; Recover dedupes by ID)
+//   - restore: reinsert main BEFORE LREM staging
+//   - recover: LRANGE (no pop), dedupe against main by ID, then DEL
+//
+// Delivery semantics: at-least-once; duplicates collapse at render via
+// clientMessageID — the stated D3 decision, do not revisit.
 package outbox
 
 import (
@@ -29,6 +41,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"strings"
 	"time"
 
@@ -39,10 +52,12 @@ import (
 type Entry struct {
 	ID              string          `json:"id"`              // outbox entry ID (unique per accept)
 	ClientMessageID string          `json:"clientMessageID"` // caller-supplied dedupe key
+	UserID          string          `json:"userID"`          // accepting user (metering at delivery)
 	Text            string          `json:"text"`            // prompt text (already validated ≤100KB)
 	Model           json.RawMessage `json:"model,omitempty"` // per-prompt model selector (raw JSON)
 	AcceptedAt      time.Time       `json:"acceptedAt"`
 	Attempts        int             `json:"attempts"`
+	NextAttemptAt   time.Time       `json:"nextAttemptAt,omitempty"` // backoff gate (zero = now)
 	LastError       string          `json:"lastError,omitempty"`
 	Status          string          `json:"status"` // pending | delivering | error
 }
@@ -56,7 +71,10 @@ const (
 
 // Tunables (vars for tests).
 var (
-	// MaxAttempts bounds retries before an entry parks as error.
+	// MaxAttempts bounds retries before an entry parks as error. With the
+	// exponential backoff below, 5 attempts span ~3.5 minutes — covering
+	// an opencode restart cycle (the #903 reconciler pattern: retries
+	// must span agent generations, not exhaust in seconds).
 	MaxAttempts = 5
 	// Cap is the per-session outbox length limit (accept returns capped).
 	Cap = 25
@@ -64,10 +82,15 @@ var (
 	DedupeTTL = 24 * time.Hour
 	// DeliveryTimeout bounds one delivery attempt (a long turn).
 	DeliveryTimeout = 10 * time.Minute
-	// RetryBackoff is the delay before a failed entry is retried.
-	RetryBackoff = 5 * time.Second
-	// LockTTL bounds the per-session delivery lock.
-	LockTTL = 2 * time.Minute
+	// RetryBackoff is the BASE delay before attempt N+1; it doubles per
+	// attempt and caps at MaxBackoff. Var for tests.
+	RetryBackoff = 10 * time.Second
+	// MaxBackoff caps the exponential retry delay.
+	MaxBackoff = 2 * time.Minute
+	// LockTTL must exceed DeliveryTimeout: a delivery longer than the
+	// lock's TTL would expire mid-turn and let a second worker deliver
+	// concurrently (one-in-flight violation).
+	LockTTL = DeliveryTimeout + 2*time.Minute
 )
 
 // ErrCapped is returned when the session's outbox is at Cap.
@@ -100,22 +123,26 @@ func New(client *redis.Client) *Service {
 	return &Service{client: client}
 }
 
-func qKey(ws, ses string) string    { return "outboxq:" + ws + ":" + ses }
-func dKey(ws, ses string) string    { return "outboxd:" + ws + ":" + ses }
+func qKey(ws, ses string) string { return "outboxq:" + ws + ":" + ses }
+func dKey(ws, ses string) string { return "outboxd:" + ws + ":" + ses }
+func dedupeKey(ws, ses, cmid string) string {
+	return "outboxdedupe:" + ws + ":" + ses + ":" + cmid
+}
 func lockKey(ws, ses string) string { return "outboxlock:" + ws + ":" + ses }
 
-// Accept validates nothing (callers validate); it dedupes, caps, and
-// persists. Returns the accepted entry (status pending). A Duplicate
-// return means the clientMessageID was already accepted — the caller
-// should respond 200 with the original ID, not an error.
-func (s *Service) Accept(ctx context.Context, workspaceID, sessionID, clientMessageID, text string, model json.RawMessage) (*Entry, error) {
+// Accept validates nothing (callers validate); it caps, persists, and
+// only THEN records the dedupe marker. Marker ordering matters: a marker
+// set before persistence survives a failed push for the dedupe TTL and
+// turns every retry into a false "duplicate" — silent loss (the exact
+// class D3 exists to kill; round-1 finding 3). Returns the accepted
+// entry (status pending). A Duplicate return carries the original ID —
+// callers should respond 200 with it, not an error.
+func (s *Service) Accept(ctx context.Context, workspaceID, sessionID, userID, clientMessageID, text string, model json.RawMessage) (*Entry, error) {
 	if clientMessageID != "" {
-		ok, err := s.client.SetNX(ctx, "outboxdedupe:"+clientMessageID, "1", DedupeTTL).Result()
-		if err != nil {
-			return nil, fmt.Errorf("outbox dedupe: %w", err)
-		}
-		if !ok {
-			return nil, &Duplicate{}
+		// Fast-path the duplicate check (marker value = original ID);
+		// the authoritative marker write happens AFTER the push below.
+		if v, err := s.client.Get(ctx, dedupeKey(workspaceID, sessionID, clientMessageID)).Result(); err == nil {
+			return nil, &Duplicate{AcceptedID: v}
 		}
 	}
 	n, err := s.client.LLen(ctx, qKey(workspaceID, sessionID)).Result()
@@ -123,11 +150,12 @@ func (s *Service) Accept(ctx context.Context, workspaceID, sessionID, clientMess
 		return nil, fmt.Errorf("outbox len: %w", err)
 	}
 	if int(n) >= Cap {
-		return nil, ErrCapped
+		return nil, ErrCapped // no marker written: a retry after drain succeeds
 	}
 	e := &Entry{
 		ID:              fmt.Sprintf("ob_%d_%s", time.Now().UnixNano(), sanitize(clientMessageID)),
 		ClientMessageID: clientMessageID,
+		UserID:          userID,
 		Text:            text,
 		Model:           model,
 		AcceptedAt:      time.Now().UTC(),
@@ -135,10 +163,25 @@ func (s *Service) Accept(ctx context.Context, workspaceID, sessionID, clientMess
 	}
 	b, err := json.Marshal(e)
 	if err != nil {
-		return nil, fmt.Errorf("outbox marshal: %w", err)
+		return nil, fmt.Errorf("outbox marshal: %w", err) // no marker
 	}
 	if err := s.client.RPush(ctx, qKey(workspaceID, sessionID), b).Err(); err != nil {
-		return nil, fmt.Errorf("outbox push: %w", err)
+		return nil, fmt.Errorf("outbox push: %w", err) // no marker
+	}
+	// Persisted. NOW the marker (value = entry ID) — and if a concurrent
+	// accept raced us to the marker, keep theirs and drop our duplicate
+	// entry (their push is durable; ours would double-deliver the same
+	// clientMessageID).
+	if clientMessageID != "" {
+		mk := dedupeKey(workspaceID, sessionID, clientMessageID)
+		first, err := s.client.SetNX(ctx, mk, e.ID, DedupeTTL).Result()
+		if err == nil && !first {
+			s.client.LRem(ctx, qKey(workspaceID, sessionID), 1, b)
+			if v, gerr := s.client.Get(ctx, mk).Result(); gerr == nil {
+				return nil, &Duplicate{AcceptedID: v}
+			}
+			return nil, &Duplicate{}
+		}
 	}
 	return e, nil
 }
@@ -175,58 +218,80 @@ func (s *Service) List(ctx context.Context, workspaceID, sessionID string) ([]En
 func (s *Service) sessions(ctx context.Context) [][2]string {
 	var out [][2]string
 	seen := map[string]bool{}
-	var cursor uint64
-	for {
-		keys, next, err := s.client.Scan(ctx, cursor, "outboxq:*", 100).Result()
-		if err != nil {
-			return out
-		}
-		for _, k := range keys {
-			parts := strings.SplitN(strings.TrimPrefix(k, "outboxq:"), ":", 2)
-			if len(parts) != 2 {
-				continue
+	add := func(pattern string) {
+		var cursor uint64
+		for {
+			keys, next, err := s.client.Scan(ctx, cursor, pattern, 100).Result()
+			if err != nil {
+				return
 			}
-			ws, ses := parts[0], parts[1]
-			key := ws + "\x00" + ses
-			if !seen[key] {
-				seen[key] = true
-				out = append(out, [2]string{ws, ses})
+			for _, k := range keys {
+				parts := strings.SplitN(strings.TrimPrefix(k, strings.SplitN(pattern, "*", 2)[0]), ":", 2)
+				if len(parts) != 2 {
+					continue
+				}
+				key := parts[0] + "\x00" + parts[1]
+				if !seen[key] {
+					seen[key] = true
+					out = append(out, [2]string{parts[0], parts[1]})
+				}
 			}
-		}
-		cursor = next
-		if cursor == 0 {
-			break
+			cursor = next
+			if cursor == 0 {
+				break
+			}
 		}
 	}
-	dcursor := uint64(0)
-	for {
-		keys, next, err := s.client.Scan(ctx, dcursor, "outboxd:*", 100).Result()
-		if err != nil {
-			return out
-		}
-		for _, k := range keys {
-			parts := strings.SplitN(strings.TrimPrefix(k, "outboxd:"), ":", 2)
-			if len(parts) != 2 {
-				continue
-			}
-			ws, ses := parts[0], parts[1]
-			key := ws + "\x00" + ses
-			if !seen[key] {
-				seen[key] = true
-				out = append(out, [2]string{ws, ses})
-			}
-		}
-		dcursor = next
-		if dcursor == 0 {
-			break
-		}
-	}
+	add("outboxq:*")
+	add("outboxd:*")
 	return out
 }
 
-// deliverOne delivers the head-of-queue pending entry for one session
-// under the per-session lock. Returns true if work was done.
-// DeliverOnce delivers the head-of-queue pending entry for one session
+// backoffFor returns the delay before attempt n+1 (n = failures so far):
+// base doubling per attempt, capped.
+func backoffFor(attempts int) time.Duration {
+	d := RetryBackoff
+	for i := 1; i < attempts && d < MaxBackoff; i++ {
+		d *= 2
+	}
+	if d > MaxBackoff {
+		d = MaxBackoff
+	}
+	return d
+}
+
+// acquireLock takes the per-session delivery lock with an owner token.
+// TTL exceeds DeliveryTimeout so a long turn cannot expire its own lock.
+func (s *Service) acquireLock(ctx context.Context, ws, ses string) (string, bool) {
+	token := fmt.Sprintf("lk_%d_%d", time.Now().UnixNano(), rand.Int63())
+	ok, err := s.client.SetNX(ctx, lockKey(ws, ses), token, LockTTL).Result()
+	if err != nil || !ok {
+		return "", false
+	}
+	return token, true
+}
+
+// releaseLock deletes the lock ONLY if we still own it (compare-and-del).
+// A bare DEL could remove a lock a slower worker's TTL-expiry let another
+// worker legitimately acquire.
+var releaseLockScript = redis.NewScript(`
+if redis.call("get", KEYS[1]) == ARGV[1] then
+	return redis.call("del", KEYS[1])
+end
+return 0
+`)
+
+func (s *Service) releaseLock(ctx context.Context, ws, ses, token string) {
+	if token == "" {
+		return
+	}
+	_ = releaseLockScript.Run(ctx, s.client, []string{lockKey(ws, ses)}, token).Err()
+}
+
+// deliverOne delivers the first due pending entry for one session under
+// the per-session lock. Returns true if work was done. Backoff-gated
+// entries (NextAttemptAt in the future) are skipped, not consumed.
+// DeliverOnce delivers the first due pending entry for one session
 // (same semantics as the Run loop's per-session step). Exported for the
 // handler-level tests; the Run loop is the production driver.
 func (s *Service) DeliverOnce(ctx context.Context, ws, ses string, d Deliverer) bool {
@@ -234,36 +299,40 @@ func (s *Service) DeliverOnce(ctx context.Context, ws, ses string, d Deliverer) 
 }
 
 func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) bool {
-	lock := lockKey(ws, ses)
-	ok, err := s.client.SetNX(ctx, lock, "1", LockTTL).Result()
-	if err != nil || !ok {
-		return false // another worker (this or the other replica) owns it
+	token, ok := s.acquireLock(ctx, ws, ses)
+	if !ok {
+		return false // another worker (this replica or another) owns it
 	}
-	defer s.client.Del(ctx, lock)
+	defer s.releaseLock(ctx, ws, ses, token)
 
 	qk := qKey(ws, ses)
-	// Find the first non-error entry (errors park in place; later entries
-	// must still flow).
 	vals, err := s.client.LRange(ctx, qk, 0, -1).Result()
 	if err != nil || len(vals) == 0 {
 		return false
 	}
+	now := time.Now().UTC()
 	idx := -1
 	var e Entry
 	for i, v := range vals {
-		if json.Unmarshal([]byte(v), &e) == nil && e.Status != StatusError {
-			idx = i
-			break
+		var cand Entry
+		if json.Unmarshal([]byte(v), &cand) == nil && cand.Status != StatusError {
+			if cand.NextAttemptAt.IsZero() || !cand.NextAttemptAt.After(now) {
+				idx, e = i, cand
+				break
+			}
 		}
 	}
 	if idx < 0 {
 		return false
 	}
 
-	// Stage: remove from main, push to delivering (crash recovery).
+	// Stage-out (loss-proof ordering): RPUSH staging FIRST, then LREM
+	// main. A crash between the two leaves the entry in BOTH — duplicate
+	// delivery is possible (at-least-once), loss is not; Recover dedupes
+	// by ID.
 	staged := mustMarshal(e)
-	s.client.LRem(ctx, qk, 1, vals[idx])
 	s.client.RPush(ctx, dKey(ws, ses), staged)
+	s.client.LRem(ctx, qk, 1, vals[idx])
 
 	dctx, cancel := context.WithTimeout(context.Background(), DeliveryTimeout)
 	defer cancel()
@@ -272,20 +341,18 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 		s.client.LRem(ctx, dKey(ws, ses), 1, staged)
 		return true
 	}
-	// Failure: restore to the main list AT ITS POSITION with attempts+1
-	// (error status when attempts exhausted). LRem shrank the list, so a
-	// bare LSet at the old index can run off the end (empty-list LSet
-	// silently fails — found by the retry tests): reinsert relative to
-	// the current occupant of the position.
+	// Failure: restore main FIRST (LInsert before the current occupant,
+	// preserving order), then LREM staging — the mirrored crash window
+	// duplicates rather than loses.
 	e.Attempts++
 	e.LastError = err.Error()
 	if e.Attempts >= MaxAttempts {
 		e.Status = StatusError
 	} else {
 		e.Status = StatusPending
+		e.NextAttemptAt = time.Now().UTC().Add(backoffFor(e.Attempts))
 	}
 	updated := string(mustMarshal(e))
-	s.client.LRem(ctx, dKey(ws, ses), 1, staged)
 	cur, _ := s.client.LRange(ctx, qk, 0, -1).Result()
 	switch {
 	case len(cur) == 0 || idx >= len(cur):
@@ -295,41 +362,59 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 	default:
 		s.client.LInsert(ctx, qk, "BEFORE", cur[idx], updated)
 	}
+	s.client.LRem(ctx, dKey(ws, ses), 1, staged)
 	return true
 }
 
 // Recover requeues staged (delivering) entries left by a crash — run at
-// worker start. At-least-once: a crash after the deliverer succeeded but
-// before removal redelivers; render dedupe collapses it.
+// worker start. LRANGE (no pop) + ID-dedupe against main, then DEL: the
+// crash windows above can leave an entry in both lists; the ID check
+// prevents Recover itself from duplicating.
 func (s *Service) Recover(ctx context.Context) int {
 	n := 0
 	for _, pair := range s.sessions(ctx) {
 		ws, ses := pair[0], pair[1]
 		dk := dKey(ws, ses)
-		for {
-			v, err := s.client.LPop(ctx, dk).Result()
-			if err != nil {
-				break
-			}
+		staged, err := s.client.LRange(ctx, dk, 0, -1).Result()
+		if err != nil || len(staged) == 0 {
+			continue
+		}
+		main, _ := s.client.LRange(ctx, qKey(ws, ses), 0, -1).Result()
+		inMain := map[string]bool{}
+		for _, v := range main {
 			var e Entry
 			if json.Unmarshal([]byte(v), &e) == nil {
-				e.Status = StatusPending
-				s.client.LPush(ctx, qKey(ws, ses), string(mustMarshal(e)))
-				n++
+				inMain[e.ID] = true
 			}
 		}
+		for _, v := range staged {
+			var e Entry
+			if json.Unmarshal([]byte(v), &e) != nil {
+				continue
+			}
+			if inMain[e.ID] {
+				continue // crash window left it in both — main wins
+			}
+			e.Status = StatusPending
+			s.client.LPush(ctx, qKey(ws, ses), string(mustMarshal(e)))
+			n++
+		}
+		s.client.Del(ctx, dk)
 	}
 	return n
 }
 
-// Run drives delivery until ctx is done. One entry in flight per session;
-// sessions discovered by scan each tick. Meant to run once per API
-// replica — duplicate delivery across replicas is possible but rare
-// (per-session lock) and safe (at-least-once + render dedupe).
+// Run drives delivery until ctx is done. Sessions are scanned each tick
+// and delivered CONCURRENTLY (bounded semaphore): deliverOne blocks for
+// up to DeliveryTimeout on a long turn, and a single sequential loop
+// would let one slow session starve every other session's outbox — the
+// starvation shape design 0050 exists to eliminate. The per-session lock
+// serializes same-session delivery; cross-session delivery is parallel.
 func (s *Service) Run(ctx context.Context, d Deliverer, tick time.Duration) {
 	s.Recover(ctx)
 	t := time.NewTicker(tick)
 	defer t.Stop()
+	sem := make(chan struct{}, 32)
 	for {
 		select {
 		case <-ctx.Done():
@@ -339,15 +424,18 @@ func (s *Service) Run(ctx context.Context, d Deliverer, tick time.Duration) {
 				select {
 				case <-ctx.Done():
 					return
-				default:
+				case sem <- struct{}{}:
 				}
-				s.deliverOne(ctx, pair[0], pair[1], d)
+				go func(ws, ses string) {
+					defer func() { <-sem }()
+					s.deliverOne(ctx, ws, ses, d)
+				}(pair[0], pair[1])
 			}
 		}
 	}
 }
 
-// Dismiss removes an error entry by ID (the queue UI's dismiss action).
+// Dismiss removes an entry by ID (the queue UI's dismiss action).
 func (s *Service) Dismiss(ctx context.Context, workspaceID, sessionID, id string) bool {
 	qk := qKey(workspaceID, sessionID)
 	vals, err := s.client.LRange(ctx, qk, 0, -1).Result()
@@ -377,6 +465,7 @@ func (s *Service) Retry(ctx context.Context, workspaceID, sessionID, id string) 
 			e.Status = StatusPending
 			e.Attempts = 0
 			e.LastError = ""
+			e.NextAttemptAt = time.Time{}
 			s.client.LSet(ctx, qk, int64(i), string(mustMarshal(e)))
 			return true
 		}
