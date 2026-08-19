@@ -27,6 +27,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -224,6 +225,17 @@ func (h *DevPreviewHandler) proxyToAgentd(c *gin.Context, workspace *v1.Workspac
 			r.Out.Header.Set("X-Forwarded-For", r.In.RemoteAddr)
 		},
 		ModifyResponse: func(resp *http.Response) error {
+			// P0-1 (redesign-2026-08-19/DESIGN.md §5.5): force no-store on
+			// HTML at the edge. The chain in front of this handler (CDN,
+			// browser) has been observed serving stale HTML across app
+			// changes, which makes developers debug code that never reached
+			// the browser. Only HTML is forced: hashed assets keep their
+			// app-set caching. Idempotent when the app already sends
+			// no-store; overrides app-set long-cache on HTML.
+			if isHTMLMediaType(resp.Header.Get("Content-Type")) {
+				resp.Header.Set("Cache-Control", "no-store")
+				resp.Header.Del("Expires")
+			}
 			// Pre-reject oversized declared Content-Length (A6 — both
 			// response shapes are normal; this handles the sized case).
 			if resp.ContentLength > maxBytes {
@@ -244,6 +256,17 @@ func (h *DevPreviewHandler) proxyToAgentd(c *gin.Context, workspace *v1.Workspac
 
 	c.Writer.Header().Del("Content-Length")
 	proxy.ServeHTTP(c.Writer, c.Request)
+}
+
+// isHTMLMediaType reports whether a Content-Type value denotes HTML
+// (including parameters such as charset). Non-parsable values are treated
+// as non-HTML so the no-store override stays narrow (P0-1).
+func isHTMLMediaType(contentType string) bool {
+	mt, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
+		return false
+	}
+	return mt == "text/html"
 }
 
 // cappedReader wraps an io.ReadCloser and returns an error when the
