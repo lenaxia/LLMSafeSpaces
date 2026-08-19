@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/gorilla/websocket"
 )
 
 func backendPort(t *testing.T, backendURL string) string {
@@ -259,5 +261,64 @@ func TestDevPreview_AuthorizationStripped(t *testing.T) {
 	}
 	if capturedAuth != "" {
 		t.Errorf("agentd Basic auth credential was forwarded to dev server: %q", capturedAuth)
+	}
+}
+
+func TestDevPreview_WebSocketUpgrade_RoundTrip(t *testing.T) {
+	// P0-2 (redesign-2026-08-19): the agentd hop must forward protocol
+	// upgrades to the dev server (HMR). agentd's Rewrite does not wipe
+	// headers, so Go's ReverseProxy upgrade handling applies; this test
+	// pins that behavior so a future Rewrite change cannot silently strip
+	// upgrades again.
+	upgrader := websocket.Upgrader{}
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ws" {
+			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusBadRequest)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Logf("backend upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+		mt, msg, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		if err := conn.WriteMessage(mt, msg); err != nil {
+			return
+		}
+	}))
+	defer backend.Close()
+
+	agentd := httptest.NewServer(devPreviewHandler("test-pass"))
+	defer agentd.Close()
+
+	wsURL := "ws://" + agentd.Listener.Addr().String() +
+		"/v1/dev-preview/" + backendPort(t, backend.URL) + "/ws"
+	header := http.Header{}
+	header.Set("Authorization", "Basic "+basicAuth("test-pass"))
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, header)
+	if err != nil {
+		body := ""
+		if resp != nil && resp.Body != nil {
+			b, _ := io.ReadAll(resp.Body)
+			body = string(b)
+		}
+		t.Fatalf("WS dial through agentd failed: %v (status=%v body=%s)", err, resp, body)
+	}
+	defer conn.Close()
+
+	sent := []byte("hello-through-agentd")
+	if err := conn.WriteMessage(websocket.TextMessage, sent); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	_, got, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+	if string(got) != string(sent) {
+		t.Fatalf("echo mismatch: sent %q got %q", sent, got)
 	}
 }

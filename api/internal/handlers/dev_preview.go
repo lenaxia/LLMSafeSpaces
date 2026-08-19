@@ -223,6 +223,28 @@ func (h *DevPreviewHandler) proxyToAgentd(c *gin.Context, workspace *v1.Workspac
 			copyRequestHeaders(r.In.Header, r.Out.Header)
 			r.Out.Header.Set("Authorization", basicAuth)
 			r.Out.Header.Set("X-Forwarded-For", r.In.RemoteAddr)
+
+			// P0-2 (redesign-2026-08-19): re-establish protocol-upgrade
+			// headers after the G34 wipe. ReverseProxy detects the upgrade
+			// and sets Connection/Upgrade on the outbound request BEFORE
+			// Rewrite runs; the wipe above would strip them, degrading WS
+			// handshakes to plain GETs at the dev server (verified in the
+			// field — HMR broken end-to-end; see redesign REGRESSION.md).
+			// Connection/Upgrade/Sec-WebSocket-* are transport descriptors,
+			// not caller credentials: forwarding them is required by
+			// epic-66 ("WS support is mandatory for HMR") and leaks nothing
+			// about the caller's relationship with the API server.
+			if upType := requestUpgradeType(r.In.Header); upType != "" {
+				r.Out.Header.Set("Connection", "Upgrade")
+				r.Out.Header.Set("Upgrade", upType)
+				for k, vs := range r.In.Header {
+					if strings.HasPrefix(strings.ToLower(k), "sec-websocket-") {
+						for _, v := range vs {
+							r.Out.Header.Add(k, v)
+						}
+					}
+				}
+			}
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			// P0-1 (redesign-2026-08-19/DESIGN.md §5.5): force no-store on
@@ -241,6 +263,15 @@ func (h *DevPreviewHandler) proxyToAgentd(c *gin.Context, workspace *v1.Workspac
 			if resp.ContentLength > maxBytes {
 				return fmt.Errorf("response exceeds size cap (%d > %d)", resp.ContentLength, maxBytes)
 			}
+			// P0-2 (redesign-2026-08-19): protocol switches (101) must keep
+			// their body unwrapped. ReverseProxy's handleUpgradeResponse
+			// type-asserts the body to io.ReadWriteCloser for the
+			// bidirectional copy; cappedReader would break it ("non-writable
+			// body"). Upgrade streams are inherently unbounded (HMR), so the
+			// byte cap does not apply to them.
+			if resp.StatusCode == http.StatusSwitchingProtocols {
+				return nil
+			}
 			// Wrap the body to count bytes for chunked streams (A6).
 			resp.Body = &cappedReader{rc: resp.Body, max: maxBytes}
 			return nil
@@ -256,6 +287,29 @@ func (h *DevPreviewHandler) proxyToAgentd(c *gin.Context, workspace *v1.Workspac
 
 	c.Writer.Header().Del("Content-Length")
 	proxy.ServeHTTP(c.Writer, c.Request)
+}
+
+// requestUpgradeType mirrors httputil's upgradeType: returns the requested
+// protocol (e.g. "websocket") when the request asks for a switch, else "".
+// Connection token lists may be comma-separated ("keep-alive, Upgrade").
+func requestUpgradeType(h http.Header) string {
+	if !headerContainsToken(h.Values("Connection"), "upgrade") {
+		return ""
+	}
+	return h.Get("Upgrade")
+}
+
+// headerContainsToken reports whether any comma-separated token in the
+// values equals want (case-insensitive, whitespace-trimmed).
+func headerContainsToken(values []string, want string) bool {
+	for _, v := range values {
+		for _, tok := range strings.Split(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(tok), want) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // isHTMLMediaType reports whether a Content-Type value denotes HTML
