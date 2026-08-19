@@ -38,10 +38,11 @@ package outbox
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
 	"strings"
 	"time"
 
@@ -263,7 +264,9 @@ func backoffFor(attempts int) time.Duration {
 // acquireLock takes the per-session delivery lock with an owner token.
 // TTL exceeds DeliveryTimeout so a long turn cannot expire its own lock.
 func (s *Service) acquireLock(ctx context.Context, ws, ses string) (string, bool) {
-	token := fmt.Sprintf("lk_%d_%d", time.Now().UnixNano(), rand.Int63())
+	b := make([]byte, 8)
+	_, _ = rand.Read(b) //nolint:gosec // lock token, not a secret
+	token := "lk_" + hex.EncodeToString(b)
 	ok, err := s.client.SetNX(ctx, lockKey(ws, ses), token, LockTTL).Result()
 	if err != nil || !ok {
 		return "", false
@@ -288,9 +291,6 @@ func (s *Service) releaseLock(ctx context.Context, ws, ses, token string) {
 	_ = releaseLockScript.Run(ctx, s.client, []string{lockKey(ws, ses)}, token).Err()
 }
 
-// deliverOne delivers the first due pending entry for one session under
-// the per-session lock. Returns true if work was done. Backoff-gated
-// entries (NextAttemptAt in the future) are skipped, not consumed.
 // DeliverOnce delivers the first due pending entry for one session
 // (same semantics as the Run loop's per-session step). Exported for the
 // handler-level tests; the Run loop is the production driver.
@@ -298,6 +298,9 @@ func (s *Service) DeliverOnce(ctx context.Context, ws, ses string, d Deliverer) 
 	return s.deliverOne(ctx, ws, ses, d)
 }
 
+// deliverOne delivers the first due pending entry for one session under
+// the per-session lock. Returns true if work was done. Backoff-gated
+// entries (NextAttemptAt in the future) are skipped, not consumed.
 func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) bool {
 	token, ok := s.acquireLock(ctx, ws, ses)
 	if !ok {
@@ -334,6 +337,9 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 	s.client.RPush(ctx, dKey(ws, ses), staged)
 	s.client.LRem(ctx, qk, 1, vals[idx])
 
+	//nolint:contextcheck // detached BY DESIGN (D3): delivery must
+	// survive the accepting request's cancellation — this is the
+	// disconnect-immunity contract, not a bug.
 	dctx, cancel := context.WithTimeout(context.Background(), DeliveryTimeout)
 	defer cancel()
 	err = d(dctx, ws, ses, e)

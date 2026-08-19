@@ -317,6 +317,11 @@ var implOnlyAllowlist = map[route]bool{
 	// in-cluster monitoring stack. Not part of the public API.
 	{method: "GET", path: "/metrics"}: true,
 
+	// D3 (#907): outbox queue-retry — an action route on the queue
+	// resource (parallel to the DELETE dismiss above), deliberately not
+	// part of the public API surface.
+	{method: "POST", path: "/api/v1/workspaces/:id/sessions/:sessionId/queue/:messageId/retry"}: true,
+
 	// #901 G6: auth-gated pprof mounts. The catch-all wildcard registers
 	// one route per method; the surface is a single admin diagnostic
 	// endpoint (Go runtime profiles), deliberately not part of the

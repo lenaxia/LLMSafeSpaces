@@ -220,11 +220,15 @@ func (h *ProxyHandler) SetAdapter(a agent.Adapter) {
 }
 
 // SetOutbox wires the D3 durable-prompt outbox (design 0050 §D3, #907).
-// Also starts the delivery worker if the handler is already started;
-// otherwise Start() launches it (nil outbox = legacy sync path).
-// SetOutboxForTest wires the outbox after Start (tests only; production
-// wires via SetOutbox before Start).
-func (h *ProxyHandler) SetOutboxForTest(o *outbox.Service) {
+// The worker launches in Start() when the outbox is set (nil = legacy
+// synchronous send path, dev/test).
+func (h *ProxyHandler) SetOutbox(o *outbox.Service) {
+	if o == nil {
+		return
+	}
+	if h.started {
+		panic("SetOutbox called after Start — request goroutines may already be reading h.outbox")
+	}
 	h.outbox = o
 }
 
@@ -242,13 +246,9 @@ func (h *ProxyHandler) DeliverOutboxOnceForTest(ws, ses string) bool {
 	return h.outbox.DeliverOnce(context.Background(), ws, ses, h.outboxDeliver)
 }
 
-func (h *ProxyHandler) SetOutbox(o *outbox.Service) {
-	if o == nil {
-		return
-	}
-	if h.started {
-		panic("SetOutbox called after Start — request goroutines may already be reading h.outbox")
-	}
+// SetOutboxForTest wires the outbox after Start (tests only; production
+// wires via SetOutbox before Start).
+func (h *ProxyHandler) SetOutboxForTest(o *outbox.Service) {
 	h.outbox = o
 }
 
