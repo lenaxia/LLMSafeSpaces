@@ -337,7 +337,8 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 	s.client.RPush(ctx, dKey(ws, ses), staged)
 	s.client.LRem(ctx, qk, 1, vals[idx])
 
-	if err := deliverDetached(d, ws, ses, e); err == nil {
+	derr := deliverDetached(d, ws, ses, e)
+	if derr == nil {
 		s.client.LRem(ctx, dKey(ws, ses), 1, staged)
 		return true
 	}
@@ -345,7 +346,7 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 	// preserving order), then LREM staging — the mirrored crash window
 	// duplicates rather than loses.
 	e.Attempts++
-	e.LastError = err.Error()
+	e.LastError = derr.Error()
 	if e.Attempts >= MaxAttempts {
 		e.Status = StatusError
 	} else {
