@@ -311,7 +311,7 @@ func TestIF_CreateConfig_NameConflict_FreshPath_409_AndCancelsDispatch(t *testin
 // ── #936 e2e unhappy legs (HTTP-level, full router) ────────────────────
 
 // TestIF_E2E_NameConflict_409Shape_FreshPath: full HTTP round-trip on the
-// fresh path — dispatch fires, insert conflicts, run cancelled, response
+// fresh path — dispatch fires, insert conflicts, run canceled, response
 // is 409 with the colliding config name AND humanized scope.
 func TestIF_E2E_NameConflict_409Shape_FreshPath(t *testing.T) {
 	t.Parallel()
@@ -327,7 +327,7 @@ func TestIF_E2E_NameConflict_409Shape_FreshPath(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
 	assert.Contains(t, body["error"], `"ml-stack"`, "names the colliding config")
 	assert.Contains(t, body["error"], "your configs", "humanizes the member scope")
-	// The dispatched run was cancelled (bounded orphan) — the exact
+	// The dispatched run was canceled (bounded orphan) — the exact
 	// production sequence dispatch-before-commit + conflict.
 	require.NotEmpty(t, disp.cancelCalls)
 	assert.Equal(t, int64(777), disp.cancelCalls[0])
