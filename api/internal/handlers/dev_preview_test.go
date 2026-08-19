@@ -17,6 +17,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"github.com/gorilla/websocket"
 )
 
 // --- Mocks ---
@@ -469,4 +471,91 @@ func TestDevPreviewHandler_G34_CallerCookieNotForwarded(t *testing.T) {
 	if auth := capturedHeaders.Get("Authorization"); strings.HasPrefix(auth, "Bearer") {
 		t.Errorf("G34 violation: caller Bearer token forwarded instead of Basic auth: %q", auth)
 	}
+}
+
+func TestDevPreviewHandler_WebSocketUpgrade_RoundTrip(t *testing.T) {
+	// P0-2 (redesign-2026-08-19): WS upgrades must traverse the API edge
+	// end-to-end. The G34 header wipe previously stripped
+	// Connection/Upgrade, degrading handshakes to plain GETs at the dev
+	// server (HMR broken in the field). Echo round-trip through the full
+	// chain: client -> API ReverseProxy -> agentd stand-in -> echo server.
+	upgrader := websocket.Upgrader{}
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Backend stands in for the agentd hop: it receives the agentd
+		// path and performs the upgrade exactly as agentd's ReverseProxy
+		// would forward it to the dev server.
+		if r.URL.Path != "/v1/dev-preview/5173/ws" {
+			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusBadRequest)
+			return
+		}
+		if r.Header.Get("Connection") != "Upgrade" || r.Header.Get("Upgrade") != "websocket" {
+			// The field-observed failure mode: upgrade headers stripped.
+			http.Error(w, "not a websocket upgrade: Connection="+r.Header.Get("Connection")+" Upgrade="+r.Header.Get("Upgrade"), http.StatusBadRequest)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Logf("backend upgrade failed: %v", err)
+			return
+		}
+		defer conn.Close()
+		mt, msg, err := conn.ReadMessage()
+		if err != nil {
+			return
+		}
+		if err := conn.WriteMessage(mt, msg); err != nil {
+			return
+		}
+	}))
+	defer backend.Close()
+
+	r := newDevPreviewRoundTripRouter(t, backend)
+	ts := httptest.NewServer(r)
+	defer ts.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/v1/workspaces/ws-1/dev-preview/5173/ws"
+	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		body := ""
+		if resp != nil && resp.Body != nil {
+			b, _ := io.ReadAll(resp.Body)
+			body = string(b)
+		}
+		t.Fatalf("WS dial through proxy failed: %v (status=%v body=%s)", err, resp, body)
+	}
+	defer conn.Close()
+
+	sent := []byte("hello-through-the-tunnel")
+	if err := conn.WriteMessage(websocket.TextMessage, sent); err != nil {
+		t.Fatalf("write failed: %v", err)
+	}
+	_, got, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read failed: %v", err)
+	}
+	if string(got) != string(sent) {
+		t.Fatalf("echo mismatch: sent %q got %q", sent, got)
+	}
+}
+
+// newDevPreviewRoundTripRouter wires a handler+router against a live test
+// backend standing in for agentd, with the agentd port overridden.
+func newDevPreviewRoundTripRouter(t *testing.T, backend *httptest.Server) *gin.Engine {
+	t.Helper()
+	backendHost := strings.TrimPrefix(backend.URL, "http://")
+	backendIP := backendHost
+	if idx := strings.LastIndex(backendHost, ":"); idx >= 0 {
+		backendIP = backendHost[:idx]
+	}
+	wsGetter := &devPreviewMockWorkspaceGetter{
+		workspaces: map[string]*v1.Workspace{
+			"ws-1": activeWorkspaceWithDevPreview("ws-1", backendIP, true),
+		},
+	}
+	pwProvider := &devPreviewMockPasswordProvider{passwords: map[string]string{"ws-1": "pass"}}
+	h := newDevPreviewHandlerForTest(t, wsGetter, pwProvider)
+	if addr := backend.Listener.Addr().String(); strings.LastIndex(addr, ":") >= 0 {
+		h.agentdPort = addr[strings.LastIndex(addr, ":")+1:]
+	}
+	return setupDevPreviewRouter(h)
 }
