@@ -1,4 +1,8 @@
-# Pinned opencode config schema — refresh procedure
+# Pinned opencode fixtures — refresh procedures
+
+(Originally the config-schema refresh doc; the SSE event-fixture
+procedures were appended below in #938. Contents: opencode config
+schema, then SSE event fixtures — live wire + persisted store.)
 
 `opencode-config.schema.json` is a pinned copy of opencode's official config schema (source: <https://opencode.ai/config.json>). The chart-side agent-config writer (`cmd/workspace-agentd/agent_config_writer.go`) MUST produce output that validates against this schema — enforced by `TestAgentConfigWriter_Rebuild_MatchesOpencodeSchema` and the generic `assertMatchesOpencodeSchema` helper called from every `rebuild()` test.
 
