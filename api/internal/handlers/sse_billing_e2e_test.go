@@ -164,10 +164,15 @@ func TestE2E_PhaseChangeSuspend_CleansBillingMaps(t *testing.T) {
 
 	tracker := sse.NewTracker(env.handler.httpClient, env.log, func(_, _ string) {})
 	env.handler.sseTracker = tracker
+	tracker.SetMeteringDecoder(agentoc.NewAdapter(nil, nil, zap.NewNop()).MeteringFromEvent)
 	tracker.SetPasswordGetter(env.handler)
 	tracker.SetPodIPResolver(func(string) string { return "10.0.0.1" })
 
 	// Seed billing state by sending a session.updated event.
+	// The decoder above is load-bearing: without it the metering guard
+	// gates the seed out, the maps start empty, and the post-suspend
+	// emptiness assertions below pass vacuously (mutation-verified in
+	// #949 round 3).
 	tracker.ProcessEvent("ws-clean", `{
 		"type": "session.updated",
 		"properties": {
