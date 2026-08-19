@@ -19,6 +19,7 @@ package main
 // chain, regardless of which mode delivered it.
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
@@ -70,6 +71,25 @@ func readAdminTokenFile(path string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(data)), nil
+}
+
+// resolveAdminTokenForBoot enforces design 0051 D5.2 — agentd refuses to
+// start without an admin-mux credential (historically an unset
+// AGENTD_ADMIN_TOKEN silently DISABLED the bearer gate on /v1/readyz and
+// /v1/statusz: a wiring gap that failed open) — and returns the token
+// resolved ONCE for the process lifetime. Every consumer (mux wrap,
+// health probe) reads the boot-resolved value, so no file/env re-read can
+// diverge from what the gate verified (TOCTOU closed, #934 review).
+// Escape: explicit AGENTD_ALLOW_NO_ADMIN_TOKEN=1 (dev/kind) → "" no error.
+func resolveAdminTokenForBoot() (string, error) {
+	tok := adminToken()
+	if tok != "" {
+		return tok, nil
+	}
+	if os.Getenv("AGENTD_ALLOW_NO_ADMIN_TOKEN") == "1" {
+		return "", nil
+	}
+	return "", fmt.Errorf("no admin token: set AGENTD_ADMIN_TOKEN_FILE (file delivery, #887 D5.1) or AGENTD_ADMIN_TOKEN (legacy env); set AGENTD_ALLOW_NO_ADMIN_TOKEN=1 only for dev clusters")
 }
 
 // scrubAdminEnv removes agentd-only credential entries from an env slice
