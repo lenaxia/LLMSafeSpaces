@@ -630,7 +630,7 @@ func TestIntegration_IF_Migration000025_TwoDefaultUpgradePath(t *testing.T) {
 	// Execute the REAL migration file (round-6 recommendation): reading
 	// the artifact prevents silent drift between the test's copy and the
 	// shipped migration.
-	migSQL, err := os.ReadFile(filepath.Join("..", "..", "migrations", "000025_image_factory_single_default.up.sql"))
+	migSQL, err := os.ReadFile(filepath.Join("..", "..", "..", "migrations", "000025_image_factory_single_default.up.sql"))
 	require.NoError(t, err, "read the shipped migration")
 	_, err = h.SQLDB().ExecContext(ctx, string(migSQL))
 	require.NoError(t, err, "shipped migration must succeed on a two-default database")
