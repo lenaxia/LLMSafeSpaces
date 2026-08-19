@@ -1758,3 +1758,92 @@ func TestPurgeUserSecrets_DBError(t *testing.T) {
 	require.Error(t, err)
 	require.NoError(t, mock.ExpectationsWereMet())
 }
+
+func TestGetAPIKeyRecordByHash_NonNullAllowedCIDRs(t *testing.T) {
+	// Pins the pgarray wrapper at this call site: a nil-only fixture
+	// would pass with the wrapper REMOVED (database/sql natively assigns
+	// nil to *[]string) — the non-NULL array is what proves it's here.
+	service, mock, cleanup := setupMockDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	createdAt := time.Now()
+	rows := sqlmock.NewRows([]string{
+		"id", "user_id", "key", "name", "active", "created_at", "expires_at",
+		"decrypt_access", "kek_salt", "wrapped_dek", "dek_synced", "key_ciphertext",
+		"allowed_cidrs",
+	}).AddRow(
+		"key-1", "user-1", "hash1", "office-key", true, createdAt, nil,
+		false, nil, nil, false, nil,
+		`{"10.0.0.0/8","192.168.0.0/16"}`,
+	)
+	mock.ExpectQuery("SELECT id, user_id, key, name, active, created_at, expires_at").
+		WithArgs("hash1").
+		WillReturnRows(rows)
+
+	rec, err := service.GetAPIKeyRecordByHash(ctx, "hash1")
+	assert.NoError(t, err)
+	require.NotNil(t, rec)
+	assert.Equal(t, []string{"10.0.0.0/8", "192.168.0.0/16"}, rec.AllowedCIDRs,
+		"text[] literal must scan through pgarray into AllowedCIDRs")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestListAPIKeys_NonNullAllowedCIDRs(t *testing.T) {
+	// The ListAPIKeys scan line had zero executing coverage before this
+	// test — auth-service tests mock the DB interface, not this query.
+	service, mock, cleanup := setupMockDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	createdAt := time.Now()
+	rows := sqlmock.NewRows([]string{
+		"id", "user_id", "key", "name", "active", "created_at", "expires_at",
+		"decrypt_access", "dek_synced", "allowed_cidrs",
+	}).
+		AddRow("key-1", "user-1", "h1", "scoped", true, createdAt, nil, false, false, `{"10.0.0.0/8"}`).
+		AddRow("key-2", "user-1", "h2", "unscoped", true, createdAt, nil, false, false, nil)
+	mock.ExpectQuery("SELECT id, user_id, key, name, active, created_at, expires_at").
+		WithArgs("user-1").
+		WillReturnRows(rows)
+
+	keys, err := service.ListAPIKeys(ctx, "user-1")
+	assert.NoError(t, err)
+	require.Len(t, keys, 2)
+	assert.Equal(t, []string{"10.0.0.0/8"}, keys[0].AllowedCIDRs, "populated allowed_cidrs must scan")
+	assert.Nil(t, keys[1].AllowedCIDRs, "SQL NULL must stay nil (not empty slice)")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestCreateAPIKey_BindsCIDRsAsPqIdenticalLiteral(t *testing.T) {
+	// Pins the byte-identity claim at the call-site level: toNullableStringArray
+	// must bind the exact literal lib/pq's StringArray produced ({"a","b"}),
+	// not a bare slice (which database/sql would reject) or another format.
+	service, mock, cleanup := setupMockDB(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	kekSalt := make([]byte, 32)
+	wrappedDEK := make([]byte, 48)
+	keyCiphertext := make([]byte, 48)
+	apiKey := &types.APIKey{
+		ID: "key-cidr", UserID: "user-1", Key: "hash", Name: "scoped",
+		Active: true, CreatedAt: time.Now(), Prefix: "lsp_",
+		KekSalt: kekSalt, WrappedDEK: wrappedDEK, DekSynced: true,
+		KeyCiphertext: keyCiphertext, DecryptAccess: true,
+		AllowedCIDRs: []string{"10.0.0.0/8", "192.168.0.0/16"},
+	}
+
+	mock.ExpectExec("INSERT INTO api_keys").
+		WithArgs(
+			apiKey.ID, apiKey.UserID, apiKey.Key, apiKey.Name, apiKey.Active,
+			apiKey.CreatedAt, nil, "lsp_", false, true,
+			kekSalt, wrappedDEK, true, keyCiphertext, apiKey.KeyVersion,
+			`{"10.0.0.0/8","192.168.0.0/16"}`, // the pgarray bind: pq-identical
+		).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	err := service.CreateAPIKey(ctx, apiKey)
+	assert.NoError(t, err)
+	assert.NoError(t, mock.ExpectationsWereMet())
+}

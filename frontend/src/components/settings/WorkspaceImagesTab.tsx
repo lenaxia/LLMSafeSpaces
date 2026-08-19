@@ -30,6 +30,10 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
   const [expandedConfig, setExpandedConfig] = useState<string | null>(null);
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
+  // #928 phase 2: refresh-flow prefill source. When set, the create form
+  // is pre-filled from this config and the base is pre-targeted at the
+  // update (bump or migration) so a re-save produces the new-hash config.
+  const [refreshSource, setRefreshSource] = useState<Config | null>(null);
 
   // Track whether the default base has been auto-selected on first load.
   // Using a ref (not state) avoids re-creating the `load` callback when
@@ -91,6 +95,64 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
     }
   };
 
+  // #928 refresh flow: prefill the create form from a stale config with
+  // the base pre-targeted at the update. The form IS the diff review —
+  // same extension selection, new base visible in the Base Image select;
+  // saving creates a NEW config (new hash, new build; coalesced if the
+  // combo exists). The original config is left untouched — migration is
+  // explicit consent per ruling #29, never a mutation.
+  const handleRefreshPrefill = (cfg: Config) => {
+    if (!cfg.updatesAvailable) return;
+    const u = cfg.updatesAvailable;
+    const targetName = u.kind === "base_migration" && u.defaultBaseName ? u.defaultBaseName : u.currentBaseName;
+    const targetVersion = u.kind === "base_migration" && u.defaultBaseVersion
+      ? u.defaultBaseVersion
+      : u.latestBaseVersion || u.currentBaseVersion;
+    // Only pre-target if the catalog actually offers that base (retired
+    // bases can't be re-targeted; the pill wouldn't show for them, but
+    // be defensive).
+    const target = catalog?.bases.find((b) => b.name === targetName && b.version === targetVersion)
+      ?? catalog?.bases.find((b) => b.name === targetName);
+    if (!target) {
+      toast("Update target base not found in catalog", "error");
+      return;
+    }
+    // R2 (#928 review r3): extensions retired since this config was saved
+    // are absent from the catalog — invisible checkboxes, unsaveable
+    // selection (save 422s "extension is retired"). Auto-drop them from
+    // the prefill and say so; an empty remainder aborts BEFORE any state
+    // mutation so no banner/prefill half-lands.
+    const liveSelection = cfg.selection.filter((id) =>
+      catalog?.extensions.some((e) => e.id === id && !e.retired),
+    );
+    const dropped = cfg.selection.length - liveSelection.length;
+    if (liveSelection.length === 0) {
+      toast("Every extension in this config has been retired — nothing to refresh; create a new config instead", "error");
+      return;
+    }
+    setRefreshSource(cfg);
+    // Scoped name uniqueness (same scope+owner) means the original name
+    // is taken — default to a de-conflicted name carrying the update
+    // target; the user can edit before saving. R3 (#928 review r3):
+    // a SECOND refresh of the same original deterministically collides
+    // with the first refresh's config — dedup against the in-hand list.
+    let suggested = `${cfg.name} (${target.name} ${target.version})`;
+    if (configs.some((c) => c.name === suggested)) {
+      for (let n = 2; ; n++) {
+        const candidate = `${suggested} ${n}`;
+        if (!configs.some((c) => c.name === candidate)) { suggested = candidate; break; }
+      }
+    }
+    setName(suggested);
+    if (dropped > 0) {
+      toast(`${dropped} retired extension${dropped > 1 ? "s" : ""} dropped from the refresh (no longer in the catalog)`, "success");
+    }
+    setSelected(new Set(liveSelection));
+    setBaseName(target.name);
+    setBaseVersion(target.version);
+    setExpandedConfig(null);
+  };
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -138,7 +200,21 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
       setConfigs((prev) => [...prev, cfg]);
       setName("");
       setSelected(new Set());
-      toast(`Image config created: ${cfg.name} is building`, "success");
+      setRefreshSource(null);
+      // N3 (#931 review r5): a refresh-save leaves the base pre-targeted
+      // at the update — the cancel-side twin of round-2's C5. Restore
+      // the default so the next manual create doesn't silently target
+      // the migration base.
+      if (refreshSource) {
+        const def = catalog?.bases.find((b) => b.isDefault) ?? catalog?.bases[0];
+        if (def) { setBaseName(def.name); setBaseVersion(def.version); }
+      }
+      toast(
+        refreshSource
+          ? `Refreshed ${refreshSource.name} onto ${baseName} ${baseVersion}: new config is building (the original is unchanged)`
+          : `Image config created: ${cfg.name} is building`,
+        "success",
+      );
     } catch (e: unknown) {
       toast(e instanceof Error ? e.message : "Failed to create config", "error");
     }
@@ -149,6 +225,20 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
   if (!catalog) return <p>No catalog data</p>;
 
   const currentSelection = Array.from(selected).sort();
+  // #928 refresh (C4): selected extensions that don't support the CURRENT
+  // target base. ResolveSelection 422s on these at save; surfacing them
+  // before the save — especially when a refresh prefill moved the base —
+  // is the difference between "why did it fail" and seeing it coming.
+  const unsupportedOnBase = currentSelection.filter((id) => {
+    const ext = catalog?.extensions.find((e) => e.id === id);
+    // Absent-from-catalog = retired (the endpoint excludes retired) —
+    // R2: flag those too; they can never save and their checkbox is
+    // invisible. If the endpoint ever INCLUDES retired entries, flag
+    // them as well (retired can never save either way).
+    if (!ext) return true;
+    if (ext.retired) return true;
+    return !ext.supportedBases.includes(baseName);
+  });
   const isCurrentSelectionBlocked = (): boolean => {
     if (currentSelection.length === 0) return false;
     if (!catalog.knownFailures || catalog.knownFailures.length === 0) return false;
@@ -253,6 +343,14 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
             </div>
             {editable && cfg.status !== "building" && (
               <div className="mt-3 flex gap-2">
+                {cfg.updatesAvailable && (
+                  <button
+                    onClick={() => handleRefreshPrefill(cfg)}
+                    className="rounded-md bg-amber-600 px-3 py-1 text-xs font-medium text-white hover:bg-amber-700"
+                  >
+                    Refresh to {cfg.updatesAvailable.kind === "base_migration" ? cfg.updatesAvailable.defaultBaseName : `${cfg.baseName} ${cfg.updatesAvailable.latestBaseVersion}`}
+                  </button>
+                )}
                 {renamingId === cfg.id ? (
                   <>
                     <input
@@ -286,6 +384,35 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
         Create {createScopeLabel} Image
       </h3>
       <div className="space-y-4 rounded-md border border-border p-4">
+        {refreshSource && (
+          <div className="flex items-start justify-between gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
+            <div>
+              <span className="font-medium">Refreshing “{refreshSource.name}”</span> — same extensions, new base.
+              Saving creates a NEW config; the original stays untouched and launchable.
+              {refreshSource.updatesAvailable?.kind === "base_migration" && (
+                <div className="mt-1 text-muted-foreground">
+                  Package versions follow the Debian suite: {refreshSource.baseName} → {refreshSource.updatesAvailable.defaultBaseName} may change system-package versions.
+                </div>
+              )}
+            </div>
+            <button
+              onClick={() => {
+                setRefreshSource(null);
+                setName("");
+                setSelected(new Set());
+                // Restore the default base — the prefill re-targeted it;
+                // leaving it would silently aim the next manual create
+                // at the migration base (review round 2, C5).
+                const def = catalog?.bases.find((b) => b.isDefault) ?? catalog?.bases[0];
+                if (def) { setBaseName(def.name); setBaseVersion(def.version); }
+              }}
+              className="shrink-0 rounded px-2 py-0.5 text-muted-foreground hover:bg-accent"
+              aria-label="Cancel refresh"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
         <div>
           <label className="block text-sm font-medium mb-1">Name</label>
           <input
@@ -314,6 +441,11 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
               </option>
             ))}
           </select>
+          {unsupportedOnBase.length > 0 && (
+            <div className="mt-1 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-xs text-red-600 dark:text-red-400">
+              Not available on {baseName}: {unsupportedOnBase.join(", ")} — deselect them or pick a base that supports them. Saving with them selected will fail.
+            </div>
+          )}
         </div>
         <div>
           <label className="block text-sm font-medium mb-1">Extensions</label>

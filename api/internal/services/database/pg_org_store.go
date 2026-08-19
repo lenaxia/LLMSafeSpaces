@@ -13,8 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lib/pq"
-
+	"github.com/lenaxia/llmsafespaces/api/internal/services/database/pgarray"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
@@ -1698,8 +1697,8 @@ func scanSSOConfig(row *sql.Row, cfg *types.OrgSSOConfig) error {
 		&cfg.DiscoveryURL,
 		&cfg.ClientID,
 		&cfg.ClientSecret,
-		pq.Array(&cfg.ClaimedDomains),
-		pq.Array(&verifiedDomains),
+		pgarray.New(&cfg.ClaimedDomains),
+		pgarray.New(&verifiedDomains),
 		&verificationToken,
 		&cfg.AutoProvision,
 		&groupMappingBytes,
@@ -1763,7 +1762,7 @@ func (s *PgOrgStore) UpsertSSOConfig(ctx context.Context, config *types.OrgSSOCo
 		   group_role_mapping = EXCLUDED.group_role_mapping,
 		   updated_at         = NOW()`,
 		config.OrgID, config.DiscoveryURL, config.ClientID, config.ClientSecret,
-		pq.Array(ssoDomainsParam(config.ClaimedDomains)), pq.Array(verified), token,
+		pgarray.New(ssoDomainsParam(config.ClaimedDomains)), pgarray.New(verified), token,
 		config.AutoProvision, groupMapping,
 	)
 	if err != nil {
@@ -1826,7 +1825,7 @@ func (s *PgOrgStore) ListSSODomains(ctx context.Context) ([]types.SSODomain, err
 	for rows.Next() {
 		var slug, name string
 		var domains []string
-		if err := rows.Scan(&slug, &name, pq.Array(&domains)); err != nil {
+		if err := rows.Scan(&slug, &name, pgarray.New(&domains)); err != nil {
 			return nil, fmt.Errorf("scan sso domain row: %w", err)
 		}
 		for _, d := range domains {

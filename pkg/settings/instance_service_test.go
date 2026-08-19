@@ -269,6 +269,64 @@ func TestInstanceService_Set_UnknownKey(t *testing.T) {
 	}
 }
 
+// TestInstanceService_DevPreview_DefaultsAndRoundTrip locks the wiring issue
+// #946 fixed: the Epic 66 keys must serve their defaults on an empty store
+// (app.go reads devPreview.enabled at boot — an index miss previously made
+// GetBool fail, the error was swallowed, and the feature booted disabled),
+// and Set must accept them (the admin PUT /settings path — previously
+// rejected as unknown key, leaving no way to enable or disable the feature).
+func TestInstanceService_DevPreview_DefaultsAndRoundTrip(t *testing.T) {
+	store := newMockStore()
+	svc := newTestService(store)
+	ctx := context.Background()
+
+	enabled, err := svc.GetBool(ctx, "devPreview.enabled")
+	if err != nil {
+		t.Fatalf("GetBool(devPreview.enabled): %v", err)
+	}
+	if !enabled {
+		t.Error("default devPreview.enabled = false, want true")
+	}
+
+	maxBytes, err := svc.GetInt(ctx, "devPreview.maxResponseBytes")
+	if err != nil {
+		t.Fatalf("GetInt(devPreview.maxResponseBytes): %v", err)
+	}
+	if maxBytes != 52428800 {
+		t.Errorf("default devPreview.maxResponseBytes = %d, want 52428800", maxBytes)
+	}
+
+	maxConns, err := svc.GetInt(ctx, "devPreview.maxConnsPerWorkspace")
+	if err != nil {
+		t.Fatalf("GetInt(devPreview.maxConnsPerWorkspace): %v", err)
+	}
+	if maxConns != 50 {
+		t.Errorf("default devPreview.maxConnsPerWorkspace = %d, want 50", maxConns)
+	}
+
+	if err := svc.Set(ctx, "devPreview.enabled", false); err != nil {
+		t.Fatalf("Set(devPreview.enabled, false): %v", err)
+	}
+	enabled, err = svc.GetBool(ctx, "devPreview.enabled")
+	if err != nil {
+		t.Fatalf("GetBool(devPreview.enabled) after Set: %v", err)
+	}
+	if enabled {
+		t.Error("devPreview.enabled after Set(false) = true, want false")
+	}
+
+	if err := svc.Set(ctx, "devPreview.maxConnsPerWorkspace", 10); err != nil {
+		t.Fatalf("Set(devPreview.maxConnsPerWorkspace, 10): %v", err)
+	}
+	maxConns, err = svc.GetInt(ctx, "devPreview.maxConnsPerWorkspace")
+	if err != nil {
+		t.Fatalf("GetInt(devPreview.maxConnsPerWorkspace) after Set: %v", err)
+	}
+	if maxConns != 10 {
+		t.Errorf("devPreview.maxConnsPerWorkspace after Set = %d, want 10", maxConns)
+	}
+}
+
 func TestInstanceService_Set_InvalidatesCache(t *testing.T) {
 	store := newMockStore()
 	store.set("auth.lockoutAttempts", 5)

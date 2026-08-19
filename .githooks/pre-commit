@@ -137,8 +137,14 @@ EOF
 #
 # Only ADDED files are checked (diff-filter=A). Modified existing worklogs
 # (e.g. typo fix on 0474_foo.md) pass through untouched — the convention
-# applies to new files only.
+# applies to new files only. Merge commits are exempt entirely: worklogs
+# arriving via `git merge main` are already bot-numbered on main, and the
+# staged-diff sees them as "added" — a false positive that blocks every
+# main-merge whose main-side grew worklogs.
 run_worklog_prefix_gate() {
+    if [ -f .git/MERGE_HEAD ]; then
+        return 0
+    fi
     local bad=0
     while IFS= read -r f; do
         local base

@@ -66,6 +66,33 @@ describe("NewWorkspaceSplitButton", () => {
     expect(onCreated).toHaveBeenCalledWith("ws-new");
   });
 
+  it("shows the update pill on stale ready configs in the launch picker (#928)", async () => {
+    // Re-mock listConfigs for this test: one stale ready config
+    const { imageFactoryApi } = await import("../../api/imageFactory");
+    vi.mocked(imageFactoryApi.listConfigs).mockResolvedValueOnce([
+      {
+        id: "c9", hash: "s-stale1", name: "Stale Stack", status: "ready", selection: ["ffmpeg"], scope: "member",
+        updatesAvailable: {
+          kind: "base_migration",
+          currentBaseName: "bookworm",
+          currentBaseVersion: "0.6.0",
+          latestBaseVersion: "0.9.0",
+          defaultBaseName: "trixie",
+          defaultBaseVersion: "0.1.0",
+        },
+      },
+    ] as never);
+    const user = userEvent.setup();
+    render(<NewWorkspaceSplitButton onCreated={vi.fn()} />);
+
+    await user.click(screen.getByLabelText("Select workspace image"));
+    expect(await screen.findByText("Stale Stack")).toBeInTheDocument();
+    const pill = screen.getByTitle(/New base available: trixie/i);
+    expect(pill).toBeInTheDocument();
+    expect(pill.textContent).toBe("↻");
+    // Fresh ready configs from prior tests are absent (mockResolvedValueOnce)
+  });
+
   it("opens popup showing ready + building configs with pills", async () => {
     const user = userEvent.setup();
     render(<NewWorkspaceSplitButton onCreated={vi.fn()} />);

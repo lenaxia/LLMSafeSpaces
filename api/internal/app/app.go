@@ -1012,25 +1012,12 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	// epic — resolved: inject ProxyHandler as the password provider).
 	var devPreviewHandler *handlers.DevPreviewHandler
 	if proxyHandler != nil {
-		dpEnabled, _ := instanceSettings.GetBool(ctx, settings.KeyDevPreviewEnabled.Name())
-		dpMaxBytes, _ := instanceSettings.GetInt(ctx, settings.KeyDevPreviewMaxResponseBytes.Name())
-		dpMaxConns, _ := instanceSettings.GetInt(ctx, settings.KeyDevPreviewMaxConnsPerWorkspace.Name())
-		if dpMaxBytes <= 0 {
-			dpMaxBytes = 52428800
-		}
-		if dpMaxConns <= 0 {
-			dpMaxConns = 50
-		}
 		devPreviewHandler = handlers.NewDevPreviewHandler(
 			&k8sWorkspaceGetterAdapter{client: k8sClient, namespace: cfg.Kubernetes.Namespace},
 			proxyHandler,
 			cfg.Kubernetes.Namespace,
 			log,
-			handlers.DevPreviewConfig{
-				Enabled:              dpEnabled,
-				MaxResponseBytes:     int64(dpMaxBytes),
-				MaxConnsPerWorkspace: dpMaxConns,
-			},
+			devPreviewConfigFromSettings(ctx, instanceSettings, log),
 		)
 	}
 
