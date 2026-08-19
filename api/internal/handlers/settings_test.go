@@ -351,3 +351,161 @@ func TestUserSettings_PUT_UnknownKey(t *testing.T) {
 		t.Errorf("expected 400 for unknown key, got %d", w.Code)
 	}
 }
+
+// ── Epic 66 dev-preview keys (issue #946) ──────────────────────────────────
+// HTTP-level wiring for the three devPreview.* settings: the schema endpoint
+// must serve them (the admin UI is schema-driven — a missing entry renders
+// no switch), and PUT must accept them (the remediation path the issue
+// found rejected: "unknown instance setting key").
+
+func TestAdminSettings_SCHEMA_ContainsDevPreviewKeys(t *testing.T) {
+	r, _ := setupSettingsRouter("admin")
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("GET", "/api/v1/admin/settings/schema", nil)
+	r.ServeHTTP(w, req)
+
+	if w.Code != 200 {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Settings []struct {
+			Key      string `json:"key"`
+			Type     string `json:"type"`
+			Category string `json:"category"`
+			ReadOnly bool   `json:"readOnly"`
+			Default  any    `json:"default"`
+			Min      *int   `json:"min"`
+			Max      *int   `json:"max"`
+		} `json:"settings"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal schema: %v", err)
+	}
+
+	want := map[string]struct {
+		typ      string
+		category string
+		def      any
+		min      *int
+		max      *int
+	}{
+		"devPreview.enabled":              {typ: "bool", category: "Dev Preview", def: true},
+		"devPreview.maxResponseBytes":     {typ: "int", category: "Dev Preview", def: float64(52428800), min: ptr(1024), max: ptr(1073741824)},
+		"devPreview.maxConnsPerWorkspace": {typ: "int", category: "Dev Preview", def: float64(50), min: ptr(1), max: ptr(1000)},
+	}
+
+	served := map[string]bool{}
+	for _, s := range resp.Settings {
+		served[s.Key] = true
+		w, ok := want[s.Key]
+		if !ok {
+			continue
+		}
+		if s.Type != w.typ {
+			t.Errorf("%s: type = %q, want %q", s.Key, s.Type, w.typ)
+		}
+		if s.Category != w.category {
+			t.Errorf("%s: category = %q, want %q", s.Key, s.Category, w.category)
+		}
+		if s.ReadOnly {
+			t.Errorf("%s: must be admin-mutable (Tier 2), got readOnly", s.Key)
+		}
+		if s.Default != w.def {
+			t.Errorf("%s: default = %v, want %v", s.Key, s.Default, w.def)
+		}
+		if (s.Min == nil) != (w.min == nil) || (s.Min != nil && *s.Min != *w.min) {
+			t.Errorf("%s: min = %v, want %v", s.Key, s.Min, w.min)
+		}
+		if (s.Max == nil) != (w.max == nil) || (s.Max != nil && *s.Max != *w.max) {
+			t.Errorf("%s: max = %v, want %v", s.Key, s.Max, w.max)
+		}
+	}
+	for key := range want {
+		if !served[key] {
+			t.Errorf("%s missing from schema endpoint — admin UI renders no switch for it (the #946 bug)", key)
+		}
+	}
+}
+
+func TestAdminSettings_PUT_DevPreview_RoundTrip(t *testing.T) {
+	r, _ := setupSettingsRouter("admin")
+
+	// Flip the kill-switch off.
+	body := `{"value": false}`
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("PUT", "/api/v1/admin/settings/devPreview.enabled", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("PUT devPreview.enabled=false: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Tighten the connection cap.
+	body = `{"value": 10}`
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest("PUT", "/api/v1/admin/settings/devPreview.maxConnsPerWorkspace", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("PUT devPreview.maxConnsPerWorkspace=10: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Both values must be visible on the read side.
+	w = httptest.NewRecorder()
+	req, _ = http.NewRequest("GET", "/api/v1/admin/settings", nil)
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("GET admin settings: expected 200, got %d", w.Code)
+	}
+	var resp struct {
+		Settings map[string]any `json:"settings"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal settings: %v", err)
+	}
+	if v, ok := resp.Settings["devPreview.enabled"].(bool); !ok || v {
+		t.Errorf("devPreview.enabled after PUT = %v, want false", resp.Settings["devPreview.enabled"])
+	}
+	if v, ok := resp.Settings["devPreview.maxConnsPerWorkspace"].(float64); !ok || v != 10 {
+		t.Errorf("devPreview.maxConnsPerWorkspace after PUT = %v, want 10", resp.Settings["devPreview.maxConnsPerWorkspace"])
+	}
+}
+
+// TestAdminSettings_PUT_DevPreview_BoundsRejected pins the Min/Max policy
+// introduced with the registration (1 KiB–1 GiB, 1–1000) at the HTTP
+// boundary, both sides: out-of-range → 400, boundary values → 200.
+func TestAdminSettings_PUT_DevPreview_BoundsRejected(t *testing.T) {
+	cases := []struct {
+		name  string
+		key   string
+		value string
+		want  int
+	}{
+		{"conns zero rejected", "devPreview.maxConnsPerWorkspace", `{"value": 0}`, 400},
+		{"conns below min rejected", "devPreview.maxConnsPerWorkspace", `{"value": -5}`, 400},
+		{"conns above max rejected", "devPreview.maxConnsPerWorkspace", `{"value": 1001}`, 400},
+		{"conns min boundary accepted", "devPreview.maxConnsPerWorkspace", `{"value": 1}`, 200},
+		{"conns max boundary accepted", "devPreview.maxConnsPerWorkspace", `{"value": 1000}`, 200},
+		{"bytes below min rejected", "devPreview.maxResponseBytes", `{"value": 1023}`, 400},
+		{"bytes above max rejected", "devPreview.maxResponseBytes", `{"value": 1073741825}`, 400},
+		{"bytes min boundary accepted", "devPreview.maxResponseBytes", `{"value": 1024}`, 200},
+		{"bytes max boundary accepted", "devPreview.maxResponseBytes", `{"value": 1073741824}`, 200},
+		{"wrong type rejected", "devPreview.enabled", `{"value": "yes"}`, 400},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _ := setupSettingsRouter("admin")
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest("PUT", "/api/v1/admin/settings/"+tc.key, bytes.NewBufferString(tc.value))
+			req.Header.Set("Content-Type", "application/json")
+			r.ServeHTTP(w, req)
+			if w.Code != tc.want {
+				t.Errorf("PUT %s %s: expected %d, got %d: %s", tc.key, tc.value, tc.want, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+func ptr(i int) *int { return &i }

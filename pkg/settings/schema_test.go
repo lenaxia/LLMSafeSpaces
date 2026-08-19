@@ -196,6 +196,55 @@ func TestInstanceSettings_WorkflowTriggerKeys(t *testing.T) {
 	}
 }
 
+// TestInstanceSettings_DevPreviewKeys pins the contract for the 3 Epic 66
+// instance settings: each must be present in InstanceSettings() (reachable via
+// InstanceService get/set), must be registered in KnownKeys (typed constant
+// and schema agree), and the typed Key constant name/default must match the
+// schema entry. Regression test for issue #946: the keys were originally
+// registered in KnownKeys only, so the kill-switch read at app boot failed
+// with "unknown instance setting key", the error was swallowed, and every
+// stock deployment booted with dev preview hard-disabled with no admin UI
+// switch and no remediation path.
+func TestInstanceSettings_DevPreviewKeys(t *testing.T) {
+	idx := InstanceSettingIndex()
+	pairs := []struct {
+		keyName  string
+		typedKey Key
+		typ      SettingType
+		def      any
+	}{
+		{"devPreview.enabled", KeyDevPreviewEnabled, TypeBool, true},
+		{"devPreview.maxResponseBytes", KeyDevPreviewMaxResponseBytes, TypeInt, 52428800},
+		{"devPreview.maxConnsPerWorkspace", KeyDevPreviewMaxConnsPerWorkspace, TypeInt, 50},
+	}
+	for _, p := range pairs {
+		t.Run(p.keyName, func(t *testing.T) {
+			def, ok := idx[p.keyName]
+			if !ok {
+				t.Fatalf("%q missing from InstanceSettings() — InstanceService.Get/Set will reject as unknown", p.keyName)
+			}
+			if def.Type != p.typ {
+				t.Errorf("type = %v, want %v", def.Type, p.typ)
+			}
+			if def.Tier != 2 {
+				t.Errorf("tier = %d, want 2 (instance)", def.Tier)
+			}
+			if !IsKnown(p.keyName) {
+				t.Errorf("%q not registered in KnownKeys (typed constant drift)", p.keyName)
+			}
+			if p.typedKey.Name() != p.keyName {
+				t.Errorf("typed key name = %q, want %q", p.typedKey.Name(), p.keyName)
+			}
+			if p.typedKey.Default() != p.def {
+				t.Errorf("typed key default = %v, want %v", p.typedKey.Default(), p.def)
+			}
+			if def.Default != p.def {
+				t.Errorf("schema default = %v, want %v", def.Default, p.def)
+			}
+		})
+	}
+}
+
 func TestUserSettingIndex(t *testing.T) {
 	idx := UserSettingIndex()
 	if len(idx) != len(UserSettings()) {
