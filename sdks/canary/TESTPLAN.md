@@ -258,7 +258,7 @@ Tests that logout actually invalidates the JWT in the revocation cache — not j
 |---|---|
 | P1 | `GET /users/me/settings` → 200 with `settings` object and `schemaVersion` integer |
 | P2 | `GET /users/me/settings/schema` → 200 with `schemaVersion` integer and `settings` array |
-| P3 | Schema `schemaVersion` equals the expected constant (currently `12`, `settings.SchemaVersion`); alert if it changes unexpectedly |
+| P3 | Schema `schemaVersion` equals the expected constant (currently `13`, `settings.SchemaVersion`); alert if it changes unexpectedly |
 | P4 | Each setting in schema has `key`, `type`, `default`, `label` fields |
 | P5 | `PUT /users/me/settings/theme` with `{"value": "dark"}` → 200 with `key` and `value` |
 | P6 | `GET /users/me/settings` after PUT reflects `theme=dark` |
