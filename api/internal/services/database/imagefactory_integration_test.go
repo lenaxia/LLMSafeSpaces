@@ -21,7 +21,7 @@ import (
 // the shared integration-test harness. They verify: SQL validity against the
 // real migration-000013 schema, column names/types match, the partial unique
 // indexes enforce scoped friendly-name uniqueness, the coalescing probe's
-// ORDER BY CASE preference works, pq.Array round-trips with text[], and
+// ORDER BY CASE preference works, pgarray.New round-trips with text[], and
 // CHECK/ON CONFLICT constraints behave. These are exactly the failure modes
 // a real-DB round-trip catches and sqlmock cannot (per design/0047).
 
@@ -227,7 +227,7 @@ func TestIntegration_IF_Configs_RoundTrip(t *testing.T) {
 	// resolved_values round-trip through JSONB
 	assert.Equal(t, imagefactory.ExtensionTypeApt, got.ResolvedValues["ffmpeg"].Type)
 	assert.Equal(t, "python@3.13", got.ResolvedValues["python313"].Value)
-	// selection round-trips through pq.Array text[]
+	// selection round-trips through pgarray.New text[]
 	assert.ElementsMatch(t, imagefactory.Selection{"ffmpeg", "python313"}, got.Selection)
 
 	// Status update
@@ -375,7 +375,7 @@ func TestIntegration_IF_KnownFailures_CRUD(t *testing.T) {
 }
 
 // TestIntegration_IF_GetLaunchableConfigByHash validates the JOIN query +
-// pq.Array scan against real PostgreSQL — the failure modes sqlmock can't
+// pgarray.New scan against real PostgreSQL — the failure modes sqlmock can't
 // catch (ambiguous column refs, text[] scan, JOIN cardinality).
 func TestIntegration_IF_GetLaunchableConfigByHash(t *testing.T) {
 	h := testharness.New(t)
@@ -411,7 +411,7 @@ func TestIntegration_IF_GetLaunchableConfigByHash(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "launch-cfg", cfg.Name)
 	assert.Equal(t, imagefactory.StatusReady, cfg.Status)
-	assert.Equal(t, imagefactory.Selection{"ffmpeg", "python-3.12"}, cfg.Selection, "pq.Array scan must round-trip")
+	assert.Equal(t, imagefactory.Selection{"ffmpeg", "python-3.12"}, cfg.Selection, "pgarray.New scan must round-trip")
 	assert.Equal(t, "ghcr.io/ws:s-launch-0.6.0", imageRef)
 
 	// Wrong owner → ErrNotFound (scope filter works).

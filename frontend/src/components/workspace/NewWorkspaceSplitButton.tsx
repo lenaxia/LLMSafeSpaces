@@ -182,6 +182,16 @@ export function NewWorkspaceSplitButton({ onCreated }: { onCreated: (wsId: strin
                 >
                   <Package className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                   <span className="truncate flex-1">{cfg.name}</span>
+                  {cfg.updatesAvailable && (
+                    <span
+                      title={cfg.updatesAvailable.kind === "base_migration"
+                        ? `New base available: ${cfg.updatesAvailable.defaultBaseName}. Refresh it in Settings → Workspace Images to migrate (package versions follow the Debian suite).`
+                        : `Base update available (${cfg.updatesAvailable.latestBaseVersion}). Refresh it in Settings → Workspace Images.`}
+                      className="rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[0.6rem] font-medium text-amber-600 dark:text-amber-400"
+                    >
+                      ↻
+                    </span>
+                  )}
                   <span className="rounded-full bg-green-500/15 px-1.5 py-0.5 text-[0.6rem] font-medium text-green-600 dark:text-green-400">
                     Ready
                   </span>

@@ -4,7 +4,7 @@
 procedures were appended below in #938. Contents: opencode config
 schema, then SSE event fixtures — live wire + persisted store.)
 
-`opencode-config.schema.json` is a pinned copy of opencode's official config schema (source: <https://opencode.ai/config.json>). The chart-side agent-config writer (`cmd/workspace-agentd/agent_config_writer.go`) MUST produce output that validates against this schema — enforced by `TestAgentConfigWriter_Rebuild_MatchesOpencodeSchema` and the generic `assertMatchesOpencodeSchema` helper called from every `rebuild()` test.
+`opencode-config.schema.json` is a pinned copy of opencode's official config schema (source: <https://opencode.ai/config.json>). The chart-side agent-config writer (`pkg/agent/opencode/configwriter.go`, behind the AgentConfigWriter seam) MUST produce output that validates against this schema — enforced by `TestAgentConfigWriter_Rebuild_MatchesOpencodeSchema` and the generic `assertMatchesOpencodeSchema` helper called from every `rebuild()` test.
 
 ## Why pinned in-tree
 
@@ -23,7 +23,7 @@ Refresh when either:
 
 ```bash
 curl -sSL https://opencode.ai/config.json \
-    -o cmd/workspace-agentd/testdata/opencode-config.schema.json
+    -o pkg/agent/opencode/testdata/opencode-config.schema.json
 go test ./cmd/workspace-agentd/... -run 'TestAgentConfigWriter_Rebuild_MatchesOpencodeSchema'
 ```
 
@@ -31,7 +31,7 @@ If tests still pass → commit the schema update. If they fail → the writer ne
 
 ## Note on external `$ref`s
 
-Opencode's schema has four `$ref` targets pointing at `https://models.dev/model-schema.json` — a 226 KB enum of every model on `models.dev`. These are resolved by the loader (`loadOpencodeSchema` in `agent_config_writer_test.go`) by **replacing each `$ref` with `{"type": "string"}`** before compilation. Rationale:
+Opencode's schema has four `$ref` targets pointing at `https://models.dev/model-schema.json` — a 226 KB enum of every model on `models.dev`. These are resolved by the loader (`loadOpencodeSchema` in `configwriter_test.go`) by **replacing each `$ref` with `{"type": "string"}`** before compilation. Rationale:
 
 - The writer emits arbitrary provider/model strings from user config; we do not gate on "must be a known models.dev model."
 - The models.dev enum changes weekly and would add a huge, unstable dependency for zero contract-testing value.
