@@ -470,3 +470,86 @@ func TestDevPreviewHandler_G34_CallerCookieNotForwarded(t *testing.T) {
 		t.Errorf("G34 violation: caller Bearer token forwarded instead of Basic auth: %q", auth)
 	}
 }
+
+func TestDevPreviewHandler_HTMLForcesNoStore_AtEdge(t *testing.T) {
+	// P0-1 (redesign-2026-08-19): HTML responses must leave the API edge
+	// with Cache-Control: no-store regardless of what the dev server set —
+	// the CDN/browser chain has served stale HTML otherwise. Non-HTML
+	// assets keep their app-set caching so hashed bundles still cache.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/dev-preview/5173/index.html":
+			// Dev server explicitly asks for long cache — must be overridden.
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Cache-Control", "max-age=3600")
+			w.Header().Set("Expires", "Wed, 21 Oct 2026 07:28:00 GMT")
+			io.WriteString(w, "<html><body>app html</body></html>")
+		case "/v1/dev-preview/5173/noheader.html":
+			// No cache headers at all — no-store must be added.
+			w.Header().Set("Content-Type", "text/html")
+			io.WriteString(w, "<html><body>bare</body></html>")
+		case "/v1/dev-preview/5173/assets/app.abc123.js":
+			// Hashed asset with immutable caching — must be preserved.
+			w.Header().Set("Content-Type", "application/javascript")
+			w.Header().Set("Cache-Control", "max-age=31536000, immutable")
+			io.WriteString(w, "console.log(1)")
+		default:
+			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusBadRequest)
+		}
+	}))
+	defer backend.Close()
+
+	r := newDevPreviewRoundTripRouter(t, backend)
+	ts := httptest.NewServer(r)
+	defer ts.Close()
+
+	get := func(path string) *http.Response {
+		t.Helper()
+		resp, err := http.Get(ts.URL + "/api/v1/workspaces/ws-1/dev-preview/5173/" + path)
+		if err != nil {
+			t.Fatalf("request to %s failed: %v", path, err)
+		}
+		resp.Body.Close()
+		return resp
+	}
+
+	resp := get("index.html")
+	if resp.Header.Get("Cache-Control") != "no-store" {
+		t.Errorf("HTML with app-set max-age: expected forced no-store, got %q", resp.Header.Get("Cache-Control"))
+	}
+	if resp.Header.Get("Expires") != "" {
+		t.Errorf("HTML: stale Expires header must be dropped, got %q", resp.Header.Get("Expires"))
+	}
+
+	resp = get("noheader.html")
+	if resp.Header.Get("Cache-Control") != "no-store" {
+		t.Errorf("HTML without cache headers: expected no-store added, got %q", resp.Header.Get("Cache-Control"))
+	}
+
+	resp = get("assets/app.abc123.js")
+	if cc := resp.Header.Get("Cache-Control"); cc != "max-age=31536000, immutable" {
+		t.Errorf("non-HTML asset: app-set caching must be preserved, got %q", cc)
+	}
+}
+
+// newDevPreviewRoundTripRouter wires a handler+router against a live test
+// backend standing in for agentd, with the agentd port overridden.
+func newDevPreviewRoundTripRouter(t *testing.T, backend *httptest.Server) *gin.Engine {
+	t.Helper()
+	backendHost := strings.TrimPrefix(backend.URL, "http://")
+	backendIP := backendHost
+	if idx := strings.LastIndex(backendHost, ":"); idx >= 0 {
+		backendIP = backendHost[:idx]
+	}
+	wsGetter := &devPreviewMockWorkspaceGetter{
+		workspaces: map[string]*v1.Workspace{
+			"ws-1": activeWorkspaceWithDevPreview("ws-1", backendIP, true),
+		},
+	}
+	pwProvider := &devPreviewMockPasswordProvider{passwords: map[string]string{"ws-1": "pass"}}
+	h := newDevPreviewHandlerForTest(t, wsGetter, pwProvider)
+	if addr := backend.Listener.Addr().String(); strings.LastIndex(addr, ":") >= 0 {
+		h.agentdPort = addr[strings.LastIndex(addr, ":")+1:]
+	}
+	return setupDevPreviewRouter(h)
+}
