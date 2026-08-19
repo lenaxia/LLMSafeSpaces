@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS uq_image_factory_bases_single_default;

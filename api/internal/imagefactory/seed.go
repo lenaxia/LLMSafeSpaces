@@ -48,7 +48,11 @@ func (s SeedExtensionEntry) ToExtension() Extension {
 // SeedCatalogStore is the subset of the DB store needed to seed the catalog.
 type SeedCatalogStore interface {
 	SetPlatformConfig(ctx context.Context, pc PlatformConfig) error
-	UpsertBase(ctx context.Context, b Base) error
+	// SeedUpsertBase is the boot-seed upsert: unlike the admin-path
+	// UpsertBase it never clears other defaults and never overwrites an
+	// existing row's is_default (#936). (Admin UpsertBase is not on this
+	// interface — SeedCatalog never calls it.)
+	SeedUpsertBase(ctx context.Context, b Base) error
 	GetExtension(ctx context.Context, id string) (Extension, error)
 	PublishExtension(ctx context.Context, e Extension) error
 }
@@ -89,13 +93,21 @@ func SeedCatalog(ctx context.Context, store SeedCatalogStore) error {
 	if err != nil {
 		return err
 	}
+	return seedCatalogWith(ctx, store, &seed)
+}
+
+// seedCatalogWith is SeedCatalog with an injected seed (tests).
+func seedCatalogWith(ctx context.Context, store SeedCatalogStore, seed *SeedCatalogData) error {
 	if err := store.SetPlatformConfig(ctx, PlatformConfig{
 		Architectures: seed.Architectures,
 	}); err != nil {
 		return fmt.Errorf("seed: platform config: %w", err)
 	}
 	for _, b := range seed.Bases {
-		if err := store.UpsertBase(ctx, b); err != nil {
+		// SeedUpsertBase (#936): the seed's is_default applies only to
+		// rows it inserts — a boot-time seed never reverts an operator's
+		// runtime default move.
+		if err := store.SeedUpsertBase(ctx, b); err != nil {
 			return fmt.Errorf("seed: base %s/%s: %w", b.Name, b.Version, err)
 		}
 	}
