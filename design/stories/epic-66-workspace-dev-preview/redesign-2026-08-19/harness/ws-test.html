@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tunnel WebSocket test</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { margin: 0; box-sizing: border-box; }
+    body {
+      min-height: 100vh; padding: 3rem 1.5rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      background: #0f172a; color: #e2e8f0; line-height: 1.7;
+    }
+    .wrap { max-width: 44rem; margin: 0 auto; }
+    h1 { font-size: 1.1rem; color: #7dd3fc; margin-bottom: 1rem; letter-spacing: 0.03em; }
+    .badge {
+      display: inline-block; font-size: 0.7rem; font-weight: 600;
+      letter-spacing: 0.08em; text-transform: uppercase; color: #7dd3fc;
+      border: 1px solid rgba(125, 211, 252, 0.4); border-radius: 999px;
+      padding: 0.2rem 0.7rem; margin-bottom: 1.5rem;
+    }
+    .panel { background: rgba(30,41,59,.6); border: 1px solid rgba(148,163,184,.2);
+             border-radius: 8px; padding: 1rem 1.2rem; margin-bottom: 1rem; }
+    .pass { color: #4ade80; font-weight: 700; }
+    .fail { color: #f87171; font-weight: 700; }
+    code { color: #7dd3fc; word-break: break-all; }
+    .note { color: #94a3b8; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="badge">ws test v1</div>
+    <h1>Dev-preview tunnel &mdash; WebSocket echo test</h1>
+    <div class="panel" id="t-url">Endpoint: deriving&hellip;</div>
+    <div class="panel" id="t-status">Status: <span class="fail">connecting&hellip;</span></div>
+    <p class="note">No click needed &mdash; the page connects, sends one message,
+      and reports whether the server echoed it back. Result appears within seconds.</p>
+  </div>
+  <script src="ws-test.js"></script>
+</body>
+</html>

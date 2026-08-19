@@ -455,6 +455,37 @@ Audit-log the toggle (actor, workspace, before/after) — reuse the existing aud
 
 ---
 
+## Field Findings & Follow-up Redesign (2026-08-19)
+
+Black-box testing of the **deployed** tunnel from inside a live workspace —
+plus threat modeling with live probes — is recorded in
+[`redesign-2026-08-19/`](redesign-2026-08-19/README.md). Headlines relevant
+to this epic's design intent:
+
+- **WS upgrades are stripped by the deployed chain** — HMR (declared
+  mandatory in Scope) is broken in production; SSE passes through unbuffered
+  and is the interim live-reload transport.
+- **The shipped CSP blocks inline scripts/styles/eval** — Next.js App
+  Router, Vue full-build, and CDN-based prototyping cannot run through the
+  tunnel.
+- **HTML caching through the chain served stale pages** across app changes;
+  the fix is edge-forced `no-store`.
+- **`x-ratelimit-*` headers are not enforced** on the proxy path
+  (127-request burst → zero 429s).
+- Verified sound: auth + per-user workspace ownership on the preview route
+  (T7 closed), proxy-layer port blocklist for agentd ports (T3 partial —
+  tool layer still mints, denial leaks topology), `lsp_session` is
+  HttpOnly/Secure/host-scoped (T2 closed).
+
+The redesign proposes per-workspace origins
+(`<ws>-preview.safespaces.dev`, single-label — no new cert needed),
+signed-bootstrap auth, and a relaxed-but-safe CSP, phased so Phase 0 fixes
+(no-store, WS forwarding, rewriters off) ship independently. Top open
+threat T1 (same-origin credentialed API calls from prompt-injected preview
+JS) is architectural — closed only by the origin migration.
+
+---
+
 ## Reference
 
 This design was developed through a multi-step threat-modeling and option-assessment conversation (2026-08-10) covering: the four-actor threat model (external attacker, honest owner, curious tenant, malicious owner); five architectural options (API-direct, agentd-mediated, reverse-tunnel, per-workspace Ingress, do-nothing); the product-shape-driven conclusion that an authenticated metered transient-workspace SaaS is not a hosting provider; and the JWT-cookie realization that collapsed both the security concern (no unauthenticated surface) and the implementation concern (browser navigation works without capability tokens). The "future proxy" comments at `pkg/agentd/types.go:53` and `cmd/workspace-agentd/server.go:190` — written long before this epic — name port 4097's user mux as the designated home for exactly this kind of endpoint.

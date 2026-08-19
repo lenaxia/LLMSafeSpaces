@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tunnel CSP test — Tier 3</title>
+  <link rel="stylesheet" href="tier3-test.css" />
+
+  <!-- PROBE: inline <style> block (governed by style-src-elem / style-src) -->
+  <style>
+    #p-styleelem-target { color: rgb(1, 2, 3); }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="badge">tier3 test v1</div>
+    <h1>Dev-preview tunnel &mdash; Tier 3 probes</h1>
+    <ol>
+      <li id="p-cssom">CSSOM control (el.style.x = v via JS): <span class="pend">PENDING</span></li>
+      <li id="p-styleelem">Inline &lt;style&gt; block applied: <span class="pend">PENDING</span></li>
+      <li id="p-styleattr">Inline style= attribute applied: <span class="pend">PENDING</span></li>
+      <li id="p-newfn">new Function() (needs unsafe-eval): <span class="pend">PENDING</span></li>
+      <li id="p-eval">eval() (needs unsafe-eval): <span class="pend">PENDING</span></li>
+      <li id="p-jsonblk">&lt;script type="application/json"&gt; data block intact: <span class="pend">PENDING</span></li>
+      <li id="p-cdn">Cross-origin CDN script executes: <span class="pend">PENDING</span></li>
+      <li id="p-fetchsame">fetch() same-origin JSON: <span class="pend">PENDING</span></li>
+      <li id="p-fetchcross">fetch() cross-origin (api.github.com): <span class="pend">PENDING</span></li>
+    </ol>
+    <p class="note">All probes run automatically. Async ones (CDN, fetches) settle
+      within ~10s. Pure red across the style/eval lines = strict CSP;
+      a FAIL on CDN/fetch-cross may also be plain network blocking in your browser.</p>
+  </div>
+
+  <!-- probe targets: invisible elements whose computed styles get measured.
+       NOTE: each probe gets its OWN element — CSSOM writes clobber style attrs. -->
+  <div id="p-cssom-target" class="hidden"></div>
+  <div id="p-styleelem-target" class="hidden"></div>
+  <div id="p-styleattr-target" class="hidden" style="color: rgb(4, 5, 6)"></div>
+
+  <!-- PROBE: non-executable data block (Next.js Pages Router __NEXT_DATA__ pattern) -->
+  <script type="application/json" id="p-json-data">{ "probe": "tier3", "ok": true, "n": 42 }</script>
+
+  <script src="tier3-test.js"></script>
+</body>
+</html>

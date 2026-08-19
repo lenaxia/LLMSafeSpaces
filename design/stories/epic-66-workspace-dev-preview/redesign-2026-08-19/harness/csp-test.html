@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tunnel CSP test</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { margin: 0; box-sizing: border-box; }
+    body {
+      min-height: 100vh; padding: 3rem 1.5rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      background: #0f172a; color: #e2e8f0; line-height: 1.7;
+    }
+    .wrap { max-width: 44rem; margin: 0 auto; }
+    h1 { font-size: 1.1rem; color: #7dd3fc; margin-bottom: 1.5rem; letter-spacing: 0.03em; }
+    li { margin-bottom: 0.75rem; list-style: none; padding: 0.6rem 0.9rem;
+         background: rgba(30,41,59,.6); border: 1px solid rgba(148,163,184,.2); border-radius: 8px; }
+    .pass    { color: #4ade80; font-weight: 700; }
+    .fail    { color: #f87171; font-weight: 700; }
+    .note    { color: #94a3b8; font-size: 0.85rem; margin-top: 1.5rem; }
+    code     { color: #7dd3fc; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Dev-preview tunnel &mdash; script execution test (served no-store)</h1>
+    <ol>
+      <li id="t-inline">Inline &lt;script&gt; block: <span class="fail">NOT RUN (blocked)</span></li>
+      <li id="t-ext">External script file (control): <span class="fail">NOT RUN (blocked)</span></li>
+      <li id="t-handler">Inline event handler (onerror): <span class="fail">NOT RUN (blocked)</span></li>
+    </ol>
+    <p class="note">
+      If a line says RAN, that mechanism executed. If ALL lines say NOT RUN,
+      JavaScript itself is disabled &mdash; report that. The probing <code>&lt;img&gt;</code>
+      is invisible either way; nothing here needs a click.
+    </p>
+  </div>
+
+  <!-- Test A: inline script block -->
+  <script>
+    document.getElementById('t-inline').innerHTML =
+      'Inline &lt;script&gt; block: <span class="pass">RAN</span>';
+  </script>
+
+  <!-- Test B: external script file (control — known to work) -->
+  <script src="csp-test-ext.js"></script>
+
+  <!-- Test C: inline event-handler attribute (fires automatically on error) -->
+  <img src="csp-test-nonexistent.png" style="display:none"
+       onerror="document.getElementById('t-handler').innerHTML =
+                'Inline event handler (onerror): <span class=pass>RAN</span>'" />
+</body>
+</html>

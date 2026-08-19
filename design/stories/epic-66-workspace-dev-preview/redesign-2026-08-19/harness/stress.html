@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tunnel stress test</title>
+  <link rel="stylesheet" href="stress.css" />
+</head>
+<body>
+  <div class="wrap">
+    <div class="badge">stress test v1</div>
+    <h1>Dev-preview tunnel &mdash; stress &amp; limits</h1>
+    <div class="panel" id="t-budget">Rate budget: reading&hellip;</div>
+    <div class="panel" id="t-status">Idle. Phases: SSE streaming &rarr; 2MB transfer &rarr;
+      request waves &rarr; (429) &rarr; recovery timing.<br />
+      <strong>Warning:</strong> the wave phase deliberately exhausts the request
+      budget; previews may 429 for a few minutes afterward while recovery is
+      measured.</div>
+    <div class="controls">
+      <button id="b-start">Start test</button>
+      <button id="b-stop" class="danger" disabled>Stop</button>
+    </div>
+    <pre id="live" class="out"></pre>
+    <h2>Summary (paste this back)</h2>
+    <pre id="summary" class="out summary">not run yet</pre>
+  </div>
+  <script src="stress.js"></script>
+</body>
+</html>
