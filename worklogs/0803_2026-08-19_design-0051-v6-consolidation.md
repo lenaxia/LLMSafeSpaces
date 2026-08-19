@@ -29,4 +29,4 @@ Design doc only; structural self-checks (§ numbering, no stale cross-references
 ## Files Modified
 
 - `design/0051_2026-08-18_agentd-uid-separation.md` (v6 rewrite)
-- `worklogs/NNNN_2026-08-19_design-0051-v6-consolidation.md` (this file)
+- `worklogs/0803_2026-08-19_design-0051-v6-consolidation.md` (this file)
