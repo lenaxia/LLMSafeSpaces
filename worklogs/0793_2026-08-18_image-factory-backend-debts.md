@@ -167,3 +167,18 @@ defaults; fresh-install semantics need an empty-default start).
 - Runbook §Moving the default base rewritten for the structural
   invariant (one call + index + seed guard + restart semantics);
   worklog renamed off the NNNN_ sentinel.
+
+---
+
+## Review round 4 addendum: migration upgrade path
+
+Round 4's one validated blocker: CREATE UNIQUE INDEX alone FAILS on the
+exact two-default databases the migration exists to rescue (reproduced
+by the reviewer on Postgres 16), stalling helm's pre-upgrade hook.
+000025 now runs a deterministic dedup UPDATE first — keep the highest
+(name, version), matching ComputeBaseUpdates' last-wins-over-ascending
+resolution so pills don't change their answer on migration day — in
+BOTH migration mirrors. Upgrade-path integration test: recreate the
+broken state (index dropped, two raw defaults), run the migration body
+verbatim, assert 1 default / trixie wins, then assert the index
+structurally blocks regression.

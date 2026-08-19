@@ -601,3 +601,43 @@ func TestIntegration_IF_CreateConfigAndBuild_FailureLeavesNoBuildRow(t *testing.
 	_, gerr := svc.GetBuild(ctx, "44444444-4444-4444-4444-444444444444")
 	assert.ErrorIs(t, gerr, ErrNotFound, "no build row may survive the rolled-back config insert")
 }
+
+// TestIntegration_IF_Migration000025_TwoDefaultUpgradePath (#936 r4): a
+// database ALREADY in the two-default state (the bug this migration
+// rescues) must migrate cleanly, keeping exactly one default — the
+// highest (name, version), matching the pill resolver's semantics.
+func TestIntegration_IF_Migration000025_TwoDefaultUpgradePath(t *testing.T) {
+	h := testharness.New(t)
+	svc := newIFService(h)
+	ctx := h.NewContext()
+
+	// Migrations (incl. 000025) already ran in harness setup on an empty
+	// table. Recreate the pre-migration two-default state by dropping the
+	// index, inserting two defaults, then re-running the migration body —
+	// the same statements an upgrading database executes.
+	_, err := h.SQLDB().ExecContext(ctx, `DROP INDEX IF EXISTS uq_image_factory_bases_single_default`)
+	require.NoError(t, err)
+	// Bypass the store's guards: raw inserts of the broken state.
+	_, err = h.SQLDB().ExecContext(ctx, `INSERT INTO image_factory_bases (name, version, image, is_default) VALUES
+		('bookworm', '0.6.0', 'i1', TRUE), ('trixie', '0.1.0', 'i2', TRUE)`)
+	require.NoError(t, err)
+
+	// Execute the migration body verbatim (what an upgrade runs).
+	_, err = h.SQLDB().ExecContext(ctx, `
+		UPDATE image_factory_bases SET is_default = FALSE, updated_at = now()
+		 WHERE is_default AND (name, version) NOT IN (
+			SELECT name, version FROM image_factory_bases WHERE is_default
+			ORDER BY name DESC, version DESC LIMIT 1);
+		CREATE UNIQUE INDEX IF NOT EXISTS uq_image_factory_bases_single_default
+			ON image_factory_bases ((true)) WHERE is_default;`)
+	require.NoError(t, err, "migration body must succeed on a two-default database")
+
+	bases, err := svc.ListBases(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, countDefaults(bases), "exactly one default after migration")
+	assert.Equal(t, "trixie", defNameOf(bases), "highest (name,version) wins — pill-resolver-compatible")
+
+	// And the index now BLOCKS regression to two defaults.
+	_, err = h.SQLDB().ExecContext(ctx, `UPDATE image_factory_bases SET is_default = TRUE WHERE name = 'bookworm'`)
+	require.Error(t, err, "the partial unique index must structurally block a second default")
+}
