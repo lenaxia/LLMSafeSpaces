@@ -37,4 +37,4 @@ The prior fix branch (`feat/issue-854-remove-legacy-runtime-dockerfiles`, commit
 - `pkg/repolint/forbidden_paths.go` + `forbidden_paths_test.go` (new)
 - `cmd/repolint/main.go` (wired)
 - `.github/renovate.json`, `docs/operator/runtime-environments.md`
-- `worklogs/NNNN_2026-08-19_runtimes-legacy-dockerfile-deletion.md` (this file)
+- `worklogs/0804_2026-08-19_runtimes-legacy-dockerfile-deletion.md` (this file)
