@@ -1,246 +1,145 @@
-# 0051 — agentd uid separation: in-workspace privilege tiers
+# 0051 — agentd uid separation: in-workspace privilege tiers (v6, sidecar architecture)
 
 **Status:** Phase 1 SHIPPED (#933 D5.1 + #934 D5.2/D5.3, merged 2026-08-19); Phase 2 (uid tiers) under review (holds; never auto-merges)
-**Date:** 2026-08-18
+**Date:** 2026-08-18 (v6 consolidation 2026-08-19)
 **Issue:** #887
-**Supersedes:** none. Refines the residual risk documented in PRs #883/#884/#886 (Epic 67).
-**Author:** agent session 2026-08-18
+**Supersedes:** the unmerged `design/0050_2026-08-16_agentd-uid-separation` draft (bot run #31919066574; its branch push failed, and the 0050 number was subsequently reused by the starvation-truthfulness design in #892/#898). v6 **adopts 0050's architecture wholesale** — its code pass was correct where v1–v5 of this doc were wrong (see §4a). Supersedes nothing else; refines the residual-risk record of PRs #883/#884/#886.
+**Author:** agent session 2026-08-18; v6 rewrite after five review rounds
 
 ---
 
 ## 1. Problem statement
 
-Every agentd user-mux endpoint now requires Basic auth (#762/#847/#848, merged). That closed the
-*unauthenticated* in-pod surface. What remains open — and what #887 tracks — is the **same-uid** path:
-code running inside the workspace container as uid 1000 (malicious pip package, InitScript, compromised
-tool output) can read `/sandbox-cfg/password` and authenticate to agentd exactly like the API server does.
+Every agentd user-mux endpoint requires Basic auth (#762/#847/#848). That closed the *unauthenticated*
+in-pod surface. What remains open — #887's scope — is the **same-uid** path: workspace code (uid 1000)
+can read every credential that exists in uid-1000 space and reach every loopback port. The goal: make
+agentd's credentials and platform-acting surfaces unreachable by uid-1000 code, to the extent
+structurally possible — and be precise about what is not possible.
 
-The naive reading of #887 is "run agentd as a different uid." This doc's job is to establish what uid
-separation actually buys once every credential channel is accounted for — because the analysis below shows
-the env channel, not the file, is the pivot — and to ship the pieces that survive scrutiny.
-
-## 2. Verified current state (main @ 728f56f0)
+## 2. Verified current state (post-#933/#934, main @ 77e47ec7)
 
 | Fact | Evidence |
 |---|---|
-| Whole container runs as uid 1000 (`USER sandbox`); agentd is PID 1 via `exec --supervise` | `runtimes/base/Dockerfile:323,326,329`; `entrypoint-opencode.sh:21-24` |
-| The entrypoint reads the password file and exports it into agentd's environment | `entrypoint-opencode.sh:17-19` |
-| agentd spawns opencode with `buildEnvFrom(secrets-env)`, which **starts from `os.Environ()`** — opencode inherits `OPENCODE_SERVER_PASSWORD` in its environment | `managed_process.go:474`; `secrets.go:1203-1205` |
-| User code (bash tool etc.) is a child of opencode, same uid 1000, no credential drop anywhere | `managed_process.go:471-475` (no `SysProcAttr.Credential`) |
-| Password file is mode 0600, uid 1000 (init container `install -m 0600`, pod `runAsUser: 1000`) | `pod_builder.go:555-560`, `:425-438` |
-| `/sandbox-runtime` (agent-config.json with provider keys, secrets-env, rt/* symlinks) is RW tmpfs owned by uid 1000 | `pod_builder.go:166-190`; `pkg/agentd/types.go:22-38` |
-| opencode reads `agent-config.json` **once at boot, no hot reload** | validated in README-LLM.md §Relay Config Subsystem (opencode 1.15.12 behavior, stable) |
-| Admin mux: bearer gate is a **no-op when `AGENTD_ADMIN_TOKEN` is unset**; `/metrics` on 4098 is unauthenticated | `server.go:163-176` (early return), `:213` |
-| Basic-auth gate accepts a readable-but-**empty** password file (`Basic b3BlbmNvZGU6` is computable) — controller-generated secrets are 32 random chars, but operator-created `workspace-pw-*` Secrets are adopted as-is | `auth.go:33`; flagged in #886 review rounds |
+| Whole workspace container runs uid 1000; agentd is PID 1 via `exec --supervise` | `runtimes/base/Dockerfile:323-329`; `entrypoint-opencode.sh` |
+| Container hardening: `RunAsNonRoot`, `AllowPrivilegeEscalation: false`, `Capabilities: drop ALL` | `pod_builder.go:176-178` — **no setuid path exists; none can be granted without weakening this** |
+| **The workspace password exists in FOUR uid-1000-readable forms**: the file (`/sandbox-cfg/password` 0600), `OPENCODE_SERVER_PASSWORD` env (opencode's own auth — upstream env-only), **#884's `injectAgentdMCPServer` Basic header embedded in `agent-config.json`** (opencode must read that file), and (pre-#933) the admin-token env — now split & file-only | `pod_builder.go` init script; `mcp_server.go` (Basic-header injection); §Phase 1 for the closed fourth copy |
+| `reload-secrets` materializes a batch decoded from the request body — a readable Basic secret means in-pod code can **inject or wipe credential material**, an integrity attack, not just disclosure | `secrets.go` reload handler (0050 finding 3, re-verified) |
+| Admin mux `/metrics` unauthenticated; token now distinct + file-only (D5.1 shipped) | `server.go` requireBearerToken wrap; #933 |
+| opencode reads `agent-config.json` once at boot, no hot reload | README-LLM §Relay Config (stable across pinned versions) |
 
-## 3. Threat-model reframe (the important part)
+## 3. Threat-model frame (unchanged since v2)
 
-**Same-uid in-pod code is, by product definition, the workspace owner's own code.** It runs the user's
-builds, their git commits, their tests. Three sub-cases matter, with different answers:
+Same-uid in-pod code is the workspace owner's own code. The defensible boundary is **platform-acting
+surfaces** (workflow dispatch, reload-secrets, agentd integrity) and **platform-materialized provider
+keys** — plus now, from 0050's finding 3, the **integrity** of credential materialization. The user's
+own secrets/history are theirs by design and out of scope.
 
-| Asset | Same-uid read | Verdict |
-|---|---|---|
-| User's own secrets (SSH keys, git creds, env secrets) | **Intended.** They are delivered to the workspace to be used | Not a boundary. Out of scope |
-| Session history (opencode `:4096`, MCP proxy `:4097`) | The user's own conversation in their own workspace | #847 closed the *unauthenticated* read. Same-uid read of your own history is not a tenant-boundary violation. Out of scope |
-| **Platform-acting surfaces**: workflow dispatch (spends platform resources), reload-secrets (config tamper + restart), agentd's own integrity, **provider keys materialized by the platform** | Unauthenticated access was the #762/#848 bug (fixed). Authenticated-with-stolen-credential access remains | **This is #887's actual scope** |
+## 4. What does NOT work (v1–v5 errors, now closed)
 
-So the goal is narrow: **make agentd's credential and the platform-materialized provider keys unreachable
-by uid-1000 code, to the extent structurally possible.** Everything else same-uid code can read is either
-yours by design or already yours through opencode.
+- **In-container uid split (v1–v5 D1): impossible.** A non-root process with an empty capability set
+  cannot `setuid` to another uid; `SysProcAttr.Credential` from uid 65532 → 1000 needs CAP_SETUID we
+  deliberately do not have (0050 finding 2; reviewer F1, five rounds). Granting CAP_SETUID/SetUID
+  binaries to buy separation would be a larger attack surface than the one removed.
+- **Cross-uid signaling (v1–v5 D1/V8): `kill(2)` across uids requires matching ruid/euid or
+  CAP_KILL — parentage is irrelevant** (reviewer F2). agentd→opencode SIGTERM/SIGKILL
+  (`managed_process.go:348-405`, `relay_injector.go:469`) would be EPERM under any split.
+- The only viable topology is **two containers in one pod** (shared netns keeps all
+  `127.0.0.1:{4096,4097,4098}` URLs unchanged) — exactly 0050's architecture.
 
-## 4. The env-channel pivot — corrected after source verification (v2 of this doc)
+### 4a. The 0050 draft (adopted)
 
-> **v1 of this section framed the env channel as a `/proc/<pid>/environ` read gated by Yama
-> `ptrace_scope`. That was wrong.** Verified against the pinned opencode v1.18.10 source: the actual
-> channel is **spawn-time inheritance** — opencode's shell tool spawns tool processes with
-> `extendEnv: true` (`session/prompt.ts:559-562`), passing its **full parent environment** to every
-> bash/child process. No ptrace, no Yama, no conditional. Two secrets ride this chain today:
+agentd becomes a **native sidecar** (init-container with `restartPolicy: Always`; chart floor 1.35 ✓)
+at **uid 2000 / gid 1000**, running the existing #872 digest-pinned image with `--sidecar`. A new
+`supervise-opencode` subcommand becomes **PID 1 of the workspace container** — extracted 1:1 from
+`managed_process.go` so `wait()`, OOM classification, and SIGTERM supervision stay same-uid where they
+must be. Policy (session-aware deferral, healthz watchdog, SSE tracking) stays in the sidecar; the
+supervisor exposes an **unauthenticated `127.0.0.1:4099` control socket** (restart/status/metrics),
+whose safety rests on capability equivalence: *restart is not stronger than SIGKILL, which same-uid
+code already holds*. Native-sidecar start order preserves the #857 stamp-before-opencode-reads
+guarantee. Cgroup metrics are sourced via the supervisor (a sidecar reads its *own* cgroup). gVisor
+(`runsc`) behavior for native sidecars and nested RO+RW subPath mounts is the big unvalidated
+assumption, with a plain-sidecar fallback documented if it fails.
 
-| Secret | How it enters opencode's env | In every tool's env today? | Evidence |
-|---|---|---|---|
-| `OPENCODE_SERVER_PASSWORD` | entrypoint export → agentd → `buildEnvFrom(os.Environ())` | **Yes** | `entrypoint-opencode.sh:17-19`; `secrets.go:1203-1205`; `prompt.ts:559` (`extendEnv: true`) |
-| `AGENTD_ADMIN_TOKEN` | **pod-spec env on the main container** | **Yes** | `pod_builder.go:78-85` (SecretKeyRef → env); same inheritance chain |
+## 5. Design (Phase 2)
 
-**Implication A — the admin token is the worst-kept secret in the pod.** It authenticates the admin mux
-(`:4098` — statusz session lists, provider introspection, `/metrics`), the mux is loopback-reachable from
-in-pod code, and the token sits in every tool's env. This is a **live finding**, worse than #887's
-theoretical premise, and — critically — fixable **without upstream**: opencode does not need this token.
+**D1 — Native-sidecar split (0050 architecture, replaces v1–v5 D1/D3/D4).** As §4a. Consequences:
 
-**Implication B — the password cannot be file-injected by us alone.** opencode reads the server password
-**env-only** (`cli/cmd/serve.ts:15`, `server/auth.ts:18` — no file option exists) and hands its whole env
-to children. So: no uid split, file mode, or ptrace policy protects the password from same-uid code under
-the current opencode. Basic auth on `:4097` is honestly **network-boundary-only** defense until opencode
-either supports a file-based password or scrubs its child env. Both are upstream asks.
+- **Credential split**: a NEW `agentdPassword` Secret key becomes the user-mux Basic secret, delivered
+  env-only to the sidecar — **agentd's secret never exists in uid-1000 space at all** (no file to
+  protect, no mode dance, no rebuild-window). This supersedes v5's D2 (0400 password file) and D3
+  (post-boot chmod of `agent-config.json`): the file and its embedded MCP Basic header remain
+  uid-1000-readable **by necessity** (opencode is their reader; the MCP entry's only caller is
+  opencode itself on loopback) — recorded as an honest residual, not papered over.
+- **File ownership**: `secrets-env`, `rt/secrets/*`, `admin-prompt.md`, reload cache → sidecar-owned
+  under its own mount; `agent-config.json` + `rt/auth.json` → uid-1000 space (opencode's).
+  `agent-config.json` gains **integrity** (not confidentiality): the sidecar writes it via a mount the
+  workspace container sees read-only (RO root + RW `rt/` subPath per 0050 — a plain RW mount would
+  allow rename-over).
+- **Integrity of reload-secrets** closes with reachability: the control-plane surfaces
+  (`:4097/:4098`) hold credentials uid-1000 code can no longer obtain.
 
-**What Yama still governs** (demoted from linchpin to footnote): cross-process `/proc/<pid>/environ` reads
-of *non-descendants* (e.g. one tool reading another agent session's process). Relevant only if opencode
-ever scrubs the two platform secrets — then it becomes the residual gate. No longer a design dependency.
+**D5 — Phase 1 (SHIPPED, unchanged).** D5.1 distinct admin token/file delivery/env scrub (#933);
+D5.2 required-token boot + D5.3 empty-password reject (#934); D5.4 `/metrics` ruling (no change —
+per-pod scrape secrets are structurally unavailable to PodMonitor; labels audited workspaceID+counts).
 
-**User env-secrets are explicitly out of scope of any "remove from env" work**: they are the product
-feature (bound for the user's builds/tools). File-vs-env for them is UX, not a security boundary.
+**D6 — Rollout.** Chart-gated `agentdSidecar.enabled` (default false = today's single-container mode,
+unchanged); canary on TEST; the V-matrix gates any default flip. The supervisor extraction is
+behavior-identical by construction (1:1 move), pinned by the existing managed-process test suite.
 
-## 5. Design
+## 6. What this design does NOT do
 
-### D1 — In-container uid split, not a sidecar
-
-agentd stays PID 1 (supervision, single-artifact digest provenance — reaffirms #863 decision #1) but the
-container's `runAsUser` becomes **uid 65532** (agentd tier, non-root, unused); agentd spawns opencode via
-`setpriv --reuid=1000 --regid=1000 --clear-groups` (`SysProcAttr.Credential` in
-`defaultOpencodeCmdFactory`). Supervision is unchanged — agentd remains the parent, signals and exit
-reaping work identically.
-
-- agentd tier (65532): reads `/sandbox-cfg/password` (becomes `0400`, owned 65532), writes
-  `/sandbox-runtime/*`.
-- workspace tier (1000): opencode, all tool processes, `/workspace`, `/home/sandbox` — as today.
-- The init containers (credential-setup, materialize) move to uid 65532: they write credential state
-  agentd consumes; nothing in them needs uid 1000 (they already run before the main container starts and
-  touch only tmpfs/PVC-symlink setup, which needs uid 1000 for `$HOME` symlinks — those few `ln -s`/`chown`
-  steps run via a bounded `setpriv --reuid=1000` wrapper inside the script, or stay in a second short init
-  container at uid 1000 ordered before credential-setup).
-
-### D2 — Password file: 0400, agentd tier only
-
-`install -m 0400 -o 65532` in the init script. Main-container (uid 1000) never sees the file. The env
-channel (§4) is the residual; its status depends on the ptrace validation.
-
-### D3 — `agent-config.json` post-boot lockdown (protects provider keys)
-
-Provider keys are the highest-value platform-materialized secret. opencode reads the file **once at
-boot** (verified, no hot reload). Sequence:
-
-1. materialize/boot writes `agent-config.json` mode `0644` (both tiers must read during boot).
-2. agentd, immediately after opencode reports ready (existing readiness path), `chmod 0400` (owned 65532).
-3. Every ConfigWriter rebuild re-writes atomically at 0400 — the ~ms window per reload between rename and
-   ready-re-lock is accepted and logged (reload cadence is user-driven, not adversarial-timed).
-
-Residual: keys are plaintext in tmpfs during boot and for the rename window on each reload. Accepted —
-strictly narrower than today (always-readable).
-
-### D4 — `rt/` credential tree splits by consumer
-
-- `rt/auth.json` (opencode relay identity): stays uid-1000-writable — opencode writes it at runtime.
-  Residual: readable by same-uid code. Accepted (low value: free-tier relay token, user-scope).
-- `rt/secrets/*`, `secrets-env`: owned 65532; opencode receives env at spawn (already the mechanism).
-  `secrets-env` mode 0400-65532. `secrets-env` content already reaches user code only via deliberate
-  env-secret binding — unchanged semantics.
-
-### D5 — Fail-closed fixes that ship regardless of the uid work (Phase 1)
-
-Independent of §4's outcome; each closes a hole found during the #886 review rounds **or this doc's v2
-env-channel verification**:
-
-1. **`AGENTD_ADMIN_TOKEN` becomes a DISTINCT secret and leaves the environment entirely** (highest
-   priority — live leak). *Correction from this doc's own v2: token==password today (both sourced from
-   the same Secret key), so a mere scrub/file move would be theater — `OPENCODE_SERVER_PASSWORD` (same
-   value) rides the same chain. The fix only delivers value if the admin token is regenerated as a
-   separate 32-char value:*
-   - `ensurePasswordSecret` upserts a distinct `admin-token` key (generated once; **never rotated in
-     place** — running pods hold the accepted value in agentd memory while rebuilt probe specs read the
-     Secret; in-place rotation desyncs them).
-   - Controller delivery: init installs `/sandbox-cfg/admin-token` mode 0400 (runtime-guarded on key
-     presence); main container gets `AGENTD_ADMIN_TOKEN_FILE` only — **no `AGENTD_ADMIN_TOKEN` env in
-     file mode**. Legacy Secrets (pre-upsert) keep the env path for the transition; no NEW pod is built
-     in legacy mode once upsert converges.
-   - agentd reads the token file-first (`AGENTD_ADMIN_TOKEN_FILE`), env fallback for legacy pods.
-   - **agentd scrubs `AGENTD_ADMIN_TOKEN`/`AGENTD_ADMIN_TOKEN_FILE` from the env it passes opencode**
-     (`buildEnvFrom`) — applied post-merge so a user-staged env-secret cannot smuggle one back.
-   - Bearer consumers of `:4098` (kubelet probes, controller deep-status, API relayChecker + statusz
-     sites) try the distinct admin token first and fall back to the password on 401 — self-healing
-     across the mixed fleet while pods rebuild.
-2. **`AGENTD_ADMIN_TOKEN` required**: agentd refuses to start when unset/unreadable (env-driven wiring
-   gap today is silent pass-through). Dev/kind escape hatch: explicit `AGENTD_ALLOW_NO_ADMIN_TOKEN=1`.
-3. **Empty-password boot reject**: `readAgentPassword` treats a readable-but-empty file as fatal (G46
-   path) instead of arming a guessable credential.
-4. **`/metrics` on the admin mux — RULING: no change, NetworkPolicy is the control.** Studied during
-   D5.1 implementation: the chart's `agentdPodMonitor` scrapes per-pod `:4098/metrics`, and Prometheus
-   PodMonitors carry ONE static bearer secret per monitor — per-pod tokens (D5.1's distinct value) are
-   structurally incompatible with that scrape model, so token-gating would break the documented metrics
-   pipeline (US-44.8 gauges vanish). Exposure audit: metric labels are `workspaceID` + operational
-   counts only (`ops_metrics.go`) — no session content, no credentials. In-pod readability is not a
-   boundary (§3); cross-pod ingress on 4098 is already NetPol-admitted only to the Prometheus pod
-   selector when the PodMonitor is enabled. If per-pod auth ever becomes a requirement, the option is a
-   kube-rbac-proxy sidecar per workspace pod — noted, disproportionate today.
-
-The password's env leak (`OPENCODE_SERVER_PASSWORD` → tools) is **not** in Phase 1 — it is
-upstream-gated (§4 Implication B): opencode must add file-based server auth or child-env scrubbing.
-Tracked as the upstream dependency below; until it lands, docs and issue threads must describe `:4097`
-Basic auth as network-boundary defense only.
-
-### D6 — Rollout: chart-gated, canary-first, reversible
-
-`controller.agentdUidSplit.enabled` (default false → container stays uid 1000 as today; the split is
-purely additive wiring: runAsUser, file modes, setpriv spawn). Enable on TEST for a full validation pass
-(§7) before any default flip. Reverting = unset the flag + recreate pods.
-
-## 6. What this design does NOT do (and why)
-
-- **Sidecar agentd** — rejected (reaffirms #863 D1): breaks PID-1 supervision of opencode, splits
-  single-artifact digest provenance into an N×M version matrix, and buys nothing over the in-container
-  split because the pod network namespace is shared either way (`:4097` reachable from the main container
-  regardless).
-- **Protecting the user's own secrets/history from same-uid code** — not a boundary (§3). Chasing it means
-  fighting opencode's process model for no tenant-security gain.
-- **Closing the env channel ourselves** — not in our control: `OPENCODE_SERVER_PASSWORD` is opencode's
-  supported mechanism. If opencode grows file-based server auth (upstream ask, to file), D2's residual
-  closes completely. Tracked as an upstream dependency note, not a blocker.
+- **No capability grants** — CAP_SETUID/CAP_KILL buy-backs are rejected outright (§4).
+- **No protection of the user's own secrets/history from same-uid code** — not a boundary (§3).
+- **No closing of the `OPENCODE_SERVER_PASSWORD` env leak or the `agent-config.json` MCP Basic
+  header** — both are opencode-upstream constraints (env-only password; opencode must read the file
+  it's configured from). Upstream asks tracked; both are residuals by necessity, now named.
+- **Does not revisit #863 D1** ("the image is the workspace") — that decision governs *delivery
+  provenance* (agentd ships via the digest-pinned image volume, #872); the sidecar runs the SAME
+  digest-pinned artifact, so single-artifact provenance is preserved. v5's §6 sidecar rejection was
+  premised on the impossible in-container split and is withdrawn.
 
 ## 7. Validation matrix (gate for leaving canary)
 
 | # | Check | PASS criterion |
 |---|---|---|
-| V1 | **(Phase 1 — SHIPPED, runnable now)** After pod rebuild: `printenv AGENTD_ADMIN_TOKEN` in a bash tool | empty — token gone from tool env |
-| V2 | uid-1000 shell cannot read `/sandbox-cfg/password`, `agent-config.json` (post-ready), `secrets-env`, `/sandbox-cfg/admin-token` | EACCES on all four |
-| V3 | `printenv OPENCODE_SERVER_PASSWORD` in a bash tool | **Expected non-empty under current opencode** (upstream-gated residual — record, don't fail) |
-| V4 | opencode boots, agent reaches Active, one full agent turn (config read at boot unaffected) | End-to-end works |
-| V5 | Relay injector + reload-secrets path: config rebuild → opencode session-aware restart cycle | Works; post-restart re-lock observed |
-| V6 | Dev-preview tunnel + MCP proxy loopback (`127.0.0.1:4097`) | Unaffected (network namespace unchanged) |
-| V7 | Suspend → resume (~22s budget) and cold boot | No regression vs. baseline |
-| V8 | Watchdog SIGTERM path (agentd 65532 signaling opencode 1000) | Signal delivery works (parent→child unaffected by uids) |
-| V9 | Zombie reaping (#908 path) under uid split | Unchanged (agentd is reaper as PID 1) |
-| V10 | **(SHIPPED — pinned by #934's integration tests)** no-token boot fails; empty-password boot fails; `/metrics` per D5.4 ruling | Fail-closed observed in CI |
-| V11 | Yama footnote (informational): `cat /proc/sys/kernel/yama/ptrace_scope` per node class | Document values; only security-relevant if/when the upstream password fix lands |
+| V1 | `printenv AGENTD_ADMIN_TOKEN` in a bash tool (**runnable now — Phase 1 shipped**) | empty |
+| V2 | uid-1000 shell vs sidecar-owned files (`secrets-env`, `rt/secrets`, admin-prompt, reload cache) and `agentdPassword` | EACCES / absent from uid-1000 space entirely |
+| V3 | `agent-config.json` readable (expected — opencode's) **but not writable** (RO mount); `rt/auth.json` RW (expected) | integrity holds: hash unchanged across a session |
+| V4 | `:4097`/`:4098` auth with workspace password / old admin token | 401 — credentials unknown to uid-1000 code |
+| V5 | opencode boot, Active, one agent turn; suspend→resume budget; cold boot | No regression vs baseline |
+| V6 | Watchdog restart, session-aware deferral, relay-injector restart — now via control socket → supervisor (same-uid signals) | Restart paths work; **no cross-uid signaling exists anywhere** |
+| V7 | Zombie/orphan reaping (#904/#908) — supervisor remains subreaper in the workspace container's PID ns | Unchanged |
+| V8 | Dev-preview tunnel + MCP proxy loopback | Unaffected (shared netns) |
+| V9 | gVisor leg: runsc × {native sidecar, plain sidecar fallback}, incl. nested RO+RW subPath mounts | Documented accept/reject + fallback decision |
+| V10 | (SHIPPED — pinned by #934's integration tests) fail-closed boots | Green in CI |
 
 ## 8. Phasing
 
-- **Phase 1 — SHIPPED (#933, #934; merged 2026-08-19). No uid changes, no rollout risk:**
-  1. ✅ **#933 (D5.1)**: distinct `admin-token` Secret key (upsert, never rotated in place) + file-only
-     delivery (`/sandbox-cfg/admin-token` 0400, `AGENTD_ADMIN_TOKEN_FILE`; legacy env mode for
-     pre-upsert Secrets) + scrub of both admin vars from the opencode spawn env on every
-     `buildEnvFrom` path + `[admin-token, password]` try-order on every `:4098` Bearer consumer.
-     Review round 2 caught a CRITICAL dash-silent `[[ ]]` bashism in the init guard (would have
-     shipped an un-gated mux fleet-wide) — fixed POSIX + exec-level init-script tests,
-     mutation-verified. GO-2026-6173 (lib/pq) cleared as a side effect.
-  2. ✅ **#934 (D5.2+D5.3)**: `resolveAdminTokenForBoot` (no token → fatal boot; explicit
-     `AGENTD_ALLOW_NO_ADMIN_TOKEN=1` dev escape), empty-password file → fatal, token resolved once
-     at boot and threaded to mux wrap + health probe (TOCTOU closed). Real-binary integration boot
-     tests pin gate ordering and escape-hatch narrowness.
-  3. ✅ **D5.4 ruling (this doc, §5)**: `/metrics` unchanged — per-pod scrape secrets are
-     structurally unavailable to PodMonitor; labels audited (workspaceID + counts only).
-- **Phase 2 (D1–D4, D6) — chart-gated pilot**: controller wiring, entrypoint changes, ConfigWriter lock,
-  runtime image entrypoint rework. TEST validation matrix → canary workspaces → default flip decision.
-  Note: with D5.1 shipped, Phase 2's uid split protects the admin token, provider keys (D3), and the
-  secret files — but NOT the workspace password (§4 Implication B).
-- **Upstream asks (blockers for closing the password residual)**: (a) opencode file-based server
-  password, or (b) opencode child-env scrubbing of designated secrets; also per-tool uid drop (would
-  enable a third tier where tool code runs below even the workspace uid — out of scope until it exists).
+- **Phase 1 — SHIPPED** (#933, #934; merged 2026-08-19): distinct admin token (file-only + env scrub
+  + mixed-fleet bearer fallback; the round-2 dash-bashism lesson is why exec-level init-script tests
+  now exist), fail-closed boots, D5.4 ruling. GO-2026-6173 cleared en route.
+- **Phase 2 — sidecar migration** (0050's US-1..US-5 shape): US-1 extract `supervise-opencode`
+  (1:1) + control socket; US-2 sidecar container + flag split; US-3 credential split
+  (`agentdPassword` key + Secret upsert); US-4 file/mount relocations (D1 ownership + integrity
+  mounts); US-5 chart gate, canary, V-matrix, gVisor leg. Each US is a reviewable PR; security-
+  sensitive ones carry the `/security` pass.
+- **Upstream asks (blockers for the two named residuals)**: opencode file-based server password (or
+  child-env scrubbing); nothing else gates Phase 2.
 
-## 9. Open questions (resolved before Phase 2 implementation)
+## 9. Open questions
 
-1. **Q1 — Init-container split mechanics**: does the `$HOME` symlink farm move to a separate uid-1000 init
-   container (cleaner) or a bounded `setpriv` wrapper inside the existing script (fewer moving parts)?
-   Lean: separate init container, ordered first — init containers are cheap and the ordering is already
-   explicit in the pod spec.
-2. **Q3 — Windows-service-style uid**: is 65532 free across all runtime images (base/python/nodejs/go)?
-   Verified for base in this doc's drafting; the others need the same one-line check during Phase 2.
-3. **Q4 — `docker run` local-dev story**: the split must not break non-K8s local runs of the runtime
-   image (where uid 1000 may be the only human-mapped uid). Escape hatch: env `AGENTD_NO_UID_SPLIT=1`
-   for local dev only, loudly logged.
+1. **Q1** — Native sidecar vs plain sidecar under runsc (V9): decide by measurement on the TEST
+   gVisor node; fallback documented in 0050 §12.
+2. **Q2** — `supervise-opencode` control-socket protocol surface (restart/status/metrics): keep it
+   minimal-and-versioned from day one; extensibility is a future trap.
+3. **Q3** — Secret key migration order: `agentdPassword` upsert must precede any sidecar-enabled pod
+   build (same convergence pattern as #933's admin-token upsert, including never-rotate-in-place).
+4. **Q4** — Local-dev (`docker run`) story: single-container mode remains the default off-Flink; the
+   sidecar path is chart-gated, so local dev is unaffected by default.
 
 ## 10. Relationship to existing controls
 
-This is layer 3 of the defense-in-depth stack; it changes nothing about layers 1–2:
-
-1. NetworkPolicy (primary — workspace↔platform, workspace↔tenant edges)
-2. Basic auth on all agentd muxes (#883/#884/#886 — network-reachable attackers, misconfig coverage)
-3. **uid tiers (this doc) — in-pod, authenticated-with-stolen-credential attackers**
-4. gVisor RuntimeClass (opt-in, Epic 51 — kernel-exploitation containment; also potentially closes V3)
+1. NetworkPolicy (primary), 2. Basic auth on all agentd muxes (#883/#884/#886), 3. **uid tiers (this
+design — Phase 2)**, 4. gVisor RuntimeClass (opt-in; also the V9 leg). The password env residual
+(§6) is **not** affected by gVisor — plain envp inheritance is not a ptrace phenomenon — and closes
+only via the upstream ask.
