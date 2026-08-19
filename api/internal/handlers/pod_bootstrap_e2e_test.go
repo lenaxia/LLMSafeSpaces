@@ -35,6 +35,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -327,10 +328,17 @@ func findModuleRoot(t *testing.T) string {
 // runAgentd runs workspace-agentd with a subcommand + env overrides and
 // returns (exitCode, stdout, stderr). Mirrors the helper in
 // cmd/workspace-agentd/secrets_test.go.
+//
+// The inherited environment is scrubbed of the in-pod relay wiring
+// (INFERENCE_RELAY_BASEURL et al.): these tests run inside real workspace
+// pods during development, where the relay env is live — without the
+// scrub, the pre-boot relay materializes an opencode-relay provider into
+// agent-config.json and every zero-provider assertion fails. CI never has
+// these vars set; the scrub makes pods and CI behave identically.
 func runAgentd(t *testing.T, bin string, args []string, env map[string]string) (int, string, string) {
 	t.Helper()
 	cmd := exec.Command(bin, args...)
-	cmd.Env = os.Environ()
+	cmd.Env = scrubRelayEnv(os.Environ())
 	for k, v := range env {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
@@ -346,6 +354,27 @@ func runAgentd(t *testing.T, bin string, args []string, env map[string]string) (
 			args, runErr, stdout.String(), stderr.String())
 	}
 	return exit, stdout.String(), stderr.String()
+}
+
+// relayEnvPrefixes are the env vars that activate the in-pod inference
+// relay. See cmd/workspace-agentd/pre_boot_relay.go and main.go.
+var relayEnvPrefixes = []string{"INFERENCE_RELAY_", "LLMSAFESPACES_FREE_MODELS_PATH"}
+
+func scrubRelayEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		keep := true
+		for _, p := range relayEnvPrefixes {
+			if strings.HasPrefix(kv, p) {
+				keep = false
+				break
+			}
+		}
+		if keep {
+			out = append(out, kv)
+		}
+	}
+	return out
 }
 
 // e2eProviderBinding describes one provider credential to seed.
