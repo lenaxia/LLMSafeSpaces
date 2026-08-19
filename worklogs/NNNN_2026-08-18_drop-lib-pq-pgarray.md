@@ -79,4 +79,4 @@ None. PR stacks independently of #938 (branched off main); merge order is free.
 - `api/internal/services/database/database.go`, `pg_org_store.go`, `imagefactory.go` — pq → pgarray/pgconn
 - `api/internal/services/database/imagefactory_test.go`, `imagefactory_integration_test.go` — error type + comments
 - `api/internal/handlers/pod_bootstrap_e2e_test.go` — env-scrub hermeticity fix
-- `go.mod`, `go.sum` — pq → indirect
+- `go.mod` — pq → indirect (go.sum untouched)

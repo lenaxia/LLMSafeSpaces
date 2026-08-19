@@ -62,21 +62,16 @@ func (a *Array) Value() (driver.Value, error) {
 	if !rv.IsValid() {
 		return nil, nil
 	}
-	switch rv.Kind() {
-	case reflect.Slice:
-		if rv.IsNil() {
-			return nil, nil
-		}
-		if rv.Type().Elem().Kind() != reflect.String {
-			return nil, fmt.Errorf("pgarray: unsupported element type %s (strings only)", rv.Type().Elem())
-		}
-		return formatTextArray(rv), nil
-	case reflect.Interface:
-		if rv.IsNil() {
-			return nil, nil
-		}
+	if rv.Kind() != reflect.Slice {
+		return nil, fmt.Errorf("pgarray: unsupported bind type %T", a.val)
 	}
-	return nil, fmt.Errorf("pgarray: unsupported bind type %T", a.val)
+	if rv.IsNil() {
+		return nil, nil
+	}
+	if rv.Type().Elem().Kind() != reflect.String {
+		return nil, fmt.Errorf("pgarray: unsupported element type %s (strings only)", rv.Type().Elem())
+	}
+	return formatTextArray(rv), nil
 }
 
 func assign(dst any, elems []string) error {

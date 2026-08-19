@@ -674,7 +674,8 @@ func (s *Service) RenameConfig(ctx context.Context, id, newName string) error {
 		`UPDATE image_factory_configs SET name = $1, updated_at = now() WHERE id = $2`,
 		newName, id)
 	if err != nil {
-		if pgErr, ok := err.(*pgconn.PgError); ok && pgErr.Code == "23505" {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return ErrConflict
 		}
 		return fmt.Errorf("rename config: %w", err)
