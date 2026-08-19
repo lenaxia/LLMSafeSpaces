@@ -470,3 +470,24 @@ func TestSSETracker_NonUsageEvents_NoWarnNoFire(t *testing.T) {
 		})
 	}
 }
+
+// TestSSETracker_Inference_InfoLessSessionUpdated_WarnsNoFire pins the
+// info-less routing end-to-end: a session.updated-typed event without an
+// info block is a metering event with incomplete fields — warn, never a
+// silent skip (base behavior), never an inference fire.
+func TestSSETracker_Inference_InfoLessSessionUpdated_WarnsNoFire(t *testing.T) {
+	tracker, log := newCapturingTracker() // real adapter decoder
+	var fired bool
+	tracker.SetOnInference(func(_, _, _ string, _, _ int64, _ float64) { fired = true })
+
+	tracker.processEvent("ws-1", `{"id":"evt_t","type":"session.updated","properties":{"sessionID":"ses_noinfo"}}`)
+
+	assert.False(t, fired, "info-less event must not fire inference")
+	var found bool
+	for _, w := range log.Warns() {
+		if strings.Contains(w, "incomplete billing fields") {
+			found = true
+		}
+	}
+	assert.True(t, found, "info-less session.updated must hit the incomplete-fields warn, not a silent skip")
+}
