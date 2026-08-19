@@ -91,4 +91,4 @@ None. Two e2e test failures in this sandbox (`TestE2E_BootstrapMaterialize_Token
 - `api/internal/handlers/proxy_connections.go`, `proxy_events.go`, `admin_token_bearer_test.go` (new)
 - `api/internal/app/app.go`, `relay_checker_test.go`
 - `design/0051_2026-08-18_agentd-uid-separation.md` (v3 amendment, on the design branch/PR #932)
-- `worklogs/NNNN_2026-08-18_agentd-admin-token-distinct-file.md` (this file)
+- `worklogs/0800_2026-08-18_agentd-admin-token-distinct-file.md` (this file)
