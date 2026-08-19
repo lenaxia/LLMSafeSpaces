@@ -2754,8 +2754,8 @@
 </span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="nt">metadata</span><span class="p">:</span>
 </span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">python-3.11</span>
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="nt">spec</span><span class="p">:</span>
-</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">  </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ghcr.io/lenaxia/llmsafespaces/python:3.11</span>
-</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">  </span><span class="nt">description</span><span class="p">:</span><span class="w"> </span><span class="s">"Python</span><span class="nv"> </span><span class="s">3.11</span><span class="nv"> </span><span class="s">with</span><span class="nv"> </span><span class="s">opencode,</span><span class="nv"> </span><span class="s">build-essential,</span><span class="nv"> </span><span class="s">mise"</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">  </span><span class="nt">image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ghcr.io/lenaxia/llmsafespaces/base:&lt;pinned-tag&gt;</span>
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="w">  </span><span class="nt">description</span><span class="p">:</span><span class="w"> </span><span class="s">"Base</span><span class="nv"> </span><span class="s">image;</span><span class="nv"> </span><span class="s">Python</span><span class="nv"> </span><span class="s">3.11</span><span class="nv"> </span><span class="s">via</span><span class="nv"> </span><span class="s">mise"</span>
 </span></code></pre></div>
 <p>Why cluster-scoped? Runtime environments are shared infrastructure — every tenant in the cluster references the same set. Namespacing them would force duplication and drift.</p>
 <h3 id="the-base-runtime">The <code>base</code> runtime<a class="headerlink" href="#the-base-runtime" title="Permanent link">&para;</a></h3>
@@ -2866,34 +2866,8 @@
 </ul>
 <hr />
 <h2 id="language-runtimes">Language runtimes<a class="headerlink" href="#language-runtimes" title="Permanent link">&para;</a></h2>
-<p>The repo ships Dockerfiles for three language runtimes under <a href="https://github.com/lenaxia/LLMSafeSpaces/tree/main/runtimes"><code>runtimes/</code></a>:</p>
-<table>
-<thead>
-<tr>
-<th>Directory</th>
-<th>Runtime</th>
-<th>Base</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>runtimes/python/</code></td>
-<td>Python</td>
-<td>Extends base; installs Python via mise</td>
-</tr>
-<tr>
-<td><code>runtimes/nodejs/</code></td>
-<td>Node.js</td>
-<td>Extends base; installs Node.js via mise</td>
-</tr>
-<tr>
-<td><code>runtimes/go/</code></td>
-<td>Go</td>
-<td>Extends base; installs Go via mise</td>
-</tr>
-</tbody>
-</table>
-<p>These are <strong>not seeded as <code>RuntimeEnvironment</code> CRDs by the chart</strong> — they are reference implementations. To make them available, build the image, push it to your registry, and register a <code>RuntimeEnvironment</code> (see below).</p>
+<p>The repo ships ONE runtime image: <code>runtimes/base/</code>.</p>
+<p>The legacy per-language Dockerfiles (<code>runtimes/{go,nodejs,python}/</code>) were deleted (Epic 7 / US-7.8; resurrected accidentally by a stale-branch merge in <code>c9c68684</code> and deleted again by #854 — a repolint <code>ForbiddenPathsCheck</code> now fails any future resurrection). They were never built by any pipeline: the tenant toolchains are <strong>mise-managed in the base image</strong>, which is also why a <code>RuntimeEnvironment</code> only ever needs to point at a <code>base</code> image tag — language stacks are installed per-workspace into the PVC-backed mise home.</p>
 <h3 id="mise-as-the-runtime-manager">mise as the runtime manager<a class="headerlink" href="#mise-as-the-runtime-manager" title="Permanent link">&para;</a></h3>
 <p>The base image uses <a href="https://mise.jdx.dev/">mise</a> (jdx/mise) as the polyglot runtime manager. This means:</p>
 <ul>
@@ -2947,8 +2921,8 @@
 </span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="s">metadata:</span>
 </span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="s">  name: python-3.11</span>
 </span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="s">spec:</span>
-</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="s">  image: ghcr.io/lenaxia/llmsafespaces/python:3.11</span>
-</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="s">  description: "Python 3.11"</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="s">  image: ghcr.io/lenaxia/llmsafespaces/base:&lt;pinned-tag&gt;</span>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="s">  description: "Base image; Python 3.11 via mise"</span>
 </span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="s">EOF</span>
 </span></code></pre></div>
 <p>List them:</p>
@@ -3129,7 +3103,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 14, 2026 15:36:11 UTC"><span class="timeago" datetime="2026-08-14T15:36:11+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 14, 2026 15:36:11 UTC">2026-08-14</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 19, 2026 23:30:09 UTC"><span class="timeago" datetime="2026-08-19T23:30:09+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 19, 2026 23:30:09 UTC">2026-08-19</span>
   </span>
 
     
