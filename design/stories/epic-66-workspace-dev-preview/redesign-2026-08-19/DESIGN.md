@@ -191,10 +191,18 @@ e.g. https://42ae0489-8d54-42a3-af62-163e50da84e8-preview.safespaces.dev/5173/in
   the preview origin can never receive a cookie meant for another host,
   and vice versa. Server-side map id → {ws, exp}; TTL e.g. 7 days or
   workspace suspend, whichever first.
-- **API session cookie hardening (prerequisite):** `lsp_session` must be
-  host-only on `api.safespaces.dev`, ideally renamed with `__Host-` prefix.
-  **[ASSUMPTION: current cookie attributes unknown — must audit; a
-  `Domain=.safespaces.dev` attribute would defeat G1 entirely]**
+- **API session cookie hardening — RESOLVED 2026-08-19 (code inspection):**
+  `lsp_session` is HttpOnly + Secure + explicit SameSite=Lax on every
+  issuance path in current main (5ff0f2ef, 2026-08-11; the audited
+  deployment predated it). The `__Host-` rename is dropped — incompatible
+  with Epic 54's optional wildcard `cookieDomain` (`__Host-` forbids
+  Domain attributes), defending only a Low-severity shadowing nuisance.
+  **Same-site caveat:** preview hosts share the registrable domain, so in
+  Epic 54 deployments (wildcard cookieDomain) SameSite does NOT gate
+  preview→API requests — the CORS origin allowlist (explicit list;
+  credentials only on match; fail-closed wildcard+credentials guard) is
+  the load-bearing control for G1. Phase 1 checklist: preview origins are
+  never added to `security.allowedOrigins`.
 - **agentd auth:** unchanged — the edge continues to inject whatever
   credential agentd expects today (we observed Basic auth on direct
   probes). **[ASSUMPTION: DevPreviewHandler already holds per-workspace

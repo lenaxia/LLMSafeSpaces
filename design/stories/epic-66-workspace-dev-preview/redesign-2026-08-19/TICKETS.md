@@ -24,13 +24,29 @@ new tests T1–T7 per DESIGN.md §8).
 - Verify: `ws-test.html` PASS through tunnel; server log shows `WS OPEN`,
   not `GET /ws 404`.
 
-### P0-3: Session cookie hardening (routine — audit resolved 2026-08-19)
-- Audit result: `lsp_session` is HttpOnly + Secure + host-scoped Domain
-  (`api.safespaces.dev`) — solid baseline; preview hosts will never
-  receive it. Remaining work is hygiene, not a blocker:
-  add explicit `SameSite=Lax`, rename with `__Host-` prefix (blocks
-  cookie-shadowing by subdomain tosses), consider shorter rotation than
-  the observed ~30-day JWT lifetime (staggered dual-accept release).
+### P0-3: Session cookie hardening — DISPOSITIONED 2026-08-19 (code inspection; see THREAT-MODEL T2 addendum)
+- **SameSite=Lax: already shipped in code** — commit 5ff0f2ef (#774,
+  2026-08-11) set `SameSiteLaxMode` explicitly on every cookie issuance
+  path (router.go setSessionCookie, passkey.go, org_sso.go ×3). The field
+  observation of an unset SameSite indicates the deployed build predates
+  2026-08-11 — a deployment-lag artifact, not a code gap. Action: none in
+  code; deploy current main. (The other field findings — CSP, WS
+  stripping, G34 wipe, cache behavior — are structural and confirmed
+  present in current main by direct code reading.)
+- **`__Host-` rename: DROPPED** — architecturally incompatible with Epic 54
+  `OrgSubdomainRouting.CookieDomain` (wildcard `.domain` cookies; the
+  `__Host-` prefix forbids Domain attributes). A per-deployment
+  conditional cookie name buys protection against a Low-severity
+  shadowing nuisance at the cost of name churn + a dual-accept migration.
+  Not worth it; HttpOnly + the CORS allowlist carry the real protection.
+- **Shorter JWT rotation: DEFERRED** — Epic 56 (durable session KEK)
+  territory; not a Phase-0-sized change.
+- **New Phase-1 deploy-checklist item (same-site nuance, see DESIGN §5.3
+  addendum):** in Epic 54 deployments with wildcard cookieDomain,
+  `<ws>-preview.safespaces.dev` is same-site with `api.safespaces.dev`,
+  so SameSite=Lax does NOT gate preview→API requests; the CORS origin
+  allowlist is the load-bearing control. Verify preview origins are never
+  added to `security.allowedOrigins` (they are not by default).
 
 ### P0-4: Disable Cloudflare body rewriters on preview paths
 - Browser Insights/beacon, Rocket Loader, auto-minify, email obfuscation:
