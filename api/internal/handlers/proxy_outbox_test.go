@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -211,7 +212,7 @@ func TestOutbox_RetrySkipsAlreadyDelivered(t *testing.T) {
 			// time ~= now): prior-attempt completion persisted later.
 			created := accepted.Add(90 * time.Second)
 			createdMS := created.UnixMilli()
-			_, _ = w.Write([]byte(fmt.Sprintf(`[{"info":{"id":"msg_u1","role":"user","time":{"created":%d}},"parts":[{"type":"text","text":"already ran"}]}]`, createdMS)))
+			fmt.Fprintf(w, `[{"info":{"id":"msg_u1","role":"user","time":{"created":%d}},"parts":[{"type":"text","text":"already ran"}]}]`, createdMS)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -252,4 +253,81 @@ func TestOutbox_RetrySkipsAlreadyDelivered(t *testing.T) {
 
 	after, _ := ob.List(context.Background(), "ws-1", "ses_1")
 	assert.Empty(t, after, "entry treated as delivered and removed")
+}
+
+// TestOutbox_RetryEndpoint_Integration exercises the retry flow at the
+// HTTP wire level (the review's missing integration case): park an entry
+// terminal via real deliveries, then POST /queue/:id/retry → 204, entry
+// is pending again with attempts reset, and the next bridge delivery
+// completes it. Also covers the 404 for an unknown id (the frontend's
+// fallback trigger).
+func TestOutbox_RetryEndpoint_Integration(t *testing.T) {
+	env := newOutboxTestEnv(t)
+	env.router.POST("/api/v1/workspaces/:id/sessions/:sessionId/queue/:messageId/retry", env.handler.RetryQueueMessage)
+	env.router.DELETE("/api/v1/workspaces/:id/sessions/:sessionId/queue/:messageId", env.handler.DeleteQueueMessage)
+	env.router.GET("/api/v1/workspaces/:id/sessions/:sessionId/queue", env.handler.ListQueue)
+
+	origBackoff, origMax := outbox.RetryBackoff, outbox.MaxBackoff
+	outbox.RetryBackoff, outbox.MaxBackoff = time.Millisecond, time.Millisecond
+	t.Cleanup(func() { outbox.RetryBackoff, outbox.MaxBackoff = origBackoff, origMax })
+
+	// Accept one entry.
+	w := postPrompt(t, env, `{"clientMessageID":"cm-it","parts":[{"type":"text","text":"integration retry"}]}`)
+	require.Equal(t, http.StatusAccepted, w.Code)
+	var acc struct {
+		MessageID string `json:"messageID"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &acc))
+	require.NotEmpty(t, acc.MessageID)
+
+	// Park it terminal: MaxAttempts failing deliveries through the real
+	// bridge (the fake backend 200s, so fail via a dead session id is
+	// not possible — instead drive the service seam with a failing
+	// deliverer, which is the same state machine).
+	ob := env.handler.GetOutboxForTest()
+	for i := 0; i < outbox.MaxAttempts; i++ {
+		_ = ob.DeliverOnce(context.Background(), "ws-1", "ses_1",
+			func(context.Context, string, string, outbox.Entry) error { return errors.New("down") })
+		time.Sleep(2 * time.Millisecond)
+	}
+	entries, _ := ob.List(context.Background(), "ws-1", "ses_1")
+	require.Len(t, entries, 1)
+	require.Equal(t, outbox.StatusError, entries[0].Status, "parked terminal after MaxAttempts")
+
+	// ListQueue shows it as error (the UI's retry affordance).
+	w2 := env.do(http.MethodGet, "/api/v1/workspaces/ws-1/sessions/ses_1/queue", nil)
+	require.Equal(t, http.StatusOK, w2.Code)
+	require.Contains(t, w2.Body.String(), `"status":"error"`)
+	require.Contains(t, w2.Body.String(), acc.MessageID)
+
+	// POST retry → 204; entry pending, attempts zeroed.
+	w3 := env.do(http.MethodPost, "/api/v1/workspaces/ws-1/sessions/ses_1/queue/"+acc.MessageID+"/retry", nil)
+	require.Equal(t, http.StatusNoContent, w3.Code)
+	entries, _ = ob.List(context.Background(), "ws-1", "ses_1")
+	require.Len(t, entries, 1)
+	require.Equal(t, outbox.StatusPending, entries[0].Status)
+	require.Zero(t, entries[0].Attempts)
+
+	// Unknown id → 404 (the frontend's fallback-to-local-re-enqueue path).
+	w4 := env.do(http.MethodPost, "/api/v1/workspaces/ws-1/sessions/ses_1/queue/ob_missing/retry", nil)
+	require.Equal(t, http.StatusNotFound, w4.Code)
+
+	// Bridge delivery now completes it (fake backend 200s).
+	ok := env.handler.DeliverOutboxOnceForTest("ws-1", "ses_1")
+	require.True(t, ok)
+	entries, _ = ob.List(context.Background(), "ws-1", "ses_1")
+	assert.Empty(t, entries, "retried entry delivers and leaves the outbox")
+}
+
+// TestOutbox_RetryQueueMessage_NoOutbox: the 501 shape when the outbox
+// is unwired (dev/test fallback), so the frontend's catch falls through
+// to local re-enqueue deterministically.
+func TestOutbox_RetryQueueMessage_NoOutbox(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	env := newTestEnv(t)
+	router := gin.New()
+	router.POST("/api/v1/workspaces/:id/sessions/:sessionId/queue/:messageId/retry", env.handler.RetryQueueMessage)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/api/v1/workspaces/ws-1/sessions/ses_1/queue/ob_x/retry", nil))
+	assert.Equal(t, http.StatusNotImplemented, w.Code)
 }
