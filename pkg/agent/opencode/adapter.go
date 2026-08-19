@@ -893,6 +893,38 @@ func (a *Adapter) ContextUsageFromEvent(eventType string, rawData string) (strin
 	return u.SessionID, &session.ContextUsage{Used: u.Tokens.PromptTokens()}, true
 }
 
+// MeteringFromEvent implements agent.Adapter. opencode: session.updated
+// events (unsuffixed on the live wire, version-suffixed in the persisted
+// store) carry cumulative usage and model attribution under info.
+func (a *Adapter) MeteringFromEvent(eventType string, props []byte) (*agent.SessionUsage, bool, error) {
+	if !wire.IsSessionUpdated(eventType) {
+		return nil, false, nil
+	}
+	u, ok, err := wire.ParseSessionUpdatedProps(props)
+	if err != nil {
+		a.logger.Warn("opencode metering event claims usage but fails to decode — wire drift?",
+			zap.Error(err), zap.String("eventType", eventType))
+		return nil, false, err
+	}
+	if !ok {
+		// A session.updated-typed event without an info block is a
+		// METERING event with incomplete fields, not a non-metering
+		// event. ok=false is reserved for "not a metering event"
+		// (silent skip); returning a zero value here routes it to the
+		// caller's incomplete-fields warn instead.
+		return &agent.SessionUsage{}, true, nil
+	}
+	return &agent.SessionUsage{
+		SessionID:     u.SessionID,
+		ModelID:       u.ModelID,
+		ProviderID:    u.ProviderID,
+		InputTokens:   u.InputTokens,
+		OutputTokens:  u.OutputTokens,
+		CostUSD:       u.CostUSD,
+		CostMalformed: u.CostMalformed,
+	}, true, nil
+}
+
 // --- Capabilities ---
 
 func (a *Adapter) Capabilities() []session.Capability {

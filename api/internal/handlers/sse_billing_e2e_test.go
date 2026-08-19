@@ -4,6 +4,10 @@
 package handlers
 
 import (
+	"go.uber.org/zap"
+
+	agentoc "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
+
 	"net/http"
 	"sync"
 	"testing"
@@ -52,6 +56,7 @@ func TestE2E_SSETracker_InferencePipeline_CostAsObject(t *testing.T) {
 		})
 		mu.Unlock()
 	})
+	tracker.SetMeteringDecoder(agentoc.NewAdapter(nil, nil, zap.NewNop()).MeteringFromEvent)
 
 	// Send session.updated with cost as an object (potential 1.18.10 wire shape).
 	// In ocCost, "cost" is CostUSD (dollar amount), not "total" (token count).
@@ -106,6 +111,7 @@ func TestE2E_SSETracker_InferencePipeline_SecondEventDedup(t *testing.T) {
 		calls = append(calls, inferenceCall{inputTokens, outputTokens})
 		mu.Unlock()
 	})
+	tracker.SetMeteringDecoder(agentoc.NewAdapter(nil, nil, zap.NewNop()).MeteringFromEvent)
 
 	// First event: bills full input + output.
 	tracker.ProcessEvent("ws-dedup", `{
@@ -158,6 +164,13 @@ func TestE2E_PhaseChangeSuspend_CleansBillingMaps(t *testing.T) {
 
 	tracker := sse.NewTracker(env.handler.httpClient, env.log, func(_, _ string) {})
 	env.handler.sseTracker = tracker
+	// BOTH of the next two calls are load-bearing for the seed below:
+	// the metering dispatch guard requires onInference != nil AND
+	// metering != nil. Missing either gates the seed out, the maps start
+	// empty, and the post-suspend emptiness assertions pass vacuously
+	// (mutation-verified #949 r3/r4).
+	tracker.SetOnInference(func(_, _, _ string, _, _ int64, _ float64) {})
+	tracker.SetMeteringDecoder(agentoc.NewAdapter(nil, nil, zap.NewNop()).MeteringFromEvent)
 	tracker.SetPasswordGetter(env.handler)
 	tracker.SetPodIPResolver(func(string) string { return "10.0.0.1" })
 
@@ -175,7 +188,11 @@ func TestE2E_PhaseChangeSuspend_CleansBillingMaps(t *testing.T) {
 		}
 	}`)
 
-	// Verify maps are populated.
+	// Verify maps are populated — BEFORE the suspend, so the post-suspend
+	// emptiness assertions below can never pass vacuously (Cycle-style).
+	preTokens, _, _ := tracker.GetBillingState("ws-clean")
+	require.NotEmpty(t, preTokens, "seed must populate sessionTokenSeen — if empty, the guard gated the seed out and the cleanup assertions below are vacuous")
+
 	tracker.ProcessEvent("ws-clean", `{
 		"type": "session.status",
 		"properties": {
@@ -220,6 +237,7 @@ func TestE2E_PhaseChangeActive_StopThenEnsure_Cycle(t *testing.T) {
 	tracker.SetPasswordGetter(env.handler)
 	tracker.SetPodIPResolver(func(string) string { return "10.0.0.1" })
 	tracker.SetOnInference(func(_, _, _ string, _, _ int64, _ float64) {})
+	tracker.SetMeteringDecoder(agentoc.NewAdapter(nil, nil, zap.NewNop()).MeteringFromEvent)
 
 	// Start a real subscription first so StopWatching has a goroutine to drain.
 	tracker.EnsureWatching("ws-cycle")
@@ -264,8 +282,8 @@ func TestE2E_SSETracker_RealFixture_1_18_10_SessionUpdated(t *testing.T) {
 	env := newTestEnvWithBackend(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-
 	tracker := sse.NewTracker(env.handler.httpClient, env.log, func(_, _ string) {})
+	tracker.SetMeteringDecoder(agentoc.NewAdapter(nil, nil, zap.NewNop()).MeteringFromEvent)
 	env.handler.sseTracker = tracker
 
 	var mu sync.Mutex

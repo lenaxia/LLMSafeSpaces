@@ -171,3 +171,46 @@ func TestKnownLeaksStillMatchReality(t *testing.T) {
 func isTestFile(path string) bool {
 	return strings.HasSuffix(path, "_test.go")
 }
+
+// TestAgentImportCheck_SubPackageEscapeCaught pins the prefix-match
+// hardening from #947 review: an exact-match implementation let platform
+// code import pkg/agent/opencode/wire (a subpackage) untouched.
+func TestAgentImportCheck_SubPackageEscapeCaught(t *testing.T) {
+	dir := t.TempDir()
+	platform := filepath.Join(dir, "api", "internal", "services", "sse")
+	if err := os.MkdirAll(platform, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(platform, "tracker.go"), []byte(
+		"package sse\n\nimport (\n\t\"github.com/lenaxia/llmsafespaces/pkg/agent/opencode/wire\"\n)\n\nvar _ = wire.ParseStepUsage\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := AgentImportCheck(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Violations) != 1 {
+		t.Fatalf("subpackage import must be flagged; got %d violations", len(rep.Violations))
+	}
+}
+
+// TestAgentImportCheck_SeamSelfImportAllowed: files inside the seam may
+// import their own subpackages (opencode/adapter.go -> opencode/wire).
+func TestAgentImportCheck_SeamSelfImportAllowed(t *testing.T) {
+	dir := t.TempDir()
+	seam := filepath.Join(dir, "pkg", "agent", "opencode")
+	if err := os.MkdirAll(seam, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(seam, "adapter.go"), []byte(
+		"package opencode\n\nimport (\n\t\"github.com/lenaxia/llmsafespaces/pkg/agent/opencode/wire\"\n)\n\nvar _ = wire.ParseStepUsage\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rep, err := AgentImportCheck(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Violations) != 0 {
+		t.Fatalf("seam self-import must be allowed; got %d violations", len(rep.Violations))
+	}
+}

@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Package wire is the ONLY code in the platform that decodes opencode wire
-// bytes (HTTP bodies and /event SSE envelopes). The API-side adapter
-// consumes it today; the in-pod agentd's own parsers migrate onto it as
-// deferred follow-up work. Nothing else may import it. Shapes are pinned
-// by golden fixtures in ../testdata — see the opencode upgrade runbook.
+// bytes (HTTP bodies and /event SSE envelopes). The API-side adapter, the
+// SSE tracker's metering path, and the in-pod agentd's usage parser all
+// consume it; nothing else may import it. Shapes are pinned by golden
+// fixtures in ../testdata — see the opencode upgrade runbook.
 //
 // Parsing is dual-shape tolerant by design. Two reasons with live-capture
 // evidence (see testdata/REFRESH.md): (1) the same logical event type is
@@ -18,6 +18,7 @@
 package wire
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -116,6 +117,19 @@ func ParseStepUsage(eventType string, raw string) (StepUsage, bool, error) {
 	return parse(env.Properties)
 }
 
+// ParseStepUsageProps is ParseStepUsage for callers that already stripped
+// the envelope (agentd's legacy nested-payload path). Same semantics.
+func ParseStepUsageProps(eventType string, props json.RawMessage) (StepUsage, bool, error) {
+	switch {
+	case IsStepEnded(eventType):
+		return parseLegacyStepEnded(props)
+	case IsPartUpdated(eventType):
+		return parsePartUpdate(props)
+	default:
+		return StepUsage{}, false, nil
+	}
+}
+
 func parseLegacyStepEnded(props json.RawMessage) (StepUsage, bool, error) {
 	var p struct {
 		SessionID string  `json:"sessionID"`
@@ -154,4 +168,105 @@ func parsePartUpdate(props json.RawMessage) (StepUsage, bool, error) {
 		return StepUsage{}, false, fmt.Errorf("step-finish part claims usage but lacks sessionID or tokens")
 	}
 	return StepUsage{SessionID: p.SessionID, Tokens: *p.Part.Tokens}, true, nil
+}
+
+// SessionUsage is the decoded session-level CUMULATIVE usage and model
+// attribution from session.updated events — the metering/billing signal.
+// Unlike StepUsage (per-step occupancy), these counters only grow;
+// delta computation is the caller's policy, not the decoder's.
+type SessionUsage struct {
+	SessionID    string
+	ModelID      string
+	ProviderID   string
+	InputTokens  int64
+	OutputTokens int64
+	CostUSD      float64
+	// CostMalformed reports a cost field that is neither a number nor
+	// an object with a numeric "cost" — decoded as CostUSD=0 so billing
+	// proceeds, but callers should warn: it is a wire-drift signal.
+	CostMalformed bool
+}
+
+// IsSessionUpdated reports whether eventType is a session.updated event,
+// tolerating the store surface's version suffix ("session.updated.1").
+func IsSessionUpdated(eventType string) bool {
+	return eventType == "session.updated" || isSuffixed(eventType, "session.updated")
+}
+
+// ParseSessionUpdated decodes a session.updated event's cumulative usage
+// and model attribution. ok=false (no error) when the event carries no
+// info block — session.updated legitimately fires without one (early
+// lifecycle). err is non-nil only for usage-bearing payloads that fail
+// to decode (wire drift). Envelope-based, like ParseStepUsage.
+func ParseSessionUpdated(eventType string, raw string) (SessionUsage, bool, error) {
+	if !IsSessionUpdated(eventType) {
+		return SessionUsage{}, false, nil
+	}
+	var env Envelope
+	if err := json.Unmarshal([]byte(raw), &env); err != nil {
+		return SessionUsage{}, false, fmt.Errorf("session.updated envelope undecodable: %w", err)
+	}
+	return ParseSessionUpdatedProps(env.Properties)
+}
+
+// ParseSessionUpdatedProps is ParseSessionUpdated for callers holding
+// already-stripped properties (the SSE tracker's dispatch path).
+func ParseSessionUpdatedProps(props json.RawMessage) (SessionUsage, bool, error) {
+	var p struct {
+		Info *struct {
+			ID    string `json:"id"`
+			Model struct {
+				ID         string `json:"id"`
+				ProviderID string `json:"providerID"`
+				Provider   string `json:"provider"`
+			} `json:"model"`
+			Tokens struct {
+				Input  int64 `json:"input"`
+				Output int64 `json:"output"`
+			} `json:"tokens"`
+			Cost json.RawMessage `json:"cost"`
+		} `json:"info"`
+	}
+	if len(props) == 0 {
+		return SessionUsage{}, false, nil
+	}
+	if err := json.Unmarshal(props, &p); err != nil {
+		return SessionUsage{}, false, fmt.Errorf("session.updated properties undecodable: %w", err)
+	}
+	if p.Info == nil {
+		return SessionUsage{}, false, nil
+	}
+	// Session identity is info.id — the field the metering path has
+	// always keyed on. properties.sessionID is redundant on the wire
+	// (same value); an empty info.id must stay empty so callers can
+	// warn-and-skip malformed billing events (pinned behavior).
+	u := SessionUsage{
+		SessionID:    p.Info.ID,
+		ModelID:      p.Info.Model.ID,
+		ProviderID:   p.Info.Model.ProviderID,
+		InputTokens:  p.Info.Tokens.Input,
+		OutputTokens: p.Info.Tokens.Output,
+	}
+	if u.ProviderID == "" {
+		u.ProviderID = p.Info.Model.Provider
+	}
+	if len(p.Info.Cost) > 0 {
+		trimmed := bytes.TrimSpace(p.Info.Cost)
+		var costFloat float64
+		if json.Unmarshal(trimmed, &costFloat) == nil {
+			u.CostUSD = costFloat
+		} else {
+			// 1.18.x object shape: "cost" is the dollar amount;
+			// "total" there is a token count — never use it as cost.
+			var costObj struct {
+				Cost float64 `json:"cost"`
+			}
+			if json.Unmarshal(trimmed, &costObj) == nil {
+				u.CostUSD = costObj.Cost
+			} else {
+				u.CostMalformed = true
+			}
+		}
+	}
+	return u, true, nil
 }

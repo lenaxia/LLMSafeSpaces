@@ -35,13 +35,7 @@ func (h *ProxyHandler) Start() error {
 			return
 		}
 
-		h.sseTracker = sse.NewTracker(h.httpClient, h.logger, h.onSessionIdle)
-		h.sseTracker.SetPasswordGetter(h)
-		h.sseTracker.SetPodIPResolver(h.getPodIPForSSE)
-		h.sseTracker.SetOnSessionActive(h.onSessionActive)
-		h.sseTracker.SetOnRawEvent(h.onRawEvent)
-		h.sseTracker.SetOnAgentDied(h.onAgentDied)
-		h.sseTracker.SetOnReconnect(h.reconcileSessionState)
+		h.sseTracker = h.newSSETracker()
 
 		watcher, err := workspace.NewWatcher(h.k8sClient, h.logger, h.namespace, h.onPhaseChange)
 		if err != nil {
@@ -242,4 +236,23 @@ func (h *ProxyHandler) GetAllKnownPhases() map[string]string {
 		return nil
 	}
 	return h.watcher.GetAllKnownPhases()
+}
+
+// newSSETracker constructs the workspace SSE tracker with every callback
+// wired, including the metering decoder — which rides the Adapter seam
+// (design 0049 boundary: no agent wire knowledge in the tracker). The
+// decoder is wired HERE, at construction, so no call site can forget it:
+// a nil decoder silently zeroes all billing inference.
+func (h *ProxyHandler) newSSETracker() *sse.Tracker {
+	t := sse.NewTracker(h.httpClient, h.logger, h.onSessionIdle)
+	if h.adapter != nil {
+		t.SetMeteringDecoder(h.adapter.MeteringFromEvent)
+	}
+	t.SetPasswordGetter(h)
+	t.SetPodIPResolver(h.getPodIPForSSE)
+	t.SetOnSessionActive(h.onSessionActive)
+	t.SetOnRawEvent(h.onRawEvent)
+	t.SetOnAgentDied(h.onAgentDied)
+	t.SetOnReconnect(h.reconcileSessionState)
+	return t
 }

@@ -5,7 +5,6 @@ package sse
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +17,8 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/lenaxia/llmsafespaces/pkg/agent"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
@@ -71,6 +72,7 @@ type Tracker struct {
 	onSessionActive  SessionIdleCallback
 	onRawEvent       RawEventCallback
 	onInference      InferenceCallback
+	metering         MeteringDecoder
 	onReconnect      ReconnectCallback
 	onAgentDied      AgentDiedCallback
 	idleTimeout      time.Duration
@@ -128,6 +130,20 @@ func (t *Tracker) SetOnSessionActive(callback SessionIdleCallback) {
 
 func (t *Tracker) SetOnReconnect(callback ReconnectCallback) {
 	t.onReconnect = callback
+}
+
+// MeteringDecoder translates one envelope-stripped agent event into
+// session-level cumulative usage and model attribution. Implemented by
+// the agent Adapter (injected at wiring) so the tracker holds no agent
+// wire knowledge — design 0049's boundary: platform code imports
+// pkg/agent, never an agent implementation package. Contract: err is
+// returned only after the implementation has logged a warn (the caller
+// returns silently on err and depends on that warn for the drift
+// signal); ok=false means "not a metering event", also silent.
+type MeteringDecoder func(eventType string, props []byte) (*agent.SessionUsage, bool, error)
+
+func (t *Tracker) SetMeteringDecoder(d MeteringDecoder) {
+	t.metering = d
 }
 
 func (t *Tracker) SetOnInference(cb InferenceCallback) {
@@ -669,8 +685,8 @@ func (t *Tracker) DispatchProperties(workspaceID, eventType string, props json.R
 }
 
 func (t *Tracker) dispatchProperties(workspaceID, eventType string, props json.RawMessage) {
-	if eventType == "session.updated" && len(props) > 0 && t.onInference != nil {
-		t.handleSessionUpdated(workspaceID, props)
+	if t.onInference != nil && t.metering != nil && len(props) > 0 {
+		t.handleSessionUpdated(workspaceID, eventType, props)
 	}
 	if eventType != "session.status" || len(props) == 0 {
 		return
@@ -733,83 +749,67 @@ func (t *Tracker) dispatchProperties(workspaceID, eventType string, props json.R
 	}
 }
 
-func (t *Tracker) handleSessionUpdated(workspaceID string, props []byte) {
-	var p struct {
-		SessionID string `json:"sessionID"`
-		Info      struct {
-			ID    string `json:"id"`
-			Model struct {
-				ID         string `json:"id"`
-				ProviderID string `json:"providerID"`
-				Provider   string `json:"provider"`
-			} `json:"model"`
-			Tokens struct {
-				Input  int64 `json:"input"`
-				Output int64 `json:"output"`
-			} `json:"tokens"`
-			Cost json.RawMessage `json:"cost"`
-		} `json:"info"`
-	}
-	if err := json.Unmarshal(props, &p); err != nil {
-		t.Logger.Warn("handleSessionUpdated: failed to parse event", "workspaceID", workspaceID, "error", err)
+func (t *Tracker) handleSessionUpdated(workspaceID, eventType string, props []byte) {
+	// Decode is the injected adapter's job (agent wire knowledge stays
+	// behind the seam); the dedup/delta computation below is billing
+	// POLICY and stays here.
+	u, ok, err := t.metering(eventType, props)
+	if err != nil {
+		// Already warned inside the seam with the eventType (the
+		// adapter owns wire-drift context); nothing to add here.
 		return
 	}
-	if p.Info.ID == "" || p.Info.Tokens.Output == 0 || p.Info.Model.ID == "" {
-		t.Logger.Warn("handleSessionUpdated: dropping session.updated with incomplete billing fields",
-			"workspaceID", workspaceID, "sessionID", p.Info.ID,
-			"hasModel", p.Info.Model.ID != "", "outputTokens", p.Info.Tokens.Output)
+	if !ok {
+		// Not a metering event — the majority of stream traffic. Never
+		// a warn (a per-event warn here floods logs and drowns the real
+		// drift signals; pinned by the non-usage-no-warn test).
 		return
 	}
-
-	providerID := p.Info.Model.ProviderID
-	if providerID == "" {
-		providerID = p.Info.Model.Provider
+	if u == nil || u.SessionID == "" || u.OutputTokens == 0 || u.ModelID == "" {
+		t.Logger.Warn("handleSessionUpdated: dropping usage event with incomplete billing fields",
+			"workspaceID", workspaceID, "sessionID", sessionIDOrEmpty(u),
+			"hasModel", u != nil && u.ModelID != "", "outputTokens", outputOrZero(u))
+		return
+	}
+	if u.CostMalformed {
+		t.Logger.Warn("handleSessionUpdated: cost field is neither number nor object — billing at 0; wire drift?",
+			"workspaceID", workspaceID, "sessionID", u.SessionID)
 	}
 
-	costVal := 0.0
-	if len(p.Info.Cost) > 0 {
-		trimmed := bytes.TrimSpace(p.Info.Cost)
-		// Try as a plain number first (1.15.x wire shape): "cost": 0.042
-		var costFloat float64
-		if json.Unmarshal(trimmed, &costFloat) == nil {
-			costVal = costFloat
-		} else {
-			// Try as an object (potential 1.18.10 wire shape).
-			// In ocCost, "cost" is CostUSD (dollar amount), while
-			// "total" is TotalTokens (int64 count). Extract the
-			// dollar field, not the token count.
-			var costObj struct {
-				Cost float64 `json:"cost"`
-			}
-			if json.Unmarshal(trimmed, &costObj) == nil {
-				costVal = costObj.Cost
-			} else {
-				t.Logger.Warn("handleSessionUpdated: could not parse cost field",
-					"workspaceID", workspaceID, "raw", string(trimmed))
-			}
-		}
-	}
-
-	key := workspaceID + ":" + p.Info.ID
+	key := workspaceID + ":" + u.SessionID
 	t.tokensMu.Lock()
 	prevOutput := t.sessionTokenSeen[key]
-	if p.Info.Tokens.Output <= prevOutput {
+	if u.OutputTokens <= prevOutput {
 		t.tokensMu.Unlock()
 		return
 	}
 	prevCost := t.sessionCostSeen[key]
-	t.sessionTokenSeen[key] = p.Info.Tokens.Output
-	t.sessionCostSeen[key] = costVal
+	t.sessionTokenSeen[key] = u.OutputTokens
+	t.sessionCostSeen[key] = u.CostUSD
 	t.tokensMu.Unlock()
 
-	outputDelta := p.Info.Tokens.Output - prevOutput
-	inputTokens := p.Info.Tokens.Input
+	outputDelta := u.OutputTokens - prevOutput
+	inputTokens := u.InputTokens
 	if prevOutput > 0 {
 		inputTokens = 0
 	}
-	costDelta := costVal - prevCost
+	costDelta := u.CostUSD - prevCost
 	if costDelta < 0 {
 		costDelta = 0
 	}
-	t.onInference(workspaceID, p.Info.Model.ID, providerID, inputTokens, outputDelta, costDelta)
+	t.onInference(workspaceID, u.ModelID, u.ProviderID, inputTokens, outputDelta, costDelta)
+}
+
+func sessionIDOrEmpty(u *agent.SessionUsage) string {
+	if u == nil {
+		return ""
+	}
+	return u.SessionID
+}
+
+func outputOrZero(u *agent.SessionUsage) int64 {
+	if u == nil {
+		return 0
+	}
+	return u.OutputTokens
 }

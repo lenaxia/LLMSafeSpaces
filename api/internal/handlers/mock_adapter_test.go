@@ -117,6 +117,10 @@ func (m *mockAdapter) ContextUsageFromEvent(eventType string, rawData string) (s
 	return "", nil, false
 }
 
+func (m *mockAdapter) MeteringFromEvent(_ string, _ []byte) (*agent.SessionUsage, bool, error) {
+	return nil, false, nil
+}
+
 // newUsageStubAdapter returns an adapter stub whose ContextUsageFromEvent
 // answers with fixed values keyed by sessionID substring in the raw payload.
 // Handler-level wiring tests use it; the real wire→usage translation (both

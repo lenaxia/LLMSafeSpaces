@@ -1202,3 +1202,39 @@ func TestStatuszEndpoint_RelayFreeModelsField(t *testing.T) {
 			"statusz must serialize the injector state %d", state.v)
 	}
 }
+
+func TestSessionStatusTracker_ProcessEvent_StepFinishPart_CapturesPromptTokens(t *testing.T) {
+	// The 1.18.x live-wire shape: usage inside step-finish parts of
+	// message.part.updated events (the legacy session.next.step.ended no
+	// longer exists on the wire). Verified by verbatim /event capture —
+	// see pkg/agent/opencode/testdata/sse_events_1_18_10_live.jsonl.
+	tracker := newSessionStatusTracker()
+
+	tracker.processEvent(`{"id":"evt1","type":"message.part.updated","properties":{"sessionID":"ses_new","part":{"type":"step-finish","reason":"tool-calls","cost":0,"tokens":{"total":3950,"input":2310,"output":285,"reasoning":75,"cache":{"read":1280,"write":0}}}}}`)
+	assert.Equal(t, int64(3590), tracker.getPromptTokens("ses_new"), "occupancy = input + cache.read + cache.write")
+}
+
+func TestSessionStatusTracker_ProcessEvent_StepFinishPart_SuffixedType(t *testing.T) {
+	// Store-surface variant emits version-suffixed type names.
+	tracker := newSessionStatusTracker()
+
+	tracker.processEvent(`{"id":"evt1","type":"message.part.updated.1","properties":{"sessionID":"ses_sfx","part":{"type":"step-finish","tokens":{"input":100,"cache":{"read":40,"write":10}}}}}`)
+	assert.Equal(t, int64(150), tracker.getPromptTokens("ses_sfx"))
+}
+
+func TestSessionStatusTracker_ProcessEvent_TextParts_NoUsage(t *testing.T) {
+	tracker := newSessionStatusTracker()
+
+	tracker.processEvent(`{"id":"evt1","type":"message.part.updated","properties":{"sessionID":"ses_t","part":{"type":"text","text":"hi"}}}`)
+	assert.Equal(t, int64(0), tracker.getPromptTokens("ses_t"), "non-finish parts carry no usage")
+}
+
+func TestSessionStatusTracker_ProcessEvent_StepFinishPart_MissingTokens_NoCaptureNoPanic(t *testing.T) {
+	// Drift shape for the CURRENT wire generation: a step-finish part
+	// without tokens exercises the seam's drift-error branch (warn, no
+	// capture) — the analog of the legacy StepEnded_MissingTokens test.
+	tracker := newSessionStatusTracker()
+
+	tracker.processEvent(`{"id":"evt1","type":"message.part.updated","properties":{"sessionID":"ses_drift","part":{"type":"step-finish","reason":"stop"}}}`)
+	assert.Equal(t, int64(0), tracker.getPromptTokens("ses_drift"), "undecodable usage must not capture")
+}
