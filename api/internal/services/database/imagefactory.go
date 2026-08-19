@@ -220,6 +220,11 @@ func upsertBaseOn(ctx context.Context, db queryExecer, b imagefactory.Base) erro
 		b.Name, b.Version, b.Image, b.Tag, b.Digest, b.IsDefault,
 	)
 	if err != nil {
+		// A concurrent default-move loser hits the partial unique index —
+		// typed conflict, not an opaque 500 (the invariant itself holds).
+		if isUniqueViolation(err) {
+			return ErrConflict
+		}
 		return fmt.Errorf("upsert base: %w", err)
 	}
 	return nil

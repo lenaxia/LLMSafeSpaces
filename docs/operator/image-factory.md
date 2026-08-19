@@ -24,17 +24,20 @@ unrelated; this page is about the image factory (design/0046).
 
 ## Moving the default base (e.g. bookworm → trixie)
 
-**Moving the default is one call.** A `POST /bases` upsert with
-`isDefault: true` clears every other default in the same statement, and
-a partial unique index (`uq_image_factory_bases_single_default`,
-migration 000025) makes "at most one default" structural — enforced by
-the database under every path, including concurrent admin upserts and
-seed-after-delete restarts. Explicit `isDefault: false` upserts leave no
-default (nothing auto-promotes).
+**Moving the default is one call.**
 
 1. Publish the new base's versions and their extension coverage first
    (see below).
 2. POST-upsert the intended row with `isDefault: true`. Done.
+
+A `POST /bases` upsert with `isDefault: true` clears every other default
+in the same statement, and a partial unique index
+(`uq_image_factory_bases_single_default`, migration 000025 — which
+first dedups any pre-existing two-default state, keeping the highest
+(name, version)) makes "at most one default" structural: enforced by
+the database under every path, including concurrent admin upserts and
+seed-after-delete restarts. Explicit `isDefault: false` upserts leave no
+default (nothing auto-promotes).
 
 **API restarts do not revert or duplicate runtime defaults.** The boot
 seed applies its `isDefault` only to rows it INSERTs, and only when no
@@ -70,9 +73,11 @@ staleness is information, never a lockout.
   naming the colliding config (#936); the form surfaces it directly.
   The prefill avoids the common cases by de-conflicting the suggested
   name against existing configs (`name (base version)`, with numeric
-  suffix on repeat refreshes). The fresh-dispatch path also cancels the
-  already-fired GH run on conflict (bounded orphan even when the run ID
-  is not yet known).
+  suffix on repeat refreshes). On the fresh-dispatch path the GH run has
+  already fired but its ID is not yet known (workflow_dispatch returns
+  none), so the run cannot be cancelled — it is a bounded orphan: it
+  finishes, its callback 404s against the missing build row, and nothing
+  retries.
 - **Refresh save 422 per-extension**: an extension in the selection is
   unsupported on the target base, or was retired after the config was
   saved. Both surface in the form before save ("Not available on …");

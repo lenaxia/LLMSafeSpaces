@@ -8,6 +8,8 @@ package database
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -618,19 +620,20 @@ func TestIntegration_IF_Migration000025_TwoDefaultUpgradePath(t *testing.T) {
 	_, err := h.SQLDB().ExecContext(ctx, `DROP INDEX IF EXISTS uq_image_factory_bases_single_default`)
 	require.NoError(t, err)
 	// Bypass the store's guards: raw inserts of the broken state.
-	_, err = h.SQLDB().ExecContext(ctx, `INSERT INTO image_factory_bases (name, version, image, is_default) VALUES
-		('bookworm', '0.6.0', 'i1', TRUE), ('trixie', '0.1.0', 'i2', TRUE)`)
+	// tag/digest supplied: nullable columns, and ListBases scans into
+	// plain strings — NULL here fails the scan before any assertion runs
+	// (round-6 finding B1').
+	_, err = h.SQLDB().ExecContext(ctx, `INSERT INTO image_factory_bases (name, version, image, tag, digest, is_default) VALUES
+		('bookworm', '0.6.0', 'i1', '0.6.0', '', TRUE), ('trixie', '0.1.0', 'i2', '0.1.0', '', TRUE)`)
 	require.NoError(t, err)
 
-	// Execute the migration body verbatim (what an upgrade runs).
-	_, err = h.SQLDB().ExecContext(ctx, `
-		UPDATE image_factory_bases SET is_default = FALSE, updated_at = now()
-		 WHERE is_default AND (name, version) NOT IN (
-			SELECT name, version FROM image_factory_bases WHERE is_default
-			ORDER BY name DESC, version DESC LIMIT 1);
-		CREATE UNIQUE INDEX IF NOT EXISTS uq_image_factory_bases_single_default
-			ON image_factory_bases ((true)) WHERE is_default;`)
-	require.NoError(t, err, "migration body must succeed on a two-default database")
+	// Execute the REAL migration file (round-6 recommendation): reading
+	// the artifact prevents silent drift between the test's copy and the
+	// shipped migration.
+	migSQL, err := os.ReadFile(filepath.Join("..", "..", "migrations", "000025_image_factory_single_default.up.sql"))
+	require.NoError(t, err, "read the shipped migration")
+	_, err = h.SQLDB().ExecContext(ctx, string(migSQL))
+	require.NoError(t, err, "shipped migration must succeed on a two-default database")
 
 	bases, err := svc.ListBases(ctx)
 	require.NoError(t, err)

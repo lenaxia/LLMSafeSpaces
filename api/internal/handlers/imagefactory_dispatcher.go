@@ -128,7 +128,8 @@ func (d *ghActionsDispatcher) Dispatch(ctx context.Context, req dispatchRequest)
 // Cancel aborts a dispatched workflow run (#936). The workflow_dispatch
 // API does not return the run ID (Dispatch returns 0 until GitHub's API
 // grows a synchronous-ID variant), so callers pass the build's recorded
-// ID; runID <= 0 is a logged no-op. Best-effort by contract.
+// ID; runID <= 0 is a SILENT no-op (nothing to cancel, nothing to log).
+// Best-effort by contract.
 func (d *ghActionsDispatcher) Cancel(ctx context.Context, ghRunID int64) error {
 	if ghRunID <= 0 {
 		return nil

@@ -302,7 +302,7 @@ func (h *ImageFactoryHandler) createConfigAtScope(
 			// Dispatch returns the GH run ID only when the dispatch API
 			// provides one; the workflow_dispatch endpoint does NOT (the
 			// ID arrives via the callback), so this is 0 today and Cancel
-			// no-ops with a log. The orphan is bounded: the run finishes,
+			// silently no-ops. The orphan is bounded: the run finishes,
 			// its callback 404s (no build row), nothing retries.
 			if build.GHRunID != nil {
 				if cerr := h.dispatcher.Cancel(ctx, *build.GHRunID); cerr != nil && h.logger != nil {

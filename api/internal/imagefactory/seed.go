@@ -48,7 +48,10 @@ func (s SeedExtensionEntry) ToExtension() Extension {
 // SeedCatalogStore is the subset of the DB store needed to seed the catalog.
 type SeedCatalogStore interface {
 	SetPlatformConfig(ctx context.Context, pc PlatformConfig) error
-	UpsertBase(ctx context.Context, b Base) error
+	// SeedUpsertBase is the boot-seed upsert: unlike the admin-path
+	// UpsertBase it never clears other defaults and never overwrites an
+	// existing row's is_default (#936). (Admin UpsertBase is not on this
+	// interface — SeedCatalog never calls it.)
 	SeedUpsertBase(ctx context.Context, b Base) error
 	GetExtension(ctx context.Context, id string) (Extension, error)
 	PublishExtension(ctx context.Context, e Extension) error

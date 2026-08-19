@@ -182,3 +182,22 @@ BOTH migration mirrors. Upgrade-path integration test: recreate the
 broken state (index dropped, two raw defaults), run the migration body
 verbatim, assert 1 default / trixie wins, then assert the index
 structurally blocks regression.
+
+---
+
+## Review round 6 addendum
+
+- B1' (blocker): the migration upgrade-path test was red-on-arrival —
+  its raw fixture INSERT omitted tag/digest (nullable; ListBases scans
+  into plain strings → NULL scan error before any assertion), and the
+  "green 29/29" dispatch never compiled integration-tagged tests (the
+  CI workflow's Test jobs run untagged). Fixture now supplies tag/
+  digest; the test also reads the REAL migration file (os.ReadFile of
+  the shipped artifact) instead of a hand-copied body — no silent
+  drift between test and shipped SQL.
+- Carried minors: stale "no-ops with a log" comments corrected
+  (silent no-op); docs state the bounded-orphan shape honestly
+  (cannot cancel without a run ID) and the migration's dedup step;
+  §Moving-the-default numbering fixed; dead SeedCatalogStore.UpsertBase
+  removed (ISP); upsertBaseOn maps 23505 → ErrConflict (concurrent
+  default-move loser gets a typed conflict, not an opaque 500).
