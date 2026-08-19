@@ -229,7 +229,14 @@ func TestE2E_Reconcile_PodSpec_PasswordSecretMounted(t *testing.T) {
 	assert.Equal(t, passwordSecretName(ws.Name), pwVol.Secret.SecretName,
 		"pw-secret must reference the workspace's password Secret")
 
-	// The main container's AGENTD_ADMIN_TOKEN env must read from the same secret.
+	// The main container's admin-token delivery must reference the same
+	// secret in ONE of the two modes (#887 D5.1):
+	//   file mode  (Secret carries the distinct admin-token key — the
+	//               mode this reconcile produced, since ensurePasswordSecret
+	//               upserts the key): AGENTD_ADMIN_TOKEN_FILE only, and the
+	//               init script installs /sandbox-cfg/admin-token.
+	//   legacy env mode: AGENTD_ADMIN_TOKEN ← SecretKeyRef(password).
+	// A drop of BOTH breaks the readiness probe auth (401 on /v1/readyz).
 	var mainContainer *corev1.Container
 	for i := range pod.Spec.Containers {
 		if pod.Spec.Containers[i].Name == "workspace" {
@@ -238,16 +245,25 @@ func TestE2E_Reconcile_PodSpec_PasswordSecretMounted(t *testing.T) {
 		}
 	}
 	require.NotNil(t, mainContainer, "main 'workspace' container must exist")
-	var foundAdminToken bool
+	var fileMode, legacyEnvMode bool
 	for _, e := range mainContainer.Env {
+		if e.Name == "AGENTD_ADMIN_TOKEN_FILE" && e.Value == "/sandbox-cfg/admin-token" {
+			fileMode = true
+		}
 		if e.Name == "AGENTD_ADMIN_TOKEN" && e.ValueFrom != nil &&
 			e.ValueFrom.SecretKeyRef != nil &&
 			e.ValueFrom.SecretKeyRef.Name == passwordSecretName(ws.Name) {
-			foundAdminToken = true
+			legacyEnvMode = true
 		}
 	}
-	assert.True(t, foundAdminToken,
-		"AGENTD_ADMIN_TOKEN env must reference the pw-secret — a drop breaks the readiness probe auth")
+	assert.True(t, fileMode || legacyEnvMode,
+		"admin-token delivery must be present (AGENTD_ADMIN_TOKEN_FILE file mode or AGENTD_ADMIN_TOKEN env mode)")
+	if fileMode {
+		assert.False(t, legacyEnvMode,
+			"file mode must not ALSO carry the env var — the token would ride opencode's env into every tool process")
+		assert.Contains(t, credSetupScript(t, pod), "install -m 0400 /mnt/secrets/password/admin-token /sandbox-cfg/admin-token",
+			"file mode requires the init script to install the token file")
+	}
 }
 
 // --- Unhappy paths ---
@@ -331,4 +347,17 @@ func TestE2E_Reconcile_PodSpec_FSGroupChangePolicyPersistedOnResume(t *testing.T
 		"resumed pod must set fsGroupChangePolicy explicitly")
 	assert.Equal(t, corev1.FSGroupChangeOnRootMismatch, *pod.Spec.SecurityContext.FSGroupChangePolicy,
 		"must be OnRootMismatch on the resume path — resume was the observed incident path")
+}
+
+// credSetupScript extracts the credential-setup init container's script.
+func credSetupScript(t *testing.T, pod *corev1.Pod) string {
+	t.Helper()
+	for i := range pod.Spec.InitContainers {
+		if pod.Spec.InitContainers[i].Name == "credential-setup" {
+			require.Len(t, pod.Spec.InitContainers[i].Command, 3)
+			return pod.Spec.InitContainers[i].Command[2]
+		}
+	}
+	t.Fatal("credential-setup init container not found")
+	return ""
 }

@@ -54,6 +54,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/settings"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 	"github.com/lenaxia/llmsafespaces/pkg/workflows"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // Compile-time check that *WorkspaceClient satisfies the caller-shaped
@@ -1078,7 +1079,23 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			agentClient := agentoc.NewWorkspaceClient(pwAdapter, ipResolver, log.ZapLogger())
 			modelsHandler.SetAgentClient(agentClient)
 			if relayURL := cfg.Server.InferenceRelayURL; relayURL != "" {
-				modelsHandler.SetRelayChecker(buildRelayChecker(ipResolver, pwAdapter))
+				modelsHandler.SetRelayChecker(buildRelayChecker(ipResolver, func(ctx context.Context, wsID string) ([]string, error) {
+					pw, pwErr := pwGetter.WorkspacePassword(ctx, wsID)
+					if pwErr != nil {
+						return nil, pwErr
+					}
+					candidates := []string{}
+					secretName := fmt.Sprintf("workspace-pw-%s", wsID)
+					if secret, sErr := k8sClient.Clientset().CoreV1().Secrets(cfg.Kubernetes.Namespace).Get(ctx, secretName, metav1.GetOptions{}); sErr == nil {
+						if tok := strings.TrimSpace(string(secret.Data["admin-token"])); tok != "" {
+							candidates = append(candidates, tok)
+						}
+					}
+					if pw != "" {
+						candidates = append(candidates, pw)
+					}
+					return candidates, nil
+				}))
 			}
 		}
 	}
@@ -1647,13 +1664,14 @@ func validateMasterSecret(log *logger.Logger) error {
 
 // buildRelayChecker creates a RelayStateChecker that reads the relay
 // injection state from the agentd admin port (/v1/readyz). The checker
-// resolves podIP + password internally, keeping the ModelsHandler free
-// of pod/auth concerns (US-29.5 design).
+// resolves podIP + bearer candidates internally, keeping the ModelsHandler
+// free of pod/auth concerns (US-29.5 design). Candidates: distinct admin
+// token first, workspace password fallback (#887 D5.1 mixed fleet).
 func buildRelayChecker(
 	ipResolver handlers.PodIPResolver,
-	pwGetter func(context.Context, string) (string, error),
+	bearerGetter func(context.Context, string) ([]string, error),
 ) handlers.RelayStateChecker {
-	return newRelayChecker(&http.Client{Timeout: 5 * time.Second}, agentd.AgentdAdminPort, ipResolver, pwGetter)
+	return newRelayChecker(&http.Client{Timeout: 5 * time.Second}, agentd.AgentdAdminPort, ipResolver, bearerGetter)
 }
 
 // readyzReadLimit bounds the /v1/readyz response read. readyz is a tiny
@@ -1670,24 +1688,19 @@ func newRelayChecker(
 	client *http.Client,
 	port int,
 	ipResolver handlers.PodIPResolver,
-	pwGetter func(context.Context, string) (string, error),
+	bearerGetter func(context.Context, string) ([]string, error),
 ) handlers.RelayStateChecker {
 	return func(ctx context.Context, userID, workspaceID string) bool {
 		podIP, err := ipResolver.GetWorkspacePodIP(ctx, userID, workspaceID)
 		if err != nil || podIP == "" {
 			return false
 		}
-		password, err := pwGetter(ctx, workspaceID)
-		if err != nil || password == "" {
+		bearers, err := bearerGetter(ctx, workspaceID)
+		if err != nil || len(bearers) == 0 {
 			return false
 		}
 		url := fmt.Sprintf("http://%s:%d/v1/readyz", podIP, port)
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
-			return false
-		}
-		req.Header.Set("Authorization", "Bearer "+password)
-		resp, err := client.Do(req)
+		resp, err := handlers.GetWithBearers(ctx, client, url, bearers)
 		if err != nil {
 			return false
 		}

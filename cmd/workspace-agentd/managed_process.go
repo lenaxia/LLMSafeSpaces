@@ -56,6 +56,10 @@ type managedProcess struct {
 	restartCount  int
 	lastRestartAt time.Time
 
+	// adminToken is the resolved-once admin-mux bearer (boot, main) used
+	// by healthProbeAfterRestart — closes the gate/use re-read TOCTOU.
+	adminToken string
+
 	// cmdFactory builds a fresh *exec.Cmd for each (re)start.
 	// Production wires `opencode serve …`; tests inject a fake.
 	// Set lazily by start() if nil at call time, so production code
@@ -441,10 +445,10 @@ func (p *managedProcess) healthProbeAfterRestart() {
 			log.Warn("health check request build failed", zap.Error(err))
 			return
 		}
-		// readyz is Bearer-gated when AGENTD_ADMIN_TOKEN is set (server.go
-		// requireBearerToken). Empty token = no auth required (dev/kind).
-		if tok := os.Getenv("AGENTD_ADMIN_TOKEN"); tok != "" {
-			req.Header.Set("Authorization", "Bearer "+tok)
+		// readyz is Bearer-gated when an admin token is set (requireBearerToken).
+		// Empty token = no auth required (dev escape hatch, D5.2-logged).
+		if p.adminToken != "" {
+			req.Header.Set("Authorization", "Bearer "+p.adminToken)
 		}
 		resp, err := client.Do(req)
 		if err == nil && resp.StatusCode == 200 {

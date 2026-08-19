@@ -34,10 +34,22 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 	// is guaranteed to exist; if Get fails we fall back to omitting
 	// the header (probe will fail closed and the pod won't be ready
 	// — observable + safe).
+	//
+	// #887 D5.1: when the Secret carries the DISTINCT `admin-token`
+	// key, delivery switches to file mode — the token is installed at
+	// /sandbox-cfg/admin-token (0400, init container) and referenced via
+	// AGENTD_ADMIN_TOKEN_FILE. Env delivery (token == password) survives
+	// only for legacy Secrets that predate the upsert; it must never be
+	// used for newly-built pods because opencode passes its full env to
+	// every tool process it spawns.
 	adminToken := ""
+	adminTokenDistinct := false
 	pwSec := &corev1.Secret{}
 	if pwErr := r.Get(ctx, types.NamespacedName{Name: passwordSecretName(workspace.Name), Namespace: workspace.Namespace}, pwSec); pwErr == nil {
-		if v, ok := pwSec.Data["password"]; ok {
+		if v, ok := pwSec.Data["admin-token"]; ok && len(v) > 0 {
+			adminToken = string(v)
+			adminTokenDistinct = true
+		} else if v, ok := pwSec.Data["password"]; ok {
 			adminToken = string(v)
 		}
 	}
@@ -76,14 +88,23 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 		Env: append([]corev1.EnvVar{
 			{Name: "WORKSPACE_ID", Value: workspace.Name},
 			{Name: "WORKSPACE_DIR", Value: agentd.WorkspacePath},
-			{Name: "AGENTD_ADMIN_TOKEN", ValueFrom: &corev1.EnvVarSource{
-				SecretKeyRef: &corev1.SecretKeySelector{
-					LocalObjectReference: corev1.LocalObjectReference{
-						Name: passwordSecretName(workspace.Name),
+			func() corev1.EnvVar {
+				// #887 D5.1: file delivery keeps the admin-mux bearer out
+				// of the environment opencode inherits (and hands to every
+				// tool process via extendEnv). Env delivery survives only
+				// for legacy Secrets predating the admin-token upsert.
+				if adminTokenDistinct {
+					return corev1.EnvVar{Name: "AGENTD_ADMIN_TOKEN_FILE", Value: "/sandbox-cfg/admin-token"}
+				}
+				return corev1.EnvVar{Name: "AGENTD_ADMIN_TOKEN", ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: passwordSecretName(workspace.Name),
+						},
+						Key: "password",
 					},
-					Key: "password",
-				},
-			}},
+				}}
+			}(),
 			// Enable the opencode v2 event system so session.next.step.ended
 			// is emitted to the /event SSE stream. Without this flag the API
 			// proxy never receives token-usage events and session_index.context_used
@@ -565,6 +586,17 @@ fi
 # Installed after materialize, the read fails on every boot and the
 # entry is stamped disabled.
 install -m 0600 /mnt/secrets/password/password /sandbox-cfg/password
+
+# #887 D5.1: distinct admin-mux bearer token, file-only delivery. The
+# pw-secret volume projects the whole Secret, so key presence == file
+# presence; the guard covers legacy Secrets during the upsert convergence
+# window. agentd resolves AGENTD_ADMIN_TOKEN_FILE first, so an installed
+# but unreferenced file is inert in legacy pods.
+# POSIX test only — this script runs under /bin/sh (dash), where [[ ]]
+# is a silent no-op (F1, review round 2).
+if [ -f /mnt/secrets/password/admin-token ]; then
+  install -m 0400 /mnt/secrets/password/admin-token /sandbox-cfg/admin-token
+fi
 
 workspace-agentd bootstrap --workspace-id "$WORKSPACE_ID" --api-url "$LLMSAFESPACE_API_URL"
 workspace-agentd materialize

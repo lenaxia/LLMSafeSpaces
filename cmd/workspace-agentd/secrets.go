@@ -1203,7 +1203,9 @@ func loadReloadSecretsCache(path string, stderr io.Writer) []secrets.Secret {
 func buildEnvFrom(path string) []string {
 	parent := os.Environ()
 	if _, err := os.Stat(path); err != nil {
-		return parent
+		// No secrets-env file — still scrub (#887 D5.1): the admin-token
+		// vars must not ride the opencode spawn env on ANY path.
+		return scrubAdminEnv(parent)
 	}
 
 	// Capture parent env as a set so we can identify which entries the
@@ -1230,7 +1232,7 @@ func buildEnvFrom(path string) []string {
 	if err != nil {
 		log.Warn("buildEnvFrom: bash source failed; secrets env not loaded",
 			zap.String("path", path), zap.Error(err))
-		return parent
+		return scrubAdminEnv(parent)
 	}
 
 	added := make([]string, 0)
@@ -1250,5 +1252,9 @@ func buildEnvFrom(path string) []string {
 		}
 		added = append(added, key+"="+val)
 	}
-	return append(parent, added...)
+	// #887 D5.1: agentd-only credentials must never ride the opencode
+	// spawn env (opencode passes its full env to every tool process).
+	// Applied after the merge so a user-staged env-secret with a banned
+	// name cannot smuggle one back in.
+	return scrubAdminEnv(append(parent, added...))
 }

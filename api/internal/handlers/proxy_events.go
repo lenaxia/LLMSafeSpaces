@@ -447,16 +447,8 @@ func (h *ProxyHandler) reconcileSessionState(workspaceID, podIP, password string
 	defer cancel()
 
 	url := fmt.Sprintf("http://%s:%d/v1/statusz", podIP, agentd.AgentdAdminPort) //nolint:gosec // G107: internal pod
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		h.logger.Warn("reconcileSessionState: failed to build statusz request", "workspaceID", workspaceID, "error", err)
-		return
-	}
-	if password != "" {
-		req.Header.Set("Authorization", "Bearer "+password)
-	}
-
-	resp, err := h.httpClient.Do(req)
+	bearers := h.adminBearerCandidates(ctx, workspaceID, password)
+	resp, err := GetWithBearers(ctx, h.httpClient, url, bearers)
 	if err != nil {
 		h.logger.Warn("reconcileSessionState: statusz unavailable", "workspaceID", workspaceID, "error", err)
 		return

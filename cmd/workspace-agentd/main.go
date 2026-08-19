@@ -104,6 +104,11 @@ func main() {
 	password := readAgentPassword()
 	client := &OpenCodeClient{password: password, client: &http.Client{Timeout: 5 * time.Second}}
 
+	// #887 D5.1 (TOCTOU, #934 review note): resolve the admin-mux bearer
+	// ONCE here; the mux wrap and the health probe read the boot value —
+	// no file/env re-read can diverge from what was verified at boot.
+	bootAdminToken := adminToken()
+
 	// US-44.7: surface the reason for the previous opencode restart
 	// (if any) and consume the one-shot marker before starting the
 	// supervisor. No-op when no marker is present (clean boot).
@@ -124,17 +129,19 @@ func main() {
 
 	startedAt := time.Now()
 	deps := serverDeps{
-		client:            client,
-		cache:             &providerCache{},
-		sseTracker:        sseTracker,
-		pressureMonitor:   newMemoryPressureMonitor(),
-		healthCache:       newHealthzCache(),
-		gr:                newGateRecorder(startedAt, agentdGateDurationSeconds, log),
-		proc:              proc,
-		password:          password,
-		startedAt:         startedAt,
-		agentConfigWriter: agentConfigWriter,
+		client:             client,
+		cache:              &providerCache{},
+		sseTracker:         sseTracker,
+		pressureMonitor:    newMemoryPressureMonitor(),
+		healthCache:        newHealthzCache(),
+		gr:                 newGateRecorder(startedAt, agentdGateDurationSeconds, log),
+		proc:               proc,
+		password:           password,
+		resolvedAdminToken: bootAdminToken,
+		startedAt:          startedAt,
+		agentConfigWriter:  agentConfigWriter,
 	}
+	proc.adminToken = bootAdminToken
 
 	startBackgroundLoops(bgCtx, &bgWg, deps)
 	// bgCtx (not rootCtx): the session-aware deferred restart must be
