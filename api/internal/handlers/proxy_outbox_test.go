@@ -10,12 +10,14 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/go-redis/redis/v8"
@@ -183,4 +185,67 @@ func listOutbox(t *testing.T, env *e2eEnv) []outbox.Entry {
 	entries, err := env.handler.GetOutboxForTest().List(context.Background(), "ws-1", "ses_1")
 	require.NoError(t, err)
 	return entries
+}
+
+// TestOutbox_RetrySkipsAlreadyDelivered pins the D3 r2 dedupe: when a
+// prior delivery attempt timed out but the turn COMPLETED and persisted
+// (the transcript now holds the user text newer than accept), the retry
+// must NOT redeliver — it treats the entry as delivered. This kills the
+// dominant duplicate-turn source (delivery timeout while opencode
+// finishes).
+func TestOutbox_RetrySkipsAlreadyDelivered(t *testing.T) {
+	accepted := time.Now().Add(-time.Minute)
+	var mu sync.Mutex
+	sendCalls := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/message"):
+			mu.Lock()
+			sendCalls++
+			mu.Unlock()
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/message"):
+			// History in opencode's wire shape (info.role — see
+			// ocMessage): the user message WAS persisted (prior attempt
+			// completed server-side).
+			// created must be AFTER the entry's AcceptedAt (accept
+			// time ~= now): prior-attempt completion persisted later.
+			created := accepted.Add(90 * time.Second)
+			createdMS := created.UnixMilli()
+			_, _ = w.Write([]byte(fmt.Sprintf(`[{"info":{"id":"msg_u1","role":"user","time":{"created":%d}},"parts":[{"type":"text","text":"already ran"}]}]`, createdMS)))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"info":{"role":"assistant","id":"msg_1"},"parts":[{"type":"text","text":"ok"}]}`))
+	}))
+	defer backend.Close()
+
+	env := newE2EEnv(t, backend)
+	mr := miniredis.RunT(t)
+	env.handler.SetOutboxForTest(outbox.New(redis.NewClient(&redis.Options{Addr: mr.Addr()})))
+
+	// Shrink the backoff so the retried entry is immediately due.
+	origBackoff, origMax := outbox.RetryBackoff, outbox.MaxBackoff
+	outbox.RetryBackoff, outbox.MaxBackoff = time.Millisecond, time.Millisecond
+	t.Cleanup(func() { outbox.RetryBackoff, outbox.MaxBackoff = origBackoff, origMax })
+
+	// Seed an entry, then mark one failed attempt through the service
+	// seam (attempts=1) whose text matches the persisted transcript.
+	ob := env.handler.GetOutboxForTest()
+	_, err := ob.Accept(context.Background(), "ws-1", "ses_1", "u-1", "cm-r", "already ran", nil)
+	require.NoError(t, err)
+	time.Sleep(2 * time.Millisecond)
+	_ = ob.DeliverOnce(context.Background(), "ws-1", "ses_1", func(ctx context.Context, _, _ string, _ outbox.Entry) error {
+		return errors.New("simulated timeout")
+	})
+
+	// Now the handler-bridge delivery: attempts=1 AND the transcript
+	// holds the text — must NOT hit /message again.
+	ok := env.handler.DeliverOutboxOnceForTest("ws-1", "ses_1")
+	require.True(t, ok)
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Zero(t, sendCalls, "retry must skip redelivery when the transcript already holds the text")
+
+	after, _ := ob.List(context.Background(), "ws-1", "ses_1")
+	assert.Empty(t, after, "entry treated as delivered and removed")
 }

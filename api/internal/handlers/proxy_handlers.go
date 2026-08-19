@@ -1245,6 +1245,13 @@ type queuedMessageResponse struct {
 	SessionID   string `json:"session_id"`
 	WorkspaceID string `json:"workspace_id"`
 	EnqueuedAt  string `json:"enqueued_at"`
+	// D3 (#907) outbox fields: the UI's retry button keys on status=error;
+	// attempts/lastError give the user retry context; clientMessageID is
+	// the render-dedupe key.
+	Status          string `json:"status"`
+	Attempts        int    `json:"attempts"`
+	LastError       string `json:"lastError,omitempty"`
+	ClientMessageID string `json:"clientMessageID,omitempty"`
 }
 
 type queueListResponse struct {
@@ -1343,11 +1350,15 @@ func (h *ProxyHandler) ListQueue(c *gin.Context) {
 		result := make([]queuedMessageResponse, 0, len(entries))
 		for _, e := range entries {
 			result = append(result, queuedMessageResponse{
-				ID:          e.ID,
-				Text:        e.Text,
-				SessionID:   sid,
-				WorkspaceID: wid,
-				EnqueuedAt:  e.AcceptedAt.UTC().Format(time.RFC3339),
+				ID:              e.ID,
+				Text:            e.Text,
+				SessionID:       sid,
+				WorkspaceID:     wid,
+				EnqueuedAt:      e.AcceptedAt.UTC().Format(time.RFC3339),
+				Status:          e.Status,
+				Attempts:        e.Attempts,
+				LastError:       e.LastError,
+				ClientMessageID: e.ClientMessageID,
 			})
 		}
 		c.JSON(http.StatusOK, queueListResponse{Messages: result})
