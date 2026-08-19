@@ -42,7 +42,14 @@ package settings
 // 4-day-stale image digest to new workspaces (incident 2026-08-14); writes of
 // mutable-tag image refs are now rejected. Existing deployments are cleaned
 // by migration 000023.
-const SchemaVersion = 11
+// Bumped to 12 (2026-08-19): added 3 Epic 66 instance settings —
+// devPreview.enabled/maxResponseBytes/maxConnsPerWorkspace — closing issue
+// #946, where they were registered in KnownKeys only and unreachable through
+// every consumer (no admin UI section, boot-time index-miss hard-disable,
+// Set rejection). Same change class as v10. New keys; admin UI schema cache
+// must refresh. Canary twins updated in lockstep
+// (TestCanary_SchemaVersion_TwinParity).
+const SchemaVersion = 12
 
 // SettingType defines the data type of a setting.
 type SettingType string
