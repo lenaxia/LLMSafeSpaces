@@ -15,15 +15,7 @@
       "automerge": true
     }
   ],
-  "regexManagers": [
-    {
-      "fileMatch": ["^runtimes/tests/requirements.txt$"],
-      "matchStrings": [
-        "(?<depName>[a-zA-Z0-9_-]+)==(?<currentValue>[0-9.]+)"
-      ],
-      "datasourceTemplate": "pypi"
-    }
-  ],
+  "regexManagers": [],
   "enabledManagers": ["regex", "dockerfile", "gomod", "npm", "pip-requirements"],
   "separateMajorMinor": true,
   "dependencyDashboard": true,

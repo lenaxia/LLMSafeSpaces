@@ -25,8 +25,8 @@ kind: RuntimeEnvironment
 metadata:
   name: python-3.11
 spec:
-  image: ghcr.io/lenaxia/llmsafespaces/python:3.11
-  description: "Python 3.11 with opencode, build-essential, mise"
+  image: ghcr.io/lenaxia/llmsafespaces/base:<pinned-tag>
+  description: "Base image; Python 3.11 via mise"
 ```
 
 Why cluster-scoped? Runtime environments are shared infrastructure — every tenant in the cluster references the same set. Namespacing them would force duplication and drift.
@@ -93,15 +93,9 @@ The base image is built to comply with the `restricted` Pod Security profile:
 
 ## Language runtimes
 
-The repo ships Dockerfiles for three language runtimes under [`runtimes/`](https://github.com/lenaxia/LLMSafeSpaces/tree/main/runtimes):
+The repo ships ONE runtime image: `runtimes/base/`.
 
-| Directory | Runtime | Base |
-|---|---|---|
-| `runtimes/python/` | Python | Extends base; installs Python via mise |
-| `runtimes/nodejs/` | Node.js | Extends base; installs Node.js via mise |
-| `runtimes/go/` | Go | Extends base; installs Go via mise |
-
-These are **not seeded as `RuntimeEnvironment` CRDs by the chart** — they are reference implementations. To make them available, build the image, push it to your registry, and register a `RuntimeEnvironment` (see below).
+The legacy per-language Dockerfiles (`runtimes/{go,nodejs,python}/`) were deleted (Epic 7 / US-7.8; resurrected accidentally by a stale-branch merge in `c9c68684` and deleted again by #854 — a repolint `ForbiddenPathsCheck` now fails any future resurrection). They were never built by any pipeline: the tenant toolchains are **mise-managed in the base image**, which is also why a `RuntimeEnvironment` only ever needs to point at a `base` image tag — language stacks are installed per-workspace into the PVC-backed mise home.
 
 ### mise as the runtime manager
 
@@ -176,8 +170,8 @@ kind: RuntimeEnvironment
 metadata:
   name: python-3.11
 spec:
-  image: ghcr.io/lenaxia/llmsafespaces/python:3.11
-  description: "Python 3.11"
+  image: ghcr.io/lenaxia/llmsafespaces/base:<pinned-tag>
+  description: "Base image; Python 3.11 via mise"
 EOF
 ```
 
