@@ -61,4 +61,4 @@ None.
 - `cmd/workspace-agentd/main_test.go` (D5.3 unit test)
 - `cmd/workspace-agentd/boot_gate_integration_test.go` (D5.2/D5.3/escape-hatch integration tests)
 - `local/test-entrypoint.sh`
-- `worklogs/NNNN_2026-08-19_agentd-fail-closed-boot.md` (this file)
+- `worklogs/0802_2026-08-19_agentd-fail-closed-boot.md` (this file)
