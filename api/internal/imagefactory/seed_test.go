@@ -30,6 +30,27 @@ func (f *fakeSeedStore) UpsertBase(_ context.Context, b Base) error {
 	f.bases[b.Name+"/"+b.Version] = b
 	return nil
 }
+func (f *fakeSeedStore) SeedUpsertBase(_ context.Context, b Base) error {
+	// Mirrors the store contract (#936): is_default applies only on
+	// INSERT and only when NO default exists (the NOT EXISTS guard).
+	key := b.Name + "/" + b.Version
+	if existing, ok := f.bases[key]; ok {
+		f.bases[key] = Base{Name: b.Name, Version: b.Version, Image: b.Image, Tag: b.Tag, Digest: b.Digest, IsDefault: existing.IsDefault}
+		return nil
+	}
+	hasDefault := false
+	for _, e := range f.bases {
+		if e.IsDefault {
+			hasDefault = true
+			break
+		}
+	}
+	if f.bases == nil {
+		f.bases = map[string]Base{}
+	}
+	f.bases[key] = Base{Name: b.Name, Version: b.Version, Image: b.Image, Tag: b.Tag, Digest: b.Digest, IsDefault: b.IsDefault && !hasDefault}
+	return nil
+}
 func (f *fakeSeedStore) GetExtension(_ context.Context, id string) (Extension, error) {
 	if f.getExtensionError != nil {
 		return Extension{}, f.getExtensionError
@@ -179,4 +200,45 @@ func TestLoadSeed_PlaywrightDepsNoTrailingNewline(t *testing.T) {
 		}
 	}
 	t.Fatal("playwright-deps extension not found in seed")
+}
+
+// TestSeedCatalog_BootAfterDefaultMove_NoSecondDefault (#936 C2): the
+// full boot path — runtime default moved to a non-seed base, seed row
+// deleted, SeedCatalog re-runs — must not mint a second default.
+func TestSeedCatalog_BootAfterDefaultMove_NoSecondDefault(t *testing.T) {
+	store := &fakeSeedStore{}
+	// Pre-state: operator moved the default to tx; bw (seed base) deleted.
+	require.NoError(t, store.SeedUpsertBase(context.Background(), Base{Name: "bw", Version: "1.0", Image: "i"}))
+	require.NoError(t, store.UpsertBase(context.Background(), Base{Name: "tx", Version: "1.0", Image: "i2", IsDefault: true}))
+	require.NoError(t, store.DeleteBase(context.Background(), "bw", "1.0"))
+
+	seed := &SeedCatalogData{Architectures: []string{"linux/amd64"}, Bases: []Base{{Name: "bw", Version: "1.0", Image: "i", IsDefault: true}}}
+	require.NoError(t, seedCatalogWith(context.Background(), store, seed))
+
+	defaults := 0
+	defName := ""
+	for _, b := range store.bases {
+		if b.IsDefault {
+			defaults++
+			defName = b.Name
+		}
+	}
+	assert.Equal(t, 1, defaults, "boot seed after a default move must not create a second default")
+	assert.Equal(t, "tx", defName, "the runtime default survives the boot seed")
+}
+
+// TestSeedCatalog_FreshInstall_CarriesDefault: empty store → seed's
+// default applies (fresh installs still get a default).
+func TestSeedCatalog_FreshInstall_CarriesDefault(t *testing.T) {
+	store := &fakeSeedStore{}
+	seed := &SeedCatalogData{Architectures: []string{"linux/amd64"}, Bases: []Base{{Name: "bw", Version: "1.0", Image: "i", IsDefault: true}}}
+	require.NoError(t, seedCatalogWith(context.Background(), store, seed))
+	bw, ok := store.bases["bw/1.0"]
+	require.True(t, ok)
+	assert.True(t, bw.IsDefault, "fresh install: seed default applies")
+}
+
+func (f *fakeSeedStore) DeleteBase(_ context.Context, name, version string) error {
+	delete(f.bases, name+"/"+version)
+	return nil
 }

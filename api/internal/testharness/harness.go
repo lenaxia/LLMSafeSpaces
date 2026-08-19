@@ -41,7 +41,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/go-redis/redis/v8"
 	"github.com/golang-migrate/migrate/v4"
-	"github.com/golang-migrate/migrate/v4/database/postgres"
+	pgxdriver "github.com/golang-migrate/migrate/v4/database/pgx/v5"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib" // registers the "pgx" database/sql driver
@@ -250,11 +250,11 @@ func (h *Harness) runMigrate(fn func(*migrate.Migrate) error) error {
 	}
 	defer func() { _ = migDB.Close() }()
 
-	drv, err := postgres.WithInstance(migDB, &postgres.Config{})
+	drv, err := pgxdriver.WithInstance(migDB, &pgxdriver.Config{})
 	if err != nil {
-		return fmt.Errorf("testharness: postgres migrate driver: %w", err)
+		return fmt.Errorf("testharness: pgx/v5 migrate driver: %w", err)
 	}
-	m, err := migrate.NewWithInstance("iofs", src, "postgres", drv)
+	m, err := migrate.NewWithInstance("iofs", src, "pgx", drv)
 	if err != nil {
 		return fmt.Errorf("testharness: migrate instance: %w", err)
 	}

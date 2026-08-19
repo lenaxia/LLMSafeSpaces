@@ -24,28 +24,27 @@ unrelated; this page is about the image factory (design/0046).
 
 ## Moving the default base (e.g. bookworm → trixie)
 
-**The upsert does not clear other defaults.** `POST /bases` upserts the
-one row you send (`ON CONFLICT (name,version)` — nothing else is
-touched). Setting trixie default leaves bookworm default TOO: a
-two-default state where pills resolve to the highest-sorted base while
-the create form's default picker takes the first — signals diverge.
-Move the default as TWO upserts, in this order:
+**Moving the default is one call.**
 
 1. Publish the new base's versions and their extension coverage first
    (see below).
-2. POST-upsert the OLD default row with `isDefault: false`.
-3. POST-upsert the NEW row with `isDefault: true`.
+2. POST-upsert the intended row with `isDefault: true`. Done.
 
-**API restarts re-apply the seed's default.** The catalog seed runs at
-every API boot and upserts `isDefault` from `catalog.seed.yaml`
-(currently bookworm=true). If your moved default diverges from the
-seed, the next API restart silently re-defaults the seed's base —
-leaving the two-default state above. Until the seed-default behavior
-gains a "don't fight the operator" mode (backend debt), EITHER keep the
-seed as the source of truth and move the default by PR-editing
-`catalog.seed.yaml` (the intended flow — the seed is reviewable in
-git), OR accept that manual moves need re-applying after restarts.
-Prefer the seed PR.
+A `POST /bases` upsert with `isDefault: true` clears every other default
+in the same statement, and a partial unique index
+(`uq_image_factory_bases_single_default`, migration 000025 — which
+first dedups any pre-existing two-default state, keeping the highest
+(name, version)) makes "at most one default" structural: enforced by
+the database under every path, including concurrent admin upserts and
+seed-after-delete restarts. Explicit `isDefault: false` upserts leave no
+default (nothing auto-promotes).
+
+**API restarts do not revert or duplicate runtime defaults.** The boot
+seed applies its `isDefault` only to rows it INSERTs, and only when no
+default exists (a NOT EXISTS guard, backed by the unique index). If an
+operator deletes the default base row entirely, a restart re-seeds the
+seed's base WITHOUT re-defaulting it while another default lives. Fresh
+installs (empty catalog) still get the seed's default. (#936)
 2. Configs on other base names gain the `new base: trixie` pill with
    the migration tooltip (package versions follow the Debian suite).
 3. **Before flipping the default**, verify extension coverage: the pill
@@ -70,15 +69,15 @@ staleness is information, never a lockout.
 
 ## Failure modes
 
-- **Refresh save 500 "failed to save config" / "failed to save config
-  and build"** (coalesced vs fresh dispatch path respectively):
-  duplicate scoped name.
-  The create paths currently return 500 (not 409) on the scoped-unique
-  violation; the prefill avoids the common cases by de-conflicting the
-  suggested name against existing configs (`name (base version)`, with
-  numeric suffix on repeat refreshes). If the user hand-edits back into
-  a collision, the error surfaces as a toast — a 4xx mapping for this
-  case is a known backend debt item.
+- **Refresh save 409**: duplicate scoped name. The API returns 409
+  naming the colliding config (#936); the form surfaces it directly.
+  The prefill avoids the common cases by de-conflicting the suggested
+  name against existing configs (`name (base version)`, with numeric
+  suffix on repeat refreshes). On the fresh-dispatch path the GH run has
+  already fired but its ID is not yet known (workflow_dispatch returns
+  none), so the run cannot be cancelled — it is a bounded orphan: it
+  finishes, its callback 404s against the missing build row, and nothing
+  retries.
 - **Refresh save 422 per-extension**: an extension in the selection is
   unsupported on the target base, or was retired after the config was
   saved. Both surface in the form before save ("Not available on …");

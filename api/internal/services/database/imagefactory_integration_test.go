@@ -8,6 +8,8 @@ package database
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -21,7 +23,7 @@ import (
 // the shared integration-test harness. They verify: SQL validity against the
 // real migration-000013 schema, column names/types match, the partial unique
 // indexes enforce scoped friendly-name uniqueness, the coalescing probe's
-// ORDER BY CASE preference works, pgarray.New round-trips with text[], and
+// ORDER BY CASE preference works, pq.Array round-trips with text[], and
 // CHECK/ON CONFLICT constraints behave. These are exactly the failure modes
 // a real-DB round-trip catches and sqlmock cannot (per design/0047).
 
@@ -227,7 +229,7 @@ func TestIntegration_IF_Configs_RoundTrip(t *testing.T) {
 	// resolved_values round-trip through JSONB
 	assert.Equal(t, imagefactory.ExtensionTypeApt, got.ResolvedValues["ffmpeg"].Type)
 	assert.Equal(t, "python@3.13", got.ResolvedValues["python313"].Value)
-	// selection round-trips through pgarray.New text[]
+	// selection round-trips through pq.Array text[]
 	assert.ElementsMatch(t, imagefactory.Selection{"ffmpeg", "python313"}, got.Selection)
 
 	// Status update
@@ -375,7 +377,7 @@ func TestIntegration_IF_KnownFailures_CRUD(t *testing.T) {
 }
 
 // TestIntegration_IF_GetLaunchableConfigByHash validates the JOIN query +
-// pgarray.New scan against real PostgreSQL — the failure modes sqlmock can't
+// pq.Array scan against real PostgreSQL — the failure modes sqlmock can't
 // catch (ambiguous column refs, text[] scan, JOIN cardinality).
 func TestIntegration_IF_GetLaunchableConfigByHash(t *testing.T) {
 	h := testharness.New(t)
@@ -411,7 +413,7 @@ func TestIntegration_IF_GetLaunchableConfigByHash(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "launch-cfg", cfg.Name)
 	assert.Equal(t, imagefactory.StatusReady, cfg.Status)
-	assert.Equal(t, imagefactory.Selection{"ffmpeg", "python-3.12"}, cfg.Selection, "pgarray.New scan must round-trip")
+	assert.Equal(t, imagefactory.Selection{"ffmpeg", "python-3.12"}, cfg.Selection, "pq.Array scan must round-trip")
 	assert.Equal(t, "ghcr.io/ws:s-launch-0.6.0", imageRef)
 
 	// Wrong owner → ErrNotFound (scope filter works).
@@ -425,4 +427,220 @@ func TestIntegration_IF_GetLaunchableConfigByHash(t *testing.T) {
 	// Platform scope → ErrNotFound (this is a member-scope config).
 	_, _, err = svc.GetLaunchableConfigByHash(ctx, "s-launch", imagefactory.ScopePlatform, nil, nil)
 	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+// ── #936: backend debts from the base-update-pill work ─────────────────
+
+// TestIntegration_IF_CreateConfig_NameCollision_Conflict: a duplicate
+// scoped name must surface as ErrConflict (#936 fix 1), not an opaque
+// wrapped 23505 the handler 500s on.
+func TestIntegration_IF_CreateConfig_NameCollision_Conflict(t *testing.T) {
+	h := testharness.New(t)
+	svc := newIFService(h)
+	ctx := h.NewContext()
+	uid := "11111111-1111-1111-1111-111111111111"
+
+	first := imagefactory.Config{Hash: "s-a", Name: "dup", Selection: []string{"e"}, BaseName: "b", BaseVersion: "1", Scope: imagefactory.ScopeMember, OwnerID: &uid, Status: imagefactory.StatusReady}
+	require.NoError(t, svc.CreateConfig(ctx, &first))
+
+	second := imagefactory.Config{Hash: "s-b", Name: "dup", Selection: []string{"e"}, BaseName: "b", BaseVersion: "1", Scope: imagefactory.ScopeMember, OwnerID: &uid, Status: imagefactory.StatusReady}
+	err := svc.CreateConfig(ctx, &second)
+	assert.ErrorIs(t, err, ErrConflict, "scoped duplicate name must map to ErrConflict (the handler turns it into 409)")
+
+	// Same name different owner is FINE (uniqueness is scoped).
+	uid2 := "22222222-2222-2222-2222-222222222222"
+	third := imagefactory.Config{Hash: "s-c", Name: "dup", Selection: []string{"e"}, BaseName: "b", BaseVersion: "1", Scope: imagefactory.ScopeMember, OwnerID: &uid2, Status: imagefactory.StatusReady}
+	require.NoError(t, svc.CreateConfig(ctx, &third))
+}
+
+// TestIntegration_IF_CreateConfigAndBuild_NameCollision_Conflict: the
+// fresh path must also map collisions to ErrConflict, and (because the
+// handler dispatches GH before this call) the CALLER needs the typed
+// error to decide dispatch cleanup — the store contract is the typed
+// error, not rollback of an external dispatch.
+func TestIntegration_IF_CreateConfigAndBuild_NameCollision_Conflict(t *testing.T) {
+	h := testharness.New(t)
+	svc := newIFService(h)
+	ctx := h.NewContext()
+	uid := "11111111-1111-1111-1111-111111111111"
+
+	cfg := imagefactory.Config{Hash: "s-d", Name: "dupab", Selection: []string{"e"}, BaseName: "b", BaseVersion: "1", Scope: imagefactory.ScopeMember, OwnerID: &uid, Status: imagefactory.StatusBuilding}
+	require.NoError(t, svc.CreateConfig(ctx, &cfg))
+
+	cfg2 := imagefactory.Config{Hash: "s-e", Name: "dupab", Selection: []string{"e"}, BaseName: "b", BaseVersion: "1", Scope: imagefactory.ScopeMember, OwnerID: &uid, Status: imagefactory.StatusBuilding}
+	build := imagefactory.Build{ID: "bld-1", ConfigID: "", Hash: "s-e", BaseName: "b", BaseVersion: "1", Status: imagefactory.BuildDispatched}
+	err := svc.CreateConfigAndBuild(ctx, &cfg2, &build)
+	assert.ErrorIs(t, err, ErrConflict, "fresh-path duplicate name must map to ErrConflict")
+}
+
+// TestIntegration_IF_UpsertDefaultBase_ClearsOthers: setting a base's
+// isDefault=true must clear every other default in the same statement
+// (#936 fix 2) — moving the default is ONE call.
+func TestIntegration_IF_UpsertDefaultBase_ClearsOthers(t *testing.T) {
+	h := testharness.New(t)
+	svc := newIFService(h)
+	ctx := h.NewContext()
+
+	require.NoError(t, svc.UpsertBase(ctx, imagefactory.Base{Name: "bw", Version: "1.0", Image: "i1", IsDefault: true}))
+	require.NoError(t, svc.UpsertBase(ctx, imagefactory.Base{Name: "tx", Version: "1.0", Image: "i2", IsDefault: true}))
+
+	bases, err := svc.ListBases(ctx)
+	require.NoError(t, err)
+	defaults := 0
+	for _, b := range bases {
+		if b.IsDefault {
+			defaults++
+		}
+	}
+	assert.Equal(t, 1, defaults, "exactly one default must exist after a default=true upsert")
+
+	// Explicitly clearing is still possible (isDefault:false upsert on the
+	// current default leaves NO default — operator's explicit choice).
+	require.NoError(t, svc.UpsertBase(ctx, imagefactory.Base{Name: "tx", Version: "1.0", Image: "i2", IsDefault: false}))
+	bases, err = svc.ListBases(ctx)
+	require.NoError(t, err)
+	defaults = 0
+	for _, b := range bases {
+		if b.IsDefault {
+			defaults++
+		}
+	}
+	assert.Equal(t, 0, defaults, "explicit isDefault:false must not auto-promote anything")
+}
+
+// TestIntegration_IF_Seed_DoesNotRevertRuntimeDefault: seeding after a
+// runtime default-move must not re-assert the seed's default on rows
+// that already exist (#936 fix 3 — insert-only default).
+func TestIntegration_IF_Seed_DoesNotRevertRuntimeDefault(t *testing.T) {
+	h := testharness.New(t)
+	svc := newIFService(h)
+	ctx := h.NewContext()
+
+	// Runtime state: operator moved the default to tx.
+	require.NoError(t, svc.UpsertBase(ctx, imagefactory.Base{Name: "bw", Version: "1.0", Image: "i1", IsDefault: false}))
+	require.NoError(t, svc.UpsertBase(ctx, imagefactory.Base{Name: "tx", Version: "1.0", Image: "i2", IsDefault: true}))
+
+	// The seed's contract: bw default=true — but only for rows it
+	// INSERTS; existing rows keep their runtime is_default.
+	seedBase := imagefactory.Base{Name: "bw", Version: "1.0", Image: "i1", IsDefault: true}
+	require.NoError(t, seedUpsertBase(ctx, svc, seedBase))
+
+	bases, err := svc.ListBases(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, countDefaults(bases), "exactly one default at every step of the seed lifecycle")
+	assert.Equal(t, "tx", defNameOf(bases), "seed re-upsert of an existing base must NOT revert the runtime default")
+
+	// Seed-after-delete (the adversarial shape from the review): operator
+	// deleted the seed row while the runtime default lives on tx. The seed
+	// must NOT mint a second default — the runtime default wins. This is
+	// the exact sequence the round-3 review reproduced producing two
+	// defaults; the NOT EXISTS guard + partial unique index close it.
+	require.NoError(t, svc.DeleteBase(ctx, "bw", "1.0"))
+	require.NoError(t, seedUpsertBase(ctx, svc, seedBase))
+	bases, err = svc.ListBases(ctx)
+	require.NoError(t, err)
+	defaults := 0
+	for _, b := range bases {
+		if b.IsDefault {
+			defaults++
+		}
+	}
+	assert.Equal(t, 1, defaults, "seed-after-delete must not create a second default")
+	assert.Equal(t, "tx", defNameOf(bases), "the runtime default survives")
+
+	// True fresh install: empty bases table → seed carries its default.
+	require.NoError(t, svc.DeleteBase(ctx, "bw", "1.0"))
+	require.NoError(t, svc.DeleteBase(ctx, "tx", "1.0"))
+	require.NoError(t, seedUpsertBase(ctx, svc, seedBase))
+	bases, err = svc.ListBases(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, countDefaults(bases))
+	assert.Equal(t, "bw", defNameOf(bases), "seed INSERT into an empty catalog carries its default")
+}
+
+// seedUpsertBase mirrors seed.go's call — kept here so the test pins
+// the store-level contract seed.go relies on (UpsertBase seeded=true
+// distinction is internal to the store).
+func seedUpsertBase(ctx context.Context, s *Service, b imagefactory.Base) error {
+	return s.SeedUpsertBase(ctx, b)
+}
+
+func countDefaults(bases []imagefactory.Base) int {
+	n := 0
+	for _, b := range bases {
+		if b.IsDefault {
+			n++
+		}
+	}
+	return n
+}
+
+func defNameOf(bases []imagefactory.Base) string {
+	for _, b := range bases {
+		if b.IsDefault {
+			return b.Name
+		}
+	}
+	return ""
+}
+
+// TestIntegration_IF_CreateConfigAndBuild_FailureLeavesNoBuildRow (#936
+// AC1): a failed fresh-path transaction must not leave a build row
+// without its config — the tx rolls back both inserts.
+func TestIntegration_IF_CreateConfigAndBuild_FailureLeavesNoBuildRow(t *testing.T) {
+	h := testharness.New(t)
+	svc := newIFService(h)
+	ctx := h.NewContext()
+	uid := "33333333-3333-3333-3333-333333333333"
+
+	cfg := imagefactory.Config{Hash: "s-orp", Name: "orphan-test", Selection: []string{"e"}, BaseName: "b", BaseVersion: "1", Scope: imagefactory.ScopeMember, OwnerID: &uid, Status: imagefactory.StatusBuilding}
+	build := imagefactory.Build{ID: "44444444-4444-4444-4444-444444444444", Hash: "s-orp", BaseName: "b", BaseVersion: "1", Status: imagefactory.BuildDispatched}
+	// Collision on the config insert → whole tx must roll back.
+	require.NoError(t, svc.CreateConfig(ctx, &imagefactory.Config{Hash: "s-orp2", Name: "orphan-test", Selection: []string{"e"}, BaseName: "b", BaseVersion: "1", Scope: imagefactory.ScopeMember, OwnerID: &uid, Status: imagefactory.StatusReady}))
+	err := svc.CreateConfigAndBuild(ctx, &cfg, &build)
+	require.ErrorIs(t, err, ErrConflict)
+
+	_, gerr := svc.GetBuild(ctx, "44444444-4444-4444-4444-444444444444")
+	assert.ErrorIs(t, gerr, ErrNotFound, "no build row may survive the rolled-back config insert")
+}
+
+// TestIntegration_IF_Migration000025_TwoDefaultUpgradePath (#936 r4): a
+// database ALREADY in the two-default state (the bug this migration
+// rescues) must migrate cleanly, keeping exactly one default — the
+// highest (name, version), matching the pill resolver's semantics.
+func TestIntegration_IF_Migration000025_TwoDefaultUpgradePath(t *testing.T) {
+	h := testharness.New(t)
+	svc := newIFService(h)
+	ctx := h.NewContext()
+
+	// Migrations (incl. 000025) already ran in harness setup on an empty
+	// table. Recreate the pre-migration two-default state by dropping the
+	// index, inserting two defaults, then re-running the migration body —
+	// the same statements an upgrading database executes.
+	_, err := h.SQLDB().ExecContext(ctx, `DROP INDEX IF EXISTS uq_image_factory_bases_single_default`)
+	require.NoError(t, err)
+	// Bypass the store's guards: raw inserts of the broken state.
+	// tag/digest supplied: nullable columns, and ListBases scans into
+	// plain strings — NULL here fails the scan before any assertion runs
+	// (round-6 finding B1').
+	_, err = h.SQLDB().ExecContext(ctx, `INSERT INTO image_factory_bases (name, version, image, tag, digest, is_default) VALUES
+		('bookworm', '0.6.0', 'i1', '0.6.0', '', TRUE), ('trixie', '0.1.0', 'i2', '0.1.0', '', TRUE)`)
+	require.NoError(t, err)
+
+	// Execute the REAL migration file (round-6 recommendation): reading
+	// the artifact prevents silent drift between the test's copy and the
+	// shipped migration.
+	migSQL, err := os.ReadFile(filepath.Join("..", "..", "..", "migrations", "000025_image_factory_single_default.up.sql"))
+	require.NoError(t, err, "read the shipped migration")
+	_, err = h.SQLDB().ExecContext(ctx, string(migSQL))
+	require.NoError(t, err, "shipped migration must succeed on a two-default database")
+
+	bases, err := svc.ListBases(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, countDefaults(bases), "exactly one default after migration")
+	assert.Equal(t, "trixie", defNameOf(bases), "highest (name,version) wins — pill-resolver-compatible")
+
+	// And the index now BLOCKS regression to two defaults.
+	_, err = h.SQLDB().ExecContext(ctx, `UPDATE image_factory_bases SET is_default = TRUE WHERE name = 'bookworm'`)
+	require.Error(t, err, "the partial unique index must structurally block a second default")
 }

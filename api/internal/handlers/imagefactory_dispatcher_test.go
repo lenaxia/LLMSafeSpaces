@@ -274,3 +274,67 @@ func TestGHActionsDispatcher_Dispatch_TokenMintFailure(t *testing.T) {
 	assert.Contains(t, err.Error(), "get token")
 	assert.Contains(t, err.Error(), "parse private key")
 }
+
+// ── Cancel (#936) ──────────────────────────────────────────────────────
+
+func TestGHActionsDispatcher_Cancel_RunIDZero_NoOp(t *testing.T) {
+	// Today's production shape: Dispatch returns 0 (workflow_dispatch
+	// yields no run ID), so Cancel(0) must silently no-op — no HTTP call.
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	d := &ghActionsDispatcher{client: srv.Client()}
+	require.NoError(t, d.Cancel(context.Background(), 0))
+	require.NoError(t, d.Cancel(context.Background(), -1))
+	assert.False(t, called, "runID<=0 must not hit the API")
+}
+
+func TestGHActionsDispatcher_Cancel_Accepted(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, "/repos/owner/repo/actions/runs/4242/cancel", r.URL.Path)
+		assert.Equal(t, "POST", r.Method)
+		assert.Equal(t, "Bearer tok", r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	oldCU := cancelURL
+	cancelURL = srv.URL + "/repos/%s/%s/actions/runs/%d/cancel"
+	defer func() { cancelURL = oldCU }()
+	d := &ghActionsDispatcher{owner: "owner", repo: "repo", client: srv.Client(), cachedToken: "tok", cachedTokenExp: time.Now().Add(time.Hour)}
+	require.NoError(t, d.Cancel(context.Background(), 4242))
+}
+
+func TestGHActionsDispatcher_Cancel_AlreadyCompleted_409_IsSuccess(t *testing.T) {
+	// 409 = the run already finished; nothing to cancel — not an error.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+	}))
+	defer srv.Close()
+
+	oldCU := cancelURL
+	cancelURL = srv.URL + "/repos/%s/%s/actions/runs/%d/cancel"
+	defer func() { cancelURL = oldCU }()
+	d := &ghActionsDispatcher{owner: "owner", repo: "repo", client: srv.Client(), cachedToken: "tok", cachedTokenExp: time.Now().Add(time.Hour)}
+	require.NoError(t, d.Cancel(context.Background(), 4242))
+}
+
+func TestGHActionsDispatcher_Cancel_UnexpectedStatus_Errors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"bad token"}`))
+	}))
+	defer srv.Close()
+
+	oldCU := cancelURL
+	cancelURL = srv.URL + "/repos/%s/%s/actions/runs/%d/cancel"
+	defer func() { cancelURL = oldCU }()
+	d := &ghActionsDispatcher{owner: "owner", repo: "repo", client: srv.Client(), cachedToken: "tok", cachedTokenExp: time.Now().Add(time.Hour)}
+	err := d.Cancel(context.Background(), 4242)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "403")
+}
