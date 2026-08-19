@@ -337,12 +337,7 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 	s.client.RPush(ctx, dKey(ws, ses), staged)
 	s.client.LRem(ctx, qk, 1, vals[idx])
 
-	// Detached BY DESIGN (D3): delivery must survive the accepting
-	// request's cancellation — this is the disconnect-immunity contract.
-	dctx, cancel := context.WithTimeout(context.Background(), DeliveryTimeout) //nolint:contextcheck // deliberate detachment, see comment above
-	defer cancel()
-	err = d(dctx, ws, ses, e)
-	if err == nil {
+	if err := deliverDetached(d, ws, ses, e); err == nil {
 		s.client.LRem(ctx, dKey(ws, ses), 1, staged)
 		return true
 	}
@@ -438,6 +433,17 @@ func (s *Service) Run(ctx context.Context, d Deliverer, tick time.Duration) {
 			}
 		}
 	}
+}
+
+// deliverDetached runs the deliverer under a FRESH, timeout-bounded
+// context — detached BY DESIGN (D3): delivery must survive the
+// accepting request's cancellation; this helper is exactly the
+// disconnect-immunity contract. It takes no context so no caller can
+// accidentally re-couple delivery to a request lifetime.
+func deliverDetached(d Deliverer, ws, ses string, e Entry) error {
+	ctx, cancel := context.WithTimeout(context.Background(), DeliveryTimeout)
+	defer cancel()
+	return d(ctx, ws, ses, e)
 }
 
 // Dismiss removes an entry by ID (the queue UI's dismiss action).
