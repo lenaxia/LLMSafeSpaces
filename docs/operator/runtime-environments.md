@@ -99,7 +99,7 @@ The repo ships Dockerfiles for three language runtimes under [`runtimes/`](https
 |---|---|---|
 | `runtimes/python/` | Python | Extends base; installs Python via mise |
 | `runtimes/nodejs/` | Node.js | Extends base; installs Node.js via mise |
-| `runtimes/go/` | Go | Extends base; installs Go via mise |
+| `runtimes/go/` | Go | Extends base; pinned Go toolchain tarball (Renovate-managed) — also available via mise |
 
 These are **not seeded as `RuntimeEnvironment` CRDs by the chart** — they are reference implementations. To make them available, build the image, push it to your registry, and register a `RuntimeEnvironment` (see below).
 
