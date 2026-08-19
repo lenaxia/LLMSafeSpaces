@@ -411,8 +411,10 @@ func TestGoldenFixture_EventStore_SessionUpdatedAllDecode(t *testing.T) {
 			decoded++
 		}
 	}
-	if decoded == 0 {
-		t.Fatalf("store fixture must contain decodable session.updated rows")
+	// Exact count pinned: fixture composition changes must be conscious
+	// (refresh per REFRESH.md), not silent drift.
+	if decoded != 81 {
+		t.Fatalf("store fixture session.updated decode count changed: got %d, pinned 81 — fixture refreshed?", decoded)
 	}
 	t.Logf("%d golden store session.updated rows decoded with attribution", decoded)
 }

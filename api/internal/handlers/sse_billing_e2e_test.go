@@ -289,7 +289,6 @@ func TestE2E_SSETracker_RealFixture_1_18_10_SessionUpdated(t *testing.T) {
 		calls = append(calls, inferenceCall{modelID, providerID, inputTokens, outputTokens})
 		mu.Unlock()
 	})
-	tracker.SetMeteringDecoder(agentoc.NewAdapter(nil, nil, zap.NewNop()).MeteringFromEvent)
 
 	tracker.ProcessEvent("ws-real", `{
 		"id": "evt_test",
