@@ -2132,28 +2132,26 @@ unrelated; this page is about the image factory (design/0046).</p>
    base) → save → NEW config/hash/build. The original stays launchable.</li>
 </ol>
 <h2 id="moving-the-default-base-eg-bookworm-trixie">Moving the default base (e.g. bookworm → trixie)<a class="headerlink" href="#moving-the-default-base-eg-bookworm-trixie" title="Permanent link">&para;</a></h2>
-<p><strong>The upsert does not clear other defaults.</strong> <code>POST /bases</code> upserts the
-one row you send (<code>ON CONFLICT (name,version)</code> — nothing else is
-touched). Setting trixie default leaves bookworm default TOO: a
-two-default state where pills resolve to the highest-sorted base while
-the create form's default picker takes the first — signals diverge.
-Move the default as TWO upserts, in this order:</p>
+<p><strong>Moving the default is one call.</strong></p>
 <ol>
 <li>Publish the new base's versions and their extension coverage first
    (see below).</li>
-<li>POST-upsert the OLD default row with <code>isDefault: false</code>.</li>
-<li>POST-upsert the NEW row with <code>isDefault: true</code>.</li>
+<li>POST-upsert the intended row with <code>isDefault: true</code>. Done.</li>
 </ol>
-<p><strong>API restarts re-apply the seed's default.</strong> The catalog seed runs at
-every API boot and upserts <code>isDefault</code> from <code>catalog.seed.yaml</code>
-(currently bookworm=true). If your moved default diverges from the
-seed, the next API restart silently re-defaults the seed's base —
-leaving the two-default state above. Until the seed-default behavior
-gains a "don't fight the operator" mode (backend debt), EITHER keep the
-seed as the source of truth and move the default by PR-editing
-<code>catalog.seed.yaml</code> (the intended flow — the seed is reviewable in
-git), OR accept that manual moves need re-applying after restarts.
-Prefer the seed PR.
+<p>A <code>POST /bases</code> upsert with <code>isDefault: true</code> clears every other default
+in the same statement, and a partial unique index
+(<code>uq_image_factory_bases_single_default</code>, migration 000025 — which
+first dedups any pre-existing two-default state, keeping the highest
+(name, version)) makes "at most one default" structural: enforced by
+the database under every path, including concurrent admin upserts and
+seed-after-delete restarts. Explicit <code>isDefault: false</code> upserts leave no
+default (nothing auto-promotes).</p>
+<p><strong>API restarts do not revert or duplicate runtime defaults.</strong> The boot
+seed applies its <code>isDefault</code> only to rows it INSERTs, and only when no
+default exists (a NOT EXISTS guard, backed by the unique index). If an
+operator deletes the default base row entirely, a restart re-seeds the
+seed's base WITHOUT re-defaulting it while another default lives. Fresh
+installs (empty catalog) still get the seed's default. (#936)
 2. Configs on other base names gain the <code>new base: trixie</code> pill with
    the migration tooltip (package versions follow the Debian suite).
 3. <strong>Before flipping the default</strong>, verify extension coverage: the pill
@@ -2199,15 +2197,15 @@ Prefer the seed PR.
 staleness is information, never a lockout.</p>
 <h2 id="failure-modes">Failure modes<a class="headerlink" href="#failure-modes" title="Permanent link">&para;</a></h2>
 <ul>
-<li><strong>Refresh save 500 "failed to save config" / "failed to save config
-  and build"</strong> (coalesced vs fresh dispatch path respectively):
-  duplicate scoped name.
-  The create paths currently return 500 (not 409) on the scoped-unique
-  violation; the prefill avoids the common cases by de-conflicting the
-  suggested name against existing configs (<code>name (base version)</code>, with
-  numeric suffix on repeat refreshes). If the user hand-edits back into
-  a collision, the error surfaces as a toast — a 4xx mapping for this
-  case is a known backend debt item.</li>
+<li><strong>Refresh save 409</strong>: duplicate scoped name. The API returns 409
+  naming the colliding config (#936); the form surfaces it directly.
+  The prefill avoids the common cases by de-conflicting the suggested
+  name against existing configs (<code>name (base version)</code>, with numeric
+  suffix on repeat refreshes). On the fresh-dispatch path the GH run has
+  already fired but its ID is not yet known (workflow_dispatch returns
+  none), so the run cannot be cancelled — it is a bounded orphan: it
+  finishes, its callback 404s against the missing build row, and nothing
+  retries.</li>
 <li><strong>Refresh save 422 per-extension</strong>: an extension in the selection is
   unsupported on the target base, or was retired after the config was
   saved. Both surface in the form before save ("Not available on …");
@@ -2238,7 +2236,7 @@ staleness is information, never a lockout.</p>
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 18, 2026 07:44:29 UTC"><span class="timeago" datetime="2026-08-18T07:44:29+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 18, 2026 07:44:29 UTC">2026-08-18</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 19, 2026 12:49:09 UTC"><span class="timeago" datetime="2026-08-19T12:49:09+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 19, 2026 12:49:09 UTC">2026-08-19</span>
   </span>
 
     
