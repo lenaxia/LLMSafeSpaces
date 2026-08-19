@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.12] - 2026-08-19
+
+### Fixed
+
+- **Dev preview could not be enabled on any stock deployment (#946, #948)**:
+  the three Epic 66 instance settings
+  (`devPreview.enabled` / `maxResponseBytes` / `maxConnsPerWorkspace`) were
+  registered in `KnownKeys` only — unreachable through every consumer: no
+  admin-UI section (the settings page is schema-driven), a boot-time
+  `GetBool` index-miss whose error was swallowed (hard-disable regardless
+  of DB state), and admin PUT rejected as unknown key. The keys are now
+  registered in `InstanceSettings()` (SchemaVersion 11→12, canary twins in
+  lockstep), the app.go read is extracted into
+  `devPreviewConfigFromSettings` with warn + typed-default fallback, and
+  the wiring is pinned by schema/service/app-wiring/HTTP-level tests
+  (red→green verified).
+- **lib/pq dropped (#945)**: GO-2026-6166..6173 have no fixed upstream
+  release; the API no longer depends on lib/pq (pgarray migration).
+- **Relay `/provider` hang (#927, #911)**: the response-header phase is
+  now bounded on both relay-router and relay-proxy — an unresponsive
+  upstream provider no longer hangs the endpoint indefinitely.
+- **agentd live-validation findings (#926)**: overlay verification is
+  pod-gated and startup logs are visible.
+- **image-factory 409 name collisions + one-call default move (#950,
+  #936)**: creating a config with a colliding name returns a typed 409
+  instead of an unhandled error, default moves in one call, and seeding
+  preserves the runtime default. Migration 000025 (single default).
+- **CI flake (#920)**: agentd watchdog/healthz tests no longer time out
+  under `-race -coverpkg`.
+
+### Added
+
+- **Epic 65 wire seam + ContextUsage contract (#938)**: adapter-mediated
+  usage persistence — the platform's context/usage reading now flows
+  through the `pkg/agent` adapter seam instead of opencode-shaped parsing
+  in platform code.
+- **Usage + metering decode migrated onto the wire seam (#949, #939)**:
+  the SSE tracker's metering decode consumes the adapter contract;
+  `MeteringFromEvent` log-before-err obligation documented on the
+  interface.
+- **Image-factory base-update (#928 v1+v2: #930, #931; ruling #929)**:
+  read-side staleness signal (base-update pill in the launch picker) and
+  the refresh flow; the base image is the version axis.
+- **G7 stress harness (#924, #907)**: watchdog/restart/turn assertions
+  under CPU storm.
+
 ## [0.15.11] - 2026-08-17
 
 ### Fixed
