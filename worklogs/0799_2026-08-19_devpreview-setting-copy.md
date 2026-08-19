@@ -39,4 +39,4 @@ None.
 - `pkg/settings/schema.go` — label/description + SchemaVersion 13 entry
 - `api/internal/handlers/settings_test.go` — label pinned in schema test
 - `sdks/canary/go/scenarios/s-user-settings/main.go`, `sdks/canary/typescript/scenarios/s-user-settings.ts`, `sdks/canary/python/scenarios/s_user_settings.py`, `sdks/canary/TESTPLAN.md` — version twins
-- `worklogs/NNNN_2026-08-19_devpreview-setting-copy.md` — this worklog
+- `worklogs/0799_2026-08-19_devpreview-setting-copy.md` — this worklog
