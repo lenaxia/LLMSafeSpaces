@@ -114,3 +114,11 @@ The reviewer's round-3 mutation testing proved both round-3 behaviors (info-less
 **Correction — my round-3 commit message claimed an interface-doc change that never landed.** The python edit targeted round-1 text that no longer existed on this branch; `str.replace` no-opped silently and I did not verify before claiming. The reviewer caught it (`git show --stat` vs the claim). Fixed for real in this commit, grep-verified pre-commit: `MeteringFromEvent`'s interface doc now states the MUST-log-before-err obligation; `MeteringDecoder`'s doc mirrors the contract.
 
 Tests added round 3: the two above. Suites: pkg/agent, opencode, wire, sse, handlers — green.
+
+### Round 5 (#949): my merge-resolution error + review fixes
+
+The reviewer caught a real regression I introduced in the #949 main-merge: resolving database.go with `--ours` took the stacked branch's pre-#945 copy — silently reverting main's lib/pq removal (`pq.Array` back at 3 sites, `// indirect` label now wrong). Exactly the failure mode the #938 round-4 reviewer described ("take main's imports"); I applied the right rule to the wrong file set. Fixed by restoring main's version verbatim.
+
+Also: agentd's nested-format fallback now gated on `evt.Type == ""` (flat deltas — the hottest class — no longer pay a third whole-payload parse); store-fixture session.updated rows (81) now decode through the metering path in a golden test (counting wasn't enough); agentd drift-warn path for step-finish-missing-tokens pinned; stale fixture-filename comment + duplicate SetMeteringDecoder call cleaned.
+
+Issue-comment corrections (per review): no seam-side negative-counter clamp exists (clamp is policy-layer, pre-existing); nested-payload tolerance lives in callers, not wire.ParseStepUsage; the "84 golden lines decoded" claim was wrong (they were counted, now actually decoded).

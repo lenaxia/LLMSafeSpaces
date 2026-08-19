@@ -381,3 +381,38 @@ func TestParseSessionUpdatedMalformedCostFlags(t *testing.T) {
 		t.Fatalf("malformed cost must flag CostMalformed and decode as 0; got %+v", u)
 	}
 }
+
+// Store-surface session.updated rows (suffixed, 81 in the fixture) must
+// decode through the metering path — the two-projection (wire vs store)
+// drift concern is exactly what #939 exists to close; counting them in
+// the taxonomy test is not enough.
+func TestGoldenFixture_EventStore_SessionUpdatedAllDecode(t *testing.T) {
+	data, err := os.ReadFile("../testdata/event_store_1_18_10.jsonl")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	decoded := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var env Envelope
+		if err := json.Unmarshal([]byte(line), &env); err != nil {
+			continue
+		}
+		if !IsSessionUpdated(env.Type) {
+			continue
+		}
+		u, ok, err := ParseSessionUpdated(env.Type, line)
+		if err != nil {
+			t.Fatalf("golden store session.updated must not drift-error: %v — %s", err, line[:100])
+		}
+		if ok {
+			if u.SessionID == "" || u.ModelID == "" {
+				t.Fatalf("golden store row missing attribution: %+v — %s", u, line[:100])
+			}
+			decoded++
+		}
+	}
+	if decoded == 0 {
+		t.Fatalf("store fixture must contain decodable session.updated rows")
+	}
+	t.Logf("%d golden store session.updated rows decoded with attribution", decoded)
+}

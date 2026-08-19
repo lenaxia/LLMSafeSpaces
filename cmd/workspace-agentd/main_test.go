@@ -1228,3 +1228,13 @@ func TestSessionStatusTracker_ProcessEvent_TextParts_NoUsage(t *testing.T) {
 	tracker.processEvent(`{"id":"evt1","type":"message.part.updated","properties":{"sessionID":"ses_t","part":{"type":"text","text":"hi"}}}`)
 	assert.Equal(t, int64(0), tracker.getPromptTokens("ses_t"), "non-finish parts carry no usage")
 }
+
+func TestSessionStatusTracker_ProcessEvent_StepFinishPart_MissingTokens_NoCaptureNoPanic(t *testing.T) {
+	// Drift shape for the CURRENT wire generation: a step-finish part
+	// without tokens exercises the seam's drift-error branch (warn, no
+	// capture) — the analog of the legacy StepEnded_MissingTokens test.
+	tracker := newSessionStatusTracker()
+
+	tracker.processEvent(`{"id":"evt1","type":"message.part.updated","properties":{"sessionID":"ses_drift","part":{"type":"step-finish","reason":"stop"}}}`)
+	assert.Equal(t, int64(0), tracker.getPromptTokens("ses_drift"), "undecodable usage must not capture")
+}

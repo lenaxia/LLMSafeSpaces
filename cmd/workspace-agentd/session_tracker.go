@@ -318,6 +318,31 @@ func (t *sessionStatusTracker) processEvent(data string) {
 	switch evt.Type {
 	case "session.status":
 		t.handleSessionStatus(evt.Properties)
+	case "":
+		// Nested format (legacy global SSE endpoint only): its events
+		// have no top-level type. Gated on evt.Type == "" so flat
+		// non-usage events (deltas — the hottest, largest class) never
+		// pay the extra whole-payload re-parse.
+		var nested struct {
+			Payload struct {
+				Type       string          `json:"type"`
+				Properties json.RawMessage `json:"properties"`
+			} `json:"payload"`
+		}
+		if json.Unmarshal([]byte(data), &nested) != nil {
+			return
+		}
+		switch nested.Payload.Type {
+		case "session.status":
+			t.handleSessionStatus(nested.Payload.Properties)
+		default:
+			if u, ok, err := wire.ParseStepUsageProps(nested.Payload.Type, nested.Payload.Properties); err != nil {
+				log.Warn("usage event claims tokens but fails to decode — wire drift?",
+					zap.Error(err), zap.String("eventType", nested.Payload.Type))
+			} else if ok {
+				t.setPromptTokens(u.SessionID, u.Tokens.PromptTokens())
+			}
+		}
 	default:
 		// Per-step usage (statusz ContextUsed until the usage-authority
 		// cutover): every usage-bearing shape is decoded by the wire
@@ -330,29 +355,6 @@ func (t *sessionStatusTracker) processEvent(data string) {
 				zap.Error(err), zap.String("eventType", evt.Type))
 		} else if ok {
 			t.setPromptTokens(u.SessionID, u.Tokens.PromptTokens())
-			return
-		}
-		// Try nested format (backward compat with the legacy global SSE
-		// endpoint, which wrapped events in a payload envelope).
-		var nested struct {
-			Payload struct {
-				Type       string          `json:"type"`
-				Properties json.RawMessage `json:"properties"`
-			} `json:"payload"`
-		}
-		if json.Unmarshal([]byte(data), &nested) != nil {
-			return
-		}
-		switch {
-		case nested.Payload.Type == "session.status":
-			t.handleSessionStatus(nested.Payload.Properties)
-		case wire.IsStepEnded(nested.Payload.Type):
-			if u, ok, err := wire.ParseStepUsageProps(nested.Payload.Type, nested.Payload.Properties); err != nil {
-				log.Warn("usage event claims tokens but fails to decode — wire drift?",
-					zap.Error(err), zap.String("eventType", nested.Payload.Type))
-			} else if ok {
-				t.setPromptTokens(u.SessionID, u.Tokens.PromptTokens())
-			}
 		}
 	}
 }

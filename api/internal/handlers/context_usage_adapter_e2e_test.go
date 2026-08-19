@@ -21,7 +21,7 @@ import (
 // (onRawEvent → persistContextFromEvent → real Adapter → wire → session
 // index), pinning the seam contract that the stub-based wiring tests only
 // assume. Wire-shape authenticity: the payloads below are byte-shapes from
-// the golden fixture (testdata/sse_events_1_18_10.jsonl, captured from a
+// the golden fixture (testdata/event_store_1_18_10.jsonl, captured from a
 // live 1.18.10 event store) and the epic-63 live SSE capture.
 
 func newRealAdapterEnv(t *testing.T) (*ProxyHandler, *contextUsedSessionIndex, *observer.ObservedLogs) {
