@@ -59,6 +59,8 @@ describe("useChatStream", () => {
 
     expect(messagesApi.sendAsync).toHaveBeenCalledWith("sb-1", "sess-1", {
       parts: [{ type: "text", text: "hi" }],
+      // D3 (#907): every send carries a clientMessageID (idempotency key).
+      clientMessageID: expect.any(String),
     });
   });
 
@@ -77,6 +79,7 @@ describe("useChatStream", () => {
     expect(messagesApi.sendAsync).toHaveBeenCalledWith("sb-1", "sess-1", {
       parts: [{ type: "text", text: "hello" }],
       model: { providerID: "anthropic", modelID: "claude-sonnet-4-5" },
+      clientMessageID: expect.any(String),
     });
   });
 

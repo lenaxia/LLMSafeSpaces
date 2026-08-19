@@ -20,6 +20,7 @@ import (
 	"github.com/gin-gonic/gin"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
@@ -218,6 +219,80 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 	}
 	if len(text) > 100_000 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "text exceeds 100KB limit"})
+		return
+	}
+
+	// D3 outbox path (design 0050 §D3, #907): accept into the Valkey
+	// outbox and 202 immediately — delivery happens in a detached worker
+	// so a client disconnect (iOS killing an in-flight POST, the
+	// 2026-08-15/16 incident's 6× context-canceled loss class) can never
+	// lose an accepted message. The synchronous adapter path below is the
+	// legacy fallback when the outbox is unset (dev/test).
+	if h.outbox != nil && h.adapter != nil {
+		workspace, ok := h.resolveWorkspaceForAdapter(c, wid)
+		if !ok {
+			return
+		}
+		defer h.releaseConnection(wid)
+
+		if !h.checkAdapterSessionLimit(c, workspace, wid, sid) {
+			return
+		}
+		if !h.checkAdapterQuota(c, workspace) {
+			if sid != "" {
+				h.removeActiveSession(c.Request.Context(), wid, sid)
+			}
+			return
+		}
+		h.adapterEnsureSSEWatch(wid)
+
+		var cmid string
+		if req := struct {
+			ClientMessageID string `json:"clientMessageID"`
+		}{}; json.Unmarshal(bodyBytes, &req) == nil {
+			cmid = req.ClientMessageID
+		}
+		userID, _ := extractAuth(c)
+		modelOverride := extractPromptModel(bodyBytes)
+
+		// Org model-policy enforcement on the explicit override — the
+		// SAME check the sync path applies (r1 finding 1: the outbox must
+		// not become the policy bypass).
+		if !h.modelOverrideAllowed(c.Request.Context(), workspace, modelOverride) {
+			if sid != "" {
+				h.removeActiveSession(c.Request.Context(), wid, sid)
+			}
+			c.JSON(http.StatusForbidden, gin.H{"error": "model not allowed by organization policy"})
+			return
+		}
+
+		var modelJSON json.RawMessage
+		if modelOverride != nil {
+			modelJSON, _ = json.Marshal(modelOverride)
+		}
+
+		e, err := h.outbox.Accept(c.Request.Context(), wid, sid, userID, cmid, text, modelJSON)
+		if err != nil {
+			var dup *outbox.Duplicate
+			if errors.As(err, &dup) {
+				// Retry of an accepted message: 200 with the ORIGINAL ID
+				// (idempotent accept), not an error (r1 finding 7).
+				c.JSON(http.StatusOK, gin.H{"messageID": dup.AcceptedID, "clientMessageID": cmid, "status": "duplicate"})
+				return
+			}
+			if errors.Is(err, outbox.ErrCapped) {
+				c.JSON(http.StatusTooManyRequests, gin.H{"error": "session queue is full", "retryAfter": 10})
+				return
+			}
+			h.logger.Error("outbox accept failed", err, "workspaceID", wid, "sessionID", sid)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to accept message"})
+			return
+		}
+		c.JSON(http.StatusAccepted, gin.H{
+			"messageID":       e.ID,
+			"clientMessageID": e.ClientMessageID,
+			"status":          "queued",
+		})
 		return
 	}
 
@@ -1135,7 +1210,8 @@ func (h *ProxyHandler) getPodIPAndPassword(ctx context.Context, workspaceID stri
 }
 
 type enqueueRequest struct {
-	Text string `json:"text" binding:"required"`
+	ClientMessageID string `json:"clientMessageID,omitempty"`
+	Text            string `json:"text" binding:"required"`
 }
 
 // queuedMessageResponse is the typed JSON shape for a queue list entry.
@@ -1179,7 +1255,46 @@ func (h *ProxyHandler) EnqueueMessage(c *gin.Context) {
 		return
 	}
 
-	// V2 path (Epic 63): send via PromptV2 with delivery:"queue".
+	// D3 (#907): with the outbox wired, enqueue and prompt are the SAME
+	// accept (single path — client-decides routing is retired). The
+	// clientMessageID field rides the same body.
+	if h.outbox != nil && h.adapter != nil {
+		workspace, ok := h.resolveWorkspaceForAdapter(c, wid)
+		if !ok {
+			return
+		}
+		defer h.releaseConnection(wid)
+		if !h.checkAdapterSessionLimit(c, workspace, wid, sid) {
+			return
+		}
+		if !h.checkAdapterQuota(c, workspace) {
+			if sid != "" {
+				h.removeActiveSession(c.Request.Context(), wid, sid)
+			}
+			return
+		}
+		h.adapterEnsureSSEWatch(wid)
+		userID, _ := extractAuth(c)
+		var modelJSON json.RawMessage
+		e, err := h.outbox.Accept(c.Request.Context(), wid, sid, userID, req.ClientMessageID, req.Text, modelJSON)
+		if err != nil {
+			var dup *outbox.Duplicate
+			if errors.As(err, &dup) {
+				c.JSON(http.StatusOK, gin.H{"messageID": dup.AcceptedID, "status": "duplicate"})
+				return
+			}
+			if errors.Is(err, outbox.ErrCapped) {
+				c.JSON(http.StatusTooManyRequests, gin.H{"error": "session queue is full", "retryAfter": 10})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enqueue"})
+			return
+		}
+		c.JSON(http.StatusAccepted, gin.H{"messageID": e.ID, "status": "queued"})
+		return
+	}
+
+	// Legacy V2 path (Epic 63): send via PromptV2 with delivery:"queue".
 	h.enqueueV2(c, wid, sid, req.Text)
 }
 
@@ -1191,9 +1306,32 @@ func (h *ProxyHandler) ListQueue(c *gin.Context) {
 	}
 	wid := c.Param("id")
 
-	// US-63.10: read from the Redis-backed shadow marker. The shadow is
-	// populated by the SSE bridge on PromptAdmitted events and cleared on
-	// Prompted events.
+	// D3 (#907): the outbox is the real queue — entries listed here ARE
+	// pending delivery (or parked error with retry context). The V2
+	// shadow below is the legacy fallback: a view of the V2 queue that
+	// opencode 1.18.10 never drains (#755) — entries there will never
+	// deliver, which is exactly why it is no longer the primary source.
+	if h.outbox != nil {
+		entries, err := h.outbox.List(c.Request.Context(), wid, sid)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list queue"})
+			return
+		}
+		result := make([]queuedMessageResponse, 0, len(entries))
+		for _, e := range entries {
+			result = append(result, queuedMessageResponse{
+				ID:          e.ID,
+				Text:        e.Text,
+				SessionID:   sid,
+				WorkspaceID: wid,
+				EnqueuedAt:  e.AcceptedAt.UTC().Format(time.RFC3339),
+			})
+		}
+		c.JSON(http.StatusOK, queueListResponse{Messages: result})
+		return
+	}
+
+	// Legacy: Redis-backed V2 shadow marker.
 	if h.v2Shadow != nil {
 		entries := h.v2Shadow.List(c.Request.Context(), wid, sid)
 		result := make([]queuedMessageResponse, 0, len(entries))
@@ -1226,11 +1364,48 @@ func (h *ProxyHandler) DeleteQueueMessage(c *gin.Context) {
 		return
 	}
 
-	// US-63.10: remove from the shadow marker. Dismissed messages must not
+	// D3 (#907): with the outbox wired, dismissal targets the REAL queue
+	// — the entry is removed and will not deliver. The V2 shadow below is
+	// the legacy path.
+	if h.outbox != nil {
+		if h.outbox.Dismiss(c.Request.Context(), wid, sid, msgID) {
+			c.Status(http.StatusNoContent)
+		} else {
+			c.JSON(http.StatusNotFound, gin.H{"error": "queue message not found"})
+		}
+		return
+	}
+
+	// US-63.10// US-63.10: remove from the shadow marker. Dismissed messages must not
 	// reappear on fresh load.
 	if h.v2Shadow != nil {
 		h.v2Shadow.Remove(c.Request.Context(), wid, sid, msgID)
 	}
 	h.publishQueueEvent(wid, sid, "dismissed", msgID, "")
 	c.Status(http.StatusNoContent)
+}
+
+// RetryQueueMessage clears an error entry back to pending (the queue
+// UI's retry action). Outbox path only.
+func (h *ProxyHandler) RetryQueueMessage(c *gin.Context) {
+	sid := c.Param("sessionId")
+	if err := validateSessionID(sid); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid sessionId: " + err.Error()})
+		return
+	}
+	wid := c.Param("id")
+	msgID := c.Param("messageId")
+	if msgID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "messageId required"})
+		return
+	}
+	if h.outbox == nil {
+		c.JSON(http.StatusNotImplemented, gin.H{"error": "queue retry requires the outbox"})
+		return
+	}
+	if h.outbox.Retry(c.Request.Context(), wid, sid, msgID) {
+		c.Status(http.StatusNoContent)
+	} else {
+		c.JSON(http.StatusNotFound, gin.H{"error": "error entry not found (retry targets error entries only)"})
+	}
 }

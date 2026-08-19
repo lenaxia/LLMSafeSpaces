@@ -4,8 +4,13 @@
 package handlers
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
+	"github.com/lenaxia/llmsafespaces/pkg/session"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/activity"
@@ -13,6 +18,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 func (h *ProxyHandler) EnableSessionParentResolution() {
@@ -62,6 +68,20 @@ func (h *ProxyHandler) Start() error {
 		// watches have no transition event to re-arm them. The reconciler
 		// heals missing watches; see its doc comment for scope limits.
 		go h.sseWatchReconciler(sseWatchReconcileInterval)
+
+		// D3 (#907): the outbox delivery worker — detached from any
+		// request context; survives client disconnects (the incident's
+		// message-loss class). The bridge re-resolves the workspace and
+		// re-checks quota per delivery.
+		if h.outbox != nil {
+			wctx, wcancel := context.WithCancel(context.Background())
+			h.outboxCancel = wcancel
+			go func() {
+				<-h.stopCh
+				wcancel()
+			}()
+			go h.outbox.Run(wctx, h.outboxDeliver, outboxTick)
+		}
 	})
 	return startErr
 }
@@ -255,4 +275,62 @@ func (h *ProxyHandler) newSSETracker() *sse.Tracker {
 	t.SetOnAgentDied(h.onAgentDied)
 	t.SetOnReconnect(h.reconcileSessionState)
 	return t
+}
+
+// outboxTick is the outbox delivery scan interval. Var for tests.
+var outboxTick = 1 * time.Second
+
+// outboxDeliver bridges the outbox worker to the adapter: detached
+// context and D3 model-selector forwarding (the accepted entry carries
+// the raw selector JSON). On success it records the SAME cross-cutting
+// events as the synchronous path (r1 finding 2): activity, session-index
+// message, and the llm_request usage event — without which the quota
+// never depletes and billing undercounts every outbox-delivered prompt.
+// The accepting userID rides the entry (the accepting request is long
+// gone by delivery time).
+func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID string, e outbox.Entry) error {
+	var model *session.ModelRef
+	if len(e.Model) > 0 {
+		var m session.ModelRef
+		if json.Unmarshal(e.Model, &m) == nil && m.ID != "" {
+			model = &m
+		}
+	}
+	_, err := h.adapter.Send(ctx, "", workspaceID, sessionID, e.Text, session.SendOpts{Model: model})
+	if err != nil {
+		return err
+	}
+	h.postOutboxDeliverSuccess(workspaceID, sessionID, e)
+	return nil
+}
+
+// postOutboxDeliverSuccess mirrors postAdapterSuccess for the detached
+// delivery path (no gin context: the accept-time userID and a synthetic
+// request id ride the entry).
+func (h *ProxyHandler) postOutboxDeliverSuccess(workspaceID, sessionID string, e outbox.Entry) {
+	if h.activityTracker != nil {
+		h.activityTracker.Record(workspaceID)
+	}
+	if h.sessionIndex != nil && sessionID != "" {
+		h.sessionIndex.RecordMessage(workspaceID, sessionID, "", time.Now())
+	}
+	if h.meteringSvc != nil && workspaceID != "" {
+		if e.UserID != "" {
+			h.meteringSvc.Record(types.UsageEvent{
+				IdempotencyKey: fmt.Sprintf("llmreq:%s:%d", workspaceID, time.Now().UnixNano()),
+				Owner:          types.BillingOwner{ID: e.UserID, Type: types.OwnerTypeUser},
+				ActorID:        e.UserID,
+				WorkspaceID:    workspaceID,
+				EventType:      "llm_request",
+				EventSubtype:   "message",
+				Quantity:       1,
+				Source:         "api",
+				EventTime:      time.Now(),
+				RequestContext: map[string]any{
+					"request_id": "outbox:" + e.ID,
+					"session_id": sessionID,
+				},
+			})
+		}
+	}
 }

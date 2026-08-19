@@ -149,6 +149,7 @@ describe("ChatPage message queue (backend-backed)", () => {
     await waitFor(() => {
       expect(messagesApi.sendAsync).toHaveBeenCalledWith("ws-1", "ses_1", {
         parts: [{ type: "text", text: "hello" }],
+        clientMessageID: expect.any(String),
       });
     });
   });

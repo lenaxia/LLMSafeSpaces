@@ -166,6 +166,10 @@ export interface SendMessageRequest {
   parts: MessagePart[];
   model?: { providerID: string; modelID: string };
   messageID?: string;
+  // D3 (#907): caller-supplied idempotency key. Stable across the send
+  // retry loop so a retried POST cannot double-send; the API dedupes on
+  // accept and returns the original acceptance for a duplicate.
+  clientMessageID?: string;
 }
 
 export interface ApiKey {
