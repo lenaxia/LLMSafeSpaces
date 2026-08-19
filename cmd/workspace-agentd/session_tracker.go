@@ -17,6 +17,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode/wire"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
 
@@ -317,10 +318,22 @@ func (t *sessionStatusTracker) processEvent(data string) {
 	switch evt.Type {
 	case "session.status":
 		t.handleSessionStatus(evt.Properties)
-	case "session.next.step.ended":
-		t.handleStepEnded(evt.Properties)
 	default:
-		// Try nested format for session.status (backward compat with global SSE endpoint).
+		// Per-step usage (statusz ContextUsed until the usage-authority
+		// cutover): every usage-bearing shape is decoded by the wire
+		// seam — the legacy standalone step-ended event (mixed fleet)
+		// and 1.18.x step-finish parts, suffixed or not. The Props
+		// variant reuses the envelope already parsed above — part
+		// updates are the dominant event type on an active stream.
+		if u, ok, err := wire.ParseStepUsageProps(evt.Type, evt.Properties); err != nil {
+			log.Warn("usage event claims tokens but fails to decode — wire drift?",
+				zap.Error(err), zap.String("eventType", evt.Type))
+		} else if ok {
+			t.setPromptTokens(u.SessionID, u.Tokens.PromptTokens())
+			return
+		}
+		// Try nested format (backward compat with the legacy global SSE
+		// endpoint, which wrapped events in a payload envelope).
 		var nested struct {
 			Payload struct {
 				Type       string          `json:"type"`
@@ -330,11 +343,16 @@ func (t *sessionStatusTracker) processEvent(data string) {
 		if json.Unmarshal([]byte(data), &nested) != nil {
 			return
 		}
-		switch nested.Payload.Type {
-		case "session.status":
+		switch {
+		case nested.Payload.Type == "session.status":
 			t.handleSessionStatus(nested.Payload.Properties)
-		case "session.next.step.ended":
-			t.handleStepEnded(nested.Payload.Properties)
+		case wire.IsStepEnded(nested.Payload.Type):
+			if u, ok, err := wire.ParseStepUsageProps(nested.Payload.Type, nested.Payload.Properties); err != nil {
+				log.Warn("usage event claims tokens but fails to decode — wire drift?",
+					zap.Error(err), zap.String("eventType", nested.Payload.Type))
+			} else if ok {
+				t.setPromptTokens(u.SessionID, u.Tokens.PromptTokens())
+			}
 		}
 	}
 }
@@ -355,26 +373,6 @@ func (t *sessionStatusTracker) handleSessionStatus(props json.RawMessage) {
 	case "busy", "retry", "error", "compacting":
 		t.set(p.SessionID, "busy")
 	}
-}
-
-func (t *sessionStatusTracker) handleStepEnded(props json.RawMessage) {
-	var p struct {
-		SessionID string `json:"sessionID"`
-		Tokens    *struct {
-			Input     int64 `json:"input"`
-			Output    int64 `json:"output"`
-			Reasoning int64 `json:"reasoning"`
-			Cache     struct {
-				Read  int64 `json:"read"`
-				Write int64 `json:"write"`
-			} `json:"cache"`
-		} `json:"tokens"`
-	}
-	if json.Unmarshal(props, &p) != nil || p.SessionID == "" || p.Tokens == nil {
-		return
-	}
-	promptTokens := p.Tokens.Input + p.Tokens.Cache.Read + p.Tokens.Cache.Write
-	t.setPromptTokens(p.SessionID, promptTokens)
 }
 
 // fillGapsState prevents concurrent fillGaps iterations.

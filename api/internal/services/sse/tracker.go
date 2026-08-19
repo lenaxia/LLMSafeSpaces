@@ -5,7 +5,6 @@ package sse
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -18,6 +17,8 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode/wire"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
@@ -669,7 +670,7 @@ func (t *Tracker) DispatchProperties(workspaceID, eventType string, props json.R
 }
 
 func (t *Tracker) dispatchProperties(workspaceID, eventType string, props json.RawMessage) {
-	if eventType == "session.updated" && len(props) > 0 && t.onInference != nil {
+	if wire.IsSessionUpdated(eventType) && len(props) > 0 && t.onInference != nil {
 		t.handleSessionUpdated(workspaceID, props)
 	}
 	if eventType != "session.status" || len(props) == 0 {
@@ -734,82 +735,45 @@ func (t *Tracker) dispatchProperties(workspaceID, eventType string, props json.R
 }
 
 func (t *Tracker) handleSessionUpdated(workspaceID string, props []byte) {
-	var p struct {
-		SessionID string `json:"sessionID"`
-		Info      struct {
-			ID    string `json:"id"`
-			Model struct {
-				ID         string `json:"id"`
-				ProviderID string `json:"providerID"`
-				Provider   string `json:"provider"`
-			} `json:"model"`
-			Tokens struct {
-				Input  int64 `json:"input"`
-				Output int64 `json:"output"`
-			} `json:"tokens"`
-			Cost json.RawMessage `json:"cost"`
-		} `json:"info"`
-	}
-	if err := json.Unmarshal(props, &p); err != nil {
-		t.Logger.Warn("handleSessionUpdated: failed to parse event", "workspaceID", workspaceID, "error", err)
+	// Decode is the wire seam's job (opencode shape knowledge); the
+	// dedup/delta computation below is billing POLICY and stays here.
+	u, ok, err := wire.ParseSessionUpdatedProps(props)
+	if err != nil {
+		t.Logger.Warn("handleSessionUpdated: usage-bearing event failed to decode — wire drift?",
+			"workspaceID", workspaceID, "error", err)
 		return
 	}
-	if p.Info.ID == "" || p.Info.Tokens.Output == 0 || p.Info.Model.ID == "" {
+	if !ok || u.SessionID == "" || u.OutputTokens == 0 || u.ModelID == "" {
 		t.Logger.Warn("handleSessionUpdated: dropping session.updated with incomplete billing fields",
-			"workspaceID", workspaceID, "sessionID", p.Info.ID,
-			"hasModel", p.Info.Model.ID != "", "outputTokens", p.Info.Tokens.Output)
+			"workspaceID", workspaceID, "sessionID", u.SessionID,
+			"hasModel", u.ModelID != "", "outputTokens", u.OutputTokens)
 		return
 	}
-
-	providerID := p.Info.Model.ProviderID
-	if providerID == "" {
-		providerID = p.Info.Model.Provider
+	if u.CostMalformed {
+		t.Logger.Warn("handleSessionUpdated: cost field is neither number nor object — billing at 0; wire drift?",
+			"workspaceID", workspaceID, "sessionID", u.SessionID)
 	}
 
-	costVal := 0.0
-	if len(p.Info.Cost) > 0 {
-		trimmed := bytes.TrimSpace(p.Info.Cost)
-		// Try as a plain number first (1.15.x wire shape): "cost": 0.042
-		var costFloat float64
-		if json.Unmarshal(trimmed, &costFloat) == nil {
-			costVal = costFloat
-		} else {
-			// Try as an object (potential 1.18.10 wire shape).
-			// In ocCost, "cost" is CostUSD (dollar amount), while
-			// "total" is TotalTokens (int64 count). Extract the
-			// dollar field, not the token count.
-			var costObj struct {
-				Cost float64 `json:"cost"`
-			}
-			if json.Unmarshal(trimmed, &costObj) == nil {
-				costVal = costObj.Cost
-			} else {
-				t.Logger.Warn("handleSessionUpdated: could not parse cost field",
-					"workspaceID", workspaceID, "raw", string(trimmed))
-			}
-		}
-	}
-
-	key := workspaceID + ":" + p.Info.ID
+	key := workspaceID + ":" + u.SessionID
 	t.tokensMu.Lock()
 	prevOutput := t.sessionTokenSeen[key]
-	if p.Info.Tokens.Output <= prevOutput {
+	if u.OutputTokens <= prevOutput {
 		t.tokensMu.Unlock()
 		return
 	}
 	prevCost := t.sessionCostSeen[key]
-	t.sessionTokenSeen[key] = p.Info.Tokens.Output
-	t.sessionCostSeen[key] = costVal
+	t.sessionTokenSeen[key] = u.OutputTokens
+	t.sessionCostSeen[key] = u.CostUSD
 	t.tokensMu.Unlock()
 
-	outputDelta := p.Info.Tokens.Output - prevOutput
-	inputTokens := p.Info.Tokens.Input
+	outputDelta := u.OutputTokens - prevOutput
+	inputTokens := u.InputTokens
 	if prevOutput > 0 {
 		inputTokens = 0
 	}
-	costDelta := costVal - prevCost
+	costDelta := u.CostUSD - prevCost
 	if costDelta < 0 {
 		costDelta = 0
 	}
-	t.onInference(workspaceID, p.Info.Model.ID, providerID, inputTokens, outputDelta, costDelta)
+	t.onInference(workspaceID, u.ModelID, u.ProviderID, inputTokens, outputDelta, costDelta)
 }

@@ -250,3 +250,134 @@ func TestGoldenFixtureTaxonomy_EventStore(t *testing.T) {
 	t.Logf("store fixture: %d part-updates, %d step-finish (all decoded), %d session.updates, %d suffixed",
 		partUpdates, stepFinishParts, sessionUpdates, suffixed)
 }
+
+// --- session.updated (cumulative usage / metering attribution) ---
+
+func TestIsSessionUpdatedToleratesVersionSuffix(t *testing.T) {
+	for _, tt := range []struct {
+		eventType string
+		want      bool
+	}{
+		{"session.updated", true},
+		{"session.updated.1", true},
+		{"session.status", false},
+		{"message.part.updated", false},
+		{"", false},
+	} {
+		if got := IsSessionUpdated(tt.eventType); got != tt.want {
+			t.Errorf("IsSessionUpdated(%q) = %v, want %v", tt.eventType, got, tt.want)
+		}
+	}
+}
+
+func TestParseSessionUpdated(t *testing.T) {
+	// Verbatim shape from the tracker_test pin (1.15.12 live capture):
+	// tokens and model under properties.info; cost a bare number.
+	raw15 := `{"id":"evt_t","type":"session.updated","properties":{"sessionID":"ses_abc","info":{"id":"ses_abc","cost":0.042,"tokens":{"input":509911,"output":20861,"reasoning":41,"cache":{"read":9229154,"write":0}},"model":{"id":"glm-5.1","providerID":"thekao cloud","variant":"default"}}}}`
+	u, ok, err := ParseSessionUpdated("session.updated", raw15)
+	if err != nil || !ok {
+		t.Fatalf("ParseSessionUpdated: ok=%v err=%v", ok, err)
+	}
+	if u.SessionID != "ses_abc" || u.ModelID != "glm-5.1" || u.ProviderID != "thekao cloud" {
+		t.Fatalf("attribution = %+v", u)
+	}
+	if u.InputTokens != 509911 || u.OutputTokens != 20861 {
+		t.Fatalf("tokens = %+v", u)
+	}
+	if u.CostUSD != 0.042 {
+		t.Fatalf("CostUSD = %v", u.CostUSD)
+	}
+}
+
+func TestParseSessionUpdatedSuffixedAndObjectCost(t *testing.T) {
+	// Store-surface variant: suffixed type; cost may arrive as an object
+	// whose "cost" field is the dollar amount (1.18.x shape).
+	raw18 := `{"id":"evt_t","type":"session.updated.1","properties":{"sessionID":"ses_x","info":{"id":"ses_x","cost":{"cost":0.5,"total":12345},"tokens":{"input":100,"output":50},"model":{"id":"m","provider":"p"}}}}`
+	u, ok, err := ParseSessionUpdated("session.updated.1", raw18)
+	if err != nil || !ok {
+		t.Fatalf("ParseSessionUpdated: ok=%v err=%v", ok, err)
+	}
+	if u.CostUSD != 0.5 {
+		t.Fatalf("object cost must yield the dollar field, got %v (total=12345 is a token count, not cost)", u.CostUSD)
+	}
+	if u.ProviderID != "p" {
+		t.Fatalf("provider fallback (provider when providerID absent) failed: %+v", u)
+	}
+}
+
+func TestParseSessionUpdatedNotUsageOrIncomplete(t *testing.T) {
+	// Different event type → ok=false, no error.
+	if _, ok, err := ParseSessionUpdated("session.status", `{"properties":{}}`); err != nil || ok {
+		t.Fatalf("wrong type: ok=%v err=%v", ok, err)
+	}
+	// Usage-typed but undecodable properties → drift error.
+	if _, _, err := ParseSessionUpdated("session.updated", `{"type":"session.updated","properties":[1]}`); err == nil {
+		t.Fatalf("undecodable properties must be a drift error")
+	}
+	// Missing info → not usage (ok=false, no error): session.updated
+	// events legitimately fire without info (e.g. early lifecycle).
+	if _, ok, err := ParseSessionUpdated("session.updated", `{"properties":{"sessionID":"s"}}`); err != nil || ok {
+		t.Fatalf("info-less event: ok=%v err=%v", ok, err)
+	}
+}
+
+// The live fixture's session.updated events (19) must all decode through
+// the metering path — billing verified against verbatim wire, not just
+// hand-written shapes.
+func TestGoldenFixture_SessionUpdatedAllDecode(t *testing.T) {
+	data, err := os.ReadFile("../testdata/sse_events_1_18_10_live.jsonl")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	decoded := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var env Envelope
+		if err := json.Unmarshal([]byte(line), &env); err != nil {
+			continue
+		}
+		if !IsSessionUpdated(env.Type) {
+			continue
+		}
+		u, ok, err := ParseSessionUpdated(env.Type, line)
+		if err != nil {
+			t.Fatalf("golden session.updated must not drift-error: %v — %s", err, line[:100])
+		}
+		if ok {
+			if u.SessionID == "" || u.ModelID == "" {
+				t.Fatalf("golden session.updated missing attribution: %+v — %s", u, line[:100])
+			}
+			decoded++
+		}
+	}
+	if decoded == 0 {
+		t.Fatalf("live fixture must contain decodable session.updated events")
+	}
+	t.Logf("%d golden session.updated events decoded with attribution", decoded)
+}
+
+func TestParseSessionUpdatedIdentityIsInfoID(t *testing.T) {
+	// Pin the metering identity contract at the seam layer: session
+	// identity comes from info.id, NOT properties.sessionID. An empty
+	// info.id must decode ok with an empty SessionID so the billing
+	// path can warn-and-skip (pinned end-to-end by
+	// TestSSETracker_Inference_EmptyID_LogsWarn).
+	raw := `{"type":"session.updated","properties":{"sessionID":"ses_props","info":{"id":"","cost":0,"tokens":{"input":10,"output":5},"model":{"id":"m"}}}}`
+	u, ok, err := ParseSessionUpdated("session.updated", raw)
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if u.SessionID != "" {
+		t.Fatalf("identity must be info.id (empty here), not properties.sessionID; got %q", u.SessionID)
+	}
+}
+
+func TestParseSessionUpdatedMalformedCostFlags(t *testing.T) {
+	raw := `{"type":"session.updated","properties":{"sessionID":"s","info":{"id":"s","cost":"not-a-number","tokens":{"input":10,"output":5},"model":{"id":"m"}}}}`
+	u, ok, err := ParseSessionUpdated("session.updated", raw)
+	if err != nil || !ok {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	if !u.CostMalformed || u.CostUSD != 0 {
+		t.Fatalf("malformed cost must flag CostMalformed and decode as 0; got %+v", u)
+	}
+}
