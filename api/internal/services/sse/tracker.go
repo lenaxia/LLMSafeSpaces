@@ -136,7 +136,10 @@ func (t *Tracker) SetOnReconnect(callback ReconnectCallback) {
 // session-level cumulative usage and model attribution. Implemented by
 // the agent Adapter (injected at wiring) so the tracker holds no agent
 // wire knowledge — design 0049's boundary: platform code imports
-// pkg/agent, never an agent implementation package.
+// pkg/agent, never an agent implementation package. Contract: err is
+// returned only after the implementation has logged a warn (the caller
+// returns silently on err and depends on that warn for the drift
+// signal); ok=false means "not a metering event", also silent.
 type MeteringDecoder func(eventType string, props []byte) (*agent.SessionUsage, bool, error)
 
 func (t *Tracker) SetMeteringDecoder(d MeteringDecoder) {

@@ -137,8 +137,10 @@ type Adapter interface {
 	// warn. A metering-TYPED event with incomplete fields (missing info
 	// block) returns ok=true with a zero-value usage so the caller's
 	// incomplete-fields handling fires. err is non-nil only for
-	// metering-bearing payloads that fail to decode (wire drift).
-	// Delta/dedup computation is the caller's policy, never the
+	// metering-bearing payloads that fail to decode (wire drift) — and
+	// implementations MUST log a warn before returning that error:
+	// callers return silently on err and depend on this for the drift
+	// signal. Delta/dedup computation is the caller's policy, never the
 	// adapter's. Like ContextUsageFromEvent, this keeps agent wire
 	// shapes behind the seam so platform code never imports an agent
 	// implementation package (design 0049 §91).
