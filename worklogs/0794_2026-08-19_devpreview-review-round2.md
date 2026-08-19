@@ -72,4 +72,4 @@ None. The `SDK Integration (live API canaries)` CI failure (`/livez: not rate-li
 - `api/internal/handlers/settings_test.go` — 3 HTTP-level test funcs (+ `ptr` helper)
 - `pkg/settings/schema.go` — SchemaVersion 12 + comment entry
 - `sdks/canary/go/scenarios/s-user-settings/main.go`, `sdks/canary/typescript/scenarios/s-user-settings.ts`, `sdks/canary/python/scenarios/s_user_settings.py`, `sdks/canary/TESTPLAN.md` — version twins
-- `worklogs/NNNN_2026-08-19_devpreview-review-round2.md` — this worklog
+- `worklogs/0794_2026-08-19_devpreview-review-round2.md` — this worklog

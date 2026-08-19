@@ -73,4 +73,4 @@ None.
 - `api/internal/app/app.go` — dev-preview settings reads: warn + typed-default fallback instead of swallowed errors
 - `pkg/settings/schema_test.go` — `TestInstanceSettings_DevPreviewKeys`
 - `pkg/settings/instance_service_test.go` — `TestInstanceService_DevPreview_DefaultsAndRoundTrip`
-- `worklogs/NNNN_2026-08-19_devpreview-settings-unreachable.md` — this worklog
+- `worklogs/0795_2026-08-19_devpreview-settings-unreachable.md` — this worklog
