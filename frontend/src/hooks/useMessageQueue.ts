@@ -34,7 +34,15 @@ export function useMessageQueue(
         const existingIds = new Set(kept.map((m) => m.id));
         const added: QueuedMessage[] = res.messages
           .filter((m) => !existingIds.has(m.id))
-          .map((m) => ({ id: m.id, text: m.text, status: "pending", sessionId: m.session_id }));
+          .map((m) => ({
+            id: m.id,
+            text: m.text,
+            // Server error entries (outbox terminal status) render as
+            // retryable locally; everything else is pending.
+            status: (m.status === "error" ? "error" : "pending") as QueuedMessage["status"],
+            error: m.lastError,
+            sessionId: m.session_id,
+          }));
         return [...kept, ...added];
       });
     } catch {
@@ -76,10 +84,24 @@ export function useMessageQueue(
 
   const retry = useCallback(async (id: string) => {
     if (!workspaceId || !sessionId) return;
+    // Server-side retry first (D3 #907): re-arms the SAME entry (attempts
+    // reset, dedupe identity kept, ordering preserved). Local re-enqueue
+    // is the fallback for client-only entries (id not known server-side,
+    // e.g. a failed local enqueue).
+    if (!id.startsWith("err_")) {
+      try {
+        await messagesApi.retryQueueMessage(workspaceId, sessionId, id);
+        void refreshQueue();
+        return;
+      } catch {
+        // Server retry unavailable (404 already-delivered, network) —
+        // fall through to local re-enqueue.
+      }
+    }
     const msg = queuedMessages.find((m) => m.id === id);
     removeById(id);
     if (msg) await enqueue(msg.text);
-  }, [workspaceId, sessionId, queuedMessages, enqueue, removeById]);
+  }, [workspaceId, sessionId, queuedMessages, enqueue, removeById, refreshQueue]);
 
   const dismiss = useCallback(async (id: string) => {
     if (!workspaceId || !sessionId) return;

@@ -150,9 +150,21 @@ before a generation change).
   collapses it.
 - **Idempotency:** `clientMessageID` is deduped at ACCEPT (retries of
   the same ID return the original messageID, 200-not-202). Double-taps
-  and iOS reconnect retries are covered. At-least-once delivery +
-  render dedupe is the stated semantics (unchanged from the original
-  ruling).
+  and iOS reconnect retries are covered.
+- **Duplicate semantics (amended r2 — honest statement of what ships):**
+  at-least-once delivery with TWO dedupe barriers, not client-side
+  render dedupe: (1) accept-time clientMessageID dedupe, and (2) a
+  pre-redelivery transcript check — a retry (attempts>0) first looks for
+  a user message with the entry's exact text newer than its accept time
+  and, if found, treats the entry as delivered instead of redelivering
+  (this closes the dominant duplicate source: a delivery-context
+  timeout while opencode finishes and persists the turn). Residual
+  duplicates remain possible (crash between turn-persist and the
+  next-attempt transcript check) and render as a repeated user turn —
+  accepted as rare. The original "deduped at render" wording asserted a
+  client mechanism that was never built; opencode history cannot carry
+  clientMessageID, so text+timestamp correlation server-side is the
+  shipped mechanism.
 - **Queue UI reads the outbox** (`ListQueue` → outbox stream entries
   with status): pending entries are REAL (they will deliver); error
   entries expose retry. The dead V2-shadow listing is deleted. The

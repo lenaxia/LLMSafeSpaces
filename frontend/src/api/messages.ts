@@ -103,9 +103,15 @@ export const messagesApi = {
   getQueue: async (workspaceId: string, sessionId: string) => {
     const res = await api.get<{ messages: Array<{
       id: string; text: string; session_id: string; workspace_id: string; enqueued_at: string; retry_count: number;
+      status?: string; attempts?: number; lastError?: string; clientMessageID?: string;
     }> }>(`/workspaces/${workspaceId}/sessions/${sessionId}/queue`);
     return res;
   },
   deleteQueueMessage: (workspaceId: string, sessionId: string, messageId: string) =>
     api.delete<void>(`/workspaces/${workspaceId}/sessions/${sessionId}/queue/${messageId}`),
+  // D3 (#907): re-arm a terminal-error outbox entry server-side (resets
+  // attempts, clears nextAttemptAt) — preferred over client-side
+  // re-enqueue, which loses the entry's history and dedupe identity.
+  retryQueueMessage: (workspaceId: string, sessionId: string, messageId: string) =>
+    api.post<void>(`/workspaces/${workspaceId}/sessions/${sessionId}/queue/${messageId}/retry`),
 };
