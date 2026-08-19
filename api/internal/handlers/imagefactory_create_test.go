@@ -307,3 +307,62 @@ func TestIF_CreateConfig_NameConflict_FreshPath_409_AndCancelsDispatch(t *testin
 	require.NotEmpty(t, disp.cancelCalls)
 	assert.Equal(t, int64(4242), disp.cancelCalls[0])
 }
+
+// ── #936 e2e unhappy legs (HTTP-level, full router) ────────────────────
+
+// TestIF_E2E_NameConflict_409Shape_FreshPath: full HTTP round-trip on the
+// fresh path — dispatch fires, insert conflicts, run cancelled, response
+// is 409 with the colliding config name AND humanized scope.
+func TestIF_E2E_NameConflict_409Shape_FreshPath(t *testing.T) {
+	t.Parallel()
+	store := s4Store() // no existing build → fresh path
+	store.createBuildErr = database.ErrConflict
+	disp := &fakeDispatcher{ghRunID: 777}
+	r := newIFRouterWithDispatcher(t, store, &fakeOrgResolver{}, disp)
+
+	w := postConfigs(t, r, s4Body("ml-stack", "ffmpeg"))
+	require.Equal(t, http.StatusConflict, w.Code)
+
+	var body map[string]string
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	assert.Contains(t, body["error"], `"ml-stack"`, "names the colliding config")
+	assert.Contains(t, body["error"], "your configs", "humanizes the member scope")
+	// The dispatched run was cancelled (bounded orphan) — the exact
+	// production sequence dispatch-before-commit + conflict.
+	require.NotEmpty(t, disp.cancelCalls)
+	assert.Equal(t, int64(777), disp.cancelCalls[0])
+	// Rollback semantics (no build row survives the failed config insert)
+	// are pinned at the store level by TestIntegration_IF_CreateConfigAndBuild_FailureLeavesNoBuildRow;
+	// this fake's flags record CALLS, not commits.
+}
+
+// TestIF_E2E_NameConflict_409Shape_CoalescedPath: same shape via the
+// coalesced path (existing succeeded build → CreateConfig-only).
+func TestIF_E2E_NameConflict_409Shape_CoalescedPath(t *testing.T) {
+	t.Parallel()
+	store := s4Store()
+	store.existingBuild = &imagefactory.Build{Status: imagefactory.BuildSucceeded}
+	store.createConfigErr = database.ErrConflict
+	disp := &fakeDispatcher{ghRunID: 999}
+	r := newIFRouterWithDispatcher(t, store, &fakeOrgResolver{}, disp)
+
+	w := postConfigs(t, r, s4Body("dup", "ffmpeg"))
+	require.Equal(t, http.StatusConflict, w.Code)
+	assert.Empty(t, disp.cancelCalls, "coalesced path dispatches nothing — nothing to cancel")
+	assert.False(t, disp.called)
+}
+
+// TestAdmin_E2E_ConcurrentDefaultMove_409: the loser of a concurrent
+// isDefault=true upsert (partial unique index fires; store returns
+// ErrConflict) gets a typed 409 naming the race — never an opaque 500.
+func TestAdmin_E2E_ConcurrentDefaultMove_409(t *testing.T) {
+	store := &fakeAdminStore{err: database.ErrConflict}
+	r := newAdminRouter(t, store)
+
+	w := adminJSON(t, r, "POST", "/api/v1/admin/image-factory/bases", upsertBaseRequest{
+		Name: "trixie", Version: "0.1.0", Image: "img", IsDefault: true,
+	})
+	require.Equal(t, http.StatusConflict, w.Code, "body: %s", w.Body.String())
+	assert.Contains(t, w.Body.String(), "concurrent default move")
+	assert.Contains(t, w.Body.String(), "trixie")
+}

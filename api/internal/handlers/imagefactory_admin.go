@@ -6,6 +6,7 @@ package handlers
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -108,6 +109,15 @@ func (h *ImageFactoryAdminHandler) UpsertBase(c *gin.Context) {
 		Name: req.Name, Version: req.Version, Image: req.Image,
 		Tag: req.Tag, Digest: req.Digest, IsDefault: req.IsDefault,
 	}); err != nil {
+		if errors.Is(err, database.ErrConflict) {
+			// Concurrent default-move loser (partial unique index, #936) —
+			// typed conflict, not an opaque 500. The invariant holds; the
+			// loser just retries.
+			c.JSON(http.StatusConflict, gin.H{
+				"error": fmt.Sprintf("concurrent default move — %s/%s lost the race; the existing default stands; retry if still intended", req.Name, req.Version),
+			})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save base"})
 		return
 	}
