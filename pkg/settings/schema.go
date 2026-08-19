@@ -163,6 +163,15 @@ func InstanceSettings() []SettingDef {
 		{Key: "triggers.maxPerUser", Tier: 2, Type: TypeInt, Default: 20, Min: intPtr(0), Max: intPtr(1000), Category: "Triggers", Label: "Max Triggers Per User", Description: "Maximum triggers a single user can own (0 = unlimited)"},
 		{Key: "triggers.cronMinIntervalSec", Tier: 2, Type: TypeInt, Default: 60, Min: intPtr(10), Max: intPtr(86400), Category: "Triggers", Label: "Cron Min Interval (sec)", Description: "Floor on cron interval (anti-abuse)"},
 		{Key: "triggers.webhookRateLimitPerSec", Tier: 2, Type: TypeInt, Default: 10, Min: intPtr(1), Max: intPtr(1000), Category: "Triggers", Label: "Webhook Rate Limit (per sec)", Description: "Default per-webhook token-bucket rate"},
+
+		// Dev Preview (Epic 66). Registered in KnownKeys by US-66.5 but
+		// missing here, which made every consumer unreachable: no admin UI
+		// section (schema-driven), a boot-time GetBool index-miss error that
+		// app.go swallowed (hard-disable), and Set rejecting the key (no
+		// remediation). Defaults mirror registry.go (issue #946).
+		{Key: "devPreview.enabled", Tier: 2, Type: TypeBool, Default: true, Category: "Dev Preview", Label: "Dev Preview", Description: "Kill-switch for the authenticated dev-preview tunnel (requires API restart to take effect)"},
+		{Key: "devPreview.maxResponseBytes", Tier: 2, Type: TypeInt, Default: 52428800, Min: intPtr(1024), Max: intPtr(1073741824), Category: "Dev Preview", Label: "Max Response (bytes)", Description: "Per-response body cap on the dev-preview proxy (default 50 MiB)"},
+		{Key: "devPreview.maxConnsPerWorkspace", Tier: 2, Type: TypeInt, Default: 50, Min: intPtr(1), Max: intPtr(1000), Category: "Dev Preview", Label: "Max Conns Per Workspace", Description: "Concurrent dev-preview connections per workspace (separate from the agent-session budget)"},
 	}
 }
 

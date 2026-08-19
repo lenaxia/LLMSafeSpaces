@@ -1012,9 +1012,27 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	// epic — resolved: inject ProxyHandler as the password provider).
 	var devPreviewHandler *handlers.DevPreviewHandler
 	if proxyHandler != nil {
-		dpEnabled, _ := instanceSettings.GetBool(ctx, settings.KeyDevPreviewEnabled.Name())
-		dpMaxBytes, _ := instanceSettings.GetInt(ctx, settings.KeyDevPreviewMaxResponseBytes.Name())
-		dpMaxConns, _ := instanceSettings.GetInt(ctx, settings.KeyDevPreviewMaxConnsPerWorkspace.Name())
+		// Fail loudly in logs on read errors (e.g. a future key registered in
+		// KnownKeys but missing from the schema — the #946 failure mode) and
+		// fall back to the typed-key defaults, rather than silently
+		// swallowing the error and booting the feature disabled (GetBool's
+		// zero value). The Default() types are pinned by
+		// TestInstanceSettings_DevPreviewKeys.
+		dpEnabled, err := instanceSettings.GetBool(ctx, settings.KeyDevPreviewEnabled.Name())
+		if err != nil {
+			log.Warn("dev-preview kill-switch read failed; using schema default", "key", settings.KeyDevPreviewEnabled.Name(), "error", err)
+			dpEnabled = settings.KeyDevPreviewEnabled.Default().(bool)
+		}
+		dpMaxBytes, err := instanceSettings.GetInt(ctx, settings.KeyDevPreviewMaxResponseBytes.Name())
+		if err != nil {
+			log.Warn("dev-preview max-response-bytes read failed; using schema default", "key", settings.KeyDevPreviewMaxResponseBytes.Name(), "error", err)
+			dpMaxBytes = settings.KeyDevPreviewMaxResponseBytes.Default().(int)
+		}
+		dpMaxConns, err := instanceSettings.GetInt(ctx, settings.KeyDevPreviewMaxConnsPerWorkspace.Name())
+		if err != nil {
+			log.Warn("dev-preview max-conns read failed; using schema default", "key", settings.KeyDevPreviewMaxConnsPerWorkspace.Name(), "error", err)
+			dpMaxConns = settings.KeyDevPreviewMaxConnsPerWorkspace.Default().(int)
+		}
 		if dpMaxBytes <= 0 {
 			dpMaxBytes = 52428800
 		}
