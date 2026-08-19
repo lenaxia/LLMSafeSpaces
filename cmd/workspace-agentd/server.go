@@ -25,16 +25,20 @@ import (
 // and threads it through the handlers and goroutines that need it,
 // mirroring the reloadSecretsDeps pattern.
 type serverDeps struct {
-	client            *OpenCodeClient
-	cache             *providerCache
-	sseTracker        *sessionStatusTracker
-	pressureMonitor   *memoryPressureMonitor
-	healthCache       *healthzCache
-	gr                *gateRecorder
-	proc              *managedProcess
-	password          string
-	startedAt         time.Time
-	agentConfigWriter agent.AgentConfigWriter
+	client          *OpenCodeClient
+	cache           *providerCache
+	sseTracker      *sessionStatusTracker
+	pressureMonitor *memoryPressureMonitor
+	healthCache     *healthzCache
+	gr              *gateRecorder
+	proc            *managedProcess
+	password        string
+	// resolvedAdminToken is the admin-mux bearer, resolved ONCE at boot
+	// (main) — the mux wrap and every consumer read this field, closing
+	// the file/env re-read TOCTOU window between gate and use.
+	resolvedAdminToken string
+	startedAt          time.Time
+	agentConfigWriter  agent.AgentConfigWriter
 }
 
 // buildStatuszHandler returns the /v1/statusz HTTP handler, parameterised on
@@ -240,10 +244,9 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	adminMux := http.NewServeMux()
 	userMux := http.NewServeMux()
 
-	// #887 D5.1: file-delivered (AGENTD_ADMIN_TOKEN_FILE) with env
-	// fallback for legacy pods — keeps the token out of the environment
-	// opencode inherits.
-	adminToken := adminToken()
+	// #887 D5.1: the token resolved once at boot (main) — no re-read
+	// here (TOCTOU closed, review note on #934).
+	adminToken := deps.resolvedAdminToken
 
 	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt, agentd.ReloadSecretsCachePath, agentd.ModelResolutionWarningPath))
 	adminMux.Handle("/v1/readyz", requireBearerToken(adminToken,

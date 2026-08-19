@@ -114,6 +114,11 @@ test_agentd_reload() {
     mkdir -p /tmp/test-agentd-cfg
     echo "pw" > /tmp/test-agentd-cfg/password
 
+    # #887 D5.1: agentd needs an admin-mux bearer in env or file; env for
+    # the test harness (the boot gate is D5.2's business — this script
+    # only asserts the HTTP server comes up).
+    export AGENTD_ADMIN_TOKEN="test-token"
+
     # Start agentd (reads password from /sandbox-cfg/password — symlink it)
     mkdir -p /sandbox-cfg 2>/dev/null || true
     ln -sf /tmp/test-agentd-cfg/password /tmp/sandbox-cfg-password 2>/dev/null || true
