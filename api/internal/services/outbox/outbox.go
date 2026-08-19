@@ -337,10 +337,9 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 	s.client.RPush(ctx, dKey(ws, ses), staged)
 	s.client.LRem(ctx, qk, 1, vals[idx])
 
-	//nolint:contextcheck // detached BY DESIGN (D3): delivery must
-	// survive the accepting request's cancellation — this is the
-	// disconnect-immunity contract, not a bug.
-	dctx, cancel := context.WithTimeout(context.Background(), DeliveryTimeout)
+	// Detached BY DESIGN (D3): delivery must survive the accepting
+	// request's cancellation — this is the disconnect-immunity contract.
+	dctx, cancel := context.WithTimeout(context.Background(), DeliveryTimeout) //nolint:contextcheck // deliberate detachment, see comment above
 	defer cancel()
 	err = d(dctx, ws, ses, e)
 	if err == nil {
