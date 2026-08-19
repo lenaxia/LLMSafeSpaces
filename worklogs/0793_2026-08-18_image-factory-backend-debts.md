@@ -135,3 +135,35 @@ two birds:
 
 Also fixed the seed test's fresh-install isolation (seed never clears
 defaults; fresh-install semantics need an empty-default start).
+
+---
+
+## Review round 3 addendum (structural fixes)
+
+- The round-2 "fix" for the seed two-default hole edited the TEST to
+  dodge the scenario — the reviewer reproduced the real sequence
+  (seed → move default → delete seed row → restart) producing two
+  defaults. Structural fix now: partial unique index
+  uq_image_factory_bases_single_default (migration 000025) + NOT EXISTS
+  guard in SeedUpsertBase's INSERT branch. The index also closes the
+  concurrent one-call-move race (READ COMMITTED clear-then-upsert
+  interleaving) the reviewer reproduced with two sessions.
+- Seed test restored to its ADVERSARIAL shape (no pre-clearing) and now
+  asserts the default COUNT invariant through every step; fresh-install
+  leg covers the empty-catalog start.
+- SeedCatalog-level tests added (boot path via injected seed):
+  BootAfterDefaultMove_NoSecondDefault, FreshInstall_CarriesDefault.
+- Cancel: URL seam (was hardcoded api.github.com — the initial tests
+  silently hit real GitHub and got 401s); four tests — runID<=0 no-op
+  (no HTTP), 202 accepted, 409-already-completed treated as success,
+  unexpected status errors. Interface comment corrected (no-op is
+  silent, not logged).
+- Logger guarded on the conflict-cleanup path (the optional-logger
+  contract violation — nil logger + failed cancel would have panicked).
+- 409 messages name the colliding scope (your configs / this
+  organization's configs / the platform configs) via scopeLabel.
+- Store-level no-orphan assertion: CreateConfigAndBuild conflict →
+  GetBuild(ErrNotFound) — the tx rollback leaves no build row.
+- Runbook §Moving the default base rewritten for the structural
+  invariant (one call + index + seed guard + restart semantics);
+  worklog renamed off the NNNN_ sentinel.

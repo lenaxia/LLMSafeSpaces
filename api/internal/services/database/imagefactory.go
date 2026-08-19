@@ -183,9 +183,16 @@ func (s *Service) UpsertBase(ctx context.Context, b imagefactory.Base) error {
 // rows the seed INSERTS — an existing base keeps its runtime is_default,
 // so a boot-time seed never reverts an operator's default move.
 func (s *Service) SeedUpsertBase(ctx context.Context, b imagefactory.Base) error {
+	// The seed's is_default applies only when it INSERTS the row AND no
+	// default exists yet — seed-after-delete (the operator removed the
+	// default row; the runtime default may live on another base) must not
+	// mint a second default. The partial unique index
+	// (000025) enforces this structurally; the NOT EXISTS guard keeps the
+	// intent readable at the store layer and gives a better error than
+	// the index violation would.
 	_, err := s.DB.ExecContext(ctx,
 		`INSERT INTO image_factory_bases (name, version, image, tag, digest, is_default, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, now())
+		 VALUES ($1, $2, $3, $4, $5, $6 AND NOT EXISTS (SELECT 1 FROM image_factory_bases WHERE is_default), now())
 		 ON CONFLICT (name, version) DO UPDATE SET
 		     image = EXCLUDED.image,
 		     tag = EXCLUDED.tag,

@@ -90,6 +90,11 @@ func SeedCatalog(ctx context.Context, store SeedCatalogStore) error {
 	if err != nil {
 		return err
 	}
+	return seedCatalogWith(ctx, store, &seed)
+}
+
+// seedCatalogWith is SeedCatalog with an injected seed (tests).
+func seedCatalogWith(ctx context.Context, store SeedCatalogStore, seed *SeedCatalogData) error {
 	if err := store.SetPlatformConfig(ctx, PlatformConfig{
 		Architectures: seed.Architectures,
 	}); err != nil {

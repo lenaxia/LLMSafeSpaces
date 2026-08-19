@@ -62,6 +62,9 @@ func NewGHActionsDispatcher(appID, privateKey, owner, repo, workflowID, ref stri
 // endpoint. Overridable in tests.
 var dispatchURL = "https://api.github.com/repos/%s/%s/actions/workflows/%s/dispatches"
 
+// cancelURL is the runs-cancel endpoint (var for test injection).
+var cancelURL = "https://api.github.com/repos/%s/%s/actions/runs/%d/cancel"
+
 // ghBaseURL is the GitHub API base URL. Overridable in tests.
 var ghBaseURL = "https://api.github.com"
 
@@ -134,7 +137,7 @@ func (d *ghActionsDispatcher) Cancel(ctx context.Context, ghRunID int64) error {
 	if err != nil {
 		return fmt.Errorf("gh cancel: get token: %w", err)
 	}
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/actions/runs/%d/cancel", d.owner, d.repo, ghRunID)
+	url := fmt.Sprintf(cancelURL, d.owner, d.repo, ghRunID)
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, nil)
 	if err != nil {
 		return fmt.Errorf("gh cancel: request: %w", err)

@@ -219,7 +219,7 @@ func (h *ImageFactoryHandler) createConfigAtScope(
 			if errors.Is(err, database.ErrConflict) {
 				// #936: scoped-name collision — 409 with the shape named.
 				c.JSON(http.StatusConflict, gin.H{
-					"error": fmt.Sprintf("a config named %q already exists in this scope — pick another name", cfg.Name),
+					"error": fmt.Sprintf("a config named %q already exists in %s — pick another name", cfg.Name, scopeLabel(scope)),
 				})
 				return
 			}
@@ -305,12 +305,12 @@ func (h *ImageFactoryHandler) createConfigAtScope(
 			// no-ops with a log. The orphan is bounded: the run finishes,
 			// its callback 404s (no build row), nothing retries.
 			if build.GHRunID != nil {
-				if cerr := h.dispatcher.Cancel(ctx, *build.GHRunID); cerr != nil {
+				if cerr := h.dispatcher.Cancel(ctx, *build.GHRunID); cerr != nil && h.logger != nil {
 					h.logger.Warn("image-factory: conflict cleanup — cancel dispatched run failed", "error", cerr.Error())
 				}
 			}
 			c.JSON(http.StatusConflict, gin.H{
-				"error": fmt.Sprintf("a config named %q already exists in this scope — pick another name", cfg.Name),
+				"error": fmt.Sprintf("a config named %q already exists in %s — pick another name", cfg.Name, scopeLabel(scope)),
 			})
 			return
 		}
@@ -341,4 +341,16 @@ func newUUID() string {
 	b[6] = (b[6] & 0x0f) | 0x40 // version 4
 	b[8] = (b[8] & 0x3f) | 0x80 // variant 10
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
+}
+
+// scopeLabel humanizes a config scope for error messages (#936 N2).
+func scopeLabel(scope imagefactory.ConfigScope) string {
+	switch scope {
+	case imagefactory.ScopeOrg:
+		return "this organization's configs"
+	case imagefactory.ScopePlatform:
+		return "the platform configs"
+	default:
+		return "your configs"
+	}
 }

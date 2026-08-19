@@ -525,30 +525,35 @@ func TestIntegration_IF_Seed_DoesNotRevertRuntimeDefault(t *testing.T) {
 
 	bases, err := svc.ListBases(ctx)
 	require.NoError(t, err)
-	defName := ""
-	for _, b := range bases {
-		if b.IsDefault {
-			defName = b.Name
-		}
-	}
-	assert.Equal(t, "tx", defName, "seed re-upsert of an existing base must NOT revert the runtime default")
+	assert.Equal(t, 1, countDefaults(bases), "exactly one default at every step of the seed lifecycle")
+	assert.Equal(t, "tx", defNameOf(bases), "seed re-upsert of an existing base must NOT revert the runtime default")
 
-	// Fresh install shape: seed inserts bw as default when absent — in a
-	// catalog with no existing default. (The seed never CLEARS defaults;
-	// seeding bw alongside the still-defaulted tx would legitimately
-	// leave two. Fresh-install semantics need the empty-default start.)
+	// Seed-after-delete (the adversarial shape from the review): operator
+	// deleted the seed row while the runtime default lives on tx. The seed
+	// must NOT mint a second default — the runtime default wins. This is
+	// the exact sequence the round-3 review reproduced producing two
+	// defaults; the NOT EXISTS guard + partial unique index close it.
 	require.NoError(t, svc.DeleteBase(ctx, "bw", "1.0"))
-	require.NoError(t, svc.UpsertBase(ctx, imagefactory.Base{Name: "tx", Version: "1.0", Image: "i2", IsDefault: false}))
 	require.NoError(t, seedUpsertBase(ctx, svc, seedBase))
 	bases, err = svc.ListBases(ctx)
 	require.NoError(t, err)
-	defName = ""
+	defaults := 0
 	for _, b := range bases {
 		if b.IsDefault {
-			defName = b.Name
+			defaults++
 		}
 	}
-	assert.Equal(t, "bw", defName, "seed INSERT of a new base still carries its default when no other default exists")
+	assert.Equal(t, 1, defaults, "seed-after-delete must not create a second default")
+	assert.Equal(t, "tx", defNameOf(bases), "the runtime default survives")
+
+	// True fresh install: empty bases table → seed carries its default.
+	require.NoError(t, svc.DeleteBase(ctx, "bw", "1.0"))
+	require.NoError(t, svc.DeleteBase(ctx, "tx", "1.0"))
+	require.NoError(t, seedUpsertBase(ctx, svc, seedBase))
+	bases, err = svc.ListBases(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, countDefaults(bases))
+	assert.Equal(t, "bw", defNameOf(bases), "seed INSERT into an empty catalog carries its default")
 }
 
 // seedUpsertBase mirrors seed.go's call — kept here so the test pins
@@ -556,4 +561,43 @@ func TestIntegration_IF_Seed_DoesNotRevertRuntimeDefault(t *testing.T) {
 // distinction is internal to the store).
 func seedUpsertBase(ctx context.Context, s *Service, b imagefactory.Base) error {
 	return s.SeedUpsertBase(ctx, b)
+}
+
+func countDefaults(bases []imagefactory.Base) int {
+	n := 0
+	for _, b := range bases {
+		if b.IsDefault {
+			n++
+		}
+	}
+	return n
+}
+
+func defNameOf(bases []imagefactory.Base) string {
+	for _, b := range bases {
+		if b.IsDefault {
+			return b.Name
+		}
+	}
+	return ""
+}
+
+// TestIntegration_IF_CreateConfigAndBuild_FailureLeavesNoBuildRow (#936
+// AC1): a failed fresh-path transaction must not leave a build row
+// without its config — the tx rolls back both inserts.
+func TestIntegration_IF_CreateConfigAndBuild_FailureLeavesNoBuildRow(t *testing.T) {
+	h := testharness.New(t)
+	svc := newIFService(h)
+	ctx := h.NewContext()
+	uid := "33333333-3333-3333-3333-333333333333"
+
+	cfg := imagefactory.Config{Hash: "s-orp", Name: "orphan-test", Selection: []string{"e"}, BaseName: "b", BaseVersion: "1", Scope: imagefactory.ScopeMember, OwnerID: &uid, Status: imagefactory.StatusBuilding}
+	build := imagefactory.Build{ID: "bld-orp", Hash: "s-orp", BaseName: "b", BaseVersion: "1", Status: imagefactory.BuildDispatched}
+	// Collision on the config insert → whole tx must roll back.
+	require.NoError(t, svc.CreateConfig(ctx, &imagefactory.Config{Hash: "s-orp2", Name: "orphan-test", Selection: []string{"e"}, BaseName: "b", BaseVersion: "1", Scope: imagefactory.ScopeMember, OwnerID: &uid, Status: imagefactory.StatusReady}))
+	err := svc.CreateConfigAndBuild(ctx, &cfg, &build)
+	require.ErrorIs(t, err, ErrConflict)
+
+	_, gerr := svc.GetBuild(ctx, "bld-orp")
+	assert.ErrorIs(t, gerr, ErrNotFound, "no build row may survive the rolled-back config insert")
 }
