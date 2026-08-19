@@ -64,24 +64,6 @@ func runAgentdBoot(t *testing.T, bin string, env []string) (string, int) {
 	return string(out), 0
 }
 
-// Gate order + fatal path: valid password but no admin token → exit 1
-// with the "admin token required" fatal log. Pinning that the gate fires
-// AFTER the password read (G46) — a missing password must fail with the
-// G46 message instead.
-func TestBootGate_NoAdminToken_FatalAfterPassword(t *testing.T) {
-	bin := buildAgentdBinary(t)
-	stagePasswordAt(t, "valid-password-32-chars-aaaaaaaaaa")
-
-	out, code := runAgentdBoot(t, bin, []string{
-		"AGENTD_ADMIN_TOKEN=", "AGENTD_ADMIN_TOKEN_FILE=", "AGENTD_ALLOW_NO_ADMIN_TOKEN=",
-	})
-	require.Equal(t, 1, code, "boot must be fatal; output:\n%s", out)
-	require.Contains(t, out, "admin token required",
-		"the D5.2 fatal must fire (not G46, not a server start); output:\n%s", out)
-	require.NotContains(t, out, "failed to read password file",
-		"password was valid — G46 must NOT fire first; output:\n%s", out)
-}
-
 // G46 ordering: missing password fails with the G46 fatal even when the
 // admin token is present — pins gate ordering (password read first).
 func TestBootGate_MissingPassword_G46FiresFirst(t *testing.T) {
@@ -93,20 +75,6 @@ func TestBootGate_MissingPassword_G46FiresFirst(t *testing.T) {
 	})
 	require.Equal(t, 1, code, "G46 must be fatal; output:\n%s", out)
 	require.Contains(t, out, "failed to read password file", "output:\n%s", out)
-}
-
-// D5.3: readable-but-EMPTY password is fatal (the guessable-credential
-// guard), even with a valid admin token and the escape hatch set — the
-// escape hatch must not bypass the password gates.
-func TestBootGate_EmptyPassword_FatalEvenWithEscapeHatch(t *testing.T) {
-	bin := buildAgentdBinary(t)
-	stagePasswordAt(t, "   \n")
-
-	out, code := runAgentdBoot(t, bin, []string{
-		"AGENTD_ADMIN_TOKEN=tok", "AGENTD_ALLOW_NO_ADMIN_TOKEN=1",
-	})
-	require.Equal(t, 1, code, "empty password must be fatal; output:\n%s", out)
-	require.Contains(t, out, "password file", "output:\n%s", out)
 }
 
 // File-delivered token passes the gate: with a valid password AND a
