@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"testing"
@@ -1237,4 +1238,17 @@ func TestSessionStatusTracker_ProcessEvent_StepFinishPart_MissingTokens_NoCaptur
 
 	tracker.processEvent(`{"id":"evt1","type":"message.part.updated","properties":{"sessionID":"ses_drift","part":{"type":"step-finish","reason":"stop"}}}`)
 	assert.Equal(t, int64(0), tracker.getPromptTokens("ses_drift"), "undecodable usage must not capture")
+}
+
+// --- D5.3: a readable-but-empty password file must be fatal (G46 path) ---
+
+func TestReadAgentPasswordFromPath_EmptyFileIsError(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "password")
+	if err := os.WriteFile(path, []byte("  \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readAgentPasswordFromPath(path); err == nil {
+		t.Fatal("an empty password file must be an error — it arms a guessable Basic credential (Basic b3BlbmNvZGU6)")
+	}
 }

@@ -104,10 +104,14 @@ func main() {
 	password := readAgentPassword()
 	client := &OpenCodeClient{password: password, client: &http.Client{Timeout: 5 * time.Second}}
 
-	// #887 D5.1 (TOCTOU, #934 review note): resolve the admin-mux bearer
-	// ONCE here; the mux wrap and the health probe read the boot value —
-	// no file/env re-read can diverge from what was verified at boot.
-	bootAdminToken := adminToken()
+	// #887 D5.2: refuse to boot without an admin-mux credential (unset
+	// historically DISABLED the bearer gate — fail open). D5.1 TOCTOU
+	// note: resolved ONCE here; mux wrap + health probe read this value.
+	bootAdminToken, bootErr := resolveAdminTokenForBoot()
+	if bootErr != nil {
+		log.Error("FATAL: admin token required — refusing to start with an un-gated admin mux", zap.Error(bootErr))
+		os.Exit(1)
+	}
 
 	// US-44.7: surface the reason for the previous opencode restart
 	// (if any) and consume the one-shot marker before starting the
@@ -198,7 +202,14 @@ func readAgentPasswordFromPath(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(pw)), nil
+	trimmed := strings.TrimSpace(string(pw))
+	if trimmed == "" {
+		// #887 D5.3: a readable-but-empty password would arm the
+		// guessable Basic credential "b3BlbmNvZGU6" on every gated
+		// user-mux endpoint. Fail boot instead (same class as G46).
+		return "", fmt.Errorf("password file %s is empty", path)
+	}
+	return trimmed, nil
 }
 
 // startManagedProcess builds and starts the opencode supervisor when
