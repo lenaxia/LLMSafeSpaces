@@ -1,0 +1,35 @@
+:root { color-scheme: dark; }
+* { margin: 0; box-sizing: border-box; }
+body {
+  min-height: 100vh; padding: 2.5rem 1.5rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  background: #0f172a; color: #e2e8f0; line-height: 1.6;
+}
+.wrap { max-width: 50rem; margin: 0 auto; }
+h1 { font-size: 1.1rem; color: #7dd3fc; margin-bottom: 1rem; letter-spacing: 0.03em; }
+h2 { font-size: 0.85rem; color: #94a3b8; margin: 1.25rem 0 0.5rem; text-transform: uppercase; letter-spacing: 0.08em; }
+.badge {
+  display: inline-block; font-size: 0.7rem; font-weight: 600;
+  letter-spacing: 0.08em; text-transform: uppercase; color: #7dd3fc;
+  border: 1px solid rgba(125, 211, 252, 0.4); border-radius: 999px;
+  padding: 0.2rem 0.7rem; margin-bottom: 1rem;
+}
+.panel { background: rgba(30,41,59,.6); border: 1px solid rgba(148,163,184,.2);
+         border-radius: 8px; padding: 0.8rem 1rem; margin-bottom: 0.75rem;
+         font-size: 0.85rem; }
+.controls { margin: 1rem 0; display: flex; gap: 0.75rem; }
+button {
+  background: #0ea5e9; color: white; border: none; border-radius: 8px;
+  padding: 0.55rem 1.3rem; font-size: 0.95rem; cursor: pointer;
+  font-family: inherit;
+}
+button:hover:not(:disabled) { background: #0284c7; }
+button.danger { background: #dc2626; }
+button.danger:hover:not(:disabled) { background: #b91c1c; }
+button:disabled { opacity: 0.45; cursor: default; }
+.out {
+  background: #0b1120; border: 1px solid rgba(148,163,184,.2); border-radius: 8px;
+  padding: 1rem; font-size: 0.78rem; max-height: 18rem; overflow: auto;
+  white-space: pre-wrap; word-break: break-all;
+}
+.summary { max-height: 30rem; }
