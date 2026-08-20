@@ -105,14 +105,6 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 					},
 				}}
 			}(),
-			// Enable the opencode v2 event system so session.next.step.ended
-			// is emitted to the /event SSE stream. Without this flag the API
-			// proxy never receives token-usage events and session_index.context_used
-			// stays NULL for every session, causing the Sidebar to show "0/Unknown".
-			// Proven by live cluster experiment: setting this flag on a running pod
-			// caused context_used to be written within one second of the next LLM
-			// step completing. See worklog 0263.
-			{Name: "OPENCODE_EXPERIMENTAL_EVENT_SYSTEM", Value: "true"},
 		}, toolParallelismEnv(requirements)...),
 		ReadinessProbe: &corev1.Probe{
 			ProbeHandler: corev1.ProbeHandler{

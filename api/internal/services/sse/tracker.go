@@ -33,6 +33,19 @@ type RawEventCallback func(workspaceID, eventType, rawData string)
 
 type InferenceCallback func(workspaceID, modelID, providerID string, inputTokens, outputTokens int64, costDollars float64)
 
+// AgentEventMetricsRecorder counts agent events for drift observability
+// (#739 Gap 2). Implemented by the metrics service; injected so the
+// tracker stays free of prometheus coupling.
+//
+// Contract: when known is false, implementations MUST bucket under a
+// single fixed label and ignore eventType (cardinality stays bounded by
+// the taxonomy); when known is true, eventType is a taxonomy member and
+// may label directly. Callers must never pass known=true with a type
+// outside the adapter's taxonomy.
+type AgentEventMetricsRecorder interface {
+	RecordAgentEvent(eventType string, known bool)
+}
+
 // AgentDiedCallback is invoked when an upstream SSE stream ends after at least
 // one byte of data has been received, signaling that the agent process died
 // mid-stream (OOM, crash, or restart). The tracker cannot distinguish a real
@@ -73,6 +86,10 @@ type Tracker struct {
 	onRawEvent       RawEventCallback
 	onInference      InferenceCallback
 	metering         MeteringDecoder
+	eventClassifier  func(eventType string) bool
+	eventMetrics     AgentEventMetricsRecorder
+	unknownSeenMu    sync.Mutex
+	unknownSeen      map[string]bool
 	onReconnect      ReconnectCallback
 	onAgentDied      AgentDiedCallback
 	idleTimeout      time.Duration
@@ -144,6 +161,18 @@ type MeteringDecoder func(eventType string, props []byte) (*agent.SessionUsage, 
 
 func (t *Tracker) SetMeteringDecoder(d MeteringDecoder) {
 	t.metering = d
+}
+
+// SetEventClassifier injects the adapter's taxonomy check. Counting is
+// enabled only when BOTH classifier and metrics recorder are set — a
+// missing injection disables observability rather than miscounting.
+func (t *Tracker) SetEventClassifier(f func(eventType string) bool) {
+	t.eventClassifier = f
+}
+
+// SetEventMetrics injects the recorder for the per-type event counters.
+func (t *Tracker) SetEventMetrics(r AgentEventMetricsRecorder) {
+	t.eventMetrics = r
 }
 
 func (t *Tracker) SetOnInference(cb InferenceCallback) {
@@ -670,7 +699,14 @@ func (t *Tracker) processEvent(workspaceID, data string) {
 				t.onRawEvent(workspaceID, nested.Payload.Type, data)
 			}
 			t.dispatchProperties(workspaceID, nested.Payload.Type, nested.Payload.Properties)
+			return
 		}
+		// Neither the flat envelope nor the nested payload parses with a
+		// type: a genuinely malformed event. Counted under 'unknown' and
+		// warned once — a taxonomy change that breaks the ENVELOPE shape
+		// must be as visible as one that renames a type (#942 review:
+		// otherwise these vanish from the drift counters entirely).
+		t.observeMalformedEvent()
 		return
 	}
 
@@ -685,6 +721,7 @@ func (t *Tracker) DispatchProperties(workspaceID, eventType string, props json.R
 }
 
 func (t *Tracker) dispatchProperties(workspaceID, eventType string, props json.RawMessage) {
+	t.observeAgentEvent(eventType)
 	if t.onInference != nil && t.metering != nil && len(props) > 0 {
 		t.handleSessionUpdated(workspaceID, eventType, props)
 	}
@@ -798,6 +835,58 @@ func (t *Tracker) handleSessionUpdated(workspaceID, eventType string, props []by
 		costDelta = 0
 	}
 	t.onInference(workspaceID, u.ModelID, u.ProviderID, inputTokens, outputDelta, costDelta)
+}
+
+// unknownSeenCap bounds the warn-once set: beyond this many distinct
+// unknown types, warns stop (the counter keeps counting) so a
+// taxonomy-rewrite upstream cannot flood the log.
+const unknownSeenCap = 64
+
+// observeAgentEvent is the drift-observability funnel: every dispatched
+// event is counted (known types by name, unknown types under the single
+// "unknown" label to bound cardinality), and each distinct unknown type
+// warns exactly once. A taxonomy rename upstream therefore shows as a
+// known series flatlining + unknown growing + a named warn — instead of
+// events silently vanishing (#739 Gap 2).
+func (t *Tracker) observeAgentEvent(eventType string) {
+	if t.eventClassifier == nil || t.eventMetrics == nil {
+		// Partial wiring (exactly one set) disables observability
+		// silently — warn once so the gap is discoverable (#942 review).
+		if t.eventClassifier != nil || t.eventMetrics != nil {
+			t.warnOnceAgentEvent("<wiring-gap>", "agent-event observability is PARTIALLY wired (classifier XOR metrics recorder) — counting disabled until both are set")
+		}
+		return
+	}
+	if t.eventClassifier(eventType) {
+		t.eventMetrics.RecordAgentEvent(eventType, true)
+		return
+	}
+	t.eventMetrics.RecordAgentEvent("", false)
+	t.warnOnceAgentEvent(eventType, "unrecognized agent event type '"+eventType+"' — taxonomy drift? (counted under 'unknown'; see Adapter.IsKnownEventType and testdata/REFRESH.md)")
+}
+
+// observeMalformedEvent counts an event whose envelope carries no
+// decodable type under the 'unknown' label (same bucket, same bounded
+// cardinality) and warns once for the class.
+func (t *Tracker) observeMalformedEvent() {
+	if t.eventMetrics == nil {
+		return
+	}
+	t.eventMetrics.RecordAgentEvent("", false)
+	t.warnOnceAgentEvent("<malformed>", "malformed agent event (no decodable type in either envelope shape) — counted under 'unknown'; see testdata/REFRESH.md")
+}
+
+func (t *Tracker) warnOnceAgentEvent(key, msg string) {
+	t.unknownSeenMu.Lock()
+	defer t.unknownSeenMu.Unlock()
+	if t.unknownSeen == nil {
+		t.unknownSeen = make(map[string]bool)
+	}
+	if t.unknownSeen[key] || len(t.unknownSeen) >= unknownSeenCap {
+		return
+	}
+	t.unknownSeen[key] = true
+	t.Logger.Warn(msg)
 }
 
 func sessionIDOrEmpty(u *agent.SessionUsage) string {

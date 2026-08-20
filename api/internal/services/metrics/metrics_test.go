@@ -161,3 +161,20 @@ func getCounterValue(c prometheus.Counter) float64 {
 	}
 	return d.Counter.GetValue()
 }
+
+func TestRecordAgentEvent(t *testing.T) {
+	// Known types count under their own name; unknown types count under
+	// the single bounded "unknown" label (cardinality = taxonomy, not
+	// upstream creativity).
+	metricsService.RecordAgentEvent("session.updated", true)
+	metricsService.RecordAgentEvent("session.updated", true)
+	metricsService.RecordAgentEvent("brand.new.event", false)
+
+	m, err := agentEventsTotal.GetMetricWithLabelValues("session.updated")
+	assert.NoError(t, err)
+	assert.Equal(t, 2.0, counterValue(m))
+
+	u, err := agentEventsTotal.GetMetricWithLabelValues("unknown")
+	assert.NoError(t, err)
+	assert.Equal(t, 1.0, counterValue(u))
+}

@@ -43,7 +43,13 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
+      # Full history: the opencode-bump fixture gate below diffs
+      # origin/main...HEAD, which needs a real merge-base. The default
+      # depth-1 merge-ref checkout grafts HEAD parentless and the
+      # three-dot range fails on every PR.
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v6
         with:
@@ -56,6 +62,23 @@ jobs:
       # duplicate worklog numbers. See worklog 0098.
       - name: Repository layout lint
         run: make repolint
+
+      # #942: an opencode version bump must refresh the golden wire
+      # fixtures in the same PR (upgrade runbook: REFRESH.md). Without
+      # this gate a bump ships with every parser pinning stale shapes —
+      # CI green, production drifting (#739 class).
+      - name: Opencode bump requires fixture refresh
+        if: github.event_name == 'pull_request'
+        run: |
+          if git diff --name-only origin/main...HEAD -- 'runtimes/*/Dockerfile' | grep -q .; then
+            if git diff -U0 origin/main...HEAD -- 'runtimes/*/Dockerfile' | grep -E '^[+-].*OPENCODE_VERSION' | grep -qvE '^[+-]{3}'; then
+              if ! git diff --name-only origin/main...HEAD -- 'pkg/agent/opencode/testdata/' | grep -q .; then
+                echo "::error::OPENCODE_VERSION bumped without a golden-fixture refresh (pkg/agent/opencode/testdata/). See the upgrade runbook: pkg/agent/opencode/testdata/REFRESH.md"
+                exit 1
+              fi
+            fi
+          fi
+          echo "fixture-freshness gate: ok"
 
       # gofmt: blocks PRs containing un-formatted Go. The Makefile target
       # writes the offending files to stdout and exits non-zero.

@@ -418,3 +418,62 @@ func TestGoldenFixture_EventStore_SessionUpdatedAllDecode(t *testing.T) {
 	}
 	t.Logf("%d golden store session.updated rows decoded with attribution", decoded)
 }
+
+// --- IsKnownEventType (drift observability taxonomy) ---
+
+func TestIsKnownEventType(t *testing.T) {
+	known := []string{
+		// Live /event taxonomy (captured, sse_events_1_18_10_live.jsonl)
+		"session.status", "session.updated", "session.created",
+		"message.part.updated", "message.part.delta", "message.updated",
+		"session.idle", "session.diff", "server.connected", "server.heartbeat",
+		"plugin.added", "catalog.updated", "reference.updated",
+		"integration.updated", "file.edited", "file.watcher.updated",
+		// Legacy event system (mixed fleet)
+		"session.next.step.ended", "session.next.step.started",
+		"session.next.step.failed", "session.next.prompt.admitted",
+		"session.next.prompted", "session.next.text.started",
+		"session.next.text.delta", "session.next.text.ended",
+		"message.created", "session.error",
+	}
+	for _, tt := range known {
+		if !IsKnownEventType(tt) {
+			t.Errorf("IsKnownEventType(%q) = false, want true", tt)
+		}
+	}
+	// Version-suffixed store variants are the same logical types.
+	if !IsKnownEventType("message.part.updated.1") || !IsKnownEventType("session.updated.12") {
+		t.Error("suffixed variants of known types must be known")
+	}
+	unknown := []string{"", "totally.new.event", "session.updatedx", "message.part.updated.x", "SESsion.status"}
+	for _, tt := range unknown {
+		if IsKnownEventType(tt) {
+			t.Errorf("IsKnownEventType(%q) = true, want false", tt)
+		}
+	}
+}
+
+// Every event type in BOTH golden fixtures must classify as known — the
+// fixtures are the pinned truth; a fixture refresh that introduces a new
+// type must extend the taxonomy in the same change (this test forces it).
+func TestIsKnownEventType_CoversBothFixtures(t *testing.T) {
+	for _, fixture := range []string{"../testdata/sse_events_1_18_10_live.jsonl", "../testdata/event_store_1_18_10.jsonl"} {
+		data, err := os.ReadFile(fixture)
+		if err != nil {
+			t.Fatalf("read fixture: %v", err)
+		}
+		seen := map[string]bool{}
+		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			var env Envelope
+			if json.Unmarshal([]byte(line), &env) != nil || env.Type == "" {
+				continue
+			}
+			if !seen[env.Type] {
+				seen[env.Type] = true
+				if !IsKnownEventType(env.Type) {
+					t.Errorf("%s: fixture type %q not in taxonomy — extend IsKnownEventType with the fixture refresh", fixture, env.Type)
+				}
+			}
+		}
+	}
+}

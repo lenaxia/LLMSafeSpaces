@@ -59,6 +59,7 @@ func (f *fakeAdapter) ContextUsageFromEvent(_ string, _ string) (string, *sessio
 func (f *fakeAdapter) MeteringFromEvent(_ string, _ []byte) (*SessionUsage, bool, error) {
 	return nil, false, nil
 }
+func (f *fakeAdapter) IsKnownEventType(string) bool { return false }
 func (f *fakeAdapter) FormatProviderConfig(_ []LLMProviderData) ([]byte, error) {
 	return nil, nil
 }

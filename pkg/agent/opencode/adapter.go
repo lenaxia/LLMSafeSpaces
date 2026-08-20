@@ -925,6 +925,11 @@ func (a *Adapter) MeteringFromEvent(eventType string, props []byte) (*agent.Sess
 	}, true, nil
 }
 
+// IsKnownEventType implements agent.Adapter via the wire taxonomy.
+func (a *Adapter) IsKnownEventType(eventType string) bool {
+	return wire.IsKnownEventType(eventType)
+}
+
 // --- Capabilities ---
 
 func (a *Adapter) Capabilities() []session.Capability {

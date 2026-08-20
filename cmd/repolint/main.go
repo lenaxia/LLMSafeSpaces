@@ -96,6 +96,7 @@ func main() {
 	failures += runCRDDrift(root)
 	failures += runGinSetMode(root)
 	failures += runAgentImport(root)
+	failures += runEventLiteral(root)
 	if *clusterDrift {
 		failures += runClusterDrift(root)
 	}
@@ -356,6 +357,38 @@ func runAgentImport(root string) int {
 	}
 	fmt.Printf("ok    agent-import boundary (%d known leak(s) tolerated pending US-65.4)\n",
 		len(repolint.KnownLeaks()))
+	return 0
+}
+
+// runEventLiteral enforces the agent event-name literal rule: string
+// matching on opencode event types is seam knowledge (design 0049) — the
+// agent-import rule cannot see string coupling, which is exactly how the
+// frontend's dead session.next.step.ended listener went unnoticed (#939).
+// Existing matches are tolerated as dated knownLeaks; new ones fail.
+func runEventLiteral(root string) int {
+	rep, err := repolint.EventLiteralCheck(root)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "FAIL  agent event literals: %v\n", err)
+		return 1
+	}
+	if rep.HasNew() {
+		fmt.Fprintf(os.Stderr, "FAIL  agent event literals (new string matches outside the seam):\n")
+		for _, v := range rep.Violations {
+			if v.IsLeaked {
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "  - %s:%d  %q  %s\n", v.File, v.Line, v.Literal, v.Excerpt)
+		}
+		fmt.Fprintf(os.Stderr, "  Move the matching behind pkg/agent/opencode (design/0049) or add a\n  dated knownLeaks entry with an issue pointer in pkg/repolint/event_literal.go.\n")
+		return 1
+	}
+	leaks := 0
+	for _, v := range rep.Violations {
+		if v.IsLeaked {
+			leaks++
+		}
+	}
+	fmt.Printf("ok    agent event literals (%d known leak(s) tolerated)\n", leaks)
 	return 0
 }
 

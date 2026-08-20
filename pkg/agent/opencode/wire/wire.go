@@ -270,3 +270,63 @@ func ParseSessionUpdatedProps(props json.RawMessage) (SessionUsage, bool, error)
 	}
 	return u, true, nil
 }
+
+// knownEventTypes is the pinned event taxonomy: every type observed in
+// the golden fixtures (live /event capture + persisted store; see
+// ../testdata/REFRESH.md) plus legacy event-system names retained for
+// mixed-fleet rollout tolerance.
+// The fixture-coverage test forces every fixture type to be listed here,
+// so a fixture refresh that introduces a type extends this set in the
+// same change.
+var knownEventTypes = map[string]bool{
+	"session.status":               true,
+	"session.updated":              true,
+	"session.created":              true,
+	"session.idle":                 true,
+	"session.diff":                 true,
+	"session.error":                true,
+	"message.created":              true,
+	"message.updated":              true,
+	"message.part.updated":         true,
+	"message.part.delta":           true,
+	"server.connected":             true,
+	"server.heartbeat":             true,
+	"plugin.added":                 true,
+	"catalog.updated":              true,
+	"reference.updated":            true,
+	"integration.updated":          true,
+	"file.edited":                  true,
+	"file.watcher.updated":         true,
+	"session.next.step.ended":      true,
+	"session.next.step.started":    true,
+	"session.next.step.failed":     true,
+	"session.next.prompt.admitted": true,
+	"session.next.prompted":        true,
+	"session.next.text.started":    true,
+	"session.next.text.delta":      true,
+	"session.next.text.ended":      true,
+}
+
+// IsKnownEventType reports whether eventType belongs to the pinned
+// opencode taxonomy (version suffixes tolerated: the persisted store
+// emits suffixed variants of the same logical types). Unknown types are
+// not errors — they are the drift signal consumers count and warn on
+// (#739 Gap 2: a taxonomy rename must be observable, not silent).
+func IsKnownEventType(eventType string) bool {
+	if eventType == "" {
+		return false
+	}
+	if knownEventTypes[eventType] {
+		return true
+	}
+	// Version-suffixed variants (numeric last segment only — same rule
+	// as isSuffixed) are the same logical type as their base.
+	if i := strings.LastIndex(eventType, "."); i >= 0 {
+		if suffix := eventType[i+1:]; suffix != "" {
+			if _, err := strconv.Atoi(suffix); err == nil {
+				return knownEventTypes[eventType[:i]]
+			}
+		}
+	}
+	return false
+}

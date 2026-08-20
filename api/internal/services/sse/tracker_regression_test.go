@@ -5,13 +5,13 @@ package sse
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"go.uber.org/zap"
 
 	agentoc "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
 
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // --- #751 tests ---
@@ -490,4 +491,179 @@ func TestSSETracker_Inference_InfoLessSessionUpdated_WarnsNoFire(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "info-less session.updated must hit the incomplete-fields warn, not a silent skip")
+}
+
+// --- Agent-event drift observability (#939/#942: taxonomy counters + unknown warns) ---
+
+// fakeEventMetrics captures RecordAgentEvent calls without prometheus.
+type fakeEventMetrics struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func (f *fakeEventMetrics) RecordAgentEvent(eventType string, known bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.counts == nil {
+		f.counts = map[string]int{}
+	}
+	if known {
+		f.counts[eventType]++
+	} else {
+		f.counts["unknown"]++
+	}
+}
+
+func newObservabilityTracker(t *testing.T) (*Tracker, *fakeEventMetrics, *capturingLogger) {
+	t.Helper()
+	tracker, log := newCapturingTracker() // real adapter decoder + real classifier via helpers below
+	tracker.SetEventClassifier(agentoc.NewAdapter(nil, nil, zap.NewNop()).IsKnownEventType)
+	m := &fakeEventMetrics{}
+	tracker.SetEventMetrics(m)
+	return tracker, m, log
+}
+
+func fireTyped(t *testing.T, tracker *Tracker, eventType, props string) {
+	t.Helper()
+	data, _ := json.Marshal(map[string]interface{}{
+		"id": "evt_t", "type": eventType, "properties": json.RawMessage(props),
+	})
+	tracker.processEvent("ws-obs", string(data))
+}
+
+func TestSSETracker_AgentEventCounters_KnownTypesCountedByName(t *testing.T) {
+	tracker, m, log := newObservabilityTracker(t)
+
+	fireTyped(t, tracker, "session.status", `{"sessionID":"s","status":{"type":"busy"}}`)
+	fireTyped(t, tracker, "session.status", `{"sessionID":"s","status":{"type":"idle"}}`)
+	fireTyped(t, tracker, "message.part.updated.1", `{"sessionID":"s","part":{"type":"text","text":"x"}}`)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	assert.Equal(t, 2, m.counts["session.status"])
+	assert.Equal(t, 1, m.counts["message.part.updated.1"], "suffixed variant counts under its own name")
+	assert.NotContains(t, m.counts, "unknown")
+	assert.Empty(t, log.Warns(), "known types never warn")
+}
+
+func TestSSETracker_AgentEventCounters_UnknownTypeCountedAndWarnedOnce(t *testing.T) {
+	tracker, m, log := newObservabilityTracker(t)
+
+	// Same unknown type three times: counted thrice, warned ONCE.
+	for i := 0; i < 3; i++ {
+		fireTyped(t, tracker, "brand.new.event", `{"sessionID":"s"}`)
+	}
+	// A second unknown type: its own single warn.
+	fireTyped(t, tracker, "another.new.event", `{"sessionID":"s"}`)
+
+	m.mu.Lock()
+	assert.Equal(t, 4, m.counts["unknown"])
+	m.mu.Unlock()
+
+	var warns []string
+	for _, w := range log.Warns() {
+		if strings.Contains(w, "unrecognized agent event type") {
+			warns = append(warns, w)
+		}
+	}
+	require.Len(t, warns, 2, "one warn per unique unknown type, not per event")
+	assert.Contains(t, warns[0], "brand.new.event")
+	assert.Contains(t, warns[1], "another.new.event")
+}
+
+func TestSSETracker_AgentEventCounters_NoClassifierNoCounting(t *testing.T) {
+	// Without a classifier injected, counting is off entirely — never
+	// misclassify as unknown (a missing injection is a wiring gap, not
+	// drift; the construction-site wiring test covers the real path).
+	tracker, _, _ := newObservabilityTracker(t)
+	tracker.SetEventClassifier(nil)
+
+	fireTyped(t, tracker, "session.status", `{"sessionID":"s","status":{"type":"busy"}}`)
+	// no panic, and nothing recorded (metrics recorder removed too)
+	tracker.SetEventMetrics(nil)
+	fireTyped(t, tracker, "session.status", `{"sessionID":"s","status":{"type":"busy"}}`)
+}
+
+func TestSSETracker_AgentEventCounters_WarnCapStopsAtLimit(t *testing.T) {
+	tracker, m, log := newObservabilityTracker(t)
+
+	// unknownSeenCap distinct unknown types: warns stop after the cap;
+	// counting never stops.
+	for i := 0; i < unknownSeenCap+5; i++ {
+		fireTyped(t, tracker, fmt.Sprintf("type.%d.drift", i), `{"sessionID":"s"}`)
+	}
+
+	m.mu.Lock()
+	assert.Equal(t, unknownSeenCap+5, m.counts["unknown"], "counting is never capped")
+	m.mu.Unlock()
+
+	var warns int
+	for _, w := range log.Warns() {
+		if strings.Contains(w, "unrecognized agent event type") {
+			warns++
+		}
+	}
+	assert.Equal(t, unknownSeenCap, warns, "exactly the cap distinct-type warns — the log cannot be flooded")
+}
+
+// TestSSETracker_AgentEventCounters_AllEntryPointsFunnelToObservation is
+// the single-funnel routing PROOF (#942 review): every public event
+// entry path — ProcessEvent flat, ProcessEvent nested, DispatchProperties
+// direct — must reach the classifier exactly once per event.
+func TestSSETracker_AgentEventCounters_AllEntryPointsFunnelToObservation(t *testing.T) {
+	tracker, m, _ := newObservabilityTracker(t)
+
+	classified := 0
+	realClassifier := agentoc.NewAdapter(nil, nil, zap.NewNop()).IsKnownEventType
+	tracker.SetEventClassifier(func(et string) bool { classified++; return realClassifier(et) })
+
+	tracker.ProcessEvent("ws-obs", `{"id":"e1","type":"session.updated","properties":{"sessionID":"s"}}`)
+	tracker.ProcessEvent("ws-obs", `{"payload":{"type":"session.updated","properties":{"sessionID":"s"}}}`)
+	tracker.DispatchProperties("ws-obs", "session.updated", json.RawMessage(`{"sessionID":"s"}`))
+
+	assert.Equal(t, 3, classified, "all three public entry points must classify")
+	m.mu.Lock()
+	assert.Equal(t, 3, m.counts["session.updated"])
+	m.mu.Unlock()
+}
+
+// TestSSETracker_AgentEventCounters_MalformedEventCountedAndWarnedOnce:
+// an event with no decodable type in either envelope shape counts under
+// 'unknown' and warns once for the class — envelope-shape drift must not
+// vanish from the counters (#942 review finding 3).
+func TestSSETracker_AgentEventCounters_MalformedEventCountedAndWarnedOnce(t *testing.T) {
+	tracker, m, log := newObservabilityTracker(t)
+
+	for i := 0; i < 3; i++ {
+		tracker.ProcessEvent("ws-obs", `not json at all`)
+	}
+
+	m.mu.Lock()
+	assert.Equal(t, 3, m.counts["unknown"], "malformed events count under 'unknown'")
+	m.mu.Unlock()
+	var warns int
+	for _, w := range log.Warns() {
+		if strings.Contains(w, "malformed agent event") {
+			warns++
+		}
+	}
+	assert.Equal(t, 1, warns, "one class-level warn, not per event")
+}
+
+// TestSSETracker_AgentEventCounters_PartialWiringWarns: exactly one of
+// classifier/recorder set disables counting — the gap must warn, not
+// stay silent (#942 review robustness 1).
+func TestSSETracker_AgentEventCounters_PartialWiringWarns(t *testing.T) {
+	tracker, _, log := newObservabilityTracker(t)
+	tracker.SetEventClassifier(nil) // recorder still set => partial
+
+	fireTyped(t, tracker, "session.updated", `{"sessionID":"s"}`)
+
+	var found bool
+	for _, w := range log.Warns() {
+		if strings.Contains(w, "PARTIALLY wired") {
+			found = true
+		}
+	}
+	assert.True(t, found, "partial observability wiring must warn once")
 }
