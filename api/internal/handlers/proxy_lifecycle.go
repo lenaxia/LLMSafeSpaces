@@ -6,11 +6,12 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
+	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
@@ -75,6 +76,10 @@ func (h *ProxyHandler) Start() error {
 		// message-loss class). The bridge re-resolves the workspace and
 		// re-checks quota per delivery.
 		if h.outbox != nil {
+			if h.adapter != nil {
+				h.outbox.SetVerifier(h.outboxVerify)
+				h.outbox.SetOnDelivered(h.outboxOnDelivered)
+			}
 			wctx, wcancel := context.WithCancel(context.Background())
 			h.outboxCancel = wcancel
 			go func() {
@@ -284,23 +289,31 @@ var outboxTick = 1 * time.Second
 
 // outboxDeliver bridges the outbox worker to the adapter: detached
 // context and D3 model-selector forwarding (the accepted entry carries
-// the raw selector JSON). On success it records the SAME cross-cutting
-// events as the synchronous path (r1 finding 2): activity, session-index
-// message, and the llm_request usage event — without which the quota
-// never depletes and billing undercounts every outbox-delivered prompt.
-// The accepting userID rides the entry (the accepting request is long
-// gone by delivery time).
+// the raw selector JSON). Confirmed delivery completes via the outbox's
+// OnDelivered hook (wired in Start) — the SINGLE seam for the
+// cross-cutting events (SSE queue.update/sent, activity, session-index,
+// llm_request usage) on the synchronous, verified, and re-send paths.
+//
+// Two #987 rules:
+//
+//  1. Never re-send unverified: any re-send (Attempts > 0 — a prior
+//     attempt existed) verifies against the transcript first. opencode
+//     persists the user message BEFORE the turn runs, so presence of
+//     the exact text at/after the send window proves the prior attempt
+//     landed and a re-send would duplicate the whole turn (the
+//     sent-once/delivered-3x incident). Subsumes the D3 r2
+//     pre-redelivery tail-25 check with exact cursor-paged coverage.
+//
+//  2. Classify failures: an HTTP status response
+//     (agent.ErrHTTPStatus) means the agent PROCESSED and rejected
+//     the request — definitive, safe to retry. Anything else (timeout
+//     mid-turn, connection cut mid-flight) is outcome-UNKNOWN and wraps
+//     outbox.Ambiguous: the outbox verifies instead of blind-retrying.
 func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID string, e outbox.Entry) error {
-	// Pre-redelivery dedupe (D3 r2): on a RETRY (attempts > 0), the prior
-	// attempt may have completed server-side without the worker knowing —
-	// a delivery-context timeout can fire while opencode still finishes
-	// and persists the turn. Redelivering then duplicates the whole turn.
-	// Before retrying, check the session transcript for a user message
-	// with this exact text newer than the accept time; if present, the
-	// turn ran — treat the entry as delivered (skip + success path).
-	if e.Attempts > 0 && h.outboxAlreadyDelivered(ctx, workspaceID, sessionID, e) {
-		h.postOutboxDeliverSuccess(workspaceID, sessionID, e)
-		return nil
+	if e.Attempts > 0 || e.VerifyAttempts > 0 {
+		if h.outboxVerify(ctx, workspaceID, sessionID, e) == outbox.VerdictDelivered {
+			return nil // prior attempt confirmed in the transcript — complete without re-sending
+		}
 	}
 	var model *session.ModelRef
 	if len(e.Model) > 0 {
@@ -311,52 +324,62 @@ func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID
 	}
 	_, err := h.adapter.Send(ctx, "", workspaceID, sessionID, e.Text, session.SendOpts{Model: model})
 	if err != nil {
-		return err
+		if errors.Is(err, agent.ErrHTTPStatus) {
+			return err
+		}
+		return outbox.Ambiguous(err)
 	}
-	h.postOutboxDeliverSuccess(workspaceID, sessionID, e)
 	return nil
 }
 
-// outboxAlreadyDelivered reports whether the transcript already contains
-// a user message with the entry's exact text, created after the entry's
-// accept time. Bounded: the recent page only, history errors fall back
-// to redelivery (at-least-once semantics preserved).
-func (h *ProxyHandler) outboxAlreadyDelivered(ctx context.Context, workspaceID, sessionID string, e outbox.Entry) bool {
-	msgs, err := h.adapter.GetHistory(ctx, "", workspaceID, sessionID)
-	if err != nil || len(msgs) == 0 {
-		return false
-	}
-	// Scan the tail (newest last in platform shape); 25 messages covers
-	// any realistic retry cadence without a full-history walk.
-	start := 0
-	if len(msgs) > 25 {
-		start = len(msgs) - 25
-	}
-	for _, m := range msgs[start:] {
-		if m.Type != session.MessageUser {
-			continue
-		}
-		if m.CreatedAt != nil && m.CreatedAt.After(e.AcceptedAt) && messageText(m) == e.Text {
-			return true
-		}
-	}
-	return false
+// deliveryVerifier is the consumer-defined seam for #987 ambiguity
+// resolution. Deliberately NOT on agent.Adapter (single consumer — no
+// premature abstraction): the opencode implementation (persist-first
+// transcript check) satisfies it structurally; a future second agent
+// either implements it or the outbox keeps its documented legacy
+// fallback. Promote to agent.Adapter when a second consumer is funded.
+type deliveryVerifier interface {
+	VerifyDelivery(ctx context.Context, userID, workspaceID, sessionID, text string, since time.Time) (delivered, definitive bool, err error)
 }
 
-// messageText returns a platform message's displayable text: the flat
-// Text field when set (user messages use the flat constructor), else the
-// concatenated text parts.
-func messageText(m session.Message) string {
-	if m.Text != "" {
-		return m.Text
+// outboxVerify resolves delivery ambiguity against the agent
+// transcript: cursor-paged coverage of the send window (adapter.
+// VerifyDelivery), delivered-proof even while the turn still runs.
+// Inconclusive (agent unreachable, coverage incomplete, or a non-
+// opencode adapter without the verifier) never blocks a re-send
+// attempt by itself — the send's own failure classification re-enters
+// verification.
+func (h *ProxyHandler) outboxVerify(ctx context.Context, workspaceID, sessionID string, e outbox.Entry) outbox.Verdict {
+	v, ok := h.adapter.(deliveryVerifier)
+	if !ok {
+		return outbox.VerdictInconclusive
 	}
-	var b strings.Builder
-	for _, p := range m.Parts {
-		if p.Type == session.PartText {
-			b.WriteString(p.Text)
-		}
+	since := e.LastAttemptAt
+	if since.IsZero() {
+		// Crash-recovered entry: the send started sometime after
+		// accept — AcceptedAt is the safe floor.
+		since = e.AcceptedAt
 	}
-	return b.String()
+	delivered, definitive, err := v.VerifyDelivery(ctx, "", workspaceID, sessionID, e.Text, since)
+	switch {
+	case err != nil:
+		return outbox.VerdictInconclusive
+	case delivered:
+		return outbox.VerdictDelivered
+	case definitive:
+		return outbox.VerdictAbsent
+	default:
+		return outbox.VerdictInconclusive
+	}
+}
+
+// outboxOnDelivered is the single confirmed-delivery seam: cross-cutting
+// events (activity, session-index, metering) plus the queue.update/sent
+// SSE that clears the frontend pill deterministically (#987 — the
+// outbox path previously never emitted it).
+func (h *ProxyHandler) outboxOnDelivered(workspaceID, sessionID string, e outbox.Entry) {
+	h.postOutboxDeliverSuccess(workspaceID, sessionID, e)
+	h.publishQueueEvent(workspaceID, sessionID, "sent", e.ID, "")
 }
 
 // postOutboxDeliverSuccess mirrors postAdapterSuccess for the detached
