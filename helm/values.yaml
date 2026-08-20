@@ -1493,6 +1493,11 @@ previewOrigin:
   # Registrable domain preview hosts live under, e.g. "safespaces.dev".
   # Preview hosts are <uuid>-preview.<baseDomain>.
   baseDomain: ""
+  # Origins allowed to EMBED preview pages (CSP frame-ancestors on the
+  # preview origin). Empty = no embedding. Set to the product dashboard
+  # origin to enable in-app preview embedding. Comma-joined into
+  # LLMSAFESPACES_PREVIEW_ORIGIN_FRAMEANCESTORS.
+  frameAncestors: []
   # HMAC key for bootstrap tokens + __Host-pv cookies.
   secretKey:
     # K8s Secret name (ExternalSecret provisioned by ops).

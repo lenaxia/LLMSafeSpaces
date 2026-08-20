@@ -151,6 +151,10 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.previewOrigin.secretKey.existingSecret | quote }}
                   key: {{ .Values.previewOrigin.secretKey.key | quote }}
+            {{- with .Values.previewOrigin.frameAncestors }}
+            - name: LLMSAFESPACES_PREVIEW_ORIGIN_FRAMEANCESTORS
+              value: {{ join "," . | quote }}
+            {{- end }}
             {{- end }}
             {{- if .Values.imageFactory.ghDispatcher.appCredentials.secretName }}
             - name: LLMSAFESPACES_IMAGE_FACTORY_APP_ID

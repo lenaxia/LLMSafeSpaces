@@ -58,6 +58,10 @@ type PreviewOriginConfig struct {
 	// BaseDomain is the registrable domain preview hosts live under;
 	// preview hosts are <uuid>-preview.<BaseDomain>.
 	BaseDomain string
+	// FrameAncestors lists origins allowed to embed preview pages
+	// (CSP frame-ancestors). Empty → 'none' (no embedding). The product
+	// dashboard origin goes here when preview embedding is wanted.
+	FrameAncestors []string
 	// APIOriginURL is the externally reachable API origin for bootstrap
 	// links on the landing page. Empty → derived as
 	// "https://api.<BaseDomain>" (the standard deployment shape).
@@ -100,7 +104,29 @@ type PreviewOriginHandler struct {
 	cfg   PreviewOriginConfig
 	cache CacheStore
 	log   pkginterfaces.LoggerInterface
+	// csp is the rendered Phase-2 policy (DESIGN §5.4), computed once.
+	csp string
 }
+
+// previewRelaxedCSPBase is the Phase-2 policy per DESIGN §5.4.
+//
+// Safety argument (why unsafe-inline/unsafe-eval are acceptable here and
+// ONLY here): preview origins hold no platform credentials (T1 closed by
+// architecture — the session cookie is host-scoped to the API), and
+// connect-src stays strictly 'self' (NO bare ws:/wss:) so no network exfil
+// channel opens. The relaxations unblock Next.js App Router hydration,
+// Vue full-build, and inline styling; the strict API-origin policy is
+// untouched.
+const previewRelaxedCSPBase = "default-src 'self'; " +
+	"script-src 'self' 'unsafe-inline' 'unsafe-eval'; " +
+	"style-src 'self' 'unsafe-inline'; " +
+	"img-src 'self' data: blob:; " +
+	"font-src 'self' data:; " +
+	"connect-src 'self'; " +
+	"object-src 'none'; " +
+	"base-uri 'self'; " +
+	"form-action 'self'; " +
+	"frame-ancestors "
 
 // CacheStore is the subset of interfaces.CacheService used here (jti
 // one-time consumption via SetNX).
@@ -120,7 +146,14 @@ func NewPreviewOriginHandler(inner *DevPreviewHandler, cfg PreviewOriginConfig, 
 	if cfg.CookieTTL <= 0 {
 		cfg.CookieTTL = 7 * 24 * time.Hour
 	}
-	return &PreviewOriginHandler{inner: inner, cfg: cfg, cache: cache, log: log}
+	fa := "'none'"
+	if len(cfg.FrameAncestors) > 0 {
+		fa = strings.Join(cfg.FrameAncestors, " ")
+	}
+	return &PreviewOriginHandler{
+		inner: inner, cfg: cfg, cache: cache, log: log,
+		csp: previewRelaxedCSPBase + fa,
+	}
 }
 
 // PreviewHost extracts the workspace ID when host is a preview host
@@ -386,6 +419,7 @@ No password is ever asked on this page, by design.</p>
 
 	c.Header("Cache-Control", "no-store")
 	c.Header("X-Robots-Tag", "noindex, nofollow")
+	c.Header("Content-Security-Policy", h.csp)
 	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(body))
 	c.Abort()
 }
@@ -420,7 +454,7 @@ func (h *PreviewOriginHandler) proxyAuthenticated(c *gin.Context, wsID string, p
 		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
-	h.inner.proxyToAgentd(c, workspace, port, subPath, password)
+	h.inner.proxyToAgentdCSP(c, workspace, port, subPath, password, h.csp)
 }
 
 // HandleBootstrap is registered on the API origin inside the existing

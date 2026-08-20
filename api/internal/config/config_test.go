@@ -515,3 +515,20 @@ func TestConfig_PreviewOrigin_DisabledIgnoresPartialConfig(t *testing.T) {
 		t.Error("Enabled must default false")
 	}
 }
+
+// TestConfig_PreviewOrigin_FrameAncestorsEnv: comma-separated env → slice.
+func TestConfig_PreviewOrigin_FrameAncestorsEnv(t *testing.T) {
+	t.Setenv("LLMSAFESPACES_PREVIEW_ORIGIN_ENABLED", "true")
+	t.Setenv("LLMSAFESPACES_PREVIEW_ORIGIN_BASEDOMAIN", "safespaces.dev")
+	t.Setenv("LLMSAFESPACES_PREVIEW_ORIGIN_TOKENSECRET", "s")
+	t.Setenv("LLMSAFESPACES_PREVIEW_ORIGIN_FRAMEANCESTORS", "https://chat.safespaces.dev,https://app.other.org")
+	path := writeMinimalConfig(t, "")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := []string{"https://chat.safespaces.dev", "https://app.other.org"}
+	if len(cfg.PreviewOrigin.FrameAncestors) != 2 || cfg.PreviewOrigin.FrameAncestors[0] != want[0] || cfg.PreviewOrigin.FrameAncestors[1] != want[1] {
+		t.Errorf("FrameAncestors = %v, want %v", cfg.PreviewOrigin.FrameAncestors, want)
+	}
+}
