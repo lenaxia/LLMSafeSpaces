@@ -209,6 +209,18 @@ func dedupeKey(ws, ses, cmid string) string {
 }
 func lockKey(ws, ses string) string { return "outboxlock:" + ws + ":" + ses }
 
+// acceptScript makes the cap check + push ATOMIC (stress-found #987):
+// a check-then-act LLen/RPush pair lets concurrent accepts — across
+// API replicas sharing Valkey — overshoot the session cap. Returns -1
+// when capped (no push), else the new length.
+var acceptScript = redis.NewScript(`
+if redis.call("llen", KEYS[1]) >= tonumber(ARGV[1]) then
+	return -1
+end
+redis.call("rpush", KEYS[1], ARGV[2])
+return redis.call("llen", KEYS[1])
+`)
+
 // Accept validates nothing (callers validate); it caps, persists, and
 // only THEN records the dedupe marker. Marker ordering matters: a marker
 // set before persistence survives a failed push for the dedupe TTL and
@@ -224,13 +236,6 @@ func (s *Service) Accept(ctx context.Context, workspaceID, sessionID, userID, cl
 			return nil, &Duplicate{AcceptedID: v}
 		}
 	}
-	n, err := s.client.LLen(ctx, qKey(workspaceID, sessionID)).Result()
-	if err != nil {
-		return nil, fmt.Errorf("outbox len: %w", err)
-	}
-	if int(n) >= Cap {
-		return nil, ErrCapped // no marker written: a retry after drain succeeds
-	}
 	e := &Entry{
 		ID:              fmt.Sprintf("ob_%d_%s", time.Now().UnixNano(), sanitize(clientMessageID)),
 		ClientMessageID: clientMessageID,
@@ -244,8 +249,12 @@ func (s *Service) Accept(ctx context.Context, workspaceID, sessionID, userID, cl
 	if err != nil {
 		return nil, fmt.Errorf("outbox marshal: %w", err) // no marker
 	}
-	if err := s.client.RPush(ctx, qKey(workspaceID, sessionID), b).Err(); err != nil {
+	n, err := acceptScript.Run(ctx, s.client, []string{qKey(workspaceID, sessionID)}, Cap, string(b)).Int64()
+	if err != nil {
 		return nil, fmt.Errorf("outbox push: %w", err) // no marker
+	}
+	if n < 0 {
+		return nil, ErrCapped // no marker written: a retry after drain succeeds
 	}
 	// Persisted. NOW the marker (value = entry ID) — and if a concurrent
 	// accept raced us to the marker, keep theirs and drop our duplicate

@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -261,16 +263,34 @@ func TestRun_EndToEnd(t *testing.T) {
 	t.Cleanup(func() { RetryBackoff, MaxBackoff = origBackoff, origMax })
 	s, _ := newTestService(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	_, err := s.Accept(ctx, "ws", "ses", "u-1", "c1", "hello", json.RawMessage(`{"modelID":"m","providerID":"p"}`))
 	require.NoError(t, err)
 
 	got := make(chan Entry, 1)
-	go s.Run(ctx, func(_ context.Context, _, _ string, e Entry) error {
-		got <- e
-		return nil
-	}, 5*time.Millisecond)
+	deliveriesDone := make(chan struct{}, 64) // buffered: the deferred signal must never block delivery
+	var deliveries int64
+	var runWG sync.WaitGroup
+	// Stop the worker AND any in-flight delivery BEFORE this test
+	// returns (var-mutating tests may follow): cancel, wait for Run,
+	// then wait for the last observed delivery goroutine to return.
+	defer func() {
+		cancel()
+		runWG.Wait()
+		for i := atomic.LoadInt64(&deliveries); i > 0; i-- {
+			<-deliveriesDone
+		}
+	}()
+	runWG.Add(1)
+	go func() {
+		defer runWG.Done()
+		s.Run(ctx, func(_ context.Context, _, _ string, e Entry) error {
+			atomic.AddInt64(&deliveries, 1)
+			defer func() { deliveriesDone <- struct{}{} }()
+			got <- e
+			return nil
+		}, 5*time.Millisecond)
+	}()
 
 	select {
 	case e := <-got:
@@ -566,18 +586,28 @@ func TestRun_ConcurrentSessionsNoHeadOfLine(t *testing.T) {
 	require.NoError(t, err)
 
 	fastDone := make(chan time.Time, 1)
+	slowDone := make(chan struct{}, 1)
 	start := time.Now()
-	go s.Run(ctx, func(ctx context.Context, _, ses string, _ Entry) error {
-		if ses == "slow" {
-			select {
-			case <-ctx.Done():
-			case <-time.After(300 * time.Millisecond): // long turn
+	var runWG sync.WaitGroup
+	// Cancel, join Run, then join the in-flight slow delivery — no
+	// goroutine of this test outlives it (var-mutating tests follow).
+	defer func() { cancel(); runWG.Wait(); <-slowDone }()
+	runWG.Add(1)
+	go func() {
+		defer runWG.Done()
+		s.Run(ctx, func(ctx context.Context, _, ses string, _ Entry) error {
+			if ses == "slow" {
+				defer func() { slowDone <- struct{}{} }()
+				select {
+				case <-ctx.Done():
+				case <-time.After(300 * time.Millisecond): // long turn
+				}
+				return nil
 			}
+			fastDone <- time.Now()
 			return nil
-		}
-		fastDone <- time.Now()
-		return nil
-	}, 5*time.Millisecond)
+		}, 5*time.Millisecond)
+	}()
 
 	select {
 	case at := <-fastDone:
