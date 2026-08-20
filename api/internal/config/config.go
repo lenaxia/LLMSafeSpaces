@@ -232,6 +232,10 @@ type Config struct {
 		Enabled     bool   `mapstructure:"enabled"`
 		BaseDomain  string `mapstructure:"baseDomain"`
 		TokenSecret string `mapstructure:"tokenSecret"`
+		// FrameAncestors: origins allowed to embed preview pages
+		// (CSP frame-ancestors; empty = no embedding). Env:
+		// LLMSAFESPACES_PREVIEW_ORIGIN_FRAMEANCESTORS (comma-separated).
+		FrameAncestors []string `mapstructure:"frameAncestors"`
 	} `mapstructure:"previewOrigin"`
 
 	// Workspace holds Helm-managed workspace defaults. Currently only
@@ -664,6 +668,9 @@ func applyPreviewOriginEnv(config *Config) error {
 	}
 	if v := os.Getenv("LLMSAFESPACES_PREVIEW_ORIGIN_TOKENSECRET"); v != "" {
 		config.PreviewOrigin.TokenSecret = v
+	}
+	if v := os.Getenv("LLMSAFESPACES_PREVIEW_ORIGIN_FRAMEANCESTORS"); v != "" {
+		config.PreviewOrigin.FrameAncestors = strings.Split(v, ",")
 	}
 	if !config.PreviewOrigin.Enabled {
 		return nil

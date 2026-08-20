@@ -1039,9 +1039,10 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		previewOriginHandler = handlers.NewPreviewOriginHandler(
 			devPreviewHandler,
 			handlers.PreviewOriginConfig{
-				Enabled:     cfg.PreviewOrigin.Enabled,
-				BaseDomain:  cfg.PreviewOrigin.BaseDomain,
-				TokenSecret: []byte(cfg.PreviewOrigin.TokenSecret),
+				Enabled:        cfg.PreviewOrigin.Enabled,
+				BaseDomain:     cfg.PreviewOrigin.BaseDomain,
+				TokenSecret:    []byte(cfg.PreviewOrigin.TokenSecret),
+				FrameAncestors: cfg.PreviewOrigin.FrameAncestors,
 			},
 			svc.GetCache(),
 			log,

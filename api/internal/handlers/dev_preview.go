@@ -189,7 +189,19 @@ func (h *DevPreviewHandler) HandleDevPreview(c *gin.Context) {
 	h.proxyToAgentd(c, workspace, port, subPath, password)
 }
 
+// proxyToAgentd proxies without edge CSP injection (path-based route:
+// the API's strict SecurityMiddleware policy applies — Phase 2 relaxes
+// CSP on per-workspace preview origins ONLY during the overlap).
 func (h *DevPreviewHandler) proxyToAgentd(c *gin.Context, workspace *v1.Workspace, port int, subPath, password string) {
+	h.proxyToAgentdCSP(c, workspace, port, subPath, password, "")
+}
+
+// proxyToAgentdCSP proxies and, when csp != "", force-sets
+// Content-Security-Policy on the response (edge policy wins over any
+// app-set CSP — the origin's policy is the operator's, not the dev
+// server's). Used by the preview-origin pipeline for the Phase-2
+// relaxed policy.
+func (h *DevPreviewHandler) proxyToAgentdCSP(c *gin.Context, workspace *v1.Workspace, port int, subPath, password, csp string) {
 	podIP := workspace.Status.PodIP
 	target := &url.URL{
 		Scheme: "http",
@@ -268,6 +280,12 @@ func (h *DevPreviewHandler) proxyToAgentd(c *gin.Context, workspace *v1.Workspac
 			}
 		},
 		ModifyResponse: func(resp *http.Response) error {
+			// P2 (redesign-2026-08-19/DESIGN.md §5.4): relaxed CSP on
+			// preview-origin responses. Set (not Add): the edge policy is
+			// authoritative; a dev-server-set CSP does not override it.
+			if csp != "" {
+				resp.Header.Set("Content-Security-Policy", csp)
+			}
 			// P0-1 (redesign-2026-08-19/DESIGN.md §5.5): force no-store on
 			// HTML at the edge. The chain in front of this handler (CDN,
 			// browser) has been observed serving stale HTML across app

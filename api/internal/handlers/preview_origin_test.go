@@ -694,3 +694,128 @@ func TestPreviewOrigin_Bootstrap_QueryPortForm(t *testing.T) {
 		}
 	}
 }
+
+// --- Phase 2: relaxed CSP on preview origins (DESIGN §5.4) ---
+
+// previewOriginCSPFixture returns a fixture router plus the constructed
+// handler (for frameAncestors variants).
+func previewOriginCSPFixture(t *testing.T, frameAncestors []string) (*PreviewOriginHandler, *gin.Engine) {
+	t.Helper()
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The dev server sets its OWN CSP — the edge policy must win (Set,
+		// not Add: exactly one header, ours).
+		w.Header().Set("Content-Security-Policy", "default-src http:")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		io.WriteString(w, "<html></html>")
+	}))
+	t.Cleanup(backend.Close)
+	pv, r, _ := newPreviewOriginFixture(t, backend)
+	pv.cfg.FrameAncestors = frameAncestors
+	fa := "'none'"
+	if len(frameAncestors) > 0 {
+		fa = strings.Join(frameAncestors, " ")
+	}
+	pv.csp = previewRelaxedCSPBase + fa
+	return pv, r
+}
+
+func previewOriginCSPGet(t *testing.T, r *gin.Engine, path string) *http.Response {
+	t.Helper()
+	loc := mintBootstrap(t, r, "5173")
+	sc := cookieFromRedemption(t, r, loc)
+	ts := httptest.NewServer(r)
+	t.Cleanup(ts.Close)
+	req, _ := http.NewRequest("GET", ts.URL+path, nil)
+	req.Host = pvHost
+	req.Header.Set("Cookie", "__Host-pv="+cookieValueOnly(sc))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	return resp
+}
+
+func TestPreviewOrigin_CSP_RelaxedPolicyOnProxiedResponses(t *testing.T) {
+	_, r := previewOriginCSPFixture(t, nil)
+	resp := previewOriginCSPGet(t, r, "/5173/index.html")
+
+	csp := resp.Header.Get("Content-Security-Policy")
+	if csp == "" {
+		t.Fatal("P2: preview-origin responses must carry a CSP")
+	}
+	for _, want := range []string{
+		"default-src 'self'",
+		"script-src 'self' 'unsafe-inline' 'unsafe-eval'",
+		"style-src 'self' 'unsafe-inline'",
+		"connect-src 'self'",
+		"object-src 'none'",
+		"frame-ancestors 'none'",
+	} {
+		if !strings.Contains(csp, want) {
+			t.Errorf("CSP missing %q; got: %s", want, csp)
+		}
+	}
+	// THE load-bearing constraint: no bare ws:/wss: token anywhere —
+	// connect-src stays 'self' (CSP3: 'self' covers same-origin wss).
+	// A bare scheme would open an exfil channel and defeat the point.
+	if strings.Contains(csp, "ws:") || strings.Contains(csp, "wss:") {
+		t.Errorf("CSP must not contain bare ws:/wss: (exfil channel); got: %s", csp)
+	}
+	// Edge policy replaces, not merges with, the dev server's.
+	if strings.Contains(csp, "http:") {
+		t.Errorf("dev-server CSP leaked through; got: %s", csp)
+	}
+	if got := len(resp.Header.Values("Content-Security-Policy")); got != 1 {
+		t.Errorf("exactly one CSP header expected (Set, not Add); got %d", got)
+	}
+}
+
+func TestPreviewOrigin_CSP_FrameAncestorsConfig(t *testing.T) {
+	_, r := previewOriginCSPFixture(t, []string{"https://chat.safespaces.dev"})
+	resp := previewOriginCSPGet(t, r, "/5173/index.html")
+	csp := resp.Header.Get("Content-Security-Policy")
+	if !strings.Contains(csp, "frame-ancestors https://chat.safespaces.dev") {
+		t.Errorf("configured frame-ancestors missing; got: %s", csp)
+	}
+	if strings.Contains(csp, "frame-ancestors 'none' https") {
+		t.Errorf("'none' must not combine with explicit origins; got: %s", csp)
+	}
+}
+
+func TestPreviewOrigin_CSP_LandingCarriesPolicy(t *testing.T) {
+	_, r := previewOriginCSPFixture(t, nil)
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Host = pvHost
+	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("landing: expected 200, got %d", w.Code)
+	}
+	if csp := w.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "script-src 'self' 'unsafe-inline' 'unsafe-eval'") {
+		t.Errorf("landing missing relaxed CSP; got: %q", csp)
+	}
+}
+
+func TestDevPreviewHandler_PathRouteInjectsNoCSP(t *testing.T) {
+	// The PATH-BASED route keeps the API's strict SecurityMiddleware
+	// policy (which supplies CSP upstream of this handler). The proxy
+	// itself must inject nothing — verifying proxyToAgentd("") cleanliness.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "ok")
+	}))
+	defer backend.Close()
+
+	ts := httptest.NewServer(newDevPreviewRoundTripRouter(t, backend))
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + "/api/v1/workspaces/ws-1/dev-preview/5173/")
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+	if csp := resp.Header.Get("Content-Security-Policy"); csp != "" {
+		t.Errorf("path-based proxy must not inject CSP; got: %q", csp)
+	}
+}
