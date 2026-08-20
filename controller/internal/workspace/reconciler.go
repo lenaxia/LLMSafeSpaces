@@ -62,6 +62,14 @@ type WorkspaceReconciler struct {
 	// without credentials; live /reload-secrets push handles delivery).
 	APIServiceURL string
 
+	// PreviewOriginBaseDomain (Epic 66 Phase 1): when non-empty, workspace
+	// pods receive PREVIEW_ORIGIN_BASE_DOMAIN so agentd's dev_preview_url
+	// MCP tool emits the per-workspace-origin bootstrap URL instead of the
+	// path-based URL. Sourced from the same previewOrigin.baseDomain chart
+	// value the API consumes — one flag enables the deployment-wide mode.
+	// Empty = path-based dev preview (unchanged behavior).
+	PreviewOriginBaseDomain string
+
 	// #863 agentd overlay delivery. When AgentdImage is set, buildPod pins a
 	// digest-addressed image volume into every workspace pod and the
 	// entrypoint verifies the binary's sha256 against the per-arch pins

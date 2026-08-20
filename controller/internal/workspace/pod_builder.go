@@ -229,6 +229,16 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 		)
 	}
 
+	// Epic 66 Phase 1: deployment-wide preview-origin mode. Non-empty
+	// PreviewOriginBaseDomain tells agentd's dev_preview_url tool to emit
+	// the per-workspace-origin bootstrap URL. Empty leaves the env unset
+	// and the tool stays in path-based mode.
+	if r.PreviewOriginBaseDomain != "" {
+		mainContainer.Env = append(mainContainer.Env,
+			corev1.EnvVar{Name: "PREVIEW_ORIGIN_BASE_DOMAIN", Value: r.PreviewOriginBaseDomain},
+		)
+	}
+
 	// Workspace setup init (packages + initScript).
 	if len(workspace.Spec.Packages) > 0 || workspace.Spec.InitScript != "" {
 		initContainers = append(initContainers, buildWorkspaceSetupInit(workspace, runtimeImage))

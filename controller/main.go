@@ -105,6 +105,11 @@ func main() {
 		"Root URL of the in-cluster API service (e.g. http://llmsafespaces-api.llmsafespaces.svc:8080) "+
 			"used to poll org status for D20 org-level workspace suspension. "+
 			"Empty disables org-suspension (the controller never org-suspends).")
+	var previewOriginBaseDomain string
+	flag.StringVar(&previewOriginBaseDomain, "preview-origin-base-domain", "",
+		"Registrable domain for per-workspace dev-preview origins (Epic 66 Phase 1), e.g. safespaces.dev. "+
+			"When set, workspace pods receive PREVIEW_ORIGIN_BASE_DOMAIN and agentd's dev_preview_url "+
+			"tool emits the per-workspace-origin bootstrap URL. Empty keeps the path-based dev preview.")
 	var defaultRuntimeClass string
 	flag.StringVar(&defaultRuntimeClass, "default-runtime-class", "",
 		"Default RuntimeClass for workspace pods (Epic 51 S51.1). "+
@@ -300,7 +305,7 @@ func main() {
 	}
 
 	// Set up controllers
-	if err := controller.SetupControllers(mgr, inferenceRelayURL, apiServiceURL, apiInternalToken, defaultRuntimeClass, controller.AgentdDelivery{
+	if err := controller.SetupControllers(mgr, inferenceRelayURL, apiServiceURL, apiInternalToken, defaultRuntimeClass, previewOriginBaseDomain, controller.AgentdDelivery{
 		Image:             agentdImage,
 		BinarySHA256AMD64: agentdBinarySHA256AMD64,
 		BinarySHA256ARM64: agentdBinarySHA256ARM64,
