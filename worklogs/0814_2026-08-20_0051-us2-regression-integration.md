@@ -84,4 +84,4 @@ None.
 - `cmd/workspace-agentd/supervise_opencode.go` (seam extraction only — `newSupervisorProcess`, `newSupervisorControlServer`; no behavior change)
 - `controller/internal/workspace/agentd_sidecar_envtest_test.go` (new, `-tags envtest`)
 - `docs/testing/0051-us2-integration-test-plan.md` (new)
-- `worklogs/NNNN_2026-08-20_0051-us2-regression-integration.md` (this file)
+- `worklogs/0814_2026-08-20_0051-us2-regression-integration.md` (this file)
