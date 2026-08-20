@@ -65,8 +65,11 @@ func validateAgentdSidecarConfig(sidecarEnabled bool, agentdImage string) error 
 }
 
 // buildAgentdSidecarContainer returns the native sidecar container.
+// adminToken is the resolved admin-mux bearer (empty when the Secret
+// predates the #933 upsert): the readiness probe must carry it because
+// the sidecar's /v1/readyz is bearer-gated whenever the token exists.
 // Called only when AgentdSidecarEnabled (validated at startup).
-func (r *WorkspaceReconciler) buildAgentdSidecarContainer(workspace *v1.Workspace) corev1.Container {
+func (r *WorkspaceReconciler) buildAgentdSidecarContainer(workspace *v1.Workspace, adminToken string) corev1.Container {
 	trueVal := true
 	falseVal := false
 	uid2000 := int64(2000)
@@ -104,7 +107,7 @@ func (r *WorkspaceReconciler) buildAgentdSidecarContainer(workspace *v1.Workspac
 		Env:            env,
 		StartupProbe:   sidecarBootProbe(),
 		LivenessProbe:  sidecarLivenessProbe(),
-		ReadinessProbe: sidecarReadinessProbe(),
+		ReadinessProbe: sidecarReadinessProbe(adminToken),
 		SecurityContext: &corev1.SecurityContext{
 			ReadOnlyRootFilesystem:   &trueVal,
 			RunAsNonRoot:             &trueVal,
@@ -160,12 +163,27 @@ func sidecarLivenessProbe() *corev1.Probe {
 	}
 }
 
-func sidecarReadinessProbe() *corev1.Probe {
+func sidecarReadinessProbe(adminToken string) *corev1.Probe {
 	return &corev1.Probe{
 		ProbeHandler: corev1.ProbeHandler{
 			HTTPGet: &corev1.HTTPGetAction{
 				Path: "/v1/readyz",
 				Port: intstr.FromInt(agentd.AgentdAdminPort),
+				// F1.4.2 parity with the main container's probes: readyz
+				// is bearer-gated when the admin token is resolved (#933).
+				// Without the header the probe 401s FOREVER — the sidecar
+				// runs (startup/liveness use the open /v1/healthz) but the
+				// pod never goes Ready. Found by the L3 kind run
+				// (32421411899): sidecar gate readyz_first_200 fired at
+				// +9s while kubelet's probe kept failing.
+				HTTPHeaders: func() []corev1.HTTPHeader {
+					if adminToken == "" {
+						return nil
+					}
+					return []corev1.HTTPHeader{
+						{Name: "Authorization", Value: "Bearer " + adminToken},
+					}
+				}(),
 			},
 		},
 		InitialDelaySeconds: 2, PeriodSeconds: 5, TimeoutSeconds: 5, FailureThreshold: 12,
@@ -175,13 +193,15 @@ func sidecarReadinessProbe() *corev1.Probe {
 // applyAgentdSidecar mutates the pod for sidecar mode: appends the
 // native sidecar as the last init container and switches the main
 // container to supervisor mode (entrypoint branch env + kernel-level
-// TCP liveness). No-op when disabled.
-func (r *WorkspaceReconciler) applyAgentdSidecar(pod *corev1.Pod, workspace *v1.Workspace) {
+// TCP liveness). adminToken is buildPod's resolved admin-mux bearer
+// (empty for legacy Secrets) — the sidecar's readiness probe needs it.
+// No-op when disabled.
+func (r *WorkspaceReconciler) applyAgentdSidecar(pod *corev1.Pod, workspace *v1.Workspace, adminToken string) {
 	if !r.AgentdSidecarEnabled {
 		return
 	}
 
-	pod.Spec.InitContainers = append(pod.Spec.InitContainers, r.buildAgentdSidecarContainer(workspace))
+	pod.Spec.InitContainers = append(pod.Spec.InitContainers, r.buildAgentdSidecarContainer(workspace, adminToken))
 
 	main := &pod.Spec.Containers[0]
 	main.Env = append(main.Env,

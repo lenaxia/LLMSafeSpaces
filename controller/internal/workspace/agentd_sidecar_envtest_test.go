@@ -144,7 +144,9 @@ func TestEnvtestAgentdSidecar_SecretBackedEnv(t *testing.T) {
 	ws.UID = types.UID("us2-integration-uid")
 	r := reconcilerWithAgentdSidecar(t)
 
-	// The Secret buildPod reads (password + admin-token keys).
+	// The Secret buildPod reads (password + admin-token keys) — created on
+	// the REAL API server (kubelet-facing admission surface) AND on the
+	// reconciler's fake client (buildPod resolves adminToken through r.Get).
 	sec := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      passwordSecretName(ws.Name),
@@ -156,6 +158,9 @@ func TestEnvtestAgentdSidecar_SecretBackedEnv(t *testing.T) {
 		},
 	}
 	require.NoError(t, dyn.Create(ctx, sec))
+	fakeCopy := sec.DeepCopy()
+	fakeCopy.ResourceVersion = "" // server-assigned on the real API; fake client rejects it on Create
+	require.NoError(t, r.Create(ctx, fakeCopy))
 
 	pod, err := r.buildPod(ctx, ws)
 	require.NoError(t, err)
@@ -194,4 +199,14 @@ func TestEnvtestAgentdSidecar_SecretBackedEnv(t *testing.T) {
 		require.Contains(t, fetched.Data, ref.Key,
 			"sidecar env %s references key %q missing from Secret %s", e.Name, ref.Key, ref.Name)
 	}
+
+	// L3-found regression (kind run 32421411899): the readiness probe must
+	// carry the bearer header — the admin-token key exists in this Secret,
+	// so buildPod resolved it and /v1/readyz is gated.
+	rp := sc.ReadinessProbe
+	require.NotNil(t, rp)
+	require.NotNil(t, rp.HTTPGet)
+	require.Len(t, rp.HTTPGet.HTTPHeaders, 1)
+	require.Equal(t, "Authorization", rp.HTTPGet.HTTPHeaders[0].Name)
+	require.Equal(t, "Bearer integration-tok", rp.HTTPGet.HTTPHeaders[0].Value)
 }
