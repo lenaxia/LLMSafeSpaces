@@ -222,8 +222,22 @@ deliberately minimal; anything richer belongs to a future versioned extension, n
 - **Error codes** (closed set v1): `version_unsupported`, `method_unknown`, `bad_request`,
   `child_gone` (supervisor alive, no child and cannot spawn — e.g. missing argv config),
   `internal`. Messages are diagnostics, never secrets.
-- **Ordering**: single-threaded request handling in the supervisor (accept → read → act → respond →
-  close). No concurrency needed at v1 volumes (restarts are rare, polls are 5s+).
+- **Ordering** (amended in US-2, superseding US-1's implementation note):
+  **handler-per-connection**. Each accepted connection is served on its own
+  goroutine; reads (`hello`/`status`/`metrics`) are lock-free; `restart` is
+  serialized by a dedicated `restartMu` with `TryLock` — a restart arriving
+  mid-restart reports `in_progress` instead of queueing — and `spawn_env`
+  stores are mutex-protected assignments (last-write-wins; no lock-free
+  claims). The original v1 wording ("single-threaded request
+  handling — no concurrency needed at v1 volumes") was wrong on its own
+  terms: one slow `restart` (seconds of child teardown) head-of-line-blocks
+  every status/hello poll under single-threaded accept→handle ordering,
+  contradicting the idempotency requirement the same section states. Proven
+  by US-1's blocked-restart test (`TestControlSocket_RestartIdempotency`)
+  and pinned by US-2's concurrency tests
+  (`TestControlSocket_ReadsNotBlockedBySlowRestart`,
+  `TestControlSocket_ConcurrentSpawnEnvLastWriteWins`), which stage a slow
+  restart and verify reads and spawn_env stores are served meanwhile.
 - **Transport honesty**: plain TCP on loopback. Not TLS (loopback in-pod; same-netns spoofing is
   equivalent to uid-1000 code — see A.4), not unix-socket (file path would be a uid-boundary
   artifact).
