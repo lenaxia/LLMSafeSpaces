@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
@@ -290,6 +291,17 @@ var outboxTick = 1 * time.Second
 // The accepting userID rides the entry (the accepting request is long
 // gone by delivery time).
 func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID string, e outbox.Entry) error {
+	// Pre-redelivery dedupe (D3 r2): on a RETRY (attempts > 0), the prior
+	// attempt may have completed server-side without the worker knowing —
+	// a delivery-context timeout can fire while opencode still finishes
+	// and persists the turn. Redelivering then duplicates the whole turn.
+	// Before retrying, check the session transcript for a user message
+	// with this exact text newer than the accept time; if present, the
+	// turn ran — treat the entry as delivered (skip + success path).
+	if e.Attempts > 0 && h.outboxAlreadyDelivered(ctx, workspaceID, sessionID, e) {
+		h.postOutboxDeliverSuccess(workspaceID, sessionID, e)
+		return nil
+	}
 	var model *session.ModelRef
 	if len(e.Model) > 0 {
 		var m session.ModelRef
@@ -303,6 +315,48 @@ func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID
 	}
 	h.postOutboxDeliverSuccess(workspaceID, sessionID, e)
 	return nil
+}
+
+// outboxAlreadyDelivered reports whether the transcript already contains
+// a user message with the entry's exact text, created after the entry's
+// accept time. Bounded: the recent page only, history errors fall back
+// to redelivery (at-least-once semantics preserved).
+func (h *ProxyHandler) outboxAlreadyDelivered(ctx context.Context, workspaceID, sessionID string, e outbox.Entry) bool {
+	msgs, err := h.adapter.GetHistory(ctx, "", workspaceID, sessionID)
+	if err != nil || len(msgs) == 0 {
+		return false
+	}
+	// Scan the tail (newest last in platform shape); 25 messages covers
+	// any realistic retry cadence without a full-history walk.
+	start := 0
+	if len(msgs) > 25 {
+		start = len(msgs) - 25
+	}
+	for _, m := range msgs[start:] {
+		if m.Type != session.MessageUser {
+			continue
+		}
+		if m.CreatedAt != nil && m.CreatedAt.After(e.AcceptedAt) && messageText(m) == e.Text {
+			return true
+		}
+	}
+	return false
+}
+
+// messageText returns a platform message's displayable text: the flat
+// Text field when set (user messages use the flat constructor), else the
+// concatenated text parts.
+func messageText(m session.Message) string {
+	if m.Text != "" {
+		return m.Text
+	}
+	var b strings.Builder
+	for _, p := range m.Parts {
+		if p.Type == session.PartText {
+			b.WriteString(p.Text)
+		}
+	}
+	return b.String()
 }
 
 // postOutboxDeliverSuccess mirrors postAdapterSuccess for the detached

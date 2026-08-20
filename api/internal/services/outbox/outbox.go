@@ -397,6 +397,7 @@ func (s *Service) Recover(ctx context.Context) int {
 				continue // crash window left it in both — main wins
 			}
 			e.Status = StatusPending
+			e.NextAttemptAt = time.Time{}
 			s.client.LPush(ctx, qKey(ws, ses), string(mustMarshal(e)))
 			n++
 		}
