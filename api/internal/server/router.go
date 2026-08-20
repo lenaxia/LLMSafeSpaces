@@ -510,9 +510,12 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 		// <ws>-preview.<baseDomain>/<port>/?t=<one-time token>. Only the
 		// API origin serves this route; preview hosts 404 /api/* (T5).
 		// Sibling path, not a sub-path: gin's router cannot register a
-		// static segment under the /dev-preview/* wildcard.
+		// static segment under the /dev-preview/* wildcard. The bare
+		// /dev-preview-bootstrap (no :port) variant reads ?port= — it
+		// backs the preview-origin landing page's no-JS form.
 		if cfg.PreviewOriginHandler != nil {
 			idGroup.GET("/dev-preview-bootstrap/:port", cfg.PreviewOriginHandler.HandleBootstrap)
+			idGroup.GET("/dev-preview-bootstrap", cfg.PreviewOriginHandler.HandleBootstrap)
 		}
 	}
 

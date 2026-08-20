@@ -77,6 +77,7 @@ func newPreviewOriginFixture(t *testing.T, backend *httptest.Server) (*PreviewOr
 	// untouched and preview hosts never reach API routes.
 	r.GET("/api/v1/anything", func(c *gin.Context) { c.String(200, "api") })
 	r.GET("/api/v1/workspaces/:id/dev-preview-bootstrap/:port", pv.HandleBootstrap)
+	r.GET("/api/v1/workspaces/:id/dev-preview-bootstrap", pv.HandleBootstrap)
 	return pv, r, inner
 }
 
@@ -535,5 +536,155 @@ func TestPreviewOrigin_BootstrapBadInput(t *testing.T) {
 	r.ServeHTTP(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("bootstrap non-uuid ws: expected 400, got %d", w.Code)
+	}
+}
+
+// --- landing page (human front door) ---
+
+func TestPreviewOrigin_Landing_DeepLink_Navigation(t *testing.T) {
+	// Unauthenticated browser navigation (Sec-Fetch-Mode: navigate — a
+	// forbidden header for fetch/XHR, so only real navigations send it)
+	// gets the landing page with a one-click bootstrap link for the port
+	// in the URL — not a bare 401.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer backend.Close()
+	_, r, _ := newPreviewOriginFixture(t, backend)
+
+	req := httptest.NewRequest("GET", "/5173/status.html", nil)
+	req.Host = pvHost
+	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("navigation without credentials: expected 200 landing, got %d", w.Code)
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
+		t.Errorf("landing must be HTML, got %q", ct)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "dev-preview-bootstrap/5173") {
+		t.Errorf("landing CTA must link the bootstrap for this port; body excerpt: %q", body[:min(200, len(body))])
+	}
+	if !strings.Contains(body, "Open preview") {
+		t.Error("landing missing CTA label")
+	}
+	if strings.Contains(body, "password") && strings.Contains(body, "input type=\"password\"") {
+		t.Error("SECURITY: landing must never contain a password field")
+	}
+	if w.Header().Get("X-Robots-Tag") == "" {
+		t.Error("landing must set X-Robots-Tag")
+	}
+	if w.Header().Get("Cache-Control") != "no-store" {
+		t.Error("landing must be no-store")
+	}
+}
+
+func TestPreviewOrigin_Landing_NonNavigation_Still401(t *testing.T) {
+	// Same URL without the navigation header (fetch/XHR/curl): unchanged
+	// 401 — subresources and API clients must not receive HTML.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer backend.Close()
+	_, r, _ := newPreviewOriginFixture(t, backend)
+
+	req := httptest.NewRequest("GET", "/5173/", nil)
+	req.Host = pvHost
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("non-navigation without credentials: expected 401, got %d", w.Code)
+	}
+}
+
+func TestPreviewOrigin_Landing_BareRoot_Form(t *testing.T) {
+	// Bare host root (no port in path): landing with a no-JS GET form
+	// whose action is the bootstrap ?port= query form.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer backend.Close()
+	_, r, _ := newPreviewOriginFixture(t, backend)
+
+	req := httptest.NewRequest("GET", "/", nil)
+	req.Host = pvHost
+	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("bare root navigation: expected 200 landing, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "<form") || !strings.Contains(body, `name="port"`) {
+		t.Error("bare-root landing must contain the port form")
+	}
+	if !strings.Contains(body, "/dev-preview-bootstrap") {
+		t.Error("form action must target the bootstrap endpoint")
+	}
+}
+
+func TestPreviewOrigin_Landing_ExpiredCookie_Navigation(t *testing.T) {
+	// An invalid/expired cookie on a navigation falls through to the
+	// landing (not a bare 401) — the common "7-day cookie expired while
+	// deep-linking" path.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer backend.Close()
+	_, r, _ := newPreviewOriginFixture(t, backend)
+
+	req := httptest.NewRequest("GET", "/5173/", nil)
+	req.Host = pvHost
+	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	req.Header.Set("Cookie", previewCookieName+"=v1.corrupted.signature")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "Open preview") {
+		t.Fatalf("invalid-cookie navigation: expected landing, got %d", w.Code)
+	}
+}
+
+func TestPreviewOrigin_Token_Precedence_Over_Landing(t *testing.T) {
+	// A navigation carrying a valid ?t= must redeem (303) — the landing
+	// must never shadow the bootstrap redirect (every bootstrap open IS
+	// a navigation).
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer backend.Close()
+	_, r, _ := newPreviewOriginFixture(t, backend)
+
+	loc := mintBootstrap(t, r, "5173")
+	u := strings.TrimPrefix(loc, "https://"+pvHost)
+	req := httptest.NewRequest("GET", u, nil)
+	req.Host = pvHost
+	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("token redemption must win over landing: expected 303, got %d", w.Code)
+	}
+}
+
+func TestPreviewOrigin_Bootstrap_QueryPortForm(t *testing.T) {
+	// /dev-preview-bootstrap?port=N — the landing form's target. Behaves
+	// identically to the path form.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer backend.Close()
+	_, r, _ := newPreviewOriginFixture(t, backend)
+
+	req := httptest.NewRequest("GET", "/api/v1/workspaces/"+pvWS+"/dev-preview-bootstrap?port=5173", nil)
+	req.Host = "api." + pvDomain
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusFound || !strings.HasPrefix(w.Header().Get("Location"), "https://"+pvHost+"/5173/") {
+		t.Fatalf("query-form bootstrap: expected 302 to preview host, got %d %q", w.Code, w.Header().Get("Location"))
+	}
+
+	// Invalid ports rejected exactly like the path form.
+	for _, q := range []string{"port=abc", "port=80", "port=4097"} {
+		req = httptest.NewRequest("GET", "/api/v1/workspaces/"+pvWS+"/dev-preview-bootstrap?"+q, nil)
+		req.Host = "api." + pvDomain
+		w = httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("query bootstrap %q: expected 400, got %d", q, w.Code)
+		}
 	}
 }
