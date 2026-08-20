@@ -25,6 +25,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"os/signal"
 	"syscall"
@@ -50,9 +51,18 @@ func runSuperviseOpencodeCommand(_ []string) int {
 	proc.start()
 	adapter := &managedProcAdapter{p: proc}
 
-	srv, err := newSupervisorControlServer(fmt.Sprintf("127.0.0.1:%d", ControlSocketPort), adapter)
+	// Socket address: the wire CONTRACT fixes 127.0.0.1:4099 in-pod
+	// (Appendix A.0) and production never sets the override — it exists
+	// so the exec-level integration test can run the real subcommand on
+	// an ephemeral port without colliding with anything else on the host
+	// (same env-override pattern as LLMSAFESPACES_AGENT_CONFIG_PATH).
+	addr := os.Getenv("LLMSAFESPACES_CONTROL_SOCKET_ADDR")
+	if addr == "" {
+		addr = fmt.Sprintf("127.0.0.1:%d", ControlSocketPort)
+	}
+	srv, err := newSupervisorControlServer(addr, adapter)
 	if err != nil {
-		log.Error("FATAL: control socket listen failed", zap.Int("port", ControlSocketPort), zap.Error(err))
+		log.Error("FATAL: control socket listen failed", zap.String("addr", addr), zap.Error(err))
 		return 1
 	}
 	go srv.serve()

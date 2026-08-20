@@ -1,0 +1,51 @@
+# US-2 kind integration (design 0051 L3) — executes scripts/us2-kind-integration.sh
+# (checks K1–K8 from docs/testing/0051-us2-integration-test-plan.md) on a
+# throwaway kind cluster with a local registry.
+#
+# NOT gating PRs: L3 exercises kubelet-side behavior (native-sidecar
+# ordering, container-restart isolation, termination) and is run on
+# workflow_dispatch + weekly cadence. L0–L2 remain the per-PR gates.
+name: US-2 kind integration (L3)
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Mondays 05:00 UTC — after the e2e-nightly slot, before work hours EU.
+    - cron: "0 5 * * 1"
+
+jobs:
+  us2-kind:
+    name: US-2 L3 checks (K1–K8)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.6"
+          cache: true
+
+      - name: Install kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin
+
+      - name: Install helm
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      - name: Run US-2 L3 integration checks
+        run: scripts/us2-kind-integration.sh
+
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
+          kubectl -n llmsafespaces get pods -o wide || true
+          kubectl -n llmsafespaces describe pod -l llmsafespaces.dev/workspace=ws-us2-int || true
+          kubectl -n llmsafespaces logs deployment/lss-controller --tail=100 || true
+          for c in agentd workspace; do
+            kubectl -n llmsafespaces logs -l llmsafespaces.dev/workspace=ws-us2-int -c "$c" --tail=80 || true
+          done

@@ -38,9 +38,10 @@ US-2 splits one process into a **pair communicating over `127.0.0.1:4099`** (App
 |---|---|---|---|
 | **L0 — unit** | Each component alone (fake collaborators) | existing suites: `control_socket_test.go`, `socket_vitals_test.go`, `sidecar_mode_test.go`, `agentd_sidecar_pod_test.go`, … | ✅ green (CI) |
 | **L0.5 — regression pins** | Deterministic tests for every gap found in #980's cycles | `us2_regression_gaps_test.go` (NEW) | ✅ green (this PR) |
-| **L1 — in-pod integration** | C1 supervisor + real child + real socket server + C2's real consumers (`buildSidecarDeps`) in one process tree | `sidecar_integration_test.go` (NEW) | ✅ green (this PR + CI) |
-| **L2 — pod-spec admission** | `buildPod` output against a real API server (KEP-753 restartPolicy admission, SecurityContext, Secret-key resolution) | `agentd_sidecar_envtest_test.go` (NEW, `-tags envtest`) | ✅ green (envtest workflow) |
-| **L3 — kind cluster** | Real kubelet: native-sidecar ordering, probes, container restarts, termination | §5 runbook (below) | ⏳ manual, this doc |
+| **L1 — in-pod integration** | C1 supervisor + real child + real socket server + C2's real consumers (`buildSidecarDeps`) in one process tree | `sidecar_integration_test.go` | ✅ green (CI) |
+| **L1.5 — supervisor subprocess** | The REAL `supervise-opencode` subcommand as a real process (PID semantics, signals, subreaper, exit code) driven by the real client over real TCP | `supervisor_subprocess_test.go` (NEW) | ✅ green (CI) |
+| **L2 — pod-spec admission** | `buildPod` output against a real API server (KEP-753 restartPolicy admission, SecurityContext, Secret-key resolution) | `agentd_sidecar_envtest_test.go` (`-tags envtest`) | ✅ green (envtest workflow) |
+| **L3 — kind cluster** | Real kubelet: native-sidecar ordering, probes, container restarts, termination | `scripts/us2-kind-integration.sh` + `.github/workflows/us2-kind-integration.yml` (NEW) | ✅ executable (workflow_dispatch + weekly; not PR-gating) |
 | **L4 — TEST-cluster canary** | Full workspace SLOs under the chart gate | US-5 (V-matrix + D6.1 rollback exercise) | ⏳ blocked on US-3/US-4 |
 
 ### L0.5 — the regression pins (one per gap; all deterministic)
@@ -81,38 +82,43 @@ Components integrated: **C5 (real `buildPod`)** ⇄ **real Kubernetes API server
 
 **Pass criteria:** all three green in the envtest workflow (CI) — `go test ./controller/internal/workspace/ -tags envtest -run TestEnvtestAgentdSidecar` with `KUBEBUILDER_ASSETS`.
 
-## 4. L3 — kind cluster runbook (manual, ~30 min)
+## 4. L3 — kind cluster (executable: `scripts/us2-kind-integration.sh`)
 
 **What this level uniquely proves:** kubelet-side behavior — native-sidecar START ORDERING (S6), probe-driven restarts of ONE container not the pod, cross-uid file reads under a real container runtime, and the termination path.
 
-### Setup
+### Running it
 
 ```bash
-kind create cluster --name us2-int --image kindest/node:v1.35.x   # chart floor 1.35
-helm install lss helm/ --set controller.agentdDelivery.image="<digest-pinned agentd image>" \
-                     --set controller.agentdSidecar.enabled=true
-kubectl apply -f <workspace.yaml>   # one test workspace
+scripts/us2-kind-integration.sh [--keep]   # --keep: leave cluster + registry up
 ```
+
+CI runs the same script via `.github/workflows/us2-kind-integration.yml` (workflow_dispatch + weekly Mondays 05:00 UTC; deliberately NOT PR-gating — L0–L2 remain the per-PR gates). Exit codes: `0` all PASS · `1` setup failure · `2` one or more checks FAILED (summary printed). The script is self-contained: throwaway local registry (the agentd sidecar REQUIRES a digest-pinned reference and digest pulls must resolve — the canonical kind `certs.d` registry wiring), controller-lean chart install (api/mcp/webhooks off — the reconciler needs none of those to build pods), pinned node image matching the chart's 1.35 floor.
+
+> **Verification honesty:** the script is executed by CI (and any docker-capable host); it was authored on a sandbox without docker, so first execution may need iteration — record outcomes on #978.
 
 ### Checks (map to V-matrix rows; full matrix is US-5)
 
-| ID | Check | Command | PASS |
-|---|---|---|---|
-| K1 | Sidecar ordering: `credential-setup` completes → `agentd` starts → main container starts only after sidecar `StartupProbe` passes | `kubectl get pod <pod> -o jsonpath='{.spec.initContainers[*].name}'`; `kubectl describe pod` events | main container's start event timestamp ≥ sidecar ready timestamp |
-| K2 | #857 stamp-before-read: `agent-config.json` contains the `llmsafespaces` MCP entry BEFORE opencode's first read | exec into sidecar: verify stamp; check opencode logs for MCP server registration | MCP entry present at first boot; no "missing MCP" warnings |
-| K3 | Filesystem bridge (S7): opencode (uid 1000) reads the sidecar-stamped `agent-config.json`; sidecar (uid 2000) reads init-written `admin-prompt.md`/`allowed-dirs.json` | `kubectl exec <pod> -c workspace -- cat /sandbox-runtime/agent-config.json`; `stat -c %a` each | readable; boot trio 0640; credential files 0600 |
-| K4 | Socket (S1) from inside the pod: sidecar→supervisor round-trip | port-forward + `hello`/`status` | responses per A.1 shapes |
-| K5 | Watchdog restart (S2) end-to-end in-pod | kill opencode's listener (e.g. `kill -STOP`/SIGKILL the opencode pid from the workspace container), watch sidecar logs | supervisor respawns; marker `last-restart-reason.json` updated; busy sessions defer |
-| K6 | Probe isolation: wedged SIDECAR restarts only the sidecar | SIGSTOP the sidecar process; wait past liveness budget | sidecar restartCount +1, main container untouched, opencode keeps serving :4096 |
-| K7 | Wedged CHILD triggers workspace-container restart (TCP liveness), sidecar survives | kill opencode from inside | workspace container restarts, sidecar does NOT restart (restartPolicy Always ≠ pod restart) |
-| K8 | Termination: pod delete drains both containers within ~5s grace | `time kubectl delete pod` | clean exit, no orphaned child in events |
+| ID | Check | PASS |
+|---|---|---|
+| K1 | Sidecar ordering: `credential-setup` finishedAt < sidecar startedAt < main startedAt (from pod status timestamps) | ordering holds |
+| K2 | #857 stamp-before-read: `agent-config.json` carries the `llmsafespaces` MCP entry at first boot | MCP entry present |
+| K3 | Filesystem bridge (S7): boot trio 0640 (admin-prompt may be absent without an API); password 0600 | modes as specced |
+| K4 | Socket (S1) from inside the pod: `hello` over `127.0.0.1:4099` via `/dev/tcp` | A.1 response shape |
+| K5 | Child crash (SIGKILL the opencode pid from the workspace container) → supervisor respawns a fresh pid, crash marker written | new pid + `"reason":"crash"` |
+| K6 | `crictl stop` the SIDECAR → sidecar restartCount +1, main untouched, opencode still serving :4096 | isolation holds |
+| K7 | `crictl stop` the WORKSPACE container → main restartCount +1, sidecar unchanged, pod returns Ready | isolation holds |
+| K8 | Pod delete completes within the 5s grace + API overhead | ≤ 30s wall |
 
-**Record results** as a comment on #978 (template: ID / PASS-FAIL / evidence command output).
+**Record results** as a comment on #978 (template: ID / PASS-FAIL / evidence command output). K6/K7 degrade to SKIP when `crictl` is unavailable on the node.
+
+### L1.5 — supervisor subprocess (`supervisor_subprocess_test.go`, new)
+
+Between L1 and L2: the REAL `supervise-opencode` subcommand as a REAL process — process start, env parsing, listener bootstrap, signal handling (SIGTERM → exit 0, child reaped, no orphans), subreaper — driven over real TCP by the real `controlClient`. Socket address via the `LLMSAFESPACES_CONTROL_SOCKET_ADDR` test seam (production keeps the fixed `127.0.0.1:4099`; the override follows the same pattern as `LLMSAFESPACES_AGENT_CONFIG_PATH`). Four tests: full Appendix-A lifecycle (hello/status/metrics/spawn_env landing in the next real child's environ, wholesale replacement, pid swap), child-crash respawn (socket stays up through the crash window, crash counter increments), clean shutdown + no orphaned child, and A.3 malformed-input error shapes against the real process. The only fake is the `opencode` binary (single-process `exec sleep` stub — a background-sleep variant once held the test's stdout pipe open past exit and failed `go test` with "WaitDelay expired").
 
 ## 5. What each level cannot catch (why the next one exists)
 
 - **L0/L0.5** can't catch: two correct halves wired wrong (wrong addr, wrong port, wrong type at the seam).
-- **L1** can't catch: pod-spec rejection by real admission (it never runs a kubelet/API server), kubelet start ordering, container-level restart isolation.
+- **L1/L1.5** can't catch: pod-spec rejection by real admission (no kubelet/API server), kubelet start ordering, container-level restart isolation.
 - **L2** can't catch: anything kubelet does at runtime (probe execution, native-sidecar gating, signal delivery).
 - **L3** can't catch: SLO/regression at fleet scale, gVisor (runsc) divergence, mixed-generation rollback convergence — that is L4/US-5 (V-matrix + D6.1 exercise on→off→on).
 
@@ -121,4 +127,4 @@ kubectl apply -f <workspace.yaml>   # one test workspace
 1. **US-3**: extend `..._SecretBackedEnv` to the `agentdPassword` key; add V4 (401 with workspace password on control-plane endpoints).
 2. **US-4**: `spawn_env` producer end-to-end (sidecar reload → composed env → socket → next spawn) — extend `..._SpawnEnvHandoff` to drive the REAL reload handler; mount-relocation assertions in K3.
 3. **US-5**: L4 canary — full V-matrix (V1–V9) on TEST, D6.1 rollback EXERCISE (on→off→on with mixed-generation pods healthy at each step), gVisor leg per V9.
-4. **L3 automation**: if K1–K8 prove high-value manually, promote to `kind`-in-CI (weekly job) — decision point after US-5.
+4. **L3 in CI**: already wired (workflow_dispatch + weekly); promote to per-PR only if the suite proves stable and fast enough — decision point after US-5.
