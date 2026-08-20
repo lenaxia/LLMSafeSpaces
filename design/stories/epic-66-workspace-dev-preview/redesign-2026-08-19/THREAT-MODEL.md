@@ -92,6 +92,24 @@ Every threat below should be read with that attacker in mind.
   - SameSite unset → add explicit `Lax` in P0-3 (browser-default grace is
     not policy). Observed JWT lifetime ~30 days → pair with rotation.
 - **P0-3 urgency: routine (not a phase-1 blocker).**
+- **Addendum 2026-08-19 (code inspection, post-merge of P0-1/P0-2):**
+  1. SameSite=Lax is already explicit on ALL issuance paths in current
+     main (5ff0f2ef, #774, 2026-08-11). The field observation of an unset
+     SameSite means the audited deployment predates that commit — the
+     field session measured a build ≥8 days stale. Structural findings
+     (CSP, WS stripping, G34) were re-confirmed in current main by code
+     reading; the SameSite gap self-heals on deploy.
+  2. The `__Host-` rename is dropped: it is incompatible with Epic 54's
+     wildcard `cookieDomain` (the prefix forbids Domain attributes), and
+     the shadowing threat it addresses is Low. T2 residual accepted.
+  3. Same-site nuance for T1 (applies to Phase 1): preview hosts share a
+     registrable domain with the API, so SameSite=Lax does NOT gate
+     preview→API credentialed requests in Epic 54 deployments. The
+     load-bearing control is the CORS origin allowlist (explicit list,
+     credentials only on match, fail-closed wildcard+credentials boot
+     guard — verified in config.go validateSecurity and
+     middleware/security.go). Phase 1 checklist: never allowlist preview
+     origins.
 
 ### T3 · Control-plane proxying via arbitrary port — **MITIGATED at proxy layer (verified); hygiene gaps remain**
 
