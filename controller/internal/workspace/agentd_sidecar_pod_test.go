@@ -38,6 +38,7 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"github.com/stretchr/testify/require"
@@ -207,9 +208,49 @@ func TestAgentdSidecar_Enabled_StartupProbeGatesStampBeforeRead(t *testing.T) {
 	require.NotNil(t, sp.HTTPGet)
 	require.Equal(t, "/v1/healthz", sp.HTTPGet.Path)
 	require.Equal(t, int(agentd.AgentdAdminPort), sp.HTTPGet.Port.IntValue())
+	require.Empty(t, sp.HTTPGet.HTTPHeaders,
+		"startup probe targets the deliberately-open /v1/healthz — no auth header needed (kubelet needs no Secret plumbing)")
 
 	require.NotNil(t, sc.LivenessProbe, "sidecar liveness restarts a wedged sidecar without touching the workspace container")
 	require.NotNil(t, sc.LivenessProbe.HTTPGet)
+}
+
+// TestAgentdSidecar_ReadinessProbeCarriesBearerToken is the L3-found
+// regression (kind run 32421411899): /v1/readyz is bearer-gated once the
+// admin token exists (#933), so the SIDECAR's readiness probe must carry
+// the same Authorization header the MAIN container's probes do — without
+// it the probe 401s forever and the pod never goes Ready even though the
+// sidecar itself is serving (its own readyz_first_200 gate fired).
+func TestAgentdSidecar_ReadinessProbeCarriesBearerToken(t *testing.T) {
+	ws := newWorkspaceForSecurity(t)
+	r := reconcilerWithAgentdSidecar(t)
+
+	// The Secret with the distinct admin-token key must exist for
+	// buildPod's adminToken resolution (ensurePasswordSecret shape).
+	sec := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      passwordSecretName(ws.Name),
+			Namespace: ws.Namespace,
+		},
+		Data: map[string][]byte{
+			"password":    []byte("pw"),
+			"admin-token": []byte("the-admin-token"),
+		},
+	}
+	require.NoError(t, r.Create(context.Background(), sec))
+
+	pod, err := r.buildPod(context.Background(), ws)
+	require.NoError(t, err)
+
+	sc := sidecarInitContainer(pod, "agentd")
+	require.NotNil(t, sc)
+	rp := sc.ReadinessProbe
+	require.NotNil(t, rp)
+	require.NotNil(t, rp.HTTPGet)
+	require.Equal(t, "/v1/readyz", rp.HTTPGet.Path)
+	require.Len(t, rp.HTTPGet.HTTPHeaders, 1, "readiness probe MUST carry the bearer header (bearer-gated endpoint)")
+	require.Equal(t, "Authorization", rp.HTTPGet.HTTPHeaders[0].Name)
+	require.Equal(t, "Bearer the-admin-token", rp.HTTPGet.HTTPHeaders[0].Value)
 }
 
 func TestAgentdSidecar_Enabled_OrderingAfterCredentialSetup(t *testing.T) {

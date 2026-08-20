@@ -353,7 +353,7 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 
 	// Design 0051 US-2: native agentd sidecar + supervisor-mode main
 	// container. No-op when the chart gate is off (default).
-	r.applyAgentdSidecar(pod, workspace)
+	r.applyAgentdSidecar(pod, workspace, adminToken)
 
 	return pod, nil
 }
