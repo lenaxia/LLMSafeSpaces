@@ -34,6 +34,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -319,6 +320,21 @@ func TestAgentdSidecar_EntrypointBranchExecLevel(t *testing.T) {
 	agentdStub := filepath.Join(stubDir, "workspace-agentd")
 	require.NoError(t, os.WriteFile(agentdStub, []byte("#!/bin/sh\necho \"argv=$*\"\nexit 0\n"), 0o755))
 
+	// entrypoint-opencode.sh sources entrypoint-common.sh at its image
+	// path (/usr/local/bin/...), which exists in the runtime image and
+	// on live workspace pods but NOT on CI runners. Copy the script and
+	// point the source line at the repo's real entrypoint-common.sh —
+	// everything else runs verbatim.
+	src, err := os.ReadFile(script)
+	require.NoError(t, err)
+	patched := strings.Replace(string(src),
+		"source /usr/local/bin/entrypoint-common.sh",
+		"source \""+entrypointScriptPath(t)+"\"", 1)
+	require.NotContains(t, patched, "/usr/local/bin/entrypoint-common.sh",
+		"the source line moved — update the patch to match the script")
+	scriptCopy := filepath.Join(dir, "entrypoint-opencode-test.sh")
+	require.NoError(t, os.WriteFile(scriptCopy, []byte(patched), 0o755))
+
 	// entrypoint-opencode.sh execs "${AGENTD_BIN}" --supervise (legacy
 	// tail); in sidecar mode it must exec supervise-opencode instead.
 	// AGENTD_IMAGE_VOLUME is explicitly blanked: this sandbox is itself a
@@ -329,7 +345,7 @@ func TestAgentdSidecar_EntrypointBranchExecLevel(t *testing.T) {
 			`export AGENTD_IMAGE_VOLUME=; `+
 			`export AGENTD_BIN="`+agentdStub+`"; `+
 			`export AGENTD_SIDECAR_MODE=1; `+
-			`bash "`+script+`"`)
+			`bash "`+scriptCopy+`"`)
 	cmd.Env = append(os.Environ(),
 		"OPENCODE_CONFIG="+filepath.Join(dir, "agent-config.json"),
 		"XDG_DATA_HOME="+filepath.Join(dir, "xdg"),
@@ -337,5 +353,16 @@ func TestAgentdSidecar_EntrypointBranchExecLevel(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "output: %s", out)
 	require.Contains(t, string(out), "argv=supervise-opencode",
-		"sidecar-mode entrypoint must exec the supervisor subcommand; output: %s")
+		"sidecar-mode entrypoint must exec the supervisor subcommand; output: %s", out)
+}
+
+// entrypointScriptPath resolves the repo's entrypoint-common.sh relative
+// to this test file.
+func entrypointScriptPath(t *testing.T) string {
+	t.Helper()
+	abs, err := filepath.Abs(entrypointScript)
+	require.NoError(t, err)
+	_, err = os.Stat(abs)
+	require.NoError(t, err, "entrypoint-common.sh not found at %s", abs)
+	return abs
 }
