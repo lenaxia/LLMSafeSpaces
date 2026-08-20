@@ -160,12 +160,18 @@ log "agentd reference: $AGENTD_REF"
 # (controller/main.go: both-or-neither). The kind node is amd64, so the
 # amd64 hash is what the entrypoint actually verifies; the arm64 field
 # must be non-empty for validation and is inert on this cluster.
-CID=$(docker create "$REG/llmsafespaces/agentd:ci" 2>/dev/null)
-[ -n "$CID" ] || { log "docker create failed for binary extraction"; exit 1; }
+# Extract the binary for hashing. The agentd image is FROM scratch with
+# NO entrypoint/cmd by design, so `docker create` needs an explicit
+# command arg (never started — filesystem access only). Every step is
+# explicitly guarded: under set -e an unguarded assignment would exit
+# silently before its error message (run 32412056256's silent death).
+CID=$(docker create "$REG/llmsafespaces/agentd:ci" no-start 2>/dev/null) \
+  || { log "docker create failed for binary extraction"; exit 1; }
 docker cp "$CID:/usr/local/bin/workspace-agentd" "$TMPDIR/workspace-agentd" >/dev/null 2>&1 \
   || { docker rm -f "$CID" >/dev/null 2>&1; log "docker cp failed to extract agentd binary"; exit 1; }
 docker rm -f "$CID" >/dev/null 2>&1
-BINARY_SHA=$(sha256sum "$TMPDIR/workspace-agentd" | cut -d' ' -f1)
+BINARY_SHA=$(sha256sum "$TMPDIR/workspace-agentd" 2>/dev/null | cut -d' ' -f1) \
+  || { log "sha256sum failed on extracted binary"; exit 1; }
 [ -n "$BINARY_SHA" ] || { log "could not hash extracted binary"; exit 1; }
 log "agentd binary sha256 (amd64): $BINARY_SHA"
 
