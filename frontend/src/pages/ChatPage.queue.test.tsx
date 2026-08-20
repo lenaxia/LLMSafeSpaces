@@ -6,7 +6,7 @@
  * The frontend manages display state (pills) locally, synced via SSE.
  */
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { screen, waitFor, act } from "@testing-library/react";
+import { screen, waitFor, act , fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { render } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
@@ -370,6 +370,52 @@ describe("ChatPage message queue (backend-backed)", () => {
 
     await waitFor(() => {
       expect(screen.queryByLabelText("Dismiss")).not.toBeInTheDocument();
+    });
+  });
+});
+
+// D6 (#998): the hung-session alert banner. workspace.alert/session_hung
+// renders the amber banner; session.status=idle for that session
+// auto-clears it (the hang resolved); dismissal works.
+describe("D6 hung-session alert banner (#998)", () => {
+  it("renders the banner on workspace.alert and auto-clears on idle", async () => {
+    renderChat(makeQueryClient(), "/chat/ws-1/ses_1");
+    await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
+
+    sendSSE({
+      type: "workspace.alert",
+      workspace_id: "ws-1",
+      session_id: "ses_1",
+      status: "session_hung",
+      data: { alert: "session_hung", oldest_busy_seconds: 960, policy: "notify_only", guidance: "g" },
+    });
+
+    const banner = await screen.findByText(/busy for 16 min without/i);
+    expect(banner).toBeInTheDocument();
+
+    // The hang resolves: idle for the same session clears it.
+    sendSSE({ type: "session.status", session_id: "ses_1", status: "idle" });
+    await waitFor(() => {
+      expect(screen.queryByText(/busy for 16 min without/i)).not.toBeInTheDocument();
+    });
+  });
+
+  it("banner is dismissable", async () => {
+    renderChat(makeQueryClient(), "/chat/ws-1/ses_1");
+    await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
+
+    sendSSE({
+      type: "workspace.alert",
+      workspace_id: "ws-1",
+      session_id: "ses_1",
+      status: "session_hung",
+      data: { alert: "session_hung", oldest_busy_seconds: 960, policy: "notify_only", guidance: "g" },
+    });
+
+    const dismiss = await screen.findByRole("button", { name: "Dismiss" });
+    fireEvent.click(dismiss);
+    await waitFor(() => {
+      expect(screen.queryByText(/busy for 16 min without/i)).not.toBeInTheDocument();
     });
   });
 });

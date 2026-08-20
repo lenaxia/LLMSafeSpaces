@@ -374,6 +374,23 @@ export interface AgentDiedEvent {
   data: { reason: string; message?: string };
 }
 
+// D6 (#998): notify-only escalation for hung-and-alive sessions — a
+// session busy past the threshold with no progress. Policy is
+// notify-only: nothing is stopped or restarted automatically.
+export interface WorkspaceAlertEvent {
+  type: "workspace.alert";
+  workspace_id?: string;
+  session_id?: string;
+  status: string; // "session_hung"
+  data: {
+    alert: string;
+    oldest_busy_seconds: number;
+    busy_ages?: Record<string, number>;
+    policy: "notify_only";
+    guidance: string;
+  };
+}
+
 /**
  * Discriminated union of all event types delivered over the workspace SSE stream.
  * Narrow on `type` to access type-specific fields.
@@ -387,4 +404,5 @@ export type WorkspaceStreamEvent =
   | AgentPermissionEvent
   | AgentPermissionResolvedEvent
   | QueueUpdateEvent
-  | AgentDiedEvent;
+  | AgentDiedEvent
+  | WorkspaceAlertEvent;

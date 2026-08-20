@@ -9,6 +9,7 @@ interface SessionActivityContextValue {
   isSessionBusy: (sessionId: string) => boolean;
   isSessionUnread: (sessionId: string) => boolean;
   workspaceBusyCount: (workspaceId: string) => number;
+  hungWorkspaces: Set<string>;
   clearPendingUnread: (sessionId: string) => void;
   isSessionPendingAction: (sessionId: string) => boolean;
   pendingActionSessionIds: Set<string>;
@@ -57,6 +58,11 @@ function pruneMany<V>(m: Map<string, V>, doomed: Set<string>): Map<string, V> {
 
 export function SessionActivityProvider({ children }: { children: ReactNode }) {
   const [busySessions, setBusySessions] = useState<Map<string, string>>(new Map());
+  // D6 (#998): workspaces with an active hung-session alert. Set on
+  // workspace.alert/session_hung; cleared on that workspace's next
+  // session.status=idle (the hang resolved) — the map is workspace-keyed
+  // so the sidebar badge survives session switches.
+  const [hungWorkspaces, setHungWorkspaces] = useState<Set<string>>(new Set());
   const [pendingUnread, setPendingUnread] = useState<Map<string, string>>(new Map());
   const queryClient = useQueryClient();
   const params = useParams();
@@ -250,7 +256,23 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         status?: string;
         phase?: string;
         snapshot_id?: string;
+        data?: { alert?: string };
       };
+
+      // D6 (#998): hung-session alert bookkeeping (workspace-scoped).
+      if (evt.type === "workspace.alert" && evt.data?.alert === "session_hung" && evt.workspace_id) {
+        const wsId = evt.workspace_id;
+        setHungWorkspaces((prev) => (prev.has(wsId) ? prev : new Set(prev).add(wsId)));
+      }
+      if (evt.type === "session.status" && evt.status === "idle" && evt.workspace_id) {
+        const wsId = evt.workspace_id;
+        setHungWorkspaces((prev) => {
+          if (!prev.has(wsId)) return prev;
+          const next = new Set(prev);
+          next.delete(wsId);
+          return next;
+        });
+      }
 
       if (evt.type === "agent.question" || evt.type === "agent.permission") {
         if (evt.workspace_id && evt.session_id && evt.request_id) {
@@ -779,7 +801,7 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
 
   return (
     <SessionActivityContext.Provider
-      value={{ isSessionBusy, isSessionUnread, workspaceBusyCount, clearPendingUnread, isSessionPendingAction, pendingActionSessionIds, addPendingAction, removePendingAction, clearWorkspacePendingActions, addPendingQuestion, addPendingPermission, pendingQuestionsForSession, pendingPermissionsForSession, clearSessionPendingPrompts, workspaceInputSnapshot }}
+      value={{ isSessionBusy, isSessionUnread, workspaceBusyCount, hungWorkspaces, clearPendingUnread, isSessionPendingAction, pendingActionSessionIds, addPendingAction, removePendingAction, clearWorkspacePendingActions, addPendingQuestion, addPendingPermission, pendingQuestionsForSession, pendingPermissionsForSession, clearSessionPendingPrompts, workspaceInputSnapshot }}
     >
       {children}
     </SessionActivityContext.Provider>
@@ -796,6 +818,14 @@ export function useIsSessionUnread(sessionId: string): boolean {
   const ctx = useContext(SessionActivityContext);
   if (!ctx) return false;
   return ctx.isSessionUnread(sessionId);
+}
+
+// useWorkspaceHung (D6 #998): true while the workspace has an active
+// hung-session alert (drives the sidebar badge).
+export function useWorkspaceHung(workspaceId: string): boolean {
+  const ctx = useContext(SessionActivityContext);
+  if (!ctx) return false;
+  return ctx.hungWorkspaces.has(workspaceId);
 }
 
 export function useWorkspaceBusyCount(workspaceId: string): number {
