@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-08-21
+
+### Added
+
+- **Epic-66 Phase 2 — relaxed CSP on per-workspace preview origins
+  (#992, redesign §5.4)**: preview-origin responses now carry the
+  dev-friendly policy (script/style `unsafe-inline`, `unsafe-eval`,
+  `img-src data: blob:`) while `connect-src` stays strictly `'self'`
+  (no bare `ws:`/`wss:` — test-enforced). Unblocks Next.js App Router
+  hydration, Vue full-build, and inline scripts/styles. Safe because
+  preview origins hold no platform credentials (T1 closed by Phase 1's
+  architecture) and no network exfil channel opens. The API origin's
+  strict policy is untouched (path-based route pinned by test).
+  `frame-ancestors` configurable via `previewOrigin.frameAncestors` /
+  `LLMSAFESPACES_PREVIEW_ORIGIN_FRAMEANCESTORS` (empty = none) —
+  enables dashboard embedding per deployment.
+- **Epic-66 UX round 2 (#986)**: `dev_preview_url` renders an
+  always-visible **Open dev preview :&lt;port&gt;** button in chat history
+  (collision-proof `LSP_DEV_PREVIEW_V1` sentinel; legacy output renders
+  unchanged); port optional everywhere (default 5173); landing page port
+  always editable + "How dev preview works" explainer;
+  `X-Forwarded-Host`/`X-Forwarded-Proto` forwarded to dev servers so
+  absolute-URL generators emit the real origin.
+
+### Fixed
+
+- **D3 follow-ups (#907, #964)**: durable-prompt server-side retry
+  wiring + pre-redelivery dedupe.
+- **US-2 CI (#989, #990)**: kind integration hardening — binary sha
+  pins, failure-preserving teardown, digest-splice fix, controller-lean
+  install.
+
 ## [0.18.0] - 2026-08-20
 
 ### Added
