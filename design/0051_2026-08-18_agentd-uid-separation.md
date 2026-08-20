@@ -70,6 +70,20 @@ assumption, with a plain-sidecar fallback documented if it fails.
   (post-boot chmod of `agent-config.json`): the file and its embedded MCP Basic header remain
   uid-1000-readable **by necessity** (opencode is their reader; the MCP entry's only caller is
   opencode itself on loopback) — recorded as an honest residual, not papered over.
+- **User-mux becomes two-credential (per-endpoint table; 0050's carve-out made explicit):**
+
+  | Endpoint group | Basic secret | Callers |
+  |---|---|---|
+  | Control plane: `reload-secrets`, `workflow/*`, `agent/reload` | `agentdPassword` (sidecar env only) | API server |
+  | `/v1/mcp` | **workspace password (carve-out)** — its only caller is opencode on loopback, which lives in uid-1000 space and cannot hold `agentdPassword` by design | opencode |
+  | Dev-preview (`/v1/dev-preview/`) | workspace password | API server |
+
+  Consequence for US-3 (implementer note): the shared `checkBasicAuth` gate gains a per-mux
+  credential parameter — the sidecar's user mux accepts either `agentdPassword` OR the workspace
+  password per route registration; existing routes keep `deps.password`, control-plane routes switch.
+  The sidecar retains the workspace password as a CLIENT credential (healthz, MCP proxy → opencode
+  `:4096`, workflow agent-node session calls) — it lives in sidecar env (uid-2000 space) and leaks
+  nothing into uid-1000 that opencode's own config doesn't already hold.
 - **File ownership**: `secrets-env`, `rt/secrets/*`, `admin-prompt.md`, reload cache → sidecar-owned
   under its own mount; `agent-config.json` + `rt/auth.json` → uid-1000 space (opencode's).
   `agent-config.json` gains **integrity** (not confidentiality): the sidecar writes it via a mount the
