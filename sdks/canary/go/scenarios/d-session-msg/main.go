@@ -71,8 +71,7 @@ func runSessionMsg(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 	msg, err := c.Sessions.SendMessage(ctx, wsID, sessionID, "Reply with exactly: PONG")
 	if run.AssertNoError(err, "send-message: no error") {
 		// P2+P3: Response shape
-		run.Assert(msg.Raw != nil, "send-message: raw present", "")
-		run.Assert(len(msg.Content) > 0, "send-message: content non-empty", "")
+		run.Assert(len(msg.TextContent()) > 0, "send-message: text non-empty", "")
 	}
 
 	// P4: lastActivityAt updated after message

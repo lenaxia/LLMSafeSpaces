@@ -42,7 +42,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
       () => c.sessions.sendMessage(wsId!, sess.sessionId, 'Reply with exactly: MODEL-SET-OK'),
       'send-message: no error');
     if (ok3 && msg) {
-      r.assert(msg.content.length > 0, 'send-message: non-empty content');
+      r.assert((msg.text ?? (msg.parts ?? []).filter(p => p.type === 'text').map(p => p.text ?? '').join('')).length > 0, 'send-message: non-empty content');
     }
 
     await r.assertError(

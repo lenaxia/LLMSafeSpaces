@@ -27,7 +27,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
       () => c.sessions.sendMessage(wsId!, sess.sessionId, 'Reply with exactly: PONG'),
       'send-message: no error');
     if (ok2 && msg) {
-      r.assert(msg.content.length > 0, 'send-message: non-empty content');
+      r.assert((msg.text ?? (msg.parts ?? []).filter(p => p.type === 'text').map(p => p.text ?? '').join('')).length > 0, 'send-message: non-empty content');
     }
 
     // lastActivityAt updated

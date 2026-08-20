@@ -136,10 +136,10 @@ func runCredModelFlow(ctx context.Context, run *canary.Runner, cfg canary.Config
 	// already pushed the credential via pushSecretsToAgent since we have a JWT DEK)
 	msg, err := c.Sessions.SendMessage(ctx, wsID, sessionID, "Reply with exactly: CRED-FLOW-OK")
 	if run.AssertNoError(err, "send-message: no error") {
-		run.Assert(len(msg.Content) > 0, "send-message: non-empty content", "")
-		run.Assert(strings.Contains(strings.ToUpper(msg.Content), "CRED-FLOW-OK"),
+		run.Assert(len(msg.TextContent()) > 0, "send-message: non-empty content", "")
+		run.Assert(strings.Contains(strings.ToUpper(msg.TextContent()), "CRED-FLOW-OK"),
 			"send-message: contains expected text",
-			fmt.Sprintf("content: %q", msg.Content[:min(len(msg.Content), 100)]))
+			fmt.Sprintf("content: %q", msg.TextContent()[:min(len(msg.TextContent()), 100)]))
 	}
 
 	// Step 7: History
@@ -158,10 +158,10 @@ func runCredModelFlow(ctx context.Context, run *canary.Runner, cfg canary.Config
 	// Step 9: Send to second session
 	msg2, err := c.Sessions.SendMessage(ctx, wsID, sess2.SessionID, "Reply with exactly: AFTER-RELOAD")
 	if run.AssertNoError(err, "send-message-2: no error") {
-		run.Assert(len(msg2.Content) > 0, "send-message-2: non-empty content", "")
-		run.Assert(strings.Contains(strings.ToUpper(msg2.Content), "AFTER-RELOAD"),
+		run.Assert(len(msg2.TextContent()) > 0, "send-message-2: non-empty content", "")
+		run.Assert(strings.Contains(strings.ToUpper(msg2.TextContent()), "AFTER-RELOAD"),
 			"send-message-2: contains expected text",
-			fmt.Sprintf("content: %q", msg2.Content[:min(len(msg2.Content), 100)]))
+			fmt.Sprintf("content: %q", msg2.TextContent()[:min(len(msg2.TextContent()), 100)]))
 	}
 
 	// Step 10: Delete credential

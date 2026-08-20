@@ -56,10 +56,11 @@ async def test_async_get_workspace(client: AsyncLLMSafeSpaces):
 @pytest.mark.asyncio
 async def test_async_send_message_extracts_text(client: AsyncLLMSafeSpaces):
     respx.post(f"{BASE}/api/v1/workspaces/ws-1/sessions/ses-1/message").mock(
-        return_value=httpx.Response(200, json={"parts": [{"type": "text", "text": "hello"}]})
+        return_value=httpx.Response(200, json={"id": "msg-1", "type": "assistant", "parts": [{"type": "text", "text": "hello"}]})
     )
     resp = await client.sessions.send_message("ws-1", "ses-1", "hi")
-    assert resp.content == "hello"
+    assert resp["type"] == "assistant"
+    assert resp["parts"][0]["text"] == "hello"
 
 
 @respx.mock

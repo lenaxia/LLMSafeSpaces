@@ -78,9 +78,9 @@ func runEnvInjection(ctx context.Context, run *canary.Runner, cfg canary.Config)
 		`Run: python3 -c 'import os; print(os.environ.get("CANARY_INJECT", "NOTFOUND"))'`)
 	if run.AssertNoError(err, "send-message: no error") {
 		// P4: Agent response contains canary-xyz
-		run.Assert(strings.Contains(msg.Content, "canary-xyz"),
+		run.Assert(strings.Contains(msg.TextContent(), "canary-xyz"),
 			"response-contains-value: canary-xyz in output",
-			fmt.Sprintf("content=%.200s", msg.Content))
+			fmt.Sprintf("content=%.200s", msg.TextContent()))
 	}
 
 	// P5: DeleteEnv, then ReloadSecrets
@@ -94,8 +94,8 @@ func runEnvInjection(ctx context.Context, run *canary.Runner, cfg canary.Config)
 	msg2, err := c.Sessions.SendMessage(ctx, wsID, sessionID,
 		`Run: python3 -c 'import os; print(os.environ.get("CANARY_INJECT", "NOTFOUND"))'`)
 	if run.AssertNoError(err, "send-message-2: no error") {
-		run.Assert(strings.Contains(msg2.Content, "NOTFOUND"),
+		run.Assert(strings.Contains(msg2.TextContent(), "NOTFOUND"),
 			"response-contains-notfound: NOTFOUND in output (var cleared)",
-			fmt.Sprintf("content=%.200s", msg2.Content))
+			fmt.Sprintf("content=%.200s", msg2.TextContent()))
 	}
 }

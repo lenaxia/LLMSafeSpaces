@@ -26,7 +26,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
 
     const [ok2, msg1] = await r.assertNoError(
       () => c.sessions.sendMessage(wsId!, sid, 'Reply with exactly: BEFORE'), 'send-before: no error');
-    if (ok2 && msg1) r.assert(msg1.content.length > 0, 'send-before: non-empty');
+    if (ok2 && msg1) r.assert((msg1.text ?? (msg1.parts ?? []).filter(p => p.type === 'text').map(p => p.text ?? '').join('')).length > 0, 'send-before: non-empty');
 
     const [ok3, hist1] = await r.assertNoError(
       () => c.sessions.getHistory(wsId!, sid), 'history-before-suspend: no error');
@@ -45,7 +45,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
 
     const [ok4, msg2] = await r.assertNoError(
       () => c.sessions.sendMessage(wsId!, sess2.sessionId, 'Reply with exactly: AFTER'), 'send-after: no error');
-    if (ok4 && msg2) r.assert(msg2.content.length > 0, 'send-after: non-empty');
+    if (ok4 && msg2) r.assert((msg2.text ?? (msg2.parts ?? []).filter(p => p.type === 'text').map(p => p.text ?? '').join('')).length > 0, 'send-after: non-empty');
 
     // P8: The BEFORE message must still be retrievable on the ORIGINAL session ID.
     // This is the actual persistence test. After resume the pod is the same

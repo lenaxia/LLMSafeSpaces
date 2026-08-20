@@ -42,8 +42,9 @@ async function run(r: Runner, cfg: Config): Promise<void> {
         'Run: python3 -c \'import os; print(os.environ.get("CANARY_INJECT", "NOTFOUND"))\''),
       'send-check-env: no error');
     if (ok2 && msg) {
-      r.assert(msg.content.includes('canary-xyz'), 'env-present: agent sees canary-xyz',
-        msg.content.substring(0, 200));
+      const text = msg.text ?? (msg.parts ?? []).filter(p => p.type === 'text').map(p => p.text ?? '').join('');
+      r.assert(text.includes('canary-xyz'), 'env-present: agent sees canary-xyz',
+        text.substring(0, 200));
     }
 
     await r.assertNoError(
@@ -58,8 +59,9 @@ async function run(r: Runner, cfg: Config): Promise<void> {
         'Run: python3 -c \'import os; print(os.environ.get("CANARY_INJECT", "NOTFOUND"))\''),
       'send-check-env-gone: no error');
     if (ok3 && msg2) {
-      r.assert(msg2.content.includes('NOTFOUND'), 'env-gone: agent sees NOTFOUND',
-        msg2.content.substring(0, 200));
+      const text2 = msg2.text ?? (msg2.parts ?? []).filter(p => p.type === 'text').map(p => p.text ?? '').join('');
+      r.assert(text2.includes('NOTFOUND'), 'env-gone: agent sees NOTFOUND',
+        text2.substring(0, 200));
     }
 
   } finally {

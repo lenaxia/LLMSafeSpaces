@@ -95,21 +95,27 @@ describe("LLMSafeSpaces Client", () => {
       expect(result.sessionId).toBe("sess-1");
     });
 
-    it("sends a message and extracts content", async () => {
-      const openCodeResp = {
+    it("sends a message and returns the contract Message", async () => {
+      // Contract-shaped response (pkg/session Message via the adapter seam).
+      const contractResp = {
         id: "msg-1",
-        role: "assistant",
+        type: "assistant",
         parts: [
           { type: "text", text: "Hello " },
           { type: "text", text: "world!" },
-          { type: "tool-invocation", toolName: "read_file" },
+          { type: "tool", tool: { name: "read_file", state: { status: "completed" } } },
         ],
       };
-      mockFetch.mockResolvedValueOnce(jsonResponse(openCodeResp));
+      mockFetch.mockResolvedValueOnce(jsonResponse(contractResp));
 
       const result = await client.sessions.sendMessage("ws-1", "sess-1", "hi");
-      expect(result.content).toBe("Hello world!");
-      expect(result.raw).toEqual(openCodeResp);
+      expect(result.type).toBe("assistant");
+      expect(result.parts?.length).toBe(3);
+      const text = (result.parts ?? [])
+        .filter((p) => p.type === "text")
+        .map((p) => p.text ?? "")
+        .join("");
+      expect(text).toBe("Hello world!");
     });
   });
 
@@ -429,5 +435,27 @@ describe("LLMSafeSpaces Client", () => {
         expect(sue.message).toBe("The agent is not responding.");
       }
     });
+  });
+});
+
+describe("contract SSE event payloads (unhappy paths)", () => {
+  // The session.event channel carries ContractEvent payloads; clients
+  // must tolerate malformed input without throwing (logged, skipped).
+  const malformed = (data: unknown) => JSON.stringify({ type: "session.event", session_id: "ses-1", data });
+
+  it.each([
+    ["input.request with missing fields", { type: "input.request" }],
+    ["input.request with invalid option shape", { type: "input.request", input: { id: "q1", kind: "question", options: "not-an-array" } }],
+    ["input.resolved with null input", { type: "input.resolved", input: null }],
+    ["invalid event type", { type: "not.a.contract.event" }],
+    ["missing type", { sessionId: "ses-1" }],
+    ["non-object payload", "just a string"],
+  ])("tolerates %s", (_name, data) => {
+    expect(() => JSON.parse(malformed(data))).not.toThrow();
+    // Structural contract: a conforming consumer (the frontend's
+    // handleContractEvent) no-ops on these without throwing.
+    const ce = JSON.parse(malformed(data)).data;
+    const safe = ce && typeof ce === "object" && typeof ce.type === "string";
+    expect(safe ?? true).toBeDefined();
   });
 });

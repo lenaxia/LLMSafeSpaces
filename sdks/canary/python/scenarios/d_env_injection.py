@@ -18,6 +18,7 @@ from canary import (
     ensure_session_with_retry,
 )
 from llmsafespaces import LLMSafeSpaces
+from llmsafespaces.client import message_text
 
 
 def run(r: Runner, cfg: Config) -> None:
@@ -65,11 +66,11 @@ def run(r: Runner, cfg: Config) -> None:
             "send-message: no error",
         )
         if ok2 and msg is not None:
-            r.assert_(len(msg.content) > 0, "send-message: non-empty content")
+            r.assert_(len(message_text(msg)) > 0, "send-message: non-empty text")
             r.assert_(
-                "canary-xyz" in msg.content,
+                "canary-xyz" in message_text(msg),
                 "env-injected: response contains canary-xyz",
-                repr(msg.content[:200]),
+                repr(message_text(msg)[:200]),
             )
 
         r.assert_no_error(
@@ -95,9 +96,9 @@ def run(r: Runner, cfg: Config) -> None:
         )
         if ok3 and msg2 is not None:
             r.assert_(
-                "NOTFOUND" in msg2.content,
+                "NOTFOUND" in message_text(msg2),
                 "env-removed: response contains NOTFOUND",
-                repr(msg2.content[:200]),
+                repr(message_text(msg2)[:200]),
             )
 
     finally:

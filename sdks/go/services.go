@@ -142,22 +142,21 @@ func (s *SessionsService) Ensure(ctx context.Context, workspaceID string) (*Ensu
 	return &resp, err
 }
 
-func (s *SessionsService) SendMessage(ctx context.Context, workspaceID, sessionID, content string) (*MessageResponse, error) {
+// SendMessage delivers a user message synchronously and returns the
+// completed assistant Message in contract shape (pkg/session).
+func (s *SessionsService) SendMessage(ctx context.Context, workspaceID, sessionID, content string) (*Message, error) {
 	body := map[string]any{
 		"content": content,
 		"parts":   []map[string]string{{"type": "text", "text": content}},
 	}
-	var raw json.RawMessage
-	err := s.c.do(ctx, "POST", fmt.Sprintf("/workspaces/%s/sessions/%s/message", workspaceID, sessionID), body, &raw)
-	if err != nil {
-		return nil, err
-	}
-	text := extractText(raw)
-	return &MessageResponse{Raw: raw, Content: text}, nil
+	var msg Message
+	err := s.c.do(ctx, "POST", fmt.Sprintf("/workspaces/%s/sessions/%s/message", workspaceID, sessionID), body, &msg)
+	return &msg, err
 }
 
-func (s *SessionsService) GetHistory(ctx context.Context, workspaceID, sessionID string) ([]json.RawMessage, error) {
-	var result []json.RawMessage
+// GetHistory returns the session transcript in contract shape.
+func (s *SessionsService) GetHistory(ctx context.Context, workspaceID, sessionID string) ([]Message, error) {
+	var result []Message
 	err := s.c.do(ctx, "GET", fmt.Sprintf("/workspaces/%s/sessions/%s/message", workspaceID, sessionID), nil, &result)
 	return result, err
 }
@@ -342,23 +341,22 @@ func (s *TerminalService) GetTicket(ctx context.Context, workspaceID string) (*T
 	return &ticket, err
 }
 
-func extractText(raw json.RawMessage) string {
-	var obj struct {
-		Parts []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"parts"`
-	}
-	if err := json.Unmarshal(raw, &obj); err != nil {
+// TextContent returns the concatenated text of a Message's text parts —
+// the convenience view for callers that don't render parts.
+func (m *Message) TextContent() string {
+	if m == nil {
 		return ""
 	}
-	var sb string
-	for _, p := range obj.Parts {
+	if m.Text != "" {
+		return m.Text
+	}
+	var sb strings.Builder
+	for _, p := range m.Parts {
 		if p.Type == "text" {
-			sb += p.Text
+			sb.WriteString(p.Text)
 		}
 	}
-	return sb
+	return sb.String()
 }
 
 // UserSettingsService handles user settings.

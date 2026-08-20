@@ -138,9 +138,8 @@ func main() {
 		msg, err := c.Sessions.SendMessage(ctx, ws.ID, session.SessionID, "Reply with exactly: PONG")
 		ok(err == nil, "Sessions.SendMessage() → no error")
 		if err == nil {
-			ok(len(msg.Content) > 0, "Sessions.SendMessage() → non-empty content")
-			ok(msg.Raw != nil, "Sessions.SendMessage() → raw present")
-			content := msg.Content
+			ok(len(msg.TextContent()) > 0, "Sessions.SendMessage() → non-empty content")
+			content := msg.TextContent()
 			if len(content) > 80 {
 				content = content[:80]
 			}

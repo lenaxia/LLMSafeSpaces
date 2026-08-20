@@ -128,10 +128,11 @@ func TestClient_ServiceUnavailableError(t *testing.T) {
 }
 
 func TestClient_SendMessage(t *testing.T) {
+	// Contract-shaped response (pkg/session Message via the adapter seam).
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(map[string]any{
 			"id":   "msg-1",
-			"role": "assistant",
+			"type": "assistant",
 			"parts": []map[string]string{
 				{"type": "text", "text": "Hello "},
 				{"type": "text", "text": "world!"},
@@ -145,8 +146,11 @@ func TestClient_SendMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if resp.Content != "Hello world!" {
-		t.Errorf("expected 'Hello world!', got: %q", resp.Content)
+	if resp.Type != "assistant" {
+		t.Errorf("expected type 'assistant', got: %q", resp.Type)
+	}
+	if got := resp.TextContent(); got != "Hello world!" {
+		t.Errorf("expected 'Hello world!', got: %q", got)
 	}
 }
 

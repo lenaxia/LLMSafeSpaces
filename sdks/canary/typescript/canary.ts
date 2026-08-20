@@ -270,3 +270,14 @@ export async function jwtLogin(cfg: Config): Promise<string> {
   }
   return obj.token;
 }
+
+/**
+ * Concatenated text of a contract Message (pkg/session shape) — the
+ * convenience view for assertions that don't render parts. Mirrors
+ * Go's Message.TextContent() and Python's message_text().
+ */
+export function msgText(msg: { text?: string; parts?: Array<{ type: string; text?: string }> } | null | undefined): string {
+  if (!msg) return "";
+  if (msg.text) return msg.text;
+  return (msg.parts ?? []).filter(p => p.type === 'text').map(p => p.text ?? '').join('');
+}
