@@ -131,20 +131,30 @@ docker push "$REG/llmsafespaces/runtime-base:ci" >/dev/null
 # RepoDigests carries the manifest digest the push just registered.
 AGENTD_REF=$(docker inspect --format '{{index .RepoDigests 0}}' "$REG/llmsafespaces/agentd:ci")
 case "$AGENTD_REF" in
-  *@sha256:*) AGENTD_REF="$REG/llmsafespaces/agentd:ci${AGENTD_REF##*@}" ;;
+  *@sha256:*) AGENTD_REF="$REG/llmsafespaces/agentd:ci@${AGENTD_REF##*@}" ;;
   *) log "could not determine agentd manifest digest (RepoDigests empty)"; exit 1 ;;
 esac
 log "agentd reference: $AGENTD_REF"
 
 # --- Chart + workspace -------------------------------------------------------
 
-log "installing controller-lean chart (api/mcp/webhooks off)"
+# Controller-lean: api/mcp/webhooks off, and NO migrations job — the
+# migrate hook runs the API image against postgres, and the reconciler
+# needs neither to build pods (the sidecar split is what is under test).
+# externalSecret stays ENABLED (create=true, dummy values): the
+# controller Deployment resolves LLMSAFESPACES_INTERNAL_TOKEN from that
+# Secret regardless of api.enabled.
+log "installing controller-lean chart (api/mcp/webhooks/migrations off)"
 helm upgrade --install "$RELEASE" helm \
   -n "$NS" --create-namespace \
   --set api.enabled=false \
   --set mcp.enabled=false \
   --set webhooks.enabled=false \
+  --set migrations.enabled=false \
   --set rbac.scope=cluster \
+  --set externalSecret.create=true \
+  --set "externalSecret.postgresPassword=us2int-pg" \
+  --set "externalSecret.redisPassword=us2int-redis" \
   --set controller.image.repository="$REG/llmsafespaces/controller" \
   --set controller.image.tag=ci \
   --set controller.image.pullPolicy=IfNotPresent \
