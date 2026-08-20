@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-08-21
+
+### Fixed
+
+- **Landing page CSP blocked its own bootstrap form (#1000)**: the
+  per-workspace preview landing page carried `form-action 'self'`, but
+  its port form submits cross-origin to the dev-preview-bootstrap
+  endpoint on the API origin — browsers blocked the landing's only CTA
+  (observed in production minutes after the 0.19.0 rollout). The
+  landing now carries a landing-specific policy with
+  `form-action 'self' <api-origin>`; proxied app pages keep the strict
+  `form-action 'self'` (token-boundary test-pinned — the extension
+  cannot leak to app responses).
+
 ## [0.19.0] - 2026-08-21
 
 ### Added
