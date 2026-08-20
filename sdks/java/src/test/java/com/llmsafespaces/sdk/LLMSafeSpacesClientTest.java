@@ -5,6 +5,7 @@ import com.llmsafespaces.sdk.exceptions.ConflictException;
 import com.llmsafespaces.sdk.exceptions.LLMSafeSpacesException;
 import com.llmsafespaces.sdk.exceptions.NotFoundException;
 import com.llmsafespaces.sdk.exceptions.RateLimitException;
+import com.llmsafespaces.sdk.models.Message;
 import com.llmsafespaces.sdk.models.Workspace;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
@@ -60,8 +61,9 @@ class LLMSafeSpacesClientTest {
 
     @Test
     void sendMessage_extractsContent() throws Exception {
+        // Contract-shaped response (pkg/session Message via the adapter seam).
         String json = """
-            {"id":"msg-1","role":"assistant","parts":[
+            {"id":"msg-1","type":"assistant","parts":[
                 {"type":"text","text":"Hello "},
                 {"type":"text","text":"world!"}
             ]}""";
@@ -70,7 +72,8 @@ class LLMSafeSpacesClientTest {
             var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
                     .apiKey("lsp_test").build();
             var result = client.sessions.sendMessage("ws-1", "sess-1", "hi");
-            assertEquals("Hello world!", result.getContent());
+            assertEquals(Message.Type.ASSISTANT, result.type);
+            assertEquals("Hello world!", result.textContent());
         } finally {
             server.stop(0);
         }
@@ -128,18 +131,20 @@ class LLMSafeSpacesClientTest {
     @Test
     void sendMessage_extractsContentFromMultipleParts() throws Exception {
         String json = """
-            {"id":"msg-1","role":"assistant","parts":[
+            {"id":"msg-1","type":"assistant","parts":[
                 {"type":"text","text":"Hello "},
                 {"type":"text","text":"world!"},
-                {"type":"tool-invocation","toolName":"read"}
+                {"type":"tool","tool":{"name":"read","state":{"status":"completed"}}}
             ]}""";
         var server = startMockServer(200, json);
         try {
             var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
                     .apiKey("lsp_test").build();
             var result = client.sessions.sendMessage("ws-1", "sess-1", "hi");
-            assertEquals("Hello world!", result.getContent());
-            assertNotNull(result.getRaw());
+            assertEquals(Message.Type.ASSISTANT, result.type);
+            assertEquals("Hello world!", result.textContent());
+            assertNotNull(result.parts);
+            assertEquals(3, result.parts.size());
         } finally {
             server.stop(0);
         }

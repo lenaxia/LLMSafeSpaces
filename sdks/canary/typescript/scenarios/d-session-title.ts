@@ -28,7 +28,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
       () => c.sessions.sendMessage(wsId!, sid,
         'Explain in one sentence why the sky is blue during the day but orange at sunset.'),
       'send-message: no error');
-    if (ok2 && msg) r.assert(msg.content.length > 0, 'send-message: non-empty content');
+    if (ok2 && msg) r.assert((msg.text ?? (msg.parts ?? []).filter(p => p.type === 'text').map(p => p.text ?? '').join('')).length > 0, 'send-message: non-empty content');
 
     let titleFound = false;
     const deadline = Date.now() + 20000;

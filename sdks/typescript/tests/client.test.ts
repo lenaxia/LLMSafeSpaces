@@ -95,21 +95,27 @@ describe("LLMSafeSpaces Client", () => {
       expect(result.sessionId).toBe("sess-1");
     });
 
-    it("sends a message and extracts content", async () => {
-      const openCodeResp = {
+    it("sends a message and returns the contract Message", async () => {
+      // Contract-shaped response (pkg/session Message via the adapter seam).
+      const contractResp = {
         id: "msg-1",
-        role: "assistant",
+        type: "assistant",
         parts: [
           { type: "text", text: "Hello " },
           { type: "text", text: "world!" },
-          { type: "tool-invocation", toolName: "read_file" },
+          { type: "tool", tool: { name: "read_file", state: { status: "completed" } } },
         ],
       };
-      mockFetch.mockResolvedValueOnce(jsonResponse(openCodeResp));
+      mockFetch.mockResolvedValueOnce(jsonResponse(contractResp));
 
       const result = await client.sessions.sendMessage("ws-1", "sess-1", "hi");
-      expect(result.content).toBe("Hello world!");
-      expect(result.raw).toEqual(openCodeResp);
+      expect(result.type).toBe("assistant");
+      expect(result.parts?.length).toBe(3);
+      const text = (result.parts ?? [])
+        .filter((p) => p.type === "text")
+        .map((p) => p.text ?? "")
+        .join("");
+      expect(text).toBe("Hello world!");
     });
   });
 

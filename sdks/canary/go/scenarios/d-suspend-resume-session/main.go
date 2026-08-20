@@ -71,7 +71,7 @@ func runSuspendResumeSession(ctx context.Context, run *canary.Runner, cfg canary
 
 	msg1, err := c.Sessions.SendMessage(ctx, wsID, sessionID, "Reply with exactly: BEFORE")
 	if run.AssertNoError(err, "send-before: no error") {
-		run.Assert(len(msg1.Content) > 0, "send-before: non-empty", "")
+		run.Assert(len(msg1.TextContent()) > 0, "send-before: non-empty", "")
 	}
 
 	// P3: History before suspend
@@ -104,7 +104,7 @@ func runSuspendResumeSession(ctx context.Context, run *canary.Runner, cfg canary
 	// P7: Send AFTER message to the new session
 	msg2, err := c.Sessions.SendMessage(ctx, wsID, sessPost.SessionID, "Reply with exactly: AFTER")
 	if run.AssertNoError(err, "send-after: no error") {
-		run.Assert(len(msg2.Content) > 0, "send-after: non-empty", "")
+		run.Assert(len(msg2.TextContent()) > 0, "send-after: non-empty", "")
 	}
 
 	// P8: The BEFORE message must still be retrievable on the ORIGINAL session ID.

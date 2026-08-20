@@ -3,7 +3,7 @@ package com.llmsafespaces.sdk.services;
 import com.google.gson.JsonObject;
 import com.llmsafespaces.sdk.LLMSafeSpacesClient;
 import com.llmsafespaces.sdk.models.EnsureSessionResponse;
-import com.llmsafespaces.sdk.models.MessageResponse;
+import com.llmsafespaces.sdk.models.Message;
 
 import java.util.Map;
 
@@ -17,11 +17,12 @@ public class SessionsService {
                 null, EnsureSessionResponse.class);
     }
 
-    public MessageResponse sendMessage(String workspaceId, String sessionId, String content) {
-        var raw = c.requestJson("POST",
+    /** Sends synchronously; returns the completed assistant Message (contract shape). */
+    public Message sendMessage(String workspaceId, String sessionId, String content) {
+        return c.request("POST",
                 "/workspaces/" + workspaceId + "/sessions/" + sessionId + "/message",
-                Map.of("content", content, "parts", new Object[]{Map.of("type", "text", "text", content)}));
-        return new MessageResponse(raw, MessageResponse.extractContent(raw));
+                Map.of("content", content, "parts", new Object[]{Map.of("type", "text", "text", content)}),
+                Message.class);
     }
 
     public void abort(String workspaceId, String sessionId) {

@@ -19,6 +19,7 @@ from canary import (
     ensure_session_with_retry,
 )
 from llmsafespaces import LLMSafeSpaces
+from llmsafespaces.client import message_text
 
 
 def run(run: Runner, cfg: Config) -> None:
@@ -62,7 +63,7 @@ def run(run: Runner, cfg: Config) -> None:
             "send-before: no error",
         )
         if ok2:
-            run.assert_(len(msg1.content) > 0, "send-before: non-empty")
+            run.assert_(len(message_text(msg1)) > 0, "send-before: non-empty")
 
         # P3: History before suspend
         ok3, hist1 = run.assert_no_error(
@@ -104,7 +105,7 @@ def run(run: Runner, cfg: Config) -> None:
             "send-after: no error",
         )
         if ok4 and msg2 is not None:
-            run.assert_(len(msg2.content) > 0, "send-after: non-empty")
+            run.assert_(len(message_text(msg2)) > 0, "send-after: non-empty")
 
         # P8: The BEFORE message must still be retrievable on the ORIGINAL session ID.
         # This is the actual persistence test — if PVC content is wiped by suspend/resume,

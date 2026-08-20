@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypedDict
 
 
 @dataclass
@@ -64,9 +64,80 @@ class EnsureSessionResponse:
 
 
 @dataclass
-class MessageResponse:
-    raw: Any
-    content: str
+class ToolState(TypedDict, total=False):
+    status: str
+    error: str
+    startedAt: str
+    completedAt: str
+
+
+class ToolPart(TypedDict, total=False):
+    """Every tool call is a ToolPart discriminated by name."""
+
+    callId: str
+    name: str
+    input: Any
+    output: Any
+    state: ToolState
+
+
+class FileDiff(TypedDict, total=False):
+    """Unified-diff payload of a file-change part (patch text authoritative)."""
+
+    path: str
+    patch: str
+    additions: int
+    deletions: int
+
+
+class Part(TypedDict, total=False):
+    """One renderable part of a message — the closed 5-type union."""
+
+    type: str
+    id: str
+    text: str
+    reasoning: str
+    tool: ToolPart
+    fileChange: FileDiff
+    custom: dict[str, Any]
+
+
+class ModelRef(TypedDict, total=False):
+    id: str
+    provider: str
+
+
+class Cost(TypedDict, total=False):
+    """Display-only token/cost data (never billing)."""
+
+    inputTokens: int
+    outputTokens: int
+    reasoningTokens: int
+    cacheReadTokens: int
+    cacheWriteTokens: int
+    totalTokens: int
+    costUsd: float
+
+
+class Message(TypedDict, total=False):
+    """One entry in a session transcript (pkg/session contract).
+
+    Flat discriminated struct: type selects which fields are meaningful.
+    """
+
+    id: str
+    sessionId: str
+    type: str
+    createdAt: str
+    parts: list[Part]
+    model: ModelRef
+    cost: Cost
+    text: str
+    command: str
+    exitCode: int
+    fromAgent: str
+    toAgent: str
+    error: dict[str, Any]
 
 
 @dataclass

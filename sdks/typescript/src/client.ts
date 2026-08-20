@@ -18,7 +18,7 @@ import type {
   CreateWorkspaceRequest,
   EnsureSessionResponse,
   FetchFn,
-  MessageResponse,
+  Message,
   ProviderCredential,
   QueuedMessage,
   SecretResponse,
@@ -265,16 +265,17 @@ class SessionsAPI {
   rename(workspaceId: string, sessionId: string, title: string) {
     return this.client.request<void>("PUT", `/workspaces/${workspaceId}/sessions/${sessionId}/title`, { title });
   }
-  async sendMessage(workspaceId: string, sessionId: string, content: string): Promise<MessageResponse> {
-    const raw = await this.client.request<unknown>(
+  /** Sends synchronously; returns the completed assistant Message (contract shape). */
+  sendMessage(workspaceId: string, sessionId: string, content: string): Promise<Message> {
+    return this.client.request<Message>(
       "POST",
       `/workspaces/${workspaceId}/sessions/${sessionId}/message`,
       { content, parts: [{ type: "text", text: content }] },
     );
-    return { raw, content: extractTextContent(raw) };
   }
-  getHistory(workspaceId: string, sessionId: string) {
-    return this.client.request<unknown[]>("GET", `/workspaces/${workspaceId}/sessions/${sessionId}/message`);
+  /** Returns the session transcript in contract shape. */
+  getHistory(workspaceId: string, sessionId: string): Promise<Message[]> {
+    return this.client.request<Message[]>("GET", `/workspaces/${workspaceId}/sessions/${sessionId}/message`);
   }
   abort(workspaceId: string, sessionId: string) {
     return this.client.request<void>("POST", `/workspaces/${workspaceId}/sessions/${sessionId}/abort`);
@@ -476,16 +477,7 @@ class ProbeAPI {
   probeModels(apiKey: string, baseURL: string) { return this.client.request<{ models: unknown[] }>("POST", "/probe-models", { apiKey, baseURL }); }
 }
 
-/** Extract text content from opencode response parts. */
-function extractTextContent(raw: unknown): string {
-  if (!raw || typeof raw !== "object") return "";
-  const obj = raw as { parts?: Array<{ type?: string; text?: string }> };
-  if (!Array.isArray(obj.parts)) return "";
-  return obj.parts
-    .filter((p) => p.type === "text" && p.text)
-    .map((p) => p.text!)
-    .join("");
-}
+
 
 class PromptsAPI {
   constructor(private client: LLMSafeSpaces) {}

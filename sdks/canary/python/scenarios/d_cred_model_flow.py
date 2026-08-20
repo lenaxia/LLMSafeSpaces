@@ -19,6 +19,7 @@ from canary import (
     ensure_session_with_retry,
 )
 from llmsafespaces import LLMSafeSpaces
+from llmsafespaces.client import message_text
 
 
 def run(run: Runner, cfg: Config) -> None:
@@ -111,11 +112,11 @@ def run(run: Runner, cfg: Config) -> None:
             "send-message: no error",
         )
         if ok3:
-            run.assert_(len(msg.content) > 0, "send-message: non-empty content")
+            run.assert_(len(message_text(msg)) > 0, "send-message: non-empty text")
             run.assert_(
-                "CRED-FLOW-OK" in msg.content.upper(),
+                "CRED-FLOW-OK" in message_text(msg).upper(),
                 "send-message: contains expected text",
-                repr(msg.content[:100]),
+                repr(message_text(msg)[:100]),
             )
 
         # Step 7: History
@@ -143,11 +144,11 @@ def run(run: Runner, cfg: Config) -> None:
                 "send-message-2: no error",
             )
             if ok5:
-                run.assert_(len(msg2.content) > 0, "send-message-2: non-empty")
+                run.assert_(len(message_text(msg2)) > 0, "send-message-2: non-empty")
                 run.assert_(
-                    "AFTER-RELOAD" in msg2.content.upper(),
+                    "AFTER-RELOAD" in message_text(msg2).upper(),
                     "send-message-2: contains expected text",
-                    repr(msg2.content[:100]),
+                    repr(message_text(msg2)[:100]),
                 )
 
         # Step 10: Delete credential

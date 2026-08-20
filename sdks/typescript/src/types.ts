@@ -106,10 +106,78 @@ export interface ActiveSessionsResponse {
   maxActive: number;
 }
 
-/** Opencode message response (proxy passthrough). */
-export interface MessageResponse {
-  raw: unknown;
-  content: string;
+/**
+ * One entry in a session transcript (pkg/session contract, design 0049).
+ * Flat discriminated struct: type selects which fields are meaningful.
+ */
+export interface Message {
+  id: string;
+  sessionId?: string;
+  type: "user" | "assistant" | "shell" | "agent_switch" | "model_switch" | "compaction" | "system";
+  createdAt?: string;
+  parts?: Part[];
+  model?: ModelRef;
+  cost?: Cost;
+  /** Plain-text form (user/system/compaction messages). */
+  text?: string;
+  /** Shell-message fields. */
+  command?: string;
+  exitCode?: number;
+  /** Agent/model-switch fields. */
+  fromAgent?: string;
+  toAgent?: string;
+  fromModel?: ModelRef;
+  toModel?: ModelRef;
+  error?: { code?: string; message: string };
+}
+
+/** One renderable part of a message — the closed 5-type union. */
+export interface Part {
+  type: "text" | "reasoning" | "tool" | "file-change" | "custom";
+  id?: string;
+  text?: string;
+  reasoning?: string;
+  tool?: ToolPart;
+  fileChange?: FileDiff;
+  custom?: { kind: string; data?: unknown };
+}
+
+/** Every tool call is a ToolPart discriminated by name. */
+export interface ToolPart {
+  callId?: string;
+  name: string;
+  input?: unknown;
+  output?: unknown;
+  state: {
+    status: "pending" | "running" | "completed" | "error";
+    error?: string;
+    startedAt?: string;
+    completedAt?: string;
+  };
+}
+
+/** Unified-diff payload of a file-change part (patch text is authoritative). */
+export interface FileDiff {
+  path: string;
+  patch: string;
+  additions?: number;
+  deletions?: number;
+}
+
+export interface ModelRef {
+  id: string;
+  provider?: string;
+}
+
+/** Display-only token/cost data (never billing). */
+export interface Cost {
+  inputTokens?: number;
+  outputTokens?: number;
+  reasoningTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  totalTokens?: number;
+  costUsd?: number;
 }
 
 export interface AuthResponse {

@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import httpx
 
 from llmsafespaces import LLMSafeSpaces
+from llmsafespaces.client import message_text
 
 API_URL = os.environ.get("API_URL", "http://localhost:18080")
 API_KEY = os.environ.get("API_KEY", "lsp_upgradetest1234567890abcdef")
@@ -78,18 +79,19 @@ try:
     result = client.sessions.send_message(
         ws_id, session.sessionId, "Reply with exactly: EA3-OK"
     )
+    text = message_text(result)
     ok(
-        isinstance(result.content, str) and len(result.content) > 0,
-        "content is non-empty (proves the call blocked for the full response)",
+        isinstance(text, str) and len(text) > 0,
+        "text content is non-empty (proves the call blocked for the full response)",
     )
     ok(
-        isinstance(result.raw, dict),
-        "raw is a dict (JSON object, not a stream fragment)",
+        isinstance(result, dict),
+        "result is a contract Message dict (JSON object, not a stream fragment)",
     )
-    if isinstance(result.raw, dict):
+    if isinstance(result, dict):
         ok(
-            "parts" in result.raw,
-            "raw has 'parts' array (opencode message shape)",
+            "parts" in result,
+            "Message has 'parts' array (contract shape)",
         )
 
     # ── Part 2: Raw HTTP — Content-Type must NOT be text/event-stream ──

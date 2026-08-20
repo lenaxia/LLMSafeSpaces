@@ -38,7 +38,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
       () => c.sessions.sendMessage(wsId!, sid,
         'Please create a new file called /tmp/canary-test-file.txt with the content "hello". This requires file write permission.'),
       'send-tool-message: no error');
-    if (okMsg && msg) r.assert(msg.content.length > 0, 'send-tool-message: non-empty content');
+    if (okMsg && msg) r.assert((msg.text ?? (msg.parts ?? []).filter(p => p.type === 'text').map(p => p.text ?? '').join('')).length > 0, 'send-tool-message: non-empty text');
 
     await sleep(3000);
 

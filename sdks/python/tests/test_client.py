@@ -12,7 +12,7 @@ from llmsafespaces import (
     LLMSafeSpacesError,
     TimeoutError,
     ServiceUnavailableError,
-    MessageResponse,
+    Message,
     ProviderCredential,
 )
 
@@ -78,22 +78,25 @@ def test_service_unavailable_error():
 
 
 @respx.mock
-def test_send_message_extracts_content():
-    opencode_resp = {
+def test_send_message_returns_contract_message():
+    # Contract-shaped response (pkg/session Message via the adapter seam).
+    contract_resp = {
         "id": "msg-1",
-        "role": "assistant",
+        "type": "assistant",
         "parts": [
             {"type": "text", "text": "Hello "},
             {"type": "text", "text": "world!"},
-            {"type": "tool-invocation", "toolName": "read_file"},
+            {"type": "tool", "tool": {"name": "read_file", "state": {"status": "completed"}}},
         ],
     }
-    respx.post(f"{BASE}/workspaces/ws-1/sessions/sess-1/message").respond(json=opencode_resp)
+    respx.post(f"{BASE}/workspaces/ws-1/sessions/sess-1/message").respond(json=contract_resp)
     client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
     result = client.sessions.send_message("ws-1", "sess-1", "hi")
-    assert isinstance(result, MessageResponse)
-    assert result.content == "Hello world!"
-    assert result.raw == opencode_resp
+    assert isinstance(result, dict)
+    assert result["type"] == "assistant"
+    assert len(result["parts"]) == 3
+    text = "".join(p.get("text", "") for p in result["parts"] if p.get("type") == "text")
+    assert text == "Hello world!"
 
 
 @respx.mock

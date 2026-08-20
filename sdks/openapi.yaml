@@ -716,7 +716,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/MessageResponse"
+                $ref: "#/components/schemas/Message"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -745,7 +745,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/MessageResponse"
+                  $ref: "#/components/schemas/Message"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -955,6 +955,14 @@ paths:
         Server-Sent Events stream. Not usable by generated SDK clients — use
         language-specific SSE libraries (EventSource in browsers, httpx-sse in Python, etc.).
         Content-Type: text/event-stream.
+
+        Event channels (US-65.8): `session.event` carries a
+        ContractEvent payload (pkg/session shapes — the only
+        agent-derived channel clients consume; agent wire shapes are
+        translated server-side). `session.status` carries platform
+        idle/busy strings and retry payloads. Other channels
+        (agent.question, agent.permission, queue.update, workspace.phase,
+        agent_died) are platform-defined.
       operationId: streamEvents
       x-opencode-proxy: true
       parameters:
@@ -3419,23 +3427,228 @@ components:
             type: string
         maxActive:
           type: integer
-    MessageResponse:
+    Message:
       type: object
-      description: Response from opencode agent (schema tracks upstream opencode version)
-      x-opencode-proxy: true
+      description: |
+        One entry in a session transcript (pkg/session contract, design 0049).
+        Flat discriminated struct: type selects which payload fields are
+        meaningful; the rest omit. Agent-specific shapes never appear — the
+        adapter translates at the seam.
+      required: [id, type]
       properties:
-        info:
-          type: object
-          description: Message metadata
+        id:
+          type: string
+        sessionId:
+          type: string
+        type:
+          type: string
+          enum: [user, assistant, shell, agent_switch, model_switch, compaction, system]
+        createdAt:
+          type: string
+          format: date-time
         parts:
           type: array
           items:
-            type: object
-            properties:
-              type:
-                type: string
-              content:
-                type: string
+            $ref: "#/components/schemas/Part"
+        model:
+          $ref: "#/components/schemas/ModelRef"
+        cost:
+          $ref: "#/components/schemas/Cost"
+        text:
+          type: string
+          description: Plain-text form (user/system/compaction messages)
+        command:
+          type: string
+          description: Shell-message command
+        exitCode:
+          type: integer
+          description: Shell-message exit code
+        fromAgent:
+          type: string
+        toAgent:
+          type: string
+        fromModel:
+          $ref: "#/components/schemas/ModelRef"
+        toModel:
+          $ref: "#/components/schemas/ModelRef"
+        error:
+          $ref: "#/components/schemas/SessionError"
+    Part:
+      type: object
+      description: |
+        One renderable part of a message (pkg/session contract). The 5-type
+        union is closed forever (design 0049 discipline rule 1): text,
+        reasoning, tool, file-change, custom. Tools are discriminated by
+        tool.name, not by part type.
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [text, reasoning, tool, file-change, custom]
+        id:
+          type: string
+        text:
+          type: string
+        reasoning:
+          type: string
+        tool:
+          $ref: "#/components/schemas/ToolPart"
+        fileChange:
+          $ref: "#/components/schemas/FileDiff"
+        custom:
+          $ref: "#/components/schemas/CustomPart"
+    ToolPart:
+      type: object
+      description: Every tool call (bash, edit, read, subagent...) is a ToolPart
+        discriminated by name. Input/Output are raw JSON — tool schemas are
+        open-ended.
+      required: [name]
+      properties:
+        callId:
+          type: string
+        name:
+          type: string
+        input:
+          description: Raw tool input JSON
+        output:
+          description: Raw tool output JSON
+        state:
+          type: object
+          required: [status]
+          properties:
+            status:
+              type: string
+              enum: [pending, running, completed, error]
+            error:
+              type: string
+            startedAt:
+              type: string
+              format: date-time
+            completedAt:
+              type: string
+              format: date-time
+    FileDiff:
+      type: object
+      description: Unified-diff payload of a file-change part (diff text is
+        authoritative — design 0049 discipline rule 4).
+      required: [path, patch]
+      properties:
+        path:
+          type: string
+        patch:
+          type: string
+          description: Unified diff text
+        additions:
+          type: integer
+        deletions:
+          type: integer
+    CustomPart:
+      type: object
+      description: Pressure-relief valve for extension-defined semantics.
+        Required kind discriminator keeps future agent extensions renderable.
+      required: [kind]
+      properties:
+        kind:
+          type: string
+        data:
+          description: Raw JSON payload
+    ContractEvent:
+      type: object
+      description: |
+        A pkg/session streaming Event, delivered to clients on the
+        session.event SSE channel (US-65.8). type selects which fields are
+        meaningful; the rest omit.
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [session.status, session.updated, message.start, message.end,
+                 part.start, part.delta, part.end, input.request,
+                 input.resolved, error]
+        timestamp:
+          type: string
+          format: date-time
+        sessionId:
+          type: string
+        messageId:
+          type: string
+        partId:
+          type: string
+        status:
+          type: string
+        session:
+          $ref: "#/components/schemas/SessionSummary"
+        message:
+          $ref: "#/components/schemas/Message"
+        part:
+          $ref: "#/components/schemas/Part"
+        delta:
+          type: string
+        error:
+          $ref: "#/components/schemas/SessionError"
+    SessionSummary:
+      type: object
+      description: The session fields carried on session.updated contract
+        events (contextUsage.used is the live occupancy numerator;
+        ModelInfo.contextWindow denominates it).
+      required: [id]
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        parentId:
+          type: string
+        contextUsage:
+          type: object
+          required: [used]
+          properties:
+            used:
+              type: integer
+              format: int64
+            window:
+              type: integer
+              format: int64
+    SessionError:
+      type: object
+      required: [message]
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+    Cost:
+      type: object
+      description: Display-only token/cost data (never billing — cgroup-based).
+      properties:
+        inputTokens:
+          type: integer
+          format: int64
+        outputTokens:
+          type: integer
+          format: int64
+        reasoningTokens:
+          type: integer
+          format: int64
+        cacheReadTokens:
+          type: integer
+          format: int64
+        cacheWriteTokens:
+          type: integer
+          format: int64
+        totalTokens:
+          type: integer
+          format: int64
+        costUsd:
+          type: number
+    ModelRef:
+      type: object
+      required: [id]
+      properties:
+        id:
+          type: string
+        provider:
+          type: string
     CreateSecretRequest:
       type: object
       required: [name, type, value]

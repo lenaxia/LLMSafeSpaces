@@ -18,9 +18,13 @@ from .errors import (
 from .types import (
     APIKey,
     AuthResponse,
+    Cost,
     CreateAgentRoleRequest,
     EnsureSessionResponse,
-    MessageResponse,
+    FileDiff,
+    Message,
+    ModelRef,
+    Part,
     ProviderCredential,
     SecretResponse,
     TerminalTicket,
@@ -356,16 +360,17 @@ class _SessionsAPI:
 
     def send_message(
         self, workspace_id: str, session_id: str, content: str
-    ) -> MessageResponse:
-        raw = self._c._request(
+    ) -> Message:
+        """Send synchronously; returns the completed assistant Message
+        (contract shape, pkg/session)."""
+        return self._c._request(
             "POST",
             f"/workspaces/{workspace_id}/sessions/{session_id}/message",
             json={"content": content, "parts": [{"type": "text", "text": content}]},
         )
-        text = _extract_text(raw)
-        return MessageResponse(raw=raw, content=text)
 
-    def get_history(self, workspace_id: str, session_id: str) -> list[Any]:
+    def get_history(self, workspace_id: str, session_id: str) -> list[Message]:
+        """Session transcript in contract shape."""
         return self._c._request(
             "GET", f"/workspaces/{workspace_id}/sessions/{session_id}/message"
         )
@@ -567,16 +572,16 @@ class _TerminalAPI:
         )
 
 
-def _extract_text(raw: Any) -> str:
-    """Extract text content from opencode response parts."""
-    if not isinstance(raw, dict):
+def message_text(msg: Message) -> str:
+    """Concatenated text of a contract Message — the convenience view for
+    callers that don't render parts."""
+    if not isinstance(msg, dict):
         return ""
-    parts = raw.get("parts", [])
-    if not isinstance(parts, list):
-        return ""
+    if msg.get("text"):
+        return str(msg["text"])
     return "".join(
-        p.get("text", "")
-        for p in parts
+        str(p.get("text", ""))
+        for p in msg.get("parts", [])
         if isinstance(p, dict) and p.get("type") == "text"
     )
 
