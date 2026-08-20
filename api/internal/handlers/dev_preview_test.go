@@ -839,3 +839,36 @@ func TestDevPreviewHandler_WSUnreachablePort_502(t *testing.T) {
 		t.Fatalf("expected 502 from ErrorHandler, got resp=%v", resp)
 	}
 }
+
+func TestDevPreviewHandler_ForwardedHostHeaders(t *testing.T) {
+	// Apps behind the tunnel see Host: localhost:<port> (deliberate —
+	// vhost-less dev servers must serve). X-Forwarded-Host/Proto carry the
+	// browser-visible origin so absolute-URL generators can work.
+	var gotXFH, gotXFP string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotXFH = r.Header.Get("X-Forwarded-Host")
+		gotXFP = r.Header.Get("X-Forwarded-Proto")
+		io.WriteString(w, "ok")
+	}))
+	defer backend.Close()
+
+	r := newDevPreviewRoundTripRouter(t, backend)
+	ts := httptest.NewServer(r)
+	defer ts.Close()
+
+	req, _ := http.NewRequest("GET", ts.URL+"/api/v1/workspaces/ws-1/dev-preview/5173/", nil)
+	req.Host = "0d2a9a1b-c3d4-4e5f-8a9b-0c1d2e3f4a5b-preview.example.com"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+
+	if gotXFH != "0d2a9a1b-c3d4-4e5f-8a9b-0c1d2e3f4a5b-preview.example.com" {
+		t.Errorf("X-Forwarded-Host = %q, want the preview origin", gotXFH)
+	}
+	if gotXFP != "https" {
+		t.Errorf("X-Forwarded-Proto = %q, want passthrough https", gotXFP)
+	}
+}

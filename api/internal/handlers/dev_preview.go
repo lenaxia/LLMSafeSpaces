@@ -223,6 +223,27 @@ func (h *DevPreviewHandler) proxyToAgentd(c *gin.Context, workspace *v1.Workspac
 			copyRequestHeaders(r.In.Header, r.Out.Header)
 			r.Out.Header.Set("Authorization", basicAuth)
 			r.Out.Header.Set("X-Forwarded-For", r.In.RemoteAddr)
+			// Tell the dev server its PUBLIC origin. Both proxy modes
+			// rewrite Host to localhost:<port> (so vhost-less dev servers
+			// serve), which also means the app cannot derive the browser-
+			// visible origin from Host — relative URLs still work (the
+			// browser resolves them against the preview origin), but
+			// absolute-URL generators (Rails/Django/SvelteKit adapter
+			// setups, OG-tag renderers) would emit localhost links.
+			// X-Forwarded-Host/Proto carry the real origin for apps that
+			// trust their proxy (standard Forwarded semantics; these are
+			// transport descriptors, not caller credentials — G34's
+			// concern — and they describe the request, not the caller).
+			if r.In.Host != "" {
+				r.Out.Header.Set("X-Forwarded-Host", r.In.Host)
+			}
+			if proto := r.In.Header.Get("X-Forwarded-Proto"); proto != "" {
+				r.Out.Header.Set("X-Forwarded-Proto", proto)
+			} else if r.In.TLS != nil {
+				r.Out.Header.Set("X-Forwarded-Proto", "https")
+			} else {
+				r.Out.Header.Set("X-Forwarded-Proto", "http")
+			}
 
 			// P0-2 (redesign-2026-08-19): re-establish protocol-upgrade
 			// headers after the G34 wipe. ReverseProxy detects the upgrade

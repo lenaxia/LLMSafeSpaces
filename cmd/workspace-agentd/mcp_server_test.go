@@ -193,7 +193,8 @@ func TestCallMCPTool_DevPreviewURL_HappyPath(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Contains(t, result, "https://platform.example.com/api/v1/workspaces/ws-abc-123/dev-preview/5173/")
-	assert.Contains(t, result, "Dev preview must be enabled")
+	assert.Regexp(t, `^LSP_DEV_PREVIEW_V1 port=5173 mode=path$`, strings.SplitN(result, "\n", 2)[0])
+	assert.Contains(t, result, "Requires dev preview enabled")
 	assert.Contains(t, result, "Workspace Settings")
 }
 
@@ -207,7 +208,7 @@ func TestCallMCPTool_DevPreviewURL_WithPath(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Contains(t, result, "/dev-preview/3000/dashboard")
-	assert.Contains(t, result, "Dev preview must be enabled")
+	assert.Contains(t, result, "Requires dev preview enabled")
 }
 
 func TestCallMCPTool_DevPreviewURL_PathWithoutSlash(t *testing.T) {
@@ -222,9 +223,13 @@ func TestCallMCPTool_DevPreviewURL_PathWithoutSlash(t *testing.T) {
 	assert.Contains(t, result, "/dev-preview/5173/about")
 }
 
-func TestCallMCPTool_DevPreviewURL_MissingPort(t *testing.T) {
-	_, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{})
-	assert.Error(t, err)
+func TestCallMCPTool_DevPreviewURL_PortOmitted(t *testing.T) {
+	// Port is optional now (UX round 2): omitted → default 5173, no error.
+	t.Setenv("WORKSPACE_ID", "ws-abc-123")
+	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
+	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{})
+	require.NoError(t, err)
+	assert.Contains(t, result, "/dev-preview/5173/")
 }
 
 func TestCallMCPTool_DevPreviewURL_PortOutOfRange(t *testing.T) {
@@ -457,4 +462,32 @@ func TestCallMCPTool_DevPreviewURL_PathModeUnchangedWithoutEnv(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, result, "/dev-preview/5173/")
 	assert.NotContains(t, result, "dev-preview-bootstrap")
+}
+
+func TestCallMCPTool_DevPreviewURL_DefaultPort(t *testing.T) {
+	// Port omitted → 5173 (Vite default, matches the landing form).
+	t.Setenv("WORKSPACE_ID", "ws-abc-123")
+	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
+
+	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{})
+	require.NoError(t, err)
+	assert.Contains(t, result, "LSP_DEV_PREVIEW_V1 port=5173 ")
+	assert.Contains(t, result, "/dev-preview/5173/")
+	assert.Contains(t, result, "[Open dev preview :5173]")
+}
+
+func TestCallMCPTool_DevPreviewURL_ButtonMarkerShape(t *testing.T) {
+	// The chat UI keys on the marker line + markdown link; pin the shape.
+	t.Setenv("WORKSPACE_ID", "0d2a9a1b-c3d4-4e5f-8a9b-0c1d2e3f4a5b")
+	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
+	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "safespaces.dev")
+
+	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
+		"port": float64(3000),
+	})
+	require.NoError(t, err)
+	lines := strings.SplitN(result, "\n", 3)
+	assert.Regexp(t, `^LSP_DEV_PREVIEW_V1 port=3000 origin=safespaces\.dev$`, lines[0])
+	assert.Regexp(t, `^\[Open dev preview :3000\]\(https://platform\.example\.com/api/v1/workspaces/0d2a9a1b-c3d4-4e5f-8a9b-0c1d2e3f4a5b/dev-preview-bootstrap/3000\)$`, lines[1])
+	assert.NotEmpty(t, lines[2], "explanation must be present")
 }

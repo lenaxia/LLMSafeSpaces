@@ -97,14 +97,14 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "dev_preview_url",
-						Description: "Construct the authenticated dev-preview URL for viewing a web app running in this workspace. The user must have dev preview enabled in workspace settings. Returns a URL the user can open in their browser to see the dev server output (with HMR support). No API call is made — the URL is deterministic. Refuses ports below 1024 and platform-reserved ports.",
+						Description: "Construct the authenticated dev-preview URL for viewing a web app running in this workspace. The user must have dev preview enabled in workspace settings. Returns a URL the chat UI renders as an open-preview button (fall back to relaying the URL as a markdown link in your reply). No API call is made — the URL is deterministic. Port defaults to 5173 when omitted. Refuses ports below 1024 and platform-reserved ports.",
 						InputSchema: map[string]any{
 							"type": "object",
 							"properties": map[string]any{
-								"port": map[string]any{"type": "integer", "description": "The localhost port the dev server is listening on (e.g. 5173 for Vite, 3000 for Next). Must be >= 1024; platform-reserved ports are refused."},
+								"port": map[string]any{"type": "integer", "description": "The localhost port the dev server is listening on (e.g. 5173 for Vite, 3000 for Next). Defaults to 5173. Must be >= 1024; platform-reserved ports are refused."},
 								"path": map[string]any{"type": "string", "description": "Optional path on the dev server (defaults to /). Carried through on path-based preview URLs; on per-workspace-origin deployments the preview opens at the app root"},
 							},
-							"required": []string{"port"},
+							"required": []string{},
 						},
 					},
 				},
@@ -156,9 +156,15 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		}
 		return mcpSessionRead(ctx, password, sessionID, limit)
 	case "dev_preview_url":
-		port, ok := toInt(args["port"])
-		if !ok || port < 1 || port > 65535 {
-			return "", fmt.Errorf("port is required and must be between 1 and 65535")
+		// Port is optional: default 5173 (the Vite default, the common
+		// case; the landing page's form defaults to the same).
+		port := 5173
+		if raw, present := args["port"]; present && raw != nil {
+			p, ok := toInt(raw)
+			if !ok || p < 1 || p > 65535 {
+				return "", fmt.Errorf("port must be between 1 and 65535")
+			}
+			port = p
 		}
 		// Tool-layer port policy (redesign-2026-08-19 THREAT-MODEL T3):
 		// refuse BEFORE minting any URL. The proxy layer refuses again —
@@ -227,21 +233,23 @@ func mcpDevPreviewURL(port int, path string) string {
 	workspaceID := os.Getenv("WORKSPACE_ID")
 	apiURL := os.Getenv("LLMSAFESPACE_API_URL")
 
-	// Epic 66 Phase 1 (redesign-2026-08-19): when the deployment sets
-	// PREVIEW_ORIGIN_BASE_DOMAIN, dev preview is served from per-workspace
-	// origins and the tool returns the owner-authenticated bootstrap URL.
-	// The API verifies workspace ownership (existing middleware chain) and
-	// 302s the browser to <ws>-preview.<domain>/<port>/ with a one-time
-	// token, redeemed for a __Host-pv preview-session cookie. The path
-	// parameter does not carry through the bootstrap hop (follow-up);
-	// the user lands at the app root and navigates.
+	// First line is a machine-readable marker the chat UI keys on to
+	// render an open-preview button; everything after is for humans.
+	// The sentinel is namespaced (LSP_), versioned (V1), and structured
+	// (key=value) so it cannot collide with organic tool output that
+	// merely mentions "dev preview". If the button does not render
+	// (older UI), the markdown link on line 2 still carries the URL.
 	if base := os.Getenv("PREVIEW_ORIGIN_BASE_DOMAIN"); base != "" {
 		url := fmt.Sprintf("%s/api/v1/workspaces/%s/dev-preview-bootstrap/%d", apiURL, workspaceID, port)
-		return fmt.Sprintf("%s\n\nThis is the per-workspace preview origin bootstrap link (workspace %s, port %d). Open it while logged in: the API verifies workspace ownership and redirects to the preview host, where the browser receives a preview-session cookie. Dev preview must be enabled in Workspace Settings (gear icon) → Dev Preview → Enable. For a specific path (e.g. %s), navigate within the preview after it opens.", url, workspaceID, port, path)
+		return fmt.Sprintf(
+			"LSP_DEV_PREVIEW_V1 port=%d origin=%s\n[Open dev preview :%d](%s)\nOpens the per-workspace preview origin (workspace %s, port %d) in a new tab. Requires dev preview enabled (Workspace Settings → Dev Preview) and an owner login; a one-time bootstrap grants a 7-day preview session. The app itself must be listening on localhost:%d in the workspace.",
+			port, base, port, url, workspaceID, port, port)
 	}
 
 	url := fmt.Sprintf("%s/api/v1/workspaces/%s/dev-preview/%d%s", apiURL, workspaceID, port, path)
-	return fmt.Sprintf("%s\n\nDev preview must be enabled for this URL to work. If the user gets a 503 error, they need to enable it first via Workspace Settings (gear icon) → Dev Preview → Enable.", url)
+	return fmt.Sprintf(
+		"LSP_DEV_PREVIEW_V1 port=%d mode=path\n[Open dev preview :%d](%s)\nOpens the dev preview tunnel (workspace %s, port %d). Requires dev preview enabled (Workspace Settings → Dev Preview → Enable); otherwise the URL returns 503. The app must be listening on localhost:%d in the workspace.",
+		port, port, url, workspaceID, port, port)
 }
 
 func toInt(v any) (int, bool) {

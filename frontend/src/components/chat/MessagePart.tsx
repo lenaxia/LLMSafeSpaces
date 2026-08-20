@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeSanitize from "rehype-sanitize";
-import { Brain, Check, Copy, Wrench, Server } from "lucide-react";
+import { Brain, Check, Copy, Wrench, Server, ExternalLink } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { useUserSetting } from "../../hooks/useUserSettings";
 import { useNow } from "../../hooks/useNow";
@@ -192,6 +192,73 @@ function ToolInput({ input }: { input: unknown }) {
   return <pre className="text-xs text-muted-foreground font-mono whitespace-pre-wrap max-h-20 overflow-y-auto">{JSON.stringify(input, null, 2)}</pre>;
 }
 
+/**
+ * DevPreviewOutput renders dev_preview_url tool output as an action button
+ * plus its explanation. The tool emits a stable first line
+ * `LSP_DEV_PREVIEW_V1 port=<n> origin=<domain|mode=path>` — namespaced,
+ * versioned, and key=value structured so organic tool output that merely
+ * mentions "dev preview" can never collide with it. The markdown link on
+ * line 2 carries the URL (bootstrap on per-workspace-origin deployments,
+ * the tunnel path otherwise). Output without the exact marker renders
+ * unchanged via the plain path below.
+ */
+/**
+ * DevPreviewToolCard: the non-collapsed wrapper for dev_preview_url output.
+ * Status icon + tool name header (consistent with other tool renderings)
+ * with the action button immediately visible — no expansion required.
+ */
+function DevPreviewToolCard({ name, state, output }: { name: string; state?: string; output: string }) {
+  return (
+    <div className="my-1.5 rounded-md border border-blue-500/20 bg-blue-500/5 px-3 py-2">
+      <div className="flex items-center gap-2 text-xs font-medium text-blue-600 dark:text-blue-400">
+        <Wrench className="h-3.5 w-3.5 flex-shrink-0" />
+        <span className="truncate">{state === "error" ? "✗" : state === "running" ? "⟳" : "✓"} {name}</span>
+      </div>
+      <DevPreviewOutput output={output} />
+    </div>
+  );
+}
+
+function DevPreviewOutput({ output }: { output: string }) {
+  const lines = output.split("\n");
+  const marker = /^LSP_DEV_PREVIEW_V1 port=(\d+)(?: origin=(\S+)| mode=path)?$/.exec((lines[0] ?? "").trim());
+  if (!marker) {
+    return (
+      <pre className="overflow-x-auto touch-manipulation text-xs text-muted-foreground whitespace-pre-wrap font-mono px-3 py-1">
+        {output}
+      </pre>
+    );
+  }
+  const port = marker[1];
+  const origin = marker[2]; // origin domain; undefined in path-based mode
+  const link = /^\[([^\]]+)\]\((https?:\/\/[^)]+)\)$/.exec((lines[1] ?? "").trim());
+  const explanation = lines.slice(link ? 2 : 1).join("\n").trim();
+  return (
+    <div className="px-3 py-2 space-y-2">
+      {link ? (
+        <a
+          href={link[2]}
+          target="_blank"
+          rel="noopener noreferrer"
+          data-testid="dev-preview-button"
+          className="inline-flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-sky-500 transition-colors"
+        >
+          <ExternalLink className="h-4 w-4" />
+          Open dev preview :{port}
+        </a>
+      ) : (
+        <pre className="overflow-x-auto text-xs text-muted-foreground whitespace-pre-wrap font-mono">{output}</pre>
+      )}
+      <p className="text-xs text-muted-foreground leading-relaxed">
+        {explanation}
+        {origin && (
+          <>{" "}Served from <code className="rounded bg-muted px-1 py-0.5">{"<workspace>"}-preview.{origin}</code>.</>
+        )}
+      </p>
+    </div>
+  );
+}
+
 function ToolDetails({ borderColor, textColor, statusIcon, toolName, filePath, badge, children }: {
   borderColor: string; textColor: string; statusIcon: string; toolName: string; filePath: string; badge?: React.ReactNode; children: React.ReactNode;
 }) {
@@ -361,8 +428,27 @@ export function MessagePart({ part, isUser, isStreaming }: Props) {
     );
   }
 
+  // Live SSE tool parts (ChatPage StreamPart): { type: "tool", text: <name>,
+  // toolOutput } — the same rendering as tool_use below. History parts are
+  // transformed into tool_use by transformHistory; streaming parts arrive
+  // as type "tool". Both must render the dev-preview button.
+  if (part.type === "tool" && part.text) {
+    const toolName = part.text;
+    if (toolName === "dev_preview_url" && part.toolOutput) {
+      return <DevPreviewToolCard name={toolName} state={part.toolState} output={part.toolOutput} />;
+    }
+  }
+
   if (part.type === "tool_use" || part.type === "tool_call") {
     const toolName = part.name ?? part.text ?? "tool";
+    // dev_preview_url renders as an ALWAYS-VISIBLE action card, not inside
+    // the collapsed ToolDetails pane: the button is the point of the tool,
+    // and hiding it behind an expansion defeats it. Non-sentinel output
+    // (older deployments) still falls through to the standard collapsed
+    // rendering below.
+    if (toolName === "dev_preview_url" && part.toolOutput && /^LSP_DEV_PREVIEW_V1\s/.test(part.toolOutput)) {
+      return <DevPreviewToolCard name={toolName} state={part.toolState} output={part.toolOutput} />;
+    }
     const hasDetails = part.input || part.toolOutput;
     const statusIcon = part.toolState === "completed" ? "✓" : part.toolState === "error" ? "✗" : part.toolState === "running" ? "⟳" : "…";
     const borderColor = part.toolState === "error" ? "border-red-500/20 bg-red-500/5" : "border-blue-500/20 bg-blue-500/5";
@@ -416,14 +502,20 @@ export function MessagePart({ part, isUser, isStreaming }: Props) {
               </div>
             )}
             {part.toolOutput && (
-              <details className="border-t border-muted">
-                <summary className="px-3 py-1 text-xs text-muted-foreground cursor-pointer hover:text-foreground">
-                  Output ({part.toolOutput.length > 200 ? `${Math.ceil(part.toolOutput.length / 1024)}KB` : `${part.toolOutput.length} chars`})
-                </summary>
-                <pre className="overflow-x-auto touch-manipulation text-xs text-muted-foreground whitespace-pre-wrap font-mono max-h-60 overflow-y-auto px-3 py-1">
-                  {part.toolOutput}
-                </pre>
-              </details>
+              toolName === "dev_preview_url" ? (
+                <div className="border-t border-muted">
+                  <DevPreviewOutput output={part.toolOutput} />
+                </div>
+              ) : (
+                <details className="border-t border-muted">
+                  <summary className="px-3 py-1 text-xs text-muted-foreground cursor-pointer hover:text-foreground">
+                    Output ({part.toolOutput.length > 200 ? `${Math.ceil(part.toolOutput.length / 1024)}KB` : `${part.toolOutput.length} chars`})
+                  </summary>
+                  <pre className="overflow-x-auto touch-manipulation text-xs text-muted-foreground whitespace-pre-wrap font-mono max-h-60 overflow-y-auto px-3 py-1">
+                    {part.toolOutput}
+                  </pre>
+                </details>
+              )
             )}
           </>
         )}
@@ -432,6 +524,17 @@ export function MessagePart({ part, isUser, isStreaming }: Props) {
   }
 
   if (part.type === "tool_result" && (part.text || typeof part.text === "string")) {
+    if (part.name === "dev_preview_url") {
+      return (
+        <div className="my-1.5 rounded-md border border-green-500/20 bg-green-500/5 px-3 py-2">
+          <div className="flex items-center gap-2 text-xs font-medium text-green-600 dark:text-green-400">
+            <Server className="h-3.5 w-3.5" />
+            Tool result
+          </div>
+          <DevPreviewOutput output={part.text ?? ""} />
+        </div>
+      );
+    }
     return (
       <div className="my-1.5 rounded-md border border-green-500/20 bg-green-500/5 px-3 py-2">
         <div className="flex items-center gap-2 text-xs font-medium text-green-600 dark:text-green-400">
