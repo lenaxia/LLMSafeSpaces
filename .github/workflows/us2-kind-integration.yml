@@ -45,7 +45,7 @@ jobs:
           export KUBECONFIG="${KUBECONFIG:-$HOME/.kube/config}"
           kubectl -n llmsafespaces get pods -o wide || true
           kubectl -n llmsafespaces describe pod -l llmsafespaces.dev/workspace=ws-us2-int || true
-          kubectl -n llmsafespaces logs deployment/lss-controller --tail=100 || true
+          kubectl -n llmsafespaces logs deployment/lss-llmsafespaces-controller --tail=100 || true
           for c in agentd workspace; do
             kubectl -n llmsafespaces logs -l llmsafespaces.dev/workspace=ws-us2-int -c "$c" --tail=80 || true
           done
