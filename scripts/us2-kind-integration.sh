@@ -220,8 +220,25 @@ helm upgrade --install "$RELEASE" helm \
   --set controller.agentdSidecar.enabled=true \
   --wait --timeout 420s || { setup_diagnostics; exit 1; }
 
-log "creating workspace $WORKSPACE_NAME"
-kubectl -n "$NS" apply -f - <<EOF
+# Webhook bootstrap race: helm --wait covers the Deployment, NOT the
+# ValidatingWebhookConfiguration's Service endpoints (and cert-manager's
+# cert landing in the pod). Creating the workspace the instant helm
+# returns gets "connection refused" from the webhook. Wait for the
+# Service to have endpoints, then retry the apply through the window.
+WEBHOOK_SVC="${RELEASE}-llmsafespaces-controller-webhook"
+log "waiting for webhook endpoints ($WEBHOOK_SVC)"
+EPS=""
+for i in $(seq 1 60); do
+  EPS=$(kubectl -n "$NS" get endpoints "$WEBHOOK_SVC" \
+    -o jsonpath='{.subsets[0].addresses[0].ip}' 2>/dev/null || true)
+  [ -n "$EPS" ] && break
+  sleep 2
+done
+[ -n "$EPS" ] || { log "webhook service never got endpoints"; setup_diagnostics; exit 1; }
+
+log "creating workspace $WORKSPACE_NAME (retrying through the webhook cert window)"
+WS_MANIFEST=$(mktemp)
+cat >"$WS_MANIFEST" <<EOF
 apiVersion: llmsafespaces.dev/v1
 kind: Workspace
 metadata:
@@ -233,6 +250,14 @@ spec:
   storage:
     size: 1Gi
 EOF
+WS_APPLIED=0
+for i in $(seq 1 15); do
+  if kubectl -n "$NS" apply -f "$WS_MANIFEST"; then WS_APPLIED=1; break; fi
+  log "workspace apply failed (attempt $i) — retrying"
+  sleep 4
+done
+rm -f "$WS_MANIFEST"
+[ "$WS_APPLIED" = "1" ] || { log "workspace apply kept failing (webhook unreachable?)"; setup_diagnostics; exit 1; }
 
 POD=""
 for i in $(seq 1 60); do
