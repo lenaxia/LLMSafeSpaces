@@ -649,3 +649,21 @@ describe("MessagePart tool elapsed badge tick growth (#892 D5)", () => {
     }
   });
 });
+
+// Dev-preview tool output renders as an action button (DEV_PREVIEW marker).
+// Uses the file's existing provider-wrapped render + screen imports.
+describe("DevPreviewOutput via MessagePart", () => {
+  it("renders an open-preview button from the marker + markdown link", () => {
+    const output = "DEV_PREVIEW 5173 safespaces.dev\n[Open dev preview :5173](https://api.example.com/api/v1/workspaces/ws/dev-preview-bootstrap/5173)\nOpens the preview. Requires login.";
+    render(<MessagePart part={{ type: "tool_result", text: output, name: "dev_preview_url" } as never} />);
+    const btn = screen.getByTestId("dev-preview-button");
+    expect(btn).toHaveAttribute("href", "https://api.example.com/api/v1/workspaces/ws/dev-preview-bootstrap/5173");
+    expect(btn).toHaveAttribute("target", "_blank");
+    expect(btn.textContent).toContain("Open dev preview :5173");
+  });
+
+  it("falls back to plain text for output without the marker", () => {
+    render(<MessagePart part={{ type: "tool_result", text: "https://old.example.com/preview", name: "dev_preview_url" } as never} />);
+    expect(screen.queryByTestId("dev-preview-button")).toBeNull();
+  });
+});

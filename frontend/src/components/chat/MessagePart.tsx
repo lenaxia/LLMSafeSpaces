@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react"
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeSanitize from "rehype-sanitize";
-import { Brain, Check, Copy, Wrench, Server } from "lucide-react";
+import { Brain, Check, Copy, Wrench, Server, ExternalLink } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { useUserSetting } from "../../hooks/useUserSettings";
 import { useNow } from "../../hooks/useNow";
@@ -190,6 +190,54 @@ function ToolInput({ input }: { input: unknown }) {
     return <code className="block text-xs font-mono text-muted-foreground truncate">{obj.path}</code>;
   }
   return <pre className="text-xs text-muted-foreground font-mono whitespace-pre-wrap max-h-20 overflow-y-auto">{JSON.stringify(input, null, 2)}</pre>;
+}
+
+/**
+ * DevPreviewOutput renders dev_preview_url tool output as an action button
+ * plus its explanation. The tool emits a stable first line
+ * `DEV_PREVIEW <port> <origin-domain|path>`; the markdown link on line 2
+ * carries the URL (bootstrap on per-workspace-origin deployments, the
+ * tunnel path otherwise). Older tool output without the marker renders
+ * unchanged via the plain path below.
+ */
+function DevPreviewOutput({ output }: { output: string }) {
+  const lines = output.split("\n");
+  const marker = /^DEV_PREVIEW (\d+)(?: (\S+))?$/.exec((lines[0] ?? "").trim());
+  if (!marker) {
+    return (
+      <pre className="overflow-x-auto touch-manipulation text-xs text-muted-foreground whitespace-pre-wrap font-mono px-3 py-1">
+        {output}
+      </pre>
+    );
+  }
+  const port = marker[1];
+  const origin = marker[2]; // origin domain, or "path" for path-based mode
+  const link = /^\[([^\]]+)\]\((https?:\/\/[^)]+)\)$/.exec((lines[1] ?? "").trim());
+  const explanation = lines.slice(link ? 2 : 1).join("\n").trim();
+  return (
+    <div className="px-3 py-2 space-y-2">
+      {link ? (
+        <a
+          href={link[2]}
+          target="_blank"
+          rel="noopener noreferrer"
+          data-testid="dev-preview-button"
+          className="inline-flex items-center gap-2 rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-sky-500 transition-colors"
+        >
+          <ExternalLink className="h-4 w-4" />
+          Open dev preview :{port}
+        </a>
+      ) : (
+        <pre className="overflow-x-auto text-xs text-muted-foreground whitespace-pre-wrap font-mono">{output}</pre>
+      )}
+      <p className="text-xs text-muted-foreground leading-relaxed">
+        {explanation}
+        {origin && origin !== "path" && (
+          <>{" "}Served from <code className="rounded bg-muted px-1 py-0.5">{"<workspace>"}-preview.{origin}</code>.</>
+        )}
+      </p>
+    </div>
+  );
 }
 
 function ToolDetails({ borderColor, textColor, statusIcon, toolName, filePath, badge, children }: {
@@ -416,14 +464,20 @@ export function MessagePart({ part, isUser, isStreaming }: Props) {
               </div>
             )}
             {part.toolOutput && (
-              <details className="border-t border-muted">
-                <summary className="px-3 py-1 text-xs text-muted-foreground cursor-pointer hover:text-foreground">
-                  Output ({part.toolOutput.length > 200 ? `${Math.ceil(part.toolOutput.length / 1024)}KB` : `${part.toolOutput.length} chars`})
-                </summary>
-                <pre className="overflow-x-auto touch-manipulation text-xs text-muted-foreground whitespace-pre-wrap font-mono max-h-60 overflow-y-auto px-3 py-1">
-                  {part.toolOutput}
-                </pre>
-              </details>
+              toolName === "dev_preview_url" ? (
+                <div className="border-t border-muted">
+                  <DevPreviewOutput output={part.toolOutput} />
+                </div>
+              ) : (
+                <details className="border-t border-muted">
+                  <summary className="px-3 py-1 text-xs text-muted-foreground cursor-pointer hover:text-foreground">
+                    Output ({part.toolOutput.length > 200 ? `${Math.ceil(part.toolOutput.length / 1024)}KB` : `${part.toolOutput.length} chars`})
+                  </summary>
+                  <pre className="overflow-x-auto touch-manipulation text-xs text-muted-foreground whitespace-pre-wrap font-mono max-h-60 overflow-y-auto px-3 py-1">
+                    {part.toolOutput}
+                  </pre>
+                </details>
+              )
             )}
           </>
         )}
@@ -432,6 +486,17 @@ export function MessagePart({ part, isUser, isStreaming }: Props) {
   }
 
   if (part.type === "tool_result" && (part.text || typeof part.text === "string")) {
+    if (part.name === "dev_preview_url") {
+      return (
+        <div className="my-1.5 rounded-md border border-green-500/20 bg-green-500/5 px-3 py-2">
+          <div className="flex items-center gap-2 text-xs font-medium text-green-600 dark:text-green-400">
+            <Server className="h-3.5 w-3.5" />
+            Tool result
+          </div>
+          <DevPreviewOutput output={part.text ?? ""} />
+        </div>
+      );
+    }
     return (
       <div className="my-1.5 rounded-md border border-green-500/20 bg-green-500/5 px-3 py-2">
         <div className="flex items-center gap-2 text-xs font-medium text-green-600 dark:text-green-400">

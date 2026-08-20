@@ -563,11 +563,17 @@ func TestPreviewOrigin_Landing_DeepLink_Navigation(t *testing.T) {
 		t.Errorf("landing must be HTML, got %q", ct)
 	}
 	body := w.Body.String()
-	if !strings.Contains(body, "dev-preview-bootstrap/5173") {
-		t.Errorf("landing CTA must link the bootstrap for this port; body excerpt: %q", body[:min(200, len(body))])
+	if !strings.Contains(body, `action="`) || !strings.Contains(body, `name="port"`) {
+		t.Errorf("landing must render the editable port form; body excerpt: %.200s", body)
+	}
+	if !strings.Contains(body, `value="5173"`) {
+		t.Errorf("deep-link landing must prefill the URL's port; body excerpt: %.200s", body)
 	}
 	if !strings.Contains(body, "Open preview") {
 		t.Error("landing missing CTA label")
+	}
+	if !strings.Contains(body, "How dev preview works") {
+		t.Error("landing missing the explainer")
 	}
 	if strings.Contains(body, "password") && strings.Contains(body, "input type=\"password\"") {
 		t.Error("SECURITY: landing must never contain a password field")

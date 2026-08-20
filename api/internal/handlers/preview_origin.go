@@ -333,15 +333,17 @@ func (h *PreviewOriginHandler) serveLanding(c *gin.Context, wsID string, port in
 	}
 	bootstrapBase := h.apiOrigin() + "/api/v1/workspaces/" + wsID + "/dev-preview-bootstrap"
 
-	var cta string
+	// The port is ALWAYS editable (prefilled from the URL when present,
+	// else the 5173 default): switching ports must not require editing
+	// the address bar.
+	portVal := 5173
 	if port > 0 {
-		cta = `<a class="btn" href="` + bootstrapBase + `/` + strconv.Itoa(port) + `">Open preview&nbsp;→</a>`
-	} else {
-		cta = `<form class="card" method="get" action="` + bootstrapBase + `">` +
-			`<label for="port">Dev server port</label>` +
-			`<input id="port" name="port" type="number" min="1024" max="65535" value="5173" required>` +
-			`<button class="btn" type="submit">Open preview&nbsp;→</button></form>`
+		portVal = port
 	}
+	cta := `<form class="card" method="get" action="` + bootstrapBase + `">` +
+		`<label for="port">Dev server port</label>` +
+		`<input id="port" name="port" type="number" min="1024" max="65535" value="` + strconv.Itoa(portVal) + `" required>` +
+		`<button class="btn" type="submit">Open preview&nbsp;→</button></form>`
 
 	body := `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
@@ -364,10 +366,20 @@ input{background:#0b1120;color:#e2e8f0;border:1px solid rgba(148,163,184,.3);bor
  padding:.65rem 1.6rem;font:inherit;font-weight:600;cursor:pointer}
 .btn:hover{background:#0284c7}
 .note{color:#64748b;font-size:.75rem;margin-top:1.5rem}
+details.how{text-align:left;margin:1.5rem auto 0;max-width:30rem;color:#94a3b8;font-size:.8rem}
+details.how summary{cursor:pointer;color:#7dd3fc;font-size:.8rem}
+details.how ul{margin:.6rem 0 0 1.1rem;padding:0;display:grid;gap:.45rem}
 </style></head><body><main>
 <h1>Workspace dev preview</h1>
 <div class="ws">` + short + ` · this preview's session is missing or expired</div>
 ` + cta + `
+<details class="how"><summary>How dev preview works</summary>
+<ul>
+<li>Your dev server runs inside the workspace; this origin tunnels to it over HTTPS — no ports exposed, no NetworkPolicy changes.</li>
+<li>Access is workspace-owner-only. The button opens via the API origin (where your login lives); it hands this origin a one-time ticket that becomes a 7-day preview session for this browser.</li>
+<li>While a session is active this URL serves your app directly, including WebSocket hot-reload.</li>
+<li>Nothing on this page asks for a password — that is by design: workspace content is agent-generated, so credentials are only ever entered on the API origin.</li>
+</ul></details>
 <p class="note">Opens via the API origin — you must be logged in as this workspace's owner.<br>
 No password is ever asked on this page, by design.</p>
 </main></body></html>`
