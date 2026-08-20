@@ -1503,3 +1503,140 @@ func TestSendPromptAsync_ModelAxis_TailAccepted(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code, "tail-allowlisted model must be permitted like SetModel permits it")
 	assert.True(t, called)
 }
+
+// --- #971: native first-page history pagination ---
+
+// mkHistMsg builds one opencode-wire user message for the paged-history
+// fixtures.
+func mkHistMsg(i int) string {
+	return fmt.Sprintf(`{"info":{"id":"msg_%03d","role":"user","time":{"created":%d}},"parts":[{"type":"text","text":"m%d"}]}`, i, 1786400000000+int64(i)*1000, i)
+}
+
+// TestE2E_GetHistory_FirstPage_UsesNativeLimit proves the session-load
+// hot path fetches ONLY the newest page from opencode (?limit=N) instead
+// of the full transcript (#971): a 120-message session serving limit=50
+// must hit ?limit=50 exactly, never the unbounded URL.
+func TestE2E_GetHistory_FirstPage_UsesNativeLimit(t *testing.T) {
+	var mu sync.Mutex
+	fullHits, pagedHits := 0, 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.URL.Query().Get("limit") != "" {
+			pagedHits++
+			// Native shape: limit=N returns the NEWEST N, ascending.
+			n := 120
+			lo := n - 50
+			if lo < 0 {
+				lo = 0
+			}
+			var b strings.Builder
+			b.WriteString("[")
+			for i := lo; i < n; i++ {
+				if i > lo {
+					b.WriteString(",")
+				}
+				b.WriteString(mkHistMsg(i))
+			}
+			b.WriteString("]")
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(b.String()))
+			return
+		}
+		fullHits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(backend.Close)
+	env := newE2EEnv(t, backend)
+
+	w := env.do(http.MethodGet, "/api/v1/workspaces/ws-1/sessions/ses_1/message?limit=50", nil)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, 1, pagedHits, "first page must use the native ?limit fetch")
+	assert.Zero(t, fullHits, "first page must NOT fetch the full transcript (#971)")
+
+	// The page is the newest 50, ascending; cursor = oldest of the page.
+	var page []map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &page))
+	require.Len(t, page, 50)
+	assert.Equal(t, "msg_070", page[0]["id"], "oldest of the newest-50 page")
+	assert.Equal(t, "msg_119", page[49]["id"], "newest message last")
+	assert.Equal(t, "msg_070", w.Header().Get("X-Next-Cursor"), "cursor points at the page's oldest for back-pagination")
+}
+
+// TestE2E_GetHistory_BackPage_FallsBackToFull proves older pages (before
+// cursor present) keep the full-fetch path: opencode 1.18.10's cursor
+// params are unusable (verified live: before= 400s every shape; cursor=
+// ignored), so slicing the full list is the only correct back-pagination.
+func TestE2E_GetHistory_BackPage_FallsBackToFull(t *testing.T) {
+	var mu sync.Mutex
+	fullHits, pagedHits := 0, 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.URL.Query().Get("limit") != "" {
+			pagedHits++
+		} else {
+			fullHits++
+		}
+		var b strings.Builder
+		b.WriteString("[")
+		for i := 0; i < 120; i++ {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			b.WriteString(mkHistMsg(i))
+		}
+		b.WriteString("]")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(b.String()))
+	}))
+	t.Cleanup(backend.Close)
+	env := newE2EEnv(t, backend)
+
+	w := env.do(http.MethodGet, "/api/v1/workspaces/ws-1/sessions/ses_1/message?limit=50&before=msg_070", nil)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, 1, fullHits, "back page must fetch the full transcript (only correct back-pagination)")
+	assert.Zero(t, pagedHits)
+
+	var page []map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &page))
+	require.Len(t, page, 50)
+	assert.Equal(t, "msg_020", page[0]["id"], "page strictly older than the cursor")
+	assert.Equal(t, "msg_069", page[49]["id"])
+	assert.Equal(t, "msg_020", w.Header().Get("X-Next-Cursor"))
+}
+
+// TestE2E_GetHistory_ShortSession_NoCursorHeader: when the native page
+// already holds the whole session there is nothing older — no cursor.
+func TestE2E_GetHistory_ShortSession_NoCursorHeader(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// limit=50 requested; serve all 10 (native shape handles it).
+		var b strings.Builder
+		b.WriteString("[")
+		for i := 0; i < 10; i++ {
+			if i > 0 {
+				b.WriteString(",")
+			}
+			b.WriteString(mkHistMsg(i))
+		}
+		b.WriteString("]")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(b.String()))
+	}))
+	t.Cleanup(backend.Close)
+	env := newE2EEnv(t, backend)
+
+	w := env.do(http.MethodGet, "/api/v1/workspaces/ws-1/sessions/ses_1/message", nil)
+	require.Equal(t, http.StatusOK, w.Code)
+	var page []map[string]any
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &page))
+	require.Len(t, page, 10)
+	assert.Empty(t, w.Header().Get("X-Next-Cursor"), "no older messages => no cursor")
+}
