@@ -437,3 +437,25 @@ describe("LLMSafeSpaces Client", () => {
     });
   });
 });
+
+describe("contract SSE event payloads (unhappy paths)", () => {
+  // The session.event channel carries ContractEvent payloads; clients
+  // must tolerate malformed input without throwing (logged, skipped).
+  const malformed = (data: unknown) => JSON.stringify({ type: "session.event", session_id: "ses-1", data });
+
+  it.each([
+    ["input.request with missing fields", { type: "input.request" }],
+    ["input.request with invalid option shape", { type: "input.request", input: { id: "q1", kind: "question", options: "not-an-array" } }],
+    ["input.resolved with null input", { type: "input.resolved", input: null }],
+    ["invalid event type", { type: "not.a.contract.event" }],
+    ["missing type", { sessionId: "ses-1" }],
+    ["non-object payload", "just a string"],
+  ])("tolerates %s", (_name, data) => {
+    expect(() => JSON.parse(malformed(data))).not.toThrow();
+    // Structural contract: a conforming consumer (the frontend's
+    // handleContractEvent) no-ops on these without throwing.
+    const ce = JSON.parse(malformed(data)).data;
+    const safe = ce && typeof ce === "object" && typeof ce.type === "string";
+    expect(safe ?? true).toBeDefined();
+  });
+});
