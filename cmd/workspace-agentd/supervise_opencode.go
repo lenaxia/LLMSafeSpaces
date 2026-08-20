@@ -79,11 +79,25 @@ func runSuperviseOpencodeCommand(_ []string) int {
 // spawn env (A.2).
 type managedProcAdapter struct {
 	p *managedProcess
+	// baseCmdFactory builds the child the spawn-env wrapper composes on
+	// top of. Nil resolves to defaultOpencodeCmdFactory at first use
+	// (production); tests inject the fake-opencode factory so the
+	// wrapper does not silently switch the child to the production
+	// `opencode` binary (absent on CI runners — the wrapper then
+	// crash-loops a failing Start and restart blocks on upCh forever).
+	baseCmdFactory func() *exec.Cmd
 	// spawnEnv is the US-0.2(a) IPC-handed env: memory-only, write-only,
 	// last-write-wins. Applied by the cmdFactory wrapper at the NEXT
 	// spawn. Never returned over the socket (A.4 invariant 1), never
 	// written to disk.
 	spawnEnv []string
+}
+
+func (a *managedProcAdapter) factory() func() *exec.Cmd {
+	if a.baseCmdFactory != nil {
+		return a.baseCmdFactory
+	}
+	return defaultOpencodeCmdFactory
 }
 
 // Restart maps the reason-enum restart onto managedProcess. In-progress-
@@ -128,9 +142,10 @@ func (a *managedProcAdapter) SetSpawnEnv(env map[string]string) {
 		flat = append(flat, k+"="+v)
 	}
 	a.spawnEnv = flat
+	base := a.factory()
 	a.p.mu.Lock()
 	a.p.cmdFactory = func() *exec.Cmd {
-		cmd := defaultOpencodeCmdFactory()
+		cmd := base()
 		cmd.Env = append([]string{}, a.spawnEnv...)
 		return cmd
 	}

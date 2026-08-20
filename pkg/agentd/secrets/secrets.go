@@ -855,12 +855,6 @@ func (m *Materializer) FormatProviders(formatter LLMProviderFormatter) ([]byte, 
 // When formatter is nil, FlushProviders is a no-op (no agent config is
 // written). This allows callers to conditionally skip agent-specific
 // rendering.
-// AgentConfigWriteMode is the mode for the materialized agent-config.json
-// (design 0051 §D1): 0640 — written across the uid split (uid-1000 init at
-// boot, uid-2000 sidecar on reload), read by uid-1000 opencode via the
-// pod's shared gid 1000. The T2 exception; see the header comment.
-const AgentConfigWriteMode os.FileMode = 0o640
-
 func (m *Materializer) FlushProviders(formatter LLMProviderFormatter) error {
 	cfg, err := m.FormatProviders(formatter)
 	if err != nil {
@@ -871,6 +865,12 @@ func (m *Materializer) FlushProviders(formatter LLMProviderFormatter) error {
 	}
 	return atomicWrite(m.FS, m.Paths.AgentConfigPath, cfg, AgentConfigWriteMode)
 }
+
+// AgentConfigWriteMode is the mode for the materialized agent-config.json
+// (design 0051 §D1): 0640 — written across the uid split (uid-1000 init at
+// boot, uid-2000 sidecar on reload), read by uid-1000 opencode via the
+// pod's shared gid 1000. The T2 exception; see the header comment.
+const AgentConfigWriteMode os.FileMode = 0o640
 
 // --- file-write helpers ---------------------------------------------------
 
