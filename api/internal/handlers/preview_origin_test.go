@@ -716,6 +716,13 @@ func previewOriginCSPFixture(t *testing.T, frameAncestors []string) (*PreviewOri
 		fa = strings.Join(frameAncestors, " ")
 	}
 	pv.csp = previewRelaxedCSPBase + fa
+	// Mirror the constructor's landingCSP derivation (form-action extended
+	// to the API bootstrap origin).
+	apiOrigin := pv.cfg.APIOriginURL
+	if apiOrigin == "" {
+		apiOrigin = "https://api." + pvDomain
+	}
+	pv.landingCSP = strings.Replace(pv.csp, "form-action 'self'", "form-action 'self' "+apiOrigin, 1)
 	return pv, r
 }
 
@@ -752,6 +759,11 @@ func TestPreviewOrigin_CSP_RelaxedPolicyOnProxiedResponses(t *testing.T) {
 		"connect-src 'self'",
 		"object-src 'none'",
 		"frame-ancestors 'none'",
+		// Token boundary: proxied app pages keep STRICT form-action
+		// ("form-action 'self';" — directive ends immediately). The
+		// landing's extended form-action is "form-action 'self' <origin>;"
+		// and must never appear here.
+		"form-action 'self';",
 	} {
 		if !strings.Contains(csp, want) {
 			t.Errorf("CSP missing %q; got: %s", want, csp)
@@ -794,8 +806,15 @@ func TestPreviewOrigin_CSP_LandingCarriesPolicy(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("landing: expected 200, got %d", w.Code)
 	}
-	if csp := w.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "script-src 'self' 'unsafe-inline' 'unsafe-eval'") {
+	csp := w.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "script-src 'self' 'unsafe-inline' 'unsafe-eval'") {
 		t.Errorf("landing missing relaxed CSP; got: %q", csp)
+	}
+	// REGRESSION (landing form was blocked by its own CSP): form-action on
+	// the LANDING must include the bootstrap API origin — the port form
+	// submits there cross-origin.
+	if !strings.Contains(csp, "form-action 'self' https://api."+pvDomain) {
+		t.Errorf("landing form-action must allowlist the API origin; got: %q", csp)
 	}
 }
 

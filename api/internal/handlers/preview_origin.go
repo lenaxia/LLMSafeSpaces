@@ -106,6 +106,11 @@ type PreviewOriginHandler struct {
 	log   pkginterfaces.LoggerInterface
 	// csp is the rendered Phase-2 policy (DESIGN §5.4), computed once.
 	csp string
+	// landingCSP is the same policy with form-action extended to include
+	// the bootstrap API origin: the landing page's own port form submits
+	// there (cross-origin GET), which strict form-action 'self' blocks.
+	// Proxied APP pages keep the strict form-action (DESIGN §5.4).
+	landingCSP string
 }
 
 // previewRelaxedCSPBase is the Phase-2 policy per DESIGN §5.4.
@@ -150,9 +155,17 @@ func NewPreviewOriginHandler(inner *DevPreviewHandler, cfg PreviewOriginConfig, 
 	if len(cfg.FrameAncestors) > 0 {
 		fa = strings.Join(cfg.FrameAncestors, " ")
 	}
+	csp := previewRelaxedCSPBase + fa
+	apiOrigin := cfg.APIOriginURL
+	if apiOrigin == "" {
+		apiOrigin = "https://api." + cfg.BaseDomain
+	}
+	apiOrigin = strings.TrimSuffix(apiOrigin, "/")
+	landingCSP := strings.Replace(csp, "form-action 'self'", "form-action 'self' "+apiOrigin, 1)
 	return &PreviewOriginHandler{
 		inner: inner, cfg: cfg, cache: cache, log: log,
-		csp: previewRelaxedCSPBase + fa,
+		csp:        csp,
+		landingCSP: landingCSP,
 	}
 }
 
@@ -419,7 +432,9 @@ No password is ever asked on this page, by design.</p>
 
 	c.Header("Cache-Control", "no-store")
 	c.Header("X-Robots-Tag", "noindex, nofollow")
-	c.Header("Content-Security-Policy", h.csp)
+	// Landing CSP (not the app CSP): form-action must permit the
+	// bootstrap submission to the API origin — this page's whole purpose.
+	c.Header("Content-Security-Policy", h.landingCSP)
 	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(body))
 	c.Abort()
 }
