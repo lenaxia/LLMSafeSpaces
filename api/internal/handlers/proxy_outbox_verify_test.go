@@ -37,8 +37,8 @@ type fakeAgentBackend struct {
 	mu sync.Mutex
 	// userTexts are the persisted user messages (created timestamps).
 	userTexts []struct {
-		text     string
-		created  time.Time
+		text    string
+		created time.Time
 	}
 	posts int
 	// stall makes each POST /message sleep past the (test-shrunk)

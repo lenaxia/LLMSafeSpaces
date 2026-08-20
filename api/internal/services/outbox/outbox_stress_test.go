@@ -259,17 +259,16 @@ func TestStress_ConcurrentAcceptDedupeAndCap(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			var dup *Duplicate
 			_, err := s.Accept(ctx, "ws-race", "ses-race", "u-1", "cm-same", "same text", nil)
 			switch {
 			case err == nil:
 				accepted.Add(1)
+			case errors.As(err, &dup):
+				duplicated.Add(1)
+			case errors.Is(err, ErrCapped):
 			default:
-				var dup *Duplicate
-				if errors.As(err, &dup) {
-					duplicated.Add(1)
-				} else if err != ErrCapped {
-					t.Errorf("unexpected accept error: %v", err)
-				}
+				t.Errorf("unexpected accept error: %v", err)
 			}
 		}()
 	}

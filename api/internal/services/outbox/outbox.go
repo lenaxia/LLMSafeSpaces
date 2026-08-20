@@ -575,11 +575,7 @@ func (s *Service) Recover(ctx context.Context) int {
 			if inMain[e.ID] {
 				continue // crash window left it in both — main wins
 			}
-<<<<<<< HEAD
-			e.Status = StatusPending
-=======
 			e.Status = StatusVerifying
->>>>>>> 910e99a6 (feat(outbox): ambiguity-aware delivery state machine — verifying status, Verifier + OnDelivered seams (#987))
 			e.NextAttemptAt = time.Time{}
 			s.client.LPush(ctx, qKey(ws, ses), string(mustMarshal(e)))
 			n++

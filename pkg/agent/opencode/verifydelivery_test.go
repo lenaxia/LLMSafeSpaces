@@ -102,7 +102,7 @@ func TestVerifyDelivery_PagesThroughCursor(t *testing.T) {
 	since := time.Now().Add(-1 * time.Hour)
 	var hits []string
 	srv := newVerifyServer(t, map[string]verifyPage{
-		"": {items: "[" + userMsg("user", "newer noise", since.Add(10*time.Minute)) + "]", nextCursor: "cur-1"},
+		"":      {items: "[" + userMsg("user", "newer noise", since.Add(10*time.Minute)) + "]", nextCursor: "cur-1"},
 		"cur-1": {items: "[" + userMsg("user", "paged match", since.Add(1*time.Minute)) + "]"},
 	}, &hits)
 	a := newTestAdapter(t, srv)

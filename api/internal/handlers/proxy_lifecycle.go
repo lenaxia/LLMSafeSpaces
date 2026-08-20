@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
-	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
+	"github.com/lenaxia/llmsafespaces/pkg/agent"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/interfaces"
@@ -305,7 +305,7 @@ var outboxTick = 1 * time.Second
 //     pre-redelivery tail-25 check with exact cursor-paged coverage.
 //
 //  2. Classify failures: an HTTP status response
-//     (opencode.ErrHTTPStatus) means the agent PROCESSED and rejected
+//     (agent.ErrHTTPStatus) means the agent PROCESSED and rejected
 //     the request — definitive, safe to retry. Anything else (timeout
 //     mid-turn, connection cut mid-flight) is outcome-UNKNOWN and wraps
 //     outbox.Ambiguous: the outbox verifies instead of blind-retrying.
@@ -324,7 +324,7 @@ func (h *ProxyHandler) outboxDeliver(ctx context.Context, workspaceID, sessionID
 	}
 	_, err := h.adapter.Send(ctx, "", workspaceID, sessionID, e.Text, session.SendOpts{Model: model})
 	if err != nil {
-		if errors.Is(err, opencode.ErrHTTPStatus) {
+		if errors.Is(err, agent.ErrHTTPStatus) {
 			return err
 		}
 		return outbox.Ambiguous(err)
