@@ -91,6 +91,11 @@ assumption, with a plain-sidecar fallback documented if it fails.
   allow rename-over).
 - **Integrity of reload-secrets** closes with reachability: the control-plane surfaces
   (`:4097/:4098`) hold credentials uid-1000 code can no longer obtain.
+- **Supervisor scope invariant**: `supervise-*` is plumbing — spawn, reap, signal, status, metrics
+  forward, nothing else. It runs as uid 1000 *inside* the snoopable space; anything it holds or
+  decides is reachable by the threat actor. New capability ideas (env assembly, exec hooks, config
+  rendering) are wrong-sided by definition — they belong in the sidecar behind the control socket.
+  Reviewers should reject supervisor PRs that grow it.
 
 **D5 — Phase 1 (SHIPPED, unchanged).** D5.1 distinct admin token/file delivery/env scrub (#933);
 D5.2 required-token boot + D5.3 empty-password reject (#934); D5.4 `/metrics` ruling (no change —
@@ -99,6 +104,24 @@ per-pod scrape secrets are structurally unavailable to PodMonitor; labels audite
 **D6 — Rollout.** Chart-gated `agentdSidecar.enabled` (default false = today's single-container mode,
 unchanged); canary on TEST; the V-matrix gates any default flip. The supervisor extraction is
 behavior-identical by construction (1:1 move), pinned by the existing managed-process test suite.
+
+**D6.1 — Rollback (mixed-generation fleet).** The migration is stateful: Secrets gain keys, mounts
+relocate, opencode restarts under a new parent. Un-flipping `agentdSidecar.enabled` must therefore
+converge, not assume uniformity — same pattern as #933's admin-token rollout:
+
+1. Flag off → controller builds single-container pods again; existing multi-`Data` Secrets are
+   simply ignored by the old code path (extra keys are inert — the #933 upsert already established
+   that extra Secret keys don't break legacy readers).
+2. Running sidecar-generation pods are drained by the normal `spec.restartGeneration` bump, not
+   force-recreated; pod-level convergence is the reconciliation loop's job.
+3. The user-mux two-credential table (§D1) means BOTH credentials remain valid during the window —
+   the sidecar accepts either per route, so API-server dispatch works against pods of any generation.
+4. File relocations are one-directional (US-4 writes sidecar-owned files; the single-container mode
+   writes the same paths uid-1000-owned) — a rolled-back pod re-chowns by rewriting, which
+   `reload-secrets` already does via `reset()` + re-materialize on every boot.
+
+Rollback is exercised as part of US-5's canary (flip on → validate → flip off → validate legacy
+pods healthy → flip on again), so D6.1 is tested before any default flip, not just asserted.
 
 ## 6. What this design does NOT do
 
@@ -132,11 +155,28 @@ behavior-identical by construction (1:1 move), pinned by the existing managed-pr
 - **Phase 1 — SHIPPED** (#933, #934; merged 2026-08-19): distinct admin token (file-only + env scrub
   + mixed-fleet bearer fallback; the round-2 dash-bashism lesson is why exec-level init-script tests
   now exist), fail-closed boots, D5.4 ruling. GO-2026-6173 cleared en route.
-- **Phase 2 — sidecar migration** (0050's US-1..US-5 shape): US-1 extract `supervise-opencode`
-  (1:1) + control socket; US-2 sidecar container + flag split; US-3 credential split
-  (`agentdPassword` key + Secret upsert); US-4 file/mount relocations (D1 ownership + integrity
-  mounts); US-5 chart gate, canary, V-matrix, gVisor leg. Each US is a reviewable PR; security-
-  sensitive ones carry the `/security` pass.
+- **Phase 2 — sidecar migration** (0050's US-1..US-5 shape, plus US-0):
+
+  **US-0 (precondition — no implementation before these are specified and reviewed):**
+  1. *Control-socket protocol.* The `127.0.0.1:4099` channel is the new trust boundary and is
+     currently one sentence. Spec must fix: message shapes (request/response), a version field from
+     day one, behavior on unknown version/method (reject, don't guess), restart-idempotency (restart
+     during a restart), and the observation that it is DELIBERATELY unauthenticated per the
+     capability-equivalence rule — state the rule in the spec so nobody "fixes" it into something
+     that holds secrets.
+  2. *`secrets-env` crossing.* Decide the one mechanism by which the child env crosses the uid
+     boundary: (a) sidecar hands the composed env to the supervisor over the control socket at
+     spawn (crossing stays in IPC; supervisor memory transiently holds it — acceptable, it's uid-1000
+     data by destination anyway), or (b) a uid-1000-readable copy under the existing mount (simple,
+     but re-creates a readable `secrets-env` residual — must be ledgered if chosen). Prefer (a)
+     unless measurement says otherwise.
+  3. *Rollback sketch (D6.1 below) reviewed.*
+
+  US-1 extract `supervise-opencode` (1:1) + control socket (per US-0.1 spec); US-2 sidecar container
+  + flag split; US-3 credential split (`agentdPassword` key + Secret upsert; per-endpoint mux table,
+  §D1); US-4 file/mount relocations (D1 ownership + integrity mounts; implements US-0.2's decision);
+  US-5 chart gate, canary, V-matrix, gVisor leg. Each US is a reviewable PR; security-sensitive ones
+  carry the `/security` pass.
 - **Upstream asks (blockers for the two named residuals)**: opencode file-based server password (or
   child-env scrubbing); nothing else gates Phase 2.
 
