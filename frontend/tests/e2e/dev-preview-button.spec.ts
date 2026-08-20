@@ -69,7 +69,7 @@ test.describe("dev_preview_url chat button (epic-66 UX round 2)", () => {
   test("tool_result with origin-mode sentinel renders the button", async ({ page }) => {
     await setupAPIMocks(page, [
       { id: "m1", type: "user", parts: [{ type: "text", text: "preview my app" }] },
-      { id: "m2", type: "assistant", parts: [{ type: "tool_result", name: "dev_preview_url", text: ORIGIN_OUTPUT }] },
+      { id: "m2", type: "assistant", parts: [{ type: "tool", tool: { callId: "c1", name: "dev_preview_url", output: ORIGIN_OUTPUT, state: { status: "completed" } } }] },
     ]);
     await page.goto(`/chat/${WORKSPACE_ID}/${SESSION_ID}`);
 
@@ -86,7 +86,7 @@ test.describe("dev_preview_url chat button (epic-66 UX round 2)", () => {
   test("tool_result with path-mode sentinel renders the button", async ({ page }) => {
     await setupAPIMocks(page, [
       { id: "m1", type: "user", parts: [{ type: "text", text: "preview on 3000" }] },
-      { id: "m2", type: "assistant", parts: [{ type: "tool_result", name: "dev_preview_url", text: PATH_OUTPUT }] },
+      { id: "m2", type: "assistant", parts: [{ type: "tool", tool: { callId: "c2", name: "dev_preview_url", output: PATH_OUTPUT, state: { status: "completed" } } }] },
     ]);
     await page.goto(`/chat/${WORKSPACE_ID}/${SESSION_ID}`);
 
@@ -98,7 +98,9 @@ test.describe("dev_preview_url chat button (epic-66 UX round 2)", () => {
 
   test("tool_use pane with sentinel output renders the button", async ({ page }) => {
     await setupAPIMocks(page, [
-      { id: "m2", type: "assistant", parts: [{ type: "tool_use", name: "dev_preview_url", state: "completed", input: { port: 5173 }, output: ORIGIN_OUTPUT }] },
+      { id: "m2", type: "assistant", parts: [
+        { type: "tool", tool: { callId: "c3", name: "dev_preview_url", input: { port: 5173 }, output: ORIGIN_OUTPUT, state: { status: "completed" } } },
+      ] },
     ]);
     await page.goto(`/chat/${WORKSPACE_ID}/${SESSION_ID}`);
 
@@ -110,11 +112,16 @@ test.describe("dev_preview_url chat button (epic-66 UX round 2)", () => {
   test("marker-less legacy output renders as plain text, no button", async ({ page }) => {
     const legacy = "https://api.example.com/api/v1/workspaces/ws/dev-preview/5173/\n\nDev preview must be enabled for this URL to work.";
     await setupAPIMocks(page, [
-      { id: "m2", type: "assistant", parts: [{ type: "tool_result", name: "dev_preview_url", text: legacy }] },
+      { id: "m2", type: "assistant", parts: [{ type: "tool", tool: { callId: "c4", name: "dev_preview_url", output: legacy, state: { status: "completed" } } }] },
     ]);
     await page.goto(`/chat/${WORKSPACE_ID}/${SESSION_ID}`);
 
-    await expect(page.getByText("Dev preview must be enabled", { exact: false })).toBeVisible({ timeout: 10_000 });
+    // Legacy output renders in the standard (collapsed) tool pane: open it,
+    // then verify plain text and the absence of a button.
+    const summary = page.getByText("dev_preview_url").first();
+    await expect(summary).toBeVisible({ timeout: 10_000 });
+    await summary.click();
+    await expect(page.getByText("Dev preview must be enabled", { exact: false })).toBeVisible({ timeout: 5_000 });
     await expect(page.getByTestId("dev-preview-button")).toHaveCount(0);
   });
 
@@ -124,18 +131,23 @@ test.describe("dev_preview_url chat button (epic-66 UX round 2)", () => {
     // versioned, key=value sentinel may render a button.
     const organic = "DEV_PREVIEW 5173 safespaces.dev\nsome tool listing ports\nDEV_PREVIEW is a mode in our framework";
     await setupAPIMocks(page, [
-      { id: "m2", type: "assistant", parts: [{ type: "tool_result", name: "some_other_tool", text: organic }] },
+      { id: "m2", type: "assistant", parts: [{ type: "tool", tool: { callId: "c5", name: "some_other_tool", output: organic, state: { status: "completed" } } }] },
     ]);
     await page.goto(`/chat/${WORKSPACE_ID}/${SESSION_ID}`);
 
-    await expect(page.getByText("some tool listing ports")).toBeVisible({ timeout: 10_000 });
+    // Organic output in the collapsed pane of an unrelated tool: open it,
+    // verify text rendered and no button appeared.
+    const summary = page.getByText("some_other_tool").first();
+    await expect(summary).toBeVisible({ timeout: 10_000 });
+    await summary.click();
+    await expect(page.getByText("some tool listing ports")).toBeVisible({ timeout: 5_000 });
     await expect(page.getByTestId("dev-preview-button")).toHaveCount(0);
   });
 
   test("sentinel with missing link line falls back to plain, no crash", async ({ page }) => {
     const truncated = "LSP_DEV_PREVIEW_V1 port=5173 origin=safespaces.dev";
     await setupAPIMocks(page, [
-      { id: "m2", type: "assistant", parts: [{ type: "tool_result", name: "dev_preview_url", text: truncated }] },
+      { id: "m2", type: "assistant", parts: [{ type: "tool", tool: { callId: "c6", name: "dev_preview_url", output: truncated, state: { status: "completed" } } }] },
     ]);
     await page.goto(`/chat/${WORKSPACE_ID}/${SESSION_ID}`);
 

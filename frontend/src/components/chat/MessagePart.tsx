@@ -202,6 +202,23 @@ function ToolInput({ input }: { input: unknown }) {
  * the tunnel path otherwise). Output without the exact marker renders
  * unchanged via the plain path below.
  */
+/**
+ * DevPreviewToolCard: the non-collapsed wrapper for dev_preview_url output.
+ * Status icon + tool name header (consistent with other tool renderings)
+ * with the action button immediately visible — no expansion required.
+ */
+function DevPreviewToolCard({ name, state, output }: { name: string; state?: string; output: string }) {
+  return (
+    <div className="my-1.5 rounded-md border border-blue-500/20 bg-blue-500/5 px-3 py-2">
+      <div className="flex items-center gap-2 text-xs font-medium text-blue-600 dark:text-blue-400">
+        <Wrench className="h-3.5 w-3.5 flex-shrink-0" />
+        <span className="truncate">{state === "error" ? "✗" : state === "running" ? "⟳" : "✓"} {name}</span>
+      </div>
+      <DevPreviewOutput output={output} />
+    </div>
+  );
+}
+
 function DevPreviewOutput({ output }: { output: string }) {
   const lines = output.split("\n");
   const marker = /^LSP_DEV_PREVIEW_V1 port=(\d+)(?: origin=(\S+)| mode=path)?$/.exec((lines[0] ?? "").trim());
@@ -411,8 +428,27 @@ export function MessagePart({ part, isUser, isStreaming }: Props) {
     );
   }
 
+  // Live SSE tool parts (ChatPage StreamPart): { type: "tool", text: <name>,
+  // toolOutput } — the same rendering as tool_use below. History parts are
+  // transformed into tool_use by transformHistory; streaming parts arrive
+  // as type "tool". Both must render the dev-preview button.
+  if (part.type === "tool" && part.text) {
+    const toolName = part.text;
+    if (toolName === "dev_preview_url" && part.toolOutput) {
+      return <DevPreviewToolCard name={toolName} state={part.toolState} output={part.toolOutput} />;
+    }
+  }
+
   if (part.type === "tool_use" || part.type === "tool_call") {
     const toolName = part.name ?? part.text ?? "tool";
+    // dev_preview_url renders as an ALWAYS-VISIBLE action card, not inside
+    // the collapsed ToolDetails pane: the button is the point of the tool,
+    // and hiding it behind an expansion defeats it. Non-sentinel output
+    // (older deployments) still falls through to the standard collapsed
+    // rendering below.
+    if (toolName === "dev_preview_url" && part.toolOutput && /^LSP_DEV_PREVIEW_V1\s/.test(part.toolOutput)) {
+      return <DevPreviewToolCard name={toolName} state={part.toolState} output={part.toolOutput} />;
+    }
     const hasDetails = part.input || part.toolOutput;
     const statusIcon = part.toolState === "completed" ? "✓" : part.toolState === "error" ? "✗" : part.toolState === "running" ? "⟳" : "…";
     const borderColor = part.toolState === "error" ? "border-red-500/20 bg-red-500/5" : "border-blue-500/20 bg-blue-500/5";
