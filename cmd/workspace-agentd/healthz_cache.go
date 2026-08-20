@@ -365,7 +365,7 @@ func refreshIsHealthyLoop(ctx context.Context, client *OpenCodeClient, cache *he
 						zap.Int("totalWatchdogRestarts", wd.totalFired),
 						zap.Int("restartsInWindow", len(wd.restarts)),
 					)
-					if err := writeRestartReasonMarker(RestartReasonMarkerPath, RestartReasonHealthWatchdog, nil); err != nil {
+					if err := writeRestartReasonMarker(markerPathFromEnv(), RestartReasonHealthWatchdog, nil); err != nil {
 						watchdogLogger.Error("failed to write health-watchdog restart-reason marker", zap.Error(err))
 						pkgOpsMetrics.RecordMarkerWriteFailure(workspaceIDFromEnv(), RestartReasonHealthWatchdog)
 					}

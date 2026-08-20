@@ -350,6 +350,11 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 	if runtimeClassName != "" {
 		pod.Spec.RuntimeClassName = &runtimeClassName
 	}
+
+	// Design 0051 US-2: native agentd sidecar + supervisor-mode main
+	// container. No-op when the chart gate is off (default).
+	r.applyAgentdSidecar(pod, workspace)
+
 	return pod, nil
 }
 

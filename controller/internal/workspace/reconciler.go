@@ -80,6 +80,13 @@ type WorkspaceReconciler struct {
 	AgentdBinarySHA256AMD64 string
 	AgentdBinarySHA256ARM64 string
 
+	// AgentdSidecarEnabled (design 0051 US-2, chart-gated, default
+	// false): when true, buildPod appends the native agentd sidecar and
+	// switches the main container to supervise-opencode mode. Requires
+	// AgentdImage (validated at startup) — the sidecar runs the same
+	// digest-pinned delivery artifact.
+	AgentdSidecarEnabled bool
+
 	// Recorder emits Kubernetes events on the Workspace (agentd verify
 	// failures). Injected from mgr.GetEventRecorderFor() in production;
 	// a FakeRecorder in tests.

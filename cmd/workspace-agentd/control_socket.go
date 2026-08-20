@@ -74,6 +74,11 @@ type controlSocketServer struct {
 	ln   net.Listener
 	proc supervisedProcIface
 
+	// metricsSource, when non-nil, supplies the `metrics` method's
+	// cgroup numbers (US-2: the supervisor's own cgroup = the workspace
+	// container's). Nil keeps the US-1 reserved envelope.
+	metricsSource func() *cgroupMetrics
+
 	mu     sync.Mutex
 	closed bool
 
@@ -251,11 +256,25 @@ func (s *controlSocketServer) spawnEnv(req controlRequest) controlResponse {
 }
 
 func (s *controlSocketServer) metrics(id *int64) controlResponse {
-	// Field set fixed by US-1 integration once the supervisor reads the
-	// workspace container's cgroup (0050 finding: the sidecar's own
-	// cgroup is the wrong one). v1 returns the reserved envelope.
+	// Field set frozen by A.2 (US-2): memory current/max, cpu usage and
+	// throttled — sourced from the WORKSPACE container's cgroup, which
+	// only the supervisor can read (0050 finding: the sidecar's own
+	// cgroup is the wrong one). No source wired → reserved envelope.
+	if s.metricsSource == nil {
+		return controlResponse{V: controlProtocolVersion, ID: idOr(id),
+			Result: map[string]any{"cgroup": map[string]any{}}}
+	}
+	m := s.metricsSource()
+	if m == nil {
+		m = &cgroupMetrics{}
+	}
 	return controlResponse{V: controlProtocolVersion, ID: idOr(id),
-		Result: map[string]any{"cgroup": map[string]any{}}}
+		Result: map[string]any{"cgroup": map[string]any{
+			"memory_current_bytes": m.MemoryCurrentBytes,
+			"memory_max_bytes":     m.MemoryMaxBytes,
+			"cpu_usage_usec":       m.CPUUsageUsec,
+			"cpu_throttled_usec":   m.CPUThrottledUsec,
+		}}}
 }
 
 func (s *controlSocketServer) errResp(id *int64, code, msg string) controlResponse {

@@ -242,6 +242,19 @@ controller:
     binarySHA256Amd64: ""
     binarySHA256Arm64: ""
 
+  # Design 0051 US-2 (agentd uid separation): split agentd into a native
+  # sidecar container (uid 2000/gid 1000, policy half: muxes, watchdog,
+  # SSE tracking, relay injector) plus a same-uid supervise-opencode PID 1
+  # in the workspace container. They talk over 127.0.0.1:4099 (Appendix A
+  # control socket). REQUIRES agentdDelivery.image (the sidecar runs the
+  # same digest-pinned artifact) — the chart fails the render otherwise.
+  # Default false: single-container mode, byte-identical to pre-0051 pods.
+  # US-3 (agentdPassword credential split), US-4 (mount relocations), and
+  # US-5 (canary/V-matrix) build on this gate; leave off outside the TEST
+  # canary until those land and the V-matrix passes.
+  agentdSidecar:
+    enabled: false
+
   # F1.4.3 (Epic 17): pre-fix the controller bound /metrics on
   # 0.0.0.0:8080, reachable from any pod with route to the controller
   # IP. The default now binds to loopback so only same-pod sidecars

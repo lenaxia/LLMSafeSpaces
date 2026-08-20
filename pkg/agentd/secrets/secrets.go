@@ -41,6 +41,12 @@
 //
 //	T1 No interpretation of secret values by the shell.
 //	T2 No file ever exists on disk with mode > 0600 for credential material.
+//	   (Design-0051 exception, agent-config.json ONLY: 0640 — the file is
+//	   written by the uid-2000 sidecar and read by uid-1000 opencode, so
+//	   the pod's shared gid 1000 must carry the read bit. Design 0051 §D1
+//	   rules this file uid-1000-readable BY NECESSITY (opencode is its
+//	   reader; the embedded MCP Basic header is a documented residual) —
+//	   0640 grants exactly that reader set, nothing wider.)
 //	T3 No path written outside SecretsBasePath, $HOME/.ssh, or AgentConfigPath.
 //	T4 No env-file line that does not round-trip cleanly through `source`.
 //	T5 An invalid secret skips that secret only; the rest still materialize.
@@ -857,8 +863,14 @@ func (m *Materializer) FlushProviders(formatter LLMProviderFormatter) error {
 	if cfg == nil {
 		return nil
 	}
-	return atomicWrite(m.FS, m.Paths.AgentConfigPath, cfg, 0o600)
+	return atomicWrite(m.FS, m.Paths.AgentConfigPath, cfg, AgentConfigWriteMode)
 }
+
+// AgentConfigWriteMode is the mode for the materialized agent-config.json
+// (design 0051 §D1): 0640 — written across the uid split (uid-1000 init at
+// boot, uid-2000 sidecar on reload), read by uid-1000 opencode via the
+// pod's shared gid 1000. The T2 exception; see the header comment.
+const AgentConfigWriteMode os.FileMode = 0o640
 
 // --- file-write helpers ---------------------------------------------------
 

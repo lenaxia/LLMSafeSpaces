@@ -24,6 +24,16 @@ if [[ -f /sandbox-cfg/password ]]; then
     export OPENCODE_SERVER_PASSWORD="$(cat /sandbox-cfg/password)"
 fi
 
+# Design 0051 US-2: in sidecar mode this container's PID 1 is the
+# same-uid supervisor (spawn/reap/signal/status only); agentd's policy
+# half runs as the native sidecar container talking to it over
+# 127.0.0.1:4099 (Appendix A). Plain [ = ] test — POSIX, no bashisms
+# (the dash lesson, #933 round 2; this script is bash but stays
+# portable by policy).
+if [ "${AGENTD_SIDECAR_MODE:-}" = "1" ]; then
+    exec "${AGENTD_BIN}" supervise-opencode
+fi
+
 # agentd is PID 1 (supervisor). It manages opencode as a child process.
 # AGENTD_BIN is exported by entrypoint-common.sh: the sha256-verified
 # overlay binary (#863) or the baked-in one (legacy mode).

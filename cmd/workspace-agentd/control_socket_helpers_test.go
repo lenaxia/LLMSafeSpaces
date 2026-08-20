@@ -20,6 +20,21 @@ type fakeRestartProc struct {
 	// genuinely overlap it.
 	block   chan struct{}
 	blocked atomic.Bool
+
+	// overrideState, when set, is returned by State() verbatim — lets
+	// tests stage pid/boot-grace evidence for the vitals gatherer.
+	overrideState atomic.Pointer[procStateOverride]
+}
+
+// procStateOverride is the staged State() answer.
+type procStateOverride struct {
+	pid           int
+	state         string
+	restarts      int
+	lastRestartAt time.Time
+	// emptyLastRestart reports last_restart_at as "" (never restarted)
+	// instead of formatting lastRestartAt.
+	emptyLastRestart bool
 }
 
 func (f *fakeRestartProc) Restart(reason string, _ int) (bool, bool) {
@@ -32,6 +47,12 @@ func (f *fakeRestartProc) Restart(reason string, _ int) (bool, bool) {
 }
 
 func (f *fakeRestartProc) State() (int, string, int, time.Time) {
+	if o := f.overrideState.Load(); o != nil {
+		if o.emptyLastRestart {
+			return o.pid, o.state, o.restarts, time.Time{}
+		}
+		return o.pid, o.state, o.restarts, o.lastRestartAt
+	}
 	return 0, "stopped", int(f.restarts.Load()), time.Time{}
 }
 
@@ -57,5 +78,14 @@ func newControlSocketServerWithProc(t *testing.T, addr string, proc supervisedPr
 		t.Fatalf("control socket listen: %v", err)
 	}
 	t.Cleanup(func() { _ = srv.close() })
+	return srv
+}
+
+// newControlSocketServerWithProcAndMetrics adds a metrics source (US-2):
+// the supervisor-side cgroup reader whose values the metrics method serves.
+func newControlSocketServerWithProcAndMetrics(t *testing.T, addr string, proc supervisedProcIface, src func() *cgroupMetrics) *controlSocketServer {
+	t.Helper()
+	srv := newControlSocketServerWithProc(t, addr, proc)
+	srv.metricsSource = src
 	return srv
 }

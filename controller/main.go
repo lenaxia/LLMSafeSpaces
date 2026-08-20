@@ -161,6 +161,11 @@ func main() {
 	flag.StringVar(&agentdBinarySHA256ARM64, "agentd-binary-sha256-arm64", "",
 		"#863: OPTIONAL per-image override — sha256 (64 hex) of the arm64 workspace-agentd "+
 			"binary inside --agentd-image. Set BOTH hashes or NEITHER.")
+	var agentdSidecarEnabled bool
+	flag.BoolVar(&agentdSidecarEnabled, "agentd-sidecar", false,
+		"Design 0051 US-2: split agentd into a native sidecar (uid 2000) + a same-uid "+
+			"supervise-opencode PID 1 in the workspace container. Requires --agentd-image. "+
+			"Default false (single-container mode, unchanged).")
 	flag.Parse()
 
 	// US-43.19 / D20: the shared secret authenticating controller→API internal
@@ -205,6 +210,12 @@ func main() {
 		agentdBinarySHA256ARM64 = pins.SHA256ARM64
 		setupLog.Info("agentd delivery: binary pins resolved from image index annotations",
 			"image", agentdImage, "sha256Amd64", agentdBinarySHA256AMD64, "sha256Arm64", agentdBinarySHA256ARM64)
+	}
+	// Design 0051 US-2: sidecar mode runs the delivery artifact as a
+	// second container — enabling it without delivery is a startup error.
+	if err := workspace.ValidateAgentdSidecar(agentdSidecarEnabled, agentdImage); err != nil {
+		setupLog.Error(err, "invalid agentd sidecar configuration")
+		os.Exit(1)
 	}
 
 	setupLog.Info("starting controller", "version", version.Version, "commit", version.CommitSHA, "built", version.BuildTime)
@@ -309,7 +320,7 @@ func main() {
 		Image:             agentdImage,
 		BinarySHA256AMD64: agentdBinarySHA256AMD64,
 		BinarySHA256ARM64: agentdBinarySHA256ARM64,
-	}); err != nil {
+	}, agentdSidecarEnabled); err != nil {
 		setupLog.Error(err, "unable to set up controllers")
 		os.Exit(1)
 	}
