@@ -58,19 +58,18 @@ async function setupAPIMocks(page: Page) {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) });
   });
 
-  // SSE events endpoint — return prefilled events in the flat format the backend
-  // produces (the proxy re-parses raw opencode JSON and sets it as evt.Data).
+  // SSE events endpoint — prefilled with the CONTRACT events the backend
+  // produces (US-65.8: the proxy translates agent events server-side;
+  // session.event carries pkg/session shapes).
   await page.route(`${API_PREFIX}/workspaces/${WORKSPACE_ID}/session-events`, async (route: Route) => {
     const events = [
       {
-        type: "agent.event",
-        event_type: "message.part.updated",
+        type: "session.event",
+        session_id: SESSION_ID,
         data: {
-          type: "message.part.updated",
-          properties: {
-            sessionID: SESSION_ID,
-            part: { type: "text", text: "Hello from SSE stream!" },
-          },
+          type: "part.end",
+          sessionId: SESSION_ID,
+          part: { type: "text", text: "Hello from SSE stream!" },
         },
       },
     ];

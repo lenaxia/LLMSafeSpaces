@@ -208,9 +208,9 @@ describe("ChatPage agent input requests (US-16.11, US-16.12)", () => {
     sendSSE(questionEvent);
     expect(screen.getByText("Pick one")).toBeInTheDocument();
     sendSSE({
-      type: "agent.event",
-      event_type: "session.error",
-      data: { properties: { sessionID: "ses_1", error: { name: "timeout" } } },
+      type: "session.event",
+      session_id: "ses_1",
+      data: { type: "error", sessionId: "ses_1", error: { code: "timeout", message: "timed out" } },
     } as unknown as WorkspaceStreamEvent);
     expect(screen.queryByText("Pick one")).not.toBeInTheDocument();
   });

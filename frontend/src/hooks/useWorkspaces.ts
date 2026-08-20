@@ -20,8 +20,9 @@ const transitioningPhases = new Set(["Pending", "Creating", "Resuming", "Suspend
  *
  * Note: context_used is no longer sourced from this status endpoint. It is
  * read from the sessions list (GET /workspaces/:id/sessions) which reads
- * session_index — persisted by the API proxy on every session.next.step.ended
- * SSE event. Real-time updates arrive via the agent.event SSE stream.
+ * session_index — persisted by the API proxy from adapter-decoded usage
+ * events. Real-time updates arrive via the session.event SSE stream
+ * (contract events, US-65.8).
  */
 export function useWorkspaceStatus(workspaceId: string | undefined) {
   return useQuery({

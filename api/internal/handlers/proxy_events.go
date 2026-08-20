@@ -16,6 +16,7 @@ import (
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
+	"github.com/lenaxia/llmsafespaces/pkg/session"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
@@ -196,15 +197,18 @@ func (h *ProxyHandler) onRawEvent(workspaceID, eventType, rawData string) {
 		})
 	}
 
-	if eventType == "session.updated" && h.sessionIndex != nil {
-		h.persistTitleFromEvent(workspaceID, rawData)
-	}
-
 	// Live context-usage persistence: the adapter decides which raw agent
 	// events carry usage. Non-usage events cost string compares inside the
 	// seam — onRawEvent already JSON-parses every event for the broker
 	// relay above, so no new per-event parse is introduced for them.
 	h.persistContextFromEvent(workspaceID, eventType, rawData)
+
+	// US-65.8 client bridge: translate agent events into CONTRACT events
+	// and publish them for browsers/SDKs. Clients consume contract shapes
+	// only; the raw agent.event relay above remains for non-client
+	// consumers. Title/parent persistence rides the translated session
+	// update (the last raw agent-shape parse in platform code retires).
+	h.publishClientEvents(workspaceID, eventType, rawData)
 
 	// Epic 63 V2 session-queue bridge: synthesize queue.update SSE events
 	// from V2 PromptAdmitted/Prompted events. Unconditional under V2.
@@ -327,6 +331,11 @@ func (h *ProxyHandler) resolveRootSessionID(workspaceID, sessionID string) strin
 }
 
 func (h *ProxyHandler) persistTitleFromEvent(workspaceID, rawData string) {
+	// Deprecated raw-parse path retained for the adapter-nil transitional
+	// state only; superseded by persistSessionMeta from translated events.
+	if h.adapter != nil {
+		return
+	}
 	var evt struct {
 		Properties struct {
 			SessionID string `json:"sessionID"`
@@ -341,21 +350,37 @@ func (h *ProxyHandler) persistTitleFromEvent(workspaceID, rawData string) {
 		return
 	}
 	id := evt.Properties.Info.ID
-	if id == "" {
+	if h.sessionIndex == nil || id == "" || h.isSessionDeleted(workspaceID, id) {
 		return
 	}
-	if h.isSessionDeleted(workspaceID, id) {
+	h.persistSessionMeta(context.Background(), workspaceID, id, evt.Properties.Info.Title, evt.Properties.Info.ParentID)
+}
+
+// publishClientEvents is the US-65.8 bridge: contract events to the
+// broker, retry detail to the platform session.status channel, and
+// title/parent persistence from the translated session update.
+func (h *ProxyHandler) publishClientEvents(workspaceID, eventType, rawData string) {
+	if h.adapter == nil {
 		return
 	}
-	if evt.Properties.Info.Title != "" {
-		if err := h.sessionIndex.UpsertTitle(context.Background(), workspaceID, id, evt.Properties.Info.Title); err != nil {
-			h.logger.Warn("Failed to upsert session title", "error", err, "workspaceID", workspaceID, "sessionID", id)
+	for _, ce := range h.adapter.ClientEventsFromEvent(eventType, rawData) {
+		if ce.Type == session.EventSessionUpdated && ce.Session != nil &&
+			h.sessionIndex != nil && !h.isSessionDeleted(workspaceID, ce.Session.ID) {
+			h.persistSessionMeta(context.Background(), workspaceID, ce.Session.ID, ce.Session.Title, ce.Session.ParentID)
 		}
+		h.publishWorkspaceEvent(workspaceID, apitypes.WorkspaceSSEEvent{
+			Type:      "session.event",
+			SessionID: ce.SessionID,
+			Data:      ce,
+		})
 	}
-	if evt.Properties.Info.ParentID != "" {
-		if err := h.sessionIndex.UpsertParent(context.Background(), workspaceID, id, evt.Properties.Info.ParentID); err != nil {
-			h.logger.Warn("Failed to upsert session parent", "error", err, "workspaceID", workspaceID, "sessionID", id)
-		}
+	if sid, retry, ok := h.adapter.RetryFromEvent(eventType, rawData); ok {
+		h.publishWorkspaceEvent(workspaceID, apitypes.WorkspaceSSEEvent{
+			Type:      "session.status",
+			SessionID: sid,
+			Status:    "retry",
+			Data:      retry,
+		})
 	}
 }
 

@@ -139,33 +139,45 @@ function getStreamParts(): Array<{ type: string; text: string }> {
 
 function makePartUpdatedEvent(sessionID: string, partType: string, text: string): WorkspaceStreamEvent {
   return {
-    type: "agent.event",
-    event_type: "message.part.updated",
+    type: "session.event",
+    session_id: sessionID,
     data: {
-      type: "message.part.updated",
-      properties: { sessionID, part: { type: partType, text } },
+      type: "part.end",
+      sessionId: sessionID,
+      part: partType === "reasoning"
+        ? { type: "reasoning", reasoning: text }
+        : partType === "tool"
+          // Contract tool parts always carry the tool object (the
+          // server guarantees it; bare tool-type parts don't exist).
+          ? { type: "tool", tool: { name: "" } }
+          : { type: partType, text },
     },
   } as unknown as WorkspaceStreamEvent;
 }
 
-function makePartDeltaEvent(sessionID: string, field: string, delta: string): WorkspaceStreamEvent {
+function makePartDeltaEvent(sessionID: string, _field: string, delta: string): WorkspaceStreamEvent {
   return {
-    type: "agent.event",
-    event_type: "message.part.delta",
+    type: "session.event",
+    session_id: sessionID,
     data: {
-      type: "message.part.delta",
-      properties: { sessionID, field, delta },
+      type: "part.delta",
+      sessionId: sessionID,
+      delta,
     },
   } as unknown as WorkspaceStreamEvent;
 }
 
 function makePartUpdatedEventSnakeCase(session_id: string, text: string): WorkspaceStreamEvent {
+  // Contract events carry camelCase sessionId; this helper now exercises
+  // the contract shape directly (the snake_case wire tolerance was an
+  // agent-envelope concern — the server translates).
   return {
-    type: "agent.event",
-    event_type: "message.part.updated",
+    type: "session.event",
+    session_id,
     data: {
-      type: "message.part.updated",
-      properties: { session_id, part: { type: "text", text } },
+      type: "part.end",
+      sessionId: session_id,
+      part: { type: "text", text },
     },
   } as unknown as WorkspaceStreamEvent;
 }
@@ -443,69 +455,54 @@ describe("ChatPage SSE event handler", () => {
     it("ignores event with missing payload", async () => {
       renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
-      sendSSEEvent({ type: "agent.event", event_type: "message.part.updated", data: { wrong: "structure" } } as unknown as WorkspaceStreamEvent);
+      sendSSEEvent({ type: "session.event", session_id: "sess-1", data: { wrong: "structure" } } as unknown as WorkspaceStreamEvent);
       await waitFor(() => {
         expect(getStreamParts()).toHaveLength(0);
       });
     });
 
-    it("ignores event with missing properties", async () => {
+    it("ignores part.end without a part payload", async () => {
       renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
-      sendSSEEvent({ type: "agent.event", event_type: "message.part.updated", data: { payload: { type: "message.part.updated" } } } as unknown as WorkspaceStreamEvent);
-      await waitFor(() => {
-        expect(getStreamParts()).toHaveLength(0);
-      });
-    });
-
-    it("ignores event with null data", async () => {
-      renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
-      await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
-      sendSSEEvent({ type: "agent.event", event_type: "message.part.updated", data: null } as unknown as WorkspaceStreamEvent);
+      sendSSEEvent({ type: "session.event", session_id: "sess-1", data: { type: "part.end", sessionId: "sess-1" } } as unknown as WorkspaceStreamEvent);
       await waitFor(() => {
         expect(getStreamParts()).toHaveLength(0);
       });
     });
   });
 
-  describe("nested SSE format unwrapping", () => {
-    it("unwraps nested payload and processes message.part.updated", async () => {
+  describe("contract stream envelope (US-65.8)", () => {
+    // The client consumed two agent envelope shapes (flat + nested
+    // payload-wrapped) before US-65.8; envelope tolerance now lives in
+    // the server translation. These tests pin the contract path the
+    // client actually implements.
+    it("processes contract part.end events", async () => {
       renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
-      sendSSEEvent({
-        type: "agent.event",
-        event_type: "message.part.updated",
-        data: {
-          directory: "ws-1",
-          payload: {
-            type: "message.part.updated",
-            properties: { sessionID: "sess-1", part: { type: "text", text: "Nested format works!" } },
-          },
-        },
-      } as unknown as WorkspaceStreamEvent);
+      sendSSEEvent(makePartUpdatedEvent("sess-1", "text", "Contract format works!"));
       await waitFor(() => {
-        expect(getStreamParts()[0]!.text).toBe("Nested format works!");
+        expect(getStreamParts()[0]!.text).toBe("Contract format works!");
       });
     });
 
-    it("unwraps nested payload and processes message.part.delta", async () => {
+    it("processes contract part.delta events after routing activates", async () => {
       renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
       // Activate text routing first
       sendSSEEvent(makePartUpdatedEvent("sess-1", "text", ""));
-      sendSSEEvent({
-        type: "agent.event",
-        event_type: "message.part.delta",
-        data: {
-          directory: "ws-1",
-          payload: {
-            type: "message.part.delta",
-            properties: { sessionID: "sess-1", field: "text", delta: "nested delta" },
-          },
-        },
-      } as unknown as WorkspaceStreamEvent);
+      sendSSEEvent(makePartDeltaEvent("sess-1", "text", "contract delta"));
       await waitFor(() => {
-        expect(getStreamParts()[0]!.text).toBe("nested delta");
+        expect(getStreamParts()[0]!.text).toBe("contract delta");
+      });
+    });
+
+    it("ignores non-contract events without throwing", async () => {
+      renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
+      await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
+      sendSSEEvent({ type: "session.event", session_id: "sess-1", data: null } as unknown as WorkspaceStreamEvent);
+      sendSSEEvent({ type: "session.event", session_id: "sess-1", data: { type: "unknown.thing" } } as unknown as WorkspaceStreamEvent);
+      await waitFor(() => {
+        expect(getStreamParts()).toHaveLength(0);
       });
     });
   });
@@ -602,11 +599,11 @@ describe("ChatPage SSE event handler", () => {
       });
     });
 
-    it("accumulates thinking deltas with field=thinking", async () => {
+    it("accumulates thinking deltas with field=thinking (server normalizes to reasoning)", async () => {
       renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
-      sendSSEEvent(makePartUpdatedEvent("sess-1", "thinking", ""));
-      sendSSEEvent(makePartDeltaEvent("sess-1", "thinking", "I wonder..."));
+      sendSSEEvent(makePartUpdatedEvent("sess-1", "reasoning", ""));
+      sendSSEEvent(makePartDeltaEvent("sess-1", "reasoning", "I wonder..."));
       await waitFor(() => {
         expect(getStreamParts().find(p => p.type === "thinking")?.text).toBe("I wonder...");
       });
@@ -616,12 +613,9 @@ describe("ChatPage SSE event handler", () => {
       renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
       sendSSEEvent({
-        type: "agent.event",
-        event_type: "message.part.updated",
-        data: {
-          type: "message.part.updated",
-          properties: { sessionID: "sess-1", part: { type: "thinking", text: "Deep thoughts" } },
-        },
+        type: "session.event",
+        session_id: "sess-1",
+        data: { type: "part.end", sessionId: "sess-1", part: { type: "reasoning", reasoning: "Deep thoughts" } },
       } as unknown as WorkspaceStreamEvent);
       await waitFor(() => {
         expect(getStreamParts().find(p => p.type === "thinking")?.text).toBe("Deep thoughts");
@@ -632,12 +626,9 @@ describe("ChatPage SSE event handler", () => {
       renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
       sendSSEEvent({
-        type: "agent.event",
-        event_type: "message.part.updated",
-        data: {
-          type: "message.part.updated",
-          properties: { sessionID: "sess-1", part: { type: "reasoning", text: "Chain of thought" } },
-        },
+        type: "session.event",
+        session_id: "sess-1",
+        data: { type: "part.end", sessionId: "sess-1", part: { type: "reasoning", reasoning: "Chain of thought" } },
       } as unknown as WorkspaceStreamEvent);
       await waitFor(() => {
         expect(getStreamParts().find(p => p.type === "thinking")?.text).toBe("Chain of thought");
@@ -653,12 +644,9 @@ describe("ChatPage SSE event handler", () => {
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
 
       sendSSEEvent({
-        type: "agent.event",
-        event_type: "message.part.updated",
-        data: {
-          type: "message.part.updated",
-          properties: { sessionID: "sess-1", part: { type: "thinking", text: "Old thinking" } },
-        },
+        type: "session.event",
+        session_id: "sess-1",
+        data: { type: "part.end", sessionId: "sess-1", part: { type: "reasoning", reasoning: "Old thinking" } },
       } as unknown as WorkspaceStreamEvent);
       await waitFor(() => {
         expect(getStreamParts().find(p => p.type === "thinking")?.text).toBe("Old thinking");
@@ -998,15 +986,15 @@ describe("ChatPage SSE event handler", () => {
 
   describe("session.error lifecycle", () => {
     function makeSessionErrorEvent(sessionID: string, errName: string, errMessage: string): WorkspaceStreamEvent {
+      // US-65.8: contract error event (code/message; the server flattens
+      // the agent's error.name + error.data.message).
       return {
-        type: "agent.event",
-        event_type: "session.error",
+        type: "session.event",
+        session_id: sessionID,
         data: {
-          type: "session.error",
-          properties: {
-            sessionID,
-            error: { name: errName, data: { message: errMessage } },
-          },
+          type: "error",
+          sessionId: sessionID,
+          error: { code: errName, message: errMessage },
         },
       } as unknown as WorkspaceStreamEvent;
     }
@@ -1288,15 +1276,18 @@ describe("ChatPage SSE event handler", () => {
 
   describe("session.error name mapping", () => {
     function makeSessionError(name: string, data?: Record<string, unknown>): WorkspaceStreamEvent {
+      // Mirrors the server translation: the agent's error.data.providerID
+      // is composed into the message (the contract Error has no provider
+      // field).
+      let message = (data?.message as string) ?? "";
+      if (data?.providerID) message = `${message} (${data.providerID})`;
       return {
-        type: "agent.event",
-        event_type: "session.error",
+        type: "session.event",
+        session_id: "sess-1",
         data: {
-          type: "session.error",
-          properties: {
-            sessionID: "sess-1",
-            error: { name, data: data ?? {} },
-          },
+          type: "error",
+          sessionId: "sess-1",
+          error: { code: name, message },
         },
       } as unknown as WorkspaceStreamEvent;
     }
@@ -1406,20 +1397,17 @@ describe("ChatPage SSE event handler", () => {
 
   describe("session.status=retry via agent.event", () => {
     function makeRetryEvent(sessionID: string, attempt: number, message: string, nextOffsetMs = 5000): WorkspaceStreamEvent {
+      // US-65.8: retry rides the platform session.status channel with a
+      // translated payload (no agent wire shapes).
       return {
-        type: "agent.event",
-        event_type: "session.status",
+        type: "session.status",
+        session_id: sessionID,
+        status: "retry",
         data: {
-          type: "session.status",
-          properties: {
-            sessionID,
-            status: {
-              type: "retry",
-              attempt,
-              message,
-              next: Date.now() + nextOffsetMs,
-            },
-          },
+          attempt,
+          message,
+          next: Date.now() + nextOffsetMs,
+          action: "retry",
         },
       } as unknown as WorkspaceStreamEvent;
     }
@@ -1572,15 +1560,8 @@ describe("ChatPage SSE event handler", () => {
       renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
       sendSSEEvent({
-        type: "agent.event",
-        event_type: "message.part.updated",
-        data: {
-          type: "message.part.updated",
-          properties: {
-            sessionID: "sess-1",
-            part: { type: "text", id: "prt_1", messageID: "msg_a", text: "hello" },
-          },
-        },
+        type: "session.event",
+        data: { type: "part.end", sessionId: "sess-1", messageId: "msg_a", part: { type: "text", text: "hello" } },
       } as unknown as WorkspaceStreamEvent);
       await waitFor(() => {
         const parts = getStreamParts() as Array<{ type: string; text: string; messageID?: string }>;
@@ -1594,22 +1575,8 @@ describe("ChatPage SSE event handler", () => {
       renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
       sendSSEEvent({
-        type: "agent.event",
-        event_type: "message.part.updated",
-        data: {
-          type: "message.part.updated",
-          properties: {
-            sessionID: "sess-1",
-            part: {
-              type: "tool",
-              id: "prt_tool",
-              messageID: "msg_a",
-              tool: "bash",
-              callID: "call_1",
-              state: { status: "completed", title: "run tests" },
-            },
-          },
-        },
+        type: "session.event",
+        data: { type: "part.end", sessionId: "sess-1", messageId: "msg_a", partId: "call_1", part: { type: "tool", tool: { name: "bash", callId: "call_1", state: { status: "completed" } } } },
       } as unknown as WorkspaceStreamEvent);
       await waitFor(() => {
         const parts = getStreamParts() as Array<{ type: string; text: string; messageID?: string }>;
@@ -1625,63 +1592,21 @@ describe("ChatPage SSE event handler", () => {
 
       // First assistant message: text + tool call
       sendSSEEvent({
-        type: "agent.event",
-        event_type: "message.part.updated",
-        data: {
-          type: "message.part.updated",
-          properties: {
-            sessionID: "sess-1",
-            part: { type: "text", id: "prt_1", messageID: "msg_a", text: "first" },
-          },
-        },
+        type: "session.event",
+        data: { type: "part.end", sessionId: "sess-1", messageId: "msg_a", part: { type: "text", text: "first" } },
       } as unknown as WorkspaceStreamEvent);
       sendSSEEvent({
-        type: "agent.event",
-        event_type: "message.part.updated",
-        data: {
-          type: "message.part.updated",
-          properties: {
-            sessionID: "sess-1",
-            part: {
-              type: "tool",
-              id: "prt_2",
-              messageID: "msg_a",
-              tool: "bash",
-              callID: "call_1",
-              state: { status: "completed" },
-            },
-          },
-        },
+        type: "session.event",
+        data: { type: "part.end", sessionId: "sess-1", messageId: "msg_a", partId: "call_1", part: { type: "tool", tool: { name: "bash", callId: "call_1", state: { status: "completed" } } } },
       } as unknown as WorkspaceStreamEvent);
       // Second assistant message: text + tool call
       sendSSEEvent({
-        type: "agent.event",
-        event_type: "message.part.updated",
-        data: {
-          type: "message.part.updated",
-          properties: {
-            sessionID: "sess-1",
-            part: { type: "text", id: "prt_3", messageID: "msg_b", text: "second" },
-          },
-        },
+        type: "session.event",
+        data: { type: "part.end", sessionId: "sess-1", messageId: "msg_b", part: { type: "text", text: "second" } },
       } as unknown as WorkspaceStreamEvent);
       sendSSEEvent({
-        type: "agent.event",
-        event_type: "message.part.updated",
-        data: {
-          type: "message.part.updated",
-          properties: {
-            sessionID: "sess-1",
-            part: {
-              type: "tool",
-              id: "prt_4",
-              messageID: "msg_b",
-              tool: "edit",
-              callID: "call_2",
-              state: { status: "completed" },
-            },
-          },
-        },
+        type: "session.event",
+        data: { type: "part.end", sessionId: "sess-1", messageId: "msg_b", partId: "call_2", part: { type: "tool", tool: { name: "edit", callId: "call_2", state: { status: "completed" } } } },
       } as unknown as WorkspaceStreamEvent);
 
       await waitFor(() => {
@@ -1696,14 +1621,14 @@ describe("ChatPage SSE event handler", () => {
       await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
       // Snapshot with empty text opens the text part; deltas accumulate onto it.
       sendSSEEvent({
-        type: "agent.event",
-        event_type: "message.part.updated",
+        type: "session.event",
+        session_id: "sess-1",
         data: {
-          type: "message.part.updated",
-          properties: {
-            sessionID: "sess-1",
-            part: { type: "text", id: "prt_1", messageID: "msg_a", text: "" },
-          },
+          type: "part.end",
+          sessionId: "sess-1",
+          messageId: "msg_a",
+          partId: "prt_1",
+          part: { type: "text", text: "" },
         },
       } as unknown as WorkspaceStreamEvent);
       sendSSEEvent(makePartDeltaEvent("sess-1", "text", "Hello"));

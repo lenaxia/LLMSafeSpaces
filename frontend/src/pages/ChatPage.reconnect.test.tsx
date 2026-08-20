@@ -192,31 +192,28 @@ function makeSessionStatusEvent(sessionId: string, status: "idle" | "busy"): Ses
 
 function makePartUpdatedWithId(sessionId: string, partId: string, text: string): WorkspaceStreamEvent {
   return {
-    type: "agent.event",
-    event_type: "message.part.updated",
+    type: "session.event",
+    session_id: sessionId,
     data: {
-      type: "message.part.updated",
-      properties: {
-        sessionID: sessionId,
-        part: { id: partId, type: "text", text },
-      },
+      type: "part.end",
+      sessionId,
+      messageId: "msg-2",
+      partId,
+      part: { type: "text", text },
     },
   } as unknown as WorkspaceStreamEvent;
 }
 
 function makePartDeltaWithId(sessionId: string, partId: string, delta: string): WorkspaceStreamEvent {
   return {
-    type: "agent.event",
-    event_type: "message.part.delta",
+    type: "session.event",
+    session_id: sessionId,
     data: {
-      type: "message.part.delta",
-      properties: {
-        sessionID: sessionId,
-        messageID: "msg-2",
-        partID: partId,
-        field: "text",
-        delta,
-      },
+      type: "part.delta",
+      sessionId,
+      messageId: "msg-2",
+      partId,
+      delta,
     },
   } as unknown as WorkspaceStreamEvent;
 }
@@ -567,14 +564,12 @@ describe("US-15.4: Boundary Detection", () => {
     // In normal (non-reconnect) mode, events should process normally
     // Send a text part event — should render (no gate active)
     sendSSEEvent({
-      type: "agent.event",
-      event_type: "message.part.updated",
+      type: "session.event",
+      session_id: "sess-1",
       data: {
-        type: "message.part.updated",
-        properties: {
-          sessionID: "sess-1",
-          part: { type: "text", text: "hello world" },
-        },
+        type: "part.end",
+        sessionId: "sess-1",
+        part: { type: "text", text: "hello world" },
       },
     } as unknown as WorkspaceStreamEvent);
 
@@ -669,14 +664,12 @@ describe("US-15.5: Idle Reconciliation", () => {
     // Now send a new event with part id "p1" (same as history) — after reconcile,
     // reconnect mode is off, so events with no part.id should still process normally
     sendSSEEvent({
-      type: "agent.event",
-      event_type: "message.part.updated",
+      type: "session.event",
+      session_id: "sess-1",
       data: {
-        type: "message.part.updated",
-        properties: {
-          sessionID: "sess-1",
-          part: { type: "text", text: "new after reconcile" },
-        },
+        type: "part.end",
+        sessionId: "sess-1",
+        part: { type: "text", text: "new after reconcile" },
       },
     } as unknown as WorkspaceStreamEvent);
 

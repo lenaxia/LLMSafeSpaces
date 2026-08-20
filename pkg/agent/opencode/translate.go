@@ -343,6 +343,60 @@ type ocFlatToolTime struct {
 // changedFiles is nil/empty when the message had no patch part or the
 // patch listed no files. Duplicate paths are de-duplicated to keep
 // filediff's input clean.
+// translatePart translates one wire part into a contract Part.
+// Returns (zero Part, changedFiles) for parts with no contract rendering
+// (step boundaries yield nothing; patch yields its file list for the
+// filediff producer). Shared by history translation and the US-65.8
+// client-event bridge.
+func translatePart(p ocPart) (session.Part, []string) {
+	switch p.Type {
+	case "text":
+		return session.Part{Type: session.PartText, ID: p.ID, Text: p.Text}, nil
+	case "reasoning":
+		r := p.Reasoning
+		if r == "" {
+			r = p.Text
+		}
+		return session.Part{Type: session.PartReasoning, ID: p.ID, Reasoning: r}, nil
+	case "tool":
+		tp := translateTool(p.Tool)
+		if tp == nil {
+			// "tool": null or a tool part with no tool object — skip
+			// rather than emitting an empty PartTool.
+			return session.Part{}, nil
+		}
+		return session.Part{Type: session.PartTool, ID: p.ID, Tool: tp}, nil
+	case "custom":
+		if p.Custom != nil && p.Custom.Kind != "" {
+			return session.Part{Type: session.PartCustom, ID: p.ID, Custom: p.Custom}, nil
+		}
+		return session.Part{}, nil
+	case "patch":
+		return session.Part{}, p.Files
+	case "step-start", "step-finish":
+		// dropped — turn boundaries carry no renderable content
+		return session.Part{}, nil
+	default:
+		// Unknown part type — preserve as Custom with the kind set to
+		// the opencode type string so future extensions surface in the
+		// UI rather than silently disappearing (design 0049 §4.3: the
+		// Custom part is the pressure-relief valve).
+		if p.Type == "" {
+			return session.Part{}, nil
+		}
+		data, _ := json.Marshal(map[string]any{
+			"type":      p.Type,
+			"text":      p.Text,
+			"reasoning": p.Reasoning,
+		})
+		return session.Part{
+			Type:   session.PartCustom,
+			ID:     p.ID,
+			Custom: &session.CustomPart{Kind: p.Type, Data: data},
+		}, nil
+	}
+}
+
 func translateMessage(m ocMessage) (session.Message, []string) {
 	sm := session.Message{
 		ID:        m.Info.ID,
@@ -407,84 +461,19 @@ func translateMessage(m ocMessage) (session.Message, []string) {
 	seen := map[string]struct{}{}
 	var changedFiles []string
 	for _, p := range m.Parts {
-		switch p.Type {
-		case "text":
-			parts = append(parts, session.Part{
-				Type: session.PartText,
-				ID:   p.ID,
-				Text: p.Text,
-			})
-		case "reasoning":
-			r := p.Reasoning
-			if r == "" {
-				r = p.Text
-			}
-			parts = append(parts, session.Part{
-				Type:      session.PartReasoning,
-				ID:        p.ID,
-				Reasoning: r,
-			})
-		case "tool":
-			tp := translateTool(p.Tool)
-			if tp == nil {
-				// "tool": null or a tool part with no tool object —
-				// skip it rather than emitting an empty PartTool.
+		sp, files := translatePart(p)
+		for _, f := range files {
+			if f == "" {
 				continue
 			}
-			parts = append(parts, session.Part{
-				Type: session.PartTool,
-				ID:   p.ID,
-				Tool: tp,
-			})
-		case "custom":
-			if p.Custom != nil && p.Custom.Kind != "" {
-				parts = append(parts, session.Part{
-					Type:   session.PartCustom,
-					ID:     p.ID,
-					Custom: p.Custom,
-				})
+			if _, dup := seen[f]; dup {
+				continue
 			}
-		case "patch":
-			for _, f := range p.Files {
-				if f == "" {
-					continue
-				}
-				if _, dup := seen[f]; dup {
-					continue
-				}
-				seen[f] = struct{}{}
-				changedFiles = append(changedFiles, f)
-			}
-		case "step-start", "step-finish":
-			// dropped — turn boundaries carry no renderable content
-		default:
-			// Unknown part type — preserve as Custom with the kind
-			// set to the opencode type string so future extensions
-			// surface in the UI rather than silently disappearing.
-			// This is the discipline rule from design 0049 §4.3: the
-			// Custom part is the pressure-relief valve.
-			// NOTE: we do not have the raw bytes here (unmarshal
-			// already happened), so we synthesize a Data payload with
-			// the known fields. If the original part had additional
-			// fields they are lost — the adapter logs at debug level.
-			if p.Type != "" {
-				customData, _ := json.Marshal(map[string]any{
-					"type":      p.Type,
-					"id":        p.ID,
-					"sessionID": p.SessionID,
-					"messageID": p.MessageID,
-					"text":      p.Text,
-					"reasoning": p.Reasoning,
-				})
-				parts = append(parts, session.Part{
-					Type: session.PartCustom,
-					ID:   p.ID,
-					Custom: &session.CustomPart{
-						Kind: p.Type,
-						Data: customData,
-					},
-				})
-			}
+			seen[f] = struct{}{}
+			changedFiles = append(changedFiles, f)
+		}
+		if sp.Type != "" {
+			parts = append(parts, sp)
 		}
 	}
 	sm.Parts = parts

@@ -146,6 +146,20 @@ type Adapter interface {
 	// implementation package (design 0049 §91).
 	MeteringFromEvent(eventType string, props []byte) (usage *SessionUsage, ok bool, err error)
 
+	// ClientEventsFromEvent translates one raw agent SSE event into
+	// zero or more CONTRACT events (pkg/session) for client
+	// consumption — the US-65.8 bridge. Clients render contract shapes
+	// only; agent wire names, envelopes, and part shapes stay behind
+	// this seam. nil for events carrying no client-facing signal (the
+	// majority — implementations must type-check before parsing so the
+	// streaming hot path never pays a parse for them).
+	ClientEventsFromEvent(eventType string, rawData string) []session.Event
+
+	// RetryFromEvent decodes an agent backoff/retry notification into
+	// the platform retry shape. Retry detail is UI-shaped and rides the
+	// platform session.status SSE event rather than the contract.
+	RetryFromEvent(eventType string, rawData string) (sessionID string, retry *ClientRetryStatus, ok bool)
+
 	// IsKnownEventType reports whether eventType belongs to the agent's
 	// pinned event taxonomy (the adapter tolerates the agent's internal
 	// naming variants). Observability support (#739 Gap 2): consumers
@@ -198,4 +212,14 @@ type SessionUsage struct {
 	OutputTokens  int64
 	CostUSD       float64
 	CostMalformed bool
+}
+
+// ClientRetryStatus is the platform retry/backoff signal decoded from
+// an agent event (US-65.8). UI-shaped by nature: NextAt is epoch millis
+// for the client's countdown; Action is the agent's follow-up verb.
+type ClientRetryStatus struct {
+	Attempt int
+	Message string
+	NextAt  int64
+	Action  string
 }

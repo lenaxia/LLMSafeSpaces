@@ -10,7 +10,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ChatPage } from "./ChatPage";
 import { TooltipProvider } from "../components/ui";
-import type { AgentEvent } from "../api/types";
+import type { SessionContractEvent, ContractPart } from "../api/types";
 
 let capturedSSEHandler: ((data: unknown) => void) | null = null;
 let lastStreamParts: Array<Record<string, unknown>> = [];
@@ -69,16 +69,35 @@ vi.mock("../providers/SessionActivityProvider", () => ({
 const WS = "ws-1";
 const SES = "ses-badge";
 
-// Real SSE envelope: agent.event whose data is a platform envelope with
-// type "message.part.updated" and the opencode part under
-// properties.part (mirrors the wire consumed at ChatPage.tsx:581-725).
+// Contract SSE envelope (US-65.8): session.event whose data is a
+// pkg/session Event — part.end carries the translated contract Part
+// (mirrors the stream consumed at ChatPage.handleContractEvent).
 function sendToolPart(part: Record<string, unknown>) {
-  const ev: AgentEvent = {
-    type: "agent.event",
-    event_type: "message.part.updated",
+  const contractTool = (raw: Record<string, unknown>) => ({
+    type: "tool",
+    tool: {
+      name: raw.tool as string,
+      callId: raw.callID as string | undefined,
+      input: (raw.state as Record<string, unknown> | undefined)?.input,
+      output: (raw.state as Record<string, unknown> | undefined)?.output,
+      state: {
+        status: (raw.state as Record<string, unknown> | undefined)?.status,
+        startedAt: (raw.state as Record<string, unknown> | undefined)?.startedAt,
+      },
+    },
+  });
+  const rawState = part.state as Record<string, unknown> | undefined;
+  const rawStart = rawState?.time ? (rawState.time as Record<string, number>).start : undefined;
+  const startedAt = (rawState?.startedAt as string | undefined) ?? (typeof rawStart === "number" ? new Date(rawStart).toISOString() : undefined);
+  const ev: SessionContractEvent = {
+    type: "session.event",
+    session_id: SES,
     data: {
-      type: "message.part.updated",
-      properties: { sessionID: SES, part },
+      type: "part.end",
+      sessionId: SES,
+      messageId: "msg-badge",
+      partId: typeof part.id === "string" ? part.id : undefined,
+      part: contractTool({ ...part, state: { ...rawState, startedAt } }) as unknown as ContractPart,
     },
   };
   act(() => {

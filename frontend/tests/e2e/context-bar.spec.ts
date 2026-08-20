@@ -66,16 +66,20 @@ async function setupAPIMocks(
     r.fulfill({ status: 200, headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }, body: "" }));
 }
 
-function stepEndedSSE(sessionID: string, input: number, cacheRead = 0, cacheWrite = 0): string {
+/**
+ * Contract usage event (US-65.8): the realtime context signal is the
+ * platform session.event carrying session.contextUsage — the server
+ * translates step-finish parts (input + cache.read + cache.write);
+ * the browser never sees agent event names.
+ */
+function usageSSE(sessionID: string, used: number): string {
   const evt = {
-    type: "agent.event",
-    event_type: "session.next.step.ended",
+    type: "session.event",
+    session_id: sessionID,
     data: {
-      type: "session.next.step.ended",
-      properties: {
-        sessionID,
-        tokens: { input, output: 100, reasoning: 0, cache: { read: cacheRead, write: cacheWrite } },
-      },
+      type: "session.updated",
+      sessionId: sessionID,
+      session: { id: sessionID, contextUsage: { used } },
     },
   };
   return `data: ${JSON.stringify(evt)}\n\n`;
@@ -123,7 +127,7 @@ test.describe("Context bar (DiskUsageBar) — real browser", () => {
       r.fulfill({
         status: 200,
         headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" },
-        body: stepEndedSSE(SESSION_ID, 80000, 5000, 2000),
+        body: usageSSE(SESSION_ID, 87000),
       }));
 
     await page.goto(`/chat/${WORKSPACE_ID}/${SESSION_ID}`);
@@ -151,7 +155,7 @@ test.describe("Context bar (DiskUsageBar) — real browser", () => {
     await expect(page.getByText(/100K/).first()).toBeVisible({ timeout: 10_000 });
 
     // Fire SSE event: 40K < 50% of 100K → compaction detected
-    sendSSE?.(stepEndedSSE(SESSION_ID, 40000));
+    sendSSE?.(usageSSE(SESSION_ID, 40000));
 
     await expect(page.getByText(/context compacted/i)).toBeVisible({ timeout: 10_000 });
   });
@@ -178,7 +182,7 @@ test.describe("Context bar (DiskUsageBar) — real browser", () => {
     await expect(page.getByText(/100K/).first()).toBeVisible({ timeout: 10_000 });
 
     // Now fire the SSE event that triggers compaction (40K < 50% of 100K)
-    sendSSE?.(stepEndedSSE(SESSION_ID, 40000));
+    sendSSE?.(usageSSE(SESSION_ID, 40000));
 
     await expect(page.getByText(/context compacted/i)).toBeVisible({ timeout: 10_000 });
     await page.getByRole("button", { name: /dismiss/i }).click();

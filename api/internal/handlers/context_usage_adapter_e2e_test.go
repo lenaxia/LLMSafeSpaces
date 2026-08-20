@@ -4,11 +4,15 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -16,6 +20,7 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 
 	opencode "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
+	"github.com/lenaxia/llmsafespaces/pkg/session"
 )
 
 // Real-adapter integration for the context-usage seam (PR #938 review):
@@ -184,4 +189,61 @@ func TestNewSSETracker_DriftObservabilityWiredAtConstruction(t *testing.T) {
 	defer m.mu.Unlock()
 	assert.Equal(t, 1, m.counts["session.updated"], "known type counted by name through production wiring")
 	assert.Equal(t, 1, m.counts["unknown"], "unknown type counted under the bounded label")
+}
+
+// TestE2E_RealAdapter_ClientEventBridge pins the US-65.8 flow end-to-end:
+// raw agent events through onRawEvent → Adapter.ClientEventsFromEvent →
+// broker receives CONTRACT-shaped session.event payloads; retry rides the
+// platform session.status channel; titles persist from the translation.
+func TestE2E_RealAdapter_ClientEventBridge(t *testing.T) {
+	h, si, _ := newRealAdapterEnv(t)
+	h.userBroker = eventbroker.NewUserEventBroker()
+	sub, _ := h.userBroker.SubscribeWorkspace("ws-1")
+	t.Cleanup(func() { h.userBroker.UnsubscribeWorkspace("ws-1", sub) })
+
+	// 1. step-finish part → contract session.event with ContextUsage
+	h.onRawEvent("ws-1", "message.part.updated", `{"id":"e1","type":"message.part.updated","properties":{"sessionID":"ses_b","part":{"id":"p1","type":"step-finish","tokens":{"input":100,"cache":{"read":40,"write":0}}}}}`)
+	// 2. session.updated → title session.event + DB persist
+	h.onRawEvent("ws-1", "session.updated", `{"id":"e2","type":"session.updated","properties":{"sessionID":"ses_b","info":{"id":"ses_b","title":"Bridged Title","parentID":"ses_root"}}}`)
+	// 3. retry status → platform session.status retry
+	h.onRawEvent("ws-1", "session.status", `{"id":"e3","type":"session.status","properties":{"sessionID":"ses_b","status":{"type":"retry","attempt":2,"message":"429","next":1787023325114,"action":"retry"}}}`)
+
+	var sawUsage, sawTitle, sawRetry bool
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && (!sawUsage || !sawTitle || !sawRetry) {
+		select {
+		case evt := <-sub.Ch:
+			switch evt.Type {
+			case "session.event":
+				ce, ok := evt.Data.(session.Event)
+				require.True(t, ok, "session.event payload must be the contract Event type")
+				if ce.Session != nil && ce.Session.ContextUsage != nil && ce.Session.ContextUsage.Used == 140 {
+					sawUsage = true
+				}
+				if ce.Session != nil && ce.Session.Title == "Bridged Title" {
+					sawTitle = true
+				}
+			case "session.status":
+				if evt.Status == "retry" {
+					sawRetry = true
+				}
+			}
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	assert.True(t, sawUsage, "contract usage session.event must reach the broker")
+	assert.True(t, sawTitle, "contract title session.event must reach the broker")
+	assert.True(t, sawRetry, "retry must ride the platform session.status channel")
+
+	v, ok := si.get("ws-1", "ses_b")
+	require.True(t, ok, "usage persisted from the bridge path")
+	assert.Equal(t, int64(140), v)
+
+	rec, err := si.ListByWorkspace(context.Background(), "ws-1")
+	require.NoError(t, err)
+	for _, r := range rec {
+		if r.ID == "ses_b" {
+			assert.Equal(t, "Bridged Title", r.Title, "title persisted from the translated session update")
+		}
+	}
 }

@@ -330,3 +330,9 @@ func IsKnownEventType(eventType string) bool {
 	}
 	return false
 }
+
+// IsPartDelta reports whether eventType is a message-part delta event,
+// tolerating the store surface's version suffix ("message.part.delta.1").
+func IsPartDelta(eventType string) bool {
+	return eventType == "message.part.delta" || isSuffixed(eventType, "message.part.delta")
+}
