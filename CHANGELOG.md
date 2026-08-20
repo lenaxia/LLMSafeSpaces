@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-08-20
+
+### Added
+
+- **D3 durable prompts (#907, #943)**: Valkey-backed outbox with
+  accept-then-202 semantics and detached delivery — prompt submissions
+  survive API restarts and deliver when the consumer is ready (api +
+  frontend).
+- **repolint ForbiddenPathsCheck (#854, #959)**: live guard against
+  resurrection of deleted filesystem trees (the c9c68684-class stale
+  merge), wired into pre-commit + CI.
+
+### Fixed
+
+- **Dev preview served stale HTML through the CDN/browser chain (#957,
+  epic-66 P0-1)**: the API edge now forces `Cache-Control: no-store` on
+  `text/html` responses — the chain had been observed serving stale
+  previews across dev-server changes, sending developers debugging code
+  that never reached the browser. Non-HTML responses keep app-set caching
+  so hashed bundles still cache.
+- **Dev preview stripped WebSocket upgrades — HMR broken end-to-end
+  (#958, epic-66 P0-2)**: the G34 header wipe in the dev-preview proxy
+  discarded `Connection`/`Upgrade` (set by ReverseProxy before Rewrite
+  runs) and the allowlist omitted the `Sec-WebSocket-*` handshake family,
+  degrading WS handshakes to plain GETs at dev servers. Upgrade headers
+  are now re-established after the wipe; 101 responses skip the
+  response-size body wrapper (upgrade streams are bidirectional and
+  unbounded). Full WS echo round-trips pinned by tests on both the API
+  edge and the agentd hop.
+- **agentd fail-closed boot (#934, D5.2/D5.3)**: an admin token is now
+  required at boot (no silent tokenless mode) and an empty workspace
+  password is rejected; the boot-resolved token threads through to the
+  muxes.
+- **Distinct admin-mux token (#933)**: agentd's admin mux authenticates
+  with its own file-only-delivered token (env scrubbed of the old
+  secret), with a mixed-fleet bearer fallback for upgrade ordering.
+
+### Changed
+
+- **Legacy per-language runtime images deleted (#854, #959)**:
+  `runtimes/{go,nodejs,python}` were dead (built by no pipeline since
+  Epic 7; accidentally resurrected by a stale-branch merge). Tenant
+  toolchains are managed by mise (the tenant runtime manager) in the
+  base image. Docs now describe the one-image reality.
+
 ## [0.15.12] - 2026-08-19
 
 ### Fixed
