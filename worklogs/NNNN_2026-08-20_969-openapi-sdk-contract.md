@@ -95,3 +95,9 @@ None. Live-canary validation (issue scope item 4) runs in CI's `SDK Integration`
 - `sdks/python/llmsafespaces/{types,client,async_client,__init__}.py`, `tests/{test_client,test_async_client,test_ea3_message_contract}.py`
 - `sdks/java/.../models/{Message.java (new), MessageResponse.java (deleted)}`, `services/SessionsService.java`, `LLMSafeSpacesClientTest.java`
 - `sdks/canary/{python,go,typescript}` scenarios + `canary.ts` (+msgText)
+
+### Round 1 (PR #975): two valid contract-completeness findings + one missed consumer
+
+1. **FileDiff was incomplete** (2 of 6 fields missing): `oldPath` + `status` (added/modified/deleted/renamed) added to the spec and all four SDKs — file-change deserialization was lossy.
+2. **InputRequest family absent** (13/13 fields): `input.request`/`input.resolved` contract events had no payload schema — `InputRequest`, `InputOption`, `ToolRef` added to the spec; `input` field added to ContractEvent; types added to Go/TS/Python/Java SDKs.
+3. **Fifth consumer found by CI**: the VS Code extension (a `file:`-linked consumer of the TS SDK) still used `resp.content` — migrated to the derived-text idiom; typecheck green (requires building the TS SDK's dist first — the linked dep doesn't ship it, which is also why CI caught it and my local sweep didn't: I hadn't type-checked the extension package).

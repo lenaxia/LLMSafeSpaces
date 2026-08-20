@@ -85,9 +85,43 @@ class FileDiff(TypedDict, total=False):
     """Unified-diff payload of a file-change part (patch text authoritative)."""
 
     path: str
+    oldPath: str
+    status: str
     patch: str
     additions: int
     deletions: int
+
+
+class InputOption(TypedDict, total=False):
+    label: str
+    description: str
+
+
+class ToolRef(TypedDict, total=False):
+    """Identifies the tool call that triggered an InputRequest."""
+
+    messageId: str
+    callId: str
+
+
+class InputRequest(TypedDict, total=False):
+    """The unified pending-input shape ("the agent needs a human",
+    design 0049 §4.5)."""
+
+    id: str
+    sessionId: str
+    rootSessionId: str
+    kind: str
+    question: str
+    header: str
+    options: list[InputOption]
+    multiple: bool
+    custom: bool
+    permission: str
+    patterns: list[str]
+    always: list[str]
+    metadata: dict[str, Any]
+    tool: ToolRef
 
 
 class Part(TypedDict, total=False):

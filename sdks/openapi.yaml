@@ -3531,10 +3531,16 @@ components:
       type: object
       description: Unified-diff payload of a file-change part (diff text is
         authoritative — design 0049 discipline rule 4).
-      required: [path, patch]
+      required: [path, status, patch]
       properties:
         path:
           type: string
+        oldPath:
+          type: string
+          description: Previous path for renames
+        status:
+          type: string
+          enum: [added, modified, deleted, renamed]
         patch:
           type: string
           description: Unified diff text
@@ -3584,8 +3590,76 @@ components:
           $ref: "#/components/schemas/Part"
         delta:
           type: string
+        input:
+          $ref: "#/components/schemas/InputRequest"
         error:
           $ref: "#/components/schemas/SessionError"
+    InputRequest:
+      type: object
+      description: |
+        The unified pending-input shape carried on input.request /
+        input.resolved contract events — "the agent needs a human"
+        (design 0049 §4.5). Question-specific fields apply when kind is
+        question; permission-specific fields when kind is permission.
+      required: [id, kind]
+      properties:
+        id:
+          type: string
+        sessionId:
+          type: string
+        rootSessionId:
+          type: string
+          description: Root session for subtask-routed prompts
+        kind:
+          type: string
+          enum: [question, permission]
+        question:
+          type: string
+        header:
+          type: string
+        options:
+          type: array
+          items:
+            $ref: "#/components/schemas/InputOption"
+        multiple:
+          type: boolean
+        custom:
+          type: boolean
+          description: Whether free-text answers are accepted
+        permission:
+          type: string
+          description: Permission action (e.g. bash, edit)
+        patterns:
+          type: array
+          items:
+            type: string
+          description: Glob patterns a permission applies to
+        always:
+          type: array
+          items:
+            type: string
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Open-ended extension data
+        tool:
+          $ref: "#/components/schemas/ToolRef"
+    InputOption:
+      type: object
+      required: [label]
+      properties:
+        label:
+          type: string
+        description:
+          type: string
+    ToolRef:
+      type: object
+      description: Identifies the tool call that triggered an InputRequest.
+      properties:
+        messageId:
+          type: string
+        callId:
+          type: string
     SessionSummary:
       type: object
       description: The session fields carried on session.updated contract

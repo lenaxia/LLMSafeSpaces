@@ -159,9 +159,39 @@ export interface ToolPart {
 /** Unified-diff payload of a file-change part (patch text is authoritative). */
 export interface FileDiff {
   path: string;
+  oldPath?: string;
+  status: "added" | "modified" | "deleted" | "renamed";
   patch: string;
   additions?: number;
   deletions?: number;
+}
+
+/** The unified pending-input shape ("the agent needs a human"). */
+export interface InputRequest {
+  id: string;
+  sessionId?: string;
+  rootSessionId?: string;
+  kind: "question" | "permission";
+  question?: string;
+  header?: string;
+  options?: InputOption[];
+  multiple?: boolean;
+  custom?: boolean;
+  permission?: string;
+  patterns?: string[];
+  always?: string[];
+  metadata?: Record<string, unknown>;
+  tool?: ToolRef;
+}
+
+export interface InputOption {
+  label: string;
+  description?: string;
+}
+
+export interface ToolRef {
+  messageId?: string;
+  callId?: string;
 }
 
 export interface ModelRef {

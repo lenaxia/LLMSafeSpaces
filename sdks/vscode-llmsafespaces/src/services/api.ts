@@ -90,7 +90,9 @@ export class ApiService {
   async sendMessage(workspaceId: string, sessionId: string, content: string): Promise<string> {
     this.ensureClient();
     const resp = await this.client!.sessions.sendMessage(workspaceId, sessionId, content);
-    return resp.content;
+    // Contract Message (pkg/session): plain text is the derived view —
+    // the text field, else concatenated text parts.
+    return resp.text ?? (resp.parts ?? []).filter(p => p.type === "text").map(p => p.text ?? "").join("");
   }
 
   async ensureSession(workspaceId: string): Promise<string> {
