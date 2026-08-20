@@ -160,6 +160,10 @@ log "agentd reference: $AGENTD_REF"
 # (controller/main.go: both-or-neither). The kind node is amd64, so the
 # amd64 hash is what the entrypoint actually verifies; the arm64 field
 # must be non-empty for validation and is inert on this cluster.
+# >>> extract-binary-sha (sentinels: executed verbatim by
+# scripts/us2_kind_script_test.go under a stubbed docker — keep the
+# block self-contained: only CID/BINARY_SHA, $REG, $TMPDIR, log, and
+# external commands may be referenced).
 # Extract the binary for hashing. The agentd image is FROM scratch with
 # NO entrypoint/cmd by design, so `docker create` needs an explicit
 # command arg (never started — filesystem access only). Every step is
@@ -174,6 +178,7 @@ BINARY_SHA=$(sha256sum "$TMPDIR/workspace-agentd" 2>/dev/null | cut -d' ' -f1) \
   || { log "sha256sum failed on extracted binary"; exit 1; }
 [ -n "$BINARY_SHA" ] || { log "could not hash extracted binary"; exit 1; }
 log "agentd binary sha256 (amd64): $BINARY_SHA"
+# <<< extract-binary-sha
 
 # --- Chart + workspace -------------------------------------------------------
 
