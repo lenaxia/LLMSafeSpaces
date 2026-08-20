@@ -146,6 +146,14 @@ type Adapter interface {
 	// implementation package (design 0049 §91).
 	MeteringFromEvent(eventType string, props []byte) (usage *SessionUsage, ok bool, err error)
 
+	// IsKnownEventType reports whether eventType belongs to the agent's
+	// pinned event taxonomy (the adapter tolerates the agent's internal
+	// naming variants). Observability support (#739 Gap 2): consumers
+	// count known types per name, count-and-warn on unknown types, so a
+	// taxonomy rename upstream is visible instead of silently dropping
+	// events. Unknown is not an error — it is the drift signal.
+	IsKnownEventType(eventType string) bool
+
 	// SetModel changes the session's active model. Subsequent Send
 	// calls use the new model.
 	SetModel(ctx context.Context, userID, workspaceID, sessionID string, model session.ModelRef) error

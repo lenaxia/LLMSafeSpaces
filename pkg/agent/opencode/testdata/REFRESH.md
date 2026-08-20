@@ -65,3 +65,65 @@ curl -sN -u "opencode:$PW" http://127.0.0.1:4096/event > capture.txt
 ```
 
 Every fixture event must remain byte-shape-faithful apart from redaction/trimming — parsers are pinned against these bytes.
+
+---
+
+# opencode upgrade runbook (gated)
+
+Every runtime-image opencode bump (`OPENCODE_VERSION` in
+`runtimes/base/Dockerfile`) changes the wire every parser, taxonomy
+table, and metering decode depends on. The bump → re-capture pairing is
+**enforced** by gates (pre-commit + CI fail a bump without fixture
+changes) — this section is the procedure the gates point at.
+
+## Rollout coupling (release checklist)
+
+The event-system env flag lives in the runtime entrypoint
+(`runtimes/base/tools/entrypoints/entrypoint-opencode.sh`, relocated
+from the controller in #942) — so after a controller deploy that
+includes #942, **the matching runtime image must deploy in the same
+cycle**. Order: build + push the runtime image first, then roll the
+controller. A controller-only roll leaves NEW pods (old image) with the
+flag still in the pod spec (fine), and REBUILT pods on the new image
+with it in the entrypoint (fine) — but a controller roll of the
+flag-REMOVAL while workspaces still run a pre-#942 image build would
+produce pods with the flag in neither place: event-blind, the worklog
+0263 regression. Deploy images and controller together.
+
+## Pre-merge (same PR as the bump)
+
+1. **Stage a capture pod** on the new version (staging workspace or a
+   scratch `opencode serve` with the new binary) and drive one full LLM
+   turn: prompt → tool calls → response → idle.
+2. **Re-capture both fixtures** (live `/event` verbatim + store
+   `opencode.db` rows; procedures at the top of this file) and replace
+   the testdata files.
+3. **Extend, don't loosen**: `wire.IsKnownEventType`'s taxonomy and
+   `pkg/repolint/event_literal.go`'s literal table must gain any new
+   event types — the fixture-coverage test enforces this for wire.
+4. **Watch the pinned counts**: `TestGoldenFixture_EventStore_SessionUpdatedAllDecode`
+   pins 81 — update consciously, never delete the pin.
+5. Full `make test` — the golden taxonomy tests fail loudly on any
+   shape drift the tolerant parsers must be taught.
+
+## Post-deploy (within the first hour)
+
+- **Drift counters**: `llmsafespaces_agent_events_total` — every known
+  type should be non-zero and growing on active workspaces; the
+  `unknown` label must stay flat at zero. A known series flatlining +
+  `unknown` growing = taxonomy drift: check the warn log for
+  `unrecognized agent event type '<name>'` (one per distinct type).
+- **Usage sanity (#739 DoD)**: `session_index.context_used` must be
+  non-NULL for sessions that ran a real LLM turn (spot-check via the
+  sessions list API or `SELECT count(*) FROM session_index WHERE
+  context_used IS NULL AND updated_at > <deploy-time>` on active rows).
+- **Billing sanity**: `llmsafespaces_inference_requests_total` and the
+  `llm_tokens` usage events must be non-zero — a taxonomy rename that
+  removes `session.updated` zeroes these silently (the counters are the
+  catch).
+
+## Drift alert (recommended)
+
+Alert on `increase(llmsafespaces_agent_events_total{event_type="unknown"}[15m]) > 0`
+sustained 30m — that is the machine-readable form of "upstream renamed
+something; run this runbook."

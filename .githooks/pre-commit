@@ -246,6 +246,25 @@ else
     show_skip "golangci-lint" "no .go files staged"
 fi
 
+# Opencode bump → fixture refresh gate (#942): bumping the pinned
+# opencode version in a runtime Dockerfile changes the agent wire every
+# parser, fixture, and metering decode depends on. Require the golden
+# fixtures (pkg/agent/opencode/testdata/) to change in the SAME commit —
+# per the upgrade runbook (testdata/REFRESH.md), a bump without a
+# re-capture is how #739-class drift ships silently with CI green.
+if git diff --cached --name-only --diff-filter=ACM | grep -qE '^runtimes/.*Dockerfile$'; then
+    if git diff --cached -U0 -- 'runtimes/*/Dockerfile' | grep -E '^[+-].*OPENCODE_VERSION' | grep -qvE '^[+-]{3}'; then
+        if ! git diff --cached --name-only | grep -qE '^pkg/agent/opencode/testdata/'; then
+            echo "== pre-commit: opencode bump gate ==" >&2
+            echo "  FAIL: OPENCODE_VERSION changed without a golden-fixture refresh." >&2
+            echo "         The wire parsers, taxonomy, and metering decode are pinned" >&2
+            echo "         to the fixtures; a bump without a re-capture ships blind drift" >&2
+            echo "         (#739 class). See pkg/agent/opencode/testdata/REFRESH.md." >&2
+            exit 1
+        fi
+    fi
+fi
+
 # Helm-render: only when chart files are staged. Other commits don't
 # affect the chart's renderability.
 if [ "$CHART_STAGED" -eq 1 ]; then

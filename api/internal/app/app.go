@@ -1506,6 +1506,9 @@ func (a *App) Run() error {
 				}
 			})
 			tracker.SetSessionMetrics(metricsSvc)
+			// #739 Gap 2: per-type agent-event counters + unknown-type
+			// warns (classifier wired at tracker construction).
+			tracker.SetEventMetrics(metricsSvc)
 		}
 	}
 	// Epic 27b US-27b.5: Wire agent state checker into proxy for chat error enrichment.

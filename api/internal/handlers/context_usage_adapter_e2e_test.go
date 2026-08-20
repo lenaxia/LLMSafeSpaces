@@ -4,8 +4,10 @@
 package handlers
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -134,4 +136,52 @@ func TestNewSSETracker_MeteringDecoderWiredAtConstruction(t *testing.T) {
 	tracker.ProcessEvent("ws-wiring", `{"id":"evt_t","type":"session.updated","properties":{"sessionID":"ses_w","info":{"id":"ses_w","cost":0.01,"tokens":{"input":1000,"output":500},"model":{"id":"gpt-4o","providerID":"openai"}}}}`)
 
 	assert.True(t, fired, "construction-site decoder wiring must make billing inference work end-to-end")
+}
+
+type handlerFakeEventMetrics struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+func (f *handlerFakeEventMetrics) RecordAgentEvent(eventType string, known bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.counts == nil {
+		f.counts = map[string]int{}
+	}
+	if known {
+		f.counts[eventType]++
+	} else {
+		f.counts["unknown"]++
+	}
+}
+
+// TestNewSSETracker_DriftObservabilityWiredAtConstruction pins the
+// construction-site wiring of the drift observability: with a real
+// adapter set, firing a known event counts it and an unknown event
+// counts under 'unknown' — end-to-end through the production newSSETracker.
+func TestNewSSETracker_DriftObservabilityWiredAtConstruction(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	t.Cleanup(backend.Close)
+	env := newE2EEnv(t, backend)
+
+	tracker := env.handler.newSSETracker()
+	m := &handlerFakeEventMetrics{}
+	tracker.SetEventMetrics(m)
+
+	evt := func(typ string) {
+		data, _ := json.Marshal(map[string]interface{}{
+			"id": "evt_t", "type": typ, "properties": json.RawMessage(`{}`),
+		})
+		tracker.ProcessEvent("ws-obs", string(data))
+	}
+	evt("session.updated")
+	evt("totally.unknown.event")
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	assert.Equal(t, 1, m.counts["session.updated"], "known type counted by name through production wiring")
+	assert.Equal(t, 1, m.counts["unknown"], "unknown type counted under the bounded label")
 }

@@ -267,6 +267,7 @@ func (h *ProxyHandler) newSSETracker() *sse.Tracker {
 	t := sse.NewTracker(h.httpClient, h.logger, h.onSessionIdle)
 	if h.adapter != nil {
 		t.SetMeteringDecoder(h.adapter.MeteringFromEvent)
+		t.SetEventClassifier(h.adapter.IsKnownEventType)
 	}
 	t.SetPasswordGetter(h)
 	t.SetPodIPResolver(h.getPodIPForSSE)

@@ -63,44 +63,36 @@ func TestPodBuilder_ContainerEnv_RequiredVars(t *testing.T) {
 	assert.NotEmpty(t, mainEnv["WORKSPACE_DIR"])
 }
 
-// TestPodBuilder_ContainerEnv_OpenCodeExperimentalEventSystem is the regression
-// test for the context-usage "0/Unknown" bug (worklog 0263).
+// TestPodBuilder_ContainerEnv_NoOpencodeEventFlag is the relocation pin
+// for the context-usage "0/Unknown" bug (worklog 0263, relocated #942).
 //
-// Root cause: OPENCODE_EXPERIMENTAL_EVENT_SYSTEM was not set in the workspace pod
-// env, so opencode never emitted session.next.step.ended to the /event SSE stream.
-// The API proxy's persistContextFromEvent was therefore never called, leaving
-// session_index.context_used NULL for every session and the Sidebar showing "0/Unknown".
-//
-// Fix: set OPENCODE_EXPERIMENTAL_EVENT_SYSTEM=true unconditionally in all workspace pods.
-//
-// Proven by live cluster experiment (worklog 0263): adding the flag to /tmp/secrets-env
-// and restarting opencode caused context_used to be written to session_index within one
-// second of the next LLM step completing (114422 tokens, exact match with
-// input + cache.read + cache.write from the step.ended event).
-func TestPodBuilder_ContainerEnv_OpenCodeExperimentalEventSystem(t *testing.T) {
+// History: OPENCODE_EXPERIMENTAL_EVENT_SYSTEM=true was originally set
+// here in the pod env after the live-cluster experiment proved the event
+// system is load-bearing for context usage. #942 relocated it to the
+// runtime entrypoint (runtimes/base/tools/entrypoints/
+// entrypoint-opencode.sh) — an opencode env-var name is runtime
+// knowledge, not platform knowledge. This test pins the NEW contract:
+// the controller must not know opencode env names; the entrypoint owns
+// them. (Entrypoint-side pinning lives in the runtime image build.)
+func TestPodBuilder_ContainerEnv_NoOpencodeEventFlag(t *testing.T) {
 	ws := newWorkspaceForPodBuilder(t)
 	r := reconcilerFor(t)
 
 	pod, err := r.buildPod(context.Background(), ws)
 	require.NoError(t, err)
 
-	var found bool
 	for _, c := range pod.Spec.Containers {
-		if c.Name != "workspace" {
-			continue
-		}
 		for _, e := range c.Env {
-			if e.Name == "OPENCODE_EXPERIMENTAL_EVENT_SYSTEM" {
-				assert.Equal(t, "true", e.Value,
-					"OPENCODE_EXPERIMENTAL_EVENT_SYSTEM must be 'true' — "+
-						"without it opencode never emits step.ended and context_used is never written to DB")
-				found = true
-			}
+			assert.NotEqual(t, "OPENCODE_EXPERIMENTAL_EVENT_SYSTEM", e.Name,
+				"opencode env-var names belong to the runtime entrypoint (#942), not the pod spec")
 		}
 	}
-	assert.True(t, found,
-		"OPENCODE_EXPERIMENTAL_EVENT_SYSTEM must be present in the workspace container env — "+
-			"it is required for the context usage bar to display real values")
+	for _, c := range pod.Spec.InitContainers {
+		for _, e := range c.Env {
+			assert.NotEqual(t, "OPENCODE_EXPERIMENTAL_EVENT_SYSTEM", e.Name,
+				"opencode env-var names belong to the runtime entrypoint (#942), not the pod spec")
+		}
+	}
 }
 
 // TestPodBuilder_ReadinessProbe_TightTiming verifies the readiness probe
