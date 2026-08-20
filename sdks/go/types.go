@@ -107,9 +107,42 @@ type ToolState struct {
 // FileDiff carries authoritative unified-diff text for a file change.
 type FileDiff struct {
 	Path      string `json:"path"`
+	OldPath   string `json:"oldPath,omitempty"`
+	Status    string `json:"status"`
 	Patch     string `json:"patch"`
 	Additions int    `json:"additions,omitempty"`
 	Deletions int    `json:"deletions,omitempty"`
+}
+
+// InputRequest is the unified pending-input shape ("the agent needs a
+// human", design 0049 §4.5) carried on input.request/resolved events.
+type InputRequest struct {
+	ID            string         `json:"id"`
+	SessionID     string         `json:"sessionId,omitempty"`
+	RootSessionID string         `json:"rootSessionId,omitempty"`
+	Kind          string         `json:"kind"`
+	Question      string         `json:"question,omitempty"`
+	Header        string         `json:"header,omitempty"`
+	Options       []InputOption  `json:"options,omitempty"`
+	Multiple      bool           `json:"multiple,omitempty"`
+	Custom        bool           `json:"custom,omitempty"`
+	Permission    string         `json:"permission,omitempty"`
+	Patterns      []string       `json:"patterns,omitempty"`
+	Always        []string       `json:"always,omitempty"`
+	Metadata      map[string]any `json:"metadata,omitempty"`
+	Tool          *ToolRef       `json:"tool,omitempty"`
+}
+
+// InputOption is one selectable choice within a question InputRequest.
+type InputOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
+// ToolRef identifies the tool call that triggered an InputRequest.
+type ToolRef struct {
+	MessageID string `json:"messageId,omitempty"`
+	CallID    string `json:"callId,omitempty"`
 }
 
 // CustomPart is the extension valve; Kind discriminates.
