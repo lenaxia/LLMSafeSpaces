@@ -605,3 +605,65 @@ func TestSSETracker_AgentEventCounters_WarnCapStopsAtLimit(t *testing.T) {
 	}
 	assert.Equal(t, unknownSeenCap, warns, "exactly the cap distinct-type warns — the log cannot be flooded")
 }
+
+// TestSSETracker_AgentEventCounters_AllEntryPointsFunnelToObservation is
+// the single-funnel routing PROOF (#942 review): every public event
+// entry path — ProcessEvent flat, ProcessEvent nested, DispatchProperties
+// direct — must reach the classifier exactly once per event.
+func TestSSETracker_AgentEventCounters_AllEntryPointsFunnelToObservation(t *testing.T) {
+	tracker, m, _ := newObservabilityTracker(t)
+
+	classified := 0
+	realClassifier := agentoc.NewAdapter(nil, nil, zap.NewNop()).IsKnownEventType
+	tracker.SetEventClassifier(func(et string) bool { classified++; return realClassifier(et) })
+
+	tracker.ProcessEvent("ws-obs", `{"id":"e1","type":"session.updated","properties":{"sessionID":"s"}}`)
+	tracker.ProcessEvent("ws-obs", `{"payload":{"type":"session.updated","properties":{"sessionID":"s"}}}`)
+	tracker.DispatchProperties("ws-obs", "session.updated", json.RawMessage(`{"sessionID":"s"}`))
+
+	assert.Equal(t, 3, classified, "all three public entry points must classify")
+	m.mu.Lock()
+	assert.Equal(t, 3, m.counts["session.updated"])
+	m.mu.Unlock()
+}
+
+// TestSSETracker_AgentEventCounters_MalformedEventCountedAndWarnedOnce:
+// an event with no decodable type in either envelope shape counts under
+// 'unknown' and warns once for the class — envelope-shape drift must not
+// vanish from the counters (#942 review finding 3).
+func TestSSETracker_AgentEventCounters_MalformedEventCountedAndWarnedOnce(t *testing.T) {
+	tracker, m, log := newObservabilityTracker(t)
+
+	for i := 0; i < 3; i++ {
+		tracker.ProcessEvent("ws-obs", `not json at all`)
+	}
+
+	m.mu.Lock()
+	assert.Equal(t, 3, m.counts["unknown"], "malformed events count under 'unknown'")
+	m.mu.Unlock()
+	var warns int
+	for _, w := range log.Warns() {
+		if strings.Contains(w, "malformed agent event") {
+			warns++
+		}
+	}
+	assert.Equal(t, 1, warns, "one class-level warn, not per event")
+}
+
+// TestSSETracker_AgentEventCounters_PartialWiringWarns: exactly one of
+// classifier/recorder set disables counting — the gap must warn, not
+// stay silent (#942 review robustness 1).
+func TestSSETracker_AgentEventCounters_PartialWiringWarns(t *testing.T) {
+	tracker, _, log := newObservabilityTracker(t)
+	tracker.SetEventClassifier(nil) // recorder still set => partial
+
+	fireTyped(t, tracker, "session.updated", `{"sessionID":"s"}`)
+
+	var found bool
+	for _, w := range log.Warns() {
+		if strings.Contains(w, "PARTIALLY wired") {
+			found = true
+		}
+	}
+	assert.True(t, found, "partial observability wiring must warn once")
+}

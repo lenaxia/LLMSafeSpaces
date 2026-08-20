@@ -100,3 +100,12 @@ None.
 - `controller/internal/workspace/pod_builder.go`, `pod_builder_test.go` — env removal + absence pin
 - `runtimes/base/tools/entrypoints/entrypoint-opencode.sh` — flag export
 - `pkg/agent/opencode/testdata/REFRESH.md` — runbook
+
+### Review round 1 (PR #967)
+
+Three test gaps + two diagnostics, all addressed:
+1. **Cross-taxonomy sync test** (`TestEventLiteralsSyncedWithWireTaxonomy`): every event-type literal the lint flags must be known to wire's taxonomy — the runbook's "extend both together" invariant is now test-enforced (part-type literals exempt: step-start/step-finish live inside payloads, not the event taxonomy).
+2. **Single-funnel PROOF** (`TestSSETracker_AgentEventCounters_AllEntryPointsFunnelToObservation`): all three public entry paths (ProcessEvent flat, ProcessEvent nested, DispatchProperties direct) verified to classify exactly once per event — the assumption is now a pin, not a comment.
+3. **Malformed events counted** (`observeMalformedEvent`): events with no decodable type in either envelope shape bucket under 'unknown' + a single class-level warn — envelope-shape drift no longer vanishes from the counters (the nested-parse success branch also now returns explicitly instead of falling through).
+4. **Partial-wiring warn**: classifier XOR recorder set disables counting with a once-per-process warn — the gap is discoverable, not silent.
+5. Runbook: alert-semantics section (64-cap triage, type-vs-payload-shape drift signals, malformed bucketing).

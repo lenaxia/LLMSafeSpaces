@@ -699,7 +699,14 @@ func (t *Tracker) processEvent(workspaceID, data string) {
 				t.onRawEvent(workspaceID, nested.Payload.Type, data)
 			}
 			t.dispatchProperties(workspaceID, nested.Payload.Type, nested.Payload.Properties)
+			return
 		}
+		// Neither the flat envelope nor the nested payload parses with a
+		// type: a genuinely malformed event. Counted under 'unknown' and
+		// warned once — a taxonomy change that breaks the ENVELOPE shape
+		// must be as visible as one that renames a type (#942 review:
+		// otherwise these vanish from the drift counters entirely).
+		t.observeMalformedEvent()
 		return
 	}
 
@@ -843,6 +850,11 @@ const unknownSeenCap = 64
 // events silently vanishing (#739 Gap 2).
 func (t *Tracker) observeAgentEvent(eventType string) {
 	if t.eventClassifier == nil || t.eventMetrics == nil {
+		// Partial wiring (exactly one set) disables observability
+		// silently — warn once so the gap is discoverable (#942 review).
+		if t.eventClassifier != nil || t.eventMetrics != nil {
+			t.warnOnceAgentEvent("<wiring-gap>", "agent-event observability is PARTIALLY wired (classifier XOR metrics recorder) — counting disabled until both are set")
+		}
 		return
 	}
 	if t.eventClassifier(eventType) {
@@ -850,15 +862,31 @@ func (t *Tracker) observeAgentEvent(eventType string) {
 		return
 	}
 	t.eventMetrics.RecordAgentEvent("", false)
+	t.warnOnceAgentEvent(eventType, "unrecognized agent event type '"+eventType+"' — taxonomy drift? (counted under 'unknown'; see Adapter.IsKnownEventType and testdata/REFRESH.md)")
+}
+
+// observeMalformedEvent counts an event whose envelope carries no
+// decodable type under the 'unknown' label (same bucket, same bounded
+// cardinality) and warns once for the class.
+func (t *Tracker) observeMalformedEvent() {
+	if t.eventMetrics == nil {
+		return
+	}
+	t.eventMetrics.RecordAgentEvent("", false)
+	t.warnOnceAgentEvent("<malformed>", "malformed agent event (no decodable type in either envelope shape) — counted under 'unknown'; see testdata/REFRESH.md")
+}
+
+func (t *Tracker) warnOnceAgentEvent(key, msg string) {
 	t.unknownSeenMu.Lock()
 	defer t.unknownSeenMu.Unlock()
 	if t.unknownSeen == nil {
 		t.unknownSeen = make(map[string]bool)
 	}
-	if !t.unknownSeen[eventType] && len(t.unknownSeen) < unknownSeenCap {
-		t.unknownSeen[eventType] = true
-		t.Logger.Warn("unrecognized agent event type '" + eventType + "' — taxonomy drift? (counted under 'unknown'; see Adapter.IsKnownEventType and testdata/REFRESH.md)")
+	if t.unknownSeen[key] || len(t.unknownSeen) >= unknownSeenCap {
+		return
 	}
+	t.unknownSeen[key] = true
+	t.Logger.Warn(msg)
 }
 
 func sessionIDOrEmpty(u *agent.SessionUsage) string {

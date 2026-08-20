@@ -127,3 +127,20 @@ produce pods with the flag in neither place: event-blind, the worklog
 Alert on `increase(llmsafespaces_agent_events_total{event_type="unknown"}[15m]) > 0`
 sustained 30m — that is the machine-readable form of "upstream renamed
 something; run this runbook."
+
+Alert semantics and edge cases:
+
+- The per-type warn log caps at 64 DISTINCT unknown types per API
+  process. Beyond the cap, counting continues but warns stop — a full
+  taxonomy rewrite (65+ new names) shows up as a large `unknown` rate
+  with only the first 64 names in the log. Triage by rate first, then
+  capture.
+- Events are classified by TYPE before metering decodes properties. A
+  rename that only changes a payload's SHAPE (type unchanged) still
+  counts as known and surfaces through the metering drift warn
+  ("usage-bearing event failed to decode"), not the unknown counter —
+  watch both signals.
+- Events whose ENVELOPE is undecodable (no type in either shape) also
+  bucket under `unknown`, with a single class-level "malformed agent
+  event" warn. Envelope-shape drift is therefore as visible as
+  type-name drift.

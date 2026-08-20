@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/lenaxia/llmsafespaces/pkg/agent/opencode/wire"
 )
 
 func writeGoFile(t *testing.T, dir, rel, content string) {
@@ -155,6 +157,26 @@ func f(t, s string) int {
 	for _, want := range []string{"session.updated", "step-finish", "message.part.delta"} {
 		if !got[want] {
 			t.Errorf("literal %q must be flagged (comma-case/map-key/Contains contexts); got %+v", want, rep.Violations)
+		}
+	}
+}
+
+// TestEventLiteralsSyncedWithWireTaxonomy enforces the runbook invariant
+// (REFRESH.md): the wire taxonomy and the lint's literal table gain new
+// types together. Every EVENT-type literal the lint flags must be known
+// to wire.IsKnownEventType — otherwise a fixture refresh updates one
+// list and not the other, and events the seam accepts get lint-flagged
+// (or worse, vice versa). Part-type literals (step-start/step-finish)
+// live inside message.part.updated payloads, not in the event taxonomy,
+// and are exempt.
+func TestEventLiteralsSyncedWithWireTaxonomy(t *testing.T) {
+	exempt := map[string]bool{"step-start": true, "step-finish": true}
+	for _, lit := range agentEventLiterals {
+		if exempt[lit] {
+			continue
+		}
+		if !wire.IsKnownEventType(lit) {
+			t.Errorf("lint literal %q is not in the wire taxonomy — extend both together (REFRESH.md upgrade runbook; wire.knownEventTypes)", lit)
 		}
 	}
 }
