@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -221,7 +223,7 @@ func TestRecover_StagedEntriesRequeued(t *testing.T) {
 	assert.Equal(t, 1, n)
 	entries, _ := s.List(ctx, "ws", "ses")
 	require.Len(t, entries, 1)
-	assert.Equal(t, StatusPending, entries[0].Status, "recovered entry is deliverable again")
+	assert.Equal(t, StatusVerifying, entries[0].Status, "recovered entry outcome is unknown — verify, never blind re-send")
 }
 
 func TestDismissAndRetry(t *testing.T) {
@@ -261,16 +263,34 @@ func TestRun_EndToEnd(t *testing.T) {
 	t.Cleanup(func() { RetryBackoff, MaxBackoff = origBackoff, origMax })
 	s, _ := newTestService(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	_, err := s.Accept(ctx, "ws", "ses", "u-1", "c1", "hello", json.RawMessage(`{"modelID":"m","providerID":"p"}`))
 	require.NoError(t, err)
 
 	got := make(chan Entry, 1)
-	go s.Run(ctx, func(_ context.Context, _, _ string, e Entry) error {
-		got <- e
-		return nil
-	}, 5*time.Millisecond)
+	deliveriesDone := make(chan struct{}, 64) // buffered: the deferred signal must never block delivery
+	var deliveries int64
+	var runWG sync.WaitGroup
+	// Stop the worker AND any in-flight delivery BEFORE this test
+	// returns (var-mutating tests may follow): cancel, wait for Run,
+	// then wait for the last observed delivery goroutine to return.
+	defer func() {
+		cancel()
+		runWG.Wait()
+		for i := atomic.LoadInt64(&deliveries); i > 0; i-- {
+			<-deliveriesDone
+		}
+	}()
+	runWG.Add(1)
+	go func() {
+		defer runWG.Done()
+		s.Run(ctx, func(_ context.Context, _, _ string, e Entry) error {
+			atomic.AddInt64(&deliveries, 1)
+			defer func() { deliveriesDone <- struct{}{} }()
+			got <- e
+			return nil
+		}, 5*time.Millisecond)
+	}()
 
 	select {
 	case e := <-got:
@@ -370,6 +390,185 @@ func TestDeliver_LockOutlivesLongTurn(t *testing.T) {
 		"lock TTL must exceed the delivery timeout or a long turn lets a second worker in")
 }
 
+// --- Ambiguity / verification state machine (incident 2026-08-20, #987) ---
+
+// shortVerifyVars compresses the verify timers for tests.
+func shortVerifyVars(t *testing.T) {
+	t.Helper()
+	origDelay, origVB, origMaxVB, origMVA := VerifyDelay, VerifyBackoff, MaxVerifyBackoff, MaxVerifyAttempts
+	VerifyDelay, VerifyBackoff, MaxVerifyBackoff = time.Millisecond, time.Millisecond, time.Millisecond
+	MaxVerifyAttempts = 3
+	t.Cleanup(func() {
+		VerifyDelay, VerifyBackoff, MaxVerifyBackoff, MaxVerifyAttempts = origDelay, origVB, origMaxVB, origMVA
+	})
+}
+
+// TestDeliver_AmbiguousMovesToVerifying: a deliverer outcome of unknown
+// result (timeout mid-turn, transport cut mid-flight) must NOT be retried
+// as a fresh send — the send most likely persisted (opencode persists
+// before the turn starts). The entry moves to verifying and the delivery
+// attempt does not count toward MaxAttempts.
+func TestDeliver_AmbiguousMovesToVerifying(t *testing.T) {
+	shortVerifyVars(t)
+	s, _ := newTestService(t)
+	s.SetVerifier(func(context.Context, string, string, Entry) Verdict { return VerdictInconclusive })
+	ctx := context.Background()
+	_, err := s.Accept(ctx, "ws", "ses", "u-1", "c1", "long turn", nil)
+	require.NoError(t, err)
+
+	ok := s.deliverOne(ctx, "ws", "ses", func(_ context.Context, _, _ string, _ Entry) error {
+		return Ambiguous(errors.New("context deadline exceeded"))
+	})
+	require.True(t, ok)
+
+	entries, _ := s.List(ctx, "ws", "ses")
+	require.Len(t, entries, 1)
+	assert.Equal(t, StatusVerifying, entries[0].Status, "ambiguous outcome moves the entry to verifying")
+	assert.Zero(t, entries[0].Attempts, "ambiguous attempts must not count toward MaxAttempts")
+	assert.False(t, entries[0].LastAttemptAt.IsZero(), "the send window start is recorded for the verifier")
+
+	// A second pass while verifying must NOT re-send (verifier inconclusive keeps it verifying).
+	sent := 0
+	s.deliverOne(ctx, "ws", "ses", func(_ context.Context, _, _ string, _ Entry) error {
+		sent++
+		return nil
+	})
+	assert.Zero(t, sent, "verifying entries are verified, never re-sent blindly")
+}
+
+// TestVerifying_DeliveredRemovesAndNotifies: a verifier verdict of
+// delivered confirms the outbox entry's removal — the ONLY completion
+// path besides the synchronous 2xx — and fires the OnDelivered hook once
+// (SSE queue.update/sent + metering ride that hook in the bridge).
+func TestVerifying_DeliveredRemovesAndNotifies(t *testing.T) {
+	shortVerifyVars(t)
+	s, _ := newTestService(t)
+	var notified []Entry
+	s.SetOnDelivered(func(_ string, _ string, e Entry) { notified = append(notified, e) })
+	s.SetVerifier(func(context.Context, string, string, Entry) Verdict { return VerdictDelivered })
+	ctx := context.Background()
+	_, err := s.Accept(ctx, "ws", "ses", "u-1", "c1", "confirmed by history", nil)
+	require.NoError(t, err)
+
+	s.deliverOne(ctx, "ws", "ses", func(_ context.Context, _, _ string, _ Entry) error {
+		return Ambiguous(errors.New("context deadline exceeded"))
+	})
+	time.Sleep(3 * time.Millisecond) // verify delay
+	ok := s.deliverOne(ctx, "ws", "ses", func(_ context.Context, _, _ string, _ Entry) error {
+		t.Fatal("re-send after ambiguous outcome")
+		return nil
+	})
+	require.True(t, ok)
+
+	entries, _ := s.List(ctx, "ws", "ses")
+	assert.Empty(t, entries, "verified-delivered entry leaves the outbox")
+	require.Len(t, notified, 1)
+	assert.Equal(t, "confirmed by history", notified[0].Text)
+}
+
+// TestVerifying_AbsentRestoresPending: verifier proves the message never
+// reached the transcript — a definitive not-delivered. The entry returns
+// to pending and the attempt counts toward MaxAttempts normally.
+func TestVerifying_AbsentRestoresPending(t *testing.T) {
+	origBackoff, origMax := RetryBackoff, MaxBackoff
+	RetryBackoff, MaxBackoff = time.Millisecond, time.Millisecond
+	t.Cleanup(func() { RetryBackoff, MaxBackoff = origBackoff, origMax })
+	shortVerifyVars(t)
+	s, _ := newTestService(t)
+	s.SetVerifier(func(context.Context, string, string, Entry) Verdict { return VerdictAbsent })
+	ctx := context.Background()
+	_, err := s.Accept(ctx, "ws", "ses", "u-1", "c1", "never landed", nil)
+	require.NoError(t, err)
+
+	s.deliverOne(ctx, "ws", "ses", func(_ context.Context, _, _ string, _ Entry) error {
+		return Ambiguous(errors.New("connection reset"))
+	})
+	time.Sleep(3 * time.Millisecond)
+	s.deliverOne(ctx, "ws", "ses", func(_ context.Context, _, _ string, _ Entry) error {
+		t.Fatal("must not re-send in the same pass that verified absent")
+		return nil
+	})
+
+	entries, _ := s.List(ctx, "ws", "ses")
+	require.Len(t, entries, 1)
+	assert.Equal(t, StatusPending, entries[0].Status, "proven-absent returns to pending for a fresh send")
+	assert.Equal(t, 1, entries[0].Attempts, "absent is a definitive failure and counts")
+}
+
+// TestVerifying_InconclusiveParksAfterBound: an unreachable verifier
+// (agent down, suspended workspace) keeps the entry verifying with
+// backoff, bounded by MaxVerifyAttempts, then parks as error — visible,
+// dismissable, retryable. It must NEVER be silently re-sent.
+func TestVerifying_InconclusiveParksAfterBound(t *testing.T) {
+	shortVerifyVars(t)
+	s, _ := newTestService(t)
+	var sends int
+	s.SetVerifier(func(context.Context, string, string, Entry) Verdict { return VerdictInconclusive })
+	ctx := context.Background()
+	_, err := s.Accept(ctx, "ws", "ses", "u-1", "c1", "agent unreachable", nil)
+	require.NoError(t, err)
+
+	s.deliverOne(ctx, "ws", "ses", func(_ context.Context, _, _ string, _ Entry) error {
+		sends++
+		return Ambiguous(errors.New("context deadline exceeded"))
+	})
+
+	for i := 0; i < MaxVerifyAttempts+2; i++ {
+		time.Sleep(3 * time.Millisecond)
+		s.deliverOne(ctx, "ws", "ses", func(_ context.Context, _, _ string, _ Entry) error {
+			sends++
+			return nil
+		})
+	}
+
+	assert.Equal(t, 1, sends, "exactly one send ever — never a blind retry")
+	entries, _ := s.List(ctx, "ws", "ses")
+	require.Len(t, entries, 1)
+	assert.Equal(t, StatusError, entries[0].Status, "unverifiable entry parks as error after the bound")
+	assert.NotEmpty(t, entries[0].LastError)
+
+	// Retry (the queue UI action) resets it for a fresh send.
+	assert.True(t, s.Retry(ctx, "ws", "ses", entries[0].ID))
+	entries, _ = s.List(ctx, "ws", "ses")
+	assert.Equal(t, StatusPending, entries[0].Status)
+	assert.Zero(t, entries[0].VerifyAttempts)
+}
+
+// TestDeliver_SuccessFiresOnDelivered: the synchronous 2xx path fires the
+// same OnDelivered hook as the verified path — one completion seam.
+func TestDeliver_SuccessFiresOnDelivered(t *testing.T) {
+	s, _ := newTestService(t)
+	var notified int
+	s.SetOnDelivered(func(string, string, Entry) { notified++ })
+	ctx := context.Background()
+	_, err := s.Accept(ctx, "ws", "ses", "u-1", "c1", "fast turn", nil)
+	require.NoError(t, err)
+
+	s.deliverOne(ctx, "ws", "ses", func(_ context.Context, _, _ string, _ Entry) error { return nil })
+	assert.Equal(t, 1, notified)
+}
+
+// TestDeliver_AmbiguousWithoutVerifierFallsBack: legacy wiring (no
+// verifier) degrades ambiguous outcomes to the pre-#987 retry path
+// rather than stranding entries in verifying forever.
+func TestDeliver_AmbiguousWithoutVerifierFallsBack(t *testing.T) {
+	origBackoff, origMax := RetryBackoff, MaxBackoff
+	RetryBackoff, MaxBackoff = time.Millisecond, time.Millisecond
+	t.Cleanup(func() { RetryBackoff, MaxBackoff = origBackoff, origMax })
+	s, _ := newTestService(t)
+	ctx := context.Background()
+	_, err := s.Accept(ctx, "ws", "ses", "u-1", "c1", "no verifier", nil)
+	require.NoError(t, err)
+
+	s.deliverOne(ctx, "ws", "ses", func(_ context.Context, _, _ string, _ Entry) error {
+		return Ambiguous(errors.New("context deadline exceeded"))
+	})
+	entries, _ := s.List(ctx, "ws", "ses")
+	require.Len(t, entries, 1)
+	assert.Equal(t, StatusPending, entries[0].Status, "no verifier wired: legacy retry semantics")
+	assert.Equal(t, 1, entries[0].Attempts)
+}
+
 // TestRun_ConcurrentSessionsNoHeadOfLine (r1 finding 11): one slow
 // session must not block another session's delivery — Run delivers
 // sessions concurrently.
@@ -387,18 +586,28 @@ func TestRun_ConcurrentSessionsNoHeadOfLine(t *testing.T) {
 	require.NoError(t, err)
 
 	fastDone := make(chan time.Time, 1)
+	slowDone := make(chan struct{}, 1)
 	start := time.Now()
-	go s.Run(ctx, func(ctx context.Context, _, ses string, _ Entry) error {
-		if ses == "slow" {
-			select {
-			case <-ctx.Done():
-			case <-time.After(300 * time.Millisecond): // long turn
+	var runWG sync.WaitGroup
+	// Cancel, join Run, then join the in-flight slow delivery — no
+	// goroutine of this test outlives it (var-mutating tests follow).
+	defer func() { cancel(); runWG.Wait(); <-slowDone }()
+	runWG.Add(1)
+	go func() {
+		defer runWG.Done()
+		s.Run(ctx, func(ctx context.Context, _, ses string, _ Entry) error {
+			if ses == "slow" {
+				defer func() { slowDone <- struct{}{} }()
+				select {
+				case <-ctx.Done():
+				case <-time.After(300 * time.Millisecond): // long turn
+				}
+				return nil
 			}
+			fastDone <- time.Now()
 			return nil
-		}
-		fastDone <- time.Now()
-		return nil
-	}, 5*time.Millisecond)
+		}, 5*time.Millisecond)
+	}()
 
 	select {
 	case at := <-fastDone:

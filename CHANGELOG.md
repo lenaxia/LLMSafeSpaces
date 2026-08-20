@@ -38,6 +38,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **US-2 CI (#989, #990)**: kind integration hardening — binary sha
   pins, failure-preserving teardown, digest-splice fix, controller-lean
   install.
+- **Outbox re-delivery on turn-timeout (#987)**: a prompt whose agent turn
+  outlived the outbox `DeliveryTimeout` (10m) was classified "not
+  delivered" and retried as a fresh POST — re-running the user's turn
+  (observed 3×) and then parking the entry as a terminal error that never
+  left the queue UI. Unknown-outcome sends (timeout mid-turn, transport
+  cut) now enter a `verifying` state and are resolved against the agent
+  transcript (opencode persists the user message before the turn runs):
+  delivered → complete; proven absent → retry; unverifiable → bounded
+  recheck. Ambiguous attempts no longer count toward the retry bound;
+  API-crash recovery requeues staged entries as verifying (never
+  blind-re-sent). Every confirmed delivery now emits the
+  `queue.update/sent` SSE (the frontend pill clears deterministically),
+  and queue pills surface `verifying`/`delivering` states. Also fixed a
+  stress-found production race: concurrent accepts could overshoot the
+  per-session queue cap across API replicas (atomic check-and-push).
+
 
 ## [0.18.0] - 2026-08-20
 
