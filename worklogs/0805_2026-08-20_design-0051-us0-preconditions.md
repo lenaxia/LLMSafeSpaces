@@ -29,4 +29,4 @@ None (design doc). Structural checks: all three sections present, cross-referenc
 ## Files Modified
 
 - `design/0051_2026-08-18_agentd-uid-separation.md`
-- `worklogs/NNNN_2026-08-20_design-0051-us0-preconditions.md` (this file)
+- `worklogs/0805_2026-08-20_design-0051-us0-preconditions.md` (this file)
