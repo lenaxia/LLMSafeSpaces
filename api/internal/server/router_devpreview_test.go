@@ -210,3 +210,110 @@ type errAssert struct{ msg string }
 func (e *errAssert) Error() string { return e.msg }
 
 func assertError(msg string) error { return &errAssert{msg: msg} }
+
+// Epic 66 Phase 1: preview-origin middleware + bootstrap route wiring.
+func newPreviewOriginRouterFixture(t *testing.T) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	log, _ := apilogger.New(false, "error", "json")
+
+	auth := &imocks.MockAuthMiddlewareService{}
+	met := &imocks.MockMetricsService{}
+	ws := &imocks.MockWorkspaceService{}
+
+	met.On("RecordRequest", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	ws.On("ResolveWorkspace", mock.Anything, mock.Anything).
+		Return(&types.WorkspaceMetadata{ID: "ws-1", UserID: "test-user"}, nil).Maybe()
+	ws.On("CheckOwnership", mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+	auth.On("AuthMiddleware").Return(gin.HandlerFunc(func(c *gin.Context) {
+		c.Set("userID", "test-user")
+		c.Next()
+	})).Maybe()
+	auth.On("GetUserID", mock.Anything).Return("test-user").Maybe()
+
+	svc := &mockServices{auth: auth, metrics: met, workspace: ws}
+
+	h := handlers.NewDevPreviewHandler(nil, nil, "llmsafespaces", nil, handlers.DevPreviewConfig{Enabled: true})
+	pv := handlers.NewPreviewOriginHandler(h, handlers.PreviewOriginConfig{
+		Enabled:     true,
+		BaseDomain:  "example.com",
+		TokenSecret: []byte("k"),
+	}, nil, nil)
+
+	return NewRouter(svc, log, nil, RouterConfig{
+		Debug:                false,
+		DevPreviewHandler:    h,
+		PreviewOriginHandler: pv,
+	})
+}
+
+func TestRouter_PreviewOriginMiddlewareRegistered(t *testing.T) {
+	r := newPreviewOriginRouterFixture(t)
+
+	// Preview host: intercepted (401 without credentials) — NOT passed to
+	// API routes and not disturbed by the API middleware chain.
+	req := httptest.NewRequest("GET", "/5173/", nil)
+	req.Host = "0d2a9a1b-c3d4-4e5f-8a9b-0c1d2e3f4a5b-preview.example.com"
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("preview host without credentials: expected 401, got %d", w.Code)
+	}
+
+	// Malformed preview host → 421.
+	req = httptest.NewRequest("GET", "/5173/", nil)
+	req.Host = "garbage-preview.example.com"
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusMisdirectedRequest {
+		t.Errorf("malformed preview host: expected 421, got %d", w.Code)
+	}
+
+	// API host: preview middleware passes through; /api/v1/auth/config is
+	// public, so a 200 (not 401/421) proves normal routing.
+	req = httptest.NewRequest("GET", "/api/v1/auth/config", nil)
+	req.Host = "api.example.com"
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("API host passthrough: expected 200 on public route, got %d", w.Code)
+	}
+
+	// Bootstrap route exists on the API host (401/403 without a valid
+	// session — the auth chain rejected it, which is correct wiring).
+	req = httptest.NewRequest("GET", "/api/v1/workspaces/0d2a9a1b-c3d4-4e5f-8a9b-0c1d2e3f4a5b/dev-preview-bootstrap/5173", nil)
+	req.Host = "api.example.com"
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code == http.StatusNotFound {
+		t.Error("bootstrap route not registered")
+	}
+}
+
+// Preview middleware must NOT register when the handler is nil — the
+// engine behaves exactly as before.
+func TestRouter_PreviewOriginNilHandler_NoInterception(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	log, _ := apilogger.New(false, "error", "json")
+	auth := &imocks.MockAuthMiddlewareService{}
+	met := &imocks.MockMetricsService{}
+	ws := &imocks.MockWorkspaceService{}
+	met.On("RecordRequest", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Maybe()
+	ws.On("ResolveWorkspace", mock.Anything, mock.Anything).
+		Return(&types.WorkspaceMetadata{ID: "ws-1", UserID: "test-user"}, nil).Maybe()
+	ws.On("CheckOwnership", mock.Anything, mock.Anything, mock.Anything).Return(nil).Maybe()
+	auth.On("AuthMiddleware").Return(gin.HandlerFunc(func(c *gin.Context) {
+		c.Set("userID", "test-user")
+		c.Next()
+	})).Maybe()
+	auth.On("GetUserID", mock.Anything).Return("test-user").Maybe()
+	svc := &mockServices{auth: auth, metrics: met, workspace: ws}
+
+	r := NewRouter(svc, log, nil, RouterConfig{Debug: false})
+	req := httptest.NewRequest("GET", "/5173/", nil)
+	req.Host = "0d2a9a1b-c3d4-4e5f-8a9b-0c1d2e3f4a5b-preview.example.com"
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("nil handler: expected normal 404 routing, got %d", w.Code)
+	}
+}

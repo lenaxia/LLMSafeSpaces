@@ -1457,3 +1457,32 @@ turnstile:
   # https://developers.cloudflare.com/turnstile/get-started/server-side-validation/
   # Override only if using a self-hosted / regional Cloudflare offering.
   verifyURL: "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+
+# ──────────────────────────────────────────────────────────────────────────
+# Epic 66 Phase 1: per-workspace preview origins (redesign-2026-08-19)
+#
+# When enabled, the API additionally serves <workspace-uuid>-preview.<baseDomain>
+# hosts through a dedicated pipeline: owner-authenticated bootstrap on the API
+# origin (/api/v1/workspaces/:id/dev-preview-bootstrap/:port, existing auth +
+# ownership middleware) → 302 with a one-time HMAC token → preview host
+# redeems it for a __Host-pv cookie → all further preview traffic authenticates
+# via that cookie only. Preview hosts never receive the platform session
+# cookie (host-scoped to the API host) and never serve /api/* routes.
+#
+# Prerequisites (ops side, BEFORE enabling):
+#   - DNS wildcard *.safespaces.dev → the API ingress (Universal SSL covers it)
+#   - Ingress host rule accepting *-preview.<baseDomain> → API service
+#   - secretKey.existingSecret holding a random 32+ byte TokenSecret
+#
+# Off by default; the path-based dev-preview route works unchanged either way.
+previewOrigin:
+  enabled: false
+  # Registrable domain preview hosts live under, e.g. "safespaces.dev".
+  # Preview hosts are <uuid>-preview.<baseDomain>.
+  baseDomain: ""
+  # HMAC key for bootstrap tokens + __Host-pv cookies.
+  secretKey:
+    # K8s Secret name (ExternalSecret provisioned by ops).
+    existingSecret: "llmsafespaces-credentials"
+    # Key within that Secret.
+    key: "preview-origin-token-secret"
