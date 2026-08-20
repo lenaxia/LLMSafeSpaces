@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-08-20
+
+### Added
+
+- **Per-workspace dev-preview origins (#974, #976, #977; epic-66 Phase 1)**:
+  dev preview moves off the API origin onto per-workspace hosts
+  (`<uuid>-preview.<baseDomain>`), closing the redesign threat-model's T1
+  (prompt-injected preview JS making credentialed same-origin API calls)
+  by architecture. Owner-authenticated bootstrap on the API origin
+  (existing auth + ownership chain) 302s to the preview host with a
+  one-time HMAC token (jti consumed via cache SetNX), redeemed for a
+  `__Host-pv` preview-session cookie — the platform session cookie never
+  reaches preview hosts, and preview hosts never serve `/api/*` (T5).
+  Blocklisted/privileged/invalid ports are indistinguishable from dead
+  ports (T3); the `dev_preview_url` tool refuses them before minting any
+  URL and emits the bootstrap URL when the deployment sets
+  `PREVIEW_ORIGIN_BASE_DOMAIN` (controller stamps it into workspace pods
+  from the same `previewOrigin` chart values the API consumes). Off by
+  default with a fail-closed boot guard (enabled without
+  baseDomain+tokenSecret refuses to start). 20 new tests across handler,
+  config, router, agentd-tool, and pod-builder layers.
+
 ## [0.16.1] - 2026-08-20
 
 ### Fixed
