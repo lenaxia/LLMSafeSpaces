@@ -570,7 +570,21 @@ func (h *ProxyHandler) GetHistory(c *gin.Context) {
 		defer h.releaseConnection(wid)
 		h.adapterEnsureSSEWatch(wid)
 
-		msgs, err := h.adapter.GetHistory(c.Request.Context(), "", wid, sid)
+		// #971: the FIRST page (no before-cursor) is the session-load
+		// hot path — fetch ONLY the newest `limit` messages via the
+		// agent's native pagination (measured: ~26ms vs ~1.8s full
+		// fetch+decode on a 452-message session). Older pages (user
+		// scrolled back) keep the full-fetch path: opencode 1.18.10's
+		// cursor params are unusable (before= rejects every shape
+		// probed; cursor= is ignored — verified live), so slicing the
+		// full list remains the only correct back-pagination.
+		var msgs []session.Message
+		var err error
+		if before == "" {
+			msgs, err = h.adapter.GetHistoryPage(c.Request.Context(), "", wid, sid, limit)
+		} else {
+			msgs, err = h.adapter.GetHistory(c.Request.Context(), "", wid, sid)
+		}
 		if err != nil {
 			h.logger.Error("GetHistory: adapter failed", err, "sessionID", sid)
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to fetch history"})
@@ -579,6 +593,15 @@ func (h *ProxyHandler) GetHistory(c *gin.Context) {
 		page, nextCursor := paginateContractHistory(msgs, limit, before)
 		if page == nil {
 			page = []session.Message{}
+		}
+		// Paged-path gap (#971): paginateContractHistory sets the cursor
+		// only when it can SEE older messages (start > 0 in the full
+		// list) — but the native page hides everything older. A full page
+		// (len == limit) means older messages MAY exist; optimistically
+		// emit the page's oldest id. A spurious cursor costs one
+		// back-page fetch that returns empty and no further cursor.
+		if before == "" && nextCursor == "" && len(page) == limit && len(page) > 0 {
+			nextCursor = page[0].ID
 		}
 		if nextCursor != "" {
 			c.Header("X-Next-Cursor", nextCursor)

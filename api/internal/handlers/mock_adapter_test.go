@@ -19,6 +19,7 @@ import (
 // the unconditional onRawEvent path and a panic default would break every
 // SSE test that doesn't configure them.
 type mockAdapter struct {
+	pagedCalls          int
 	getSessionFn        func(ctx context.Context, userID, workspaceID, sessionID string) (*session.Session, error)
 	createSessionFn     func(ctx context.Context, userID, workspaceID, title string) (*session.Session, error)
 	listSessionsFn      func(ctx context.Context, userID, workspaceID string) ([]session.Session, error)
@@ -83,6 +84,13 @@ func (m *mockAdapter) Abort(ctx context.Context, uid, wid, sid string) error {
 	}
 	panic("mockAdapter.Abort not configured")
 }
+func (m *mockAdapter) GetHistoryPage(ctx context.Context, uid, wid, sid string, limit int) ([]session.Message, error) {
+	// Default: delegate to the full history (callers slice); tests that
+	// assert the paged path set pagedCalls.
+	m.pagedCalls++
+	return m.GetHistory(ctx, uid, wid, sid)
+}
+
 func (m *mockAdapter) GetHistory(ctx context.Context, uid, wid, sid string) ([]session.Message, error) {
 	if m.getHistoryFn != nil {
 		return m.getHistoryFn(ctx, uid, wid, sid)
