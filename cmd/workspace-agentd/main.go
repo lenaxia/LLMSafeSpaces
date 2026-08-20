@@ -75,6 +75,15 @@ func main() {
 	// runtimes/base/tools/entrypoints/entrypoint-common.sh and consolidates
 	// secret materialization in a single, tested code path. See worklog
 	// 0078 (Epic 17 G2/G20 remediation).
+	// Design 0051 US-1: same-uid supervisor mode. Same image, new role —
+	// the Phase-2 sidecar split (US-2) keeps this entry point; it becomes
+	// PID 1 of the workspace container and serves the Appendix-A control
+	// socket on 127.0.0.1:4099. Supervisor scope invariant (0051 D1):
+	// plumbing only.
+	if len(os.Args) > 1 && os.Args[1] == "supervise-opencode" {
+		os.Exit(runSuperviseOpencodeCommand(os.Args[2:]))
+	}
+
 	if len(os.Args) > 1 && os.Args[1] == "materialize" {
 		os.Exit(runMaterializeCommand(os.Args[2:], os.Stdout, os.Stderr))
 	}
