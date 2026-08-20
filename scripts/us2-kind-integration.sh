@@ -254,8 +254,8 @@ socket_json() { # $1: id, $2: method — one Appendix-A round trip from inside t
 }
 
 # --- K1: native-sidecar start ordering ---------------------------------------
-TERM_CRED=$(jq_field '.status.initContainerStatuses[]? | select(.name=="credential-setup") | .lastState.terminated.finishedAt // empty')
-START_SIDECAR=$(jq_field '.status.initContainerStatuses[]? | select(.name=="agentd") | .state.running.startedAt // .lastState.terminated.finishedAt // empty')
+TERM_CRED=$(jq_field '.status.initContainerStatuses[]? | select(.name=="credential-setup") | .state.terminated.finishedAt // .lastState.terminated.finishedAt // empty')
+START_SIDECAR=$(jq_field '.status.initContainerStatuses[]? | select(.name=="agentd") | .state.running.startedAt // .state.terminated.startedAt // empty')
 START_MAIN=$(jq_field '.status.containerStatuses[0].state.running.startedAt // empty')
 if [ -n "$TERM_CRED" ] && [ -n "$START_SIDECAR" ] && [ -n "$START_MAIN" ] \
   && [ "$TERM_CRED" \< "$START_SIDECAR" ] && [ "$START_SIDECAR" \< "$START_MAIN" ]; then
@@ -303,8 +303,13 @@ if [ "${OLD_CHILD:-0}" -gt 0 ] 2>/dev/null; then
   done
   MARKER=$(kubectl -n "$NS" exec "$POD" -c workspace -- \
     cat /sandbox-runtime/last-restart-reason.json 2>/dev/null || echo "")
+  # The supervisor classifies ANY SIGKILL as potential-OOM (isOOMExit: SIGKILL
+  # is what the OOM killer sends — externally-killed and OOM-killed are
+  # indistinguishable BY DESIGN). Our kill -9 therefore yields "oom", not
+  # "crash"; either marker proves the crash path recorded the restart.
+  MARKER_OK=$(printf '%s' "$MARKER" | jq -r '.reason // empty' 2>/dev/null)
   if [ "$NEW_CHILD" -gt 0 ] 2>/dev/null && [ "$NEW_CHILD" != "$OLD_CHILD" ] \
-    && printf '%s' "$MARKER" | grep -q '"reason":"crash"'; then
+    && { [ "$MARKER_OK" = "crash" ] || [ "$MARKER_OK" = "oom" ]; }; then
     pass K5 "child $OLD_CHILD → $NEW_CHILD respawned; crash marker recorded"
   else
     fail K5 "child $OLD_CHILD → ${NEW_CHILD:-?}; marker: $(printf '%s' "$MARKER" | head -c 80)"
@@ -315,13 +320,21 @@ fi
 
 # --- K6/K7: container-level restart isolation (crictl via the kind node) -----
 NODE_CONTAINER=$(docker ps --filter "name=${CLUSTER_NAME}-control-plane" --format '{{.ID}}' | head -1)
+[ -n "$NODE_CONTAINER" ] || log "K6/K7: no docker container matched ${CLUSTER_NAME}-control-plane"
+CRICTL_BIN=""
+if [ -n "$NODE_CONTAINER" ]; then
+  CRICTL_BIN=$(docker exec "$NODE_CONTAINER" sh -c \
+    'command -v crictl 2>/dev/null || { [ -x /usr/local/bin/crictl ] && echo /usr/local/bin/crictl; }' \
+    2>/dev/null | head -1)
+  [ -n "$CRICTL_BIN" ] || log "K6/K7: crictl not found on node ${NODE_CONTAINER}"
+fi
 crictl_cid() { # $1: pod uid, $2: container name
-  docker exec "$NODE_CONTAINER" crictl ps -o json 2>/dev/null \
+  docker exec "$NODE_CONTAINER" "$CRICTL_BIN" ps -o json 2>/dev/null \
     | jq -r --arg pod "$1" --arg name "$2" \
       '.containers[]? | select(.podSandboxId == $pod and .metadata.name == $name) | .id' \
     | head -1
 }
-if [ -n "$NODE_CONTAINER" ] && docker exec "$NODE_CONTAINER" command -v crictl >/dev/null 2>&1; then
+if [ -n "$NODE_CONTAINER" ] && [ -n "$CRICTL_BIN" ]; then
   POD_UID=$(jq_field '.metadata.uid')
 
   # K6: stop the SIDECAR → only it restarts; opencode keeps serving.
@@ -344,7 +357,7 @@ if [ -n "$NODE_CONTAINER" ] && docker exec "$NODE_CONTAINER" command -v crictl >
   SC_BEFORE=$(jq_field '.status.initContainerStatuses[]? | select(.name=="agentd") | .restartCount // 0')
   MAIN_BEFORE=$(jq_field '.status.containerStatuses[0].restartCount')
   MAIN_CID=$(crictl_cid "$POD_UID" workspace)
-  docker exec "$NODE_CONTAINER" crictl stop --timeout 5 "$MAIN_CID" >/dev/null 2>&1 || true
+  docker exec "$NODE_CONTAINER" "$CRICTL_BIN" stop --timeout 5 "$MAIN_CID" >/dev/null 2>&1 || true
   MAIN_AFTER=$MAIN_BEFORE
   for i in $(seq 1 60); do
     MAIN_AFTER=$(jq_field '.status.containerStatuses[0].restartCount')
