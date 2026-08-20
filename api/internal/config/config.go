@@ -217,6 +217,23 @@ type Config struct {
 		VerifyURL string `mapstructure:"verifyURL"`
 	} `mapstructure:"turnstile"`
 
+	// PreviewOrigin is the Epic-66 Phase-1 per-workspace preview origin
+	// (<uuid>-preview.<baseDomain>). When Enabled, the API serves preview
+	// hosts through the preview pipeline (signed one-time bootstrap →
+	// __Host-pv cookie) and NEVER serves /api/* on those hosts. Fail-closed
+	// like Turnstile: Enabled without BaseDomain+TokenSecret refuses to
+	// boot. Off by default — the path-based dev-preview route is unaffected.
+	//
+	// Wired via ops-prod cluster-config → chart values → env:
+	//   LLMSAFESPACES_PREVIEW_ORIGIN_ENABLED     ("true" | unset)
+	//   LLMSAFESPACES_PREVIEW_ORIGIN_BASEDOMAIN  (ConfigMap)
+	//   LLMSAFESPACES_PREVIEW_ORIGIN_TOKENSECRET (secretKeyRef; never ConfigMap)
+	PreviewOrigin struct {
+		Enabled     bool   `mapstructure:"enabled"`
+		BaseDomain  string `mapstructure:"baseDomain"`
+		TokenSecret string `mapstructure:"tokenSecret"`
+	} `mapstructure:"previewOrigin"`
+
 	// Workspace holds Helm-managed workspace defaults. Currently only
 	// DefaultStorageClass is exposed here: when non-empty the API pins the
 	// `workspace.defaultStorageClass` instance setting via SetHelmOverrides
@@ -362,6 +379,9 @@ func Load(path string) (*Config, error) {
 	// all extracted to helpers for the same reason.
 	applyAuthDefaults(&config)
 	if err := applyTurnstileEnv(&config); err != nil {
+		return nil, err
+	}
+	if err := applyPreviewOriginEnv(&config); err != nil {
 		return nil, err
 	}
 	if err := validateSecurity(&config); err != nil {
@@ -626,6 +646,34 @@ func validateSecurity(config *Config) error {
 // the secret is loaded via a K8s Secret + valueFrom.secretKeyRef in the
 // chart, and viper's AutomaticEnv doesn't pick up nested keys reliably
 // when they contain dots.
+// applyPreviewOriginEnv applies LLMSAFESPACES_PREVIEW_ORIGIN_* env
+// overrides and enforces the fail-closed guard: Enabled=true without
+// BaseDomain and TokenSecret refuses to boot (mirrors errCORSWildcard-
+// WithCredentials / Turnstile posture — never run in a state where the
+// operator thinks preview origins are on but they aren't, or worse, on
+// with an empty HMAC key that would make every token forgeable).
+//
+// The env layer is separate from the YAML path because the secret arrives
+// via a K8s Secret + secretKeyRef (same reason as Turnstile).
+func applyPreviewOriginEnv(config *Config) error {
+	if v := os.Getenv("LLMSAFESPACES_PREVIEW_ORIGIN_ENABLED"); v == "true" {
+		config.PreviewOrigin.Enabled = true
+	}
+	if v := os.Getenv("LLMSAFESPACES_PREVIEW_ORIGIN_BASEDOMAIN"); v != "" {
+		config.PreviewOrigin.BaseDomain = v
+	}
+	if v := os.Getenv("LLMSAFESPACES_PREVIEW_ORIGIN_TOKENSECRET"); v != "" {
+		config.PreviewOrigin.TokenSecret = v
+	}
+	if !config.PreviewOrigin.Enabled {
+		return nil
+	}
+	if config.PreviewOrigin.BaseDomain == "" || config.PreviewOrigin.TokenSecret == "" {
+		return fmt.Errorf("config: previewOrigin.enabled=true requires previewOrigin.baseDomain and previewOrigin.tokenSecret (env LLMSAFESPACES_PREVIEW_ORIGIN_BASEDOMAIN / _TOKENSECRET)")
+	}
+	return nil
+}
+
 func applyTurnstileEnv(config *Config) error {
 	if v := os.Getenv("LLMSAFESPACES_TURNSTILE_ENABLED"); v == "true" {
 		config.Turnstile.Enabled = true

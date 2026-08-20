@@ -133,6 +133,14 @@ type RouterConfig struct {
 	// to in-workspace dev servers (Epic 66, optional). nil when disabled.
 	DevPreviewHandler *handlers.DevPreviewHandler
 
+	// PreviewOriginHandler serves <uuid>-preview.<baseDomain> hosts
+	// (Epic 66 Phase 1, optional). nil when preview origins are disabled —
+	// in that case NO engine middleware is registered and the API behaves
+	// exactly as before. When non-nil, its middleware runs BEFORE the API
+	// middleware chain: preview hosts bypass API CORS/rate policy and can
+	// never match /api/* routes (T5).
+	PreviewOriginHandler *handlers.PreviewOriginHandler
+
 	// AgentReloadHandler handles POST /api/v1/workspaces/:id/agent/reload (optional)
 	AgentReloadHandler *handlers.AgentReloadHandler
 
@@ -349,6 +357,15 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 
 	router.Use(middleware.RecoveryMiddleware(logger))
 	router.Use(middleware.TracingMiddleware(logger, cfg.TracingConfig))
+
+	// Epic 66 Phase 1: preview-origin interception, deliberately before
+	// Security/CORS/RateLimit — preview hosts must not receive the API
+	// CORS policy, consume the API rate budget, or match /api/* routes.
+	// Aborts every request it handles; API traffic passes through.
+	if cfg.PreviewOriginHandler != nil {
+		router.Use(cfg.PreviewOriginHandler.Middleware())
+	}
+
 	router.Use(middleware.SecurityMiddleware(logger, cfg.SecurityConfig))
 	router.Use(middleware.LoggingMiddleware(logger, cfg.LoggingConfig))
 	router.Use(middleware.MetricsMiddleware(services.GetMetrics()))
@@ -488,6 +505,15 @@ func NewRouter(services interfaces.Services, logger *apilogger.Logger, proxyHand
 	// On idGroup so WorkspaceAccessMiddleware + AuthMiddleware run first.
 	if cfg.DevPreviewHandler != nil {
 		idGroup.GET("/dev-preview/*portPath", cfg.DevPreviewHandler.HandleDevPreview)
+
+		// Phase 1: owner-authenticated (idGroup chain) bootstrap → 302 to
+		// <ws>-preview.<baseDomain>/<port>/?t=<one-time token>. Only the
+		// API origin serves this route; preview hosts 404 /api/* (T5).
+		// Sibling path, not a sub-path: gin's router cannot register a
+		// static segment under the /dev-preview/* wildcard.
+		if cfg.PreviewOriginHandler != nil {
+			idGroup.GET("/dev-preview-bootstrap/:port", cfg.PreviewOriginHandler.HandleBootstrap)
+		}
 	}
 
 	// Settings routes (admin + user)

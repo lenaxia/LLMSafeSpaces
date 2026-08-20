@@ -453,3 +453,65 @@ func TestIsTruthy(t *testing.T) {
 		})
 	}
 }
+
+// TestConfig_PreviewOrigin_EnvOverrides: the three env vars populate the
+// struct (Epic 66 Phase 1).
+func TestConfig_PreviewOrigin_EnvOverrides(t *testing.T) {
+	t.Setenv("LLMSAFESPACES_PREVIEW_ORIGIN_ENABLED", "true")
+	t.Setenv("LLMSAFESPACES_PREVIEW_ORIGIN_BASEDOMAIN", "safespaces.dev")
+	t.Setenv("LLMSAFESPACES_PREVIEW_ORIGIN_TOKENSECRET", "0xtest_preview_secret")
+	path := writeMinimalConfig(t, "")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if !cfg.PreviewOrigin.Enabled || cfg.PreviewOrigin.BaseDomain != "safespaces.dev" || cfg.PreviewOrigin.TokenSecret != "0xtest_preview_secret" {
+		t.Errorf("previewOrigin mis-populated: %+v", cfg.PreviewOrigin)
+	}
+}
+
+// TestConfig_PreviewOrigin_EnabledWithoutDomainOrSecretFailsClosed:
+// enabled with a missing baseDomain or token secret must refuse to boot —
+// an empty HMAC key would make every bootstrap token forgeable.
+func TestConfig_PreviewOrigin_EnabledWithoutDomainOrSecretFailsClosed(t *testing.T) {
+	cases := []struct {
+		name       string
+		domain     string
+		secret     string
+		wantSubstr string
+	}{
+		{"no domain", "", "s", "baseDomain"},
+		{"no secret", "safespaces.dev", "", "tokenSecret"},
+		{"neither", "", "", "baseDomain"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("LLMSAFESPACES_PREVIEW_ORIGIN_ENABLED", "true")
+			t.Setenv("LLMSAFESPACES_PREVIEW_ORIGIN_BASEDOMAIN", tc.domain)
+			t.Setenv("LLMSAFESPACES_PREVIEW_ORIGIN_TOKENSECRET", tc.secret)
+			path := writeMinimalConfig(t, "")
+			_, err := Load(path)
+			if err == nil {
+				t.Fatalf("expected fail-closed error for %s", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.wantSubstr) {
+				t.Errorf("error should mention %q; got: %v", tc.wantSubstr, err)
+			}
+		})
+	}
+}
+
+// TestConfig_PreviewOrigin_DisabledIgnoresPartialConfig: with enabled
+// unset, partial values don't error (no handler wires anyway).
+func TestConfig_PreviewOrigin_DisabledIgnoresPartialConfig(t *testing.T) {
+	t.Setenv("LLMSAFESPACES_PREVIEW_ORIGIN_BASEDOMAIN", "safespaces.dev")
+	// No ENABLED, no TOKENSECRET.
+	path := writeMinimalConfig(t, "")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load should not fail when disabled: %v", err)
+	}
+	if cfg.PreviewOrigin.Enabled {
+		t.Error("Enabled must default false")
+	}
+}
