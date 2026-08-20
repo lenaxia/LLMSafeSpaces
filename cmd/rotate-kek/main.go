@@ -79,7 +79,7 @@ func run(oldFile, newFile, dbURL, redisURL, table, resumeFrom string, targetVer 
 
 	// Connect to Postgres.
 	pgStore, err := newPgRotationStore(dbURL)
-	if err != nil {
+	if err != nil { // nolint:staticcheck // SA4023: constructor is a deliberate stub (always errors, "not yet wired"); branch stays defensive until the store is implemented
 		return fmt.Errorf("connect to Postgres: %w", err)
 	}
 	defer pgStore.Close()
@@ -88,7 +88,7 @@ func run(oldFile, newFile, dbURL, redisURL, table, resumeFrom string, targetVer 
 	var redisCacheStore secrets.RotationStore = pgStore
 	if redisURL != "" {
 		rc, err := newRedisCacheFlusher(redisURL)
-		if err != nil {
+		if err != nil { // nolint:staticcheck // SA4023: constructor is a deliberate stub (always errors, "not yet wired"); branch stays defensive until the store is implemented
 			return fmt.Errorf("connect to Redis: %w", err)
 		}
 		defer rc.Close()

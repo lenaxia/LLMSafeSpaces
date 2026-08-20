@@ -143,7 +143,7 @@ func runAudit(dbURL, kmsProvider string) error {
 		return fmt.Errorf("--db-url is required for --audit")
 	}
 	pgStore, err := newPgMigrationStore(dbURL)
-	if err != nil {
+	if err != nil { // nolint:staticcheck // SA4023: constructor is a deliberate stub (always errors, "not yet wired"); branch stays defensive until the store is implemented
 		return fmt.Errorf("connect to Postgres: %w", err)
 	}
 	defer pgStore.Close()
@@ -291,7 +291,7 @@ func run(dbURL, masterKeyFile, kmsProvider, awsRegion, awsCredsFile, gcpCredsFil
 
 	// Connect to Postgres.
 	pgStore, err := newPgMigrationStore(dbURL)
-	if err != nil {
+	if err != nil { // nolint:staticcheck // SA4023: constructor is a deliberate stub (always errors, "not yet wired"); branch stays defensive until the store is implemented
 		return fmt.Errorf("connect to Postgres: %w", err)
 	}
 	defer pgStore.Close()
@@ -299,7 +299,7 @@ func run(dbURL, masterKeyFile, kmsProvider, awsRegion, awsCredsFile, gcpCredsFil
 	var store secrets.MigrationStore = pgStore
 	if redisURL != "" {
 		rc, err := newRedisCacheFlusher(redisURL)
-		if err != nil {
+		if err != nil { // nolint:staticcheck // SA4023: constructor is a deliberate stub (always errors, "not yet wired"); branch stays defensive until the store is implemented
 			return fmt.Errorf("connect to Redis: %w", err)
 		}
 		defer rc.Close()
