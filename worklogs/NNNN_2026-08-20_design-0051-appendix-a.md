@@ -1,0 +1,34 @@
+# Worklog: design 0051 Appendix A — control-socket protocol spec + US-0.2 decision
+
+**Date:** 2026-08-20
+**Session:** US-0 preconditions: write the 4099 protocol spec, decide the secrets-env crossing, open for review. Owner said Go on Phase 2.
+**Status:** Complete
+
+---
+
+## Objective
+
+US-0 blocked all Phase-2 implementation on (1) the control-socket protocol being specified and reviewed, (2) the secrets-env uid-crossing decision, (3) D6.1 review (already in place).
+
+## Work Completed
+
+- **Appendix A** (new): the full v1 wire contract — request/response with `v`+`id` (no negotiation; `version_unsupported` on mismatch), closed method set (`hello`, `status`, `restart`, `spawn_env`, `metrics`), one-JSON-per-connection transport (no framing/sessions), unknown-field tolerance for forward compat, restart idempotency (in-progress-wins, first restart's params win), closed error-code set, single-threaded supervisor handling.
+- **A.4 — the capability-equivalence rule written INTO the spec**: the socket is deliberately unauthenticated because every capability it grants (restart, env-replace-at-next-spawn, status read) is strictly weaker than what uid-1000 code already holds (SIGKILL, SIGSTOP, ptrace, /proc). Two invariants enforced for ALL future versions: no method returns env values; `restart` takes a closed reason enum, never argv. A v2 must re-derive A.4 before review.
+- **US-0.2 DECIDED — option (a) IPC handoff**: `spawn_env` pushes the composed child env over the socket; supervisor holds it memory-only (never logged/dumped; pod death wipes it); the uid-1000-readable secrets-env file is NOT created in sidecar mode. Option (b) rejected: it re-creates exactly the readable-credential residual the split exists to close.
+- **A.6 TDD targets** for US-1: golden wire shapes, version/method/malformed rejections, concurrent-restart idempotency, spawn_env memory-only (no file), and a NEGATIVE capability test (no v1 method emits env values or accepts argv).
+- US-0 phasing section updated from "must be specified" to "specified here; this PR is the review".
+
+## Key Decisions
+
+1. Minimal-by-construction: one connection per request, no streaming — richer needs go to a versioned v2 that re-derives A.4, not v1 accretion.
+2. `spawn_env` write-only + `restart` reason-enum are the two mechanical enforcements of the trust-boundary rule; the negative test makes them permanent.
+3. metrics via supervisor (not sidecar reading its own cgroup) — carried from 0050's finding.
+
+## Tests Run
+
+Design doc; structural checks: appendix present, phasing cross-refs consistent, table escapes render-safe (\| in cells).
+
+## Files Modified
+
+- `design/0051_2026-08-18_agentd-uid-separation.md`
+- `worklogs/NNNN_2026-08-20_design-0051-appendix-a.md` (this file)
