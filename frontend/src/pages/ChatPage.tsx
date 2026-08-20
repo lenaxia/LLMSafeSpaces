@@ -313,10 +313,21 @@ export function ChatPage() {
   const idCounterRef = useRef(0);
 
   const { send, streaming, localStreaming, notifySessionIdle, error: chatError, clearError, atCapRetryAfter, clearAtCap, streamTimedOut, clearStreamTimedOut } = useChatStream(activeWorkspaceId, sessionId, isSessionBusy);
+
+  // Ref mirrors so async continuations (reconcileOnIdle's post-refetch
+  // code) read the CURRENT busy/streaming state rather than the stale
+  // closure captured when the callback was created.
+  const isSessionBusyRef = useRef(false);
+  isSessionBusyRef.current = isSessionBusy;
+  const localStreamingRef = useRef(false);
+  localStreamingRef.current = localStreaming;
   const [retryStatus, setRetryStatus] = useState<RetryStatus | null>(null);
   const sessionTitle = useSessionTitle(activeWorkspaceId, sessionId, isReady, streaming);
 
-  // US-15.3: Compute historyPartIds from fetched history for boundary detection
+  // US-15.3: Compute historyPartIds from fetched history for boundary detection.
+  // Holds BOTH part ids and tool call ids — events are matched on either —
+  // because a history part and its live event share the call id even when
+  // the part id is unavailable on one side.
   const historyPartIds = useRef<Set<string>>(new Set());
   useEffect(() => {
     const ids = new Set<string>();
@@ -324,6 +335,7 @@ export function ChatPage() {
       for (const msg of history) {
         for (const part of msg.parts) {
           if (part.id) ids.add(part.id);
+          if (part.toolCallId) ids.add(part.toolCallId);
         }
       }
     }
@@ -442,13 +454,37 @@ export function ChatPage() {
         const historyKeys = new Set(msgs.map(messageIdentityKey));
         setLocalMessages((prev) => prev.filter((m) => !historyKeys.has(messageIdentityKey(m))));
       }
+      // Rebuild the boundary-gate ID set SYNCHRONOUSLY from the fresh
+      // transcript. The [history] effect runs on the next commit — without
+      // this, resumed SSE events arriving in that window are matched
+      // against the pre-refetch (stale) set and re-append parts history
+      // already renders (the duplicate-bubble bug: one bash run rendering
+      // as both a history bubble and a stream bubble after reconnect).
+      const freshIds = new Set<string>();
+      for (const msg of msgs) {
+        for (const part of msg.parts) {
+          if (part.id) freshIds.add(part.id);
+          if (part.toolCallId) freshIds.add(part.toolCallId);
+        }
+      }
+      historyPartIds.current = freshIds;
       setSessionErrors([]);
-      isReconnectMode.current = false;
       knownLivePartIds.current.clear();
       sentTextRef.current = "";
       activePartTypeRef.current = null;
       currentThinkingIdxRef.current = -1;
       currentTextIdxRef.current = -1;
+      if (isSessionBusyRef.current || localStreamingRef.current) {
+        // The session is STILL in flight (this reconcile came from an SSE
+        // reconnect mid-turn, not a genuine idle). History now renders the
+        // in-flight messages, so keep the boundary gate ARMED: resumed
+        // part events for parts already in history must be dropped, or
+        // they re-enter sseStreamParts as duplicates. Disarmed normally
+        // by doSendNow (new user send) and the session-change reset.
+        isReconnectMode.current = true;
+      } else {
+        isReconnectMode.current = false;
+      }
       if (freshHistory) {
         void queue.refreshQueue();
       }
@@ -570,11 +606,19 @@ export function ChatPage() {
     if (ce.sessionId && ce.sessionId !== currentSessionId) return;
 
     // US-15.4 boundary gate: in reconnect mode, ignore events for parts
-    // already rendered from history.
-    if (isReconnectMode.current && ce.partId) {
-      if (historyPartIds.current.has(ce.partId)) return;
-      if (ce.type === "part.delta" && !knownLivePartIds.current.has(ce.partId)) return;
-      knownLivePartIds.current.add(ce.partId);
+    // already rendered from history. Tool events match on the call id too
+    // (part id may be absent on either side; call id is shared).
+    if (isReconnectMode.current) {
+      const livePartId = ce.partId || ce.part?.id;
+      const liveCallId = ce.part?.tool?.callId;
+      const inHistory = (id: string | undefined) => !!id && historyPartIds.current.has(id);
+      if (ce.type === "part.delta") {
+        if (inHistory(livePartId)) return;
+        if (!knownLivePartIds.current.has(livePartId ?? "")) return;
+      } else if (inHistory(livePartId) || inHistory(liveCallId)) {
+        return;
+      }
+      if (livePartId) knownLivePartIds.current.add(livePartId);
     }
 
     if (ce.type === "part.delta") {
@@ -675,7 +719,13 @@ export function ChatPage() {
                 toolInput,
                 toolOutput,
                 messageID: partMessageID ?? prev[existingIdx]!.messageID,
-                toolStartedAt: toolStartedAt ?? prev[existingIdx]!.toolStartedAt,
+                // The agent rewrites the tool start time on every part
+                // snapshot (verified live against opencode 1.18.10: same
+                // part, start moved 75.7s between updates) — it is the
+                // snapshot time, not the call start. Anchor to the
+                // FIRST-seen value so the elapsed badge doesn't reset on
+                // every output line.
+                toolStartedAt: prev[existingIdx]!.toolStartedAt ?? toolStartedAt,
               };
               return updated;
             }
