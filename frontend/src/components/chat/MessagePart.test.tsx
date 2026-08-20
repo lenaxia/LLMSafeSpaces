@@ -654,8 +654,8 @@ describe("MessagePart tool elapsed badge tick growth (#892 D5)", () => {
 // Uses the file's existing provider-wrapped render + screen imports.
 describe("DevPreviewOutput via MessagePart", () => {
   it("renders an open-preview button from the marker + markdown link", () => {
-    const output = "DEV_PREVIEW 5173 safespaces.dev\n[Open dev preview :5173](https://api.example.com/api/v1/workspaces/ws/dev-preview-bootstrap/5173)\nOpens the preview. Requires login.";
-    render(<MessagePart part={{ type: "tool_result", text: output, name: "dev_preview_url" } as never} />);
+    const output = "LSP_DEV_PREVIEW_V1 port=5173 origin=safespaces.dev\n[Open dev preview :5173](https://api.example.com/api/v1/workspaces/ws/dev-preview-bootstrap/5173)\nOpens the preview. Requires login.";
+    render(<MessagePart part={{ type: "tool_result", text: output, name: "dev_preview_url" } as never} isUser={false} />);
     const btn = screen.getByTestId("dev-preview-button");
     expect(btn).toHaveAttribute("href", "https://api.example.com/api/v1/workspaces/ws/dev-preview-bootstrap/5173");
     expect(btn).toHaveAttribute("target", "_blank");
@@ -663,7 +663,7 @@ describe("DevPreviewOutput via MessagePart", () => {
   });
 
   it("falls back to plain text for output without the marker", () => {
-    render(<MessagePart part={{ type: "tool_result", text: "https://old.example.com/preview", name: "dev_preview_url" } as never} />);
+    render(<MessagePart part={{ type: "tool_result", text: "https://old.example.com/preview", name: "dev_preview_url" } as never} isUser={false} />);
     expect(screen.queryByTestId("dev-preview-button")).toBeNull();
   });
 });

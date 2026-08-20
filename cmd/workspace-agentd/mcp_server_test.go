@@ -193,7 +193,7 @@ func TestCallMCPTool_DevPreviewURL_HappyPath(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Contains(t, result, "https://platform.example.com/api/v1/workspaces/ws-abc-123/dev-preview/5173/")
-	assert.Regexp(t, `^DEV_PREVIEW 5173 path$`, strings.SplitN(result, "\n", 2)[0])
+	assert.Regexp(t, `^LSP_DEV_PREVIEW_V1 port=5173 mode=path$`, strings.SplitN(result, "\n", 2)[0])
 	assert.Contains(t, result, "Requires dev preview enabled")
 	assert.Contains(t, result, "Workspace Settings")
 }
@@ -471,7 +471,7 @@ func TestCallMCPTool_DevPreviewURL_DefaultPort(t *testing.T) {
 
 	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{})
 	require.NoError(t, err)
-	assert.Contains(t, result, "DEV_PREVIEW 5173 ")
+	assert.Contains(t, result, "LSP_DEV_PREVIEW_V1 port=5173 ")
 	assert.Contains(t, result, "/dev-preview/5173/")
 	assert.Contains(t, result, "[Open dev preview :5173]")
 }
@@ -487,7 +487,7 @@ func TestCallMCPTool_DevPreviewURL_ButtonMarkerShape(t *testing.T) {
 	})
 	require.NoError(t, err)
 	lines := strings.SplitN(result, "\n", 3)
-	assert.Regexp(t, `^DEV_PREVIEW 3000 safespaces\.dev$`, lines[0])
+	assert.Regexp(t, `^LSP_DEV_PREVIEW_V1 port=3000 origin=safespaces\.dev$`, lines[0])
 	assert.Regexp(t, `^\[Open dev preview :3000\]\(https://platform\.example\.com/api/v1/workspaces/0d2a9a1b-c3d4-4e5f-8a9b-0c1d2e3f4a5b/dev-preview-bootstrap/3000\)$`, lines[1])
 	assert.NotEmpty(t, lines[2], "explanation must be present")
 }

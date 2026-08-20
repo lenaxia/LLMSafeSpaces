@@ -235,18 +235,20 @@ func mcpDevPreviewURL(port int, path string) string {
 
 	// First line is a machine-readable marker the chat UI keys on to
 	// render an open-preview button; everything after is for humans.
-	// If the button does not render (older UI), the markdown link on
-	// line 2 still carries the URL.
+	// The sentinel is namespaced (LSP_), versioned (V1), and structured
+	// (key=value) so it cannot collide with organic tool output that
+	// merely mentions "dev preview". If the button does not render
+	// (older UI), the markdown link on line 2 still carries the URL.
 	if base := os.Getenv("PREVIEW_ORIGIN_BASE_DOMAIN"); base != "" {
 		url := fmt.Sprintf("%s/api/v1/workspaces/%s/dev-preview-bootstrap/%d", apiURL, workspaceID, port)
 		return fmt.Sprintf(
-			"DEV_PREVIEW %d %s\n[Open dev preview :%d](%s)\nOpens the per-workspace preview origin (workspace %s, port %d) in a new tab. Requires dev preview enabled (Workspace Settings → Dev Preview) and an owner login; a one-time bootstrap grants a 7-day preview session. The app itself must be listening on localhost:%d in the workspace.",
+			"LSP_DEV_PREVIEW_V1 port=%d origin=%s\n[Open dev preview :%d](%s)\nOpens the per-workspace preview origin (workspace %s, port %d) in a new tab. Requires dev preview enabled (Workspace Settings → Dev Preview) and an owner login; a one-time bootstrap grants a 7-day preview session. The app itself must be listening on localhost:%d in the workspace.",
 			port, base, port, url, workspaceID, port, port)
 	}
 
 	url := fmt.Sprintf("%s/api/v1/workspaces/%s/dev-preview/%d%s", apiURL, workspaceID, port, path)
 	return fmt.Sprintf(
-		"DEV_PREVIEW %d path\n[Open dev preview :%d](%s)\nOpens the dev preview tunnel (workspace %s, port %d). Requires dev preview enabled (Workspace Settings → Dev Preview → Enable); otherwise the URL returns 503. The app must be listening on localhost:%d in the workspace.",
+		"LSP_DEV_PREVIEW_V1 port=%d mode=path\n[Open dev preview :%d](%s)\nOpens the dev preview tunnel (workspace %s, port %d). Requires dev preview enabled (Workspace Settings → Dev Preview → Enable); otherwise the URL returns 503. The app must be listening on localhost:%d in the workspace.",
 		port, port, url, workspaceID, port, port)
 }
 

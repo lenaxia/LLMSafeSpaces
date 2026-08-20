@@ -195,14 +195,16 @@ function ToolInput({ input }: { input: unknown }) {
 /**
  * DevPreviewOutput renders dev_preview_url tool output as an action button
  * plus its explanation. The tool emits a stable first line
- * `DEV_PREVIEW <port> <origin-domain|path>`; the markdown link on line 2
- * carries the URL (bootstrap on per-workspace-origin deployments, the
- * tunnel path otherwise). Older tool output without the marker renders
+ * `LSP_DEV_PREVIEW_V1 port=<n> origin=<domain|mode=path>` — namespaced,
+ * versioned, and key=value structured so organic tool output that merely
+ * mentions "dev preview" can never collide with it. The markdown link on
+ * line 2 carries the URL (bootstrap on per-workspace-origin deployments,
+ * the tunnel path otherwise). Output without the exact marker renders
  * unchanged via the plain path below.
  */
 function DevPreviewOutput({ output }: { output: string }) {
   const lines = output.split("\n");
-  const marker = /^DEV_PREVIEW (\d+)(?: (\S+))?$/.exec((lines[0] ?? "").trim());
+  const marker = /^LSP_DEV_PREVIEW_V1 port=(\d+)(?: origin=(\S+)| mode=path)?$/.exec((lines[0] ?? "").trim());
   if (!marker) {
     return (
       <pre className="overflow-x-auto touch-manipulation text-xs text-muted-foreground whitespace-pre-wrap font-mono px-3 py-1">
@@ -211,7 +213,7 @@ function DevPreviewOutput({ output }: { output: string }) {
     );
   }
   const port = marker[1];
-  const origin = marker[2]; // origin domain, or "path" for path-based mode
+  const origin = marker[2]; // origin domain; undefined in path-based mode
   const link = /^\[([^\]]+)\]\((https?:\/\/[^)]+)\)$/.exec((lines[1] ?? "").trim());
   const explanation = lines.slice(link ? 2 : 1).join("\n").trim();
   return (
@@ -232,7 +234,7 @@ function DevPreviewOutput({ output }: { output: string }) {
       )}
       <p className="text-xs text-muted-foreground leading-relaxed">
         {explanation}
-        {origin && origin !== "path" && (
+        {origin && (
           <>{" "}Served from <code className="rounded bg-muted px-1 py-0.5">{"<workspace>"}-preview.{origin}</code>.</>
         )}
       </p>
