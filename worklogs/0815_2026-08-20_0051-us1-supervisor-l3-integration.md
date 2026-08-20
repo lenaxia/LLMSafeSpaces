@@ -86,4 +86,4 @@ None. (docker/kind unavailable on this sandbox — the script's first real execu
 - `scripts/us2-kind-integration.sh` (new, executable)
 - `.github/workflows/us2-kind-integration.yml` (new)
 - `docs/testing/0051-us2-integration-test-plan.md` (L1.5 row; §4 executable L3; §5/§6 updates)
-- `worklogs/NNNN_2026-08-20_0051-us1-supervisor-l3-integration.md` (this file)
+- `worklogs/0815_2026-08-20_0051-us1-supervisor-l3-integration.md` (this file)
