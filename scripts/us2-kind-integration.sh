@@ -33,6 +33,7 @@
 
 set -euo pipefail
 
+TMPDIR="${TMPDIR:-/tmp}"
 KEEP=0
 [ "${1:-}" = "--keep" ] && KEEP=1
 
@@ -63,13 +64,28 @@ finish() {
   if [ "$code" -ne 0 ] && [ "$fails" -eq 0 ]; then
     log "SETUP FAILURE before checks ran (exit $code)"
   fi
-  if [ "$KEEP" -ne 1 ]; then
+  # Teardown ONLY on success (or --keep). On failure the cluster stays up
+  # so the workflow's diagnostics step can inspect it — GitHub-hosted
+  # runners are ephemeral, so a leaked cluster costs nothing.
+  if [ "$KEEP" -ne 1 ] && [ "$fails" -eq 0 ] && [ "$code" -eq 0 ]; then
     kind delete cluster --name "$CLUSTER_NAME" >/dev/null 2>&1 || true
     docker rm -f "$REG_NAME" >/dev/null 2>&1 || true
+  else
+    log "cluster $CLUSTER_NAME + registry $REG_NAME left running for diagnostics (--keep to force on success)"
   fi
   [ "$fails" -eq 0 ] || exit 2
 }
 trap finish EXIT
+
+# In-script diagnostics on setup failure (runs while the cluster is still
+# up, unlike the workflow's post-hoc step): controller logs + pod describe.
+setup_diagnostics() {
+  log "setup failed — dumping diagnostics (cluster left running)"
+  kubectl -n "$NS" get pods -o wide 2>&1 | sed 's/^/  /' || true
+  kubectl -n "$NS" describe deploy -l app.kubernetes.io/name=llmsafespaces 2>&1 | tail -40 || true
+  kubectl -n "$NS" logs "deploy/${RELEASE}-controller" --tail=60 2>&1 | sed 's/^/  /' || true
+  kubectl -n "$NS" get events --sort-by=.lastTimestamp 2>&1 | tail -25 || true
+}
 
 # --- Preflight ---------------------------------------------------------------
 for bin in docker kind helm kubectl go jq curl; do
@@ -136,6 +152,23 @@ case "$AGENTD_REF" in
 esac
 log "agentd reference: $AGENTD_REF"
 
+# Binary sha256 pins (the break-glass path). REQUIRED here: with only the
+# image set, the controller resolves pins at startup by querying the
+# registry AT THE REFERENCE'S HOSTNAME from INSIDE ITS POD — where
+# localhost:5001 does not resolve (the certs.d alias is node-level
+# containerd-only) — and exits fatal. Explicit pins skip that lookup
+# (controller/main.go: both-or-neither). The kind node is amd64, so the
+# amd64 hash is what the entrypoint actually verifies; the arm64 field
+# must be non-empty for validation and is inert on this cluster.
+CID=$(docker create "$REG/llmsafespaces/agentd:ci" 2>/dev/null)
+[ -n "$CID" ] || { log "docker create failed for binary extraction"; exit 1; }
+docker cp "$CID:/usr/local/bin/workspace-agentd" "$TMPDIR/workspace-agentd" >/dev/null 2>&1 \
+  || { docker rm -f "$CID" >/dev/null 2>&1; log "docker cp failed to extract agentd binary"; exit 1; }
+docker rm -f "$CID" >/dev/null 2>&1
+BINARY_SHA=$(sha256sum "$TMPDIR/workspace-agentd" | cut -d' ' -f1)
+[ -n "$BINARY_SHA" ] || { log "could not hash extracted binary"; exit 1; }
+log "agentd binary sha256 (amd64): $BINARY_SHA"
+
 # --- Chart + workspace -------------------------------------------------------
 
 # Controller-lean: api/mcp/webhooks off, and NO migrations job — the
@@ -159,8 +192,10 @@ helm upgrade --install "$RELEASE" helm \
   --set controller.image.tag=ci \
   --set controller.image.pullPolicy=IfNotPresent \
   --set "controller.agentdDelivery.image=${AGENTD_REF}" \
+  --set "controller.agentdDelivery.binarySHA256Amd64=${BINARY_SHA}" \
+  --set "controller.agentdDelivery.binarySHA256Arm64=${BINARY_SHA}" \
   --set controller.agentdSidecar.enabled=true \
-  --wait --timeout 300s
+  --wait --timeout 300s || { setup_diagnostics; exit 1; }
 
 log "creating workspace $WORKSPACE_NAME"
 kubectl -n "$NS" apply -f - <<EOF
