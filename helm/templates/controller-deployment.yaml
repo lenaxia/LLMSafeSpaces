@@ -121,6 +121,15 @@ spec:
                   authenticates the controller→API call (the endpoint fails
                   closed without it). */}}
             - --api-service-url={{ $apiServiceURL }}
+            {{- /* Epic 66 Phase 1: per-workspace preview origins. When
+                    previewOrigin is enabled the controller stamps
+                    PREVIEW_ORIGIN_BASE_DOMAIN into workspace pods so
+                    agentd's dev_preview_url tool emits the bootstrap URL
+                    (same chart values the API consumes — one flag enables
+                    the deployment-wide mode). */}}
+            {{- if .Values.previewOrigin.enabled }}
+            - --preview-origin-base-domain={{ .Values.previewOrigin.baseDomain }}
+            {{- end }}
             {{- /* Epic 51 S51.1: default RuntimeClass for workspace pods.
                     Set to "gvisor" when .Values.gvisor.enabled is true.
                     Empty means runc (default K8s runtime, used in dev/single-tenant). */}}
