@@ -662,6 +662,29 @@ describe("DevPreviewOutput via MessagePart", () => {
     expect(btn.textContent).toContain("Open dev preview :5173");
   });
 
+  it("button is visible WITHOUT expanding the tool pane (regression, 1eee7f28)", () => {
+    // RED before 1eee7f28: dev_preview_url output rendered inside
+    // ToolDetails → LazyDetails, which does not MOUNT children until the
+    // pane is expanded — the button did not exist in the DOM unexpanded,
+    // defeating the one-click UX. GREEN after: the tool_use branch
+    // early-returns the always-visible DevPreviewToolCard.
+    render(
+      <MessagePart
+        part={{
+          type: "tool_use",
+          name: "dev_preview_url",
+          toolState: "completed",
+          input: { port: 5173 },
+          toolOutput: "LSP_DEV_PREVIEW_V1 port=5173 origin=safespaces.dev\n[Open dev preview :5173](https://api.example.com/api/v1/workspaces/ws/dev-preview-bootstrap/5173)\nOpens the preview.",
+        } as never}
+        isUser={false}
+      />,
+    );
+    const btn = screen.getByTestId("dev-preview-button");
+    expect(btn).toBeVisible();
+    expect(btn).toHaveAttribute("href", "https://api.example.com/api/v1/workspaces/ws/dev-preview-bootstrap/5173");
+  });
+
   it("falls back to plain text for output without the marker", () => {
     render(<MessagePart part={{ type: "tool_result", text: "https://old.example.com/preview", name: "dev_preview_url" } as never} isUser={false} />);
     expect(screen.queryByTestId("dev-preview-button")).toBeNull();
