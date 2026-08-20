@@ -135,12 +135,19 @@ test.describe("dev_preview_url chat button (epic-66 UX round 2)", () => {
     ]);
     await page.goto(`/chat/${WORKSPACE_ID}/${SESSION_ID}`);
 
-    // Organic output in the collapsed pane of an unrelated tool: open it,
-    // verify text rendered and no button appeared.
-    const summary = page.getByText("some_other_tool").first();
+    // Organic output in an unrelated tool: the pane may render open or
+    // collapsed (LazyDetails mounts content only after first open) — click
+    // the <summary> element itself (role=button-like, contains the tool
+    // name), then assert the organic text is present and no button exists.
+    const summary = page.locator("summary", { hasText: "some_other_tool" }).first();
     await expect(summary).toBeVisible({ timeout: 10_000 });
     await summary.click();
-    await expect(page.getByText("some tool listing ports")).toBeVisible({ timeout: 5_000 });
+    const organicText = page.getByText("some tool listing ports");
+    await expect(organicText).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByTestId("dev-preview-button")).toHaveCount(0);
+    // The collision guard itself: organic DEV_PREVIEW-prefixed output must
+    // not have produced a button even though its first line resembles the
+    // pre-V1 marker.
     await expect(page.getByTestId("dev-preview-button")).toHaveCount(0);
   });
 
