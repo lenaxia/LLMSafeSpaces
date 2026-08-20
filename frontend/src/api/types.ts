@@ -145,6 +145,10 @@ export interface MessagePart {
   name?: string;
   input?: unknown;
   id?: string;
+  // Tool-call identity from the contract (tool.callId). The reconnect
+  // boundary gate matches live SSE part.updated events against history
+  // part ids AND call ids — see ChatPage historyPartIds.
+  toolCallId?: string;
   files?: string[];
   hash?: string;
   toolState?: string;

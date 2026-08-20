@@ -110,6 +110,33 @@ describe("transformHistory", () => {
     expect(result[0]!.parts[0]!.toolOutput).toBe("file.go");
   });
 
+  it("preserves part id and tool callId — the reconnect boundary gate keys on them", () => {
+    // ChatPage.historyPartIds (US-15.4) matches live SSE part.updated
+    // events against history part identities. Dropping them makes the
+    // gate a no-op and duplicates in-flight parts after an SSE reconnect.
+    const raw = [
+      {
+        id: "msg_1",
+        type: "assistant",
+        parts: [{
+          type: "tool",
+          id: "prt_running",
+          tool: {
+            name: "bash",
+            callId: "call_running",
+            input: { command: "ls -la" },
+            output: "file.go",
+            state: { status: "running" },
+          },
+        }],
+      },
+    ];
+    const result = transformHistory(raw);
+    const part = result[0]!.parts[0]!;
+    expect(part.id).toBe("prt_running");
+    expect(part.toolCallId).toBe("call_running");
+  });
+
   it("handles file_change parts", () => {
     const raw = [
       {

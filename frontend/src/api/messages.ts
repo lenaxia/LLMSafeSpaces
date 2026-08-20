@@ -9,6 +9,7 @@ interface ContractMessage {
   createdAt?: string;
   parts?: Array<{
     type: string;
+    id?: string;
     text?: string;
     reasoning?: string;
     tool?: {
@@ -48,7 +49,9 @@ export function transformHistory(raw: ContractMessage[]): Message[] {
           const toolName = p.tool.name ?? "";
           return {
             type: "tool_use" as const,
+            id: p.id,
             text: toolName,
+            toolCallId: p.tool.callId,
             toolState: p.tool.state?.status ?? "",
             input: p.tool.input,
             toolOutput: typeof p.tool.output === "string" ? p.tool.output : undefined,
