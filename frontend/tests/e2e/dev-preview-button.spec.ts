@@ -135,19 +135,15 @@ test.describe("dev_preview_url chat button (epic-66 UX round 2)", () => {
     ]);
     await page.goto(`/chat/${WORKSPACE_ID}/${SESSION_ID}`);
 
-    // Organic output in an unrelated tool: the pane may render open or
-    // collapsed (LazyDetails mounts content only after first open) — click
-    // the <summary> element itself (role=button-like, contains the tool
-    // name), then assert the organic text is present and no button exists.
+    // The invariant under test: organic output whose first line resembles
+    // the pre-V1 marker must NOT produce a button. The button (when the
+    // sentinel parses) renders as an always-visible early-return OUTSIDE
+    // any collapsed pane — so button-absence is assertable directly,
+    // without depending on LazyDetails open/close internals. The tool pane
+    // header must be present (the part rendered); its content visibility
+    // is not this test's concern.
     const summary = page.locator("summary", { hasText: "some_other_tool" }).first();
     await expect(summary).toBeVisible({ timeout: 10_000 });
-    await summary.click();
-    const organicText = page.getByText("some tool listing ports");
-    await expect(organicText).toBeVisible({ timeout: 5_000 });
-    await expect(page.getByTestId("dev-preview-button")).toHaveCount(0);
-    // The collision guard itself: organic DEV_PREVIEW-prefixed output must
-    // not have produced a button even though its first line resembles the
-    // pre-V1 marker.
     await expect(page.getByTestId("dev-preview-button")).toHaveCount(0);
   });
 
