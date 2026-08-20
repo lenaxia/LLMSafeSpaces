@@ -49,8 +49,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Legacy per-language runtime images deleted (#854, #959)**:
   `runtimes/{go,nodejs,python}` were dead (built by no pipeline since
   Epic 7; accidentally resurrected by a stale-branch merge). Tenant
-  toolchains are mise-managed in the base image. Docs now describe the
-  one-image reality.
+  toolchains are managed by mise (the tenant runtime manager) in the
+  base image. Docs now describe the one-image reality.
 
 ## [0.15.12] - 2026-08-19
 
