@@ -79,11 +79,14 @@ trap finish EXIT
 
 # In-script diagnostics on setup failure (runs while the cluster is still
 # up, unlike the workflow's post-hoc step): controller logs + pod describe.
+# The controller Deployment's name is the chart fullname
+# (${RELEASE}-llmsafespaces-controller) — the run-32417391466 iteration
+# logged the WRONG name (lss-controller) and captured nothing.
 setup_diagnostics() {
   log "setup failed — dumping diagnostics (cluster left running)"
   kubectl -n "$NS" get pods -o wide 2>&1 | sed 's/^/  /' || true
   kubectl -n "$NS" describe deploy -l app.kubernetes.io/name=llmsafespaces 2>&1 | tail -40 || true
-  kubectl -n "$NS" logs "deploy/${RELEASE}-controller" --tail=60 2>&1 | sed 's/^/  /' || true
+  kubectl -n "$NS" logs "deploy/${RELEASE}-llmsafespaces-controller" --tail=60 2>&1 | sed 's/^/  /' || true
   kubectl -n "$NS" get events --sort-by=.lastTimestamp 2>&1 | tail -25 || true
 }
 
@@ -182,20 +185,29 @@ log "agentd binary sha256 (amd64): $BINARY_SHA"
 
 # --- Chart + workspace -------------------------------------------------------
 
-# Controller-lean: api/mcp/webhooks off, and NO migrations job — the
-# migrate hook runs the API image against postgres, and the reconciler
-# needs neither to build pods (the sidecar split is what is under test).
-# externalSecret stays ENABLED (create=true, dummy values): the
-# controller Deployment resolves LLMSAFESPACES_INTERNAL_TOKEN from that
+# cert-manager first: the controller binary ALWAYS registers its admission
+# webhooks (no flag gate — controller/main.go), so webhooks.enabled=false
+# merely removes the cert volume and crash-loops the manager on cert load.
+# Same manifest/version as e2e-nightly.
+log "installing cert-manager (webhook certs are mandatory for the controller)"
+kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.0/cert-manager.yaml
+kubectl -n cert-manager rollout status deployment/cert-manager --timeout=180s
+kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout=180s
+
+# Controller-lean: api/mcp off, and NO migrations job — the migrate hook
+# runs the API image against postgres, and the reconciler needs neither to
+# build pods (the sidecar split is what is under test). Webhooks stay ON
+# (see above). externalSecret stays ENABLED (create=true, dummy values):
+# the controller Deployment resolves LLMSAFESPACES_INTERNAL_TOKEN from that
 # Secret regardless of api.enabled.
-log "installing controller-lean chart (api/mcp/webhooks/migrations off)"
+log "installing controller-lean chart (api/mcp/migrations off; webhooks on)"
 helm upgrade --install "$RELEASE" helm \
   -n "$NS" --create-namespace \
   --set api.enabled=false \
   --set mcp.enabled=false \
-  --set webhooks.enabled=false \
   --set migrations.enabled=false \
   --set rbac.scope=cluster \
+  --set "webhooks.allowedImageRegistries[0]=$REG/llmsafespaces/" \
   --set externalSecret.create=true \
   --set "externalSecret.postgresPassword=us2int-pg" \
   --set "externalSecret.redisPassword=us2int-redis" \
@@ -206,7 +218,7 @@ helm upgrade --install "$RELEASE" helm \
   --set "controller.agentdDelivery.binarySHA256Amd64=${BINARY_SHA}" \
   --set "controller.agentdDelivery.binarySHA256Arm64=${BINARY_SHA}" \
   --set controller.agentdSidecar.enabled=true \
-  --wait --timeout 300s || { setup_diagnostics; exit 1; }
+  --wait --timeout 420s || { setup_diagnostics; exit 1; }
 
 log "creating workspace $WORKSPACE_NAME"
 kubectl -n "$NS" apply -f - <<EOF
