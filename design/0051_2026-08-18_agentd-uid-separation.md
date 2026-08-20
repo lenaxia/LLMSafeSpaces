@@ -157,20 +157,17 @@ pods healthy → flip on again), so D6.1 is tested before any default flip, not 
   now exist), fail-closed boots, D5.4 ruling. GO-2026-6173 cleared en route.
 - **Phase 2 — sidecar migration** (0050's US-1..US-5 shape, plus US-0):
 
-  **US-0 (precondition — no implementation before these are specified and reviewed):**
-  1. *Control-socket protocol.* The `127.0.0.1:4099` channel is the new trust boundary and is
-     currently one sentence. Spec must fix: message shapes (request/response), a version field from
-     day one, behavior on unknown version/method (reject, don't guess), restart-idempotency (restart
-     during a restart), and the observation that it is DELIBERATELY unauthenticated per the
-     capability-equivalence rule — state the rule in the spec so nobody "fixes" it into something
-     that holds secrets.
-  2. *`secrets-env` crossing.* Decide the one mechanism by which the child env crosses the uid
-     boundary: (a) sidecar hands the composed env to the supervisor over the control socket at
-     spawn (crossing stays in IPC; supervisor memory transiently holds it — acceptable, it's uid-1000
-     data by destination anyway), or (b) a uid-1000-readable copy under the existing mount (simple,
-     but re-creates a readable `secrets-env` residual — must be ledgered if chosen). Prefer (a)
-     unless measurement says otherwise.
-  3. *Rollback sketch (D6.1 below) reviewed.*
+  **US-0 (precondition — SPECIFIED in Appendix A + decision below; this PR is the review):**
+  1. *Control-socket protocol* → **Appendix A** (this PR): wire format with `v`+`id`, closed v1
+     method set (`hello`/`status`/`restart`/`spawn_env`/`metrics`), restart idempotency
+     (in-progress-wins), unknown-version/method rejection, and the capability-equivalence rule
+     stated IN SPEC (A.4) with its two enforced invariants (no env values out; no arbitrary argv in)
+     plus the TDD targets US-1 must hit (A.6).
+  2. *`secrets-env` crossing* → **DECIDED: option (a), IPC handoff** — the `spawn_env` method.
+     Rationale: option (b) re-creates the readable-`secrets-env` residual the split exists to close;
+     (a)'s costs (supervisor memory holds uid-1000-destined data — its destination is uid-1000
+     anyway; one extra method) are strictly smaller. Memory-only, write-only, per A.2/A.4.
+  3. *Rollback sketch* → D6.1 (already in place, reviewed with v6+amendments).
 
   US-1 extract `supervise-opencode` (1:1) + control socket (per US-0.1 spec); US-2 sidecar container
   + flag split; US-3 credential split (`agentdPassword` key + Secret upsert; per-endpoint mux table,
@@ -179,6 +176,89 @@ pods healthy → flip on again), so D6.1 is tested before any default flip, not 
   carry the `/security` pass.
 - **Upstream asks (blockers for the two named residuals)**: opencode file-based server password (or
   child-env scrubbing); nothing else gates Phase 2.
+
+## 8a. Appendix A — Control-socket protocol (US-0.1 spec)
+
+`supervised` sidecar agentd ⇄ `supervise-*` (PID 1 of the workspace container), `127.0.0.1:4099`.
+Single TCP listener on the supervisor; the sidecar is the only intended client. Request/response,
+one JSON object per connection, connection per request (no framing, no sessions, no streaming) —
+deliberately minimal; anything richer belongs to a future versioned extension, not v1.
+
+### A.1 Wire format
+
+```jsonc
+// Request
+{ "v": 1, "id": 42, "method": "restart", "params": { ... } }
+// Response — exactly one of result | error
+{ "v": 1, "id": 42, "result": { ... } }
+{ "v": 1, "id": 42, "error": { "code": "method_unknown", "message": "..." } }
+```
+
+- `v` (int): protocol version, MUST be `1`. Any other value → error `version_unsupported`, connection
+  closed. No negotiation in v1.
+- `id` (int, required): echoed verbatim in the response. Lets the sidecar correlate despite the
+  one-connection-per-request model (and costs nothing).
+- `method` (string), `params` (object, optional; unknown keys within a known method are IGNORED —
+  forward compatibility for additive fields).
+- Unknown `method` → error `method_unknown`. Never guess, never dispatch on prefix.
+- Malformed JSON / wrong top-level types → error `bad_request` where parseable, else connection
+  close with no response.
+
+### A.2 Methods (v1 — the complete set)
+
+| Method | Params | Result | Notes |
+|---|---|---|---|
+| `hello` | `{}` | `{"supervisor":"supervise-opencode","pid":1,"child_pid":123,"child_state":"running"\|"stopped"}` | Liveness + state probe. `hello` with an incompatible `v` is how a version mismatch is DETECTED, not negotiated. |
+| `status` | `{}` | `{"child_pid":123,"child_state":"running"\|"stopped","restarts":7,"last_restart_at":"RFC3339"}` | Feeds sidecar statusz/healthz surfaces. |
+| `restart` | `{"reason":"health_watchdog"\|"relay_injector"\|"session_aware"\|"credential_reload"\|"manual","grace_seconds":30}` | `{"restarted":true}` or, if already restarting, `{"restarted":false,"in_progress":true}` | Idempotent: a restart arriving mid-restart does NOT queue or fail — it reports `in_progress` and the FIRST restart's parameters win. See A.3. |
+| `spawn_env` | `{"env":{"KEY":"val",...}}` | `{"stored":true}` | **US-0.2 decision (a)**: the sidecar pushes the composed child env (secrets-env + parent) over IPC; the supervisor holds it in memory only and uses it for the NEXT spawn. The uid-1000-readable `secrets-env` file is NOT created in sidecar mode. Memory-only: never logged, never dumped, dropped on supervisor exit (pod death wipes the container anyway). Sent once per credential reload before the `restart` that applies it. |
+| `metrics` | `{}` | `{"cgroup":{...mem/cpu fields...}}` | The supervisor reads the WORKSPACE container's cgroup (its own) and forwards; the sidecar's own cgroup is the wrong one (0050 finding). Field set fixed in US-1 tests. |
+
+### A.3 Semantics & error model
+
+- **Idempotency**: `restart` is idempotent-by-in-progress (above). `hello`/`status`/`metrics` are
+  pure reads. `spawn_env` last-write-wins (a reload replaces the whole env, matching `reset()` +
+  re-materialize semantics).
+- **Error codes** (closed set v1): `version_unsupported`, `method_unknown`, `bad_request`,
+  `child_gone` (supervisor alive, no child and cannot spawn — e.g. missing argv config),
+  `internal`. Messages are diagnostics, never secrets.
+- **Ordering**: single-threaded request handling in the supervisor (accept → read → act → respond →
+  close). No concurrency needed at v1 volumes (restarts are rare, polls are 5s+).
+- **Transport honesty**: plain TCP on loopback. Not TLS (loopback in-pod; same-netns spoofing is
+  equivalent to uid-1000 code — see A.4), not unix-socket (file path would be a uid-boundary
+  artifact).
+
+### A.4 Security posture — the capability-equivalence rule, in spec
+
+The socket is **deliberately unauthenticated**. The rule, stated so nobody "fixes" it later:
+
+> Any 127.0.0.1:4099 caller can cause: opencode to restart, its env to be replaced at next spawn,
+> or status to be read. A uid-1000 process in this pod can ALREADY: SIGKILL opencode, SIGSTOP it
+> forever, ptrace-inject env, and read /proc. Therefore the socket grants NO capability the threat
+> actor lacks. The moment a method would grant something uid-1000 code cannot do natively (e.g.
+> "read the stored spawn_env back", "exec arbitrary argv", "fetch a secret"), the socket has
+> crossed the line and the design is wrong — such methods are prohibited in ALL future versions
+> unless separately designed and reviewed.
+
+Two invariants follow, enforced in review + tests: (1) the supervisor never returns env VALUES
+(`spawn_env` is write-only; `status`/`hello` expose pids/state only); (2) `restart` takes a closed
+reason enum, never an arbitrary command.
+
+### A.5 Versioning
+
+Bumps add methods/fields, never change existing semantics. Unknown-field tolerance (A.1) is the
+forward-compat mechanism. A v2 proposal must re-derive A.4 before review — the rule is versioned
+with the protocol.
+
+### A.6 Test plan (US-1's TDD targets)
+
+1. Golden wire tests: every method's request/response shape pinned byte-level (version, id echo).
+2. `version_unsupported` on `v:2`; `method_unknown` on `"method":"exec"`; `bad_request` on malformed.
+3. Restart idempotency: two concurrent `restart`s → exactly one restart, second gets `in_progress`.
+4. `spawn_env` memory-only: no file written anywhere under any tmpfs path the tests can observe.
+5. Capability-equivalence test (negative): assert NO v1 method returns env values or accepts argv.
+
+---
 
 ## 9. Open questions
 
