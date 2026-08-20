@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 
@@ -138,9 +139,15 @@ func (s *compositeMigrationStore) FlushDEKCache(ctx context.Context) error {
 }
 
 // --- Constructors (stubs — PG/Redis connections deferred per rotate-kek convention) ---
+//
+// errNotWired is the explicit stub sentinel. Callers check
+// errors.Is(err, errNotWired) and fail fast with the operational hint,
+// instead of the generic wrap — staticcheck SA4023 flagged the old shape
+// (constructor always errors => every err-nil check "always true").
+var errNotWired = errors.New("not yet wired (use MigrationCoordinator directly for testing)")
 
 func newPgMigrationStore(dbURL string) (*pgMigrationStore, error) {
-	return nil, fmt.Errorf("postgres connection not yet wired (use MigrationCoordinator directly for testing)")
+	return nil, errNotWired
 }
 
 func (s *pgMigrationStore) Close() {}

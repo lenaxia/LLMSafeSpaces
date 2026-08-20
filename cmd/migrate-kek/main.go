@@ -142,7 +142,7 @@ func runAudit(dbURL, kmsProvider string) error {
 	if dbURL == "" {
 		return fmt.Errorf("--db-url is required for --audit")
 	}
-	pgStore, err := newPgMigrationStore(dbURL)
+	pgStore, err := newPgMigrationStore(dbURL) //nolint:staticcheck // SA4023: stub constructor always errors until PG wiring lands (rotate-kek convention)
 	if err != nil {
 		return fmt.Errorf("connect to Postgres: %w", err)
 	}
@@ -290,7 +290,7 @@ func run(dbURL, masterKeyFile, kmsProvider, awsRegion, awsCredsFile, gcpCredsFil
 	}
 
 	// Connect to Postgres.
-	pgStore, err := newPgMigrationStore(dbURL)
+	pgStore, err := newPgMigrationStore(dbURL) //nolint:staticcheck // SA4023: stub constructor always errors until PG wiring lands (rotate-kek convention)
 	if err != nil {
 		return fmt.Errorf("connect to Postgres: %w", err)
 	}
@@ -298,7 +298,7 @@ func run(dbURL, masterKeyFile, kmsProvider, awsRegion, awsCredsFile, gcpCredsFil
 
 	var store secrets.MigrationStore = pgStore
 	if redisURL != "" {
-		rc, err := newRedisCacheFlusher(redisURL)
+		rc, err := newRedisCacheFlusher(redisURL) //nolint:staticcheck // SA4023: stub constructor always errors until Redis wiring lands
 		if err != nil {
 			return fmt.Errorf("connect to Redis: %w", err)
 		}
