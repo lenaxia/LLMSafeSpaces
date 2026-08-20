@@ -28,7 +28,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
       () => c.sessions.sendMessage(wsId!, sid,
         'Use the task tool to spawn a subagent that responds with exactly: SUBTASK-OK'),
       'send-subtask-message: no error');
-    if (ok2 && msg) r.assert(msg.content.length > 0, 'send-subtask-message: non-empty content');
+    if (ok2 && msg) r.assert((msg.text ?? (msg.parts ?? []).filter(p => p.type === 'text').map(p => p.text ?? '').join('')).length > 0, 'send-subtask-message: non-empty content');
 
     let subtaskFound = false;
     const deadline = Date.now() + 30000;

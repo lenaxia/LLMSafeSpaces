@@ -21,6 +21,10 @@ type fakeAdapter struct{}
 func (f *fakeAdapter) CreateSession(_ context.Context, _, _, _ string) (*session.Session, error) {
 	return &session.Session{}, nil
 }
+func (f *fakeAdapter) GetHistoryPage(_ context.Context, _, _, _ string, _ int) ([]session.Message, error) {
+	return nil, nil
+}
+
 func (f *fakeAdapter) GetSession(_ context.Context, _, _, _ string) (*session.Session, error) {
 	return &session.Session{}, nil
 }

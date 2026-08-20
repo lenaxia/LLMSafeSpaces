@@ -3,7 +3,7 @@
 // D-CRED-MODEL-FLOW canary — TypeScript SDK (flagship end-to-end scenario)
 
 import { LLMSafeSpaces } from '../../../typescript/src/index.js';
-import { Runner, Config, configFromEnv, nodeFetch, waitActive, ensureSessionWithRetry } from '../canary.js';
+import { Runner, Config, configFromEnv, nodeFetch, waitActive, ensureSessionWithRetry, msgText } from '../canary.js';
 
 async function run(run: Runner, cfg: Config): Promise<void> {
   if (!cfg.llmApiKey || !cfg.llmModel) {
@@ -74,9 +74,9 @@ async function run(run: Runner, cfg: Config): Promise<void> {
       'send-message: no error',
     );
     if (ok3 && msg) {
-      run.assert(msg.content.length > 0, 'send-message: non-empty content');
-      run.assert(msg.content.toUpperCase().includes('CRED-FLOW-OK'), 'send-message: contains expected text',
-        msg.content.substring(0, 100));
+      run.assert((msg.text ?? (msg.parts ?? []).filter(p => p.type === 'text').map(p => p.text ?? '').join('')).length > 0, 'send-message: non-empty content');
+      run.assert(msgText(msg).toUpperCase().includes('CRED-FLOW-OK'), 'send-message: contains expected text',
+        msgText(msg).substring(0, 100));
     }
 
     // Step 7: History
@@ -102,9 +102,9 @@ async function run(run: Runner, cfg: Config): Promise<void> {
       'send-message-2: no error',
     );
     if (ok5 && msg2) {
-      run.assert(msg2.content.length > 0, 'send-message-2: non-empty');
-      run.assert(msg2.content.toUpperCase().includes('AFTER-RELOAD'), 'send-message-2: contains expected text',
-        msg2.content.substring(0, 100));
+      run.assert((msg2.text ?? (msg2.parts ?? []).filter(p => p.type === 'text').map(p => p.text ?? '').join('')).length > 0, 'send-message-2: non-empty');
+      run.assert(msgText(msg2).toUpperCase().includes('AFTER-RELOAD'), 'send-message-2: contains expected text',
+        msgText(msg2).substring(0, 100));
     }
 
     // Step 10: Delete credential

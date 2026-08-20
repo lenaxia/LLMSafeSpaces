@@ -34,7 +34,7 @@ const orgStatusCacheTTL = 30 * time.Second
 // contract at startup.
 type AgentdDelivery = workspace.AgentdDeliveryConfig
 
-func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiInternalToken, defaultRuntimeClass string, agentdDelivery AgentdDelivery, agentdSidecarEnabled bool) error {
+func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiInternalToken, defaultRuntimeClass, previewOriginBaseDomain string, agentdDelivery AgentdDelivery, agentdSidecarEnabled bool) error {
 	logger := log.Log.WithName("controller")
 	logger.Info("Setting up controllers")
 
@@ -57,6 +57,7 @@ func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiInt
 		OrgStatusClient:         orgStatusClient,
 		DefaultRuntimeClass:     defaultRuntimeClass,
 		APIServiceURL:           apiServiceURL,
+		PreviewOriginBaseDomain: previewOriginBaseDomain,
 		AgentdImage:             agentdDelivery.Image,
 		AgentdBinarySHA256AMD64: agentdDelivery.BinarySHA256AMD64,
 		AgentdBinarySHA256ARM64: agentdDelivery.BinarySHA256ARM64,

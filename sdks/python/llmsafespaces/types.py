@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypedDict
 
 
 @dataclass
@@ -64,9 +64,114 @@ class EnsureSessionResponse:
 
 
 @dataclass
-class MessageResponse:
-    raw: Any
-    content: str
+class ToolState(TypedDict, total=False):
+    status: str
+    error: str
+    startedAt: str
+    completedAt: str
+
+
+class ToolPart(TypedDict, total=False):
+    """Every tool call is a ToolPart discriminated by name."""
+
+    callId: str
+    name: str
+    input: Any
+    output: Any
+    state: ToolState
+
+
+class FileDiff(TypedDict, total=False):
+    """Unified-diff payload of a file-change part (patch text authoritative)."""
+
+    path: str
+    oldPath: str
+    status: str
+    patch: str
+    additions: int
+    deletions: int
+
+
+class InputOption(TypedDict, total=False):
+    label: str
+    description: str
+
+
+class ToolRef(TypedDict, total=False):
+    """Identifies the tool call that triggered an InputRequest."""
+
+    messageId: str
+    callId: str
+
+
+class InputRequest(TypedDict, total=False):
+    """The unified pending-input shape ("the agent needs a human",
+    design 0049 §4.5)."""
+
+    id: str
+    sessionId: str
+    rootSessionId: str
+    kind: str
+    question: str
+    header: str
+    options: list[InputOption]
+    multiple: bool
+    custom: bool
+    permission: str
+    patterns: list[str]
+    always: list[str]
+    metadata: dict[str, Any]
+    tool: ToolRef
+
+
+class Part(TypedDict, total=False):
+    """One renderable part of a message — the closed 5-type union."""
+
+    type: str
+    id: str
+    text: str
+    reasoning: str
+    tool: ToolPart
+    fileChange: FileDiff
+    custom: dict[str, Any]
+
+
+class ModelRef(TypedDict, total=False):
+    id: str
+    provider: str
+
+
+class Cost(TypedDict, total=False):
+    """Display-only token/cost data (never billing)."""
+
+    inputTokens: int
+    outputTokens: int
+    reasoningTokens: int
+    cacheReadTokens: int
+    cacheWriteTokens: int
+    totalTokens: int
+    costUsd: float
+
+
+class Message(TypedDict, total=False):
+    """One entry in a session transcript (pkg/session contract).
+
+    Flat discriminated struct: type selects which fields are meaningful.
+    """
+
+    id: str
+    sessionId: str
+    type: str
+    createdAt: str
+    parts: list[Part]
+    model: ModelRef
+    cost: Cost
+    text: str
+    command: str
+    exitCode: int
+    fromAgent: str
+    toAgent: str
+    error: dict[str, Any]
 
 
 @dataclass

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -383,11 +384,27 @@ func (a *Adapter) Abort(ctx context.Context, userID, workspaceID, sessionID stri
 }
 
 func (a *Adapter) GetHistory(ctx context.Context, userID, workspaceID, sessionID string) ([]session.Message, error) {
+	return a.getHistory(ctx, userID, workspaceID, sessionID, 0)
+}
+
+// GetHistoryPage returns the NEWEST limit messages (oldest-first within
+// the page) via opencode's native ?limit=N (#971). Verified live on
+// 1.18.10: limit=N returns the newest N in ascending time order — 26ms
+// for a page vs 1.8s for the full 2.4MB transcript decode.
+func (a *Adapter) GetHistoryPage(ctx context.Context, userID, workspaceID, sessionID string, limit int) ([]session.Message, error) {
+	return a.getHistory(ctx, userID, workspaceID, sessionID, limit)
+}
+
+func (a *Adapter) getHistory(ctx context.Context, userID, workspaceID, sessionID string, limit int) ([]session.Message, error) {
 	c, err := a.resolve(ctx, userID, workspaceID)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := a.doGet(ctx, c, "/session/"+sessionID+"/message")
+	url := "/session/" + sessionID + "/message"
+	if limit > 0 {
+		url += "?limit=" + strconv.Itoa(limit)
+	}
+	resp, err := a.doGet(ctx, c, url)
 	if err != nil {
 		return nil, err
 	}

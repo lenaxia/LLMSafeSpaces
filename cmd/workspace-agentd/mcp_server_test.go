@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -407,4 +408,53 @@ func TestInjectAgentdMCPServer_CredentialAcceptedByGate(t *testing.T) {
 	mcpHandler(pw)(w, req)
 	require.Equal(t, http.StatusOK, w.Code,
 		"the credential stamped on the opencode entry must pass the /v1/mcp gate")
+}
+
+func TestCallMCPTool_DevPreviewURL_RefusesPrivilegedAndReservedPorts(t *testing.T) {
+	// Tool-layer port policy (THREAT-MODEL T3): refused BEFORE any URL is
+	// minted; generic message — no service names leaked at this boundary.
+	for _, port := range []float64{80, 443, 1023, 4096, 4097, 4098} {
+		_, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
+			"port": port,
+		})
+		require.Error(t, err, "port %v must be refused by the tool", port)
+		if strings.Contains(err.Error(), "agentd") || strings.Contains(err.Error(), "opencode") || strings.Contains(err.Error(), "mux") {
+			t.Errorf("port %v refusal leaks topology: %v", port, err)
+		}
+	}
+	// Boundary sanity: first usable port passes validation.
+	_, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
+		"port": float64(1024),
+	})
+	require.NoError(t, err)
+}
+
+func TestCallMCPTool_DevPreviewURL_OriginMode(t *testing.T) {
+	// Epic 66 Phase 1: with PREVIEW_ORIGIN_BASE_DOMAIN set, the tool returns
+	// the bootstrap URL; ownership is verified by the API middleware chain
+	// and the browser is redirected to the per-workspace origin.
+	t.Setenv("WORKSPACE_ID", "0d2a9a1b-c3d4-4e5f-8a9b-0c1d2e3f4a5b")
+	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
+	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "safespaces.dev")
+
+	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
+		"port": float64(5173),
+	})
+	require.NoError(t, err)
+	assert.Contains(t, result, "https://platform.example.com/api/v1/workspaces/0d2a9a1b-c3d4-4e5f-8a9b-0c1d2e3f4a5b/dev-preview-bootstrap/5173")
+	assert.Contains(t, result, "0d2a9a1b-c3d4-4e5f-8a9b-0c1d2e3f4a5b")
+	assert.NotContains(t, result, "/dev-preview/5173/", "origin mode must not return the path-based URL")
+}
+
+func TestCallMCPTool_DevPreviewURL_PathModeUnchangedWithoutEnv(t *testing.T) {
+	t.Setenv("WORKSPACE_ID", "ws-abc-123")
+	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
+	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "") // unset → path mode
+
+	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{
+		"port": float64(5173),
+	})
+	require.NoError(t, err)
+	assert.Contains(t, result, "/dev-preview/5173/")
+	assert.NotContains(t, result, "dev-preview-bootstrap")
 }

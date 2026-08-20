@@ -15,6 +15,7 @@ from canary import (
     ensure_session_with_retry,
 )
 from llmsafespaces import LLMSafeSpaces
+from llmsafespaces.client import message_text
 
 
 def run(r: Runner, cfg: Config) -> None:
@@ -53,7 +54,7 @@ def run(r: Runner, cfg: Config) -> None:
             "send-message: no error",
         )
         if ok2 and msg is not None:
-            r.assert_(len(msg.content) > 0, "send-message: non-empty content")
+            r.assert_(len(message_text(msg)) > 0, "send-message: non-empty text")
 
         # P4: lastActivityAt updated
         ok3, st = r.assert_no_error(

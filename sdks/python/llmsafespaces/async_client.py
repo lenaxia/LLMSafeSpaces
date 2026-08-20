@@ -25,7 +25,7 @@ from .types import (
     AuthResponse,
     CreateAgentRoleRequest,
     EnsureSessionResponse,
-    MessageResponse,
+    Message,
     ProviderCredential,
     SecretResponse,
     TerminalTicket,
@@ -256,16 +256,15 @@ class _AsyncSessionsAPI:
 
     async def send_message(
         self, workspace_id: str, session_id: str, content: str
-    ) -> MessageResponse:
-        raw = await self._c._request(
+    ) -> Message:
+        """Send synchronously; returns the contract Message (pkg/session)."""
+        return await self._c._request(
             "POST",
             f"/workspaces/{workspace_id}/sessions/{session_id}/message",
             json={"content": content, "parts": [{"type": "text", "text": content}]},
         )
-        text = _extract_text(raw)
-        return MessageResponse(raw=raw, content=text)
 
-    async def get_history(self, workspace_id: str, session_id: str) -> list[Any]:
+    async def get_history(self, workspace_id: str, session_id: str) -> list[Message]:
         return await self._c._request(
             "GET", f"/workspaces/{workspace_id}/sessions/{session_id}/message"
         )
@@ -441,20 +440,6 @@ class _AsyncTerminalAPI:
         return TerminalTicket(
             **await self._c._request("POST", f"/workspaces/{workspace_id}/terminal/ticket")
         )
-
-
-def _extract_text(raw: Any) -> str:
-    """Extract text content from opencode response parts."""
-    if not isinstance(raw, dict):
-        return ""
-    parts = raw.get("parts", [])
-    if not isinstance(parts, list):
-        return ""
-    return "".join(
-        p.get("text", "")
-        for p in parts
-        if isinstance(p, dict) and p.get("type") == "text"
-    )
 
 
 class _AsyncUserSettingsAPI:

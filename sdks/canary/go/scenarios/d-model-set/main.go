@@ -92,7 +92,7 @@ func runModelSet(ctx context.Context, run *canary.Runner, cfg canary.Config) {
 		if run.AssertNoError(err, "ensure-session") {
 			msg, err := c.Sessions.SendMessage(ctx, wsID, sess.SessionID, "Reply with exactly: MODEL-SET-OK")
 			if run.AssertNoError(err, "p3-send-message") {
-				run.Assert(len(msg.Content) > 0, "p3-non-empty-response", "")
+				run.Assert(len(msg.TextContent()) > 0, "p3-non-empty-response", "")
 			}
 		}
 	}

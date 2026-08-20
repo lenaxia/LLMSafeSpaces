@@ -1028,6 +1028,26 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		)
 	}
 
+	// Epic 66 Phase 1: per-workspace preview origins. Wraps the SAME
+	// devPreviewHandler (shared proxy machinery, gates, caps). Nil unless
+	// config enables it AND the required secret is present — the config
+	// loader already fails boot on enabled-without-secret; the nil-check
+	// here is defense-in-depth (a nil handler means the engine middleware
+	// is never registered: fail-closed, preview hosts 404 at the ingress).
+	var previewOriginHandler *handlers.PreviewOriginHandler
+	if devPreviewHandler != nil && cfg.PreviewOrigin.Enabled && cfg.PreviewOrigin.TokenSecret != "" {
+		previewOriginHandler = handlers.NewPreviewOriginHandler(
+			devPreviewHandler,
+			handlers.PreviewOriginConfig{
+				Enabled:     cfg.PreviewOrigin.Enabled,
+				BaseDomain:  cfg.PreviewOrigin.BaseDomain,
+				TokenSecret: []byte(cfg.PreviewOrigin.TokenSecret),
+			},
+			svc.GetCache(),
+			log,
+		)
+	}
+
 	// Epic 27a: Agent reload handler.
 	var agentReloadHandler *handlers.AgentReloadHandler
 	var bulkReloadHandler *handlers.BulkReloadHandler
@@ -1286,6 +1306,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		OrgCredentialsHandler:           orgCredsHandler,
 		TerminalHandler:                 terminalHandler,
 		DevPreviewHandler:               devPreviewHandler,
+		PreviewOriginHandler:            previewOriginHandler,
 		AgentReloadHandler:              agentReloadHandler,
 		BulkReloadHandler:               bulkReloadHandler,
 		UsageHandler:                    usageHandler,

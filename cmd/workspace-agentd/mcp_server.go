@@ -97,12 +97,12 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "dev_preview_url",
-						Description: "Construct the authenticated dev-preview URL for viewing a web app running in this workspace. The user must have dev preview enabled in workspace settings. Returns a URL the user can open in their browser to see the dev server output (with HMR support). No API call is made — the URL is deterministic.",
+						Description: "Construct the authenticated dev-preview URL for viewing a web app running in this workspace. The user must have dev preview enabled in workspace settings. Returns a URL the user can open in their browser to see the dev server output (with HMR support). No API call is made — the URL is deterministic. Refuses ports below 1024 and platform-reserved ports.",
 						InputSchema: map[string]any{
 							"type": "object",
 							"properties": map[string]any{
-								"port": map[string]any{"type": "integer", "description": "The localhost port the dev server is listening on (e.g. 5173 for Vite, 3000 for Next)"},
-								"path": map[string]any{"type": "string", "description": "Optional path on the dev server (defaults to /)"},
+								"port": map[string]any{"type": "integer", "description": "The localhost port the dev server is listening on (e.g. 5173 for Vite, 3000 for Next). Must be >= 1024; platform-reserved ports are refused."},
+								"path": map[string]any{"type": "string", "description": "Optional path on the dev server (defaults to /). Carried through on path-based preview URLs; on per-workspace-origin deployments the preview opens at the app root"},
 							},
 							"required": []string{"port"},
 						},
@@ -160,6 +160,16 @@ func callMCPTool(ctx context.Context, password, name string, args map[string]any
 		if !ok || port < 1 || port > 65535 {
 			return "", fmt.Errorf("port is required and must be between 1 and 65535")
 		}
+		// Tool-layer port policy (redesign-2026-08-19 THREAT-MODEL T3):
+		// refuse BEFORE minting any URL. The proxy layer refuses again —
+		// either layer alone is a single point of failure. Generic message:
+		// no topology disclosure at this boundary either.
+		if port < 1024 {
+			return "", fmt.Errorf("port %d is not available for dev preview (privileged ports are refused)", port)
+		}
+		if _, denied := devPreviewDeniedPorts[port]; denied {
+			return "", fmt.Errorf("port %d is not available for dev preview", port)
+		}
 		path := "/"
 		if p, ok := args["path"].(string); ok && p != "" {
 			if !strings.HasPrefix(p, "/") {
@@ -216,6 +226,20 @@ func mcpSessionRead(ctx context.Context, password, sessionID string, limit int) 
 func mcpDevPreviewURL(port int, path string) string {
 	workspaceID := os.Getenv("WORKSPACE_ID")
 	apiURL := os.Getenv("LLMSAFESPACE_API_URL")
+
+	// Epic 66 Phase 1 (redesign-2026-08-19): when the deployment sets
+	// PREVIEW_ORIGIN_BASE_DOMAIN, dev preview is served from per-workspace
+	// origins and the tool returns the owner-authenticated bootstrap URL.
+	// The API verifies workspace ownership (existing middleware chain) and
+	// 302s the browser to <ws>-preview.<domain>/<port>/ with a one-time
+	// token, redeemed for a __Host-pv preview-session cookie. The path
+	// parameter does not carry through the bootstrap hop (follow-up);
+	// the user lands at the app root and navigates.
+	if base := os.Getenv("PREVIEW_ORIGIN_BASE_DOMAIN"); base != "" {
+		url := fmt.Sprintf("%s/api/v1/workspaces/%s/dev-preview-bootstrap/%d", apiURL, workspaceID, port)
+		return fmt.Sprintf("%s\n\nThis is the per-workspace preview origin bootstrap link (workspace %s, port %d). Open it while logged in: the API verifies workspace ownership and redirects to the preview host, where the browser receives a preview-session cookie. Dev preview must be enabled in Workspace Settings (gear icon) → Dev Preview → Enable. For a specific path (e.g. %s), navigate within the preview after it opens.", url, workspaceID, port, path)
+	}
+
 	url := fmt.Sprintf("%s/api/v1/workspaces/%s/dev-preview/%d%s", apiURL, workspaceID, port, path)
 	return fmt.Sprintf("%s\n\nDev preview must be enabled for this URL to work. If the user gets a 503 error, they need to enable it first via Workspace Settings (gear icon) → Dev Preview → Enable.", url)
 }

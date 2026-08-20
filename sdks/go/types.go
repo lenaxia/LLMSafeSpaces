@@ -3,7 +3,10 @@
 
 package llmsafespaces
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 type Workspace struct {
 	ID          string            `json:"id"`
@@ -53,9 +56,122 @@ type EnsureSessionResponse struct {
 	Resumed        bool   `json:"resumed"`
 }
 
-type MessageResponse struct {
-	Raw     any    `json:"-"`
-	Content string `json:"-"`
+// Message is one entry in a session transcript (pkg/session contract).
+// Flat discriminated struct: Type selects which fields are meaningful.
+type Message struct {
+	ID        string     `json:"id"`
+	SessionID string     `json:"sessionId,omitempty"`
+	Type      string     `json:"type"`
+	CreatedAt *time.Time `json:"createdAt,omitempty"`
+	Parts     []Part     `json:"parts,omitempty"`
+	Model     *ModelRef  `json:"model,omitempty"`
+	Cost      *Cost      `json:"cost,omitempty"`
+	Text      string     `json:"text,omitempty"`
+	Command   string     `json:"command,omitempty"`
+	ExitCode  *int       `json:"exitCode,omitempty"`
+	FromAgent string     `json:"fromAgent,omitempty"`
+	ToAgent   string     `json:"toAgent,omitempty"`
+	FromModel *ModelRef  `json:"fromModel,omitempty"`
+	ToModel   *ModelRef  `json:"toModel,omitempty"`
+	Error     *MsgError  `json:"error,omitempty"`
+}
+
+// Part is one renderable part of a message — the closed 5-type union.
+type Part struct {
+	Type       string      `json:"type"`
+	ID         string      `json:"id,omitempty"`
+	Text       string      `json:"text,omitempty"`
+	Reasoning  string      `json:"reasoning,omitempty"`
+	Tool       *ToolPart   `json:"tool,omitempty"`
+	FileChange *FileDiff   `json:"fileChange,omitempty"`
+	Custom     *CustomPart `json:"custom,omitempty"`
+}
+
+// ToolPart discriminates tool calls by Name; input/output are raw JSON.
+type ToolPart struct {
+	CallID string          `json:"callId,omitempty"`
+	Name   string          `json:"name"`
+	Input  json.RawMessage `json:"input,omitempty"`
+	Output json.RawMessage `json:"output,omitempty"`
+	State  ToolState       `json:"state"`
+}
+
+// ToolState is the tool-call lifecycle.
+type ToolState struct {
+	Status      string     `json:"status"`
+	Error       string     `json:"error,omitempty"`
+	StartedAt   *time.Time `json:"startedAt,omitempty"`
+	CompletedAt *time.Time `json:"completedAt,omitempty"`
+}
+
+// FileDiff carries authoritative unified-diff text for a file change.
+type FileDiff struct {
+	Path      string `json:"path"`
+	OldPath   string `json:"oldPath,omitempty"`
+	Status    string `json:"status"`
+	Patch     string `json:"patch"`
+	Additions int    `json:"additions,omitempty"`
+	Deletions int    `json:"deletions,omitempty"`
+}
+
+// InputRequest is the unified pending-input shape ("the agent needs a
+// human", design 0049 §4.5) carried on input.request/resolved events.
+type InputRequest struct {
+	ID            string         `json:"id"`
+	SessionID     string         `json:"sessionId,omitempty"`
+	RootSessionID string         `json:"rootSessionId,omitempty"`
+	Kind          string         `json:"kind"`
+	Question      string         `json:"question,omitempty"`
+	Header        string         `json:"header,omitempty"`
+	Options       []InputOption  `json:"options,omitempty"`
+	Multiple      bool           `json:"multiple,omitempty"`
+	Custom        bool           `json:"custom,omitempty"`
+	Permission    string         `json:"permission,omitempty"`
+	Patterns      []string       `json:"patterns,omitempty"`
+	Always        []string       `json:"always,omitempty"`
+	Metadata      map[string]any `json:"metadata,omitempty"`
+	Tool          *ToolRef       `json:"tool,omitempty"`
+}
+
+// InputOption is one selectable choice within a question InputRequest.
+type InputOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
+// ToolRef identifies the tool call that triggered an InputRequest.
+type ToolRef struct {
+	MessageID string `json:"messageId,omitempty"`
+	CallID    string `json:"callId,omitempty"`
+}
+
+// CustomPart is the extension valve; Kind discriminates.
+type CustomPart struct {
+	Kind string          `json:"kind"`
+	Data json.RawMessage `json:"data,omitempty"`
+}
+
+// MsgError is the error payload on a message.
+type MsgError struct {
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message"`
+}
+
+// ModelRef identifies a model.
+type ModelRef struct {
+	ID       string `json:"id"`
+	Provider string `json:"provider,omitempty"`
+}
+
+// Cost is display-only token/cost data.
+type Cost struct {
+	InputTokens      int64   `json:"inputTokens,omitempty"`
+	OutputTokens     int64   `json:"outputTokens,omitempty"`
+	ReasoningTokens  int64   `json:"reasoningTokens,omitempty"`
+	CacheReadTokens  int64   `json:"cacheReadTokens,omitempty"`
+	CacheWriteTokens int64   `json:"cacheWriteTokens,omitempty"`
+	TotalTokens      int64   `json:"totalTokens,omitempty"`
+	CostUSD          float64 `json:"costUsd,omitempty"`
 }
 
 type TerminalTicket struct {

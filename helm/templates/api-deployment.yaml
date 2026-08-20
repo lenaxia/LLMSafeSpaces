@@ -137,6 +137,21 @@ spec:
             - name: LLMSAFESPACES_TURNSTILE_VERIFYURL
               value: {{ .Values.turnstile.verifyURL | quote }}
             {{- end }}
+            {{- if .Values.previewOrigin.enabled }}
+            # Epic 66 Phase 1 — per-workspace preview origins. The token
+            # secret arrives via secretKeyRef (never in a ConfigMap / pod
+            # spec dump). The API fails to boot when enabled=true without
+            # baseDomain/secret — fail-closed, mirroring Turnstile.
+            - name: LLMSAFESPACES_PREVIEW_ORIGIN_ENABLED
+              value: "true"
+            - name: LLMSAFESPACES_PREVIEW_ORIGIN_BASEDOMAIN
+              value: {{ .Values.previewOrigin.baseDomain | quote }}
+            - name: LLMSAFESPACES_PREVIEW_ORIGIN_TOKENSECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.previewOrigin.secretKey.existingSecret | quote }}
+                  key: {{ .Values.previewOrigin.secretKey.key | quote }}
+            {{- end }}
             {{- if .Values.imageFactory.ghDispatcher.appCredentials.secretName }}
             - name: LLMSAFESPACES_IMAGE_FACTORY_APP_ID
               valueFrom:

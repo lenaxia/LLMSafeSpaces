@@ -83,6 +83,14 @@ type Adapter interface {
 	// agent reported file changes.
 	GetHistory(ctx context.Context, userID, workspaceID, sessionID string) ([]session.Message, error)
 
+	// GetHistoryPage returns the NEWEST `limit` messages of a session,
+	// oldest-first within the page, using the agent's native pagination
+	// when it has one (#971: fetching+decoding the full transcript to
+	// slice a page was ~95% of session-load latency on large sessions).
+	// Implementations without native pagination may return the full
+	// transcript; callers slice.
+	GetHistoryPage(ctx context.Context, userID, workspaceID, sessionID string, limit int) ([]session.Message, error)
+
 	// --- Streaming / Input (design 0049 §4.6) ---
 
 	// Stream subscribes to the session's event stream, translating
