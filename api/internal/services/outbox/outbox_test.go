@@ -587,11 +587,30 @@ func TestRun_ConcurrentSessionsNoHeadOfLine(t *testing.T) {
 
 	fastDone := make(chan time.Time, 1)
 	slowDone := make(chan struct{}, 1)
+	// testDone wakes the slow-fn on TEST teardown. Load-bearing: the
+	// deliverer receives a DETACHED context (deliverDetached — the D3
+	// disconnect-immunity contract), so waiting on ITS ctx.Done() can
+	// never observe the test's cancel(); under scheduler contention the
+	// 300ms timer alone made this test's cleanup stall past the package
+	// timeout (release-run flakes, 2× on 2026-08-20).
+	testDone := make(chan struct{})
 	start := time.Now()
 	var runWG sync.WaitGroup
 	// Cancel, join Run, then join the in-flight slow delivery — no
 	// goroutine of this test outlives it (var-mutating tests follow).
-	defer func() { cancel(); runWG.Wait(); <-slowDone }()
+	// Bounded: if any join stalls, fail FAST with a diagnostic instead of
+	// hanging the package for 10 minutes.
+	defer func() {
+		cancel()
+		close(testDone)
+		joined := make(chan struct{})
+		go func() { runWG.Wait(); <-slowDone; close(joined) }()
+		select {
+		case <-joined:
+		case <-time.After(5 * time.Second):
+			t.Error("teardown stalled >5s: Run or the slow delivery did not observe cancellation (detached-ctx assumption violated)")
+		}
+	}()
 	runWG.Add(1)
 	go func() {
 		defer runWG.Done()
@@ -599,7 +618,7 @@ func TestRun_ConcurrentSessionsNoHeadOfLine(t *testing.T) {
 			if ses == "slow" {
 				defer func() { slowDone <- struct{}{} }()
 				select {
-				case <-ctx.Done():
+				case <-testDone: // test teardown — independent of the detached ctx
 				case <-time.After(300 * time.Millisecond): // long turn
 				}
 				return nil
