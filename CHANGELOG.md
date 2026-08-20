@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.16.1] - 2026-08-20
+
+### Fixed
+
+- **Session load took 10–15s on large transcripts (#971, #973)**: the
+  first history page now uses opencode's native `?limit=N` (measured
+  live: 26ms vs 1.8s for the full-transcript fetch+decode the handler
+  previously performed per page — ~95% of the hot path was decoding
+  messages it then discarded). Back-pagination keeps the full-fetch
+  path (opencode 1.18.10's cursor params are unusable — verified live:
+  `before=` 400s every shape, `cursor=` is ignored). The
+  `X-Next-Cursor` contract is unchanged.
+- **D3 follow-ups (#960→#964)**: queue retry wired server-side
+  (POST /queue/:id/retry re-arms the same entry) and a pre-redelivery
+  transcript check that collapses the dominant duplicate-turn source.
+
 ## [0.16.0] - 2026-08-20
 
 ### Added
