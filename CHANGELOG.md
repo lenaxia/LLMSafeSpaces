@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-08-20
+
+### Added
+
+- **Dev-preview landing page (#983, epic-66 Phase 1 UX)**: unauthenticated
+  browser navigations to a preview origin now get a human front door — a
+  one-click bootstrap link for deep links whose preview session lapsed,
+  and a no-JS port form on the bare host root — instead of a bare 401/502.
+  fetch/XHR/curl keep the 401 (Sec-Fetch-Mode cannot be forged by script);
+  token redemption always wins over the landing. The landing is static
+  HTML+CSS with no scripts, no credentials, and a test asserting no
+  password input can ever appear: the preview origin serves
+  prompt-injectable content, so it must never train users to enter
+  credentials there. Identity stays exclusively on the API origin.
+- **agentd sidecar split (#980, design 0051 US-2)**: `--sidecar` mode,
+  chart-gated native sidecar, socket grace/metrics.
+- **OpenAPI spec + SDKs on the session contract (#969, #975)**.
+
+### Fixed
+
+- **US-2 pod-spec sidecar invariants restored (#982)**: tests lost in the
+  #980 squash, re-established.
+
 ## [0.17.0] - 2026-08-20
 
 ### Added
