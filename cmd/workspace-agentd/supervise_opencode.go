@@ -46,24 +46,15 @@ func runSuperviseOpencodeCommand(_ []string) int {
 	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	proc := &managedProcess{}
-	proc.onChildStarted = nil // no session tracker in supervisor mode (sidecar owns policy)
-	// The probe URL would hit the sidecar's bearer-gated readyz; the
-	// supervisor never holds that token (D1) — skip the probe entirely.
-	// The sidecar's watchdog + the pod probes own health semantics.
-	proc.skipHealthProbe = true
+	proc := newSupervisorProcess()
 	proc.start()
 	adapter := &managedProcAdapter{p: proc}
 
-	srv, err := newControlSocketServer(fmt.Sprintf("127.0.0.1:%d", ControlSocketPort), adapter)
+	srv, err := newSupervisorControlServer(fmt.Sprintf("127.0.0.1:%d", ControlSocketPort), adapter)
 	if err != nil {
 		log.Error("FATAL: control socket listen failed", zap.Int("port", ControlSocketPort), zap.Error(err))
 		return 1
 	}
-	// US-2 metrics wiring: the supervisor's own cgroup IS the workspace
-	// container's (0050 finding) — serve it over the socket for the
-	// sidecar's statusz/pressure/ops-metrics surfaces.
-	srv.metricsSource = newWorkspaceCgroupReader().read
 	go srv.serve()
 	log.Info("supervise-opencode: control socket serving", zap.String("addr", srv.addr()))
 
@@ -72,6 +63,37 @@ func runSuperviseOpencodeCommand(_ []string) int {
 	_ = srv.close()
 	proc.stop()
 	return 0
+}
+
+// newSupervisorProcess builds the supervisor's managedProcess with
+// supervisor-mode flags. Extracted from runSuperviseOpencodeCommand so the
+// configuration is pinnable by test (the command itself never returns).
+//
+//   - onChildStarted nil: no session tracker in supervisor mode (the
+//     sidecar owns policy).
+//   - skipHealthProbe: the probe URL would hit the sidecar's bearer-gated
+//     readyz, and the supervisor never holds that token (D1 keeps it out
+//     of uid-1000 space). The sidecar's watchdog + the pod probes own
+//     health semantics in the split topology.
+func newSupervisorProcess() *managedProcess {
+	proc := &managedProcess{}
+	proc.onChildStarted = nil
+	proc.skipHealthProbe = true
+	return proc
+}
+
+// newSupervisorControlServer builds the supervisor's control socket with
+// the metrics source wired (US-2): the supervisor's own cgroup IS the
+// workspace container's (0050 finding) — served over the socket for the
+// sidecar's statusz/pressure/ops-metrics surfaces. Extracted so the
+// wiring is pinnable by test.
+func newSupervisorControlServer(addr string, adapter *managedProcAdapter) (*controlSocketServer, error) {
+	srv, err := newControlSocketServer(addr, adapter)
+	if err != nil {
+		return nil, err
+	}
+	srv.metricsSource = newWorkspaceCgroupReader().read
+	return srv, nil
 }
 
 // managedProcAdapter maps control-socket vocabulary (Appendix A) onto
