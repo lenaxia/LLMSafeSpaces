@@ -24,6 +24,15 @@
 //	                          (compare-and-del), TTL > DeliveryTimeout so a
 //	                          long turn cannot expire its own lock
 //
+// Delivery semantics: at-least-once for PROVEN-not-delivered failures
+// only. An attempt whose outcome is UNKNOWN (send timeout mid-turn,
+// transport cut mid-flight) is never blind-retried: opencode persists the
+// user message before the turn starts, so the message is most likely in
+// the transcript. Unknown outcomes move the entry to verifying and a
+// Verifier (transcript check) decides: delivered → remove; absent →
+// retry; inconclusive → recheck with backoff (#987 — the sent-once/
+// delivered-3x incident class).
+//
 // Crash-safety: every multi-step transition is ordered so the worst case
 // is DUPLICATE delivery (at-least-once, collapsed at render via
 // clientMessageID), never LOSS:
@@ -31,9 +40,8 @@
 //     both → delivered possibly twice, never zero; Recover dedupes by ID)
 //   - restore: reinsert main BEFORE LREM staging
 //   - recover: LRANGE (no pop), dedupe against main by ID, then DEL
-//
-// Delivery semantics: at-least-once; duplicates collapse at render via
-// clientMessageID — the stated D3 decision, do not revisit.
+//   - recover status: staged entries requeue as VERIFYING — the outcome
+//     of the interrupted send is unknown, same as a timeout
 package outbox
 
 import (
@@ -57,16 +65,19 @@ type Entry struct {
 	Text            string          `json:"text"`            // prompt text (already validated ≤100KB)
 	Model           json.RawMessage `json:"model,omitempty"` // per-prompt model selector (raw JSON)
 	AcceptedAt      time.Time       `json:"acceptedAt"`
-	Attempts        int             `json:"attempts"`
-	NextAttemptAt   time.Time       `json:"nextAttemptAt,omitempty"` // backoff gate (zero = now)
+	Attempts        int             `json:"attempts"`                 // definitive failures only
+	LastAttemptAt   time.Time       `json:"lastAttemptAt,omitempty"`  // send-window start (verifier anchor)
+	VerifyAttempts  int             `json:"verifyAttempts,omitempty"` // inconclusive verification passes
+	NextAttemptAt   time.Time       `json:"nextAttemptAt,omitempty"`  // backoff gate (zero = now)
 	LastError       string          `json:"lastError,omitempty"`
-	Status          string          `json:"status"` // pending | delivering | error
+	Status          string          `json:"status"` // pending | delivering | verifying | error
 }
 
 // Status values.
 const (
 	StatusPending    = "pending"
 	StatusDelivering = "delivering"
+	StatusVerifying  = "verifying"
 	StatusError      = "error"
 )
 
@@ -92,6 +103,20 @@ var (
 	// lock's TTL would expire mid-turn and let a second worker deliver
 	// concurrently (one-in-flight violation).
 	LockTTL = DeliveryTimeout + 2*time.Minute
+	// VerifyDelay is the initial delay before the first verification
+	// pass after an ambiguous send (lets a racing persist land).
+	VerifyDelay = 3 * time.Second
+	// VerifyBackoff is the BASE delay between inconclusive verification
+	// passes; it doubles per pass and caps at MaxVerifyBackoff.
+	VerifyBackoff = 3 * time.Second
+	// MaxVerifyBackoff caps the verification recheck delay.
+	MaxVerifyBackoff = 2 * time.Minute
+	// MaxVerifyAttempts bounds inconclusive passes before the entry
+	// parks as error (agent unreachable for the full backoff span).
+	MaxVerifyAttempts = 40
+	// VerifyPageSize is the history page size the verifier asks for
+	// (documented on the seam; the opencode impl uses it).
+	VerifyPageSize = 500
 )
 
 // ErrCapped is returned when the session's outbox is at Cap.
@@ -105,6 +130,50 @@ func (d *Duplicate) Error() string {
 	return "duplicate clientMessageID: " + d.AcceptedID
 }
 
+// AmbiguousError marks a deliverer outcome as UNKNOWN: the send may or
+// may not have persisted (timeout mid-turn, transport cut mid-flight).
+// The deliverer wraps such errors via Ambiguous; the outbox responds by
+// verifying against the agent transcript instead of blind-retrying
+// (#987: blind retries re-POST the same text as a NEW message and
+// duplicate the turn).
+type AmbiguousError struct{ Err error }
+
+func (a *AmbiguousError) Error() string { return "ambiguous delivery: " + a.Err.Error() }
+func (a *AmbiguousError) Unwrap() error { return a.Err }
+
+// Ambiguous wraps err as an unknown-outcome delivery failure.
+func Ambiguous(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &AmbiguousError{Err: err}
+}
+
+// Verdict is a verifier's decision about an ambiguous delivery attempt.
+type Verdict int
+
+const (
+	// VerdictInconclusive: the transcript could not be read (agent
+	// unreachable, page coverage incomplete) — recheck with backoff.
+	VerdictInconclusive Verdict = iota
+	// VerdictDelivered: the entry's text is present in the agent
+	// transcript within the send window — the entry is complete.
+	VerdictDelivered
+	// VerdictAbsent: the transcript proves the message never persisted
+	// — a definitive failure, safe to re-send.
+	VerdictAbsent
+)
+
+// Verifier resolves ambiguous delivery attempts against agent state.
+// It must be read-only and idempotent; the outbox calls it under the
+// per-session lock with a timeout-bounded context.
+type Verifier func(ctx context.Context, workspaceID, sessionID string, e Entry) Verdict
+
+// DeliveredHook fires exactly once per entry on confirmed delivery —
+// both the synchronous 2xx path and the verified path. SSE
+// queue.update/sent, metering, and session-index recording ride it.
+type DeliveredHook func(workspaceID, sessionID string, e Entry)
+
 // Deliverer delivers one entry. The worker calls it with a detached,
 // timeout-bounded context — it must not reference the accepting request.
 type Deliverer func(ctx context.Context, workspaceID, sessionID string, e Entry) error
@@ -113,6 +182,12 @@ type Deliverer func(ctx context.Context, workspaceID, sessionID string, e Entry)
 // Valkey client is borrowed (lifecycle owned by the caller).
 type Service struct {
 	client *redis.Client
+	// verifier resolves ambiguous outcomes; nil degrades them to the
+	// legacy retry path (dev/test wiring only — production always wires
+	// the transcript verifier).
+	verifier Verifier
+	// onDelivered fires once per confirmed delivery (nil = no-op).
+	onDelivered DeliveredHook
 }
 
 // New returns a Service backed by client, or nil if client is nil
@@ -123,6 +198,12 @@ func New(client *redis.Client) *Service {
 	}
 	return &Service{client: client}
 }
+
+// SetVerifier wires the ambiguity resolver. Call before Run.
+func (s *Service) SetVerifier(v Verifier) { s.verifier = v }
+
+// SetOnDelivered wires the confirmed-delivery hook. Call before Run.
+func (s *Service) SetOnDelivered(h DeliveredHook) { s.onDelivered = h }
 
 func qKey(ws, ses string) string { return "outboxq:" + ws + ":" + ses }
 func dKey(ws, ses string) string { return "outboxd:" + ws + ":" + ses }
@@ -298,9 +379,10 @@ func (s *Service) DeliverOnce(ctx context.Context, ws, ses string, d Deliverer) 
 	return s.deliverOne(ctx, ws, ses, d)
 }
 
-// deliverOne delivers the first due pending entry for one session under
-// the per-session lock. Returns true if work was done. Backoff-gated
-// entries (NextAttemptAt in the future) are skipped, not consumed.
+// deliverOne advances the first due entry for one session under the
+// per-session lock: pending entries are sent, verifying entries are
+// verified. Returns true if work was done. Backoff-gated entries
+// (NextAttemptAt in the future) are skipped, not consumed.
 func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) bool {
 	token, ok := s.acquireLock(ctx, ws, ses)
 	if !ok {
@@ -329,6 +411,10 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 		return false
 	}
 
+	if e.Status == StatusVerifying {
+		return s.verifyOne(ctx, ws, ses, qk, vals, idx, e)
+	}
+
 	// Stage-out (loss-proof ordering): RPUSH staging FIRST, then LREM
 	// main. A crash between the two leaves the entry in BOTH — duplicate
 	// delivery is possible (at-least-once), loss is not; Recover dedupes
@@ -337,9 +423,23 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 	s.client.RPush(ctx, dKey(ws, ses), staged)
 	s.client.LRem(ctx, qk, 1, vals[idx])
 
+	e.LastAttemptAt = now
 	derr := deliverDetached(ctx, d, ws, ses, e)
 	if derr == nil {
 		s.client.LRem(ctx, dKey(ws, ses), 1, staged)
+		s.fireOnDelivered(ws, ses, e)
+		return true
+	}
+	var amb *AmbiguousError
+	if errors.As(derr, &amb) && s.verifier != nil {
+		// Unknown outcome: the send may have persisted (opencode
+		// persists before the turn). Verify against the transcript —
+		// never blind-retry (#987).
+		e.Status = StatusVerifying
+		e.VerifyAttempts = 0
+		e.LastError = "ambiguous: " + amb.Err.Error()
+		e.NextAttemptAt = now.Add(VerifyDelay)
+		s.restoreStaged(ctx, qk, dKey(ws, ses), idx, staged, e)
 		return true
 	}
 	// Failure: restore main FIRST (LInsert before the current occupant,
@@ -351,8 +451,61 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 		e.Status = StatusError
 	} else {
 		e.Status = StatusPending
-		e.NextAttemptAt = time.Now().UTC().Add(backoffFor(e.Attempts))
+		e.NextAttemptAt = now.Add(backoffFor(e.Attempts))
 	}
+	s.restoreStaged(ctx, qk, dKey(ws, ses), idx, staged, e)
+	return true
+}
+
+// verifyOne resolves a verifying entry in place (never staged out —
+// verification is read-only; a crash mid-verify re-verifies idempotently).
+func (s *Service) verifyOne(ctx context.Context, ws, ses, qk string, vals []string, idx int, e Entry) bool {
+	now := time.Now().UTC()
+	if s.verifier == nil {
+		// No verifier wired (legacy/dev): degrade to the retry path —
+		// better a bounded duplicate risk than an entry stranded in
+		// verifying forever.
+		e.Status = StatusPending
+		e.Attempts++
+		e.NextAttemptAt = now.Add(backoffFor(e.Attempts))
+		s.client.LSet(ctx, qk, int64(idx), string(mustMarshal(e)))
+		return true
+	}
+	switch s.verifier(ctx, ws, ses, e) {
+	case VerdictDelivered:
+		s.client.LRem(ctx, qk, 1, vals[idx])
+		s.fireOnDelivered(ws, ses, e)
+		return true
+	case VerdictAbsent:
+		e.Status = StatusPending
+		e.Attempts++
+		e.VerifyAttempts = 0
+		e.LastError = ""
+		if e.Attempts >= MaxAttempts {
+			e.Status = StatusError
+			e.LastError = "delivery confirmed absent; retry bound reached"
+		} else {
+			e.NextAttemptAt = now.Add(backoffFor(e.Attempts))
+		}
+		s.client.LSet(ctx, qk, int64(idx), string(mustMarshal(e)))
+		return true
+	default: // inconclusive — agent unreachable or page coverage incomplete
+		e.VerifyAttempts++
+		if e.VerifyAttempts >= MaxVerifyAttempts {
+			e.Status = StatusError
+			e.LastError = "delivery unverifiable: agent unreachable"
+		} else {
+			e.NextAttemptAt = now.Add(verifyBackoffFor(e.VerifyAttempts))
+		}
+		s.client.LSet(ctx, qk, int64(idx), string(mustMarshal(e)))
+		return true
+	}
+}
+
+// restoreStaged reinserts the (updated) entry into the main list at its
+// position and removes it from staging — the failure/ambiguous restore
+// ordering that duplicates rather than loses on a crash between steps.
+func (s *Service) restoreStaged(ctx context.Context, qk, dk string, idx int, staged []byte, e Entry) {
 	updated := string(mustMarshal(e))
 	cur, _ := s.client.LRange(ctx, qk, 0, -1).Result()
 	switch {
@@ -363,14 +516,34 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 	default:
 		s.client.LInsert(ctx, qk, "BEFORE", cur[idx], updated)
 	}
-	s.client.LRem(ctx, dKey(ws, ses), 1, staged)
-	return true
+	s.client.LRem(ctx, dk, 1, staged)
+}
+
+func (s *Service) fireOnDelivered(ws, ses string, e Entry) {
+	if s.onDelivered != nil {
+		s.onDelivered(ws, ses, e)
+	}
+}
+
+// verifyBackoffFor returns the delay before verify pass n (n = inconclusive
+// passes so far): base doubling per pass, capped.
+func verifyBackoffFor(passes int) time.Duration {
+	d := VerifyBackoff
+	for i := 1; i < passes && d < MaxVerifyBackoff; i++ {
+		d *= 2
+	}
+	if d > MaxVerifyBackoff {
+		d = MaxVerifyBackoff
+	}
+	return d
 }
 
 // Recover requeues staged (delivering) entries left by a crash — run at
 // worker start. LRANGE (no pop) + ID-dedupe against main, then DEL: the
 // crash windows above can leave an entry in both lists; the ID check
-// prevents Recover itself from duplicating.
+// prevents Recover itself from duplicating. Requeued entries enter
+// VERIFYING: the interrupted send's outcome is unknown — blind re-send
+// is the #987 duplicate class.
 func (s *Service) Recover(ctx context.Context) int {
 	n := 0
 	for _, pair := range s.sessions(ctx) {
@@ -396,7 +569,11 @@ func (s *Service) Recover(ctx context.Context) int {
 			if inMain[e.ID] {
 				continue // crash window left it in both — main wins
 			}
+<<<<<<< HEAD
 			e.Status = StatusPending
+=======
+			e.Status = StatusVerifying
+>>>>>>> 910e99a6 (feat(outbox): ambiguity-aware delivery state machine — verifying status, Verifier + OnDelivered seams (#987))
 			e.NextAttemptAt = time.Time{}
 			s.client.LPush(ctx, qKey(ws, ses), string(mustMarshal(e)))
 			n++
@@ -478,6 +655,7 @@ func (s *Service) Retry(ctx context.Context, workspaceID, sessionID, id string) 
 		if json.Unmarshal([]byte(v), &e) == nil && e.ID == id && e.Status == StatusError {
 			e.Status = StatusPending
 			e.Attempts = 0
+			e.VerifyAttempts = 0
 			e.LastError = ""
 			e.NextAttemptAt = time.Time{}
 			s.client.LSet(ctx, qk, int64(i), string(mustMarshal(e)))
