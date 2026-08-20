@@ -1994,22 +1994,22 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#4-l3-kind-cluster-runbook-manual-30-min" class="md-nav__link">
+  <a href="#4-l3-kind-cluster-executable-scriptsus2-kind-integrationsh" class="md-nav__link">
     <span class="md-ellipsis">
       
-        4. L3 — kind cluster runbook (manual, ~30 min)
+        4. L3 — kind cluster (executable: scripts/us2-kind-integration.sh)
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="4. L3 — kind cluster runbook (manual, ~30 min)">
+    <nav class="md-nav" aria-label="4. L3 — kind cluster (executable: scripts/us2-kind-integration.sh)">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#setup" class="md-nav__link">
+  <a href="#running-it" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Setup
+        Running it
       
     </span>
   </a>
@@ -2021,6 +2021,17 @@
     <span class="md-ellipsis">
       
         Checks (map to V-matrix rows; full matrix is US-5)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#l15-supervisor-subprocess-supervisor_subprocess_testgo-new" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        L1.5 — supervisor subprocess (supervisor_subprocess_test.go, new)
       
     </span>
   </a>
@@ -2167,20 +2178,26 @@
 <tr>
 <td><strong>L1 — in-pod integration</strong></td>
 <td>C1 supervisor + real child + real socket server + C2's real consumers (<code>buildSidecarDeps</code>) in one process tree</td>
-<td><code>sidecar_integration_test.go</code> (NEW)</td>
-<td>✅ green (this PR + CI)</td>
+<td><code>sidecar_integration_test.go</code></td>
+<td>✅ green (CI)</td>
+</tr>
+<tr>
+<td><strong>L1.5 — supervisor subprocess</strong></td>
+<td>The REAL <code>supervise-opencode</code> subcommand as a real process (PID semantics, signals, subreaper, exit code) driven by the real client over real TCP</td>
+<td><code>supervisor_subprocess_test.go</code> (NEW)</td>
+<td>✅ green (CI)</td>
 </tr>
 <tr>
 <td><strong>L2 — pod-spec admission</strong></td>
 <td><code>buildPod</code> output against a real API server (KEP-753 restartPolicy admission, SecurityContext, Secret-key resolution)</td>
-<td><code>agentd_sidecar_envtest_test.go</code> (NEW, <code>-tags envtest</code>)</td>
+<td><code>agentd_sidecar_envtest_test.go</code> (<code>-tags envtest</code>)</td>
 <td>✅ green (envtest workflow)</td>
 </tr>
 <tr>
 <td><strong>L3 — kind cluster</strong></td>
 <td>Real kubelet: native-sidecar ordering, probes, container restarts, termination</td>
-<td>§5 runbook (below)</td>
-<td>⏳ manual, this doc</td>
+<td><code>scripts/us2-kind-integration.sh</code> + <code>.github/workflows/us2-kind-integration.yml</code> (NEW)</td>
+<td>✅ executable (workflow_dispatch + weekly; not PR-gating)</td>
 </tr>
 <tr>
 <td><strong>L4 — TEST-cluster canary</strong></td>
@@ -2301,80 +2318,74 @@
 </tbody>
 </table>
 <p><strong>Pass criteria:</strong> all three green in the envtest workflow (CI) — <code>go test ./controller/internal/workspace/ -tags envtest -run TestEnvtestAgentdSidecar</code> with <code>KUBEBUILDER_ASSETS</code>.</p>
-<h2 id="4-l3-kind-cluster-runbook-manual-30-min">4. L3 — kind cluster runbook (manual, ~30 min)<a class="headerlink" href="#4-l3-kind-cluster-runbook-manual-30-min" title="Permanent link">&para;</a></h2>
+<h2 id="4-l3-kind-cluster-executable-scriptsus2-kind-integrationsh">4. L3 — kind cluster (executable: <code>scripts/us2-kind-integration.sh</code>)<a class="headerlink" href="#4-l3-kind-cluster-executable-scriptsus2-kind-integrationsh" title="Permanent link">&para;</a></h2>
 <p><strong>What this level uniquely proves:</strong> kubelet-side behavior — native-sidecar START ORDERING (S6), probe-driven restarts of ONE container not the pod, cross-uid file reads under a real container runtime, and the termination path.</p>
-<h3 id="setup">Setup<a class="headerlink" href="#setup" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>kind<span class="w"> </span>create<span class="w"> </span>cluster<span class="w"> </span>--name<span class="w"> </span>us2-int<span class="w"> </span>--image<span class="w"> </span>kindest/node:v1.35.x<span class="w">   </span><span class="c1"># chart floor 1.35</span>
-</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>helm<span class="w"> </span>install<span class="w"> </span>lss<span class="w"> </span>helm/<span class="w"> </span>--set<span class="w"> </span>controller.agentdDelivery.image<span class="o">=</span><span class="s2">"&lt;digest-pinned agentd image&gt;"</span><span class="w"> </span><span class="se">\</span>
-</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">                     </span>--set<span class="w"> </span>controller.agentdSidecar.enabled<span class="o">=</span><span class="nb">true</span>
-</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>kubectl<span class="w"> </span>apply<span class="w"> </span>-f<span class="w"> </span>&lt;workspace.yaml&gt;<span class="w">   </span><span class="c1"># one test workspace</span>
+<h3 id="running-it">Running it<a class="headerlink" href="#running-it" title="Permanent link">&para;</a></h3>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>scripts/us2-kind-integration.sh<span class="w"> </span><span class="o">[</span>--keep<span class="o">]</span><span class="w">   </span><span class="c1"># --keep: leave cluster + registry up</span>
 </span></code></pre></div>
+<p>CI runs the same script via <code>.github/workflows/us2-kind-integration.yml</code> (workflow_dispatch + weekly Mondays 05:00 UTC; deliberately NOT PR-gating — L0–L2 remain the per-PR gates). Exit codes: <code>0</code> all PASS · <code>1</code> setup failure · <code>2</code> one or more checks FAILED (summary printed). The script is self-contained: throwaway local registry (the agentd sidecar REQUIRES a digest-pinned reference and digest pulls must resolve — the canonical kind <code>certs.d</code> registry wiring), controller-lean chart install (api/mcp/webhooks off — the reconciler needs none of those to build pods), pinned node image matching the chart's 1.35 floor.</p>
+<blockquote>
+<p><strong>Verification honesty:</strong> the script is executed by CI (and any docker-capable host); it was authored on a sandbox without docker, so first execution may need iteration — record outcomes on #978.</p>
+</blockquote>
 <h3 id="checks-map-to-v-matrix-rows-full-matrix-is-us-5">Checks (map to V-matrix rows; full matrix is US-5)<a class="headerlink" href="#checks-map-to-v-matrix-rows-full-matrix-is-us-5" title="Permanent link">&para;</a></h3>
 <table>
 <thead>
 <tr>
 <th>ID</th>
 <th>Check</th>
-<th>Command</th>
 <th>PASS</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td>K1</td>
-<td>Sidecar ordering: <code>credential-setup</code> completes → <code>agentd</code> starts → main container starts only after sidecar <code>StartupProbe</code> passes</td>
-<td><code>kubectl get pod &lt;pod&gt; -o jsonpath='{.spec.initContainers[*].name}'</code>; <code>kubectl describe pod</code> events</td>
-<td>main container's start event timestamp ≥ sidecar ready timestamp</td>
+<td>Sidecar ordering: <code>credential-setup</code> finishedAt &lt; sidecar startedAt &lt; main startedAt (from pod status timestamps)</td>
+<td>ordering holds</td>
 </tr>
 <tr>
 <td>K2</td>
-<td>#857 stamp-before-read: <code>agent-config.json</code> contains the <code>llmsafespaces</code> MCP entry BEFORE opencode's first read</td>
-<td>exec into sidecar: verify stamp; check opencode logs for MCP server registration</td>
-<td>MCP entry present at first boot; no "missing MCP" warnings</td>
+<td>#857 stamp-before-read: <code>agent-config.json</code> carries the <code>llmsafespaces</code> MCP entry at first boot</td>
+<td>MCP entry present</td>
 </tr>
 <tr>
 <td>K3</td>
-<td>Filesystem bridge (S7): opencode (uid 1000) reads the sidecar-stamped <code>agent-config.json</code>; sidecar (uid 2000) reads init-written <code>admin-prompt.md</code>/<code>allowed-dirs.json</code></td>
-<td><code>kubectl exec &lt;pod&gt; -c workspace -- cat /sandbox-runtime/agent-config.json</code>; <code>stat -c %a</code> each</td>
-<td>readable; boot trio 0640; credential files 0600</td>
+<td>Filesystem bridge (S7): boot trio 0640 (admin-prompt may be absent without an API); password 0600</td>
+<td>modes as specced</td>
 </tr>
 <tr>
 <td>K4</td>
-<td>Socket (S1) from inside the pod: sidecar→supervisor round-trip</td>
-<td>port-forward + <code>hello</code>/<code>status</code></td>
-<td>responses per A.1 shapes</td>
+<td>Socket (S1) from inside the pod: <code>hello</code> over <code>127.0.0.1:4099</code> via <code>/dev/tcp</code></td>
+<td>A.1 response shape</td>
 </tr>
 <tr>
 <td>K5</td>
-<td>Watchdog restart (S2) end-to-end in-pod</td>
-<td>kill opencode's listener (e.g. <code>kill -STOP</code>/SIGKILL the opencode pid from the workspace container), watch sidecar logs</td>
-<td>supervisor respawns; marker <code>last-restart-reason.json</code> updated; busy sessions defer</td>
+<td>Child crash (SIGKILL the opencode pid from the workspace container) → supervisor respawns a fresh pid, crash marker written</td>
+<td>new pid + <code>"reason":"crash"</code></td>
 </tr>
 <tr>
 <td>K6</td>
-<td>Probe isolation: wedged SIDECAR restarts only the sidecar</td>
-<td>SIGSTOP the sidecar process; wait past liveness budget</td>
-<td>sidecar restartCount +1, main container untouched, opencode keeps serving :4096</td>
+<td><code>crictl stop</code> the SIDECAR → sidecar restartCount +1, main untouched, opencode still serving :4096</td>
+<td>isolation holds</td>
 </tr>
 <tr>
 <td>K7</td>
-<td>Wedged CHILD triggers workspace-container restart (TCP liveness), sidecar survives</td>
-<td>kill opencode from inside</td>
-<td>workspace container restarts, sidecar does NOT restart (restartPolicy Always ≠ pod restart)</td>
+<td><code>crictl stop</code> the WORKSPACE container → main restartCount +1, sidecar unchanged, pod returns Ready</td>
+<td>isolation holds</td>
 </tr>
 <tr>
 <td>K8</td>
-<td>Termination: pod delete drains both containers within ~5s grace</td>
-<td><code>time kubectl delete pod</code></td>
-<td>clean exit, no orphaned child in events</td>
+<td>Pod delete completes within the 5s grace + API overhead</td>
+<td>≤ 30s wall</td>
 </tr>
 </tbody>
 </table>
-<p><strong>Record results</strong> as a comment on #978 (template: ID / PASS-FAIL / evidence command output).</p>
+<p><strong>Record results</strong> as a comment on #978 (template: ID / PASS-FAIL / evidence command output). K6/K7 degrade to SKIP when <code>crictl</code> is unavailable on the node.</p>
+<h3 id="l15-supervisor-subprocess-supervisor_subprocess_testgo-new">L1.5 — supervisor subprocess (<code>supervisor_subprocess_test.go</code>, new)<a class="headerlink" href="#l15-supervisor-subprocess-supervisor_subprocess_testgo-new" title="Permanent link">&para;</a></h3>
+<p>Between L1 and L2: the REAL <code>supervise-opencode</code> subcommand as a REAL process — process start, env parsing, listener bootstrap, signal handling (SIGTERM → exit 0, child reaped, no orphans), subreaper — driven over real TCP by the real <code>controlClient</code>. Socket address via the <code>LLMSAFESPACES_CONTROL_SOCKET_ADDR</code> test seam (production keeps the fixed <code>127.0.0.1:4099</code>; the override follows the same pattern as <code>LLMSAFESPACES_AGENT_CONFIG_PATH</code>). Four tests: full Appendix-A lifecycle (hello/status/metrics/spawn_env landing in the next real child's environ, wholesale replacement, pid swap), child-crash respawn (socket stays up through the crash window, crash counter increments), clean shutdown + no orphaned child, and A.3 malformed-input error shapes against the real process. The only fake is the <code>opencode</code> binary (single-process <code>exec sleep</code> stub — a background-sleep variant once held the test's stdout pipe open past exit and failed <code>go test</code> with "WaitDelay expired").</p>
 <h2 id="5-what-each-level-cannot-catch-why-the-next-one-exists">5. What each level cannot catch (why the next one exists)<a class="headerlink" href="#5-what-each-level-cannot-catch-why-the-next-one-exists" title="Permanent link">&para;</a></h2>
 <ul>
 <li><strong>L0/L0.5</strong> can't catch: two correct halves wired wrong (wrong addr, wrong port, wrong type at the seam).</li>
-<li><strong>L1</strong> can't catch: pod-spec rejection by real admission (it never runs a kubelet/API server), kubelet start ordering, container-level restart isolation.</li>
+<li><strong>L1/L1.5</strong> can't catch: pod-spec rejection by real admission (no kubelet/API server), kubelet start ordering, container-level restart isolation.</li>
 <li><strong>L2</strong> can't catch: anything kubelet does at runtime (probe execution, native-sidecar gating, signal delivery).</li>
 <li><strong>L3</strong> can't catch: SLO/regression at fleet scale, gVisor (runsc) divergence, mixed-generation rollback convergence — that is L4/US-5 (V-matrix + D6.1 exercise on→off→on).</li>
 </ul>
@@ -2383,7 +2394,7 @@
 <li><strong>US-3</strong>: extend <code>..._SecretBackedEnv</code> to the <code>agentdPassword</code> key; add V4 (401 with workspace password on control-plane endpoints).</li>
 <li><strong>US-4</strong>: <code>spawn_env</code> producer end-to-end (sidecar reload → composed env → socket → next spawn) — extend <code>..._SpawnEnvHandoff</code> to drive the REAL reload handler; mount-relocation assertions in K3.</li>
 <li><strong>US-5</strong>: L4 canary — full V-matrix (V1–V9) on TEST, D6.1 rollback EXERCISE (on→off→on with mixed-generation pods healthy at each step), gVisor leg per V9.</li>
-<li><strong>L3 automation</strong>: if K1–K8 prove high-value manually, promote to <code>kind</code>-in-CI (weekly job) — decision point after US-5.</li>
+<li><strong>L3 in CI</strong>: already wired (workflow_dispatch + weekly); promote to per-PR only if the suite proves stable and fast enough — decision point after US-5.</li>
 </ol>
 
 
@@ -2407,7 +2418,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 20, 2026 16:56:11 UTC"><span class="timeago" datetime="2026-08-20T16:56:11+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 20, 2026 16:56:11 UTC">2026-08-20</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 20, 2026 18:38:48 UTC"><span class="timeago" datetime="2026-08-20T18:38:48+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 20, 2026 18:38:48 UTC">2026-08-20</span>
   </span>
 
     
