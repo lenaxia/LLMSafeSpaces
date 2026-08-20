@@ -4,7 +4,7 @@ import { messagesApi } from "../api/messages";
 export type QueuedMessage = {
   id: string;
   text: string;
-  status: "pending" | "error";
+  status: "pending" | "delivering" | "verifying" | "error";
   error?: string;
   sessionId: string;
 };
@@ -37,9 +37,13 @@ export function useMessageQueue(
           .map((m) => ({
             id: m.id,
             text: m.text,
-            // Server error entries (outbox terminal status) render as
-            // retryable locally; everything else is pending.
-            status: (m.status === "error" ? "error" : "pending") as QueuedMessage["status"],
+            // Server statuses map 1:1 (#987): error = retryable,
+            // verifying = sent, outcome being confirmed (never
+            // re-sent blindly), delivering = in flight. Unknown
+            // statuses degrade to pending.
+            status: (["error", "verifying", "delivering"].includes(m.status ?? "")
+              ? m.status
+              : "pending") as QueuedMessage["status"],
             error: m.lastError,
             sessionId: m.session_id,
           }));

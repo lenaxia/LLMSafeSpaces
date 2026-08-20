@@ -215,3 +215,22 @@ describe("useMessageQueue (refresh-based reconciliation)", () => {
     await waitFor(() => expect(result.current.queuedMessages).toHaveLength(1));
   });
 });
+
+  it("maps server verifying/delivering statuses through (#987)", async () => {
+    (messagesApi.getQueue as ReturnType<typeof vi.fn>).mockResolvedValue({
+      messages: [
+        { id: "msg_v", text: "sent unconfirmed", session_id: "ses-1", workspace_id: "ws-1", enqueued_at: "", retry_count: 0, status: "verifying" },
+        { id: "msg_d", text: "in flight", session_id: "ses-1", workspace_id: "ws-1", enqueued_at: "", retry_count: 0, status: "delivering" },
+        { id: "msg_u", text: "unknown future status", session_id: "ses-1", workspace_id: "ws-1", enqueued_at: "", retry_count: 0, status: "teleported" },
+      ],
+    });
+
+    const { result } = render();
+
+    await waitFor(() => {
+      expect(result.current.queuedMessages).toHaveLength(3);
+    });
+    expect(result.current.queuedMessages[0]!.status).toBe("verifying");
+    expect(result.current.queuedMessages[1]!.status).toBe("delivering");
+    expect(result.current.queuedMessages[2]!.status).toBe("pending"); // unknown server statuses degrade to pending
+  });

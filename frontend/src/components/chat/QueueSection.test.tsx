@@ -148,3 +148,32 @@ describe("QueueSection", () => {
     expect(screen.queryByText(/queued/)).not.toBeInTheDocument();
   });
 });
+
+describe("QueueSection in-flight states (#987)", () => {
+  it("renders verifying with confirming label, Dismiss but no Retry", async () => {
+    const onRetry = vi.fn();
+    render(
+      <QueueSection
+        messages={[makeMsg({ status: "verifying", text: "long turn" })]}
+        onRetry={onRetry}
+        onDismiss={vi.fn()}
+        isMobile={false}
+      />,
+    );
+    expect(screen.getByText("Sent — confirming delivery…")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Retry")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Dismiss")).toBeInTheDocument();
+  });
+
+  it("renders delivering with sending label", () => {
+    render(
+      <QueueSection
+        messages={[makeMsg({ status: "delivering", text: "going out" })]}
+        onRetry={vi.fn()}
+        onDismiss={vi.fn()}
+        isMobile={false}
+      />,
+    );
+    expect(screen.getByText("Sending…")).toBeInTheDocument();
+  });
+});
