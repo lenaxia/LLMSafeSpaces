@@ -1282,3 +1282,112 @@ func TestAdapterMeteringFromEvent(t *testing.T) {
 		assert.Equal(t, "p", u.ProviderID, "provider fallback applies")
 	})
 }
+
+// --- ClientEventsFromEvent / RetryFromEvent (US-65.8 client bridge) ---
+
+func TestAdapterClientEventsFromEvent(t *testing.T) {
+	a := NewAdapter(nil, nil, zap.NewNop())
+
+	t.Run("part delta maps to contract part.delta", func(t *testing.T) {
+		raw := `{"id":"evt1","type":"message.part.delta","properties":{"sessionID":"ses_a","messageID":"msg_1","partID":"prt_1","field":"text","delta":"The"}}`
+		evts := a.ClientEventsFromEvent("message.part.delta", raw)
+		require.Len(t, evts, 1)
+		e := evts[0]
+		assert.Equal(t, session.EventPartDelta, e.Type)
+		assert.Equal(t, "ses_a", e.SessionID)
+		assert.Equal(t, "msg_1", e.MessageID)
+		assert.Equal(t, "prt_1", e.PartID)
+		assert.Equal(t, "The", e.Delta)
+	})
+
+	t.Run("part update maps to contract part.end with translated part", func(t *testing.T) {
+		raw := `{"id":"evt2","type":"message.part.updated","properties":{"sessionID":"ses_a","part":{"id":"prt_2","sessionID":"ses_a","messageID":"msg_1","type":"text","text":"hello world"}}}`
+		evts := a.ClientEventsFromEvent("message.part.updated", raw)
+		require.Len(t, evts, 1)
+		e := evts[0]
+		assert.Equal(t, session.EventPartEnd, e.Type)
+		assert.Equal(t, "ses_a", e.SessionID)
+		assert.Equal(t, "msg_1", e.MessageID)
+		assert.Equal(t, "prt_2", e.PartID)
+		require.NotNil(t, e.Part)
+		assert.Equal(t, session.PartText, e.Part.Type)
+		assert.Equal(t, "hello world", e.Part.Text)
+	})
+
+	t.Run("step-finish part update yields context usage session update", func(t *testing.T) {
+		raw := `{"id":"evt3","type":"message.part.updated","properties":{"sessionID":"ses_a","part":{"id":"prt_3","type":"step-finish","tokens":{"input":2310,"cache":{"read":1280,"write":0}}}}}`
+		evts := a.ClientEventsFromEvent("message.part.updated", raw)
+		require.Len(t, evts, 1)
+		e := evts[0]
+		assert.Equal(t, session.EventSessionUpdated, e.Type)
+		require.NotNil(t, e.Session)
+		require.NotNil(t, e.Session.ContextUsage)
+		assert.Equal(t, int64(3590), e.Session.ContextUsage.Used)
+	})
+
+	t.Run("step-start part update yields nothing", func(t *testing.T) {
+		raw := `{"id":"evt4","type":"message.part.updated","properties":{"sessionID":"ses_a","part":{"id":"prt_4","type":"step-start"}}}`
+		assert.Empty(t, a.ClientEventsFromEvent("message.part.updated", raw))
+	})
+
+	t.Run("session.updated yields title/parent session update", func(t *testing.T) {
+		raw := `{"id":"evt5","type":"session.updated","properties":{"sessionID":"ses_a","info":{"id":"ses_a","title":"New title","parentID":"ses_root"}}}`
+		evts := a.ClientEventsFromEvent("session.updated", raw)
+		require.Len(t, evts, 1)
+		e := evts[0]
+		assert.Equal(t, session.EventSessionUpdated, e.Type)
+		require.NotNil(t, e.Session)
+		assert.Equal(t, "ses_a", e.Session.ID)
+		assert.Equal(t, "New title", e.Session.Title)
+		assert.Equal(t, "ses_root", e.Session.ParentID)
+		assert.Nil(t, e.Session.ContextUsage, "session.updated tokens are CUMULATIVE — never map to ContextUsage (per-step semantics)")
+	})
+
+	t.Run("error events map to contract error", func(t *testing.T) {
+		raw := `{"id":"evt6","type":"session.error","properties":{"sessionID":"ses_a","error":{"name":"ContextOverflowError","data":{"message":"too long"}}}}`
+		evts := a.ClientEventsFromEvent("session.error", raw)
+		require.Len(t, evts, 1)
+		assert.Equal(t, session.EventError, evts[0].Type)
+		require.NotNil(t, evts[0].Error)
+		assert.Equal(t, "ContextOverflowError", evts[0].Error.Code)
+		assert.Equal(t, "too long", evts[0].Error.Message)
+
+		raw2 := `{"id":"evt7","type":"session.next.step.failed","properties":{"sessionID":"ses_a","error":{"type":"unknown","message":"HTTP 401"}}}`
+		evts2 := a.ClientEventsFromEvent("session.next.step.failed", raw2)
+		require.Len(t, evts2, 1)
+		assert.Equal(t, session.EventError, evts2[0].Type)
+		assert.Equal(t, "HTTP 401", evts2[0].Error.Message)
+	})
+
+	t.Run("non-client events yield nothing (hot path)", func(t *testing.T) {
+		for _, typ := range []string{"session.status", "server.heartbeat", "plugin.added", "file.edited"} {
+			assert.Empty(t, a.ClientEventsFromEvent(typ, `{"id":"e","type":"`+typ+`","properties":{"sessionID":"s"}}`), typ)
+		}
+	})
+}
+
+func TestAdapterRetryFromEvent(t *testing.T) {
+	a := NewAdapter(nil, nil, zap.NewNop())
+
+	t.Run("retry status decodes", func(t *testing.T) {
+		raw := `{"id":"evt8","type":"session.status","properties":{"sessionID":"ses_a","status":{"type":"retry","attempt":2,"message":"provider 429","next":1787023325114,"action":"retry"}}}`
+		sid, retry, ok := a.RetryFromEvent("session.status", raw)
+		require.True(t, ok)
+		assert.Equal(t, "ses_a", sid)
+		require.NotNil(t, retry)
+		assert.Equal(t, 2, retry.Attempt)
+		assert.Equal(t, "provider 429", retry.Message)
+		assert.Equal(t, int64(1787023325114), retry.NextAt)
+		assert.Equal(t, "retry", retry.Action)
+	})
+
+	t.Run("busy and idle are not retries", func(t *testing.T) {
+		_, _, ok := a.RetryFromEvent("session.status", `{"properties":{"sessionID":"s","status":{"type":"busy"}}}`)
+		assert.False(t, ok)
+	})
+
+	t.Run("other event types are not retries", func(t *testing.T) {
+		_, _, ok := a.RetryFromEvent("session.updated", `{"properties":{}}`)
+		assert.False(t, ok)
+	})
+}

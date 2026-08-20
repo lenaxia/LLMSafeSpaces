@@ -98,16 +98,20 @@ function seedSessionsCache(qc: QueryClient, workspaceId: string, sessionId: stri
   ]);
 }
 
-/** Fire a synthetic session.next.step.ended SSE event via the captured handler. */
-function fireStepEnded(sessionId: string, inputTokens: number) {
+/**
+ * Fire a synthetic contract usage event via the captured handler
+ * (US-65.8: the realtime context signal is the platform session.event
+ * carrying session.contextUsage — the server translates step-finish
+ * parts; the client never sees agent event names).
+ */
+function fireStepEnded(sessionId: string, usedTokens: number) {
   capturedSSEHandler?.({
-    type: "agent.event",
-    event_type: "session.next.step.ended",
+    type: "session.event",
+    session_id: sessionId,
     data: {
-      properties: {
-        sessionID: sessionId,
-        tokens: { input: inputTokens, output: 200, reasoning: 0, cache: { read: 0, write: 0 } },
-      },
+      type: "session.updated",
+      sessionId,
+      session: { id: sessionId, contextUsage: { used: usedTokens } },
     },
   });
 }

@@ -217,19 +217,16 @@ Every new opencode quirk becomes a platform hack. Every eventual agent swap beco
 
 ---
 
-### US-65.8: Frontend migration to contract (can lag)
+### US-65.8: Frontend migration to contract
+
+**Status:** SSE realtime path landed (context usage + title + retry + errors + part streaming via `Adapter.ClientEventsFromEvent` → `session.event` SSE; the browser consumes contract/platform shapes only — zero agent event-name or envelope parsing in `frontend/src`). History rendering was already contract-shaped (US-65.4). Remaining: OpenAPI/SDK regeneration from `pkg/session` types (#968) — the SDKs still carry the pre-contract `MessageResponse` proxy shape.
 
 **Goal:** Web and mobile clients consume `pkg/session` types via OpenAPI-generated SDK.
 
-**Files:**
-- Modified: `sdks/openapi.yaml` — regenerate from contract types.
-- Modified: `sdks/typescript/`, `sdks/python/` — regenerate.
-- Modified: `frontend/` — replace opencode-shaped rendering with contract-shaped rendering.
-
 **Done when:**
-- Frontend renders `Part` types (text, reasoning, tool with state, file change, custom) from the contract.
-- Mobile renders the same shapes.
-- No opencode-specific parsing in any client.
+- Frontend renders `Part` types (text, reasoning, tool with state, file change, custom) from the contract. ✓ (history: US-65.4; realtime: US-65.8 SSE bridge)
+- Mobile renders the same shapes. ✓ by construction — mobile clients consume the same `session.event`/contract surfaces; no mobile client exists in-repo yet.
+- No opencode-specific parsing in any client. ✓ (repolint event-literal rule guards the server seam; `frontend/src` greps clean)
 
 ---
 

@@ -28,28 +28,12 @@ import { Spinner } from "../components/ui/Spinner";
 import { KebabMenu } from "../components/ui/KebabMenu";
 import type { KebabMenuItem } from "../components/ui/KebabMenu";
 import { sessionsApi } from "../api/sessions";
-import type { Message, SessionListItem, WorkspaceStreamEvent, AgentEvent, QuestionRequest, PermissionRequest } from "../api/types";
+import type { Message, SessionListItem, WorkspaceStreamEvent, SessionContractEvent, SessionStatusEvent, ContractEvent, QuestionRequest, PermissionRequest } from "../api/types";
 import { QuestionPrompt } from "../components/chat/QuestionPrompt";
 import { PermissionPrompt } from "../components/chat/PermissionPrompt";
 import { useClearPendingUnread, useAddPendingQuestion, useAddPendingPermission, useRemovePendingAction, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, useIsSessionBusy, useWorkspaceInputSnapshot } from "../providers/SessionActivityProvider";
 
 type StreamPart = { type: "text" | "thinking" | "tool"; text: string; toolState?: string; toolStartedAt?: string; toolCallID?: string; toolInput?: unknown; toolOutput?: string; messageID?: string };
-
-// parseToolStartedAt extracts a tool call's start time from an opencode
-// SSE tool-part state, handling both wire shapes (design 0050 D5):
-// — 1.18.10+ flat: state.time.start, epoch millis (number)
-// — ≤1.15.x nested: state.startedAt, ISO-8601 string
-// Normalized to ISO so consumers (the elapsed badge) can Date.parse it.
-// Returns undefined when absent — the badge degrades to absent.
-function parseToolStartedAt(state: Record<string, unknown> | undefined): string | undefined {
-  if (!state) return undefined;
-  const nested = state.startedAt;
-  if (typeof nested === "string" && nested) return nested;
-  const time = state.time as { start?: unknown } | undefined;
-  const start = time?.start;
-  if (typeof start === "number" && start > 0) return new Date(start).toISOString();
-  return undefined;
-}
 
 // Reconnect-mode activation window. Reconnect mode ("mounted into an
 // in-progress run") may only ARM within this long of the page mounting into
@@ -578,48 +562,24 @@ export function ChatPage() {
   const currentThinkingIdxRef = useRef<number>(-1);
   const currentTextIdxRef = useRef<number>(-1);
 
-  const parseStreamEvent = useCallback((event: AgentEvent, currentSessionId: string) => {
-    let payload = event.data as Record<string, unknown> | undefined;
-    if (!payload) return;
+  // handleContractEvent renders one CONTRACT event (US-65.8: clients
+  // consume pkg/session shapes only — the agent's wire names, envelopes,
+  // and part shapes are translated server-side behind the adapter seam).
+  const handleContractEvent = useCallback((ce: ContractEvent, currentSessionId: string) => {
+    if (!ce?.type) return;
+    if (ce.sessionId && ce.sessionId !== currentSessionId) return;
 
-    if (!payload.type && payload.payload && typeof payload.payload === "object") {
-      payload = payload.payload as Record<string, unknown>;
+    // US-15.4 boundary gate: in reconnect mode, ignore events for parts
+    // already rendered from history.
+    if (isReconnectMode.current && ce.partId) {
+      if (historyPartIds.current.has(ce.partId)) return;
+      if (ce.type === "part.delta" && !knownLivePartIds.current.has(ce.partId)) return;
+      knownLivePartIds.current.add(ce.partId);
     }
 
-    if (!payload?.type) return;
-
-    const props = payload.properties as Record<string, unknown> | undefined;
-    if (!props) return;
-
-    const eventSessionId = (props.sessionID as string) || (props.session_id as string);
-    if (eventSessionId && eventSessionId !== currentSessionId) return;
-
-    // US-15.4: Boundary detection gate — in reconnect mode, ignore events for parts already in history
-    if (isReconnectMode.current) {
-      if (payload.type === "message.part.updated") {
-        const part = props.part as Record<string, unknown> | undefined;
-        const partId = part?.id as string | undefined;
-        if (partId && historyPartIds.current.has(partId)) {
-          return; // Already rendered from history
-        }
-        if (partId) {
-          knownLivePartIds.current.add(partId);
-        }
-      } else if (payload.type === "message.part.delta") {
-        const partId = props.partID as string | undefined;
-        if (partId && historyPartIds.current.has(partId)) {
-          return; // Delta for a history part — ignore
-        }
-        if (partId && !knownLivePartIds.current.has(partId)) {
-          return; // Orphan delta — ignore
-        }
-      }
-    }
-
-    if (payload.type === "message.part.delta") {
-      const delta = props.delta as string | undefined;
+    if (ce.type === "part.delta") {
+      const delta = ce.delta;
       if (!delta) return;
-
       const target = activePartTypeRef.current;
       if (target === "reasoning" || target === "text") {
         const expectedType = target === "reasoning" ? "thinking" : "text";
@@ -631,45 +591,32 @@ export function ChatPage() {
         });
       }
       // "user-echo" and null: discard
-    } else if (payload.type === "message.part.updated") {
-      const part = props.part as Record<string, unknown> | undefined;
+    } else if (ce.type === "part.end") {
+      const part = ce.part;
       if (!part) return;
+      const partMessageID = ce.messageId || undefined;
 
-      // Extract the messageID this part belongs to. Opencode partitions an
-      // assistant turn into multiple messages (each ending in a tool call);
-      // the streaming view mirrors this partition — one bubble per messageID.
-      // Deltas that follow this snapshot append onto the same StreamPart
-      // (activePartTypeRef routes them to the last text/thinking entry),
-      // which already carries this messageID — so no per-partID lookup is
-      // needed.
-      const partMessageID = (part.messageID as string) || undefined;
-
-      const partType = part.type as string | undefined;
-      if (partType === "reasoning" || partType === "thinking") {
+      if (part.type === "reasoning") {
         activePartTypeRef.current = "reasoning";
-        const text = typeof part.text === "string" ? part.text : "";
+        const text = part.reasoning ?? "";
         if (text) {
-          // Snapshot: update the current thinking block by tracked index
           const idx = currentThinkingIdxRef.current;
           setSseStreamParts((prev) => {
             if (idx >= 0 && idx < prev.length && prev[idx]!.type === "thinking") {
               const updated = [...prev];
-              updated[idx] = { ...prev[idx]!, type: "thinking", text, messageID: partMessageID ?? prev[idx]!.messageID };
+              updated[idx] = { ...updated[idx]!, type: "thinking", text, messageID: partMessageID ?? prev[idx]!.messageID };
               return updated;
             }
-            // Fallback: append if no tracked block
             return [...prev, { type: "thinking", text, messageID: partMessageID }];
           });
         } else {
-          // Empty text = new thinking block starting; track its index
           setSseStreamParts((prev) => {
             currentThinkingIdxRef.current = prev.length;
             return [...prev, { type: "thinking", text: "", messageID: partMessageID }];
           });
         }
-      } else if (partType === "text") {
-        const text = typeof part.text === "string" ? part.text : "";
-        // Detect user echo
+      } else if (part.type === "text") {
+        const text = part.text ?? "";
         if (sentTextRef.current && text === sentTextRef.current) {
           activePartTypeRef.current = "user-echo";
         } else if (sentTextRef.current && text.startsWith(sentTextRef.current)) {
@@ -679,7 +626,7 @@ export function ChatPage() {
           setSseStreamParts((prev) => {
             if (idx >= 0 && idx < prev.length && prev[idx]!.type === "text") {
               const updated = [...prev];
-              updated[idx] = { ...prev[idx]!, type: "text", text: stripped, messageID: partMessageID ?? prev[idx]!.messageID };
+              updated[idx] = { ...updated[idx]!, type: "text", text: stripped, messageID: partMessageID ?? prev[idx]!.messageID };
               return updated;
             }
             return [...prev, { type: "text", text: stripped, messageID: partMessageID }];
@@ -691,63 +638,54 @@ export function ChatPage() {
             setSseStreamParts((prev) => {
               if (idx >= 0 && idx < prev.length && prev[idx]!.type === "text") {
                 const updated = [...prev];
-                updated[idx] = { ...prev[idx]!, type: "text", text, messageID: partMessageID ?? prev[idx]!.messageID };
+                updated[idx] = { ...updated[idx]!, type: "text", text, messageID: partMessageID ?? prev[idx]!.messageID };
                 return updated;
               }
               return [...prev, { type: "text", text, messageID: partMessageID }];
             });
           } else {
-            // Empty = new text block starting; track its index
             setSseStreamParts((prev) => {
               currentTextIdxRef.current = prev.length;
               return [...prev, { type: "text", text: "", messageID: partMessageID }];
             });
           }
         }
-      } else if (partType === "tool" || partType === "tool_use" || partType === "tool_call") {
-        // opencode ToolPart: { type:"tool", tool:"bash", callID:"...", state:{status,input,output,title} }
-        const toolName = (part.tool as string) || (part.name as string) || "";
-        const state = part.state as Record<string, unknown> | undefined;
-        const toolState = (state?.status as string) || "";
-        const title = (state?.title as string) || "";
-        const displayText = title ? `${toolName}: ${title}` : toolName;
-        const callID = (part.callID as string) || undefined;
-        const toolInput = state?.input;
-        const toolOutput = (state?.output as string) || undefined;
-        const toolStartedAt = parseToolStartedAt(state);
+      } else if (part.type === "tool" && part.tool) {
+        // Flat contract ToolPart (mirrors api/messages.ts history
+        // rendering): name/input/output on the tool; state carries
+        // status + ISO startedAt — no agent-shape parsing.
+        const tool = part.tool;
+        const toolName = tool.name || "";
+        const toolState = tool.state?.status || "";
+        const callID = tool.callId;
+        const toolInput = tool.input;
+        const toolOutput = typeof tool.output === "string" ? tool.output : undefined;
+        const toolStartedAt = tool.state?.startedAt;
         setSseStreamParts((prev) => {
-          // If this is an update to an existing tool call (same callID), update in place
           if (callID) {
             const existingIdx = prev.findIndex((p: StreamPart) => p.type === "tool" && p.toolCallID === callID);
             if (existingIdx >= 0) {
               const updated = [...prev];
-              // Preserve original tool name if current event doesn't have one
-              const existingName = prev[existingIdx]!.text.split(":")[0] || "";
-              const effectiveName = toolName || existingName;
-              const effectiveText = title ? `${effectiveName}: ${title}` : effectiveName;
               updated[existingIdx] = {
                 ...prev[existingIdx]!,
                 type: "tool",
-                text: effectiveText,
+                text: toolName || prev[existingIdx]!.text,
                 toolState,
                 toolCallID: callID,
                 toolInput,
                 toolOutput,
                 messageID: partMessageID ?? prev[existingIdx]!.messageID,
-                // The start time arrives on the first event for a call;
-                // later updates may omit it — preserve the original so
-                // the elapsed badge anchors to when the tool began.
                 toolStartedAt: toolStartedAt ?? prev[existingIdx]!.toolStartedAt,
               };
               return updated;
             }
           }
-          return [...prev, { type: "tool", text: displayText, toolState, toolStartedAt, toolCallID: callID, toolInput, toolOutput, messageID: partMessageID }];
+          return [...prev, { type: "tool", text: toolName, toolState, toolStartedAt, toolCallID: callID, toolInput, toolOutput, messageID: partMessageID }];
         });
         activePartTypeRef.current = null;
       }
-      // step-start, step-finish: don't change routing or parts
-
+      // file-change / custom parts: rendered from history on reconcile;
+      // no live streaming treatment.
     }
   }, []);
 
@@ -773,6 +711,17 @@ export function ChatPage() {
           clearSessionPendingPrompts(event.session_id);
         } else if (event.status === "busy") {
           setRetryStatus(null);
+        } else if (event.status === "retry") {
+          // Platform retry payload (translated server-side, US-65.8).
+          const r = (event as SessionStatusEvent).data;
+          if (r) {
+            setRetryStatus({
+              attempt: typeof r.attempt === "number" ? r.attempt : 1,
+              message: typeof r.message === "string" ? r.message : "",
+              next: typeof r.next === "number" ? r.next : Date.now(),
+              action: r.action as unknown as RetryStatus["action"],
+            });
+          }
         }
       }
     } else if (event.type === "queue.update" && workspaceId) {
@@ -784,100 +733,59 @@ export function ChatPage() {
       } else if (qe.event === "dismissed" && qe.messageID) {
         queue.removeById(qe.messageID);
       }
-    } else if (event.type === "agent.event" && workspaceId) {
-      const oe = event as AgentEvent;
-      // Handle session.updated — update sidebar title in real-time
-      if (oe.event_type === "session.updated") {
-        const payload = oe.data as Record<string, unknown> | undefined;
-        const props = (payload?.properties ?? (payload?.payload && (payload.payload as Record<string, unknown>)?.properties)) as Record<string, unknown> | undefined;
-        const sid = (props?.id as string) || (props?.sessionID as string);
-        const title = props?.title as string | undefined;
-        if (sid && title) {
+    } else if (event.type === "session.event" && workspaceId) {
+      // US-65.8: contract events — the only agent-derived stream the
+      // client consumes. Agent wire shapes are translated server-side.
+      const ce = (event as SessionContractEvent).data;
+      if (!ce) return;
+
+      if (ce.type === "session.updated" && ce.session) {
+        // Sidebar title in real time
+        if (ce.session.title) {
+          const sid = ce.session.id;
+          const title = ce.session.title;
           queryClient.setQueryData<SessionListItem[]>(["sessions", workspaceId], (old) => {
             if (!old) return old;
             return old.map((s) => s.id === sid ? { ...s, title } : s);
           });
         }
-      }
-      // Handle session.status inside agent.event — this is where the full
-      // retry payload lives. The proxy also synthesizes a string "busy" event
-      // on the session.status channel for retry, but the rich retry fields
-      // (attempt, message, next, action) only travel through this path.
-      if (oe.event_type === "session.status" && sessionId) {
-        const payload = oe.data as Record<string, unknown> | undefined;
-        const props = (payload?.properties ?? (payload?.payload && (payload.payload as Record<string, unknown>)?.properties)) as Record<string, unknown> | undefined;
-        const sid = (props?.sessionID as string) || (props?.id as string);
-        if (sid === sessionId) {
-          const statusObj = props?.status as Record<string, unknown> | undefined;
-          if (statusObj?.type === "retry") {
-            setRetryStatus({
-              attempt: typeof statusObj.attempt === "number" ? statusObj.attempt : 1,
-              message: typeof statusObj.message === "string" ? statusObj.message : "",
-              next: typeof statusObj.next === "number" ? statusObj.next : Date.now(),
-              action: statusObj.action as RetryStatus["action"],
-            });
-          }
-        }
-      }
-      // Handle session.next.step.ended — update context_used in real time.
-      // The proxy also persists this to session_index (DB) for cold-start.
-      // Here we update the in-memory ref map so the DiskUsageBar reflects the
-      // new value immediately without waiting for the next sessions poll.
-      if (oe.event_type === "session.next.step.ended") {
-        const payload = oe.data as Record<string, unknown> | undefined;
-        const props = (payload?.properties ?? (payload?.payload && (payload.payload as Record<string, unknown>)?.properties)) as Record<string, unknown> | undefined;
-        const sid = props?.sessionID as string | undefined;
-        const tokens = props?.tokens as Record<string, unknown> | undefined;
-        if (sid && tokens) {
-          const input = typeof tokens.input === "number" ? tokens.input : 0;
-          const cache = tokens.cache as Record<string, unknown> | undefined;
-          const cacheRead = typeof cache?.read === "number" ? cache.read : 0;
-          const cacheWrite = typeof cache?.write === "number" ? cache.write : 0;
-          const promptTokens = input + cacheRead + cacheWrite;
-          contextBySessionRef.current.set(sid, promptTokens);
+        // Real-time context usage (per-step occupancy semantics — the
+        // contract guarantees session.updated tokens are NEVER mapped to
+        // contextUsage, so this value is always the correct numerator).
+        if (ce.session.contextUsage && ce.session.id) {
+          contextBySessionRef.current.set(ce.session.id, ce.session.contextUsage.used);
           setContextVersion((v) => v + 1);
         }
-      }
-      // Handle session.error — surface LLM/provider errors as a message bubble.
-      // Written to sessionErrors (not localMessages) so reconcileOnIdle's
-      // setLocalMessages([]) cannot wipe the error before the user sees it.
-      if (oe.event_type === "session.error" && sessionId) {
-        const payload = oe.data as Record<string, unknown> | undefined;
-        const props = (payload?.properties ?? (payload?.payload && (payload.payload as Record<string, unknown>)?.properties)) as Record<string, unknown> | undefined;
-        const sid = (props?.sessionID as string) || (props?.id as string);
-        if (sid === sessionId) {
-          const err = props?.error as Record<string, unknown> | undefined;
-          const errData = err?.data as Record<string, unknown> | undefined;
-          const errName = err?.name as string | undefined;
-          const rawMessage = errData?.message as string | undefined;
-
-          // Map known error names to actionable user-facing messages.
-          let text: string;
-          if (errName === "ContextOverflowError") {
-            text = "Context limit reached — type /compact to summarize the conversation and continue";
-          } else if (errName === "MessageOutputLengthError") {
-            text = "Response was too long for this model's output limit";
-          } else if (errName === "ProviderAuthError") {
-            const provider = errData?.providerID as string | undefined;
-            text = provider
-              ? `Authentication failed for ${provider} — check your credentials`
-              : (rawMessage ?? "Authentication failed — check your credentials");
-          } else {
-            text = rawMessage ?? errName ?? "Agent error";
-          }
-
-          setSessionErrors((prev) => [...prev, {
-            id: `error-${++idCounterRef.current}`,
-            role: "assistant",
-            parts: [{ type: "error" as const, text: `⚠️ ${text}` }],
-          }]);
-          // US-16.12: Clear stale prompts on session error (global, scoped).
-          clearSessionPendingPrompts(sessionId ?? "");
+      } else if (ce.type === "error" && sessionId && ce.sessionId === sessionId) {
+        // Map known error codes to actionable user-facing messages.
+        const code = ce.error?.code ?? "";
+        const rawMessage = ce.error?.message ?? "";
+        let text: string;
+        if (code === "ContextOverflowError") {
+          text = "Context limit reached — type /compact to summarize the conversation and continue";
+        } else if (code === "MessageOutputLengthError") {
+          text = "Response was too long for this model's output limit";
+        } else if (code === "ProviderAuthError") {
+          text = rawMessage
+            ? `Authentication failed: ${rawMessage} — check the API key in Settings`
+            : "The configured provider rejected the request — check the API key in Settings";
+        } else if (code === "ProviderRateLimitError" || /rate limit/i.test(rawMessage)) {
+          text = "The provider rate-limited this workspace — retrying shortly";
+        } else {
+          text = rawMessage || code || "The agent hit an unexpected error";
         }
+        setSessionErrors((prev) => [...prev, {
+          id: `error-${++idCounterRef.current}`,
+          role: "assistant",
+          parts: [{ type: "error" as const, text: `⚠️ ${text}` }],
+        }]);
+        // US-16.12: Clear stale prompts on session error (global, scoped).
+        clearSessionPendingPrompts(sessionId ?? "");
       }
-      // Route streaming events to the active session parser
+
+      // Route streaming events to the active session renderer
       if (sessionId) {
-        parseStreamEvent(oe, sessionId);
+        handleContractEvent(ce, sessionId);
       }
     } else if (event.type === "agent.question") {
       const req = event.data as QuestionRequest;
@@ -900,7 +808,7 @@ export function ChatPage() {
     } else {
       console.debug("[ChatPage] unhandled SSE event type:", event.type);
     }
-  }, [queryClient, workspaceId, sessionId, parseStreamEvent, notifySessionIdle, reconcileOnIdle, queue, addPendingQuestion, addPendingPermission, removePendingAction, clearSessionPendingPrompts, clearStreamTimedOut]);
+  }, [queryClient, workspaceId, sessionId, handleContractEvent, notifySessionIdle, reconcileOnIdle, queue, addPendingQuestion, addPendingPermission, removePendingAction, clearSessionPendingPrompts, clearStreamTimedOut]);
 
   // US-15.2: On SSE reconnect, re-poll status to catch missed transitions.
   // Also resync the transcript: opencode history is authoritative after an

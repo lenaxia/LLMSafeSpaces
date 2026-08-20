@@ -120,7 +120,11 @@ func (m *mockAdapter) ContextUsageFromEvent(eventType string, rawData string) (s
 func (m *mockAdapter) MeteringFromEvent(_ string, _ []byte) (*agent.SessionUsage, bool, error) {
 	return nil, false, nil
 }
-func (m *mockAdapter) IsKnownEventType(string) bool { return false }
+func (m *mockAdapter) IsKnownEventType(string) bool                         { return false }
+func (m *mockAdapter) ClientEventsFromEvent(string, string) []session.Event { return nil }
+func (m *mockAdapter) RetryFromEvent(string, string) (string, *agent.ClientRetryStatus, bool) {
+	return "", nil, false
+}
 
 // newUsageStubAdapter returns an adapter stub whose ContextUsageFromEvent
 // answers with fixed values keyed by sessionID substring in the raw payload.
