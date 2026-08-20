@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -56,12 +57,19 @@ func readBody(resp *http.Response, limit int64) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(resp.Body, limit))
 }
 
+// ErrHTTPStatus marks errors where the agent PROCESSED the request and
+// answered with a status >= 400: the outcome is definitive (rejected),
+// not ambiguous. Callers driving at-least-once retries use this to
+// distinguish "safe to retry" (rejection) from "outcome unknown"
+// (transport cut / timeout mid-request — see VerifyDelivery).
+var ErrHTTPStatus = errors.New("opencode http status")
+
 // httpError reads a small portion of resp.Body and returns an error
 // that includes the status code and body excerpt. Caller has already
 // deferred-Close'd the body.
 func (a *Adapter) httpError(path string, resp *http.Response) error {
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-	return fmt.Errorf("%s returned %d: %s", path, resp.StatusCode, string(body))
+	return fmt.Errorf("%w: %s returned %d: %s", ErrHTTPStatus, path, resp.StatusCode, string(body))
 }
 
 // parseProviderCatalogForContract extracts the model catalog from

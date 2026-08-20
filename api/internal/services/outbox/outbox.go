@@ -114,9 +114,6 @@ var (
 	// MaxVerifyAttempts bounds inconclusive passes before the entry
 	// parks as error (agent unreachable for the full backoff span).
 	MaxVerifyAttempts = 40
-	// VerifyPageSize is the history page size the verifier asks for
-	// (documented on the seam; the opencode impl uses it).
-	VerifyPageSize = 500
 )
 
 // ErrCapped is returned when the session's outbox is at Cap.
