@@ -71,6 +71,13 @@ type managedProcess struct {
 	// new child is serving. Empty means skip the health check.
 	healthCheckURL string
 
+	// skipHealthProbe suppresses the post-restart probe even when
+	// healthCheckURL is set (supervisor mode: the URL would target the
+	// sidecar's bearer-gated readyz, and the supervisor must never hold
+	// that token — design 0051 D1 keeps it out of uid-1000 space; the
+	// sidecar's watchdog owns health semantics in the split topology).
+	skipHealthProbe bool
+
 	// supervisor lifecycle channels.
 	//
 	//   upCh — closed by the supervisor every time a fresh child is
@@ -251,9 +258,9 @@ func (p *managedProcess) supervise() {
 		// Crash path: classify exit, handle OOM, record metric, log, backoff, loop.
 		exitKind := classifyExit(waitErr)
 		if isOOMExit(exitKind) {
-			handleOOMExit(workspaceIDFromEnv(), RestartReasonMarkerPath)
+			handleOOMExit(workspaceIDFromEnv(), markerPathFromEnv())
 		} else {
-			if err := writeRestartReasonMarker(RestartReasonMarkerPath, "crash", nil); err != nil {
+			if err := writeRestartReasonMarker(markerPathFromEnv(), "crash", nil); err != nil {
 				log.Error("failed to write restart-reason marker", zap.Error(err))
 				pkgOpsMetrics.RecordMarkerWriteFailure(workspaceIDFromEnv(), "crash")
 			} else {
@@ -328,6 +335,23 @@ func (p *managedProcess) childStartedAt() time.Time {
 // a no-op — callers in tests pass nil rather than building a partial
 // supervisor.
 func (p *managedProcess) restart() {
+	p.restartWithGrace(defaultRestartGrace)
+}
+
+// defaultRestartGrace is the historical SIGTERM→SIGKILL window. Kept as
+// a named constant so the single-container behavior is pinned by test
+// (US-2 parameterized the window for control-socket callers; every
+// existing in-process caller keeps exactly this budget).
+const defaultRestartGrace = 5 * time.Second
+
+// restartWithGrace is restart() with a caller-supplied SIGTERM→SIGKILL
+// window (design 0051 A.2 grace_seconds). A shorter window serves
+// socket-requested restarts; a longer one would need a matching bump of
+// the pod's terminationGracePeriodSeconds to be observable.
+func (p *managedProcess) restartWithGrace(grace time.Duration) {
+	if grace <= 0 {
+		grace = defaultRestartGrace
+	}
 	p.mu.Lock()
 	if p.doneCh == nil {
 		// Supervisor not running.
@@ -346,7 +370,7 @@ func (p *managedProcess) restart() {
 	if pid > 0 {
 		log.Info("stopping opencode for restart", zap.Int("pid", pid))
 		_ = syscall.Kill(pid, syscall.SIGTERM)
-		// Give the child up to 5s to exit on SIGTERM, then SIGKILL.
+		// Give the child up to `grace` to exit on SIGTERM, then SIGKILL.
 		// We can't Wait() here (supervisor owns Wait), so we rely on
 		// the supervisor's loop iteration: when the child exits, the
 		// supervisor will see restartRequested and loop. We poll
@@ -355,7 +379,7 @@ func (p *managedProcess) restart() {
 		// Uses syscall.Kill instead of cmd.Process.Signal/Kill to
 		// avoid a data race with cmd.Wait() in supervise(): both
 		// would concurrently access the same *os.Process struct.
-		killTimer := time.AfterFunc(5*time.Second, func() {
+		killTimer := time.AfterFunc(grace, func() {
 			_ = syscall.Kill(pid, syscall.SIGKILL)
 		})
 		defer killTimer.Stop()
@@ -372,7 +396,7 @@ func (p *managedProcess) restart() {
 	// fresh context to outlive the triggering HTTP request; same
 	// reason here. Tracked via probeWg so stop() can wait for it,
 	// preventing log-pointer races during test teardown.
-	if p.healthCheckURL != "" {
+	if p.healthCheckURL != "" && !p.skipHealthProbe {
 		p.probeWg.Add(1)
 		go func() {
 			defer p.probeWg.Done()

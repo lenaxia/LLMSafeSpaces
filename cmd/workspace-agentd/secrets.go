@@ -660,7 +660,7 @@ func applyWorkspaceConfig(agentConfigPath, secretsPath string) {
 	}
 
 	merged, _ := json.MarshalIndent(cfg, "", "  ")
-	_ = os.WriteFile(agentConfigPath, merged, 0o600)
+	_ = os.WriteFile(agentConfigPath, merged, 0o640) //nolint:gosec // G306: design 0051 §D1 cross-uid boot file — group-read by necessity (shared gid 1000), documented T2 exception
 }
 
 // modelResolutionWarningPath places the marker beside agent-config.json on
@@ -682,7 +682,7 @@ func writeModelResolutionWarning(path, defaultModel string) {
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(path, merged, 0o600)
+	_ = os.WriteFile(path, merged, 0o640) //nolint:gosec // G306: design 0051 §D1 cross-uid marker — group-read (sidecar 2000 writes, supervisor/sidecar 1000-gid reads)
 }
 
 // applyMCPServersToConfig reads the current agent-config.json (written by
@@ -717,7 +717,7 @@ func applyMCPServersToConfig(agentConfigPath string, servers []secrets.StagedMCP
 	}
 
 	merged, _ := json.MarshalIndent(cfg, "", "  ")
-	_ = os.WriteFile(agentConfigPath, merged, 0o600)
+	_ = os.WriteFile(agentConfigPath, merged, 0o640) //nolint:gosec // G306: design 0051 §D1 cross-uid boot file — group-read by necessity (shared gid 1000), documented T2 exception
 }
 
 // resolveModelWithProvider resolves the workspace default model against the

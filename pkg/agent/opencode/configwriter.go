@@ -649,7 +649,7 @@ func (w *ConfigWriter) rebuildLocked() error {
 		return fmt.Errorf("agent-config writer: marshal config: %w", err)
 	}
 
-	return atomicRenameWrite(w.path, output, 0o600)
+	return atomicRenameWrite(w.path, output, 0o640)
 }
 
 // atomicRenameWrite writes data to a temp file in the same directory as

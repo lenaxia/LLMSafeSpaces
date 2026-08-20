@@ -145,6 +145,12 @@ spec:
             {{- if and .Values.controller.agentdDelivery.image (ne (len .Values.controller.agentdDelivery.binarySHA256Arm64) 0) (eq (len .Values.controller.agentdDelivery.binarySHA256Amd64) 0) }}
             {{- fail "controller.agentdDelivery.binarySHA256*: set BOTH hashes or NEITHER (image-only resolves them from the index annotations)" }}
             {{- end }}
+            {{- if and .Values.controller.agentdSidecar.enabled (not .Values.controller.agentdDelivery.image) }}
+            {{- fail "controller.agentdSidecar.enabled requires controller.agentdDelivery.image (the sidecar runs the digest-pinned delivery artifact)" }}
+            {{- end }}
+            {{- if .Values.controller.agentdSidecar.enabled }}
+            - --agentd-sidecar=true
+            {{- end }}
             {{- with .Values.controller.agentdDelivery.image }}
             - --agentd-image={{ . }}
             {{- with $.Values.controller.agentdDelivery.binarySHA256Amd64 }}

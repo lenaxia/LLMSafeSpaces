@@ -48,6 +48,10 @@ func runSuperviseOpencodeCommand(_ []string) int {
 
 	proc := &managedProcess{}
 	proc.onChildStarted = nil // no session tracker in supervisor mode (sidecar owns policy)
+	// The probe URL would hit the sidecar's bearer-gated readyz; the
+	// supervisor never holds that token (D1) — skip the probe entirely.
+	// The sidecar's watchdog + the pod probes own health semantics.
+	proc.skipHealthProbe = true
 	proc.start()
 	adapter := &managedProcAdapter{p: proc}
 
@@ -56,6 +60,10 @@ func runSuperviseOpencodeCommand(_ []string) int {
 		log.Error("FATAL: control socket listen failed", zap.Int("port", ControlSocketPort), zap.Error(err))
 		return 1
 	}
+	// US-2 metrics wiring: the supervisor's own cgroup IS the workspace
+	// container's (0050 finding) — serve it over the socket for the
+	// sidecar's statusz/pressure/ops-metrics surfaces.
+	srv.metricsSource = newWorkspaceCgroupReader().read
 	go srv.serve()
 	log.Info("supervise-opencode: control socket serving", zap.String("addr", srv.addr()))
 
@@ -78,19 +86,23 @@ type managedProcAdapter struct {
 	spawnEnv []string
 }
 
-// Restart maps the reason-enum restart onto managedProcess.restart().
-// In-progress-wins is enforced at the socket (restartMu); the adapter
-// is only reached when it holds the lock, so no second restart can be
+// Restart maps the reason-enum restart onto managedProcess. In-progress-
+// wins is enforced at the socket (restartMu); the adapter is only
+// reached when it holds the lock, so no second restart can be
 // concurrently in flight here.
 func (a *managedProcAdapter) Restart(reason string, graceSeconds int) (bool, bool) {
 	if reason != "" {
 		log.Info("control: restart requested", zap.String("reason", reason))
 	}
-	// grace_seconds maps to the SIGTERM→SIGKILL window; the current
-	// restart() hardcodes 5s. Honor longer graces by NOT mapping them
-	// yet — US-2 wires grace through when the kill-timer becomes a
-	// parameter (noted there); socket contract already carries it.
-	a.p.restart()
+	// grace_seconds maps to the SIGTERM→SIGKILL window (US-2 wiring of
+	// the deferred US-1 item). Out-of-range values collapse to the
+	// 5s default (the socket already clamps to 1..300; this is the
+	// adapter-side guard for direct callers).
+	grace := defaultRestartGrace
+	if graceSeconds > 0 && graceSeconds <= 300 {
+		grace = time.Duration(graceSeconds) * time.Second
+	}
+	a.p.restartWithGrace(grace)
 	return true, false
 }
 

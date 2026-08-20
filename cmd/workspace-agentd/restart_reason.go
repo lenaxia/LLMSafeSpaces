@@ -13,6 +13,7 @@ import (
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
+	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd/secrets"
 )
 
@@ -24,6 +25,22 @@ import (
 // (worklog 371 H5) — it had zero read-side consumers and the reason="oom"
 // entry in this marker subsumes its useful information.
 const RestartReasonMarkerPath = "/workspace/.opencode-restart-reason"
+
+// SidecarRestartMarkerPath is defined in pkg/agentd (types.go) — the
+// controller stamps the same string into both containers' env. Markers
+// under it are 0640 (cross-uid, shared group).
+const SidecarRestartMarkerPath = agentd.SidecarRestartMarkerPath
+
+// markerPathFromEnv resolves the active marker path: the
+// LLMSAFESPACES_RESTART_MARKER_PATH env (set on both containers by the
+// controller when agentdSidecar is enabled) overrides the single-
+// container default. Env unset → today's behavior, byte-identical.
+func markerPathFromEnv() string {
+	if p := os.Getenv("LLMSAFESPACES_RESTART_MARKER_PATH"); p != "" {
+		return p
+	}
+	return RestartReasonMarkerPath
+}
 
 // restartReasonStaleThreshold is how old a marker may be before the
 // boot-time reader treats it as "stale" (likely unrelated to this boot,
@@ -87,7 +104,10 @@ func writeRestartReasonMarker(path, reason string, secretNames []string) error {
 	if err := os.MkdirAll(dir, 0750); err != nil {
 		return fmt.Errorf("create marker dir %s: %w", dir, err)
 	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	// 0640 (US-2): in sidecar mode the writers straddle uids (sidecar
+	// 2000, supervisor 1000) with the pod's shared group 1000; in
+	// single-container mode the group bit is inert.
+	if err := os.WriteFile(path, data, 0640); err != nil { //nolint:gosec // G306: design 0051 — cross-uid marker (sidecar 2000 + supervisor 1000 writers, shared gid 1000)
 		return fmt.Errorf("write restart-reason marker %s: %w", path, err)
 	}
 	return nil

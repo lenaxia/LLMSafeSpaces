@@ -39,6 +39,50 @@ type serverDeps struct {
 	resolvedAdminToken string
 	startedAt          time.Time
 	agentConfigWriter  agent.AgentConfigWriter
+
+	// restarter, when non-nil, is the health-watchdog's restart path.
+	// Single-container mode leaves it nil (the loop falls back to
+	// deps.proc); sidecar mode wires the control-socket restarter.
+	restarter healthWatchdogRestarter
+	// vitals, when non-nil, is the watchdog corroboration probe.
+	// Single-container mode leaves it nil (built from deps.proc);
+	// sidecar mode wires the socket gatherer. NEVER leave both nil in
+	// sidecar mode — nil vitals restores pre-#892 kill-on-timeout
+	// semantics (the 2026-08-15 kill-churn class).
+	vitals vitalsGatherer
+	// sys supplies statusz's system metrics. Nil → local cgroup reads
+	// (single-container mode). Sidecar mode wires socket-backed reads —
+	// the sidecar's own cgroup is the wrong container (0050 finding).
+	sys sysMetricsSource
+}
+
+// sysMetricsSource is the statusz system-metrics seam: typed functions
+// so sidecar mode can substitute socket-backed reads for the local
+// cgroup ones without globals.
+type sysMetricsSource struct {
+	memory func() *agentd.MemoryUsage
+	cpu    func() *agentd.CPUUsage
+	disk   func() *agentd.DiskUsage
+}
+
+// defaultSysMetrics reads the local cgroupfs — the single-container
+// behavior, unchanged.
+func defaultSysMetrics() sysMetricsSource {
+	return sysMetricsSource{memory: getMemoryUsage, cpu: getCPUUsage, disk: getDiskUsage}
+}
+
+func (s sysMetricsSource) orDefaults() sysMetricsSource {
+	out := s
+	if out.memory == nil {
+		out.memory = getMemoryUsage
+	}
+	if out.cpu == nil {
+		out.cpu = getCPUUsage
+	}
+	if out.disk == nil {
+		out.disk = getDiskUsage
+	}
+	return out
 }
 
 // buildStatuszHandler returns the /v1/statusz HTTP handler, parameterised on
@@ -51,6 +95,7 @@ func buildStatuszHandler(
 	pressureMon *memoryPressureMonitor,
 	startedAt time.Time,
 	modelWarnPath string,
+	sys sysMetricsSource,
 ) http.HandlerFunc {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -87,6 +132,7 @@ func buildStatuszHandler(
 		// US-44.5: surface memory pressure state.
 		pressure, _, _ := pressureMon.snapshot()
 
+		sys := sys.orDefaults()
 		_ = json.NewEncoder(w).Encode(agentd.StatuszResponse{
 			Healthy:             healthy,
 			Ready:               ready,
@@ -99,9 +145,9 @@ func buildStatuszHandler(
 			AgentType:           "opencode",
 			AgentVersion:        version,
 			UptimeSeconds:       int(time.Since(startedAt).Seconds()),
-			Disk:                getDiskUsage(),
-			Memory:              getMemoryUsage(),
-			CPU:                 getCPUUsage(),
+			Disk:                sys.disk(),
+			Memory:              sys.memory(),
+			CPU:                 sys.cpu(),
 			RelayFreeModels:     RelayFreeModelsState(),
 			Context:             contextUsage,
 			MemoryPressure:      pressure,
@@ -261,7 +307,7 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	// callers must use a generous timeout (controller uses 30s). Do NOT
 	// use this endpoint for liveness or readiness probes.
 	adminMux.Handle("/v1/statusz", requireBearerToken(adminToken,
-		buildStatuszHandler(deps.client, deps.cache, deps.sseTracker, deps.pressureMonitor, deps.startedAt, agentd.ModelResolutionWarningPath)))
+		buildStatuszHandler(deps.client, deps.cache, deps.sseTracker, deps.pressureMonitor, deps.startedAt, agentd.ModelResolutionWarningPath, deps.sys)))
 
 	// S18.10: Expose Prometheus metrics on admin port so the cluster-level
 	// Prometheus scraper can collect per-pod agentd gate timings.
@@ -359,7 +405,18 @@ func startBackgroundLoops(bgCtx context.Context, bgWg *sync.WaitGroup, deps serv
 	}()
 
 	// US-44.8: periodic metrics collection for ops dashboards. Updates
-	// memory usage, active sessions, and context token gauges every 60s.
+	// memory usage, active sessions, and context token token gauges every
+	// 60s. Memory reads cross the control socket in sidecar mode (the
+	// sidecar's own cgroup is the wrong container — 0050 finding).
+	memCurrent := readCgroupMemoryCurrent
+	if deps.sys.memory != nil {
+		memCurrent = func() (int64, error) {
+			if m := deps.sys.memory(); m != nil {
+				return m.UsedBytes, nil
+			}
+			return 0, fmt.Errorf("no memory metrics available")
+		}
+	}
 	bgWg.Add(1)
 	go func() {
 		defer bgWg.Done()
@@ -371,7 +428,7 @@ func startBackgroundLoops(bgCtx context.Context, bgWg *sync.WaitGroup, deps serv
 			case <-bgCtx.Done():
 				return
 			case <-ticker.C:
-				if memBytes, err := readCgroupMemoryCurrent(); err == nil {
+				if memBytes, err := memCurrent(); err == nil {
 					pkgOpsMetrics.SetMemoryUsage(wsID, memBytes)
 				}
 				pkgOpsMetrics.UpdateFromTracker(wsID, deps.sseTracker)
@@ -399,14 +456,24 @@ func startBackgroundLoops(bgCtx context.Context, bgWg *sync.WaitGroup, deps serv
 	// starvation-corroboration probe (watchdog_vitals.go) so would-fire
 	// moments check TCP + CPU evidence before killing opencode. Incident
 	// 2026-08-15: six watchdog kills of a healthy-but-throttled opencode.
+	//
+	// Restarter/vitals seams (US-2): sidecar mode wires the control-
+	// socket implementations; single-container mode keeps the in-process
+	// ones built from deps.proc.
+	restarter := deps.restarter
+	if restarter == nil {
+		restarter = deps.proc
+	}
+	var vitals vitalsGatherer
+	if deps.vitals != nil {
+		vitals = deps.vitals
+	} else if deps.proc != nil {
+		vitals = buildVitalsGatherer(deps.proc)
+	}
 	bgWg.Add(1)
 	go func() {
 		defer bgWg.Done()
-		var vitals vitalsGatherer
-		if deps.proc != nil {
-			vitals = buildVitalsGatherer(deps.proc)
-		}
-		refreshIsHealthyLoop(bgCtx, deps.client, deps.healthCache, log, deps.gr, deps.proc, &busySessionChecker{tracker: deps.sseTracker}, vitals)
+		refreshIsHealthyLoop(bgCtx, deps.client, deps.healthCache, log, deps.gr, restarter, &busySessionChecker{tracker: deps.sseTracker}, vitals)
 	}()
 
 	// #904: orphan zombie reaper. agentd is PID 1 (and a subreaper),

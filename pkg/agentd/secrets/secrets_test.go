@@ -896,7 +896,10 @@ func TestLLMProvider_FlushProviders_FormatterError(t *testing.T) {
 }
 
 // TestG20_LLMProvider_Mode0600 ensures flushed provider config is written
-// with mode 0600.
+// with the design-0051 §D1 cross-uid mode: 0640 (group-read for the shared
+// gid 1000). Single-uid readers lose nothing (they are IN that group); the
+// sidecar (uid 2000) → opencode (uid 1000) boot path gains the read it
+// needs. Everything else stays 0600 per T2.
 func TestG20_LLMProvider_Mode0600(t *testing.T) {
 	m, fs := newFixture(t)
 	_, err := m.Materialize([]Secret{{
@@ -913,8 +916,8 @@ func TestG20_LLMProvider_Mode0600(t *testing.T) {
 
 	mode, ok := fs.modes["/sandbox-runtime/agent-config.json"]
 	require.True(t, ok, "mode should be recorded for agent-config.json")
-	require.Equal(t, os.FileMode(0o600), mode,
-		"agent config must be written with mode 0600 (G20)")
+	require.Equal(t, AgentConfigWriteMode, mode,
+		"agent config must be written with the §D1 cross-uid mode 0640 (G20 + design 0051)")
 }
 
 // HasFailures / Counts ------------------------------------------------------

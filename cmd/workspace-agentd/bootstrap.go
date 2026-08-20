@@ -100,20 +100,20 @@ func runBootstrapCommand(args []string, _ io.Writer, stderr io.Writer) int {
 		return 0
 	}
 
-	if err := atomicWriteSecrets(*out, secrets); err != nil {
+	if err := atomicWriteSecrets(*out, secrets, 0o600); err != nil {
 		_, _ = fmt.Fprintf(stderr, "bootstrap: failed to write secrets.json: %v\n", err)
 		return 0
 	}
 
 	if len(wsCfg) > 0 && string(wsCfg) != "null" {
 		cfgPath := filepath.Join(filepath.Dir(*out), "workspace-config.json")
-		if err := atomicWriteSecrets(cfgPath, wsCfg); err != nil {
+		if err := atomicWriteSecrets(cfgPath, wsCfg, 0o600); err != nil {
 			_, _ = fmt.Fprintf(stderr, "bootstrap: failed to write workspace-config.json: %v\n", err)
 		}
 	}
 
 	if adminPrompt != "" {
-		if err := atomicWriteSecrets(*adminPromptOut, []byte(adminPrompt)); err != nil {
+		if err := atomicWriteSecrets(*adminPromptOut, []byte(adminPrompt), 0o640); err != nil {
 			_, _ = fmt.Fprintf(stderr, "bootstrap: failed to write admin-prompt.md: %v\n", err)
 		} else {
 			_, _ = fmt.Fprintf(stderr, "bootstrap: wrote admin prompt (%d bytes)\n", len(adminPrompt))
@@ -124,7 +124,7 @@ func runBootstrapCommand(args []string, _ io.Writer, stderr io.Writer) int {
 		dirsJSON, mErr := json.Marshal(allowedDirs)
 		if mErr != nil {
 			_, _ = fmt.Fprintf(stderr, "bootstrap: failed to marshal allowed-dirs: %v\n", mErr)
-		} else if err := atomicWriteSecrets(*allowedDirsOut, dirsJSON); err != nil {
+		} else if err := atomicWriteSecrets(*allowedDirsOut, dirsJSON, 0o640); err != nil {
 			_, _ = fmt.Fprintf(stderr, "bootstrap: failed to write allowed-dirs.json: %v\n", err)
 		} else {
 			_, _ = fmt.Fprintf(stderr, "bootstrap: wrote allowed-dirs (%d patterns)\n", len(allowedDirs))
@@ -176,10 +176,15 @@ func fetchBootstrapSecrets(apiURL, workspaceID, token string) (json.RawMessage, 
 }
 
 func writeEmptySecrets(path string) {
-	_ = atomicWriteSecrets(path, []byte("[]"))
+	_ = atomicWriteSecrets(path, []byte("[]"), 0o600)
 }
 
-func atomicWriteSecrets(path string, data []byte) error {
+// atomicWriteSecrets writes path atomically (temp + rename) with perm.
+// 0600 for credential payloads; 0640 for the design-0051 boot pair
+// (admin-prompt, allowed-dirs) that the uid-2000 sidecar must read even
+// though the bootstrap init container (their writer) runs uid 1000 —
+// the pod's shared gid 1000 is the read bridge.
+func atomicWriteSecrets(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".bootstrap-*")
 	if err != nil {
@@ -192,7 +197,7 @@ func atomicWriteSecrets(path string, data []byte) error {
 		_ = tmp.Close()
 		return err
 	}
-	if err := tmp.Chmod(0o600); err != nil {
+	if err := tmp.Chmod(perm); err != nil {
 		_ = tmp.Close()
 		return err
 	}

@@ -84,6 +84,15 @@ func main() {
 		os.Exit(runSuperviseOpencodeCommand(os.Args[2:]))
 	}
 
+	// Design 0051 US-2: native-sidecar mode. The pod splits into the
+	// sidecar (this branch: policy, credentials, muxes) and a
+	// supervise-opencode PID 1 in the workspace container. Dispatch
+	// order matters: --sidecar shares the flag-parsing tail below, so
+	// it must exit before it.
+	if len(os.Args) > 1 && os.Args[1] == "--sidecar" {
+		os.Exit(runSidecarCommand(os.Args[2:]))
+	}
+
 	if len(os.Args) > 1 && os.Args[1] == "materialize" {
 		os.Exit(runMaterializeCommand(os.Args[2:], os.Stdout, os.Stderr))
 	}
@@ -125,7 +134,7 @@ func main() {
 	// US-44.7: surface the reason for the previous opencode restart
 	// (if any) and consume the one-shot marker before starting the
 	// supervisor. No-op when no marker is present (clean boot).
-	logRestartReason(RestartReasonMarkerPath, log.Core())
+	logRestartReason(markerPathFromEnv(), log.Core())
 
 	// Stamp the platform blocks (built-in MCP server, admin prompt,
 	// allowed dirs) onto agent-config.json BEFORE opencode starts, so

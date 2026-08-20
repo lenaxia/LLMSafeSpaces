@@ -57,6 +57,13 @@ const (
 	// Same tmpfs lifecycle as ReloadSecretsCachePath; removed by the next
 	// successful resolution.
 	ModelResolutionWarningPath = "/sandbox-runtime/model-resolution-warning.json"
+	// SidecarRestartMarkerPath is where the restart-reason marker lives
+	// in sidecar mode (design 0051 US-2): the shared /sandbox-runtime
+	// tmpfs. Writers straddle uids (sidecar 2000, supervisor 1000) with
+	// the pod's shared group 1000 in common, so markers there are 0640.
+	// The controller stamps it into LLMSAFESPACES_RESTART_MARKER_PATH on
+	// BOTH containers; env unset keeps the single-container default.
+	SidecarRestartMarkerPath = "/sandbox-runtime/last-restart-reason.json"
 )
 
 // Ports and network constants shared between agentd and the controller.

@@ -34,7 +34,7 @@ const orgStatusCacheTTL = 30 * time.Second
 // contract at startup.
 type AgentdDelivery = workspace.AgentdDeliveryConfig
 
-func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiInternalToken, defaultRuntimeClass string, agentdDelivery AgentdDelivery) error {
+func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiInternalToken, defaultRuntimeClass string, agentdDelivery AgentdDelivery, agentdSidecarEnabled bool) error {
 	logger := log.Log.WithName("controller")
 	logger.Info("Setting up controllers")
 
@@ -60,6 +60,7 @@ func SetupControllers(mgr ctrl.Manager, inferenceRelayURL, apiServiceURL, apiInt
 		AgentdImage:             agentdDelivery.Image,
 		AgentdBinarySHA256AMD64: agentdDelivery.BinarySHA256AMD64,
 		AgentdBinarySHA256ARM64: agentdDelivery.BinarySHA256ARM64,
+		AgentdSidecarEnabled:    agentdSidecarEnabled,
 		Recorder:                mgr.GetEventRecorderFor("workspace-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		logger.Error(err, "unable to create Workspace controller")
