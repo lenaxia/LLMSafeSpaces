@@ -78,8 +78,8 @@ func run(oldFile, newFile, dbURL, redisURL, table, resumeFrom string, targetVer 
 	}
 
 	// Connect to Postgres.
-	pgStore, err := newPgRotationStore(dbURL)
-	if err != nil {
+	pgStore, err := newPgRotationStore(dbURL) // nolint:staticcheck // SA4023 related-info anchor: constructor is a deliberate stub; see the comparison line below
+	if err != nil {                           // nolint:staticcheck // SA4023: constructor is a deliberate stub (always errors, "not yet wired"); branch stays defensive until the store is implemented
 		return fmt.Errorf("connect to Postgres: %w", err)
 	}
 	defer pgStore.Close()
@@ -87,8 +87,8 @@ func run(oldFile, newFile, dbURL, redisURL, table, resumeFrom string, targetVer 
 	// Connect to Redis for DEK cache flush.
 	var redisCacheStore secrets.RotationStore = pgStore
 	if redisURL != "" {
-		rc, err := newRedisCacheFlusher(redisURL)
-		if err != nil {
+		rc, err := newRedisCacheFlusher(redisURL) // nolint:staticcheck // SA4023 related-info anchor: constructor is a deliberate stub; see the comparison line below
+		if err != nil {                           // nolint:staticcheck // SA4023: constructor is a deliberate stub (always errors, "not yet wired"); branch stays defensive until the store is implemented
 			return fmt.Errorf("connect to Redis: %w", err)
 		}
 		defer rc.Close()
