@@ -128,9 +128,11 @@ func TestPathResolution_EntrypointMatchesConstants(t *testing.T) {
 	require.NoError(t, err, "entrypoint-opencode.sh must be readable")
 	script := string(scriptBytes)
 
-	// OPENCODE_CONFIG must match AgentConfigPath.
-	require.Contains(t, script, "OPENCODE_CONFIG="+agentd.AgentConfigPath,
-		"entrypoint OPENCODE_CONFIG must match agentd.AgentConfigPath (%s)", agentd.AgentConfigPath)
+	// OPENCODE_CONFIG must default to AgentConfigPath while honoring a
+	// pre-set value (US-4b: the sidecar-mode controller override points
+	// the workspace container at /agentd-config/agent-config.json).
+	require.Contains(t, script, "OPENCODE_CONFIG=\"${OPENCODE_CONFIG:-"+agentd.AgentConfigPath+"}\"",
+		"entrypoint OPENCODE_CONFIG must default to agentd.AgentConfigPath (%s) without clobbering a pre-set value", agentd.AgentConfigPath)
 
 	// The source path for secrets-env must match SecretsEnvPath.
 	require.Contains(t, script, agentd.SecretsEnvPath,

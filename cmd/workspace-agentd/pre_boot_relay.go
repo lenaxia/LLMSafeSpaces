@@ -92,12 +92,15 @@ var (
 )
 
 // effectiveAdminPromptPath returns the admin-prompt source path,
-// honoring the test override.
+// honoring (in order) the in-process test override and the
+// LLMSAFESPACES_ADMIN_PROMPT_PATH env (US-4b: the sidecar-mode
+// relocation to /agentd-secrets — this subcommand runs in the INIT
+// container, whose env the controller wires identically).
 func effectiveAdminPromptPath() string {
 	if adminPromptTestPath != "" {
 		return adminPromptTestPath
 	}
-	return agentd.AdminPromptPath
+	return adminPromptPathFromEnv()
 }
 
 // effectiveAllowedDirsPath returns the allowed-dirs source path,

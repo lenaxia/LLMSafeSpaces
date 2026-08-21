@@ -108,7 +108,7 @@ CI runs the same script via `.github/workflows/us2-kind-integration.yml` (workfl
 |---|---|---|
 | K1 | Sidecar ordering: `credential-setup` finishedAt < sidecar startedAt < main startedAt (from pod status timestamps) | ordering holds |
 | K2 | #857 stamp-before-read: `agent-config.json` carries the `llmsafespaces` MCP entry at first boot | MCP entry present |
-| K3 | Filesystem bridge (S7): boot trio 0640 (admin-prompt may be absent without an API); password 0600 | modes as specced |
+| K3 | Filesystem bridge + US-4b mount topology: `agent-config.json` 0640 on the RO `/agentd-config` mount; `admin-prompt.md` ABSENT from the workspace container (sidecar-only volume); `/agentd-secrets` not mounted; `rt/` 0770; password 0600 | modes + mount-topology claims (V2/V3) |
 | K4 | Socket (S1) from inside the pod: `hello` over `127.0.0.1:4099` via `/dev/tcp` | A.1 response shape |
 | K5 | Child crash (SIGKILL the opencode pid from the workspace container) → supervisor respawns a fresh pid, crash marker written | new pid + `"reason":"crash"` |
 | K6 | `crictl stop` the SIDECAR → sidecar restartCount +1, main untouched, opencode still serving :4096 | isolation holds |
@@ -131,6 +131,6 @@ Between L1 and L2: the REAL `supervise-opencode` subcommand as a REAL process �
 ## 6. Gated follow-ups (tracked, not forgotten)
 
 1. **US-3**: extend `..._SecretBackedEnv` to the `agentdPassword` key; add V4 (401 with workspace password on control-plane endpoints).
-2. **US-4**: `spawn_env` producer end-to-end (sidecar reload → composed env → socket → next spawn) — extend `..._SpawnEnvHandoff` to drive the REAL reload handler; mount-relocation assertions in K3.
+2. **US-4**: ~~`spawn_env` producer end-to-end + mount relocations~~ — DONE: US-4a (#1015) drove the real reload handler (`TestReloadHandler_SidecarEndToEnd`); US-4b relocated the stores by consumer (K2/K3 updated for `/agentd-config` + the sidecar-only `agentd-secrets` volume; cross-uid `rt/*` modes pinned by `TestReloadHandler_SidecarEndToEnd_CrossUIDModes` + `pkg/agentd/secrets` cross-uid suite).
 3. **US-5**: L4 canary — full V-matrix (V1–V9) on TEST, D6.1 rollback EXERCISE (on→off→on with mixed-generation pods healthy at each step), gVisor leg per V9.
 4. **L3 in CI**: already wired (workflow_dispatch + weekly); promote to per-PR only if the suite proves stable and fast enough — decision point after US-5.

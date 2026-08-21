@@ -503,15 +503,18 @@ The relay config subsystem manages how `agent-config.json` — the file opencode
 | `/tmp` | Longhorn PVC (`subPath: tmp`) | Yes — init scripts, package caches; NOT credentials (US-35.7 moved them to tmpfs) | init-script.sh |
 | `/sandbox-cfg` | emptyDir (memory, 32Mi) | No — ephemeral per pod, read-only on main container | secrets.json, workspace-config.json, password (from bootstrap) |
 | `/sandbox-runtime` | emptyDir (memory, 96Mi, RW) | No — ephemeral per pod, wiped on death | agent-config.json, secrets-env, `admin-prompt.md` (merged platform/org/role/user system prompt, #483), `last-reload-secrets.json` (reload-replay cache, #443), symlink targets for SSH/git/secrets/auth.json |
+| `/agentd-config` | emptyDir (memory, 8Mi) — **sidecar mode only** | No | `agent-config.json` + `allowed-dirs.json`: RW sidecar (the ConfigWriter), **RO workspace container** — integrity by mount (US-4b, design 0051) |
+| `/agentd-secrets` | emptyDir (memory, 16Mi) — **sidecar mode only, never mounted in the workspace container** | No | `secrets-env`, `admin-prompt.md`, `last-reload-secrets.json` — absent from uid-1000 space by mount topology (US-4b); env crosses to the child only via `spawn_env` |
 
-**Key path constants** (`pkg/agentd/types.go`):
+**Key path constants** (`pkg/agentd/types.go`) — single-container defaults; in sidecar mode (US-4b, design 0051) every consumer honors its `LLMSAFESPACES_*_PATH` env override (controller wires `/agentd-config` + `/agentd-secrets` coordinates on the sidecar and init containers):
 
 ```
-AgentConfigPath  = "/sandbox-runtime/agent-config.json"
-AdminPromptPath  = "/sandbox-runtime/admin-prompt.md"  ← bootstrap writes merged platform→org→role→user system prompt here; #483
-SecretsBasePath  = "/sandbox-runtime/rt/secrets"   ← deleted by reset() on every reload; tmpfs
-SecretsEnvPath   = "/sandbox-runtime/secrets-env"
-ReloadSecretsCachePath = "/sandbox-runtime/last-reload-secrets.json"  ← persisted by reloadSecretsHandler; replayed by boot-time materialize to restore user-DEK creds after a container restart (#443); tmpfs, wiped on pod death
+AgentConfigPath  = "/sandbox-runtime/agent-config.json"   (override: LLMSAFESPACES_AGENT_CONFIG_PATH → /agentd-config/agent-config.json)
+AdminPromptPath  = "/sandbox-runtime/admin-prompt.md"     ← bootstrap writes merged platform→org→role→user system prompt here; #483 (override: LLMSAFESPACES_ADMIN_PROMPT_PATH → /agentd-secrets/admin-prompt.md)
+AllowedDirsPath  = "/sandbox-runtime/allowed-dirs.json"   (override: LLMSAFESPACES_ALLOWED_DIRS_PATH → /agentd-config/allowed-dirs.json)
+SecretsBasePath  = "/sandbox-runtime/rt/secrets"   ← deleted by reset() on every reload; tmpfs; UNRELOCATED (tool-consumed, US-35.7 class C) — sidecar re-materializes it 0640/0770 (LLMSAFESPACES_CROSS_UID_FILES)
+SecretsEnvPath   = "/sandbox-runtime/secrets-env"  (override: LLMSAFESPACES_SECRETS_ENV_PATH → /agentd-secrets/secrets-env)
+ReloadSecretsCachePath = "/sandbox-runtime/last-reload-secrets.json"  ← persisted by reloadSecretsHandler; replayed by boot-time materialize to restore user-DEK creds after a container restart (#443); tmpfs, wiped on pod death (override: LLMSAFESPACES_RELOAD_CACHE_PATH → /agentd-secrets/last-reload-secrets.json)
 ```
 
 
@@ -524,7 +527,7 @@ opencode merges config files via recursive deep-merge, last writer wins:
 2. Project config: `findUp(["opencode.json","opencode.jsonc"], cwd, {rootFirst:true})`
 3. `OPENCODE_CONFIG` env var path — **always appended last, always wins**
 
-`OPENCODE_CONFIG=/sandbox-runtime/agent-config.json` is set by `entrypoint-opencode.sh`. Therefore `agent-config.json` overrides all other config for any key it sets. opencode does **not** hot-reload this file — it is only read at process startup.
+`OPENCODE_CONFIG=/sandbox-runtime/agent-config.json` is set by `entrypoint-opencode.sh` (the export honors a pre-set value: in sidecar mode the controller points the workspace container at `/agentd-config/agent-config.json`, US-4b). Therefore `agent-config.json` overrides all other config for any key it sets. opencode does **not** hot-reload this file — it is only read at process startup.
 
 **auth.json location** (validated): `XDG_DATA_HOME=/workspace/.local` is set before `exec workspace-agentd`, so agentd inherits it. `authJSONPath = /workspace/.local/opencode/auth.json` — US-35.7: this path is a symlink to `/sandbox-runtime/rt/auth.json` (tmpfs), created by the init container. Wiped on pod death; no plaintext on PVC at rest.
 

@@ -140,8 +140,11 @@ func runSidecarCommand(_ []string) int {
 	// agent-config.json BEFORE the muxes serve. The kubelet gates the
 	// main container on this sidecar's startup probe, so opencode's
 	// first config read can only happen after the stamp lands.
-	agentConfigPath := envOrDefault("LLMSAFESPACES_AGENT_CONFIG_PATH", agentd.AgentConfigPath)
-	agentConfigWriter := ensureBootAgentConfig(agentConfigPath, agentd.AdminPromptPath, agentd.AllowedDirsPath, password)
+	// US-4b: the sidecar's stores live on the consumer-split volumes —
+	// the controller wires the env overrides; helpers default to the
+	// /sandbox-runtime consts for env-less local runs.
+	bootCfgPath, bootPromptPath, bootDirsPath := bootAgentConfigPathsWithEnv()
+	agentConfigWriter := ensureBootAgentConfig(bootCfgPath, bootPromptPath, bootDirsPath, password)
 
 	deps := buildSidecarDeps(sidecarConfig{
 		password:    password,

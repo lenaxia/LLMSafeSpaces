@@ -213,3 +213,63 @@ func TestEnvtestAgentdSidecar_SecretBackedEnv(t *testing.T) {
 	require.Equal(t, "Authorization", rp.HTTPGet.HTTPHeaders[0].Name)
 	require.Equal(t, "Bearer integration-tok", rp.HTTPGet.HTTPHeaders[0].Value)
 }
+
+// TestEnvtestUS4B_MountTopologyAdmitted: the US-4b consumer-split volumes
+// and their mount matrix must survive real API-server admission —
+// emptyDir/SizeLimit quantity validation, Memory-medium shape, and the
+// RO-mount/absent-mount matrix per container are exactly the fields the
+// API server validates (and defaults) beyond the unit suite's struct
+// asserts. V2/V3 live here at the admission level.
+func TestEnvtestUS4B_MountTopologyAdmitted(t *testing.T) {
+	cfg := startEnvtest(t)
+	ws := newWorkspaceForSecurity(t)
+	ws.UID = types.UID("us4b-integration-uid")
+	r := reconcilerWithAgentdSidecar(t)
+
+	pod, err := r.buildPod(context.Background(), ws)
+	require.NoError(t, err)
+	pod.Namespace = "default"
+
+	dyn, err := client.New(cfg, client.Options{})
+	require.NoError(t, err)
+	require.NoError(t, dyn.Create(context.Background(), pod))
+
+	got := &corev1.Pod{}
+	require.NoError(t, dyn.Get(context.Background(), client.ObjectKeyFromObject(pod), got))
+
+	vols := map[string]*corev1.Volume{}
+	for i := range got.Spec.Volumes {
+		vols[got.Spec.Volumes[i].Name] = &got.Spec.Volumes[i]
+	}
+	for _, name := range []string{"agentd-config", "agentd-secrets"} {
+		v, ok := vols[name]
+		require.True(t, ok, "%s volume must survive admission", name)
+		require.NotNil(t, v.EmptyDir, "%s must be an emptyDir", name)
+		require.Equal(t, corev1.StorageMediumMemory, v.EmptyDir.Medium,
+			"%s must stay Memory-medium after admission/defaulting", name)
+		require.NotNil(t, v.EmptyDir.SizeLimit, "%s SizeLimit must parse and survive", name)
+	}
+
+	// Workspace container: agentd-config RO, agentd-secrets ABSENT.
+	main := got.Spec.Containers[0]
+	var cfgMount *corev1.VolumeMount
+	for i := range main.VolumeMounts {
+		switch main.VolumeMounts[i].Name {
+		case "agentd-config":
+			cfgMount = &main.VolumeMounts[i]
+		case "agentd-secrets":
+			t.Fatal("agentd-secrets must NEVER be mounted on the workspace container")
+		}
+	}
+	require.NotNil(t, cfgMount, "workspace container must mount agentd-config")
+	require.True(t, cfgMount.ReadOnly, "agentd-config is RO on the workspace container (V3)")
+
+	// OPENCODE_CONFIG env survives with the relocated coordinate.
+	var ocCfg string
+	for _, e := range main.Env {
+		if e.Name == "OPENCODE_CONFIG" {
+			ocCfg = e.Value
+		}
+	}
+	require.Equal(t, "/agentd-config/agent-config.json", ocCfg)
+}

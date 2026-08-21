@@ -49,11 +49,11 @@ func writeSecretsEnv(t *testing.T, dir, content string) string {
 func TestParseSecretsEnvDelta_QuotingAndNoise(t *testing.T) {
 	dir := t.TempDir()
 	p := writeSecretsEnv(t, dir, ""+
-		"USER_KEY_SIMPLE=abc123\n"+
-		"USER_KEY_SPACES='hello world'\n"+
+		"export USER_KEY_SIMPLE='abc123'\n"+
+		"export USER_KEY_SPACES='hello world'\n"+
 		// shellquote.Bash renders it's quoted as 'it'\''s quoted
-		"USER_KEY_QUOTE='it'\\''s quoted'\n"+
-		"USER_KEY_MULTILINE='line1\nline2'\n")
+		"export USER_KEY_QUOTE='it'\\''s quoted'\n"+
+		"export USER_KEY_MULTILINE='line1\nline2'\n")
 
 	delta, err := parseSecretsEnvDelta(p)
 	require.NoError(t, err)
@@ -82,7 +82,7 @@ func TestPushInitialSpawnEnv_BootHandoff(t *testing.T) {
 	srv := newControlSocketServerWithProc(t, "127.0.0.1:0", proc)
 	go srv.serve()
 
-	p := writeSecretsEnv(t, t.TempDir(), "BOOT_SECRET='boot-value'\n")
+	p := writeSecretsEnv(t, t.TempDir(), "export BOOT_SECRET='boot-value'\n")
 	require.NoError(t, pushInitialSpawnEnv(newControlClient(srv.addr()), p))
 
 	env := *proc.lastEnv.Load()
@@ -144,7 +144,7 @@ func TestSocketReloadProc_PushesDeltaThenRestarts(t *testing.T) {
 	go srv.serve()
 
 	dir := t.TempDir()
-	p := writeSecretsEnv(t, dir, "RELOADED_SECRET='v1'\n")
+	p := writeSecretsEnv(t, dir, "export RELOADED_SECRET='v1'\n")
 	rp := newSocketReloadProc(newControlClient(srv.addr()), p)
 	rp.restart()
 
@@ -155,7 +155,7 @@ func TestSocketReloadProc_PushesDeltaThenRestarts(t *testing.T) {
 
 	// A changed file on the NEXT restart hands off the LATEST delta
 	// (last-write-wins per A.2/A.3 — the re-read happens at restart time).
-	require.NoError(t, os.WriteFile(p, []byte("RELOADED_SECRET='v2'\n"), 0o600))
+	require.NoError(t, os.WriteFile(p, []byte("export RELOADED_SECRET='v2'\n"), 0o600))
 	rp.restart()
 	require.Equal(t, "v2", (*proc.lastEnv.Load())["RELOADED_SECRET"])
 }
@@ -244,6 +244,50 @@ func TestReloadHandler_SidecarEndToEnd(t *testing.T) {
 	require.Contains(t, string(data), "MY_PROVIDER_KEY")
 }
 
+// TestReloadHandler_SidecarEndToEnd_CrossUIDModes: with the sidecar's
+// LLMSAFESPACES_CROSS_UID_FILES armed, the SAME handler's materialization
+// must produce group-readable rt/* stores (US-4b: uid-2000 writes,
+// uid-1000 tools read via gid 1000).
+func TestReloadHandler_SidecarEndToEnd_CrossUIDModes(t *testing.T) {
+	withTestLogger(t)
+	dir := t.TempDir()
+	secretsDir := filepath.Join(dir, "rt", "secrets")
+	t.Setenv("LLMSAFESPACES_SECRETS_ENV_PATH", filepath.Join(dir, "secrets-env"))
+	t.Setenv("LLMSAFESPACES_RESTART_MARKER_PATH", filepath.Join(dir, "marker.json"))
+	t.Setenv("LLMSAFESPACES_SECRETS_BASE_DIR", secretsDir)
+	t.Setenv("LLMSAFESPACES_SSH_DIR", filepath.Join(dir, "rt", "ssh"))
+	t.Setenv("LLMSAFESPACES_AGENT_CONFIG_PATH", filepath.Join(dir, "agent-config.json"))
+	t.Setenv("LLMSAFESPACES_GIT_CREDS_PATH", filepath.Join(dir, "rt", "git-credentials"))
+	t.Setenv("LLMSAFESPACES_RELOAD_CACHE_PATH", filepath.Join(dir, "last-reload.json"))
+	t.Setenv("LLMSAFESPACES_CROSS_UID_FILES", "1")
+
+	proc := &fakeRestartProc{}
+	srv := newControlSocketServerWithProc(t, "127.0.0.1:0", proc)
+	go srv.serve()
+	rp := newSocketReloadProc(newControlClient(srv.addr()), filepath.Join(dir, "secrets-env"))
+
+	h := reloadSecretsHandler(loadMaterializeConfig(), reloadSecretsDeps{
+		OpencodePassword: "pw",
+		Proc:             rp,
+	})
+	body := bytes.NewBufferString(
+		`[{"type":"secret-file","name":"app-cfg","metadata":{"mount_path":"app/config.env"},"plaintext":"tool-bytes"}]`)
+	req := httptest.NewRequest(http.MethodPost, "/v1/reload-secrets", body)
+	req.SetBasicAuth("opencode", "pw")
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	require.Equal(t, http.StatusOK, rec.Code, "body: %s", rec.Body.String())
+
+	fileInfo, err := os.Stat(filepath.Join(secretsDir, "app", "config.env"))
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o640), fileInfo.Mode().Perm(),
+		"cross-uid reload: secret-file must be gid-1000 readable")
+	dirInfo, err := os.Stat(secretsDir)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o770), dirInfo.Mode().Perm(),
+		"cross-uid reload: secret-file root must be gid-1000 traversable")
+}
+
 // --- review round 1: boot ordering + degradation ------------------------------
 
 // TestPushInitialSpawnEnv_DeadSocketFailsFast: an unreachable supervisor
@@ -254,7 +298,7 @@ func TestPushInitialSpawnEnv_DeadSocketFailsFast(t *testing.T) {
 	cc := newControlClient(fmt.Sprintf("127.0.0.1:%d", deadPort))
 	cc.timeout = 5 * time.Second
 
-	p := writeSecretsEnv(t, t.TempDir(), "BOOT_SECRET='x'\n")
+	p := writeSecretsEnv(t, t.TempDir(), "export BOOT_SECRET='x'\n")
 	begin := time.Now()
 	err := pushInitialSpawnEnv(cc, p)
 	require.Error(t, err, "dead socket must surface an error, not silence")

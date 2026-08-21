@@ -605,7 +605,26 @@ if [ -f /mnt/secrets/password/admin-token ]; then
   install -m 0400 /mnt/secrets/password/admin-token /sandbox-cfg/admin-token
 fi
 
-workspace-agentd bootstrap --workspace-id "$WORKSPACE_ID" --api-url "$LLMSAFESPACE_API_URL"
+# Design 0051 US-4b: sidecar-mode store relocations. Every relocation is
+# gated on AGENTD_SIDECAR_MODE (set by the controller only in
+# sidecar-enabled pods) — the default path below is the unchanged
+# single-container behavior. POSIX [ = ] only (the dash lesson, #933).
+if [ "${AGENTD_SIDECAR_MODE:-}" = "1" ]; then
+  # rt dirs group-writable (0770): the uid-2000 sidecar's reset()
+  # unlinks/recreates these on every credential reload; the pod's shared
+  # gid 1000 carries the write. Materialized files land 0640
+  # (LLMSAFESPACES_CROSS_UID_FILES=1 on the sidecar).
+  chmod 0770 /sandbox-runtime/rt /sandbox-runtime/rt/secrets /sandbox-runtime/rt/ssh
+  # Bootstrap writes the admin prompt to the sidecar-ONLY agentd-secrets
+  # volume and allowed-dirs to agentd-config (the integrity volume).
+  # The materialize env (LLMSAFESPACES_*_PATH) points its outputs at the
+  # relocated stores as well.
+  workspace-agentd bootstrap --workspace-id "$WORKSPACE_ID" --api-url "$LLMSAFESPACE_API_URL" \
+    --admin-prompt-out /agentd-secrets/admin-prompt.md \
+    --allowed-dirs-out /agentd-config/allowed-dirs.json
+else
+  workspace-agentd bootstrap --workspace-id "$WORKSPACE_ID" --api-url "$LLMSAFESPACE_API_URL"
+fi
 workspace-agentd materialize
 `
 	pwVolume := corev1.Volume{
@@ -661,8 +680,9 @@ workspace-agentd materialize
 
 	trueVal := true
 	falseVal := false
+
 	credInit := corev1.Container{
-		Name:    "credential-setup",
+		Name:    credentialSetupContainerName,
 		Image:   runtimeImage,
 		Command: []string{"/bin/sh", "-c", credScript},
 		Env: func() []corev1.EnvVar {
