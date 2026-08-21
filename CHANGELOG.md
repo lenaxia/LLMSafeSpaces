@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-08-21
+
+### Added
+
+- **agentd US-3 credential split (#1011, design 0051)**: `agentdPassword`
+  secret key + per-endpoint credential table (§D1) — user-mux and
+  admin-mux no longer share a credential.
+- **Release-pipeline integrity (#1008)**: agentd is built, signed,
+  Trivy-scanned, SBOM'd, and release-noted inside the release workflow —
+  release success now means ALL artifacts published (the v0.19.1 gap).
+  Enforced by a new repolint invariant (every `*_IMAGE` in the sign/
+  scan/SBOM loops and release table; every merge job gates the release).
+
+### Fixed
+
+- **Dev-preview chat button did not render in production (#1013)**:
+  workspace pods without `LLMSAFESPACE_API_URL` emitted RELATIVE
+  bootstrap links, which the button parser (absolute-only) rejected.
+  agentd now derives `https://api.<baseDomain>` in origin mode; the
+  frontend resolves relative links against the app's API base (never
+  the frontend origin). E2E covers split- and same-origin deployments
+  via mocked `/env.json` — the blind spot that shipped this bug.
+- **agentd path-mode tests were environment-dependent**: they inherited
+  the pod's real `PREVIEW_ORIGIN_BASE_DOMAIN` and flipped to origin
+  mode inside refreshed pods; all affected tests pin their env now.
+- **US-2 L3 kind CI (#1007, #1009)**: crictl sandbox resolution,
+  1s-granular timestamp ties.
+
 ## [0.19.2] - 2026-08-21
 
 ### Fixed
