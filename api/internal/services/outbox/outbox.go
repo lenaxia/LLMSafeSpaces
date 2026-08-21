@@ -52,6 +52,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -103,6 +104,13 @@ var (
 	// lock's TTL would expire mid-turn and let a second worker deliver
 	// concurrently (one-in-flight violation).
 	LockTTL = DeliveryTimeout + 2*time.Minute
+
+	// bookkeepingTimeout bounds post-delivery Redis cleanup (staging
+	// LRem, state restore, lock release) on a context DETACHED from the
+	// driver's cancellation. Generous and fixed: it guards against
+	// unbounded hangs only — never coupled to DeliveryTimeout, which the
+	// stress harness shrinks to 10ms.
+	bookkeepingTimeout = 5 * time.Second
 	// VerifyDelay is the initial delay before the first verification
 	// pass after an ambiguous send (lets a racing persist land).
 	VerifyDelay = 3 * time.Second
@@ -395,6 +403,15 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 		return false // another worker (this replica or another) owns it
 	}
 	defer s.releaseLock(ctx, ws, ses, token)
+	// Lock release must survive driver cancellation (Run abandons
+	// in-flight workers on ctx.Done; a held lock would block the next
+	// worker for LockTTL). Detached + bounded, same principle as bctx
+	// below — which is canceled by the time deferred cleanup runs.
+	defer func() {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		s.releaseLock(cleanupCtx, ws, ses, token)
+	}()
 
 	qk := qKey(ws, ses)
 	vals, err := s.client.LRange(ctx, qk, 0, -1).Result()
@@ -424,15 +441,29 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 	// Stage-out (loss-proof ordering): RPUSH staging FIRST, then LREM
 	// main. A crash between the two leaves the entry in BOTH — duplicate
 	// delivery is possible (at-least-once), loss is not; Recover dedupes
-	// by ID.
+	// by ID. Pre-delivery staging rides the driver ctx: cancellation here
+	// simply means the entry was never staged out; the next worker picks
+	// it up.
 	staged := mustMarshal(e)
 	s.client.RPush(ctx, dKey(ws, ses), staged)
 	s.client.LRem(ctx, qk, 1, vals[idx])
 
 	e.LastAttemptAt = now
 	derr := deliverDetached(ctx, d, ws, ses, e)
+	// Bookkeeping context: minted AFTER delivery, detached from driver
+	// cancellation (Run abandons in-flight workers on ctx.Done; a detached
+	// deliverer outlives it by design — D3), bounded so a wedged Redis
+	// cannot pin the goroutine forever. Two load-bearing details:
+	// (1) minted AFTER the deliverer returns — it may consume the whole
+	//     DeliveryTimeout; a pre-minted ctx is expired on arrival;
+	// (2) a FIXED generous budget, NOT DeliveryTimeout — the bound exists
+	//     to prevent unbounded hangs, not to enforce delivery timing, and
+	//     the stress harness legitimately shrinks DeliveryTimeout to 10ms
+	//     (bookkeeping under contention needs far more than that).
+	bctx, bcancel := context.WithTimeout(context.WithoutCancel(ctx), bookkeepingTimeout)
+	defer bcancel()
 	if derr == nil {
-		s.client.LRem(ctx, dKey(ws, ses), 1, staged)
+		s.client.LRem(bctx, dKey(ws, ses), 1, staged)
 		s.fireOnDelivered(ws, ses, e)
 		return true
 	}
@@ -445,7 +476,7 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 		e.VerifyAttempts = 0
 		e.LastError = "ambiguous: " + amb.Err.Error()
 		e.NextAttemptAt = now.Add(VerifyDelay)
-		s.restoreStaged(ctx, qk, dKey(ws, ses), idx, staged, e)
+		s.restoreStaged(bctx, qk, dKey(ws, ses), idx, staged, e)
 		return true
 	}
 	// Failure: restore main FIRST (LInsert before the current occupant,
@@ -459,7 +490,7 @@ func (s *Service) deliverOne(ctx context.Context, ws, ses string, d Deliverer) b
 		e.Status = StatusPending
 		e.NextAttemptAt = now.Add(backoffFor(e.Attempts))
 	}
-	s.restoreStaged(ctx, qk, dKey(ws, ses), idx, staged, e)
+	s.restoreStaged(bctx, qk, dKey(ws, ses), idx, staged, e)
 	return true
 }
 
@@ -591,11 +622,23 @@ func (s *Service) Recover(ctx context.Context) int {
 // would let one slow session starve every other session's outbox — the
 // starvation shape design 0050 exists to eliminate. The per-session lock
 // serializes same-session delivery; cross-session delivery is parallel.
+// Run drives delivery until ctx is canceled, THEN joins every worker
+// it spawned before returning. The join is load-bearing: abandoning
+// in-flight deliverOne goroutines on exit (a) leaks them past the
+// caller's lifetime — observed as goroutine-stack races against
+// subsequent package-var mutations in tests, and as unbounded teardown
+// stalls behind detached deliveries in production shutdown — and (b)
+// makes "Run returned" mean nothing. Workers quiesce promptly on a
+// canceled ctx: pre-delivery Redis ops fail fast, in-flight deliveries
+// complete under their detached contexts (D3) with detached-bounded
+// bookkeeping, bounded by DeliveryTimeout + bookkeepingTimeout.
 func (s *Service) Run(ctx context.Context, d Deliverer, tick time.Duration) {
 	s.Recover(ctx)
 	t := time.NewTicker(tick)
 	defer t.Stop()
 	sem := make(chan struct{}, 32)
+	var workers sync.WaitGroup
+	defer workers.Wait()
 	for {
 		select {
 		case <-ctx.Done():
@@ -607,7 +650,9 @@ func (s *Service) Run(ctx context.Context, d Deliverer, tick time.Duration) {
 					return
 				case sem <- struct{}{}:
 				}
+				workers.Add(1)
 				go func(ws, ses string) {
+					defer workers.Done()
 					defer func() { <-sem }()
 					s.deliverOne(ctx, ws, ses, d)
 				}(pair[0], pair[1])

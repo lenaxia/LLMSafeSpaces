@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -587,6 +588,16 @@ func TestRun_ConcurrentSessionsNoHeadOfLine(t *testing.T) {
 
 	fastDone := make(chan time.Time, 1)
 	slowDone := make(chan struct{}, 1)
+	// slowStarted fires when the slow session's DELIVERER is entered.
+	// Load-bearing for teardown: a slow-session worker spawn is LIKELY,
+	// not guaranteed — the scheduler may cancel Run before that tick's
+	// worker runs, in which case slowDone never fires (the entry simply
+	// stays pending — correct outbox semantics; the next Run delivers
+	// it). The join below waits for slowDone ONLY when the delivery
+	// actually started. Waiting unconditionally produced phantom 5s
+	// stalls (4MB goroutine dumps: join blocked on <-slowDone, every
+	// worker already gone, nothing left to wake it).
+	slowStarted := make(chan struct{}, 1)
 	// testDone wakes the slow-fn on TEST teardown. Load-bearing: the
 	// deliverer receives a DETACHED context (deliverDetached — the D3
 	// disconnect-immunity contract), so waiting on ITS ctx.Done() can
@@ -604,11 +615,33 @@ func TestRun_ConcurrentSessionsNoHeadOfLine(t *testing.T) {
 		cancel()
 		close(testDone)
 		joined := make(chan struct{})
-		go func() { runWG.Wait(); <-slowDone; close(joined) }()
+		go func() {
+			runWG.Wait()
+			select {
+			case <-slowStarted:
+				<-slowDone // delivery began; it must complete (testDone wakes it)
+			default:
+				// never spawned — nothing pending, nothing to join
+			}
+			close(joined)
+		}()
 		select {
 		case <-joined:
 		case <-time.After(5 * time.Second):
-			t.Error("teardown stalled >5s: Run or the slow delivery did not observe cancellation (detached-ctx assumption violated)")
+			// Both-ready select race guard: joined may have closed in the
+			// same instant the timer fired (4MB stack dumps of such events
+			// showed every worker ALREADY gone — a phantom stall). Re-check
+			// non-blockingly before declaring failure.
+			select {
+			case <-joined:
+				return
+			default:
+			}
+			// Diagnose, don't just fail: dump goroutine stacks so the
+			// stalling frame is named in the test output.
+			buf := make([]byte, 4<<20)
+			n := runtime.Stack(buf, true)
+			t.Errorf("teardown stalled >5s: Run or the slow delivery did not observe cancellation. Goroutine dump:\n%s", buf[:n])
 		}
 	}()
 	runWG.Add(1)
@@ -616,6 +649,7 @@ func TestRun_ConcurrentSessionsNoHeadOfLine(t *testing.T) {
 		defer runWG.Done()
 		s.Run(ctx, func(ctx context.Context, _, ses string, _ Entry) error {
 			if ses == "slow" {
+				slowStarted <- struct{}{}
 				defer func() { slowDone <- struct{}{} }()
 				select {
 				case <-testDone: // test teardown — independent of the detached ctx
