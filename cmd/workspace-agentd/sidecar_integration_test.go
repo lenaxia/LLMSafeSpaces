@@ -180,12 +180,13 @@ func TestIntegration_SpawnEnvHandoff_CrossesToRealChild(t *testing.T) {
 		return strings.Contains(env, "USER_SECRET_A=alpha\x00") && strings.Contains(env, "USER_SECRET_B=beta\x00")
 	}, 5*time.Second, 100*time.Millisecond, "the next real spawn must run with the socket-handed env")
 
-	// And nothing else: the handed env REPLACES the child env wholesale
-	// (the sidecar composes the full env — parent+secrets — upstream).
+	// US-4a merge semantics: the supervisor composes parent + handed delta
+	// (platform vars win — the sidecar cannot compose the parent, A.4).
 	data, err := os.ReadFile("/proc/" + strconv.Itoa(mustPID(t, h)) + "/environ")
 	require.NoError(t, err)
-	require.False(t, strings.Contains(string(data), "GO_TEST_FAKE_OPENCODE="),
-		"the handed env replaces the child env; the factory's default env must not leak through")
+	require.True(t, strings.Contains(string(data), "GO_TEST_FAKE_OPENCODE=1") &&
+		strings.Contains(string(data), "USER_SECRET_A=alpha\x00"),
+		"next spawn runs parent+delta: platform vars retained AND the handed delta applied")
 }
 
 // TestIntegration_Vitals_AgainstRealChildAndSocket: with the real child

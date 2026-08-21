@@ -68,8 +68,10 @@ func TestManagedProcAdapter_WrapperUsesInjectedBaseFactory(t *testing.T) {
 	cmd := factory()
 	require.Equal(t, baseBinary, cmd.Path,
 		"the wrapper must compose on the injected baseCmdFactory — a Path of \"opencode\" is the CI-hang regression (#980 round 2)")
-	require.Equal(t, []string{"HANDED=env"}, cmd.Env,
-		"the wrapper replaces the child env with the handed spawn env (the sidecar composes the FULL env)")
+	// US-4a merge semantics: the delta rides ON TOP of the base env
+	// (platform vars win — A.4 forbids the sidecar composing the parent).
+	require.Contains(t, cmd.Env, "HANDED=env")
+	require.Contains(t, cmd.Env, "BASE_MARKER=1", "base factory env retained (merge, not replace)")
 }
 
 // TestManagedProcAdapter_NilBaseFactoryFallsBackToDefault pins the lazy

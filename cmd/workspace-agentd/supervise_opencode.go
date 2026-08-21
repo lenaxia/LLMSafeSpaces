@@ -118,9 +118,10 @@ type managedProcAdapter struct {
 	// `opencode` binary (absent on CI runners — the wrapper then
 	// crash-loops a failing Start and restart blocks on upCh forever).
 	baseCmdFactory func() *exec.Cmd
-	// spawnEnv is the US-0.2(a) IPC-handed env: memory-only, write-only,
-	// last-write-wins. Applied by the cmdFactory wrapper at the NEXT
-	// spawn. Never returned over the socket (A.4 invariant 1), never
+	// spawnEnv is the US-0.2(a) IPC-handed env delta: memory-only,
+	// write-only, last-write-wins. MERGED onto the base factory's env at
+	// the NEXT spawn (US-4a; wholesale replacement was US-2's interim
+	// shape). Never returned over the socket (A.4 invariant 1), never
 	// written to disk.
 	spawnEnv []string
 }
@@ -178,7 +179,11 @@ func (a *managedProcAdapter) SetSpawnEnv(env map[string]string) {
 	a.p.mu.Lock()
 	a.p.cmdFactory = func() *exec.Cmd {
 		cmd := base()
-		cmd.Env = append([]string{}, a.spawnEnv...)
+		// US-4a merge semantics: the sidecar hands ONLY the secrets
+		// delta (A.4 forbids env OUT of the supervisor, so the sidecar
+		// cannot compose the parent); the supervisor composes parent +
+		// delta with platform vars winning — buildEnvFrom parity.
+		cmd.Env = parentPlusDelta(cmd.Env, env)
 		return cmd
 	}
 	a.p.mu.Unlock()
