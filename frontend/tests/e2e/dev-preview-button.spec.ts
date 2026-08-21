@@ -30,7 +30,11 @@ const PATH_OUTPUT = [
   "Opens the dev preview tunnel.",
 ].join("\n");
 
-async function setupAPIMocks(page: Page, messages: unknown[]) {
+async function setupAPIMocks(page: Page, messages: unknown[], apiBaseUrl = "/api/v1") {
+  // /env.json drives the app's API base — the relative-link resolution
+  // under test reads it. Default mirrors the same-origin deployment.
+  await page.route("**/env.json", (r: Route) =>
+    r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ apiBaseUrl, turnstileSiteKey: "" }) }));
   await page.route(`${API}/auth/login`, (r: Route) =>
     r.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ token: "e2e-token", user: { id: "u1", username: "tester", role: "user" } }) }));
   await page.route(`${API}/auth/me`, (r: Route) =>
@@ -144,6 +148,55 @@ test.describe("dev_preview_url chat button (epic-66 UX round 2)", () => {
     // is not this test's concern.
     const summary = page.locator("summary", { hasText: "some_other_tool" }).first();
     await expect(summary).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByTestId("dev-preview-button")).toHaveCount(0);
+  });
+
+  test("RELATIVE bootstrap link renders the button with the ABSOLUTE API href (split deployment)", async ({ page }) => {
+    // Regression (2026-08-21): production pods emit /api/v1/... links
+    // (no absolute API URL in env); absolute-only parsing rendered plain
+    // text. With a split-deployment env (api on its own origin), the
+    // button must point at the API origin — never the frontend origin.
+    const rel = [
+      "LSP_DEV_PREVIEW_V1 port=5173 origin=safespaces.dev",
+      "[Open dev preview :5173](/api/v1/workspaces/ws-devpreview-e2e/dev-preview-bootstrap/5173)",
+      "Opens the preview.",
+    ].join("\n");
+    await setupAPIMocks(page, [
+      { id: "m2", type: "assistant", parts: [{ type: "tool", tool: { callId: "c7", name: "dev_preview_url", output: rel, state: { status: "completed" } } }] },
+    ], "https://api.example.com/api/v1");
+
+    await page.goto(`/chat/${WORKSPACE_ID}/${SESSION_ID}`);
+    const btn = page.getByTestId("dev-preview-button");
+    await expect(btn).toBeVisible({ timeout: 10_000 });
+    await expect(btn).toHaveAttribute("href", "https://api.example.com/api/v1/workspaces/ws-devpreview-e2e/dev-preview-bootstrap/5173");
+  });
+
+  test("RELATIVE link stays relative under the same-origin default (correct there) — unhappy split", async ({ page }) => {
+    // Same-origin deployment (default env): the relative link is correct
+    // as-is and the button must still render. The 'unhappy' scenario for
+    // resolution is a malformed link line, asserted after.
+    const rel = [
+      "LSP_DEV_PREVIEW_V1 port=3000 mode=path",
+      "[Open dev preview :3000](/api/v1/workspaces/ws-devpreview-e2e/dev-preview-bootstrap/3000)",
+      "Opens the preview.",
+    ].join("\n");
+    await setupAPIMocks(page, [
+      { id: "m2", type: "assistant", parts: [{ type: "tool", tool: { callId: "c8", name: "dev_preview_url", output: rel, state: { status: "completed" } } }] },
+    ]);
+
+    await page.goto(`/chat/${WORKSPACE_ID}/${SESSION_ID}`);
+    const btn = page.getByTestId("dev-preview-button");
+    await expect(btn).toBeVisible({ timeout: 10_000 });
+    await expect(btn).toHaveAttribute("href", "/api/v1/workspaces/ws-devpreview-e2e/dev-preview-bootstrap/3000");
+  });
+
+  test("malformed link line (empty target) renders no button", async ({ page }) => {
+    const bad = "LSP_DEV_PREVIEW_V1 port=5173 origin=safespaces.dev\n[Open dev preview :5173]()\nOpens the preview.";
+    await setupAPIMocks(page, [
+      { id: "m2", type: "assistant", parts: [{ type: "tool", tool: { callId: "c9", name: "dev_preview_url", output: bad, state: { status: "completed" } } }] },
+    ]);
+
+    await page.goto(`/chat/${WORKSPACE_ID}/${SESSION_ID}`);
     await expect(page.getByTestId("dev-preview-button")).toHaveCount(0);
   });
 
