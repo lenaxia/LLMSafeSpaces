@@ -491,3 +491,18 @@ func TestCallMCPTool_DevPreviewURL_ButtonMarkerShape(t *testing.T) {
 	assert.Regexp(t, `^\[Open dev preview :3000\]\(https://platform\.example\.com/api/v1/workspaces/0d2a9a1b-c3d4-4e5f-8a9b-0c1d2e3f4a5b/dev-preview-bootstrap/3000\)$`, lines[1])
 	assert.NotEmpty(t, lines[2], "explanation must be present")
 }
+
+func TestCallMCPTool_DevPreviewURL_OriginModeDerivesAPIOrigin(t *testing.T) {
+	// Regression (2026-08-21): workspace pods don't always carry
+	// LLMSAFESPACE_API_URL; the tool then emitted a RELATIVE bootstrap
+	// link, which the chat button's parser rejects (needs absolute).
+	// In origin mode the API origin is derivable: https://api.<baseDomain>.
+	t.Setenv("WORKSPACE_ID", "0d2a9a1b-c3d4-4e5f-8a9b-0c1d2e3f4a5b")
+	t.Setenv("LLMSAFESPACE_API_URL", "")
+	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "safespaces.dev")
+
+	result, err := callMCPTool(context.Background(), "password", "dev_preview_url", map[string]any{})
+	require.NoError(t, err)
+	assert.Contains(t, result, "(https://api.safespaces.dev/api/v1/workspaces/0d2a9a1b-c3d4-4e5f-8a9b-0c1d2e3f4a5b/dev-preview-bootstrap/5173)")
+	assert.NotContains(t, result, "(/api/v1/", "link must be absolute")
+}

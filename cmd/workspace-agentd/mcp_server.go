@@ -240,6 +240,16 @@ func mcpDevPreviewURL(port int, path string) string {
 	// merely mentions "dev preview". If the button does not render
 	// (older UI), the markdown link on line 2 still carries the URL.
 	if base := os.Getenv("PREVIEW_ORIGIN_BASE_DOMAIN"); base != "" {
+		// Workspace pods do not always carry LLMSAFESPACE_API_URL (it is
+		// wired for the bootstrap init container; agentd's env may lack it),
+		// which yielded RELATIVE bootstrap links — the chat button's parser
+		// requires absolute URLs. In origin mode the API origin is
+		// derivable: https://api.<baseDomain> (the same derivation the
+		// preview handler uses server-side).
+		if apiURL == "" {
+			apiURL = "https://api." + base
+		}
+		apiURL = strings.TrimSuffix(apiURL, "/")
 		url := fmt.Sprintf("%s/api/v1/workspaces/%s/dev-preview-bootstrap/%d", apiURL, workspaceID, port)
 		return fmt.Sprintf(
 			"LSP_DEV_PREVIEW_V1 port=%d origin=%s\n[Open dev preview :%d](%s)\nOpens the per-workspace preview origin (workspace %s, port %d) in a new tab. Requires dev preview enabled (Workspace Settings → Dev Preview) and an owner login; a one-time bootstrap grants a 7-day preview session. The app itself must be listening on localhost:%d in the workspace.",
