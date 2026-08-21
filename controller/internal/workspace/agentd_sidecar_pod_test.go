@@ -407,3 +407,51 @@ func entrypointScriptPath(t *testing.T) string {
 	require.NoError(t, err, "entrypoint-common.sh not found at %s", abs)
 	return abs
 }
+
+// --- US-3: control-plane credential wiring -----------------------------------
+
+// TestAgentdSidecar_ControlPlanePasswordEnvAndIsolation: the sidecar gets
+// AGENTD_CONTROL_PLANE_PASSWORD from the NEW agentdPassword Secret key
+// (§D1), and — the whole point of the split — the MAIN container must
+// carry NO reference to it (the secret must never exist in uid-1000
+// space).
+func TestAgentdSidecar_ControlPlanePasswordEnvAndIsolation(t *testing.T) {
+	ws := newWorkspaceForSecurity(t)
+	sec := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      passwordSecretName(ws.Name),
+			Namespace: ws.Namespace,
+		},
+		Data: map[string][]byte{
+			"password":       []byte("pw"),
+			"admin-token":    []byte("tok"),
+			"agentdPassword": []byte("the-agentd-pw"),
+		},
+	}
+	r := reconcilerWithAgentdSidecar(t)
+	require.NoError(t, r.Create(context.Background(), sec))
+
+	pod, err := r.buildPod(context.Background(), ws)
+	require.NoError(t, err)
+
+	sc := sidecarInitContainer(pod, "agentd")
+	require.NotNil(t, sc)
+	cp := sidecarEnvVar(sc, "AGENTD_CONTROL_PLANE_PASSWORD")
+	require.NotNil(t, cp, "sidecar must receive the control-plane credential")
+	require.NotNil(t, cp.ValueFrom.SecretKeyRef)
+	require.Equal(t, "agentdPassword", cp.ValueFrom.SecretKeyRef.Key,
+		"the NEW §D1 Secret key")
+	require.Equal(t, passwordSecretName(ws.Name), cp.ValueFrom.SecretKeyRef.Name)
+
+	// Isolation: the workspace container (uid-1000 space) must have NO
+	// env var sourced from the agentdPassword key — by name OR by key.
+	main := &pod.Spec.Containers[0]
+	require.Nil(t, sidecarEnvVar(main, "AGENTD_CONTROL_PLANE_PASSWORD"),
+		"the control-plane credential must never be wired into uid-1000 space")
+	for _, e := range main.Env {
+		if e.ValueFrom != nil && e.ValueFrom.SecretKeyRef != nil {
+			require.NotEqual(t, "agentdPassword", e.ValueFrom.SecretKeyRef.Key,
+				"main container env %s references the agentdPassword key — uid-1000 leak", e.Name)
+		}
+	}
+}

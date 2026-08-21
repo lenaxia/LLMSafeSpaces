@@ -51,19 +51,32 @@ func (r *WorkspaceReconciler) ensurePasswordSecret(ctx context.Context, workspac
 	name := passwordSecretName(workspace.Name)
 	secret := &corev1.Secret{}
 	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: workspace.Namespace}, secret); err == nil {
-		// #887 D5.1: converge legacy Secrets onto the DISTINCT admin
-		// token key. Generated once, never rotated in place — running
-		// pods hold the accepted value in agentd memory while rebuilt
-		// probe specs read the Secret; in-place rotation desyncs them.
-		if _, ok := secret.Data["admin-token"]; ok {
-			return nil
-		}
+		// #887 D5.1 / design 0051 US-3 (Q3): converge legacy Secrets onto
+		// the DISTINCT admin-token and agentdPassword keys. Generated
+		// once, never rotated in place — running pods hold the accepted
+		// values in agentd memory while rebuilt probe specs / API-server
+		// credential reads diverge; in-place rotation desyncs them.
+		changed := false
 		if secret.Data == nil {
 			// A Secret created without any data carries a nil map;
 			// assignment would panic (F4, review round 1).
 			secret.Data = map[string][]byte{}
 		}
-		secret.Data["admin-token"] = []byte(common.GenerateRandomString(32))
+		if _, ok := secret.Data["admin-token"]; !ok {
+			secret.Data["admin-token"] = []byte(common.GenerateRandomString(32))
+			changed = true
+		}
+		// US-3: the control-plane Basic secret (§D1 per-endpoint table).
+		// Same upsert-once rule. Its absence in a sidecar-enabled build
+		// would leave the pod failing on a missing Secret key, so
+		// convergence happens here — in handlePending, BEFORE buildPod.
+		if _, ok := secret.Data["agentdPassword"]; !ok {
+			secret.Data["agentdPassword"] = []byte(common.GenerateRandomString(32))
+			changed = true
+		}
+		if !changed {
+			return nil
+		}
 		return r.Update(ctx, secret)
 	}
 	password := common.GenerateRandomString(32)
@@ -73,8 +86,9 @@ func (r *WorkspaceReconciler) ensurePasswordSecret(ctx context.Context, workspac
 			Namespace: workspace.Namespace,
 		},
 		Data: map[string][]byte{
-			"password":    []byte(password),
-			"admin-token": []byte(common.GenerateRandomString(32)),
+			"password":       []byte(password),
+			"admin-token":    []byte(common.GenerateRandomString(32)),
+			"agentdPassword": []byte(common.GenerateRandomString(32)),
 		},
 	}
 	if err := controllerutil.SetControllerReference(workspace, newSecret, r.Scheme); err != nil {

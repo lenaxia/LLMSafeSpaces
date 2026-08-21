@@ -76,9 +76,14 @@ func (r *nodeExecRegistry) cancelNode(nodeID string) {
 
 var registry = newNodeExecRegistry()
 
-func workflowExecuteHandler(password string) http.HandlerFunc {
+// Design 0051 US-3 (§D1): control-plane route. workspacePassword is BOTH
+// an accepted credential and the CLIENT credential for agent-node
+// opencode session calls (the sidecar retains it as a client secret by
+// design). extraAuth carries additional ACCEPTED credentials (the
+// agentdPassword in sidecar mode; D6.1 mixed-generation window).
+func workflowExecuteHandler(workspacePassword string, extraAuth ...string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !checkBasicAuth(r, password) {
+		if !checkBasicAuthAny(r, append([]string{workspacePassword}, extraAuth...)...) {
 			rejectUnauthorized(w)
 			return
 		}
@@ -109,16 +114,17 @@ func workflowExecuteHandler(password string) http.HandlerFunc {
 		case "condition":
 			execConditionNode(ctx, w, &req)
 		case "agent":
-			execAgentNode(ctx, password, w, &req)
+			execAgentNode(ctx, workspacePassword, w, &req)
 		default:
 			writeWorkflowError(w, http.StatusBadRequest, "invalid_node_type", fmt.Sprintf("unsupported node type: %s", req.NodeType))
 		}
 	}
 }
 
-func workflowCancelHandler(password string) http.HandlerFunc {
+// Design 0051 US-3 (§D1): control-plane route — see workflowExecuteHandler.
+func workflowCancelHandler(passwords ...string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !checkBasicAuth(r, password) {
+		if !checkBasicAuthAny(r, passwords...) {
 			rejectUnauthorized(w)
 			return
 		}
@@ -132,9 +138,10 @@ func workflowCancelHandler(password string) http.HandlerFunc {
 	}
 }
 
-func workflowDeleteSessionHandler(password string) http.HandlerFunc {
+// Design 0051 US-3 (§D1): control-plane route — see workflowExecuteHandler.
+func workflowDeleteSessionHandler(workspacePassword string, extraAuth ...string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !checkBasicAuth(r, password) {
+		if !checkBasicAuthAny(r, append([]string{workspacePassword}, extraAuth...)...) {
 			rejectUnauthorized(w)
 			return
 		}
@@ -143,7 +150,7 @@ func workflowDeleteSessionHandler(password string) http.HandlerFunc {
 			writeWorkflowError(w, http.StatusBadRequest, "missing_session_id", "sessionId query parameter required")
 			return
 		}
-		deleteOpencodeSession(r.Context(), password, sessionID)
+		deleteOpencodeSession(r.Context(), workspacePassword, sessionID)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

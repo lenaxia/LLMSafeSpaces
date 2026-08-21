@@ -43,7 +43,7 @@ func TestAgentdReloadHandler_DisposeSucceeds_Returns200(t *testing.T) {
 	// For a proper unit test, we extract the logic: the handler calls
 	// oc.DisposeInstance. We test via the httptest pattern.
 	log := zaptest.NewLogger(t)
-	handler := agentReloadHandler("test-pw", log)
+	handler := agentReloadHandler(log, "test-pw")
 
 	// The handler constructs its own opencode client pointing at localhost:AgentPort.
 	// In test, we can't easily intercept that. Instead, we verify the handler's
@@ -68,7 +68,7 @@ func TestAgentdReloadHandler_DisposeSucceeds_Returns200(t *testing.T) {
 
 func TestAgentdReloadHandler_MethodNotPost_Returns405(t *testing.T) {
 	log := zaptest.NewLogger(t)
-	handler := agentReloadHandler("test-pw", log)
+	handler := agentReloadHandler(log, "test-pw")
 
 	methods := []string{http.MethodGet, http.MethodPut, http.MethodDelete, http.MethodPatch}
 	for _, m := range methods {
@@ -84,7 +84,7 @@ func TestAgentdReloadHandler_MethodNotPost_Returns405(t *testing.T) {
 
 func TestAgentdReloadHandler_ConcurrentCalls_NoRace(t *testing.T) {
 	log := zaptest.NewLogger(t, zaptest.Level(zap.WarnLevel))
-	handler := agentReloadHandler("test-pw", log)
+	handler := agentReloadHandler(log, "test-pw")
 
 	// Concurrent calls should not race (handler creates a fresh client per call)
 	var wg sync.WaitGroup
@@ -108,7 +108,7 @@ func TestAgentdReloadHandler_ConcurrentCalls_NoRace(t *testing.T) {
 func TestAgentReloadHandler_RequiresAuth(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/v1/agent/reload", nil)
 	rec := httptest.NewRecorder()
-	agentReloadHandler("test-pw", zap.NewNop())(rec, req)
+	agentReloadHandler(zap.NewNop(), "test-pw")(rec, req)
 	require.Equal(t, http.StatusUnauthorized, rec.Code, "unauthenticated agent reload must be rejected")
 	require.Equal(t, `Basic realm="agentd"`, rec.Header().Get("WWW-Authenticate"))
 }
