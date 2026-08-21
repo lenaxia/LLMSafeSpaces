@@ -155,6 +155,19 @@ func runSidecarCommand(_ []string) int {
 	// monitor, ops ticker, fillGaps, health watchdog (+reaper loop,
 	// which is a no-op — the sidecar spawns no children and never
 	// becomes a subreaper).
+	// US-4a boot handoff (US-0.2(a)): push the materializer's secrets
+	// delta BEFORE the muxes serve. The kubelet gates the workspace
+	// container on this sidecar's startup probe, so the push lands before
+	// the supervisor's first spawn. Failure is logged, not fatal — an
+	// empty or unreadable file means no env-secrets (safe degradation,
+	// same doctrine as buildEnvFrom's missing file).
+	if deps.reloadProc != nil {
+		if err := pushInitialSpawnEnv(newControlClient(ControlSocketAddr()), secretsEnvPathFromEnv()); err != nil {
+			log.Warn("sidecar: initial spawn-env handoff failed; child boots with the platform env only",
+				zap.String("path", secretsEnvPathFromEnv()), zap.Error(err))
+		}
+	}
+
 	startBackgroundLoops(bgCtx, &bgWg, deps)
 	maybeStartRelayInjector(rootCtx, bgCtx, &bgWg, deps)
 
@@ -182,10 +195,14 @@ func buildSidecarDeps(cfg sidecarConfig) serverDeps {
 	so := &socketOps{cc: cc}
 	startedAt := time.Now()
 	controlPlanePassword, _ := readSidecarControlPlanePasswordFromEnv()
+	// US-4a: the reload path's socket-backed restarter — pushes the fresh
+	// secrets-env delta, then requests the credential_reload restart.
+	reloadProc := newSocketReloadProc(cc, secretsEnvPathFromEnv())
 	return serverDeps{
 		password:             cfg.password,
 		controlPlanePassword: controlPlanePassword,
 		resolvedAdminToken:   cfg.adminToken,
+		reloadProc:           reloadProc,
 		startedAt:            startedAt,
 		cache:                &providerCache{},
 		sseTracker:           newSessionStatusTracker(),

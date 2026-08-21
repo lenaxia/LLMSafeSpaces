@@ -847,7 +847,11 @@ func reloadSecretsHandler(cfg materializeConfig, deps reloadSecretsDeps) http.Ha
 	lister := deps.Lister
 	markerPath := deps.RestartReasonMarkerPath
 	if markerPath == "" {
-		markerPath = RestartReasonMarkerPath
+		// markerPathFromEnv: the controller points BOTH containers at the
+		// shared tmpfs marker in sidecar mode — the const default is the
+		// PVC path, which the sidecar sees READ-ONLY (its /workspace mount),
+		// so a socket-mode reload's marker write would silently fail.
+		markerPath = markerPathFromEnv()
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {

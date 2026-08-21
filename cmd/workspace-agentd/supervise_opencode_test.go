@@ -4,6 +4,7 @@
 package main
 
 import (
+	"os/exec"
 	"testing"
 	"time"
 
@@ -26,15 +27,19 @@ func TestManagedProcAdapter_State(t *testing.T) {
 }
 
 func TestManagedProcAdapter_SetSpawnEnvMemoryOnlyNextFactory(t *testing.T) {
-	adapter := &managedProcAdapter{p: &managedProcess{}}
+	// The base factory's env (a zero exec.Cmd here → nil) is the parent
+	// block; US-4a merge semantics put the handed delta ON TOP of it.
+	adapter := &managedProcAdapter{p: &managedProcess{}, baseCmdFactory: func() *exec.Cmd {
+		return &exec.Cmd{Env: []string{"PARENT=kept"}}
+	}}
 
 	adapter.SetSpawnEnv(map[string]string{"GH_TOKEN": "ghp_x", "Y": "2"})
 
-	// The NEXT factory call returns the handed-over env verbatim.
 	factory := adapter.p.cmdFactory
 	require.NotNil(t, factory, "SetSpawnEnv installs the factory wrapper")
 	cmd := factory()
-	assert.ElementsMatch(t, []string{"GH_TOKEN=ghp_x", "Y=2"}, cmd.Env)
+	assert.ElementsMatch(t, []string{"PARENT=kept", "GH_TOKEN=ghp_x", "Y=2"}, cmd.Env,
+		"merge: parent block retained, delta applied (US-4a; wholesale replacement was US-2's interim shape)")
 
 	// Memory-only (A.2/A.4): the adapter exposes no getter — enforce
 	// structurally: spawnEnv is only consumed via the factory closure.
@@ -42,13 +47,16 @@ func TestManagedProcAdapter_SetSpawnEnvMemoryOnlyNextFactory(t *testing.T) {
 }
 
 func TestManagedProcAdapter_LastWriteWins(t *testing.T) {
-	adapter := &managedProcAdapter{p: &managedProcess{}}
+	adapter := &managedProcAdapter{p: &managedProcess{}, baseCmdFactory: func() *exec.Cmd {
+		return &exec.Cmd{Env: []string{"PARENT=kept"}}
+	}}
 
 	adapter.SetSpawnEnv(map[string]string{"A": "1"})
 	adapter.SetSpawnEnv(map[string]string{"B": "2"})
 
 	cmd := adapter.p.cmdFactory()
-	assert.Equal(t, []string{"B=2"}, cmd.Env, "reload replaces the whole env (A.3 last-write-wins)")
+	assert.ElementsMatch(t, []string{"PARENT=kept", "B=2"}, cmd.Env,
+		"the LAST delta wins wholesale over previous deltas (A.3 last-write-wins), parent block always retained")
 }
 
 // The full end-to-end supervisor mode is exercised in the boot-gate

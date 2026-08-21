@@ -194,6 +194,7 @@ func TestSidecar_SpawnEnvConsumerReady(t *testing.T) {
 	_, _ = adapter.Restart("credential_reload", 5)
 
 	// The fake child re-execs the test binary; its env carried the probe.
+	// US-4a merge semantics: parent env retained, delta applied.
 	require.Eventually(t, func() bool {
 		pid := p.pid()
 		if pid <= 0 {
@@ -203,8 +204,9 @@ func TestSidecar_SpawnEnvConsumerReady(t *testing.T) {
 		if err != nil {
 			return false
 		}
-		return containsEnvPair(string(data), "PROBE_VAR=socket-handed")
-	}, 5*time.Second, 100*time.Millisecond, "next spawn must run with the spawn_env-handed environment")
+		return containsEnvPair(string(data), "PROBE_VAR=socket-handed") &&
+			containsEnvPair(string(data), "GO_TEST_FAKE_OPENCODE=1")
+	}, 5*time.Second, 100*time.Millisecond, "next spawn must run parent+delta (merge, US-4a)")
 }
 
 // --- small helpers (test-local) ---

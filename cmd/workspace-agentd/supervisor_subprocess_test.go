@@ -195,12 +195,12 @@ func TestSupervisorSubprocess_LifecycleAndContract(t *testing.T) {
 	secondPID = sp.childPIDOf(t, cc)
 	require.NotEqual(t, firstPID, secondPID, "restart must swap the child process")
 
-	// The handed env REPLACES the child env wholesale — the factory's
-	// own env (GO_TEST_SUPERVISOR included) must not leak through.
+	// US-4a merge semantics: the supervisor composes parent + handed
+	// delta — platform vars (the supervisor's own env) retained.
 	data, err := os.ReadFile("/proc/" + strconv.Itoa(secondPID) + "/environ")
 	require.NoError(t, err)
-	require.False(t, strings.Contains(string(data), "GO_TEST_SUPERVISOR="),
-		"spawn_env replacement semantics: only the handed env may reach the child")
+	require.True(t, strings.Contains(string(data), "GO_TEST_SUPERVISOR=1"),
+		"merge semantics: the parent env is retained alongside the handed delta")
 
 	// NOTE: status.restarts counts CRASH recoveries; operator-initiated
 	// (socket) restarts reset the counter by design — the pid swap above

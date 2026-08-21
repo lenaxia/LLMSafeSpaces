@@ -58,6 +58,11 @@ type serverDeps struct {
 	// accepted on control-plane routes alongside the workspace password
 	// (D6.1 mixed-generation window). Empty in single-container mode.
 	controlPlanePassword string
+	// reloadProc is the reload-secrets path's restarter for sidecar mode
+	// (US-4a): pushes the fresh secrets-env delta over the socket, then
+	// requests the credential_reload restart. Used only when proc is nil
+	// (single-container mode keeps the in-process managedProcess).
+	reloadProc restartableProcess
 }
 
 // sysMetricsSource is the statusz system-metrics seam: typed functions
@@ -335,8 +340,21 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 		return ids
 	}
 
+	// Typed-nil guard: `restartableProcess(deps.proc)` with a nil
+	// *managedProcess yields a NON-nil interface (the classic trap) and
+	// the reload would silently no-op in sidecar mode. Compare the
+	// CONCRETE pointer, then convert.
+	var reloadProc restartableProcess
+	if deps.proc != nil {
+		reloadProc = deps.proc
+	} else {
+		// Sidecar mode: files apply in the sidecar; the restart crosses
+		// the socket WITH the fresh secrets delta (US-4a — before this,
+		// a nil proc meant files applied but opencode never restarted).
+		reloadProc = deps.reloadProc
+	}
 	userMux.HandleFunc("/v1/reload-secrets", reloadSecretsHandler(loadMaterializeConfig(), reloadSecretsDeps{
-		Proc:                 deps.proc,
+		Proc:                 reloadProc,
 		OpencodePassword:     deps.password,
 		ControlPlanePassword: deps.controlPlanePassword,
 		Tracker:              deps.sseTracker,
