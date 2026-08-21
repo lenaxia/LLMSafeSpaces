@@ -54,6 +54,10 @@ type serverDeps struct {
 	// (single-container mode). Sidecar mode wires socket-backed reads —
 	// the sidecar's own cgroup is the wrong container (0050 finding).
 	sys sysMetricsSource
+	// controlPlanePassword is the design-0051 §D1 agentdPassword (US-3):
+	// accepted on control-plane routes alongside the workspace password
+	// (D6.1 mixed-generation window). Empty in single-container mode.
+	controlPlanePassword string
 }
 
 // sysMetricsSource is the statusz system-metrics seam: typed functions
@@ -332,21 +336,22 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	}
 
 	userMux.HandleFunc("/v1/reload-secrets", reloadSecretsHandler(loadMaterializeConfig(), reloadSecretsDeps{
-		Proc:              deps.proc,
-		OpencodePassword:  deps.password,
-		Tracker:           deps.sseTracker,
-		BgCtx:             bgCtx,
-		BgWg:              bgWg,
-		Lister:            liveSessions,
-		AgentConfigWriter: deps.agentConfigWriter,
+		Proc:                 deps.proc,
+		OpencodePassword:     deps.password,
+		ControlPlanePassword: deps.controlPlanePassword,
+		Tracker:              deps.sseTracker,
+		BgCtx:                bgCtx,
+		BgWg:                 bgWg,
+		Lister:               liveSessions,
+		AgentConfigWriter:    deps.agentConfigWriter,
 	}))
-	userMux.HandleFunc("/v1/agent/reload", agentReloadHandler(deps.password, log))
+	userMux.HandleFunc("/v1/agent/reload", agentReloadHandler(log, deps.password, deps.controlPlanePassword))
 
 	// Epic 64: Workflow node execution endpoints. These are called by
 	// the API server's workflow engine to dispatch individual nodes.
-	userMux.HandleFunc("/v1/workflow/node/execute", workflowExecuteHandler(deps.password))
-	userMux.HandleFunc("/v1/workflow/node/cancel", workflowCancelHandler(deps.password))
-	userMux.HandleFunc("/v1/workflow/session/delete", workflowDeleteSessionHandler(deps.password))
+	userMux.HandleFunc("/v1/workflow/node/execute", workflowExecuteHandler(deps.password, deps.controlPlanePassword))
+	userMux.HandleFunc("/v1/workflow/node/cancel", workflowCancelHandler(deps.password, deps.controlPlanePassword))
+	userMux.HandleFunc("/v1/workflow/session/delete", workflowDeleteSessionHandler(deps.password, deps.controlPlanePassword))
 	userMux.HandleFunc("/v1/mcp", mcpHandler(deps.password))
 
 	// Epic 66: Dev Preview — authenticated HTTP/WS tunnel to localhost dev

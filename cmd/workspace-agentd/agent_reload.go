@@ -27,12 +27,15 @@ import (
 //
 // Idempotent: opencode's InstanceStore short-circuits on already-disposed
 // entries; concurrent calls are safe.
-func agentReloadHandler(opencodePassword string, log *zap.Logger) http.HandlerFunc {
+// Design 0051 US-3 (§D1): control-plane route. workspacePassword is BOTH
+// an accepted credential and the CLIENT credential for the opencode
+// dispose call (opencode's own auth — the sidecar retains it as a client
+// secret by design). extraAuth carries additional ACCEPTED credentials
+// (the agentdPassword in sidecar mode; D6.1 mixed-generation window).
+// #848's gate stays; the credential SET widened.
+func agentReloadHandler(log *zap.Logger, workspacePassword string, extraAuth ...string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// #848: dispose is a disruption primitive — gate it with the
-		// workspace Basic credential like every other user-mux endpoint.
-		// The API server's AgentReloadHandler sends the same credential.
-		if !checkBasicAuth(r, opencodePassword) {
+		if !checkBasicAuthAny(r, append([]string{workspacePassword}, extraAuth...)...) {
 			rejectUnauthorized(w)
 			return
 		}
@@ -44,7 +47,7 @@ func agentReloadHandler(opencodePassword string, log *zap.Logger) http.HandlerFu
 
 		oc := opencode.NewClient(
 			fmt.Sprintf("http://localhost:%d", agentd.AgentPort),
-			opencodePassword,
+			workspacePassword,
 			log,
 		)
 

@@ -153,8 +153,9 @@ func TestEnvtestAgentdSidecar_SecretBackedEnv(t *testing.T) {
 			Namespace: "default",
 		},
 		Data: map[string][]byte{
-			"password":    []byte("integration-pw"),
-			"admin-token": []byte("integration-tok"),
+			"password":       []byte("integration-pw"),
+			"admin-token":    []byte("integration-tok"),
+			"agentdPassword": []byte("integration-agentd-pw"),
 		},
 	}
 	require.NoError(t, dyn.Create(ctx, sec))
@@ -185,6 +186,8 @@ func TestEnvtestAgentdSidecar_SecretBackedEnv(t *testing.T) {
 	}
 	require.Equal(t, "password", keys["AGENTD_SIDECAR_PASSWORD"])
 	require.Equal(t, "admin-token", keys["AGENTD_ADMIN_TOKEN"])
+	require.Equal(t, "agentdPassword", keys["AGENTD_CONTROL_PLANE_PASSWORD"],
+		"US-3: the control-plane credential comes from the NEW agentdPassword key")
 
 	// Every referenced Secret key must exist in the created Secret —
 	// the exact failure kubelet would report at container start.

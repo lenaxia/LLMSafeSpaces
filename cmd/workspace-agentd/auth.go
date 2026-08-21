@@ -35,6 +35,33 @@ func checkBasicAuth(r *http.Request, password string) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(expected)) == 1
 }
 
+// checkBasicAuthAny is the design-0051 §D1 per-endpoint gate: reports
+// whether the request carries a credential valid for ANY of the given
+// passwords. Empty entries are SKIPPED (an unset credential must never
+// authenticate as the empty password — the "opencode:" degenerate
+// Basic value). Every comparison stays constant-time and every entry is
+// checked (no short-circuit), so timing does not reveal WHICH entry
+// matched.
+//
+// Callers: control-plane routes (reload-secrets, agent/reload,
+// workflow/*) pass {agentdPassword, workspacePassword} — the D6.1
+// mixed-generation-window pair; single-container wiring passes the
+// workspace password alone.
+func checkBasicAuthAny(r *http.Request, passwords ...string) bool {
+	got := r.Header.Get("Authorization")
+	match := false
+	for _, pw := range passwords {
+		if pw == "" {
+			continue
+		}
+		expected := "Basic " + basicAuth(pw)
+		if subtle.ConstantTimeCompare([]byte(got), []byte(expected)) == 1 {
+			match = true // keep comparing: uniform work regardless of position
+		}
+	}
+	return match
+}
+
 // rejectUnauthorized writes the unified 401 + Basic challenge for
 // failed checkBasicAuth.
 func rejectUnauthorized(w http.ResponseWriter) {

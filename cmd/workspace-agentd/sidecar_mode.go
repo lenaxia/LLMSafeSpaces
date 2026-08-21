@@ -36,9 +36,28 @@ import (
 )
 
 // sidecarEnvPassword is the env var the controller wires from the
-// password Secret (US-2 keeps the workspace password; the distinct
-// agentdPassword key lands with US-3).
+// password Secret's `password` key: the workspace password (§D1
+// carve-out secret for /v1/mcp + dev-preview, and the sidecar's CLIENT
+// credential for opencode-facing calls).
 const sidecarEnvPassword = "AGENTD_SIDECAR_PASSWORD"
+
+// sidecarEnvControlPlanePassword is the §D1 agentdPassword (US-3): the
+// control-plane Basic secret from the Secret's `agentdPassword` key,
+// delivered env-only to the sidecar. Required at sidecar boot — the
+// controller's upsert-once (ensurePasswordSecret) guarantees the key
+// before any sidecar-enabled pod build (design Q3), so absence is a bug
+// state and the D5.2/D5.3 fail-closed doctrine applies.
+const sidecarEnvControlPlanePassword = "AGENTD_CONTROL_PLANE_PASSWORD"
+
+// readSidecarControlPlanePasswordFromEnv resolves the §D1 control-plane
+// secret. Missing/empty is an error the caller treats as fatal.
+func readSidecarControlPlanePasswordFromEnv() (string, error) {
+	pw := os.Getenv(sidecarEnvControlPlanePassword)
+	if pw == "" {
+		return "", errSidecarCredentialMissing(sidecarEnvControlPlanePassword)
+	}
+	return pw, nil
+}
 
 // readSidecarPasswordFromEnv resolves the user-mux Basic secret for
 // sidecar mode. Empty or unset is an error the caller treats as fatal.
@@ -74,6 +93,8 @@ func errSidecarCredentialMissing(envVar string) error {
 }
 
 // sidecarConfig is the resolved boot configuration for sidecar mode.
+// The §D1 control-plane credential is NOT here: buildSidecarDeps
+// resolves it from the env directly (single resolution site).
 type sidecarConfig struct {
 	password    string
 	adminToken  string
@@ -95,6 +116,13 @@ func runSidecarCommand(_ []string) int {
 	}
 	adminToken, err := resolveSidecarAdminTokenFromEnv()
 	if err != nil {
+		log.Error("FATAL", zap.Error(err))
+		return 1
+	}
+	// §D1 control-plane credential: fail fast at boot (buildSidecarDeps
+	// re-resolves it for the deps; the upsert-once controller path
+	// guarantees presence — absence is a bug state, D5.2/D5.3 doctrine).
+	if _, err := readSidecarControlPlanePasswordFromEnv(); err != nil {
 		log.Error("FATAL", zap.Error(err))
 		return 1
 	}
@@ -146,23 +174,27 @@ func runSidecarCommand(_ []string) int {
 
 // buildSidecarDeps assembles the sidecar's serverDeps. The control
 // socket client is the single seam to the supervisor: restarts, status,
-// and the workspace container's cgroup numbers all cross it.
+// and the workspace container's cgroup numbers all cross it. The §D1
+// control-plane credential resolves here (single site) so every
+// construction path carries it.
 func buildSidecarDeps(cfg sidecarConfig) serverDeps {
 	cc := newControlClient(cfg.controlAddr)
 	so := &socketOps{cc: cc}
 	startedAt := time.Now()
+	controlPlanePassword, _ := readSidecarControlPlanePasswordFromEnv()
 	return serverDeps{
-		password:           cfg.password,
-		resolvedAdminToken: cfg.adminToken,
-		startedAt:          startedAt,
-		cache:              &providerCache{},
-		sseTracker:         newSessionStatusTracker(),
-		pressureMonitor:    so.pressureMonitor(),
-		healthCache:        newHealthzCache(),
-		gr:                 newGateRecorder(startedAt, agentdGateDurationSeconds, log),
-		restarter:          so.restarter(),
-		vitals:             so.vitals(fmtAgentAddr()),
-		sys:                so.sysMetrics(),
+		password:             cfg.password,
+		controlPlanePassword: controlPlanePassword,
+		resolvedAdminToken:   cfg.adminToken,
+		startedAt:            startedAt,
+		cache:                &providerCache{},
+		sseTracker:           newSessionStatusTracker(),
+		pressureMonitor:      so.pressureMonitor(),
+		healthCache:          newHealthzCache(),
+		gr:                   newGateRecorder(startedAt, agentdGateDurationSeconds, log),
+		restarter:            so.restarter(),
+		vitals:               so.vitals(fmtAgentAddr()),
+		sys:                  so.sysMetrics(),
 	}
 }
 

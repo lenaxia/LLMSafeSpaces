@@ -797,6 +797,11 @@ type reloadSecretsDeps struct {
 	// password produces 401 against real opencode and was the proximate
 	// cause of Bug 1 (worklog 0125).
 	OpencodePassword string
+	// ControlPlanePassword is the design-0051 §D1 agentdPassword: the
+	// Basic secret accepted (alongside the workspace password) on
+	// control-plane routes. Empty in single-container mode — the
+	// handler then reduces to workspace-password-only auth, unchanged.
+	ControlPlanePassword string
 
 	// Tracker is the SSE session-status tracker. May be nil.
 	Tracker *sessionStatusTracker
@@ -849,8 +854,12 @@ func reloadSecretsHandler(cfg materializeConfig, deps reloadSecretsDeps) http.Ha
 		// #848: reload-secrets applies credential batches (provider
 		// config, env secrets) and can trigger an opencode restart —
 		// control-plane surface. Only the API server's agentpush calls
-		// this; it authenticates with the workspace Basic credential.
-		if !checkBasicAuth(r, opencodePassword) {
+		// this. Design 0051 US-3 (§D1): authenticates against the §D1
+		// credential set — agentdPassword (the control-plane secret) OR
+		// the workspace password (D6.1 mixed-generation window; the
+		// empty ControlPlanePassword of single-container mode reduces
+		// to today's behavior).
+		if !checkBasicAuthAny(r, deps.ControlPlanePassword, opencodePassword) {
 			rejectUnauthorized(w)
 			return
 		}

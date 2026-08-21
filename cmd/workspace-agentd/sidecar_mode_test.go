@@ -217,3 +217,54 @@ func containsEnvPair(environ, pair string) bool {
 	}
 	return false
 }
+
+// --- US-3: control-plane credential -----------------------------------------
+
+// TestSidecar_ControlPlaneEnvCredentials: the §D1 control-plane secret
+// arrives via env and is REQUIRED in sidecar mode — the upsert-once
+// controller path guarantees the Secret key before any sidecar build
+// (Q3), so its absence is a bug state, and the D5.2/D5.3 fail-closed
+// doctrine applies.
+func TestSidecar_ControlPlaneEnvCredentials(t *testing.T) {
+	t.Setenv("AGENTD_CONTROL_PLANE_PASSWORD", "cp-secret")
+	pw, err := readSidecarControlPlanePasswordFromEnv()
+	require.NoError(t, err)
+	require.Equal(t, "cp-secret", pw)
+
+	t.Setenv("AGENTD_CONTROL_PLANE_PASSWORD", "")
+	_, err = readSidecarControlPlanePasswordFromEnv()
+	require.Error(t, err, "missing control-plane credential must be fatal in sidecar mode (D5.2/D5.3)")
+}
+
+// TestSidecarDeps_CarryControlPlanePassword: buildSidecarDeps threads the
+// env credential into serverDeps for the per-route wiring.
+func TestSidecarDeps_CarryControlPlanePassword(t *testing.T) {
+	withTestLogger(t)
+	t.Setenv("AGENTD_CONTROL_PLANE_PASSWORD", "cp-secret")
+	srv := newControlSocketServerWithProc(t, "127.0.0.1:0", &fakeRestartProc{})
+	go srv.serve()
+
+	deps := buildSidecarDeps(sidecarConfig{
+		password:    "pw",
+		adminToken:  "tok",
+		controlAddr: srv.addr(),
+	})
+	require.Equal(t, "cp-secret", deps.controlPlanePassword,
+		"buildSidecarDeps must resolve the control-plane credential for the §D1 per-route table")
+}
+
+// TestSidecarDeps_NoControlPlanePasswordInSingleContainerShape: with the
+// env unset, buildSidecarDeps reports empty — the single-container wiring
+// (which never sets it) is unchanged.
+func TestSidecarDeps_NoControlPlanePasswordInSingleContainerShape(t *testing.T) {
+	withTestLogger(t)
+	srv := newControlSocketServerWithProc(t, "127.0.0.1:0", &fakeRestartProc{})
+	go srv.serve()
+
+	deps := buildSidecarDeps(sidecarConfig{
+		password:    "pw",
+		adminToken:  "tok",
+		controlAddr: srv.addr(),
+	})
+	require.Empty(t, deps.controlPlanePassword)
+}
