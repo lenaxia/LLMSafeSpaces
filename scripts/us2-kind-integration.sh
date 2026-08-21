@@ -353,19 +353,21 @@ if [ -n "$NODE_CONTAINER" ]; then
     2>/dev/null | head -1)
   [ -n "$CRICTL_BIN" ] || log "K6/K7: crictl not found on node ${NODE_CONTAINER}"
 fi
-crictl_cid() { # $1: pod uid, $2: container name
-  docker exec "$NODE_CONTAINER" "$CRICTL_BIN" ps -o json 2>/dev/null \
-    | jq -r --arg pod "$1" --arg name "$2" \
-      '.containers[]? | select(.podSandboxId == $pod and .metadata.name == $name) | .id' \
-    | head -1
+crictl_cid() { # $1: pod NAME, $2: container name
+  # crictl's container podSandboxId is the SANDBOX CONTAINER id — NOT the
+  # pod's Kubernetes metadata.uid (run 32430854469: matching by uid found
+  # nothing, crictl stop "" no-oped, restartCounts never moved). Resolve
+  # the sandbox by pod name first, then the container within it.
+  local sbid
+  sbid=$(docker exec "$NODE_CONTAINER" "$CRICTL_BIN" pods --name "^$1$" -q 2>/dev/null | head -1)
+  [ -n "$sbid" ] || return 1
+  docker exec "$NODE_CONTAINER" "$CRICTL_BIN" ps --pod "$sbid" --name "^$2$" -q 2>/dev/null | head -1
 }
 if [ -n "$NODE_CONTAINER" ] && [ -n "$CRICTL_BIN" ]; then
-  POD_UID=$(jq_field '.metadata.uid')
-
   # K6: stop the SIDECAR → only it restarts; opencode keeps serving.
   SC_BEFORE=$(jq_field '.status.initContainerStatuses[]? | select(.name=="agentd") | .restartCount // 0')
   MAIN_BEFORE=$(jq_field '.status.containerStatuses[0].restartCount')
-  SC_CID=$(crictl_cid "$POD_UID" agentd)
+  SC_CID=$(crictl_cid "$POD" agentd)
   docker exec "$NODE_CONTAINER" crictl stop --timeout 5 "$SC_CID" >/dev/null 2>&1 || true
   sleep 30
   SC_AFTER=$(jq_field '.status.initContainerStatuses[]? | select(.name=="agentd") | .restartCount // 0')
@@ -381,7 +383,7 @@ if [ -n "$NODE_CONTAINER" ] && [ -n "$CRICTL_BIN" ]; then
   # K7: stop the WORKSPACE container → it restarts; the sidecar does NOT.
   SC_BEFORE=$(jq_field '.status.initContainerStatuses[]? | select(.name=="agentd") | .restartCount // 0')
   MAIN_BEFORE=$(jq_field '.status.containerStatuses[0].restartCount')
-  MAIN_CID=$(crictl_cid "$POD_UID" workspace)
+  MAIN_CID=$(crictl_cid "$POD" workspace)
   docker exec "$NODE_CONTAINER" "$CRICTL_BIN" stop --timeout 5 "$MAIN_CID" >/dev/null 2>&1 || true
   MAIN_AFTER=$MAIN_BEFORE
   for i in $(seq 1 60); do
