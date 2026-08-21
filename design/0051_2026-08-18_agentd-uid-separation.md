@@ -84,11 +84,17 @@ assumption, with a plain-sidecar fallback documented if it fails.
   The sidecar retains the workspace password as a CLIENT credential (healthz, MCP proxy → opencode
   `:4096`, workflow agent-node session calls) — it lives in sidecar env (uid-2000 space) and leaks
   nothing into uid-1000 that opencode's own config doesn't already hold.
-- **File ownership**: `secrets-env`, `rt/secrets/*`, `admin-prompt.md`, reload cache → sidecar-owned
-  under its own mount; `agent-config.json` + `rt/auth.json` → uid-1000 space (opencode's).
-  `agent-config.json` gains **integrity** (not confidentiality): the sidecar writes it via a mount the
-  workspace container sees read-only (RO root + RW `rt/` subPath per 0050 — a plain RW mount would
-  allow rename-over).
+- **File ownership** (amended US-4b, 2026-08-21 — owner ruling: stores split by CONSUMER, no new
+  PVCs, Memory-medium emptyDirs only): `secrets-env`, `admin-prompt.md`, reload cache → a
+  sidecar-ONLY volume (`agentd-secrets`), never mounted in the workspace container — absent from
+  uid-1000 space BY MOUNT TOPOLOGY (US-0.2(a): env crosses only via spawn_env). `agent-config.json`
+  + `allowed-dirs.json` → `agentd-config` volume: RW sidecar, **RO workspace container** — the
+  integrity property (rename-over impossible) is a mount fact, not a mode dance. `rt/secrets/*`,
+  `rt/ssh`, `rt/git-credentials`, `rt/auth.json` stay in `sandbox-runtime` as uid-1000
+  **tool-consumed** paths (US-35.7 class C — the original §D1 wording listing `rt/secrets/*` as
+  sidecar-owned was an imprecision that would have broken every `secret-file` bind). The restart
+  marker stays shared at `/sandbox-runtime/last-restart-reason.json` (reason strings, not secret).
+  Single-container mode is byte-identical: all relocations are sidecar-mode env overrides.
 - **Integrity of reload-secrets** closes with reachability: the control-plane surfaces
   (`:4097/:4098`) hold credentials uid-1000 code can no longer obtain.
 - **Supervisor scope invariant**: `supervise-*` is plumbing — spawn, reap, signal, status, metrics
@@ -140,7 +146,7 @@ pods healthy → flip on again), so D6.1 is tested before any default flip, not 
 | # | Check | PASS criterion |
 |---|---|---|
 | V1 | `printenv AGENTD_ADMIN_TOKEN` in a bash tool (**runnable now — Phase 1 shipped**) | empty |
-| V2 | uid-1000 shell vs sidecar-owned files (`secrets-env`, `rt/secrets`, admin-prompt, reload cache) and `agentdPassword` | EACCES / absent from uid-1000 space entirely |
+| V2 | uid-1000 shell vs sidecar-owned files (`secrets-env`, admin-prompt, reload cache — on the sidecar-only `agentd-secrets` volume) and `agentdPassword` | absent from uid-1000 space entirely (never mounted in the workspace container; `rt/*` tool-consumed paths are deliberately shared — US-35.7 class C) |
 | V3 | `agent-config.json` readable (expected — opencode's) **but not writable** (RO mount); `rt/auth.json` RW (expected) | integrity holds: hash unchanged across a session |
 | V4 | `:4097`/`:4098` auth with workspace password / old admin token | 401 — credentials unknown to uid-1000 code |
 | V5 | opencode boot, Active, one agent turn; suspend→resume budget; cold boot | No regression vs baseline |
