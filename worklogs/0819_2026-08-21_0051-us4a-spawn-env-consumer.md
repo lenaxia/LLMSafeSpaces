@@ -62,4 +62,4 @@ New (all green): delta parser (quoting/noise/absent), boot handoff (push + empty
 - `cmd/workspace-agentd/spawn_env_consumer.go` (new), `spawn_env_consumer_test.go` (new)
 - `cmd/workspace-agentd/supervise_opencode.go` (merge semantics), `server.go` (reloadProc), `sidecar_mode.go` (boot push + reloadProc wiring), `secrets.go` (marker default → markerPathFromEnv)
 - Updated pins: `supervise_opencode_test.go`, `sidecar_mode_test.go`, `sidecar_integration_test.go`, `supervisor_subprocess_test.go`, `us2_regression_gaps_test.go`
-- `worklogs/NNNN_2026-08-21_0051-us4a-spawn-env-consumer.md`
+- `worklogs/0819_2026-08-21_0051-us4a-spawn-env-consumer.md`
