@@ -176,3 +176,43 @@ func TestEntrypointAgentd_UnwritableTerminationLogDoesNotMaskExitCode(t *testing
 	_ = dir
 	_ = bin
 }
+
+// TestEntrypointOpenCodeConfig_HonorsPresetValue (US-4b): the workspace
+// container's entrypoint must not clobber a controller-set OPENCODE_CONFIG
+// — sidecar mode points opencode at /agentd-config/agent-config.json (the
+// RO integrity mount); unset (single-container), the /sandbox-runtime
+// default stands. Executes the exact generated export line under bash.
+func TestEntrypointOpenCodeConfig_HonorsPresetValue(t *testing.T) {
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not available; skipping entrypoint regression")
+	}
+	src, err := os.ReadFile("../../../runtimes/base/tools/entrypoints/entrypoint-opencode.sh")
+	require.NoError(t, err)
+
+	line := ""
+	for _, l := range strings.Split(string(src), "\n") {
+		if strings.HasPrefix(l, "export OPENCODE_CONFIG=") {
+			line = l
+			break
+		}
+	}
+	require.NotEmpty(t, line, "entrypoint must export OPENCODE_CONFIG")
+	require.Contains(t, line, "${OPENCODE_CONFIG:-",
+		"the export must honor a pre-set value (sidecar-mode relocation)")
+
+	// Preset value survives (sidecar mode).
+	cmd := exec.Command("bash", "-c", line+`; printf '%s' "$OPENCODE_CONFIG"`)
+	cmd.Env = []string{"OPENCODE_CONFIG=/agentd-config/agent-config.json"}
+	out, err := cmd.Output()
+	require.NoError(t, err)
+	require.Equal(t, "/agentd-config/agent-config.json", string(out),
+		"a controller-set OPENCODE_CONFIG must win over the script default")
+
+	// Unset → the single-container default.
+	cmd = exec.Command("bash", "-c", line+`; printf '%s' "$OPENCODE_CONFIG"`)
+	cmd.Env = []string{}
+	out, err = cmd.Output()
+	require.NoError(t, err)
+	require.Equal(t, "/sandbox-runtime/agent-config.json", string(out),
+		"no preset → the /sandbox-runtime default (single-container, byte-identical)")
+}

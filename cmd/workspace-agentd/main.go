@@ -140,8 +140,11 @@ func main() {
 	// allowed dirs) onto agent-config.json BEFORE opencode starts, so
 	// its first read sees the completed config regardless of which
 	// conditional write paths later skip. See boot_config.go.
-	agentConfigPath := envOrDefault("LLMSAFESPACES_AGENT_CONFIG_PATH", agentd.AgentConfigPath)
-	agentConfigWriter := ensureBootAgentConfig(agentConfigPath, agentd.AdminPromptPath, agentd.AllowedDirsPath, password)
+	// US-4b: all three store coordinates honor the LLMSAFESPACES_*_PATH
+	// env overrides (sidecar-mode relocations); unset → the consts,
+	// byte-identical single-container behavior.
+	bootCfgPath, bootPromptPath, bootDirsPath := bootAgentConfigPathsWithEnv()
+	agentConfigWriter := ensureBootAgentConfig(bootCfgPath, bootPromptPath, bootDirsPath, password)
 
 	// The tracker must exist before the supervisor starts: its
 	// generation-change hook (design 0050 D2) clears orphaned busy flags
@@ -269,7 +272,7 @@ func maybeStartRelayInjector(rootCtx, bgCtx context.Context, bgWg *sync.WaitGrou
 		RelayURL:          relayURL,
 		OpenCodeBaseURL:   getAgentAddr(),
 		OpenCodePassword:  deps.password,
-		AgentConfigPath:   envOrDefault("LLMSAFESPACES_AGENT_CONFIG_PATH", agentd.AgentConfigPath),
+		AgentConfigPath:   agentConfigPathFromEnv(),
 		AuthJSONPath:      authJSONPath,
 		AgentConfigWriter: deps.agentConfigWriter,
 		HealthCheck:       func() bool { snap := deps.healthCache.Snapshot(); return snap.Initialized && snap.Healthy },

@@ -302,22 +302,33 @@ else
 fi
 
 # --- K2: #857 stamp present in the config opencode first read ----------------
+# US-4b: the config lives on the RO /agentd-config mount in the workspace
+# container (the sidecar's writer put it there).
 MCP_ENTRY=$(kubectl -n "$NS" exec "$POD" -c workspace -- \
-  grep -c 'llmsafespaces' /sandbox-runtime/agent-config.json 2>/dev/null || echo 0)
+  grep -c 'llmsafespaces' /agentd-config/agent-config.json 2>/dev/null || echo 0)
 if [ "$MCP_ENTRY" -ge 1 ]; then
   pass K2 "agent-config.json carries the llmsafespaces MCP entry at first boot"
 else
   fail K2 "no llmsafespaces entry in agent-config.json"
 fi
 
-# --- K3: cross-uid file modes -------------------------------------------------
-MODE_CFG=$(kubectl -n "$NS" exec "$POD" -c workspace -- stat -c %a /sandbox-runtime/agent-config.json 2>/dev/null || echo "?")
+# --- K3: cross-uid file modes + US-4b mount topology -------------------------
+# Pre-US-4b: agent-config/admin-prompt on /sandbox-runtime (0640 bridge).
+# US-4b: agent-config on the RO /agentd-config mount; admin-prompt and
+# the whole agentd-secrets volume ABSENT from the workspace container
+# (sidecar-only by mount topology, V2); rt dirs group-writable (0770)
+# for the uid-2000 reload path (V3 + class-C tool consumption).
+MODE_CFG=$(kubectl -n "$NS" exec "$POD" -c workspace -- stat -c %a /agentd-config/agent-config.json 2>/dev/null || echo "?")
 MODE_PROMPT=$(kubectl -n "$NS" exec "$POD" -c workspace -- stat -c %a /sandbox-runtime/admin-prompt.md 2>/dev/null || echo "absent")
 MODE_PW=$(kubectl -n "$NS" exec "$POD" -c workspace -- stat -c %a /sandbox-cfg/password 2>/dev/null || echo "?")
-if [ "$MODE_CFG" = "640" ] && { [ "$MODE_PROMPT" = "640" ] || [ "$MODE_PROMPT" = "absent" ]; } && [ "$MODE_PW" = "600" ]; then
-  pass K3 "agent-config=$MODE_CFG admin-prompt=$MODE_PROMPT password=$MODE_PW"
+MODE_RT=$(kubectl -n "$NS" exec "$POD" -c workspace -- stat -c %a /sandbox-runtime/rt 2>/dev/null || echo "?")
+SECRETS_VOL=$(kubectl -n "$NS" exec "$POD" -c workspace -- sh -c 'test -d /agentd-secrets && echo present || echo absent' 2>/dev/null || echo absent)
+CFG_RO=$(kubectl -n "$NS" exec "$POD" -c workspace -- sh -c 'test -w /agentd-config && echo rw || echo ro' 2>/dev/null || echo "?")
+if [ "$MODE_CFG" = "640" ] && [ "$MODE_PROMPT" = "absent" ] && [ "$MODE_PW" = "600" ] \
+   && [ "$MODE_RT" = "770" ] && [ "$SECRETS_VOL" = "absent" ] && [ "$CFG_RO" = "ro" ]; then
+  pass K3 "agent-config=$MODE_CFG(RO mount) admin-prompt=$MODE_PROMPT password=$MODE_PW rt=$MODE_RT agentd-secrets=$SECRETS_VOL"
 else
-  fail K3 "agent-config=$MODE_CFG admin-prompt=$MODE_PROMPT password=$MODE_PW (want 640/{640,absent}/600)"
+  fail K3 "agent-config=$MODE_CFG admin-prompt=$MODE_PROMPT password=$MODE_PW rt=$MODE_RT agentd-secrets=$SECRETS_VOL cfg-mount=$CFG_RO (want 640/absent/600/770/absent/ro)"
 fi
 
 # --- K4: in-pod control-socket round trip ------------------------------------

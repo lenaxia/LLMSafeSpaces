@@ -45,6 +45,31 @@ const (
 	SidecarRestartMarkerEnv = agentd.SidecarRestartMarkerPath
 )
 
+// US-4b (design 0051 §D1 amendment, owner ruling 2026-08-21): stores
+// split by CONSUMER. Two new Memory-medium emptyDirs; all relocations are
+// sidecar-mode env overrides — the single-container pod spec never
+// references any of these paths.
+const (
+	agentdConfigVolumeName  = "agentd-config"
+	agentdSecretsVolumeName = "agentd-secrets"
+
+	agentdConfigMountPath  = "/agentd-config"
+	agentdSecretsMountPath = "/agentd-secrets"
+
+	// agent-config.json + allowed-dirs.json: RW sidecar (the ConfigWriter
+	// owns every write), RO workspace container — integrity is a mount
+	// fact (V3: rename-over impossible from uid-1000 space).
+	sidecarAgentConfigPath = agentdConfigMountPath + "/agent-config.json"
+	sidecarAllowedDirsPath = agentdConfigMountPath + "/allowed-dirs.json"
+
+	// secrets-env, admin-prompt.md, last-reload-secrets.json: sidecar-ONLY
+	// volume, never mounted in the workspace container (V2: absent from
+	// uid-1000 space by mount topology; env crosses via spawn_env only).
+	sidecarSecretsEnvPath  = agentdSecretsMountPath + "/secrets-env"
+	sidecarAdminPromptPath = agentdSecretsMountPath + "/admin-prompt.md"
+	sidecarReloadCachePath = agentdSecretsMountPath + "/last-reload-secrets.json"
+)
+
 // ValidateAgentdSidecar is the exported startup guard used by controller
 // main. Wraps validateAgentdSidecarConfig.
 func ValidateAgentdSidecar(sidecarEnabled bool, agentdImage string) error {
@@ -107,6 +132,20 @@ func (r *WorkspaceReconciler) buildAgentdSidecarContainer(workspace *v1.Workspac
 		{Name: "LLMSAFESPACES_RESTART_MARKER_PATH", Value: SidecarRestartMarkerEnv},
 		// auth.json discovery must match the main container's XDG home.
 		{Name: "XDG_DATA_HOME", Value: "/workspace/.local"},
+		// US-4b store relocations — the sidecar's writers/readers target
+		// the consumer-split volumes (see the const block above). Every
+		// one of these env overrides defaults to the /sandbox-runtime
+		// coordinate in the agentd binary, so an env-less sidecar (local
+		// dev, older controller) keeps the legacy layout.
+		{Name: "LLMSAFESPACES_AGENT_CONFIG_PATH", Value: sidecarAgentConfigPath},
+		{Name: "LLMSAFESPACES_ALLOWED_DIRS_PATH", Value: sidecarAllowedDirsPath},
+		{Name: "LLMSAFESPACES_SECRETS_ENV_PATH", Value: sidecarSecretsEnvPath},
+		{Name: "LLMSAFESPACES_ADMIN_PROMPT_PATH", Value: sidecarAdminPromptPath},
+		{Name: "LLMSAFESPACES_RELOAD_CACHE_PATH", Value: sidecarReloadCachePath},
+		// rt/* is tool-consumed (class C) but re-materialized by THIS
+		// uid-2000 process on every reload: files land 0640 / dirs 0770
+		// so uid-1000 tools (shared gid 1000) keep reading them.
+		{Name: "LLMSAFESPACES_CROSS_UID_FILES", Value: "1"},
 	}
 	if r.InferenceRelayURL != "" {
 		env = append(env, corev1.EnvVar{Name: "INFERENCE_RELAY_BASEURL", Value: r.InferenceRelayURL})
@@ -134,6 +173,11 @@ func (r *WorkspaceReconciler) buildAgentdSidecarContainer(workspace *v1.Workspac
 			{Name: "sandbox-cfg", MountPath: "/sandbox-cfg", ReadOnly: true},
 			{Name: "sandbox-runtime", MountPath: "/sandbox-runtime"},
 			{Name: "workspace", MountPath: agentd.WorkspacePath, SubPath: "workspace", ReadOnly: true},
+			// US-4b: both new volumes RW — the ConfigWriter and the
+			// reload handler write here; the workspace container gets
+			// agentd-config RO and NEVER agentd-secrets.
+			{Name: agentdConfigVolumeName, MountPath: agentdConfigMountPath},
+			{Name: agentdSecretsVolumeName, MountPath: agentdSecretsMountPath},
 		},
 	}
 }
@@ -216,13 +260,37 @@ func (r *WorkspaceReconciler) applyAgentdSidecar(pod *corev1.Pod, workspace *v1.
 
 	pod.Spec.InitContainers = append(pod.Spec.InitContainers, r.buildAgentdSidecarContainer(workspace, adminToken))
 
+	// US-4b: the two consumer-split volumes (Memory medium per the ruling —
+	// the US-35.7 at-rest invariant is non-negotiable). agentd-config is
+	// small (config + allowed-dirs + model-resolution warning);
+	// agentd-secrets carries the reload cache, which holds full plaintext
+	// batches — sized in the sandbox-cfg class.
+	pod.Spec.Volumes = append(pod.Spec.Volumes,
+		corev1.Volume{Name: agentdConfigVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
+			Medium:    corev1.StorageMediumMemory,
+			SizeLimit: ptrQuantity("8Mi"),
+		}}},
+		corev1.Volume{Name: agentdSecretsVolumeName, VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{
+			Medium:    corev1.StorageMediumMemory,
+			SizeLimit: ptrQuantity("16Mi"),
+		}}},
+	)
+
 	main := &pod.Spec.Containers[0]
 	main.Env = append(main.Env,
 		corev1.EnvVar{Name: "AGENTD_SIDECAR_MODE", Value: "1"},
 		// The supervisor's crash-path and socket-restart markers land on
 		// the same cross-uid-readable file the sidecar reads at boot.
 		corev1.EnvVar{Name: "LLMSAFESPACES_RESTART_MARKER_PATH", Value: SidecarRestartMarkerEnv},
+		// US-4b: opencode reads agent-config.json from the RO
+		// agentd-config mount. entrypoint-opencode.sh honors a pre-set
+		// OPENCODE_CONFIG; unset (single-container) keeps its
+		// /sandbox-runtime default.
+		corev1.EnvVar{Name: "OPENCODE_CONFIG", Value: sidecarAgentConfigPath},
 	)
+	main.VolumeMounts = append(main.VolumeMounts, corev1.VolumeMount{
+		Name: agentdConfigVolumeName, MountPath: agentdConfigMountPath, ReadOnly: true,
+	})
 	// Liveness in sidecar mode: HTTP healthz is served by the SIDECAR
 	// (shared netns) — pointing the WORKSPACE container's liveness at it
 	// would restart opencode+supervisor whenever the sidecar wedges,
@@ -237,4 +305,38 @@ func (r *WorkspaceReconciler) applyAgentdSidecar(pod *corev1.Pod, workspace *v1.
 		},
 		InitialDelaySeconds: 15, PeriodSeconds: 10, TimeoutSeconds: 10, FailureThreshold: 8,
 	}
+
+	// US-4b: the credential-setup init writes the bootstrap pair and the
+	// materialize base into the relocated stores (RW here; the sidecar
+	// takes over as the writer once serving). AGENTD_SIDECAR_MODE drives
+	// the script's guarded relocation branch (chmod 0770 rt dirs +
+	// relocated bootstrap --out flags).
+	if cred := initContainerByName(pod, credentialSetupContainerName); cred != nil {
+		cred.Env = append(cred.Env,
+			corev1.EnvVar{Name: "AGENTD_SIDECAR_MODE", Value: "1"},
+			corev1.EnvVar{Name: "LLMSAFESPACES_AGENT_CONFIG_PATH", Value: sidecarAgentConfigPath},
+			corev1.EnvVar{Name: "LLMSAFESPACES_SECRETS_ENV_PATH", Value: sidecarSecretsEnvPath},
+			corev1.EnvVar{Name: "LLMSAFESPACES_RELOAD_CACHE_PATH", Value: sidecarReloadCachePath},
+			// The boot files this init writes (secrets-env, reload cache)
+			// are READ by the uid-2000 sidecar across the split — they
+			// must materialize 0640 (rt/* files follow the reload state's
+			// modes for consistency).
+			corev1.EnvVar{Name: "LLMSAFESPACES_CROSS_UID_FILES", Value: "1"},
+		)
+		cred.VolumeMounts = append(cred.VolumeMounts,
+			corev1.VolumeMount{Name: agentdConfigVolumeName, MountPath: agentdConfigMountPath},
+			corev1.VolumeMount{Name: agentdSecretsVolumeName, MountPath: agentdSecretsMountPath},
+		)
+	}
+}
+
+// initContainerByName returns a mutable pointer to the named init
+// container, or nil when absent.
+func initContainerByName(pod *corev1.Pod, name string) *corev1.Container {
+	for i := range pod.Spec.InitContainers {
+		if pod.Spec.InitContainers[i].Name == name {
+			return &pod.Spec.InitContainers[i]
+		}
+	}
+	return nil
 }

@@ -311,6 +311,13 @@ type materializeConfig struct {
 	// /sandbox-runtime tmpfs (survives container restart, wiped on pod death).
 	// See agentd.ReloadSecretsCachePath.
 	reloadCachePath string
+	// crossUID arms the materializer's cross-uid modes (design 0051 US-4b):
+	// the SIDECAR's reload path re-materializes the tool-consumed rt/*
+	// stores as uid 2000 while uid-1000 tools stay their readers — files
+	// 0640 / dirs 0770 via the shared gid 1000. Set from
+	// LLMSAFESPACES_CROSS_UID_FILES (controller wires it on the sidecar
+	// only); every other construction keeps the owner-only modes.
+	crossUID bool
 }
 
 func (c materializeConfig) toPaths() secrets.Paths {
@@ -342,6 +349,7 @@ func loadMaterializeConfig() materializeConfig {
 		gitCredsPath:     envOrDefault("LLMSAFESPACES_GIT_CREDS_PATH", "/sandbox-runtime/rt/git-credentials"),
 		enricherCacheDir: envOrDefault("LLMSAFESPACES_ENRICHER_CACHE_DIR", home+"/.local/state/llmsafespaces"),
 		reloadCachePath:  envOrDefault("LLMSAFESPACES_RELOAD_CACHE_PATH", agentd.ReloadSecretsCachePath),
+		crossUID:         os.Getenv("LLMSAFESPACES_CROSS_UID_FILES") == "1",
 	}
 }
 
@@ -893,7 +901,7 @@ func reloadSecretsHandler(cfg materializeConfig, deps reloadSecretsDeps) http.Ha
 		// window.
 		reloadMu.Lock()
 
-		m := &secrets.Materializer{FS: secrets.RealFS(), Paths: cfg.toPaths()}
+		m := &secrets.Materializer{FS: secrets.RealFS(), Paths: cfg.toPaths(), CrossUID: cfg.crossUID}
 		result, mErr := m.Materialize(batch)
 
 		if mErr != nil && !errors.Is(mErr, secrets.ErrPartialFailure) {
@@ -1155,7 +1163,16 @@ func writeReloadSecretsCache(path string, batch []secrets.Secret) error {
 		cleanup()
 		return fmt.Errorf("write cache: %w", err)
 	}
-	if err := tmp.Chmod(0o600); err != nil {
+	// US-4b: in sidecar mode the INIT container writes the boot cache
+	// (uid 1000) and the sidecar's healthz reads it (uid 2000) — 0640
+	// carries that read across the split via the shared gid; the
+	// uid-1000 exclusion is the mount topology (agentd-secrets volume),
+	// not the mode. Single-container keeps 0600.
+	cacheMode := os.FileMode(0o600)
+	if os.Getenv("LLMSAFESPACES_CROSS_UID_FILES") == "1" {
+		cacheMode = 0o640
+	}
+	if err := tmp.Chmod(cacheMode); err != nil {
 		_ = tmp.Close()
 		cleanup()
 		return fmt.Errorf("chmod cache: %w", err)

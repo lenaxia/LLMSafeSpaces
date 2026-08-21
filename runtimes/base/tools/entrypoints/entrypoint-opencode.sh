@@ -10,7 +10,11 @@ if [[ -f /sandbox-runtime/secrets-env ]]; then
     source /sandbox-runtime/secrets-env
 fi
 
-export OPENCODE_CONFIG=/sandbox-runtime/agent-config.json
+# OPENCODE_CONFIG honors a pre-set value: in sidecar mode (US-4b) the
+# controller points the workspace container at /agentd-config/agent-config.json
+# (the RO integrity mount); unset — single-container mode — the
+# /sandbox-runtime default stands.
+export OPENCODE_CONFIG="${OPENCODE_CONFIG:-/sandbox-runtime/agent-config.json}"
 export XDG_DATA_HOME=/workspace/.local
 
 # Enable opencode's experimental event system so the /event SSE stream

@@ -29,34 +29,34 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
 	"go.uber.org/zap"
-
-	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 )
-
-// secretsEnvPathFromEnv resolves the secrets-env location (the same
-// override the materializer and reload handler use — single coordinate,
-// so US-4b's relocation is a controller env change, not new code paths).
-func secretsEnvPathFromEnv() string {
-	return envOrDefault("LLMSAFESPACES_SECRETS_ENV_PATH", agentd.SecretsEnvPath)
-}
 
 // parseSecretsEnvDelta returns the variables the bash-sourceable env
 // file introduces, excluding anything already present in THIS process's
-// environment and excluding shell noise (SHLVL/PWD/OLDPWD/_). Parsing
-// reuses the bash-source + env -0 machinery from buildEnvFrom — a pure
-// Go re-implementation would have to mirror bash quoting rules exactly,
-// which is the class of bug that produced G2.
+// environment and excluding shell noise (SHLVL/PWD/OLDPWD/_).
+//
+// US-4b: the parser is PURE GO — the sidecar image is FROM scratch (no
+// bash exists there), so the US-4a bash-source implementation could only
+// fail in real sidecar pods. This is not the G2 bug class (parsing
+// arbitrary bash): the file has exactly ONE writer, the materializer's
+// applyEnvSecret/applyAPIKey via secrets.FormatEnvLine, whose output is
+// the canonical `export NAME='shellSingleQuote(value)'` form. The
+// scanner below is the exact inverse of that encoder and rejects
+// anything else as corruption (single writer → malformed means corrupt).
 func parseSecretsEnvDelta(path string) (map[string]string, error) {
 	//nolint:gosec // G304: path is the deployment-configured secrets-env
 	// coordinate (env override → const default), same trust class as
 	// buildEnvFrom's source target.
-	if _, err := os.Stat(path); err != nil {
-		return map[string]string{}, nil // absent = no env-secrets: normal
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]string{}, nil // absent = no env-secrets: normal
+		}
+		return nil, fmt.Errorf("read secrets-env %s: %w", path, err)
 	}
 	parent := os.Environ()
 	parentSet := make(map[string]struct{}, len(parent))
@@ -66,33 +66,92 @@ func parseSecretsEnvDelta(path string) (map[string]string, error) {
 		}
 	}
 	const noise = "SHLVL\x00PWD\x00OLDPWD\x00_\x00"
-	//nolint:gosec,noctx // G204: constant script body, path bound to $1; boot/reload-time call — same shape as buildEnvFrom
-	out, err := trackedOutput(exec.Command("bash", "-c",
-		`set -a; source "$1"; env -0`,
-		"_", path,
-	))
+
+	parsed, err := scanShellquoteExports(string(data))
 	if err != nil {
 		return nil, fmt.Errorf("parse secrets-env %s: %w", path, err)
 	}
 	delta := map[string]string{}
-	for _, rec := range strings.Split(string(out), "\x00") {
-		if rec == "" {
+	for _, kv := range parsed {
+		if _, inParent := parentSet[kv.name]; inParent {
 			continue
 		}
-		i := strings.IndexByte(rec, '=')
-		if i <= 0 {
+		if strings.Contains(noise, kv.name+"\x00") {
 			continue
 		}
-		key, val := rec[:i], rec[i+1:]
-		if _, inParent := parentSet[key]; inParent {
-			continue
-		}
-		if strings.Contains(noise, key+"\x00") {
-			continue
-		}
-		delta[key] = val
+		delta[kv.name] = kv.value
 	}
 	return delta, nil
+}
+
+// nameValue is one decoded `export NAME='value'` entry.
+type nameValue struct {
+	name, value string
+}
+
+// scanShellquoteExports decodes a stream of FormatEnvLine records:
+//
+//	"export " NAME "='" shellSingleQuote(value) "'\n"
+//
+// with shellSingleQuote(v) = "'" + v with each `'` replaced by `'\”`.
+// Values may contain raw newlines (the quote spans lines). Any byte
+// sequence that is not exactly this grammar is an error — the file's
+// single writer never produces anything else, so a mismatch is
+// corruption and must surface, not silently drop variables.
+func scanShellquoteExports(data string) ([]nameValue, error) {
+	var order []nameValue
+	i := 0
+	n := len(data)
+	for i < n {
+		rest := data[i:]
+		const prefix = "export "
+		if !strings.HasPrefix(rest, prefix) {
+			return nil, fmt.Errorf("record at offset %d: missing %q prefix", i, prefix)
+		}
+		i += len(prefix)
+
+		nameStart := i
+		for i < n && (data[i] == '_' || data[i] >= 'a' && data[i] <= 'z' || data[i] >= 'A' && data[i] <= 'Z' || data[i] >= '0' && data[i] <= '9') {
+			i++
+		}
+		name := data[nameStart:i]
+		if name == "" || i >= n || data[i] != '=' || i+1 >= n || data[i+1] != '\'' {
+			return nil, fmt.Errorf("record at offset %d: malformed name or missing opening quote", nameStart)
+		}
+		i += 2 // consume ='
+
+		var value strings.Builder
+		terminated := false
+	parseValue:
+		for i < n {
+			switch data[i] {
+			case '\'':
+				// Either the escaped form '\'' (encoder: ' → '\'')
+				// or the record's closing quote.
+				if strings.HasPrefix(data[i:], `'\''`) {
+					value.WriteByte('\'')
+					i += 4
+				} else {
+					i++ // consume closing quote
+					terminated = true
+					break parseValue
+				}
+			default:
+				value.WriteByte(data[i])
+				i++
+			}
+		}
+		if !terminated {
+			return nil, fmt.Errorf("record %q: unterminated value", name)
+		}
+		if !strings.HasPrefix(data[i:], "\n") {
+			return nil, fmt.Errorf("record %q: missing record terminator", name)
+		}
+		i++ // consume \n
+
+		order = append(order, nameValue{name: name, value: value.String()})
+	}
+	return order, nil
 }
 
 // pushInitialSpawnEnv hands the boot-time secrets delta to the

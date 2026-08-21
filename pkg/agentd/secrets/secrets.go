@@ -41,12 +41,15 @@
 //
 //	T1 No interpretation of secret values by the shell.
 //	T2 No file ever exists on disk with mode > 0600 for credential material.
-//	   (Design-0051 exception, agent-config.json ONLY: 0640 — the file is
-//	   written by the uid-2000 sidecar and read by uid-1000 opencode, so
-//	   the pod's shared gid 1000 must carry the read bit. Design 0051 §D1
-//	   rules this file uid-1000-readable BY NECESSITY (opencode is its
-//	   reader; the embedded MCP Basic header is a documented residual) —
-//	   0640 grants exactly that reader set, nothing wider.)
+//	   (Design-0051 exceptions, both gid-1000-scoped: (a) agent-config.json
+//	   ALWAYS 0640 — written by the uid-2000 sidecar, read by uid-1000
+//	   opencode, ruled uid-1000-readable BY NECESSITY (the embedded MCP
+//	   Basic header is a documented residual); (b) US-4b, CrossUID mode
+//	   ONLY: the tool-consumed rt/* stores go 0640/0770 — the sidecar's
+//	   reload re-materializes them uid-2000-owned while uid-1000 tools
+//	   (git/ssh/user processes, shared gid 1000) remain their readers per
+//	   the US-35.7 class-C ruling. gid 1000 is exactly that reader set,
+//	   nothing wider.)
 //	T3 No path written outside SecretsBasePath, $HOME/.ssh, or AgentConfigPath.
 //	T4 No env-file line that does not round-trip cleanly through `source`.
 //	T5 An invalid secret skips that secret only; the rest still materialize.
@@ -246,6 +249,7 @@ var ErrPartialFailure = errors.New("secret materialization had partial failures"
 type Filesystem interface {
 	RemoveAll(path string) error
 	MkdirAll(path string, perm os.FileMode) error
+	Chmod(path string, perm os.FileMode) error
 	OpenForCreate(path string, flag int, perm os.FileMode) (io.WriteCloser, error)
 	Remove(path string) error
 }
@@ -258,6 +262,7 @@ func RealFS() Filesystem { return realFS{} }
 
 func (realFS) RemoveAll(path string) error                  { return os.RemoveAll(path) }
 func (realFS) MkdirAll(path string, perm os.FileMode) error { return os.MkdirAll(path, perm) }
+func (realFS) Chmod(path string, perm os.FileMode) error    { return os.Chmod(path, perm) }
 func (realFS) Remove(path string) error                     { return os.Remove(path) }
 func (realFS) OpenForCreate(path string, flag int, perm os.FileMode) (io.WriteCloser, error) {
 	return os.OpenFile(path, flag, perm)
@@ -450,10 +455,36 @@ type LLMProviderFormatter func(providers []sec.LLMProviderData) ([]byte, error)
 // NewMaterializer or pass a Materializer{} with field defaults filled in
 // by the caller.
 type Materializer struct {
-	FS               Filesystem
-	Paths            Paths
+	FS    Filesystem
+	Paths Paths
+	// CrossUID arms the group bits on the tool-consumed rt/* stores
+	// (design 0051 US-4b): dirs 0770, files 0640. Set ONLY on the
+	// sidecar's reload path, where uid-2000 writes must stay readable by
+	// the uid-1000 tools that consume ~/.secrets/*, ~/.ssh/* and
+	// ~/.git-credentials via the pod's shared gid 1000 (US-35.7 class C
+	// ruling). Unset (single-container, init-container materialize): the
+	// pre-US-4b owner-only modes stand.
+	CrossUID         bool
 	stagedProviders  []sec.LLMProviderData
 	stagedMCPServers []StagedMCPServer
+}
+
+// secretDirMode is the mode for materialized credential DIRECTORIES.
+func (m *Materializer) secretDirMode() os.FileMode {
+	if m.CrossUID {
+		return 0o770
+	}
+	return 0o700
+}
+
+// secretFileMode is the mode for materialized credential FILES in the
+// tool-consumed rt/* stores (T2 exception, design 0051 US-4b: gid 1000
+// is exactly the uid-1000 reader set, nothing wider).
+func (m *Materializer) secretFileMode() os.FileMode {
+	if m.CrossUID {
+		return 0o640
+	}
+	return 0o600
 }
 
 // NewMaterializer returns a Materializer using the production filesystem
@@ -492,6 +523,17 @@ func (m *Materializer) Materialize(secrets []Secret) (*MaterializeResult, error)
 	return result, nil
 }
 
+// mkdirExact creates dir with EXACTLY perm: MkdirAll honors the process
+// umask, which in production (sidecar umask 022) would strip the group
+// WRITE bit from 0770 — the exact bit the next cross-uid reset() unlink
+// needs. The follow-up Chmod is umask-immune (US-4b).
+func (m *Materializer) mkdirExact(path string, perm os.FileMode) error {
+	if err := m.FS.MkdirAll(path, perm); err != nil {
+		return err
+	}
+	return m.FS.Chmod(path, perm)
+}
+
 func (m *Materializer) reset() error {
 	m.stagedProviders = nil
 	m.stagedMCPServers = nil
@@ -499,13 +541,13 @@ func (m *Materializer) reset() error {
 	if err := m.FS.RemoveAll(m.Paths.SecretsBaseDir); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if err := m.FS.MkdirAll(m.Paths.SecretsBaseDir, 0o700); err != nil {
+	if err := m.mkdirExact(m.Paths.SecretsBaseDir, m.secretDirMode()); err != nil {
 		return err
 	}
 	if err := m.FS.RemoveAll(m.Paths.SSHDir); err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	if err := m.FS.MkdirAll(m.Paths.SSHDir, 0o700); err != nil {
+	if err := m.mkdirExact(m.Paths.SSHDir, m.secretDirMode()); err != nil {
 		return err
 	}
 	// These three are best-effort; absence is fine.
@@ -606,7 +648,11 @@ func (m *Materializer) applyAPIKey(s Secret) error {
 		varName = "API_KEY_" + sanitizeEnvSuffix(s.Name)
 	}
 	line := FormatEnvLine(varName, s.Plaintext)
-	return appendFile(m.FS, m.Paths.SecretsEnvPath, []byte(line), 0o600)
+	// secretFileMode (not fixed 0600): in sidecar mode the INIT container
+	// writes this file and the uid-2000 sidecar's boot handoff reads it —
+	// the uid-1000 exclusion is the MOUNT (agentd-secrets volume is never
+	// mounted in the workspace container), not the mode (US-4b).
+	return appendFile(m.FS, m.Paths.SecretsEnvPath, []byte(line), m.secretFileMode())
 }
 
 func (m *Materializer) applySSHKey(s Secret) error {
@@ -629,7 +675,7 @@ func (m *Materializer) applySSHKey(s Secret) error {
 	}
 
 	keyPath := filepath.Join(m.Paths.SSHDir, "id_"+keyType+"_"+s.Name)
-	if err := atomicWrite(m.FS, keyPath, []byte(s.Plaintext), 0o600); err != nil {
+	if err := atomicWrite(m.FS, keyPath, []byte(s.Plaintext), m.secretFileMode()); err != nil {
 		return err
 	}
 
@@ -638,7 +684,7 @@ func (m *Materializer) applySSHKey(s Secret) error {
 	// directive.
 	configPath := filepath.Join(m.Paths.SSHDir, "config")
 	block := "Host " + host + "\n    IdentityFile " + keyPath + "\n    StrictHostKeyChecking accept-new\n"
-	return appendFile(m.FS, configPath, []byte(block), 0o600)
+	return appendFile(m.FS, configPath, []byte(block), m.secretFileMode())
 }
 
 func (m *Materializer) applyGitCredential(s Secret) error {
@@ -675,7 +721,7 @@ func (m *Materializer) applyGitCredential(s Secret) error {
 		}
 	}
 	line := protocol + "://oauth2:" + s.Plaintext + "@" + host + "\n"
-	return appendFile(m.FS, m.Paths.GitCredsPath, []byte(line), 0o600)
+	return appendFile(m.FS, m.Paths.GitCredsPath, []byte(line), m.secretFileMode())
 }
 
 func (m *Materializer) applySecretFile(s Secret) error {
@@ -684,10 +730,10 @@ func (m *Materializer) applySecretFile(s Secret) error {
 	if err != nil {
 		return newValidationError("%s", err.Error())
 	}
-	if err := m.FS.MkdirAll(filepath.Dir(resolved), 0o700); err != nil {
+	if err := m.mkdirExact(filepath.Dir(resolved), m.secretDirMode()); err != nil {
 		return err
 	}
-	return atomicWrite(m.FS, resolved, []byte(s.Plaintext), 0o600)
+	return atomicWrite(m.FS, resolved, []byte(s.Plaintext), m.secretFileMode())
 }
 
 func (m *Materializer) applyEnvSecret(s Secret) error {
@@ -696,7 +742,11 @@ func (m *Materializer) applyEnvSecret(s Secret) error {
 		return newValidationError("%s", err.Error())
 	}
 	line := FormatEnvLine(varName, s.Plaintext)
-	return appendFile(m.FS, m.Paths.SecretsEnvPath, []byte(line), 0o600)
+	// secretFileMode (not fixed 0600): in sidecar mode the INIT container
+	// writes this file and the uid-2000 sidecar's boot handoff reads it —
+	// the uid-1000 exclusion is the MOUNT (agentd-secrets volume is never
+	// mounted in the workspace container), not the mode (US-4b).
+	return appendFile(m.FS, m.Paths.SecretsEnvPath, []byte(line), m.secretFileMode())
 }
 
 func (m *Materializer) applyLLMProvider(s Secret) error {

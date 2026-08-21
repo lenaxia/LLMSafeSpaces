@@ -177,6 +177,17 @@ func (f *fakeFS) MkdirAll(path string, perm os.FileMode) error {
 	return nil
 }
 
+func (f *fakeFS) Chmod(path string, perm os.FileMode) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, isDir := f.dirs[path]; isDir {
+		f.dirs[path] = perm
+	} else {
+		f.modes[path] = perm
+	}
+	return nil
+}
+
 func (f *fakeFS) Remove(path string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

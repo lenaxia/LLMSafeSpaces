@@ -72,6 +72,10 @@ const (
 	ComponentWorkspace = "workspace"
 )
 
+// credentialSetupContainerName is the credential-setup init container
+// (built in pod_builder.go, mutated for sidecar mode in agentd_sidecar.go).
+const credentialSetupContainerName = "credential-setup"
+
 // Password secret naming.
 func passwordSecretName(workspaceName string) string {
 	return "workspace-pw-" + workspaceName

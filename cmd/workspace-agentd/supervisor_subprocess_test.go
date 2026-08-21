@@ -362,8 +362,9 @@ func TestSidecarBoot_PushPrecedesMuxServing(t *testing.T) {
 	sp := startSupervisorSubprocess(t)
 	cc := newControlClient(sp.addr)
 
-	// A real secrets-env with a delta to hand off.
-	envPath := writeSecretsEnv(t, t.TempDir(), "BOOT_ORDER_DELTA='landed-before-mux'\n")
+	// A real secrets-env with a delta to hand off (the materializer's
+	// canonical FormatEnvLine form — `export NAME='value'`).
+	envPath := writeSecretsEnv(t, t.TempDir(), "export BOOT_ORDER_DELTA='landed-before-mux'\n")
 
 	dir := t.TempDir()
 	marker := filepath.Join(dir, "push-done")
