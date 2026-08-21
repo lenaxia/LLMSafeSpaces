@@ -3,6 +3,16 @@ import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { render } from "../../test/utils";
 import { MessagePart, closeOpenFence } from "./MessagePart";
+
+// Env mock for DevPreviewOutput's relative-link resolution. Top-level so
+// vitest hoists it; mutable so the relative-link test can pin an absolute
+// API base and everything else keeps the same-origin default.
+const testEnvState = { apiBaseUrl: "/api/v1" };
+vi.mock("../../env", () => ({
+  getEnv: () => ({ apiBaseUrl: testEnvState.apiBaseUrl, turnstileSiteKey: "" }),
+  loadEnv: async () => ({ apiBaseUrl: testEnvState.apiBaseUrl, turnstileSiteKey: "" }),
+}));
+afterEach(() => { testEnvState.apiBaseUrl = "/api/v1"; });
 import { highlight } from "../../lib/shiki";
 
 vi.mock("../../lib/shiki", () => ({
@@ -682,6 +692,17 @@ describe("DevPreviewOutput via MessagePart", () => {
     );
     const btn = screen.getByTestId("dev-preview-button");
     expect(btn).toBeVisible();
+    expect(btn).toHaveAttribute("href", "https://api.example.com/api/v1/workspaces/ws/dev-preview-bootstrap/5173");
+  });
+
+  it("resolves a RELATIVE bootstrap link against the API base (regression)", () => {
+    // Production pods can emit /api/v1/... (no absolute API URL in env);
+    // the button must still render, pointing at the API origin — never
+    // the frontend origin (different host in split deployments).
+    const output = "LSP_DEV_PREVIEW_V1 port=5173 origin=safespaces.dev\n[Open dev preview :5173](/api/v1/workspaces/ws/dev-preview-bootstrap/5173)\nOpens the preview.";
+    testEnvState.apiBaseUrl = "https://api.example.com/api/v1";
+    render(<MessagePart part={{ type: "tool_result", text: output, name: "dev_preview_url" } as never} isUser={false} />);
+    const btn = screen.getByTestId("dev-preview-button");
     expect(btn).toHaveAttribute("href", "https://api.example.com/api/v1/workspaces/ws/dev-preview-bootstrap/5173");
   });
 

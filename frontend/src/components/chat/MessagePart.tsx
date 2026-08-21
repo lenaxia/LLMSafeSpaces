@@ -6,6 +6,7 @@ import { Brain, Check, Copy, Wrench, Server, ExternalLink } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { useUserSetting } from "../../hooks/useUserSettings";
 import { useNow } from "../../hooks/useNow";
+import { getEnv } from "../../env";
 import { useTheme } from "../../providers/ThemeProvider";
 import { highlight } from "../../lib/shiki";
 import { LazyDetails } from "../ui/LazyDetails";
@@ -231,13 +232,23 @@ function DevPreviewOutput({ output }: { output: string }) {
   }
   const port = marker[1];
   const origin = marker[2]; // origin domain; undefined in path-based mode
-  const link = /^\[([^\]]+)\]\((https?:\/\/[^)]+)\)$/.exec((lines[1] ?? "").trim());
+  const link = /^\[([^\]]+)\]\(([^)]+)\)$/.exec((lines[1] ?? "").trim());
+  let href = link?.[2];
+  if (link && href && !/^[a-z][a-z0-9+.-]*:/i.test(href)) {
+    // Relative link (workspace pods may emit /api/v1/... when the pod env
+    // lacks the absolute API URL): resolve against the app's API base —
+    // NOT the frontend origin, which is a different host in split
+    // deployments (chat.safespaces.dev vs api.safespaces.dev).
+    const { apiBaseUrl } = getEnv();
+    const apiOrigin = apiBaseUrl.replace(/\/api\/v1\/?$/, "");
+    href = apiOrigin + (href.startsWith("/") ? href : "/" + href);
+  }
   const explanation = lines.slice(link ? 2 : 1).join("\n").trim();
   return (
     <div className="px-3 py-2 space-y-2">
-      {link ? (
+      {link && href ? (
         <a
-          href={link[2]}
+          href={href}
           target="_blank"
           rel="noopener noreferrer"
           data-testid="dev-preview-button"
