@@ -52,6 +52,9 @@ func secretsEnvPathFromEnv() string {
 // Go re-implementation would have to mirror bash quoting rules exactly,
 // which is the class of bug that produced G2.
 func parseSecretsEnvDelta(path string) (map[string]string, error) {
+	//nolint:gosec // G304: path is the deployment-configured secrets-env
+	// coordinate (env override → const default), same trust class as
+	// buildEnvFrom's source target.
 	if _, err := os.Stat(path); err != nil {
 		return map[string]string{}, nil // absent = no env-secrets: normal
 	}

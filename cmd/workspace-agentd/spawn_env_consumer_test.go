@@ -22,12 +22,14 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -240,4 +242,36 @@ func TestReloadHandler_SidecarEndToEnd(t *testing.T) {
 	require.NoError(t, err, "reload must persist the restart-reason marker")
 	require.Contains(t, string(data), "env_secrets_changed")
 	require.Contains(t, string(data), "MY_PROVIDER_KEY")
+}
+
+// --- review round 1: boot ordering + degradation ------------------------------
+
+// TestPushInitialSpawnEnv_DeadSocketFailsFast: an unreachable supervisor
+// surfaces as an error WITHIN the 5s budget (never a hang), so the boot
+// sequence's log-and-continue branch is reachable and bounded.
+func TestPushInitialSpawnEnv_DeadSocketFailsFast(t *testing.T) {
+	deadPort := freeTCPPort(t)
+	cc := newControlClient(fmt.Sprintf("127.0.0.1:%d", deadPort))
+	cc.timeout = 5 * time.Second
+
+	p := writeSecretsEnv(t, t.TempDir(), "BOOT_SECRET='x'\n")
+	begin := time.Now()
+	err := pushInitialSpawnEnv(cc, p)
+	require.Error(t, err, "dead socket must surface an error, not silence")
+	require.Less(t, time.Since(begin), 6*time.Second,
+		"the boot push must be bounded by its timeout — took %v", time.Since(begin))
+}
+
+// TestPushInitialSpawnEnv_EmptyDeltaSkipsDeadSocket: with no delta, no
+// socket call is made at all — a supervisor that is not yet up cannot
+// even delay the boot when there is nothing to hand off.
+func TestPushInitialSpawnEnv_EmptyDeltaSkipsDeadSocket(t *testing.T) {
+	deadPort := freeTCPPort(t)
+	cc := newControlClient(fmt.Sprintf("127.0.0.1:%d", deadPort))
+	cc.timeout = 100 * time.Millisecond // would fail fast IF dialed
+
+	begin := time.Now()
+	require.NoError(t, pushInitialSpawnEnv(cc, filepath.Join(t.TempDir(), "nope")))
+	require.Less(t, time.Since(begin), time.Second,
+		"empty delta must short-circuit before any dial")
 }
