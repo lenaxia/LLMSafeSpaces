@@ -97,6 +97,7 @@ func main() {
 	failures += runGinSetMode(root)
 	failures += runAgentImport(root)
 	failures += runEventLiteral(root)
+	failures += runReleaseArtifacts(root)
 	if *clusterDrift {
 		failures += runClusterDrift(root)
 	}
@@ -107,6 +108,21 @@ func main() {
 	}
 	fmt.Println("repolint: all checks passed")
 	os.Exit(exitOK)
+}
+
+// runReleaseArtifacts enforces the release workflow's artifact-completeness
+// invariants (every image signed/scanned/SBOM'd/tabled; every merge job
+// gates the release). See pkg/repolint/release_artifacts.go — born from the
+// v0.19.1 incident (release green, agentd never published).
+func runReleaseArtifacts(root string) int {
+	fails := repolint.RunReleaseArtifactCompleteness(root)
+	for _, f := range fails {
+		fmt.Fprintf(os.Stderr, "FAIL %s\n", f)
+	}
+	if len(fails) > 0 {
+		fmt.Fprintln(os.Stderr, "release artifacts: 0 known exceptions tolerated")
+	}
+	return len(fails)
 }
 
 // runFixWorklogs executes the worklog auto-renumber pass against
