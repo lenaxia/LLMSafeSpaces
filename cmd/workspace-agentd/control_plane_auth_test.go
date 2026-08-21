@@ -86,9 +86,10 @@ func TestControlPlaneAuth_SingleContainerModeUnchanged(t *testing.T) {
 func TestControlPlaneAuth_WorkflowAndAgentReloadAcceptBoth(t *testing.T) {
 	withTestLogger(t)
 	handlers := map[string]http.HandlerFunc{
-		"agent-reload":    agentReloadHandler(log, testWorkspacePW, testAgentdPW),
-		"workflow-exec":   workflowExecuteHandler(testWorkspacePW, testAgentdPW),
-		"workflow-cancel": workflowCancelHandler(testAgentdPW, testWorkspacePW),
+		"agent-reload":         agentReloadHandler(log, testWorkspacePW, testAgentdPW),
+		"workflow-exec":        workflowExecuteHandler(testWorkspacePW, testAgentdPW),
+		"workflow-cancel":      workflowCancelHandler(testWorkspacePW, testAgentdPW),
+		"workflow-del-session": workflowDeleteSessionHandler(testWorkspacePW, testAgentdPW),
 	}
 	for name, h := range handlers {
 		t.Run(name, func(t *testing.T) {
