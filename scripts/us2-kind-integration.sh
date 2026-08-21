@@ -282,11 +282,23 @@ socket_json() { # $1: id, $2: method — one Appendix-A round trip from inside t
 TERM_CRED=$(jq_field '.status.initContainerStatuses[]? | select(.name=="credential-setup") | .state.terminated.finishedAt // .lastState.terminated.finishedAt // empty')
 START_SIDECAR=$(jq_field '.status.initContainerStatuses[]? | select(.name=="agentd") | .state.running.startedAt // .state.terminated.startedAt // empty')
 START_MAIN=$(jq_field '.status.containerStatuses[0].state.running.startedAt // empty')
-if [ -n "$TERM_CRED" ] && [ -n "$START_SIDECAR" ] && [ -n "$START_MAIN" ] \
-  && [ "$TERM_CRED" \< "$START_SIDECAR" ] && [ "$START_SIDECAR" \< "$START_MAIN" ]; then
-  pass K1 "credential-setup@$TERM_CRED < sidecar@$START_SIDECAR < main@$START_MAIN"
+# Pod-status timestamps have 1-second granularity: credential-setup can
+# finish in the SAME second the sidecar starts (native sidecars begin
+# immediately after the prior init completes) — a tie is correct, not a
+# violation. The load-bearing ordering is sidecar-start ≤ main-start
+# (the #857 gate). Parse to epoch and compare with ties allowed.
+if [ -n "$TERM_CRED" ] && [ -n "$START_SIDECAR" ] && [ -n "$START_MAIN" ]; then
+  T_CRED=$(date -u -d "$TERM_CRED" +%s 2>/dev/null || echo 0)
+  T_SC=$(date -u -d "$START_SIDECAR" +%s 2>/dev/null || echo 0)
+  T_MAIN=$(date -u -d "$START_MAIN" +%s 2>/dev/null || echo 0)
+  if [ "$T_CRED" -gt 0 ] && [ "$T_SC" -gt 0 ] && [ "$T_MAIN" -gt 0 ] \
+    && [ "$T_CRED" -le "$T_SC" ] && [ "$T_SC" -le "$T_MAIN" ]; then
+    pass K1 "credential-setup@$TERM_CRED ≤ sidecar@$START_SIDECAR ≤ main@$START_MAIN"
+  else
+    fail K1 "ordering: cred=$TERM_CRED sidecar=$START_SIDECAR main=$START_MAIN (epoch $T_CRED/$T_SC/$T_MAIN)"
+  fi
 else
-  fail K1 "ordering: cred=$TERM_CRED sidecar=$START_SIDECAR main=$START_MAIN"
+  fail K1 "missing timestamps: cred=$TERM_CRED sidecar=$START_SIDECAR main=$START_MAIN"
 fi
 
 # --- K2: #857 stamp present in the config opencode first read ----------------
