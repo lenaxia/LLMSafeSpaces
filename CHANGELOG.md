@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.2] - 2026-08-21
+
+### Fixed
+
+- **Outbox test teardown hang (#1005)**: TestRun_ConcurrentSessionsNoHeadOfLine
+  hung the race-detector package (10m timeout) on every full-suite CI run,
+  blocking the v0.19.1 tag build entirely. The test's slow-fn waited on the
+  deliverer context — which deliverDetached deliberately detaches from
+  cancellation (D3 disconnect-immunity) — so test teardown could never wake
+  it; the unbounded cleanup join then stalled indefinitely under scheduler
+  contention. The fn now selects on a test-owned channel, and the teardown
+  join runs under a 5s watchdog that fails fast with a diagnostic instead
+  of killing the package.
+
 ## [0.19.1] - 2026-08-21
 
 ### Fixed
