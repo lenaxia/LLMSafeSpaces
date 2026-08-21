@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.1] - 2026-08-21
+
+### Fixed
+
+- **Outbox: Run joins its workers — the release-pipeline hang root cause
+  (#1016)**: Run returned on ctx.Done without joining the deliverOne
+  goroutines it spawned. The abandoned-goroutine gap caused the 10-minute
+  race-detector package hangs that killed the v0.19.1 and v0.20.0 release
+  runs, the #1005 watchdog stalls, and a goroutine-stack data race against
+  subsequent tests. Post-delivery Redis bookkeeping (staging cleanup,
+  state restore, lock release) now runs on a detached, bounded context
+  minted AFTER the deliverer returns, with a fixed 5s bookkeepingTimeout
+  (never coupled to DeliveryTimeout). Verified 25× -race with zero
+  failures and zero races (baseline flaked 2–4/25).
+
 ## [0.20.0] - 2026-08-21
 
 ### Added
