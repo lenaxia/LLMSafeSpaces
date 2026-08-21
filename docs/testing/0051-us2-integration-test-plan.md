@@ -41,7 +41,7 @@ US-2 splits one process into a **pair communicating over `127.0.0.1:4099`** (App
 | **L1 — in-pod integration** | C1 supervisor + real child + real socket server + C2's real consumers (`buildSidecarDeps`) in one process tree | `sidecar_integration_test.go` | ✅ green (CI) |
 | **L1.5 — supervisor subprocess** | The REAL `supervise-opencode` subcommand as a real process (PID semantics, signals, subreaper, exit code) driven by the real client over real TCP | `supervisor_subprocess_test.go` (NEW) | ✅ green (CI) |
 | **L2 — pod-spec admission** | `buildPod` output against a real API server (KEP-753 restartPolicy admission, SecurityContext, Secret-key resolution) | `agentd_sidecar_envtest_test.go` (`-tags envtest`) | ✅ green (envtest workflow) |
-| **L3 — kind cluster** | Real kubelet: native-sidecar ordering, probes, container restarts, termination | `scripts/us2-kind-integration.sh` + `.github/workflows/us2-kind-integration.yml` (NEW) | ✅ executable (workflow_dispatch + weekly; not PR-gating) |
+| **L3 — kind cluster** | Real kubelet: native-sidecar ordering, probes, container restarts, termination | `scripts/us2-kind-integration.sh` + `.github/workflows/us2-kind-integration.yml` | ✅ **K1–K8 ALL GREEN** (run 32435547256; found real bug → #999) |
 | **L4 — TEST-cluster canary** | Full workspace SLOs under the chart gate | US-5 (V-matrix + D6.1 rollback exercise) | ⏳ blocked on US-3/US-4 |
 
 ### L0.5 — the regression pins (one per gap; all deterministic)
@@ -94,7 +94,13 @@ scripts/us2-kind-integration.sh [--keep]   # --keep: leave cluster + registry up
 
 CI runs the same script via `.github/workflows/us2-kind-integration.yml` (workflow_dispatch + weekly Mondays 05:00 UTC; deliberately NOT PR-gating — L0–L2 remain the per-PR gates). Exit codes: `0` all PASS · `1` setup failure · `2` one or more checks FAILED (summary printed). The script is self-contained: throwaway local registry (the agentd sidecar REQUIRES a digest-pinned reference and digest pulls must resolve — the canonical kind `certs.d` registry wiring), controller-lean chart install (api/mcp/webhooks off — the reconciler needs none of those to build pods), pinned node image matching the chart's 1.35 floor.
 
-> **Verification honesty:** the script is executed by CI (and any docker-capable host); it was authored on a sandbox without docker, so first execution may need iteration — record outcomes on #978.
+> **Execution status:** K1–K8 all green on main (run 32435547256). The
+> bring-up iterations are themselves part of the record: L3 found a real
+> product bug (#999 — sidecar readiness probe missing the bearer token →
+> pods never Ready) plus five harness issues (digest splice, binary-sha
+> pins, scratch-image docker create, cert-manager requirement,
+> webhook-endpoint race) fixed in #989–#1009, each with the run ID in its
+> PR description. Results recorded on #978.
 
 ### Checks (map to V-matrix rows; full matrix is US-5)
 
