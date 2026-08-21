@@ -185,6 +185,7 @@ func TestCallMCPTool_SessionRead_MissingID(t *testing.T) {
 }
 
 func TestCallMCPTool_DevPreviewURL_HappyPath(t *testing.T) {
+	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "") // pin path mode — real pods carry the env (#977)
 	t.Setenv("WORKSPACE_ID", "ws-abc-123")
 	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
 
@@ -199,6 +200,7 @@ func TestCallMCPTool_DevPreviewURL_HappyPath(t *testing.T) {
 }
 
 func TestCallMCPTool_DevPreviewURL_WithPath(t *testing.T) {
+	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "") // pin path mode — real pods carry the env (#977)
 	t.Setenv("WORKSPACE_ID", "ws-abc-123")
 	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
 
@@ -212,6 +214,7 @@ func TestCallMCPTool_DevPreviewURL_WithPath(t *testing.T) {
 }
 
 func TestCallMCPTool_DevPreviewURL_PathWithoutSlash(t *testing.T) {
+	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "") // pin path mode — real pods carry the env (#977)
 	t.Setenv("WORKSPACE_ID", "ws-abc-123")
 	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
 
@@ -224,6 +227,7 @@ func TestCallMCPTool_DevPreviewURL_PathWithoutSlash(t *testing.T) {
 }
 
 func TestCallMCPTool_DevPreviewURL_PortOmitted(t *testing.T) {
+	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "") // pin path mode — real pods carry the env (#977)
 	// Port is optional now (UX round 2): omitted → default 5173, no error.
 	t.Setenv("WORKSPACE_ID", "ws-abc-123")
 	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
@@ -416,6 +420,7 @@ func TestInjectAgentdMCPServer_CredentialAcceptedByGate(t *testing.T) {
 }
 
 func TestCallMCPTool_DevPreviewURL_RefusesPrivilegedAndReservedPorts(t *testing.T) {
+	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "") // pin path mode — real pods carry the env (#977)
 	// Tool-layer port policy (THREAT-MODEL T3): refused BEFORE any URL is
 	// minted; generic message — no service names leaked at this boundary.
 	for _, port := range []float64{80, 443, 1023, 4096, 4097, 4098} {
@@ -465,6 +470,7 @@ func TestCallMCPTool_DevPreviewURL_PathModeUnchangedWithoutEnv(t *testing.T) {
 }
 
 func TestCallMCPTool_DevPreviewURL_DefaultPort(t *testing.T) {
+	t.Setenv("PREVIEW_ORIGIN_BASE_DOMAIN", "") // pin path mode — real pods carry the env (#977)
 	// Port omitted → 5173 (Vite default, matches the landing form).
 	t.Setenv("WORKSPACE_ID", "ws-abc-123")
 	t.Setenv("LLMSAFESPACE_API_URL", "https://platform.example.com")
