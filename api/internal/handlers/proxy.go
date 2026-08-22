@@ -137,6 +137,10 @@ type ProxyHandler struct {
 	// (e.g. the stranded-queue sweep) to shut down.
 	stopCh chan struct{}
 
+	// busyAlerts / busyAlertsMu back the D6 (#998) escalation cooldown.
+	busyAlerts   map[string]time.Time
+	busyAlertsMu sync.Mutex
+
 	// outboxCancel stops the outbox delivery worker on Stop().
 	outboxCancel context.CancelFunc
 
@@ -197,6 +201,7 @@ func NewProxyHandler(
 		dialect:       dialect,
 		stateStore:    wsstate.NewInMemoryStore(),
 		connCount:     make(map[string]int),
+		busyAlerts:    make(map[string]time.Time),
 		requestBuffer: newRequestBuffer(defaultBufferMaxSize, defaultBufferTimeout, defaultBufferPollInterval, logger),
 		v2Pending:     newV2PendingSessions(),
 	}, nil
