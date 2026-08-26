@@ -148,8 +148,8 @@ func (s *fakeWorkflowStore) DeleteWorkflow(_ context.Context, ownerType, ownerID
 	return nil
 }
 
-func (s *fakeWorkflowStore) CountWorkflowsByOwner(_ context.Context, ownerType, ownerID string) (int, error) {
-	rows, err := s.ListWorkflows(context.Background(), ownerType, ownerID)
+func (s *fakeWorkflowStore) CountWorkflowsByOwner(ctx context.Context, ownerType, ownerID string) (int, error) {
+	rows, err := s.ListWorkflows(ctx, ownerType, ownerID)
 	return len(rows), err
 }
 
@@ -276,8 +276,8 @@ func (s *fakeTriggerStore) DeleteTrigger(_ context.Context, _, _, triggerID stri
 	return nil
 }
 
-func (s *fakeTriggerStore) CountTriggersByOwner(_ context.Context, ownerType, ownerID string) (int, error) {
-	rows, err := s.ListTriggers(context.Background(), ownerType, ownerID)
+func (s *fakeTriggerStore) CountTriggersByOwner(ctx context.Context, ownerType, ownerID string) (int, error) {
+	rows, err := s.ListTriggers(ctx, ownerType, ownerID)
 	return len(rows), err
 }
 
