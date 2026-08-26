@@ -10,7 +10,7 @@
       
       
       
-        <link rel="canonical" href="https://lenaxia.github.io/LLMSafeSpaces/testing/0051-us2-integration-test-plan/">
+        <link rel="canonical" href="https://lenaxia.github.io/LLMSafeSpaces/runbooks/sidecar-flip/">
       
       
       
@@ -23,7 +23,7 @@
     
     
       
-        <title>Design 0051 US-2 — Integration Test Plan - LLMSafeSpaces</title>
+        <title>Runbook: agentd sidecar flip (design 0051, migration step 3) - LLMSafeSpaces</title>
       
     
     
@@ -76,7 +76,7 @@
     <div data-md-component="skip">
       
         
-        <a href="#design-0051-us-2-integration-test-plan" class="md-skip">
+        <a href="#runbook-agentd-sidecar-flip-design-0051-migration-step-3" class="md-skip">
           Skip to content
         </a>
       
@@ -110,7 +110,7 @@
         <div class="md-header__topic" data-md-component="header-topic">
           <span class="md-ellipsis">
             
-              Design 0051 US-2 — Integration Test Plan
+              Runbook: agentd sidecar flip (design 0051, migration step 3)
             
           </span>
         </div>
@@ -1915,158 +1915,6 @@
     
   
   
-    <label class="md-nav__title" for="__toc">
-      <span class="md-nav__icon md-icon"></span>
-      Table of contents
-    </label>
-    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
-      
-        <li class="md-nav__item">
-  <a href="#1-what-is-being-integrated" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        1. What is being integrated
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#2-integration-seams-where-components-touch" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        2. Integration seams (where components touch)
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#3-level-definitions-and-what-exists-today" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        3. Level definitions and what exists today
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="3. Level definitions and what exists today">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#l05-the-regression-pins-one-per-gap-all-deterministic" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        L0.5 — the regression pins (one per gap; all deterministic)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#l1-in-pod-integration-sidecar_integration_testgo" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        L1 — in-pod integration (sidecar_integration_test.go)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#l2-pod-spec-admission-agentd_sidecar_envtest_testgo-tags-envtest" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        L2 — pod-spec admission (agentd_sidecar_envtest_test.go, -tags envtest)
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#4-l3-kind-cluster-executable-scriptsus2-kind-integrationsh" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        4. L3 — kind cluster (executable: scripts/us2-kind-integration.sh)
-      
-    </span>
-  </a>
-  
-    <nav class="md-nav" aria-label="4. L3 — kind cluster (executable: scripts/us2-kind-integration.sh)">
-      <ul class="md-nav__list">
-        
-          <li class="md-nav__item">
-  <a href="#running-it" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Running it
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#checks-map-to-v-matrix-rows-full-matrix-is-us-5" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        Checks (map to V-matrix rows; full matrix is US-5)
-      
-    </span>
-  </a>
-  
-</li>
-        
-          <li class="md-nav__item">
-  <a href="#l15-supervisor-subprocess-supervisor_subprocess_testgo-new" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        L1.5 — supervisor subprocess (supervisor_subprocess_test.go, new)
-      
-    </span>
-  </a>
-  
-</li>
-        
-      </ul>
-    </nav>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#5-what-each-level-cannot-catch-why-the-next-one-exists" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        5. What each level cannot catch (why the next one exists)
-      
-    </span>
-  </a>
-  
-</li>
-      
-        <li class="md-nav__item">
-  <a href="#6-gated-follow-ups-tracked-not-forgotten" class="md-nav__link">
-    <span class="md-ellipsis">
-      
-        6. Gated follow-ups (tracked, not forgotten)
-      
-    </span>
-  </a>
-  
-</li>
-      
-    </ul>
-  
 </nav>
                   </div>
                 </div>
@@ -2085,349 +1933,31 @@
   
 
 
-<h1 id="design-0051-us-2-integration-test-plan">Design 0051 US-2 — Integration Test Plan<a class="headerlink" href="#design-0051-us-2-integration-test-plan" title="Permanent link">&para;</a></h1>
-<p><strong>Status:</strong> L0–L2 implemented and green (this document ships with them); L3+ gated on US-4/US-5
-<strong>Date:</strong> 2026-08-20
-<strong>Scope:</strong> US-2 sidecar split (<code>--sidecar</code> mode + chart-gated native sidecar + supervisor socket wiring), merged in #980/#981/#982
-<strong>Related:</strong> <code>design/0051_2026-08-18_agentd-uid-separation.md</code> (§D1 architecture, Appendix A protocol, §7 V-matrix), issue #978</p>
-<hr />
-<h2 id="1-what-is-being-integrated">1. What is being integrated<a class="headerlink" href="#1-what-is-being-integrated" title="Permanent link">&para;</a></h2>
-<p>US-2 splits one process into a <strong>pair communicating over <code>127.0.0.1:4099</code></strong> (Appendix A) plus the control plane that constructs them:</p>
-<table>
-<thead>
-<tr>
-<th>#</th>
-<th>Component</th>
-<th>Lives in</th>
-<th>Role</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>C1</td>
-<td><strong>Supervisor</strong> — <code>workspace-agentd supervise-opencode</code></td>
-<td>workspace container, PID 1, uid 1000</td>
-<td>spawns/reaps/signals opencode; serves the control socket; sources workspace-cgroup metrics</td>
-</tr>
-<tr>
-<td>C2</td>
-<td><strong>Sidecar</strong> — <code>workspace-agentd --sidecar</code></td>
-<td>native sidecar container, uid 2000/gid 1000</td>
-<td>policy half: muxes (:4097/:4098), boot agent-config stamp (#857), watchdog + vitals, SSE tracking, relay injector, pressure monitor</td>
-</tr>
-<tr>
-<td>C3</td>
-<td><strong>Control socket</strong></td>
-<td>C1 serves, C2 consumes</td>
-<td>the ONLY C1⇄C2 interface: <code>hello/status/restart/spawn_env/metrics</code> (v1, frozen)</td>
-</tr>
-<tr>
-<td>C4</td>
-<td><strong>Opencode child</strong></td>
-<td>workspace container, child of C1</td>
-<td>the supervised workload (:4096)</td>
-</tr>
-<tr>
-<td>C5</td>
-<td><strong>Controller / pod spec</strong></td>
-<td><code>pod_builder.go</code> + chart gate</td>
-<td>constructs the two containers, their mounts, probes, env credentials, and the #857 startup-probe ordering</td>
-</tr>
-<tr>
-<td>C6</td>
-<td><strong>Kubelet (external)</strong></td>
-<td>cluster</td>
-<td>native-sidecar start gating, liveness/readiness probes, container restarts</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Explicitly out of scope for US-2</strong> (land with US-3/US-4/US-5, tracked in §6): the <code>agentdPassword</code> credential split, cross-uid secret re-materialization on reload, the sidecar's full reload consumer path, live-cluster canary + V-matrix + gVisor leg.</p>
-<h2 id="2-integration-seams-where-components-touch">2. Integration seams (where components touch)<a class="headerlink" href="#2-integration-seams-where-components-touch" title="Permanent link">&para;</a></h2>
+<h1 id="runbook-agentd-sidecar-flip-design-0051-migration-step-3">Runbook: agentd sidecar flip (design 0051, migration step 3)<a class="headerlink" href="#runbook-agentd-sidecar-flip-design-0051-migration-step-3" title="Permanent link">&para;</a></h1>
+<p><strong>Owner:</strong> platform operator
+<strong>Preconditions (all mandatory, in order):</strong></p>
 <ol>
-<li><strong>S1 — Socket contract</strong>: C2's client ⇄ C3's server. Wire shapes, error codes, idempotency, concurrency (A.1–A.5).</li>
-<li><strong>S2 — Restart path</strong>: C2 watchdog/reload → C3 <code>restart</code> → C1 <code>restartWithGrace</code> → real SIGTERM/SIGKILL + respawn of C4.</li>
-<li><strong>S3 — Env handoff</strong>: C2 composes child env → C3 <code>spawn_env</code> (memory-only) → applied at C4's NEXT spawn. (US-0.2(a); full producer lands in US-4.)</li>
-<li><strong>S4 — Metrics path</strong>: C1 reads the workspace container's cgroup → C3 <code>metrics</code> → C2's statusz/pressure monitor/ops gauges.</li>
-<li><strong>S5 — Vitals path</strong>: C2's watchdog gathers TCP-dial evidence (shared netns) + pid/boot evidence via C3 <code>status</code> → #892 verdict matrix (HUNG is the only lethal verdict).</li>
-<li><strong>S6 — Pod construction</strong>: C5 builds the C1+C2+C4 pod; kubelet (C6) must admit it, start credential-setup → sidecar (gated on its startup probe, which only serves AFTER the #857 stamp) → main container.</li>
-<li><strong>S7 — Filesystem bridge</strong>: cross-uid shared files (boot trio, markers) at 0640 via the pod's shared gid 1000; credential files stay 0600.</li>
+<li>Release carrying steps 1–2 (<code>init-fs</code>, platform-init containers, sidecar boot phase, supervisor Command bypass + self-verify) + step 4 (factory <code>MinBaseVersion</code> floor) is deployed: controller, API, and the digest-pinned agentd delivery image move as ONE coordinate (<code>controller.agentdDelivery.image</code> — the Renovate-managed single coordinate).</li>
+<li>The L3 kind suite (K1–K13) has passed once against the released artifacts, including:</li>
+<li><strong>K10</strong> resumed-legacy-PVC boot (the force-upgrade path),</li>
+<li><strong>K11</strong> sidecar-restart idempotency guard,</li>
+<li><strong>K13</strong> degraded-base boot (the 2026-08-25 incident-class regression).</li>
+<li>Cluster ≥ 1.35 (native sidecars) — already the chart floor.</li>
 </ol>
-<h2 id="3-level-definitions-and-what-exists-today">3. Level definitions and what exists today<a class="headerlink" href="#3-level-definitions-and-what-exists-today" title="Permanent link">&para;</a></h2>
-<table>
-<thead>
-<tr>
-<th>Level</th>
-<th>What runs</th>
-<th>Where</th>
-<th>Status</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><strong>L0 — unit</strong></td>
-<td>Each component alone (fake collaborators)</td>
-<td>existing suites: <code>control_socket_test.go</code>, <code>socket_vitals_test.go</code>, <code>sidecar_mode_test.go</code>, <code>agentd_sidecar_pod_test.go</code>, …</td>
-<td>✅ green (CI)</td>
-</tr>
-<tr>
-<td><strong>L0.5 — regression pins</strong></td>
-<td>Deterministic tests for every gap found in #980's cycles</td>
-<td><code>us2_regression_gaps_test.go</code> (NEW)</td>
-<td>✅ green (this PR)</td>
-</tr>
-<tr>
-<td><strong>L1 — in-pod integration</strong></td>
-<td>C1 supervisor + real child + real socket server + C2's real consumers (<code>buildSidecarDeps</code>) in one process tree</td>
-<td><code>sidecar_integration_test.go</code></td>
-<td>✅ green (CI)</td>
-</tr>
-<tr>
-<td><strong>L1.5 — supervisor subprocess</strong></td>
-<td>The REAL <code>supervise-opencode</code> subcommand as a real process (PID semantics, signals, subreaper, exit code) driven by the real client over real TCP</td>
-<td><code>supervisor_subprocess_test.go</code> (NEW)</td>
-<td>✅ green (CI)</td>
-</tr>
-<tr>
-<td><strong>L2 — pod-spec admission</strong></td>
-<td><code>buildPod</code> output against a real API server (KEP-753 restartPolicy admission, SecurityContext, Secret-key resolution)</td>
-<td><code>agentd_sidecar_envtest_test.go</code> (<code>-tags envtest</code>)</td>
-<td>✅ green (envtest workflow)</td>
-</tr>
-<tr>
-<td><strong>L3 — kind cluster</strong></td>
-<td>Real kubelet: native-sidecar ordering, probes, container restarts, termination</td>
-<td><code>scripts/us2-kind-integration.sh</code> + <code>.github/workflows/us2-kind-integration.yml</code></td>
-<td>✅ <strong>K1–K8 ALL GREEN</strong> (run 32435547256; found real bug → #999)</td>
-</tr>
-<tr>
-<td><strong>L4 — TEST-cluster canary</strong></td>
-<td>Full workspace SLOs under the chart gate</td>
-<td>US-5 (V-matrix + D6.1 rollback exercise)</td>
-<td>⏳ blocked on US-3/US-4</td>
-</tr>
-</tbody>
-</table>
-<h3 id="l05-the-regression-pins-one-per-gap-all-deterministic">L0.5 — the regression pins (one per gap; all deterministic)<a class="headerlink" href="#l05-the-regression-pins-one-per-gap-all-deterministic" title="Permanent link">&para;</a></h3>
-<table>
-<thead>
-<tr>
-<th>Gap (found in #980 cycles)</th>
-<th>Test</th>
-<th>Pin</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>Adapter wrapper ignored injected base factory → CI 5-min hang (only machines WITHOUT <code>opencode</code> on PATH fail)</td>
-<td><code>TestManagedProcAdapter_WrapperUsesInjectedBaseFactory</code></td>
-<td>wrapper's cmd.Path == injected base path, env == handed env</td>
-</tr>
-<tr>
-<td>Nil-factory fallback breakage → reloads stop applying env</td>
-<td><code>TestManagedProcAdapter_NilBaseFactoryFallsBackToDefault</code></td>
-<td>resolves to production argv</td>
-</tr>
-<tr>
-<td>Supervisor health probe would 401 forever against bearer-gated readyz (D1 token boundary)</td>
-<td><code>TestManagedProcess_SkipHealthProbeSuppressesPostRestartProbe</code> (+positive control)</td>
-<td>zero probe hits with flag set; ≥1 without</td>
-</tr>
-<tr>
-<td>Supervisor flags not set</td>
-<td><code>TestNewSupervisorProcess_SupervisorModeFlags</code></td>
-<td>skipHealthProbe ∧ no session hook</td>
-</tr>
-<tr>
-<td>Cgroup reader existed but was never wired (lint-catch)</td>
-<td><code>TestNewSupervisorControlServer_WiresLiveMetricsSource</code></td>
-<td>non-nil source, readable values</td>
-</tr>
-<tr>
-<td>Reload-path write modes unpinned (3 × 0640 sites)</td>
-<td><code>TestReloadWritePaths_GroupReadable</code></td>
-<td>each writer leaves 0640</td>
-</tr>
-<tr>
-<td>Live-pod env masks CI-only breakage</td>
-<td><code>TestAgentdSidecar_EntrypointBranchExecLevel</code> (in #982; sources repo <code>entrypoint-common.sh</code>, blanks <code>AGENTD_IMAGE_VOLUME</code>)</td>
-<td>CI-parity by construction</td>
-</tr>
-<tr>
-<td>0640 constant drift</td>
-<td><code>TestG20_LLMProvider_Mode0600</code> (updated in #980) + <code>cross_uid_modes_test.go</code></td>
-<td>constants + real writes</td>
-</tr>
-</tbody>
-</table>
-<h3 id="l1-in-pod-integration-sidecar_integration_testgo">L1 — in-pod integration (<code>sidecar_integration_test.go</code>)<a class="headerlink" href="#l1-in-pod-integration-sidecar_integration_testgo" title="Permanent link">&para;</a></h3>
-<p>Components integrated: <strong>C1 (real managedProcess + adapter + real socket server)</strong> ⇄ <strong>C2's real consumers from <code>buildSidecarDeps</code></strong> ⇄ <strong>C4 (real child process: fork/exec, real signals, real port binding)</strong>. Only fakes: the opencode <em>binary</em> (test re-exec) and the metrics <em>source</em> (static snapshot — live cgroup values drift between reads).</p>
-<table>
-<thead>
-<tr>
-<th>Test</th>
-<th>Seam</th>
-<th>Validates</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>..._StatusAndMetrics</code></td>
-<td>S1+S4</td>
-<td>sidecar observes the real child (pid/state) through the socket; cgroup numbers cross verbatim; the pressure seam reads the same values via its own client</td>
-</tr>
-<tr>
-<td><code>..._SidecarWatchdogRestart_ThroughSocket</code></td>
-<td>S2</td>
-<td>sidecar's restart verb → socket → adapter → real SIGTERM → a NEW serving child; socket reports the new generation</td>
-</tr>
-<tr>
-<td><code>..._SpawnEnvHandoff_CrossesToRealChild</code></td>
-<td>S3</td>
-<td>env pushed over the socket lands in the NEXT real spawn's <code>/proc/&lt;pid&gt;/environ</code>, wholesale (no parent-env leak)</td>
-</tr>
-<tr>
-<td><code>..._Vitals_AgainstRealChildAndSocket</code></td>
-<td>S5</td>
-<td>live serving child ⇒ never lethal; refused-dial-on-young-child (real unbound port + young <code>last_restart_at</code> via real server) ⇒ RESPAWN, never HUNG</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Pass criteria:</strong> all four green, <code>-race</code> clean, on runners WITHOUT <code>opencode</code> installed (CI guarantees this; the L0.5 pins make local/CI divergence impossible going forward).</p>
-<h3 id="l2-pod-spec-admission-agentd_sidecar_envtest_testgo-tags-envtest">L2 — pod-spec admission (<code>agentd_sidecar_envtest_test.go</code>, <code>-tags envtest</code>)<a class="headerlink" href="#l2-pod-spec-admission-agentd_sidecar_envtest_testgo-tags-envtest" title="Permanent link">&para;</a></h3>
-<p>Components integrated: <strong>C5 (real <code>buildPod</code>)</strong> ⇄ <strong>real Kubernetes API server</strong> (validation + defaulting + Secret storage).</p>
-<table>
-<thead>
-<tr>
-<th>Test</th>
-<th>Validates</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td><code>..._PodSpecAdmitted</code></td>
-<td>the sidecar-mode pod is ADMITTED (native-sidecar <code>restartPolicy</code> on an init container per KEP-753, SecurityContext, probes); uid 2000/gid 1000, startup probe = HTTP <code>:4098/v1/healthz</code> (#857 gate), ordering credential-setup → agentd-last all survive the round-trip</td>
-</tr>
-<tr>
-<td><code>..._DisabledPodUnchanged</code></td>
-<td>gate OFF ⇒ admitted pod has no sidecar, one container (admission-level regression pin)</td>
-</tr>
-<tr>
-<td><code>..._SecretBackedEnv</code></td>
-<td>the credential env's <code>secretKeyRef</code>s resolve against a REAL created Secret (password + admin-token keys exist) — the exact kubelet start-time failure class</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Pass criteria:</strong> all three green in the envtest workflow (CI) — <code>go test ./controller/internal/workspace/ -tags envtest -run TestEnvtestAgentdSidecar</code> with <code>KUBEBUILDER_ASSETS</code>.</p>
-<h2 id="4-l3-kind-cluster-executable-scriptsus2-kind-integrationsh">4. L3 — kind cluster (executable: <code>scripts/us2-kind-integration.sh</code>)<a class="headerlink" href="#4-l3-kind-cluster-executable-scriptsus2-kind-integrationsh" title="Permanent link">&para;</a></h2>
-<p><strong>What this level uniquely proves:</strong> kubelet-side behavior — native-sidecar START ORDERING (S6), probe-driven restarts of ONE container not the pod, cross-uid file reads under a real container runtime, and the termination path.</p>
-<h3 id="running-it">Running it<a class="headerlink" href="#running-it" title="Permanent link">&para;</a></h3>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>scripts/us2-kind-integration.sh<span class="w"> </span><span class="o">[</span>--keep<span class="o">]</span><span class="w">   </span><span class="c1"># --keep: leave cluster + registry up</span>
-</span></code></pre></div>
-<p>CI runs the same script via <code>.github/workflows/us2-kind-integration.yml</code> (workflow_dispatch + weekly Mondays 05:00 UTC; deliberately NOT PR-gating — L0–L2 remain the per-PR gates). Exit codes: <code>0</code> all PASS · <code>1</code> setup failure · <code>2</code> one or more checks FAILED (summary printed). The script is self-contained: throwaway local registry (the agentd sidecar REQUIRES a digest-pinned reference and digest pulls must resolve — the canonical kind <code>certs.d</code> registry wiring), controller-lean chart install (api/mcp/webhooks off — the reconciler needs none of those to build pods), pinned node image matching the chart's 1.35 floor.</p>
-<blockquote>
-<p><strong>Execution status:</strong> K1–K8 all green on main (run 32435547256). The
-bring-up iterations are themselves part of the record: L3 found a real
-product bug (#999 — sidecar readiness probe missing the bearer token →
-pods never Ready) plus five harness issues (digest splice, binary-sha
-pins, scratch-image docker create, cert-manager requirement,
-webhook-endpoint race) fixed in #989–#1009, each with the run ID in its
-PR description. Results recorded on #978.</p>
-</blockquote>
-<h3 id="checks-map-to-v-matrix-rows-full-matrix-is-us-5">Checks (map to V-matrix rows; full matrix is US-5)<a class="headerlink" href="#checks-map-to-v-matrix-rows-full-matrix-is-us-5" title="Permanent link">&para;</a></h3>
-<table>
-<thead>
-<tr>
-<th>ID</th>
-<th>Check</th>
-<th>PASS</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>K1</td>
-<td>Sidecar ordering (step-1 form, superseding the credential-setup row): <code>platform-init</code> finishedAt &lt; sidecar startedAt &lt; main startedAt (from pod status timestamps)</td>
-<td>ordering holds</td>
-</tr>
-<tr>
-<td>K2</td>
-<td>#857 stamp-before-read: <code>agent-config.json</code> carries the <code>llmsafespaces</code> MCP entry at first boot</td>
-<td>MCP entry present</td>
-</tr>
-<tr>
-<td>K3</td>
-<td>Filesystem bridge + US-4b mount topology: <code>agent-config.json</code> 0640 on the RO <code>/agentd-config</code> mount; <code>admin-prompt.md</code> ABSENT from the workspace container (sidecar-only volume); <code>/agentd-secrets</code> not mounted; <code>rt/</code> 0770; password 0600; secrets-env {0640, absent} (cross-uid profile)</td>
-<td>modes + mount-topology claims (V2/V3)</td>
-</tr>
-<tr>
-<td>K4</td>
-<td>Socket (S1) from inside the pod: <code>hello</code> over <code>127.0.0.1:4099</code> via <code>/dev/tcp</code></td>
-<td>A.1 response shape</td>
-</tr>
-<tr>
-<td>K5</td>
-<td>Child crash (SIGKILL the opencode pid from the workspace container) → supervisor respawns a fresh pid, crash marker written</td>
-<td>new pid + <code>"reason":"crash"</code></td>
-</tr>
-<tr>
-<td>K6</td>
-<td><code>crictl stop</code> the SIDECAR → sidecar restartCount +1, main untouched, opencode still serving :4096</td>
-<td>isolation holds</td>
-</tr>
-<tr>
-<td>K7</td>
-<td><code>crictl stop</code> the WORKSPACE container → main restartCount +1, sidecar unchanged, pod returns Ready</td>
-<td>isolation holds</td>
-</tr>
-<tr>
-<td>K8</td>
-<td>Pod delete completes within the 5s grace + API overhead</td>
-<td>≤ 30s wall</td>
-</tr>
-<tr>
-<td>K9</td>
-<td>Step-1 migration: platform-init runs <code>[binary, "init-fs"]</code> from the pinned agentd image (no shell), legacy bash inits absent, symlink farm on the PVC (<code>.ssh→rt/ssh</code>, <code>auth.json→rt/auth.json</code>)</td>
-<td>subcommand form + farm live</td>
-</tr>
-<tr>
-<td>K10</td>
-<td>Step-1 migration (force-upgrade path): planted legacy state on the PVC (real <code>.secrets</code> dir, real-file auth.json) → pod delete → recreated pod Ready with farm links replacing the planted paths</td>
-<td>replacement + Ready</td>
-</tr>
-<tr>
-<td>K11</td>
-<td>Step-1 migration (restart guard): after K6's sidecar restart, current sidecar instance logs zero <code>bootstrap:</code> lines while the previous instance shows the first-boot fetch attempt (API off in this topology)</td>
-<td>guard skips refetch</td>
-</tr>
-<tr>
-<td>K12</td>
-<td>Step-2 migration: main container <code>Command</code> = overlay supervisor (<code>supervise-opencode</code>), baked entrypoint bypassed; relocated env present (OPENCODE_CONFIG on the agentd-config mount, XDG_DATA_HOME, event system, OPENCODE_SERVER_PASSWORD via secretKeyRef); #863 verify moved into the supervisor (self-hash /proc/self/exe vs pod-spec pins, exit 81 contract preserved)</td>
-<td>bypass + env + self-verify</td>
-</tr>
-<tr>
-<td>K13</td>
-<td>Incident class (2026-08-25), regression form: a DEGRADED runtime base (baked agentd + entrypoints deleted from the freshly built image) boots a second workspace Ready in sidecar mode — platform code is provably independent of the runtime image</td>
-<td>Ready on degraded base</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Status note:</strong> K1–K8 ran GREEN pre-migration (run 32435547256; found → #999). The step-&frac12; revisions (K1 re-pinned, K3 extension, K9–K13) are new and await their first execution — the sidecar-flip runbook lists that green run as a flip precondition.</p>
-<p><strong>Record results</strong> as a comment on #978 (template: ID / PASS-FAIL / evidence command output). K6/K7 degrade to SKIP when <code>crictl</code> is unavailable on the node.</p>
-<h3 id="l15-supervisor-subprocess-supervisor_subprocess_testgo-new">L1.5 — supervisor subprocess (<code>supervisor_subprocess_test.go</code>, new)<a class="headerlink" href="#l15-supervisor-subprocess-supervisor_subprocess_testgo-new" title="Permanent link">&para;</a></h3>
-<p>Between L1 and L2: the REAL <code>supervise-opencode</code> subcommand as a REAL process — process start, env parsing, listener bootstrap, signal handling (SIGTERM → exit 0, child reaped, no orphans), subreaper — driven over real TCP by the real <code>controlClient</code>. Socket address via the <code>LLMSAFESPACES_CONTROL_SOCKET_ADDR</code> test seam (production keeps the fixed <code>127.0.0.1:4099</code>; the override follows the same pattern as <code>LLMSAFESPACES_AGENT_CONFIG_PATH</code>). Four tests: full Appendix-A lifecycle (hello/status/metrics/spawn_env landing in the next real child's environ, wholesale replacement, pid swap), child-crash respawn (socket stays up through the crash window, crash counter increments), clean shutdown + no orphaned child, and A.3 malformed-input error shapes against the real process. The only fake is the <code>opencode</code> binary (single-process <code>exec sleep</code> stub — a background-sleep variant once held the test's stdout pipe open past exit and failed <code>go test</code> with "WaitDelay expired").</p>
-<h2 id="5-what-each-level-cannot-catch-why-the-next-one-exists">5. What each level cannot catch (why the next one exists)<a class="headerlink" href="#5-what-each-level-cannot-catch-why-the-next-one-exists" title="Permanent link">&para;</a></h2>
-<ul>
-<li><strong>L0/L0.5</strong> can't catch: two correct halves wired wrong (wrong addr, wrong port, wrong type at the seam).</li>
-<li><strong>L1/L1.5</strong> can't catch: pod-spec rejection by real admission (no kubelet/API server), kubelet start ordering, container-level restart isolation.</li>
-<li><strong>L2</strong> can't catch: anything kubelet does at runtime (probe execution, native-sidecar gating, signal delivery).</li>
-<li><strong>L3</strong> can't catch: SLO/regression at fleet scale, gVisor (runsc) divergence, mixed-generation rollback convergence — that is L4/US-5 (V-matrix + D6.1 exercise on→off→on).</li>
-</ul>
-<h2 id="6-gated-follow-ups-tracked-not-forgotten">6. Gated follow-ups (tracked, not forgotten)<a class="headerlink" href="#6-gated-follow-ups-tracked-not-forgotten" title="Permanent link">&para;</a></h2>
+<p><strong>Flip:</strong> set <code>controller.agentdSidecar.enabled: true</code> in the release values. New and recreated pods get the sidecar spec; existing running pods keep their old spec until restarted (D6.1 convergence).</p>
+<p><strong>Rolling upgrade (canary → fleet):</strong></p>
 <ol>
-<li><strong>US-3</strong>: extend <code>..._SecretBackedEnv</code> to the <code>agentdPassword</code> key; add V4 (401 with workspace password on control-plane endpoints).</li>
-<li><strong>US-4</strong>: <del><code>spawn_env</code> producer end-to-end + mount relocations</del> — DONE: US-4a (#1015) drove the real reload handler (<code>TestReloadHandler_SidecarEndToEnd</code>); US-4b relocated the stores by consumer (K2/K3 updated for <code>/agentd-config</code> + the sidecar-only <code>agentd-secrets</code> volume; cross-uid <code>rt/*</code> modes pinned by <code>TestReloadHandler_SidecarEndToEnd_CrossUIDModes</code> + <code>pkg/agentd/secrets</code> cross-uid suite).</li>
-<li><strong>US-5</strong>: L4 canary — full V-matrix (V1–V9) on TEST, D6.1 rollback EXERCISE (on→off→on with mixed-generation pods healthy at each step), gVisor leg per V9.</li>
-<li><strong>L3 in CI</strong>: already wired (workflow_dispatch + weekly); promote to per-PR only if the suite proves stable and fast enough — decision point after US-5.</li>
+<li><strong>Canary one Active workspace:</strong> <code>kubectl -n llmsafespaces delete pod &lt;pod&gt;</code> (NORMAL delete only — SIGTERM; never <code>--grace-period=0</code>, agentd's session-aware shutdown + SQLite WAL need the grace window). Verify:</li>
+<li>new pod spec: <code>platform-init</code> first init, <code>agentd</code> last init with <code>restartPolicy: Always</code>, main <code>command[0]=/agentd/usr/local/bin/workspace-agentd</code>;</li>
+<li><code>BootReady=True</code> condition on the Workspace;</li>
+<li>sidecar Ready, opencode session smoke (chat round-trip);</li>
+<li>env-secrets/SSH key still land (cross-uid 0640 profile — K3's <code>secrets-env</code> mode).</li>
+<li><strong>Batch:</strong> delete pods of Active workspaces in batches (≤25% per wave), same verification per wave. Watch <code>llmsafespaces_workspace_platform_boot_failures_total</code> — any non-zero value STOPS the rollout (page; it is a platform regression, not load).</li>
+<li><strong>Suspended workspaces:</strong> do nothing. They regenerate the pod spec at resume — free upgrades, no action, no risk window.</li>
+<li><strong>Accepting force-upgrade semantics:</strong> an in-flight session on a deleted pod is interrupted (~22s resume cost); PVCs retain all state; opencode.db replays via WAL.</li>
 </ol>
+<p><strong>Rollback:</strong> flip the value back off. Per D6.1: recreated pods converge to the legacy single-container spec; Secrets carry extra keys that legacy readers ignore; file relocations re-converge via reset()+re-materialize. The legacy bash path and baked binary remain in the base image until migration step 5 (post-soak deletion) — that is exactly why they are retained.</p>
+<p><strong>Step 5 (separate, later):</strong> after ≥1 soak cycle with zero platform-boot failures, delete the baked agentd + entrypoints + legacy bash init path from <code>runtimes/base/Dockerfile</code> and <code>pod_builder.go</code> (the <code>overlayOn=false</code> branch). Keep the prior base tag pullable as the rollback artifact. The <code>MinBaseVersion</code> floor then also ratchets to the release that makes baked-agentd absence universal.</p>
 
 
 
@@ -2460,7 +1990,7 @@ PR description. Results recorded on #978.</p>
     <span class="md-icon" title="Created">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14.47 15.08 11 13V7h1.5v5.25l3.08 1.83c-.41.28-.79.62-1.11 1m-1.39 4.84c-.36.05-.71.08-1.08.08-4.42 0-8-3.58-8-8s3.58-8 8-8 8 3.58 8 8c0 .37-.03.72-.08 1.08.69.1 1.33.32 1.92.64.1-.56.16-1.13.16-1.72 0-5.5-4.5-10-10-10S2 6.5 2 12s4.47 10 10 10c.59 0 1.16-.06 1.72-.16-.32-.59-.54-1.23-.64-1.92M18 15v3h-3v2h3v3h2v-3h3v-2h-3v-3z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 20, 2026 16:56:11 UTC"><span class="timeago" datetime="2026-08-20T16:56:11+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 20, 2026 16:56:11 UTC">2026-08-20</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 26, 2026 05:20:05 UTC"><span class="timeago" datetime="2026-08-26T05:20:05+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 26, 2026 05:20:05 UTC">2026-08-26</span>
   </span>
 
     
