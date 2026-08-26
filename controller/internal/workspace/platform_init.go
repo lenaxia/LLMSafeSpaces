@@ -43,6 +43,9 @@ func (r *WorkspaceReconciler) buildPlatformInit(relayOn bool) corev1.Container {
 	uid1000 := int64(1000)
 
 	mounts := []corev1.VolumeMount{
+		// The overlay binary itself (image volume; Command references
+		// agentdMountPath — kind L3 2026-08-26 caught its absence).
+		{Name: "agentd", MountPath: agentdMountPath, ReadOnly: true},
 		// PVC ROOT (not subPaths — this container creates them).
 		{Name: "workspace", MountPath: "/pvc"},
 		{Name: "sandbox-cfg", MountPath: "/sandbox-cfg"},
@@ -100,6 +103,7 @@ func (r *WorkspaceReconciler) buildPlatformBootstrap(workspace *v1.Workspace) co
 			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 		},
 		VolumeMounts: []corev1.VolumeMount{
+			{Name: "agentd", MountPath: agentdMountPath, ReadOnly: true},
 			{Name: "sandbox-cfg", MountPath: "/sandbox-cfg"},
 			{Name: "sandbox-runtime", MountPath: "/sandbox-runtime"},
 			{Name: "bootstrap-token", MountPath: "/var/run/bootstrap", ReadOnly: true},
@@ -138,6 +142,7 @@ func (r *WorkspaceReconciler) buildPlatformMaterialize(relayBaseURL string) core
 			Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 		},
 		VolumeMounts: []corev1.VolumeMount{
+			{Name: "agentd", MountPath: agentdMountPath, ReadOnly: true},
 			{Name: "sandbox-cfg", MountPath: "/sandbox-cfg"},
 			{Name: "sandbox-runtime", MountPath: "/sandbox-runtime"},
 			{Name: "workspace", MountPath: "/workspace", SubPath: "workspace"},

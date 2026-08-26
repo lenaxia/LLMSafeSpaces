@@ -37,6 +37,7 @@ package workspace
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -94,6 +95,48 @@ func TestPlatformInit_OverlayMode_ReplacesBashInits(t *testing.T) {
 	// Ordering: platform-init is the FIRST init container (it creates
 	// the subPath roots every later container mounts).
 	require.Equal(t, "platform-init", pod.Spec.InitContainers[0].Name)
+}
+
+// TestPlatformInit_AgentdVolumeMountedEverywhere: every container whose
+// Command references the overlay binary path must mount the `agentd`
+// image volume — wireAgentdOverlay wires main+sidecar only, and the
+// platform init containers were missed (kind L3 run 06:35 UTC 2026-08-26:
+// platform-init CrashLoopBackOff, exit 128, "stat /agentd/usr/local/bin/
+// workspace-agentd: no such file or directory"). Found at L3 because no
+// lower layer validates mount-vs-command consistency.
+func TestPlatformInit_AgentdVolumeMountedEverywhere(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		sidecar bool
+	}{
+		{"legacy overlay", false},
+		{"sidecar mode", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := newWorkspaceForSecurity(t)
+			r := reconcilerWithAgentd(t)
+			if tc.sidecar {
+				r.AgentdSidecarEnabled = true
+			}
+			pod, err := r.buildPod(context.Background(), ws)
+			require.NoError(t, err)
+
+			for _, c := range pod.Spec.InitContainers {
+				if len(c.Command) == 0 || !strings.HasPrefix(c.Command[0], agentdMountPath) {
+					continue
+				}
+				require.NotNil(t, sidecarVolumeMount(&c, "agentd"),
+					"%s runs the overlay binary but does not mount the agentd volume", c.Name)
+			}
+			for _, c := range pod.Spec.Containers {
+				if len(c.Command) == 0 || !strings.HasPrefix(c.Command[0], agentdMountPath) {
+					continue
+				}
+				require.NotNil(t, sidecarVolumeMount(&c, "agentd"),
+					"%s runs the overlay binary but does not mount the agentd volume", c.Name)
+			}
+		})
+	}
 }
 
 // TestPlatformInit_OverlayMode_FreeModelsMountedWithRelay: the catalog
