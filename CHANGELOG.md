@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-08-26
+
+### Added
+
+- **Sidecar migration steps 1–2: platform boot leaves the runtime image
+  (#1021, design 0051 D7)**: closes the 2026-08-25 incident class
+  structurally. `workspace-agentd init-fs` (uid 1000, digest-pinned
+  artifact) absorbs the bash init containers — PVC subPath roots, the
+  US-35.7 symlink farm hardened against pre-planted symlinks (lstat
+  semantics: the link inode is replaced, never followed), G21 password
+  0600, admin-token 0400, free-models copy. In sidecar mode
+  bootstrap+materialize run inside the sidecar's boot phase (the #857
+  stamp-before-read guarantee rides the startup probe) with a restart
+  guard (no API refetch on sidecar restart; materialize is idempotent)
+  and fail-fast propagation. In legacy overlay mode they run as
+  `platform-bootstrap`/`platform-materialize` init containers. No shell
+  executes from the runtime image in overlay mode.
+- **Supervisor Command bypass + self-verify (#1021)**: sidecar-mode main
+  containers run the overlay supervisor directly (baked entrypoint
+  bypassed); the #863 verify moved into the supervisor — self-hash of
+  /proc/self/exe against the pod-spec pins, exit 81 +
+  `expected=/got=` message contract preserved for
+  `detectAgentdVerificationFailure`. Entrypoint env relocated to the
+  pod spec (OPENCODE_CONFIG, XDG_DATA_HOME, event system,
+  OPENCODE_SERVER_PASSWORD via secretKeyRef — fail-closed).
+- **BootReady condition + platform-boot-failure visibility (#1021)**: a
+  crash-looping platform container surfaces as `BootReady=False`
+  (`ReasonPlatformBootFailed`) with a one-shot event and the
+  `llmsafespaces_workspace_platform_boot_failures_total` metric — the
+  eternal-reasonless-Creating incident presentation now self-reports.
+- **Image factory base compatibility floor (#1021)**:
+  `imagefactory.MinBaseVersion = 0.15.7` (the #871 release) enforced at
+  render time — the factory refuses to stage onto bases whose baked
+  agentd predates the secrets contract. Ships in the API release train;
+  bumps are reviewed release actions.
+- **L3 kind suite K1–K13 (#1021)**: the step-1/2 world is pinned at L3 —
+  platform-init ordering, subcommand form + symlink farm, resumed
+  legacy PVC (force-upgrade path), sidecar restart guard, supervisor
+  Command bypass, and K13: a DEGRADED runtime base (baked agentd +
+  entrypoints deleted) boots Ready — the incident-class regression.
+  e2e-nightly now runs sidecar-mode full stack. Flip runbook at
+  docs/runbooks/sidecar-flip.md (the `agentdSidecar.enabled` default
+  stays false until K1–K13 passes once on released artifacts).
+- **agentd US-4a spawn_env consumer end-to-end (#1015, design 0051)**:
+  parent+delta env merge for the supervised opencode child.
+- **agentd/controller US-4b mount relocations by consumer (#1020,
+  design 0051)**: agentd-config (RO in the workspace container) and
+  agentd-secrets (sidecar-only) emptyDir volumes; rt/* re-materialized
+  0640/0770 (cross-uid via shared gid 1000); admin-prompt and the
+  reload cache leave uid-1000 space entirely.
+
+### Fixed
+
+- **`materialize` subcommand ignored `LLMSAFESPACES_CROSS_UID_FILES`
+  (#1021)**: only the reload handler passed `CrossUID` to the
+  Materializer, so sidecar-mode boot-phase materialization wrote 0600
+  uid-2000 files that the uid-1000 supervisor/entrypoint silently
+  failed to read (EACCES degraded `buildEnvFrom` — env-secrets would
+  vanish with no signal). Found by writing the integration test before
+  the fix.
+
 ## [0.20.1] - 2026-08-21
 
 ### Fixed
