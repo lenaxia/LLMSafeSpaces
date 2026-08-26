@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.3] - 2026-08-26
+
+### Fixed
+
+- **init-fs left rt/ itself outside the 0770 managed set (#1028, kind
+  run 3)**: the sidecar's bootstrap writes rt/secrets.json directly in
+  rt/, and a 0750 parent (MkdirAll default under umask, +setgid from
+  the pod fsGroup) made the empty-batch write fail SILENTLY — the
+  restart guard never held (K11) and rt/ stat'ed 2750 (K3), while the
+  graceful degrade chain kept the pod booting (why K13 — the
+  degraded-base incident regression — still passed). rt/ now joins the
+  exact-0770 set; writeEmptySecrets reports failures (never-block-boot
+  preserved; pinned by the loudness regression test); the K10 script
+  check switches from pod-name diff (names are deterministic) to
+  creationTimestamp.
+
 ## [0.21.2] - 2026-08-26
 
 ### Fixed
