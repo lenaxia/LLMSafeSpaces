@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -463,4 +464,39 @@ func TestAllowedDirsPathDefault(t *testing.T) {
 	require.Equal(t, "/sandbox-runtime/allowed-dirs.json", agentd.AllowedDirsPath,
 		"AllowedDirsPath must live on the /sandbox-runtime tmpfs — same "+
 			"rationale as AdminPromptPath (see LLMSafeSpaces#483).")
+}
+
+// TestRunBootstrapCommand_EmptyBatchWriteFailure_IsLoud is the
+// regression pin for the silent-degrade triage cost of kind run 3
+// (PR #1028 review): when the batch write fails (unwritable parent —
+// the 0750 rt/ incident shape), the failure MUST reach stderr while
+// never-block-boot holds (exit 0, degraded materialize). Pre-fix, the
+// error was swallowed (`_ =`) and the sidecar restart guard failed
+// invisibly two layers away (K11).
+func TestRunBootstrapCommand_EmptyBatchWriteFailure_IsLoud(t *testing.T) {
+	dir := t.TempDir()
+	token := writeBootstrapToken(t, dir)
+
+	// Unwritable parent for --out: a FILE blocks the mkdir of its would-be parent dir.
+	blocker := filepath.Join(dir, "blocked")
+	require.NoError(t, os.WriteFile(blocker, []byte("in the way"), 0o644))
+	out := filepath.Join(blocker, "sub", "secrets.json")
+
+	// API down (closed port) so bootstrap takes the degrade path that
+	// calls writeEmptySecrets; the blocker makes that write fail.
+	closed := httptest.NewServer(http.NotFoundHandler())
+	closed.Close()
+
+	var stderr bytes.Buffer
+	code := runBootstrapCommand([]string{
+		"--workspace-id", "ws",
+		"--api-url", closed.URL,
+		"--token-file", token,
+		"--out", out,
+	}, io.Discard, &stderr)
+
+	require.Equal(t, 0, code, "never-block-boot holds on batch-write failure")
+	require.Contains(t, stderr.String(), "empty-batch write FAILED",
+		"the silent swallow is the bug this pins — a future revert to `_ =` must fail here")
+	require.Contains(t, stderr.String(), out)
 }

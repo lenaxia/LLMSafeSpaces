@@ -153,11 +153,18 @@ func runInitFSCommand(args []string, stderr io.Writer) int {
 	// EACCES (kind L3, 2026-08-26). Chmod AFTER MkdirAll: MkdirAll
 	// applies the process umask, and 0770 & ~umask(022) = 0750 loses
 	// the group-write bit the bridge depends on.
-	for _, d := range []string{filepath.Join(*runtimeDir, "rt", "ssh"), filepath.Join(*runtimeDir, "rt", "secrets")} {
+	//
+	// rt/ ITSELF is in the managed set (kind run 3, 12:16 UTC): the
+	// sidecar's bootstrap writes rt/secrets.json DIRECTLY in rt/, so a
+	// 0750 parent silently defeats the batch write (writeEmptySecrets
+	// ignores its error) — the restart guard then never holds (K11) and
+	// rt/ stat shows 2750 (K3; setgid from the pod fsGroup).
+	rtDir := filepath.Join(*runtimeDir, "rt")
+	for _, d := range []string{rtDir, filepath.Join(rtDir, "ssh"), filepath.Join(rtDir, "secrets")} {
 		if err := os.MkdirAll(d, 0o770); err != nil { //nolint:gosec // G301: 0770 is the US-4b cross-uid contract (see comment above)
 			return fail("tmpfs dir %s: %v", d, err)
 		}
-		if err := os.Chmod(d, 0o770); err != nil { //nolint:gosec // G302: directory (not file) — exact-mode see comment above
+		if err := os.Chmod(d, 0o770); err != nil { //nolint:gosec // G302: directory (not file) — exact-mode, see comment above
 			return fail("tmpfs dir %s mode: %v", d, err)
 		}
 	}
