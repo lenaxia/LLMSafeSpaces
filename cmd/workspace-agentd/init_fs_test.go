@@ -33,9 +33,12 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -275,6 +278,87 @@ func TestInitFS_MissingPasswordSource_Fails(t *testing.T) {
 
 	_, err := os.Stat(tr.cfg + "/password")
 	require.True(t, os.IsNotExist(err), "no partial password file")
+}
+
+// TestInitFS_RTDirs_CrossUIDContract pins the exact access bit the
+// 2026-08-26 kind incident was about: the uid-2000 sidecar's
+// materialize must CREATE/UNLINK inside rt/secrets via the pod's shared
+// gid 1000 — which requires the directory's GROUP-WRITE bit (0o020).
+// Mode equality alone is satisfiable by shapes that still EACCES the
+// sidecar (0700: no group bits; 0750 — what a bare MkdirAll(0770)
+// yields under umask 022: group bits without write). Red against both
+// the original bug and the umask variant; green only with the exact
+// chmod-after-mkdir 0770.
+func TestInitFS_RTDirs_CrossUIDContract(t *testing.T) {
+	bin := buildAgentdBinary(t)
+	tr := newInitFSTree(t)
+	tr.writePasswordSource(t, "pw\n", "")
+
+	exit, _ := runInitFSSubcommand(t, bin, tr.args()...)
+	require.Equal(t, 0, exit)
+
+	for _, d := range []string{filepath.Join(tr.rt, "rt", "ssh"), filepath.Join(tr.rt, "rt", "secrets")} {
+		info, err := os.Stat(d)
+		require.NoError(t, err)
+		require.NotZero(t, info.Mode().Perm()&0o020,
+			"%s must carry the group-WRITE bit (0o020) — without it the uid-2000 sidecar cannot create/unlink inside via shared gid 1000 (kind incident 2026-08-26)", d)
+	}
+}
+
+// TestInitFS_ThenSidecarWrite_CrossUID_RealReproduction is the full
+// incident reproduction when the test runs as root (local, kind nodes,
+// privileged CI): init-fs runs as uid 1000/gid 1000, then a probe as
+// uid 2000/gid 1000 (the sidecar's identity) opens
+// rt/secrets/secrets.json for write through the directory path. With
+// 0700/0750 the probe gets EACCES; with the 0770 contract it succeeds.
+// Unprivileged runs skip — TestInitFS_RTDirs_CrossUIDContract is the
+// always-on pin (PR #1025 review).
+func TestInitFS_ThenSidecarWrite_CrossUID_RealReproduction(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping subprocess test in -short mode")
+	}
+	if os.Geteuid() != 0 {
+		t.Skip("requires root to setuid subprocesses (the always-on contract pin covers unprivileged runs)")
+	}
+	if runtime.GOOS != "linux" {
+		t.Skip("linux credentials are linux-only")
+	}
+
+	bin := buildAgentdBinary(t)
+	tr := newInitFSTree(t)
+	tr.writePasswordSource(t, "pw\n", "")
+
+	// 1. init-fs AS uid 1000/gid 1000 (the platform-init identity).
+	cmd := exec.Command(bin, append([]string{"init-fs"}, tr.args()...)...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: 1000, Gid: 1000}}
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "init-fs as uid1000: %s", out)
+
+	// 2. Write probe AS uid 2000/gid 1000 (the sidecar identity), via
+	// this test binary re-invoked as the helper (standard TestMain-less
+	// re-exec pattern — no production surface added).
+	probe := filepath.Join(tr.rt, "rt", "secrets", "secrets.json")
+	pcmd := exec.Command(os.Args[0], "-test.run=TestHelperSidecarWriteProbe", "--", probe)
+	pcmd.Env = append(os.Environ(), "LSS_WRITE_PROBE=1")
+	pcmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: 2000, Gid: 1000}}
+	pout, perr := pcmd.CombinedOutput()
+	require.NoError(t, perr,
+		"uid-2000 sidecar write probe failed (this is the 2026-08-26 kind incident): %s", pout)
+}
+
+// TestHelperSidecarWriteProbe is never run directly: it is re-exec'd by
+// TestInitFS_ThenSidecarWrite_CrossUID_RealReproduction under the
+// sidecar's credentials and writes the probe file (exit non-zero on
+// EACCES — which is the incident's failure mode).
+func TestHelperSidecarWriteProbe(t *testing.T) {
+	if os.Getenv("LSS_WRITE_PROBE") != "1" {
+		t.Skip("helper: only runs via re-exec")
+	}
+	probe := os.Args[len(os.Args)-1]
+	if err := os.WriteFile(probe, []byte(`[]`), 0o640); err != nil {
+		fmt.Fprintf(os.Stderr, "probe: %v\n", err)
+		os.Exit(3)
+	}
 }
 
 // TestInitFS_OptionalSourcesAbsent: no admin-token, no free-models
