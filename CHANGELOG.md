@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.2] - 2026-08-26
+
+### Fixed
+
+- **init-fs created rt dirs 0700 instead of the US-4b 0770 cross-uid
+  contract (#1025, found by kind run 2)**: the uid-2000 sidecar's boot
+  phase failed materialize with EACCES — the shared-gid-1000 bridge
+  needs the group-write bit. Exact-mode semantics (chmod after
+  MkdirAll): a bare MkdirAll(0770) under umask 022 yields 0750, which
+  also EACCES. Pinned two ways: the always-on group-write-bit contract
+  test (red against 0700 AND the 0750 umask variant) and a root-gated
+  real cross-uid reproduction (init-fs as uid 1000/gid 1000, the
+  materialize write probed as uid 2000/gid 1000 via test re-exec).
+
 ## [0.21.1] - 2026-08-26
 
 ### Fixed
