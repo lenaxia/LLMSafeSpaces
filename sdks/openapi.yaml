@@ -4,7 +4,7 @@ info:
   description: |
     LLMSafeSpaces is a Kubernetes-first platform for running AI agents securely in isolated sandboxes.
     Every sandbox runs `opencode serve` as a persistent HTTP server with a PVC-backed persistent workspace.
-  version: "0.5.4"
+  version: "0.6.0"
   license:
     name: AGPL-3.0-or-later
     url: https://www.gnu.org/licenses/agpl-3.0.html
@@ -29,6 +29,12 @@ tags:
     description: Provider credentials, agent roles, and prompts
   - name: mcp
     description: External MCP server management (Epic 53)
+  - name: workflows
+    description: Workflow definitions, runs, and node runs (Epic 64)
+  - name: triggers
+    description: Workflow/routine triggers — cron and webhook sources (Epic 64)
+  - name: passkeys
+    description: WebAuthn passkey ceremonies and account credential management (Epic 59)
   - name: usage
     description: Usage metering and quota (feature-gated)
   - name: account
@@ -737,15 +743,43 @@ paths:
           schema:
             type: boolean
             default: false
+        - name: limit
+          in: query
+          description: |
+            Page size (messages returned). Values above 200 are capped to 200;
+            non-positive or non-numeric values are rejected with 400.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: before
+          in: query
+          description: |
+            Cursor for back-pagination. Pass the `X-Next-Cursor` value from the
+            previous page to fetch older messages. Omit to fetch the newest page.
+          schema:
+            type: string
       responses:
         "200":
-          description: Message history
+          description: |
+            Message history page (newest-first ordering within a page). The
+            `X-Next-Cursor` response header, when present, is the cursor for the
+            next (older) page; its absence means the beginning of the session
+            was reached.
+          headers:
+            X-Next-Cursor:
+              description: Cursor for the next (older) page. Absent when there are no older messages.
+              schema:
+                type: string
           content:
             application/json:
               schema:
                 type: array
                 items:
                   $ref: "#/components/schemas/Message"
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
@@ -2984,6 +3018,1230 @@ paths:
                   status:
                     type: string
                     example: ok
+  # --- Workflows (Epic 64) ---
+  /me/workflows:
+    get:
+      tags: [workflows]
+      summary: List workflows owned by the authenticated user
+      operationId: listWorkflows
+      responses:
+        "200":
+          description: Workflow list (unpaginated — all rows for the owner)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workflows]
+                properties:
+                  workflows:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Workflow"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [workflows]
+      summary: Create a workflow definition
+      operationId: createWorkflow
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkflowCreateRequest"
+      responses:
+        "201":
+          description: Workflow created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workflow"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          description: Duplicate name/slug or per-owner quota exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /me/workflows/{id}:
+    get:
+      tags: [workflows]
+      summary: Get a workflow definition
+      operationId: getWorkflow
+      parameters:
+        - $ref: "#/components/parameters/WorkflowId"
+      responses:
+        "200":
+          description: Workflow
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workflow"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [workflows]
+      summary: Update a workflow definition (partial — omitted fields keep existing values)
+      operationId: updateWorkflow
+      parameters:
+        - $ref: "#/components/parameters/WorkflowId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkflowUpdateRequest"
+      responses:
+        "200":
+          description: Updated workflow
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workflow"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      tags: [workflows]
+      summary: Delete a workflow definition
+      operationId: deleteWorkflow
+      parameters:
+        - $ref: "#/components/parameters/WorkflowId"
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /me/workflows/{id}/runs:
+    post:
+      tags: [workflows]
+      summary: Start a workflow run
+      description: |
+        Accepted asynchronously (202). Poll `GET /me/runs/{runId}` for status.
+        `workspaceId` is required unless the workflow defines `targetWorkspaceId`.
+        A concurrent run of the same workflow returns 409 with `Retry-After: 30`.
+      operationId: runWorkflow
+      parameters:
+        - $ref: "#/components/parameters/WorkflowId"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                input:
+                  type: object
+                  description: Must satisfy the workflow's inputSchema
+                workspaceId:
+                  type: string
+                  description: Target workspace (required when the workflow has no targetWorkspaceId)
+      responses:
+        "202":
+          description: Run accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowRun"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: A run of this workflow is already in flight
+          headers:
+            Retry-After:
+              schema:
+                type: integer
+                example: 30
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    get:
+      tags: [workflows]
+      summary: List runs of a workflow (most recent 20)
+      operationId: listWorkflowRuns
+      parameters:
+        - $ref: "#/components/parameters/WorkflowId"
+      responses:
+        "200":
+          description: Run list (fixed page size 20, newest first)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [runs]
+                properties:
+                  runs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WorkflowRun"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /me/runs/{runId}:
+    get:
+      tags: [workflows]
+      summary: Get workflow run status
+      operationId: getWorkflowRun
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: Run detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowRun"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /me/runs/{runId}/nodes:
+    get:
+      tags: [workflows]
+      summary: List node runs of a workflow run
+      operationId: getWorkflowRunNodes
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: Node runs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [nodes]
+                properties:
+                  nodes:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WorkflowNodeRun"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /me/runs/{runId}/cancel:
+    post:
+      tags: [workflows]
+      summary: Cancel a running workflow
+      operationId: cancelWorkflowRun
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: Canceled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  canceled:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Run already in a terminal state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  # --- Triggers (Epic 64) ---
+  /me/triggers:
+    get:
+      tags: [triggers]
+      summary: List triggers owned by the authenticated user
+      operationId: listTriggers
+      responses:
+        "200":
+          description: Trigger list (unpaginated)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [triggers]
+                properties:
+                  triggers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Trigger"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [triggers]
+      summary: Create a trigger
+      description: |
+        Routine mode: `workspaceId` + `prompt` (agent turn per fire).
+        Workflow mode: `workflowId` (DAG run per fire). Exactly one of the two.
+        `memoryMode: last_result` requires `captureMode: full`. Cron sources
+        require `sourceConfig.expr`. Webhook triggers return their URL; the
+        HMAC secret is obtained via rotate-secret.
+      operationId: createTrigger
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TriggerCreateRequest"
+      responses:
+        "201":
+          description: |
+            Trigger created. Webhook-source triggers respond with
+            `{"trigger": ..., "webhookUrl": ...}`; other sources return the
+            bare Trigger object.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Trigger"
+                  - type: object
+                    properties:
+                      trigger:
+                        $ref: "#/components/schemas/Trigger"
+                      webhookUrl:
+                        type: string
+                        example: /api/v1/hooks/0b6bd7e2-...
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /me/triggers/{id}:
+    get:
+      tags: [triggers]
+      summary: Get a trigger
+      operationId: getTrigger
+      parameters:
+        - $ref: "#/components/parameters/TriggerId"
+      responses:
+        "200":
+          description: Trigger
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Trigger"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [triggers]
+      summary: Update a trigger (partial — omitted fields keep existing values; sourceType immutable)
+      operationId: updateTrigger
+      parameters:
+        - $ref: "#/components/parameters/TriggerId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TriggerUpdateRequest"
+      responses:
+        "200":
+          description: Updated trigger
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Trigger"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [triggers]
+      summary: Delete a trigger
+      operationId: deleteTrigger
+      parameters:
+        - $ref: "#/components/parameters/TriggerId"
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /me/triggers/{id}/fires:
+    get:
+      tags: [triggers]
+      summary: List recent fires of a trigger (most recent 50)
+      operationId: listTriggerFires
+      parameters:
+        - $ref: "#/components/parameters/TriggerId"
+      responses:
+        "200":
+          description: Fire history (fixed page size 50, newest first)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [fires]
+                properties:
+                  fires:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TriggerFire"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /me/triggers/{id}/rotate-secret:
+    post:
+      tags: [triggers]
+      summary: Rotate a webhook trigger's HMAC secret
+      description: |
+        Generates a new secret and returns the plaintext exactly once
+        (`whsec_` + 64 hex chars). The previous secret stops validating
+        immediately. Webhook-source triggers only.
+      operationId: rotateTriggerSecret
+      parameters:
+        - $ref: "#/components/parameters/TriggerId"
+      responses:
+        "200":
+          description: New secret (display once — never retrievable again)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [webhookSecret, webhookUrl]
+                properties:
+                  webhookSecret:
+                    type: string
+                    example: whsec_a1b2c3...
+                  webhookUrl:
+                    type: string
+                    example: /api/v1/hooks/0b6bd7e2-...
+        "400":
+          description: Trigger is not a webhook trigger
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  # --- Org-scope workflows & triggers (Epic 64) ---
+  /orgs/{id}/workflows:
+    get:
+      tags: [workflows]
+      summary: List workflows owned by an organization (org admin)
+      operationId: listOrgWorkflows
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      responses:
+        "200":
+          description: Workflow list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [workflows]
+                properties:
+                  workflows:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Workflow"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [workflows]
+      summary: Create an organization workflow (org admin)
+      operationId: createOrgWorkflow
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkflowCreateRequest"
+      responses:
+        "201":
+          description: Workflow created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workflow"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /orgs/{id}/workflows/{workflowId}:
+    get:
+      tags: [workflows]
+      summary: Get an organization workflow (org admin)
+      operationId: getOrgWorkflow
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: workflowId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Workflow
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workflow"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [workflows]
+      summary: Update an organization workflow (org admin, partial)
+      operationId: updateOrgWorkflow
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: workflowId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkflowUpdateRequest"
+      responses:
+        "200":
+          description: Updated workflow
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Workflow"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      tags: [workflows]
+      summary: Delete an organization workflow (org admin)
+      operationId: deleteOrgWorkflow
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: workflowId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /orgs/{id}/workflows/{workflowId}/runs:
+    post:
+      tags: [workflows]
+      summary: Start an organization workflow run (org admin)
+      operationId: runOrgWorkflow
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: workflowId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                input:
+                  type: object
+                workspaceId:
+                  type: string
+      responses:
+        "202":
+          description: Run accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkflowRun"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /orgs/{id}/triggers:
+    get:
+      tags: [triggers]
+      summary: List triggers owned by an organization (org admin)
+      operationId: listOrgTriggers
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      responses:
+        "200":
+          description: Trigger list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [triggers]
+                properties:
+                  triggers:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Trigger"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [triggers]
+      summary: Create an organization trigger (org admin)
+      operationId: createOrgTrigger
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TriggerCreateRequest"
+      responses:
+        "201":
+          description: Trigger created (same shape variations as user scope)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/Trigger"
+                  - type: object
+                    properties:
+                      trigger:
+                        $ref: "#/components/schemas/Trigger"
+                      webhookUrl:
+                        type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /orgs/{id}/triggers/{triggerId}:
+    get:
+      tags: [triggers]
+      summary: Get an organization trigger (org admin)
+      operationId: getOrgTrigger
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: triggerId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Trigger
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Trigger"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [triggers]
+      summary: Update an organization trigger (org admin, partial)
+      operationId: updateOrgTrigger
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: triggerId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TriggerUpdateRequest"
+      responses:
+        "200":
+          description: Updated trigger
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Trigger"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [triggers]
+      summary: Delete an organization trigger (org admin)
+      operationId: deleteOrgTrigger
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: triggerId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  # --- Workspace workflow views (Epic 64) ---
+  /workspaces/{id}/runs/active:
+    get:
+      tags: [workflows]
+      summary: List non-terminal workflow runs targeting a workspace
+      operationId: listActiveWorkspaceRuns
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "200":
+          description: Active (queued/running) runs
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [runs]
+                properties:
+                  runs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/WorkflowRun"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/session-origins:
+    get:
+      tags: [workflows]
+      summary: List session origin mappings for a workspace
+      operationId: listSessionOrigins
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      responses:
+        "200":
+          description: Session origins
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [origins]
+                properties:
+                  origins:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SessionOrigin"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  # --- Webhook receiver (Epic 64, public — HMAC signature is the credential) ---
+  /hooks/{webhookId}:
+    post:
+      tags: [triggers]
+      summary: Webhook receiver for webhook-source triggers
+      security: []
+      description: |
+        Public endpoint authenticated by HMAC signature (the secret from
+        rotate-secret), not by JWT/API key. Send header
+        `X-Hub-Signature-256: sha256=<hex HMAC-SHA256 of the raw body>`;
+        optionally `X-Hub-Signature-Timestamp` (unix seconds, ±5 min skew
+        allowed). Body is arbitrary bytes (max 1 MiB). Dedup by configurable
+        header (default `X-Request-ID`) or body hash. IP allowlist and 10 rps
+        rate limit per webhook may apply.
+      operationId: receiveWebhook
+      parameters:
+        - name: webhookId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: X-Hub-Signature-256
+          in: header
+          required: true
+          schema:
+            type: string
+            example: sha256=85e078...
+        - name: X-Hub-Signature-Timestamp
+          in: header
+          required: false
+          schema:
+            type: string
+        - name: X-Request-ID
+          in: header
+          required: false
+          description: Dedup key in header idempotency mode (default mode)
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Arbitrary JSON payload forwarded to the trigger
+      responses:
+        "200":
+          description: Duplicate delivery (idempotency hit)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [duplicate]
+        "202":
+          description: Fired — workflow run started (`runId`) or routine scheduled (`fireId`)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [fired]
+                  runId:
+                    type: string
+                  fireId:
+                    type: string
+        "401":
+          description: Missing/invalid signature or timestamp skew exceeded
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Source IP not in allowlist
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: "Workflow already running (Retry-After: 30)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429":
+          description: "Rate limited (Retry-After: 30)"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  # --- Passkeys (Epic 59) ---
+  /auth/passkey/register/begin:
+    post:
+      tags: [passkeys]
+      summary: Begin passkey registration (signup)
+      security: []
+      description: |
+        First step of WebAuthn attestation for new-account signup. Returns the
+        creation options and an opaque session token to echo at /finish.
+        Rate limited to 10/min per IP (not documented per-route elsewhere).
+      operationId: passkeyRegisterBegin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+                name:
+                  type: string
+      responses:
+        "200":
+          description: Creation options + session token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasskeyBeginRegistration"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: Account already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /auth/passkey/register/finish:
+    post:
+      tags: [passkeys]
+      summary: Finish passkey registration (signup)
+      security: []
+      description: |
+        Completes attestation, creates the account, and returns a JWT plus
+        one-time recovery codes (10 codes, shown exactly once). Also sets the
+        session cookie.
+      operationId: passkeyRegisterFinish
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasskeyFinishRequest"
+      responses:
+        "200":
+          description: Account created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, recoveryCodes]
+                properties:
+                  token:
+                    type: string
+                  recoveryCodes:
+                    type: array
+                    items:
+                      type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /auth/passkey/login/begin:
+    post:
+      tags: [passkeys]
+      summary: Begin passkey login
+      security: []
+      operationId: passkeyLoginBegin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+                  format: email
+      responses:
+        "200":
+          description: Assertion options + session token
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [options, sessionToken]
+                properties:
+                  options:
+                    type: object
+                    description: Flat PublicKeyCredentialRequestOptionsJSON (challenge, rpId, allowCredentials, ...)
+                  sessionToken:
+                    type: string
+        "400":
+          description: Invalid request or no passkey registered for the account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /auth/passkey/login/finish:
+    post:
+      tags: [passkeys]
+      summary: Finish passkey login
+      security: []
+      description: Sets the session cookie and returns the JWT in the body. Rate limited to 10/min per IP.
+      operationId: passkeyLoginFinish
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasskeyLoginFinishRequest"
+      responses:
+        "200":
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, user]
+                properties:
+                  token:
+                    type: string
+                  user:
+                    $ref: "#/components/schemas/User"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Passkey login failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /auth/passkey/recover:
+    post:
+      tags: [passkeys]
+      summary: Recover access with a recovery code
+      security: []
+      description: |
+        Authenticates with email + one recovery code. Returns
+        `mustEnrollPasskey: true` — the caller must enroll a new passkey.
+        Rate limited to 5/min per IP.
+      operationId: passkeyRecover
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, code]
+              properties:
+                email:
+                  type: string
+                  format: email
+                code:
+                  type: string
+                  minLength: 8
+      responses:
+        "200":
+          description: Recovered
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [token, user, mustEnrollPasskey]
+                properties:
+                  token:
+                    type: string
+                  user:
+                    $ref: "#/components/schemas/User"
+                  mustEnrollPasskey:
+                    type: boolean
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Invalid recovery code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /account/passkeys:
+    get:
+      tags: [passkeys]
+      summary: List the authenticated user's passkeys
+      operationId: listPasskeys
+      responses:
+        "200":
+          description: Passkey list (public metadata only)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [passkeys]
+                properties:
+                  passkeys:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/PasskeyCredential"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /account/passkeys/{id}:
+    delete:
+      tags: [passkeys]
+      summary: Delete a passkey
+      description: Fails with 409 when attempting to delete the last remaining passkey.
+      operationId: deletePasskey
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted:
+                    type: boolean
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Cannot delete the last passkey
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /account/passkeys/recovery-codes/regenerate:
+    post:
+      tags: [passkeys]
+      summary: Regenerate recovery codes (invalidates all previous codes)
+      operationId: regenerateRecoveryCodes
+      responses:
+        "200":
+          description: New codes (shown exactly once)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [recoveryCodes]
+                properties:
+                  recoveryCodes:
+                    type: array
+                    items:
+                      type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /account/passkeys/enroll/begin:
+    post:
+      tags: [passkeys]
+      summary: Begin enrolling an additional passkey on the authenticated account
+      operationId: passkeyEnrollBegin
+      responses:
+        "200":
+          description: Creation options + session token
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PasskeyBeginRegistration"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /account/passkeys/enroll/finish:
+    post:
+      tags: [passkeys]
+      summary: Finish enrolling an additional passkey
+      operationId: passkeyEnrollFinish
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionToken, response]
+              properties:
+                sessionToken:
+                  type: string
+                name:
+                  type: string
+                response:
+                  type: object
+                  description: Browser PublicKeyCredential attestation response JSON
+      responses:
+        "200":
+          description: Enrolled
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enrolled:
+                    type: boolean
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Credential does not belong to this account
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
 components:
   parameters:
     WorkspaceId:
@@ -3005,6 +4263,34 @@ components:
       in: path
       required: true
       description: Secret ID
+      schema:
+        type: string
+    OrgId:
+      name: id
+      in: path
+      required: true
+      description: Organization ID
+      schema:
+        type: string
+    WorkflowId:
+      name: id
+      in: path
+      required: true
+      description: Workflow ID
+      schema:
+        type: string
+    RunId:
+      name: runId
+      in: path
+      required: true
+      description: Workflow run ID
+      schema:
+        type: string
+    TriggerId:
+      name: id
+      in: path
+      required: true
+      description: Trigger ID
       schema:
         type: string
   responses:
@@ -3072,12 +4358,18 @@ components:
           type: string
     AuthConfig:
       type: object
-      required: [registrationEnabled, oidcEnabled, instanceName, motd]
+      required: [registrationEnabled, oidcEnabled, passkeyEnabled, instanceName, motd]
       properties:
         registrationEnabled:
           type: boolean
         oidcEnabled:
           type: boolean
+        passkeyEnabled:
+          type: boolean
+          description: True when the passkey (WebAuthn) handler is wired (RPID configured)
+        passkeyDefaultSignup:
+          type: boolean
+          description: Present when the instance defaults signup to passkey registration
         ssoProviders:
           type: array
           items:
@@ -4242,3 +5534,445 @@ components:
               remaining:
                 type: integer
                 format: int64
+    # --- Workflows & triggers (Epic 64) ---
+    Workflow:
+      type: object
+      required: [id, ownerType, name, slug, specYaml, status, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        ownerType:
+          type: string
+          enum: [user, org]
+        ownerId:
+          type: string
+          description: Omitted for user scope and platform-owned rows
+        name:
+          type: string
+        slug:
+          type: string
+          pattern: "^[a-z0-9][a-z0-9-]{0,127}$"
+        description:
+          type: string
+        specYaml:
+          type: string
+          description: Workflow DAG spec (JSON document serialized as a string in v1)
+        inputSchema:
+          type: object
+        targetWorkspaceId:
+          type: string
+        onMissingWorkspace:
+          type: string
+          enum: [abort, create]
+        status:
+          type: string
+          enum: [draft, active, archived]
+        defaults:
+          type: object
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    WorkflowCreateRequest:
+      type: object
+      required: [name, specYaml]
+      properties:
+        name:
+          type: string
+          pattern: "^[a-zA-Z0-9][a-zA-Z0-9 _-]{0,127}$"
+        slug:
+          type: string
+        description:
+          type: string
+        specYaml:
+          type: string
+        inputSchema:
+          type: object
+        targetWorkspaceId:
+          type: string
+        onMissingWorkspace:
+          type: string
+          enum: [abort, create]
+        status:
+          type: string
+          enum: [draft, active, archived]
+        defaults:
+          type: object
+    WorkflowUpdateRequest:
+      type: object
+      description: Partial update — omitted fields keep their existing values. Updating specYaml re-snapshots the spec; in-flight runs stay pinned to their start-time snapshot.
+      properties:
+        name:
+          type: string
+        slug:
+          type: string
+        description:
+          type: string
+        specYaml:
+          type: string
+        inputSchema:
+          type: object
+        targetWorkspaceId:
+          type: string
+        onMissingWorkspace:
+          type: string
+          enum: [abort, create]
+        status:
+          type: string
+          enum: [draft, active, archived]
+        defaults:
+          type: object
+    WorkflowRun:
+      type: object
+      required: [id, workflowId, specSnapshot, status, workspaceId, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        workflowId:
+          type: string
+          format: uuid
+        specSnapshot:
+          type: object
+          description: Immutable DAG spec pinned at run start
+        input:
+          type: object
+        output:
+          type: object
+        status:
+          type: string
+          enum: [queued, running, succeeded, failed, canceled, timed_out]
+        errorCode:
+          type: string
+        error:
+          type: object
+        triggerId:
+          type: string
+        triggerFireId:
+          type: string
+        workspaceId:
+          type: string
+        startedAt:
+          type: string
+          format: date-time
+          nullable: true
+        finishedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    WorkflowNodeRun:
+      type: object
+      required: [id, workflowRunId, nodeId, nodeType, status, attempt, startedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        workflowRunId:
+          type: string
+          format: uuid
+        nodeId:
+          type: string
+          description: Matches the run's spec snapshot, not the current spec
+        nodeType:
+          type: string
+          enum: [script, agent, http, condition]
+        status:
+          type: string
+          enum: [pending, running, succeeded, failed, skipped]
+        attempt:
+          type: integer
+        input:
+          type: object
+        output:
+          type: object
+        branch:
+          type: string
+          description: Branch taken (condition nodes)
+        errorCode:
+          type: string
+        error:
+          type: object
+        startedAt:
+          type: string
+          format: date-time
+        finishedAt:
+          type: string
+          format: date-time
+          nullable: true
+    Trigger:
+      type: object
+      required: [id, ownerType, name, enabled, sourceType, sourceConfig, consecutiveFailures, autoDisableAfter, createdAt, updatedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        ownerType:
+          type: string
+          enum: [user, org]
+        ownerId:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        enabled:
+          type: boolean
+        sourceType:
+          type: string
+          enum: [cron, webhook]
+        sourceConfig:
+          type: object
+          description: "cron: {expr: string, tz?: string}; webhook: {}"
+        workspaceId:
+          type: string
+        workflowId:
+          type: string
+        prompt:
+          type: string
+        agent:
+          type: string
+        scriptPath:
+          type: string
+        scriptArgs:
+          type: array
+          items:
+            type: string
+        scriptEnv:
+          type: object
+        memoryMode:
+          type: string
+          enum: [none, last_result]
+        memoryMaxRuns:
+          type: integer
+        captureMode:
+          type: string
+          enum: [errors_only, full]
+        preserveSession:
+          type: string
+          enum: [never, always, on_failure]
+        consecutiveFailures:
+          type: integer
+        autoDisableAfter:
+          type: integer
+        lastFiredAt:
+          type: string
+          format: date-time
+          nullable: true
+        nextFireAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    TriggerCreateRequest:
+      type: object
+      required: [name, sourceType, sourceConfig]
+      description: Exactly one of workspaceId (routine mode) or workflowId (workflow mode) is required. memoryMode last_result requires captureMode full.
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        enabled:
+          type: boolean
+        sourceType:
+          type: string
+          enum: [cron, webhook]
+        sourceConfig:
+          type: object
+        workspaceId:
+          type: string
+        workflowId:
+          type: string
+        prompt:
+          type: string
+        agent:
+          type: string
+        scriptPath:
+          type: string
+        scriptArgs:
+          type: array
+          items:
+            type: string
+        scriptEnv:
+          type: object
+        memoryMode:
+          type: string
+          enum: [none, last_result]
+        memoryMaxRuns:
+          type: integer
+        captureMode:
+          type: string
+          enum: [errors_only, full]
+        preserveSession:
+          type: string
+          enum: [never, always, on_failure]
+        autoDisableAfter:
+          type: integer
+          minimum: 1
+        webhookAllowedIps:
+          type: array
+          items:
+            type: string
+          description: CIDR allowlist (webhook sources only)
+        webhookIdempotencyMode:
+          type: string
+          enum: [header, hash, disabled]
+        webhookIdempotencyHeader:
+          type: string
+    TriggerUpdateRequest:
+      type: object
+      description: Partial update — omitted fields keep their existing values. sourceType is immutable.
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        enabled:
+          type: boolean
+        sourceConfig:
+          type: object
+        workspaceId:
+          type: string
+        workflowId:
+          type: string
+        prompt:
+          type: string
+        agent:
+          type: string
+        scriptPath:
+          type: string
+        scriptArgs:
+          type: array
+          items:
+            type: string
+        scriptEnv:
+          type: object
+        memoryMode:
+          type: string
+          enum: [none, last_result]
+        memoryMaxRuns:
+          type: integer
+        captureMode:
+          type: string
+          enum: [errors_only, full]
+        preserveSession:
+          type: string
+          enum: [never, always, on_failure]
+        autoDisableAfter:
+          type: integer
+          minimum: 1
+    TriggerFire:
+      type: object
+      required: [id, triggerId, sourceType, actionType, status, firedAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        triggerId:
+          type: string
+          format: uuid
+        sourceType:
+          type: string
+        inputEnvelope:
+          type: object
+        actionType:
+          type: string
+          enum: [run_workflow, routine]
+        actionResult:
+          type: object
+        status:
+          type: string
+          enum: [fired, delivered, failed, validation_error, rate_limited, skipped, auto_disabled]
+        firedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+    SessionOrigin:
+      type: object
+      required: [sessionId, origin]
+      properties:
+        sessionId:
+          type: string
+        workspaceId:
+          type: string
+        origin:
+          type: string
+          enum: [manual, routine, workflow, api]
+        triggerId:
+          type: string
+        title:
+          type: string
+    # --- Passkeys (Epic 59) ---
+    PasskeyBeginRegistration:
+      type: object
+      required: [options, sessionToken]
+      properties:
+        options:
+          type: object
+          description: |
+            Flat WebAuthn PublicKeyCredentialCreationOptionsJSON — top-level
+            keys challenge (base64url), rp, user, pubKeyCredParams, etc. (no
+            publicKey wrapper). Forward verbatim to navigator.credentials.create().
+        sessionToken:
+          type: string
+          description: Opaque token to echo at the matching /finish call
+    PasskeyFinishRequest:
+      type: object
+      required: [sessionToken, email, response]
+      properties:
+        sessionToken:
+          type: string
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        response:
+          type: object
+          description: Browser PublicKeyCredential attestation response JSON
+    PasskeyLoginFinishRequest:
+      type: object
+      required: [sessionToken, email, response]
+      properties:
+        sessionToken:
+          type: string
+        email:
+          type: string
+          format: email
+        response:
+          type: object
+          description: Browser PublicKeyCredential assertion response JSON
+    PasskeyCredential:
+      type: object
+      required: [id, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Row ID (the delete-target), not the WebAuthn credential ID
+        name:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        lastUsedAt:
+          type: string
+          format: date-time
+          nullable: true
