@@ -130,10 +130,17 @@ func (s *Service) ListBases(ctx context.Context) ([]imagefactory.Base, error) {
 	defer func() { _ = rows.Close() }()
 	var out []imagefactory.Base
 	for rows.Next() {
+		// Scan-side NULL tolerance (incident 2026-08-26 19:45 UTC): the
+		// table has no NOT NULL constraints, and a NULL digest from any
+		// direct-SQL writer made every catalog read 500. Reader
+		// availability must not depend on writer discipline — NULLs read
+		// as zero values.
 		var b imagefactory.Base
-		if err := rows.Scan(&b.Name, &b.Version, &b.Image, &b.Tag, &b.Digest, &b.IsDefault); err != nil {
+		var digest sql.NullString
+		if err := rows.Scan(&b.Name, &b.Version, &b.Image, &b.Tag, &digest, &b.IsDefault); err != nil {
 			return nil, fmt.Errorf("list bases scan: %w", err)
 		}
+		b.Digest = digest.String
 		out = append(out, b)
 	}
 	return out, rows.Err()
@@ -141,10 +148,12 @@ func (s *Service) ListBases(ctx context.Context) ([]imagefactory.Base, error) {
 
 func (s *Service) GetBase(ctx context.Context, name, version string) (imagefactory.Base, error) {
 	var b imagefactory.Base
+	var digest sql.NullString
 	err := s.DB.QueryRowContext(ctx,
 		`SELECT name, version, image, tag, digest, is_default FROM image_factory_bases WHERE name = $1 AND version = $2`,
 		name, version,
-	).Scan(&b.Name, &b.Version, &b.Image, &b.Tag, &b.Digest, &b.IsDefault)
+	).Scan(&b.Name, &b.Version, &b.Image, &b.Tag, &digest, &b.IsDefault)
+	b.Digest = digest.String // NULL-tolerant, see ListBases
 	if errors.Is(err, sql.ErrNoRows) {
 		return imagefactory.Base{}, ErrNotFound
 	}
