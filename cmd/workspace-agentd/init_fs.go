@@ -147,9 +147,18 @@ func runInitFSCommand(args []string, stderr io.Writer) int {
 	}
 
 	// 2. Tmpfs credential dirs (reset() operates here every reload).
+	// 0770 exact (US-4b cross-uid contract): the uid-2000 sidecar's boot
+	// phase and reload reset() must traverse and re-materialize here via
+	// the pod's shared gid 1000 — 0700 produced sidecar materialize
+	// EACCES (kind L3, 2026-08-26). Chmod AFTER MkdirAll: MkdirAll
+	// applies the process umask, and 0770 & ~umask(022) = 0750 loses
+	// the group-write bit the bridge depends on.
 	for _, d := range []string{filepath.Join(*runtimeDir, "rt", "ssh"), filepath.Join(*runtimeDir, "rt", "secrets")} {
-		if err := os.MkdirAll(d, 0o700); err != nil {
+		if err := os.MkdirAll(d, 0o770); err != nil { //nolint:gosec // G301: 0770 is the US-4b cross-uid contract (see comment above)
 			return fail("tmpfs dir %s: %v", d, err)
+		}
+		if err := os.Chmod(d, 0o770); err != nil { //nolint:gosec // G302: directory (not file) — exact-mode see comment above
+			return fail("tmpfs dir %s mode: %v", d, err)
 		}
 	}
 

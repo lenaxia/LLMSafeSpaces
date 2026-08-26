@@ -136,12 +136,15 @@ func TestInitFS_HappyPath_FreshPVC(t *testing.T) {
 		assert.Equal(t, target, got)
 	}
 
-	// Tmpfs credential dirs, 0700.
+	// Tmpfs credential dirs, 0770 (US-4b cross-uid contract: the uid-2000
+	// sidecar's boot phase/reset traverses and re-materializes here via
+	// the pod's shared gid 1000 — kind L3 08:42 UTC 2026-08-26 caught
+	// 0700 producing sidecar materialize EACCES).
 	for _, d := range []string{filepath.Join(tr.rt, "rt", "ssh"), filepath.Join(tr.rt, "rt", "secrets")} {
 		info, err := os.Stat(d)
 		require.NoError(t, err)
 		require.True(t, info.IsDir())
-		assert.Equal(t, os.FileMode(0o700), info.Mode().Perm(), "%s mode", d)
+		assert.Equal(t, os.FileMode(0o770), info.Mode().Perm(), "%s mode", d)
 	}
 
 	// Password: exact bytes, 0600, no group/other bits.
