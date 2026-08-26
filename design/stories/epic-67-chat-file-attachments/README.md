@@ -129,6 +129,24 @@ Attach is one tap on mobile; selectors move from ChatPage header; drawer state i
 ### D13 — Dead `MessagePart.files` removed (types.ts:152)
 Two similar-but-different fields, one dead — zero-tech-debt rule.
 
+### D14 — Symlink/tmp squatting defense: `O_EXCL` create (stress-test addition)
+The in-pod threat is the agent itself (uid 1000 owns `/workspace`): a compromised agent can pre-create `uploads/<guessed>.tmp` — or a symlink at that path pointing outside the PVC — before an upload lands. Mitigation: agentd creates the `.tmp` with `O_CREATE|O_EXCL` (O_EXCL never follows an existing symlink) and retries with a fresh uuid on `EEXIST`. The API cannot guess uuids; the agent cannot race 128 bits.
+
+### D15 — Compose is idempotent: strip-then-append (stress-test addition)
+`ComposeAttachmentManifest` removes any pre-existing **trailing** v1 manifest block from the input text before appending the new one. Property: `compose(compose(t, f), f) == compose(t, f)` for all t, f. This kills the double-append class entirely (retry storms, client resubmission, a user pasting a copied block) rather than enumerating its sources. Duplicates within `files[]` and empty-string entries are rejected 400 (explicit over dedup-silently).
+
+### D16 — Gate order is contract: auth → access → phase → disk → cap (stress-test addition)
+Asserted by test (U1.2.16), not incidental. A `401` must never leak phase info; a disk-gated request must not reach agentd; a cap violation on a non-Active workspace reports phase, not size.
+
+### D17 — Send blocked while uploads in flight (frontend, stress-test addition)
+The composer disables send while any chip is mid-upload (uploading chips are visually distinct from attached chips). Rationale: sending without the settled path would reference a file that may 404 at the agent; sending after a failed upload is the user's explicit choice via chip retry/remove.
+
+### D18 — MCP base64 tolerates wrapped input (stress-test addition)
+Base64 with embedded newlines/whitespace (common from CLI-wrapped clients) is normalized before decode; strictly malformed input after normalization → tool error. Never a panic.
+
+### D19 — Orphan-on-late-crash is accepted behavior (stress-test addition)
+If agentd crashes between rename and response, the file exists but the client sees 5xx. The orphan is an ordinary workspace file (D2): no journal, no cleanup job. Retry creates a new uuid. Accepted and documented rather than engineered around.
+
 ## Validated Assumptions
 
 | Assumption | Evidence |
@@ -151,6 +169,9 @@ Two similar-but-different fields, one dead — zero-tech-debt rule.
 - Disk-pressure notice and manifest both active → order fixture-locked: notice first, manifest after (U1.4.6)
 - `clientMessageID` retry → deterministic composed text, single manifest (U1.4.5)
 - Forged manifest line inside user text → parser consumes only the trailing block (U1.3.10/U1.6.10)
+- In-pod adversary pre-creates `.tmp` or symlink at a guessed upload path → `O_EXCL` + fresh-uuid retry (D14, U1.1.15/16, I13)
+- Caller text already ends with a manifest block (copied/replayed/forged) → strip-then-append idempotency (D15, U1.3.14, U1.5.10)
+- agentd crashes between rename and response → orphan file, client 5xx, retry = new uuid — accepted (D19)
 
 ## Non-Functional Requirements
 
@@ -214,6 +235,13 @@ Tiers follow Rule 0 (TDD — tests written first, per story). Every scenario is 
 | U1.1.12 | Concurrency: 32 parallel uploads of distinct names | all 201; 32 distinct uuid paths; no corruption (hash each) |
 | U1.1.13 | fsync-before-rename ordering (fault-injection or code-structure assertion) | fsync precedes rename |
 | U1.1.14 | Filename that sanitizes to empty (all control chars) | 400, nothing written |
+| U1.1.15 | Symlink squat: `.tmp` path pre-created as symlink pointing outside uploads dir → write attempt | `O_EXCL` fails, retry with new uuid; symlink NOT followed; nothing written through it |
+| U1.1.16 | `.tmp` squat (plain pre-created file at guessed path) | `EEXIST` → fresh uuid retry → success |
+| U1.1.17 | Same filename uploaded twice sequentially | two distinct uuid paths; no overwrite |
+| U1.1.18 | Slowloris: body writer stalls (e.g. 1 byte/10s) | write deadline aborts, `.tmp` removed, 5xx |
+| U1.1.19 | Filename only whitespace after sanitize | 400, nothing written |
+| U1.1.20 | Response leaks only final path — no `.tmp` path, no internal paths, in success or error bodies | verified |
+| U1.1.21 | fsync failure injection (failing writer on Sync) | error; `.tmp` removed; no final file |
 
 #### 1.2 API upload handler (US-67.2)
 
@@ -232,6 +260,15 @@ Tiers follow Rule 0 (TDD — tests written first, per story). Every scenario is 
 | U1.2.11 | API-side filename sanitization (same hostile table as U1.1.3) applied before forwarding | sanitized |
 | U1.2.12 | Method wrong (GET/PUT on route) | 404/405 per gin conventions |
 | U1.2.13 | Empty filename in part (`filename=""`) | 400 |
+| U1.2.14 | Content-Length spoof: claims < cap, streams > cap | `LimitReader` cut at cap+1 → 413 |
+| U1.2.15 | CRLF in multipart `Content-Disposition` filename | sanitized to single line before forwarding (no header smuggling) |
+| U1.2.16 | Gate order: non-authed + non-Active + full-disk + oversize simultaneously | 401 → (authed) 409 → (Active) 507 → (not full) 413, in that order; never skips ahead |
+| U1.2.17 | Wrong content type (`application/json` on upload route) | 415 |
+| U1.2.18 | Non-file form fields alongside the file part | ignored (documented); upload proceeds |
+| U1.2.19 | agentd returns garbage/non-JSON | 502, no panic, no body leak |
+| U1.2.20 | Workspace deleted mid-request (cache says Active, K8s says gone) | 404 from access re-check; no agentd call |
+| U1.2.21 | Metrics: counters emitted per rejection reason (auth/phase/disk/cap/agentd-error) and per success | asserted via test registry |
+| U1.2.22 | Route participates in existing rate-limiting middleware stack | asserted |
 
 #### 1.3 Attachment manifest composer + path validation (US-67.3)
 
@@ -248,6 +285,15 @@ Tiers follow Rule 0 (TDD — tests written first, per story). Every scenario is 
 | U1.3.9 | Parser: no block in text → empty, no error | yes |
 | U1.3.10 | Parser: forged `[llmsafespaces:attachment …]` inside user text mid-message | parser only consumes the trailing block; interior lines remain text |
 | U1.3.11 | Total-length accounting: user text + manifest > 100k chars → 413/400 per existing prompt cap | enforced at send handler |
+| U1.3.12 | Duplicate paths within `files[]` | 400 (explicit rejection, D15) |
+| U1.3.13 | Empty-string / whitespace-padded entries in `files[]` | 400 |
+| U1.3.14 | Idempotency property: `compose(compose(t,f),f) == compose(t,f)` — including t that already ends with a v1 block, and t with a *forged* trailing block | strip-then-append holds (D15) |
+| U1.3.15 | Name containing `"` or `\` post-sanitize | composer percent-escapes/strips so manifest line structure is unbroken (defense in depth) |
+| U1.3.16 | User text ending in trailing newlines (0, 1, 3) | blank-line normalization deterministic — golden fixtures lock each |
+| U1.3.17 | Text at exactly the cap boundary: passes alone, fails with 1-file manifest | boundary asserted |
+| U1.3.18 | Parser: block followed by trailing newline(s) vs not | both parse; trailing whitespace tolerated |
+| U1.3.19 | Parser: block with unknown/newer version marker or unknown attributes | treated as plain text (forward compatibility) |
+| U1.3.20 | Unicode filenames round-trip through compose → parse | exact |
 
 #### 1.4 Send-path service wiring (US-67.3)
 
@@ -271,6 +317,12 @@ Tiers follow Rule 0 (TDD — tests written first, per story). Every scenario is 
 | U1.5.5 | Hostile filename | sanitized identically to REST |
 | U1.5.6 | `session_message` with `files[]` | same validation + composer as REST (shared code path) |
 | U1.5.7 | `session_message` `files` + oversized text | existing `maxMessageSize` accounting includes manifest |
+| U1.5.8 | Base64 with embedded newlines/whitespace (CLI-wrapped) | normalized, decodes, succeeds (D18) |
+| U1.5.9 | Base64 empty string / content missing | tool error |
+| U1.5.10 | `session_message` where caller's text already ends with a (possibly forged) v1 block | compose idempotency (D15/U1.3.14) applies on the MCP path too — single block dispatched |
+| U1.5.11 | Upload to non-Active workspace via MCP tool | tool error naming the phase (not a raw HTTP error passthrough) |
+| U1.5.12 | Concurrent MCP `workspace_file_upload` calls (4 parallel) | all succeed; distinct uuid paths |
+| U1.5.13 | Huge non-base64 arg (e.g. 6 MB of `z`) | tool error before decode (cap checked on input length); no server OOM |
 
 #### 1.6 Frontend unit/component — vitest (US-67.5)
 
@@ -288,6 +340,15 @@ Tiers follow Rule 0 (TDD — tests written first, per story). Every scenario is 
 | U1.6.10 | Interior forged line renders as plain text (not chip) | yes |
 | U1.6.11 | Dead `MessagePart.files` removed; typecheck green; no usages remain | yes |
 | U1.6.12 | Drawer open state does not leak across workspaces/sessions (scoped setting) | yes |
+| U1.6.13 | Upload in flight while send clicked | send disabled until uploads settle (D17); uploading chips visually distinct |
+| U1.6.14 | File-picker cancel (no selection) | no-op, no chip, no upload call |
+| U1.6.15 | Multi-select: 5 files picked at once | 5 chips; client cap (10) enforced across the batch |
+| U1.6.16 | Same file attached twice | two chips, two uploads (no client dedup — documented) |
+| U1.6.17 | Session switch (same workspace) mid-pending-chips | chips persist (workspace-scoped); workspace switch clears pending chips |
+| U1.6.18 | Upload error → retry chip → new upload (new uuid, no stale path reuse) | yes |
+| U1.6.19 | History entry that is ONLY a manifest block (no prose) | renders chips, empty text; no crash, no empty bubble artifact |
+| U1.6.20 | Chevron a11y: `aria-expanded`, keyboard operable; chips removable via keyboard | yes |
+| U1.6.21 | Text field retains content while drawer toggles and chips change (no state clobber) | yes |
 
 ### 2. Integration tests
 
@@ -305,6 +366,9 @@ Tiers follow Rule 0 (TDD — tests written first, per story). Every scenario is 
 | I10 | MCP server via mcp-go test client (stdio): `workspace_file_upload` → `session_message(files)` → fake agent asserts manifest | pkg/mcp + fakes | full path |
 | I11 | Playwright/MSW component flow: attach → chip → send → payload shape; strip-on-render | frontend | yes |
 | I12 | SSE/history round trip: fake agentd history contains manifest text; transform strips | frontend + fakes | yes |
+| I13 | Symlink attack vertical: in-pod adversary pre-creates `.tmp` symlink → API upload → agentd | handler + agentd | `O_EXCL` path taken; nothing written outside uploads dir |
+| I14 | Retry storm: same `clientMessageID` retried 5× against flaky agent (alternating 503/success) | handler chain | exactly one manifest; no duplicate files referenced |
+| I15 | Gate-order integration: layered failure states on a single workspace | router + services | response reflects first-failing gate (D16) |
 
 ### 3. E2E tests (kind cluster via `local/`, Playwright via `frontend/tests/e2e/`, stub-agent harness in `tests/`)
 
@@ -320,6 +384,8 @@ Tiers follow Rule 0 (TDD — tests written first, per story). Every scenario is 
 | E8 | MCP external: stdio MCP client (CI harness) against deployed API — upload base64 + `session_message(files)` | green |
 | E9 | SDK codegen: regenerated SDKs compile and expose `uploads` + `files` (sdks CI job) | green |
 | E10 | Multi-tenant: two users, two workspaces, simultaneous uploads — no cross-workspace path leakage | green |
+| E11 | Chaos: pod killed mid-upload (upload API call in flight) → client sees clean 5xx; pod restarts; retry succeeds; exactly one intact file on disk (no `.tmp`) | green |
+| E12 | Docs-consistency: README-LLM manifest snippet byte-matches the golden fixture (CI grep against `testdata/`) — prevents doc/format drift | green |
 
 ### 4. Non-functional / regression (all stories)
 
