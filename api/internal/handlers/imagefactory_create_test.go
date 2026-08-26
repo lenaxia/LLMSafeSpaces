@@ -44,11 +44,11 @@ func (f *fakeDispatcher) Cancel(_ context.Context, ghRunID int64) error {
 }
 
 func s4Store() *fakeIFStore {
-	b := imagefactory.Base{Name: "bookworm", Version: "0.6.0", Image: "img", Tag: "0.6.0", IsDefault: true}
+	b := imagefactory.Base{Name: "bookworm", Version: "0.20.1", Image: "img", Tag: "0.6.0", IsDefault: true}
 	return &fakeIFStore{
 		platformCfg: imagefactory.PlatformConfig{Architectures: []string{"linux/amd64"}},
 		bases:       []imagefactory.Base{b},
-		baseByName:  map[string]imagefactory.Base{"bookworm/0.6.0": b},
+		baseByName:  map[string]imagefactory.Base{"bookworm/0.20.1": b},
 		extensions: []imagefactory.Extension{
 			{ID: "ffmpeg", Type: imagefactory.ExtensionTypeApt, Value: "ffmpeg", SupportedBases: []string{"bookworm"}},
 		},

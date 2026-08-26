@@ -146,6 +146,13 @@ func (r *WorkspaceReconciler) buildAgentdSidecarContainer(workspace *v1.Workspac
 		// uid-2000 process on every reload: files land 0640 / dirs 0770
 		// so uid-1000 tools (shared gid 1000) keep reading them.
 		{Name: "LLMSAFESPACES_CROSS_UID_FILES", Value: "1"},
+		// Design 0051 sidecar migration step 1: the sidecar's boot phase
+		// (sidecar_boot.go) runs bootstrap+materialize before the muxes
+		// serve — it needs the API coordinate, and a writable enricher
+		// cache OUTSIDE the PVC home (the sidecar does not mount
+		// /home/sandbox; /sandbox-runtime is its own RW tmpfs).
+		{Name: "LLMSAFESPACE_API_URL", Value: r.APIServiceURL},
+		{Name: "LLMSAFESPACES_ENRICHER_CACHE_DIR", Value: "/sandbox-runtime/enricher-cache"},
 	}
 	if r.InferenceRelayURL != "" {
 		env = append(env, corev1.EnvVar{Name: "INFERENCE_RELAY_BASEURL", Value: r.InferenceRelayURL})
@@ -178,6 +185,10 @@ func (r *WorkspaceReconciler) buildAgentdSidecarContainer(workspace *v1.Workspac
 			// agentd-config RO and NEVER agentd-secrets.
 			{Name: agentdConfigVolumeName, MountPath: agentdConfigMountPath},
 			{Name: agentdSecretsVolumeName, MountPath: agentdSecretsMountPath},
+			// Design 0051 sidecar migration step 1: the sidecar's boot
+			// phase performs bootstrap; the projected SA token mounts here
+			// (sidecar mode has no platform-bootstrap init container).
+			{Name: "bootstrap-token", MountPath: "/var/run/bootstrap", ReadOnly: true},
 		},
 	}
 }
@@ -277,16 +288,38 @@ func (r *WorkspaceReconciler) applyAgentdSidecar(pod *corev1.Pod, workspace *v1.
 	)
 
 	main := &pod.Spec.Containers[0]
+	// Step-2 migration: the main container runs the overlay supervisor
+	// DIRECTLY — the baked entrypoint (runtime-image platform logic; the
+	// 2026-08-25 stale-base supply chain) is bypassed. Its env work
+	// moves here; the #863 verify moves into the supervisor itself
+	// (supervise_selfverify.go, exit-81 contract preserved).
+	main.Command = []string{agentdMountPath + agentdBinaryRelPath}
+	main.Args = []string{"supervise-opencode"}
 	main.Env = append(main.Env,
 		corev1.EnvVar{Name: "AGENTD_SIDECAR_MODE", Value: "1"},
 		// The supervisor's crash-path and socket-restart markers land on
 		// the same cross-uid-readable file the sidecar reads at boot.
 		corev1.EnvVar{Name: "LLMSAFESPACES_RESTART_MARKER_PATH", Value: SidecarRestartMarkerEnv},
 		// US-4b: opencode reads agent-config.json from the RO
-		// agentd-config mount. entrypoint-opencode.sh honors a pre-set
-		// OPENCODE_CONFIG; unset (single-container) keeps its
-		// /sandbox-runtime default.
+		// agentd-config mount.
 		corev1.EnvVar{Name: "OPENCODE_CONFIG", Value: sidecarAgentConfigPath},
+		// Entrypoint env work, relocated (entrypoint-opencode.sh): the
+		// event system was an export; XDG home matches the sidecar's
+		// auth.json discovery.
+		corev1.EnvVar{Name: "XDG_DATA_HOME", Value: "/workspace/.local"},
+		corev1.EnvVar{Name: "OPENCODE_EXPERIMENTAL_EVENT_SYSTEM", Value: "true"},
+		// Was: `cat /sandbox-cfg/password` in bash — secretKeyRef is
+		// fail-closed (missing Secret = container-create error, not a
+		// silent gap).
+		corev1.EnvVar{Name: "OPENCODE_SERVER_PASSWORD", ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: passwordSecretName(workspace.Name)},
+				Key:                  "password",
+			},
+		}},
+		// mise: PATH shims + MISE_DATA_DIR already come from the image
+		// ENV — no `mise activate` needed for a non-shell PID 1. The
+		// supervisor's buildEnvFrom sources secrets-env for the child.
 	)
 	main.VolumeMounts = append(main.VolumeMounts, corev1.VolumeMount{
 		Name: agentdConfigVolumeName, MountPath: agentdConfigMountPath, ReadOnly: true,

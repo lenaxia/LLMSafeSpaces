@@ -15,7 +15,7 @@ on:
 
 jobs:
   us2-kind:
-    name: US-2 L3 checks (K1–K8)
+    name: US-2 L3 checks (K1–K13)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

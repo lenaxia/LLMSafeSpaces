@@ -210,19 +210,32 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 
 	var initContainers []corev1.Container
 
-	// workspace-dirs init: unconditionally ensures all three PVC subPath
-	// directories exist at the PVC root before any other init or the main
-	// container mounts them. Without this, kubelet fails the pod with
-	// "subPath not found" on a fresh PVC. Runs as the same non-root UID as
-	// the main container; writes only to the PVC root.
-	initContainers = append(initContainers, buildWorkspaceDirsInit(runtimeImage))
-
 	// Epic 42 / 26: inject relay baseURL so agentd can configure the opencode
 	// provider to route free-tier inference through the self-hosted relay fleet
 	// for IP distribution. Empty InferenceRelayURL (the chart default) leaves
 	// the env var unset; agentd then no-ops the relay injector and opencode
 	// calls https://opencode.ai/zen/v1 directly using its built-in `public` key.
 	relayBaseURL := r.InferenceRelayURL
+
+	// Design 0051 sidecar migration, step 1: with overlay delivery on,
+	// the bash init containers are replaced by platform init containers
+	// running the digest-pinned agentd image (platform_init.go). The
+	// first one (platform-init) creates the PVC subPath roots, so it
+	// keeps workspace-dirs' FIRST position. Legacy-no-overlay keeps the
+	// bash path unchanged (deleted in migration step 5, together with
+	// the baked binary).
+	overlayOn := r.agentdOverlayEnabled()
+	if overlayOn {
+		initContainers = append(initContainers, r.buildPlatformInit(relayBaseURL != ""))
+	} else {
+		// workspace-dirs init: unconditionally ensures all three PVC subPath
+		// directories exist at the PVC root before any other init or the main
+		// container mounts them. Without this, kubelet fails the pod with
+		// "subPath not found" on a fresh PVC. Runs as the same non-root UID as
+		// the main container; writes only to the PVC root.
+		initContainers = append(initContainers, buildWorkspaceDirsInit(runtimeImage))
+	}
+
 	if relayBaseURL != "" {
 		mainContainer.Env = append(mainContainer.Env,
 			corev1.EnvVar{Name: "INFERENCE_RELAY_BASEURL", Value: relayBaseURL},
@@ -244,14 +257,29 @@ func (r *WorkspaceReconciler) buildPod(ctx context.Context, workspace *v1.Worksp
 		initContainers = append(initContainers, buildWorkspaceSetupInit(workspace, runtimeImage))
 	}
 
-	// Credential setup init.
-	credInit, pwVolume, bootstrapTokenVol, err := r.buildCredentialSetupInit(workspace, runtimeImage, relayBaseURL)
-	if err != nil {
-		return nil, err
+	// Credential setup: overlay mode runs the platform subcommands from
+	// the pinned agentd image; sidecar mode defers bootstrap+materialize
+	// to the sidecar's boot phase (the sidecar is appended last by
+	// applyAgentdSidecar, and its startup probe gates the main container
+	// on boot completion — #857 ordering preserved). Legacy-no-overlay
+	// keeps the bash heredoc (step-5 deletion candidate).
+	if overlayOn {
+		volumes = append(volumes, buildPasswordSecretVolume(workspace))
+		volumes = append(volumes, buildBootstrapTokenVolume())
+		if !r.AgentdSidecarEnabled {
+			initContainers = append(initContainers,
+				r.buildPlatformBootstrap(workspace),
+				r.buildPlatformMaterialize(relayBaseURL))
+		}
+	} else {
+		credInit, pwVolume, bootstrapTokenVol, err := r.buildCredentialSetupInit(workspace, runtimeImage, relayBaseURL)
+		if err != nil {
+			return nil, err
+		}
+		initContainers = append(initContainers, credInit)
+		volumes = append(volumes, pwVolume)
+		volumes = append(volumes, bootstrapTokenVol)
 	}
-	initContainers = append(initContainers, credInit)
-	volumes = append(volumes, pwVolume)
-	volumes = append(volumes, bootstrapTokenVol)
 
 	// Free-models ConfigMap volume (2026-06-23 cold-start optimization,
 	// item #1a). Mounted optionally so a pod started before the

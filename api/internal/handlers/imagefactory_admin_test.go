@@ -163,7 +163,7 @@ func TestAdmin_Bases_CRUD(t *testing.T) {
 
 	// Create
 	w := adminJSON(t, r, "POST", "/api/v1/admin/image-factory/bases", upsertBaseRequest{
-		Name: "bookworm", Version: "0.6.0", Image: "img", Tag: "0.6.0",
+		Name: "bookworm", Version: "0.20.1", Image: "img", Tag: "0.20.1",
 	})
 	require.Equal(t, http.StatusCreated, w.Code)
 	require.Len(t, store.bases, 1)
@@ -173,12 +173,12 @@ func TestAdmin_Bases_CRUD(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 
 	// Delete
-	w = adminJSON(t, r, "DELETE", "/api/v1/admin/image-factory/bases/bookworm/0.6.0", nil)
+	w = adminJSON(t, r, "DELETE", "/api/v1/admin/image-factory/bases/bookworm/0.20.1", nil)
 	require.Equal(t, http.StatusOK, w.Code)
 	assert.Empty(t, store.bases)
 
 	// Delete again → 404
-	w = adminJSON(t, r, "DELETE", "/api/v1/admin/image-factory/bases/bookworm/0.6.0", nil)
+	w = adminJSON(t, r, "DELETE", "/api/v1/admin/image-factory/bases/bookworm/0.20.1", nil)
 	assert.Equal(t, http.StatusNotFound, w.Code)
 }
 

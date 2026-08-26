@@ -242,16 +242,25 @@ controller:
     binarySHA256Amd64: ""
     binarySHA256Arm64: ""
 
-  # Design 0051 US-2 (agentd uid separation): split agentd into a native
+  # Design 0051 (agentd uid separation): split agentd into a native
   # sidecar container (uid 2000/gid 1000, policy half: muxes, watchdog,
-  # SSE tracking, relay injector) plus a same-uid supervise-opencode PID 1
-  # in the workspace container. They talk over 127.0.0.1:4099 (Appendix A
-  # control socket). REQUIRES agentdDelivery.image (the sidecar runs the
-  # same digest-pinned artifact) — the chart fails the render otherwise.
-  # Default false: single-container mode, byte-identical to pre-0051 pods.
-  # US-3 (agentdPassword credential split), US-4 (mount relocations), and
-  # US-5 (canary/V-matrix) build on this gate; leave off outside the TEST
-  # canary until those land and the V-matrix passes.
+  # SSE tracking, relay injector, credential boot phase) plus a same-uid
+  # supervise-opencode PID 1 in the workspace container. They talk over
+  # 127.0.0.1:4099 (Appendix A control socket). REQUIRES
+  # agentdDelivery.image (the sidecar runs the same digest-pinned
+  # artifact) — the chart fails the render otherwise.
+  #
+  # Migration state (see worklog 0819 + design 0051 D7): steps 1-2 are
+  # code-complete — platform boot (init-fs/bootstrap/materialize) runs
+  # from the agentd artifact, and sidecar-mode main containers run the
+  # overlay supervisor directly (baked entrypoint bypassed; #863 verify
+  # moved into the supervisor). US-2/US-3/US-4a shipped. Default stays
+  # false until the L3 kind suite (K1–K13, incl. the degraded-base
+  # incident regression) passes once on the released artifacts — then
+  # the flip is this default plus the runbook in
+  # docs/runbooks/sidecar-flip.md (canary → rolling delete; suspended
+  # workspaces upgrade free on resume). Rollback = flip back off (D6.1
+  # convergence).
   agentdSidecar:
     enabled: false
 

@@ -9,7 +9,7 @@ import (
 )
 
 func sampleBase() Base {
-	return Base{Name: "bookworm", Version: "0.6.0", Image: "ghcr.io/acme/base", Tag: "0.6.0"}
+	return Base{Name: "bookworm", Version: "0.20.1", Image: "ghcr.io/acme/base", Tag: "0.20.1"}
 }
 
 func sampleResolvedApt() ResolvedValues {
@@ -39,7 +39,7 @@ func TestRenderDockerfile_Happy_Empty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RenderDockerfile: %v", err)
 	}
-	mustContain(t, out, "FROM ghcr.io/acme/base:0.6.0")
+	mustContain(t, out, "FROM ghcr.io/acme/base:0.20.1")
 	mustContain(t, out, "USER sandbox")
 	mustContain(t, out, "WORKDIR /workspace")
 	mustEndWith(t, out, `ENTRYPOINT ["/usr/local/bin/entrypoint-opencode.sh"]`)
@@ -51,7 +51,7 @@ func TestRenderDockerfile_Happy_Empty(t *testing.T) {
 
 func TestRenderDockerfile_DigestPinnedBase(t *testing.T) {
 	t.Parallel()
-	b := Base{Name: "bookworm", Version: "0.6.0", Image: "img", Digest: "sha256:deadbeef"}
+	b := Base{Name: "bookworm", Version: "0.20.1", Image: "img", Digest: "sha256:deadbeef"}
 	out, err := RenderDockerfile(ResolvedValues{}, b)
 	if err != nil {
 		t.Fatalf("RenderDockerfile: %v", err)

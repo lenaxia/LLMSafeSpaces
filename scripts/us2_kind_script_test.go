@@ -105,6 +105,29 @@ func TestUS2KindScript_DiagnosticsWiredToHelmFailure(t *testing.T) {
 		"helm failure must invoke in-script diagnostics before exiting")
 }
 
+// TestUS2KindScript_Step1MigrationChecks: the step-1 (platform-init)
+// migration checks must survive glue rot the same way — the workflow runs
+// weekly, and a check silently renamed or deleted is a check that stopped
+// guarding (the K1 revision followed the 2026-08-25 incident; losing it
+// back to `credential-setup` would re-pin the pre-migration world).
+func TestUS2KindScript_Step1MigrationChecks(t *testing.T) {
+	src := scriptSource(t)
+	require.Contains(t, src, `select(.name=="platform-init")`,
+		"K1 must order on platform-init (step-1 world), not credential-setup")
+	require.Contains(t, src, `pass K9 "platform-init=`,
+		"K9 (subcommand form + symlink farm) must be present")
+	require.Contains(t, src, `fail K10 "pod did not recreate+Ready`,
+		"K10 (resumed legacy PVC) must be present")
+	require.Contains(t, src, `pass K11 "sidecar restarted`,
+		"K11 (restart guard, no bootstrap refetch) must be present")
+	require.Contains(t, src, `MODE_ENV=`,
+		"K3 must check the secrets-env cross-uid mode")
+	require.Contains(t, src, `pass K12 "main=[overlay supervise-opencode]`,
+		"K12 (supervisor Command bypass + relocated env) must be present")
+	require.Contains(t, src, `pass K13 "degraded base`,
+		"K13 (degraded-base boots clean — the incident-class regression) must be present")
+}
+
 // --- behavioral regression: the binary-extraction block ----------------------
 //
 // extractBlock pulls the sentinel-marked block VERBATIM out of the script;

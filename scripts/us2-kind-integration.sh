@@ -3,17 +3,31 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # US-2 integration level L3 (design 0051) — kind-cluster execution of the
-# K1–K8 checks specified in docs/testing/0051-us2-integration-test-plan.md.
+# K1–K13 checks specified in docs/testing/0051-us2-integration-test-plan.md.
 #
 # What this level uniquely proves (everything below needs a real kubelet):
-#   K1 native-sidecar start ordering (credential-setup → agentd → main)
+#   K1 native-sidecar start ordering (platform-init → agentd → main)
 #   K2 #857 stamp-before-opencode-reads (sidecar startup gate)
-#   K3 cross-uid file bridge (boot trio 0640 via shared gid 1000)
+#   K3 cross-uid file bridge + US-4b mount topology (0640/0770 via gid 1000)
 #   K4 in-pod control-socket round trip (Appendix A over real TCP)
 #   K5 supervisor crash-recovery + restart-reason marker
 #   K6 a stopped SIDECAR restarts only the sidecar (probe isolation)
 #   K7 a stopped WORKSPACE container restarts without touching the sidecar
 #   K8 pod termination drains both containers within the grace budget
+#   K9 step-1 migration: platform-init runs [binary, subcommand] (no shell)
+#      from the pinned agentd image and builds the symlink farm on the PVC
+#   K10 step-1 migration: a RESUMED legacy PVC (pre-planted dirs/files at
+#      managed paths) boots and the planted state is replaced
+#   K11 step-1 migration: sidecar restart does NOT re-run bootstrap (the
+#      idempotency guard) and the pod stays Ready
+#   K12 step-2 migration: the main container runs the overlay supervisor
+#      DIRECTLY — the baked entrypoint is bypassed, and the relocated
+#      env (OPENCODE_CONFIG on the agentd-config mount, XDG_DATA_HOME,
+#      event system, server password) is present
+#   K13 the incident class (2026-08-25), regression form: a DEGRADED
+#      runtime base (baked agentd and entrypoints DELETED) still boots
+#      Ready in sidecar mode — platform code provably independent of
+#      the runtime image
 #
 # Topology: controller-only chart install (api/mcp/webhooks off — no
 # postgres, no cert-manager). The reconciler needs none of those to build
@@ -279,26 +293,69 @@ socket_json() { # $1: id, $2: method — one Appendix-A round trip from inside t
 }
 
 # --- K1: native-sidecar start ordering ---------------------------------------
-TERM_CRED=$(jq_field '.status.initContainerStatuses[]? | select(.name=="credential-setup") | .state.terminated.finishedAt // .lastState.terminated.finishedAt // empty')
+# Step-1 migration: platform-init replaces credential-setup in the chain.
+TERM_PINIT=$(jq_field '.status.initContainerStatuses[]? | select(.name=="platform-init") | .state.terminated.finishedAt // .lastState.terminated.finishedAt // empty')
 START_SIDECAR=$(jq_field '.status.initContainerStatuses[]? | select(.name=="agentd") | .state.running.startedAt // .state.terminated.startedAt // empty')
 START_MAIN=$(jq_field '.status.containerStatuses[0].state.running.startedAt // empty')
-# Pod-status timestamps have 1-second granularity: credential-setup can
+# Pod-status timestamps have 1-second granularity: platform-init can
 # finish in the SAME second the sidecar starts (native sidecars begin
 # immediately after the prior init completes) — a tie is correct, not a
 # violation. The load-bearing ordering is sidecar-start ≤ main-start
 # (the #857 gate). Parse to epoch and compare with ties allowed.
-if [ -n "$TERM_CRED" ] && [ -n "$START_SIDECAR" ] && [ -n "$START_MAIN" ]; then
-  T_CRED=$(date -u -d "$TERM_CRED" +%s 2>/dev/null || echo 0)
+if [ -n "$TERM_PINIT" ] && [ -n "$START_SIDECAR" ] && [ -n "$START_MAIN" ]; then
+  T_CRED=$(date -u -d "$TERM_PINIT" +%s 2>/dev/null || echo 0)
   T_SC=$(date -u -d "$START_SIDECAR" +%s 2>/dev/null || echo 0)
   T_MAIN=$(date -u -d "$START_MAIN" +%s 2>/dev/null || echo 0)
   if [ "$T_CRED" -gt 0 ] && [ "$T_SC" -gt 0 ] && [ "$T_MAIN" -gt 0 ] \
     && [ "$T_CRED" -le "$T_SC" ] && [ "$T_SC" -le "$T_MAIN" ]; then
-    pass K1 "credential-setup@$TERM_CRED ≤ sidecar@$START_SIDECAR ≤ main@$START_MAIN"
+    pass K1 "platform-init@$TERM_PINIT ≤ sidecar@$START_SIDECAR ≤ main@$START_MAIN"
   else
-    fail K1 "ordering: cred=$TERM_CRED sidecar=$START_SIDECAR main=$START_MAIN (epoch $T_CRED/$T_SC/$T_MAIN)"
+    fail K1 "ordering: pinit=$TERM_PINIT sidecar=$START_SIDECAR main=$START_MAIN (epoch $T_CRED/$T_SC/$T_MAIN)"
   fi
 else
-  fail K1 "missing timestamps: cred=$TERM_CRED sidecar=$START_SIDECAR main=$START_MAIN"
+  fail K1 "missing timestamps: pinit=$TERM_PINIT sidecar=$START_SIDECAR main=$START_MAIN"
+fi
+
+# --- K9: platform-init is [binary, subcommand] — no shell, pinned image -----
+# The 2026-08-25 incident class: platform boot logic executing from the
+# runtime image. Post-migration the init container must run the overlay
+# binary directly (Command = /agentd/.../workspace-agentd, Args =
+# ["init-fs"]) and actually build the US-35.7 symlink farm on the PVC.
+PINIT_CMD=$(jq_field '.spec.initContainers[]? | select(.name=="platform-init") | .command[0] // empty')
+PINIT_ARG=$(jq_field '.spec.initContainers[]? | select(.name=="platform-init") | .args[0] // empty')
+PINIT_IMG=$(jq_field '.spec.initContainers[]? | select(.name=="platform-init") | .image // empty')
+LEGACY_INITS=$(jq_field '[.spec.initContainers[]? | select(.name=="credential-setup" or .name=="workspace-dirs")] | length')
+SSH_TARGET=$(kubectl -n "$NS" exec "$POD" -c workspace -- readlink /home/sandbox/.ssh 2>/dev/null || echo "")
+AUTH_TARGET=$(kubectl -n "$NS" exec "$POD" -c workspace -- readlink /workspace/.local/opencode/auth.json 2>/dev/null || echo "")
+if [ "$PINIT_CMD" = "/agentd/usr/local/bin/workspace-agentd" ] && [ "$PINIT_ARG" = "init-fs" ] \
+  && printf '%s' "$PINIT_IMG" | grep -q "$REG/llmsafespaces/agentd" \
+  && [ "$LEGACY_INITS" = "0" ] \
+  && [ "$SSH_TARGET" = "/sandbox-runtime/rt/ssh" ] \
+  && [ "$AUTH_TARGET" = "/sandbox-runtime/rt/auth.json" ]; then
+  pass K9 "platform-init=[$PINIT_CMD ${PINIT_ARG}] img=pinned; farm .ssh→rt/ssh auth.json→rt/auth.json; legacy inits=0"
+else
+  fail K9 "cmd=$PINIT_ARG/$PINIT_CMD img=$PINIT_IMG legacy=$LEGACY_INITS ssh→${SSH_TARGET:-none} auth→${AUTH_TARGET:-none}"
+fi
+
+# --- K12: main container runs the overlay supervisor directly (step 2) -------
+# The baked entrypoint (runtime-image platform logic — the 2026-08-25
+# stale-base supply chain) must be bypassed: Command = the overlay
+# binary, args = supervise-opencode, and the relocated entrypoint env
+# present (OPENCODE_CONFIG points at the US-4b agentd-config mount).
+# The #863 verify moved INTO the supervisor (self-hash, exit 81).
+MAIN_CMD=$(jq_field '.spec.containers[0].command[0] // empty')
+MAIN_ARG=$(jq_field '.spec.containers[0].args[0] // empty')
+ENV_CONFIG=$(jq_field '[.spec.containers[0].env[]? | select(.name=="OPENCODE_CONFIG") | .value] | .[0] // empty')
+ENV_XDG=$(jq_field '[.spec.containers[0].env[]? | select(.name=="XDG_DATA_HOME") | .value] | .[0] // empty')
+ENV_EVT=$(jq_field '[.spec.containers[0].env[]? | select(.name=="OPENCODE_EXPERIMENTAL_EVENT_SYSTEM") | .value] | .[0] // empty')
+ENV_PWREF=$(jq_field '[.spec.containers[0].env[]? | select(.name=="OPENCODE_SERVER_PASSWORD") | .valueFrom.secretKeyRef.key] | .[0] // empty')
+if [ "$MAIN_CMD" = "/agentd/usr/local/bin/workspace-agentd" ] && [ "$MAIN_ARG" = "supervise-opencode" ] \
+  && [ "$ENV_CONFIG" = "/agentd-config/agent-config.json" ] \
+  && [ "$ENV_XDG" = "/workspace/.local" ] \
+  && [ "$ENV_EVT" = "true" ] && [ "$ENV_PWREF" = "password" ]; then
+  pass K12 "main=[overlay supervise-opencode]; env: config/xdg/event/password-ref all present"
+else
+  fail K12 "cmd=$MAIN_CMD arg=$MAIN_ARG config=$ENV_CONFIG xdg=$ENV_XDG evt=$ENV_EVT pwref=$ENV_PWREF"
 fi
 
 # --- K2: #857 stamp present in the config opencode first read ----------------
@@ -324,11 +381,17 @@ MODE_PW=$(kubectl -n "$NS" exec "$POD" -c workspace -- stat -c %a /sandbox-cfg/p
 MODE_RT=$(kubectl -n "$NS" exec "$POD" -c workspace -- stat -c %a /sandbox-runtime/rt 2>/dev/null || echo "?")
 SECRETS_VOL=$(kubectl -n "$NS" exec "$POD" -c workspace -- sh -c 'test -d /agentd-secrets && echo present || echo absent' 2>/dev/null || echo absent)
 CFG_RO=$(kubectl -n "$NS" exec "$POD" -c workspace -- sh -c 'test -w /agentd-config && echo rw || echo ro' 2>/dev/null || echo "?")
+# Step-1 migration: secrets-env is materialized by the uid-2000 sidecar's
+# boot phase (cross-uid profile, 0640) on the sidecar-only agentd-secrets
+# volume — checked from the SIDECAR container; the workspace container
+# must not see it at all (SECRETS_VOL above).
+MODE_ENV=$(kubectl -n "$NS" exec "$POD" -c agentd -- stat -c %a /agentd-secrets/secrets-env 2>/dev/null || echo "absent")
 if [ "$MODE_CFG" = "640" ] && [ "$MODE_PROMPT" = "absent" ] && [ "$MODE_PW" = "600" ] \
-   && [ "$MODE_RT" = "770" ] && [ "$SECRETS_VOL" = "absent" ] && [ "$CFG_RO" = "ro" ]; then
-  pass K3 "agent-config=$MODE_CFG(RO mount) admin-prompt=$MODE_PROMPT password=$MODE_PW rt=$MODE_RT agentd-secrets=$SECRETS_VOL"
+   && [ "$MODE_RT" = "770" ] && [ "$SECRETS_VOL" = "absent" ] && [ "$CFG_RO" = "ro" ] \
+   && { [ "$MODE_ENV" = "640" ] || [ "$MODE_ENV" = "absent" ]; }; then
+  pass K3 "agent-config=$MODE_CFG(RO mount) admin-prompt=$MODE_PROMPT password=$MODE_PW rt=$MODE_RT agentd-secrets=$SECRETS_VOL secrets-env=$MODE_ENV"
 else
-  fail K3 "agent-config=$MODE_CFG admin-prompt=$MODE_PROMPT password=$MODE_PW rt=$MODE_RT agentd-secrets=$SECRETS_VOL cfg-mount=$CFG_RO (want 640/absent/600/770/absent/ro)"
+  fail K3 "agent-config=$MODE_CFG admin-prompt=$MODE_PROMPT password=$MODE_PW rt=$MODE_RT agentd-secrets=$SECRETS_VOL cfg-mount=$CFG_RO secrets-env=$MODE_ENV (want 640/absent/600/770/absent/ro/{640,absent})"
 fi
 
 # --- K4: in-pod control-socket round trip ------------------------------------
@@ -421,9 +484,25 @@ if [ -n "$NODE_CONTAINER" ] && [ -n "$CRICTL_BIN" ]; then
   else
     fail K7 "main ${MAIN_BEFORE}→${MAIN_AFTER}; sidecar ${SC_BEFORE}→${SC_AFTER}"
   fi
+
+  # K11: sidecar restart does NOT re-run bootstrap (idempotency guard).
+  # K6 stopped the sidecar once, so restartCount >= 1 and the CURRENT
+  # container instance re-ran the boot phase. The guard must have skipped
+  # the API fetch: zero bootstrap lines in the current instance's log
+  # while the previous instance (first boot, API off in this topology)
+  # shows the fetch attempt. A regression here means every sidecar
+  # restart hammers a possibly-down API with an expired token.
+  SC_RESTARTS=$(jq_field '.status.initContainerStatuses[]? | select(.name=="agentd") | .restartCount // 0')
+  CURR_BS=$(kubectl -n "$NS" logs "$POD" -c agentd 2>/dev/null | grep -c '^bootstrap:' || true)
+  PREV_BS=$(kubectl -n "$NS" logs "$POD" -c agentd --previous 2>/dev/null | grep -c '^bootstrap:' || true)
+  if [ "$SC_RESTARTS" -gt 0 ] 2>/dev/null && [ "${CURR_BS:-0}" -eq 0 ] && [ "${PREV_BS:-0}" -ge 1 ]; then
+    pass K11 "sidecar restarted ${SC_RESTARTS}x; current-instance bootstrap lines=0 (guard), previous=${PREV_BS}"
+  else
+    fail K11 "restarts=$SC_RESTARTS current-bootstrap-lines=${CURR_BS:-?} previous=${PREV_BS:-?}"
+  fi
 else
   log "SKIP K6/K7 (no docker exec into kind node / crictl unavailable)"
-  RESULTS+=("SKIP K6 — crictl unavailable on node" "SKIP K7 — crictl unavailable on node")
+  RESULTS+=("SKIP K6 — crictl unavailable on node" "SKIP K7 — crictl unavailable on node" "SKIP K11 — crictl unavailable on node")
 fi
 
 # --- K8: termination drains within the grace budget ---------------------------
@@ -434,6 +513,102 @@ if [ "$ELAPSED" -le 30 ]; then
   pass K8 "pod delete completed in ${ELAPSED}s (terminationGracePeriod 5s + API overhead)"
 else
   fail K8 "pod delete took ${ELAPSED}s"
+fi
+
+# --- K10: resumed legacy PVC — planted state replaced, pod boots --------------
+# The force-upgrade path: an OLD workspace's PVC carries weeks of pre-
+# migration state (real .secrets dir with user-era files, a real-file
+# auth.json from pre-US-35.7). The recreated pod must replace the managed
+# paths and reach Ready. K8 above deleted the pod — wait for the
+# controller's recreation first, then plant as uid 1000 from inside.
+POD=""
+for i in $(seq 1 60); do
+  POD=$(kubectl -n "$NS" get pods -l llmsafespaces.dev/workspace="$WORKSPACE_NAME" \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  [ -n "$POD" ] && break
+  sleep 2
+done
+if [ -n "$POD" ]; then
+  kubectl -n "$NS" wait --for=condition=Ready "pod/$POD" --timeout=300s >/dev/null 2>&1 || true
+fi
+kubectl -n "$NS" exec "$POD" -c workspace -- mkdir -p /home/sandbox/.secrets/junk >/dev/null 2>&1 || true
+kubectl -n "$NS" exec "$POD" -c workspace -- sh -c 'echo legacy > /home/sandbox/.secrets/junk/f' >/dev/null 2>&1 || true
+kubectl -n "$NS" exec "$POD" -c workspace -- mkdir -p /workspace/.local/opencode >/dev/null 2>&1 || true
+kubectl -n "$NS" exec "$POD" -c workspace -- sh -c 'echo legacy-auth > /workspace/.local/opencode/auth.json' >/dev/null 2>&1 || true
+OLD_POD="$POD"
+kubectl -n "$NS" delete "pod/$POD" --wait=true >/dev/null 2>&1
+POD=""
+for i in $(seq 1 60); do
+  POD=$(kubectl -n "$NS" get pods -l llmsafespaces.dev/workspace="$WORKSPACE_NAME" \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  [ -n "$POD" ] && [ "$POD" != "$OLD_POD" ] && break
+  sleep 2
+done
+if [ -n "$POD" ] && [ "$POD" != "$OLD_POD" ] \
+  && kubectl -n "$NS" wait --for=condition=Ready "pod/$POD" --timeout=300s >/dev/null 2>&1; then
+  NEW_SECRETS=$(kubectl -n "$NS" exec "$POD" -c workspace -- readlink /home/sandbox/.secrets 2>/dev/null || echo "")
+  JUNK_GONE=$(kubectl -n "$NS" exec "$POD" -c workspace -- sh -c 'ls /sandbox-runtime/rt/secrets/junk 2>/dev/null || echo gone' 2>/dev/null || echo gone)
+  NEW_AUTH=$(kubectl -n "$NS" exec "$POD" -c workspace -- readlink /workspace/.local/opencode/auth.json 2>/dev/null || echo "")
+  if [ "$NEW_SECRETS" = "/sandbox-runtime/rt/secrets" ] && [ "$JUNK_GONE" = "gone" ] \
+    && [ "$NEW_AUTH" = "/sandbox-runtime/rt/auth.json" ]; then
+    pass K10 "recreated pod $POD Ready; planted .secrets/auth.json replaced with farm links; junk wiped"
+  else
+    fail K10 "secrets→${NEW_SECRETS:-none} junk=$JUNK_GONE auth→${NEW_AUTH:-none}"
+  fi
+else
+  fail K10 "pod did not recreate+Ready after delete (old=$OLD_POD new=${POD:-none})"
+fi
+
+# --- K13: the incident class — DEGRADED runtime base boots clean ---------------
+# 2026-08-25 regression form: a base whose baked agentd and entrypoints
+# are GONE (simulating any stale/broken factory base — worse than the
+# incident's, which merely carried a pre-#871 binary) must still boot
+# Ready in sidecar mode. Post step-1+2 the pod executes zero platform
+# code from the runtime image; this check proves it end-to-end. If it
+# fails, platform logic has leaked back into the base dependency.
+log "building degraded runtime base (baked agentd + entrypoints removed)"
+DEGRADED_TAG="$REG/llmsafespaces/runtime-base:degraded"
+docker build --network host -t "$DEGRADED_TAG" -f - "$TMPDIR" <<EOF
+FROM $REG/llmsafespaces/runtime-base:ci
+USER root
+RUN rm -f /usr/local/bin/workspace-agentd \
+           /usr/local/bin/entrypoint-opencode.sh \
+           /usr/local/bin/entrypoint-common.sh
+USER sandbox
+EOF
+docker push "$DEGRADED_TAG" >/dev/null
+
+WS2_NAME="$WORKSPACE_NAME-degraded"
+kubectl -n "$NS" apply -f - <<EOF
+apiVersion: llmsafespaces.dev/v1
+kind: Workspace
+metadata:
+  name: $WS2_NAME
+spec:
+  owner:
+    userID: us2-int
+  runtime: $DEGRADED_TAG
+  storage:
+    size: 1Gi
+EOF
+POD2=""
+for i in $(seq 1 60); do
+  POD2=$(kubectl -n "$NS" get pods -l llmsafespaces.dev/workspace="$WS2_NAME" \
+    -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+  [ -n "$POD2" ] && break
+  sleep 2
+done
+if [ -n "$POD2" ] && kubectl -n "$NS" wait --for=condition=Ready "pod/$POD2" --timeout=300s >/dev/null 2>&1; then
+  BAKED_GONE=$(kubectl -n "$NS" exec "$POD2" -c workspace -- \
+    sh -c 'ls /usr/local/bin/workspace-agentd 2>/dev/null || echo gone' 2>/dev/null || echo gone)
+  if [ "$BAKED_GONE" = "gone" ]; then
+    pass K13 "degraded base (no baked agentd/entrypoints) booted Ready — platform code is base-independent"
+  else
+    fail K13 "pod Ready but baked agentd present — the degraded build did not degrade (test bug)"
+  fi
+else
+  fail K13 "workspace on degraded base never became Ready (platform code still base-dependent)"
+  kubectl -n "$NS" describe pod "$POD2" 2>/dev/null | tail -30 || true
 fi
 
 log "all checks executed"

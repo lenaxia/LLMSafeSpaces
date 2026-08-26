@@ -247,6 +247,20 @@ func (r *WorkspaceReconciler) handleCreating(ctx context.Context, workspace *v1.
 		return ctrl.Result{RequeueAfter: agentdVerifyFailureRequeue}, nil
 	}
 
+	// Design 0051 sidecar migration step 1: platform boot-phase failure
+	// visibility. A crash-looping platform container (init-fs/bootstrap/
+	// materialize/sidecar boot) never becomes Ready — surface the reason
+	// on the Workspace instead of an eternal Creating, and skip crashloop
+	// recovery (pod deletion cannot fix a platform bug).
+	if r.detectPlatformBootFailure(ctx, workspace, existingPod) {
+		if err := r.Status().Update(ctx, workspace); err != nil {
+			recordStatusUpdateConflictOnError("handleCreating_platform_boot", err)
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: agentdVerifyFailureRequeue}, nil
+	}
+	r.markBootReady(existingPod, workspace)
+
 	// Persist any status changes (e.g. ObservedRestartGeneration bump) that
 	// were applied above but didn't fall into a branch that already calls
 	// Status().Update. Without this, the in-memory status is lost on the next

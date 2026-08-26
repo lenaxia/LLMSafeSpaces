@@ -106,14 +106,21 @@ CI runs the same script via `.github/workflows/us2-kind-integration.yml` (workfl
 
 | ID | Check | PASS |
 |---|---|---|
-| K1 | Sidecar ordering: `credential-setup` finishedAt < sidecar startedAt < main startedAt (from pod status timestamps) | ordering holds |
+| K1 | Sidecar ordering (step-1 form, superseding the credential-setup row): `platform-init` finishedAt < sidecar startedAt < main startedAt (from pod status timestamps) | ordering holds |
 | K2 | #857 stamp-before-read: `agent-config.json` carries the `llmsafespaces` MCP entry at first boot | MCP entry present |
-| K3 | Filesystem bridge + US-4b mount topology: `agent-config.json` 0640 on the RO `/agentd-config` mount; `admin-prompt.md` ABSENT from the workspace container (sidecar-only volume); `/agentd-secrets` not mounted; `rt/` 0770; password 0600 | modes + mount-topology claims (V2/V3) |
+| K3 | Filesystem bridge + US-4b mount topology: `agent-config.json` 0640 on the RO `/agentd-config` mount; `admin-prompt.md` ABSENT from the workspace container (sidecar-only volume); `/agentd-secrets` not mounted; `rt/` 0770; password 0600; secrets-env {0640, absent} (cross-uid profile) | modes + mount-topology claims (V2/V3) |
 | K4 | Socket (S1) from inside the pod: `hello` over `127.0.0.1:4099` via `/dev/tcp` | A.1 response shape |
 | K5 | Child crash (SIGKILL the opencode pid from the workspace container) → supervisor respawns a fresh pid, crash marker written | new pid + `"reason":"crash"` |
 | K6 | `crictl stop` the SIDECAR → sidecar restartCount +1, main untouched, opencode still serving :4096 | isolation holds |
 | K7 | `crictl stop` the WORKSPACE container → main restartCount +1, sidecar unchanged, pod returns Ready | isolation holds |
 | K8 | Pod delete completes within the 5s grace + API overhead | ≤ 30s wall |
+| K9 | Step-1 migration: platform-init runs `[binary, "init-fs"]` from the pinned agentd image (no shell), legacy bash inits absent, symlink farm on the PVC (`.ssh→rt/ssh`, `auth.json→rt/auth.json`) | subcommand form + farm live |
+| K10 | Step-1 migration (force-upgrade path): planted legacy state on the PVC (real `.secrets` dir, real-file auth.json) → pod delete → recreated pod Ready with farm links replacing the planted paths | replacement + Ready |
+| K11 | Step-1 migration (restart guard): after K6's sidecar restart, current sidecar instance logs zero `bootstrap:` lines while the previous instance shows the first-boot fetch attempt (API off in this topology) | guard skips refetch |
+| K12 | Step-2 migration: main container `Command` = overlay supervisor (`supervise-opencode`), baked entrypoint bypassed; relocated env present (OPENCODE_CONFIG on the agentd-config mount, XDG_DATA_HOME, event system, OPENCODE_SERVER_PASSWORD via secretKeyRef); #863 verify moved into the supervisor (self-hash /proc/self/exe vs pod-spec pins, exit 81 contract preserved) | bypass + env + self-verify |
+| K13 | Incident class (2026-08-25), regression form: a DEGRADED runtime base (baked agentd + entrypoints deleted from the freshly built image) boots a second workspace Ready in sidecar mode — platform code is provably independent of the runtime image | Ready on degraded base |
+
+**Status note:** K1–K8 ran GREEN pre-migration (run 32435547256; found → #999). The step-1/2 revisions (K1 re-pinned, K3 extension, K9–K13) are new and await their first execution — the sidecar-flip runbook lists that green run as a flip precondition.
 
 **Record results** as a comment on #978 (template: ID / PASS-FAIL / evidence command output). K6/K7 degrade to SKIP when `crictl` is unavailable on the node.
 

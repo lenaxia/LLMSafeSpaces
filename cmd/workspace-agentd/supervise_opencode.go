@@ -40,6 +40,19 @@ func runSuperviseOpencodeCommand(_ []string) int {
 	log := newLogger()
 	defer func() { _ = log.Sync() }()
 
+	// Step-2 migration: verify-before-exec, moved from the baked
+	// entrypoint's bash (#863) into the supervisor itself — the main
+	// container now starts here directly. Exit 81 keeps the controller's
+	// AgentdVerificationFailed detection contract. Runs before ANY work
+	// (socket, children, markers) — fail closed.
+	//
+	//nolint:errcheck // selfExe read failure → empty hash → pin mismatch → 81
+	if err := runSupervisorSelfVerify("/proc/self/exe"); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		_ = os.WriteFile("/dev/termination-log", []byte(err.Error()), 0o644) //nolint:gosec // best-effort, same as the bash log_fail
+		return supervisorExitVerifyFailed
+	}
+
 	// PID 1 duties: reap orphans exactly like the current in-container
 	// agentd does (#904/#908 paths unchanged).
 	_ = becomeSubreaper()

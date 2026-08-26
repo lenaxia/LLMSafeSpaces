@@ -260,18 +260,27 @@ func TestAgentdSidecar_Enabled_OrderingAfterCredentialSetup(t *testing.T) {
 	pod, err := r.buildPod(context.Background(), ws)
 	require.NoError(t, err)
 
+	// Migration step 1: in sidecar mode the credential half of boot
+	// (bootstrap+materialize) runs INSIDE the sidecar's boot phase, in
+	// order before its platform stamp (pinned in
+	// cmd/workspace-agentd/sidecar_boot_test.go) — the base
+	// agent-config.json exists before the sidecar stamps platform
+	// blocks because the same process writes both, in sequence. The
+	// pod-level ordering pin narrows to: platform-init (uid-1000 PVC
+	// prep) first, sidecar LAST so its startup probe gates the main
+	// container on completed boot.
 	credIdx, sidecarIdx := -1, -1
 	for i, c := range pod.Spec.InitContainers {
 		switch c.Name {
-		case "credential-setup":
+		case "platform-init":
 			credIdx = i
 		case "agentd":
 			sidecarIdx = i
 		}
 	}
-	require.GreaterOrEqual(t, credIdx, 0, "credential-setup init must exist")
+	require.GreaterOrEqual(t, credIdx, 0, "platform-init must exist")
 	require.Greater(t, sidecarIdx, credIdx,
-		"sidecar must start AFTER credential-setup: the base agent-config.json materialize writes must exist before the sidecar stamps platform blocks")
+		"sidecar must start AFTER platform-init: the tmpfs credential dirs and symlink farm must exist before the sidecar's boot phase materializes into them")
 	require.Equal(t, len(pod.Spec.InitContainers)-1, sidecarIdx,
 		"sidecar is the LAST init container")
 }

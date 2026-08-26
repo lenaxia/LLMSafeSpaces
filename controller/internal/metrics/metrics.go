@@ -66,6 +66,15 @@ var (
 		prometheus.CounterOpts{Name: "llmsafespaces_workspace_agentd_verify_failures_total", Help: "Entrypoint agentd binary verification failures by outcome/node/agentd digest (verify_failed = sha256 mismatch, overlay_missing = pinned binary absent). Once per failure episode, not per restart"},
 		[]string{"outcome", "node", "agentd"},
 	)
+	// Design 0051 sidecar migration step 1: platform boot-phase failures
+	// (init-fs operational failure, bootstrap/materialize non-zero exit in
+	// the sidecar's boot phase or the legacy platform init containers).
+	// High-signal — a persistent occurrence means a platform regression
+	// (code or contract skew), never user load.
+	WorkspacePlatformBootFailuresTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{Name: "llmsafespaces_workspace_platform_boot_failures_total", Help: "Platform boot-phase failures (init-fs/bootstrap/materialize in platform containers) by container/node. Once per failure episode, not per restart"},
+		[]string{"container", "node"},
+	)
 	WorkspaceRecoveryDurationSeconds = prometheus.NewHistogramVec(
 		prometheus.HistogramOpts{
 			Name:    "llmsafespaces_workspace_recovery_duration_seconds",
@@ -198,6 +207,7 @@ func AllCollectors() []prometheus.Collector {
 		WorkspaceSafeModeActive, WorkspaceSafeModeEntriesTotal, WorkspaceSafeModeExitsTotal,
 		WorkspaceControllerRestartsTotal, WorkspacesInRecovery,
 		WorkspaceAgentdVerifyFailuresTotal,
+		WorkspacePlatformBootFailuresTotal,
 		WorkspaceRecoveryDurationSeconds,
 		WorkspaceStatusUpdateConflictsTotal,
 		WorkspaceCreateDurationSeconds, WorkspaceResumeDurationSeconds,

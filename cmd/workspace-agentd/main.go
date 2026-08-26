@@ -75,6 +75,14 @@ func main() {
 	// runtimes/base/tools/entrypoints/entrypoint-common.sh and consolidates
 	// secret materialization in a single, tested code path. See worklog
 	// 0078 (Epic 17 G2/G20 remediation).
+	// Design 0051 sidecar migration step 1: `init-fs` subcommand — the
+	// uid-1000 PVC filesystem prep (dirs, hardened symlink farm,
+	// password/admin-token installs, free-models copy) absorbed from the
+	// runtime-image init containers into this digest-pinned artifact.
+	if len(os.Args) > 1 && os.Args[1] == "init-fs" {
+		os.Exit(runInitFSCommand(os.Args[2:], os.Stderr))
+	}
+
 	// Design 0051 US-1: same-uid supervisor mode. Same image, new role —
 	// the Phase-2 sidecar split (US-2) keeps this entry point; it becomes
 	// PID 1 of the workspace container and serves the Appendix-A control
