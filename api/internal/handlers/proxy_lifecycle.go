@@ -281,6 +281,9 @@ func (h *ProxyHandler) newSSETracker() *sse.Tracker {
 	t.SetOnRawEvent(h.onRawEvent)
 	t.SetOnAgentDied(h.onAgentDied)
 	t.SetOnReconnect(h.reconcileSessionState)
+	if h.tokenSeenStore != nil {
+		t.SetTokenSeenStore(h.tokenSeenStore)
+	}
 	return t
 }
 

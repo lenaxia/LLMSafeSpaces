@@ -86,6 +86,10 @@ type ProxyHandler struct {
 
 	meteringSvc interfaces.MeteringService
 
+	// tokenSeenStore persists per-session cumulative usage dedup state
+	// across tracker restarts (#759); nil = in-memory only (dev/test).
+	tokenSeenStore sse.TokenSeenStore
+
 	// versionSyncCb is the callback wired into the CRD watcher to persist
 	// runtime version info (imageTag) to the DB whenever a workspace becomes
 	// Active. Set via SetVersionSyncCallback before Start().
@@ -288,6 +292,19 @@ func (h *ProxyHandler) SetStateStore(store wsstate.Store) {
 		panic("SetStateStore called after Start — request goroutines may already be reading stateStore")
 	}
 	h.stateStore = store
+}
+
+// SetTokenSeenStore wires the persistent session-usage dedup store
+// (#759). The SSE tracker consumes it at construction; panics after
+// Start for the same race-safety reason as SetStateStore.
+func (h *ProxyHandler) SetTokenSeenStore(store sse.TokenSeenStore) {
+	if store == nil {
+		return
+	}
+	if h.started {
+		panic("SetTokenSeenStore called after Start — the tracker may already be reading it")
+	}
+	h.tokenSeenStore = store
 }
 
 func (h *ProxyHandler) proxyToWorkspace(c *gin.Context, targetPath string, isWriteOp bool, sessionID string) {
