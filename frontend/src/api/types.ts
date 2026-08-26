@@ -97,6 +97,10 @@ export interface AgentSession {
   title?: string;
   parentID?: string;
   share?: string;
+  // Ground-truth busy/idle from the adapter's /v1/statusz sync (#792
+  // Pattern 1) — the timeout-recheck in useChatStream reads it before
+  // declaring an interrupted stream (2026-08-26 false-positive incident).
+  status?: "idle" | "busy" | "retry";
 }
 
 export interface WorkspaceStatus {

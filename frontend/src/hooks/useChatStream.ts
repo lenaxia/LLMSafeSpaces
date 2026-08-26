@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { messagesApi } from "../api/messages";
+import { workspacesApi } from "../api/workspaces";
 import { ApiClientError } from "../api/client";
 import type { Message } from "../api/types";
 
@@ -129,8 +130,27 @@ export function useChatStream(workspaceId: string | undefined, sessionId: string
         // Only show the interrupted banner when:
         // 1. The idle SSE never arrived (resolvedViaSSE=false), AND
         // 2. The server is not still actively busy (would indicate slow response)
+        //
+        // Incident 2026-08-26 (fe8348c8): serverBusy is only as live as the
+        // SSE subscription — and the first message is often sent exactly
+        // when that subscription is flapping through pod startup ("no pod
+        // IP", backoff). Stale-false busy + timeout = false "Response
+        // interrupted" banner over a healthy run. Before declaring an
+        // interruption, RECHECK the session status over plain HTTP: busy
+        // means the agent is alive and we simply missed the event stream.
+        // The recheck fails OPEN (banner shows) — warning on a live agent
+        // is recoverable; hanging silently on a dead one is not.
         if (!resolvedViaSSE && !serverBusyRef.current && currentSessionRef.current === capturedSessionId) {
-          setStreamTimedOut(true);
+          let serverStillBusy = false;
+          try {
+            const session = await workspacesApi.getSession(workspaceId, capturedSessionId);
+            serverStillBusy = session?.status === "busy";
+          } catch {
+            // Unreachable status endpoint — preserve pre-recheck behavior.
+          }
+          if (!serverStillBusy) {
+            setStreamTimedOut(true);
+          }
         }
 
         const history = await messagesApi.getHistory(workspaceId, capturedSessionId);
