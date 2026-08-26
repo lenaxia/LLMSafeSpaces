@@ -82,21 +82,21 @@ func runBootstrapCommand(args []string, _ io.Writer, stderr io.Writer) int {
 
 	if err := os.MkdirAll(filepath.Dir(*out), 0o750); err != nil {
 		_, _ = fmt.Fprintf(stderr, "bootstrap: failed to create output dir: %v\n", err)
-		writeEmptySecrets(*out)
+		writeEmptySecrets(*out, stderr)
 		return 0
 	}
 
 	token, err := os.ReadFile(*tokenFile)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "bootstrap: token file unreadable (%s): %v\n", *tokenFile, err)
-		writeEmptySecrets(*out)
+		writeEmptySecrets(*out, stderr)
 		return 0
 	}
 
 	secrets, wsCfg, adminPrompt, allowedDirs, err := fetchBootstrapSecrets(*apiURL, *workspaceID, string(token))
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "bootstrap: fetch failed: %v\n", err)
-		writeEmptySecrets(*out)
+		writeEmptySecrets(*out, stderr)
 		return 0
 	}
 
@@ -175,8 +175,13 @@ func fetchBootstrapSecrets(apiURL, workspaceID, token string) (json.RawMessage, 
 	return result.Secrets, result.WorkspaceConfig, result.AdminPrompt, result.AllowedExternalDirectories, nil
 }
 
-func writeEmptySecrets(path string) {
-	_ = atomicWriteSecrets(path, []byte("[]"), 0o600)
+func writeEmptySecrets(path string, stderr io.Writer) {
+	if err := atomicWriteSecrets(path, []byte("[]"), 0o600); err != nil {
+		// Never-block-boot holds, but silence here cost a day of K11
+		// triage (kind run 3): a 0750 rt/ made the empty-batch write
+		// fail invisibly, so the sidecar restart guard never held.
+		_, _ = fmt.Fprintf(stderr, "bootstrap: empty-batch write FAILED at %s: %v (restart guard will not hold)\n", path, err)
+	}
 }
 
 // atomicWriteSecrets writes path atomically (temp + rename) with perm.

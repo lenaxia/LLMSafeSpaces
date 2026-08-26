@@ -535,16 +535,25 @@ kubectl -n "$NS" exec "$POD" -c workspace -- mkdir -p /home/sandbox/.secrets/jun
 kubectl -n "$NS" exec "$POD" -c workspace -- sh -c 'echo legacy > /home/sandbox/.secrets/junk/f' >/dev/null 2>&1 || true
 kubectl -n "$NS" exec "$POD" -c workspace -- mkdir -p /workspace/.local/opencode >/dev/null 2>&1 || true
 kubectl -n "$NS" exec "$POD" -c workspace -- sh -c 'echo legacy-auth > /workspace/.local/opencode/auth.json' >/dev/null 2>&1 || true
+# Pod names are DETERMINISTIC (podName(ws,UID)) — the recreated pod
+# carries the same name (kind run 3's K10 spun forever on a name-diff
+# that can never differ). Detect recreation via creationTimestamp
+# instead: wait for a pod strictly younger than the delete.
 OLD_POD="$POD"
+DELETE_TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 kubectl -n "$NS" delete "pod/$POD" --wait=true >/dev/null 2>&1
 POD=""
-for i in $(seq 1 60); do
-  POD=$(kubectl -n "$NS" get pods -l llmsafespaces.dev/workspace="$WORKSPACE_NAME" \
+for i in $(seq 1 90); do
+  CAND=$(kubectl -n "$NS" get pods -l llmsafespaces.dev/workspace="$WORKSPACE_NAME" \
     -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
-  [ -n "$POD" ] && [ "$POD" != "$OLD_POD" ] && break
+  CTS=$(kubectl -n "$NS" get pods -l llmsafespaces.dev/workspace="$WORKSPACE_NAME" \
+    -o jsonpath='{.items[0].metadata.creationTimestamp}' 2>/dev/null || true)
+  if [ -n "$CAND" ] && [ -n "$CTS" ] && [[ "$CTS" > "$DELETE_TS" ]]; then
+    POD="$CAND"; break
+  fi
   sleep 2
 done
-if [ -n "$POD" ] && [ "$POD" != "$OLD_POD" ] \
+if [ -n "$POD" ] \
   && kubectl -n "$NS" wait --for=condition=Ready "pod/$POD" --timeout=300s >/dev/null 2>&1; then
   NEW_SECRETS=$(kubectl -n "$NS" exec "$POD" -c workspace -- readlink /home/sandbox/.secrets 2>/dev/null || echo "")
   JUNK_GONE=$(kubectl -n "$NS" exec "$POD" -c workspace -- sh -c 'ls /sandbox-runtime/rt/secrets/junk 2>/dev/null || echo gone' 2>/dev/null || echo gone)

@@ -143,7 +143,7 @@ func TestInitFS_HappyPath_FreshPVC(t *testing.T) {
 	// sidecar's boot phase/reset traverses and re-materializes here via
 	// the pod's shared gid 1000 — kind L3 08:42 UTC 2026-08-26 caught
 	// 0700 producing sidecar materialize EACCES).
-	for _, d := range []string{filepath.Join(tr.rt, "rt", "ssh"), filepath.Join(tr.rt, "rt", "secrets")} {
+	for _, d := range []string{filepath.Join(tr.rt, "rt"), filepath.Join(tr.rt, "rt", "ssh"), filepath.Join(tr.rt, "rt", "secrets")} {
 		info, err := os.Stat(d)
 		require.NoError(t, err)
 		require.True(t, info.IsDir())
@@ -297,7 +297,7 @@ func TestInitFS_RTDirs_CrossUIDContract(t *testing.T) {
 	exit, _ := runInitFSSubcommand(t, bin, tr.args()...)
 	require.Equal(t, 0, exit)
 
-	for _, d := range []string{filepath.Join(tr.rt, "rt", "ssh"), filepath.Join(tr.rt, "rt", "secrets")} {
+	for _, d := range []string{filepath.Join(tr.rt, "rt"), filepath.Join(tr.rt, "rt", "ssh"), filepath.Join(tr.rt, "rt", "secrets")} {
 		info, err := os.Stat(d)
 		require.NoError(t, err)
 		require.NotZero(t, info.Mode().Perm()&0o020,
