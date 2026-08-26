@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.1] - 2026-08-26
+
+### Fixed
+
+- **Platform init containers did not mount the agentd image volume
+  (#1023, found by the first K1–K13 kind run)**: platform-init,
+  platform-bootstrap, and platform-materialize exec the overlay binary
+  path but the `agentd` image volume was never mounted on them
+  (wireAgentdOverlay wires main+sidecar only) — every NEW workspace pod
+  on an overlay-mode cluster crash-looped at Init with exit 128
+  (`stat /agentd/usr/local/bin/workspace-agentd: no such file or
+  directory`). No L0–L2 layer validates mount-vs-command consistency;
+  only a real kubelet could see it. Pinned by
+  TestPlatformInit_AgentdVolumeMountedEverywhere (both modes, init +
+  main containers).
+
 ## [0.21.0] - 2026-08-26
 
 ### Added
