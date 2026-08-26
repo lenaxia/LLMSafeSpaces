@@ -317,10 +317,18 @@ var implOnlyAllowlist = map[route]bool{
 	// in-cluster monitoring stack. Not part of the public API.
 	{method: "GET", path: "/metrics"}: true,
 
-	// D3 (#907): outbox queue-retry — an action route on the queue
-	// resource (parallel to the DELETE dismiss above), deliberately not
-	// part of the public API surface.
-	{method: "POST", path: "/api/v1/workspaces/:id/sessions/:sessionId/queue/:messageId/retry"}: true,
+	// D3 (#907): outbox queue-retry — documented in the spec since the
+	// #1042 catch-up; no longer allowlisted.
+
+	// Internal service-to-service endpoints — authenticated by shared
+	// secrets / TokenReview, never called by SDK or frontend clients.
+	// GET /api/v1/internal/orgs/:orgID/status — X-Internal-Token.
+	{method: "GET", path: "/api/v1/internal/orgs/:orgID/status"}: true,
+	// POST /internal/v1/pod-bootstrap — K8s projected SA token (TokenReview).
+	{method: "POST", path: "/internal/v1/pod-bootstrap"}: true,
+	// POST /internal/image-factory/builds/:id/callback — constant-time
+	// per-build callback token; the builder is the only caller.
+	{method: "POST", path: "/internal/image-factory/builds/:id/callback"}: true,
 
 	// #901 G6: auth-gated pprof mounts. The catch-all wildcard registers
 	// one route per method; the surface is a single admin diagnostic
@@ -335,6 +343,12 @@ var implOnlyAllowlist = map[route]bool{
 	{method: "OPTIONS", path: "/api/v1/admin/debug/pprof/*path"}: true,
 	{method: "TRACE", path: "/api/v1/admin/debug/pprof/*path"}:   true,
 	{method: "CONNECT", path: "/api/v1/admin/debug/pprof/*path"}: true,
+
+	// Epic 66: the router registers the dev-preview tunnel as a catch-all
+	// wildcard (/dev-preview/*portPath) capturing port + sub-path in one
+	// param; the spec documents the {port} path shape. Same shape-mismatch
+	// rationale as the specOnly entry above.
+	{method: "GET", path: "/api/v1/workspaces/:id/dev-preview/*portPath"}: true,
 
 	// /health (no prefix) — legacy alias for /livez. Documented in
 	// OpenAPI under the root path. The router also serves an
@@ -416,25 +430,49 @@ func newContractFixture(t *testing.T) *gin.Engine {
 		ModelsHandler:       &handlers.ModelsHandler{},
 		WorkspaceEnvHandler: &handlers.WorkspaceEnvHandler{},
 		TerminalHandler:     &handlers.TerminalHandler{},
-		// Epic 53: MCP server handlers. Zero-value stubs are sufficient —
-		// the contract test only checks route presence, not behavior.
-		// OrgsHandler is required because registerMCPRoutes uses it for
-		// the OrgAdminGuard on org MCP routes.
-		AdminMCPServersHandler: &handlers.MCPServersHandler{},
-		OrgMCPServersHandler:   &handlers.MCPServersHandler{},
-		UserMCPServersHandler:  &handlers.MCPServersHandler{},
-		OrgsHandler:            &handlers.OrgsHandler{},
-		// Epic 64: workflow/trigger/run/hook routes. Zero-value stubs —
-		// route presence only. OrgWorkflows/OrgTriggers additionally
-		// require OrgsHandler (OrgAdminGuard), already set above.
-		UserWorkflowsHandler:   &handlers.WorkflowsHandler{},
-		OrgWorkflowsHandler:    &handlers.WorkflowsHandler{},
-		UserTriggersHandler:    &handlers.TriggersHandler{},
-		OrgTriggersHandler:     &handlers.TriggersHandler{},
-		WebhookReceiverHandler: &handlers.WebhookReceiverHandler{},
-		// Epic 59: passkey ceremonies + account passkey management.
-		// Zero-value stub — route presence only.
-		PasskeyHandler: &handlers.PasskeyHandler{},
+		// Every handler below is a zero-value stub: the contract test
+		// checks route presence and method, never behavior. Wiring ALL
+		// handlers means every production route is visible to the
+		// impl→spec diff — nothing can hide behind an unwired handler
+		// (#1043).
+		AdminProviderCredentialsHandler: &handlers.AdminProviderCredentialsHandler{},
+		UserProviderCredentialsHandler:  &handlers.UserProviderCredentialsHandler{},
+		ImageFactoryHandler:             &handlers.ImageFactoryHandler{},
+		ImageFactoryAdminHandler:        &handlers.ImageFactoryAdminHandler{},
+		UnlockDEKHandler:                &handlers.UnlockDEKHandler{},
+		OrgsHandler:                     &handlers.OrgsHandler{},
+		OrgCredentialsHandler:           &handlers.OrgCredentialsHandler{},
+		DevPreviewHandler:               &handlers.DevPreviewHandler{},
+		PreviewOriginHandler:            &handlers.PreviewOriginHandler{},
+		AgentReloadHandler:              &handlers.AgentReloadHandler{},
+		BulkReloadHandler:               &handlers.BulkReloadHandler{},
+		UsageHandler:                    &handlers.UsageHandler{},
+		WebhookHandler:                  &handlers.StripeWebhookHandler{},
+		InvitationsHandler:              &handlers.InvitationsHandler{},
+		EmailHandler:                    &handlers.EmailHandler{},
+		EmailVerifyHandler:              &handlers.EmailVerifyHandler{},
+		PasswordResetHandler:            &handlers.PasswordResetHandler{},
+		PolicyHandler:                   &handlers.PolicyHandler{},
+		PromptHandler:                   &handlers.PromptHandler{},
+		AgentRoleHandler:                &handlers.AgentRoleHandler{},
+		AuditHandler:                    &handlers.AuditHandler{},
+		RelayAdminHandler:               &handlers.RelayAdminHandler{},
+		PlatformInfoHandler:             &handlers.PlatformInfoHandler{},
+		AdminSessionHandler:             &handlers.AdminSessionHandler{},
+		PlatformAdminHandler:            &handlers.PlatformAdminHandler{},
+		InternalOrgStatusHandler:        &handlers.InternalOrgStatusHandler{},
+		PodBootstrapHandler:             &handlers.PodBootstrapHandler{},
+		AdminMCPServersHandler:          &handlers.MCPServersHandler{},
+		OrgMCPServersHandler:            &handlers.MCPServersHandler{},
+		UserMCPServersHandler:           &handlers.MCPServersHandler{},
+		SSOHandler:                      &handlers.SSOHandler{},
+		LoginDiscoveryHandler:           &handlers.LoginDiscoveryHandler{},
+		PasskeyHandler:                  &handlers.PasskeyHandler{},
+		UserWorkflowsHandler:            &handlers.WorkflowsHandler{},
+		OrgWorkflowsHandler:             &handlers.WorkflowsHandler{},
+		UserTriggersHandler:             &handlers.TriggersHandler{},
+		OrgTriggersHandler:              &handlers.TriggersHandler{},
+		WebhookReceiverHandler:          &handlers.WebhookReceiverHandler{},
 	}
 	// proxyHandler also has a conditional wiring guard (sessions,
 	// events, message, prompt, abort routes). Pass a zero-value stub

@@ -29,6 +29,12 @@ tags:
     description: Provider credentials, agent roles, and prompts
   - name: mcp
     description: External MCP server management (Epic 53)
+  - name: orgs
+    description: Organizations — invitations, policies, audit, SSO config
+  - name: imageFactory
+    description: Workspace image configuration (Epic 46)
+  - name: admin
+    description: Platform-admin operations (orgs, users, relay, email, platform info)
   - name: workflows
     description: Workflow definitions, runs, and node runs (Epic 64)
   - name: triggers
@@ -1268,7 +1274,7 @@ paths:
   /secrets/audit:
     get:
       tags: [secrets]
-      summary: Get secret audit log
+      summary: Secret access audit log
       operationId: getSecretAuditLog
       responses:
         "200":
@@ -4242,6 +4248,2561 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  # --- Org SSO (Epic 43, public + org-admin) ---
+  /auth/sso/domains:
+    get:
+      tags: [auth]
+      summary: List verified SSO domains (public, for login-page routing)
+      security: []
+      operationId: listSsoDomains
+      responses:
+        "200":
+          description: Verified domains across all orgs (empty array when none)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [domains]
+                properties:
+                  domains:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SsoDomain"
+        "500":
+          description: Lookup failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /auth/sso/{orgSlug}/start:
+    get:
+      tags: [auth]
+      summary: Begin the SSO PKCE login flow
+      security: []
+      description: |
+        302 redirect to the org's IdP authorize URL with a PKCE code challenge.
+        Sets a signed, HttpOnly state cookie (`lsp_sso_state`, 10-minute TTL).
+        All failure modes also 302 — to the frontend login page with an
+        `?sso=<reason>` query parameter (provisioning_disabled, suspended,
+        email_unverified, not_configured, state_invalid, config_error, error).
+      operationId: startSsoLogin
+      parameters:
+        - name: orgSlug
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "302":
+          description: Redirect to IdP (or to the frontend with an error reason)
+          headers:
+            Location:
+              schema:
+                type: string
+            Set-Cookie:
+              schema:
+                type: string
+  /auth/sso/{orgSlug}/callback:
+    get:
+      tags: [auth]
+      summary: Complete the SSO PKCE login flow
+      security: []
+      description: |
+        Verifies state cookie + IdP code, enforces email_verified, resolves
+        user + role + membership, then 302s to the frontend with
+        `?sso=success` and sets the session cookie. Failures 302 to the
+        login page with `?sso=<reason>`.
+      operationId: ssoLoginCallback
+      parameters:
+        - name: orgSlug
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: code
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: state
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "302":
+          description: Redirect to the frontend; session cookie set on success
+          headers:
+            Location:
+              schema:
+                type: string
+            Set-Cookie:
+              schema:
+                type: string
+  /orgs/{id}/sso:
+    get:
+      tags: [auth]
+      summary: Read the org's SSO configuration (org admin)
+      description: Returns a default empty config object when none exists.
+      operationId: getOrgSso
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      responses:
+        "200":
+          description: SSO config (secret never returned — hasSecret flag only)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgSsoConfig"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    put:
+      tags: [auth]
+      summary: Upsert the org's SSO configuration (org admin)
+      description: |
+        Empty `clientSecret` leaves the existing secret unchanged. The client
+        secret is encrypted at rest with the server KEK. Returns the stored
+        config; if a live config reload fails the response degrades to
+        `{"status":"ok"}`.
+      operationId: upsertOrgSso
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpsertOrgSsoRequest"
+      responses:
+        "200":
+          description: Stored config (or degraded ok ack)
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: "#/components/schemas/OrgSsoConfig"
+                  - type: object
+                    properties:
+                      status:
+                        type: string
+                        enum: [ok]
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          description: Server key not configured for secret encryption
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags: [auth]
+      summary: Remove the org's SSO configuration (org admin)
+      operationId: deleteOrgSso
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      responses:
+        "204":
+          description: Removed
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /orgs/{id}/sso/domains/{domain}/verify:
+    post:
+      tags: [auth]
+      summary: On-demand DNS verification of a claimed domain (org admin)
+      description: |
+        Expects a TXT record ` _llmsafespaces-verify.<domain> = <verificationToken>`.
+        Note: the response body uses PascalCase keys (`Domain`, `Verified`).
+      operationId: verifySsoDomain
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: domain
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Verification result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  Domain:
+                    type: string
+                  Verified:
+                    type: boolean
+        "400":
+          description: Domain not claimed by this org
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: No SSO config for this org
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: No verification token — rotate first
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: DNS record mismatch
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /orgs/{id}/sso/verification-token/rotate:
+    post:
+      tags: [auth]
+      summary: Generate or rotate the DNS verification token (org admin)
+      operationId: rotateSsoVerificationToken
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      responses:
+        "200":
+          description: New token
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [verificationToken]
+                properties:
+                  verificationToken:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  # --- Org invitations ---
+  /orgs/{id}/invitations:
+    get:
+      tags: [orgs]
+      summary: List the org's pending invitations (org member)
+      operationId: listOrgInvitations
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      responses:
+        "200":
+          description: Invitation list (bare array)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/OrgInvitation"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [orgs]
+      summary: Create invitations (org admin)
+      description: Sends invitation emails (max 100 per call, 50/hour org limit).
+      operationId: createOrgInvitations
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateInvitationsRequest"
+      responses:
+        "201":
+          description: Created invitations (bare array)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/OrgInvitation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          description: Hourly invitation limit exceeded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  limit:
+                    type: integer
+  /orgs/{id}/invitations/{invID}:
+    delete:
+      tags: [orgs]
+      summary: Revoke an invitation (org admin)
+      operationId: deleteOrgInvitation
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: invID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Revoked
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /orgs/{id}/invitations/{invID}/resend:
+    post:
+      tags: [orgs]
+      summary: Resend an invitation (org admin)
+      description: Replaces the invitation row (new ID and expiry) and re-sends the email.
+      operationId: resendOrgInvitation
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: invID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Replacement invitation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OrgInvitation"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Invitation already terminal (accepted/declined/expired)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /orgs/{id}/invitations/{invID}/verify-user:
+    post:
+      tags: [orgs]
+      summary: Manually verify the invitee's email (org admin)
+      description: |
+        For invitees who cannot click email links. 422 when no account exists
+        for the invitation email.
+      operationId: verifyInvitationUser
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: invID
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Verified
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          description: Invitation expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: No account exists for the invitation email
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                    enum: [no_account_for_email]
+                  message:
+                    type: string
+  /invitations/{token}:
+    get:
+      tags: [orgs]
+      summary: Read invitation details (public — the token is the credential)
+      security: []
+      operationId: getInvitation
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Invitation details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InvitationDetail"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /invitations/{token}/accept:
+    post:
+      tags: [orgs]
+      summary: Accept an invitation (authenticated; invitee email must match)
+      operationId: acceptInvitation
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Membership created
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [membership]
+                properties:
+                  membership:
+                    $ref: "#/components/schemas/OrgMember"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          description: Account email does not match the invitation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Already accepted/declined or already a member (of any org)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "410":
+          description: Expired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /invitations/{token}/decline:
+    post:
+      tags: [orgs]
+      summary: Decline an invitation (authenticated)
+      operationId: declineInvitation
+      parameters:
+        - name: token
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Declined
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [declined]
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  # --- Org credentials ---
+  /orgs/{id}/credentials:
+    get:
+      tags: [credentials]
+      summary: List org credentials (org admin, newest first)
+      operationId: listOrgCredentials
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      responses:
+        "200":
+          description: Credential list (bare array)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ProviderCredential"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [credentials]
+      summary: Create an org credential (org admin)
+      description: |
+        On auto-bind failure the credential is still created (201) with a
+        `bindWarning` field.
+      operationId: createOrgCredential
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProviderCredentialRequest"
+      responses:
+        "201":
+          description: Credential created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderCredential"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /orgs/{id}/credentials/{credID}:
+    put:
+      tags: [credentials]
+      summary: Update an org credential (org admin, partial)
+      operationId: updateOrgCredential
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: credID
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateProviderCredentialRequest"
+      responses:
+        "200":
+          description: Updated credential
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProviderCredential"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    delete:
+      tags: [credentials]
+      summary: Delete an org credential (org admin, idempotent)
+      description: Returns 204 even when the credential does not exist.
+      operationId: deleteOrgCredential
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: credID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted (or already absent)
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /orgs/{id}/credentials/{credID}/models:
+    get:
+      tags: [credentials]
+      summary: Probe models reachable via an org credential (org admin)
+      operationId: probeOrgCredentialModels
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: credID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Probe result (200 with `warning` on probe failure)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProbeModelsResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /orgs/{id}/credentials/{credID}/auto-apply:
+    post:
+      tags: [credentials]
+      summary: Enable auto-apply for an org credential (org admin)
+      description: No request body; priority is fixed at 5.
+      operationId: enableOrgCredentialAutoApply
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: credID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "201":
+          description: Enabled (empty body)
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+    get:
+      tags: [credentials]
+      summary: List org auto-apply rules (org admin)
+      description: |
+        Returns ALL org rules (not just this credential's). Note: the wire
+        keys are PascalCase (`CredentialID`, `TargetType`, `TargetID`,
+        `Priority`).
+      operationId: listOrgCredentialAutoApply
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: credID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Rules (bare array)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    CredentialID:
+                      type: string
+                    TargetType:
+                      type: string
+                    TargetID:
+                      type: string
+                      nullable: true
+                    Priority:
+                      type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [credentials]
+      summary: Disable auto-apply for an org credential (org admin)
+      operationId: disableOrgCredentialAutoApply
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: credID
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Disabled
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  # --- Org policies ---
+  /orgs/{id}/policies:
+    get:
+      tags: [orgs]
+      summary: List org policies (org admin)
+      operationId: listOrgPolicies
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      responses:
+        "200":
+          description: Policy list (bare array; values are raw JSON of varying type per key)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/OrgPolicy"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /orgs/{id}/policies/{key}:
+    put:
+      tags: [orgs]
+      summary: Set an org policy (org admin; Business+ plan)
+      description: |
+        The request body IS the raw JSON policy value (a bare scalar/array/
+        object — not an envelope). Valid keys and value types: allowed_models
+        (string[]), allowed_providers (string[]), max_workspaces_per_member
+        (int), max_active_workspaces_per_member (int), sys_prompt_org
+        (string <= 10000), allow_user_prompt (bool), allow_user_mcp_servers
+        (bool), max_mcp_servers_per_workspace (int), default_runtime
+        (string), allowed_image_configs (string[]).
+      operationId: setOrgPolicy
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {}
+      responses:
+        "200":
+          description: Set
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "402":
+          description: Feature not included in the org's plan
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    delete:
+      tags: [orgs]
+      summary: Reset an org policy to default (org admin; Business+ plan)
+      operationId: deleteOrgPolicy
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Reset
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "402":
+          description: Feature not included in the org's plan
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  # --- Org prompt & agent roles ---
+  /orgs/{id}/prompt:
+    get:
+      tags: [credentials]
+      summary: Read the org system prompt (org member)
+      operationId: getOrgPrompt
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      responses:
+        "200":
+          description: Org prompt
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [prompt, allowUserPrompt]
+                properties:
+                  prompt:
+                    type: string
+                  allowUserPrompt:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    put:
+      tags: [credentials]
+      summary: Set the org system prompt (org admin; partial)
+      operationId: setOrgPrompt
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                prompt:
+                  type: string
+                  maxLength: 10000
+                allowUserPrompt:
+                  type: boolean
+      responses:
+        "200":
+          description: Set
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /orgs/{id}/agent-roles:
+    get:
+      tags: [credentials]
+      summary: List org agent roles (org admin)
+      operationId: listOrgAgentRoles
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      responses:
+        "200":
+          description: Role list (bare array)
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AgentRole"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+    post:
+      tags: [credentials]
+      summary: Create an org agent role (org admin)
+      operationId: createOrgAgentRole
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateAgentRoleRequest"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRole"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+  /orgs/{id}/agent-roles/{roleId}:
+    get:
+      tags: [credentials]
+      summary: Get an org agent role (org admin)
+      operationId: getOrgAgentRole
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: roleId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRole"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [credentials]
+      summary: Update an org agent role (org admin; partial)
+      operationId: updateOrgAgentRole
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: roleId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAgentRoleRequest"
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRole"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [credentials]
+      summary: Delete an org agent role (org admin)
+      description: 409 when other roles extend it or workspaces use it.
+      operationId: deleteOrgAgentRole
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: roleId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Role is extended or in use
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  # --- Org audit ---
+  /orgs/{id}/audit:
+    get:
+      tags: [orgs]
+      summary: List the org's audit log (org admin; Business+ plan)
+      operationId: listOrgAudit
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+        - name: limit
+          in: query
+          description: Page size (default 50, max 200)
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        "200":
+          description: Audit entries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, pagination]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AuditLogEntry"
+                  pagination:
+                    $ref: "#/components/schemas/PaginationMetadata"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "402":
+          description: Feature not included in the org's plan
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  # --- Image factory (Epic 46) ---
+  /image-factory/catalog:
+    get:
+      tags: [imageFactory]
+      summary: List the image-factory catalog (bases, extensions, known failures)
+      operationId: getImageFactoryCatalog
+      responses:
+        "200":
+          description: Catalog
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImageFactoryCatalog"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /image-factory/configs:
+    get:
+      tags: [imageFactory]
+      summary: List image configs visible to the caller
+      operationId: listImageConfigs
+      responses:
+        "200":
+          description: Config list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [configs]
+                properties:
+                  configs:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ImageConfig"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+    post:
+      tags: [imageFactory]
+      summary: Create a member-scope image config and start its build
+      description: |
+        422 for name/selection/base validation failures and known-failure
+        blocks; 503 when the build dispatcher is not wired or dispatch fails.
+      operationId: createImageConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateImageConfigRequest"
+      responses:
+        "201":
+          description: Config created (build dispatched)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImageConfig"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          description: Validation failed (unknown base/version, invalid selection, known-failure blocklist)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Build dispatcher unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /image-factory/configs/{hash}:
+    get:
+      tags: [imageFactory]
+      summary: Get an image config by hash
+      operationId: getImageConfig
+      parameters:
+        - name: hash
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImageConfig"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [imageFactory]
+      summary: Delete an image config (owner or admin)
+      description: 409 when a build is in flight for the config.
+      operationId: deleteImageConfig
+      parameters:
+        - name: hash
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Deleted
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Build in flight
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+    patch:
+      tags: [imageFactory]
+      summary: Rename an image config (owner or admin)
+      operationId: renameImageConfig
+      parameters:
+        - name: hash
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  maxLength: 64
+                  minLength: 1
+      responses:
+        "200":
+          description: Updated config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImageConfig"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Name conflict
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "422":
+          description: Empty or over-length name
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /orgs/{id}/image-factory/configs:
+    post:
+      tags: [imageFactory]
+      summary: Create an org-scope image config (org admin)
+      operationId: createOrgImageConfig
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateImageConfigRequest"
+      responses:
+        "201":
+          description: Config created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImageConfig"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Build dispatcher unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/image-factory/platform-config:
+    get:
+      tags: [imageFactory]
+      summary: Read the platform image-factory config (admin)
+      operationId: getImageFactoryPlatformConfig
+      responses:
+        "200":
+          description: Platform config
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [architectures]
+                properties:
+                  architectures:
+                    type: array
+                    items:
+                      type: string
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [imageFactory]
+      summary: Set the platform image-factory config (admin)
+      operationId: setImageFactoryPlatformConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [architectures]
+              properties:
+                architectures:
+                  type: array
+                  items:
+                    type: string
+      responses:
+        "200":
+          description: Saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /admin/image-factory/bases:
+    get:
+      tags: [imageFactory]
+      summary: List base images (admin)
+      operationId: listImageFactoryBases
+      responses:
+        "200":
+          description: Bases
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [bases]
+                properties:
+                  bases:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ImageFactoryBase"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [imageFactory]
+      summary: Upsert a base image (admin)
+      description: 409 on a concurrent default-move race (retry if still intended).
+      operationId: upsertImageFactoryBase
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, version, image]
+              properties:
+                name:
+                  type: string
+                version:
+                  type: string
+                image:
+                  type: string
+                tag:
+                  type: string
+                digest:
+                  type: string
+                isDefault:
+                  type: boolean
+      responses:
+        "201":
+          description: Saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: Concurrent default-move race — retry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/image-factory/bases/{name}/{version}:
+    delete:
+      tags: [imageFactory]
+      summary: Delete a base image version (admin)
+      operationId: deleteImageFactoryBase
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: version
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /admin/image-factory/extensions:
+    get:
+      tags: [imageFactory]
+      summary: List extensions incl. retired (admin)
+      operationId: listImageFactoryExtensions
+      responses:
+        "200":
+          description: Extensions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [extensions]
+                properties:
+                  extensions:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ImageFactoryExtension"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    post:
+      tags: [imageFactory]
+      summary: Publish an extension (admin)
+      description: 422 for invalid type or invalid/missing fileSpec on file-type extensions.
+      operationId: publishImageFactoryExtension
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, type, value, supportedBases]
+              properties:
+                id:
+                  type: string
+                type:
+                  type: string
+                  enum: [apt, mise, file]
+                value:
+                  type: string
+                fileSpec:
+                  type: object
+                  properties:
+                    path:
+                      type: string
+                    mode:
+                      type: string
+                supportedBases:
+                  type: array
+                  items:
+                    type: string
+                description:
+                  type: string
+      responses:
+        "201":
+          description: Published
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          description: Invalid type or fileSpec
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/image-factory/extensions/{id}:
+    delete:
+      tags: [imageFactory]
+      summary: Retire an extension (admin; soft delete)
+      operationId: retireImageFactoryExtension
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Retired
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /admin/image-factory/known-failures:
+    get:
+      tags: [imageFactory]
+      summary: List known failures (admin, incl. failure reasons)
+      operationId: listImageFactoryKnownFailures
+      responses:
+        "200":
+          description: Known failures
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [knownFailures]
+                properties:
+                  knownFailures:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/ImageFactoryKnownFailure"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /admin/image-factory/known-failures/{hash}/{baseName}:
+    put:
+      tags: [imageFactory]
+      summary: Set a known failure's retriable flag (admin)
+      operationId: setImageFactoryKnownFailureRetriable
+      parameters:
+        - name: hash
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: baseName
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [retriable]
+              properties:
+                retriable:
+                  type: boolean
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [imageFactory]
+      summary: Delete a known-failure blocklist entry (admin)
+      operationId: deleteImageFactoryKnownFailure
+      parameters:
+        - name: hash
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: baseName
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /admin/image-factory/configs:
+    post:
+      tags: [imageFactory]
+      summary: Create a platform-scope image config (admin)
+      operationId: createPlatformImageConfig
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateImageConfigRequest"
+      responses:
+        "201":
+          description: Config created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImageConfig"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          description: Validation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Build dispatcher unavailable
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  # --- Queue retry (D3 #907) ---
+  /workspaces/{id}/sessions/{sessionId}/queue/{messageId}/retry:
+    post:
+      tags: [sessions]
+      summary: Retry a failed queued message
+      description: Targets error entries only; 501 when the durable outbox is not wired.
+      operationId: retryQueueMessage
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - $ref: "#/components/parameters/SessionId"
+        - name: messageId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Retry scheduled
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          description: Entry not found (or not an error entry)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "501":
+          description: Queue retry requires the outbox
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  # --- Bulk agent reload ---
+  /users/me/agents/reload:
+    post:
+      tags: [workspaces]
+      summary: Reload the agent in every workspace pending reload (NDJSON stream)
+      description: |
+        Streams one JSON object per line (application/x-ndjson): per-workspace
+        outcomes (`{workspaceId, disposed, drained, lastDisposedAt}` or
+        `{workspaceId, error:{code,message}}`) and a final summary line
+        (`{summary:{total,succeeded,failed,durationMs}}`). Workspaces are
+        discovered server-side. `drain=true` waits for busy sessions up to
+        `drainTimeoutSeconds` (1..600, default 300).
+      operationId: bulkReloadAgents
+      parameters:
+        - name: drain
+          in: query
+          schema:
+            type: boolean
+        - name: drainTimeoutSeconds
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 600
+            default: 300
+      responses:
+        "200":
+          description: NDJSON event stream
+          content:
+            application/x-ndjson:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  # --- Stripe webhook (public — Stripe signature is the credential) ---
+  /webhooks/stripe:
+    post:
+      tags: [account]
+      summary: Stripe webhook receiver
+      security: []
+      description: |
+        Authenticated by the `Stripe-Signature` header (HMAC of the raw body).
+        Handles checkout.session.completed, invoice.paid,
+        invoice.payment_failed, customer.subscription.updated, and
+        customer.subscription.deleted; unknown types are acknowledged with
+        200 ok.
+      operationId: receiveStripeWebhook
+      parameters:
+        - name: Stripe-Signature
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: Raw Stripe event payload
+      responses:
+        "200":
+          description: Processed (or duplicate, or unknown-but-acknowledged type)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok, duplicate]
+        "400":
+          description: Malformed payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Invalid signature
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "500":
+          description: Recording or processing failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Stripe webhook processing not configured
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  # --- Admin: platform info / audit / sessions / platform admin / email ---
+  /admin/platform-info:
+    get:
+      tags: [admin]
+      summary: Component versions (admin)
+      operationId: getPlatformInfo
+      responses:
+        "200":
+          description: Component versions (empty string per component when not found)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [api, controller, frontend, relayRouter, baseRuntime]
+                properties:
+                  api:
+                    type: string
+                  controller:
+                    type: string
+                  frontend:
+                    type: string
+                  relayRouter:
+                    type: string
+                  baseRuntime:
+                    type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /admin/audit:
+    get:
+      tags: [admin]
+      summary: Cross-org audit log (admin)
+      operationId: listAdminAudit
+      parameters:
+        - name: org_id
+          in: query
+          schema:
+            type: string
+        - name: actor_id
+          in: query
+          schema:
+            type: string
+        - name: domain
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          description: Page size (default 100, clamped to 500)
+          schema:
+            type: integer
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+      responses:
+        "200":
+          description: Audit entries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, pagination]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AuditLogEntry"
+                  pagination:
+                    $ref: "#/components/schemas/PaginationMetadata"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /admin/workspaces/{workspaceId}/sessions/{sessionId}/force-abort:
+    post:
+      tags: [admin]
+      summary: Force-abort an active session (admin)
+      description: Emits session.status/aborted SSE events to the workspace; audit insert is best-effort.
+      operationId: adminForceAbortSession
+      parameters:
+        - name: workspaceId
+          in: path
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/SessionId"
+      responses:
+        "200":
+          description: Aborted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [aborted, sessionId, workspaceId]
+                properties:
+                  aborted:
+                    type: boolean
+                  sessionId:
+                    type: string
+                  workspaceId:
+                    type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          description: Session not currently active (nothing to abort)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  sessionId:
+                    type: string
+                  workspaceId:
+                    type: string
+  /admin/orgs:
+    get:
+      tags: [admin]
+      summary: List organizations (admin)
+      operationId: adminListOrgs
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [pending_activation, active, suspended]
+      responses:
+        "200":
+          description: Org summaries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, pagination]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OrgSummary"
+                  pagination:
+                    $ref: "#/components/schemas/PaginationMetadata"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /admin/users:
+    get:
+      tags: [admin]
+      summary: List users (admin)
+      operationId: adminListUsers
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - name: status
+          in: query
+          schema:
+            type: string
+            enum: [active, suspended]
+      responses:
+        "200":
+          description: User list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, pagination]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/AdminUserEntry"
+                  pagination:
+                    $ref: "#/components/schemas/PaginationMetadata"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /admin/orgs/{id}/suspend:
+    post:
+      tags: [admin]
+      summary: Suspend an organization (admin)
+      operationId: adminSuspendOrg
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      responses:
+        "200":
+          description: Suspended
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [suspended]
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /admin/orgs/{id}/unsuspend:
+    post:
+      tags: [admin]
+      summary: Unsuspend an organization (admin)
+      operationId: adminUnsuspendOrg
+      parameters:
+        - $ref: "#/components/parameters/OrgId"
+      responses:
+        "200":
+          description: Activated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [active]
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /admin/users/{id}/suspend:
+    post:
+      tags: [admin]
+      summary: Suspend a user (admin)
+      description: |
+        409 when the user is the last admin of an org; `?force=true`
+        overrides (the org loses its last admin).
+      operationId: adminSuspendUser
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: force
+          in: query
+          schema:
+            type: boolean
+            default: false
+      responses:
+        "200":
+          description: Suspended
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [suspended]
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: User is the last admin of an org (override with force=true)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  orgId:
+                    type: string
+  /admin/users/{id}/unsuspend:
+    post:
+      tags: [admin]
+      summary: Unsuspend a user (admin)
+      operationId: adminUnsuspendUser
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Activated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [active]
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /admin/email/test:
+    post:
+      tags: [admin]
+      summary: Send a test email (admin)
+      description: Rate limited to 5/hour/admin; never leaks raw provider errors (mapped categories only).
+      operationId: sendTestEmail
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [to]
+              properties:
+                to:
+                  type: string
+                  description: Recipient address ("Name <a@b.c>" accepted)
+      responses:
+        "200":
+          description: Attempted (sent=false when no provider is configured)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sent, provider]
+                properties:
+                  sent:
+                    type: boolean
+                  provider:
+                    type: string
+                    enum: [ses, noop]
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          description: Test-send rate limit exceeded (5/hour)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  error:
+                    type: string
+                  limit:
+                    type: integer
+        "502":
+          description: Provider rejected the send (mapped category)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  # --- Admin: usage & billing ---
+  /admin/usage/{ownerId}:
+    get:
+      tags: [usage]
+      summary: Usage report for an owner (admin)
+      operationId: adminGetUsage
+      parameters:
+        - name: ownerId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: from
+          in: query
+          schema:
+            type: string
+            format: date-time
+        - name: to
+          in: query
+          schema:
+            type: string
+            format: date-time
+      responses:
+        "200":
+          description: Usage report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UsageReport"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /admin/billing/status:
+    get:
+      tags: [usage]
+      summary: Billing export status (admin)
+      description: Note — response keys are snake_case (`export_cursors`, `dlq_size`).
+      operationId: getBillingStatus
+      responses:
+        "200":
+          description: Export cursors + DLQ size
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [export_cursors, dlq_size]
+                properties:
+                  export_cursors:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        last_exported_id:
+                          type: integer
+                          format: int64
+                        last_exported_at:
+                          type: string
+                          format: date-time
+                  dlq_size:
+                    type: integer
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /admin/billing/dlq:
+    get:
+      tags: [usage]
+      summary: Dead-letter queue entries (admin, newest first, max 100)
+      operationId: listBillingDlq
+      responses:
+        "200":
+          description: DLQ entries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entries]
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/BillingDlqEntry"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /admin/billing/dlq/{id}/retry:
+    post:
+      tags: [usage]
+      summary: Retry a dead-lettered usage event (admin)
+      operationId: retryBillingDlqEntry
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Retried
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+        "404":
+          description: Entry not found or already resolved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/billing/dlq/{id}/discard:
+    post:
+      tags: [usage]
+      summary: Discard a dead-lettered usage event (admin)
+      operationId: discardBillingDlqEntry
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Discarded (unknown IDs also return 200)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+  # --- Admin: relay fleet (Epic 42, feature-gated) ---
+  /admin/relay/setup:
+    get:
+      tags: [admin]
+      summary: Relay fleet setup wizard state (admin)
+      operationId: getRelaySetup
+      responses:
+        "200":
+          description: Wizard state
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deployed, routerDeployed, crdInstalled, awsConfigured, ociConfigured, gcpConfigured]
+                properties:
+                  deployed:
+                    type: boolean
+                  routerDeployed:
+                    type: boolean
+                  crdInstalled:
+                    type: boolean
+                  awsConfigured:
+                    type: boolean
+                  ociConfigured:
+                    type: boolean
+                  gcpConfigured:
+                    type: boolean
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          description: Router/CRD check failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/relay/status:
+    get:
+      tags: [admin]
+      summary: Relay fleet status dashboard (admin)
+      operationId: getRelayStatus
+      responses:
+        "200":
+          description: Fleet status (deployed=false with zero values when no fleet exists)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RelayStatus"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /admin/relay/oci-creds:
+    post:
+      tags: [admin]
+      summary: Store OCI credentials for the relay fleet (admin)
+      operationId: setRelayOciCreds
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tenancy, user, fingerprint, key, region]
+              properties:
+                tenancy:
+                  type: string
+                user:
+                  type: string
+                fingerprint:
+                  type: string
+                key:
+                  type: string
+                region:
+                  type: string
+      responses:
+        "200":
+          description: Stored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  configured:
+                    type: boolean
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          description: Storage failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/relay/gcp-creds:
+    post:
+      tags: [admin]
+      summary: Store GCP credentials for the relay fleet (admin)
+      operationId: setRelayGcpCreds
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [serviceAccountJson]
+              properties:
+                serviceAccountJson:
+                  type: string
+      responses:
+        "200":
+          description: Stored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  configured:
+                    type: boolean
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /admin/relay/aws-creds:
+    post:
+      tags: [admin]
+      summary: Store AWS credentials for the relay fleet (admin)
+      operationId: setRelayAwsCreds
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [accessKeyId, secretAccessKey, region]
+              properties:
+                accessKeyId:
+                  type: string
+                secretAccessKey:
+                  type: string
+                region:
+                  type: string
+      responses:
+        "200":
+          description: Stored
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  configured:
+                    type: boolean
+        "400":
+          $ref: "#/components/responses/BadRequest"
+  /admin/relay/deploy:
+    post:
+      tags: [admin]
+      summary: Deploy the relay fleet (admin)
+      operationId: deployRelay
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [providers]
+              properties:
+                upstreamURL:
+                  type: string
+                  default: https://opencode.ai/zen/v1
+                providers:
+                  type: array
+                  items:
+                    type: string
+                    enum: [aws, oci, gcp]
+      responses:
+        "200":
+          description: Deploy initiated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deployed:
+                    type: boolean
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          description: Deploy or cluster operation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /admin/relay/rotate/{id}:
+    post:
+      tags: [admin]
+      summary: Trigger VM rotation for a relay (admin)
+      operationId: rotateRelay
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Rotation triggered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rotating:
+                    type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /admin/relay/pause:
+    post:
+      tags: [admin]
+      summary: Pause the relay fleet (admin)
+      operationId: pauseRelay
+      responses:
+        "200":
+          description: Paused
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  paused:
+                    type: boolean
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /admin/relay/resume:
+    post:
+      tags: [admin]
+      summary: Resume the relay fleet (admin)
+      operationId: resumeRelay
+      responses:
+        "200":
+          description: Resumed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  paused:
+                    type: boolean
+        "404":
+          $ref: "#/components/responses/NotFound"
+  # --- Dev preview bootstrap (Epic 66 preview origins) ---
+  /workspaces/{id}/dev-preview-bootstrap/{port}:
+    get:
+      tags: [workspaces]
+      summary: Get a one-time token redirect to the workspace's preview origin
+      description: |
+        302 to `https://<workspaceId>-preview.<domain>/<port>/?t=<one-time
+        HMAC token>` (TTL 5m). Registered only when preview origins are
+        enabled on the instance.
+      operationId: devPreviewBootstrap
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - name: port
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "302":
+          description: Redirect to the preview origin
+          headers:
+            Location:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          description: Token generation failed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: Dev preview disabled on this instance
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+  /workspaces/{id}/dev-preview-bootstrap:
+    get:
+      tags: [workspaces]
+      summary: Get a one-time token redirect (port via query parameter)
+      operationId: devPreviewBootstrapByQuery
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - name: port
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        "302":
+          description: Redirect to the preview origin
+          headers:
+            Location:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
 components:
   parameters:
     WorkspaceId:
@@ -5258,7 +7819,7 @@ components:
           type: string
     CreateAgentRoleRequest:
       type: object
-      required: [name, slug, description]
+      required: [name, slug]
       properties:
         name:
           type: string
@@ -5292,6 +7853,9 @@ components:
       properties:
         id:
           type: string
+        orgId:
+          type: string
+          description: Present on org-scope credentials only
         name:
           type: string
         kind:
@@ -5320,6 +7884,9 @@ components:
         updatedAt:
           type: string
           format: date-time
+        bindWarning:
+          type: string
+          description: Present when the credential was created but its auto-bind failed
     McpServer:
       type: object
       properties:
@@ -5427,6 +7994,18 @@ components:
           type: string
         baseURL:
           type: string
+        modelAllowlist:
+          type: array
+          items:
+            type: string
+        modelContextLimits:
+          type: object
+          additionalProperties:
+            type: integer
+        modelOutputLimits:
+          type: object
+          additionalProperties:
+            type: integer
     UpdateProviderCredentialRequest:
       type: object
       properties:
@@ -5976,3 +8555,548 @@ components:
           type: string
           format: date-time
           nullable: true
+    # --- Orgs: SSO, invitations, policies, audit ---
+    SsoDomain:
+      type: object
+      required: [domain, orgSlug, orgName]
+      properties:
+        domain:
+          type: string
+        orgSlug:
+          type: string
+        orgName:
+          type: string
+    OrgSsoConfig:
+      type: object
+      required: [orgId, discoveryUrl, clientId, hasSecret, claimedDomains, verifiedDomains, verificationToken, autoProvision, groupRoleMapping, updatedAt]
+      properties:
+        orgId:
+          type: string
+        discoveryUrl:
+          type: string
+        clientId:
+          type: string
+        hasSecret:
+          type: boolean
+          description: The secret itself is never returned
+        claimedDomains:
+          type: array
+          items:
+            type: string
+        verifiedDomains:
+          type: array
+          items:
+            type: string
+        verificationToken:
+          type: string
+        autoProvision:
+          type: boolean
+        groupRoleMapping:
+          type: object
+          additionalProperties:
+            type: string
+            enum: [admin, member]
+        updatedAt:
+          type: string
+          format: date-time
+    UpsertOrgSsoRequest:
+      type: object
+      required: [discoveryUrl, clientId]
+      properties:
+        discoveryUrl:
+          type: string
+          format: uri
+        clientId:
+          type: string
+        clientSecret:
+          type: string
+          description: Empty = leave the existing secret unchanged
+        claimedDomains:
+          type: array
+          items:
+            type: string
+        autoProvision:
+          type: boolean
+          nullable: true
+        groupRoleMapping:
+          type: object
+          additionalProperties:
+            type: string
+            enum: [admin, member]
+    OrgInvitation:
+      type: object
+      required: [id, orgId, email, role, invitedBy, expiresAt, createdAt]
+      properties:
+        id:
+          type: string
+          format: uuid
+        orgId:
+          type: string
+        email:
+          type: string
+        role:
+          type: string
+          enum: [admin, member]
+        invitedBy:
+          type: string
+          format: uuid
+        expiresAt:
+          type: string
+          format: date-time
+        acceptedAt:
+          type: string
+          format: date-time
+          nullable: true
+        declinedAt:
+          type: string
+          format: date-time
+          nullable: true
+        bounceType:
+          type: string
+        bouncedAt:
+          type: string
+          format: date-time
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        inviteeUserExists:
+          type: boolean
+          nullable: true
+          description: Populated on list responses only
+        inviteeEmailVerified:
+          type: boolean
+          nullable: true
+          description: Populated on list responses only
+    CreateInvitationsRequest:
+      type: object
+      required: [emails, role]
+      properties:
+        emails:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: string
+            format: email
+        role:
+          type: string
+          enum: [admin, member]
+    InvitationDetail:
+      type: object
+      required: [orgName, orgSlug, inviterName, role, expiresAt]
+      properties:
+        orgName:
+          type: string
+        orgSlug:
+          type: string
+        inviterName:
+          type: string
+        role:
+          type: string
+          enum: [admin, member]
+        expiresAt:
+          type: string
+          format: date-time
+    OrgMember:
+      type: object
+      required: [orgId, userId, username, email, role, emailVerified, createdAt]
+      properties:
+        orgId:
+          type: string
+        userId:
+          type: string
+        username:
+          type: string
+        email:
+          type: string
+        role:
+          type: string
+          enum: [admin, member]
+        emailVerified:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+    OrgPolicy:
+      type: object
+      required: [key, value, updatedAt]
+      properties:
+        key:
+          type: string
+          enum: [allowed_models, allowed_providers, max_workspaces_per_member, max_active_workspaces_per_member, sys_prompt_org, allow_user_prompt, allow_user_mcp_servers, max_mcp_servers_per_workspace, default_runtime, allowed_image_configs]
+        value:
+          description: Raw JSON value; type depends on key
+        updatedAt:
+          type: string
+          format: date-time
+    AuditLogEntry:
+      type: object
+      required: [id, actorId, domain, action, createdAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        actorId:
+          type: string
+        domain:
+          type: string
+        action:
+          type: string
+        targetId:
+          type: string
+        orgId:
+          type: string
+        metadata:
+          type: object
+        createdAt:
+          type: string
+          format: date-time
+    # --- Image factory ---
+    ImageFactoryCatalog:
+      type: object
+      required: [architectures, bases, extensions, knownFailures]
+      properties:
+        architectures:
+          type: array
+          items:
+            type: string
+        bases:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImageFactoryBase"
+        extensions:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImageFactoryExtension"
+        knownFailures:
+          type: array
+          items:
+            $ref: "#/components/schemas/ImageFactoryKnownFailure"
+    ImageFactoryBase:
+      type: object
+      required: [name, version, image, isDefault]
+      properties:
+        name:
+          type: string
+        version:
+          type: string
+        image:
+          type: string
+        tag:
+          type: string
+        digest:
+          type: string
+        isDefault:
+          type: boolean
+    ImageFactoryExtension:
+      type: object
+      required: [id, type, value, supportedBases, retired, reviewRequested]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          enum: [apt, mise, file]
+        value:
+          type: string
+        fileSpec:
+          type: object
+          properties:
+            path:
+              type: string
+            mode:
+              type: string
+        supportedBases:
+          type: array
+          items:
+            type: string
+        retired:
+          type: boolean
+        reviewRequested:
+          type: boolean
+        description:
+          type: string
+    ImageFactoryKnownFailure:
+      type: object
+      required: [selectionHash, selection, baseName, detectedAt, retriable]
+      properties:
+        selectionHash:
+          type: string
+        selection:
+          type: array
+          items:
+            type: string
+        baseName:
+          type: string
+        explanation:
+          type: string
+        detectedAt:
+          type: string
+          format: date-time
+        retriable:
+          type: boolean
+    ImageConfig:
+      type: object
+      required: [id, hash, name, selection, resolvedValues, baseName, baseVersion, scope, status]
+      properties:
+        id:
+          type: string
+        hash:
+          type: string
+        name:
+          type: string
+        selection:
+          type: array
+          items:
+            type: string
+        resolvedValues:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              type:
+                type: string
+                enum: [apt, mise, file]
+              value:
+                type: string
+              fileSpec:
+                type: object
+                properties:
+                  path:
+                    type: string
+                  mode:
+                    type: string
+        baseName:
+          type: string
+        baseVersion:
+          type: string
+        scope:
+          type: string
+          enum: [member, org, platform]
+        ownerId:
+          type: string
+          nullable: true
+        orgId:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [building, ready, rejected]
+        updatesAvailable:
+          type: object
+          nullable: true
+          properties:
+            kind:
+              type: string
+              enum: [version_bump, base_migration]
+            currentBaseName:
+              type: string
+            currentBaseVersion:
+              type: string
+            latestBaseVersion:
+              type: string
+            defaultBaseName:
+              type: string
+            defaultBaseVersion:
+              type: string
+    CreateImageConfigRequest:
+      type: object
+      required: [name, selection, baseName]
+      properties:
+        name:
+          type: string
+        selection:
+          type: array
+          items:
+            type: string
+          description: Extension IDs
+        baseName:
+          type: string
+        baseVersion:
+          type: string
+          description: Defaults to the base's default version
+    # --- Admin ---
+    OrgSummary:
+      type: object
+      required: [id, name, slug, createdBy, createdAt, updatedAt, status, memberCount, workspaceCount]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        slug:
+          type: string
+        createdBy:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        status:
+          type: string
+          enum: [pending_activation, active, suspended]
+        planId:
+          type: string
+        subscriptionStatus:
+          type: string
+        memberCount:
+          type: integer
+        workspaceCount:
+          type: integer
+    AdminUserEntry:
+      type: object
+      required: [id, email, role, status, createdAt, orgCount]
+      properties:
+        id:
+          type: string
+        email:
+          type: string
+        role:
+          type: string
+        status:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        orgCount:
+          type: integer
+        orgId:
+          type: string
+        orgName:
+          type: string
+    UsageReport:
+      type: object
+      required: [ownerId, ownerType, periodFrom, periodTo, totals]
+      properties:
+        ownerId:
+          type: string
+        ownerType:
+          type: string
+        periodFrom:
+          type: string
+          format: date-time
+        periodTo:
+          type: string
+          format: date-time
+        totals:
+          type: object
+          additionalProperties:
+            type: integer
+            format: int64
+        byWorkspace:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: integer
+              format: int64
+        byDay:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties:
+              type: integer
+              format: int64
+    BillingDlqEntry:
+      type: object
+      required: [id, payload, errorMessage, retryCount, firstFailedAt]
+      properties:
+        id:
+          type: integer
+          format: int64
+        payload:
+          type: object
+          description: The dead-lettered usage event
+        errorMessage:
+          type: string
+        retryCount:
+          type: integer
+        firstFailedAt:
+          type: string
+          format: date-time
+        lastRetriedAt:
+          type: string
+          format: date-time
+    RelayStatus:
+      type: object
+      required: [deployed]
+      properties:
+        deployed:
+          type: boolean
+        overall:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+        healthyReplicas:
+          type: integer
+        totalReplicas:
+          type: integer
+        fallbackActive:
+          type: boolean
+        activeStreams:
+          type: integer
+          format: int64
+        instances:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              provider:
+                type: string
+              region:
+                type: string
+              shape:
+                type: string
+              publicIP:
+                type: string
+              state:
+                type: string
+              healthy:
+                type: boolean
+              metrics:
+                type: object
+              cost:
+                type: object
+              lastProvisionError:
+                type: string
+        conditions:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+              status:
+                type: string
+              reason:
+                type: string
+              message:
+                type: string
+        recentEvents:
+          type: array
+          items:
+            type: object
+            properties:
+              timestamp:
+                type: string
+              type:
+                type: string
+              message:
+                type: string
+              severity:
+                type: string
+        alerts:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              expression:
+                type: string
+              firing:
+                type: boolean
