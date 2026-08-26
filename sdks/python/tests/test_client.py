@@ -699,3 +699,28 @@ def test_secret_response_full_payload_round_trip():
     s = client.secrets.create(name="canary", type="env-secret", value="v", metadata={"var_name": "CANARY_VAR"})
     assert s.globalDefault is False
     assert s.metadata == {"var_name": "CANARY_VAR"}
+
+
+@respx.mock
+def test_get_history_page_params_and_cursor():
+    route = respx.get(f"{BASE}/workspaces/ws-1/sessions/sess-1/message").respond(
+        json=[{"id": "m1", "type": "user", "text": "hi"}],
+        headers={"X-Next-Cursor": "msg_42"},
+    )
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    page = client.sessions.get_history_page("ws-1", "sess-1", limit=50, before="msg_99")
+    assert route.called
+    assert "limit=50" in str(route.calls.last.request.url)
+    assert "before=msg_99" in str(route.calls.last.request.url)
+    assert page["nextCursor"] == "msg_42"
+    assert page["messages"][0]["id"] == "m1"
+
+
+@respx.mock
+def test_get_history_page_defaults_empty_cursor():
+    route = respx.get(f"{BASE}/workspaces/ws-1/sessions/sess-1/message").respond(json=[])
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    page = client.sessions.get_history_page("ws-1", "sess-1")
+    assert "?" not in str(route.calls.last.request.url)
+    assert page["nextCursor"] == ""
+    assert page["messages"] == []

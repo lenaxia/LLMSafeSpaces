@@ -25,6 +25,29 @@ public class SessionsService {
                 Message.class);
     }
 
+    /**
+     * One page of session history with cursor pagination. limit <= 0 and a
+     * null/empty before are omitted (server defaults: limit 50, newest
+     * page). nextCursor is "" when the beginning was reached.
+     */
+    public HistoryPage getHistoryPage(String workspaceId, String sessionId, int limit, String before) {
+        StringBuilder path = new StringBuilder(
+                "/workspaces/" + workspaceId + "/sessions/" + sessionId + "/message");
+        String sep = "?";
+        if (limit > 0) {
+            path.append(sep).append("limit=").append(limit);
+            sep = "&";
+        }
+        if (before != null && !before.isEmpty()) {
+            path.append(sep).append("before=").append(before);
+        }
+        var resp = c.requestJsonWithCursor("GET", path.toString(), null);
+        Message[] messages = resp.body() == null
+                ? new Message[0]
+                : c.gson.fromJson(resp.body(), Message[].class);
+        return new HistoryPage(java.util.Arrays.asList(messages), resp.nextCursor());
+    }
+
     public void abort(String workspaceId, String sessionId) {
         c.requestVoid("POST",
                 "/workspaces/" + workspaceId + "/sessions/" + sessionId + "/abort", null);

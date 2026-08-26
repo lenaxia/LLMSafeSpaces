@@ -414,3 +414,17 @@ async def test_async_secret_response_full_payload_round_trip(client: AsyncLLMSaf
     s = await client.secrets.create(name="canary", type="env-secret", value="v", metadata={"var_name": "CANARY_VAR"})
     assert s.globalDefault is False
     assert s.metadata == {"var_name": "CANARY_VAR"}
+
+
+.mock
+@pytest.mark.asyncio
+async def test_get_history_page_async():
+    route = respx.get(f"{BASE}/api/v1/workspaces/ws-1/sessions/sess-1/message").respond(
+        json=[{"id": "m1", "type": "user", "text": "hi"}],
+        headers={"X-Next-Cursor": "msg_7"},
+    )
+    client = AsyncLLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    page = await client.sessions.get_history_page("ws-1", "sess-1", limit=10)
+    assert route.called
+    assert page["nextCursor"] == "msg_7"
+    assert page["messages"][0]["id"] == "m1"

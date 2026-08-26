@@ -360,3 +360,52 @@ class LLMSafeSpacesClientTest {
         }
     }
 }
+
+    @org.junit.jupiter.api.Test
+    void getHistoryPage_paramsAndCursor() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        final String[] gotQuery = {null};
+        server.createContext("/api/v1/workspaces/ws-1/sessions/sess-1/message", exchange -> {
+            gotQuery[0] = exchange.getRequestURI().getRawQuery();
+            byte[] body = "[{\"id\":\"m1\",\"type\":\"user\",\"text\":\"hi\"}]".getBytes();
+            exchange.getResponseHeaders().set("X-Next-Cursor", "msg_42");
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            var page = client.sessions.getHistoryPage("ws-1", "sess-1", 50, "msg_99");
+            org.junit.jupiter.api.Assertions.assertEquals("limit=50&before=msg_99", gotQuery[0]);
+            org.junit.jupiter.api.Assertions.assertEquals("msg_42", page.nextCursor);
+            org.junit.jupiter.api.Assertions.assertEquals(1, page.messages.size());
+            org.junit.jupiter.api.Assertions.assertEquals("m1", page.messages.get(0).id);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @org.junit.jupiter.api.Test
+    void getHistoryPage_emptyCursorWhenHeaderAbsent() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/api/v1/workspaces/ws-1/sessions/sess-1/message", exchange -> {
+            byte[] body = "[]".getBytes();
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            var page = client.sessions.getHistoryPage("ws-1", "sess-1", 0, null);
+            org.junit.jupiter.api.Assertions.assertEquals("", page.nextCursor);
+            org.junit.jupiter.api.Assertions.assertTrue(page.messages.isEmpty());
+        } finally {
+            server.stop(0);
+        }
+    }

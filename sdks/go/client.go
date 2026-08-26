@@ -90,20 +90,45 @@ func New(baseURL string, opts ...Option) *Client {
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body, result any) error {
+	resp, err := c.send(ctx, method, path, body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return c.decode(resp, result)
+}
+
+// doWithHeader performs a request, decodes the JSON body into result, and
+// also returns the response headers (e.g. pagination cursors).
+func (c *Client) doWithHeader(ctx context.Context, method, path string, body, result any) (http.Header, error) {
+	resp, err := c.send(ctx, method, path, body)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if err := c.decode(resp, result); err != nil {
+		return nil, err
+	}
+	return resp.Header, nil
+}
+
+// send builds and executes an authenticated request, returning the raw
+// response. Callers own Body.Close.
+func (c *Client) send(ctx context.Context, method, path string, body any) (*http.Response, error) {
 	url := c.baseURL + "/api/v1" + path
 
 	var bodyReader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
 		if err != nil {
-			return fmt.Errorf("marshal request: %w", err)
+			return nil, fmt.Errorf("marshal request: %w", err)
 		}
 		bodyReader = bytes.NewReader(data)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
 	if err != nil {
-		return fmt.Errorf("create request: %w", err)
+		return nil, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
@@ -113,25 +138,26 @@ func (c *Client) do(ctx context.Context, method, path string, body, result any) 
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	} else if c.email != "" {
 		if err := c.login(ctx); err != nil {
-			return err
+			return nil, err
 		}
 		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
+		return nil, fmt.Errorf("request failed: %w", err)
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		return parseError(resp)
+		defer resp.Body.Close()
+		return nil, parseError(resp)
 	}
+	return resp, nil
+}
 
-	// 204 No Content has no body by definition. 202 Accepted MAY carry a
-	// payload describing the accepted operation (RFC 7231 §6.3.3), so read
-	// the body and decode only when it is non-empty AND a result is wanted
-	// (preserving the void contract for callers like Suspend/Restart).
+// decode reads a successful response body into result following the same
+// 204/202/empty-body contract as the historical do().
+func (c *Client) decode(resp *http.Response, result any) error {
 	if resp.StatusCode == 204 {
 		return nil
 	}
