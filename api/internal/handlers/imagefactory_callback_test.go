@@ -83,7 +83,7 @@ func postCallback(t *testing.T, r http.Handler, buildID, token string, body inte
 func TestIF_Callback_Succeeded(t *testing.T) {
 	t.Parallel()
 	bs := &fakeBuildStore{builds: map[string]imagefactory.Build{
-		"b-1": {ID: "b-1", ConfigID: "c-1", Hash: "s-abc", BaseName: "bookworm", BaseVersion: "0.6.0",
+		"b-1": {ID: "b-1", ConfigID: "c-1", Hash: "s-abc", BaseName: "bookworm", BaseVersion: "0.20.1",
 			Status: imagefactory.BuildDispatched, CallbackToken: "tok-secret"},
 	}}
 	r := newCallbackRouter(t, bs)
@@ -92,13 +92,13 @@ func TestIF_Callback_Succeeded(t *testing.T) {
 	b := bs.builds["b-1"]
 	assert.Equal(t, imagefactory.BuildSucceeded, b.Status)
 	assert.Equal(t, "sha256:ok", b.Digest)
-	assert.Contains(t, b.ImageRef, "s-abc-0.6.0")
+	assert.Contains(t, b.ImageRef, "s-abc-0.20.1")
 }
 
 func TestIF_Callback_Failed(t *testing.T) {
 	t.Parallel()
 	bs := &fakeBuildStore{builds: map[string]imagefactory.Build{
-		"b-1": {ID: "b-1", ConfigID: "c-1", Hash: "s-abc", BaseName: "bookworm", BaseVersion: "0.6.0",
+		"b-1": {ID: "b-1", ConfigID: "c-1", Hash: "s-abc", BaseName: "bookworm", BaseVersion: "0.20.1",
 			Status: imagefactory.BuildDispatched, CallbackToken: "tok-secret",
 			ResolvedValues: imagefactory.ResolvedValues{"ffmpeg": {Type: imagefactory.ExtensionTypeApt, Value: "ffmpeg"}}},
 	}}
@@ -190,7 +190,7 @@ func TestIF_Callback_SucceededStoreError500(t *testing.T) {
 	bs := &fakeBuildStore{
 		builds: map[string]imagefactory.Build{
 			"b-1": {ID: "b-1", ConfigID: "c-1", Hash: "s-abc", BaseName: "bookworm",
-				BaseVersion: "0.6.0", Status: imagefactory.BuildDispatched, CallbackToken: "tok"},
+				BaseVersion: "0.20.1", Status: imagefactory.BuildDispatched, CallbackToken: "tok"},
 		},
 		succeedErr: testError("connection lost"),
 	}
@@ -204,7 +204,7 @@ func TestIF_Callback_FailedStoreError500(t *testing.T) {
 	bs := &fakeBuildStore{
 		builds: map[string]imagefactory.Build{
 			"b-1": {ID: "b-1", ConfigID: "c-1", Hash: "s-abc", BaseName: "bookworm",
-				BaseVersion: "0.6.0", Status: imagefactory.BuildDispatched, CallbackToken: "tok",
+				BaseVersion: "0.20.1", Status: imagefactory.BuildDispatched, CallbackToken: "tok",
 				ResolvedValues: imagefactory.ResolvedValues{"ffmpeg": {Type: imagefactory.ExtensionTypeApt, Value: "ffmpeg"}}},
 		},
 		failErr: testError("FK constraint"),
@@ -242,7 +242,7 @@ func TestIF_Callback_Failed_WithLLMExplainer(t *testing.T) {
 	bs := &fakeBuildStore{builds: map[string]imagefactory.Build{
 		"b-1": {
 			ID: "b-1", ConfigID: "c-1", Hash: "s-fail", BaseName: "bookworm",
-			BaseVersion: "0.6.0", Status: imagefactory.BuildDispatched, CallbackToken: "tok",
+			BaseVersion: "0.20.1", Status: imagefactory.BuildDispatched, CallbackToken: "tok",
 			ResolvedValues: rv,
 		},
 	}}
@@ -285,7 +285,7 @@ func TestIF_Callback_Failed_LLMDown_UsesFallback(t *testing.T) {
 	bs := &fakeBuildStore{builds: map[string]imagefactory.Build{
 		"b-1": {
 			ID: "b-1", ConfigID: "c-1", Hash: "s-fail2", BaseName: "bookworm",
-			BaseVersion: "0.6.0", Status: imagefactory.BuildDispatched, CallbackToken: "tok",
+			BaseVersion: "0.20.1", Status: imagefactory.BuildDispatched, CallbackToken: "tok",
 			ResolvedValues: rv,
 		},
 	}}

@@ -10,6 +10,20 @@ import (
 	"strings"
 )
 
+// MinBaseVersion is the runtime-base compatibility floor (design 0051
+// sidecar migration, step 4). A base older than this cannot be staged
+// onto by the factory: v0.15.7 is the platform release carrying #871
+// (dual-shape Secret metadata parsing in agentd), the minimum whose
+// baked agentd can parse everything the current API stages into
+// secrets.json. Below it, legacy-mode pods execute a baked agentd that
+// crash-loops on contract-shape MCP metadata — the 2026-08-25 incident
+// (factory staged onto operator-pinned bookworm@0.8.0, a catalog row
+// five weeks stale). The floor ships in the API's release train, so
+// bumping it is a reviewed release action; the factory cannot know
+// which mode a future workspace will run in, so the floor holds for
+// every build.
+const MinBaseVersion = "0.15.7"
+
 // RenderDockerfile renders the deterministic Dockerfile for a workspace
 // image from frozen resolved values + a base. Pure function of
 // (ResolvedValues, Base): identical inputs always render an identical
@@ -23,6 +37,10 @@ import (
 func RenderDockerfile(rv ResolvedValues, base Base) (string, error) {
 	if err := ValidateResolved(rv); err != nil {
 		return "", fmt.Errorf("render: %w", err)
+	}
+	if compareVersions(base.Version, MinBaseVersion) < 0 {
+		return "", fmt.Errorf("base %s@%s is below the compatibility floor %s — its baked agentd predates the #871 secrets contract (2026-08-25 incident); update the base catalog entry",
+			base.Name, base.Version, MinBaseVersion)
 	}
 
 	var b strings.Builder

@@ -424,7 +424,7 @@ func runMaterializeCommand(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	m := &secrets.Materializer{FS: secrets.RealFS(), Paths: cfg.toPaths()}
+	m := &secrets.Materializer{FS: secrets.RealFS(), Paths: cfg.toPaths(), CrossUID: cfg.crossUID}
 	result, err := m.Materialize(secretsList)
 	reportResult(stderr, result)
 

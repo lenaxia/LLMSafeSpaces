@@ -58,7 +58,10 @@ func runUS4BBranch(t *testing.T, sidecarMode string) us4bBranchResult {
 	}
 
 	ws := newWorkspaceForSecurity(t)
-	r := reconcilerWithAgentd(t)
+	// The bash cred script survives only in legacy-no-overlay mode post
+	// sidecar-migration step 1 (overlay pods run platform-init instead);
+	// extract it from there. The branch text itself is mode-independent.
+	r := reconcilerFor(t)
 	pod, err := r.buildPod(context.Background(), ws)
 	require.NoError(t, err)
 	cred := sidecarInitContainer(pod, credentialSetupContainerName)

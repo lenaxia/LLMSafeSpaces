@@ -55,7 +55,7 @@ func TestGHActionsDispatcher_Dispatch_Success(t *testing.T) {
 		CallbackToken: "tok",
 		Hash:          "s-abc",
 		BaseName:      "bookworm",
-		BaseVersion:   "0.6.0",
+		BaseVersion:   "0.20.1",
 		Architectures: []string{"linux/amd64"},
 		Dockerfile:    "FROM base\n",
 	})

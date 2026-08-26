@@ -274,6 +274,13 @@ const (
 	// image-volume-delivered workspace-agentd binary (#863). Only set when
 	// agentd overlay delivery is enabled; absent in legacy baked-in mode.
 	WorkspaceConditionAgentdVerified WorkspaceConditionType = "AgentdVerified"
+	// WorkspaceConditionBootReady reports the platform boot phase
+	// (design 0051 sidecar migration, step 1): init-fs, bootstrap, and
+	// materialize as executed by the platform containers. False with
+	// ReasonPlatformBootFailed means a platform container is
+	// crash-looping on a boot-phase failure — the pod will never become
+	// Ready and pod deletion cannot fix it (code or input bug).
+	WorkspaceConditionBootReady WorkspaceConditionType = "BootReady"
 )
 
 const (
@@ -298,6 +305,10 @@ const (
 	ReasonAgentdVerificationFailed = "AgentdVerificationFailed"
 	ReasonAgentdOverlayMissing     = "AgentdOverlayMissing"
 	ReasonAgentdVerified           = "AgentdVerified"
+	// Design 0051 sidecar migration step 1: platform boot-phase outcomes
+	// (init-fs / bootstrap / materialize in the platform containers).
+	ReasonPlatformBootFailed = "PlatformBootFailed"
+	ReasonBootReady          = "BootReady"
 )
 
 // WorkspaceCondition describes a condition of a Workspace.

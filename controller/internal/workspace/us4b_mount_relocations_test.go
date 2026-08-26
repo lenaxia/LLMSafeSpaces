@@ -165,29 +165,33 @@ func TestUS4B_Enabled_WorkspaceOpenCodeConfigEnv(t *testing.T) {
 }
 
 func TestUS4B_Enabled_CredentialSetupInitSidecarEnv(t *testing.T) {
+	// Sidecar-migration step 1: overlay+sidecar pods have NO bash
+	// credential-setup init (platform-init + the sidecar's boot phase own
+	// boot). The successor surface for the US-4b relocation contract is
+	// the SIDECAR container's own env — this pins it there.
 	pod := buildPodUS4B(t, true)
-	cred := sidecarInitContainer(pod, "credential-setup")
-	require.NotNil(t, cred)
+	require.Nil(t, sidecarInitContainer(pod, "credential-setup"),
+		"overlay+sidecar pods run platform-init, not the bash cred script")
+	sc := sidecarInitContainer(pod, "agentd")
+	require.NotNil(t, sc)
 
 	expect := map[string]string{
-		"AGENTD_SIDECAR_MODE":             "1",
 		"LLMSAFESPACES_AGENT_CONFIG_PATH": "/agentd-config/agent-config.json",
 		"LLMSAFESPACES_SECRETS_ENV_PATH":  "/agentd-secrets/secrets-env",
 		"LLMSAFESPACES_RELOAD_CACHE_PATH": "/agentd-secrets/last-reload-secrets.json",
-		// The init's boot files (secrets-env, reload cache) are read by
-		// the uid-2000 sidecar across the split → 0640 at materialize.
+		// The boot files the sidecar materializes are read across the
+		// uid split → 0640 at materialize.
 		"LLMSAFESPACES_CROSS_UID_FILES": "1",
 	}
 	for name, val := range expect {
-		ev := sidecarEnvVar(cred, name)
-		require.NotNil(t, ev, "credential-setup env must carry %s in sidecar mode", name)
+		ev := sidecarEnvVar(sc, name)
+		require.NotNil(t, ev, "sidecar env must carry %s", name)
 		require.Equal(t, val, ev.Value, "%s", name)
 	}
-
 	for _, vol := range []string{us4bAgentdConfigVolume, us4bAgentdSecretsVolume} {
-		m := sidecarVolumeMount(cred, vol)
-		require.NotNil(t, m, "credential-setup must mount %s (bootstrap/materialize write there)", vol)
-		require.False(t, m.ReadOnly, "credential-setup writes %s", vol)
+		m := sidecarVolumeMount(sc, vol)
+		require.NotNil(t, m, "sidecar must mount %s (its boot phase writes there)", vol)
+		require.False(t, m.ReadOnly, "sidecar writes %s", vol)
 	}
 }
 
@@ -195,11 +199,25 @@ func TestUS4B_Enabled_CredentialSetupInitSidecarEnv(t *testing.T) {
 
 func credSetupScriptFor(t *testing.T, sidecar bool) string {
 	t.Helper()
+	// Sidecar-migration step 1: the bash cred script exists only in
+	// legacy-no-overlay pods now (overlay pods run platform-init); the
+	// script branch pins below validate the SCRIPT, so extract from a
+	// legacy pod regardless of the sidecar parameter.
 	pod := buildPodUS4B(t, sidecar)
-	cred := sidecarInitContainer(pod, "credential-setup")
-	require.NotNil(t, cred)
-	require.Len(t, cred.Command, 3)
-	return cred.Command[2]
+	var src *corev1.Container
+	if cred := sidecarInitContainer(pod, "credential-setup"); cred != nil {
+		src = cred
+	} else {
+		// Overlay pod: build a legacy pod for the script text.
+		ws := newWorkspaceForSecurity(t)
+		r := reconcilerFor(t)
+		legacy, err := r.buildPod(context.Background(), ws)
+		require.NoError(t, err)
+		src = sidecarInitContainer(legacy, "credential-setup")
+	}
+	require.NotNil(t, src)
+	require.Len(t, src.Command, 3)
+	return src.Command[2]
 }
 
 func TestUS4B_Enabled_CredScriptSidecarBranch(t *testing.T) {

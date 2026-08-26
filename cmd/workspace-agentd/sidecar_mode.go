@@ -127,6 +127,28 @@ func runSidecarCommand(_ []string) int {
 		return 1
 	}
 
+	// Credential boot phase (step-1 migration): bootstrap+materialize
+	// run HERE, before ensureBootAgentConfig and the muxes — the #857
+	// stamp-before-read guarantee rides this sidecar's startup probe.
+	// Fail-fast: a non-zero boot phase exits the sidecar so kubelet
+	// surfaces CrashLoopBackOff with a reason, never a never-Ready
+	// zombie. Env: WORKSPACE_ID + LLMSAFESPACE_API_URL are already in
+	// the sidecar's container env (pod builder); the controller points
+	// the LLMSAFESPACES_* materialize paths at /sandbox-runtime.
+	// Runs before any context allocation — it owns the whole process on
+	// failure.
+	if code := runSidecarBootSecrets(sidecarBootOpts{
+		WorkspaceID: os.Getenv("WORKSPACE_ID"),
+		APIURL:      os.Getenv("LLMSAFESPACE_API_URL"),
+		TokenFile:   "/var/run/bootstrap/token",
+		SecretsOut:  sidecarSecretsOutPath,
+		Stderr:      os.Stderr,
+	}); code != 0 {
+		log.Error("FATAL: sidecar credential boot phase failed — refusing to serve",
+			zap.Int("exit", code))
+		return code
+	}
+
 	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 	bgCtx, bgCancel := context.WithCancel(rootCtx)

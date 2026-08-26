@@ -45,7 +45,7 @@ type e2eImageFactoryStore struct {
 
 func newE2EStore() *e2eImageFactoryStore {
 	return &e2eImageFactoryStore{
-		e2eBase: imagefactory.Base{Name: "bookworm", Version: "0.6.0", Image: "ghcr.io/acme/base", Tag: "0.6.0", IsDefault: true},
+		e2eBase: imagefactory.Base{Name: "bookworm", Version: "0.20.1", Image: "ghcr.io/acme/base", Tag: "0.20.1", IsDefault: true},
 		e2eExtensions: map[string]imagefactory.Extension{
 			"ffmpeg":    {ID: "ffmpeg", Type: imagefactory.ExtensionTypeApt, Value: "ffmpeg", SupportedBases: []string{"bookworm"}},
 			"python313": {ID: "python313", Type: imagefactory.ExtensionTypeMise, Value: "python@3.13", SupportedBases: []string{"bookworm"}},
@@ -531,7 +531,7 @@ func TestE2E_ImageFactory_IdempotentReplay(t *testing.T) {
 func TestE2E_ImageFactory_AdminGuard(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	store := &fakeAdminStore{bases: []imagefactory.Base{{Name: "bookworm", Version: "0.6.0"}}}
+	store := &fakeAdminStore{bases: []imagefactory.Base{{Name: "bookworm", Version: "0.20.1"}}}
 	r.Use(func(c *gin.Context) {
 		if role, ok := c.GetQuery("role"); ok && role == "admin" {
 			c.Set("userRole", "admin")
@@ -667,21 +667,21 @@ var _ extensionReviewer = (*e2eImageFactoryStore)(nil)
 
 // ── Base-update pill enrichment (#928) ──────────────────────────────────
 
-// TestListConfigs_BaseUpdatesEnriched: a stale config (bookworm 0.6.0
-// with 0.9.0 published, default moved to trixie) must surface
+// TestListConfigs_BaseUpdatesEnriched: a stale config (bookworm 0.20.1
+// with 0.21.0 published, default moved to trixie) must surface
 // updatesAvailable with kind=base_migration on the list endpoint; a
 // fresh config must omit the field entirely.
 func TestListConfigs_BaseUpdatesEnriched(t *testing.T) {
 	store := newE2EStore()
 	store.e2eExtraBases = []imagefactory.Base{
-		{Name: "bookworm", Version: "0.6.0", Image: "ghcr.io/acme/base", Tag: "0.6.0"},
-		{Name: "bookworm", Version: "0.9.0", Image: "ghcr.io/acme/base", Tag: "0.9.0"},
+		{Name: "bookworm", Version: "0.20.1", Image: "ghcr.io/acme/base", Tag: "0.20.1"},
+		{Name: "bookworm", Version: "0.21.0", Image: "ghcr.io/acme/base", Tag: "0.21.0"},
 		{Name: "trixie", Version: "0.1.0", Image: "ghcr.io/acme/base-trixie", Tag: "0.1.0", IsDefault: true},
 	}
 	uid := "user-1"
 	stale := &imagefactory.Config{
 		ID: "cfg-stale", Hash: "s-stale", Name: "stale", Scope: imagefactory.ScopeMember, OwnerID: &uid,
-		BaseName: "bookworm", BaseVersion: "0.6.0", Status: imagefactory.StatusReady,
+		BaseName: "bookworm", BaseVersion: "0.20.1", Status: imagefactory.StatusReady,
 	}
 	fresh := &imagefactory.Config{
 		ID: "cfg-fresh", Hash: "s-fresh", Name: "fresh", Scope: imagefactory.ScopeMember, OwnerID: &uid,
@@ -706,7 +706,7 @@ func TestListConfigs_BaseUpdatesEnriched(t *testing.T) {
 	require.NotNil(t, byName["stale"].UpdatesAvailable, "stale config must carry the pill payload")
 	require.Equal(t, imagefactory.BaseUpdateBaseMigration, byName["stale"].UpdatesAvailable.Kind)
 	require.Equal(t, "trixie", byName["stale"].UpdatesAvailable.DefaultBaseName)
-	require.Equal(t, "0.9.0", byName["stale"].UpdatesAvailable.LatestBaseVersion)
+	require.Equal(t, "0.21.0", byName["stale"].UpdatesAvailable.LatestBaseVersion)
 	require.Nil(t, byName["fresh"].UpdatesAvailable, "fresh config must omit the field")
 }
 
@@ -714,13 +714,13 @@ func TestListConfigs_BaseUpdatesEnriched(t *testing.T) {
 func TestGetConfig_BaseUpdatesEnriched(t *testing.T) {
 	store := newE2EStore()
 	store.e2eExtraBases = []imagefactory.Base{
-		{Name: "bookworm", Version: "0.6.0", Image: "ghcr.io/acme/base", Tag: "0.6.0"},
-		{Name: "bookworm", Version: "0.9.0", Image: "ghcr.io/acme/base", Tag: "0.9.0", IsDefault: true},
+		{Name: "bookworm", Version: "0.20.1", Image: "ghcr.io/acme/base", Tag: "0.20.1"},
+		{Name: "bookworm", Version: "0.21.0", Image: "ghcr.io/acme/base", Tag: "0.21.0", IsDefault: true},
 	}
 	uid := "user-1"
 	store.e2eConfigs["s-old"] = &imagefactory.Config{
 		ID: "cfg-old", Hash: "s-old", Name: "old", Scope: imagefactory.ScopeMember, OwnerID: &uid,
-		BaseName: "bookworm", BaseVersion: "0.6.0", Status: imagefactory.StatusReady,
+		BaseName: "bookworm", BaseVersion: "0.20.1", Status: imagefactory.StatusReady,
 	}
 
 	r := newE2ERouter(t, store, &fakeDispatcher{ghRunID: 1})
@@ -734,7 +734,7 @@ func TestGetConfig_BaseUpdatesEnriched(t *testing.T) {
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &cfg))
 	require.NotNil(t, cfg.UpdatesAvailable)
 	require.Equal(t, imagefactory.BaseUpdateVersionBump, cfg.UpdatesAvailable.Kind)
-	require.Equal(t, "0.9.0", cfg.UpdatesAvailable.LatestBaseVersion)
+	require.Equal(t, "0.21.0", cfg.UpdatesAvailable.LatestBaseVersion)
 }
 
 // TestListConfigs_BaseUpdateEnrichmentFailsOpen: a catalog-read failure
@@ -747,7 +747,7 @@ func TestListConfigs_BaseUpdateEnrichmentFailsOpen(t *testing.T) {
 	uid := "user-1"
 	store.e2eConfigs["s-x"] = &imagefactory.Config{
 		ID: "cfg-x", Hash: "s-x", Name: "x", Scope: imagefactory.ScopeMember, OwnerID: &uid,
-		BaseName: "bookworm", BaseVersion: "0.6.0", Status: imagefactory.StatusReady,
+		BaseName: "bookworm", BaseVersion: "0.20.1", Status: imagefactory.StatusReady,
 	}
 
 	r := newE2ERouter(t, store, &fakeDispatcher{ghRunID: 1}) // no SetLogger — nil logger
@@ -771,7 +771,7 @@ func TestGetConfig_BaseUpdateEnrichmentFailsOpen(t *testing.T) {
 	uid := "user-1"
 	store.e2eConfigs["s-y"] = &imagefactory.Config{
 		ID: "cfg-y", Hash: "s-y", Name: "y", Scope: imagefactory.ScopeMember, OwnerID: &uid,
-		BaseName: "bookworm", BaseVersion: "0.6.0", Status: imagefactory.StatusReady,
+		BaseName: "bookworm", BaseVersion: "0.20.1", Status: imagefactory.StatusReady,
 	}
 
 	r := newE2ERouter(t, store, &fakeDispatcher{ghRunID: 1})
@@ -790,16 +790,16 @@ func TestGetConfig_BaseUpdateEnrichmentFailsOpen(t *testing.T) {
 func TestListConfigs_PillGatedToReadyConfigs(t *testing.T) {
 	store := newE2EStore()
 	store.e2eExtraBases = []imagefactory.Base{
-		{Name: "bookworm", Version: "0.9.0", Image: "img", Tag: "0.9.0", IsDefault: true},
+		{Name: "bookworm", Version: "0.21.0", Image: "img", Tag: "0.21.0", IsDefault: true},
 	}
 	uid := "user-1"
 	store.e2eConfigs["s-b"] = &imagefactory.Config{
 		ID: "cfg-b", Hash: "s-b", Name: "building", Scope: imagefactory.ScopeMember, OwnerID: &uid,
-		BaseName: "bookworm", BaseVersion: "0.6.0", Status: imagefactory.StatusBuilding,
+		BaseName: "bookworm", BaseVersion: "0.20.1", Status: imagefactory.StatusBuilding,
 	}
 	store.e2eConfigs["s-r"] = &imagefactory.Config{
 		ID: "cfg-r", Hash: "s-r", Name: "rejected", Scope: imagefactory.ScopeMember, OwnerID: &uid,
-		BaseName: "bookworm", BaseVersion: "0.6.0", Status: imagefactory.StatusRejected,
+		BaseName: "bookworm", BaseVersion: "0.20.1", Status: imagefactory.StatusRejected,
 	}
 
 	r := newE2ERouter(t, store, &fakeDispatcher{ghRunID: 1})

@@ -115,6 +115,47 @@ behavior-identical by construction (1:1 move), pinned by the existing managed-pr
 relocate, opencode restarts under a new parent. Un-flipping `agentdSidecar.enabled` must therefore
 converge, not assume uniformity — same pattern as #933's admin-token rollout:
 
+**D7 — Boot-executor relocation (2026-08-25 amendment; step-1 of the fast-track to sidecar mode).**
+Motivated by the 2026-08-25 incident: the credential-setup bash heredoc executed `/bin/sh` and
+`workspace-agentd` from the RUNTIME image — a user-plane artifact on its own release cadence. A
+factory-built base (`ws:s-…-0.8.0`, built that day) carried a pre-#871 agentd and crash-looped
+`Init:Error` on contract-shape MCP metadata. Consequence adopted here: **platform boot logic ships in
+the platform artifact.**
+
+- `init-fs` subcommand (uid 1000, digest-pinned agentd image): PVC subPath roots (absorbs
+  workspace-dirs), the US-35.7 symlink farm hardened against pre-planted symlinks (lstat semantics —
+  the link inode is replaced, never followed), G21 password install (0600, never briefly wider),
+  #887 admin-token install, free-models copy.
+- Bootstrap+materialize: legacy single-container mode keeps them as `platform-bootstrap` /
+  `platform-materialize` init containers from the agentd image; **sidecar mode absorbs them into the
+  sidecar's boot phase** (`sidecar_boot.go`), running before `ensureBootAgentConfig` and the muxes.
+- **Ordering (supersedes the init-exit form of the #857 guarantee):** the main container is gated on
+  the sidecar's startup probe, and the sidecar serves `/v1/healthz` only after boot completes —
+  opencode's first config read observes completed credential state by construction.
+- **Path relocation:** bootstrap output moves to `/sandbox-runtime/rt/secrets.json` (the sidecar's
+  `/sandbox-cfg` mount is ReadOnly; the tmpfs has identical pod-scoped lifetime semantics).
+- **Restart semantics (a native sidecar RESTARTS; an init container does not):** a non-empty
+  secrets.json means bootstrap already ran for this pod — the API is not re-hit (it may be down; the
+  600s projected token is expired); materialize re-runs (idempotent by design). Materialize failures
+  propagate non-zero → CrashLoopBackOff, surfaced by the controller as `BootReady=False`
+  (`ReasonPlatformBootFailed`) + event + metric — never an eternal, reason-less Creating.
+- uid/mode matrix for the boot phase (gid 1000 is the pod-wide read bridge):
+
+  | Path | Writer (uid) | Readers (uid) | Mode |
+  |---|---|---|---|
+  | PVC subPath roots + symlink farm | init-fs (1000) | opencode (1000) | 0755 dirs, links |
+  | `rt/ssh`, `rt/secrets` | init-fs (1000) | materializer (2000 sidecar / 1000 legacy) | 0700 |
+  | `/sandbox-cfg/password` | init-fs (1000) | main-container entrypoint/agentd (1000); sidecar uses env | 0600 |
+  | `/sandbox-cfg/admin-token` | init-fs (1000) | legacy main agentd (1000); sidecar uses env | 0400 |
+  | `/sandbox-cfg/free-models.json` | init-fs (1000) | materialize (2000/1000) | 0644 |
+  | `rt/secrets.json` (bootstrap out) | bootstrap (2000 sidecar / 1000 legacy) | materialize | 0600 |
+  | `rt/*` credential outputs, `agent-config.json` | materialize (2000/1000) | opencode (1000) | 0600 / 0640 (T2 exception) |
+
+- Legacy-no-overlay pods (no `agentdDelivery.image`) keep the bash init containers unchanged; that
+  path is deleted in migration step 5 together with the baked binary. Helm rollback (D6.1) that
+  lands on a no-overlay chart against a base without the baked binary is the residual D6.1 risk —
+  the chart compatibility gate (base floor + single-coordinate agentd pin) is migration step 4.
+
 1. Flag off → controller builds single-container pods again; existing multi-`Data` Secrets are
    simply ignored by the old code path (extra keys are inert — the #933 upsert already established
    that extra Secret keys don't break legacy readers).

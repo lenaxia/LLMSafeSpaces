@@ -34,8 +34,32 @@ jobs:
         run: |
           curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
 
+      - name: Start local registry (digest-pinned agentd delivery)
+        run: |
+          # The sidecar-mode nightly needs controller.agentdDelivery.image
+          # DIGEST-PINNED (controller startup validation); digest refs must
+          # resolve in-node. Same pattern as scripts/us2-kind-integration.sh.
+          docker run -d --restart=always -p "127.0.0.1:5001:5000" \
+            --network bridge --name lss-e2e-registry registry:3
+          for i in $(seq 1 30); do
+            curl -fs http://127.0.0.1:5001/v2/ >/dev/null 2>&1 && exit 0
+            sleep 1
+          done
+          echo "registry did not become ready"; exit 1
+
       - name: Create kind cluster
-        run: kind create cluster --config local/kind-cluster.yaml --name $CLUSTER_NAME
+        run: |
+          kind create cluster --config local/kind-cluster.yaml --name $CLUSTER_NAME
+          # Alias localhost:5001 inside the node to the registry container
+          # (local/kind-cluster.yaml enables the certs.d config path).
+          for node in $(kind get nodes --name $CLUSTER_NAME); do
+            docker exec "$node" mkdir -p /etc/containerd/certs.d/localhost:5001
+            printf '[host."http://lss-e2e-registry:5000"]\n' \
+              | docker exec -i "$node" cp /dev/stdin /etc/containerd/certs.d/localhost:5001/hosts.toml
+          done
+          if [ "$(docker inspect -f='{{json .NetworkSettings.Networks.kind}}' lss-e2e-registry)" = "null" ]; then
+            docker network connect kind lss-e2e-registry
+          fi
 
       - name: Build and load images
         run: |
@@ -46,6 +70,24 @@ jobs:
           docker build --network host --build-arg VERSION="$E2E_VERSION" --build-arg COMMIT_SHA="${{ github.sha }}" -f api/Dockerfile -t llmsafespaces/api:$IMAGE_TAG .
           docker build --network host --build-arg VERSION="$E2E_VERSION" --build-arg COMMIT_SHA="${{ github.sha }}" -f controller/Dockerfile -t llmsafespaces/controller:$IMAGE_TAG .
           docker build --network host --build-arg VERSION="$E2E_VERSION" --build-arg COMMIT_SHA="${{ github.sha }}" -f runtimes/base/Dockerfile -t llmsafespaces/runtime-base:$IMAGE_TAG .
+
+          # agentd delivery artifact → local registry (digest-pinned ref +
+          # binary sha for the entrypoint/supervisor verify pins).
+          docker build --network host --build-arg VERSION="$E2E_VERSION" --build-arg COMMIT_SHA="${{ github.sha }}" \
+            -f cmd/workspace-agentd/Dockerfile -t localhost:5001/llmsafespaces/agentd:$IMAGE_TAG .
+          docker push localhost:5001/llmsafespaces/agentd:$IMAGE_TAG >/dev/null
+          AGENTD_REF=$(docker inspect --format '{{index .RepoDigests 0}}' localhost:5001/llmsafespaces/agentd:$IMAGE_TAG)
+          case "$AGENTD_REF" in
+            *@sha256:*) AGENTD_REF="localhost:5001/llmsafespaces/agentd:$IMAGE_TAG@${AGENTD_REF##*@}" ;;
+            *) echo "could not determine agentd digest"; exit 1 ;;
+          esac
+          CID=$(docker create localhost:5001/llmsafespaces/agentd:$IMAGE_TAG no-start)
+          docker cp "$CID:/usr/local/bin/workspace-agentd" /tmp/workspace-agentd >/dev/null 2>&1 || { docker rm -f "$CID"; echo "agentd binary extract failed"; exit 1; }
+          docker rm -f "$CID" >/dev/null 2>&1
+          BINARY_SHA=$(sha256sum /tmp/workspace-agentd | cut -d' ' -f1)
+          [ -n "$BINARY_SHA" ] || { echo "agentd binary hash failed"; exit 1; }
+          echo "AGENTD_REF=$AGENTD_REF" >> "$GITHUB_ENV"
+          echo "AGENTD_BINARY_SHA=$BINARY_SHA" >> "$GITHUB_ENV"
 
           # Retag runtime-base with the ghcr.io/lenaxia/ prefix so the
           # RuntimeEnvironment validating webhook's image allow-list accepts
@@ -108,6 +150,10 @@ jobs:
             --set "externalSecret.redisPassword=e2e-redis-pw-2026" \
             --set rbac.scope=cluster \
             --set api.config.logging.development=true \
+            --set "controller.agentdDelivery.image=${{ env.AGENTD_REF }}" \
+            --set "controller.agentdDelivery.binarySHA256Amd64=${{ env.AGENTD_BINARY_SHA }}" \
+            --set "controller.agentdDelivery.binarySHA256Arm64=${{ env.AGENTD_BINARY_SHA }}" \
+            --set controller.agentdSidecar.enabled=true \
             --wait --timeout 5m
 
       - name: Wait for rollout

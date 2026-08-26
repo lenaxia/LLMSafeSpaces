@@ -26,3 +26,13 @@ networking:
   # default networkPolicy.enabled=true policies are rendered but inert in
   # this dev cluster. No override is needed.
   apiServerAddress: "127.0.0.1"
+# Local-registry support (same wiring as scripts/us2-kind-integration.sh):
+# the agentd sidecar requires a digest-pinned delivery image, and digest
+# refs must resolve inside the nodes. Enabling the certs.d config path is
+# harmless without a registry running; the nightly + us2 scripts create a
+# `registry:3` container, connect it to the kind network, and write the
+# hosts.toml alias after cluster create.
+containerdConfigPatches:
+- |-
+  [plugins."io.containerd.grpc.v1.cri".registry]
+    config_path = "/etc/containerd/certs.d"
