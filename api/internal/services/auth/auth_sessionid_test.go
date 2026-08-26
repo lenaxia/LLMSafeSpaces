@@ -151,6 +151,13 @@ func (m *mockDB) CheckResourceOwnership(context.Context, string, string, string)
 func (m *mockDB) ListSessionIndex(context.Context, string) ([]types.SessionListItem, error) {
 	return nil, nil
 }
+
+func (m *mockDB) InsertSessionAlert(context.Context, string, string, string, int) error {
+	return nil
+}
+func (m *mockDB) ListSessionAlerts(context.Context, string, int) ([]types.SessionAlert, error) {
+	return nil, nil
+}
 func (m *mockDB) DeleteSessionIndex(context.Context, string) error        { return nil }
 func (m *mockDB) DeleteSessionTree(context.Context, string, string) error { return nil }
 func (m *mockDB) UpsertSessionMessage(context.Context, string, string, time.Time) error {

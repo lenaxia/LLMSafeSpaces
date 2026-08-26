@@ -270,6 +270,13 @@ func (m *fullMockDB) CheckResourceOwnership(context.Context, string, string, str
 func (m *fullMockDB) ListSessionIndex(context.Context, string) ([]types.SessionListItem, error) {
 	return nil, nil
 }
+
+func (m *fullMockDB) InsertSessionAlert(context.Context, string, string, string, int) error {
+	return nil
+}
+func (m *fullMockDB) ListSessionAlerts(context.Context, string, int) ([]types.SessionAlert, error) {
+	return nil, nil
+}
 func (m *fullMockDB) DeleteSessionIndex(context.Context, string) error        { return nil }
 func (m *fullMockDB) DeleteSessionTree(context.Context, string, string) error { return nil }
 func (m *fullMockDB) UpsertSessionMessage(context.Context, string, string, time.Time) error {
