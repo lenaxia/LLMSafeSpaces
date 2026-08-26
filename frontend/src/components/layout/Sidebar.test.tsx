@@ -14,12 +14,14 @@ vi.mock("../../api/auth", () => ({
 let mockIsSessionBusy = (_sid: string) => false;
 let mockIsSessionUnread = (_sid: string) => false;
 let mockWorkspaceBusyCount = (_wsid: string) => 0;
+let mockWorkspaceHung = (_wsid: string) => false;
 let mockSessionPendingActions = (): Set<string> => new Set<string>();
 
 vi.mock("../../providers/SessionActivityProvider", () => ({
   useIsSessionBusy: (sid: string) => mockIsSessionBusy(sid),
   useIsSessionUnread: (sid: string) => mockIsSessionUnread(sid),
   useWorkspaceBusyCount: (wsid: string) => mockWorkspaceBusyCount(wsid),
+  useWorkspaceHung: (wsid: string) => mockWorkspaceHung(wsid),
   useClearPendingUnread: () => () => {},
   useIsSessionPendingAction: () => false,
   useSessionPendingActions: () => mockSessionPendingActions(),
@@ -137,6 +139,51 @@ describe("Sidebar", () => {
     expect(screen.getByRole("menuitem", { name: "Refresh compute" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Suspend" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "Delete" })).toBeInTheDocument();
+  });
+});
+
+describe("Sidebar — D6 hung badge (#998)", () => {
+  beforeEach(() => {
+    mockWorkspaceHung = (_wsid: string) => false;
+    mockWorkspaceBusyCount = (_wsid: string) => 0;
+  });
+
+  // The sidebar auto-expands every workspace group on load; the badge
+  // (and the collapsed busy dot it replaces) renders only when the
+  // group is collapsed — collapse it first, as a user would.
+  async function collapseAlpha() {
+    expect(await screen.findByText("alpha")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("alpha"));
+  }
+
+  it("shows the amber hung badge when the workspace is hung", async () => {
+    mockWorkspaceHung = (wsid: string) => wsid === "ws-1";
+    renderSidebar();
+    await collapseAlpha();
+    expect(await screen.findByTestId("hung-badge")).toBeInTheDocument();
+  });
+
+  it("replaces the busy indicator while hung", async () => {
+    mockWorkspaceHung = (wsid: string) => wsid === "ws-1";
+    mockWorkspaceBusyCount = (_wsid: string) => 2;
+    renderSidebar();
+    await collapseAlpha();
+    expect(await screen.findByTestId("hung-badge")).toBeInTheDocument();
+    expect(screen.queryByTestId("busy-indicator")).not.toBeInTheDocument();
+  });
+
+  it("shows the busy indicator (not the hung badge) for busy-but-healthy workspaces", async () => {
+    mockWorkspaceBusyCount = (_wsid: string) => 2;
+    renderSidebar();
+    await collapseAlpha();
+    expect(screen.queryByTestId("hung-badge")).not.toBeInTheDocument();
+  });
+
+  it("shows no badge at all for idle workspaces", async () => {
+    renderSidebar();
+    await collapseAlpha();
+    expect(screen.queryByTestId("hung-badge")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("busy-indicator")).not.toBeInTheDocument();
   });
 });
 

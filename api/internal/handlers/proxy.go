@@ -141,6 +141,10 @@ type ProxyHandler struct {
 	busyAlerts   map[string]time.Time
 	busyAlertsMu sync.Mutex
 
+	// sessionAlerts persists D6 (#998) escalations (nil = dev/test:
+	// SSE-only, no durability). Wired via SetSessionAlerts before Start.
+	sessionAlerts interfaces.SessionAlertsService
+
 	// outboxCancel stops the outbox delivery worker on Stop().
 	outboxCancel context.CancelFunc
 

@@ -68,3 +68,42 @@ hung-and-alive sessions to the owner: **notify, never execute**.
 - api/internal/handlers/proxy.go (busyAlerts state)
 - frontend/src/api/types.ts, pages/ChatPage.tsx (+queue tests),
   providers/SessionActivityProvider.tsx, components/layout/Sidebar.tsx
+
+## Round 2 — PR #1003 review findings (2026-08-26)
+
+Review verdict: REQUEST CHANGES — one hard blocker (issue #998 finding
+4: "event lands in session history for workflow surfaces" — transient
+SSE + in-memory only) plus missing test categories and a Lint failure
+(imports) + frontend mock breakage (`useWorkspaceHung` missing from 16
+test mocks).
+
+### Finding 4 — alert persistence
+- migration 000026: `session_alerts` table (ws, session, alert, oldest
+  busy seconds, created_at; ws+created DESC index).
+- `api/internal/services/sessionalerts`: sessionindex-pattern service —
+  non-blocking RecordAlert → bounded queue → drainer → InsertSessionAlert;
+  Stop flushes; ListByWorkspace filters 24h retention.
+- `ProxyHandler.SetSessionAlerts` + RecordAlert hook in escalateHungs
+  (nil = SSE-only dev/test). GET /workspaces/:id/alerts (limit 1-200,
+  default 50) for reconnects/workflows.
+- Wired in app.go alongside sessionIndex (Start/Stop lifecycle).
+
+### Tests added
+- Handler: PersistsAlert (mock service args), ConcurrentCooldownIsolation
+  (cooling ws cannot mask a second hung ws), ReconcilerTickIntegration
+  (real sseWatchReconciler tick → live statusz fetch asserting Bearer
+  auth via workspace-pw admin-token secret), GetWorkspaceAlerts (list,
+  limit=0/abc → 400), NotConfigured → 501.
+- Service: non-blocking enqueue, drain-to-insert, Stop flushes 3,
+  retention filter hides >24h.
+- Sidebar: 4 badge tests (hung badge on collapse, replaces busy dot,
+  busy-but-healthy keeps dot, idle shows nothing) — sidebar auto-expands
+  groups on load; badge renders collapsed-only, tests collapse first.
+- 16 existing test-file mocks gained `useWorkspaceHung`; e2e_suspend
+  recordingDB gained the two new DatabaseService methods; imports fixed.
+
+### Verification
+- handlers 110s green (race), sessionalerts green, app green, mocks
+  build; imports-check + fmt-check clean.
+- Frontend 1703 pass (7 fails confined to a foreign in-flight
+  SessionAuthority.test.tsx — untracked, not in this PR).

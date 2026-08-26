@@ -85,6 +85,8 @@ type DatabaseService interface {
 	CheckPermission(ctx context.Context, userID, resourceType, resourceID, action string) (bool, error)
 	CheckResourceOwnership(ctx context.Context, userID, resourceType, resourceID string) (bool, error)
 	ListSessionIndex(ctx context.Context, workspaceID string) ([]types.SessionListItem, error)
+	InsertSessionAlert(ctx context.Context, workspaceID, sessionID, alert string, oldestBusySeconds int) error
+	ListSessionAlerts(ctx context.Context, workspaceID string, limit int) ([]types.SessionAlert, error)
 	DeleteSessionIndex(ctx context.Context, workspaceID string) error
 	DeleteSessionTree(ctx context.Context, workspaceID, sessionID string) error
 	UpsertSessionMessage(ctx context.Context, workspaceID, sessionID string, at time.Time) error
@@ -168,6 +170,16 @@ type SessionIndexService interface {
 	UpsertParent(ctx context.Context, workspaceID, sessionID, parentID string) error
 	UpsertContextUsed(ctx context.Context, workspaceID, sessionID string, contextUsed int64) error
 	UpdateLastSeen(ctx context.Context, workspaceID, sessionID string) error
+	Start() error
+	Stop() error
+}
+
+// SessionAlertsService persists D6 (#998) escalations so hung-session
+// alerts survive SSE disconnects and remain queryable by workflow
+// surfaces (GET /workspaces/:id/alerts).
+type SessionAlertsService interface {
+	RecordAlert(workspaceID, sessionID, alert string, oldestBusySeconds int)
+	ListByWorkspace(ctx context.Context, workspaceID string, limit int) ([]types.SessionAlert, error)
 	Start() error
 	Stop() error
 }

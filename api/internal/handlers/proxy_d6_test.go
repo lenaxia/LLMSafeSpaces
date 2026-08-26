@@ -10,21 +10,26 @@ package handlers
 // nothing restarts, nothing aborts.
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
+	"github.com/lenaxia/llmsafespaces/pkg/types"
 )
 
 type fakePhaseSourceD6 map[string]string
@@ -181,4 +186,177 @@ func TestEscalateHungs_NotifyOnlyNoRestart(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	assert.Zero(t, patches, "D6 policy is notify-only: no workspace mutation")
+}
+
+// mockSessionAlerts is a testify mock of interfaces.SessionAlertsService.
+type mockSessionAlerts struct {
+	mock.Mock
+}
+
+func (m *mockSessionAlerts) RecordAlert(workspaceID, sessionID, alert string, oldestBusySeconds int) {
+	m.Called(workspaceID, sessionID, alert, oldestBusySeconds)
+}
+
+func (m *mockSessionAlerts) ListByWorkspace(ctx context.Context, workspaceID string, limit int) ([]types.SessionAlert, error) {
+	args := m.Called(ctx, workspaceID, limit)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]types.SessionAlert), args.Error(1)
+}
+
+func (m *mockSessionAlerts) Start() error { return nil }
+func (m *mockSessionAlerts) Stop() error  { return nil }
+
+// #998 finding 4: every published escalation must also be persisted for
+// workflow surfaces (session history) — same args as the SSE payload.
+func TestEscalateHungs_PersistsAlert(t *testing.T) {
+	origCooldown := busyAlertCooldown
+	busyAlertCooldown = time.Hour
+	t.Cleanup(func() { busyAlertCooldown = origCooldown })
+
+	seconds := int((busyAlertOlderThan + 5*time.Minute).Seconds())
+	env, broker := newD6Env(t, hungStatusz(seconds))
+	_ = broker
+
+	alerts := &mockSessionAlerts{}
+	alerts.On("RecordAlert", "ws-1", "ses-x", "session_hung", seconds).Once()
+	env.handler.SetSessionAlerts(alerts)
+
+	env.handler.escalateHungs([]string{"ws-1"})
+
+	alerts.AssertExpectations(t)
+}
+
+// Cooldown isolation: a cooling workspace must not mask a second hung
+// workspace in the same sweep — the cooldown map is per-workspace.
+func TestEscalateHungs_ConcurrentCooldownIsolation(t *testing.T) {
+	origCooldown := busyAlertCooldown
+	busyAlertCooldown = time.Hour
+	t.Cleanup(func() { busyAlertCooldown = origCooldown })
+
+	seconds := int((busyAlertOlderThan + time.Hour).Seconds())
+	env, broker := newD6Env(t, hungStatusz(seconds))
+	env.setupWorkspacePodWithT(t, "ws-2", backendHost(t, env), "Active", "ws-2")
+	env.handler.phaseSource = fakePhaseSourceD6{"ws-1": "Active", "ws-2": "Active"}
+
+	sub1, err := broker.SubscribeWorkspace("ws-1")
+	require.NoError(t, err)
+	defer broker.UnsubscribeWorkspace("ws-1", sub1)
+	sub2, err := broker.SubscribeWorkspace("ws-2")
+	require.NoError(t, err)
+	defer broker.UnsubscribeWorkspace("ws-2", sub2)
+
+	// ws-1 already alerted (inside cooldown); ws-2 never has.
+	env.handler.markBusyAlerted("ws-1")
+
+	env.handler.escalateHungs([]string{"ws-1", "ws-2"})
+
+	select {
+	case evt := <-sub1.Ch:
+		t.Fatalf("ws-1 cooling must stay silent: got %+v", evt)
+	default:
+	}
+	select {
+	case evt := <-sub2.Ch:
+		assert.Equal(t, "workspace.alert", evt.Type)
+		assert.Equal(t, "session_hung", evt.Status)
+	default:
+		t.Fatal("ws-2 must alert despite ws-1 cooling")
+	}
+}
+
+// Full integration through the REAL reconciler tick: phaseSource →
+// EnsureWatching → escalateHungs → statusz fetch with live bearer auth.
+// The fake statusz asserts the Authorization header so the test pins
+// the production auth path (admin bearer candidates), not a bypass.
+func TestEscalateHungs_ReconcilerTickIntegration(t *testing.T) {
+	origCooldown := busyAlertCooldown
+	busyAlertCooldown = time.Hour
+	t.Cleanup(func() { busyAlertCooldown = origCooldown })
+	origInterval := sseWatchReconcileInterval
+	sseWatchReconcileInterval = 20 * time.Millisecond
+	t.Cleanup(func() { sseWatchReconcileInterval = origInterval })
+
+	var sawBearer atomic.Bool
+	env, broker := newD6Env(t, func(w http.ResponseWriter, r *http.Request) {
+		auth := r.Header.Get("Authorization")
+		if !strings.HasPrefix(auth, "Bearer ") {
+			t.Errorf("statusz fetch must use bearer auth, got %q", auth)
+			return
+		}
+		sawBearer.Store(true)
+		hungStatusz(int((busyAlertOlderThan + time.Minute).Seconds()))(w, r)
+	})
+	// The statusz fetch authenticates with the admin-token bearer from
+	// the workspace-pw secret — wire a real one so the production
+	// candidate path (k8s secret → Bearer) is exercised end-to-end.
+	secret := makePasswordSecret("ws-1", "test-password")
+	secret.Data["admin-token"] = []byte("d6-admin-token")
+	_, err := env.clientset.CoreV1().Secrets("default").Create(context.Background(), secret, metav1.CreateOptions{})
+	require.NoError(t, err)
+
+	sub, err := broker.SubscribeWorkspace("ws-1")
+	require.NoError(t, err)
+	defer broker.UnsubscribeWorkspace("ws-1", sub)
+
+	tracker := sse.NewTracker(env.handler.httpClient, env.log, nil)
+	env.handler.sseTracker = tracker
+
+	if env.handler.stopCh == nil {
+		env.handler.stopCh = make(chan struct{})
+	}
+	done := make(chan struct{}, 1)
+	go func() { env.handler.sseWatchReconciler(sseWatchReconcileInterval); close(done) }()
+	t.Cleanup(func() {
+		env.handler.stopOnce.Do(func() { close(env.handler.stopCh) })
+		tracker.Stop()
+		<-done
+	})
+
+	select {
+	case evt := <-sub.Ch:
+		assert.Equal(t, "workspace.alert", evt.Type)
+		assert.True(t, sawBearer.Load(), "statusz fetch must carry bearer auth")
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconciler tick must surface the hung session")
+	}
+}
+
+// GET /workspaces/:id/alerts — the reconnect/workflow surface (#998
+// finding 4). Valid list, invalid limit, and unconfigured service.
+func TestGetWorkspaceAlerts(t *testing.T) {
+	env, _ := newD6Env(t, hungStatusz(0))
+
+	alerts := &mockSessionAlerts{}
+	now := time.Now().UTC()
+	alerts.On("ListByWorkspace", mock.Anything, "ws-1", 50).
+		Return([]types.SessionAlert{
+			{ID: "1", WorkspaceID: "ws-1", SessionID: "ses-x", Alert: "session_hung", OldestBusySeconds: 960, CreatedAt: now},
+		}, nil).Once()
+	env.handler.SetSessionAlerts(alerts)
+
+	w := env.doRequestWithT(t, http.MethodGet, "/api/v1/workspaces/ws-1/alerts", nil)
+	require.Equal(t, http.StatusOK, w.Code)
+	var body struct {
+		Alerts []types.SessionAlert `json:"alerts"`
+	}
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &body))
+	require.Len(t, body.Alerts, 1)
+	assert.Equal(t, "session_hung", body.Alerts[0].Alert)
+	assert.Equal(t, "ses-x", body.Alerts[0].SessionID)
+
+	w = env.doRequestWithT(t, http.MethodGet, "/api/v1/workspaces/ws-1/alerts?limit=0", nil)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+
+	w = env.doRequestWithT(t, http.MethodGet, "/api/v1/workspaces/ws-1/alerts?limit=abc", nil)
+	assert.Equal(t, http.StatusBadRequest, w.Code)
+
+	alerts.AssertExpectations(t)
+}
+
+func TestGetWorkspaceAlerts_NotConfigured(t *testing.T) {
+	env, _ := newD6Env(t, hungStatusz(0))
+	w := env.doRequestWithT(t, http.MethodGet, "/api/v1/workspaces/ws-1/alerts", nil)
+	assert.Equal(t, http.StatusNotImplemented, w.Code)
 }

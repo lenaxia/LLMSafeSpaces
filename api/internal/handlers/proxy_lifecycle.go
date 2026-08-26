@@ -8,11 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
@@ -479,6 +480,12 @@ func (h *ProxyHandler) escalateHungs(workspaceIDs []string) {
 			},
 		})
 		h.markBusyAlerted(wid)
+		// #998 finding 4: persist the alert so it lands in session
+		// history for workflow surfaces and survives SSE disconnects.
+		// Non-blocking (bounded queue + drainer); nil = SSE-only.
+		if h.sessionAlerts != nil {
+			h.sessionAlerts.RecordAlert(wid, oldestSession(sz.BusyAges), "session_hung", sz.OldestBusySeconds)
+		}
 		h.logger.Warn("D6 escalation: session hung (notify-only)",
 			"workspaceID", wid, "oldestBusySeconds", sz.OldestBusySeconds)
 	}
