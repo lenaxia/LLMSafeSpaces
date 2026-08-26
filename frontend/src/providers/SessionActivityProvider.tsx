@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useParams } from "react-router-dom";
 import { useUserEventStream } from "../hooks/useUserEventStream";
+import { workspacesApi } from "../api/workspaces";
 import type { QuestionRequest, PermissionRequest } from "../api/types";
 
 interface SessionActivityContextValue {
@@ -141,6 +142,19 @@ export function SessionActivityProvider({ children }: { children: ReactNode }) {
         if (!Array.isArray(data)) continue;
 
         seeded.add(wsId);
+
+        // D6 (#998) history surface: seed hung state from persisted
+        // alerts once per workspace so a reconnecting client recovers
+        // alerts missed while no SSE stream was attached. Best-effort —
+        // a failed fetch leaves the in-memory state untouched (the live
+        // SSE path re-alerts on the next cooldown cycle anyway).
+        workspacesApi
+          .getAlerts(wsId)
+          .then((alerts) => {
+            if (!alerts || alerts.length === 0) return;
+            setHungWorkspaces((prev) => (prev.has(wsId) ? prev : new Set(prev).add(wsId)));
+          })
+          .catch(() => {});
 
         for (const session of data as Array<{ id: string; status?: string }>) {
           // Backend session.Status enum is {unknown, idle, busy, error,

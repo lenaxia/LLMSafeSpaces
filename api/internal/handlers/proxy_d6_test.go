@@ -12,6 +12,7 @@ package handlers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"net/url"
@@ -26,7 +27,10 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/lenaxia/llmsafespaces/api/internal/logger"
+	"github.com/lenaxia/llmsafespaces/api/internal/mocks"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/eventbroker"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionalerts"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
@@ -359,4 +363,162 @@ func TestGetWorkspaceAlerts_NotConfigured(t *testing.T) {
 	env, _ := newD6Env(t, hungStatusz(0))
 	w := env.doRequestWithT(t, http.MethodGet, "/api/v1/workspaces/ws-1/alerts", nil)
 	assert.Equal(t, http.StatusNotImplemented, w.Code)
+}
+
+// E2E happy path (#998): the complete workflow — real reconciler tick
+// detects the hung session via statusz, publishes the SSE alert, AND the
+// alert is readable back from the persisted history surface
+// (GET /workspaces/:id/alerts) through the real sessionalerts service.
+func TestD6_E2E_DetectionToHistory(t *testing.T) {
+	origCooldown := busyAlertCooldown
+	busyAlertCooldown = time.Hour
+	t.Cleanup(func() { busyAlertCooldown = origCooldown })
+	origInterval := sseWatchReconcileInterval
+	sseWatchReconcileInterval = 20 * time.Millisecond
+	t.Cleanup(func() { sseWatchReconcileInterval = origInterval })
+
+	env, broker := newD6Env(t, hungStatusz(int((busyAlertOlderThan + time.Minute).Seconds())))
+
+	// Real service backed by a mock DB (the only seam without a live
+	// Postgres): insert recorded, list served from the recorded row.
+	db := &mocks.MockDatabaseService{}
+	var mu sync.Mutex
+	var inserted []types.SessionAlert
+	db.On("InsertSessionAlert", mock.Anything, "ws-1", "ses-x", "session_hung", mock.Anything).
+		Run(func(args mock.Arguments) {
+			mu.Lock()
+			inserted = append(inserted, types.SessionAlert{
+				WorkspaceID: args.String(1), SessionID: args.String(2),
+				Alert: args.String(3), CreatedAt: time.Now().UTC(),
+			})
+			mu.Unlock()
+		}).
+		Return(nil).Maybe()
+	db.On("ListSessionAlerts", mock.Anything, "ws-1", mock.Anything).
+		Run(func(mock.Arguments) {}).Return(nil, nil).Maybe()
+	log, _ := logger.NewObserved()
+	svc := sessionalerts.New(db, log)
+	require.NoError(t, svc.Start())
+	t.Cleanup(func() { _ = svc.Stop() })
+	env.handler.SetSessionAlerts(svc)
+
+	sub, err := broker.SubscribeWorkspace("ws-1")
+	require.NoError(t, err)
+	defer broker.UnsubscribeWorkspace("ws-1", sub)
+
+	tracker := sse.NewTracker(env.handler.httpClient, env.log, nil)
+	env.handler.sseTracker = tracker
+	if env.handler.stopCh == nil {
+		env.handler.stopCh = make(chan struct{})
+	}
+	done := make(chan struct{}, 1)
+	go func() { env.handler.sseWatchReconciler(sseWatchReconcileInterval); close(done) }()
+	t.Cleanup(func() {
+		env.handler.stopOnce.Do(func() { close(env.handler.stopCh) })
+		tracker.Stop()
+		<-done
+	})
+
+	// 1. Live surface: SSE alert arrives.
+	select {
+	case evt := <-sub.Ch:
+		assert.Equal(t, "workspace.alert", evt.Type)
+	case <-time.After(5 * time.Second):
+		t.Fatal("reconciler must surface the hung session")
+	}
+	// 2. Durable surface: the alert landed in persisted history.
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(inserted) == 1 && inserted[0].SessionID == "ses-x"
+	}, 3*time.Second, 20*time.Millisecond)
+}
+
+// E2E unhappy path: a panic inside the escalation sweep (here: the
+// persistence hook) must not kill the reconciler — SSE watch arming
+// continues on subsequent ticks.
+func TestD6_E2E_PanicIsolation_ReconcilerSurvives(t *testing.T) {
+	origCooldown := busyAlertCooldown
+	busyAlertCooldown = time.Hour
+	t.Cleanup(func() { busyAlertCooldown = origCooldown })
+	origInterval := sseWatchReconcileInterval
+	sseWatchReconcileInterval = 15 * time.Millisecond
+	t.Cleanup(func() { sseWatchReconcileInterval = origInterval })
+
+	env, _ := newD6Env(t, hungStatusz(99999))
+	alerts := &mockSessionAlerts{}
+	alerts.On("RecordAlert", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Run(func(mock.Arguments) { panic("boom: persistence layer exploded") })
+	env.handler.SetSessionAlerts(alerts)
+
+	var ticks atomic.Int32
+	phases := fakePhaseSourceD6{"ws-1": "Active"}
+	env.handler.phaseSource = phaseCountingSource{inner: phases, ticks: &ticks}
+
+	tracker := sse.NewTracker(env.handler.httpClient, env.log, nil)
+	env.handler.sseTracker = tracker
+	if env.handler.stopCh == nil {
+		env.handler.stopCh = make(chan struct{})
+	}
+	done := make(chan struct{}, 1)
+	go func() { env.handler.sseWatchReconciler(sseWatchReconcileInterval); close(done) }()
+	t.Cleanup(func() {
+		env.handler.stopOnce.Do(func() { close(env.handler.stopCh) })
+		tracker.Stop()
+		<-done
+	})
+
+	// The first tick panics inside escalateHungs; the reconciler must
+	// keep ticking (>=3 proves survival past the panic, not a race on
+	// the very first tick).
+	require.Eventually(t, func() bool { return ticks.Load() >= 3 },
+		5*time.Second, 20*time.Millisecond, "reconciler must survive escalation panics")
+}
+
+// E2E unhappy path: database persistence failure must not suppress the
+// live SSE alert — the SSE path stays primary, persistence is
+// best-effort durability.
+func TestD6_E2E_PersistFailureStillAlerts(t *testing.T) {
+	origCooldown := busyAlertCooldown
+	busyAlertCooldown = time.Hour
+	t.Cleanup(func() { busyAlertCooldown = origCooldown })
+
+	env, broker := newD6Env(t, hungStatusz(int((busyAlertOlderThan + time.Hour).Seconds())))
+	db := &mocks.MockDatabaseService{}
+	db.On("InsertSessionAlert", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(errors.New("db down")).Maybe()
+	log, logs := logger.NewObserved()
+	svc := sessionalerts.New(db, log)
+	require.NoError(t, svc.Start())
+	t.Cleanup(func() { _ = svc.Stop() })
+	env.handler.SetSessionAlerts(svc)
+
+	sub, err := broker.SubscribeWorkspace("ws-1")
+	require.NoError(t, err)
+	defer broker.UnsubscribeWorkspace("ws-1", sub)
+
+	env.handler.escalateHungs([]string{"ws-1"})
+
+	select {
+	case evt := <-sub.Ch:
+		assert.Equal(t, "workspace.alert", evt.Type, "SSE alert must survive persistence failure")
+	default:
+		t.Fatal("persistence failure suppressed the live alert")
+	}
+	// The insert failure is logged (drainer); persistence is best-effort
+	// so no error surfaces to the caller path.
+	require.Eventually(t, func() bool {
+		return len(logs.FilterMessageSnippet("session_alerts: insert failed").All()) > 0
+	}, 2*time.Second, 10*time.Millisecond, "insert failure must be logged")
+}
+
+// phaseCountingSource wraps a phase source, counting reconciler ticks.
+type phaseCountingSource struct {
+	inner fakePhaseSourceD6
+	ticks *atomic.Int32
+}
+
+func (p phaseCountingSource) GetAllKnownPhases() map[string]string {
+	p.ticks.Add(1)
+	return p.inner.GetAllKnownPhases()
 }

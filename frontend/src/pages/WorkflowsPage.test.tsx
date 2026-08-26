@@ -25,7 +25,16 @@ vi.mock("../api/workflows", () => ({
     run: (id: string) => mockRun(id),
   },
   triggerApi: { list: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
-  runApi: { get: vi.fn(), cancel: vi.fn(), nodes: vi.fn() },
+  runApi: { get: vi.fn(), cancel: vi.fn(), nodes: vi.fn(), listForWorkflow: (...a: unknown[]) => mockListRuns(...a) },
+}));
+
+const mockListRuns = vi.fn();
+const mockGetAlerts = vi.fn();
+
+vi.mock("../api/workspaces", () => ({
+  workspacesApi: {
+    getAlerts: (id: string) => mockGetAlerts(id),
+  },
 }));
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -111,6 +120,46 @@ describe("WorkflowsPage", () => {
     await waitFor(() => {
       expect(screen.getByText("nightly-backup")).toBeInTheDocument();
     });
+  });
+});
+
+// ─── D6 hung-alert badge (#998) ──────────────────────────────────────────────
+
+describe("WorkflowsPage — D6 hung-alert badge (#998)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockList.mockResolvedValue([WF1]);
+  });
+
+  function runFixture(workspaceId?: string) {
+    return {
+      id: "run-1234567890abcdef", workflowId: "wf-1", status: "running",
+      workspaceId, createdAt: "2026-08-26T00:00:00Z", updatedAt: "2026-08-26T00:00:00Z",
+    };
+  }
+
+  async function openHistory() {
+    renderPage("/workflows/wf-1");
+    const toggle = await screen.findByRole("button", { name: /run history/i });
+    fireEvent.click(toggle);
+  }
+
+  it("flags runs whose workspace has a persisted hung alert", async () => {
+    mockListRuns.mockResolvedValue([runFixture("ws-hung")]);
+    mockGetAlerts.mockResolvedValue([
+      { id: "1", workspaceId: "ws-hung", sessionId: "ses-x", alert: "session_hung", oldestBusySeconds: 960, createdAt: new Date().toISOString() },
+    ]);
+    await openHistory();
+    expect(await screen.findByTestId("workflow-hung-alert")).toBeInTheDocument();
+    expect(mockGetAlerts).toHaveBeenCalledWith("ws-hung");
+  });
+
+  it("shows no badge when the run's workspace is alert-free", async () => {
+    mockListRuns.mockResolvedValue([runFixture("ws-ok")]);
+    mockGetAlerts.mockResolvedValue([]);
+    await openHistory();
+    await screen.findByText("run-1234");
+    expect(screen.queryByTestId("workflow-hung-alert")).not.toBeInTheDocument();
   });
 });
 

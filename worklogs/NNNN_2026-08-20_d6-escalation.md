@@ -107,3 +107,31 @@ test mocks).
   build; imports-check + fmt-check clean.
 - Frontend 1703 pass (7 fails confined to a foreign in-flight
   SessionAuthority.test.tsx — untracked, not in this PR).
+
+## Round 3 — PR #1003 second review (2026-08-26)
+
+Verdict: REQUEST CHANGES — Finding 3b: alerts infrastructure existed but
+no surface CONSUMED it; 4 e2e gaps; OpenAPI contract test failed on the
+undocumented route.
+
+### Surfaces now consume alerts (#998 finding 3b)
+- frontend workspacesApi.getAlerts; SessionActivityProvider seeds
+  hungWorkspaces from persisted alerts once per workspace on (re)load —
+  reconnect recovery for the banner/badge.
+- WorkflowsPage: amber hung badge on runs whose workspace has
+  persisted alerts (workflow surfaces see hangs without SSE).
+- GET /workspaces/{id}/alerts documented in sdks/openapi.yaml
+  (+SessionAlert schema) — fixes TestOpenAPIRouterContract.
+
+### E2E tests (handlers)
+- DetectionToHistory: real reconciler tick → SSE alert AND persisted
+  insert through the real sessionalerts service.
+- PanicIsolation_ReconcilerSurvives: RecordAlert panics; reconciler
+  keeps ticking (>=3 ticks).
+- PersistFailureStillAlerts: DB insert errors; SSE alert still emitted;
+  failure logged, no crash.
+
+### Frontend tests
+- SessionActivityProvider.alerts.test.tsx (3): seeds hung from alerts,
+  stays healthy when empty, holds state on fetch failure.
+- WorkflowsPage badge (2): flags hung-workspace runs, silent when clean.
