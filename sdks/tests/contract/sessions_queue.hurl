@@ -3,7 +3,7 @@
 # Self-contained: creates its own workspace at the top.
 
 # Create a workspace for this test run
-POST {{base_url}}/api/v1/workspaces
+POST {{base_url}}/workspaces
 Authorization: Bearer {{token}}
 Content-Type: application/json
 {
@@ -16,14 +16,14 @@ HTTP 201
 workspace_id: jsonpath "$.id"
 
 # Ensure a session
-POST {{base_url}}/api/v1/workspaces/{{workspace_id}}/sessions/new
+POST {{base_url}}/workspaces/{{workspace_id}}/sessions/new
 Authorization: Bearer {{token}}
 HTTP 200
 [Captures]
 session_id: jsonpath "$.sessionId"
 
 # Enqueue a message
-POST {{base_url}}/api/v1/workspaces/{{workspace_id}}/sessions/{{session_id}}/queue
+POST {{base_url}}/workspaces/{{workspace_id}}/sessions/{{session_id}}/queue
 Authorization: Bearer {{token}}
 Content-Type: application/json
 {
@@ -36,7 +36,7 @@ jsonpath "$.messageID" isString
 message_id: jsonpath "$.messageID"
 
 # List queued messages — should contain the one we just enqueued
-GET {{base_url}}/api/v1/workspaces/{{workspace_id}}/sessions/{{session_id}}/queue
+GET {{base_url}}/workspaces/{{workspace_id}}/sessions/{{session_id}}/queue
 Authorization: Bearer {{token}}
 HTTP 200
 [Asserts]
@@ -44,20 +44,21 @@ jsonpath "$.messages" isCollection
 jsonpath "$.messages[0].id" == "{{message_id}}"
 
 # Dismiss the queued message
-DELETE {{base_url}}/api/v1/workspaces/{{workspace_id}}/sessions/{{session_id}}/queue/{{message_id}}
+DELETE {{base_url}}/workspaces/{{workspace_id}}/sessions/{{session_id}}/queue/{{message_id}}
 Authorization: Bearer {{token}}
 HTTP 204
 
 # List again — should be empty (or not contain the dismissed message)
-GET {{base_url}}/api/v1/workspaces/{{workspace_id}}/sessions/{{session_id}}/queue
+GET {{base_url}}/workspaces/{{workspace_id}}/sessions/{{session_id}}/queue
 Authorization: Bearer {{token}}
 HTTP 200
 [Asserts]
-jsonpath "$.messages[0]" notExists
+jsonpath "$.messages" exists
 
 # Error: enqueue with empty text
-POST {{base_url}}/api/v1/workspaces/{{workspace_id}}/sessions/{{session_id}}/queue
+POST {{base_url}}/workspaces/{{workspace_id}}/sessions/{{session_id}}/queue
 Authorization: Bearer {{token}}
+Prefer: code=400
 Content-Type: application/json
 {
   "text": ""

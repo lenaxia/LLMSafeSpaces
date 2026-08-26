@@ -10,32 +10,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// TestSpec_Completeness verifies the actual openapi.yaml has all expected endpoints.
-// Derives the expected path set from the canonical expectedPaths list in main.go
-// (single source of truth) — no duplicate list here.
-func TestSpec_Completeness(t *testing.T) {
-	data, err := os.ReadFile("../openapi.yaml")
-	if err != nil {
-		t.Skipf("openapi.yaml not found (run from sdks/validate/): %v", err)
-	}
-
-	var doc map[string]any
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		t.Fatalf("failed to parse openapi.yaml: %v", err)
-	}
-
-	paths, _ := doc["paths"].(map[string]any)
-	if paths == nil {
-		t.Fatal("no paths in spec")
-	}
-
-	// Use the canonical expectedPaths from main.go — single source of truth.
-	for _, expected := range expectedPaths {
-		if _, ok := paths[expected]; !ok {
-			t.Errorf("missing path: %s", expected)
-		}
-	}
-}
+// Route-coverage parity is enforced by TestOpenAPIRouterContract in
+// api/internal/server (spec ↔ production router, both directions, every
+// handler wired). The tests here cover structure only.
 
 // TestSpec_AllRefsResolve validates the actual spec has no broken references.
 func TestSpec_AllRefsResolve(t *testing.T) {

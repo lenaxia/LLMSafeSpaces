@@ -10,8 +10,10 @@ Multi-language client SDKs for the LLMSafeSpaces API.
 | TypeScript | `@llmsafespaces/sdk` | `npm install @llmsafespaces/sdk` |
 | Go | `github.com/lenaxia/llmsafespaces/sdk/go` | `go get github.com/lenaxia/llmsafespaces/sdk/go` |
 
-SDK versions track the platform version. The OpenAPI spec at `sdks/openapi.yaml`
-is the canonical API contract.
+The OpenAPI spec at `sdks/openapi.yaml` is the canonical API contract. Route
+parity between the spec and the production router is enforced by
+`TestOpenAPIRouterContract` (api/internal/server) — spec and router are
+diffed in both directions with every handler wired.
 
 ## Quick start (Python)
 
@@ -41,17 +43,19 @@ console.log(response.content);
 
 ```
 sdks/
-├── openapi.yaml          # Canonical OpenAPI 3.0.3 spec (84 paths)
+├── openapi.yaml          # Canonical OpenAPI 3.0.3 spec
 ├── go/                   # Go SDK (reference implementation)
 ├── python/               # Python SDK (sync + async)
 ├── typescript/           # TypeScript SDK
 ├── java/                 # Java SDK (typed facade)
 ├── tests/contract/       # Hurl contract tests
-└── validate/             # Spec validator + route-coverage CI check
+└── validate/             # Spec structural validator (route parity lives in api/internal/server)
 ```
 
 ## Versioning
 
-SDK versions match the platform version. When a platform tag (e.g., `v0.4.5`)
-is pushed, the release workflow publishes Python and TypeScript SDKs at the
-same version. Go modules resolve directly from VCS tags.
+The spec and SDKs version INDEPENDENTLY of the platform (semver over the API
+surface: additive changes bump the minor, breaking changes the major). The
+platform release version (e.g. `v0.21.3`) tracks the deployable artifacts,
+not the SDK surface. When the spec minor bumps, Python and TypeScript SDKs
+are republished from the same change; Go modules resolve from VCS tags.
