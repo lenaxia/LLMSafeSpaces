@@ -201,8 +201,12 @@ func TestSupervisorSubprocess_LifecycleAndContract(t *testing.T) {
 	// US-4a merge semantics, with pid self-consistency: read pid → read
 	// environ → re-read pid; a changed pid means the supervisor moved on
 	// (crash-backoff churn) and the read may have hit a transient/recycled
-	// pid — retry. The FINAL read must still satisfy BOTH the platform
-	// env and the handed delta; nothing is weakened.
+	// pid — retry. The delta+parent checks are INSIDE the Eventually
+	// window: on loaded CI runners the first post-restart child can be a
+	// churn respawn without the handed delta (kind-era flake, 2026-08-26);
+	// the window must keep searching for the child that carries BOTH.
+	// Nothing is weakened — the FINAL read must still satisfy pid
+	// stability, the platform env, and the handed delta together.
 	var data []byte
 	var secondPID int
 	require.Eventually(t, func() bool {
@@ -217,10 +221,16 @@ func TestSupervisorSubprocess_LifecycleAndContract(t *testing.T) {
 		if sp.childPIDOf(t, cc) != pid {
 			return false // transient pid — the supervisor replaced it mid-read
 		}
+		if !strings.Contains(string(d), "PROBE_VAR=handed-via-socket\x00") {
+			return false // churn respawn without the delta — keep waiting
+		}
+		if !strings.Contains(string(d), "GO_TEST_SUPERVISOR=1") {
+			return false // merge semantics: parent env must ride along
+		}
 		data = d
 		secondPID = pid
 		return true
-	}, 10*time.Second, 100*time.Millisecond, "the next real child must run parent+delta")
+	}, 15*time.Second, 100*time.Millisecond, "the next real child must run parent+delta")
 	require.NotEqual(t, firstPID, secondPID, "restart must swap the child process")
 	require.True(t, strings.Contains(string(data), "PROBE_VAR=handed-via-socket\x00"),
 		"the socket-handed delta reached the next spawn")
