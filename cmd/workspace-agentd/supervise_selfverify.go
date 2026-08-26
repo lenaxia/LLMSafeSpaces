@@ -110,12 +110,26 @@ func sha256Path(path string) (string, error) {
 
 // runSupervisorSelfVerify is the production entry: resolve env, hash
 // /proc/self/exe, decide. Non-nil error → the supervisor exits 81.
+// The volume flag short-circuits BEFORE any hashing — legacy pods skip
+// the multi-hundred-ms binary hash entirely (the unconditional form
+// shifted supervisor startup latency enough to miss the spawn-env
+// delta window in TestSupervisorSubprocess_LifecycleAndContract, CI
+// 2026-08-26).
 func runSupervisorSelfVerify(exePath string) error {
+	if os.Getenv("AGENTD_IMAGE_VOLUME") != "1" {
+		return nil // legacy: baked binary, no overlay pin contract
+	}
+	actual, err := sha256Path(exePath)
+	if err != nil {
+		// Unreadable self → empty hash → guaranteed pin mismatch → 81.
+		// Fail closed without inventing a hash.
+		actual = ""
+	}
 	return selfVerifyDecision(selfVerifyEnv{
 		volumeFlag: os.Getenv("AGENTD_IMAGE_VOLUME"),
 		amd64Pin:   os.Getenv("LLMSAFESPACES_AGENTD_SHA256_AMD64"),
 		arm64Pin:   os.Getenv("LLMSAFESPACES_AGENTD_SHA256_ARM64"),
 		arch:       unameArch(runtime.GOARCH),
-		actualSHA:  func() string { s, _ := sha256Path(exePath); return s }(),
+		actualSHA:  actual,
 	})
 }
