@@ -252,6 +252,14 @@ func (h *ProxyHandler) SetOutboxForTest(o *outbox.Service) {
 	h.outbox = o
 }
 
+// SetUserBrokerForTest wires the workspace SSE broker without running
+// Start (tests only; production creates the broker inside Start). The
+// mcp-router integration gate (api/internal/server) drives StreamEvents
+// through the production router and publishes events on this broker.
+func (h *ProxyHandler) SetUserBrokerForTest(b *eventbroker.UserEventBroker) {
+	h.userBroker = b
+}
+
 // SetModelPolicyChecker wires the org-policy checker for per-prompt model
 // override enforcement. Optional (nil = unenforced). Panics after Start for
 // the same race-safety reason as SetAdapter.

@@ -75,7 +75,7 @@ type APIClient interface {
 	ListWorkflows(ctx context.Context) (json.RawMessage, error)
 	GetWorkflow(ctx context.Context, workflowID string) (json.RawMessage, error)
 	CreateWorkflow(ctx context.Context, name, specYAML, status string) (json.RawMessage, error)
-	UpdateWorkflow(ctx context.Context, workflowID, name, status, specYAML string) (json.RawMessage, error)
+	UpdateWorkflow(ctx context.Context, workflowID string, name, status, specYAML *string) (json.RawMessage, error)
 	RunWorkflow(ctx context.Context, workflowID, input, workspaceID string) (json.RawMessage, error)
 	GetWorkflowRunStatus(ctx context.Context, runID string) (json.RawMessage, error)
 	CancelWorkflowRun(ctx context.Context, runID string) error
@@ -83,7 +83,7 @@ type APIClient interface {
 	// Trigger management (Epic 64)
 	ListTriggers(ctx context.Context) (json.RawMessage, error)
 	CreateTrigger(ctx context.Context, name, sourceType, sourceConfig, workspaceID, workflowID, prompt, memoryMode, captureMode, preserveSession string) (json.RawMessage, error)
-	UpdateTrigger(ctx context.Context, triggerID, enabled string) (json.RawMessage, error)
+	UpdateTrigger(ctx context.Context, triggerID string, enabled *bool) (json.RawMessage, error)
 	DeleteTrigger(ctx context.Context, triggerID string) error
 }
 
@@ -112,15 +112,36 @@ type RefreshWorkspaceResp struct {
 	RestartGeneration int64 `json:"restartGeneration"`
 }
 
-// SessionResp is the response from session creation.
+// SessionResp is the response from session creation. The production
+// route POST /workspaces/:id/sessions/new returns
+// types.EnsureSessionResponse, whose session identifier is serialized
+// as "sessionId" (#1033).
 type SessionResp struct {
-	ID string `json:"id"`
+	ID string `json:"sessionId"`
 }
 
-// Message represents a chat message in session history.
+// Message is one entry of session history, in the platform session
+// contract shape (design 0049): every message is id/type/parts, and
+// prose lives in text parts — the legacy {role, content} decode never
+// matched the API response and always decoded empty (#1034 cluster).
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	ID    string `json:"id"`
+	Type  string `json:"type"`
+	Parts []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"parts"`
+}
+
+// TextContent returns the concatenated text parts of the message.
+func (m Message) TextContent() string {
+	var sb strings.Builder
+	for _, p := range m.Parts {
+		if p.Type == "text" {
+			sb.WriteString(p.Text)
+		}
+	}
+	return sb.String()
 }
 
 // CreateCredentialReq is the request for creating an LLM provider credential.
@@ -335,10 +356,15 @@ func (c *HTTPClient) RefreshWorkspace(ctx context.Context, workspaceID string) (
 	return &resp, nil
 }
 
-// CreateSession resolves workspace → sandbox, then creates a session via the proxy.
+// CreateSession creates a session via POST /workspaces/:id/sessions/new
+// (design 0041). The response is types.EnsureSessionResponse; the
+// session identifier arrives in the sessionId field.
 func (c *HTTPClient) CreateSession(ctx context.Context, workspaceID string) (*SessionResp, error) {
+	if err := validateID(workspaceID, "workspace_id"); err != nil {
+		return nil, err
+	}
 	var resp SessionResp
-	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/workspaces/"+workspaceID+"/sessions", nil, &resp); err != nil {
+	if err := c.doJSON(ctx, http.MethodPost, "/api/v1/workspaces/"+workspaceID+"/sessions/new", nil, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
@@ -365,18 +391,24 @@ func (c *HTTPClient) SendMessage(ctx context.Context, workspaceID, sessionID, me
 		return "", fmt.Errorf("message too large (%d bytes, max %d)", len(message), maxMessageSize)
 	}
 
-	// 1. Fire prompt_async
-	body := map[string]string{"message": message}
+	// 1. Fire prompt_async. The /prompt handler accepts the parts-based
+	// body shape ({parts:[{type:text,...}]}) — a bare {"message": ...}
+	// key extracts no text and is rejected (#1034).
+	body := map[string]any{
+		"parts": []map[string]string{{"type": "text", "text": message}},
+	}
 	path := fmt.Sprintf("/api/v1/workspaces/%s/sessions/%s/prompt", workspaceID, sessionID)
 	if err := c.doJSON(ctx, http.MethodPost, path, body, nil); err != nil {
 		return "", err
 	}
 
-	// 2. Subscribe to SSE events and wait for session.idle
+	// 2. Subscribe to SSE events and wait for session.idle. The
+	// workspace-scoped stream lives at /session-events (Epic 28 renamed
+	// the old /events route out of existence).
 	sseCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	eventsURL := fmt.Sprintf("%s/api/v1/workspaces/%s/events", c.BaseURL, workspaceID)
+	eventsURL := fmt.Sprintf("%s/api/v1/workspaces/%s/session-events", c.BaseURL, workspaceID)
 	req, err := http.NewRequestWithContext(sseCtx, http.MethodGet, eventsURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("create SSE request: %w", err)
@@ -469,7 +501,7 @@ func (c *HTTPClient) fallbackHistory(ctx context.Context, workspaceID, sessionID
 		return "", fmt.Errorf("fallback history fetch: %w", err)
 	}
 	if len(msgs) > 0 {
-		return msgs[len(msgs)-1].Content, nil
+		return msgs[len(msgs)-1].TextContent(), nil
 	}
 	return "", nil
 }
@@ -624,11 +656,25 @@ func (c *HTTPClient) CreateWorkflow(ctx context.Context, name, specYAML, status 
 	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/workflows", body)
 }
 
-func (c *HTTPClient) UpdateWorkflow(ctx context.Context, workflowID, name, status, specYAML string) (json.RawMessage, error) {
+// UpdateWorkflow issues a partial update via PUT /me/workflows/:id. The
+// API binds types.UpdateWorkflowRequest (pointer fields; nil = keep
+// existing), so only the provided arguments are sent — omitted fields
+// must not appear in the body at all, or their empty-string values fail
+// validation server-side (#1036).
+func (c *HTTPClient) UpdateWorkflow(ctx context.Context, workflowID string, name, status, specYAML *string) (json.RawMessage, error) {
 	if err := validateID(workflowID, "workflow_id"); err != nil {
 		return nil, err
 	}
-	body := map[string]string{"name": name, "status": status, "specYaml": specYAML}
+	body := map[string]any{}
+	if name != nil {
+		body["name"] = *name
+	}
+	if status != nil {
+		body["status"] = *status
+	}
+	if specYAML != nil {
+		body["specYaml"] = *specYAML
+	}
 	return c.doRaw(ctx, http.MethodPut, "/api/v1/me/workflows/"+workflowID, body)
 }
 
@@ -683,11 +729,18 @@ func (c *HTTPClient) CreateTrigger(ctx context.Context, name, sourceType, source
 	return c.doRaw(ctx, http.MethodPost, "/api/v1/me/triggers", body)
 }
 
-func (c *HTTPClient) UpdateTrigger(ctx context.Context, triggerID, enabled string) (json.RawMessage, error) {
+// UpdateTrigger issues a partial update via PUT /me/triggers/:id. The
+// API binds types.UpdateTriggerRequest.Enabled *bool — a nil enabled
+// sends no key (keep existing); a present value must be a JSON boolean
+// (#1035).
+func (c *HTTPClient) UpdateTrigger(ctx context.Context, triggerID string, enabled *bool) (json.RawMessage, error) {
 	if err := validateID(triggerID, "trigger_id"); err != nil {
 		return nil, err
 	}
-	body := map[string]string{"enabled": enabled}
+	body := map[string]any{}
+	if enabled != nil {
+		body["enabled"] = *enabled
+	}
 	return c.doRaw(ctx, http.MethodPut, "/api/v1/me/triggers/"+triggerID, body)
 }
 
