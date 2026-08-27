@@ -240,16 +240,16 @@ func newOrgsWireStore() *fakeOrgStore {
 			ID: orgsWireOrgID, Name: "Acme", Slug: "acme", CreatedBy: orgsWireAdminID,
 			Status: types.OrgStatusActive, PlanID: types.PlanEnterprise,
 		},
-	members: []*types.OrgMember{{
-		OrgID: orgsWireOrgID, UserID: orgsWireUserID, Username: "u1",
-		Email: "u1@example.com", Role: types.OrgRoleMember, EmailVerified: true,
-	}, {
-		OrgID: orgsWireOrgID, UserID: "user-2", Username: "u2",
-		Email: "u2@example.com", Role: types.OrgRoleAdmin, EmailVerified: true,
-	}, {
-		OrgID: orgsWireOrgID, UserID: "user-3", Username: "u3",
-		Email: "u3@example.com", Role: types.OrgRoleAdmin, EmailVerified: true,
-	}},
+		members: []*types.OrgMember{{
+			OrgID: orgsWireOrgID, UserID: orgsWireUserID, Username: "u1",
+			Email: "u1@example.com", Role: types.OrgRoleMember, EmailVerified: true,
+		}, {
+			OrgID: orgsWireOrgID, UserID: "user-2", Username: "u2",
+			Email: "u2@example.com", Role: types.OrgRoleAdmin, EmailVerified: true,
+		}, {
+			OrgID: orgsWireOrgID, UserID: "user-3", Username: "u3",
+			Email: "u3@example.com", Role: types.OrgRoleAdmin, EmailVerified: true,
+		}},
 		workspaces: []*types.WorkspaceMetadata{{ID: "ws-1", UserID: orgsWireUserID, Name: "w", Runtime: "base", StorageSize: "15Gi"}},
 		total:      1,
 	}
