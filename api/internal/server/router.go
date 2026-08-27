@@ -1461,6 +1461,7 @@ func registerImageFactoryRoutes(router *gin.Engine, services interfaces.Services
 	ifg.GET("/catalog", h.Catalog)
 	ifg.GET("/configs", h.ListConfigs)
 	ifg.GET("/configs/:hash", h.GetConfig)
+	ifg.GET("/resolve/:hash", h.ResolveHash)
 	ifg.POST("/configs", h.CreateConfig)
 	ifg.DELETE("/configs/:hash", h.DeleteConfig)
 	ifg.PATCH("/configs/:hash", h.RenameConfig)

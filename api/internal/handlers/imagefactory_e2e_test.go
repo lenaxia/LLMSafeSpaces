@@ -10,6 +10,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 
@@ -151,6 +152,33 @@ func (s *e2eImageFactoryStore) GetInFlightOrSuccessfulBuild(ctx context.Context,
 	}
 	return nil, nil
 }
+func (s *e2eImageFactoryStore) ResolveHash(ctx context.Context, hash string) (imagefactory.HashResolution, error) {
+	res := imagefactory.HashResolution{Hash: hash, Versions: []string{}}
+	seen := map[string]bool{}
+	for _, b := range s.e2eBuilds {
+		if b.Hash != hash {
+			continue
+		}
+		if b.Status != imagefactory.BuildSucceeded && b.Status != imagefactory.BuildDispatched {
+			continue
+		}
+		if res.BaseName == "" {
+			res.BaseName = b.BaseName
+			res.Selection = b.ResolvedValues.Selection()
+		}
+		if !seen[b.BaseVersion] {
+			seen[b.BaseVersion] = true
+			res.Versions = append(res.Versions, b.BaseVersion)
+		}
+	}
+	if res.BaseName == "" {
+		return imagefactory.HashResolution{}, database.ErrNotFound
+	}
+	sort.Slice(res.Versions, func(i, j int) bool {
+		return imagefactory.CompareVersions(res.Versions[i], res.Versions[j]) > 0
+	})
+	return res, nil
+}
 func (s *e2eImageFactoryStore) SetConfigStatus(ctx context.Context, id string, status imagefactory.ConfigStatus) error {
 	if c, ok := s.e2eConfigs[id]; ok {
 		c.Status = status
@@ -236,6 +264,7 @@ func newE2ERouter(t *testing.T, store *e2eImageFactoryStore, disp buildDispatche
 	r.GET("/api/v1/image-factory/catalog", h.Catalog)
 	r.GET("/api/v1/image-factory/configs", h.ListConfigs)
 	r.GET("/api/v1/image-factory/configs/:hash", h.GetConfig)
+	r.GET("/api/v1/image-factory/resolve/:hash", h.ResolveHash)
 	r.POST("/api/v1/image-factory/configs", h.CreateConfig)
 	r.DELETE("/api/v1/image-factory/configs/:hash", h.DeleteConfig)
 	r.PATCH("/api/v1/image-factory/configs/:hash", h.RenameConfig)
@@ -524,6 +553,106 @@ func TestE2E_ImageFactory_IdempotentReplay(t *testing.T) {
 	assert.Equal(t, http.StatusNoContent, w.Code)
 	assert.Equal(t, imagefactory.BuildSucceeded, store.e2eBuilds[build.ID].Status,
 		"replay must not overwrite terminal succeeded state")
+}
+
+// ── E2E: Hash resolution (GET /resolve/:hash through the full router) ────
+
+// TestE2E_ResolveHash_HappyPath exercises resolve end-to-end: builds
+// seeded under one schematic hash across two base versions (one
+// succeeded, one in-flight) resolve to the recovered selection and the
+// distinct versions newest-first. The request goes through the same
+// router the production app registers.
+func TestE2E_ResolveHash_HappyPath(t *testing.T) {
+	store := newE2EStore()
+	rv := imagefactory.ResolvedValues{
+		"ffmpeg":    imagefactory.ResolvedValue{Type: "apt", Value: "ffmpeg"},
+		"python313": imagefactory.ResolvedValue{Type: "mise", Value: "python@3.13"},
+	}
+	store.e2eBuilds["b-old"] = &imagefactory.Build{
+		ID: "b-old", ConfigID: "cfg-x", Hash: "s-abcdef0123456789", BaseName: "bookworm",
+		BaseVersion: "0.20.1", ResolvedValues: rv, Status: imagefactory.BuildSucceeded,
+	}
+	store.e2eBuilds["b-new"] = &imagefactory.Build{
+		ID: "b-new", ConfigID: "cfg-y", Hash: "s-abcdef0123456789", BaseName: "bookworm",
+		BaseVersion: "0.21.2", ResolvedValues: rv, Status: imagefactory.BuildDispatched,
+	}
+	r := newE2ERouter(t, store, &fakeDispatcher{})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/image-factory/resolve/s-abcdef0123456789", nil)
+	req.Header.Set("X-Test-UserID", "user-2") // a DIFFERENT user than the builder
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var res imagefactory.HashResolution
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
+	assert.Equal(t, "s-abcdef0123456789", res.Hash)
+	assert.Equal(t, "bookworm", res.BaseName)
+	assert.Equal(t, imagefactory.Selection{"ffmpeg", "python313"}, res.Selection)
+	assert.Equal(t, []string{"0.21.2", "0.20.1"}, res.Versions, "newest first, dispatched rides along")
+}
+
+// TestE2E_ResolveHash_OnlyFailedBuilds: a hash whose every build failed
+// must 404 — a failed combination's selection may have been the failure
+// cause, and no usable image exists to re-select onto.
+func TestE2E_ResolveHash_OnlyFailedBuilds(t *testing.T) {
+	store := newE2EStore()
+	store.e2eBuilds["b-fail"] = &imagefactory.Build{
+		ID: "b-fail", ConfigID: "cfg-z", Hash: "s-fedcba9876543210", BaseName: "bookworm",
+		BaseVersion: "0.20.1", Status: imagefactory.BuildFailed,
+	}
+	r := newE2ERouter(t, store, &fakeDispatcher{})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/image-factory/resolve/s-fedcba9876543210", nil)
+	req.Header.Set("X-Test-UserID", "user-1")
+	r.ServeHTTP(w, req)
+	assert.Equal(t, http.StatusNotFound, w.Code)
+}
+
+// TestE2E_ResolveHash_Malformed: wrong-shape hashes never reach the
+// store (422) — same validation the route enforces in production.
+func TestE2E_ResolveHash_Malformed(t *testing.T) {
+	store := newE2EStore()
+	r := newE2ERouter(t, store, &fakeDispatcher{})
+	for _, bad := range []string{"not-a-hash", "s-ABC123DEF4567890", "s-short", "s-abc123def45678901"} {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/image-factory/resolve/"+bad, nil)
+		req.Header.Set("X-Test-UserID", "user-1")
+		r.ServeHTTP(w, req)
+		assert.Equal(t, http.StatusUnprocessableEntity, w.Code, "hash %q", bad)
+	}
+}
+
+// TestE2E_ResolveHash_RetiredExtensionNotFiltered: resolution is a
+// content address — retired extensions surface in the selection and the
+// create path (ResolveSelection) 422s on save. Retirement filtering for
+// the FORM is the frontend's job (tested there); the API must not
+// silently rewrite what a hash addresses.
+func TestE2E_ResolveHash_RetiredExtensionNotFiltered(t *testing.T) {
+	store := newE2EStore()
+	store.e2eBuilds["b-ret"] = &imagefactory.Build{
+		ID: "b-ret", ConfigID: "cfg-r", Hash: "s-0123456789abcdef", BaseName: "bookworm",
+		BaseVersion: "0.20.1", Status: imagefactory.BuildSucceeded,
+		ResolvedValues: imagefactory.ResolvedValues{
+			"ffmpeg": imagefactory.ResolvedValue{Type: "apt", Value: "ffmpeg"},
+		},
+	}
+	// Retire ffmpeg in the catalog after the image was built.
+	ext := store.e2eExtensions["ffmpeg"]
+	ext.Retired = true
+	store.e2eExtensions["ffmpeg"] = ext
+	r := newE2ERouter(t, store, &fakeDispatcher{})
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/image-factory/resolve/s-0123456789abcdef", nil)
+	req.Header.Set("X-Test-UserID", "user-1")
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	var res imagefactory.HashResolution
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &res))
+	assert.Equal(t, imagefactory.Selection{"ffmpeg"}, res.Selection,
+		"resolution reports what the hash addresses; retirement is enforced at save, not read")
 }
 
 // ── E2E: AdminGuard blocks non-admin ────────────────────────────────────

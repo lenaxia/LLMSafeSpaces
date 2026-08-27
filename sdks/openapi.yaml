@@ -6212,6 +6212,41 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Error"
+  /image-factory/resolve/{hash}:
+    get:
+      tags: [imageFactory]
+      summary: Resolve a schematic hash to its selection and built versions
+      description: >
+        Public content-address lookup: returns the extension selection a
+        schematic hash names, its base name, and every base version with a
+        succeeded or in-flight build under it (newest first). Any
+        authenticated user may resolve any hash — hashes address
+        platform-wide artifacts and reveal only catalog extension IDs.
+      operationId: resolveImageHash
+      parameters:
+        - name: hash
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: '^s-[0-9a-f]{16}$'
+      responses:
+        "200":
+          description: Resolution
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImageHashResolution"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          description: Malformed hash
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /orgs/{id}/image-factory/configs:
     post:
       tags: [imageFactory]
@@ -9624,6 +9659,24 @@ components:
           format: date-time
         retriable:
           type: boolean
+    ImageHashResolution:
+      type: object
+      required: [hash, selection, baseName, versions]
+      properties:
+        hash:
+          type: string
+          pattern: '^s-[0-9a-f]{16}$'
+        selection:
+          type: array
+          items:
+            type: string
+        baseName:
+          type: string
+        versions:
+          type: array
+          description: Base versions with a succeeded or in-flight build under the hash, newest first.
+          items:
+            type: string
     ImageConfig:
       type: object
       required: [id, hash, name, selection, resolvedValues, baseName, baseVersion, scope, status]

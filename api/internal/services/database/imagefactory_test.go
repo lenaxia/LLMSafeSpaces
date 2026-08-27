@@ -314,6 +314,146 @@ func TestGetBuildByGHRunID_NotFound(t *testing.T) {
 	assert.ErrorIs(t, err, ErrNotFound)
 }
 
+// ── ResolveHash ─────────────────────────────────────────────────────────
+
+func TestResolveHash_AggregatesVersionsAndRecoversSelection(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	rvJSON := mustJSON(t, imagefactory.ResolvedValues{
+		"ffmpeg":      {Type: "apt", Value: "ffmpeg"},
+		"python-3.13": {Type: "mise", Value: "python@3.13"},
+	})
+	rows := sqlmock.NewRows([]string{"base_name", "base_version", "resolved_values"}).
+		AddRow("bookworm", "0.21.2", rvJSON).
+		AddRow("bookworm", "0.23.0", rvJSON)
+	mock.ExpectQuery(qAny).WithArgs("s-abc123def4567890").WillReturnRows(rows)
+
+	res, err := svc.ResolveHash(context.Background(), "s-abc123def4567890")
+	require.NoError(t, err)
+	assert.Equal(t, "s-abc123def4567890", res.Hash)
+	assert.Equal(t, "bookworm", res.BaseName)
+	assert.Equal(t, imagefactory.Selection{"ffmpeg", "python-3.13"}, res.Selection)
+	// Newest first, regardless of row order.
+	assert.Equal(t, []string{"0.23.0", "0.21.2"}, res.Versions)
+}
+
+func TestResolveHash_DedupesVersions(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	rvJSON := mustJSON(t, imagefactory.ResolvedValues{"ffmpeg": {Type: "apt", Value: "ffmpeg"}})
+	rows := sqlmock.NewRows([]string{"base_name", "base_version", "resolved_values"}).
+		AddRow("bookworm", "0.23.0", rvJSON).
+		AddRow("bookworm", "0.23.0", rvJSON)
+	mock.ExpectQuery(qAny).WithArgs("s-abc123def4567890").WillReturnRows(rows)
+
+	res, err := svc.ResolveHash(context.Background(), "s-abc123def4567890")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"0.23.0"}, res.Versions)
+}
+
+func TestResolveHash_NotFound(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	mock.ExpectQuery(qAny).WithArgs("s-abc123def4567890").
+		WillReturnRows(sqlmock.NewRows([]string{"base_name", "base_version", "resolved_values"}))
+	_, err := svc.ResolveHash(context.Background(), "s-abc123def4567890")
+	assert.ErrorIs(t, err, ErrNotFound)
+}
+
+func TestResolveHash_QueryError(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	mock.ExpectQuery(qAny).WithArgs("s-abc123def4567890").WillReturnError(errors.New("db down"))
+	_, err := svc.ResolveHash(context.Background(), "s-abc123def4567890")
+	require.Error(t, err)
+}
+
+func TestResolveHash_CorruptResolvedValues(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	rows := sqlmock.NewRows([]string{"base_name", "base_version", "resolved_values"}).
+		AddRow("bookworm", "0.23.0", []byte(`{not json`))
+	mock.ExpectQuery(qAny).WithArgs("s-abc123def4567890").WillReturnRows(rows)
+	_, err := svc.ResolveHash(context.Background(), "s-abc123def4567890")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unmarshal resolved_values")
+}
+
+// ── Base-sync integration: SyncBaseOnce through the real Service SQL ────
+
+// digestResolverStub satisfies imagefactory.ManifestResolver for store
+// integration tests — the registry is not the unit under test here.
+type digestResolverStub struct {
+	digest string
+	err    error
+}
+
+func (d digestResolverStub) ResolveDigest(ctx context.Context, repo, tag string) (string, error) {
+	return d.digest, d.err
+}
+
+// TestSyncBaseOnce_ThroughService drives the reconciliation flow through
+// the real database Service: ListBases read, then the UpsertBase
+// transaction (clear prior default, upsert new default row, commit).
+// This is the integration the reconciler wiring in app.go relies on —
+// *database.Service must satisfy imagefactory.BaseSyncStore against real
+// SQL, not just the fake.
+func TestSyncBaseOnce_ThroughService(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+
+	// Stale catalog: default bookworm 0.21.2, platform at 0.23.0.
+	mock.ExpectQuery(qAny).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "version", "image", "tag", "digest", "is_default"}).
+			AddRow("bookworm", "0.21.2", "ghcr.io/acme/base", "0.21.2", "sha256:old", true))
+	// UpsertBase transaction for a default=true row.
+	mock.ExpectBegin()
+	mock.ExpectExec(qAny). // UPDATE ... SET is_default = FALSE WHERE is_default
+				WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(qAny). // INSERT ... ON CONFLICT DO UPDATE
+				WithArgs("bookworm", "0.23.0", "ghcr.io/acme/base", "0.23.0", "sha256:new", true).
+				WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
+
+	synced, err := imagefactory.SyncBaseOnce(context.Background(), svc,
+		digestResolverStub{digest: "sha256:new"}, "0.23.0")
+	require.NoError(t, err)
+	assert.True(t, synced)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestSyncBaseOnce_ThroughServiceFreshCatalog: a catalog already at the
+// platform version issues NO writes — the reconciler goes quiet.
+func TestSyncBaseOnce_ThroughServiceFreshCatalog(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	mock.ExpectQuery(qAny).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "version", "image", "tag", "digest", "is_default"}).
+			AddRow("bookworm", "0.23.0", "ghcr.io/acme/base", "0.23.0", "sha256:cur", true))
+
+	synced, err := imagefactory.SyncBaseOnce(context.Background(), svc,
+		digestResolverStub{digest: "sha256:cur"}, "0.23.0")
+	require.NoError(t, err)
+	assert.False(t, synced)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestSyncBaseOnce_ThroughServiceUnresolvableTag: the registry gate —
+// when the digest cannot be resolved the catalog is left untouched.
+func TestSyncBaseOnce_ThroughServiceUnresolvableTag(t *testing.T) {
+	t.Parallel()
+	svc, mock := newMockService(t)
+	mock.ExpectQuery(qAny).
+		WillReturnRows(sqlmock.NewRows([]string{"name", "version", "image", "tag", "digest", "is_default"}).
+			AddRow("bookworm", "0.21.2", "ghcr.io/acme/base", "0.21.2", "sha256:old", true))
+
+	synced, err := imagefactory.SyncBaseOnce(context.Background(), svc,
+		digestResolverStub{err: errors.New("manifest head: status 404")}, "0.24.0")
+	require.Error(t, err)
+	assert.False(t, synced)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
 func TestListRejectedConfigsForFailure(t *testing.T) {
 	t.Parallel()
 	svc, mock := newMockService(t)

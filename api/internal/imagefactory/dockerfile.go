@@ -38,7 +38,7 @@ func RenderDockerfile(rv ResolvedValues, base Base) (string, error) {
 	if err := ValidateResolved(rv); err != nil {
 		return "", fmt.Errorf("render: %w", err)
 	}
-	if compareVersions(base.Version, MinBaseVersion) < 0 {
+	if CompareVersions(base.Version, MinBaseVersion) < 0 {
 		return "", fmt.Errorf("base %s@%s is below the compatibility floor %s — its baked agentd predates the #871 secrets contract (2026-08-25 incident); update the base catalog entry",
 			base.Name, base.Version, MinBaseVersion)
 	}

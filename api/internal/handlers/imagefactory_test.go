@@ -100,6 +100,10 @@ func (f *fakeIFStore) GetInFlightOrSuccessfulBuild(ctx context.Context, hash, ba
 	return f.existingBuild, f.err
 }
 
+func (f *fakeIFStore) ResolveHash(ctx context.Context, hash string) (imagefactory.HashResolution, error) {
+	return imagefactory.HashResolution{}, database.ErrNotFound
+}
+
 func (f *fakeIFStore) CreateConfig(ctx context.Context, c *imagefactory.Config) error {
 	f.calledCreateConfig = true
 	f.lastCreatedConfig = c

@@ -34,6 +34,10 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
   // is pre-filled from this config and the base is pre-targeted at the
   // update (bump or migration) so a re-save produces the new-hash config.
   const [refreshSource, setRefreshSource] = useState<Config | null>(null);
+  // Hash-based re-selection: paste a schematic hash (shown on every
+  // existing image) to recover its exact selection + base.
+  const [hashInput, setHashInput] = useState("");
+  const [hashLoading, setHashLoading] = useState(false);
 
   // Track whether the default base has been auto-selected on first load.
   // Using a ref (not state) avoids re-creating the `load` callback when
@@ -151,6 +155,40 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
     setBaseName(target.name);
     setBaseVersion(target.version);
     setExpandedConfig(null);
+  };
+
+  // Hash-based re-selection: resolve a pasted schematic hash to its
+  // selection + base and prefill the create form. Only live catalog
+  // extensions are checked (same retirement discipline as the refresh
+  // prefill); versions resolve newest-first from the builds table, so
+  // the newest buildable version of that schematic is pre-targeted.
+  const handleLoadHash = async () => {
+    const hash = hashInput.trim();
+    if (!hash) return;
+    setHashLoading(true);
+    try {
+      const res = await imageFactoryApi.resolveHash(hash);
+      const liveSelection = res.selection.filter((id) =>
+        catalog?.extensions.some((e) => e.id === id && !e.retired),
+      );
+      const dropped = res.selection.length - liveSelection.length;
+      if (liveSelection.length === 0) {
+        toast("Every extension in that hash has been retired — re-select manually instead", "error");
+        return;
+      }
+      if (dropped > 0) {
+        toast(`${dropped} retired extension${dropped > 1 ? "s" : ""} dropped from the hash (no longer in the catalog)`, "success");
+      }
+      setSelected(new Set(liveSelection));
+      setBaseName(res.baseName);
+      setBaseVersion(res.versions[0] ?? "");
+      setHashInput("");
+      toast(`Loaded ${hash}: ${liveSelection.length} extensions on ${res.baseName}`, "success");
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Failed to resolve hash", "error");
+    } finally {
+      setHashLoading(false);
+    }
   };
 
   const load = useCallback(async () => {
@@ -314,14 +352,14 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
               <span
                 title={
                   cfg.updatesAvailable.kind === "base_migration"
-                    ? `New base available: ${cfg.updatesAvailable.defaultBaseName} ${cfg.updatesAvailable.defaultBaseVersion} (current: ${cfg.updatesAvailable.currentBaseName} ${cfg.updatesAvailable.currentBaseVersion}). Package versions follow the Debian suite — re-save on the new base to migrate.`
-                    : `Base update available: ${cfg.updatesAvailable.currentBaseName} ${cfg.updatesAvailable.latestBaseVersion} (current: ${cfg.updatesAvailable.currentBaseVersion}). Re-save to pick it up.`
+                    ? `New base available: ${cfg.updatesAvailable.defaultBaseName} platform ${cfg.updatesAvailable.defaultBaseVersion} (current: ${cfg.updatesAvailable.currentBaseName} platform ${cfg.updatesAvailable.currentBaseVersion}). Package versions follow the Debian suite — re-save on the new base to migrate.`
+                    : `Platform release ${cfg.updatesAvailable.latestBaseVersion} available (current: ${cfg.updatesAvailable.currentBaseVersion}). Re-save to pick it up.`
                 }
                 className="rounded-full px-2 py-0.5 text-xs font-medium bg-amber-500/15 text-amber-600 dark:text-amber-400"
               >
                 {cfg.updatesAvailable.kind === "base_migration"
                   ? `new base: ${cfg.updatesAvailable.defaultBaseName}`
-                  : `base ${cfg.updatesAvailable.latestBaseVersion} available`}
+                  : `platform ${cfg.updatesAvailable.latestBaseVersion} available`}
               </span>
             )}
             <span className={`rounded-full px-2 py-0.5 text-xs font-medium ${statusPill(cfg.status)}`}>
@@ -332,7 +370,10 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
         {isExpanded && (
           <div className="border-t border-border px-3 py-2 bg-muted/30">
             <div className="text-xs text-muted-foreground mb-2">
-              Base: {cfg.baseName} · {cfg.selection.length} extensions · {cfg.baseVersion}
+              Base: {cfg.baseName} (platform {cfg.baseVersion}) · {cfg.selection.length} extensions ·{" "}
+              <span className="font-mono" title="Schematic hash — paste it into 'Build from hash' to re-select these options">
+                {cfg.hash}
+              </span>
             </div>
             <div className="flex flex-wrap gap-1">
               {cfg.selection.map((ext) => (
@@ -424,6 +465,29 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
           />
         </div>
         <div>
+          <label className="block text-sm font-medium mb-1">Build from hash</label>
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={hashInput}
+              onChange={(e) => setHashInput(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void handleLoadHash(); } }}
+              placeholder="s-… paste an image's schematic hash to re-select its options"
+              className="w-full rounded-md border border-border px-3 py-1.5 text-sm font-mono"
+            />
+            <button
+              onClick={() => void handleLoadHash()}
+              disabled={!hashInput.trim() || hashLoading}
+              className="shrink-0 rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent disabled:opacity-50"
+            >
+              {hashLoading ? "Loading…" : "Load"}
+            </button>
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Every image shows its hash — paste one here to reproduce its exact extension selection and base.
+          </p>
+        </div>
+        <div>
           <label className="block text-sm font-medium mb-1">Base Image</label>
           <select
             value={baseName ? `${baseName}/${baseVersion}` : ""}
@@ -437,7 +501,7 @@ export function WorkspaceImagesTab({ scope = "user" }: WorkspaceImagesTabProps) 
           >
             {catalog.bases.map((b) => (
               <option key={`${b.name}/${b.version}`} value={`${b.name}/${b.version}`}>
-                {b.name} ({b.version})
+                {b.name} — platform {b.version}
               </option>
             ))}
           </select>

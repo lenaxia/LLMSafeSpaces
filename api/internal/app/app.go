@@ -57,6 +57,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/secrets"
 	"github.com/lenaxia/llmsafespaces/pkg/settings"
 	"github.com/lenaxia/llmsafespaces/pkg/types"
+	"github.com/lenaxia/llmsafespaces/pkg/version"
 	"github.com/lenaxia/llmsafespaces/pkg/workflows"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -787,6 +788,44 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		if err := imagefactory.SeedCatalog(context.Background(), dbSvc); err != nil {
 			log.Warn("image factory catalog seed failed", "error", err.Error())
 		}
+
+		// Reconcile the catalog default with the deployed platform
+		// release: when the API's build version outstrips the default
+		// base row, upsert the new (name, version) row and move the
+		// default in one transaction — no operator action. The digest
+		// resolve doubles as the existence gate (never catalog a tag GH
+		// Actions cannot pull). Existing builds/configs are immutable;
+		// pinned configs migrate via the base-update pill as before.
+		// Failure is non-fatal: the ticker retries hourly.
+		baseSyncResolver := imagefactory.NewHTTPManifestResolver()
+		syncBases := func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			synced, err := imagefactory.SyncBaseOnce(ctx, dbSvc, baseSyncResolver, version.Version)
+			switch {
+			case err != nil:
+				log.Warn("image factory base sync failed (will retry)", "error", err.Error())
+			case synced:
+				log.Info("image factory default base advanced to platform release",
+					"platformVersion", imagefactory.NormalizePlatformVersion(version.Version))
+			}
+		}
+		go func() {
+			// First pass runs off the construction path: a 15s registry
+			// timeout on an egress-restricted cluster must not delay
+			// API startup.
+			syncBases()
+			ticker := time.NewTicker(1 * time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					syncBases()
+				}
+			}
+		}()
 
 		imageRepo := cfg.ImageFactory.ImageRepo
 		if imageRepo == "" {
