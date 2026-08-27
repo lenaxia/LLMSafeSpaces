@@ -49,6 +49,7 @@ import (
 	apiwf "github.com/lenaxia/llmsafespaces/api/internal/workflows"
 	pkgagent "github.com/lenaxia/llmsafespaces/pkg/agent"
 	agentoc "github.com/lenaxia/llmsafespaces/pkg/agent/opencode"
+	"github.com/lenaxia/llmsafespaces/pkg/agent/systemnotices"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	"github.com/lenaxia/llmsafespaces/pkg/billing"
 	emailpkg "github.com/lenaxia/llmsafespaces/pkg/email"
@@ -219,7 +220,15 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		proxyHandler.AdapterPodIPResolver(),
 		log.ZapLogger(),
 	)
-	proxyHandler.SetAdapter(agentAdapter)
+
+	// #944: system-notice injection at the Adapter seam — the ONE point
+	// every entrypoint (HTTP chat, MCP, SDK) shares. The disk-pressure
+	// nudge was twice orphaned by path migrations when it lived in the
+	// proxy transport; wrapping here covers all of them forever.
+	proxyHandler.SetAdapter(systemnotices.Wrap(agentAdapter, &crdDiskUsage{
+		k8s:       k8sClient,
+		namespace: cfg.Kubernetes.Namespace,
+	}))
 
 	// Wire the V2 client concrete factory (US-65.6: removes opencode import
 	// from proxy_v2.go; the factory is the only allowed opencode import site).
@@ -1580,6 +1589,29 @@ func (a *App) Run() error {
 	}
 
 	return nil
+}
+
+// crdDiskUsage sources workspace disk usage for the system-notice
+// decorator (#944) from the Workspace CRD status — the same numbers the
+// controller mirrors from agentd /v1/statusz and the frontend renders.
+// No new telemetry; read failures fail open inside the decorator.
+type crdDiskUsage struct {
+	k8s       *kubernetes.Client
+	namespace string
+}
+
+var _ systemnotices.WorkspaceDiskUsage = (*crdDiskUsage)(nil)
+
+func (c *crdDiskUsage) DiskUsage(ctx context.Context, workspaceID string) (int64, int64, error) {
+	v1Client, err := c.k8s.LlmsafespacesV1()
+	if err != nil {
+		return 0, 0, fmt.Errorf("disk usage: llmsafespaces client: %w", err)
+	}
+	ws, err := v1Client.Workspaces(c.namespace).Get(ctx, workspaceID, metav1.GetOptions{})
+	if err != nil {
+		return 0, 0, fmt.Errorf("disk usage: get workspace %s: %w", workspaceID, err)
+	}
+	return ws.Status.DiskUsedBytes, ws.Status.DiskTotalBytes, nil
 }
 
 func (a *App) Shutdown() error {
