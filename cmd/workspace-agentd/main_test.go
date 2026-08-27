@@ -1252,3 +1252,34 @@ func TestReadAgentPasswordFromPath_EmptyFileIsError(t *testing.T) {
 		t.Fatal("an empty password file must be an error — it arms a guessable Basic credential (Basic b3BlbmNvZGU6)")
 	}
 }
+
+// TestStatuszEndpoint_OldestBusySeconds (#998 D6): busy-age escalation
+// inputs surface through the REAL handler.
+func TestStatuszEndpoint_OldestBusySeconds(t *testing.T) {
+	opencodeSrv := newOpenCodeTestServer()
+	defer opencodeSrv.Close()
+
+	client, cache, tracker := newStatuszTestFixture(t, opencodeSrv)
+	handler := buildStatuszHandler(client, cache, tracker, newMemoryPressureMonitor(), time.Now(), "", defaultSysMetrics())
+
+	req := httptest.NewRequest("GET", "/v1/statusz", nil)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+	var resp agentd.StatuszResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Zero(t, resp.OldestBusySeconds, "idle tracker: no busy age")
+	assert.Empty(t, resp.BusyAges)
+
+	// Busy for a while → oldest reflects it.
+	tracker.statuses["ses-x"] = "busy"
+	tracker.busySince["ses-x"] = time.Now().Add(-20 * time.Minute)
+	req2 := httptest.NewRequest("GET", "/v1/statusz", nil)
+	w2 := httptest.NewRecorder()
+	handler.ServeHTTP(w2, req2)
+	require.Equal(t, http.StatusOK, w2.Code)
+	var resp2 agentd.StatuszResponse
+	require.NoError(t, json.Unmarshal(w2.Body.Bytes(), &resp2))
+	assert.GreaterOrEqual(t, resp2.OldestBusySeconds, 1199, "20-minute busy session surfaces as oldest_busy_seconds")
+	assert.Contains(t, resp2.BusyAges, "ses-x")
+}

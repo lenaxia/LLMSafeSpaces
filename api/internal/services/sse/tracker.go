@@ -79,23 +79,31 @@ type opencodeEvent struct {
 }
 
 type Tracker struct {
-	HttpClient       *http.Client
-	Logger           pkginterfaces.LoggerInterface
-	onSessionIdle    SessionIdleCallback
-	onSessionActive  SessionIdleCallback
-	onRawEvent       RawEventCallback
-	onInference      InferenceCallback
-	metering         MeteringDecoder
-	eventClassifier  func(eventType string) bool
-	eventMetrics     AgentEventMetricsRecorder
-	unknownSeenMu    sync.Mutex
-	unknownSeen      map[string]bool
-	onReconnect      ReconnectCallback
-	onAgentDied      AgentDiedCallback
-	idleTimeout      time.Duration
+	HttpClient      *http.Client
+	Logger          pkginterfaces.LoggerInterface
+	onSessionIdle   SessionIdleCallback
+	onSessionActive SessionIdleCallback
+	onRawEvent      RawEventCallback
+	onInference     InferenceCallback
+	metering        MeteringDecoder
+	eventClassifier func(eventType string) bool
+	eventMetrics    AgentEventMetricsRecorder
+	unknownSeenMu   sync.Mutex
+	unknownSeen     map[string]bool
+	onReconnect     ReconnectCallback
+	onAgentDied     AgentDiedCallback
+	idleTimeout     time.Duration
+	// storeBaseCtx is the parent for token-seen store operations. The
+	// event-processing path carries no request context by design, and the
+	// dedup read/write must not inherit (and die with) a cancellable
+	// caller context. Never canceled.
+	storeBaseCtx context.Context
+
 	tokensMu         sync.Mutex
 	sessionTokenSeen map[string]int64
 	sessionCostSeen  map[string]float64
+	tokenSeenStore   TokenSeenStore
+	storeWarnOnce    sync.Once
 	startTimeMu      sync.Mutex
 	sessionStartTime map[string]time.Time
 	sessionMetrics   SessionMetricsRecorder
@@ -125,6 +133,7 @@ func NewTracker(
 		Logger:           logger,
 		onSessionIdle:    onSessionIdle,
 		idleTimeout:      sseIdleTimeout,
+		storeBaseCtx:     context.Background(),
 		subscriptions:    make(map[string]context.CancelFunc),
 		goroutineWg:      make(map[string]*sync.WaitGroup),
 		sessionTokenSeen: make(map[string]int64),
@@ -177,6 +186,26 @@ func (t *Tracker) SetEventMetrics(r AgentEventMetricsRecorder) {
 
 func (t *Tracker) SetOnInference(cb InferenceCallback) {
 	t.onInference = cb
+}
+
+// TokenSeenStore persists the per-session cumulative token/cost dedup
+// state so a tracker restart (API pod deploy, crash, OOM) does not
+// re-bill a session's cumulative input (#759). opencode reports
+// cumulative tokens per session.updated; the in-memory maps alone reset
+// on restart and the first post-restart event re-bills the full input.
+// The store is consulted only on in-memory miss (hot path unchanged)
+// and written through on every accepted event.
+type TokenSeenStore interface {
+	GetSessionUsage(ctx context.Context, workspaceID, sessionID string) (output int64, cost float64, ok bool, err error)
+	SetSessionUsage(ctx context.Context, workspaceID, sessionID string, output int64, cost float64) error
+}
+
+// tokenSeenStoreTimeout bounds store operations on the event-processing
+// path; a slow or down store must never stall the SSE pipeline.
+const tokenSeenStoreTimeout = 2 * time.Second
+
+func (t *Tracker) SetTokenSeenStore(s TokenSeenStore) {
+	t.tokenSeenStore = s
 }
 
 func (t *Tracker) SetSessionMetrics(r SessionMetricsRecorder) {
@@ -658,6 +687,8 @@ func (t *Tracker) connectAndRead(ctx context.Context, workspaceID string) error 
 			eventData.WriteString(strings.TrimPrefix(line, "data: "))
 			eventData.WriteString("\n")
 		} else if line == "" && eventData.Len() > 0 {
+			// nolint:contextcheck // processEvent carries no ctx by
+			// design; the token-seen store derives from storeBaseCtx.
 			t.processEvent(workspaceID, eventData.String())
 			eventData.Reset()
 		}
@@ -814,16 +845,25 @@ func (t *Tracker) handleSessionUpdated(workspaceID, eventType string, props []by
 	}
 
 	key := workspaceID + ":" + u.SessionID
+	prevOutput, prevCost := t.priorUsage(workspaceID, u.SessionID, key)
+	if u.OutputTokens <= prevOutput {
+		return
+	}
 	t.tokensMu.Lock()
-	prevOutput := t.sessionTokenSeen[key]
+	// Re-read under the lock: a concurrent event for the same session may
+	// have advanced the state past what priorUsage loaded.
+	if cur, ok := t.sessionTokenSeen[key]; ok && cur > prevOutput {
+		prevOutput = cur
+		prevCost = t.sessionCostSeen[key]
+	}
 	if u.OutputTokens <= prevOutput {
 		t.tokensMu.Unlock()
 		return
 	}
-	prevCost := t.sessionCostSeen[key]
 	t.sessionTokenSeen[key] = u.OutputTokens
 	t.sessionCostSeen[key] = u.CostUSD
 	t.tokensMu.Unlock()
+	t.persistSessionUsage(workspaceID, u.SessionID, u.OutputTokens, u.CostUSD)
 
 	outputDelta := u.OutputTokens - prevOutput
 	inputTokens := u.InputTokens
@@ -835,6 +875,60 @@ func (t *Tracker) handleSessionUpdated(workspaceID, eventType string, props []by
 		costDelta = 0
 	}
 	t.onInference(workspaceID, u.ModelID, u.ProviderID, inputTokens, outputDelta, costDelta)
+}
+
+// priorUsage returns the last-known cumulative output/cost for the
+// session. Hot path is the in-memory map; on miss the persistent store
+// (#759) is consulted so tracker restarts and StopWatching cleanups do
+// not re-bill cumulative input. Store errors degrade to in-memory
+// behavior with a single warn.
+func (t *Tracker) priorUsage(workspaceID, sessionID, key string) (int64, float64) {
+	t.tokensMu.Lock()
+	prevOutput, seen := t.sessionTokenSeen[key]
+	prevCost := t.sessionCostSeen[key]
+	t.tokensMu.Unlock()
+	if seen || t.tokenSeenStore == nil {
+		return prevOutput, prevCost
+	}
+
+	ctx, cancel := context.WithTimeout(t.storeBaseCtx, tokenSeenStoreTimeout)
+	defer cancel()
+	out, cost, ok, err := t.tokenSeenStore.GetSessionUsage(ctx, workspaceID, sessionID)
+	if err != nil {
+		t.storeWarnOnce.Do(func() {
+			t.Logger.Warn("token-seen store read failed; falling back to in-memory dedup until it recovers",
+				"error", err)
+		})
+		return 0, 0
+	}
+	if !ok {
+		return 0, 0
+	}
+	t.tokensMu.Lock()
+	if _, exists := t.sessionTokenSeen[key]; !exists {
+		t.sessionTokenSeen[key] = out
+		t.sessionCostSeen[key] = cost
+	}
+	t.tokensMu.Unlock()
+	return out, cost
+}
+
+// persistSessionUsage writes the accepted cumulative state through to
+// the store (best-effort: a failure is logged once and billing has
+// already happened — losing the write only risks a future re-bill of
+// input, the pre-#759 behavior).
+func (t *Tracker) persistSessionUsage(workspaceID, sessionID string, output int64, cost float64) {
+	if t.tokenSeenStore == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(t.storeBaseCtx, tokenSeenStoreTimeout)
+	defer cancel()
+	if err := t.tokenSeenStore.SetSessionUsage(ctx, workspaceID, sessionID, output, cost); err != nil {
+		t.storeWarnOnce.Do(func() {
+			t.Logger.Warn("token-seen store write failed; dedup state may regress on restart until it recovers",
+				"error", err)
+		})
+	}
 }
 
 // unknownSeenCap bounds the warn-once set: beyond this many distinct

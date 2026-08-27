@@ -337,6 +337,13 @@ func (m *apiKeyAwareDB) CheckResourceOwnership(context.Context, string, string, 
 func (m *apiKeyAwareDB) ListSessionIndex(context.Context, string) ([]types.SessionListItem, error) {
 	return nil, nil
 }
+
+func (m *apiKeyAwareDB) InsertSessionAlert(context.Context, string, string, string, int) error {
+	return nil
+}
+func (m *apiKeyAwareDB) ListSessionAlerts(context.Context, string, int) ([]types.SessionAlert, error) {
+	return nil, nil
+}
 func (m *apiKeyAwareDB) DeleteSessionIndex(context.Context, string) error { return nil }
 func (m *apiKeyAwareDB) DeleteSessionTree(context.Context, string, string) error {
 	return nil

@@ -40,7 +40,9 @@ import (
 	"github.com/lenaxia/llmsafespaces/api/internal/services/prompt"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/role"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/secretautopush"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionalerts"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sessionindex"
+	"github.com/lenaxia/llmsafespaces/api/internal/services/sse"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/sso"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/workspace"
 	"github.com/lenaxia/llmsafespaces/api/internal/services/wsstate"
@@ -75,6 +77,7 @@ type App struct {
 	agentReloadHandler *handlers.AgentReloadHandler
 	bulkReloadHandler  *handlers.BulkReloadHandler
 	sessionIndexSvc    *sessionindex.Service
+	sessionAlertsSvc   *sessionalerts.Service
 	instanceSettings   *settings.InstanceService
 	userSettings       *settings.UserService
 	asyncAudit         *secrets.AsyncAuditLogger // nil if pgxpool path not used
@@ -236,6 +239,11 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 	}
 	proxyHandler.SetSessionIndex(sessionIndexSvc)
 
+	// D6 (#998) finding 4: persist hung-session escalations so alerts
+	// survive SSE disconnects and remain queryable (GET /workspaces/:id/alerts).
+	sessionAlertsSvc := sessionalerts.New(svc.Database, log)
+	proxyHandler.SetSessionAlerts(sessionAlertsSvc)
+
 	if cacheSvc, ok := svc.Cache.(*cache.Service); ok {
 		proxyHandler.SetV2QueueShadow(handlers.NewV2QueueShadow(cacheSvc.GetClient()))
 		proxyHandler.SetV2PendingTracker(handlers.NewV2PendingTracker(cacheSvc.GetClient()))
@@ -250,6 +258,14 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 			log.With("component", "wsstate"),
 		)
 		proxyHandler.SetStateStore(redisStateStore)
+
+		// #759: persist per-session cumulative usage dedup state on the
+		// shared cache so an API pod restart never re-bills a session's
+		// cumulative input tokens.
+		proxyHandler.SetTokenSeenStore(sse.NewRedisTokenSeenStore(
+			cacheSvc.GetClient(),
+			sse.DefaultTokenSeenTTL,
+		))
 
 		// D3 (design 0050 §D3, #907): the durable-prompt outbox — same
 		// Valkey instance (AOF-persisted); accepts survive client
@@ -1365,6 +1381,7 @@ func New(cfg *config.Config, log *logger.Logger) (*App, error) {
 		agentReloadHandler: agentReloadHandler,
 		bulkReloadHandler:  bulkReloadHandler,
 		sessionIndexSvc:    sessionIndexSvc,
+		sessionAlertsSvc:   sessionAlertsSvc,
 		instanceSettings:   instanceSettings,
 		userSettings:       userSettings,
 		asyncAudit:         asyncAudit,
@@ -1547,6 +1564,15 @@ func (a *App) Run() error {
 		return fmt.Errorf("failed to start session index: %w", err)
 	}
 
+	if err := a.sessionAlertsSvc.Start(); err != nil {
+		_ = a.sessionAlertsSvc.Stop()
+		_ = a.sessionIndexSvc.Stop()
+		_ = a.proxyHandler.Stop()
+		a.k8sClient.Stop()
+		_ = a.services.Stop()
+		return fmt.Errorf("failed to start session alerts: %w", err)
+	}
+
 	a.logger.Info("Starting HTTP server", "address", a.server.Addr)
 
 	if err := a.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -1582,6 +1608,10 @@ func (a *App) Shutdown() error {
 
 	if err := a.sessionIndexSvc.Stop(); err != nil {
 		a.logger.Error("Session index shutdown error", err)
+	}
+
+	if err := a.sessionAlertsSvc.Stop(); err != nil {
+		a.logger.Error("Session alerts shutdown error", err)
 	}
 
 	// Drain pending audit entries before tearing down the DB pool so

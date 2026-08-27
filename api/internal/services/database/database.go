@@ -1023,6 +1023,41 @@ func (s *Service) ListAPIKeysWithDecrypt(ctx context.Context, userID string) ([]
 
 // --- Session Index DB methods (Phase A) ---
 
+// InsertSessionAlert appends one D6 (#998) escalation record. The
+// escalation path is fire-and-forget (background drainer in the
+// sessionalerts service); failures are logged upstream, not surfaced.
+func (s *Service) InsertSessionAlert(ctx context.Context, workspaceID, sessionID, alert string, oldestBusySeconds int) error {
+	_, err := s.DB.ExecContext(ctx,
+		`INSERT INTO session_alerts (workspace_id, session_id, alert, oldest_busy_seconds)
+		 VALUES ($1, $2, $3, $4)`, workspaceID, sessionID, alert, oldestBusySeconds)
+	return err
+}
+
+// ListSessionAlerts returns the most recent alerts for a workspace,
+// newest-first. Older-first callers (rendering) reverse in place.
+func (s *Service) ListSessionAlerts(ctx context.Context, workspaceID string, limit int) ([]types.SessionAlert, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.DB.QueryContext(ctx,
+		`SELECT id::text, workspace_id, session_id, alert, oldest_busy_seconds, created_at
+		 FROM session_alerts WHERE workspace_id = $1
+		 ORDER BY created_at DESC LIMIT $2`, workspaceID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	alerts := make([]types.SessionAlert, 0, limit)
+	for rows.Next() {
+		var a types.SessionAlert
+		if err := rows.Scan(&a.ID, &a.WorkspaceID, &a.SessionID, &a.Alert, &a.OldestBusySeconds, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		alerts = append(alerts, a)
+	}
+	return alerts, rows.Err()
+}
+
 func (s *Service) ListSessionIndex(ctx context.Context, workspaceID string) ([]types.SessionListItem, error) {
 	rows, err := s.DB.QueryContext(ctx,
 		`SELECT session_id, title, parent_session_id, last_message_at, message_count,

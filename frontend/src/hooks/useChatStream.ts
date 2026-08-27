@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { messagesApi } from "../api/messages";
+import { workspacesApi } from "../api/workspaces";
 import { ApiClientError } from "../api/client";
 import type { Message } from "../api/types";
 
@@ -15,6 +16,11 @@ import type { Message } from "../api/types";
 // requires both a network failure and a missed busy event — a narrow race
 // that v0.15.3's fix makes extremely unlikely.
 const IDLE_WAIT_TIMEOUT_MS = 60_000;
+
+// Bound on the post-timeout session-status recheck. Without it, a fetch
+// during a network partition hangs and holds the interrupted-banner
+// decision hostage. Fail-open path handles aborts (review #1051).
+const RECHECK_TIMEOUT_MS = 10_000;
 
 // When the workspace is restarting (opencode down for a credential reload,
 // OOM recovery, crash, or relay injection), the proxy returns 503 with a
@@ -129,8 +135,37 @@ export function useChatStream(workspaceId: string | undefined, sessionId: string
         // Only show the interrupted banner when:
         // 1. The idle SSE never arrived (resolvedViaSSE=false), AND
         // 2. The server is not still actively busy (would indicate slow response)
+        //
+        // Incident 2026-08-26 (fe8348c8): serverBusy is only as live as the
+        // SSE subscription — and the first message is often sent exactly
+        // when that subscription is flapping through pod startup ("no pod
+        // IP", backoff). Stale-false busy + timeout = false "Response
+        // interrupted" banner over a healthy run. Before declaring an
+        // interruption, RECHECK the session status over plain HTTP: busy
+        // means the agent is alive and we simply missed the event stream.
+        // The recheck fails OPEN (banner shows) — warning on a live agent
+        // is recoverable; hanging silently on a dead one is not.
         if (!resolvedViaSSE && !serverBusyRef.current && currentSessionRef.current === capturedSessionId) {
-          setStreamTimedOut(true);
+          let serverStillBusy = false;
+          try {
+            // Bounded recheck (review #1051): an unbounded fetch during a
+            // network partition would hold the banner hostage. 10s is far
+            // above a healthy status round-trip and far below user patience.
+            const recheckCtl = new AbortController();
+            const recheckTimer = setTimeout(() => recheckCtl.abort(), RECHECK_TIMEOUT_MS);
+            const session = await workspacesApi
+              .getSession(workspaceId, capturedSessionId, { signal: recheckCtl.signal })
+              .finally(() => clearTimeout(recheckTimer));
+            serverStillBusy = session?.status === "busy";
+          } catch {
+            // Unreachable/timed-out status endpoint — preserve pre-recheck
+            // behavior (fail open: banner shows).
+          }
+          // Session-switch guard AFTER the await: a user navigating away
+          // mid-recheck must not see a stale-session banner (review #1051).
+          if (!serverStillBusy && currentSessionRef.current === capturedSessionId) {
+            setStreamTimedOut(true);
+          }
         }
 
         const history = await messagesApi.getHistory(workspaceId, capturedSessionId);

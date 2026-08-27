@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { workflowApi, runApi, type Workflow, type WorkflowRun } from "../api/workflows";
+import { workspacesApi } from "../api/workspaces";
 import { WorkflowEditor } from "../components/workflows/WorkflowEditor";
 import { Badge } from "../components/ui/Badge";
 import { Spinner } from "../components/ui/Spinner";
@@ -30,6 +31,25 @@ export function WorkflowsPage() {
     queryFn: () => runApi.listForWorkflow(workflowId!),
     enabled: !!workflowId && showHistory,
   }) as { data: WorkflowRun[] | undefined };
+
+  // D6 (#998): persisted hung-session alerts for the workspaces behind
+  // the visible runs — workflow surfaces consume the alerts endpoint so
+  // an unattended hung session is visible from the workflows view, not
+  // only from the live SSE banner (which a workflow never sees).
+  const runWorkspaceIds = Array.from(
+    new Set((runs ?? []).map((r) => r.workspaceId).filter((id): id is string => !!id)),
+  );
+  const { data: hungAlertsByWs } = useQuery({
+    queryKey: ["workspace-alerts", runWorkspaceIds],
+    queryFn: async () => {
+      const entries = await Promise.all(
+        runWorkspaceIds.map(async (wsId) => [wsId, await workspacesApi.getAlerts(wsId)] as const),
+      );
+      return new Map(entries.filter(([, alerts]) => alerts.length > 0));
+    },
+    enabled: runWorkspaceIds.length > 0,
+    staleTime: 60_000,
+  });
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => workflowApi.delete(id),
@@ -188,6 +208,13 @@ export function WorkflowsPage() {
                           <span className="font-mono text-xs">{run.id.slice(0, 8)}</span>
                           {run.errorCode && (
                             <span className="text-xs text-destructive">{run.errorCode}</span>
+                          )}
+                          {run.workspaceId && hungAlertsByWs?.has(run.workspaceId) && (
+                            <span
+                              title="This run's workspace has a hung session (busy beyond threshold with no progress; nothing was stopped automatically)"
+                              className="h-2 w-2 shrink-0 rounded-full bg-amber-500"
+                              data-testid="workflow-hung-alert"
+                            />
                           )}
                         </div>
                         <span className="text-xs text-muted-foreground">

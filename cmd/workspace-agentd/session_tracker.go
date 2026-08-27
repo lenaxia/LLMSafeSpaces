@@ -46,14 +46,19 @@ type providerReadySnapshot struct {
 // sessionStatusTracker subscribes to opencode's SSE stream and tracks busy/idle per session
 // and per-session prompt tokens from step-finish events.
 type sessionStatusTracker struct {
-	mu           sync.RWMutex
-	statuses     map[string]string // session ID → "busy" | "idle"
-	promptTokens map[string]int64  // session ID → current context size (input + cache.read + cache.write)
+	mu       sync.RWMutex
+	statuses map[string]string // session ID → "busy" | "idle"
+	// busySince records when each session last transitioned to busy
+	// (design 0050 D6 / #998): backs oldest_busy_seconds in statusz for
+	// unattended-escalation detection. Cleared on idle.
+	busySince    map[string]time.Time
+	promptTokens map[string]int64 // session ID → current context size (input + cache.read + cache.write)
 }
 
 func newSessionStatusTracker() *sessionStatusTracker {
 	return &sessionStatusTracker{
 		statuses:     make(map[string]string),
+		busySince:    make(map[string]time.Time),
 		promptTokens: make(map[string]int64),
 	}
 }
@@ -61,7 +66,27 @@ func newSessionStatusTracker() *sessionStatusTracker {
 func (t *sessionStatusTracker) set(sessionID, status string) {
 	t.mu.Lock()
 	t.statuses[sessionID] = status
+	if status == "busy" {
+		if _, exists := t.busySince[sessionID]; !exists {
+			t.busySince[sessionID] = time.Now()
+		}
+	} else {
+		delete(t.busySince, sessionID)
+	}
 	t.mu.Unlock()
+}
+
+// busyDurations returns (session ID → time busy) for every session
+// currently marked busy (#998). Callers derive oldest_busy_seconds.
+func (t *sessionStatusTracker) busyDurations() map[string]time.Duration {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	now := time.Now()
+	out := make(map[string]time.Duration, len(t.busySince))
+	for id, since := range t.busySince {
+		out[id] = now.Sub(since)
+	}
+	return out
 }
 
 func (t *sessionStatusTracker) get(sessionID string) string {
@@ -138,6 +163,9 @@ func (t *sessionStatusTracker) resetBusyFlags() []string {
 	for id, s := range t.statuses {
 		if s == "busy" {
 			t.statuses[id] = "idle"
+			// D6 (#998): a generation change orphaned this busy flag —
+			// its busy-age is fiction; clear the escalation clock too.
+			delete(t.busySince, id)
 			cleared = append(cleared, id)
 		}
 	}
