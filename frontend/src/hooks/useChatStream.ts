@@ -62,7 +62,7 @@ export function useChatStream(workspaceId: string | undefined, sessionId: string
   }, []);
 
   const send = useCallback(
-    async (text: string, onComplete: (msg: Message) => void, model?: { providerID: string; modelID: string }) => {
+    async (text: string, onComplete: (msg: Message) => void, model?: { providerID: string; modelID: string }, files?: string[]) => {
       if (!workspaceId || !sessionId) return;
       const capturedSessionId = sessionId;
       setLocalStreaming(true);
@@ -85,11 +85,14 @@ export function useChatStream(workspaceId: string | undefined, sessionId: string
         // D3 (#907): one clientMessageID per user message, stable across
         // retries — the API's outbox dedupes on it, so a retried POST can
         // never double-send.
+        // Epic 67 (D11): files ride as a top-level field; the backend
+        // composes the manifest. The text is never mutated client-side.
         const clientMessageID = crypto.randomUUID();
         for (let attempt = 0; attempt <= SEND_MAX_503_RETRIES; attempt++) {
           try {
             await messagesApi.sendAsync(workspaceId, sessionId, {
               parts: [{ type: "text", text }],
+              ...(files && files.length > 0 ? { files } : {}),
               ...(model && { model }),
               clientMessageID,
             });

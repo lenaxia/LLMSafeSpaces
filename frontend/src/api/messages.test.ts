@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { transformHistory } from "./messages";
+import { messagesApi } from "./messages";
 
 describe("transformHistory", () => {
   it("extracts createdAt from contract message (ISO string)", () => {
@@ -240,5 +241,26 @@ describe("transformHistory tool start time (#892 D5)", () => {
     ];
     const result = transformHistory(raw as Parameters<typeof transformHistory>[0]);
     expect(result[0]!.parts[0]!.toolStartedAt).toBeUndefined();
+  });
+});
+
+describe("queueMessage files (Epic 67 U1.6.8)", () => {
+  it("omits files from the request body when none are attached", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ messageID: "m1" }), { status: 200 }),
+    );
+    await messagesApi.queueMessage("ws-1", "ses-1", "plain");
+    const body = JSON.parse((global.fetch as ReturnType<typeof vi.fn>).mock.calls[0]![1]!.body as string);
+    expect(body).toEqual({ text: "plain" });
+  });
+
+  it("carries files[] as a top-level field when provided", async () => {
+    global.fetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ messageID: "m2" }), { status: 200 }),
+    );
+    const files = ["/workspace/uploads/11111111-2222-3333-4444-555555555555-a.txt"];
+    await messagesApi.queueMessage("ws-1", "ses-1", "with file", files);
+    const body = JSON.parse((global.fetch as ReturnType<typeof vi.fn>).mock.calls[0]![1]!.body as string);
+    expect(body).toEqual({ text: "with file", files });
   });
 });

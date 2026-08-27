@@ -174,7 +174,7 @@ describe("ChatPage message queue (backend-backed)", () => {
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => {
-      expect(messagesApi.queueMessage).toHaveBeenCalledWith("ws-1", "ses_1", "queued msg");
+      expect(messagesApi.queueMessage).toHaveBeenCalledWith("ws-1", "ses_1", "queued msg", [] as string[]);
     });
     expect(screen.getByText("queued msg")).toBeInTheDocument();
     expect(screen.getByText("1 message queued")).toBeInTheDocument();
@@ -235,7 +235,7 @@ describe("ChatPage message queue (backend-backed)", () => {
     await user.click(screen.getByRole("button", { name: "Send message" }));
 
     await waitFor(() => {
-      expect(messagesApi.queueMessage).toHaveBeenCalledWith("ws-1", "ses_1", "message B");
+      expect(messagesApi.queueMessage).toHaveBeenCalledWith("ws-1", "ses_1", "message B", [] as string[]);
     });
     expect(messagesApi.sendAsync).not.toHaveBeenCalled();
   });

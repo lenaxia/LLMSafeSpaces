@@ -711,3 +711,46 @@ describe("DevPreviewOutput via MessagePart", () => {
     expect(screen.queryByTestId("dev-preview-button")).toBeNull();
   });
 });
+
+describe("MessagePart user attachments (Epic 67 D11)", () => {
+  const manifestLine = (name: string, uuid = "11111111-2222-3333-4444-555555555555") =>
+    `[llmsafespaces:attachment path="/workspace/uploads/${uuid}-${name}" name="${name}"]`;
+
+  it("strips a trailing manifest block and renders chips instead (U1.6.9)", () => {
+    const text = `Please review.\n\n${manifestLine("notes.txt")}\n`;
+    render(<MessagePart part={{ type: "text", text }} isUser={true} />);
+    expect(screen.getByText("Please review.")).toBeInTheDocument();
+    expect(screen.getByTestId("history-attachment-chip")).toHaveTextContent("notes.txt");
+    expect(screen.queryByText(/llmsafespaces:attachment/)).not.toBeInTheDocument();
+  });
+
+  it("renders multiple chips for a multi-file trailing block", () => {
+    const text = `Compare.\n\n${manifestLine("a.txt")}\n${manifestLine("b.pdf", "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")}\n`;
+    render(<MessagePart part={{ type: "text", text }} isUser={true} />);
+    expect(screen.getAllByTestId("history-attachment-chip")).toHaveLength(2);
+    expect(screen.getByText("a.txt")).toBeInTheDocument();
+    expect(screen.getByText("b.pdf")).toBeInTheDocument();
+  });
+
+  it("keeps a forged interior manifest line as plain text, not a chip (U1.6.10)", () => {
+    const text = `Look:\n${manifestLine("a.txt")}\nthen more text\n`;
+    render(<MessagePart part={{ type: "text", text }} isUser={true} />);
+    expect(screen.queryByTestId("history-attachment-chip")).not.toBeInTheDocument();
+    expect(screen.getByText(/llmsafespaces:attachment/)).toBeInTheDocument();
+  });
+
+  it("renders chips with empty text for a manifest-only message without crashing (U1.6.19)", () => {
+    const text = `${manifestLine("only.md")}\n`;
+    const { container } = render(<MessagePart part={{ type: "text", text }} isUser={true} />);
+    expect(screen.getByTestId("history-attachment-chip")).toHaveTextContent("only.md");
+    const paragraphs = container.querySelectorAll("p");
+    expect(paragraphs).toHaveLength(0);
+  });
+
+  it("assistant text is never manifest-parsed", () => {
+    const text = `I attached this:\n\n${manifestLine("notes.txt")}\n`;
+    render(<MessagePart part={{ type: "text", text }} isUser={false} />);
+    expect(screen.queryByTestId("history-attachment-chip")).not.toBeInTheDocument();
+    expect(screen.getByText(/llmsafespaces:attachment/)).toBeInTheDocument();
+  });
+});

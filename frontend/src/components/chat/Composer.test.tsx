@@ -103,7 +103,7 @@ describe("Composer", () => {
     render(<Composer onSend={onSend} />);
     await user.type(screen.getByPlaceholderText("Type a message..."), "  hello world  ");
     await user.click(screen.getByRole("button", { name: "Send message" }));
-    expect(onSend).toHaveBeenCalledWith("hello world");
+    expect(onSend).toHaveBeenCalledWith("hello world", []);
   });
 
   it("clears textarea after send", async () => {
@@ -157,7 +157,7 @@ describe("Composer", () => {
     const textarea = screen.getByPlaceholderText("Type a message...");
     await user.type(textarea, "hello");
     await user.keyboard("{Control>}{Enter}{/Control}");
-    expect(onSend).toHaveBeenCalledWith("hello");
+    expect(onSend).toHaveBeenCalledWith("hello", []);
   });
 
   it("DESKTOP default mode: Cmd+Enter sends (Mac meta key)", async () => {
@@ -167,7 +167,7 @@ describe("Composer", () => {
     const textarea = screen.getByPlaceholderText("Type a message...");
     await user.type(textarea, "hello");
     await user.keyboard("{Meta>}{Enter}{/Meta}");
-    expect(onSend).toHaveBeenCalledWith("hello");
+    expect(onSend).toHaveBeenCalledWith("hello", []);
   });
 
   it("DESKTOP default mode: Shift+Enter adds a newline (does NOT send)", async () => {
@@ -189,7 +189,7 @@ describe("Composer", () => {
     const textarea = screen.getByPlaceholderText("Type a message...");
     await user.type(textarea, "hi");
     await user.keyboard("{Enter}");
-    expect(onSend).toHaveBeenCalledWith("hi");
+    expect(onSend).toHaveBeenCalledWith("hi", []);
   });
 
   it("DESKTOP legacy mode (sendOnEnter=true): Shift+Enter adds newline", async () => {
@@ -351,7 +351,7 @@ describe("Composer", () => {
     render(<Composer onSend={onSend} onAbort={vi.fn()} streaming />);
     await user.type(screen.getByPlaceholderText("Type a message..."), "queued msg");
     await user.click(screen.getByRole("button", { name: "Send message" }));
-    expect(onSend).toHaveBeenCalledWith("queued msg");
+    expect(onSend).toHaveBeenCalledWith("queued msg", []);
   });
 
   it("clicking stop during streaming calls onAbort", async () => {
@@ -368,7 +368,7 @@ describe("Composer", () => {
     render(<Composer onSend={onSend} onAbort={vi.fn()} streaming />);
     await user.type(screen.getByPlaceholderText("Type a message..."), "hello");
     await user.keyboard("{Control>}{Enter}{/Control}");
-    expect(onSend).toHaveBeenCalledWith("hello");
+    expect(onSend).toHaveBeenCalledWith("hello", []);
   });
 
   it("does not show queued indicator by default", () => {

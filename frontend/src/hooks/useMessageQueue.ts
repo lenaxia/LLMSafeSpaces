@@ -7,6 +7,8 @@ export type QueuedMessage = {
   status: "pending" | "delivering" | "verifying" | "error";
   error?: string;
   sessionId: string;
+  /** Epic 67: upload paths attached to the queued entry (local re-enqueue only). */
+  files?: string[];
 };
 
 const RESTART_PHASES = ["Creating", "Pending", "Suspending"];
@@ -60,18 +62,18 @@ export function useMessageQueue(
     refreshQueue();
   }, [refreshQueue]);
 
-  const enqueue = useCallback(async (text: string) => {
+  const enqueue = useCallback(async (text: string, files?: string[]) => {
     if (!workspaceId || !sessionId) return;
     try {
-      const res = await messagesApi.queueMessage(workspaceId, sessionId, text);
+      const res = await messagesApi.queueMessage(workspaceId, sessionId, text, files);
       setQueuedMessages((prev) => [
         ...prev,
-        { id: res.messageID, text, status: "pending", sessionId },
+        { id: res.messageID, text, status: "pending", sessionId, files },
       ]);
     } catch {
       setQueuedMessages((prev) => [
         ...prev,
-        { id: "err_" + Date.now(), text, status: "error", sessionId, error: "Failed to queue" },
+        { id: "err_" + Date.now(), text, status: "error", sessionId, error: "Failed to queue", files },
       ]);
     }
   }, [workspaceId, sessionId]);
@@ -104,7 +106,7 @@ export function useMessageQueue(
     }
     const msg = queuedMessages.find((m) => m.id === id);
     removeById(id);
-    if (msg) await enqueue(msg.text);
+    if (msg) await enqueue(msg.text, msg.files);
   }, [workspaceId, sessionId, queuedMessages, enqueue, removeById, refreshQueue]);
 
   const dismiss = useCallback(async (id: string) => {

@@ -79,3 +79,10 @@ export function useUserSetting<T>(key: string, defaultValue: T): T {
   const settings = useSyncExternalStore(subscribe, getSnapshot);
   return (settings[key] as T) ?? defaultValue;
 }
+
+/** Write a single user setting: optimistic local update + API persist.
+ * Same contract as useUserSettings().setSetting without the mount fetch. */
+export async function setUserSetting(key: string, value: unknown): Promise<void> {
+  updateCache({ ...cache, [key]: value });
+  await settingsApi.setUserSetting(key, value);
+}

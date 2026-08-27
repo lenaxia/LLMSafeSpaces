@@ -6,6 +6,7 @@ vi.mock("../api/messages", () => ({
     queueMessage: vi.fn(),
     getQueue: vi.fn().mockResolvedValue({ messages: [] }),
     deleteQueueMessage: vi.fn().mockResolvedValue(undefined),
+    retryQueueMessage: vi.fn(),
     getHistory: vi.fn().mockResolvedValue([]),
     sendAsync: vi.fn(),
   },
@@ -48,7 +49,7 @@ describe("useMessageQueue (refresh-based reconciliation)", () => {
 
     await act(async () => { await result.current.enqueue("hello"); });
 
-    expect(messagesApi.queueMessage).toHaveBeenCalledWith("ws-1", "ses-1", "hello");
+    expect(messagesApi.queueMessage).toHaveBeenCalledWith("ws-1", "ses-1", "hello", undefined);
     expect(result.current.queuedMessages).toHaveLength(1);
     expect(result.current.queuedMessages[0]!.text).toBe("hello");
     expect(result.current.queuedMessages[0]!.status).toBe("pending");
@@ -133,6 +134,9 @@ describe("useMessageQueue (refresh-based reconciliation)", () => {
 
     act(() => { result.current.markError("msg_1", "failed"); });
 
+    // Server-side retry fails (e.g. already delivered / network) so the
+    // local re-enqueue fallback runs.
+    (messagesApi.retryQueueMessage as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("404"));
     (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValue({ messageID: "msg_2" });
     await act(async () => { await result.current.retry("msg_1"); });
 
@@ -234,3 +238,39 @@ describe("useMessageQueue (refresh-based reconciliation)", () => {
     expect(result.current.queuedMessages[1]!.status).toBe("delivering");
     expect(result.current.queuedMessages[2]!.status).toBe("pending"); // unknown server statuses degrade to pending
   });
+
+describe("useMessageQueue files (Epic 67 U1.6.8)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValue({ messageID: "msg_test_1" });
+    (messagesApi.getQueue as ReturnType<typeof vi.fn>).mockResolvedValue({ messages: [] });
+    (messagesApi.deleteQueueMessage as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+  });
+
+  it("enqueue carries files[] to the queue endpoint", async () => {
+    (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValue({ messageID: "msg_f1" });
+    const { result } = render();
+    await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
+
+    const files = ["/workspace/uploads/11111111-2222-3333-4444-555555555555-q.txt"];
+    await act(async () => { await result.current.enqueue("queued with file", files); });
+
+    expect(messagesApi.queueMessage).toHaveBeenCalledWith("ws-1", "ses-1", "queued with file", files);
+    expect(result.current.queuedMessages[0]).toMatchObject({ text: "queued with file", files });
+  });
+
+  it("local re-enqueue after a failed server retry preserves files", async () => {
+    (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValue({ messageID: "msg_r1" });
+    const { result } = render();
+    await waitFor(() => expect(messagesApi.getQueue).toHaveBeenCalled());
+
+    const files = ["/workspace/uploads/11111111-2222-3333-4444-555555555555-r.txt"];
+    await act(async () => { await result.current.enqueue("retry me", files); });
+    (messagesApi.retryQueueMessage as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("404"));
+    (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockResolvedValue({ messageID: "msg_r2" });
+
+    await act(async () => { await result.current.retry("msg_r1"); });
+
+    expect(messagesApi.queueMessage).toHaveBeenCalledWith("ws-1", "ses-1", "retry me", files);
+  });
+});

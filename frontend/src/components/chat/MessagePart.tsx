@@ -9,6 +9,8 @@ import { useNow } from "../../hooks/useNow";
 import { getEnv } from "../../env";
 import { useTheme } from "../../providers/ThemeProvider";
 import { highlight } from "../../lib/shiki";
+import { parseAttachments } from "../../lib/attachments";
+import { AttachmentChips } from "./AttachmentChips";
 import { LazyDetails } from "../ui/LazyDetails";
 import type { MessagePart as MessagePartType } from "../../api/types";
 
@@ -353,7 +355,15 @@ export function MessagePart({ part, isUser, isStreaming }: Props) {
 
   if (part.type === "text" && part.text) {
     if (isUser) {
-      return <p className="whitespace-pre-wrap text-sm">{part.text}</p>;
+      // Epic 67 D11: user bubbles strip the trailing attachment manifest
+      // block and render chips instead. Interior forged lines stay text.
+      const { text: stripped, attachments } = parseAttachments(part.text);
+      return (
+        <div>
+          {stripped && <p className="whitespace-pre-wrap text-sm">{stripped}</p>}
+          {attachments && <AttachmentChips attachments={attachments} />}
+        </div>
+      );
     }
     let text = part.text;
     if (isStreaming) {

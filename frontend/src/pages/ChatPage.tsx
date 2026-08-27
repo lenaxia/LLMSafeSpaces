@@ -13,6 +13,8 @@ import { useChatStream } from "../hooks/useChatStream";
 import { useEventStream } from "../hooks/useEventStream";
 import { useSessionTitle } from "../hooks/useSessionTitle";
 import { useMessageQueue } from "../hooks/useMessageQueue";
+import { useComposerAttachments } from "../hooks/useComposerAttachments";
+import { parseAttachments } from "../lib/attachments";
 import { wsLog } from "../lib/wsLog";
 import { extractUserMessageTexts } from "../lib/composerHistory";
 import { ChatView } from "../components/chat/ChatView";
@@ -22,8 +24,6 @@ import { HealthBanner } from "../components/chat/HealthBanner";
 import { SessionRetryBanner, type RetryStatus } from "../components/chat/SessionRetryBanner";
 import { AgentReloadBanner } from "../components/workspace/AgentReloadBanner";
 import { DiskUsageBar } from "../components/workspace/DiskUsageBar";
-import { ModelSelector } from "../components/chat/ModelSelector";
-import { RoleSelector } from "../components/chat/RoleSelector";
 import { Spinner } from "../components/ui/Spinner";
 import { KebabMenu } from "../components/ui/KebabMenu";
 import type { KebabMenuItem } from "../components/ui/KebabMenu";
@@ -54,11 +54,20 @@ const AUTO_ABORT_DWELL_MS = 1_500;
 // history. It deliberately excludes `id` (optimistic ids never match server
 // ids) and `createdAt` (server messages may omit it — see transformHistory), so
 // neither is a reliable match key. (role, text) is the simplest key that
-// recognises the same user message on both sides of the wire. Known limitation:
-// two consecutive identical messages collide on this key (see issue #447).
+// recognises the same user message on both sides of the wire. User text is
+// manifest-stripped before keying (Epic 67 D11): the optimistic bubble carries
+// the raw prose while server history carries the composed text — both must key
+// identically or the optimistic bubble lingers beside the history bubble.
+// Known limitation: two consecutive identical messages collide on this key
+// (see issue #447).
 function messageIdentityKey(m: Message): string {
   const text = m.parts
-    .map((p) => ("text" in p && typeof p.text === "string" ? p.text : ""))
+    .map((p) => {
+      if ("text" in p && typeof p.text === "string") {
+        return m.role === "user" ? parseAttachments(p.text).text : p.text;
+      }
+      return "";
+    })
     .join("");
   return `${m.role}|${text}`;
 }
@@ -311,6 +320,11 @@ export function ChatPage() {
   const pendingPermissions = usePendingPermissionsForSession(sessionId ?? "");
 
   const queue = useMessageQueue(activeWorkspaceId, sessionId);
+
+  // Epic 67 D12/D17: workspace-scoped attachment chips. Persist across
+  // session switches inside the workspace; cleared on workspace switch
+  // (inside the hook). Uploads target the workspace uploads route.
+  const composerAttachments = useComposerAttachments(workspaceId);
 
   const idCounterRef = useRef(0);
 
@@ -666,17 +680,27 @@ export function ChatPage() {
         if (sentTextRef.current && text === sentTextRef.current) {
           activePartTypeRef.current = "user-echo";
         } else if (sentTextRef.current && text.startsWith(sentTextRef.current)) {
-          activePartTypeRef.current = "text";
-          const stripped = text.slice(sentTextRef.current.length);
-          const idx = currentTextIdxRef.current;
-          setSseStreamParts((prev) => {
-            if (idx >= 0 && idx < prev.length && prev[idx]!.type === "text") {
-              const updated = [...prev];
-              updated[idx] = { ...updated[idx]!, type: "text", text: stripped, messageID: partMessageID ?? prev[idx]!.messageID };
-              return updated;
-            }
-            return [...prev, { type: "text", text: stripped, messageID: partMessageID }];
-          });
+          // Epic 67 D11: with attached files the user echo comes back as the
+          // composed text (prose + manifest). A remainder that is ONLY a
+          // manifest block is still the user echo — never streamed as
+          // assistant content.
+          const remainder = text.slice(sentTextRef.current.length);
+          const parsedRemainder = parseAttachments(remainder);
+          if (parsedRemainder.attachments !== null && parsedRemainder.text === "") {
+            activePartTypeRef.current = "user-echo";
+          } else {
+            activePartTypeRef.current = "text";
+            const stripped = remainder;
+            const idx = currentTextIdxRef.current;
+            setSseStreamParts((prev) => {
+              if (idx >= 0 && idx < prev.length && prev[idx]!.type === "text") {
+                const updated = [...prev];
+                updated[idx] = { ...updated[idx]!, type: "text", text: stripped, messageID: partMessageID ?? prev[idx]!.messageID };
+                return updated;
+              }
+              return [...prev, { type: "text", text: stripped, messageID: partMessageID }];
+            });
+          }
         } else {
           activePartTypeRef.current = "text";
           if (text) {
@@ -897,7 +921,7 @@ export function ChatPage() {
   // doSendNow MUST be defined before the early return below.
   // Placing any hook after an early return violates the Rules of Hooks — React
   // throws error #310 ("Rendered more hooks than during the previous render").
-  const doSendNow = (text: string) => {
+  const doSendNow = (text: string, files: string[]) => {
     // Resolve current model selection into opencode's PromptInput.model format.
     // currentModel is the flat model ID stored in the DB (e.g. "glm-5.1", never
     // "provider/model"). The backend resolves the providerID and returns it as
@@ -945,7 +969,7 @@ export function ChatPage() {
     // it (after history catches up), preserving optimistic UX.
     send(text, (_msg: Message) => {
       reconcileOnIdle();
-    }, currentModelRef);
+    }, currentModelRef, files);
   };
 
   const allMessages = [...(history ?? []), ...localMessages, ...sessionErrors];
@@ -962,7 +986,7 @@ export function ChatPage() {
   const isTransitioning = !status?.phase || status?.phase === "Pending" || status?.phase === "Creating" || status?.phase === "Resuming" || status?.phase === "Suspending";
   const phaseLabel = status?.phase ? status.phase.toLowerCase() : "loading";
 
-  const handleSend = (text: string) => {
+  const handleSend = (text: string, files: string[]) => {
     // If busy OR there are still messages waiting in the queue, hold the
     // new message in the queue too. Without the queue-length check, a
     // direct send races ahead of the drain goroutine when the session
@@ -977,10 +1001,12 @@ export function ChatPage() {
     // requires a server-side check in SendPromptAsync — out of scope for
     // this fix.
     if (isSessionBusy || streaming || queue.queuedMessages.length > 0) {
-      queue.enqueue(text);
+      queue.enqueue(text, files);
+      composerAttachments.clearAttached();
       return;
     }
-    doSendNow(text);
+    doSendNow(text, files);
+    composerAttachments.clearAttached();
   };
 
   const sessionDisplayName = sessionTitle || "New chat";
@@ -1058,16 +1084,6 @@ export function ChatPage() {
           )}
         </div>
         <div className="flex items-center gap-2">
-          {isReady && workspaceId && (
-            <>
-              <ModelSelector workspaceId={workspaceId} disabled={!isReady} />
-              <RoleSelector
-                workspaceId={workspaceId}
-                orgId={activeWorkspaceData?.orgId}
-                disabled={!isReady}
-              />
-            </>
-          )}
           <KebabMenu items={kebabItems} footer={[
             ...(status?.agentHealth?.agentVersion ? [`opencode v${status.agentHealth.agentVersion}`] : []),
             ...(status?.imageTag ? [`image: ${status.imageTag}`] : []),
@@ -1230,6 +1246,14 @@ export function ChatPage() {
             lastSeenAt={lastSeenAt}
             userMessageHistory={userMessageHistory}
             viewOnly={isSubtask}
+            workspaceId={workspaceId}
+            orgId={activeWorkspaceData?.orgId}
+            attachments={composerAttachments.chips}
+            capViolation={composerAttachments.capViolation}
+            onAddFiles={composerAttachments.addFiles}
+            onRemoveAttachment={composerAttachments.remove}
+            onRetryAttachment={composerAttachments.retry}
+            onDismissCapViolation={composerAttachments.dismissCapViolation}
             prompts={
               (pendingQuestions.length > 0 || pendingPermissions.length > 0) ? (
                 <>
