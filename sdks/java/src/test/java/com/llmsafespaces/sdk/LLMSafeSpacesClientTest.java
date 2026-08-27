@@ -637,4 +637,27 @@ class LLMSafeSpacesClientTest {
             server.stop(0);
         }
     }
+
+    @Test
+    void workspacesUpload_neutralizesHostileFilenameInMultipartFraming() throws Exception {
+        var capturedBytes = new java.util.concurrent.atomic.AtomicReference<byte[]>();
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/api/v1/workspaces/ws-1/uploads", exchange -> {
+            capturedBytes.set(exchange.getRequestBody().readAllBytes());
+            exchange.sendResponseHeaders(201, -1);
+            exchange.close();
+        });
+        server.start();
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            client.workspaces.upload("ws-1", "we\"ird\r\ninjected.txt", "x".getBytes());
+            var body = new String(capturedBytes.get(), java.nio.charset.StandardCharsets.UTF_8);
+            assertFalse(body.contains("\"ird"));
+            assertFalse(body.contains("\r\ninjected"));
+            assertTrue(body.contains("filename=\"we_ird__injected.txt\""));
+        } finally {
+            server.stop(0);
+        }
+    }
 }

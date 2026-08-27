@@ -291,9 +291,10 @@ public class LLMSafeSpacesClient {
      */
     public <T> T requestMultipart(String path, String filename, byte[] content, Class<T> type) {
         String boundary = "----llmsafespaces-java-" + java.util.UUID.randomUUID();
+        String safeFilename = filename.replaceAll("[\"\\r\\n]", "_");
         String dash = "--";
         String bodyHead = dash + boundary + "\r\n"
-                + "Content-Disposition: form-data; name=\"file\"; filename=\"" + filename + "\"\r\n"
+                + "Content-Disposition: form-data; name=\"file\"; filename=\"" + safeFilename + "\"\r\n"
                 + "Content-Type: application/octet-stream\r\n\r\n";
         String bodyTail = "\r\n" + dash + boundary + dash + "\r\n";
 
