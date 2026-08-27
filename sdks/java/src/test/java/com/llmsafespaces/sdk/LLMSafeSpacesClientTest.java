@@ -359,7 +359,6 @@ class LLMSafeSpacesClientTest {
             server.stop(0);
         }
     }
-}
 
     @org.junit.jupiter.api.Test
     void getHistoryPage_paramsAndCursor() throws Exception {
@@ -409,3 +408,4 @@ class LLMSafeSpacesClientTest {
             server.stop(0);
         }
     }
+}
