@@ -1611,6 +1611,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#file-uploads" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        File uploads
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#agent-input-run_resolve" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2285,6 +2296,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#file-uploads" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        File uploads
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#agent-input-run_resolve" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -2555,7 +2577,7 @@
 <tr>
 <td><code>session_message</code></td>
 <td><code>workspace_id</code>, <code>session_id</code>, <code>message</code></td>
-<td>Send a message and get the response (blocks until the agent replies)</td>
+<td>Send a message and get the response (blocks until the agent replies). Optional <code>files</code> (array of upload paths) appends the v1 attachment manifest to the prompt — same semantics as the REST <code>/prompt</code> route.</td>
 </tr>
 <tr>
 <td><code>session_history</code></td>
@@ -2565,6 +2587,24 @@
 </tbody>
 </table>
 <p><code>session_message</code> sends the prompt via <code>POST .../sessions/:id/prompt</code>, then subscribes to the workspace event stream (<code>GET .../session-events</code>) until the session goes idle. If the agent asks a question during the turn, the tool returns a structured <code>{"type":"question","request":{...}}</code> result instead of blocking; permission requests are auto-approved (<code>always</code>) in headless mode.</p>
+<h3 id="file-uploads">File uploads<a class="headerlink" href="#file-uploads" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Required args</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>workspace_file_upload</code></td>
+<td><code>workspace_id</code>, <code>filename</code>, <code>content_b64</code></td>
+<td>Upload a file to <code>/workspace/uploads/</code> on the workspace PVC. <code>content_b64</code> is base64 (wrapped/whitespace tolerated). Returns <code>{"path","name","size"}</code>; pass <code>path</code> values to <code>session_message</code>'s <code>files</code> param.</td>
+</tr>
+</tbody>
+</table>
+<p><code>workspace_file_upload</code> decodes to at most <strong>5 MiB</strong> (larger inputs are rejected before decoding) — use the REST <code>POST /workspaces/:id/uploads</code> multipart route or an SDK for bigger files. Paths follow the manifest contract: <code>[llmsafespaces:attachment path="&lt;path&gt;" name="&lt;name&gt;"]</code> lines appended to prompts; agents read the files with their own tools.</p>
 <div class="admonition warning">
 <p class="admonition-title"><code>session_message</code> blocks</p>
 <p>Like the REST <code>POST .../message</code>, this tool waits for the full assistant response and can take 30–120+ seconds. The default tool timeout is 300s. Messages are capped at 1 MiB.</p>
@@ -2788,7 +2828,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 27, 2026 00:03:42 UTC"><span class="timeago" datetime="2026-08-27T00:03:42+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 27, 2026 00:03:42 UTC">2026-08-27</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 27, 2026 12:32:14 UTC"><span class="timeago" datetime="2026-08-27T12:32:14+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 27, 2026 12:32:14 UTC">2026-08-27</span>
   </span>
 
     
