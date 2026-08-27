@@ -1542,6 +1542,12 @@ func registerProxyRoutes(idGroup *gin.RouterGroup, proxyHandler *handlers.ProxyH
 	// D10: on-demand input-snapshot flight (ChatPage arms reconnect mode on
 	// in-workspace session switches where no SSE reconnect fires).
 	idGroup.POST("/input-snapshot", proxyHandler.RequestInputSnapshot)
+
+	// Epic 67 US-67.2: workspace file upload — streaming multipart ingest
+	// through agentd's user-mux PUT /v1/files, behind the same
+	// AuthMiddleware + WorkspaceAccessMiddleware gate as every other
+	// proxied :id route.
+	idGroup.POST("/uploads", proxyHandler.UploadFile)
 }
 
 // respondWithError maps API errors to HTTP responses. It uses errors.As to

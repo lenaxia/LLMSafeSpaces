@@ -70,20 +70,24 @@ func initFSManagedLinks(pvcRoot, runtimeDir string) [][2]string {
 // operate on the link inode itself. Idempotent: an already-correct link
 // is left alone (stable inode across sidecar-style re-runs).
 func replaceSymlink(path, target string) error {
+	//nolint:gosec // G703: path derives from package constants (symlinkPairs); MkdirAll only creates the parent
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("parent dir for %s: %w", path, err)
 	}
+	//nolint:gosec // G703: path derives from package constants; Lstat/Readlink never traverse a planted link
 	if info, err := os.Lstat(path); err == nil {
 		if info.Mode()&os.ModeSymlink != 0 {
 			if cur, rErr := os.Readlink(path); rErr == nil && cur == target {
 				return nil // already correct — idempotent no-op
 			}
+			//nolint:gosec // G703: path derives from package constants; Remove acts on the LINK inode (never follows it)
 			if err := os.Remove(path); err != nil { // removes the LINK, not the target
 				return fmt.Errorf("remove planted symlink %s: %w", path, err)
 			}
 		} else {
 			// Pre-planted file or directory: platform-owned path,
 			// bash `rm -rf` parity (reset() wipes these every reload).
+			//nolint:gosec // G703: path derives from package constants (platform-owned runtime paths)
 			if err := os.RemoveAll(path); err != nil {
 				return fmt.Errorf("remove planted path %s: %w", path, err)
 			}

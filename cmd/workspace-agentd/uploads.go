@@ -36,11 +36,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -49,7 +46,6 @@ import (
 )
 
 const (
-	uploadMaxFilenameBytes   = 200
 	uploadCreateAttempts     = 3
 	defaultUploadMaxBytes    = int64(25 << 20)
 	defaultUploadBodyTimeout = 5 * time.Minute
@@ -121,55 +117,13 @@ func uploadConfigFromEnv() fileUploadConfig {
 	return cfg
 }
 
-// sanitizeUploadFilename flattens an untrusted filename to a safe base
-// name (design epic-67 D9; agentd is the authoritative layer):
-//
-//  1. basename — both path separators (/ and \) are split so Windows
-//     shaped traversal cannot survive
-//  2. strip control characters (C0/C1 incl. \n \r \x1b), bidi/RTL
-//     overrides (U+202A-U+202E, U+2066-U+2069), quotes, backslashes,
-//     and any residual slash
-//  3. trim trailing dots and spaces (Windows-hostile suffixes)
-//  4. truncate to 200 bytes on a rune boundary, re-trim
-//  5. reject empty or whitespace-only results
+// sanitizeUploadFilename delegates to agentd.SanitizeFilename — the single
+// shared implementation (design epic-67 D9) consumed by both upload layers:
+// this authoritative agentd endpoint and the API's defense-in-depth proxy.
+// Behavior identical to the original local implementation (US-67.1), pinned
+// by the hostile table in uploads_test.go.
 func sanitizeUploadFilename(raw string) (string, bool) {
-	base := filepath.Base(strings.ReplaceAll(raw, "\\", "/"))
-
-	var b strings.Builder
-	b.Grow(len(base))
-	for _, r := range base {
-		if isForbiddenFilenameRune(r) {
-			continue
-		}
-		b.WriteRune(r)
-	}
-
-	name := strings.TrimRight(b.String(), ". ")
-	if len(name) > uploadMaxFilenameBytes {
-		for len(name) > uploadMaxFilenameBytes {
-			_, size := utf8.DecodeLastRuneInString(name)
-			name = name[:len(name)-size]
-		}
-		name = strings.TrimRight(name, ". ")
-	}
-	if strings.TrimSpace(name) == "" {
-		return "", false
-	}
-	return name, true
-}
-
-func isForbiddenFilenameRune(r rune) bool {
-	switch r {
-	case '"', '\'', '\\', '/':
-		return true
-	}
-	if r >= 0x202A && r <= 0x202E {
-		return true
-	}
-	if r >= 0x2066 && r <= 0x2069 {
-		return true
-	}
-	return unicode.IsControl(r)
+	return agentd.SanitizeFilename(raw)
 }
 
 type uploadErrorResponse struct {
@@ -262,6 +216,7 @@ func uploadFilesHandler(logger *zap.Logger, cfg fileUploadConfig, workspacePassw
 				return
 			}
 			if err := sink.Close(); err != nil {
+				//nolint:gosec // G703: tmpPath is server-generated (uuid + operator-configured root); no client bytes reach it
 				_ = os.Remove(tmpPath)
 				logger.Warn("upload: close failed", zap.Error(err))
 				pkgOpsMetrics.RecordUploadOutcome(uploadWorkspaceID(), uploadOutcomeWriteError)
@@ -269,6 +224,7 @@ func uploadFilesHandler(logger *zap.Logger, cfg fileUploadConfig, workspacePassw
 				return
 			}
 			if err := cfg.rename(tmpPath, finalPath); err != nil {
+				//nolint:gosec // G703: tmpPath is server-generated (uuid + operator-configured root); no client bytes reach it
 				_ = os.Remove(tmpPath)
 				logger.Warn("upload: rename failed", zap.Error(err))
 				pkgOpsMetrics.RecordUploadOutcome(uploadWorkspaceID(), uploadOutcomeWriteError)
@@ -297,6 +253,7 @@ func uploadFilesHandler(logger *zap.Logger, cfg fileUploadConfig, workspacePassw
 // partial file behind.
 func abortUploadTmp(sink uploadSink, tmpPath string) {
 	_ = sink.Close()
+	//nolint:gosec // G703: tmpPath is server-generated (uuid + operator-configured root); no client bytes reach it
 	_ = os.Remove(tmpPath)
 }
 
