@@ -230,6 +230,76 @@ test.describe("Composer attachments (Epic 67)", () => {
     await expect(page.getByTestId("history-attachment-chip")).toHaveText(/notes\.txt/);
     await expect(page.getByText(/llmsafespaces:attachment/)).toHaveCount(0);
   });
+
+  // E3 (browser half): a 26 MiB file is rejected with a friendly composer
+  // error surfaced on the chip + notice — the server-side half (nothing
+  // lands on the PVC, no .tmp residue) is covered by the upload handler
+  // and agentd test suites (U1.1.4/U1.2.5) at the Go layer.
+  test("E3 oversize: 26 MiB file → friendly composer error, chip error state, no files[]", async ({ page }) => {
+    const uploaded: string[] = [];
+    const prompts: Array<Record<string, unknown>> = [];
+    await mockAuthAndWorkspace(page);
+    await mockHistory(page, []);
+    await page.route(`${API}/workspaces/${WS_ID}/uploads`, async (route: Route) => {
+      const body = route.request().postDataBuffer();
+      const disposition = body ? Buffer.from(body).toString("latin1").match(/filename="([^"]*)"/) : null;
+      uploaded.push(disposition?.[1] ?? "unknown");
+      await route.fulfill({
+        status: 413, contentType: "application/json",
+        body: JSON.stringify({ error: "file exceeds size cap" }),
+      });
+    });
+    await capturePrompts(page, prompts);
+
+    await gotoChat(page);
+
+    const big = Buffer.alloc(26 * 1024 * 1024, 0x61);
+    await page.setInputFiles('[data-testid="composer-file-input"]', {
+      name: "big.bin", mimeType: "application/octet-stream", buffer: big,
+    });
+
+    const chip = page.locator('[data-testid^="composer-chip-"][data-status="error"]', { hasText: "big.bin" });
+    await expect(chip).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByLabel("upload-error-notice")).toContainText(/big\.bin/);
+    await expect(page.getByLabel("upload-error-notice")).toContainText(/file exceeds size cap/);
+    expect(uploaded).toEqual(["big.bin"]);
+
+    // Send still works (failed chips are the user's explicit choice — D17),
+    // and the failed upload is NOT referenced in the payload.
+    await page.getByPlaceholder("Type a message...").fill("trying with the big one");
+    await page.getByRole("button", { name: "Send message" }).click();
+    await expect(prompts).toHaveLength(1);
+    expect(Object.keys(prompts[0]!)).not.toContain("files");
+  });
+
+  // E4: upload against a suspended workspace → the 409 is surfaced in the
+  // composer with the phase hint (Epic 67 D5).
+  test("E4 suspended workspace: upload 409 surfaced with phase hint", async ({ page }) => {
+    const uploaded: string[] = [];
+    await mockAuthAndWorkspace(page);
+    await mockHistory(page, []);
+    await page.route(`${API}/workspaces/${WS_ID}/uploads`, async (route: Route) => {
+      const body = route.request().postDataBuffer();
+      const disposition = body ? Buffer.from(body).toString("latin1").match(/filename="([^"]*)"/) : null;
+      uploaded.push(disposition?.[1] ?? "unknown");
+      await route.fulfill({
+        status: 409, contentType: "application/json",
+        body: JSON.stringify({ error: "workspace not active", phase: "Suspended" }),
+      });
+    });
+
+    await gotoChat(page);
+
+    await page.setInputFiles('[data-testid="composer-file-input"]', {
+      name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("abc"),
+    });
+
+    const chip = page.locator('[data-testid^="composer-chip-"][data-status="error"]', { hasText: "notes.txt" });
+    await expect(chip).toBeVisible({ timeout: 5_000 });
+    await expect(chip).toContainText("workspace not active (phase: Suspended)");
+    await expect(page.getByLabel("upload-error-notice")).toContainText("workspace not active (phase: Suspended)");
+    expect(uploaded).toEqual(["notes.txt"]);
+  });
 });
 
 test.describe("Composer attachments — mobile viewport 375×812 (E5)", () => {

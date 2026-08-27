@@ -266,6 +266,19 @@ jobs:
           LLM_MODEL: ${{ secrets.LLM_MODEL }}
         run: bash local/test.sh
 
+      - name: Run attachment e2e rows (Epic 67 E2/E10/E11)
+        # Cluster-level upload rows: PVC persistence across
+        # suspend/resume, multi-tenant isolation, pod-kill chaos. The
+        # nightly installs with agentdSidecar.enabled=true, where uploads
+        # clean-fail by design (epic-67 D1 as-built) — the script asserts
+        # that clean-fail and skips the three rows with an explicit
+        # message; they run fully in single-container deploys.
+        env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          CTX: kind-${{ env.CLUSTER_NAME }}
+          NS: ${{ env.NS }}
+        run: bash local/us-67-attachments-e2e.sh
+
       - name: Run V2 session-queue behavioral e2e (US-63.3/63.4/63.9)
         # Hard-assert behavioral properties that unit tests cannot cover:
         #   US-63.3: enqueue while busy → runs after current turn

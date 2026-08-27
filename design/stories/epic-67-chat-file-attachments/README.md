@@ -1,6 +1,6 @@
 # Epic 67: Chat File Attachments — Upload, PVC Ingest, and Prompt Reference
 
-**Status:** Approved — pre-implementation
+**Status:** Shipped — as-built (US-67.1…US-67.6 merged)
 **Created:** 2026-08-26
 **Tracking:** GitHub issues (epic + US-67.1…US-67.6); this document is the authoritative design and as-built record. Execution status lives only on GitHub — do not duplicate here.
 
@@ -208,6 +208,37 @@ US-67.1..67.5 ──► US-67.6
 ```
 
 US-67.1 and US-67.3 can start in parallel; US-67.2 needs 67.1; US-67.5 needs 67.3's format locked before the TS parser is written.
+
+---
+
+## As-built deviations
+
+The shipped code matches D1–D19 except where noted here (both corrections
+are already folded into the decision text above):
+
+1. **agentd port (D1):** `PUT /v1/files` serves on the **user mux (:4097)**,
+   symmetric with reload-secrets — not the admin port 4098 sketched in the
+   architecture diagram. **Sidecar mode clean-fails (5xx):** the sidecar's
+   `/workspace` mount is read-only (`controller/internal/workspace/agentd_sidecar.go`);
+   uploads are supported in single-container mode. A control-socket write
+   op for sidecar mode is a tracked follow-up. `local/us-67-attachments-e2e.sh`
+   gates on this and asserts the clean-fail when sidecar mode is detected.
+2. **Manifest attributes (D7):** v1 lines carry `path` + `name` only — the
+   illustrative `bytes=` sketch was dropped because send-time validation is
+   shape-only (D8). The golden fixtures in `pkg/session/attachments/testdata/`
+   are the authoritative format.
+3. **SDK shape correction (US-67.6):** reconciling the spec surfaced that all
+   four SDKs sent dead prompt fields (`message`/`content`) — the live handler
+   extracts text from `parts`. US-67.6 fixed the SDKs and the spec to the
+   as-built `{parts, files, clientMessageID, model}` body.
+
+**E2E coverage as-built:** E1/E5/E6 (browser), E3/E4 (browser, stubbed
+backend — the pod-side half of E3 is covered by the U1.1/U1.2 Go suites),
+E7 (golden prompt bytes), E8 (external stdio MCP client), E9 (SDK wire
+tests + `make sdk-check` + sdk-contract CI), E12 (README/golden fixture
+consistency) run in CI. E2/E10/E11 are cluster-only (`local/us-67-attachments-e2e.sh`,
+wired into e2e-nightly; rows execute fully only in single-container mode —
+see deviation 1).
 
 ---
 

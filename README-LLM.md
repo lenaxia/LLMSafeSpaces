@@ -26,6 +26,7 @@
 14. [Testing Requirements](#testing-requirements)
 15. [Multi-Tenant OIDC SSO](#multi-tenant-oidc-sso)
 16. [Cloudflare Turnstile CAPTCHA](#cloudflare-turnstile-captcha)
+17. [File Attachments (Epic 67)](#file-attachments-epic-67)
 
 ---
 
@@ -1906,6 +1907,81 @@ External MCP servers give workspace agents access to third-party tools (GitHub, 
 
 ---
 
+## File Attachments (Epic 67)
+
+**Status:** Shipped — as-built. Design: [`design/stories/epic-67-chat-file-attachments/README.md`](design/stories/epic-67-chat-file-attachments/README.md) (authoritative, D1–D19 with as-built corrections).
+
+One upload primitive, one send-path semantic, four client surfaces (web composer, REST/SDK, MCP). Files land on the workspace PVC under `/workspace/uploads/<uuid>-<name>`; the prompt references them; the agent reads them with its own tools. This is a **workspace file-ingest API the composer surfaces** — not a session-contract feature: the 5-part contract is unchanged, file references ride as composed text (D10).
+
+### Flow (as-built)
+
+```
+Web (+ picker)  ── multipart ──┐
+REST / SDK      ── multipart ──┼─► POST /api/v1/workspaces/:id/uploads  [AuthMiddleware + WorkspaceAccessMiddleware]
+MCP tool        ── base64 ────┘        streaming, caps, phase+disk gates
+                                         │ Basic auth (workspace password)
+                                         ▼
+                               agentd PUT /v1/files (USER mux, :4097)
+                               sanitize → <uuid>-<name>.tmp (O_EXCL) → fsync → rename
+                                         ▼
+                               /workspace/uploads/<uuid>-<name>  (PVC — persists across suspend/resume)
+                                         ▼
+       Send: files[] on POST /prompt + /queue (V1 /message rejects files with 400) + MCP session_message
+                                         ▼
+               attachments.Compose (pkg/session/attachments) — ONE function, compose-once at acceptance
+                                         ▼
+                      Adapter.Send(text) unchanged → agent reads files with its own tools
+```
+
+### As-built corrections to the original design sketch
+
+- **D1 — agentd user mux, port 4097 (not admin 4098).** `PUT /v1/files` follows the validated reload-secrets pattern: the user mux (`agentd.AgentdPort = 4097`), Basic auth via `checkBasicAuthAny`. **Sidecar-mode caveat:** the sidecar's `/workspace` mount is read-only (`controller/internal/workspace/agentd_sidecar.go`), so uploads fail cleanly with 5xx in sidecar mode; single-container mode is the supported configuration for uploads (control-socket write op = tracked follow-up).
+- **D7 — manifest v1 lines carry `path` + `name` only.** The `bytes=` attribute sketched in the architecture diagram was dropped: send-time validation is shape-only (D8 — the API cannot stat workspace files). The golden fixtures in `pkg/session/attachments/testdata/` are authoritative.
+
+### Caps & gates
+
+| Surface | Cap |
+|---|---|
+| REST/SDK upload (`POST /workspaces/:id/uploads`) | 25 MiB/file, streamed (never buffered by the API) |
+| MCP `workspace_file_upload` | 5 MiB decoded (7 MiB encoded pre-decode guard); tool description points bigger files at REST |
+| `files[]` per send | 10 entries; duplicates/empty/out-of-shape paths → 400 |
+
+**Gate order is contract (D16), asserted by test:** auth → access → phase (Active only, else 409 + current phase) → disk (CRD ratio ≥ critical threshold → 507; unknown fails open) → cap (413). A 401 never leaks phase; a disk-gated request never reaches agentd.
+
+### Manifest format v1 (stable API contract)
+
+Composed by exactly one function — `attachments.Compose(text, files)` (`pkg/session/attachments/`) — called once at send acceptance; retries must not double-append (D15 strip-then-append idempotency: `compose(compose(t,f),f) == compose(t,f)`). One line per file, appended after the user text separated by exactly one blank line, each line:
+
+<!-- begin:attachment-manifest-v1 -->
+```text
+Please review the attached notes.
+
+[llmsafespaces:attachment path="/workspace/uploads/11111111-2222-3333-4444-555555555555-notes.txt" name="notes.txt"]
+```
+<!-- end:attachment-manifest-v1 -->
+
+This block byte-matches the golden fixture `pkg/session/attachments/testdata/compose_one_file.want.json` (CI-enforced, e2e row E12). Attribute values backslash-escape `"` and `\`; control characters are stripped from names. The parser consumes only the **trailing** block — interior/forged lines stay plain text (U1.3.10); unknown versions/attributes are plain text (forward compatibility). Changes are additive-only; any format change = new version marker while v1 stays parseable.
+
+**Send-time validation is a shape check, not an existence probe (D8):** `^/workspace/uploads/<uuid>-`. A deleted file means the agent's tools report not-found — same as any workspace path.
+
+### Surfaces
+
+- **agentd (`cmd/workspace-agentd/uploads.go`)** — `PUT /v1/files?filename=`: `O_EXCL` tmp create + fsync + rename (D3 atomic, D14 symlink/.tmp squat defense with fresh-uuid retry on EEXIST), 25 MiB server-side cap (never trusts the API), boot scrub of `*.tmp`, slowloris read deadline, per-outcome Prometheus counter.
+- **API (`api/internal/handlers/uploads.go`)** — streaming multipart: the single `file` part is piped (io.Pipe + cap+1 LimitReader) straight into the agentd request; client disconnects propagate via request context; filename sanitized before forwarding (D9 defense-in-depth — `agentd.SanitizeFilename` is the single shared source); error mapping: conn-refused 502 / agentd 413 → 413 / agentd 5xx+garbage → 502 / timeout → 504, agentd internals never leak. Metrics: `llmsafespaces_uploads_total{success,cap,phase,disk,agentd_error}`.
+- **Send paths (`proxy_handlers.go`)** — `/prompt` and `/queue` accept top-level `files[]`, compose the manifest at acceptance (outbox entries persist the composed text — compose-once under retry, U1.4.3); V1 `/message` rejects `files` with an explicit 400 (`files not supported on this route; use /prompt`) — it proxies bodies verbatim and must not gain rewriting logic (D6).
+- **MCP (`pkg/mcp/uploads.go`)** — `workspace_file_upload(workspace_id, filename, content_b64)` tool (whitespace-tolerant base64, D18; phase-naming error messages, U1.5.11) + `session_message(files)` over the same shared composer (U1.5.6). See `docs/api/mcp.md`.
+- **Frontend (US-67.5)** — composer "+" attach button always visible; chips (uploading/attached/error); send blocked while any chip is uploading (D17); user bubbles strip the trailing manifest and render chips via the TS parser port (`frontend/src/lib/attachments.ts`, verified against the same golden fixtures); dead `MessagePart.files` removed (D13); model/persona selectors moved into the chevron drawer (D12).
+
+### SDKs
+
+All four SDKs expose `workspaces.upload(...)` (multipart, typed `FileUpload` result) and `files` parameters on the async-prompt/queue methods — the 409 phase surfaces on the conflict error of each (`APIError.Phase` / `ConflictError.phase` / `ConflictException.phase`). `make -C sdks sdk-check` runs the spec validator + spec↔router parity contract (E9 core); per-language compile + wire-level tests run in the `sdk-contract` CI job.
+
+### Out of scope (unchanged)
+
+Vision/multimodal (needs file parts through the adapter seam); drag-drop + clipboard paste (follow-ups on the same endpoint); dedup on retry (orphans are ordinary workspace files, D19); S3/object-store staging; session-scoped folders (sessions are lazy; uploads are workspace-scoped, D2); per-tenant PVC quotas (Epic 43); content sniffing/thumbnails/browse UI.
+
+---
+
 ## API Reference
 
 The complete REST surface is documented in `sdks/openapi.yaml` — the canonical spec, kept in both-directions parity with the production router by `TestOpenAPIRouterContract` (`api/internal/server/router_openapi_contract_test.go`, every handler wired). The API has ~200 routes covering:
@@ -1980,6 +2056,7 @@ The API service is configured via `api/config/config.yaml` with environment vari
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.26 | 2026-08-27 | Added "File Attachments (Epic 67)" section documenting the as-built upload/attachment system: agentd `PUT /v1/files` on the user mux (:4097, single-container mode only — sidecar /workspace is read-only, uploads clean-fail 5xx there), API `POST /workspaces/:id/uploads` streaming multipart with the D16 gate order (auth→access→phase→disk→cap), manifest format v1 (path+name only — the `bytes=` sketch was dropped) locked by golden fixtures with compose-once idempotency (D15), `files[]` on /prompt + /queue with explicit 400 rejection on V1 /message, MCP `workspace_file_upload` + `session_message(files)` (5 MiB decoded cap), caps 25 MiB REST / 5 MiB MCP / 10 files per send, SDK upload + files surface in all four SDKs (`make sdk-check` + sdk-contract CI), and the out-of-scope list. E2E rows E7/E8/E9/E12 CI-enforced; E3/E4 browser-half; E2/E10/E11 cluster-only via `local/us-67-attachments-e2e.sh`. Fixed pre-existing canary Makefile breakage from #1072. |
 | 1.25 | 2026-08-27 | Epic #1032 API-surface sync follow-ups: API Reference rewritten — ~200 routes, 22 areas (passkeys, workflows/triggers, MCP servers, image factory, org surface, admin, usage/billing, Stripe webhook), canonical reference is now sdks/openapi.yaml with TestOpenAPIRouterContract as the both-directions parity gate; `?verbose` documented as accepted-and-ignored (patch stripping removed in Epic 65); spec ssoProviders dead field removed and verbose descriptions corrected. |
 | 1.23 | 2026-08-02 | Added disk-pressure prompt injection: when a workspace's `/workspace` PVC crosses 90% usage the API proxy prepends a notice part to LLM-bound chat requests (POST /message; V2 prompts go through enqueueV2 → PromptV2, which does not inject) so the agent nudges the user to free space; at 95% the notice escalates to safe-cleanup guidance (build artifacts + caches only, logs as last resort since they cannot be reproduced). Ratio comes from the existing Workspace CRD status fields (`diskUsedBytes`/`diskTotalBytes`) — no new telemetry. New `api/internal/handlers/proxy_disk_pressure.go`; thresholds env-overridable via `DISK_WARNING_THRESHOLD`/`DISK_CRITICAL_THRESHOLD`. |
 | 1.22 | 2026-06-29 | Secrets UX: added `global_default` boolean to `user_secrets` (migration 000004); propagated through `SecretStore`, `PgSecretStore`, `SecretService`, `AsyncAuditLogger`; `SecretService.SeedGlobalDefaultSecrets` added; `workspace.Service` gains `SecretAutoProvisioner` interface + `SetSecretAutoProvisioner` setter, called best-effort on `CreateWorkspace` after `credProvisioner`; `UpdateSecretRequest.GlobalDefault` is a `*bool` (nil = leave unchanged); frontend: `globalDefault` field on `SecretResponse`/`CreateSecretRequest`/`UpdateSecretRequest`; `SecretsTab` adds "Include in all workspaces" checkbox on create form, "Update" inline form per secret row (carries globalDefault toggle + new value), softened post-creation warning from "will never be shown again" to "you can reveal this value later using your password". |

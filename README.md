@@ -121,6 +121,7 @@ All endpoints are JSON. Authentication is via `Authorization: Bearer <jwt-or-api
 | `POST` | `/api/v1/workspaces/:id/restart` | Restart the workspace pod |
 | `GET` | `/api/v1/workspaces/:id/status` | Get phase + conditions + credential state + agent health |
 | `POST` | `/api/v1/workspaces/:id/agent/reload` | Hot-reload agent credentials without pod restart |
+| `POST` | `/api/v1/workspaces/:id/uploads` | Upload a file to the workspace PVC (`multipart/form-data`, field `file`; 25 MiB cap; returns `{path, name, size}` — see [File Attachments](#file-attachments-epic-67) in README-LLM) |
 
 ### Session Management
 
@@ -138,8 +139,8 @@ These endpoints are reverse-proxied to the workspace pod's `opencode serve` inst
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/api/v1/workspaces/:id/sessions/:sessionId/message` | Send a message; wait for the assistant reply |
-| `POST` | `/api/v1/workspaces/:id/sessions/:sessionId/prompt` | Send a message asynchronously (`204 No Content`) |
+| `POST` | `/api/v1/workspaces/:id/sessions/:sessionId/message` | Send a message; wait for the assistant reply (`files` rejected — use `/prompt`) |
+| `POST` | `/api/v1/workspaces/:id/sessions/:sessionId/prompt` | Send a message asynchronously; optional `files[]` composes the attachment manifest |
 | `GET` | `/api/v1/workspaces/:id/sessions/:sessionId/message` | Fetch session history |
 | `GET` | `/api/v1/workspaces/:id/sessions/:sessionId` | Get a single session |
 | `POST` | `/api/v1/workspaces/:id/sessions/:sessionId/abort` | Abort a running session |

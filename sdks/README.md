@@ -58,18 +58,26 @@ Endpoints marked with `x-opencode-proxy: true` return responses from the upstrea
 - **Go**: manual HTTP streaming
 - **TypeScript/Node**: `eventsource` package
 
-## SDK Generation (Future — US-14.3 through US-14.6)
+## Keeping the SDKs in sync
+
+The four SDKs are hand-written against `openapi.yaml` (the generation
+targets from US-14.3–14.6 never shipped; the placeholder targets remain
+only as no-ops). Sync is enforced by tests, not codegen:
 
 ```bash
-# Generate all SDKs
-make generate-all
+# Spec validity + spec↔router parity contract (Epic 67 E9 core)
+make sdk-check
 
-# Generate individual SDKs
-make generate-ts
-make generate-python
-make generate-go
-make generate-java
+# Validate the spec structurally alone
+make validate
 ```
+
+- Route parity: `TestOpenAPIRouterContract` (api/internal/server) diffs the
+  spec and the production router in both directions — CI-blocking.
+- Per-language compile + wire-level tests: the `sdk-contract` CI job
+  (`.github/workflows/ci.yml`) builds and tests Go/TypeScript/Python/Java
+  on every PR.
+- Live-API canaries: `sdks/canary/` (`make -C sdks/canary canary-ci`).
 
 ## Design Decisions
 

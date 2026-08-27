@@ -1,6 +1,6 @@
 # Client SDKs
 
-LLMSafeSpaces ships typed client SDKs in four languages, plus a VS Code extension. They live under [`sdks/`](https://github.com/lenaxia/LLMSafeSpaces/tree/main/sdks) and are thin, ergonomic wrappers over the [REST API](rest.md).
+LLMSafeSpaces ships typed client SDKs in four languages. They live under [`sdks/`](https://github.com/lenaxia/LLMSafeSpaces/tree/main/sdks) and are thin, ergonomic wrappers over the [REST API](rest.md).
 
 ## Available SDKs
 
@@ -11,9 +11,9 @@ LLMSafeSpaces ships typed client SDKs in four languages, plus a VS Code extensio
 | **Python** | `sdks/python/` | `llmsafespaces` | Python 3.10+ | API key or email/password |
 | **Java** | `sdks/java/` | `com.llmsafespaces:sdk` | Java 17+ | API key |
 
-## How they're generated
+## How they're kept in sync
 
-All four language SDKs are kept in sync against a single hand-written **OpenAPI 3.0.3 specification** at [`sdks/openapi.yaml`](https://github.com/lenaxia/LLMSafeSpaces/tree/main/sdks/openapi.yaml). The spec is the source of truth for the REST contract, derived from:
+All four language SDKs are hand-written against a single **OpenAPI 3.0.3 specification** at [`sdks/openapi.yaml`](https://github.com/lenaxia/LLMSafeSpaces/tree/main/sdks/openapi.yaml). The spec is the source of truth for the REST contract, derived from:
 
 - `api/internal/server/router.go` — route definitions
 - `pkg/types/types.go` — request/response types
@@ -22,20 +22,30 @@ All four language SDKs are kept in sync against a single hand-written **OpenAPI 
 ```bash
 cd sdks
 
-# Validate the spec structurally (Go-based validator, no npm required)
+# Validate the spec structurally + spec↔router parity contract (Epic 67 E9)
+make sdk-check
+
+# Validate the spec alone (Go-based validator, no npm required)
 make validate
-
-# Regenerate all SDKs
-make generate-all
-
-# Or one at a time
-make generate-ts
-make generate-python
-make generate-go
-make generate-java
 ```
 
-The validator checks OpenAPI 3.0.3 structure, resolves all `$ref` targets, and confirms security schemes and at least one path are defined.
+The validator checks OpenAPI 3.0.3 structure, resolves all `$ref` targets, and confirms security schemes and at least one path are defined. Route parity between the spec and the production router is enforced bidirectionally by `TestOpenAPIRouterContract` (api/internal/server) — a route added to the router without the spec (or vice versa) fails CI. Per-language compile + wire-level tests run in the `sdk-contract` CI job.
+
+### File attachments (Epic 67)
+
+All four SDKs expose the upload + files surface:
+
+```go
+up, err := client.Workspaces.UploadFile(ctx, wsID, "notes.txt", bytes.NewReader(data))
+err = client.Sessions.SendPromptAsync(ctx, wsID, sesID, "review the attached notes", up.Path)
+```
+
+```python
+up = client.workspaces.upload_file(ws_id, "notes.txt", data)
+client.sessions.send_prompt_async(ws_id, ses_id, "review the attached notes", files=[up.path])
+```
+
+The API composes the v1 attachment manifest into the dispatched text; callers pass upload paths only. A 409 (workspace not Active) surfaces the phase on the conflict error of each SDK.
 
 ### What's not modeled
 

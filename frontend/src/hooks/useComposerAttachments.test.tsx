@@ -53,6 +53,19 @@ describe("useComposerAttachments", () => {
     expect(result.current.chips).toHaveLength(0);
   });
 
+  it("surfaces the workspace phase in the chip error on a 409 (Epic 67 D5/E4)", async () => {
+    const { ApiClientError } = await import("../api/client");
+    uploadMock.mockRejectedValue(
+      new ApiClientError(409, { error: "workspace not active", phase: "Suspended" }),
+    );
+    const { result } = renderHook(() => useComposerAttachments("ws-1"));
+
+    act(() => result.current.addFiles([fileOf("f.txt")]));
+    await waitFor(() => expect(result.current.chips[0]!.status).toBe("error"));
+
+    expect(result.current.chips[0]!.error).toBe("workspace not active (phase: Suspended)");
+  });
+
   it("retry performs a NEW upload with a fresh id and no stale path reuse", async () => {
     let calls = 0;
     uploadMock.mockImplementation(async () => {
