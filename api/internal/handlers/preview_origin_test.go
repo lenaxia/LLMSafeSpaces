@@ -916,21 +916,28 @@ func TestEpic67PortHostBootstrapAndRedemption(t *testing.T) {
 	if !strings.Contains(sc, "__Host-pv=") {
 		t.Errorf("missing __Host-pv cookie: %q", sc)
 	}
-
-	// 6. Test authenticated request to port-host
 	cookieValue := cookieValueOnly(sc)
-	req2 := httptest.NewRequest("GET", "/", nil)
+
+	// 6. Test authenticated request to port-host via REAL server
+	// (ReverseProxy needs CloseNotifier support).
+	ts := httptest.NewServer(r)
+	defer ts.Close()
+	req2, _ := http.NewRequest("GET", ts.URL+"/", nil)
 	req2.Host = portHost
 	req2.Header.Set("Cookie", "__Host-pv="+cookieValue)
-	w2 := httptest.NewRecorder()
-	r.ServeHTTP(w2, req2)
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("cookie proxy: %v", err)
+	}
+	defer resp2.Body.Close()
+	bodyBytes, _ := io.ReadAll(resp2.Body)
 
 	// Should proxy to backend successfully
-	if w2.Code != http.StatusOK {
-		t.Fatalf("authenticated request: expected 200, got %d body=%s", w2.Code, w2.Body.String())
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("authenticated request: expected 200, got %d body=%s", resp2.StatusCode, bodyBytes)
 	}
 
-	body := w2.Body.String()
+	body := string(bodyBytes)
 	if !strings.Contains(body, "OK: /"+port) {
 		t.Errorf("expected backend path /%s, got response body: %q", port, body)
 	}
@@ -968,19 +975,26 @@ func TestEpic67PortHostRootRequest(t *testing.T) {
 	sc := w.Header().Get("Set-Cookie")
 	cookieValue := cookieValueOnly(sc)
 
-	// Test root request on port-host (should go directly to app, not landing page)
-	req2 := httptest.NewRequest("GET", "/", nil)
+	// Test root request on port-host (should go directly to app, not landing
+	// page). REAL server: ReverseProxy needs CloseNotifier support.
+	ts := httptest.NewServer(r)
+	defer ts.Close()
+	req2, _ := http.NewRequest("GET", ts.URL+"/", nil)
 	req2.Host = portHost
 	req2.Header.Set("Cookie", "__Host-pv="+cookieValue)
 	req2.Header.Set("Sec-Fetch-Mode", "navigate")
-	w2 := httptest.NewRecorder()
-	r.ServeHTTP(w2, req2)
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("port-host root request: %v", err)
+	}
+	defer resp2.Body.Close()
+	bodyBytes, _ := io.ReadAll(resp2.Body)
 
-	if w2.Code != http.StatusOK {
-		t.Fatalf("port-host root request: expected 200, got %d body=%s", w2.Code, w2.Body.String())
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("port-host root request: expected 200, got %d body=%s", resp2.StatusCode, bodyBytes)
 	}
 
-	body := w2.Body.String()
+	body := string(bodyBytes)
 	if !strings.Contains(body, "Root page") {
 		t.Errorf("port-host root should return app root, got: %q", body)
 	}
@@ -1012,7 +1026,9 @@ func TestEpic67PortHostPathPreservation(t *testing.T) {
 	sc := w.Header().Get("Set-Cookie")
 	cookieValue := cookieValueOnly(sc)
 
-	// Test various paths on port-host
+	// Test various paths on port-host. Proxy-reaching requests go through
+	// a REAL server — ReverseProxy needs CloseNotifier support a bare
+	// ResponseRecorder lacks.
 	testPaths := []string{
 		"/app",
 		"/app/dashboard",
@@ -1020,19 +1036,27 @@ func TestEpic67PortHostPathPreservation(t *testing.T) {
 		"/static/style.css",
 	}
 
+	ts := httptest.NewServer(r)
+	defer ts.Close()
+
 	for _, path := range testPaths {
-		reqPath := httptest.NewRequest("GET", path, nil)
+		reqPath, _ := http.NewRequest("GET", ts.URL+path, nil)
 		reqPath.Host = portHost
 		reqPath.Header.Set("Cookie", "__Host-pv="+cookieValue)
-		wPath := httptest.NewRecorder()
-		r.ServeHTTP(wPath, reqPath)
+		respPath, err := http.DefaultClient.Do(reqPath)
+		if err != nil {
+			t.Errorf("path %s: request failed: %v", path, err)
+			continue
+		}
+		bodyBytes, _ := io.ReadAll(respPath.Body)
+		respPath.Body.Close()
 
-		if wPath.Code != http.StatusOK {
-			t.Errorf("path %s: expected 200, got %d", path, wPath.Code)
+		if respPath.StatusCode != http.StatusOK {
+			t.Errorf("path %s: expected 200, got %d", path, respPath.StatusCode)
 			continue
 		}
 
-		body := wPath.Body.String()
+		body := string(bodyBytes)
 		expectedPath := "/" + port + path
 		if !strings.Contains(body, "Path: "+expectedPath) {
 			t.Errorf("path %s: expected backend to see %s, got: %q", path, expectedPath, body)

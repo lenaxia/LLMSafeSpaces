@@ -307,21 +307,11 @@ func (h *PreviewOriginHandler) servePreview(c *gin.Context, wsID string, port in
 			return
 		}
 
-		// Ordering hazard fix (Epic 67): Landing page only for LEGACY hosts
-		// On port-hosts, / is the app root — authenticated users must get their app
-		if c.Request.URL.Path == "/" && c.Request.Method == http.MethodGet {
-			// Epic 67 fix: Check for token redemption first
-			tok := c.Query("t")
-			if tok != "" {
-				// Token redemption takes precedence over landing page
-				// (continue to token validation below)
-			} else if !h.hasValidPreviewCookie(c, wsID) {
-				h.unauthorized(c)
-				return
-			}
-			// Authenticated request to / on port-host → proxy to app root
-			// (this continues below to the authenticated proxy path)
-		}
+		// No special-case for "/" here: on port-hosts the ENTIRE path is
+		// app path (the port lives in the host), so authenticated "/"
+		// requests proxy to the app root via the common flow below, and
+		// unauthenticated browser navigations get the deep-link landing
+		// page via the common tok=="" branch — same UX as legacy hosts.
 	} else {
 		// Legacy mode: parse port from path prefix
 		portStr := strings.TrimPrefix(c.Request.URL.Path, "/")

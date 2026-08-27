@@ -4,51 +4,43 @@
 package handlers
 
 import (
-	"context"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"regexp"
 	"strings"
 	"testing"
-	"testing/quick"
 	"time"
-
-	"github.com/gin-gonic/gin"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 )
+
+// Epic 67 unit + workflow tests. Reuses the Epic 66 fixture
+// (newPreviewOriginFixture, mintPortHostBootstrap, cookieValueOnly) from
+// preview_origin_test.go — same package, no redeclarations.
+//
+// Proxy-reaching requests always go through a REAL httptest.NewServer
+// (never a bare ResponseRecorder): httputil.ReverseProxy needs
+// CloseNotifier/deadline support the recorder lacks.
 
 const (
 	epic67TestDomain = "epic67.test.example.com"
 	epic67TestWS     = "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d"
-	epic67TestPort   = 5173 // Vite default
 )
 
-// Mock implementations for testing
-type epic67MockWorkspaceGetter struct {
-	workspace *v1.Workspace
-}
+// Byte-exact T3 body: blocked/privileged/dead ports must be
+// indistinguishable (THREAT-MODEL T3).
+const epic67UnreachableBody = "workspace dev-preview endpoint unreachable\n"
 
-func (m *epic67MockWorkspaceGetter) GetWorkspace(_ context.Context, id string) (*v1.Workspace, error) {
-	if m.workspace != nil && m.workspace.Name == id {
-		return m.workspace, nil
-	}
-	return nil, nil
-}
+var (
+	epic67NewRE    = regexp.MustCompile(`^[0-9]{1,5}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-preview\.` + regexp.QuoteMeta(epic67TestDomain) + `$`)
+	epic67LegacyRE = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-preview\.` + regexp.QuoteMeta(epic67TestDomain) + `$`)
+)
 
-type epic67MockPasswordProvider struct {
-	password string
-}
+// --- host parsing ---
 
-func (m *epic67MockPasswordProvider) WorkspacePassword(_ context.Context, _ string) (string, error) {
-	return m.password, nil
-}
-
-// TestEpic67LegacyHostBackwardCompatibility ensures legacy hosts still work
+// TestEpic67LegacyHostBackwardCompatibility ensures legacy hosts still parse.
 func TestEpic67LegacyHostBackwardCompatibility(t *testing.T) {
 	t.Parallel()
 
@@ -57,20 +49,27 @@ func TestEpic67LegacyHostBackwardCompatibility(t *testing.T) {
 		BaseDomain: epic67TestDomain,
 		TokenSecret: []byte("epic67-test-secret-key"),
 	}
-
 	h := NewPreviewOriginHandler(nil, cfg, &fakePVCache{}, nil)
 
-	// Test legacy host format
 	legacyHost := epic67TestWS + "-preview." + epic67TestDomain
 	wsID, port, isPortHost, ok := h.PreviewHost(legacyHost)
 
-	require.True(t, ok, "Legacy host should be recognized")
-	require.Equal(t, epic67TestWS, wsID, "Workspace ID should match")
-	assert.Equal(t, 0, port, "Legacy hosts have port=0")
-	assert.False(t, isPortHost, "Legacy hosts have isPortHost=false")
+	if !ok {
+		t.Fatal("Legacy host should be recognized")
+	}
+	if wsID != epic67TestWS {
+		t.Errorf("workspace ID mismatch: got %q want %q", wsID, epic67TestWS)
+	}
+	if port != 0 {
+		t.Errorf("legacy hosts must have port=0, got %d", port)
+	}
+	if isPortHost {
+		t.Error("legacy hosts must have isPortHost=false")
+	}
 }
 
-// TestEpic67PortHostParsing validates port extraction from port-hosts
+// TestEpic67PortHostParsing validates port extraction from port-hosts,
+// including the F1 digit-leading-UUID population.
 func TestEpic67PortHostParsing(t *testing.T) {
 	t.Parallel()
 
@@ -79,7 +78,6 @@ func TestEpic67PortHostParsing(t *testing.T) {
 		BaseDomain: epic67TestDomain,
 		TokenSecret: []byte("epic67-test-secret-key"),
 	}
-
 	h := NewPreviewOriginHandler(nil, cfg, &fakePVCache{}, nil)
 
 	testCases := []struct {
@@ -90,738 +88,559 @@ func TestEpic67PortHostParsing(t *testing.T) {
 		expectedIsPort bool
 		expectedOk     bool
 	}{
-		{
-			name:           "Vite default port",
-			host:           "5173-" + epic67TestWS + "-preview." + epic67TestDomain,
-			expectedWSID:   epic67TestWS,
-			expectedPort:   5173,
-			expectedIsPort: true,
-			expectedOk:     true,
-		},
-		{
-			name:           "Express default port",
-			host:           "3000-" + epic67TestWS + "-preview." + epic67TestDomain,
-			expectedWSID:   epic67TestWS,
-			expectedPort:   3000,
-			expectedIsPort: true,
-			expectedOk:     true,
-		},
-		{
-			name:           "Max valid port",
-			host:           "65535-" + epic67TestWS + "-preview." + epic67TestDomain,
-			expectedWSID:   epic67TestWS,
-			expectedPort:   65535,
-			expectedIsPort: true,
-			expectedOk:     true,
-		},
-		{
-			name:           "Single digit port",
-			host:           "1-" + epic67TestWS + "-preview." + epic67TestDomain,
-			expectedWSID:   epic67TestWS,
-			expectedPort:   1,
-			expectedIsPort: true,
-			expectedOk:     true,
-		},
-		{
-			name:           "F1 case: digit-leading UUID (port 1044)",
-			host:           "1044-1044f4f2-1234-5678-9abc-def000000000-preview." + epic67TestDomain,
-			expectedWSID:   "1044f4f2-1234-5678-9abc-def000000000",
-			expectedPort:   1044,
-			expectedIsPort: true,
-			expectedOk:     true,
-		},
-		{
-			name:           "Wrong domain",
-			host:           "5173-" + epic67TestWS + "-preview.wrong-domain.com",
-			expectedWSID:   "",
-			expectedPort:   0,
-			expectedIsPort: false,
-			expectedOk:     false,
-		},
-		{
-			name:           "Invalid port (too large)",
-			host:           "65536-" + epic67TestWS + "-preview." + epic67TestDomain,
-			expectedWSID:   "",
-			expectedPort:   0,
-			expectedIsPort: false,
-			expectedOk:     false,
-		},
-		{
-			name:           "Non-numeric port",
-			host:           "abc-" + epic67TestWS + "-preview." + epic67TestDomain,
-			expectedWSID:   "",
-			expectedPort:   0,
-			expectedIsPort: false,
-			expectedOk:     false,
-		},
+		{"Vite default port", "5173-" + epic67TestWS + "-preview." + epic67TestDomain, epic67TestWS, 5173, true, true},
+		{"Express default port", "3000-" + epic67TestWS + "-preview." + epic67TestDomain, epic67TestWS, 3000, true, true},
+		{"Max valid port", "65535-" + epic67TestWS + "-preview." + epic67TestDomain, epic67TestWS, 65535, true, true},
+		{"Single digit port", "1-" + epic67TestWS + "-preview." + epic67TestDomain, epic67TestWS, 1, true, true},
+		{"F1 digit-leading UUID", "1044-1044f4f2-1234-5678-9abc-def000000000-preview." + epic67TestDomain, "1044f4f2-1234-5678-9abc-def000000000", 1044, true, true},
+		{"F1 all-digit first segment", "99999-99999999-1234-5678-9abc-def000000000-preview." + epic67TestDomain, "99999999-1234-5678-9abc-def000000000", 99999, true, true},
+		{"Wrong domain", "5173-" + epic67TestWS + "-preview.wrong-domain.com", "", 0, false, false},
+		{"Port too large (6 digits)", "65536-" + epic67TestWS + "-preview." + epic67TestDomain, "", 0, false, false},
+		{"Non-numeric port", "abc-" + epic67TestWS + "-preview." + epic67TestDomain, "", 0, false, false},
 	}
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-
 			wsID, port, isPortHost, ok := h.PreviewHost(tc.host)
-
-			assert.Equal(t, tc.expectedOk, ok, "ok status")
-			if tc.expectedOk {
-				assert.Equal(t, tc.expectedWSID, wsID, "workspace ID")
-				assert.Equal(t, tc.expectedPort, port, "port number")
-				assert.Equal(t, tc.expectedIsPort, isPortHost, "isPortHost flag")
+			if ok != tc.expectedOk {
+				t.Fatalf("ok = %v, want %v", ok, tc.expectedOk)
+			}
+			if !tc.expectedOk {
+				return
+			}
+			if wsID != tc.expectedWSID || port != tc.expectedPort || isPortHost != tc.expectedIsPort {
+				t.Errorf("got (ws=%q port=%d isPortHost=%v), want (ws=%q port=%d isPortHost=%v)",
+					wsID, port, isPortHost, tc.expectedWSID, tc.expectedPort, tc.expectedIsPort)
 			}
 		})
 	}
 }
 
-// TestEpic67BootstrapRedirect validates the bootstrap redirect format
+// --- bootstrap redirect ---
+
+// TestEpic67BootstrapRedirect validates the owner bootstrap redirects to
+// the port-host shape and never the legacy path shape.
 func TestEpic67BootstrapRedirect(t *testing.T) {
 	t.Parallel()
 
-	cfg := PreviewOriginConfig{
-		Enabled:    true,
-		BaseDomain: epic67TestDomain,
-		TokenSecret: []byte("epic67-test-secret-key"),
-	}
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer backend.Close()
+	_, r, _ := newPreviewOriginFixture(t, backend)
 
-	h := NewPreviewOriginHandler(nil, cfg, &fakePVCache{}, nil)
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-
-	// Mock authenticated request with workspace context
-	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/workspaces/"+epic67TestWS+"/dev-preview-bootstrap/5173", nil)
-	c.Params = []gin.Param{
-		{Key: "id", Value: epic67TestWS},
-		{Key: "port", Value: "5173"},
-	}
-
-	// Create mock workspace getter
-	mockWS := &v1.Workspace{
-		Status: v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive, PodIP: "10.0.1.2"},
-		Spec:   v1.WorkspaceSpec{NetworkAccess: &v1.WorkspaceNetworkAccess{DevPreview: true}},
-	}
-
-	mockGetter := &epic67MockWorkspaceGetter{workspace: mockWS}
-	mockPW := &epic67MockPasswordProvider{password: "test-password"}
-
-	inner := NewDevPreviewHandler(mockGetter, mockPW, "default", nil, DevPreviewConfig{Enabled: true})
-	h.inner = inner
-
-	// Call HandleBootstrap
-	h.HandleBootstrap(c)
-
-	// Should redirect with 302
-	if w.Code != http.StatusFound {
-		t.Errorf("Bootstrap should return 302, got %d: %s", w.Code, w.Body.String())
-	}
-
-	loc := w.Header().Get("Location")
-	if loc == "" {
-		t.Fatal("Bootstrap should set Location header")
-	}
-
-	// Validate redirect format: https://5173<uuid>-preview.<baseDomain>/?t=...
-	expectedPrefix := "https://5173-" + epic67TestWS + "-preview." + epic67TestDomain + "/?t="
-	if !strings.HasPrefix(loc, expectedPrefix) {
-		t.Errorf("Bootstrap redirect should start with %q, got %q", expectedPrefix, loc)
-	}
-
-	// Validate that it's NOT the legacy format
-	legacyPrefix := "https://" + epic67TestWS + "-preview." + epic67TestDomain + "/5173/"
-	if strings.HasPrefix(loc, legacyPrefix) {
-		t.Errorf("Bootstrap should use new port-host format, not legacy format: %q", loc)
+	for _, port := range []string{"5173", "3000", "65535", "1024"} {
+		loc := mintPortHostBootstrap(t, r, port) // asserts prefix + 302 internally
+		if !strings.Contains(loc, "?t=v1.") {
+			t.Errorf("port %s: bootstrap location missing token: %q", port, loc)
+		}
+		// Must NOT be the legacy path shape.
+		legacyPrefix := "https://" + pvWS + "-preview." + pvDomain + "/" + port
+		if strings.HasPrefix(loc, legacyPrefix) {
+			t.Errorf("port %s: bootstrap must use port-host shape, got legacy: %q", port, loc)
+		}
 	}
 }
 
-// TestEpic67LandingPageBehavior validates landing page gating to legacy hosts only
+// --- landing page gating ---
+
+// TestEpic67LandingPageBehavior: legacy bare-root keeps the Epic 66 landing
+// page; port-host root with a session proxies to the APP root (the agentd
+// hop receives the full preview path including the port segment).
 func TestEpic67LandingPageBehavior(t *testing.T) {
 	t.Parallel()
 
-	cfg := PreviewOriginConfig{
-		Enabled:    true,
-		BaseDomain: epic67TestDomain,
-		TokenSecret: []byte("epic67-test-secret-key"),
-	}
-
-	mockWS := &v1.Workspace{
-		Status: v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive, PodIP: "10.0.1.2"},
-		Spec:   v1.WorkspaceSpec{NetworkAccess: &v1.WorkspaceNetworkAccess{DevPreview: true}},
-	}
-
-	mockGetter := &epic67MockWorkspaceGetter{workspace: mockWS}
-	mockPW := &epic67MockPasswordProvider{password: "test-password"}
-
-	inner := NewDevPreviewHandler(mockGetter, mockPW, "default", nil, DevPreviewConfig{Enabled: true})
-	h := NewPreviewOriginHandler(inner, cfg, &fakePVCache{}, nil)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Stand-in for agentd: receives /v1/dev-preview/<port><subPath>.
+		io.WriteString(w, "AGENTD:"+r.URL.Path)
+	}))
+	defer backend.Close()
+	_, r, _ := newPreviewOriginFixture(t, backend)
 
 	t.Run("legacy_host_root_gets_landing_page", func(t *testing.T) {
 		t.Parallel()
-
-		// Legacy host root request should get landing page (not the app)
-		legacyHost := epic67TestWS + "-preview." + epic67TestDomain
-		cookieValue := h.signCookie(&previewCookiePayload{
-			Ws:  epic67TestWS,
-			Exp: time.Now().Add(h.cfg.CookieTTL).Unix(),
-		})
-
-		req := httptest.NewRequest("GET", "/", nil)
+		// serveLanding renders directly (no proxy) — recorder is safe.
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Host = pvHost
 		req.Header.Set("Sec-Fetch-Mode", "navigate")
-		req.Header.Set("Cookie", "__Host-pv="+cookieValue)
-		req.Host = legacyHost
 		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-		c.Request = req
+		r.ServeHTTP(w, req)
 
-		// Call servePreview with legacy host parameters (isPortHost=false)
-		// The landing page should be served at legacy host root
-		if c.Request.URL.Path == "/" && c.Request.Method == http.MethodGet &&
-			(c.GetHeader("Sec-Fetch-Mode") == "navigate") {
-			h.serveLanding(c, epic67TestWS, 0)
-			return
-		}
-
-		// Should have served landing page
 		if w.Code != http.StatusOK {
-			t.Errorf("Legacy host root should serve landing page (200), got %d", w.Code)
+			t.Fatalf("legacy root: expected 200 landing, got %d body=%s", w.Code, w.Body.String())
 		}
-
-		body := w.Body.String()
-		if !strings.Contains(body, "Workspace dev preview") {
-			t.Errorf("Response should contain landing page text, got: %q", body)
+		if body := w.Body.String(); !strings.Contains(body, "Workspace dev preview") {
+			t.Errorf("legacy root: expected landing page content, got %q", body)
 		}
 	})
 
 	t.Run("port_host_root_goes_to_app", func(t *testing.T) {
 		t.Parallel()
+		loc := mintPortHostBootstrap(t, r, "5173")
+		u, _ := url.Parse(loc)
+		portHost := u.Host
 
-		// Port-host root request should go to the app (no landing page)
-		// because the port is already in the hostname
-		portHost := "5173-" + epic67TestWS + "-preview." + epic67TestDomain
-
-		// Create a mock backend that returns different content for root vs other paths
-		backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/" + "5173" { // Note: backend sees port in path
-				w.Header().Set("Content-Type", "text/html; charset=utf-8")
-				w.WriteHeader(http.StatusOK)
-				io.WriteString(w, "<html><body>App Root Page</body></html>")
-			} else {
-				w.WriteHeader(http.StatusNotFound)
-				io.WriteString(w, "404 Not Found")
-			}
-		}))
-		defer backend.Close()
-
-		inner := NewDevPreviewHandler(mockGetter, mockPW, backend.URL, nil, DevPreviewConfig{Enabled: true})
-		h.inner = inner
-
-		cookieValue := h.signCookie(&previewCookiePayload{
-			Ws:  epic67TestWS,
-			Exp: time.Now().Add(h.cfg.CookieTTL).Unix(),
-		})
-
-		req := httptest.NewRequest("GET", "/", nil)
-		req.Header.Set("Cookie", "__Host-pv="+cookieValue)
+		// Redeem token (303 + cookie; no proxy — recorder safe).
+		req := httptest.NewRequest(http.MethodGet, "/?t="+url.QueryEscape(u.Query().Get("t")), nil)
 		req.Host = portHost
 		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-		c.Request = req
-
-		// Call servePreview with port-host parameters (isPortHost=true, port=5173)
-		h.servePreview(c, epic67TestWS, 5173, true)
-
-		// Should proxy to app root, not serve landing page
-		if w.Code != http.StatusOK {
-			t.Errorf("Port-host root should proxy to app (200), got %d: %s", w.Code, w.Body.String())
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusSeeOther {
+			t.Fatalf("redemption: expected 303, got %d body=%s", w.Code, w.Body.String())
 		}
+		cookieVal := cookieValueOnly(w.Header().Get("Set-Cookie"))
 
-		body := w.Body.String()
-		if !strings.Contains(body, "App Root Page") {
-			t.Errorf("Port-host root should return app content, got: %q", body)
+		// Authenticated root on port-host → app root via REAL server
+		// (ReverseProxy needs CloseNotifier support).
+		ts := httptest.NewServer(r)
+		defer ts.Close()
+		req2, _ := http.NewRequest(http.MethodGet, ts.URL+"/", nil)
+		req2.Host = portHost
+		req2.Header.Set("Cookie", "__Host-pv="+cookieVal)
+		req2.Header.Set("Sec-Fetch-Mode", "navigate")
+		resp, err := http.DefaultClient.Do(req2)
+		if err != nil {
+			t.Fatalf("port-host root: %v", err)
 		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
 
-		// Verify it's NOT the landing page
-		if strings.Contains(body, "Workspace dev preview") {
-			t.Errorf("Port-host root should NOT serve landing page, got: %q", body)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("port-host root: expected 200, got %d body=%s", resp.StatusCode, body)
+		}
+		if strings.Contains(string(body), "Workspace dev preview") {
+			t.Errorf("port-host root must NOT serve the landing page, got %q", body)
+		}
+		// The agentd hop carries the port segment; the APP path is "/".
+		if want := "AGENTD:/v1/dev-preview/5173/"; !strings.Contains(string(body), want) {
+			t.Errorf("agentd hop path: expected %q in %q", want, body)
 		}
 	})
 }
 
-// TestEpic67TokenBindingMismatch validates that tokens are rejected when host-port ≠ token-port
+// --- token binding ---
+
+// TestEpic67TokenBindingMismatch: a token minted for one port must be
+// rejected when redeemed on a different port's host (preview_origin.go
+// token-binding check), for multiple port pairs.
 func TestEpic67TokenBindingMismatch(t *testing.T) {
 	t.Parallel()
 
-	cfg := PreviewOriginConfig{
-		Enabled:    true,
-		BaseDomain: epic67TestDomain,
-		TokenSecret: []byte("epic67-test-secret-key"),
-	}
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer backend.Close()
+	_, r, _ := newPreviewOriginFixture(t, backend)
 
-	h := NewPreviewOriginHandler(nil, cfg, &fakePVCache{}, nil)
+	for _, pair := range [][2]string{{"5173", "3000"}, {"3000", "8080"}, {"8080", "5173"}} {
+		minted, replay := pair[0], pair[1]
+		loc := mintPortHostBootstrap(t, r, minted)
+		u, _ := url.Parse(loc)
+		token := u.Query().Get("t")
 
-	// Create a token for port 5173
-	token5173 := h.signToken(&previewTokenPayload{
-		Ws:   epic67TestWS,
-		Port: 5173,
-		Exp:  time.Now().Add(h.cfg.TokenTTL).Unix(),
-		Jti:  hex.EncodeToString([]byte("test-jti-1")),
-	})
+		// Redeem on the WRONG port host.
+		wrongHost := replay + "-" + pvWS + "-preview." + pvDomain
+		req := httptest.NewRequest(http.MethodGet, "/?t="+url.QueryEscape(token), nil)
+		req.Host = wrongHost
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
 
-	// Try to redeem this token on port 3000 host (different port)
-	port3000Host := "3000-" + epic67TestWS + "-preview." + epic67TestDomain
-	reqURL := "/?t=" + token5173
-	req := httptest.NewRequest("GET", reqURL, nil)
-	req.Host = port3000Host
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = req
-
-	// Call servePreview with different port in host vs token
-	h.servePreview(c, epic67TestWS, 3000, true)
-
-	// Should reject with 401 due to port binding mismatch
-	if w.Code != http.StatusUnauthorized {
-		t.Errorf("Token binding mismatch should return 401, got %d: %s", w.Code, w.Body.String())
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("token(%s) on host(%s): expected 401, got %d body=%s",
+				minted, replay, w.Code, w.Body.String())
+		}
 	}
 }
 
-// TestEpic67CookieScopingPerPort validates that different ports need separate bootstraps
+// --- cookie scoping (F5) ---
+
+// TestEpic67CookieScopingPerPort: __Host-pv is a HOST-only cookie, so a
+// browser never sends a 5173-host cookie to a 3000-host. Simulating that
+// (no Cookie header on the second host): navigations get the deep-link
+// landing page (one-click re-bootstrap), non-navigations get 401.
 func TestEpic67CookieScopingPerPort(t *testing.T) {
 	t.Parallel()
 
-	cfg := PreviewOriginConfig{
-		Enabled:    true,
-		BaseDomain: epic67TestDomain,
-		TokenSecret: []byte("epic67-test-secret-key"),
-		CookieTTL:   7 * 24 * time.Hour,
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "APP")
+	}))
+	defer backend.Close()
+	_, r, _ := newPreviewOriginFixture(t, backend)
+
+	// Bootstrap + redeem on 5173.
+	loc := mintPortHostBootstrap(t, r, "5173")
+	u, _ := url.Parse(loc)
+	req := httptest.NewRequest(http.MethodGet, "/?t="+url.QueryEscape(u.Query().Get("t")), nil)
+	req.Host = u.Host
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("5173 redemption: expected 303, got %d", w.Code)
+	}
+	if cookieValueOnly(w.Header().Get("Set-Cookie")) == "" {
+		t.Fatal("5173 redemption: no cookie set")
 	}
 
-	h := NewPreviewOriginHandler(nil, cfg, &fakePVCache{}, nil)
+	// Same workspace, different port host, browser sends NO cookie.
+	otherHost := "3000-" + pvWS + "-preview." + pvDomain
 
-	// Create mock workspace for inner handler
-	mockWS := &v1.Workspace{
-		Status: v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive, PodIP: "10.0.1.2"},
-		Spec:   v1.WorkspaceSpec{NetworkAccess: &v1.WorkspaceNetworkAccess{DevPreview: true}},
+	nav := httptest.NewRequest(http.MethodGet, "/", nil)
+	nav.Host = otherHost
+	nav.Header.Set("Sec-Fetch-Mode", "navigate")
+	wn := httptest.NewRecorder()
+	r.ServeHTTP(wn, nav)
+	if wn.Code != http.StatusOK || !strings.Contains(wn.Body.String(), "Workspace dev preview") {
+		t.Errorf("3000 navigation without cookie: expected 200 landing, got %d body=%s", wn.Code, wn.Body.String())
 	}
 
-	mockGetter := &epic67MockWorkspaceGetter{workspace: mockWS}
-	mockPW := &epic67MockPasswordProvider{password: "test-password"}
-
-	inner := NewDevPreviewHandler(mockGetter, mockPW, "default", nil, DevPreviewConfig{Enabled: true})
-	h.inner = inner
-
-	// 1. Bootstrap and authenticate on port 5173
-	loc5173 := mintPortHostBootstrap(t, h, "5173")
-	u5173, _ := url.Parse(loc5173)
-	port5173Host := u5173.Host
-	token5173 := u5173.Query().Get("t")
-
-	// Redeem token for port 5173
-	reqRedeem5173 := httptest.NewRequest("GET", "/?t="+url.QueryEscape(token5173), nil)
-	reqRedeem5173.Host = port5173Host
-	wRedeem5173 := httptest.NewRecorder()
-	cRedeem5173, _ := gin.CreateTestContext(wRedeem5173)
-	cRedeem5173.Request = reqRedeem5173
-	h.servePreview(cRedeem173, epic67TestWS, 5173, true)
-	cookie5173 := wRedeem5173.Header().Get("Set-Cookie")
-
-	if wRedeem5173.Code != http.StatusSeeOther {
-		t.Fatalf("Port 5173 token redemption failed: got %d", wRedeem5173.Code)
-	}
-
-	// 2. Try to access port 3000 with the port 5173 cookie (should fail)
-	req3000 := httptest.NewRequest("GET", "/", nil)
-	req3000.Host = "3000-" + epic67TestWS + "-preview." + epic67TestDomain
-	req3000.Header.Set("Cookie", cookie5173)
-	w3000 := httptest.NewRecorder()
-	c3000, _ := gin.CreateTestContext(w3000)
-	c3000.Request = req3000
-	h.servePreview(c3000, epic67TestWS, 3000, true)
-
-	// Should get 401 (unauthorized) because cookie is scoped to port 5173
-	if w3000.Code != http.StatusUnauthorized {
-		t.Errorf("Port 3000 request with port 5173 cookie should return 401, got %d", w3000.Code)
-	}
-
-	// 3. Port 3000 request without cookie should get landing page (navigation mode)
-	req3000Nav := httptest.NewRequest("GET", "/", nil)
-	req3000Nav.Host = "3000-" + epic67TestWS + "-preview." + epic67TestDomain
-	req3000Nav.Header.Set("Sec-Fetch-Mode", "navigate")
-	w3000Nav := httptest.NewRecorder()
-	c3000Nav, _ := gin.CreateTestContext(w3000Nav)
-	c3000Nav.Request = req3000Nav
-	h.servePreview(c3000Nav, epic67TestWS, 3000, true)
-
-	// Port-host root requests in navigation mode get 401 (not landing page)
-	if w3000Nav.Code != http.StatusUnauthorized {
-		t.Errorf("Port-host root without cookie should return 401 in navigation mode, got %d", w3000Nav.Code)
+	api := httptest.NewRequest(http.MethodGet, "/", nil)
+	api.Host = otherHost
+	wa := httptest.NewRecorder()
+	r.ServeHTTP(wa, api)
+	if wa.Code != http.StatusUnauthorized {
+		t.Errorf("3000 non-navigation without cookie: expected 401, got %d", wa.Code)
 	}
 }
 
-// TestEpic67RootAbsoluteRedirectWorkflow tests the core Epic 67 motivation
-// Validates that apps emitting root-absolute redirects work on port-hosts
+// --- core motivation: root-absolute redirects ---
+
+// TestEpic67RootAbsoluteRedirectWorkflow is THE Epic 67 regression test
+// (tinyrsvp incident): an app emitting 303 Location: /login must complete
+// the round trip on a port-host — the Location stays root-absolute because
+// the port lives in the host. On a LEGACY host the same root-absolute URL
+// loses the /<port>/ prefix and dies with the indistinguishable 502.
 func TestEpic67RootAbsoluteRedirectWorkflow(t *testing.T) {
 	t.Parallel()
 
-	cfg := PreviewOriginConfig{
-		Enabled:    true,
-		BaseDomain: epic67TestDomain,
-		TokenSecret: []byte("epic67-test-secret-key"),
-	}
-
-	h := NewPreviewOriginHandler(nil, cfg, &fakePVCache{}, nil)
-
-	// Create a mock backend that emits root-absolute redirects (like tinyrsvp)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" {
-			// App emits root-absolute redirect to /login
+		switch r.URL.Path {
+		case "/v1/dev-preview/5173/":
+			// The app's root emits a ROOT-ABSOLUTE redirect (the breakage class).
 			w.Header().Set("Location", "/login")
 			w.WriteHeader(http.StatusSeeOther)
-			return
-		}
-		if r.URL.Path == "/login" {
+		case "/v1/dev-preview/5173/login":
 			io.WriteString(w, "Login page loaded successfully")
-			return
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			io.WriteString(w, "404 Not Found")
 		}
-		w.WriteHeader(http.StatusNotFound)
-		io.WriteString(w, "404 Not Found")
 	}))
 	defer backend.Close()
+	_, r, _ := newPreviewOriginFixture(t, backend)
 
-	// Create mock workspace
-	mockWS := &v1.Workspace{
-		Status: v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive, PodIP: "10.0.1.2"},
-		Spec:   v1.WorkspaceSpec{NetworkAccess: &v1.WorkspaceNetworkAccess{DevPreview: true}},
-	}
-
-	mockGetter := &epic67MockWorkspaceGetter{workspace: mockWS}
-	mockPW := &epic67MockPasswordProvider{password: "test-password"}
-
-	inner := NewDevPreviewHandler(mockGetter, mockPW, backend.URL, nil, DevPreviewConfig{Enabled: true})
-	h.inner = inner
-
-	// Workflow: 1. Bootstrap, 2. Get cookie, 3. Request root, 4. Follow redirect to /login, 5. Login page loads
-	loc := mintPortHostBootstrap(t, h, "5173")
+	// 1. Bootstrap + redeem → session cookie.
+	loc := mintPortHostBootstrap(t, r, "5173")
 	u, _ := url.Parse(loc)
 	portHost := u.Host
-	token := u.Query().Get("t")
-
-	// 1. Get cookie via token redemption
-	reqRedeem := httptest.NewRequest("GET", "/?t="+url.QueryEscape(token), nil)
-	reqRedeem.Host = portHost
-	wRedeem := httptest.NewRecorder()
-	cRedeem, _ := gin.CreateTestContext(wRedeem)
-	cRedeem.Request = reqRedeem
-	h.servePreview(cRedeem, epic67TestWS, 5173, true)
-
-	if wRedeem.Code != http.StatusSeeOther {
-		t.Fatalf("Token redemption failed: got %d body=%s", wRedeem.Code, wRedeem.Body.String())
+	req := httptest.NewRequest(http.MethodGet, "/?t="+url.QueryEscape(u.Query().Get("t")), nil)
+	req.Host = portHost
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusSeeOther {
+		t.Fatalf("redemption: expected 303, got %d body=%s", w.Code, w.Body.String())
 	}
+	cookieVal := cookieValueOnly(w.Header().Get("Set-Cookie"))
 
-	cookie5173 := wRedeem.Header().Get("Set-Cookie")
-	if cookie5173 == "" {
-		t.Fatal("No cookie set after redemption")
-	}
+	ts := httptest.NewServer(r)
+	defer ts.Close()
 
-	cookieValue := cookieValueOnly(cookie5173)
-
-	// 2. Request app root (which will redirect to /login)
-	reqRoot := httptest.NewRequest("GET", "/", nil)
+	// 2. GET / on the port-host → app's 303 must surface VERBATIM.
+	reqRoot, _ := http.NewRequest(http.MethodGet, ts.URL+"/", nil)
 	reqRoot.Host = portHost
-	reqRoot.Header.Set("Cookie", "__Host-pv="+cookieValue)
-	wRoot := httptest.NewRecorder()
-	cRoot, _ := gin.CreateTestContext(wRoot)
-	cRoot.Request = reqRoot
-	h.servePreview(cRoot, epic67TestWS, 5173, true)
+	reqRoot.Header.Set("Cookie", "__Host-pv="+cookieVal)
+	respRoot, err := http.DefaultClient.Do(reqRoot)
+	if err != nil {
+		t.Fatalf("root request: %v", err)
+	}
+	defer respRoot.Body.Close()
+	io.ReadAll(respRoot.Body)
 
-	// 3. App should emit 303 to /login
-	if wRoot.Code != http.StatusSeeOther {
-		t.Errorf("App should return 303 to /login, got %d body=%s", wRoot.Code, wRoot.Body.String())
+	if respRoot.StatusCode != http.StatusSeeOther {
+		t.Fatalf("app root: expected 303, got %d", respRoot.StatusCode)
+	}
+	if got := respRoot.Header.Get("Location"); got != "/login" {
+		t.Fatalf("root-absolute Location NOT preserved: got %q, want exactly \"/login\" — "+
+			"the browser must resolve it against %q so the port survives", got, portHost)
 	}
 
-	locRoot := wRoot.Header().Get("Location")
-	if locRoot != "/login" {
-		t.Errorf("App should redirect to /login, got %q", locRoot)
-	}
-
-	// 4. Follow redirect to /login
-	reqLogin := httptest.NewRequest("GET", "/login", nil)
+	// 3. Browser follows /login against the SAME port-host → app page loads.
+	reqLogin, _ := http.NewRequest(http.MethodGet, ts.URL+"/login", nil)
 	reqLogin.Host = portHost
-	reqLogin.Header.Set("Cookie", "__Host-pv="+cookieValue)
-	wLogin := httptest.NewRecorder()
-	cLogin, _ := gin.CreateContext(wLogin)
-	cLogin.Request = reqLogin
-	h.servePreview(cLogin, epic67TestWS, 5173, true)
-
-	// 5. Login page should load successfully
-	if wLogin.Code != http.StatusOK {
-		t.Errorf("Login page should load successfully, got %d body=%s", wLogin.Code, wLogin.Body.String())
+	reqLogin.Header.Set("Cookie", "__Host-pv="+cookieVal)
+	respLogin, err := http.DefaultClient.Do(reqLogin)
+	if err != nil {
+		t.Fatalf("login request: %v", err)
+	}
+	defer respLogin.Body.Close()
+	body, _ := io.ReadAll(respLogin.Body)
+	if respLogin.StatusCode != http.StatusOK || !strings.Contains(string(body), "Login page loaded successfully") {
+		t.Fatalf("login round trip failed: %d %q", respLogin.StatusCode, body)
 	}
 
-	body := wLogin.Body.String()
-	if !strings.Contains(body, "Login page loaded successfully") {
-		t.Errorf("Expected login page content, got: %q", body)
+	// 4. CONTRAST — the same root-absolute URL on the LEGACY host: the
+	// /<port>/ prefix is gone, port parsing fails, T3 502. This is the
+	// exact Epic 66 breakage Epic 67 fixes.
+	reqLegacy, _ := http.NewRequest(http.MethodGet, ts.URL+"/login", nil)
+	reqLegacy.Host = pvHost // legacy shape, no port prefix in path
+	reqLegacy.Header.Set("Cookie", "__Host-pv="+cookieVal)
+	respLegacy, err := http.DefaultClient.Do(reqLegacy)
+	if err != nil {
+		t.Fatalf("legacy contrast request: %v", err)
 	}
-
-	t.Logf("✓ Root-absolute redirect workflow validated successfully on port-host")
+	defer respLegacy.Body.Close()
+	lbody, _ := io.ReadAll(respLegacy.Body)
+	if respLegacy.StatusCode != http.StatusBadGateway || string(lbody) != epic67UnreachableBody {
+		t.Fatalf("legacy contrast: expected indistinguishable 502 %q, got %d %q",
+			epic67UnreachableBody, respLegacy.StatusCode, lbody)
+	}
 }
 
-// TestEpic67UnhappyPathScenarios tests failure modes specific to port-hosts
+// --- unhappy paths (T3 focus) ---
+
+// TestEpic67UnhappyPathScenarios covers port-host failure modes. The T3
+// subtest compares the BLOCKED-port response byte-for-byte with a genuinely
+// DEAD port's response (closed listener → proxy ErrorHandler) — they must
+// be identical.
 func TestEpic67UnhappyPathScenarios(t *testing.T) {
 	t.Parallel()
 
-	cfg := PreviewOriginConfig{
-		Enabled:    true,
-		BaseDomain: epic67TestDomain,
-		TokenSecret: []byte("epic67-test-secret-key"),
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, "APP")
+	}))
+	defer backend.Close()
+	pv, r, _ := newPreviewOriginFixture(t, backend)
+
+	cookieVal := func() string {
+		t.Helper()
+		loc := mintPortHostBootstrap(t, r, "5173")
+		u, _ := url.Parse(loc)
+		req := httptest.NewRequest(http.MethodGet, "/?t="+url.QueryEscape(u.Query().Get("t")), nil)
+		req.Host = u.Host
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return cookieValueOnly(w.Header().Get("Set-Cookie"))
+	}()
+
+	// getViaHost issues an authenticated GET / against host through a REAL
+	// server (proxy path requires CloseNotifier support). Takes the
+	// SUBTEST's t: parallel subtests must not touch the parent's.
+	getViaHost := func(t *testing.T, host, cookie string) (int, string) {
+		t.Helper()
+		ts := httptest.NewServer(r)
+		defer ts.Close()
+		req, _ := http.NewRequest(http.MethodGet, ts.URL+"/", nil)
+		req.Host = host
+		if cookie != "" {
+			req.Header.Set("Cookie", "__Host-pv="+cookie)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request to %s: %v", host, err)
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return resp.StatusCode, string(b)
 	}
 
-	h := NewPreviewOriginHandler(nil, cfg, &fakePVCache{}, nil)
-
-	// Create mock workspace for unhappy path tests
-	mockWS := &v1.Workspace{
-		Status: v1.WorkspaceStatus{Phase: v1.WorkspacePhaseActive, PodIP: "10.0.1.2"},
-		Spec:   v1.WorkspaceSpec{NetworkAccess: &v1.WorkspaceNetworkAccess{DevPreview: true}},
-	}
-
-	mockGetter := &epic67MockWorkspaceGetter{workspace: mockWS}
-	mockPW := &epic67MockPasswordProvider{password: "test-password"}
-
-	inner := NewDevPreviewHandler(mockGetter, mockPW, "default", nil, DevPreviewConfig{Enabled: true})
-	h.inner = inner
-
-	t.Run("invalid_host_port_binding", func(t *testing.T) {
+	t.Run("blocked_port_equals_dead_port_T3", func(t *testing.T) {
 		t.Parallel()
 
-		// Request with invalid port in host (too large)
-		invalidHost := "70000-" + epic67TestWS + "-preview." + epic67TestDomain
-		cookieValue := h.signCookie(&previewCookiePayload{
-			Ws:  epic67TestWS,
-			Exp: time.Now().Add(h.cfg.CookieTTL).Unix(),
-		})
-
-		req := httptest.NewRequest("GET", "/app", nil)
-		req.Host = invalidHost
-		req.Header.Set("Cookie", "__Host-pv="+cookieValue)
-		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-		c.Request = req
-
-		h.servePreview(c, epic67TestWS, 70000, true)
-
-		// Should return 502 (unreachable) for invalid port
-		if w.Code != http.StatusBadGateway {
-			t.Errorf("Invalid port should return 502, got %d", w.Code)
+		// Blocked port (4097 = agentd user mux): refused pre-proxy.
+		blockedCode, blockedBody := getViaHost(t, "4097-"+pvWS+"-preview."+pvDomain, cookieVal)
+		if blockedCode != http.StatusBadGateway {
+			t.Fatalf("blocked port: expected 502, got %d", blockedCode)
 		}
 
-		body := w.Body.String()
-		if !strings.Contains(body, "unreachable") {
-			t.Errorf("Invalid port should not reveal block reason, got: %q", body)
+		// Genuinely dead port: point a SECOND fixture's agentd hop at a
+		// closed listener and request a valid, unblocked port.
+		deadTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		deadAddr := deadTS.Listener.Addr().String()
+		deadTS.Close()
+		deadPort := deadAddr[strings.LastIndex(deadAddr, ":")+1:]
+
+		_, r2, inner2 := newPreviewOriginFixture(t, backend)
+		inner2.agentdPort = deadPort
+
+		ts2 := httptest.NewServer(r2)
+		defer ts2.Close()
+		req, _ := http.NewRequest(http.MethodGet, ts2.URL+"/", nil)
+		req.Host = "5173-" + pvWS + "-preview." + pvDomain
+		req.Header.Set("Cookie", "__Host-pv="+cookieVal)
+		deadResp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("dead port request: %v", err)
+		}
+		defer deadResp.Body.Close()
+		db, _ := io.ReadAll(deadResp.Body)
+
+		// T3: byte-exact identity of status AND body.
+		if deadResp.StatusCode != blockedCode || string(db) != blockedBody {
+			t.Fatalf("T3 VIOLATION: blocked=(%d,%q) dead=(%d,%q) — port scanner oracle",
+				blockedCode, blockedBody, deadResp.StatusCode, db)
+		}
+		if blockedBody != epic67UnreachableBody {
+			t.Fatalf("T3 body drifted from canonical unreachable body: %q", blockedBody)
 		}
 	})
 
-	t.Run("malformed_host_rejected", func(t *testing.T) {
+	t.Run("privileged_port_502", func(t *testing.T) {
 		t.Parallel()
-
-		// Malformed host (not valid preview host)
-		malformedHost := "not-a-preview-host." + epic67TestDomain
-
-		req := httptest.NewRequest("GET", "/", nil)
-		req.Host = malformedHost
-		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-		c.Request = req
-
-		// Middleware should reject with 421
-		h.Middleware()(c)
-
-		if c.IsAborted() && c.Writer.Status() == http.StatusMisdirectedRequest {
-			// Correct behavior: malformed preview hosts get 421
-		} else {
-			t.Errorf("Malformed preview host should be rejected with 421")
+		code, body := getViaHost(t, "80-"+pvWS+"-preview."+pvDomain, cookieVal)
+		if code != http.StatusBadGateway || body != epic67UnreachableBody {
+			t.Errorf("privileged port: expected 502 %q, got %d %q", epic67UnreachableBody, code, body)
 		}
 	})
 
-	t.Run("blocked_port_on_port_host", func(t *testing.T) {
+	t.Run("expired_cookie_401", func(t *testing.T) {
 		t.Parallel()
-
-		// Request to blocked port 4097 (agentd port) on port-host
-		blockedHost := "4097-" + epic67TestWS + "-preview." + epic67TestDomain
-		cookieValue := h.signCookie(&previewCookiePayload{
-			Ws:  epic67TestWS,
-			Exp: time.Now().Add(h.cfg.CookieTTL).Unix(),
-		})
-
-		req := httptest.NewRequest("GET", "/", nil)
-		req.Host = blockedHost
-		req.Header.Set("Cookie", "__Host-pv="+cookieValue)
-		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-		c.Request = req
-
-		h.servePreview(c, epic67TestWS, 4097, true)
-
-		// Should return indistinguishable 502 (blocked ports)
-		if w.Code != http.StatusBadGateway {
-			t.Errorf("Blocked port should return 502, got %d", w.Code)
-		}
-
-		body := w.Body.String()
-		if !strings.Contains(body, "unreachable") {
-			t.Errorf("Blocked port should not reveal block reason, got: %q", body)
-		}
-	})
-
-	t.Run("expired_cookie_rejected", func(t *testing.T) {
-		t.Parallel()
-
-		// Create an expired cookie
-		expiredCookie := h.signCookie(&previewCookiePayload{
-			Ws:  epic67TestWS,
+		expired := pv.signCookie(&previewCookiePayload{
+			Ws:  pvWS,
 			Exp: time.Now().Add(-time.Hour).Unix(),
 		})
-
-		portHost := "5173-" + epic67TestWS + "-preview." + epic67TestDomain
-
-		req := httptest.NewRequest("GET", "/", nil)
-		req.Host = portHost
-		req.Header.Set("Cookie", "__Host-pv="+expiredCookie)
-		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-		c.Request = req
-
-		h.servePreview(c, epic67TestTestWS, 5173, true)
-
-		// Should fall through to token check, then get 401
-		if w.Code != http.StatusUnauthorized {
-			t.Errorf("Expired cookie should result in 401, got %d", w.Code)
+		code, _ := getViaHost(t, "5173-"+pvWS+"-preview."+pvDomain, expired)
+		if code != http.StatusUnauthorized {
+			t.Errorf("expired cookie: expected 401, got %d", code)
 		}
 	})
 
-	t.Run("privileged_port_rejected", func(t *testing.T) {
+	t.Run("malformed_host_421", func(t *testing.T) {
 		t.Parallel()
-
-		// Request to privileged port 80 on port-host
-		privilegedHost := "80-" + epic67TestWS + "-preview." + epic67TestDomain
-
-		req := httptest.NewRequest("GET", "/", nil)
-		req.Host = privilegedHost
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.Host = "garbage-preview." + pvDomain
 		w := httptest.NewRecorder()
-		c, _ := gin.CreateTestContext(w)
-		c.Request = req
-
-		h.servePreview(c, epic67TestTestWS, 80, true)
-
-		// Should return indistinguishable 502
-		if w.Code != http.StatusBadGateway {
-			t.Errorf("Privileged port should return 502, got %d", w.Code)
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusMisdirectedRequest {
+			t.Errorf("malformed preview host: expected 421, got %d", w.Code)
 		}
 	})
 }
 
-// Property test: Epic 67 regex disjointness validation
-// Proves that no host can match both port-in-subdomain and legacy patterns
+// --- property tests: regex disjointness ---
+
+// epic67GenUUID generates a canonical lowercase UUID. When digitStress is
+// true the first segment is ALL digits — the F1 population (~62% of real
+// UUIDs lead with a digit; all-digit first segments are the adversarial
+// worst case for host disambiguation).
+func epic67GenUUID(rng *rand.Rand, digitStress bool) string {
+	hexd := func(n int) string {
+		const hex = "0123456789abcdef"
+		b := make([]byte, n)
+		for i := range b {
+			b[i] = hex[rng.Intn(16)]
+		}
+		return string(b)
+	}
+	digd := func(n int) string {
+		b := make([]byte, n)
+		for i := range b {
+			b[i] = byte('0' + rng.Intn(10))
+		}
+		return string(b)
+	}
+	first := hexd(8)
+	if digitStress {
+		first = digd(8)
+	}
+	return first + "-" + hexd(4) + "-" + hexd(4) + "-" + hexd(4) + "-" + hexd(12)
+}
+
+// TestEpic67PropertyDisjointness: 10,000 deterministic iterations over
+// VALID canonical UUIDs (half F1-stressed) proving no host matches both
+// the port-host and legacy patterns, and each generated host matches
+// exactly the pattern it was constructed for.
 func TestEpic67PropertyDisjointness(t *testing.T) {
 	t.Parallel()
 
-	// New format regex: ^[0-9]{1,5}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-preview\.<baseDomain>$
-	newRegex := regexp.MustCompile(`^[0-9]{1,5}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-preview\.` + regexp.QuoteMeta(epic67TestDomain) + "$")
+	const iterations = 10000
+	rng := rand.New(rand.NewSource(67)) // deterministic
 
-	// Legacy format regex: ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-preview\.<baseDomain>$
-	legacyRegex := regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-preview\.` + regexp.QuoteMeta(epic67TestDomain) + "$")
+	for i := 0; i < iterations; i++ {
+		uuid := epic67GenUUID(rng, i%2 == 0)
+		port := 1 + rng.Intn(65535)
 
-	// Property test: verify that no generated host can match both regexes simultaneously
-	f := func(port uint16, uuid string) bool {
-		// Ensure valid port range
-		if port < 1 || port > 65535 {
-			return true // skip invalid ports
-		}
-
-		// Ensure valid UUID format
-		if len(uuid) != 36 {
-			return true // skip invalid UUIDs
-		}
-
-		// Construct both host formats
-		legacyHost := fmt.Sprintf("%s-preview.%s", uuid, epic67TestDomain)
+		legacyHost := uuid + "-preview." + epic67TestDomain
 		portHost := fmt.Sprintf("%d-%s-preview.%s", port, uuid, epic67TestDomain)
 
-		// Test: legacy host should NOT match port-host regex
-		if newRegex.MatchString(legacyHost) {
-			t.Errorf("DISJOINTNESS VIOLATION: legacy host %q matches port-host regex", legacyHost)
-			return false
+		if epic67NewRE.MatchString(legacyHost) {
+			t.Fatalf("iter %d: DISJOINTNESS VIOLATION — legacy host %q matches port-host RE", i, legacyHost)
 		}
-
-		// Test: port-host should NOT match legacy regex
-		if legacyRegex.MatchString(portHost) {
-			t.Errorf("DISJOINTNESS VIOLATION: port-host %q matches legacy regex", portHost)
-			return false
+		if epic67LegacyRE.MatchString(portHost) {
+			t.Fatalf("iter %d: DISJOINTNESS VIOLATION — port host %q matches legacy RE", i, portHost)
 		}
-
-		// Test: a host matching BOTH is impossible
-		// (implicitly covered by the above two checks, but explicit here for clarity)
-		if newRegex.MatchString(legacyHost) && legacyRegex.MatchString(legacyHost) {
-			t.Errorf("DISJOINTNESS VIOLATION: host %q matches BOTH regexes", legacyHost)
-			return false
+		if !epic67LegacyRE.MatchString(legacyHost) {
+			t.Fatalf("iter %d: generated legacy host %q fails legacy RE (bad generator)", i, legacyHost)
 		}
-
-		return true
-	}
-
-	// Use testing/quick for property-based testing
-	config := &quick.Config{
-		MaxCount: 10000, // 10,000 iterations as claimed in PR
-	}
-
-	if err := quick.Check(f, config); err != nil {
-		t.Errorf("Property test failed: %v", err)
+		if !epic67NewRE.MatchString(portHost) {
+			t.Fatalf("iter %d: generated port host %q fails port-host RE (bad generator)", i, portHost)
+		}
 	}
 }
 
-// TestEpic67QuantifierBoundInvariant validates the critical invariant that
-// the port quantifier {1,5} is strictly less than the first UUID segment length (8)
+// TestEpic67QuantifierBoundInvariant proves the disjointness mechanism
+// exhaustively at the boundary: the port quantifier max (5) is strictly
+// below the UUID first-segment length (8), so the FIRST dash of any
+// port-host label sits at position ≤5 while any legacy label's sits at 8
+// — one string cannot satisfy both. Also proves the {1,5} quantifier is
+// actually enforced (6+ leading digits match neither pattern).
 func TestEpic67QuantifierBoundInvariant(t *testing.T) {
 	t.Parallel()
 
-	// The port quantifier is {1,5}, which means it can match at most 5 digits.
-	// The first UUID segment is exactly 8 characters: [0-9a-f]{8}
-	// Even if all 8 characters are digits (the worst case), the port regex
-	// can only consume ≤5 of them, leaving ≥3 characters, which means the
-	// first dash position differs between the two patterns.
+	const portMax = 5
+	const uuidFirstSeg = 8
+	if !(portMax < uuidFirstSeg) {
+		t.Fatal("invariant broken: port quantifier max must be < 8")
+	}
 
-	assert.Equal(t, 5, 5, "Port quantifier max length must be 5")
-	assert.Equal(t, 8, 8, "UUID first segment length must be 8")
+	// Exhaustive boundary sweep: every port length 1..5 crossed with every
+	// digit-prefix length 1..8 of the UUID's first segment.
+	digits := "12345678"
+	filler := "abcdefabcdef" // ≥8 hex chars
+	for portLen := 1; portLen <= portMax; portLen++ {
+		portStr := digits[:portLen]
+		for prefixLen := 1; prefixLen <= uuidFirstSeg; prefixLen++ {
+			// UUID first segment starts with `prefixLen` digits, rest hex.
+			first := digits[:prefixLen] + filler[:uuidFirstSeg-prefixLen]
+			if len(first) != uuidFirstSeg {
+				t.Fatalf("generator bug: first segment %q has len %d", first, len(first))
+			}
+			uuid := first + "-aaaa-bbbb-cccc-dddddddddddd"
 
-	// Invariant: 5 < 8
-	assert.Less(t, 5, 8, "Port quantifier max must be strictly less than UUID first segment length")
+			portLabel := portStr + "-" + uuid
+			legacyLabel := uuid
 
-	t.Run("proof_by_contradiction", func(t *testing.T) {
-		t.Parallel()
+			pd := strings.Index(portLabel, "-")
+			ld := strings.Index(legacyLabel, "-")
+			if pd == ld {
+				t.Fatalf("portLen=%d prefixLen=%d: first-dash positions collide at %d — disjointness would fail",
+					portLen, prefixLen, pd)
+			}
+			if pd > portMax {
+				t.Fatalf("portLen=%d: port-host first dash at %d > quantifier max %d", portLen, pd, portMax)
+			}
+			if ld != uuidFirstSeg {
+				t.Fatalf("legacy first dash at %d, want %d", ld, uuidFirstSeg)
+			}
 
-		// Assume a host H matches both regexes.
-		// Then H's first segment must be both:
-		//   - Exactly 8 characters (legacy requirement)
-		//   - At most 5 digits followed by a dash (new requirement)
-		// This is a contradiction: the first dash can't be at both position 8
-		// and position ≤5.
+			portHost := portLabel + "-preview." + epic67TestDomain
+			legacyHost := legacyLabel + "-preview." + epic67TestDomain
+			if epic67LegacyRE.MatchString(portHost) || !epic67NewRE.MatchString(portHost) {
+				t.Fatalf("portLen=%d prefixLen=%d: port host %q misclassified", portLen, prefixLen, portHost)
+			}
+			if epic67NewRE.MatchString(legacyHost) || !epic67LegacyRE.MatchString(legacyHost) {
+				t.Fatalf("portLen=%d prefixLen=%d: legacy host %q misclassified", portLen, prefixLen, legacyHost)
+			}
+		}
+	}
 
-		// Let's demonstrate this with a concrete example:
-		allDigitsUUID := "12345678-aaaa-bbbb-cccc-dddddddddddd"
-		legacyHost := allDigitsUUID + "-preview." + epic67TestDomain
-		portHost := "12345-" + allDigitsUUID + "-preview." + epic67TestDomain
-
-		// The legacy host has its first dash at position 8
-		firstDashLegacy := strings.Index(legacyHost, "-")
-		assert.Equal(t, 8, firstDashLegacy, "Legacy host's first dash at position 8")
-
-		// The port-host has its first dash at position 5
-		firstDashPort := strings.Index(portHost, "-")
-		assert.Equal(t, 5, firstDashPort, "Port-host's first dash at position 5")
-
-		// Since 8 ≠ 5, a host cannot match both patterns
-		assert.NotEqual(t, firstDashLegacy, firstDashPort, "First dash positions differ → disjoint sets")
-	})
+	// Quantifier enforcement: a 6+ digit leading segment matches NEITHER
+	// pattern (not a preview host at all → 421 upstream).
+	for _, sixPort := range []string{"123456", "1234567", "12345678"} {
+		host := sixPort + "-1044f4f2-1234-5678-9abc-def000000000-preview." + epic67TestDomain
+		if epic67NewRE.MatchString(host) || epic67LegacyRE.MatchString(host) {
+			t.Errorf("%d-digit leading segment %q must match neither pattern", len(sixPort), host)
+		}
+	}
 }
 
-// TestEpic67F1DigitLeadingUUIDWorkaround tests the F1 failure mode workarounds
+// TestEpic67F1DigitLeadingUUIDWorkaround: multiple digit-leading UUIDs,
+// including ports whose digits collide with the UUID's own prefix.
 func TestEpic67F1DigitLeadingUUIDWorkaround(t *testing.T) {
 	t.Parallel()
 
@@ -830,76 +649,32 @@ func TestEpic67F1DigitLeadingUUIDWorkaround(t *testing.T) {
 		BaseDomain: epic67TestDomain,
 		TokenSecret: []byte("epic67-test-secret-key"),
 	}
-
 	h := NewPreviewOriginHandler(nil, cfg, &fakePVCache{}, nil)
 
-	// F1 case: UUID starting with digits that could be misparsed as port
-	f1UUID := "1044f4f2-1234-5678-9abc-def000000000"
+	f1Cases := []struct {
+		uuid string
+		port string
+	}{
+		{"1044f4f2-1234-5678-9abc-def000000000", "1044"},  // port == UUID prefix
+		{"1044f4f2-1234-5678-9abc-def000000000", "104"},   // partial prefix
+		{"1044f4f2-1234-5678-9abc-def000000000", "1044"},  // duplicate-prefix stress
+		{"99999999-1234-5678-9abc-def000000000", "99999"}, // all-digit segment, max port
+		{"00000001-1234-5678-9abc-def000000000", "1"},     // near-zero digit segment
+	}
 
-	t.Run("legacy_f1_host_correctly_parsed", func(t *testing.T) {
-		t.Parallel()
-
-		legacyHost := f1UUID + "-preview." + epic67TestDomain
-		wsID, port, isPortHost, ok := h.PreviewHost(legacyHost)
-
-		require.True(t, ok, "F1 legacy host should be recognized")
-		require.Equal(t, f1UUID, wsID, "F1 UUID should be extracted without ambiguity")
-		assert.Equal(t, 0, port, "Legacy hosts have port=0")
-		assert.False(t, isPortHost, "Legacy hosts have isPortHost=false")
-	})
-
-	t.Run("port_f1_host_correctly_parsed", func(t *testing.T) {
-		t.Parallel()
-
-		// Note: the port 1044 matches the prefix of the UUID, but should
-		// be parsed as the port, not consumed into the UUID.
-		portHost := "1044-" + f1UUID + "-preview." + epic67TestDomain
+	for _, tc := range f1Cases {
+		portHost := tc.port + "-" + tc.uuid + "-preview." + epic67TestDomain
 		wsID, port, isPortHost, ok := h.PreviewHost(portHost)
+		if !ok || wsID != tc.uuid || !isPortHost {
+			t.Errorf("F1 host %q: got (ws=%q port=%d isPort=%v ok=%v), want ws=%q isPort=true",
+				portHost, wsID, port, isPortHost, ok, tc.uuid)
+		}
 
-		require.True(t, ok, "F1 port-host should be recognized")
-		require.Equal(t, f1UUID, wsID, "F1 UUID should be extracted from port-host")
-		assert.Equal(t, 1044, port, "Port should be extracted correctly")
-		assert.True(t, isPortHost, "F1 port-host should have isPortHost=true")
-	})
-}
-
-// mintPortHostBootstrap helper for Epic 67 tests
-func mintPortHostBootstrap(t *testing.T, h *PreviewOriginHandler, port string) string {
-	t.Helper()
-
-	// Create a minimal gin engine for bootstrap testing
-	if h.engine == nil {
-		r := gin.New()
-		r.GET("/api/v1/workspaces/:id/dev-preview-bootstrap/:port", h.HandleBootstrap)
-		h.engine = r
+		legacyHost := tc.uuid + "-preview." + epic67TestDomain
+		wsID2, _, isPort2, ok2 := h.PreviewHost(legacyHost)
+		if !ok2 || wsID2 != tc.uuid || isPort2 {
+			t.Errorf("F1 legacy host %q: got (ws=%q isPort=%v ok=%v), want ws=%q isPort=false",
+				legacyHost, wsID2, isPort2, ok2, tc.uuid)
+		}
 	}
-
-	req := httptest.NewRequest("GET", "/api/v1/workspaces/"+epic67TestWS+"/dev-preview-bootstrap/"+port, nil)
-	req.Host = "api." + epic67TestDomain
-	w := httptest.NewRecorder()
-	h.engine.ServeHTTP(w, req)
-
-	if w.Code != http.StatusFound {
-		t.Fatalf("bootstrap: expected 302, got %d body=%s", w.Code, w.Body.String())
-	}
-
-	loc := w.Header().Get("Location")
-	expectedPrefix := "https://" + port + "-" + epic67TestWS + "-preview." + epic67TestDomain
-	if !strings.HasPrefix(loc, expectedPrefix) {
-		t.Fatalf("bootstrap: location not on port-host preview origin: expected prefix %q, got %q", expectedPrefix, loc)
-	}
-	return loc
-}
-
-// cookieValueOnly extracts the cookie value from a Set-Cookie header
-func cookieValueOnly(setCookie string) string {
-	if setCookie == "" {
-		return ""
-	}
-	// Extract just the value from "name=value; attributes"
-	parts := strings.Split(setCookie, ";")
-	if len(parts) == 0 {
-		return ""
-	}
-	return strings.TrimPrefix(strings.Split(parts[0], "=")[1], "\"")
 }
