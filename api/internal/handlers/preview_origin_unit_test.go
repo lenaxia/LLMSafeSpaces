@@ -593,7 +593,7 @@ func TestEpic67QuantifierBoundInvariant(t *testing.T) {
 
 	const portMax = 5
 	const uuidFirstSeg = 8
-	if !(portMax < uuidFirstSeg) {
+	if portMax >= uuidFirstSeg {
 		t.Fatal("invariant broken: port quantifier max must be < 8")
 	}
 

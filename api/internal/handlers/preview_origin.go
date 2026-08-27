@@ -142,14 +142,6 @@ type CacheStore interface {
 // uuidRE matches canonical lowercase UUIDs (workspace names).
 var previewUUIDRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
-// Epic 67: portHostRE matches the new port-in-subdomain format:
-// <port>-<uuid>-preview.<baseDomain> where port is 1-5 digits.
-// The port quantifier {1,5} is strictly less than 8 (the first UUID segment length),
-// ensuring mathematical disjointness from the legacy format.
-var previewPortHostRE = func(baseDomain string) *regexp.Regexp {
-	return regexp.MustCompile(`^[0-9]{1,5}-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-preview\.` + regexp.QuoteMeta(baseDomain) + `$`)
-}
-
 // Epic 67 regex patterns for host disambiguation (must match test patterns)
 var (
 	// epic67NewPattern: port-in-subdomain pattern (port 1-5 digits, then UUID)
