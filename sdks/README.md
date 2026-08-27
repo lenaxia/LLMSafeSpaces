@@ -100,8 +100,12 @@ The session message queue has two modes:
 
 **For SDK consumers who need reliable queue visibility under V2:**
 subscribe to the workspace SSE stream (`GET /workspaces/{id}/session-events`) and
-track `queue.update` events (`enqueued` = message admitted, `sent` =
-message promoted/running). This is the authoritative source.
+track `queue.update` events. Values: `enqueued` = message admitted to the durable
+queue; `delivering` = the delivery worker picked it up (POST in flight — clear
+any "queued" UI state here; the send is synchronous turn-to-completion, so `sent`
+can lag by minutes); `sent` = delivery confirmed (authoritative cleanup);
+`error` = delivery failed (retryable, entry carries the failure); `dismissed` =
+entry removed by the user.
 
 `listQueue` and `dismissQueued` are deprecated and will be removed in the
 next major SDK version.
