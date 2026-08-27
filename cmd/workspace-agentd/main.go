@@ -179,7 +179,13 @@ func main() {
 		startedAt:          startedAt,
 		agentConfigWriter:  agentConfigWriter,
 	}
-	proc.adminToken = bootAdminToken
+	// Nil guard: bare `workspace-agentd` (server-only, no --supervise)
+	// runs without a managed process — every deps.proc consumer already
+	// tolerates nil (server.go typed-nil guards, maybeStartRelayInjector);
+	// this assignment was the one unconditional deref and panicked.
+	if proc != nil {
+		proc.adminToken = bootAdminToken
+	}
 
 	startBackgroundLoops(bgCtx, &bgWg, deps)
 	// bgCtx (not rootCtx): the session-aware deferred restart must be

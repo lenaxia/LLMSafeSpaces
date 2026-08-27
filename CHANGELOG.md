@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Git auth survives suspend/resume; decoupled from `gh`/`GH_TOKEN` (#1087)**:
+  the runtime image now points git's `credential.helper` at the
+  materialized `/home/sandbox/.git-credentials` via two layers —
+  `/etc/gitconfig` and `GIT_CONFIG_*` image ENV (the env layer survives a
+  PVC-persisted `gh auth setup-git` helper reset; validated against git
+  2.39). Cold-boot materialization from a bound `git-credential` secret is
+  regression-gated by `cmd/workspace-agentd/git_creds_boot_test.go`
+  (suspend/resume cycle) and the image-build smoke test.
+- **Bare `workspace-agentd` invocation no longer nil-panics**: the
+  admin-token assignment on the (nil, by design) server-only process was
+  the one unguarded deref (`main.go`); now guarded. Also repaired the
+  stale `local/test-entrypoint.sh` harness (sed-patched bash-materializer
+  era) to drive the real subcommands — 7/7 green.
+
 ## [0.24.0] - 2026-08-27
 
 ### Added
