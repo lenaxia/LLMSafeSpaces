@@ -32,8 +32,20 @@ func TestIntegration_FullWorkflow(t *testing.T) {
 		Return("```python\nprint('hello world')\n```", nil)
 	mockClient.On("GetHistory", mock.Anything, "ws-1", "sess-1").
 		Return([]Message{
-			{Role: "user", Content: "write hello world in python"},
-			{Role: "assistant", Content: "```python\nprint('hello world')\n```"},
+			{
+				ID: "msg_1", Type: "user",
+				Parts: []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				}{{Type: "text", Text: "write hello world in python"}},
+			},
+			{
+				ID: "msg_2", Type: "assistant",
+				Parts: []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				}{{Type: "text", Text: "```python\nprint('hello world')\n```"}},
+			},
 		}, nil)
 	mockClient.On("SuspendWorkspace", mock.Anything, "ws-1").Return(nil)
 
