@@ -174,6 +174,12 @@ type ProxyHandler struct {
 	// set once via SetModelPolicyChecker before Start — same invariant as
 	// SetAdapter.
 	modelPolicyChecker OrgPolicyChecker
+
+	// Epic 67 US-67.2 upload overrides. Zero → env-derived defaults
+	// (UPLOAD_MAX_BYTES / UPLOAD_TIMEOUT_MS); set via SetUploadLimitsForTest.
+	// Written only before Start (test wiring), read on the upload path.
+	uploadMaxBytesOverride      int64
+	uploadStreamTimeoutOverride time.Duration
 }
 
 func NewProxyHandler(
