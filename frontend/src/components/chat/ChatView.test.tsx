@@ -71,7 +71,7 @@ describe("ChatView", () => {
     render(<ChatView {...defaultProps} onSend={onSend} />);
     await user.type(screen.getByPlaceholderText("Type a message..."), "test");
     await user.click(screen.getByRole("button", { name: "Send message" }));
-    expect(onSend).toHaveBeenCalledWith("test");
+    expect(onSend).toHaveBeenCalledWith("test", []);
   });
 
   it("disables composer when disabled", () => {

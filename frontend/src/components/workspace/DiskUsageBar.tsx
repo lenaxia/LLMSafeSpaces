@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { Tooltip } from "../ui/Tooltip";
+import { formatBytes } from "../../lib/format";
 
 interface MetricProps {
   label: string;
@@ -7,13 +8,6 @@ interface MetricProps {
   total: number;
   formatValue?: (v: number) => string;
   warningThreshold?: number;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
-  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
 function formatTokens(tokens: number): string {

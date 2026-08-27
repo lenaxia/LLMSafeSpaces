@@ -8,6 +8,7 @@ import { MessageBubble } from "./MessageBubble";
 import { QueueSection } from "./QueueSection";
 import { useIsMobile } from "../../hooks/useMediaQuery";
 import type { QueuedMessage } from "../../hooks/useMessageQueue";
+import type { PendingAttachment } from "../../hooks/useComposerAttachments";
 
 interface StreamingPart {
   type: "thinking" | "text" | "tool";
@@ -32,7 +33,7 @@ interface Props {
   streaming: boolean;
   streamParts: StreamingPart[];
   disabled: boolean;
-  onSend: (text: string) => void;
+  onSend: (text: string, files: string[]) => void;
   onAbort: () => void;
   prompts?: React.ReactNode;
   onLoadEarlier?: () => void;
@@ -57,6 +58,16 @@ interface Props {
    */
   viewOnly?: boolean;
   viewOnlyMessage?: string;
+  /** Workspace scope for the composer drawer selectors and attachments. */
+  workspaceId?: string;
+  orgId?: string;
+  /** Workspace-scoped pending attachment chips (Epic 67 D12/D17). */
+  attachments?: PendingAttachment[];
+  capViolation?: boolean;
+  onAddFiles?: (files: File[]) => void;
+  onRemoveAttachment?: (id: string) => void;
+  onRetryAttachment?: (id: string) => void;
+  onDismissCapViolation?: () => void;
 }
 
 const DEFAULT_STREAM_BUBBLE_KEY = "__stream_default__";
@@ -82,7 +93,7 @@ function partitionStreamPartsByMessage(streamParts: StreamingPart[]): Array<{ ke
   return order.map((key) => ({ key, parts: groups.get(key)! }));
 }
 
-export function ChatView({ messages, streaming, streamParts, disabled, onSend, onAbort, prompts, onLoadEarlier, hasOlderMessages, loadingOlder, queuedMessages = [], onQueueRetry, onQueueDismiss, models, lastSeenAt, userMessageHistory, viewOnly = false, viewOnlyMessage }: Props) {
+export function ChatView({ messages, streaming, streamParts, disabled, onSend, onAbort, prompts, onLoadEarlier, hasOlderMessages, loadingOlder, queuedMessages = [], onQueueRetry, onQueueDismiss, models, lastSeenAt, userMessageHistory, viewOnly = false, viewOnlyMessage, workspaceId, orgId, attachments, capViolation, onAddFiles, onRemoveAttachment, onRetryAttachment, onDismissCapViolation }: Props) {
   const isMobile = useIsMobile();
   const streamedBubbles = partitionStreamPartsByMessage(streamParts);
   const hasStreamedContent = streamedBubbles.length > 0;
@@ -129,7 +140,21 @@ export function ChatView({ messages, streaming, streamParts, disabled, onSend, o
             />
           )}
 
-          <Composer onSend={onSend} onAbort={onAbort} disabled={disabled} streaming={streaming} userMessageHistory={userMessageHistory} />
+          <Composer
+            onSend={onSend}
+            onAbort={onAbort}
+            disabled={disabled}
+            streaming={streaming}
+            userMessageHistory={userMessageHistory}
+            workspaceId={workspaceId}
+            orgId={orgId}
+            attachments={attachments}
+            capViolation={capViolation}
+            onAddFiles={onAddFiles}
+            onRemoveAttachment={onRemoveAttachment}
+            onRetryAttachment={onRetryAttachment}
+            onDismissCapViolation={onDismissCapViolation}
+          />
         </>
       )}
     </div>

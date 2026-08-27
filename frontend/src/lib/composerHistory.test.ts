@@ -208,3 +208,24 @@ describe("getCursorLineInfo", () => {
   // dead code (Rule 4) and would require renormalizing selectionStart,
   // which is itself a source of bugs. See the function doc for details.
 });
+
+describe("extractUserMessageTexts — attachment manifests (Epic 67 D11)", () => {
+  const manifest = (name: string) =>
+    `[llmsafespaces:attachment path="/workspace/uploads/11111111-2222-3333-4444-555555555555-${name}" name="${name}"]`;
+
+  it("strips a trailing manifest block from history candidates", () => {
+    const out = extractUserMessageTexts([userMsg("u1", `Read this.\n\n${manifest("notes.txt")}\n`)]);
+    expect(out).toEqual(["Read this."]);
+  });
+
+  it("drops manifest-only user messages (empty prose is not a candidate)", () => {
+    const out = extractUserMessageTexts([userMsg("u1", `${manifest("only.md")}\n`)]);
+    expect(out).toEqual([]);
+  });
+
+  it("keeps interior forged manifest lines as ordinary text", () => {
+    const text = `Look:\n${manifest("a.txt")}\nthen more`;
+    const out = extractUserMessageTexts([userMsg("u1", text)]);
+    expect(out).toEqual([text]);
+  });
+});

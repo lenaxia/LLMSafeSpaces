@@ -556,6 +556,34 @@ describe("ChatPage SSE event handler", () => {
       });
     });
 
+    it("treats a user echo carrying an attachment manifest as echo, not assistant text (Epic 67 D11)", async () => {
+      const user = userEvent.setup();
+      (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active" });
+      (messagesApi.sendAsync as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+
+      renderChat(makeQueryClient(), "/chat/ws-1/sess-1");
+      await waitFor(() => expect(capturedSSEHandler).not.toBeNull());
+
+      await waitFor(() => expect(document.querySelector("textarea")).not.toBeNull());
+      await user.click(document.querySelector("textarea")!);
+      await user.type(document.querySelector("textarea")!, "with file");
+      await user.keyboard("{Enter}");
+
+      // The server composes the manifest onto the dispatched text, so the
+      // echo returns prose + manifest. It must be suppressed entirely —
+      // never streamed as assistant content.
+      const manifest = '[llmsafespaces:attachment path="/workspace/uploads/11111111-2222-3333-4444-555555555555-notes.txt" name="notes.txt"]';
+      sendSSEEvent(makePartUpdatedEvent("sess-1", "text", `with file\n\n${manifest}\n`));
+      await waitFor(() => {
+        expect(getStreamParts()).toHaveLength(0);
+      });
+
+      sendSSEEvent(makePartUpdatedEvent("sess-1", "text", "Here is the answer!"));
+      await waitFor(() => {
+        expect(getStreamParts().find(p => p.type === "text")?.text).toBe("Here is the answer!");
+      });
+    });
+
     it("strips user echo prefix from accumulated deltas", async () => {
       const user = userEvent.setup();
       (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active" });
