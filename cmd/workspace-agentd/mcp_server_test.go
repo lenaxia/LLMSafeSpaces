@@ -512,3 +512,74 @@ func TestCallMCPTool_DevPreviewURL_OriginModeDerivesAPIOrigin(t *testing.T) {
 	assert.Contains(t, result, "(https://api.safespaces.dev/api/v1/workspaces/0d2a9a1b-c3d4-4e5f-8a9b-0c1d2e3f4a5b/dev-preview-bootstrap/5173)")
 	assert.NotContains(t, result, "(/api/v1/", "link must be absolute")
 }
+
+// TestMCPHandler_ToolDescriptionGuidance pins the guidance contract of the
+// tools/list descriptions. The descriptions are the ONLY documentation an
+// agent ever sees for these tools (the MCP client surfaces them verbatim
+// to the model), so the load-bearing elements — when to use, when not to
+// use, and the user-actionable failure paths — are contract, not prose.
+// If you change a description, change this test in the same commit.
+func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
+	t.Parallel()
+
+	req, _ := json.Marshal(mcpRequest{
+		JSONRPC: "2.0", ID: 1, Method: "tools/list",
+	})
+	w := httptest.NewRecorder()
+	r := mcpAuthedRequest(req)
+	mcpHandler(mcpTestPassword)(w, r)
+
+	var resp mcpResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	tools := resp.Result.(map[string]any)["tools"].([]any)
+
+	descs := map[string]string{}
+	for _, tool := range tools {
+		tt := tool.(map[string]any)
+		descs[tt["name"].(string)] = tt["description"].(string)
+	}
+
+	t.Run("dev_preview_url guidance", func(t *testing.T) {
+		d, ok := descs["dev_preview_url"]
+		require.True(t, ok, "dev_preview_url in tools/list")
+		for _, want := range []string{
+			"Offer it when", // capability framing, not imperative
+			"you have started or verified a web server", // proactive offer trigger
+			"nothing is listening on that port",         // when NOT to use
+			"it is deterministic",                       // no repeat calls
+			"Workspace Settings → Dev Preview",          // user-actionable failure path
+			"4096-4098",                                 // reserved ports named
+		} {
+			assert.Contains(t, d, want)
+		}
+		assert.NotContains(t, d, "USE PROACTIVELY", "guidance should offer, not command")
+	})
+
+	t.Run("session_list guidance", func(t *testing.T) {
+		d, ok := descs["session_list"]
+		require.True(t, ok, "session_list in tools/list")
+		for _, want := range []string{
+			"starting a task in a workspace you did not create", // acclimation trigger
+			"the user references earlier work",                  // user-reference trigger
+			"about to rebuild something that may already exist", // redo-avoidance trigger
+			"resuming after a suspend/resume",                   // continuity trigger
+			"Not for: the current conversation",                 // negative scope
+			"session_read",                                      // pairing pointer
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+
+	t.Run("session_read guidance", func(t *testing.T) {
+		d, ok := descs["session_read"]
+		require.True(t, ok, "session_read in tools/list")
+		for _, want := range []string{
+			"from session_list",                          // ID provenance
+			"approaches tried and abandoned",             // what prior sessions hold
+			"summarize for yourself rather than dumping", // no history-dump replies
+			"not a running log",                          // negative scope
+		} {
+			assert.Contains(t, d, want)
+		}
+	})
+}

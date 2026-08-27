@@ -77,7 +77,7 @@ func mcpHandler(password string) http.HandlerFunc {
 				"tools": []mcpTool{
 					{
 						Name:        "session_list",
-						Description: "List past agent sessions (conversations) in this workspace. Use to find prior work before redoing it or asking the user to re-explain: what was built, tried, or decided earlier lives in these sessions.",
+						Description: "List past agent sessions (conversations) from this workspace. This workspace's history is often the fastest source of context: what was already built, tried, decided, or broken. Use when: starting a task in a workspace you did not create from scratch; the user references earlier work (\"continue\", \"like last time\", \"that bug from before\"); you are about to rebuild something that may already exist; you are resuming after a suspend/resume or a fresh chat in the same workspace; the user asks what was done previously. Not for: the current conversation (you already have it in context). Pair with session_read to pull the details of a specific session.",
 						InputSchema: map[string]any{
 							"type":       "object",
 							"properties": map[string]any{},
@@ -85,7 +85,7 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "session_read",
-						Description: "Read the message history of a past session in this workspace — context recovery for what was previously built, tried, or decided.",
+						Description: "Read the message history of a past session in this workspace (IDs from session_list). Use when you need the specifics of prior work: file paths touched, approaches tried and abandoned, decisions and their reasons, commands that worked or failed. Prefer a limit first and read more only if needed — summarize for yourself rather than dumping full histories into your reply. Not for: current-conversation content or live program state (these are past transcripts, not a running log).",
 						InputSchema: map[string]any{
 							"type": "object",
 							"properties": map[string]any{
@@ -97,7 +97,7 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "dev_preview_url",
-						Description: "Get the preview URL for a web app running in this workspace, and give it to the user. USE PROACTIVELY: whenever you start, run, or build a web app (npm run dev, flask run, http.server, ...), call this and share the link — do not wait to be asked. The chat UI renders the returned URL as an open-preview button; if it does not render, relay the URL as a markdown link in your reply. Requirements: the app must be listening on the given localhost port, and the user must have Dev Preview enabled (Workspace Settings → Dev Preview) — if the preview does not work, point the user there. No API call is made — the URL is deterministic. Port defaults to 5173; ports below 1024 and platform-reserved ports (4096-4098) are refused.",
+						Description: "Returns the preview URL for a web app running in this workspace, which you can offer to the user as an open-preview link (the chat UI renders it as a button; otherwise relay it as a markdown link). Offer it when: you have started or verified a web server on a localhost port; you finish building a UI the user will want to inspect; the user asks to see or try the app. Do not use when: nothing is listening on that port — the link does not start the app, it only points at it; you have already shared the URL for that port (it is deterministic — one link suffices); the port is below 1024 or in 4096-4098 (refused). Requirements: the user must have Dev Preview enabled (Workspace Settings → Dev Preview) — if the preview does not load, point them there. No API call is made.",
 						InputSchema: map[string]any{
 							"type": "object",
 							"properties": map[string]any{
