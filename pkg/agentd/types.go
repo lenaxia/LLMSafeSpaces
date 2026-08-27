@@ -64,6 +64,11 @@ const (
 	// The controller stamps it into LLMSAFESPACES_RESTART_MARKER_PATH on
 	// BOTH containers; env unset keeps the single-container default.
 	SidecarRestartMarkerPath = "/sandbox-runtime/last-restart-reason.json"
+	// UploadsPath is the Epic 67 file-ingest root on the workspace PVC:
+	// every PUT /v1/files upload lands here as <uuid>-<sanitized-name>
+	// (atomic tmp+rename, design epic-67 D2/D3). Override via
+	// LLMSAFESPACES_UPLOADS_PATH (tests, dev relocatability).
+	UploadsPath = "/workspace/uploads"
 )
 
 // Ports and network constants shared between agentd and the controller.
@@ -134,6 +139,16 @@ type ReadyzResponse struct {
 	// API server needs this flag on every ListModels cache miss — using statusz
 	// (which has no latency upper bound) would be unsafe.
 	RelayInjected bool `json:"relay_injected"`
+}
+
+// FileUploadResponse is the response for PUT /v1/files (Epic 67 US-67.1).
+// Path is the absolute final location (/workspace/uploads/<uuid>-<name> in
+// production); Name is the sanitized filename; Size the byte count on disk.
+// Error responses never echo .tmp or internal paths (design U1.1.20).
+type FileUploadResponse struct {
+	Path string `json:"path"`
+	Name string `json:"name"`
+	Size int64  `json:"size"`
 }
 
 // SessionTokens describes token usage for a session.

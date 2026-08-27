@@ -146,6 +146,10 @@ func TestSidecarDeps_PressureReadsWorkspaceCgroupViaSocket(t *testing.T) {
 // sidecar's watchdog/reload writes and the supervisor's crash-path writes
 // land on one cross-uid-readable file the next sidecar boot surfaces.
 func TestSidecar_MarkerPathEnvOverride(t *testing.T) {
+	// Force-unset first: dev pods may carry a preset marker path in
+	// their environment (this agentd's own container does); the
+	// default-when-unset contract must hold regardless of the host env.
+	t.Setenv("LLMSAFESPACES_RESTART_MARKER_PATH", "")
 	require.Equal(t, RestartReasonMarkerPath, markerPathFromEnv(),
 		"env unset → single-container default, byte-identical behavior")
 

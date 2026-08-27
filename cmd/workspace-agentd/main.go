@@ -144,6 +144,11 @@ func main() {
 	// supervisor. No-op when no marker is present (clean boot).
 	logRestartReason(markerPathFromEnv(), log.Core())
 
+	// Epic 67 US-67.1: boot scrub — uploads interrupted by a crash leave
+	// .tmp residue; the atomic-or-absent contract (D3) removes them once
+	// at startup. Best-effort: a failed scrub never blocks boot.
+	scrubUploadsAtBoot(log, uploadsPathFromEnv())
+
 	// Stamp the platform blocks (built-in MCP server, admin prompt,
 	// allowed dirs) onto agent-config.json BEFORE opencode starts, so
 	// its first read sees the completed config regardless of which

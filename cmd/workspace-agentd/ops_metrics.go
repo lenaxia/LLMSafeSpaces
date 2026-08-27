@@ -39,6 +39,14 @@ type opsMetrics struct {
 	// growth points at a tool population being orphaned mid-execution
 	// (the #892 stuck-running correlation).
 	orphansReaped *prometheus.CounterVec
+	// fileUploads counts PUT /v1/files outcomes (Epic 67 US-67.1):
+	// accepted, rejected_name, rejected_cap, write_error, unauthorized —
+	// the design doc's agentd-side observability (cap hits + write
+	// failures) plus the rejection reasons the API cannot see.
+	fileUploads *prometheus.CounterVec
+	// uploadScrubRemoved counts stale uploads/*.tmp files removed by the
+	// boot scrub (design epic-67 D3).
+	uploadScrubRemoved *prometheus.CounterVec
 }
 
 // pkgOpsMetrics is the package-level singleton. Tests create their own
@@ -87,6 +95,16 @@ func newOpsMetrics() *opsMetrics {
 			Name: "workspace_orphans_reaped_total",
 			Help: "Zombie children reaped by the orphan reaper (adopted grandchildren of agentd, #904)",
 		}, []string{"workspace_id"}),
+
+		fileUploads: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "workspace_agentd_file_uploads_total",
+			Help: "PUT /v1/files outcomes by reason (accepted, rejected_name, rejected_cap, write_error, unauthorized) — Epic 67 US-67.1",
+		}, []string{"workspace_id", "outcome"}),
+
+		uploadScrubRemoved: promauto.NewCounterVec(prometheus.CounterOpts{
+			Name: "workspace_agentd_upload_scrub_removed_total",
+			Help: "Stale uploads/*.tmp files removed by the agentd boot scrub (Epic 67 D3 atomic-or-absent contract)",
+		}, []string{"workspace_id"}),
 	}
 }
 
@@ -130,6 +148,28 @@ func (m *opsMetrics) RecordOrphanReap(workspaceID string) {
 		workspaceID = "unknown"
 	}
 	m.orphansReaped.WithLabelValues(workspaceID).Inc()
+}
+
+// RecordUploadOutcome counts one PUT /v1/files request resolution
+// (Epic 67 US-67.1 observability).
+func (m *opsMetrics) RecordUploadOutcome(workspaceID string, outcome uploadOutcome) {
+	if workspaceID == "" {
+		workspaceID = "unknown"
+	}
+	if outcome == "" {
+		outcome = "unknown"
+	}
+	m.fileUploads.WithLabelValues(workspaceID, string(outcome)).Inc()
+}
+
+// RecordUploadScrub adds n to the boot-scrub removed counter.
+func (m *opsMetrics) RecordUploadScrub(workspaceID string, files int) {
+	if workspaceID == "" {
+		workspaceID = "unknown"
+	}
+	if files > 0 {
+		m.uploadScrubRemoved.WithLabelValues(workspaceID).Add(float64(files))
+	}
 }
 
 // RecordRestart increments the restart counter for the given reason.

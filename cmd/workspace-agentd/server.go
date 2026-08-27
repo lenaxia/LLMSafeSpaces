@@ -282,45 +282,13 @@ func requireBearerToken(token string, h http.Handler) http.Handler {
 	})
 }
 
-// wireHTTPServers builds the admin (health probes) and user (reload)
-// muxes, creates both http.Server instances, starts them, and returns
-// them along with the shared error channel. The admin endpoints carry
-// agent session metadata and provider-config, so /v1/statusz and
-// /v1/readyz are wrapped in requireBearerToken when AGENTD_ADMIN_TOKEN
-// is set (F1.4.2). /v1/healthz stays open: it only emits {ok,
-// started_at} and the kubelet liveness probe targets it without
-// configured headers.
-//
-// US-22.8: two separate http.Server instances eliminate listener-layer
-// head-of-line blocking. Admin port serves health probes (kubelet,
-// controller) on a dedicated goroutine pool; user port serves
-// reload-secrets and future proxy endpoints independently.
-func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) (adminSrv, userSrv *http.Server, srvErr chan error) {
-	adminMux := http.NewServeMux()
+// buildUserMux assembles the user-mux (port 4097) routes — the
+// control-plane surface the API server calls (reload-secrets, agent
+// reload, workflow dispatch, MCP proxy, dev-preview tunnel, and the
+// Epic 67 file-ingest endpoint). Extracted from wireHTTPServers so the
+// registration path itself is testable without binding real ports.
+func buildUserMux(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) *http.ServeMux {
 	userMux := http.NewServeMux()
-
-	// #887 D5.1: the token resolved once at boot (main) — no re-read
-	// here (TOCTOU closed, review note on #934).
-	adminToken := deps.resolvedAdminToken
-
-	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt, reloadCachePathFromEnv(), modelWarnPathFromEnv()))
-	adminMux.Handle("/v1/readyz", requireBearerToken(adminToken,
-		buildReadyzHandler(deps, opencodeTCPReady(fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort)))))
-
-	// /v1/statusz is the EXPENSIVE deep-introspection endpoint. It makes
-	// multiple synchronous HTTP calls to opencode (IsHealthy,
-	// ConnectedProviders, ConfiguredProviderCount, ListSessions) under a
-	// mutex. Under SSE load, these calls can take seconds to complete.
-	// Consumers: controller deep-status poll (60s) and API status
-	// enrichment (infrequent). Performance contract: NO upper bound —
-	// callers must use a generous timeout (controller uses 30s). Do NOT
-	// use this endpoint for liveness or readiness probes.
-	adminMux.Handle("/v1/statusz", requireBearerToken(adminToken,
-		buildStatuszHandler(deps.client, deps.cache, deps.sseTracker, deps.pressureMonitor, deps.startedAt, modelWarnPathFromEnv(), deps.sys)))
-
-	// S18.10: Expose Prometheus metrics on admin port so the cluster-level
-	// Prometheus scraper can collect per-pod agentd gate timings.
-	adminMux.Handle("/metrics", promhttp.Handler())
 
 	// The session lister probes opencode's /session endpoint to prune
 	// stale busy entries from the tracker when opencode dies mid-busy and
@@ -365,6 +333,11 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	}))
 	userMux.HandleFunc("/v1/agent/reload", agentReloadHandler(log, deps.password, deps.controlPlanePassword))
 
+	// Epic 67 US-67.1: file-ingest endpoint. Control-plane route on the
+	// user mux, symmetric with reload-secrets (design epic-67 D1) — the
+	// uploads root honors LLMSAFESPACES_UPLOADS_PATH.
+	userMux.HandleFunc("/v1/files", uploadFilesHandler(log, uploadConfigFromEnv(), deps.password, deps.controlPlanePassword))
+
 	// Epic 64: Workflow node execution endpoints. These are called by
 	// the API server's workflow engine to dispatch individual nodes.
 	userMux.HandleFunc("/v1/workflow/node/execute", workflowExecuteHandler(deps.password, deps.controlPlanePassword))
@@ -376,6 +349,50 @@ func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDep
 	// servers. The API server proxies to this endpoint, which forwards to
 	// localhost:<port>. Port denylist + Host rewrite per PREVIEW-CONTRACT.md.
 	userMux.HandleFunc("/v1/dev-preview/", devPreviewHandler(deps.password))
+
+	return userMux
+}
+
+// wireHTTPServers builds the admin (health probes) and user (reload)
+// muxes, creates both http.Server instances, starts them, and returns
+// them along with the shared error channel. The admin endpoints carry
+// agent session metadata and provider-config, so /v1/statusz and
+// /v1/readyz are wrapped in requireBearerToken when AGENTD_ADMIN_TOKEN
+// is set (F1.4.2). /v1/healthz stays open: it only emits {ok,
+// started_at} and the kubelet liveness probe targets it without
+// configured headers.
+//
+// US-22.8: two separate http.Server instances eliminate listener-layer
+// head-of-line blocking. Admin port serves health probes (kubelet,
+// controller) on a dedicated goroutine pool; user port serves
+// reload-secrets and future proxy endpoints independently.
+func wireHTTPServers(bgCtx context.Context, bgWg *sync.WaitGroup, deps serverDeps) (adminSrv, userSrv *http.Server, srvErr chan error) {
+	adminMux := http.NewServeMux()
+
+	// #887 D5.1: the token resolved once at boot (main) — no re-read
+	// here (TOCTOU closed, review note on #934).
+	adminToken := deps.resolvedAdminToken
+
+	adminMux.HandleFunc("/v1/healthz", healthzHandler(deps.startedAt, reloadCachePathFromEnv(), modelWarnPathFromEnv()))
+	adminMux.Handle("/v1/readyz", requireBearerToken(adminToken,
+		buildReadyzHandler(deps, opencodeTCPReady(fmt.Sprintf("127.0.0.1:%d", agentd.AgentPort)))))
+
+	// /v1/statusz is the EXPENSIVE deep-introspection endpoint. It makes
+	// multiple synchronous HTTP calls to opencode (IsHealthy,
+	// ConnectedProviders, ConfiguredProviderCount, ListSessions) under a
+	// mutex. Under SSE load, these calls can take seconds to complete.
+	// Consumers: controller deep-status poll (60s) and API status
+	// enrichment (infrequent). Performance contract: NO upper bound —
+	// callers must use a generous timeout (controller uses 30s). Do NOT
+	// use this endpoint for liveness or readiness probes.
+	adminMux.Handle("/v1/statusz", requireBearerToken(adminToken,
+		buildStatuszHandler(deps.client, deps.cache, deps.sseTracker, deps.pressureMonitor, deps.startedAt, modelWarnPathFromEnv(), deps.sys)))
+
+	// S18.10: Expose Prometheus metrics on admin port so the cluster-level
+	// Prometheus scraper can collect per-pod agentd gate timings.
+	adminMux.Handle("/metrics", promhttp.Handler())
+
+	userMux := buildUserMux(bgCtx, bgWg, deps)
 
 	// Start admin server (health probes) on dedicated port.
 	adminSrv = &http.Server{
