@@ -149,31 +149,36 @@ describe("QueueSection", () => {
   });
 });
 
-describe("QueueSection in-flight states (#987)", () => {
-  it("renders verifying with confirming label, Dismiss but no Retry", async () => {
-    const onRetry = vi.fn();
+describe("QueueSection display contract (TUI parity)", () => {
+  // In-flight entries (delivering/verifying) never reach this component:
+  // useMessageQueue filters them out of displayed state — a message the
+  // agent is processing belongs to the conversation, not the queue. The
+  // type no longer carries those statuses; pending and error are the
+  // only renderable states.
+  it("renders pending entries as plain queued bubbles", () => {
     render(
       <QueueSection
-        messages={[makeMsg({ status: "verifying", text: "long turn" })]}
-        onRetry={onRetry}
-        onDismiss={vi.fn()}
-        isMobile={false}
-      />,
-    );
-    expect(screen.getByText("Sent — confirming delivery…")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Retry")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Dismiss")).toBeInTheDocument();
-  });
-
-  it("renders delivering with sending label", () => {
-    render(
-      <QueueSection
-        messages={[makeMsg({ status: "delivering", text: "going out" })]}
+        messages={[makeMsg({ status: "pending", text: "waiting" })]}
         onRetry={vi.fn()}
         onDismiss={vi.fn()}
         isMobile={false}
       />,
     );
-    expect(screen.getByText("Sending…")).toBeInTheDocument();
+    expect(screen.getByText("waiting")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Retry")).not.toBeInTheDocument();
+  });
+
+  it("renders error entries with retry affordance", () => {
+    render(
+      <QueueSection
+        messages={[makeMsg({ status: "error", text: "failed send", error: "agent unreachable" })]}
+        onRetry={vi.fn()}
+        onDismiss={vi.fn()}
+        isMobile={false}
+      />,
+    );
+    expect(screen.getByText("agent unreachable")).toBeInTheDocument();
+    expect(screen.getByLabelText("Retry")).toBeInTheDocument();
+    expect(screen.getByLabelText("Dismiss")).toBeInTheDocument();
   });
 });

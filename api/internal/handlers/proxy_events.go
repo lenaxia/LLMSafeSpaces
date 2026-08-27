@@ -108,6 +108,24 @@ func (h *ProxyHandler) onPhaseChange(workspace *v1.Workspace) {
 			if h.sseTracker != nil {
 				h.sseTracker.StopWatching(workspace.Name)
 			}
+			// Resume self-heal: an agent that was unreachable (suspend,
+			// OOM, restart) is now reachable — re-arm outbox entries
+			// parked as "delivery unverifiable" so the #987 verify-first
+			// path can confirm-and-remove them (or resume bounded
+			// verification) instead of waiting for manual Retry.
+			// Detached + bounded: phase handling must not block on Redis.
+			if h.outbox != nil && h.adapter != nil {
+				wsName := workspace.Name
+				go func() {
+					sctx, cancel := context.WithTimeout(context.WithoutCancel(context.Background()), 30*time.Second)
+					defer cancel()
+					if n, err := h.outbox.SweepWorkspaceUnverifiable(sctx, wsName); err != nil {
+						h.logger.Warn("outbox unverifiable sweep failed", "error", err, "workspace_id", wsName)
+					} else if n > 0 {
+						h.logger.Info("outbox unverifiable sweep re-armed entries", "count", n, "workspace_id", wsName)
+					}
+				}()
+			}
 		} else {
 			// No-transition update: only cached config (the original
 			// else-branch semantics — do NOT nuke password/parent

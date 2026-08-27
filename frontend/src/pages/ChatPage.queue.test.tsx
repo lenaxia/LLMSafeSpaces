@@ -419,3 +419,140 @@ describe("D6 hung-session alert banner (#998)", () => {
     });
   });
 });
+
+describe("queue-path regressions (suspend/resume casualties)", () => {
+  beforeEach(() => {
+    capturedSSEHandler = null;
+    mockBusyState.reset();
+    vi.clearAllMocks();
+    (messagesApi.getQueue as ReturnType<typeof vi.fn>).mockResolvedValue({ messages: [] });
+    (workspacesApi.getStatus as ReturnType<typeof vi.fn>).mockResolvedValue({ phase: "Active", sessions: [{ id: "ses_1", status: "idle" }] });
+    (workspacesApi.list as ReturnType<typeof vi.fn>).mockResolvedValue({ items: [], pagination: { limit: 20, offset: 0, total: 0 } });
+    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (messagesApi.getHistoryPage as ReturnType<typeof vi.fn>).mockResolvedValue({ messages: [], nextCursor: undefined });
+    (messagesApi.sendAsync as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+  });
+
+  it("parked ERROR entries do not force the queue path — direct send still used", async () => {
+    // The suspend/resume casualty: entries parked as "delivery
+    // unverifiable" stay in the queue forever until Retry/Dismiss.
+    // Counting them as "queue busy" permanently reroutes every new send
+    // through enqueue (which skips the user-echo strip and mis-renders).
+    (messagesApi.getQueue as ReturnType<typeof vi.fn>).mockResolvedValue({
+      messages: [
+        { id: "q-err-1", text: "old stranded message", status: "error", lastError: "delivery unverifiable: agent unreachable", session_id: "ses_1" },
+      ],
+    });
+    const user = userEvent.setup();
+    renderChat(makeQueryClient(), "/chat/ws-1/ses_1");
+    await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
+    // Wait for the queue refresh to land the error entry in state.
+    await waitFor(() => expect(screen.getByText("old stranded message")).toBeInTheDocument());
+
+    await user.type(document.querySelector("textarea")!, "fresh direct message");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+
+    await waitFor(() => {
+      expect(messagesApi.sendAsync).toHaveBeenCalledWith("ws-1", "ses_1", {
+        parts: [{ type: "text", text: "fresh direct message" }],
+        clientMessageID: expect.any(String),
+      });
+    });
+    expect(messagesApi.queueMessage).not.toHaveBeenCalled();
+  });
+
+  it("user echo of a QUEUED message is NOT rendered as an assistant bubble", async () => {
+    // Busy → send → enqueue. Then the outbox delivers later: the agent
+    // echoes the user turn as a part.end text event. Without echo
+    // tracking on the queue path, that text lands in the assistant
+    // streaming buffer (ChatView hardcodes role=assistant).
+    const user = userEvent.setup();
+    renderChat(makeQueryClient(), "/chat/ws-1/ses_1");
+    await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
+
+    sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
+    await user.type(document.querySelector("textarea")!, "queued hello");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(messagesApi.queueMessage).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByText("1 message queued")).toBeInTheDocument());
+
+    // Agent reachable again; the outbox delivers the queued message and
+    // a NEW turn starts. The turn echoes the user text first, then the
+    // assistant answer streams — both while the stream is live.
+    sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
+    sendSSE({
+      type: "session.event",
+      session_id: "ses_1",
+      data: {
+        type: "part.end",
+        sessionId: "ses_1",
+        messageId: "msg_user_echo",
+        part: { id: "pt_1", type: "text", text: "queued hello" },
+      },
+    });
+    sendSSE({
+      type: "session.event",
+      session_id: "ses_1",
+      data: {
+        type: "part.end",
+        sessionId: "ses_1",
+        messageId: "msg_reply",
+        part: { id: "pt_2", type: "text", text: "the answer" },
+      },
+    });
+
+    // Sanity: the assistant stream IS rendering (the answer shows on
+    // the agent side) — proving the echo check below is not vacuous.
+    await waitFor(() => {
+      const bubbles = Array.from(document.querySelectorAll(".justify-start"));
+      expect(bubbles.some((el) => el.textContent?.includes("the answer"))).toBe(true);
+    });
+    // The user echo must NOT appear in any agent-side bubble.
+    const agentBubbles = Array.from(document.querySelectorAll(".justify-start"));
+    const leak = agentBubbles.find((el) => el.textContent?.includes("queued hello"));
+    expect(leak).toBeUndefined();
+    // The echo also clears the pending pill: the agent owns the message
+    // now, it is in the conversation, not the queue.
+    await waitFor(() => {
+      expect(screen.queryByText("1 message queued")).not.toBeInTheDocument();
+    });
+  });
+
+  it("a delivering entry is invisible — the pill clears when the worker picks it up", async () => {
+    // The outbox delivery send is synchronous turn-to-completion, so an
+    // entry stays staged as delivering for the WHOLE multi-minute turn.
+    // The pill must not render "Sending…" for that window (TUI parity:
+    // once the agent owns the message it is in the conversation).
+    let enqueued = false;
+    (messagesApi.getQueue as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      return Promise.resolve({
+        messages: enqueued
+          ? [{ id: "msg_q_test", text: "long turn message", session_id: "ses_1", status: "delivering" }]
+          : [],
+      });
+    });
+    (messagesApi.queueMessage as ReturnType<typeof vi.fn>).mockImplementation(() => {
+      enqueued = true;
+      return Promise.resolve({ messageID: "msg_q_test" });
+    });
+
+    const user = userEvent.setup();
+    renderChat(makeQueryClient(), "/chat/ws-1/ses_1");
+    await waitFor(() => expect(document.querySelector("textarea")).not.toBeDisabled());
+
+    sendSSE({ type: "session.status", session_id: "ses_1", status: "busy" });
+    await user.type(document.querySelector("textarea")!, "long turn message");
+    await user.click(screen.getByRole("button", { name: "Send message" }));
+    await waitFor(() => expect(screen.getByText("1 message queued")).toBeInTheDocument());
+
+    // The worker stages the entry out (POST in flight) and the bridge
+    // announces it; the refresh that follows must drop the pill even
+    // though GET /queue still REPORTS the delivering entry.
+    sendSSE({ type: "queue.update", session_id: "ses_1", data: { event: "delivering", messageID: "msg_q_test" } });
+
+    await waitFor(() => {
+      expect(screen.queryByText("1 message queued")).not.toBeInTheDocument();
+    });
+    expect(screen.queryByText("Sending…")).not.toBeInTheDocument();
+  });
+});
