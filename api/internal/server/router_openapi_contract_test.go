@@ -424,6 +424,17 @@ func newContractFixture(t *testing.T) *gin.Engine {
 		OrgMCPServersHandler:   &handlers.MCPServersHandler{},
 		UserMCPServersHandler:  &handlers.MCPServersHandler{},
 		OrgsHandler:            &handlers.OrgsHandler{},
+		// Epic 64: workflow/trigger/run/hook routes. Zero-value stubs —
+		// route presence only. OrgWorkflows/OrgTriggers additionally
+		// require OrgsHandler (OrgAdminGuard), already set above.
+		UserWorkflowsHandler:   &handlers.WorkflowsHandler{},
+		OrgWorkflowsHandler:    &handlers.WorkflowsHandler{},
+		UserTriggersHandler:    &handlers.TriggersHandler{},
+		OrgTriggersHandler:     &handlers.TriggersHandler{},
+		WebhookReceiverHandler: &handlers.WebhookReceiverHandler{},
+		// Epic 59: passkey ceremonies + account passkey management.
+		// Zero-value stub — route presence only.
+		PasskeyHandler: &handlers.PasskeyHandler{},
 	}
 	// proxyHandler also has a conditional wiring guard (sessions,
 	// events, message, prompt, abort routes). Pass a zero-value stub
