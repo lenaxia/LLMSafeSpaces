@@ -44,10 +44,13 @@ contract-test-mock:
 	@command -v npx  >/dev/null 2>&1 || { echo "npx not installed — requires Node.js"; exit 1; }
 	@echo "Starting Prism mock server from $(SPEC) on :4010..."
 	@npx --yes @stoplight/prism-cli mock $(SPEC) --port 4010 > /tmp/prism.log 2>&1 & PRISM_PID=$$!; \
-		for i in 1 2 3 4 5 6 7 8 9 10; do \
-			curl -sf http://localhost:4010/ >/dev/null 2>&1 && break; \
+		ready=0; \
+		for i in $$(seq 1 60); do \
+			curl -s -o /dev/null http://localhost:4010/ && { ready=1; break; }; \
+			kill -0 $$PRISM_PID 2>/dev/null || { echo "Prism died during startup:"; cat /tmp/prism.log; exit 1; }; \
 			sleep 1; \
 		done; \
+		[ $$ready -eq 1 ] || { echo "Prism not listening on :4010 after 60s:"; cat /tmp/prism.log; kill $$PRISM_PID; exit 1; }; \
 		echo "Prism ready (pid $$PRISM_PID). Running Hurl suite..."; \
 		for f in tests/contract/*.hurl; do \
 			echo "→ $$f"; \
