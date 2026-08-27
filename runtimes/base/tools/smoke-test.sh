@@ -94,6 +94,15 @@ verify npm   mise which npm
 verify cargo mise which cargo
 verify go    mise which go
 
+# PATH resolution through shims — the bug class the 2026-08-27 fix closed:
+# `mise which <t>` succeeds even when the shims dirs are empty, so the
+# build stayed green while every non-interactive runtime shell (harness
+# tool shells, CI scripts) got "command not found". A runtime must be
+# invocable AS a command, not just discoverable via mise.
+verify python3-shim sh -c "command -v python3"
+verify node-shim    sh -c "command -v node"
+verify go-shim      sh -c "command -v go"
+
 # JVM tools are SOFT (best-effort pre-install; available via mise at runtime).
 for t in java mvn gradle; do
 	if mise which "$t" >/dev/null 2>&1; then

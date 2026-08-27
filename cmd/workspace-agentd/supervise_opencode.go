@@ -57,6 +57,16 @@ func runSuperviseOpencodeCommand(_ []string) int {
 	// agentd does (#904/#908 paths unchanged).
 	_ = becomeSubreaper()
 
+	// Relocated entrypoint env work (step-2 migration precedent): rebuild
+	// mise shims before the first child spawn. Build-time `mise reshim`
+	// wrote to MISE_DATA_DIR, which the /workspace PVC mount shadows at
+	// runtime — fresh PVC ⇒ empty shims dirs ⇒ toolchains unresolvable in
+	// every non-interactive shell (harness tool shells never see `mise
+	// activate`). Best-effort by design (D1: the supervisor is plumbing;
+	// a broken mise degrades to the documented `mise which` fallback and
+	// must never block boot).
+	ensureMiseShims(log)
+
 	rootCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
@@ -200,4 +210,35 @@ func (a *managedProcAdapter) SetSpawnEnv(env map[string]string) {
 		return cmd
 	}
 	a.p.mu.Unlock()
+}
+
+// ensureMiseShims regenerates mise's shim directory (best-effort, never
+// returns an error). See the call site for the PVC-shadowing rationale.
+// Idempotent: mise itself no-ops when shims are current.
+func ensureMiseShims(log *zap.Logger) {
+	mise, err := exec.LookPath("mise")
+	if err != nil {
+		if log != nil {
+			log.Info("supervise-opencode: mise absent (degraded base?); skipping shim rebuild")
+		}
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	// G204: `mise` is resolved via LookPath on the container's PATH — the
+	// same trust domain as PID 1 itself (an attacker who can inject PATH
+	// here already owns the container). Fixed argv "reshim"; output is
+	// only logged, never executed or parsed.
+	//nolint:gosec // G204: boot-time, fixed argv, same-uid binary from the runtime image
+	out, err := exec.CommandContext(ctx, mise, "reshim").CombinedOutput()
+	if err != nil {
+		if log != nil {
+			log.Warn("supervise-opencode: mise reshim failed (non-fatal; toolchains resolve via 'mise which')",
+				zap.Error(err), zap.String("output", string(out)))
+		}
+		return
+	}
+	if log != nil {
+		log.Info("supervise-opencode: mise shims rebuilt")
+	}
 }
