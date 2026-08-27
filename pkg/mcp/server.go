@@ -12,6 +12,8 @@ import (
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
+
+	"github.com/lenaxia/llmsafespaces/pkg/session/attachments"
 )
 
 // NewServer creates a configured MCP server with all LLMSafeSpaces tools registered.
@@ -33,6 +35,7 @@ func NewServer(client APIClient, defaultTimeout time.Duration) *server.MCPServer
 		server.ServerTool{Tool: sessionCreateTool, Handler: h.sessionCreate},
 		server.ServerTool{Tool: sessionMessageTool, Handler: h.sessionMessage},
 		server.ServerTool{Tool: sessionHistoryTool, Handler: h.sessionHistory},
+		server.ServerTool{Tool: workspaceFileUploadTool, Handler: h.workspaceFileUpload},
 		server.ServerTool{Tool: runResolveTool, Handler: h.runResolve},
 		server.ServerTool{Tool: credentialCreateTool, Handler: h.credentialCreate},
 		server.ServerTool{Tool: credentialListTool, Handler: h.credentialList},
@@ -89,10 +92,17 @@ var sessionMessageTool = mcp.NewTool("session_message",
 		"For long-running tasks, use session_message to start the task, then poll session_history "+
 		"to check for the completed response — the sync wait may time out on complex tasks. "+
 		"If the agent asks a question or requests permission, the response will indicate a pending "+
-		"input request; use run_resolve to answer it."),
+		"input request; use run_resolve to answer it. "+
+		"Optional files: attachment paths previously returned by workspace_file_upload (max 10); "+
+		"they are appended to the message as a v1 manifest the agent reads with its own tools. "+
+		"Raw prompts may also reference files directly with manifest lines of the form "+
+		"[llmsafespaces:attachment path=\"/workspace/uploads/<uuid>-<name>\" name=\"<name>\"] — "+
+		"any trailing block like this in the message is replaced, not duplicated."),
 	mcp.WithString("workspace_id", mcp.Required(), mcp.Description("Workspace ID")),
 	mcp.WithString("session_id", mcp.Required(), mcp.Description("Session ID")),
 	mcp.WithString("message", mcp.Required(), mcp.Description("The message/prompt to send")),
+	mcp.WithArray("files", mcp.WithStringItems(),
+		mcp.Description("Optional attachment paths (/workspace/uploads/<uuid>-<name>, max 10, no duplicates); appended to the message as a v1 attachment manifest")),
 )
 
 var sessionHistoryTool = mcp.NewTool("session_history",
@@ -202,11 +212,25 @@ func (h *handlers) sessionMessage(ctx context.Context, req mcp.CallToolRequest) 
 	if message == "" {
 		return mcp.NewToolResultError("message is required"), nil
 	}
-	if len(message) > maxMessageSize {
-		return mcp.NewToolResultError(fmt.Sprintf("message too large (%d bytes, max %d)", len(message), maxMessageSize)), nil
+
+	composed := message
+	files := stringSliceArg(args, "files")
+	if len(files) > 0 {
+		var cerr error
+		composed, cerr = attachments.Compose(message, files)
+		if cerr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("invalid files: %v", cerr)), nil
+		}
+	}
+	if len(composed) > maxMessageSize {
+		if len(files) > 0 {
+			return mcp.NewToolResultError(fmt.Sprintf(
+				"message too large (%d bytes including attachment manifest, max %d)", len(composed), maxMessageSize)), nil
+		}
+		return mcp.NewToolResultError(fmt.Sprintf("message too large (%d bytes, max %d)", len(composed), maxMessageSize)), nil
 	}
 
-	response, err := h.client.SendMessage(ctx, workspaceID, sessionID, message, h.timeout)
+	response, err := h.client.SendMessage(ctx, workspaceID, sessionID, composed, h.timeout)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to send message: %v", err)), nil
 	}
@@ -238,6 +262,19 @@ func (h *handlers) sessionHistory(ctx context.Context, req mcp.CallToolRequest) 
 func strArg(args map[string]any, key string) string {
 	v, _ := args[key].(string)
 	return v
+}
+
+func stringSliceArg(args map[string]any, key string) []string {
+	raw, _ := args[key].([]any)
+	if len(raw) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		s, _ := v.(string)
+		out = append(out, s)
+	}
+	return out
 }
 
 // run_resolve (US-65.7): unified tool for resolving any pending input

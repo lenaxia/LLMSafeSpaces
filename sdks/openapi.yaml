@@ -1111,6 +1111,92 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/uploads:
+    post:
+      tags: [workspaces]
+      summary: Upload a file into the workspace
+      description: |
+        Streams a single multipart/form-data file part (field name `file`)
+        to the workspace pod's ingest endpoint; the file lands atomically on
+        the workspace PVC under `/workspace/uploads/` and persists across
+        suspend/resume. Gates, in order: the workspace phase must be Active
+        (409 with the current phase), disk usage must be below the critical
+        threshold (507), and the body must be within the upload cap
+        (413, 25 MiB default). The upload is streamed end to end — the
+        client body is never buffered by the API. Non-file form fields are
+        ignored; more than one file part, an empty filename, or a malformed
+        body is rejected with 400.
+      operationId: uploadWorkspaceFile
+      x-epic: "67"
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The file to ingest (single part, field name `file`)
+      responses:
+        "201":
+          description: File stored on the workspace PVC
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileUploadResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Workspace is not in the Active phase
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Error"
+                  - type: object
+                    properties:
+                      phase:
+                        type: string
+                        description: Current workspace phase
+        "413":
+          description: File (or request body) exceeds the upload size cap
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "415":
+          description: Content type must be multipart/form-data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "502":
+          description: Workspace agent unreachable or failed the upload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "504":
+          description: Workspace agent timed out
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "507":
+          description: Workspace disk is full
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
   /workspaces/{id}/question/{requestID}/reply:
     post:
       tags: [sessions]
@@ -7502,6 +7588,22 @@ components:
       properties:
         error:
           type: string
+    FileUploadResponse:
+      type: object
+      description: |
+        Result of a successful workspace file upload (Epic 67). `path` is
+        the absolute final location on the workspace PVC
+        (`/workspace/uploads/<uuid>-<name>`); `name` is the sanitized
+        filename; `size` is the byte count stored.
+      required: [path, name, size]
+      properties:
+        path:
+          type: string
+        name:
+          type: string
+        size:
+          type: integer
+          format: int64
     ModelSelector:
       type: object
       description: |

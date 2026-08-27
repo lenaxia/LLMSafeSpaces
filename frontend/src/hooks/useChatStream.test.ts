@@ -23,10 +23,13 @@ import { workspacesApi } from "../api/workspaces";
 async function sendAndIdle(
   result: ReturnType<typeof renderHook<ReturnType<typeof useChatStream>, unknown>>["result"],
   text: string,
-  onComplete = vi.fn(),
+  onCompleteOrFiles?: ReturnType<typeof vi.fn> | string[],
+  maybeOnComplete?: ReturnType<typeof vi.fn>,
 ) {
+  const files = Array.isArray(onCompleteOrFiles) ? onCompleteOrFiles : undefined;
+  const onComplete = Array.isArray(onCompleteOrFiles) ? maybeOnComplete ?? vi.fn() : (onCompleteOrFiles ?? vi.fn());
   let sendPromise!: Promise<void>;
-  act(() => { sendPromise = result.current.send(text, onComplete); });
+  act(() => { sendPromise = result.current.send(text, onComplete, undefined, files); });
   // Wait for sendAsync to have been called (means idle resolver is set)
   await vi.waitFor(() => expect(messagesApi.sendAsync).toHaveBeenCalled());
   act(() => { result.current.notifySessionIdle("sess-1"); });
@@ -737,5 +740,40 @@ describe("useChatStream", () => {
     expect(result.current.streamTimedOut).toBe(false);
 
     vi.useRealTimers();
+  });
+});
+
+describe("useChatStream files (Epic 67 U1.6.7/U1.6.8)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("send carries files[] top-level on the prompt request without mutating text", async () => {
+    (messagesApi.sendAsync as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const { result } = renderHook(() => useChatStream("sb-1", "sess-1"));
+
+    const files = ["/workspace/uploads/11111111-2222-3333-4444-555555555555-n.txt"];
+    await sendAndIdle(result, "see file", files);
+
+    expect(messagesApi.sendAsync).toHaveBeenCalledWith("sb-1", "sess-1", {
+      parts: [{ type: "text", text: "see file" }],
+      files,
+      clientMessageID: expect.any(String),
+    });
+  });
+
+  it("send without files omits the field entirely", async () => {
+    (messagesApi.sendAsync as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const { result } = renderHook(() => useChatStream("sb-1", "sess-1"));
+
+    await sendAndIdle(result, "no files");
+
+    const call = (messagesApi.sendAsync as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(call![2]).toEqual({
+      parts: [{ type: "text", text: "no files" }],
+      clientMessageID: expect.any(String),
+    });
   });
 });

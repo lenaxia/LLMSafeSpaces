@@ -5,7 +5,7 @@
 import { LLMSafeSpaces } from '../../../typescript/src/index.js';
 import { Runner, Config, configFromEnv, nodeFetch, rawDo } from '../canary.js';
 
-const EXPECTED_SCHEMA_VERSION = 13;
+const EXPECTED_SCHEMA_VERSION = 14;
 
 async function run(r: Runner, cfg: Config): Promise<void> {
   const c = new LLMSafeSpaces({ baseUrl: cfg.apiUrl, apiKey: cfg.apiKey, timeout: 15000, fetch: nodeFetch as any });

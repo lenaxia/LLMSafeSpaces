@@ -55,6 +55,7 @@ type APIClient interface {
 	CreateSession(ctx context.Context, workspaceID string) (*SessionResp, error)
 	GetHistory(ctx context.Context, workspaceID, sessionID string) ([]Message, error)
 	SendMessage(ctx context.Context, workspaceID, sessionID, message string, timeout time.Duration) (string, error)
+	UploadFile(ctx context.Context, workspaceID, filename string, content []byte) (*UploadResp, error)
 
 	// Agent input — question & permission replies (Epic 16 US-16.6)
 	QuestionReply(ctx context.Context, workspaceID, requestID string, answers [][]string) error
@@ -442,7 +443,6 @@ func (c *HTTPClient) SendMessage(ctx context.Context, workspaceID, sessionID, me
 				SessionID string          `json:"session_id"`
 				Status    string          `json:"status"`
 				EventType string          `json:"event_type"`
-				Content   string          `json:"content"`
 				Data      json.RawMessage `json:"data"`
 			}
 			if json.Unmarshal([]byte(data), &event) == nil {
@@ -479,8 +479,21 @@ func (c *HTTPClient) SendMessage(ctx context.Context, workspaceID, sessionID, me
 					}
 				}
 
-				if event.Content != "" {
-					response.WriteString(event.Content)
+				// Live content: session.event envelopes carry the
+				// contract event in data; part.delta streams the
+				// assistant text (#1053 — the old read of a top-level
+				// "content" field never existed on the broker envelope,
+				// so live accumulation was dead code).
+				if event.Type == "session.event" && len(event.Data) > 0 {
+					var ce struct {
+						Type      string `json:"type"`
+						SessionID string `json:"sessionId,omitempty"`
+						Delta     string `json:"delta,omitempty"`
+					}
+					if json.Unmarshal(event.Data, &ce) == nil && ce.Delta != "" &&
+						(ce.SessionID == "" || ce.SessionID == sessionID) {
+						response.WriteString(ce.Delta)
+					}
 				}
 			}
 		}

@@ -43,11 +43,14 @@ async function request<T>(
 ): Promise<T> {
   const { apiBaseUrl } = getEnv();
   const url = `${apiBaseUrl}${path}`;
+  // FormData bodies must NOT carry an explicit Content-Type — the browser
+  // sets the multipart boundary. Every other body is JSON.
+  const isFormData = options.body instanceof FormData;
   const res = await fetch(url, {
     ...options,
     credentials: "include",
     headers: {
-      "Content-Type": "application/json",
+      ...(isFormData ? {} : { "Content-Type": "application/json" }),
       ...options.headers as Record<string, string>,
     },
   });
@@ -80,7 +83,10 @@ export const api = {
     request<T>(path, { method: "PUT", body: body !== undefined ? JSON.stringify(body) : undefined }),
   delete: <T>(path: string) => request<T>(path, { method: "DELETE" }),
   patch: <T>(path: string, body?: unknown) =>
-    request<T>(path, { method: "PATCH", body: body ? JSON.stringify(body) : undefined }),
+    request<T>(path, { method: "PATCH", body: body !== undefined ? JSON.stringify(body) : undefined }),
+  // Multipart upload (Epic 67): the browser sets the Content-Type boundary.
+  upload: <T>(path: string, form: FormData) =>
+    request<T>(path, { method: "POST", body: form }),
 };
 
 export async function getRaw<T>(path: string): Promise<{ data: T; headers: Headers }> {

@@ -621,6 +621,53 @@ func TestMCPClientSessionMessage_IdleTermination(t *testing.T) {
 	}
 }
 
+// TestMCPClientSessionMessage_LiveContentFromSessionEvents pins #1053:
+// streamed part.delta content arrives inside session.event envelopes and
+// must be captured live — the old read of a top-level "content" field
+// (which the broker envelope never carries) meant live accumulation was
+// dead code and every response fell through to the history round-trip.
+func TestMCPClientSessionMessage_LiveContentFromSessionEvents(t *testing.T) {
+	f := newMCPRouterFixture(t)
+
+	done := make(chan string, 1)
+	go func() {
+		out, err := f.client.SendMessage(context.Background(), mcpTestWSID, mcpTestSession, "hi", 10*time.Second)
+		if err != nil {
+			done <- "ERROR: " + err.Error()
+			return
+		}
+		done <- out
+	}()
+
+	require.Eventually(t, func() bool {
+		return f.broker.WorkspaceSubscriberCount(mcpTestWSID) > 0
+	}, 5*time.Second, 10*time.Millisecond)
+
+	// Stream two deltas as real contract events inside session.event
+	// envelopes — exactly what publishClientEvents puts on the wire.
+	for _, chunk := range []string{"Hello ", "live world!"} {
+		f.broker.PublishToWorkspace(mcpTestWSID, apitypes.WorkspaceSSEEvent{
+			Type:      "session.event",
+			SessionID: mcpTestSession,
+			Data: map[string]any{
+				"type":      "part.delta",
+				"sessionId": mcpTestSession,
+				"delta":     chunk,
+			},
+		})
+	}
+	f.broker.PublishToWorkspace(mcpTestWSID, mcpSSEEvent("session.status", nil, mcpTestSession, "idle"))
+
+	select {
+	case out := <-done:
+		require.NotContains(t, out, "ERROR")
+		assert.Equal(t, "Hello live world!", out,
+			"streamed part.delta content must be captured live from session.event data (#1053)")
+	case <-time.After(15 * time.Second):
+		t.Fatal("SendMessage did not return after idle event")
+	}
+}
+
 // TestMCPRouterTriggerUpdate_EnabledBoolBinds pins #1035: the
 // trigger_update tool must declare enabled as boolean and the client
 // must send {"enabled": <bool>} — the API binds

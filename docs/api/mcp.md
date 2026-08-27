@@ -95,10 +95,18 @@ The server advertises 24 tools, all workspace-centric — the sandbox layer is h
 | Tool | Required args | Description |
 |------|---------------|-------------|
 | `session_create` | `workspace_id` | Create a conversation session in an active workspace. Returns the `sessionId` from `POST /workspaces/:id/sessions/new`. |
-| `session_message` | `workspace_id`, `session_id`, `message` | Send a message and get the response (blocks until the agent replies) |
+| `session_message` | `workspace_id`, `session_id`, `message` | Send a message and get the response (blocks until the agent replies). Optional `files` (array of upload paths) appends the v1 attachment manifest to the prompt — same semantics as the REST `/prompt` route. |
 | `session_history` | `workspace_id`, `session_id` | Get the message history of a session (contract shape: `id`/`type`/`parts`) |
 
 `session_message` sends the prompt via `POST .../sessions/:id/prompt`, then subscribes to the workspace event stream (`GET .../session-events`) until the session goes idle. If the agent asks a question during the turn, the tool returns a structured `{"type":"question","request":{...}}` result instead of blocking; permission requests are auto-approved (`always`) in headless mode.
+
+### File uploads
+
+| Tool | Required args | Description |
+|------|---------------|-------------|
+| `workspace_file_upload` | `workspace_id`, `filename`, `content_b64` | Upload a file to `/workspace/uploads/` on the workspace PVC. `content_b64` is base64 (wrapped/whitespace tolerated). Returns `{"path","name","size"}`; pass `path` values to `session_message`'s `files` param. |
+
+`workspace_file_upload` decodes to at most **5 MiB** (larger inputs are rejected before decoding) — use the REST `POST /workspaces/:id/uploads` multipart route or an SDK for bigger files. Paths follow the manifest contract: `[llmsafespaces:attachment path="<path>" name="<name>"]` lines appended to prompts; agents read the files with their own tools.
 
 !!! warning "`session_message` blocks"
     Like the REST `POST .../message`, this tool waits for the full assistant response and can take 30–120+ seconds. The default tool timeout is 300s. Messages are capped at 1 MiB.

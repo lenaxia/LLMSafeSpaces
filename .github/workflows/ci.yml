@@ -118,7 +118,11 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          # Pinned (was `latest`): a gosec taint-analysis release between
+          # PR #1075 and #1083 flagged pre-existing code mid-flight and
+          # broke CI (worklog US-67.2). Bump deliberately, with a
+          # full-repo lint run in the same PR.
+          version: v2.13.1
           args: --timeout=5m
 
       # Helm chart sanity: chart lints and `helm template` succeeds with

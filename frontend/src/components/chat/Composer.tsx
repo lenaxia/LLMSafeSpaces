@@ -1,15 +1,19 @@
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import { Send, Square } from "lucide-react";
+import { ChevronDown, ChevronRight, FileText, Loader2, Paperclip, RotateCcw, Send, Square, X } from "lucide-react";
 import { Button } from "../ui/Button";
 import { Tooltip } from "../ui/Tooltip";
 import { cn } from "../../lib/utils";
-import { useUserSetting } from "../../hooks/useUserSettings";
+import { setUserSetting, useUserSetting } from "../../hooks/useUserSettings";
 import { useIsMobile } from "../../hooks/useMediaQuery";
 import { getCursorLineInfo } from "../../lib/composerHistory";
+import { formatBytes } from "../../lib/format";
+import { ModelSelector } from "./ModelSelector";
+import { RoleSelector } from "./RoleSelector";
+import type { PendingAttachment } from "../../hooks/useComposerAttachments";
 
 interface Props {
-  onSend: (text: string) => void;
+  onSend: (text: string, files: string[]) => void;
   onAbort?: () => void;
   disabled?: boolean;
   streaming?: boolean;
@@ -21,10 +25,70 @@ interface Props {
    * navigates history regardless of this prop.
    */
   userMessageHistory?: string[];
+  /** Workspace scope for the attach button, uploads, and drawer selectors. */
+  workspaceId?: string;
+  orgId?: string;
+  /** Workspace-scoped pending attachments (chips) rendered above the textarea. */
+  attachments?: PendingAttachment[];
+  capViolation?: boolean;
+  onAddFiles?: (files: File[]) => void;
+  onRemoveAttachment?: (id: string) => void;
+  onRetryAttachment?: (id: string) => void;
+  onDismissCapViolation?: () => void;
 }
 
 /** Sentinel: no pending cursor move. */
 const NO_PENDING_CURSOR = -1;
+
+const CHIP_BASE = "inline-flex max-w-full items-center gap-1 rounded-md border px-2 py-1 text-xs min-h-[32px]";
+const CHIP_STYLES: Record<PendingAttachment["status"], string> = {
+  uploading: "border-border bg-muted/60 text-muted-foreground",
+  attached: "border-border bg-muted text-foreground",
+  error: "border-destructive/50 bg-destructive/10 text-destructive",
+};
+
+function ComposerChip({ chip, onRemove, onRetry }: {
+  chip: PendingAttachment;
+  onRemove?: (id: string) => void;
+  onRetry?: (id: string) => void;
+}) {
+  return (
+    <span
+      data-testid={`composer-chip-${chip.id}`}
+      data-status={chip.status}
+      className={cn(CHIP_BASE, CHIP_STYLES[chip.status], chip.status === "uploading" && "animate-pulse")}
+    >
+      {chip.status === "uploading" ? (
+        <Loader2 className="h-3 w-3 shrink-0 animate-spin" aria-hidden="true" />
+      ) : (
+        <FileText className="h-3 w-3 shrink-0" aria-hidden="true" />
+      )}
+      <span className="max-w-[160px] truncate font-medium" title={chip.name}>{chip.name}</span>
+      <span className="shrink-0 text-muted-foreground">{formatBytes(chip.size)}</span>
+      {chip.status === "error" && chip.error && (
+        <span className="max-w-[160px] truncate" title={chip.error}>{chip.error}</span>
+      )}
+      {chip.status === "error" && (
+        <button
+          type="button"
+          aria-label={`Retry upload ${chip.name}`}
+          onClick={() => onRetry?.(chip.id)}
+          className="ml-0.5 shrink-0 rounded p-0.5 hover:bg-destructive/20"
+        >
+          <RotateCcw className="h-3 w-3" aria-hidden="true" />
+        </button>
+      )}
+      <button
+        type="button"
+        aria-label={`Remove attachment ${chip.name}`}
+        onClick={() => onRemove?.(chip.id)}
+        className="ml-0.5 shrink-0 rounded p-0.5 hover:bg-muted-foreground/20"
+      >
+        <X className="h-3 w-3" aria-hidden="true" />
+      </button>
+    </span>
+  );
+}
 
 /**
  * Composer — the chat input box.
@@ -35,8 +99,8 @@ const NO_PENDING_CURSOR = -1;
  *   - Desktop, legacy mode (sendOnEnter=true):
  *       Enter = send, Shift+Enter = newline, Ctrl/Cmd+Enter = send
  *   - Mobile: Enter = newline; only the send button sends. The
- *     sendOnEnter setting is ignored on mobile because mobile
- *     keyboards do not reliably produce modifier keys.
+ *       sendOnEnter setting is ignored on mobile because mobile
+ *       keyboards do not reliably produce modifier keys.
  *
  * All key paths are guarded against IME composition: while a CJK IME
  * is mid-composition (isComposing=true or keyCode===229), Enter and
@@ -49,12 +113,64 @@ const NO_PENDING_CURSOR = -1;
  * Down past the newest entry. Mirrors the opencode TUI semantics
  * (packages/tui/src/prompt/history.tsx + component/prompt/index.tsx),
  * adapted to a DOM textarea via getCursorLineInfo.
+ *
+ * Attachments (Epic 67): the "+" button is always visible in the input
+ * row; chips render between the options drawer and the textarea; send
+ * is blocked while any chip is uploading (D17) and carries only settled
+ * paths — the text is never mutated client-side (D11). The options
+ * drawer (D12) holds the model + persona selectors; its open state is
+ * the persisted user preference `composerDrawerOpen` ("auto" default
+ * expands on desktop and collapses on mobile).
  */
-export function Composer({ onSend, onAbort, disabled, streaming, placeholder = "Type a message...", userMessageHistory = [] }: Props) {
+export function Composer({
+  onSend,
+  onAbort,
+  disabled,
+  streaming,
+  placeholder = "Type a message...",
+  userMessageHistory = [],
+  workspaceId,
+  orgId,
+  attachments = [],
+  capViolation = false,
+  onAddFiles,
+  onRemoveAttachment,
+  onRetryAttachment,
+  onDismissCapViolation,
+}: Props) {
   const [text, setText] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const sendOnEnter = useUserSetting("sendOnEnter", false);
   const isMobile = useIsMobile();
+
+  // Upload-failure toast (U1.6.4): fires once per failed chip (tracked by
+  // id so retry→re-fail re-toasts), auto-dismisses after 4s.
+  const [uploadErrorNotice, setUploadErrorNotice] = useState<string | null>(null);
+  const toastedErrorIdsRef = useRef(new Set<string>());
+  useEffect(() => {
+    for (const chip of attachments) {
+      if (chip.status === "error" && !toastedErrorIdsRef.current.has(chip.id)) {
+        toastedErrorIdsRef.current.add(chip.id);
+        setUploadErrorNotice(
+          chip.error ? `Upload failed: ${chip.name} — ${chip.error}` : `Upload failed: ${chip.name}`,
+        );
+      }
+    }
+  }, [attachments]);
+  useEffect(() => {
+    if (!uploadErrorNotice) return;
+    const t = setTimeout(() => setUploadErrorNotice(null), 4000);
+    return () => clearTimeout(t);
+  }, [uploadErrorNotice]);
+
+  const drawerPref = useUserSetting<string>("composerDrawerOpen", "auto");
+  const drawerOpen = drawerPref === "auto" ? !isMobile : drawerPref === "open";
+  const toggleDrawer = () => {
+    void setUserSetting("composerDrawerOpen", drawerOpen ? "collapsed" : "open").catch(() => {});
+  };
+
+  const anyUploading = attachments.some((a) => a.status === "uploading");
 
   // History-browsing state. historyCursor === -1 means "not browsing".
   // 0..N-1 indexes into userMessageHistory (already newest-first).
@@ -97,8 +213,8 @@ export function Composer({ onSend, onAbort, disabled, streaming, placeholder = "
   const handleSubmit = (e?: { preventDefault: () => void }) => {
     e?.preventDefault();
     const trimmed = text.trim();
-    if (!trimmed || disabled) return;
-    onSend(trimmed);
+    if (!trimmed || disabled || anyUploading) return;
+    onSend(trimmed, attachments.filter((a) => a.status === "attached" && a.path).map((a) => a.path!));
     setText("");
     setHistoryCursor(-1);
     setSavedDraft(null);
@@ -208,7 +324,7 @@ export function Composer({ onSend, onAbort, disabled, streaming, placeholder = "
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   };
 
-  const canSend = text.trim().length > 0 && !disabled;
+  const canSend = text.trim().length > 0 && !disabled && !anyUploading;
 
   const sendShortcutLabel = isMobile
     ? null
@@ -228,9 +344,88 @@ export function Composer({ onSend, onAbort, disabled, streaming, placeholder = "
     </Button>
   );
 
+  const handleFileChange = (e: { target: { files: FileList | null; value: string } }) => {
+    const files = Array.from(e.target.files ?? []);
+    if (files.length > 0) onAddFiles?.(files);
+    e.target.value = "";
+  };
+
   return (
     <form onSubmit={handleSubmit} className="border-t border-border p-4">
+      {workspaceId && drawerOpen && (
+        <div
+          id="composer-options-drawer"
+          data-testid="composer-options-drawer"
+          className="flex flex-wrap items-center gap-2 pb-2"
+        >
+          <ModelSelector workspaceId={workspaceId} disabled={disabled} />
+          <RoleSelector workspaceId={workspaceId} orgId={orgId} disabled={disabled} />
+        </div>
+      )}
+
+      {attachments.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 pb-2">
+          {attachments.map((chip) => (
+            <ComposerChip key={chip.id} chip={chip} onRemove={onRemoveAttachment} onRetry={onRetryAttachment} />
+          ))}
+        </div>
+      )}
+
+      {uploadErrorNotice && (
+        <div role="status" aria-label="upload-error-notice" className="mb-2 rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive">
+          {uploadErrorNotice}
+        </div>
+      )}
+
+      {capViolation && (
+        <div role="status" className="mb-2 flex items-center justify-between gap-2 rounded-md border border-yellow-500/40 bg-yellow-500/10 px-2 py-1 text-xs text-yellow-800 dark:text-yellow-200">
+          <span>Attachment limit reached — up to 10 files per message.</span>
+          <button
+            type="button"
+            aria-label="Dismiss attachment notice"
+            onClick={onDismissCapViolation}
+            className="shrink-0 underline hover:no-underline"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
       <div className="flex items-end gap-2">
+        {workspaceId && (
+          <>
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="min-h-[44px] min-w-[44px]"
+              aria-label="Toggle composer options"
+              aria-expanded={drawerOpen}
+              aria-controls="composer-options-drawer"
+              onClick={toggleDrawer}
+            >
+              {drawerOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+            </Button>
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              hidden
+              data-testid="composer-file-input"
+              onChange={handleFileChange}
+            />
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="min-h-[44px] min-w-[44px]"
+              aria-label="Attach files"
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <Paperclip className="h-4 w-4" />
+            </Button>
+          </>
+        )}
         <textarea
           ref={textareaRef}
           value={text}

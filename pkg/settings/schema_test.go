@@ -4,6 +4,7 @@
 package settings
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -276,6 +277,34 @@ func TestSendOnEnterDefaultFalse(t *testing.T) {
 	}
 	if def.Default != false {
 		t.Errorf("sendOnEnter default = %v, want false (desktop Enter is newline by default; Ctrl/Cmd+Enter sends)", def.Default)
+	}
+}
+
+// TestComposerDrawerOpenEnum pins the composer options-drawer preference
+// (Epic 67 D12). The frontend reads it via useUserSetting("composerDrawerOpen", "auto"):
+// "auto" expands on desktop and collapses on mobile (media-query-aware default),
+// "open"/"collapsed" are the persisted explicit overrides. The enum keeps the
+// unset state distinguishable from an explicit choice, which a bool cannot.
+func TestComposerDrawerOpenEnum(t *testing.T) {
+	idx := UserSettingIndex()
+	def, ok := idx["composerDrawerOpen"]
+	if !ok {
+		t.Fatal("composerDrawerOpen missing from UserSettings")
+	}
+	if def.Type != TypeEnum {
+		t.Fatalf("composerDrawerOpen type = %v, want TypeEnum", def.Type)
+	}
+	if !reflect.DeepEqual(def.Enum, []string{"auto", "open", "collapsed"}) {
+		t.Errorf("composerDrawerOpen enum = %v, want [auto open collapsed]", def.Enum)
+	}
+	if def.Default != "auto" {
+		t.Errorf("composerDrawerOpen default = %v, want auto", def.Default)
+	}
+	if err := Validate(def, "collapsed"); err != nil {
+		t.Errorf("collapsed rejected: %v", err)
+	}
+	if err := Validate(def, "bogus"); err == nil {
+		t.Error("bogus value accepted")
 	}
 }
 

@@ -73,6 +73,14 @@ func (m *MockAPIClient) SendMessage(ctx context.Context, workspaceID, sessionID,
 	return args.String(0), args.Error(1)
 }
 
+func (m *MockAPIClient) UploadFile(ctx context.Context, workspaceID, filename string, content []byte) (*UploadResp, error) {
+	args := m.Called(ctx, workspaceID, filename, content)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*UploadResp), args.Error(1)
+}
+
 func (m *MockAPIClient) CreateCredential(ctx context.Context, req CreateCredentialReq) (*CredentialResp, error) {
 	args := m.Called(ctx, req)
 	if args.Get(0) == nil {

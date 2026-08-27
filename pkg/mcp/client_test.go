@@ -283,9 +283,12 @@ func TestHTTPClient_SendMessage_SSEResponse(t *testing.T) {
 	mux.HandleFunc("/api/v1/workspaces/ws-1/session-events", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher := w.(http.Flusher)
-		fmt.Fprintf(w, "data: {\"type\":\"content\",\"content\":\"Hello \"}\n\n")
+		// The real broker shape (#1053): contract events ride
+		// session.event envelopes, and streamed text arrives as
+		// part.delta payloads inside data.
+		fmt.Fprintf(w, "data: {\"type\":\"session.event\",\"session_id\":\"sess-1\",\"data\":{\"type\":\"part.delta\",\"sessionId\":\"sess-1\",\"delta\":\"Hello \"}}\n\n")
 		flusher.Flush()
-		fmt.Fprintf(w, "data: {\"type\":\"content\",\"content\":\"world!\"}\n\n")
+		fmt.Fprintf(w, "data: {\"type\":\"session.event\",\"session_id\":\"sess-1\",\"data\":{\"type\":\"part.delta\",\"sessionId\":\"sess-1\",\"delta\":\"world!\"}}\n\n")
 		flusher.Flush()
 		fmt.Fprintf(w, "data: {\"type\":\"session.status\",\"session_id\":\"sess-1\",\"status\":\"idle\"}\n\n")
 		flusher.Flush()
@@ -297,6 +300,33 @@ func TestHTTPClient_SendMessage_SSEResponse(t *testing.T) {
 	resp, err := client.SendMessage(context.Background(), "ws-1", "sess-1", "hi", 5*time.Second)
 	require.NoError(t, err)
 	assert.Equal(t, "Hello world!", resp)
+}
+
+// TestHTTPClient_SendMessage_SSEOtherSessionDelta_Ignored: deltas from
+// another session on the same workspace stream must not bleed into this
+// call's response.
+func TestHTTPClient_SendMessage_SSEOtherSessionDelta_Ignored(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/prompt", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/api/v1/workspaces/ws-1/session-events", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		fmt.Fprintf(w, "data: {\"type\":\"session.event\",\"session_id\":\"sess-2\",\"data\":{\"type\":\"part.delta\",\"sessionId\":\"sess-2\",\"delta\":\"other session\"}}\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "data: {\"type\":\"session.event\",\"session_id\":\"sess-1\",\"data\":{\"type\":\"part.delta\",\"sessionId\":\"sess-1\",\"delta\":\"mine\"}}\n\n")
+		flusher.Flush()
+		fmt.Fprintf(w, "data: {\"type\":\"session.status\",\"session_id\":\"sess-1\",\"status\":\"idle\"}\n\n")
+		flusher.Flush()
+	})
+
+	client, ts := newTestHTTPClient(mux)
+	defer ts.Close()
+
+	resp, err := client.SendMessage(context.Background(), "ws-1", "sess-1", "hi", 5*time.Second)
+	require.NoError(t, err)
+	assert.Equal(t, "mine", resp)
 }
 
 func TestHTTPClient_SendMessage_FallbackToHistory(t *testing.T) {
@@ -403,7 +433,7 @@ func TestHTTPClient_SendMessage_SSEWithKeepalives(t *testing.T) {
 		flusher.Flush()
 		fmt.Fprintf(w, "retry: 3000\n\n")
 		flusher.Flush()
-		fmt.Fprintf(w, "data: {\"type\":\"content\",\"content\":\"answer\"}\n\n")
+		fmt.Fprintf(w, "data: {\"type\":\"session.event\",\"session_id\":\"sess-1\",\"data\":{\"type\":\"part.delta\",\"sessionId\":\"sess-1\",\"delta\":\"answer\"}}\n\n")
 		flusher.Flush()
 		fmt.Fprintf(w, "data: not-json-at-all\n\n")
 		flusher.Flush()
@@ -492,7 +522,7 @@ func TestHTTPClient_SendMessage_IgnoresIdleForOtherSession(t *testing.T) {
 		fmt.Fprintf(w, "data: {\"type\":\"session.status\",\"session_id\":\"sess-OTHER\",\"status\":\"idle\"}\n\n")
 		flusher.Flush()
 		// Content for our session
-		fmt.Fprintf(w, "data: {\"type\":\"content\",\"content\":\"result\"}\n\n")
+		fmt.Fprintf(w, "data: {\"type\":\"session.event\",\"session_id\":\"sess-1\",\"data\":{\"type\":\"part.delta\",\"sessionId\":\"sess-1\",\"delta\":\"result\"}}\n\n")
 		flusher.Flush()
 		// Idle for OUR session — should break
 		fmt.Fprintf(w, "data: {\"type\":\"session.status\",\"session_id\":\"sess-1\",\"status\":\"idle\"}\n\n")
@@ -518,7 +548,7 @@ func TestHTTPClient_SendMessage_IgnoresBusyEvents(t *testing.T) {
 		// Busy event — should be ignored
 		fmt.Fprintf(w, "data: {\"type\":\"session.status\",\"session_id\":\"sess-1\",\"status\":\"busy\"}\n\n")
 		flusher.Flush()
-		fmt.Fprintf(w, "data: {\"type\":\"content\",\"content\":\"done\"}\n\n")
+		fmt.Fprintf(w, "data: {\"type\":\"session.event\",\"session_id\":\"sess-1\",\"data\":{\"type\":\"part.delta\",\"sessionId\":\"sess-1\",\"delta\":\"done\"}}\n\n")
 		flusher.Flush()
 		fmt.Fprintf(w, "data: {\"type\":\"session.status\",\"session_id\":\"sess-1\",\"status\":\"idle\"}\n\n")
 		flusher.Flush()

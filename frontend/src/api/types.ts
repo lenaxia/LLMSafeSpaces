@@ -153,7 +153,6 @@ export interface MessagePart {
   // boundary gate matches live SSE part.updated events against history
   // part ids AND call ids — see ChatPage historyPartIds.
   toolCallId?: string;
-  files?: string[];
   hash?: string;
   toolState?: string;
   toolOutput?: string;
@@ -178,6 +177,12 @@ export interface SendMessageRequest {
   // retry loop so a retried POST cannot double-send; the API dedupes on
   // accept and returns the original acceptance for a duplicate.
   clientMessageID?: string;
+  /**
+   * Epic 67 (D11): workspace upload paths to attach. The BACKEND composes
+   * the attachment manifest into the dispatched text — the client never
+   * mutates the text itself.
+   */
+  files?: string[];
 }
 
 export interface ApiKey {

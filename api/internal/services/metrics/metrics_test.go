@@ -178,3 +178,17 @@ func TestRecordAgentEvent(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, 1.0, counterValue(u))
 }
+
+func TestRecordUploadRequest_IncrementsCounter(t *testing.T) {
+	pre := getCounterValue(uploadsTotal.With(prometheus.Labels{"reason": "cap"}))
+	RecordUploadRequest("cap")
+	post := getCounterValue(uploadsTotal.With(prometheus.Labels{"reason": "cap"}))
+	assert.Equal(t, pre+1, post)
+}
+
+func TestRecordUploadRequest_EmptyReasonCountsUnknown(t *testing.T) {
+	pre := getCounterValue(uploadsTotal.With(prometheus.Labels{"reason": "unknown"}))
+	RecordUploadRequest("")
+	post := getCounterValue(uploadsTotal.With(prometheus.Labels{"reason": "unknown"}))
+	assert.Equal(t, pre+1, post)
+}

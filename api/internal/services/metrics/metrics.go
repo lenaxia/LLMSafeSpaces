@@ -721,3 +721,40 @@ func RecordMCPServerOp(scope, action string) {
 func RecordMCPBinding(sourceType string) {
 	mcpBindingsTotal.WithLabelValues(sourceType).Inc()
 }
+
+// --- Epic 67 US-67.2: workspace upload route metrics ---
+
+var (
+	// uploadsTotal counts POST /workspaces/:id/uploads resolutions by
+	// outcome reason (design epic-67 Observability; U1.2.21). Reasons are
+	// exhaustively enumerated: "success", "cap", "phase", "disk",
+	// "agentd_error". Auth rejections are counted by the auth layer's own
+	// metrics (they occur in middleware, before the upload handler runs);
+	// request-shape 400/415/404 rejections are visible in api_requests_total
+	// by status code.
+	uploadsTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "llmsafespaces_uploads_total",
+			Help: "Total workspace file uploads by outcome reason (success, cap, phase, disk, agentd_error).",
+		},
+		[]string{"reason"},
+	)
+)
+
+// RecordUploadRequest increments the upload outcome counter. reason must be
+// one of "success", "cap", "phase", "disk", "agentd_error"; an empty reason
+// is counted as "unknown".
+func RecordUploadRequest(reason string) {
+	if reason == "" {
+		reason = "unknown"
+	}
+	uploadsTotal.WithLabelValues(reason).Inc()
+}
+
+// UploadsCounter exposes the underlying CounterVec so tests can reset it
+// between cases (Prometheus counters are process-global) and assert on
+// labeled values. Not intended for production code paths — use
+// RecordUploadRequest.
+func UploadsCounter() *prometheus.CounterVec {
+	return uploadsTotal
+}

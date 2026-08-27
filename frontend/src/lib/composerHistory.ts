@@ -1,4 +1,5 @@
 import type { Message } from "../api/types";
+import { parseAttachments } from "./attachments";
 
 /**
  * Extract the plain text of every user message in `messages`, in
@@ -9,6 +10,10 @@ import type { Message } from "../api/types";
  * parts (see transformHistory in api/messages.ts), but we filter
  * defensively so a malformed or future-shaped message cannot corrupt
  * the history list.
+ *
+ * Trailing attachment-manifest blocks are stripped (Epic 67 D11):
+ * history candidates are the user's prose, never the composed manifest
+ * lines. Manifest-only messages have empty prose and are dropped.
  *
  * Whitespace-only and part-less user messages are dropped — they are
  * not useful as prompt-history candidates.
@@ -26,8 +31,9 @@ export function extractUserMessageTexts(messages: Message[]): string[] {
         text += part.text;
       }
     }
-    if (text.trim().length > 0) {
-      out.push(text);
+    const prose = parseAttachments(text).text;
+    if (prose.trim().length > 0) {
+      out.push(prose);
     }
   }
   return out;
