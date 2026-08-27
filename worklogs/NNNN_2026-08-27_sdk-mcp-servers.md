@@ -67,3 +67,29 @@ None.
 - `sdks/python/`: types.py, client.py, async_client.py, __init__.py, 2 test files
 - `sdks/java/`: LLMSafeSpacesClient.java (wiring), 3 new services, client test (+2)
 - VS Code removal: `sdks/vscode-llmsafespaces/**` deleted; ci.yml, mutation.yml, security-scan.yml, .golangci.yml, Makefile, docs/api/sdks.md cleaned
+
+---
+
+## Review round 2 addendum
+
+- **Canaries (was deferred)**: S-MCP-CRUD added to all three canary runners
+  (Go/TS/Python) + registered in the Makefile SHALLOW lists — full CRUD +
+  auto-apply round-trip with cleanup and two negative cases.
+- **Hurl contract case**: `sdks/tests/contract/mcp-servers.hurl` (9 steps
+  incl. bind/auto-apply + documented-409 error contract), verified green
+  locally against Prism (hurl 5.0.1) — all 11 contract files pass.
+- **Spec accuracy fixes found by the Hurl run** (pre-existing thin MCP
+  entries): org/user-scope list/get/update/delete/auto-apply responses had
+  NO content blocks; user create lacked the 409 body; user+org auto-apply
+  create lacked the requestBody (Prism 415). All patched to the real wire
+  (`{"servers":[...]}`, `{"rules":[...]}`, `{"deleted":true}`,
+  `{"bound":true}`, Conflict ref). McpServer gained `required` + example.
+- **SDK test mocks aligned to true codes**: delete 200 `{deleted:true}` and
+  bind 200 `{bound:true}` (were 204/201).
+- Trivy step repaired (review round 1 fallout: whitespace-only line broke
+  the continuation chain in security-scan.yml).
+
+Self-inflicted-damage log: one perl replacement inserted a 3-space path
+indent (YAML parse error — caught by validator); another stripped Java
+escapes (caught on read-back). Both fixed; lesson re-confirmed: file
+surgery via anchored edits, never ad-hoc regex on structured files.

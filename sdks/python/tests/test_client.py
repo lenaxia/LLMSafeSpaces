@@ -738,7 +738,7 @@ def test_mcp_servers_user_scope_crud():
     update_route = respx.put(f"{BASE}/me/mcp-servers/srv-1").respond(
         json={"id": "srv-1", "name": "renamed", "transport": "http", "hasSecret": False, "enabled": True}
     )
-    delete_route = respx.delete(f"{BASE}/me/mcp-servers/srv-1").respond(status_code=204)
+    delete_route = respx.delete(f"{BASE}/me/mcp-servers/srv-1").respond(status_code=200, json={"deleted": True})
 
     client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
     srv = client.mcp_servers.create({"name": "n", "transport": "http", "url": "https://m.example"})
@@ -759,7 +759,7 @@ def test_mcp_servers_user_scope_crud():
 
 @respx.mock
 def test_mcp_servers_bind_and_auto_apply():
-    bind_route = respx.post(f"{BASE}/me/mcp-servers/srv-1/bindings").respond(status_code=201)
+    bind_route = respx.post(f"{BASE}/me/mcp-servers/srv-1/bindings").respond(status_code=200, json={"bound": True})
     aa_route = respx.post(f"{BASE}/me/mcp-servers/srv-1/auto-apply").respond(
         status_code=201, json={"created": True}
     )

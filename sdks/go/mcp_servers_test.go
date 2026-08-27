@@ -40,7 +40,7 @@ func TestMcpServers_UserScopeCRUD(t *testing.T) {
 			json.NewDecoder(r.Body).Decode(&gotBody)
 			fmt.Fprint(w, `{"id":"srv-1","name":"renamed","transport":"http"}`)
 		case gotPath == "/api/v1/me/mcp-servers/srv-1" && gotMethod == "DELETE":
-			w.WriteHeader(204)
+			fmt.Fprint(w, `{"deleted":true}`)
 		default:
 			t.Errorf("unexpected %s %s", gotMethod, gotPath)
 			w.WriteHeader(404)
@@ -112,7 +112,7 @@ func TestMcpServers_BindAndAutoApply(t *testing.T) {
 		switch {
 		case gotPath == "/api/v1/me/mcp-servers/srv-1/bindings" && gotMethod == "POST":
 			json.NewDecoder(r.Body).Decode(&gotBody)
-			w.WriteHeader(201)
+			fmt.Fprint(w, `{"bound":true}`)
 		case gotPath == "/api/v1/me/mcp-servers/srv-1/bindings/ws-1" && gotMethod == "DELETE":
 			w.WriteHeader(204)
 		case gotPath == "/api/v1/me/mcp-servers/srv-1/auto-apply" && gotMethod == "POST":

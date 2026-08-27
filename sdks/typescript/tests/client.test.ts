@@ -531,7 +531,7 @@ describe("mcpServers (user scope)", () => {
 
   it("bind + auto-apply send the documented bodies", async () => {
     const client = new LLMSafeSpaces({ baseUrl: "http://localhost:8080", apiKey: "lsp_test123" });
-    mockFetch.mockResolvedValueOnce(new Response(null, { status: 201 }));
+    mockFetch.mockResolvedValueOnce(jsonResponse({ bound: true }));
     await client.mcpServers.bind("srv-1", "ws-1");
     expect(mockFetch.mock.calls[0][0]).toBe("http://localhost:8080/api/v1/me/mcp-servers/srv-1/bindings");
     expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({ workspaceId: "ws-1" });

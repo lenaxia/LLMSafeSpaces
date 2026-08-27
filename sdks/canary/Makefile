@@ -26,6 +26,7 @@ canary-ci: canary-go-fast canary-python-fast canary-typescript-fast canary-mcp-f
 GO_SHALLOW := s-health s-auth s-auth-config s-logout s-apikey s-user-settings \
               s-ws-crud s-ws-status s-secret-crud s-secret-reveal s-secret-audit \
               s-secret-bindings s-env-vars s-cred-crud s-error-format \
+              s-mcp-crud
               s-ownership
 
 GO_DEEP := d-ws-lifecycle d-session-ensure d-session-msg d-prompt-async \
@@ -52,6 +53,7 @@ canary-go: canary-go-fast canary-go-deep
 PY_SHALLOW := s_health s_auth s_auth_config s_logout s_apikey s_user_settings \
               s_ws_crud s_ws_status s_secret_crud s_secret_reveal s_secret_audit \
               s_secret_bindings s_env_vars s_cred_crud s_error_format s_ownership
+              s_mcp_crud
 
 PY_DEEP := d_ws_lifecycle d_session_ensure d_session_msg d_prompt_async \
            d_cred_bind d_cred_model_flow d_suspend_resume_session d_sse_events
@@ -78,6 +80,7 @@ canary-python: canary-python-fast canary-python-deep
 TS_SHALLOW := s-health s-auth s-auth-config s-logout s-apikey s-user-settings \
               s-ws-crud s-ws-status s-secret-crud s-secret-reveal s-secret-audit \
               s-secret-bindings s-env-vars s-cred-crud s-error-format s-ownership
+              s-mcp-crud
 
 TS_DEEP := d-ws-lifecycle d-session-ensure d-session-msg d-prompt-async \
            d-cred-bind d-cred-model-flow d-suspend-resume-session d-sse-events

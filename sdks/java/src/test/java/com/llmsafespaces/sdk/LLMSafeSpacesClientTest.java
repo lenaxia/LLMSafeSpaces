@@ -420,17 +420,16 @@ class LLMSafeSpacesClientTest {
             byte[] body;
             int status = 200;
             if ("POST".equals(gotMethod[0]) && gotPath[0].equals("/api/v1/me/mcp-servers")) {
-                body = "{"id":"srv-1","name":"n","transport":"http"}".getBytes();
+                body = "{\"id\":\"srv-1\",\"name\":\"n\",\"transport\":\"http\"}".getBytes();
                 status = 201;
             } else if ("GET".equals(gotMethod[0]) && gotPath[0].equals("/api/v1/me/mcp-servers")) {
-                body = "{"servers":[{"id":"srv-1","name":"n","transport":"stdio"}]}".getBytes();
+                body = "{\"servers\":[{\"id\":\"srv-1\",\"name\":\"n\",\"transport\":\"stdio\"}]}".getBytes();
             } else if ("PUT".equals(gotMethod[0]) && gotPath[0].equals("/api/v1/me/mcp-servers/srv-1")) {
-                body = "{"id":"srv-1","name":"renamed","transport":"http"}".getBytes();
+                body = "{\"id\":\"srv-1\",\"name\":\"renamed\",\"transport\":\"http\"}".getBytes();
             } else if ("DELETE".equals(gotMethod[0])) {
-                body = new byte[0];
-                status = 204;
+                body = "{\"deleted\":true}".getBytes();
             } else {
-                body = "{"id":"srv-1","name":"n"}".getBytes();
+                body = "{\"id\":\"srv-1\",\"name\":\"n\"}".getBytes();
             }
             if (body.length == 0) {
                 exchange.sendResponseHeaders(status, -1);

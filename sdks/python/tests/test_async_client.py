@@ -440,7 +440,7 @@ async def test_mcp_servers_async_crud():
     list_route = respx.get(f"{BASE}/api/v1/me/mcp-servers").respond(
         json={"servers": [{"id": "srv-1", "name": "n", "transport": "http", "hasSecret": False, "enabled": True}]}
     )
-    bind_route = respx.post(f"{BASE}/api/v1/me/mcp-servers/srv-1/bindings").respond(status_code=201)
+    bind_route = respx.post(f"{BASE}/api/v1/me/mcp-servers/srv-1/bindings").respond(status_code=200, json={"bound": True})
 
     async with AsyncLLMSafeSpaces(BASE, api_key="lsp_test") as client:
         srv = await client.mcp_servers.create({"name": "n", "transport": "http"})
