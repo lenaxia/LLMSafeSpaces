@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { LLMSafeSpaces } from "../src/client.js";
-import { AuthError, NotFoundError, TimeoutError, LLMSafeSpacesError, ServiceUnavailableError, RateLimitError } from "../src/errors.js";
+import { AuthError, NotFoundError, ConflictError, TimeoutError, LLMSafeSpacesError, ServiceUnavailableError, RateLimitError } from "../src/errors.js";
 
 // Mock fetch globally
 const mockFetch = vi.fn();
@@ -553,5 +553,37 @@ describe("mcpServers (user scope)", () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({ servers: [] }));
     await client.orgMcpServers.list("org-9");
     expect(mockFetch.mock.calls[2][0]).toBe("http://localhost:8080/api/v1/orgs/org-9/mcp-servers");
+  });
+});
+
+// #1046 review round 1: unhappy paths + edge cases
+describe("mcpServers (unhappy paths)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("propagates 404/409/400 as typed errors", async () => {
+    const client = new LLMSafeSpaces({ baseUrl: "http://localhost:8080", apiKey: "lsp_test123" });
+    mockFetch.mockResolvedValueOnce(errorResponse("mcp server not found", 404));
+    await expect(client.mcpServers.get("missing")).rejects.toBeInstanceOf(NotFoundError);
+
+    mockFetch.mockResolvedValueOnce(errorResponse("name already in use", 409));
+    await expect(client.mcpServers.create({ name: "dup", transport: "http" })).rejects.toBeInstanceOf(ConflictError);
+
+    mockFetch.mockResolvedValueOnce(errorResponse("transport is immutable", 400));
+    await expect(client.mcpServers.update("srv-1", {})).rejects.toBeInstanceOf(LLMSafeSpacesError);
+  });
+
+  it("returns [] for an empty list and tolerates a bare-array response", async () => {
+    const client = new LLMSafeSpaces({ baseUrl: "http://localhost:8080", apiKey: "lsp_test123" });
+    mockFetch.mockResolvedValueOnce(jsonResponse({ servers: [] }));
+    expect(await client.mcpServers.list()).toEqual([]);
+
+    // some deployments return a bare array; the SDK unwraps both shapes
+    mockFetch.mockResolvedValueOnce(jsonResponse([]));
+    expect(await client.mcpServers.list()).toEqual([]);
+
+    mockFetch.mockResolvedValueOnce(jsonResponse({ rules: [] }));
+    expect(await client.mcpServers.listAutoApply("srv-1")).toEqual([]);
   });
 });

@@ -149,3 +149,69 @@ func TestMcpServers_BindAndAutoApply(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// Unhappy paths (review round 1): error propagation + edge cases.
+func TestMcpServers_UnhappyPaths(t *testing.T) {
+	c := newMcpTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/api/v1/me/mcp-servers/missing" && r.Method == "GET":
+			w.WriteHeader(404)
+			fmt.Fprint(w, `{"error":"mcp server not found"}`)
+		case r.URL.Path == "/api/v1/me/mcp-servers" && r.Method == "POST":
+			w.WriteHeader(409)
+			fmt.Fprint(w, `{"error":"name already in use"}`)
+		case r.URL.Path == "/api/v1/me/mcp-servers/srv-1" && r.Method == "PUT":
+			w.WriteHeader(400)
+			fmt.Fprint(w, `{"error":"transport is immutable"}`)
+		case r.URL.Path == "/api/v1/me/mcp-servers" && r.Method == "GET":
+			fmt.Fprint(w, `{"servers":[]}`)
+		default:
+			w.WriteHeader(404)
+		}
+	})
+
+	_, err := c.McpServers.Get(context.Background(), "missing")
+	if !IsNotFound(err) {
+		t.Fatalf("expected 404 APIError, got %v", err)
+	}
+
+	_, err = c.McpServers.Create(context.Background(), CreateMcpServerRequest{Name: "dup", Transport: "http"})
+	if !IsConflict(err) {
+		t.Fatalf("expected 409 APIError, got %v", err)
+	}
+
+	_, err = c.McpServers.Update(context.Background(), "srv-1", UpdateMcpServerRequest{})
+	if apiErr, ok := err.(*APIError); !ok || apiErr.Status != 400 {
+		t.Fatalf("expected 400 APIError, got %v", err)
+	}
+
+	empty, err := c.McpServers.List(context.Background())
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("empty list edge: %v %+v", err, empty)
+	}
+}
+
+// Both admin deleteAutoApply path variants (review round 1).
+func TestMcpServers_AdminDeleteAutoApplyVariants(t *testing.T) {
+	var gotPaths []string
+	c := newMcpTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotPaths = append(gotPaths, r.Method+" "+r.URL.Path)
+		w.WriteHeader(204)
+	})
+
+	if err := c.AdminMcpServers.DeleteAutoApply(context.Background(), "srv-1", "all", nil); err != nil {
+		t.Fatalf("targetType-only: %v", err)
+	}
+	if err := c.AdminMcpServers.DeleteAutoApply(context.Background(), "srv-1", "user", strPtr("u-1")); err != nil {
+		t.Fatalf("targetType+targetId: %v", err)
+	}
+	want := []string{
+		"DELETE /api/v1/admin/mcp-servers/srv-1/auto-apply/all",
+		"DELETE /api/v1/admin/mcp-servers/srv-1/auto-apply/user/u-1",
+	}
+	for i, w := range want {
+		if gotPaths[i] != w {
+			t.Fatalf("path[%d] = %s, want %s", i, gotPaths[i], w)
+		}
+	}
+}

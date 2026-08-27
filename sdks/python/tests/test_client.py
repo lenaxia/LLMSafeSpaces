@@ -791,3 +791,34 @@ def test_mcp_servers_admin_and_org_scopes():
     assert client.org_mcp_servers.list("org-9") == []
     client.admin_mcp_servers.delete_auto_apply("srv-1", "user")
     assert admin_route.called and org_route.called and del_aa_route.called
+
+
+@respx.mock
+def test_mcp_servers_unhappy_paths():
+    respx.get(f"{BASE}/me/mcp-servers/missing").respond(
+        status_code=404, json={"error": "mcp server not found"}
+    )
+    respx.post(f"{BASE}/me/mcp-servers").respond(
+        status_code=409, json={"error": "name already in use"}
+    )
+    respx.get(f"{BASE}/me/mcp-servers").respond(json={"servers": []})
+    respx.get(f"{BASE}/me/mcp-servers/srv-1/auto-apply").respond(json={"rules": []})
+
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    with pytest.raises(NotFoundError):
+        client.mcp_servers.get("missing")
+    with pytest.raises(ConflictError):
+        client.mcp_servers.create({"name": "dup", "transport": "http"})
+    assert client.mcp_servers.list() == []
+    assert client.mcp_servers.list_auto_apply("srv-1") == []
+
+
+@respx.mock
+def test_mcp_servers_admin_delete_auto_apply_variants():
+    bare = respx.delete(f"{BASE}/admin/mcp-servers/srv-1/auto-apply/all").respond(status_code=204)
+    scoped = respx.delete(f"{BASE}/admin/mcp-servers/srv-1/auto-apply/user/u-1").respond(status_code=204)
+
+    client = LLMSafeSpaces("http://localhost:8080", api_key="lsp_test")
+    client.admin_mcp_servers.delete_auto_apply("srv-1", "all")
+    client.admin_mcp_servers.delete_auto_apply("srv-1", "user", "u-1")
+    assert bare.called and scoped.called

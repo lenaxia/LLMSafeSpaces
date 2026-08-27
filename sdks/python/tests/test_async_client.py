@@ -449,3 +449,14 @@ async def test_mcp_servers_async_crud():
         assert listed[0]["id"] == "srv-1"
         await client.mcp_servers.bind("srv-1", "ws-1")
     assert create_route.called and list_route.called and bind_route.called
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_mcp_servers_async_unhappy_path():
+    respx.get(f"{BASE}/api/v1/me/mcp-servers/missing").respond(
+        status_code=404, json={"error": "mcp server not found"}
+    )
+    async with AsyncLLMSafeSpaces(BASE, api_key="lsp_test") as client:
+        with pytest.raises(NotFoundError):
+            await client.mcp_servers.get("missing")

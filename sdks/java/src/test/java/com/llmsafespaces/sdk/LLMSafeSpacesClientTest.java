@@ -494,4 +494,41 @@ class LLMSafeSpacesClientTest {
             server.stop(0);
         }
     }
+
+    @org.junit.jupiter.api.Test
+    void mcpServers_unhappyPaths() throws Exception {
+        var server = startMockServer(404, "{"error":"mcp server not found"}");
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            org.junit.jupiter.api.Assertions.assertThrows(
+                    NotFoundException.class, () -> client.mcpServers.get("missing"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @org.junit.jupiter.api.Test
+    void mcpServers_adminDeleteAutoApplyVariants() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        final java.util.List<String> paths = new java.util.ArrayList<>();
+        server.createContext("/api/v1/", exchange -> {
+            paths.add(exchange.getRequestURI().getPath());
+            exchange.sendResponseHeaders(204, -1);
+            exchange.close();
+        });
+        server.start();
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            client.adminMcpServers.deleteAutoApply("srv-1", "all", null);
+            client.adminMcpServers.deleteAutoApply("srv-1", "user", "u-1");
+            org.junit.jupiter.api.Assertions.assertEquals(
+                    "/api/v1/admin/mcp-servers/srv-1/auto-apply/all", paths.get(0));
+            org.junit.jupiter.api.Assertions.assertEquals(
+                    "/api/v1/admin/mcp-servers/srv-1/auto-apply/user/u-1", paths.get(1));
+        } finally {
+            server.stop(0);
+        }
+    }
 }
