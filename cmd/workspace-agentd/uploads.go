@@ -216,6 +216,7 @@ func uploadFilesHandler(logger *zap.Logger, cfg fileUploadConfig, workspacePassw
 				return
 			}
 			if err := sink.Close(); err != nil {
+				//nolint:gosec // G703: tmpPath is server-generated (uuid + operator-configured root); no client bytes reach it
 				_ = os.Remove(tmpPath)
 				logger.Warn("upload: close failed", zap.Error(err))
 				pkgOpsMetrics.RecordUploadOutcome(uploadWorkspaceID(), uploadOutcomeWriteError)
@@ -223,6 +224,7 @@ func uploadFilesHandler(logger *zap.Logger, cfg fileUploadConfig, workspacePassw
 				return
 			}
 			if err := cfg.rename(tmpPath, finalPath); err != nil {
+				//nolint:gosec // G703: tmpPath is server-generated (uuid + operator-configured root); no client bytes reach it
 				_ = os.Remove(tmpPath)
 				logger.Warn("upload: rename failed", zap.Error(err))
 				pkgOpsMetrics.RecordUploadOutcome(uploadWorkspaceID(), uploadOutcomeWriteError)
@@ -251,6 +253,7 @@ func uploadFilesHandler(logger *zap.Logger, cfg fileUploadConfig, workspacePassw
 // partial file behind.
 func abortUploadTmp(sink uploadSink, tmpPath string) {
 	_ = sink.Close()
+	//nolint:gosec // G703: tmpPath is server-generated (uuid + operator-configured root); no client bytes reach it
 	_ = os.Remove(tmpPath)
 }
 
