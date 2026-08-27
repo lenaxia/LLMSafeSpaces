@@ -25,6 +25,7 @@ import (
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
+	"github.com/lenaxia/llmsafespaces/pkg/session/attachments"
 )
 
 func (h *ProxyHandler) CreateSession(c *gin.Context) {
@@ -77,6 +78,10 @@ func (h *ProxyHandler) SendMessage(c *gin.Context) {
 		return
 	}
 	wid := c.Param("id")
+
+	if rejectMessageRouteFiles(c) {
+		return
+	}
 
 	// Adapter path (US-65.4): adapter.Send returns a typed
 	// session.Message with contract-shaped parts. The response is
@@ -212,6 +217,14 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 	if perr != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": perr.Error()})
 		return
+	}
+	if files := extractPromptFiles(bodyBytes); len(files) > 0 {
+		composed, cerr := attachments.Compose(text, files)
+		if cerr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": cerr.Error()})
+			return
+		}
+		text = composed
 	}
 	if len(text) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "text must not be empty"})
@@ -417,6 +430,43 @@ func extractPromptText(body []byte) (string, error) {
 		}
 	}
 	return sb.String(), nil
+}
+
+func extractPromptFiles(body []byte) []string {
+	var parsed struct {
+		Files []string `json:"files"`
+	}
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return nil
+	}
+	return parsed.Files
+}
+
+func rejectMessageRouteFiles(c *gin.Context) bool {
+	if c.Request.Body == nil || c.Request.ContentLength == 0 {
+		return false
+	}
+	limited := http.MaxBytesReader(c.Writer, c.Request.Body, 10*1024*1024)
+	bodyBytes, err := io.ReadAll(limited)
+	_ = c.Request.Body.Close()
+	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "request body exceeds 10 MB limit"})
+		} else {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read request body"})
+		}
+		return true
+	}
+	c.Request.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+	var probe struct {
+		Files []string `json:"files"`
+	}
+	if json.Unmarshal(bodyBytes, &probe) == nil && len(probe.Files) > 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "files not supported on this route; use /prompt"})
+		return true
+	}
+	return false
 }
 
 // modelOverrideAllowed enforces the org's allowed-models/allowed-providers
@@ -1233,8 +1283,9 @@ func (h *ProxyHandler) getPodIPAndPassword(ctx context.Context, workspaceID stri
 }
 
 type enqueueRequest struct {
-	ClientMessageID string `json:"clientMessageID,omitempty"`
-	Text            string `json:"text" binding:"required"`
+	ClientMessageID string   `json:"clientMessageID,omitempty"`
+	Text            string   `json:"text"`
+	Files           []string `json:"files,omitempty"`
 }
 
 // queuedMessageResponse is the typed JSON shape for a queue list entry.
@@ -1275,6 +1326,14 @@ func (h *ProxyHandler) EnqueueMessage(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request body"})
 		return
+	}
+	if len(req.Files) > 0 {
+		composed, cerr := attachments.Compose(req.Text, req.Files)
+		if cerr != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": cerr.Error()})
+			return
+		}
+		req.Text = composed
 	}
 	if len(req.Text) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "text must not be empty"})
