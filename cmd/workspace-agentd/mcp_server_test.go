@@ -543,12 +543,14 @@ func TestMCPHandler_ToolDescriptionGuidance(t *testing.T) {
 		d, ok := descs["dev_preview_url"]
 		require.True(t, ok, "dev_preview_url in tools/list")
 		for _, want := range []string{
-			"Offer it when", // capability framing, not imperative
-			"you have started or verified a web server", // proactive offer trigger
-			"nothing is listening on that port",         // when NOT to use
-			"it is deterministic",                       // no repeat calls
-			"Workspace Settings → Dev Preview",          // user-actionable failure path
-			"4096-4098",                                 // reserved ports named
+			"Offer it when",                               // capability framing, not imperative
+			"working on frontend/UI changes",              // frontend-work trigger: offer unprompted
+			"offer to spin up the dev preview unprompted", //   → start server + share link before being asked
+			"you have started or verified a web server",   // already-running trigger
+			"nothing is listening on that port",           // when NOT to use
+			"it is deterministic",                         // no repeat calls
+			"Workspace Settings → Dev Preview",            // user-actionable failure path
+			"4096-4098",                                   // reserved ports named
 		} {
 			assert.Contains(t, d, want)
 		}
