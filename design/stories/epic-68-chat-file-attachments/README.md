@@ -394,7 +394,7 @@ Tiers follow Rule 0 (TDD — tests written first, per story). Every scenario is 
 
 | # | Scenario | Layers | Expect |
 |---|----------|--------|--------|
-| I1 | Router: `POST /uploads` behind AuthMiddleware + WorkspaceAccessMiddleware — no JWT → 401; other user's workspace → 404 | router + fakes | enforced |
+| I1 | Router: `POST /uploads` behind AuthMiddleware + WorkspaceAccessMiddleware — no JWT → 401; other user's workspace → **403** (as-built run 33120763607: the middleware's platform-wide convention; the original 404 expectation was aspirational. Existence-oracle posture — 403 names the workspace, 404 would not — is a platform-wide security question affecting all ~90 routes, tracked outside this epic) | router + fakes | enforced |
 | I2 | Full vertical in-process: real upload handler → real agentd `PUT /v1/files` handler (httptest, temp dir as `/workspace`) → file on disk | handler + agentd | bytes identical; uuid path |
 | I3 | Cancellation: client aborts mid-25MiB stream; real agentd handler under test | handler + agentd | upstream write aborted; no file; no `.tmp` residue |
 | I4 | Concurrent: 8 parallel uploads, mixed sizes incl. boundary | handler + agentd | all succeed; distinct paths; hashes correct |

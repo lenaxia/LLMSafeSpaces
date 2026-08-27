@@ -265,8 +265,8 @@ PATH_B=$(printf '%s' "${BODY}" | python3 -c 'import json,sys; print(json.load(sy
 ok "both tenants uploaded (${PATH_A}, ${PATH_B})"
 
 upload_do "${WS_B}" "${KEY_A}" "evil.txt" /tmp/us67-a.txt
-[[ "${UPLOAD_STATUS}" == "404" ]] || die "E10: cross-user upload returned ${UPLOAD_STATUS} (want 404): ${BODY}"
-ok "cross-user upload denied (404)"
+[[ "${UPLOAD_STATUS}" == "403" ]] || die "E10: cross-user upload returned ${UPLOAD_STATUS} (want 403): ${BODY}"
+ok "cross-user upload denied (403)"
 
 LEAK=$(exec_ws "${WS_A}" sh -c "ls /workspace/uploads | grep -v notes-e2 | grep -v tenant-a || true")
 [[ -z "${LEAK}" ]] || die "E10: workspace A contains foreign files: ${LEAK}"
