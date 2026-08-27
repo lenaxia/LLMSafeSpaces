@@ -101,7 +101,7 @@ exec_ws() { # ws cmd...
 seed_workspace() { # ws user_id
     local ws="$1" user_id="$2"
     kc -n "${NS}" delete workspace "${ws}" --ignore-not-found >/dev/null 2>&1 || true
-    cat <<EOF | kc apply -f - >/dev/null
+    cat <<EOF | kc -n "${NS}" apply -f - >/dev/null
 apiVersion: llmsafespaces.dev/v1
 kind: Workspace
 metadata:
