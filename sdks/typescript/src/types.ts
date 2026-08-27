@@ -309,6 +309,17 @@ export interface QueuedMessage {
   retry_count: number;
 }
 
+/**
+ * Result of a workspace file upload (Epic 67): the absolute path of the
+ * stored file on the workspace PVC (/workspace/uploads/&lt;uuid&gt;-&lt;name&gt;),
+ * its sanitized name, and the stored byte count.
+ */
+export interface FileUpload {
+  path: string;
+  name: string;
+  size: number;
+}
+
 // MCP server management (Epic 53). Secrets (env/headers) are write-only —
 // responses carry hasSecret only.
 export interface McpServer {

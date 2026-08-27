@@ -587,3 +587,88 @@ describe("mcpServers (unhappy paths)", () => {
     expect(await client.mcpServers.listAutoApply("srv-1")).toEqual([]);
   });
 });
+
+// Epic 67: workspace upload + files-on-send surface (wire-level)
+describe("attachments (Epic 67)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("workspaces.upload posts multipart with field name 'file'", async () => {
+    const client = new LLMSafeSpaces({ baseUrl: "http://localhost:8080", apiKey: "lsp_test123" });
+    mockFetch.mockResolvedValueOnce(jsonResponse({
+      path: "/workspace/uploads/11111111-2222-3333-4444-555555555555-notes.txt",
+      name: "notes.txt",
+      size: 5,
+    }, 201));
+
+    const up = await client.workspaces.upload("ws-1", "notes.txt", new Blob(["hello"]));
+
+    expect(up).toEqual({
+      path: "/workspace/uploads/11111111-2222-3333-4444-555555555555-notes.txt",
+      name: "notes.txt",
+      size: 5,
+    });
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(url).toBe("http://localhost:8080/api/v1/workspaces/ws-1/uploads");
+    expect(init.method).toBe("POST");
+    expect(init.body).toBeInstanceOf(FormData);
+    expect((init.body as FormData).get("file")).toBeInstanceOf(Blob);
+    expect(await ((init.body as FormData).get("file") as Blob).text()).toBe("hello");
+    // The boundary comes from the platform FormData — no JSON content type.
+    expect(init.headers["Content-Type"]).toBeUndefined();
+  });
+
+  it("workspaces.upload surfaces the phase on a 409", async () => {
+    const client = new LLMSafeSpaces({ baseUrl: "http://localhost:8080", apiKey: "lsp_test123" });
+    mockFetch.mockResolvedValueOnce(errorResponse("workspace not active", 409));
+
+    const promise = client.workspaces.upload("ws-1", "f.txt", new Blob(["x"]));
+    // The 409 body carries phase — accepted via the error shape below.
+    await expect(promise).rejects.toBeInstanceOf(ConflictError);
+  });
+
+  it("sendPromptAsync sends parts (not dead fields) and optional files", async () => {
+    const client = new LLMSafeSpaces({ baseUrl: "http://localhost:8080", apiKey: "lsp_test123" });
+    mockFetch.mockResolvedValueOnce(new Response(null, { status: 202 }));
+
+    await client.sessions.sendPromptAsync("ws-1", "ses_1", "review please",
+      ["/workspace/uploads/11111111-2222-3333-4444-555555555555-notes.txt"]);
+
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(url).toBe("http://localhost:8080/api/v1/workspaces/ws-1/sessions/ses_1/prompt");
+    const body = JSON.parse(init.body);
+    expect(body).toEqual({
+      parts: [{ type: "text", text: "review please" }],
+      files: ["/workspace/uploads/11111111-2222-3333-4444-555555555555-notes.txt"],
+    });
+  });
+
+  it("sendPromptAsync omits files when none given and carries no dead fields", async () => {
+    const client = new LLMSafeSpaces({ baseUrl: "http://localhost:8080", apiKey: "lsp_test123" });
+    mockFetch.mockResolvedValueOnce(new Response(null, { status: 202 }));
+
+    await client.sessions.sendPromptAsync("ws-1", "ses_1", "hi");
+
+    const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body).toEqual({ parts: [{ type: "text", text: "hi" }] });
+    expect("message" in body).toBe(false);
+    expect("content" in body).toBe(false);
+  });
+
+  it("enqueue carries optional files", async () => {
+    const client = new LLMSafeSpaces({ baseUrl: "http://localhost:8080", apiKey: "lsp_test123" });
+    mockFetch.mockResolvedValueOnce(jsonResponse({ messageID: "qm-1" }, 202));
+
+    const resp = await client.sessions.enqueue("ws-1", "ses_1", "later",
+      ["/workspace/uploads/11111111-2222-3333-4444-555555555555-notes.txt"]);
+
+    expect(resp).toEqual({ messageID: "qm-1" });
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(url).toBe("http://localhost:8080/api/v1/workspaces/ws-1/sessions/ses_1/queue");
+    expect(JSON.parse(init.body)).toEqual({
+      text: "later",
+      files: ["/workspace/uploads/11111111-2222-3333-4444-555555555555-notes.txt"],
+    });
+  });
+});

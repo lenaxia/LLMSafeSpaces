@@ -2,6 +2,7 @@ package com.llmsafespaces.sdk.services;
 
 import com.google.gson.reflect.TypeToken;
 import com.llmsafespaces.sdk.LLMSafeSpacesClient;
+import com.llmsafespaces.sdk.models.FileUpload;
 import com.llmsafespaces.sdk.models.Workspace;
 import com.llmsafespaces.sdk.models.EnsureSessionResponse;
 
@@ -45,6 +46,18 @@ public class WorkspacesService {
 
     public Map<String, Object> getStatus(String id) {
         return c.request("GET", "/workspaces/" + id + "/status", null, Map.class);
+    }
+
+    /**
+     * Uploads a file into the workspace (Epic 67): multipart POST with a
+     * single part named {@code file}; the file lands on the workspace PVC
+     * under /workspace/uploads/. The returned path feeds the {@code files}
+     * parameter of {@code sessions.sendPromptAsync}/{@code sessions.enqueue}.
+     * The workspace must be Active; a 409 rejects with ConflictException
+     * carrying {@code phase}.
+     */
+    public FileUpload upload(String id, String filename, byte[] content) {
+        return c.requestMultipart("/workspaces/" + id + "/uploads", filename, content, FileUpload.class);
     }
 
     @SuppressWarnings("unchecked")

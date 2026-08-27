@@ -118,11 +118,13 @@ public class LLMSafeSpacesClient {
 
             if (resp.statusCode() >= 400) {
                 String msg = "Unknown error";
+                String phase = null;
                 try {
                     var err = JsonParser.parseString(resp.body()).getAsJsonObject();
                     if (err.has("error")) msg = err.get("error").getAsString();
+                    if (err.has("phase")) phase = err.get("phase").getAsString();
                 } catch (Exception ignored) {}
-                throw mapException(msg, resp.statusCode());
+                throw withPhase(mapException(msg, resp.statusCode()), phase);
             }
 
             if (type == void.class || type == Void.class ||
@@ -170,11 +172,13 @@ public class LLMSafeSpacesClient {
             }
             if (resp.statusCode() >= 400) {
                 String msg = "Unknown error";
+                String phase = null;
                 try {
                     var err = JsonParser.parseString(resp.body()).getAsJsonObject();
                     if (err.has("error")) msg = err.get("error").getAsString();
+                    if (err.has("phase")) phase = err.get("phase").getAsString();
                 } catch (Exception ignored) {}
-                throw mapException(msg, resp.statusCode());
+                throw withPhase(mapException(msg, resp.statusCode()), phase);
             }
             if (resp.body() == null || resp.body().isEmpty()) return null;
             return JsonParser.parseString(resp.body()).getAsJsonObject();
@@ -272,6 +276,59 @@ public class LLMSafeSpacesClient {
             case 429 -> new RateLimitException(msg);
             default -> new LLMSafeSpacesException(msg, statusCode);
         };
+    }
+
+    private static LLMSafeSpacesException withPhase(LLMSafeSpacesException e, String phase) {
+        if (phase != null && e instanceof ConflictException conflict) {
+            return conflict.withPhase(phase);
+        }
+        return e;
+    }
+
+    /**
+     * POST multipart/form-data with a single part named {@code file}
+     * (Epic 67 upload route) and decode the JSON response into {@code type}.
+     */
+    public <T> T requestMultipart(String path, String filename, byte[] content, Class<T> type) {
+        String boundary = "----llmsafespaces-java-" + java.util.UUID.randomUUID();
+        String safeFilename = filename.replaceAll("[\"\\r\\n]", "_");
+        String dash = "--";
+        String bodyHead = dash + boundary + "\r\n"
+                + "Content-Disposition: form-data; name=\"file\"; filename=\"" + safeFilename + "\"\r\n"
+                + "Content-Type: application/octet-stream\r\n\r\n";
+        String bodyTail = "\r\n" + dash + boundary + dash + "\r\n";
+
+        byte[] head = bodyHead.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        byte[] tail = bodyTail.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+        var reqBuilder = HttpRequest.newBuilder()
+                .uri(URI.create(baseUrl + "/api/v1" + path))
+                .timeout(timeout)
+                .header("Content-Type", "multipart/form-data; boundary=" + boundary);
+
+        String authHeader = authHeaders();
+        if (authHeader != null) reqBuilder.header("Authorization", authHeader);
+
+        reqBuilder.method("POST", HttpRequest.BodyPublishers.ofByteArrays(java.util.List.of(head, content, tail)));
+
+        try {
+            HttpResponse<String> resp = httpClient.send(reqBuilder.build(),
+                    HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() >= 400) {
+                String msg = "Unknown error";
+                String phase = null;
+                try {
+                    var err = JsonParser.parseString(resp.body()).getAsJsonObject();
+                    if (err.has("error")) msg = err.get("error").getAsString();
+                    if (err.has("phase")) phase = err.get("phase").getAsString();
+                } catch (Exception ignored) {}
+                throw withPhase(mapException(msg, resp.statusCode()), phase);
+            }
+            if (resp.body() == null || resp.body().isEmpty()) return null;
+            return gson.fromJson(resp.body(), type);
+        } catch (IOException | InterruptedException e) {
+            throw new LLMSafeSpacesException("Request failed: " + e.getMessage(), 0);
+        }
     }
 
     public static class Builder {

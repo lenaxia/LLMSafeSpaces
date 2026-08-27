@@ -88,6 +88,7 @@ Workspaces are the core resource. Every workspace owns a pod running `opencode s
 | `POST` | `/workspaces/:id/restart` | Restart the workspace pod (declarative; bumps `restartGeneration`) |
 | `POST` | `/workspaces/:id/refresh-compute` | Re-sync resource defaults + latest image version and rebuild the pod |
 | `POST` | `/workspaces/:id/agent/reload` | Hot-reload agent credentials without a pod restart |
+| `POST` | `/workspaces/:id/uploads` | Upload a file to the workspace PVC (Epic 67 — see below) |
 | `GET` | `/workspaces/:id/status` | Phase, conditions, credential state, agent health |
 | `GET` | `/workspaces/:id/models` | List available models (requires active pod) |
 | `PUT` | `/workspaces/:id/model` | Set the default model |
@@ -135,9 +136,9 @@ These are reverse-proxied to the workspace pod. The proxy injects HTTP basic aut
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/workspaces/:id/sessions/:sessionId/message` | Send a message; wait for the assistant reply |
-| `POST` | `/workspaces/:id/sessions/:sessionId/prompt` | Send a message asynchronously (`204 No Content`) |
-| `POST` | `/workspaces/:id/sessions/:sessionId/queue` | Enqueue a message |
+| `POST` | `/workspaces/:id/sessions/:sessionId/message` | Send a message; wait for the assistant reply (`files` rejected with 400 — use `/prompt`) |
+| `POST` | `/workspaces/:id/sessions/:sessionId/prompt` | Send a message asynchronously; optional `files[]` (Epic 67 — see [File uploads](#file-uploads-epic-67)) |
+| `POST` | `/workspaces/:id/sessions/:sessionId/queue` | Enqueue a message; same optional `files[]` |
 | `GET` | `/workspaces/:id/sessions/:sessionId/queue` | List queued messages |
 | `DELETE` | `/workspaces/:id/sessions/:sessionId/queue/:messageId` | Delete a queued message |
 | `GET` | `/workspaces/:id/sessions/:sessionId/message` | Fetch session history |
@@ -163,6 +164,27 @@ curl -X POST "$API/api/v1/workspaces/$WS/sessions/$SID/message" \
   }' \
   | jq '.parts[] | select(.type=="text") | .text'
 # → "PONG"
+```
+
+### File uploads (Epic 67)
+
+`POST /workspaces/:id/uploads` streams one `multipart/form-data` part (field name `file`) onto the workspace PVC at `/workspace/uploads/<uuid>-<name>`; the response is `201 {path, name, size}`. Caps: 25 MiB/file, streamed end-to-end (the API never buffers the body). Gates, in order: phase must be `Active` (409 + current phase), disk below the critical threshold (507), body within the cap (413). Single-container agentd mode only — in agentd-sidecar deployments uploads fail cleanly with 5xx (the sidecar's `/workspace` is read-only).
+
+Pass returned paths as `files[]` on `/prompt` or `/queue`; the API composes the v1 attachment manifest (`[llmsafespaces:attachment path="…" name="…"]` lines) into the dispatched text exactly once — retries never double-append, and duplicates/out-of-shape paths are rejected with 400 (max 10 files per send). The synchronous `/message` route rejects `files` with an explicit 400.
+
+```bash
+UP=$(curl -sX POST "$API/api/v1/workspaces/$WS/uploads" \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@notes.txt")
+# → {"path":"/workspace/uploads/<uuid>-notes.txt","name":"notes.txt","size":32}
+
+curl -X POST "$API/api/v1/workspaces/$WS/sessions/$SID/prompt" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "parts": [{"type":"text","text":"review the attached notes"}],
+    "files": ['"$(echo "$UP" | jq -c .path)"']
+  }'
 ```
 
 ---

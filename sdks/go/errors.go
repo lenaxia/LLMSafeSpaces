@@ -11,6 +11,7 @@ type APIError struct {
 	Message    string
 	Reason     string // structured reason for 503s (not_ready, agent_unreachable, agent_restarting)
 	RetryAfter int    // seconds to wait before retrying (for 429/503)
+	Phase      string // current workspace phase on upload 409s (Epic 67 D5)
 }
 
 func (e *APIError) Error() string {

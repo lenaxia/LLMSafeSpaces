@@ -42,7 +42,7 @@ async function run(r: Runner, cfg: Config): Promise<void> {
     // N1: malformed session ID
     const [s] = await rawDo('POST',
       `${cfg.apiUrl}/api/v1/workspaces/${wsId}/sessions/..%2Fetc/prompt`,
-      cfg.apiKey, Buffer.from('{"message":"ping"}'));
+      cfg.apiKey, Buffer.from('{"parts":[{"type":"text","text":"ping"}]}'));
     r.assert(s === 400, `malformed-session-id: 400 (got ${s})`);
 
   } finally {

@@ -23,6 +23,7 @@ from .types import (
     CreateAgentRoleRequest,
     EnsureSessionResponse,
     FileDiff,
+    FileUpload,
     HistoryPage,
     McpAutoApplyRule,
     McpServer,
@@ -232,6 +233,25 @@ class LLMSafeSpaces:
             return None, resp.headers
         return resp.json(), resp.headers
 
+    def _upload_file(
+        self, path: str, filename: str, content: bytes | str, *, timeout: float | None = None
+    ) -> Any:
+        """POST multipart/form-data with a single part named ``file``."""
+        url = f"{self._base_url}/api/v1{path}"
+        body = content.encode() if isinstance(content, str) else content
+        resp = self._client.request(
+            "POST",
+            url,
+            headers=self._auth_headers(),
+            files={"file": (filename, body, "application/octet-stream")},
+            timeout=timeout or self._timeout,
+        )
+        if resp.status_code >= 400:
+            self._raise_for_status(resp)
+        if resp.content:
+            return resp.json()
+        return None
+
     def _auth_headers(self) -> dict[str, str]:
         if self._api_key:
             return {"Authorization": f"Bearer {self._api_key}"}
@@ -265,7 +285,12 @@ class LLMSafeSpaces:
             case 404:
                 raise NotFoundError(msg)
             case 409:
-                raise ConflictError(msg)
+                phase = None
+                try:
+                    phase = resp.json().get("phase")
+                except Exception:
+                    pass
+                raise ConflictError(msg, phase=phase)
             case 429:
                 raise RateLimitError(msg)
             case 503:
@@ -316,6 +341,16 @@ class _WorkspacesAPI:
 
     def get_status(self, workspace_id: str) -> dict[str, Any]:
         return self._c._request("GET", f"/workspaces/{workspace_id}/status")
+
+    def upload_file(self, workspace_id: str, filename: str, content: bytes | str) -> FileUpload:
+        """Upload a file into the workspace (Epic 67): multipart POST with a
+        single part named ``file``; the file lands on the workspace PVC under
+        /workspace/uploads/. The returned path feeds the ``files`` parameter
+        of ``sessions.send_prompt_async`` / ``sessions.enqueue``."""
+        data = self._c._upload_file(
+            f"/workspaces/{workspace_id}/uploads", filename, content
+        )
+        return FileUpload(**data)
 
     def restart(self, workspace_id: str) -> None:
         self._c._request("POST", f"/workspaces/{workspace_id}/restart")
@@ -446,12 +481,23 @@ class _SessionsAPI:
         return self._c._request("GET", f"/workspaces/{workspace_id}/sessions/active")
 
     def send_prompt_async(
-        self, workspace_id: str, session_id: str, message: str
+        self,
+        workspace_id: str,
+        session_id: str,
+        message: str,
+        files: list[str] | None = None,
     ) -> None:
+        """Send a prompt asynchronously (202; the reply arrives on the
+        workspace SSE stream). ``files`` are upload-namespace paths
+        (Epic 67) — the API composes the v1 attachment manifest into the
+        dispatched text."""
+        body: dict[str, Any] = {"parts": [{"type": "text", "text": message}]}
+        if files:
+            body["files"] = files
         self._c._request(
             "POST",
             f"/workspaces/{workspace_id}/sessions/{session_id}/prompt",
-            json={"message": message},
+            json=body,
         )
 
     def delete(self, workspace_id: str, session_id: str) -> None:
@@ -460,11 +506,18 @@ class _SessionsAPI:
             f"/workspaces/{workspace_id}/sessions/{session_id}",
         )
 
-    def enqueue(self, workspace_id: str, session_id: str, text: str) -> str:
+    def enqueue(
+        self, workspace_id: str, session_id: str, text: str, files: list[str] | None = None
+    ) -> str:
+        """Enqueue a message for a busy session; ``files`` as in
+        send_prompt_async (Epic 67)."""
+        body: dict[str, Any] = {"text": text}
+        if files:
+            body["files"] = files
         resp = self._c._request(
             "POST",
             f"/workspaces/{workspace_id}/sessions/{session_id}/queue",
-            json={"text": text},
+            json=body,
         )
         return resp["messageID"]
 

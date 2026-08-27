@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ApiClientError } from "../api/client";
 import { uploadsApi } from "../api/uploads";
 
 // Mirrors the backend per-send file cap (pkg/session/attachments maxFiles).
@@ -58,7 +59,7 @@ export function useComposerAttachments(workspaceId: string | undefined) {
           setChips((prev) =>
             prev.map((c) =>
               c.id === id
-                ? { ...c, status: "error", error: err instanceof Error ? err.message : "Upload failed" }
+                ? { ...c, status: "error", error: uploadErrorMessage(err) }
                 : c,
             ),
           );
@@ -141,4 +142,16 @@ export function useComposerAttachments(workspaceId: string | undefined) {
     clearAttached,
     dismissCapViolation,
   };
+}
+
+// Upload-failure chip text: the API's message, with the workspace phase
+// appended when the 409 body carries one (Epic 67 D5 — the user sees WHY
+// the workspace is not accepting uploads, e.g. "(phase: Suspended)").
+function uploadErrorMessage(err: unknown): string {
+  if (err instanceof ApiClientError) {
+    const phase = err.body?.phase;
+    if (phase) return `${err.message} (phase: ${phase})`;
+    return err.message;
+  }
+  return err instanceof Error ? err.message : "Upload failed";
 }

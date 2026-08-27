@@ -460,3 +460,66 @@ async def test_mcp_servers_async_unhappy_path():
     async with AsyncLLMSafeSpaces(BASE, api_key="lsp_test") as client:
         with pytest.raises(NotFoundError):
             await client.mcp_servers.get("missing")
+
+
+# ── Epic 67: workspace upload + files-on-send (wire-level, async) ────────────
+
+UPLOAD_PATH = "/workspace/uploads/11111111-2222-3333-4444-555555555555-notes.txt"
+UPLOAD_RESP = {"path": UPLOAD_PATH, "name": "notes.txt", "size": 5}
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_upload_file(client: AsyncLLMSafeSpaces):
+    route = respx.post(f"{BASE}/api/v1/workspaces/ws-1/uploads").mock(
+        return_value=httpx.Response(201, json=UPLOAD_RESP)
+    )
+    up = await client.workspaces.upload_file("ws-1", "notes.txt", b"hello")
+    assert up.path == UPLOAD_PATH
+    assert up.name == "notes.txt"
+    request = route.calls[0].request
+    assert request.headers["content-type"].startswith("multipart/form-data")
+    assert b'name="file"; filename="notes.txt"' in request.content
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_upload_file_phase_on_409(client: AsyncLLMSafeSpaces):
+    from llmsafespaces.errors import ConflictError
+
+    respx.post(f"{BASE}/api/v1/workspaces/ws-1/uploads").mock(
+        return_value=httpx.Response(409, json={"error": "workspace not active", "phase": "Suspended"})
+    )
+    with pytest.raises(ConflictError) as exc_info:
+        await client.workspaces.upload_file("ws-1", "f.txt", b"x")
+    assert exc_info.value.phase == "Suspended"
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_send_prompt_async_files(client: AsyncLLMSafeSpaces):
+    import json as _json
+
+    route = respx.post(f"{BASE}/api/v1/workspaces/ws-1/sessions/ses_1/prompt").mock(
+        return_value=httpx.Response(202)
+    )
+    await client.sessions.send_prompt_async("ws-1", "ses_1", "review please", files=[UPLOAD_PATH])
+    body = _json.loads(route.calls[0].request.content)
+    assert body == {
+        "parts": [{"type": "text", "text": "review please"}],
+        "files": [UPLOAD_PATH],
+    }
+
+
+@respx.mock
+@pytest.mark.asyncio
+async def test_async_enqueue_files(client: AsyncLLMSafeSpaces):
+    import json as _json
+
+    route = respx.post(f"{BASE}/api/v1/workspaces/ws-1/sessions/ses_1/queue").mock(
+        return_value=httpx.Response(202, json={"messageID": "qm-1"})
+    )
+    mid = await client.sessions.enqueue("ws-1", "ses_1", "later", files=[UPLOAD_PATH])
+    assert mid == "qm-1"
+    body = _json.loads(route.calls[0].request.content)
+    assert body == {"text": "later", "files": [UPLOAD_PATH]}

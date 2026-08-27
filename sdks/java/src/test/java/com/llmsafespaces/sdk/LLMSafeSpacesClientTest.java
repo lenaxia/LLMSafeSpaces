@@ -530,4 +530,134 @@ class LLMSafeSpacesClientTest {
             server.stop(0);
         }
     }
+
+    // ── Epic 67: workspace upload + files-on-send (wire-level) ──────────────
+
+    private static final String UPLOAD_PATH =
+            "/workspace/uploads/11111111-2222-3333-4444-555555555555-notes.txt";
+
+    @Test
+    void workspacesUpload_postsMultipartAndReturnsTypedFileUpload() throws Exception {
+        var captured = new java.util.concurrent.ConcurrentHashMap<String, String>();
+        var capturedBytes = new java.util.concurrent.atomic.AtomicReference<byte[]>();
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/api/v1/workspaces/ws-1/uploads", exchange -> {
+            captured.put("method", exchange.getRequestMethod());
+            captured.put("contentType", exchange.getRequestHeaders().getFirst("Content-Type"));
+            capturedBytes.set(exchange.getRequestBody().readAllBytes());
+            String json = "{\"path\":\"" + UPLOAD_PATH + "\",\"name\":\"notes.txt\",\"size\":5}";
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(201, json.length());
+            exchange.getResponseBody().write(json.getBytes());
+            exchange.close();
+        });
+        server.start();
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            var up = client.workspaces.upload("ws-1", "notes.txt", "hello".getBytes());
+            assertEquals("POST", captured.get("method"));
+            assertTrue(captured.get("contentType").startsWith("multipart/form-data; boundary="));
+            var body = new String(capturedBytes.get(), java.nio.charset.StandardCharsets.UTF_8);
+            assertTrue(body.contains("name=\"file\"; filename=\"notes.txt\""));
+            assertTrue(body.contains("hello"));
+            assertEquals(UPLOAD_PATH, up.path);
+            assertEquals("notes.txt", up.name);
+            assertEquals(5, up.size);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void workspacesUpload_surfacesPhaseOn409() throws Exception {
+        HttpServer server = startMockServer(409,
+                "{\"error\":\"workspace not active\",\"phase\":\"Suspended\"}");
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            var ex = assertThrows(com.llmsafespaces.sdk.exceptions.ConflictException.class,
+                    () -> client.workspaces.upload("ws-1", "f.txt", "x".getBytes()));
+            assertEquals("Suspended", ex.phase);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void sendPromptAsync_sendsPartsAndFiles_noDeadFields() throws Exception {
+        var captured = new java.util.concurrent.atomic.AtomicReference<String>();
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/api/v1/workspaces/ws-1/sessions/ses_1/prompt", exchange -> {
+            captured.set(new String(exchange.getRequestBody().readAllBytes(),
+                    java.nio.charset.StandardCharsets.UTF_8));
+            exchange.sendResponseHeaders(202, -1);
+            exchange.close();
+        });
+        server.start();
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            client.sessions.sendPromptAsync("ws-1", "ses_1", "review please", java.util.List.of(UPLOAD_PATH));
+            var json = com.google.gson.JsonParser.parseString(captured.get()).getAsJsonObject();
+            var part = json.getAsJsonArray("parts").get(0).getAsJsonObject();
+            assertEquals("text", part.get("type").getAsString());
+            assertEquals("review please", part.get("text").getAsString());
+            assertEquals(UPLOAD_PATH, json.getAsJsonArray("files").get(0).getAsString());
+            assertFalse(json.has("message"));
+            assertFalse(json.has("content"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void enqueue_carriesFiles() throws Exception {
+        var captured = new java.util.concurrent.atomic.AtomicReference<String>();
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/api/v1/workspaces/ws-1/sessions/ses_1/queue", exchange -> {
+            captured.set(new String(exchange.getRequestBody().readAllBytes(),
+                    java.nio.charset.StandardCharsets.UTF_8));
+            String json = "{\"messageID\":\"qm-1\"}";
+            exchange.getResponseHeaders().set("Content-Type", "application/json");
+            exchange.sendResponseHeaders(202, json.length());
+            exchange.getResponseBody().write(json.getBytes());
+            exchange.close();
+        });
+        server.start();
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            String mid = client.sessions.enqueue("ws-1", "ses_1", "later", java.util.List.of(UPLOAD_PATH));
+            assertEquals("qm-1", mid);
+            var json = com.google.gson.JsonParser.parseString(captured.get()).getAsJsonObject();
+            assertEquals("later", json.get("text").getAsString());
+            assertEquals(UPLOAD_PATH, json.getAsJsonArray("files").get(0).getAsString());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void workspacesUpload_neutralizesHostileFilenameInMultipartFraming() throws Exception {
+        var capturedBytes = new java.util.concurrent.atomic.AtomicReference<byte[]>();
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext("/api/v1/workspaces/ws-1/uploads", exchange -> {
+            capturedBytes.set(exchange.getRequestBody().readAllBytes());
+            exchange.sendResponseHeaders(201, -1);
+            exchange.close();
+        });
+        server.start();
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            client.workspaces.upload("ws-1", "we\"ird\r\ninjected.txt", "x".getBytes());
+            var body = new String(capturedBytes.get(), java.nio.charset.StandardCharsets.UTF_8);
+            assertFalse(body.contains("\"ird"));
+            assertFalse(body.contains("\r\ninjected"));
+            assertTrue(body.contains("filename=\"we_ird__injected.txt\""));
+        } finally {
+            server.stop(0);
+        }
+    }
 }

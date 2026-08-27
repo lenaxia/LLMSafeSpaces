@@ -97,7 +97,7 @@ func runPromptAsync(ctx context.Context, run *canary.Runner, cfg canary.Config) 
 	// N1: prompt_async with malformed session ID
 	status, _, _ := canary.RawDo(ctx, "POST",
 		fmt.Sprintf("%s/api/v1/workspaces/%s/sessions/../../etc/prompt", cfg.APIURL, wsID),
-		cfg.APIKey, []byte(`{"message":"ping"}`))
+		cfg.APIKey, []byte(`{"parts":[{"type":"text","text":"ping"}]}`))
 	run.Assert(status == 400, "malformed-session-id: 400", fmt.Sprintf("got %d", status))
 
 	// N2: prompt_async on non-Active workspace — verify 503 shape
@@ -113,7 +113,7 @@ func runPromptAsync(ctx context.Context, run *canary.Runner, cfg canary.Config) 
 		pendingStatus, pendingBody, _ := canary.RawDo(ctx, "POST",
 			fmt.Sprintf("%s/api/v1/workspaces/%s/sessions/test-session-id/prompt",
 				cfg.APIURL, pendingWS.ID),
-			cfg.APIKey, []byte(`{"message":"ping"}`))
+			cfg.APIKey, []byte(`{"parts":[{"type":"text","text":"ping"}]}`))
 		// Either 503 (workspace not ready) or 400 (invalid session ID format)
 		run.Assert(pendingStatus == 503 || pendingStatus == 400,
 			"prompt-async-not-ready: 503 or 400", fmt.Sprintf("got %d", pendingStatus))

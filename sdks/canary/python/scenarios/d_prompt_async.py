@@ -55,7 +55,7 @@ def run(r: Runner, cfg: Config) -> None:
             "POST",
             f"{cfg.api_url}/api/v1/workspaces/{ws_id}/sessions/{sid}/prompt",
             cfg.api_key,
-            json.dumps({"message": "Reply with the word: ASYNC-OK"}).encode(),
+            json.dumps({"parts": [{"type": "text", "text": "Reply with the word: ASYNC-OK"}]}).encode(),
         )
         r.assert_(s in (200, 202), f"prompt-async: 202 immediate (got {s})")
 
@@ -77,7 +77,7 @@ def run(r: Runner, cfg: Config) -> None:
             "POST",
             f"{cfg.api_url}/api/v1/workspaces/{ws_id}/sessions/..%2Fetc/prompt",
             cfg.api_key,
-            json.dumps({"message": "ping"}).encode(),
+            json.dumps({"parts": [{"type": "text", "text": "ping"}]}).encode(),
         )
         r.assert_(s2 == 400, "malformed-session-id: 400", str(s2))
 

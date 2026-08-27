@@ -25,10 +25,15 @@ class NotFoundError(LLMSafeSpacesError):
 
 
 class ConflictError(LLMSafeSpacesError):
-    """Conflict state (409)."""
+    """Conflict state (409).
 
-    def __init__(self, message: str = "Conflict"):
+    ``phase`` carries the current workspace phase when the 409 body has
+    one (upload phase gate, Epic 67 D5).
+    """
+
+    def __init__(self, message: str = "Conflict", phase: str | None = None):
         super().__init__(message, 409, "CONFLICT")
+        self.phase = phase
 
 
 class TimeoutError(LLMSafeSpacesError):

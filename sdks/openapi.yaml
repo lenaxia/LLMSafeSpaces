@@ -4,7 +4,7 @@ info:
   description: |
     LLMSafeSpaces is a Kubernetes-first platform for running AI agents securely in isolated sandboxes.
     Every sandbox runs `opencode serve` as a persistent HTTP server with a PVC-backed persistent workspace.
-  version: "0.6.0"
+  version: "0.7.0"
   license:
     name: AGPL-3.0-or-later
     url: https://www.gnu.org/licenses/agpl-3.0.html
@@ -770,6 +770,17 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Message"
+        "400":
+          description: |
+            Invalid request — including a `files` array (Epic 67): this
+            synchronous route proxies the body verbatim and rejects file
+            references explicitly with
+            `{"error": "files not supported on this route; use /prompt"}`.
+            Use the async prompt route instead.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -835,6 +846,16 @@ paths:
     post:
       tags: [sessions]
       summary: Send an async prompt (returns immediately, results via SSE)
+      description: |
+        Accepts a prompt composed of text parts and returns immediately
+        (202); the agent's reply arrives on the workspace SSE stream.
+        Optional `files` (Epic 67) references previously uploaded files:
+        the API validates each path against the upload namespace
+        (`/workspace/uploads/<uuid>-…`, max 10, no duplicates) and
+        appends the v1 attachment manifest to the dispatched text — the
+        caller's `parts` text is never mutated client-side. Composition
+        is idempotent: a retried `clientMessageID` re-dispatches exactly
+        one manifest.
       operationId: sendPromptAsync
       x-opencode-proxy: true
       parameters:
@@ -846,15 +867,42 @@ paths:
           application/json:
             schema:
               type: object
-              required: [content]
+              required: [parts]
               properties:
-                content:
+                parts:
+                  type: array
+                  description: Text parts of the prompt (concatenated in order)
+                  items:
+                    type: object
+                    required: [type, text]
+                    properties:
+                      type:
+                        type: string
+                        enum: [text]
+                      text:
+                        type: string
+                files:
+                  type: array
+                  maxItems: 10
+                  description: |
+                    Paths returned by the upload endpoint
+                    (`POST /workspaces/{id}/uploads`). The API composes the
+                    v1 attachment manifest into the dispatched text.
+                    Duplicates, empty entries, or paths outside
+                    `/workspace/uploads/<uuid>-` are rejected with 400.
+                  items:
+                    type: string
+                    pattern: '^/workspace/uploads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-'
+                clientMessageID:
                   type: string
+                  description: Caller-chosen idempotency key; a retry with the same value re-dispatches the originally accepted text exactly once
                 model:
                   $ref: "#/components/schemas/ModelSelector"
       responses:
         "202":
           description: Prompt accepted
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "403":
@@ -954,6 +1002,23 @@ paths:
                   type: string
                   maxLength: 100000
                   description: Message text to enqueue
+                files:
+                  type: array
+                  maxItems: 10
+                  description: |
+                    Paths returned by the upload endpoint
+                    (`POST /workspaces/{id}/uploads`, Epic 67). The API
+                    composes the v1 attachment manifest into the enqueued
+                    text once (compose-once; retries never double-append).
+                    Same validation as the prompt route: duplicates, empty
+                    entries, or paths outside `/workspace/uploads/<uuid>-`
+                    are rejected with 400.
+                  items:
+                    type: string
+                    pattern: '^/workspace/uploads/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-'
+                clientMessageID:
+                  type: string
+                  description: Caller-chosen idempotency key; a retry with the same value returns the originally accepted entry
       responses:
         "202":
           description: Message enqueued
