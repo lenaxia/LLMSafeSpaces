@@ -105,4 +105,4 @@ Note: `-timeout 120s` is insufficient for the handlers package under `-race` on 
 - `pkg/session/attachments/testdata/parse_unknown_attribute.{in,want}.json` (new)
 - `api/internal/handlers/proxy_handlers.go` (compose wiring on `/prompt` + `/queue`, `files` rejection on `/message`, `extractPromptFiles`, `rejectMessageRouteFiles`, `enqueueRequest.Files`)
 - `api/internal/handlers/proxy_attachments_test.go` (new)
-- `worklogs/NNNN_2026-08-27_us-67-3-attachment-manifest.md` (this file)
+- `worklogs/0838_2026-08-27_us-67-3-attachment-manifest.md` (this file)
