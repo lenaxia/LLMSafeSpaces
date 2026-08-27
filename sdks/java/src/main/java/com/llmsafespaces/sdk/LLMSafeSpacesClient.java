@@ -181,6 +181,54 @@ public class LLMSafeSpacesClient {
         requestJson(method, path, body);
     }
 
+    /** A JSON response body (array or object) plus the X-Next-Cursor header. */
+    public record CursorResponse(JsonElement body, String nextCursor) {}
+
+    /**
+     * Like {@link #requestJson}, but also returns the X-Next-Cursor
+     * response header (pagination). body is null when the response is
+     * empty. No auth-retry: used for authenticated GETs.
+     */
+    public CursorResponse requestJsonWithCursor(String method, String path, Object body) {
+        // History responses are top-level JSON arrays, so the body is a
+        // JsonElement, not an object.
+        String url = baseUrl + "/api/v1" + path;
+        var reqBuilder = HttpRequest.newBuilder()
+                .uri(URI.create(url))
+                .timeout(timeout)
+                .header("Content-Type", "application/json");
+
+        String authHeader = authHeaders();
+        if (authHeader != null) reqBuilder.header("Authorization", authHeader);
+
+        if (body != null) {
+            reqBuilder.method(method, HttpRequest.BodyPublishers.ofString(gson.toJson(body)));
+        } else {
+            reqBuilder.method(method, HttpRequest.BodyPublishers.noBody());
+        }
+
+        try {
+            HttpResponse<String> resp = httpClient.send(reqBuilder.build(),
+                    HttpResponse.BodyHandlers.ofString());
+            if (resp.statusCode() >= 400) {
+                String msg = "Unknown error";
+                try {
+                    var err = JsonParser.parseString(resp.body()).getAsJsonObject();
+                    if (err.has("error")) msg = err.get("error").getAsString();
+                } catch (Exception ignored) {}
+                throw mapException(msg, resp.statusCode());
+            }
+            JsonElement parsed = null;
+            if (resp.body() != null && !resp.body().isEmpty()) {
+                parsed = JsonParser.parseString(resp.body());
+            }
+            String cursor = resp.headers().firstValue("X-Next-Cursor").orElse("");
+            return new CursorResponse(parsed, cursor);
+        } catch (IOException | InterruptedException e) {
+            throw new LLMSafeSpacesException("Request failed: " + e.getMessage(), 0);
+        }
+    }
+
     private String authHeaders() {
         if (apiKey != null) return "Bearer " + apiKey;
         if (token != null) return "Bearer " + token;

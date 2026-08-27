@@ -459,3 +459,41 @@ describe("contract SSE event payloads (unhappy paths)", () => {
     expect(safe ?? true).toBeDefined();
   });
 });
+
+// #1047: cursor pagination on session history
+describe("getHistoryPage", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("sends limit/before and surfaces X-Next-Cursor", async () => {
+    const client = new LLMSafeSpaces({ baseUrl: "http://localhost:8080", apiKey: "lsp_test123" });
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify([{ id: "m1", type: "user", text: "hi" }]), {
+        status: 200,
+        headers: { "Content-Type": "application/json", "X-Next-Cursor": "msg_42" },
+      }),
+    );
+    const page = await client.sessions.getHistoryPage("ws-1", "sess-1", { limit: 50, before: "msg_99" });
+    const calls = mockFetch.mock.calls;
+    const url = calls[calls.length - 1][0] as string;
+    expect(url).toContain("limit=50");
+    expect(url).toContain("before=msg_99");
+    expect(page.nextCursor).toBe("msg_42");
+    expect(page.messages).toHaveLength(1);
+    expect(page.messages[0].id).toBe("m1");
+  });
+
+  it("omits empty params and empty cursor", async () => {
+    const client = new LLMSafeSpaces({ baseUrl: "http://localhost:8080", apiKey: "lsp_test123" });
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify([]), { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    const page = await client.sessions.getHistoryPage("ws-1", "sess-1");
+    const calls = mockFetch.mock.calls;
+    const url = calls[calls.length - 1][0] as string;
+    expect(url).not.toContain("?");
+    expect(page.nextCursor).toBe("");
+    expect(page.messages).toEqual([]);
+  });
+});

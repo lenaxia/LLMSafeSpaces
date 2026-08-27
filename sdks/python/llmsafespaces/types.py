@@ -174,6 +174,17 @@ class Message(TypedDict, total=False):
     error: dict[str, Any]
 
 
+class HistoryPage(TypedDict):
+    """One page of session history plus the cursor for the next (older) page.
+
+    nextCursor is "" when the beginning of the session was reached
+    (no X-Next-Cursor response header).
+    """
+
+    messages: list[Message]
+    nextCursor: str
+
+
 @dataclass
 class AuthResponse:
     token: str

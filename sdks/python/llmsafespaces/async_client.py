@@ -10,6 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
+from urllib.parse import urlencode
 
 from .errors import (
     AuthError,
@@ -25,6 +26,7 @@ from .types import (
     AuthResponse,
     CreateAgentRoleRequest,
     EnsureSessionResponse,
+    HistoryPage,
     Message,
     ProviderCredential,
     SecretResponse,
@@ -119,6 +121,21 @@ class AsyncLLMSafeSpaces:
         if resp.content:
             return resp.json()
         return None
+
+    async def _request_with_headers(
+        self, method: str, path: str, *, timeout: float | None = None
+    ) -> tuple[Any, httpx.Headers]:
+        """Like _request, but also returns the response headers (for
+        pagination cursors). No auth-retry: used for authenticated GETs."""
+        url = f"{self._base_url}/api/v1{path}"
+        resp = await self._client.request(
+            method, url, headers=await self._auth_headers(), timeout=timeout or self._timeout
+        )
+        if resp.status_code >= 400:
+            self._raise_for_status(resp)
+        if resp.status_code == 204 or not resp.content:
+            return None, resp.headers
+        return resp.json(), resp.headers
 
     async def _auth_headers(self) -> dict[str, str]:
         if self._api_key:
@@ -267,6 +284,28 @@ class _AsyncSessionsAPI:
     async def get_history(self, workspace_id: str, session_id: str) -> list[Message]:
         return await self._c._request(
             "GET", f"/workspaces/{workspace_id}/sessions/{session_id}/message"
+        )
+
+    async def get_history_page(
+        self,
+        workspace_id: str,
+        session_id: str,
+        limit: int | None = None,
+        before: str | None = None,
+    ) -> HistoryPage:
+        """One page of session history with cursor pagination (#1047)."""
+        params: dict[str, str] = {}
+        if limit is not None and limit > 0:
+            params["limit"] = str(limit)
+        if before:
+            params["before"] = before
+        path = f"/workspaces/{workspace_id}/sessions/{session_id}/message"
+        if params:
+            path = f"{path}?{urlencode(params)}"
+        messages, headers = await self._c._request_with_headers("GET", path)
+        return HistoryPage(
+            messages=messages or [],
+            nextCursor=headers.get("X-Next-Cursor", ""),
         )
 
     async def abort(self, workspace_id: str, session_id: str) -> None:

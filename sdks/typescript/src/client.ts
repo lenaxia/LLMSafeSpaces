@@ -159,6 +159,63 @@ export class LLMSafeSpaces {
     return JSON.parse(text) as T;
   }
 
+  /**
+   * Internal: like {@link request}, but also returns the response headers
+   * (e.g. pagination cursors). Body decoding follows the same contract.
+   */
+  async requestWithHeaders<T>(
+    method: string,
+    path: string,
+    body?: unknown,
+    timeout?: number,
+  ): Promise<{ data: T; headers: Headers }> {
+    const url = `${this.baseUrl}/api/v1${path}`;
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+
+    if (this.apiKey) {
+      headers["Authorization"] = `Bearer ${this.apiKey}`;
+    } else if (this.token) {
+      headers["Authorization"] = `Bearer ${this.token}`;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout ?? this.timeout);
+
+    let res: Response;
+    try {
+      res = await this.fetchFn(url, {
+        method,
+        headers,
+        body: body ? JSON.stringify(body) : undefined,
+        signal: controller.signal,
+      });
+    } catch (e: unknown) {
+      clearTimeout(timer);
+      if (e instanceof Error && e.name === "AbortError") {
+        throw new TimeoutError();
+      }
+      throw e;
+    }
+    clearTimeout(timer);
+
+    if (!res.ok) {
+      const errBody = await res.json().catch(() => ({ error: res.statusText }));
+      const msg = (errBody as { error?: string }).error ?? res.statusText;
+      if (res.status === 401 || res.status === 403) throw new AuthError(msg, res.status);
+      if (res.status === 404) throw new NotFoundError(msg);
+      throw new LLMSafeSpacesError(msg, res.status);
+    }
+
+    let data: T;
+    if (res.status === 204) {
+      data = undefined as T;
+    } else {
+      const text = await res.text();
+      data = text === "" ? (undefined as T) : (JSON.parse(text) as T);
+    }
+    return { data, headers: res.headers };
+  }
+
   private async login(): Promise<void> {
     if (!this.credentials) throw new AuthError("No credentials configured");
     this.loggingIn = true;
@@ -276,6 +333,24 @@ class SessionsAPI {
   /** Returns the session transcript in contract shape. */
   getHistory(workspaceId: string, sessionId: string): Promise<Message[]> {
     return this.client.request<Message[]>("GET", `/workspaces/${workspaceId}/sessions/${sessionId}/message`);
+  }
+  /**
+   * Returns one page of session history with cursor pagination.
+   * nextCursor is "" when the beginning of the session was reached
+   * (no X-Next-Cursor response header).
+   */
+  async getHistoryPage(
+    workspaceId: string,
+    sessionId: string,
+    opts?: { limit?: number; before?: string },
+  ): Promise<{ messages: Message[]; nextCursor: string }> {
+    const q = new URLSearchParams();
+    if (opts?.limit && opts.limit > 0) q.set("limit", String(opts.limit));
+    if (opts?.before) q.set("before", opts.before);
+    const qs = q.toString();
+    const path = `/workspaces/${workspaceId}/sessions/${sessionId}/message${qs ? `?${qs}` : ""}`;
+    const { data, headers } = await this.client.requestWithHeaders<Message[]>("GET", path);
+    return { messages: data ?? [], nextCursor: headers.get("X-Next-Cursor") ?? "" };
   }
   abort(workspaceId: string, sessionId: string) {
     return this.client.request<void>("POST", `/workspaces/${workspaceId}/sessions/${sessionId}/abort`);

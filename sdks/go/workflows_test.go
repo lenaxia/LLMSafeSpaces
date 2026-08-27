@@ -6,6 +6,7 @@ package llmsafespaces
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -150,5 +151,60 @@ func TestSDK_DeleteTrigger(t *testing.T) {
 	err := c.Triggers.Delete(context.Background(), "trig-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// GetHistoryPage: cursor pagination (#1047) — query params on the wire,
+// X-Next-Cursor from the response header, absent header = empty cursor.
+func TestGetHistoryPage_ParamsAndCursor(t *testing.T) {
+	var gotQuery string
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("X-Next-Cursor", "msg_42")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"id":"m1","type":"user","text":"hi"}]`)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("k"))
+	page, err := c.Sessions.GetHistoryPage(context.Background(), "ws-1", "sess-1", 50, "msg_99")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotPath != "/api/v1/workspaces/ws-1/sessions/sess-1/message" {
+		t.Fatalf("path: %s", gotPath)
+	}
+	if gotQuery != "before=msg_99&limit=50" {
+		t.Fatalf("query: %s", gotQuery)
+	}
+	if page.NextCursor != "msg_42" {
+		t.Fatalf("cursor: %q", page.NextCursor)
+	}
+	if len(page.Messages) != 1 || page.Messages[0].ID != "m1" {
+		t.Fatalf("messages: %+v", page.Messages)
+	}
+}
+
+func TestGetHistoryPage_OmitEmptyParams(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[]`)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, WithAPIKey("k"))
+	page, err := c.Sessions.GetHistoryPage(context.Background(), "ws-1", "sess-1", 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotQuery != "" {
+		t.Fatalf("expected no query params, got %q", gotQuery)
+	}
+	if page.NextCursor != "" {
+		t.Fatalf("absent header must yield empty cursor, got %q", page.NextCursor)
 	}
 }

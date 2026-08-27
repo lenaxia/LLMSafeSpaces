@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -159,6 +160,37 @@ func (s *SessionsService) GetHistory(ctx context.Context, workspaceID, sessionID
 	var result []Message
 	err := s.c.do(ctx, "GET", fmt.Sprintf("/workspaces/%s/sessions/%s/message", workspaceID, sessionID), nil, &result)
 	return result, err
+}
+
+// HistoryPage is one page of session history plus the cursor for the next
+// (older) page. NextCursor is empty when the beginning of the session was
+// reached (no X-Next-Cursor response header).
+type HistoryPage struct {
+	Messages   []Message
+	NextCursor string
+}
+
+// GetHistoryPage fetches one page of session history. limit <= 0 and an
+// empty before are omitted from the query (server defaults: limit 50,
+// newest page).
+func (s *SessionsService) GetHistoryPage(ctx context.Context, workspaceID, sessionID string, limit int, before string) (*HistoryPage, error) {
+	q := url.Values{}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	if before != "" {
+		q.Set("before", before)
+	}
+	path := fmt.Sprintf("/workspaces/%s/sessions/%s/message", workspaceID, sessionID)
+	if enc := q.Encode(); enc != "" {
+		path += "?" + enc
+	}
+	var msgs []Message
+	header, err := s.c.doWithHeader(ctx, "GET", path, nil, &msgs)
+	if err != nil {
+		return nil, err
+	}
+	return &HistoryPage{Messages: msgs, NextCursor: header.Get("X-Next-Cursor")}, nil
 }
 
 func (s *SessionsService) Abort(ctx context.Context, workspaceID, sessionID string) error {
