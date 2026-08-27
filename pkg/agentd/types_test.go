@@ -129,3 +129,18 @@ func TestDiskUsage_JSON(t *testing.T) {
 	assert.Equal(t, int64(500), decoded.UsedBytes)
 	assert.Equal(t, int64(1000), decoded.TotalBytes)
 }
+
+func TestFileUploadResponse_JSON(t *testing.T) {
+	resp := FileUploadResponse{
+		Path: "/workspace/uploads/00000000-0000-0000-0000-000000000001-notes.txt",
+		Name: "notes.txt",
+		Size: 1234,
+	}
+	data, err := json.Marshal(resp)
+	assert.NoError(t, err)
+	assert.JSONEq(t, `{"path":"/workspace/uploads/00000000-0000-0000-0000-000000000001-notes.txt","name":"notes.txt","size":1234}`, string(data))
+
+	var decoded FileUploadResponse
+	assert.NoError(t, json.Unmarshal(data, &decoded))
+	assert.Equal(t, resp, decoded)
+}

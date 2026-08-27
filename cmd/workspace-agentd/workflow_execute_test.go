@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -148,6 +149,12 @@ func TestWorkflowExecute_ConditionOtherwise(t *testing.T) {
 }
 
 func TestWorkflowExecute_ScriptSuccess(t *testing.T) {
+	// The script node executes via python3 — a workspace-runtime-image
+	// dependency. Dev hosts without python3 on PATH skip rather than
+	// report a false failure of the handler contract.
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not on PATH; script-node runtime is a workspace-image dependency")
+	}
 	body := `{"nodeId":"s1","nodeType":"script","spec":{"language":"python","handler":"def handler(input):\n    return {\"result\": input.get(\"x\", 0) + 1}"},"input":{"x":41}}`
 	req := authedReq(http.MethodPost, "/v1/workflow/node/execute", testAuthPassword, strings.NewReader(body))
 	w := httptest.NewRecorder()
