@@ -1,0 +1,233 @@
+name: E2E Attachments (kind, single-container)
+
+# Epic 68 cluster-level attachment rows E2/E10/E11 — the three rows the
+# sidecar-mode nightly (e2e-nightly.yml) cannot execute: it installs with
+# controller.agentdSidecar.enabled=true, where uploads clean-fail by
+# design (epic-68 D1 as-built — the sidecar's /workspace is read-only),
+# so local/us-68-attachments-e2e.sh asserts that clean-fail and skips
+# the rows there. This workflow deploys the same chart in
+# single-container mode (controller.agentdSidecar.enabled=false), where
+# uploads are functional: the script's sidecar gate passes through and
+# the rows run fully —
+#
+#   E2  — upload → suspend → resume → file byte-identical on the PVC
+#   E10 — two tenants, simultaneous uploads, cross-user 404, no leakage
+#   E11 — pod killed mid-upload → clean 5xx, restart, retry, no .tmp
+#
+# Same bootstrap as the nightly (kind cluster from local/kind-cluster.yaml,
+# images built + kind-loaded, cert-manager, seeded Postgres/Redis, same
+# helm values) EXCEPT:
+#   - no local container registry — it exists solely for digest-pinned
+#     agentd delivery, which is sidecar-only. Single-container mode runs
+#     the workspace-agentd binary baked into runtimes/base (image-layer
+#     COPY), so agentdDelivery values stay empty ("legacy baked-in mode",
+#     helm/values.yaml) and the controller's delivery validation is a
+#     no-op for sidecar-disabled configs.
+#   - no LLM secrets — the attachment rows exercise uploads + filesystem
+#     assertions only, no agent turns (verified: zero LLM_* references
+#     in local/us-68-attachments-e2e.sh). The workflow must run without
+#     them so the rows finally execute.
+# The sidecar nightly is intentionally left untouched.
+
+on:
+  schedule:
+    # Sundays 04:00 UTC — quiet slot: two hours clear of the daily
+    # e2e-nightly run (06:00 UTC) and of the Monday 05:00 UTC US-2 L3
+    # kind run. This is a full kind deployment.
+    - cron: "0 4 * * 0"
+  workflow_dispatch: # Allow manual trigger
+
+# Never overlap itself: a manual dispatch while a scheduled run is in
+# flight is queued, not run concurrently (full kind deployment — too
+# expensive to run two at once, too expensive to cancel mid-flight).
+# Cross-workflow exclusion with the sidecar nightly cannot be enforced
+# from here alone (the nightly declares no concurrency group); the
+# 04:00 Sunday slot keeps them apart in time, and the two runs are
+# isolated GitHub-hosted runners regardless.
+concurrency:
+  group: ${{ github.workflow }}
+
+permissions:
+  contents: read
+
+env:
+  CLUSTER_NAME: llmsafespaces-ci
+  IMAGE_TAG: ci
+  NS: llmsafespaces
+
+jobs:
+  e2e-kind:
+    name: Attachment e2e E2/E10/E11 (kind cluster, single-container)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.6"
+          cache: true
+
+      - name: Install kind
+        run: |
+          curl -Lo ./kind https://kind.sigs.k8s.io/dl/v0.32.0/kind-linux-amd64
+          chmod +x ./kind
+          sudo mv ./kind /usr/local/bin/kind
+
+      - name: Install helm
+        run: |
+          curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      - name: Create kind cluster
+        # Same cluster config as the nightly. No local registry is
+        # started and no certs.d hosts.toml alias is wired: digest-pinned
+        # agentd delivery is sidecar-mode-only, so nothing references
+        # localhost:5001 (the containerdConfigPatches in
+        # local/kind-cluster.yaml are harmless without a registry).
+        run: kind create cluster --config local/kind-cluster.yaml --name $CLUSTER_NAME
+
+      - name: Build and load images
+        run: |
+          # Stamp build versions so the e2e cluster's healthz/platform-info
+          # surfaces report the e2e build identity (semver-style tag name
+          # without a leading "v") instead of the "unknown" default.
+          E2E_VERSION="${{ env.IMAGE_TAG }}"
+          docker build --network host --build-arg VERSION="$E2E_VERSION" --build-arg COMMIT_SHA="${{ github.sha }}" -f api/Dockerfile -t llmsafespaces/api:$IMAGE_TAG .
+          docker build --network host --build-arg VERSION="$E2E_VERSION" --build-arg COMMIT_SHA="${{ github.sha }}" -f controller/Dockerfile -t llmsafespaces/controller:$IMAGE_TAG .
+          docker build --network host --build-arg VERSION="$E2E_VERSION" --build-arg COMMIT_SHA="${{ github.sha }}" -f runtimes/base/Dockerfile -t llmsafespaces/runtime-base:$IMAGE_TAG .
+
+          # No agentd delivery artifact is built or pushed here, unlike
+          # the nightly: the sidecar split is disabled below and
+          # single-container mode runs the workspace-agentd binary baked
+          # into runtimes/base (COPY in runtimes/base/Dockerfile).
+          # agentdDelivery.image / binarySHA256* are only required when
+          # controller.agentdSidecar.enabled=true (the chart fails the
+          # render otherwise); empty = legacy baked-in mode.
+
+          # Retag runtime-base with the ghcr.io/lenaxia/ prefix so the
+          # RuntimeEnvironment validating webhook's image allow-list accepts
+          # it (the webhook requires ghcr.io/lenaxia/ prefixed images).
+          docker tag llmsafespaces/runtime-base:$IMAGE_TAG ghcr.io/lenaxia/llmsafespaces/runtime-base:$IMAGE_TAG
+
+          kind load docker-image llmsafespaces/api:$IMAGE_TAG --name $CLUSTER_NAME
+          kind load docker-image llmsafespaces/controller:$IMAGE_TAG --name $CLUSTER_NAME
+          kind load docker-image ghcr.io/lenaxia/llmsafespaces/runtime-base:$IMAGE_TAG --name $CLUSTER_NAME
+
+      - name: Install cert-manager
+        run: |
+          kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.0/cert-manager.yaml
+          kubectl -n cert-manager rollout status deployment/cert-manager --timeout=180s
+          kubectl -n cert-manager rollout status deployment/cert-manager-webhook --timeout=180s
+
+      - name: Create credentials Secret (before Postgres)
+        # The Postgres/Valkey manifests reference llmsafespaces-credentials
+        # for their passwords. The chart normally creates this Secret as a
+        # pre-install hook — but Postgres must start BEFORE the chart (the
+        # API needs Postgres to pass readiness). Create the namespace +
+        # Secret first with known non-insecure passwords, then pass the
+        # same passwords to helm install so the chart does not rotate them.
+        run: |
+          kubectl create namespace $NS --dry-run=client -o yaml | kubectl apply -f -
+          kubectl -n $NS create secret generic llmsafespaces-credentials \
+              --from-literal=postgres-password=e2e-pg-pw-2026 \
+              --from-literal=redis-password=e2e-redis-pw-2026 \
+              --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Deploy Postgres + Redis
+        run: |
+          kubectl apply -f local/postgres-redis.yaml
+          kubectl -n $NS rollout status deployment/postgres --timeout=180s
+          kubectl -n $NS rollout status deployment/valkey --timeout=180s
+
+      - name: Helm install LLMSafeSpaces (single-container)
+        # Identical to the nightly's install except:
+        #   - controller.agentdSidecar.enabled=false, set EXPLICITLY —
+        #     it is the values default today, but the default is slated
+        #     to flip once the sidecar L3 suite passes (helm/values.yaml
+        #     migration-state note); pinning keeps this workflow
+        #     single-container regardless.
+        #   - no controller.agentdDelivery.* sets — required only for
+        #     sidecar mode; the controller's agentd-delivery startup
+        #     validation returns nil for sidecar-disabled configs
+        #     (controller/internal/workspace/agentd_sidecar.go).
+        run: |
+          # MCP is disabled, same as the nightly e2e: the cmd/mcp binary
+          # has no Dockerfile yet so there is no image to pull (issue #28).
+          helm upgrade --install llmsafespaces helm \
+            -n $NS --create-namespace \
+            --set api.image.repository=llmsafespaces/api \
+            --set api.image.tag=$IMAGE_TAG \
+            --set api.image.pullPolicy=IfNotPresent \
+            --set controller.image.repository=llmsafespaces/controller \
+            --set controller.image.tag=$IMAGE_TAG \
+            --set controller.image.pullPolicy=IfNotPresent \
+            --set mcp.enabled=false \
+            --set postgresql.host=postgres \
+            --set postgresql.port=5432 \
+            --set postgresql.user=llmsafespaces \
+            --set postgresql.database=llmsafespaces \
+            --set redis.host=redis-master \
+            --set redis.port=6379 \
+            --set externalSecret.create=true \
+            --set "externalSecret.postgresPassword=e2e-pg-pw-2026" \
+            --set "externalSecret.redisPassword=e2e-redis-pw-2026" \
+            --set rbac.scope=cluster \
+            --set api.config.logging.development=true \
+            --set controller.agentdSidecar.enabled=false \
+            --wait --timeout 5m
+
+      - name: Wait for rollout
+        run: |
+          kubectl -n $NS rollout status deployment/llmsafespaces-api --timeout=180s
+          kubectl -n $NS rollout status deployment/llmsafespaces-controller --timeout=180s
+
+      - name: Seed RuntimeEnvironment python-3.11
+        # The nightly gets this from local/test.sh (Test 3), which this
+        # workflow does not run. The attachments script seeds workspaces
+        # with runtime python:3.11; the controller resolves that to the
+        # cluster-scoped RuntimeEnvironment "python-3.11" (same manifest
+        # as local/test.sh). The ghcr.io/lenaxia/ prefix is required by
+        # the RuntimeEnvironment validating webhook's image allow-list.
+        run: |
+          kubectl apply -f - <<'EOF'
+          apiVersion: llmsafespaces.dev/v1
+          kind: RuntimeEnvironment
+          metadata:
+            name: python-3.11
+          spec:
+            image: ghcr.io/lenaxia/llmsafespaces/runtime-base:ci
+            language: python
+            version: "3.11"
+          EOF
+
+      - name: Run attachment e2e rows (Epic 68 E2/E10/E11)
+        # The script seeds its own users/API keys/workspaces (postgres
+        # via kubectl exec + Workspace CRs), port-forwards the API, and
+        # gates on sidecar mode — the gate passes through here because
+        # the install is single-container, so E2 (PVC persistence across
+        # suspend/resume), E10 (multi-tenant isolation), and E11
+        # (pod-kill chaos) execute fully. No LLM credentials are
+        # involved: uploads + filesystem assertions only, no agent turns.
+        env:
+          CLUSTER_NAME: ${{ env.CLUSTER_NAME }}
+          CTX: kind-${{ env.CLUSTER_NAME }}
+          NS: ${{ env.NS }}
+        run: bash local/us-68-attachments-e2e.sh
+
+      - name: Dump cluster state on failure
+        if: failure()
+        run: |
+          echo "=== Pod status ==="
+          kubectl -n $NS get pods -o wide
+          echo "=== Workspaces ==="
+          kubectl -n $NS get workspaces -o wide || true
+          echo "=== API logs ==="
+          kubectl -n $NS logs deployment/llmsafespaces-api --tail=50 || true
+          echo "=== Controller logs ==="
+          kubectl -n $NS logs deployment/llmsafespaces-controller --tail=50 || true
+          echo "=== Events ==="
+          kubectl -n $NS get events --sort-by='.lastTimestamp' | tail -30
+
+      - name: Teardown
+        if: always()
+        run: kind delete cluster --name $CLUSTER_NAME
