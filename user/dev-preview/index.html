@@ -1934,10 +1934,10 @@
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
-  <a href="#new-url-format-epic-67" class="md-nav__link">
+  <a href="#new-url-format-epic-68" class="md-nav__link">
     <span class="md-ellipsis">
       
-        New URL Format (Epic 67)
+        New URL Format (Epic 68)
       
     </span>
   </a>
@@ -2044,15 +2044,15 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#url-format-details-epic-67" class="md-nav__link">
+  <a href="#url-format-details-epic-68" class="md-nav__link">
     <span class="md-ellipsis">
       
-        URL format details (Epic 67)
+        URL format details (Epic 68)
       
     </span>
   </a>
   
-    <nav class="md-nav" aria-label="URL format details (Epic 67)">
+    <nav class="md-nav" aria-label="URL format details (Epic 68)">
       <ul class="md-nav__list">
         
           <li class="md-nav__item">
@@ -2121,7 +2121,7 @@
 <div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>https://&lt;port&gt;-&lt;workspace-id&gt;-preview.&lt;platform-domain&gt;/
 </span></code></pre></div>
 <p>in your browser and see your dev server's output, <strong>including hot-module replacement (HMR)</strong> — file changes in your workspace update the browser without a manual reload.</p>
-<h3 id="new-url-format-epic-67">New URL Format (Epic 67)<a class="headerlink" href="#new-url-format-epic-67" title="Permanent link">&para;</a></h3>
+<h3 id="new-url-format-epic-68">New URL Format (Epic 68)<a class="headerlink" href="#new-url-format-epic-68" title="Permanent link">&para;</a></h3>
 <p><strong>Port-in-subdomain format:</strong> <code>https://5173-&lt;workspace-id&gt;-preview.&lt;platform-domain&gt;/</code></p>
 <p>The port is now in the hostname, not the path. This fixes a critical issue where apps that emit root-absolute URLs (like <code>303 Location: /login</code>) would break — they now resolve correctly relative to the preview origin instead of losing the port.</p>
 <p><strong>Legacy format (still supported):</strong> <code>https://&lt;platform-origin&gt;/api/v1/workspaces/&lt;workspace-id&gt;/dev-preview/5173/</code></p>
@@ -2271,7 +2271,7 @@
 </table>
 <h2 id="ipv6-localhost-note">IPv6 / <code>localhost</code> note<a class="headerlink" href="#ipv6-localhost-note" title="Permanent link">&para;</a></h2>
 <p>Browsers resolve <code>localhost</code> to <code>::1</code> (IPv6) first. The platform's API ingress must serve both A and AAAA records (or bind dual-stack). If your browser reports <code>ECONNREFUSED ::1</code>, contact your operator — the ingress binding needs to support IPv6. The in-pod agentd listener is already dual-stack-safe (<code>0.0.0.0</code>).</p>
-<h2 id="url-format-details-epic-67">URL format details (Epic 67)<a class="headerlink" href="#url-format-details-epic-67" title="Permanent link">&para;</a></h2>
+<h2 id="url-format-details-epic-68">URL format details (Epic 68)<a class="headerlink" href="#url-format-details-epic-68" title="Permanent link">&para;</a></h2>
 <h3 id="host-disambiguation">Host disambiguation<a class="headerlink" href="#host-disambiguation" title="Permanent link">&para;</a></h3>
 <p>The platform distinguishes between two preview host formats:</p>
 <ul>
@@ -2311,7 +2311,7 @@
     <span class="md-icon" title="Last update">
       <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M21 13.1c-.1 0-.3.1-.4.2l-1 1 2.1 2.1 1-1c.2-.2.2-.6 0-.8l-1.3-1.3c-.1-.1-.2-.2-.4-.2m-1.9 1.8-6.1 6V23h2.1l6.1-6.1zM12.5 7v5.2l4 2.4-1 1L11 13V7zM11 21.9c-5.1-.5-9-4.8-9-9.9C2 6.5 6.5 2 12 2c5.3 0 9.6 4.1 10 9.3-.3-.1-.6-.2-1-.2s-.7.1-1 .2C19.6 7.2 16.2 4 12 4c-4.4 0-8 3.6-8 8 0 4.1 3.1 7.5 7.1 7.9l-.1.2z"/></svg>
     </span>
-    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 27, 2026 03:27:05 UTC"><span class="timeago" datetime="2026-08-27T03:27:05+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 27, 2026 03:27:05 UTC">2026-08-27</span>
+    <span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-timeago" title="August 27, 2026 19:01:46 UTC"><span class="timeago" datetime="2026-08-27T19:01:46+00:00" locale="en"></span></span><span class="git-revision-date-localized-plugin git-revision-date-localized-plugin-iso_date" title="August 27, 2026 19:01:46 UTC">2026-08-27</span>
   </span>
 
     
