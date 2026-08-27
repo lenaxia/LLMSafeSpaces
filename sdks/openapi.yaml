@@ -630,6 +630,47 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+  /workspaces/{id}/alerts:
+    get:
+      tags: [sessions]
+      summary: List persisted hung-session alerts (D6)
+      description: >
+        D6 (#998) escalation records for a workspace — one per published
+        notify-only workspace.alert/session_hung event, newest-first,
+        within a 24h retention window. Survives SSE disconnects; the
+        reconnecting clients and workflow surfaces use it to recover
+        missed alerts.
+      operationId: listWorkspaceAlerts
+      parameters:
+        - $ref: "#/components/parameters/WorkspaceId"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+          description: Maximum alerts to return.
+      responses:
+        "200":
+          description: Persisted alerts (may be empty)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [alerts]
+                properties:
+                  alerts:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/SessionAlert"
+        "400":
+          description: Invalid limit
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
   /workspaces/{id}/sessions/new:
     post:
       tags: [sessions]
@@ -7271,6 +7312,24 @@ components:
         status:
           type: string
           enum: [active, idle]
+    SessionAlert:
+      type: object
+      required: [id, workspaceId, sessionId, alert, oldestBusySeconds, createdAt]
+      properties:
+        id:
+          type: string
+        workspaceId:
+          type: string
+        sessionId:
+          type: string
+        alert:
+          type: string
+          enum: [session_hung]
+        oldestBusySeconds:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
     ActiveSessionsResponse:
       type: object
       properties:

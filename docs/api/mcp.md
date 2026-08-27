@@ -77,13 +77,13 @@ The [VS Code extension](sdks.md#vs-code-extension) embeds the MCP tool surface a
 
 ## Tools
 
-The server advertises 15 tools, all workspace-centric — the sandbox layer is hidden from callers. Each tool maps to one or more REST API calls.
+The server advertises 24 tools, all workspace-centric — the sandbox layer is hidden from callers. Each tool maps to one or more REST API calls.
 
 ### Workspace lifecycle
 
 | Tool | Required args | Description |
 |------|---------------|-------------|
-| `workspace_create` | `runtime`, `name`? | Create a new workspace with a persistent development environment |
+| `workspace_create` | `runtime`, `name` | Create a new workspace with a persistent development environment |
 | `workspace_activate` | `workspace_id` | Activate a workspace (starts the agent). Required before creating sessions. |
 | `workspace_stop` | `workspace_id` | Stop a workspace (suspends the agent, preserves all files) |
 | `workspace_refresh_compute` | `workspace_id` | Re-sync resource defaults + latest image version and rebuild the pod |
@@ -94,22 +94,22 @@ The server advertises 15 tools, all workspace-centric — the sandbox layer is h
 
 | Tool | Required args | Description |
 |------|---------------|-------------|
-| `session_create` | `workspace_id` | Create a conversation session in an active workspace |
+| `session_create` | `workspace_id` | Create a conversation session in an active workspace. Returns the `sessionId` from `POST /workspaces/:id/sessions/new`. |
 | `session_message` | `workspace_id`, `session_id`, `message` | Send a message and get the response (blocks until the agent replies) |
-| `session_history` | `workspace_id`, `session_id` | Get the message history of a session |
+| `session_history` | `workspace_id`, `session_id` | Get the message history of a session (contract shape: `id`/`type`/`parts`) |
+
+`session_message` sends the prompt via `POST .../sessions/:id/prompt`, then subscribes to the workspace event stream (`GET .../session-events`) until the session goes idle. If the agent asks a question during the turn, the tool returns a structured `{"type":"question","request":{...}}` result instead of blocking; permission requests are auto-approved (`always`) in headless mode.
 
 !!! warning "`session_message` blocks"
     Like the REST `POST .../message`, this tool waits for the full assistant response and can take 30–120+ seconds. The default tool timeout is 300s. Messages are capped at 1 MiB.
 
-### Agent input: questions & permissions
+### Agent input: `run_resolve`
 
-The agent can pause and ask the caller a question or request permission for an action. These tools reply to those requests.
+The agent can pause and ask the caller a question or request permission for an action. `run_resolve` (US-65.7) is the unified reply tool for both — it replaced the former `session_question_reply`, `session_question_reject`, and `session_permission_reply` tools.
 
 | Tool | Required args | Description |
 |------|---------------|-------------|
-| `session_question_reply` | `workspace_id`, `request_id`, `answers` | Reply to a question. `answers` is a JSON array of string arrays, e.g. `[["answer1"],["answer2"]]`. |
-| `session_question_reject` | `workspace_id`, `request_id` | Reject a question (aborts the current operation) |
-| `session_permission_reply` | `workspace_id`, `request_id`, `reply` | Reply to a permission request. `reply` is `once`, `always`, or `reject`. Optional `message`. |
+| `run_resolve` | `workspace_id`, `request_id`, `reply` | Resolve a pending input request. For `que_*` IDs, `reply` is a JSON array of answers, e.g. `[["answer1"]]`. For `per_*` IDs, `reply` is `once`, `always`, or `reject`. Optional `message`. |
 
 Question request IDs start with `que_`; permission request IDs start with `per_`.
 
@@ -132,6 +132,31 @@ openai_compatible
 ```
 
 `slug` is the per-owner unique identity: lowercase alphanumeric and hyphens, 1–64 chars, no leading/trailing hyphen. It becomes the `agent-config.json` provider key.
+
+### Workflows (Epic 64)
+
+| Tool | Required args | Description |
+|------|---------------|-------------|
+| `workflow_list` | _(none)_ | List workflows owned by the authenticated user |
+| `workflow_get` | `workflow_id` | Get a workflow definition by ID |
+| `workflow_create` | `name`, `spec_yaml` | Create a workflow definition. Optional: `status` (`draft` default, `active`, `archived`). |
+| `workflow_update` | `workflow_id` | Partial update — only provided args are sent. Optional: `name`, `status`, `spec_yaml`. |
+| `workflow_run` | `workflow_id` | Start a workflow run. Optional: `input` (JSON), `workspace_id` (override target). |
+| `workflow_status` | `run_id` | Get the status of a workflow run |
+| `workflow_cancel` | `run_id` | Cancel a running workflow |
+
+`spec_yaml` is the workflow DAG spec as a JSON document (`{"nodes":[...],"edges":[...]}`).
+
+### Triggers (Epic 64)
+
+| Tool | Required args | Description |
+|------|---------------|-------------|
+| `trigger_list` | _(none)_ | List triggers owned by the authenticated user |
+| `trigger_create` | `name`, `source_type`, `source_config` | Create a trigger. Routine mode (no `workflow_id`): `workspace_id` + `prompt`. Workflow mode: `workflow_id`. Optional: `memory_mode`, `capture_mode`, `preserve_session`. |
+| `trigger_update` | `trigger_id` | Partial update. Optional: `enabled` (**boolean**). |
+| `trigger_delete` | `trigger_id` | Delete a trigger |
+
+`source_type` is `cron` (with `source_config` JSON `{"expr","tz"}`) or `webhook` (with `{}`).
 
 ## How MCP maps to workspace sessions
 

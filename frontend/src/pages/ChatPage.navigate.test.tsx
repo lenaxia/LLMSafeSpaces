@@ -32,6 +32,7 @@ vi.mock("../providers/SessionActivityProvider", () => ({
   useIsSessionBusy: () => false,
   useIsSessionUnread: () => false,
   useWorkspaceBusyCount: () => 0,
+    useWorkspaceHung: () => false,
   useIsSessionPendingAction: () => false,
   useSessionPendingActions: () => new Set<string>(),
   useAddPendingAction: () => () => {},

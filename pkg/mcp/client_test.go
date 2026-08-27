@@ -32,6 +32,15 @@ func newTestHTTPClient(handler http.Handler) (*HTTPClient, *httptest.Server) {
 	return client, ts
 }
 
+// contractMsg builds a contract-shaped history Message (design 0049:
+// id/type/parts) for test fixtures.
+func contractMsg(id, typ, text string) Message {
+	return Message{ID: id, Type: typ, Parts: []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	}{{Type: "text", Text: text}}}
+}
+
 // ===== CreateWorkspace =====
 
 func TestHTTPClient_CreateWorkspace_HappyPath(t *testing.T) {
@@ -230,7 +239,7 @@ func TestHTTPClient_RefreshWorkspace_APIError(t *testing.T) {
 
 func TestHTTPClient_CreateSession_HappyPath(t *testing.T) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/new", func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "POST", r.Method)
 		json.NewEncoder(w).Encode(SessionResp{ID: "sess-1"})
 	})
@@ -250,8 +259,7 @@ func TestHTTPClient_GetHistory_HappyPath(t *testing.T) {
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/message", func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "GET", r.Method)
 		json.NewEncoder(w).Encode([]Message{
-			{Role: "user", Content: "hi"},
-			{Role: "assistant", Content: "hello"},
+			contractMsg("msg_1", "user", "hi"), contractMsg("msg_2", "assistant", "hello"),
 		})
 	})
 
@@ -261,7 +269,7 @@ func TestHTTPClient_GetHistory_HappyPath(t *testing.T) {
 	msgs, err := client.GetHistory(context.Background(), "ws-1", "sess-1")
 	require.NoError(t, err)
 	assert.Len(t, msgs, 2)
-	assert.Equal(t, "hello", msgs[1].Content)
+	assert.Equal(t, "hello", msgs[1].TextContent())
 }
 
 // ===== SendMessage =====
@@ -272,7 +280,7 @@ func TestHTTPClient_SendMessage_SSEResponse(t *testing.T) {
 		assert.Equal(t, "POST", r.Method)
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("/api/v1/workspaces/ws-1/events", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/workspaces/ws-1/session-events", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher := w.(http.Flusher)
 		fmt.Fprintf(w, "data: {\"type\":\"content\",\"content\":\"Hello \"}\n\n")
@@ -296,14 +304,13 @@ func TestHTTPClient_SendMessage_FallbackToHistory(t *testing.T) {
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/prompt", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("/api/v1/workspaces/ws-1/events", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/workspaces/ws-1/session-events", func(w http.ResponseWriter, r *http.Request) {
 		// SSE stream closes immediately without session.idle
 		w.Header().Set("Content-Type", "text/event-stream")
 	})
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/message", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode([]Message{
-			{Role: "user", Content: "hi"},
-			{Role: "assistant", Content: "fallback response"},
+			contractMsg("msg_1", "user", "hi"), contractMsg("msg_2", "assistant", "fallback response"),
 		})
 	})
 
@@ -335,13 +342,13 @@ func TestHTTPClient_SendMessage_Timeout(t *testing.T) {
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/prompt", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("/api/v1/workspaces/ws-1/events", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/workspaces/ws-1/session-events", func(w http.ResponseWriter, r *http.Request) {
 		// Block until context canceled (simulates timeout)
 		w.Header().Set("Content-Type", "text/event-stream")
 		<-r.Context().Done()
 	})
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/message", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode([]Message{{Role: "assistant", Content: "timeout fallback"}})
+		json.NewEncoder(w).Encode([]Message{contractMsg("msg_1", "assistant", "timeout fallback")})
 	})
 
 	client, ts := newTestHTTPClient(mux)
@@ -388,7 +395,7 @@ func TestHTTPClient_SendMessage_SSEWithKeepalives(t *testing.T) {
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/prompt", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("/api/v1/workspaces/ws-1/events", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/workspaces/ws-1/session-events", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher := w.(http.Flusher)
 		// Real SSE streams have comments, retry directives, and event types
@@ -478,7 +485,7 @@ func TestHTTPClient_SendMessage_IgnoresIdleForOtherSession(t *testing.T) {
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/prompt", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("/api/v1/workspaces/ws-1/events", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/workspaces/ws-1/session-events", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher := w.(http.Flusher)
 		// Idle for a DIFFERENT session — should be ignored
@@ -505,7 +512,7 @@ func TestHTTPClient_SendMessage_IgnoresBusyEvents(t *testing.T) {
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/prompt", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("/api/v1/workspaces/ws-1/events", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/workspaces/ws-1/session-events", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher := w.(http.Flusher)
 		// Busy event — should be ignored
@@ -557,7 +564,7 @@ func TestValidateID_AcceptsUnderscoreIDs(t *testing.T) {
 func TestHTTPClient_GetHistory_AcceptsOpenCodeSessionID(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/ses_18b28260affeoxXrX1iwPH8wFg/message", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode([]Message{{Role: "assistant", Content: "ok"}})
+		json.NewEncoder(w).Encode([]Message{contractMsg("msg_1", "assistant", "ok")})
 	})
 
 	client, ts := newTestHTTPClient(mux)
@@ -575,7 +582,7 @@ func TestHTTPClient_SendMessage_QuestionDetected(t *testing.T) {
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/prompt", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("/api/v1/workspaces/ws-1/events", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/workspaces/ws-1/session-events", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher := w.(http.Flusher)
 		// Agent asks a question
@@ -605,7 +612,7 @@ func TestHTTPClient_SendMessage_QuestionForDifferentSession_Ignored(t *testing.T
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/prompt", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("/api/v1/workspaces/ws-1/events", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/workspaces/ws-1/session-events", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher := w.(http.Flusher)
 		// Question for a DIFFERENT session — should be ignored
@@ -616,7 +623,7 @@ func TestHTTPClient_SendMessage_QuestionForDifferentSession_Ignored(t *testing.T
 		flusher.Flush()
 	})
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/message", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode([]Message{{Role: "assistant", Content: "done"}})
+		json.NewEncoder(w).Encode([]Message{contractMsg("msg_1", "assistant", "done")})
 	})
 
 	client, ts := newTestHTTPClient(mux)
@@ -634,7 +641,7 @@ func TestHTTPClient_SendMessage_PermissionAutoApproved(t *testing.T) {
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/prompt", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
-	mux.HandleFunc("/api/v1/workspaces/ws-1/events", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/v1/workspaces/ws-1/session-events", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher := w.(http.Flusher)
 		// Permission event
@@ -649,7 +656,7 @@ func TestHTTPClient_SendMessage_PermissionAutoApproved(t *testing.T) {
 		w.Write([]byte(`true`))
 	})
 	mux.HandleFunc("/api/v1/workspaces/ws-1/sessions/sess-1/message", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode([]Message{{Role: "assistant", Content: "done after permission"}})
+		json.NewEncoder(w).Encode([]Message{contractMsg("msg_1", "assistant", "done after permission")})
 	})
 
 	client, ts := newTestHTTPClient(mux)

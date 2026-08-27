@@ -77,6 +77,19 @@ type ActiveSessionsResponse struct {
 	MaxActive int      `json:"maxActive"`
 }
 
+// SessionAlert is one persisted D6 (#998) escalation. Rows are appended
+// by the API-side escalation sweep each time a notify-only
+// workspace.alert (session_hung) is published, so alerts survive SSE
+// disconnects and remain readable by workflow surfaces after the fact.
+type SessionAlert struct {
+	ID                string    `json:"id"`
+	WorkspaceID       string    `json:"workspaceId"`
+	SessionID         string    `json:"sessionId"`
+	Alert             string    `json:"alert"`
+	OldestBusySeconds int       `json:"oldestBusySeconds"`
+	CreatedAt         time.Time `json:"createdAt"`
+}
+
 // EnsureSessionResponse is returned by POST /workspaces/:id/sessions/new.
 // It guarantees the workspace is active with a running pod, returning the
 // workspace ID and session ID for immediate use.

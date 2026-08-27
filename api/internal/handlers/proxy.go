@@ -86,6 +86,10 @@ type ProxyHandler struct {
 
 	meteringSvc interfaces.MeteringService
 
+	// tokenSeenStore persists per-session cumulative usage dedup state
+	// across tracker restarts (#759); nil = in-memory only (dev/test).
+	tokenSeenStore sse.TokenSeenStore
+
 	// versionSyncCb is the callback wired into the CRD watcher to persist
 	// runtime version info (imageTag) to the DB whenever a workspace becomes
 	// Active. Set via SetVersionSyncCallback before Start().
@@ -136,6 +140,14 @@ type ProxyHandler struct {
 	// stopCh is closed by Stop() to signal background goroutines
 	// (e.g. the stranded-queue sweep) to shut down.
 	stopCh chan struct{}
+
+	// busyAlerts / busyAlertsMu back the D6 (#998) escalation cooldown.
+	busyAlerts   map[string]time.Time
+	busyAlertsMu sync.Mutex
+
+	// sessionAlerts persists D6 (#998) escalations (nil = dev/test:
+	// SSE-only, no durability). Wired via SetSessionAlerts before Start.
+	sessionAlerts interfaces.SessionAlertsService
 
 	// outboxCancel stops the outbox delivery worker on Stop().
 	outboxCancel context.CancelFunc
@@ -197,6 +209,7 @@ func NewProxyHandler(
 		dialect:       dialect,
 		stateStore:    wsstate.NewInMemoryStore(),
 		connCount:     make(map[string]int),
+		busyAlerts:    make(map[string]time.Time),
 		requestBuffer: newRequestBuffer(defaultBufferMaxSize, defaultBufferTimeout, defaultBufferPollInterval, logger),
 		v2Pending:     newV2PendingSessions(),
 	}, nil
@@ -252,6 +265,14 @@ func (h *ProxyHandler) SetOutboxForTest(o *outbox.Service) {
 	h.outbox = o
 }
 
+// SetUserBrokerForTest wires the workspace SSE broker without running
+// Start (tests only; production creates the broker inside Start). The
+// mcp-router integration gate (api/internal/server) drives StreamEvents
+// through the production router and publishes events on this broker.
+func (h *ProxyHandler) SetUserBrokerForTest(b *eventbroker.UserEventBroker) {
+	h.userBroker = b
+}
+
 // SetModelPolicyChecker wires the org-policy checker for per-prompt model
 // override enforcement. Optional (nil = unenforced). Panics after Start for
 // the same race-safety reason as SetAdapter.
@@ -288,6 +309,19 @@ func (h *ProxyHandler) SetStateStore(store wsstate.Store) {
 		panic("SetStateStore called after Start — request goroutines may already be reading stateStore")
 	}
 	h.stateStore = store
+}
+
+// SetTokenSeenStore wires the persistent session-usage dedup store
+// (#759). The SSE tracker consumes it at construction; panics after
+// Start for the same race-safety reason as SetStateStore.
+func (h *ProxyHandler) SetTokenSeenStore(store sse.TokenSeenStore) {
+	if store == nil {
+		return
+	}
+	if h.started {
+		panic("SetTokenSeenStore called after Start — the tracker may already be reading it")
+	}
+	h.tokenSeenStore = store
 }
 
 func (h *ProxyHandler) proxyToWorkspace(c *gin.Context, targetPath string, isWriteOp bool, sessionID string) {

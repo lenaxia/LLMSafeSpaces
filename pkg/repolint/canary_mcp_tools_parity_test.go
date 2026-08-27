@@ -85,3 +85,49 @@ func TestCanary_MCPTools_Parity(t *testing.T) {
 	require.GreaterOrEqual(t, len(resp.Tools), floor,
 		"canary floor (%d) exceeds the real registry size (%d) — tools were removed; update the canary", floor, len(resp.Tools))
 }
+
+// TestDocs_MCPTools_Parity pins docs/api/mcp.md to the real tool
+// registry (#1038): every registered tool must be documented and the
+// doc must not list removed/renamed tools. The doc may describe a tool
+// in prose, but any backticked `tool_name` in a table row is part of
+// the documented contract.
+func TestDocs_MCPTools_Parity(t *testing.T) {
+	doc, err := os.ReadFile(repoRoot(t) + "/docs/api/mcp.md")
+	require.NoError(t, err)
+
+	// Tool tables: rows shaped "| `name` | ... |".
+	rowRe := regexp.MustCompile("(?m)^\\| `([a-z_]+)` \\|")
+	documented := map[string]bool{}
+	for _, m := range rowRe.FindAllStringSubmatch(string(doc), -1) {
+		documented[m[1]] = true
+	}
+	require.NotEmpty(t, documented, "docs/api/mcp.md must document tools in tables")
+
+	srv := mcpserver.NewServer(nil, 30*time.Second)
+	cl, err := client.NewInProcessClient(srv)
+	require.NoError(t, err)
+	defer func() { _ = cl.Close() }()
+	ctx := context.Background()
+	require.NoError(t, cl.Start(ctx))
+	initReq := mcp.InitializeRequest{}
+	initReq.Params.ProtocolVersion = mcp.LATEST_PROTOCOL_VERSION
+	initReq.Params.ClientInfo = mcp.Implementation{Name: "docs-parity", Version: "1.0"}
+	_, err = cl.Initialize(ctx, initReq)
+	require.NoError(t, err)
+
+	resp, err := cl.ListTools(ctx, mcp.ListToolsRequest{})
+	require.NoError(t, err)
+	registered := map[string]bool{}
+	for _, tool := range resp.Tools {
+		registered[tool.Name] = true
+	}
+
+	for name := range documented {
+		require.True(t, registered[name],
+			"docs/api/mcp.md documents tool %q which the registry does not serve — remove or rename the doc entry", name)
+	}
+	for name := range registered {
+		require.True(t, documented[name],
+			"registry serves tool %q which docs/api/mcp.md does not document — add it to the tool tables", name)
+	}
+}

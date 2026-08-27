@@ -14,6 +14,16 @@ export interface EnsureSessionResponse {
   resumed: boolean;
 }
 
+// D6 (#998): one persisted hung-session escalation record.
+export interface SessionAlert {
+  id: string;
+  workspaceId: string;
+  sessionId: string;
+  alert: string;
+  oldestBusySeconds: number;
+  createdAt: string;
+}
+
 export interface ModelInfo {
   id: string;
   providerID: string;
@@ -54,6 +64,9 @@ export const workspacesApi = {
   refreshCompute: (id: string) =>
     api.post<{ restartGeneration: number }>(`/workspaces/${id}/refresh-compute`),
   getSessions: (id: string) => api.get<SessionListItem[]>(`/workspaces/${id}/sessions`),
+  // D6 (#998): persisted hung-session alerts (24h retention server-side).
+  getAlerts: (id: string) =>
+    api.get<{ alerts: SessionAlert[] }>(`/workspaces/${id}/alerts`).then((r) => r.alerts ?? []),
   getSession: (workspaceId: string, sessionId: string) =>
     api.get<AgentSession>(`/workspaces/${workspaceId}/sessions/${sessionId}`),
   renameSession: (workspaceId: string, sessionId: string, title: string) =>

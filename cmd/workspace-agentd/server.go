@@ -119,6 +119,20 @@ func buildStatuszHandler(
 			}
 		}
 
+		// D6 (#998): busy-age escalation inputs. busyAges from the SSE
+		// tracker's busy-at timestamps; OldestBusySeconds drives the
+		// API's alert threshold (0 when nothing is busy).
+		busyAges := tracker.busyDurations()
+		oldest := 0
+		ages := make(map[string]int, len(busyAges))
+		for id, d := range busyAges {
+			secs := int(d.Seconds())
+			ages[id] = secs
+			if secs > oldest {
+				oldest = secs
+			}
+		}
+
 		// Context usage: per-session ContextUsed from SSE prompt tokens.
 		// Top-level TotalTokens = model context limit (same for all sessions).
 		// UsedTokens is not meaningful as an aggregate; set to 0.
@@ -158,6 +172,8 @@ func buildStatuszHandler(
 			Memory:              sys.memory(),
 			CPU:                 sys.cpu(),
 			RelayFreeModels:     RelayFreeModelsState(),
+			OldestBusySeconds:   oldest,
+			BusyAges:            ages,
 			Context:             contextUsage,
 			MemoryPressure:      pressure,
 			Warnings:            modelResolutionWarnings(modelWarnPath),

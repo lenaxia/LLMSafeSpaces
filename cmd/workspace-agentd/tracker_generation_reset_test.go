@@ -5,6 +5,7 @@ package main
 
 import (
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -100,4 +101,37 @@ func TestRecordTrackerBusyReset_Metric(t *testing.T) {
 
 	require.Equal(t, 5.0, testutil.ToFloat64(vec.WithLabelValues("ws-metric")))
 	require.Equal(t, 1.0, testutil.ToFloat64(vec.WithLabelValues("unknown")))
+}
+
+// D6 (#998): busy-at timestamps back oldest_busy_seconds escalation.
+func TestTracker_BusyDurations(t *testing.T) {
+	withTestLogger(t)
+	tr := newSessionStatusTracker()
+	require.Empty(t, tr.busyDurations(), "idle tracker has no busy ages")
+
+	tr.set("ses-a", "busy")
+	tr.set("ses-b", "busy")
+	tr.set("ses-b", "busy") // re-set does NOT restart the clock
+	tr.set("ses-idle", "idle")
+
+	durs := tr.busyDurations()
+	require.Len(t, durs, 2)
+	require.Greater(t, durs["ses-a"], time.Duration(0))
+	require.Less(t, durs["ses-a"], 2*time.Second)
+
+	tr.set("ses-a", "idle")
+	_, ok := tr.busyDurations()["ses-a"]
+	require.False(t, ok, "idle clears the busy age")
+}
+
+// D2 interplay (#998): the generation reset must clear busy ages too —
+// an orphaned flag's age is fiction.
+func TestResetBusyFlags_ClearsBusySince(t *testing.T) {
+	withTestLogger(t)
+	tr := newSessionStatusTracker()
+	tr.set("ses-o", "busy")
+	require.NotEmpty(t, tr.busyDurations())
+
+	tr.resetBusyFlags()
+	require.Empty(t, tr.busyDurations(), "orphaned busy age must not survive the generation reset")
 }

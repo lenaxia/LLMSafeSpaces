@@ -25,6 +25,7 @@ vi.mock("../../api/workspaces", () => ({
     getStatus: vi.fn().mockResolvedValue({ phase: "Active" }),
     activate: vi.fn().mockResolvedValue({ resumed: "ws-1" }),
     getSessions: vi.fn().mockResolvedValue([]),
+    getAlerts: vi.fn().mockResolvedValue([]),
     listModels: vi.fn().mockResolvedValue({ models: [], currentModel: "" }),
     markSessionSeen: vi.fn().mockResolvedValue(undefined),
     renameWorkspace: vi.fn().mockResolvedValue(undefined),

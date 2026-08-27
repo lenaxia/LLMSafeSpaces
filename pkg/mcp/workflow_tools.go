@@ -81,7 +81,7 @@ var triggerCreateTool = mcp.NewTool("trigger_create",
 var triggerUpdateTool = mcp.NewTool("trigger_update",
 	mcp.WithDescription("Update a trigger (partial update)"),
 	mcp.WithString("trigger_id", mcp.Required(), mcp.Description("Trigger ID")),
-	mcp.WithString("enabled", mcp.Description("Enable/disable")),
+	mcp.WithBoolean("enabled", mcp.Description("Enable/disable")),
 )
 
 var triggerDeleteTool = mcp.NewTool("trigger_delete",
@@ -136,9 +136,20 @@ func (h *handlers) workflowUpdate(ctx context.Context, req mcp.CallToolRequest) 
 	if workflowID == "" {
 		return mcp.NewToolResultError("workflow_id is required"), nil
 	}
-	name, _ := args["name"].(string)
-	status, _ := args["status"].(string)
-	specYAML, _ := args["spec_yaml"].(string)
+	// Partial-update semantics (#1036): only args the caller supplied
+	// are forwarded; omitted args stay nil (keep existing). The API
+	// binds pointer fields, so a present-but-empty string is an explicit
+	// (invalid) value and a missing arg must not become one.
+	var name, status, specYAML *string
+	if v, ok := args["name"].(string); ok {
+		name = &v
+	}
+	if v, ok := args["status"].(string); ok {
+		status = &v
+	}
+	if v, ok := args["spec_yaml"].(string); ok {
+		specYAML = &v
+	}
 	resp, err := h.client.UpdateWorkflow(ctx, workflowID, name, status, specYAML)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to update workflow: %v", err)), nil
@@ -226,7 +237,12 @@ func (h *handlers) triggerUpdate(ctx context.Context, req mcp.CallToolRequest) (
 	if triggerID == "" {
 		return mcp.NewToolResultError("trigger_id is required"), nil
 	}
-	enabled, _ := args["enabled"].(string)
+	// enabled is boolean on the wire (#1035): the API binds
+	// UpdateTriggerRequest.Enabled *bool. Absent → nil (keep existing).
+	var enabled *bool
+	if v, ok := args["enabled"].(bool); ok {
+		enabled = &v
+	}
 	resp, err := h.client.UpdateTrigger(ctx, triggerID, enabled)
 	if err != nil {
 		return mcp.NewToolResultError(fmt.Sprintf("failed to update trigger: %v", err)), nil

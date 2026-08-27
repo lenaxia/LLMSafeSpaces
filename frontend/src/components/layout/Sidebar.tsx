@@ -7,7 +7,7 @@ import { useConfirmDialog } from "../../hooks/useConfirmDialog";
 import { orgsApi } from "../../api/orgs";
 import { ApiClientError } from "../../api/client";
 import { useAuth } from "../../providers/AuthProvider";
-import { useSessionStatus, useWorkspaceBusyCount, useSessionPendingActions } from "../../providers/SessionActivityProvider";
+import { useSessionStatus, useWorkspaceBusyCount, useSessionPendingActions, useWorkspaceHung } from "../../providers/SessionActivityProvider";
 import type { SessionDisplayStatus } from "../../providers/SessionActivityProvider";
 import { RenameWorkspaceDialog } from "../workspace/RenameWorkspaceDialog";
 import { NewWorkspaceSplitButton } from "../workspace/NewWorkspaceSplitButton";
@@ -367,6 +367,7 @@ function WorkspaceGroup({
   const isResuming = workspace.phase === "Resuming";
   const isActive = workspace.phase === "Active";
   const busyCount = useWorkspaceBusyCount(workspace.id);
+  const hung = useWorkspaceHung(workspace.id);
 
   const [showSettings, setShowSettings] = useState(false);
   const [showRefreshConfirm, setShowRefreshConfirm] = useState(false);
@@ -435,8 +436,16 @@ function WorkspaceGroup({
             {!activating && workspace.phase && !isActive && !isSuspended && (
               <span className="text-xs text-muted-foreground">{workspace.phase}</span>
             )}
-            {!expanded && busyCount > 0 && (
+            {!expanded && busyCount > 0 && !hung && (
               <BusyIndicator size="sm" />
+            )}
+            {!expanded && hung && (
+              <span
+                title="A session has been busy without progress — possibly hung (nothing was stopped automatically)"
+                aria-label="session possibly hung"
+                className="h-2 w-2 shrink-0 rounded-full bg-amber-500"
+                data-testid="hung-badge"
+              />
             )}
           </button>
           {isSuspended && !activating && (
