@@ -2,8 +2,8 @@
 
 > **Repository:** `github.com/lenaxia/llmsafespaces`
 
-**Version:** 1.25
-**Last Updated:** 2026-08-27
+**Version:** 1.27
+**Last Updated:** 2026-08-30
 **Project Status:** Active Development
 
 ---
@@ -27,6 +27,7 @@
 15. [Multi-Tenant OIDC SSO](#multi-tenant-oidc-sso)
 16. [Cloudflare Turnstile CAPTCHA](#cloudflare-turnstile-captcha)
 17. [File Attachments (Epic 68)](#file-attachments-epic-68)
+18. [Task Model](#task-model)
 
 ---
 
@@ -1984,6 +1985,95 @@ Vision/multimodal (needs file parts through the adapter seam); drag-drop + clipb
 
 ---
 
+## Task Model
+
+**Status:** Planned — design contract for a platform-side background-LLM feature. Not yet implemented. The implementing session should follow this contract and update this section to as-built.
+
+The Task Model is the LLM the platform uses for its **own** purposes — naming workspaces from session context, generating summaries, and future background tasks. It is distinct from the model a workspace uses for agent work (`workspaces.default_model`): the workspace model drives the in-pod agent; the task model drives server-side calls the API makes for platform UX.
+
+The first concrete consumer is **workspace naming**. Today, workspace naming is a frontend-only hack: `frontend/src/pages/ChatPage.tsx:599-613` renames a workspace from opencode's in-pod session title, once, when the workspace name still matches the auto-generated `adjective-noun-number` placeholder (`frontend/src/lib/names.ts:7`). This couples platform naming to opencode's titler and to frontend state. The Task Model replaces this with a server-side call: when session content becomes available, the platform makes a straight LLM call (OpenAI-compatible HTTP, **not** an agent/pod call) to name the workspace, gated on the same placeholder-name condition so user-named workspaces are never clobbered.
+
+### Credential prerequisite — satisfied; sessionless decryption is the remaining gate
+
+**Satisfied:** the password-tier DEK deletion cut landed (worklog 0673, migration `000014` — every user is `server_kek`/`passkey`, `user_keys.wrapped_dek` wrapped by the master `RootKeyProvider`), and the follow-on 0662 cleanup landed (PR #734, worklog `0755`, migration `000023` nulling legacy column residue). There is no longer a class of credentials the server cannot decrypt.
+
+**Still open:** no code path decrypts a user DEK without a live session.
+
+- `KeyService.GetDEK` (`pkg/secrets/key_service.go:493`) resolves Redis cache → `jwt_sessions` rehydrate → `ErrDEKUnavailable`. It never consults `rootKeyProvider`.
+- `KeyService.GetDEKForUser` (`key_service.go:654`) iterates `ListActiveJWTSessionsForUser` — it requires **at least one active (unexpired) session row** and unwraps via signing-key-derived KEKs, not the master KEK.
+
+Consequence: server-side task calls on a user-owned credential work only while the owning user has an active session. Scoping decision for v1:
+
+- **(a) Session-triggered only (recommended first step):** restrict v1 consumers to tasks that fire from session activity. Workspace naming qualifies — it triggers while the user is chatting, so `GetDEKForUser` suffices. No new decrypt surface.
+- **(b) `GetDEKSessionless(userID)`:** a new method that unwraps `user_keys.wrapped_dek` via `rootKeyProvider` and caches under a synthetic session key. Required for scheduled/offline tasks (summaries on a timer). Widens the decrypt surface — pair with a distinct audit-log action label per the Epic 58 Q4 precedent so operators can alert on platform-initiated personal-secret decrypts independently.
+
+### Precedence
+
+Most-specific wins. Resolution walks the chain top-down and uses the first level that yields a valid `(credential, model)` pair.
+
+| # | Level | Store | Credential source |
+|---|-------|-------|-------------------|
+| 1 | User | `user_settings` key `taskModel` (new) | A user-owned `provider_credentials` row (`owner_type='user'`) |
+| 2 | Org | `org_policies` key `task_model` (new) | An org-owned `provider_credentials` row (`owner_type='org'`) |
+| 3 | Platform | `instance_settings` key `taskModel.defaultModel` (new, Tier 2) | An admin-owned `provider_credentials` row (`owner_type='admin'`) |
+| 4 | Workspace | `workspaces.default_model` (existing) | The workspace's bound credentials + its default model |
+
+- **Non-org users:** #1 → #3 → #4 (#2 skipped).
+- **Org members:** #1 → #2 → #3 → #4.
+- **Org admins:** setting #2 is the org default their members inherit; they pick from the org's available providers (see "Org model enumeration").
+
+**On the workspace fallback (#4):** the explicit design decision — if nothing else is configured, the platform naming call uses the same model the workspace uses for agent work. It is the most expensive option (whatever model the user picked for real work), which is why #3 exists.
+
+**On the platform default (#3):** recommended baseline so operators can pin a cheap, fast model for naming/summaries instead of accidentally driving background tasks with a premium workspace model.
+
+### Storage — follows established patterns
+
+- **Platform default (#3):** new Tier 2 key `taskModel.defaultModel` in `pkg/settings/schema.go` `InstanceSettings()`, value `{credentialID, model}` jsonb, served by the existing `InstanceService`.
+- **Org default (#2):** new `task_model` key in `org_policies` via the CHECK-swap migration template (latest example: `api/migrations/000017_allowed_image_configs.up.sql`); new `OrgPolicyKey` const + typed `*T` field in `pkg/types/orgs_policy.go`; a `case` in `applyPolicyValue` (`api/internal/services/policy/service.go`); `isValidKey`/`isValidValue` cases in the policies handler. This is **not** a `GetEffectivePolicy` `org ∩ platform` intersect value — it is a plain read like `sys_prompt_org`.
+- **User override (#1):** new `taskModel` key in `pkg/settings/schema.go` `UserSettings()` (value `{credentialID, model}`). This is the first **server-resolved** user setting — distinct from `preferredModel` (`pkg/settings/schema.go:205`), which is client-side seeding only. Keep the two keys separate; do not overload `preferredModel`.
+
+### Org model enumeration (new surface)
+
+There is no org-level model catalog endpoint — the catalog is built per-workspace from the running pod (`api/internal/handlers/models_handler.go:84`), and `allowed_models`/`allowed_providers` only filter. An org admin setting a task model has nothing to pick from except probing each credential (`GET /orgs/:id/credentials/:credID/models`, `org_credentials.go:355`). Two options:
+
+- **Validate at write time (recommended):** `PUT /orgs/:id/policies/task_model` accepts `{credentialID, model}`, verifies the credential is org-owned, decrypts it, and probes the provider's `/v1/models` to confirm the model ID is offered. Cheaper; no new catalog endpoint.
+- **New aggregate catalog:** `GET /orgs/:id/task-model-candidates` aggregating all org credentials' probed models. Heavier; only justified if the picker UI needs a single live list.
+
+### Call shape
+
+Generalizes the image-factory build-failure explainer precedent (`api/internal/handlers/imagefactory_explainer.go:21`): `LLMExplainerConfig{BaseURL, Model, APIKey}` POSTs to `{BaseURL}/chat/completions` with a system + user prompt, 15s timeout, graceful degradation on any failure. The Task Model path resolves `(baseURL, apiKey, modelID)` from the precedence chain, decrypts the credential server-side, and makes the call. On any failure (no task model resolvable, credential decrypt failure, provider timeout, parse error) the naming task falls back to leaving the name unchanged — never fatal to the session/chat path.
+
+### Naming trigger
+
+- **Trigger:** session context available (e.g. after the first assistant turn, or N messages). Platform-side background call, not in the user request path.
+- **Gate:** only fires when the workspace name still matches the auto-generated placeholder (`/^[a-z]+-[a-z]+-\d+$/` from `names.ts`, or `New session - <timestamp>`), mirroring `ChatPage.tsx:599-613`. User-named workspaces are never clobbered.
+- **Migration:** the frontend auto-rename effect (`ChatPage.tsx:599-613`) is removed once the server-side path ships. The `hasAutoRenamedRef` once-per-workspace semantics move server-side.
+
+### Gaps and non-goals
+
+- **Sessionless decryption gap.** Until `GetDEKSessionless` exists (or v1 is scoped to session-triggered tasks), a user-owned task model is unusable when the user has no active session; resolution degrades down the precedence chain.
+- **Naming gate preserved.** Server-side naming only fires on placeholder names; never overrides a user-named workspace.
+- **No in-pod agent involvement.** Task Model calls are server-side OpenAI-compatible HTTP calls, never routed through the workspace pod or opencode.
+- **No coupling to the free-tier relay.** The task model credential is a real provider credential with a real key; the anonymous opencode Zen relay path is not a task-model source.
+- **Not a per-workspace setting.** Task Model resolves per-user/per-org/per-platform. The workspace only enters as the fallback model source (#4).
+
+### File reference (target — not yet implemented)
+
+| Concern | File |
+|---------|------|
+| Precedence resolver | new `api/internal/services/taskmodel/` service |
+| Sessionless decrypt (if scope b) | `pkg/secrets/key_service.go` (`GetDEK` :493, `GetDEKForUser` :654) |
+| Platform default setting | `pkg/settings/schema.go`, `pkg/settings/instance_service.go` |
+| Org default policy | `pkg/types/orgs_policy.go`, `api/internal/services/policy/service.go`, new migration under `api/migrations/` + `helm/migrations/` mirror |
+| User override setting | `pkg/settings/schema.go`, `pkg/settings/user_service.go` |
+| Write-time validation (probe) | `api/internal/handlers/policies.go`, `api/internal/handlers/credential_probe.go` |
+| LLM call (precedent) | `api/internal/handlers/imagefactory_explainer.go:21` |
+| Naming trigger + `UPDATE workspaces SET name` | new background handler; `UpdateWorkspace` in the workspace service |
+| Frontend hack being replaced | `frontend/src/pages/ChatPage.tsx:599-613`, `frontend/src/lib/names.ts:7` |
+| Credential prerequisite history | worklogs 0673 (cut), 0755 (cleanup); migrations 000014, 000023 |
+
+---
+
 ## API Reference
 
 The complete REST surface is documented in `sdks/openapi.yaml` — the canonical spec, kept in both-directions parity with the production router by `TestOpenAPIRouterContract` (`api/internal/server/router_openapi_contract_test.go`, every handler wired). The API has ~200 routes covering:
@@ -2058,6 +2148,7 @@ The API service is configured via `api/config/config.yaml` with environment vari
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.27 | 2026-08-30 | Added "Task Model" section §18 (design contract, not yet implemented): a platform-side background-LLM feature distinct from the workspace agent model. First consumer is workspace naming, replacing the frontend-only auto-rename hack (`ChatPage.tsx:599-613`) with a server-side OpenAI-compatible call triggered by session context. Precedence: user → org → platform default → workspace model fallback. Storage follows established patterns (Tier 2 instance setting, new `org_policies` key via CHECK-swap migration, new server-resolved `user_settings` key distinct from client-side `preferredModel`). Credential prerequisite marked **satisfied** (DEK cut landed: worklog 0673 + migration 000014; cleanup PR #734 + migration 000023); the remaining gate is **sessionless decryption** — `GetDEK`/`GetDEKForUser` unwrap only via Redis/active `jwt_sessions` rows and never fall back to `rootKeyProvider` on `user_keys.wrapped_dek`. (Section renumbered 17→18 and doc version 1.25→1.27 during rebase: §17 File Attachments and v1.26 landed via later PRs.) |
 | 1.26 | 2026-08-27 | Added "File Attachments (Epic 68)" section documenting the as-built upload/attachment system: agentd `PUT /v1/files` on the user mux (:4097, single-container mode only — sidecar /workspace is read-only, uploads clean-fail 5xx there), API `POST /workspaces/:id/uploads` streaming multipart with the D16 gate order (auth→access→phase→disk→cap), manifest format v1 (path+name only — the `bytes=` sketch was dropped) locked by golden fixtures with compose-once idempotency (D15), `files[]` on /prompt + /queue with explicit 400 rejection on V1 /message, MCP `workspace_file_upload` + `session_message(files)` (5 MiB decoded cap), caps 25 MiB REST / 5 MiB MCP / 10 files per send, SDK upload + files surface in all four SDKs (`make sdk-check` + sdk-contract CI), and the out-of-scope list. E2E rows E7/E8/E9/E12 CI-enforced; E3/E4 browser-half; E2/E10/E11 cluster-only via `local/us-68-attachments-e2e.sh`. Fixed pre-existing canary Makefile breakage from #1072. |
 | 1.25 | 2026-08-27 | Epic #1032 API-surface sync follow-ups: API Reference rewritten — ~200 routes, 22 areas (passkeys, workflows/triggers, MCP servers, image factory, org surface, admin, usage/billing, Stripe webhook), canonical reference is now sdks/openapi.yaml with TestOpenAPIRouterContract as the both-directions parity gate; `?verbose` documented as accepted-and-ignored (patch stripping removed in Epic 65); spec ssoProviders dead field removed and verbose descriptions corrected. |
 | 1.23 | 2026-08-02 | Added disk-pressure prompt injection: when a workspace's `/workspace` PVC crosses 90% usage the API proxy prepends a notice part to LLM-bound chat requests (POST /message; V2 prompts go through enqueueV2 → PromptV2, which does not inject) so the agent nudges the user to free space; at 95% the notice escalates to safe-cleanup guidance (build artifacts + caches only, logs as last resort since they cannot be reproduced). Ratio comes from the existing Workspace CRD status fields (`diskUsedBytes`/`diskTotalBytes`) — no new telemetry. New `api/internal/handlers/proxy_disk_pressure.go`; thresholds env-overridable via `DISK_WARNING_THRESHOLD`/`DISK_CRITICAL_THRESHOLD`. |
