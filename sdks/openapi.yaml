@@ -746,7 +746,7 @@ paths:
         - $ref: "#/components/parameters/SessionId"
         - name: verbose
           in: query
-          description: If true, include patch parts in response
+          description: "Accepted for backwards compatibility; ignored. Patch-part stripping was removed in Epic 65 — all parts pass through unfiltered."
           schema:
             type: boolean
             default: false
@@ -786,7 +786,7 @@ paths:
         - $ref: "#/components/parameters/SessionId"
         - name: verbose
           in: query
-          description: If true, include patch parts in response
+          description: "Accepted for backwards compatibility; ignored. Patch-part stripping was removed in Epic 65 — all parts pass through unfiltered."
           schema:
             type: boolean
             default: false
@@ -7086,10 +7086,6 @@ components:
         passkeyDefaultSignup:
           type: boolean
           description: Present when the instance defaults signup to passkey registration
-        ssoProviders:
-          type: array
-          items:
-            type: string
         instanceName:
           type: string
         motd:
