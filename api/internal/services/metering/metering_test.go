@@ -36,6 +36,7 @@ func setupTestService(t *testing.T) (*Service, sqlmock.Sqlmock, func()) {
 		logger:  log.With("component", "metering-test"),
 		config:  cfg,
 		db:      db,
+		billCtx: context.Background(),
 		ch:      make(chan UsageEvent, 4096),
 		done:    make(chan struct{}),
 		stopCtx: context.Background(),
@@ -68,10 +69,20 @@ func makeEvent(eventType string, quantity int64) types.UsageEvent {
 }
 
 func TestRecord_NonBlocking(t *testing.T) {
-	svc, _, cleanup := setupTestService(t)
+	svc, mock, cleanup := setupTestService(t)
 	defer cleanup()
 
 	svc.ch = make(chan UsageEvent, 2)
+
+	// Buffer-full events take the synchronous direct-write fallback, so
+	// Record still must not block — the DB call has its own timeout.
+	mock.ExpectExec("INSERT INTO usage_events").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
 
 	done := make(chan struct{})
 	go func() {
@@ -83,12 +94,123 @@ func TestRecord_NonBlocking(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("Record should not block even when channel is full")
 	}
 
+	assert.Equal(t, uint64(0), svc.metrics.dropped.Load(),
+		"buffer-full events must be direct-written, not dropped (#766)")
+}
+
+// TestRecord_BufferFull_WritesDirectlyToDB pins the #766 core fix: when
+// the async buffer is full, the event is written to the DB synchronously
+// instead of being silently dropped.
+func TestRecord_BufferFull_WritesDirectlyToDB(t *testing.T) {
+	svc, mock, cleanup := setupTestService(t)
+	defer cleanup()
+
+	svc.ch = make(chan UsageEvent, 1)
+
+	overflow := makeEvent("llm_tokens", 50)
+	overflow.IdempotencyKey = "overflow-key"
+
+	mock.ExpectExec("INSERT INTO usage_events").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	svc.Record(makeEvent("llm_tokens", 1)) // fills the buffer
+	svc.Record(overflow)                   // buffer full → direct write
+
+	assert.Equal(t, uint64(0), svc.metrics.dropped.Load(),
+		"buffer-full event must not be dropped")
+	assert.Equal(t, uint64(1), svc.metrics.written.Load(),
+		"buffer-full event must be written via the direct path")
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestRecord_BufferFull_DirectWriteFails_Drops: if the DB itself rejects
+// the fallback write, the drop is counted and surfaced — never silent.
+func TestRecord_BufferFull_DirectWriteFails_Drops(t *testing.T) {
+	svc, mock, cleanup := setupTestService(t)
+	defer cleanup()
+
+	svc.ch = make(chan UsageEvent, 1)
+
+	mock.ExpectExec("INSERT INTO usage_events").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnError(fmt.Errorf("db down"))
+
+	svc.Record(makeEvent("llm_tokens", 1)) // fills the buffer
+	svc.Record(makeEvent("llm_tokens", 2)) // direct write fails
+
 	assert.Equal(t, uint64(1), svc.metrics.dropped.Load(),
-		"third event should be dropped when channel has capacity 2")
+		"failed direct write must be counted as dropped")
+	assert.Equal(t, uint64(0), svc.metrics.written.Load())
+}
+
+// TestRecord_AfterStop_WritesDirectly: events arriving after Stop are
+// written synchronously rather than dropped — the shutdown window is
+// small but billing events must not vanish in it (#766 TOCTOU).
+func TestRecord_AfterStop_WritesDirectly(t *testing.T) {
+	svc, mock, cleanup := newStartedService(t)
+	defer cleanup()
+
+	svc.Stop()
+
+	late := makeEvent("llm_tokens", 3)
+	late.IdempotencyKey = "late-key"
+	mock.ExpectExec("INSERT INTO usage_events").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	svc.Record(late)
+
+	assert.Equal(t, uint64(0), svc.metrics.dropped.Load(),
+		"post-stop event must be direct-written, not dropped")
+	assert.Equal(t, uint64(1), svc.metrics.written.Load())
+	assert.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestRecord_SendOnClosedChannel_RecoversViaDirectWrite pins the TOCTOU
+// half of #766: a Record racing Stop's close(s.ch) panics on send; the
+// recover handler must salvage the event via the direct write instead of
+// dropping it. Simulated deterministically by closing the channel out
+// from under Record without setting the closed flag.
+func TestRecord_SendOnClosedChannel_RecoversViaDirectWrite(t *testing.T) {
+	svc, mock, cleanup := setupTestService(t)
+	defer cleanup()
+
+	svc.ch = make(chan UsageEvent, 1)
+	close(svc.ch) // exactly what Stop does; closed flag stays false
+
+	raced := makeEvent("llm_tokens", 7)
+	raced.IdempotencyKey = "race-key"
+	mock.ExpectExec("INSERT INTO usage_events").
+		WithArgs(sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(1, 1))
+
+	svc.Record(raced)
+
+	assert.Equal(t, uint64(0), svc.metrics.dropped.Load(),
+		"stop-race event must be salvaged by the direct write")
+	assert.Equal(t, uint64(1), svc.metrics.written.Load())
+	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
 func TestRecord_AfterStop(t *testing.T) {
@@ -100,7 +222,7 @@ func TestRecord_AfterStop(t *testing.T) {
 	svc.Record(makeEvent("llm_request", 1))
 
 	assert.Equal(t, uint64(1), svc.metrics.dropped.Load(),
-		"Record after Stop should increment dropped counter")
+		"Record after Stop with a failing direct write increments dropped")
 }
 
 func TestRecord_SkipsEmptyEventType(t *testing.T) {

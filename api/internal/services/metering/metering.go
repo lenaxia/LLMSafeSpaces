@@ -28,6 +28,11 @@ const (
 	maxDLQRetries     = 5
 	dlqReaperInterval = 60 * time.Second
 	insertTimeout     = 5 * time.Second
+	// exportMaxAttempts bounds the same-cycle retry of failed billing
+	// export groups (#758). Idempotency keys bind the export window, so
+	// a same-window retry is safe at Stripe's idempotency layer.
+	exportMaxAttempts = 3
+	exportRetryDelay  = 200 * time.Millisecond
 )
 
 var (
@@ -82,6 +87,12 @@ var (
 			Help: "Seconds since last successful export",
 		},
 	)
+	metricExportFailures = promauto.NewCounter(
+		prometheus.CounterOpts{
+			Name: "llmsafespaces_metering_export_failures_total",
+			Help: "Total billing export cycles that failed and held the cursor (#758)",
+		},
+	)
 )
 
 type serviceMetrics struct {
@@ -110,6 +121,11 @@ type Service struct {
 	billingSvc WorkspaceBillingProvider
 	usageRpt   UsageReporter
 
+	// billCtx is the parent for direct billing writes (buffer-full and
+	// shutdown-race fallbacks). Never canceled: these writes must
+	// outlive request and shutdown contexts (#766).
+	billCtx context.Context
+
 	ch       chan UsageEvent
 	done     chan struct{}
 	stopCtx  context.Context
@@ -129,6 +145,7 @@ func New(cfg *config.Config, log pkginterfaces.LoggerInterface, db *sql.DB) (*Se
 		logger:  log.With("component", "metering"),
 		config:  cfg,
 		db:      db,
+		billCtx: context.Background(),
 		ch:      make(chan UsageEvent, channelCapacity),
 		done:    make(chan struct{}),
 		stopCtx: ctx,
@@ -179,31 +196,55 @@ func (s *Service) Stop() error {
 	return nil
 }
 
+// Record enqueues a usage event for async batch write. Every path is
+// lossless (#766): a full buffer falls back to a synchronous direct
+// write; events racing Stop's channel close (the send panics) are
+// salvaged by the same direct write inside the recover handler; events
+// arriving after Stop are also written directly.
 func (s *Service) Record(event UsageEvent) {
 	if event.EventType == "" {
 		return
 	}
 	if s.closed.Load() {
-		s.metrics.dropped.Add(1)
-		metricEventsDropped.Inc()
+		s.recordDirect(event)
 		return
 	}
 	defer func() {
 		if r := recover(); r != nil {
-			s.metrics.dropped.Add(1)
-			metricEventsDropped.Inc()
+			// Send on a closed channel: Stop raced this Record. The
+			// event never entered the buffer — write it directly.
+			s.recordDirect(event)
 		}
 	}()
 	select {
 	case s.ch <- event:
 	default:
+		s.recordDirect(event)
+	}
+}
+
+// recordDirect writes one event synchronously with its own bounded
+// timeout — the lossless back-pressure path for buffer-full, stop-race,
+// and post-stop events. A DB failure here is counted as a drop and
+// surfaced (never silent).
+func (s *Service) recordDirect(event UsageEvent) {
+	// billCtx is a dedicated base context for direct billing writes: a
+	// billing write must not inherit (and die with) a caller's cancellable
+	// request context, and must keep working during shutdown (post-stop
+	// and stop-race events) unlike stopCtx.
+	ctx, cancel := context.WithTimeout(s.billCtx, insertTimeout)
+	defer cancel()
+	if _, err := s.db.ExecContext(ctx, insertEventSQL, s.eventArgs(event)...); err != nil {
 		s.metrics.dropped.Add(1)
 		metricEventsDropped.Inc()
-		s.logger.Warn("Metering buffer full, dropping event",
+		s.logger.Error("Metering direct write failed, dropping event", err,
 			"event_type", event.EventType,
 			"workspace_id", event.WorkspaceID,
 		)
+		return
 	}
+	s.metrics.written.Add(1)
+	metricEventsRecorded.WithLabelValues(event.EventType, event.Source).Inc()
 }
 
 func (s *Service) RecordLifecycleEvent(ctx context.Context, workspaceID, ownerID string, ownerType OwnerType, fromPhase, toPhase, resourceTier string, eventTime time.Time) error {
@@ -436,15 +477,22 @@ func (s *Service) ExportUsage(ctx context.Context) (int, error) {
 	// US-43.17: If a usage reporter is configured (StripeProvider), aggregate
 	// usage events by customer + event type and report to Stripe Metered.
 	//
-	// Design note: a reporter failure is logged but does NOT block cursor
-	// advancement. Rationale: a persistent Stripe outage would otherwise stall
-	// the cursor forever, causing usage_events to grow unbounded. The
-	// trade-off is that the failed window's usage is not reported to Stripe.
-	// A future reconciliation job can recover missed windows by diffing the
-	// cursor against usage_events (tracked as Phase 5 follow-up).
+	// #758: a reporter failure HOLDS the cursor and surfaces the error.
+	// The next export cycle retries the same window with identical
+	// idempotency keys — already-reported groups dedupe at Stripe's
+	// idempotency layer, only the failed groups consume new records.
+	// Advancing the cursor here was permanent revenue loss for the
+	// failed window. A persistent outage stalls the export pointer, not
+	// usage_events growth (the table is the source of truth either way).
 	if s.usageRpt != nil {
 		if err := s.exportToStripe(ctx, lastID, maxID); err != nil {
-			s.logger.Error("Stripe usage export failed", err)
+			metricExportFailures.Inc()
+			metricExportLag.Inc()
+			s.logger.Error("Stripe usage export failed, cursor held", err,
+				"cursor", lastID,
+				"window_max", maxID,
+			)
+			return 0, fmt.Errorf("stripe export failed, cursor held at %d: %w", lastID, err)
 		}
 	}
 
@@ -463,9 +511,10 @@ func (s *Service) ExportUsage(ctx context.Context) (int, error) {
 // exportToStripe aggregates usage events between lastID and maxID by customer +
 // event type, resolves the Stripe customer id from billing_accounts, and
 // reports the totals to Stripe Metered Billing. Each aggregation group gets a
-// deterministic idempotency key scoped to the export window so retries (e.g.
-// from a transient Stripe error followed by cursor re-processing) do not
-// double-report.
+// deterministic idempotency key binding the full [lastID, maxID] window so
+// same-window retries (within this cycle, or the next cycle after a held
+// cursor) do not double-report. Failed groups retry up to exportMaxAttempts;
+// groups that already reported successfully are not re-attempted (#758).
 //
 // Usage events are recorded per-user (owner_type='user'); billing accounts are
 // per-org (owner_type='org'). The JOIN resolves user → org via org_memberships,
@@ -507,9 +556,9 @@ func (s *Service) exportToStripe(ctx context.Context, lastID, maxID int64) error
 		if e.ExternalCustomerID == "" {
 			continue
 		}
-		// Deterministic per customer+type+window: stable across retries of
-		// the same [lastID, maxID] range, distinct across windows.
-		e.IdempotencyKey = fmt.Sprintf("meter-%s-%s-%d", e.ExternalCustomerID, e.EventType, maxID)
+		// Deterministic per customer+type+window: BOTH bounds make the key
+		// stable across same-window retries and distinct across windows.
+		e.IdempotencyKey = fmt.Sprintf("meter-%s-%s-%d-%d", e.ExternalCustomerID, e.EventType, lastID, maxID)
 		events = append(events, e)
 	}
 	if err := rows.Err(); err != nil {
@@ -520,10 +569,47 @@ func (s *Service) exportToStripe(ctx context.Context, lastID, maxID int64) error
 		return nil
 	}
 
-	if _, err := s.usageRpt.ReportUsage(ctx, events); err != nil {
-		return fmt.Errorf("report usage to billing provider: %w", err)
+	return s.reportWithRetry(ctx, events)
+}
+
+// reportWithRetry reports export groups, consuming ReportUsage's
+// per-group success markers: only groups after the first failure are
+// retried, with unchanged idempotency keys, so a partial Stripe outage
+// costs at most exportMaxAttempts calls per still-failing group and
+// never re-reports a succeeded one.
+func (s *Service) reportWithRetry(ctx context.Context, events []billing.UsageExportEvent) error {
+	pending := events
+	var lastErr error
+	for attempt := 1; attempt <= exportMaxAttempts; attempt++ {
+		if len(pending) == 0 {
+			return nil
+		}
+		ids, err := s.usageRpt.ReportUsage(ctx, pending)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		// ids covers every group that no longer needs reporting: the
+		// successfully reported prefix plus any skipped-no-meter entries
+		// before the first failure. A nil ids (reporter failed before
+		// any progress) retries the whole set.
+		if len(ids) < len(pending) {
+			pending = pending[len(ids):]
+		}
+		s.logger.Warn("Billing export partial failure, retrying failed groups", err,
+			"reported_so_far", len(events)-len(pending),
+			"pending", len(pending),
+			"attempt", attempt,
+		)
+		if attempt < exportMaxAttempts {
+			select {
+			case <-time.After(exportRetryDelay):
+			case <-ctx.Done():
+				return fmt.Errorf("report usage to billing provider: %w", lastErr)
+			}
+		}
 	}
-	return nil
+	return fmt.Errorf("report usage to billing provider after %d attempts: %w", exportMaxAttempts, lastErr)
 }
 
 func (s *Service) run() {
@@ -854,6 +940,8 @@ func (s *Service) reconcileComputeTime(ctx context.Context) error {
 			continue
 		}
 
+		// nolint:contextcheck // Record's interface carries no ctx; its
+		// direct-write fallback derives from the service's billCtx.
 		emitted := s.emitComputeBuckets(workspaceID, userID, startTime, now)
 		totalEmitted += emitted
 	}
@@ -967,6 +1055,8 @@ func (s *Service) recordStorageBytes(ctx context.Context) error {
 		if bytes <= 0 {
 			continue
 		}
+		// nolint:contextcheck // Record's interface carries no ctx; its
+		// direct-write fallback derives from the service's billCtx.
 		s.Record(UsageEvent{
 			IdempotencyKey: fmt.Sprintf("storage:%s:%s", r.ID, dateStr),
 			Owner:          BillingOwner{ID: r.UserID, Type: OwnerTypeUser},
@@ -1022,11 +1112,14 @@ func (s *Service) exportLoop() {
 		case <-ticker.C:
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			_, err := s.ExportUsage(ctx)
+			cancel()
 			if err != nil {
 				s.logger.Error("Billing export failed", err)
+			} else {
+				// Only a successful export clears the lag gauge — a
+				// failure resetting it to 0 would mask held exports.
+				metricExportLag.Set(0)
 			}
-			metricExportLag.Set(0)
-			cancel()
 		}
 	}
 }

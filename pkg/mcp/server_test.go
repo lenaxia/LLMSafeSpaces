@@ -140,7 +140,7 @@ func (m *MockAPIClient) CreateWorkflow(ctx context.Context, name, specYAML, stat
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
-func (m *MockAPIClient) UpdateWorkflow(ctx context.Context, workflowID, name, status, specYAML string) (json.RawMessage, error) {
+func (m *MockAPIClient) UpdateWorkflow(ctx context.Context, workflowID string, name, status, specYAML *string) (json.RawMessage, error) {
 	args := m.Called(ctx, workflowID, name, status, specYAML)
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
@@ -165,7 +165,7 @@ func (m *MockAPIClient) CreateTrigger(ctx context.Context, name, sourceType, sou
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
 
-func (m *MockAPIClient) UpdateTrigger(ctx context.Context, triggerID, enabled string) (json.RawMessage, error) {
+func (m *MockAPIClient) UpdateTrigger(ctx context.Context, triggerID string, enabled *bool) (json.RawMessage, error) {
 	args := m.Called(ctx, triggerID, enabled)
 	return json.RawMessage(args.String(0)), args.Error(1)
 }
@@ -427,8 +427,20 @@ func TestSessionHistory_HappyPath(t *testing.T) {
 	ctx := context.Background()
 
 	mockClient.On("GetHistory", ctx, "ws-123", "sess-456").Return([]Message{
-		{Role: "user", Content: "hello"},
-		{Role: "assistant", Content: "Hi there!"},
+		{
+			ID: "msg_1", Type: "user",
+			Parts: []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}{{Type: "text", Text: "hello"}},
+		},
+		{
+			ID: "msg_2", Type: "assistant",
+			Parts: []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			}{{Type: "text", Text: "Hi there!"}},
+		},
 	}, nil)
 
 	result, err := h.sessionHistory(ctx, makeReq("session_history", map[string]any{

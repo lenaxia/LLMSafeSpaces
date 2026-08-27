@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.4] - 2026-08-26
+
+### Fixed
+
+- **image-factory catalog reads 500 on a NULL digest row (#1030,
+  live incident 19:45 UTC)**: a direct-SQL catalog row with digest
+  NULL made every /image-factory/catalog (and base-update enrichment)
+  fail — ListBases scanned digest into a plain string. The table has
+  no NOT NULL constraints; reader availability must not depend on
+  writer discipline. Scan-side NULL tolerance (sql.NullString, NULL
+  reads as the zero value) in ListBases/GetBase, pinned by sqlmock
+  regression tests using the incident's exact row shape.
+
 ## [0.21.3] - 2026-08-26
 
 ### Fixed
