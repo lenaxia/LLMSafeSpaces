@@ -112,4 +112,4 @@ None.
 - `cmd/workspace-agentd/workflow_execute_test.go` — python3 LookPath skip guard (pre-existing failure)
 - `pkg/agentd/types.go` — `UploadsPath` const, `FileUploadResponse` DTO
 - `pkg/agentd/types_test.go` — `FileUploadResponse` JSON round-trip test
-- `worklogs/NNNN_2026-08-27_us-67-1-agentd-file-endpoint.md` — this worklog
+- `worklogs/0837_2026-08-27_us-67-1-agentd-file-endpoint.md` — this worklog
