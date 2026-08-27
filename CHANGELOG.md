@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-08-27
+
+### Added
+
+- **Epic 67 chat file attachments — full pipeline**: US-67.2 upload route
+  with streaming multipart + gates (#1083), US-67.4
+  `workspace_file_upload` MCP tool + `session_message` files param
+  (#1084), US-67.5 composer drawer, upload chips, manifest strip
+  (#1085).
+- **SDKs (#1072)**: MCP-server CRUD in Go/TS/Python/Java; VS Code
+  extension removed.
+
+### Fixed
+
+- **mise toolchains resolve on PATH in non-interactive shells (#1086)**:
+  three stacked causes — build-time reshim ran before the ENV block and
+  wrote to /root (dead weight); MISE_DATA_DIR shims under /workspace are
+  PVC-shadowed at runtime; sidecar mode (production) bypasses the baked
+  entrypoint, so no boot step ever rebuilt shims. Fixed at every layer:
+  build reshim into the system dir (baked, never shadowed),
+  `$MISE_DATA_DIR/shims` first on PATH, entrypoint reshim (legacy
+  mode), `ensureMiseShims` in the supervisor (sidecar mode, before
+  first child spawn). Regression-tested per layer (verified fail/pass
+  against pre-fix code) + K14 kind check: real pod, fresh PVC,
+  `sh -c 'command -v go python3 node'`. Smoke test now asserts PATH
+  resolution, not just `mise which` discoverability — the gap that let
+  this ship green.
+- **Creating-phase wedge (#1081, #935)**: init-crashloop recovery +
+  restart rebuild.
+- **MCP live part.delta capture (#1053, #1082)**: content from
+  session.event envelopes.
+
+### Changed
+
+- **Docs (#1089)**: README-LLM/OpenAPI reference synced to
+  post-epic-1032 reality.
+
 ## [0.23.0] - 2026-08-27
 
 ### Added
