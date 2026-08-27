@@ -225,6 +225,11 @@ func ensureMiseShims(log *zap.Logger) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	// G204: `mise` is resolved via LookPath on the container's PATH — the
+	// same trust domain as PID 1 itself (an attacker who can inject PATH
+	// here already owns the container). Fixed argv "reshim"; output is
+	// only logged, never executed or parsed.
+	//nolint:gosec // G204: boot-time, fixed argv, same-uid binary from the runtime image
 	out, err := exec.CommandContext(ctx, mise, "reshim").CombinedOutput()
 	if err != nil {
 		if log != nil {
