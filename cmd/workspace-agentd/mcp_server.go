@@ -77,7 +77,7 @@ func mcpHandler(password string) http.HandlerFunc {
 				"tools": []mcpTool{
 					{
 						Name:        "session_list",
-						Description: "List opencode sessions in this workspace",
+						Description: "List past agent sessions (conversations) from this workspace. This workspace's history is often the fastest source of context: what was already built, tried, decided, or broken. Use when: starting a task in a workspace you did not create from scratch; the user references earlier work (\"continue\", \"like last time\", \"that bug from before\"); you are about to rebuild something that may already exist; you are resuming after a suspend/resume or a fresh chat in the same workspace; the user asks what was done previously. Not for: the current conversation (you already have it in context). Pair with session_read to pull the details of a specific session.",
 						InputSchema: map[string]any{
 							"type":       "object",
 							"properties": map[string]any{},
@@ -85,11 +85,11 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "session_read",
-						Description: "Read message history from an opencode session",
+						Description: "Read the message history of a past session in this workspace (IDs from session_list). Use when you need the specifics of prior work: file paths touched, approaches tried and abandoned, decisions and their reasons, commands that worked or failed. Prefer a limit first and read more only if needed — summarize for yourself rather than dumping full histories into your reply. Not for: current-conversation content or live program state (these are past transcripts, not a running log).",
 						InputSchema: map[string]any{
 							"type": "object",
 							"properties": map[string]any{
-								"session_id": map[string]any{"type": "string", "description": "The session ID to read"},
+								"session_id": map[string]any{"type": "string", "description": "The session ID to read (from session_list)"},
 								"limit":      map[string]any{"type": "integer", "description": "Max messages to return (default 20)"},
 							},
 							"required": []string{"session_id"},
@@ -97,11 +97,11 @@ func mcpHandler(password string) http.HandlerFunc {
 					},
 					{
 						Name:        "dev_preview_url",
-						Description: "Construct the authenticated dev-preview URL for viewing a web app running in this workspace. The user must have dev preview enabled in workspace settings. Returns a URL the chat UI renders as an open-preview button (fall back to relaying the URL as a markdown link in your reply). No API call is made — the URL is deterministic. Port defaults to 5173 when omitted. Refuses ports below 1024 and platform-reserved ports.",
+						Description: "Returns the preview URL for a web app running in this workspace, which you can offer to the user as an open-preview link (the chat UI renders it as a button; otherwise relay it as a markdown link). Offer it when: you have started or verified a web server on a localhost port; you finish building a UI the user will want to inspect; the user asks to see or try the app. Do not use when: nothing is listening on that port — the link does not start the app, it only points at it; you have already shared the URL for that port (it is deterministic — one link suffices); the port is below 1024 or in 4096-4098 (refused). Requirements: the user must have Dev Preview enabled (Workspace Settings → Dev Preview) — if the preview does not load, point them there. No API call is made.",
 						InputSchema: map[string]any{
 							"type": "object",
 							"properties": map[string]any{
-								"port": map[string]any{"type": "integer", "description": "The localhost port the dev server is listening on (e.g. 5173 for Vite, 3000 for Next). Defaults to 5173. Must be >= 1024; platform-reserved ports are refused."},
+								"port": map[string]any{"type": "integer", "description": "The localhost port the dev server is listening on (e.g. 5173 for Vite, 3000 for Next/Express). Defaults to 5173. Must be >= 1024; ports 4096-4098 are refused."},
 								"path": map[string]any{"type": "string", "description": "Optional path on the dev server (defaults to /). Carried through on path-based preview URLs; on per-workspace-origin deployments the preview opens at the app root"},
 							},
 							"required": []string{},
