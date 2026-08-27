@@ -65,9 +65,9 @@ None.
 
 ## Tests Run
 
-- `go test -timeout 60s -race ./api/internal/imagefactory/` — ok (base_sync, registry, selection hash-shape, floor, updates, dockerfile)
-- `go test -timeout 600s -race ./api/internal/services/database/` — ok (ResolveHash happy/dedupe/not-found/query-error/corrupt-JSON)
-- `go test -timeout 600s -race ./api/internal/handlers/` — ok (resolve handler 200/422/404/500 + full suite)
+- `go test -timeout 60s -race ./api/internal/imagefactory/` — ok (base_sync, registry, selection hash-shape, floor, updates, dockerfile, reconciler workflow)
+- `go test -timeout 600s -race ./api/internal/services/database/` — ok (ResolveHash happy/dedupe/not-found/query-error/corrupt-JSON; SyncBaseOnce-through-Service integration: converge / quiet / unresolvable-tag gate)
+- `go test -timeout 600s -race ./api/internal/handlers/` — ok (resolve handler 200/422/404/500 + E2E through the full router: happy path cross-user, only-failed-builds 404, malformed 422, retired-extension-not-filtered contract + full suite)
 - `go test -timeout 900s ./...` — ok (full root module)
 - `go test -timeout 300s -race ./api/internal/server/ -run TestOpenAPIRouterContract` — ok
 - `cd frontend && npx vitest run src/components/settings/` — 219 passed

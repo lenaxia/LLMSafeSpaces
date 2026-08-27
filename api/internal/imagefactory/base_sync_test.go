@@ -137,6 +137,24 @@ func (f *fakeSyncStore) UpsertBase(ctx context.Context, b Base) error {
 		return f.upErr
 	}
 	f.upserted = append(f.upserted, b)
+	// Apply like the real store: a default=true upsert clears every
+	// other default, then inserts-or-updates the row.
+	if b.IsDefault {
+		for i := range f.bases {
+			f.bases[i].IsDefault = false
+		}
+	}
+	replaced := false
+	for i := range f.bases {
+		if f.bases[i].Name == b.Name && f.bases[i].Version == b.Version {
+			f.bases[i] = b
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		f.bases = append(f.bases, b)
+	}
 	return nil
 }
 
@@ -212,4 +230,62 @@ func TestSyncBaseOnce(t *testing.T) {
 		require.Error(t, err)
 		assert.False(t, synced)
 	})
+}
+
+// TestBaseSyncReconciler_Workflow drives the hourly-loop behavior the
+// app.go wiring depends on, across successive ticks: converge, go quiet,
+// survive a registry outage without mutating the catalog, then advance
+// again when the platform release moves and the registry recovers.
+func TestBaseSyncReconciler_Workflow(t *testing.T) {
+	store := &fakeSyncStore{bases: []Base{
+		{Name: "bookworm", Version: "0.21.2", Image: "ghcr.io/acme/base", Tag: "0.21.2", IsDefault: true},
+	}}
+	res := &fakeResolver{digest: "sha256:aaa"}
+
+	// Tick 1 (platform 0.23.0): converges — new row + default moved.
+	synced, err := SyncBaseOnce(context.Background(), store, res, "0.23.0")
+	require.NoError(t, err)
+	assert.True(t, synced)
+	require.Len(t, store.bases, 2)
+	def := defaultOf(t, store.bases)
+	assert.Equal(t, "0.23.0", def.Version)
+	assert.Equal(t, "sha256:aaa", def.Digest)
+
+	// Tick 2 (same platform version): quiet — no further writes.
+	before := len(store.upserted)
+	synced, err = SyncBaseOnce(context.Background(), store, res, "0.23.0")
+	require.NoError(t, err)
+	assert.False(t, synced)
+	assert.Len(t, store.upserted, before)
+
+	// Tick 3 (platform 0.24.0, registry outage): error, catalog untouched.
+	res.err = errors.New("dial tcp: i/o timeout")
+	synced, err = SyncBaseOnce(context.Background(), store, res, "0.24.0")
+	require.Error(t, err)
+	assert.False(t, synced)
+	assert.Len(t, store.bases, 2, "existence gate: no row for an unresolvable tag")
+	def = defaultOf(t, store.bases)
+	assert.Equal(t, "0.23.0", def.Version)
+
+	// Tick 4 (registry recovered, tag now published): advances.
+	res.err = nil
+	res.digest = "sha256:bbb"
+	synced, err = SyncBaseOnce(context.Background(), store, res, "0.24.0")
+	require.NoError(t, err)
+	assert.True(t, synced)
+	require.Len(t, store.bases, 3)
+	def = defaultOf(t, store.bases)
+	assert.Equal(t, "0.24.0", def.Version)
+	assert.Equal(t, "sha256:bbb", def.Digest)
+}
+
+func defaultOf(t *testing.T, bases []Base) Base {
+	t.Helper()
+	for _, b := range bases {
+		if b.IsDefault {
+			return b
+		}
+	}
+	t.Fatal("no default base after sync")
+	return Base{}
 }
