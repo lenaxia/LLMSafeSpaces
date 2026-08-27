@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-08-27
+
+### Added
+
+- **Epic 67 — port-in-subdomain preview origins (#1069, design
+  epic-67-port-in-subdomain-preview-origins)**: dev-preview hosts move to
+  `https://<port>-<uuid>-preview.<baseDomain>/<app-path>`, fixing the
+  root-absolute-URL breakage class (apps emitting `303 Location: /login`
+  lost the port prefix and died with an indistinguishable 502 — the
+  tinyrsvp incident). The port now lives in the host, so root-absolute
+  URLs, SPA routers, and runtime `fetch('/api/...')` resolve correctly
+  with zero app changes (same shape as GitHub Codespaces/Gitpod). Host
+  disambiguation via two fixed-length regexes proven mathematically
+  disjoint (port quantifier {1,5} < UUID first-segment length 8 — F1
+  digit-leading UUIDs cannot be misparsed), backed by a 10k-iteration
+  property test and an exhaustive boundary sweep. Legacy
+  `<uuid>-preview.<baseDomain>/<port>/...` URLs keep working; bootstrap
+  redirects to the new shape. Token binding rejects host-port ≠
+  token-port; T3 indistinguishable-from-dead verified byte-for-byte
+  (blocked vs dead port); landing page serves deep links on both host
+  shapes. Also fixes `LLMSAFESPACE_API_URL` missing from the main
+  container (relative bootstrap links).
+- **Default platform prompt for fresh installs (#1073)**: the
+  platform-tier system prompt is no longer empty until an admin
+  configures it — `types.DefaultPlatformPrompt` ships in code
+  (posture of `DefaultJWTIssuer`), used only when the
+  `sys_prompt_platform` row is absent; a saved row, including an
+  explicitly cleared one, always wins. Content merges the operator's
+  production prompt (tier framing, egress model, credential handling,
+  behavioral invariants, tone) with mise environment guidance — the
+  load-bearing rule that `command not found` almost never means the
+  toolchain is absent (check `mise which`/`mise ls`/installs dirs
+  first). Fixes a factual error along the way: `/tmp` and
+  `/home/sandbox` DO persist (PVC subPaths), contrary to the Dockerfile
+  comment. `GET /admin/prompt` surfaces the effective default so admins
+  can edit from it.
+- **MCP tool guidance contract (#1076, #1079)**: agentd's
+  `tools/list` descriptions — the only documentation the model ever
+  sees — now carry when-to-use/when-NOT-to-use guidance per tool.
+  `dev_preview_url`: offer the preview link when a server is running, a
+  UI is finished, or the user is doing frontend/UI work (offer to spin
+  up the dev server and share the link unprompted); never mint links at
+  dead ports or re-share a deterministic URL. `session_list`/
+  `session_read`: concrete underuse triggers (unfamiliar workspace,
+  user references earlier work, about-to-rebuild checks,
+  suspend/resume continuity) and negative scope.
+  `TestMCPHandler_ToolDescriptionGuidance` pins the guidance as
+  contract.
+- **US-67.1 (#1074)**: agentd file-ingest endpoint `PUT /v1/files`.
+- **US-67.3 (#1075)**: attachment manifest v1 contract + `files[]`
+  send-path integration.
+- **SDKs (#1068)**: cursor-paginated session history in Go/TS/Python/Java.
+- **OpenAPI (#1064)**: org/admin/image-factory surface documented; every
+  handler wired into the contract fixture.
+
+### Fixed
+
+- **Chat stream interruption false alarms (#1051)**: session status is
+  rechecked before declaring an interrupted stream.
+- **Outbox freeze (#1078, #1019 C+D)**: deploy-drain grace +
+  frozen-queue surfacing.
+- **Chat disk pressure (#1071)**: nudges moved to the Adapter seam +
+  typed disk-full 507.
+- **Billing migrations (#1070)**: renumbered past
+  000026_session_alerts; chart synced; quota integration tests added.
+
+### Changed
+
+- **SDK contract gates (#1067)**: Hurl contract tests now blocking;
+  expectedPaths dropped; PACKAGES claims corrected.
+
 ## [0.22.0] - 2026-08-27
 
 ### Added
