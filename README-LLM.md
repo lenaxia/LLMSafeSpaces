@@ -2,8 +2,8 @@
 
 > **Repository:** `github.com/lenaxia/llmsafespaces`
 
-**Version:** 1.24
-**Last Updated:** 2026-08-15
+**Version:** 1.25
+**Last Updated:** 2026-08-27
 **Project Status:** Active Development
 
 ---
@@ -1908,31 +1908,34 @@ External MCP servers give workspace agents access to third-party tools (GitHub, 
 
 ## API Reference
 
-The complete REST API is documented in `README.md` under "REST API". The API has ~90 routes covering:
+The complete REST surface is documented in `sdks/openapi.yaml` — the canonical spec, kept in both-directions parity with the production router by `TestOpenAPIRouterContract` (`api/internal/server/router_openapi_contract_test.go`, every handler wired). The API has ~200 routes covering:
 
-- **Auth** (8 routes): register, login, logout, me, API key CRUD
-- **Workspaces** (10 routes): CRUD + suspend, activate, restart, refresh-compute, status, agent reload
+- **Auth** (19 routes): register, login, logout, me, API key CRUD, lookup, password reset, email verify, unlock-dek, SSO (PKCE start/callback/domains)
+- **Passkeys** (11 routes, Epic 59): register/login/recover ceremonies, account passkey management, recovery codes, enroll
+- **Workspaces** (16 routes): CRUD + suspend, activate, restart, refresh-compute, status, agent reload, dev-preview, prompt/agent-role, models, terminal
 - **Session management** (5 routes): list, ensure, rename, mark-seen, active
-- **Session proxy** (7 routes): message, prompt, history, get, abort, delete, SSE events — reverse-proxied to the workspace pod's `opencode serve` on port 4096
+- **Session proxy** (8 routes): message, prompt, history (cursor-paginated), get, abort, delete, queue (+retry), SSE events — reverse-proxied to the workspace pod's `opencode serve` on port 4096
 - **Questions & Permissions** (5 routes): list/reply/reject agent questions and permission requests
-- **Events** (2 routes): user-scoped SSE stream, bulk agent reload
+- **Events** (2 routes): user-scoped SSE stream, bulk agent reload (NDJSON)
 - **Secrets** (8 routes): CRUD + audit + reveal + bindings — encrypted at rest store
 - **Workspace bindings** (3 routes): set/get bindings, reload-secrets
 - **Workspace env** (3 routes): set/get/delete environment variables
-- **Models** (2 routes): list available models, set default model
-- **Terminal** (2 routes): ticket + WebSocket proxy
-- **Admin provider credentials** (8 routes): CRUD + auto-apply rules
-- **User provider credentials** (7 routes): CRUD + bindings
+- **Provider credentials** (23 routes): user CRUD/bindings, admin CRUD/auto-apply, org CRUD/auto-apply/probe
+- **MCP servers** (28 routes, Epic 53): admin/org/user scopes — CRUD + bindings + auto-apply
+- **Workflows & triggers** (30 routes, Epic 64): user/org workflow CRUD + runs + nodes + cancel, trigger CRUD + fires + rotate-secret, webhook receiver (HMAC-authed)
+- **Orgs** (8 core routes + sub-resources): CRUD, members, invitations, credentials, policies, prompt, agent-roles, audit, SSO config, billing
+- **Image factory** (17 routes, Epic 46): catalog, config CRUD + scoped creates + admin portal
 - **Settings** (6 routes): admin instance + user preferences + schemas
 - **Account** (3 routes): key rotation, password change, recovery
+- **Usage & billing** (8 routes): user usage/quota, admin usage report, billing status + DLQ retry/discard
 - **Relay fleet** (9 routes, conditional): setup wizard + status + provider creds + deploy/rotate/pause/resume — registered only when the relay admin handler is wired (Epic 42/48)
+- **Platform admin** (11 routes): platform-info, cross-org audit, force-abort session, orgs/users list + suspend, email test
+- **Webhooks** (1 route): Stripe (signature-authed)
 - **Infrastructure** (4 routes): livez, health, readyz, metrics
 
-### `?verbose=true` flag
+### `?verbose=true` flag (historical)
 
-By default, the proxy strips parts of `type=="patch"` from message and history responses. opencode emits a `patch` part for every assistant turn, listing every workspace file it touched (~2 KB per response of internal snapshot paths). For most clients this is noise.
-
-Pass `?verbose=true` on any message or history request to receive the unfiltered response.
+The proxy still strips a `verbose` query parameter before forwarding (backwards compatibility), but the behavior it used to control no longer exists: patch-part stripping was removed in Epic 65 (commit `3c0b1d52`, 2026-05-26) — message and history responses now pass all parts through unfiltered. The flag is accepted and ignored.
 
 ---
 
@@ -1977,6 +1980,7 @@ The API service is configured via `api/config/config.yaml` with environment vari
 
 | Version | Date | Changes |
 |---------|------|---------|
+| 1.25 | 2026-08-27 | Epic #1032 API-surface sync follow-ups: API Reference rewritten — ~200 routes, 22 areas (passkeys, workflows/triggers, MCP servers, image factory, org surface, admin, usage/billing, Stripe webhook), canonical reference is now sdks/openapi.yaml with TestOpenAPIRouterContract as the both-directions parity gate; `?verbose` documented as accepted-and-ignored (patch stripping removed in Epic 65); spec ssoProviders dead field removed and verbose descriptions corrected. |
 | 1.23 | 2026-08-02 | Added disk-pressure prompt injection: when a workspace's `/workspace` PVC crosses 90% usage the API proxy prepends a notice part to LLM-bound chat requests (POST /message; V2 prompts go through enqueueV2 → PromptV2, which does not inject) so the agent nudges the user to free space; at 95% the notice escalates to safe-cleanup guidance (build artifacts + caches only, logs as last resort since they cannot be reproduced). Ratio comes from the existing Workspace CRD status fields (`diskUsedBytes`/`diskTotalBytes`) — no new telemetry. New `api/internal/handlers/proxy_disk_pressure.go`; thresholds env-overridable via `DISK_WARNING_THRESHOLD`/`DISK_CRITICAL_THRESHOLD`. |
 | 1.22 | 2026-06-29 | Secrets UX: added `global_default` boolean to `user_secrets` (migration 000004); propagated through `SecretStore`, `PgSecretStore`, `SecretService`, `AsyncAuditLogger`; `SecretService.SeedGlobalDefaultSecrets` added; `workspace.Service` gains `SecretAutoProvisioner` interface + `SetSecretAutoProvisioner` setter, called best-effort on `CreateWorkspace` after `credProvisioner`; `UpdateSecretRequest.GlobalDefault` is a `*bool` (nil = leave unchanged); frontend: `globalDefault` field on `SecretResponse`/`CreateSecretRequest`/`UpdateSecretRequest`; `SecretsTab` adds "Include in all workspaces" checkbox on create form, "Update" inline form per secret row (carries globalDefault toggle + new value), softened post-creation warning from "will never be shown again" to "you can reveal this value later using your password". |
 | 1.21 | 2026-06-29 | Closed the F11 header-trust gap: `resolveCallbackURL` (`org_sso.go`) no longer derives the SSO callback URL from `X-Forwarded-Proto`/`Host` when `oidc.redirectBaseUrl` is unset. Start returns HTTP 500 with a config hint; Callback redirects to the frontend with `?sso=config_error`. New sentinel `sso.ErrRedirectBaseURLNotSet`. The default (empty) is now safe-by-construction — SSO fails closed instead of trusting attacker-influenceable headers. |
