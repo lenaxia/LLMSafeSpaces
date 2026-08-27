@@ -27,11 +27,15 @@ from .types import (
     CreateAgentRoleRequest,
     EnsureSessionResponse,
     HistoryPage,
+    McpAutoApplyRule,
+    McpServer,
+    CreateMcpServerRequest,
     Message,
     ProviderCredential,
     SecretResponse,
     TerminalTicket,
     UpdateAgentRoleRequest,
+    UpdateMcpServerRequest,
     UpdateProviderCredentialRequest,
     Workspace,
     WorkspaceListItem,
@@ -73,6 +77,9 @@ class AsyncLLMSafeSpaces:
         self.probe = _AsyncProbeAPI(self)
         self.prompts = _AsyncPromptsAPI(self)
         self.agent_roles = _AsyncAgentRolesAPI(self)
+        self.mcp_servers = _AsyncMcpServersAPI(self)
+        self.admin_mcp_servers = _AsyncAdminMcpServersAPI(self)
+        self.org_mcp_servers = _AsyncOrgMcpServersAPI(self)
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -757,3 +764,138 @@ class _AsyncProbeAPI:
     async def probe_models(self, api_key: str, base_url: str) -> dict[str, Any]:
         return await self._c._request("POST", "/probe-models",
                                       json={"apiKey": api_key, "baseURL": base_url})
+
+
+class _AsyncMcpServersAPI:
+    """MCP servers owned by the caller (/me/mcp-servers, Epic 53)."""
+
+    def __init__(self, client: "AsyncLLMSafeSpaces"):
+        self._c = client
+
+    async def list(self) -> list[McpServer]:
+        resp = await self._c._request("GET", "/me/mcp-servers")
+        if isinstance(resp, list):
+            return resp
+        return resp.get("servers", [])
+
+    async def get(self, server_id: str) -> McpServer:
+        return await self._c._request("GET", f"/me/mcp-servers/{server_id}")
+
+    async def create(self, req: CreateMcpServerRequest) -> McpServer:
+        return await self._c._request("POST", "/me/mcp-servers", json=dict(req))
+
+    async def update(self, server_id: str, req: UpdateMcpServerRequest) -> McpServer:
+        return await self._c._request("PUT", f"/me/mcp-servers/{server_id}", json=dict(req))
+
+    async def delete(self, server_id: str) -> None:
+        await self._c._request("DELETE", f"/me/mcp-servers/{server_id}")
+
+    async def bind(self, server_id: str, workspace_id: str) -> None:
+        await self._c._request("POST", f"/me/mcp-servers/{server_id}/bindings", json={"workspaceId": workspace_id})
+
+    async def unbind(self, server_id: str, workspace_id: str) -> None:
+        await self._c._request("DELETE", f"/me/mcp-servers/{server_id}/bindings/{workspace_id}")
+
+    async def create_auto_apply(self, server_id: str, target_type: str, target_id: str | None = None) -> None:
+        body: dict[str, Any] = {"targetType": target_type}
+        if target_id is not None:
+            body["targetId"] = target_id
+        await self._c._request("POST", f"/me/mcp-servers/{server_id}/auto-apply", json=body)
+
+    async def list_auto_apply(self, server_id: str) -> list[McpAutoApplyRule]:
+        resp = await self._c._request("GET", f"/me/mcp-servers/{server_id}/auto-apply")
+        if isinstance(resp, list):
+            return resp
+        return resp.get("rules", [])
+
+
+class _AsyncAdminMcpServersAPI:
+    """Platform MCP servers (/admin/mcp-servers; admin scope)."""
+
+    def __init__(self, client: "AsyncLLMSafeSpaces"):
+        self._c = client
+
+    async def list(self) -> list[McpServer]:
+        resp = await self._c._request("GET", "/admin/mcp-servers")
+        if isinstance(resp, list):
+            return resp
+        return resp.get("servers", [])
+
+    async def get(self, server_id: str) -> McpServer:
+        return await self._c._request("GET", f"/admin/mcp-servers/{server_id}")
+
+    async def create(self, req: CreateMcpServerRequest) -> McpServer:
+        return await self._c._request("POST", "/admin/mcp-servers", json=dict(req))
+
+    async def update(self, server_id: str, req: UpdateMcpServerRequest) -> McpServer:
+        return await self._c._request("PUT", f"/admin/mcp-servers/{server_id}", json=dict(req))
+
+    async def delete(self, server_id: str) -> None:
+        await self._c._request("DELETE", f"/admin/mcp-servers/{server_id}")
+
+    async def bind(self, server_id: str, workspace_id: str) -> None:
+        await self._c._request("POST", f"/admin/mcp-servers/{server_id}/bindings", json={"workspaceId": workspace_id})
+
+    async def unbind(self, server_id: str, workspace_id: str) -> None:
+        await self._c._request("DELETE", f"/admin/mcp-servers/{server_id}/bindings/{workspace_id}")
+
+    async def create_auto_apply(self, server_id: str, target_type: str, target_id: str | None = None) -> None:
+        body: dict[str, Any] = {"targetType": target_type}
+        if target_id is not None:
+            body["targetId"] = target_id
+        await self._c._request("POST", f"/admin/mcp-servers/{server_id}/auto-apply", json=body)
+
+    async def list_auto_apply(self, server_id: str) -> list[McpAutoApplyRule]:
+        resp = await self._c._request("GET", f"/admin/mcp-servers/{server_id}/auto-apply")
+        if isinstance(resp, list):
+            return resp
+        return resp.get("rules", [])
+
+    async def delete_auto_apply(self, server_id: str, target_type: str, target_id: str | None = None) -> None:
+        path = f"/admin/mcp-servers/{server_id}/auto-apply/{target_type}"
+        if target_id is not None:
+            path += f"/{target_id}"
+        await self._c._request("DELETE", path)
+
+
+class _AsyncOrgMcpServersAPI:
+    """Organization MCP servers (/orgs/{org_id}/mcp-servers; org-admin)."""
+
+    def __init__(self, client: "AsyncLLMSafeSpaces"):
+        self._c = client
+
+    async def list(self, org_id: str) -> list[McpServer]:
+        resp = await self._c._request("GET", f"/orgs/{org_id}/mcp-servers")
+        if isinstance(resp, list):
+            return resp
+        return resp.get("servers", [])
+
+    async def get(self, org_id: str, server_id: str) -> McpServer:
+        return await self._c._request("GET", f"/orgs/{org_id}/mcp-servers/{server_id}")
+
+    async def create(self, org_id: str, req: CreateMcpServerRequest) -> McpServer:
+        return await self._c._request("POST", f"/orgs/{org_id}/mcp-servers", json=dict(req))
+
+    async def update(self, org_id: str, server_id: str, req: UpdateMcpServerRequest) -> McpServer:
+        return await self._c._request("PUT", f"/orgs/{org_id}/mcp-servers/{server_id}", json=dict(req))
+
+    async def delete(self, org_id: str, server_id: str) -> None:
+        await self._c._request("DELETE", f"/orgs/{org_id}/mcp-servers/{server_id}")
+
+    async def bind(self, org_id: str, server_id: str, workspace_id: str) -> None:
+        await self._c._request("POST", f"/orgs/{org_id}/mcp-servers/{server_id}/bindings", json={"workspaceId": workspace_id})
+
+    async def unbind(self, org_id: str, server_id: str, workspace_id: str) -> None:
+        await self._c._request("DELETE", f"/orgs/{org_id}/mcp-servers/{server_id}/bindings/{workspace_id}")
+
+    async def create_auto_apply(self, org_id: str, server_id: str, target_type: str, target_id: str | None = None) -> None:
+        body: dict[str, Any] = {"targetType": target_type}
+        if target_id is not None:
+            body["targetId"] = target_id
+        await self._c._request("POST", f"/orgs/{org_id}/mcp-servers/{server_id}/auto-apply", json=body)
+
+    async def list_auto_apply(self, org_id: str, server_id: str) -> list[McpAutoApplyRule]:
+        resp = await self._c._request("GET", f"/orgs/{org_id}/mcp-servers/{server_id}/auto-apply")
+        if isinstance(resp, list):
+            return resp
+        return resp.get("rules", [])

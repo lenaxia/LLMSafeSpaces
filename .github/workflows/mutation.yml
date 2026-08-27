@@ -78,7 +78,6 @@ jobs:
         run: |
           rm -rf frontend/node_modules \
                  sdks/typescript/node_modules \
-                 sdks/vscode-llmsafespaces/node_modules
 
       # Custom output choice: gremlins's JSON output is structured.
       # Workers default to NumCPU; on standard GHA runners that's 4

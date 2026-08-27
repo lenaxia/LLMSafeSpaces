@@ -397,7 +397,6 @@ trivy-fs:
 	trivy fs --severity HIGH,CRITICAL --exit-code 1 \
 		--skip-dirs frontend/node_modules \
 		--skip-dirs sdks/typescript/node_modules \
-		--skip-dirs sdks/vscode-llmsafespaces/node_modules \
 		--ignorefile .trivyignore \
 		.
 
@@ -408,7 +407,6 @@ trivy-config:
 	trivy config --severity HIGH,CRITICAL --exit-code 1 \
 		--skip-dirs frontend/node_modules \
 		--skip-dirs sdks/typescript/node_modules \
-		--skip-dirs sdks/vscode-llmsafespaces/node_modules \
 		--skip-dirs design/stories/epic-17-security-review \
 		--skip-dirs local \
 		--ignorefile .trivyignore \

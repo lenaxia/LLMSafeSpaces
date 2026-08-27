@@ -497,3 +497,61 @@ describe("getHistoryPage", () => {
     expect(page.messages).toEqual([]);
   });
 });
+
+// #1046: MCP-server CRUD across the three Epic 53 scopes
+describe("mcpServers (user scope)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("create + list + update hit the right paths and shapes", async () => {
+    const client = new LLMSafeSpaces({ baseUrl: "http://localhost:8080", apiKey: "lsp_test123" });
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse({ id: "srv-1", name: "n", transport: "http", hasSecret: true, enabled: true }, 201),
+    );
+    const srv = await client.mcpServers.create({ name: "n", transport: "http", url: "https://m.example" });
+    expect(srv.id).toBe("srv-1");
+    let url = mockFetch.mock.calls[0][0] as string;
+    expect(url).toBe("http://localhost:8080/api/v1/me/mcp-servers");
+    let body = JSON.parse(mockFetch.mock.calls[0][1].body);
+    expect(body.transport).toBe("http");
+
+    mockFetch.mockResolvedValueOnce(jsonResponse({ servers: [{ id: "srv-1", name: "n", transport: "stdio" }] }));
+    const list = await client.mcpServers.list();
+    expect(list).toHaveLength(1);
+    expect(list[0].transport).toBe("stdio");
+
+    mockFetch.mockResolvedValueOnce(jsonResponse({ id: "srv-1", name: "renamed", transport: "http" }));
+    await client.mcpServers.update("srv-1", { name: "renamed" });
+    url = mockFetch.mock.calls[2][0] as string;
+    body = JSON.parse(mockFetch.mock.calls[2][1].body);
+    expect(url).toBe("http://localhost:8080/api/v1/me/mcp-servers/srv-1");
+    expect(body.name).toBe("renamed");
+  });
+
+  it("bind + auto-apply send the documented bodies", async () => {
+    const client = new LLMSafeSpaces({ baseUrl: "http://localhost:8080", apiKey: "lsp_test123" });
+    mockFetch.mockResolvedValueOnce(new Response(null, { status: 201 }));
+    await client.mcpServers.bind("srv-1", "ws-1");
+    expect(mockFetch.mock.calls[0][0]).toBe("http://localhost:8080/api/v1/me/mcp-servers/srv-1/bindings");
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body)).toEqual({ workspaceId: "ws-1" });
+
+    mockFetch.mockResolvedValueOnce(new Response(null, { status: 201 }));
+    await client.mcpServers.createAutoApply("srv-1", "user", "u-1");
+    expect(mockFetch.mock.calls[1][0]).toBe("http://localhost:8080/api/v1/me/mcp-servers/srv-1/auto-apply");
+    expect(JSON.parse(mockFetch.mock.calls[1][1].body)).toEqual({ targetType: "user", targetId: "u-1" });
+  });
+
+  it("admin deleteAutoApply builds both path variants; org scope carries orgId", async () => {
+    const client = new LLMSafeSpaces({ baseUrl: "http://localhost:8080", apiKey: "lsp_test123" });
+    mockFetch.mockResolvedValue(new Response(null, { status: 204 }));
+    await client.adminMcpServers.deleteAutoApply("srv-1", "all");
+    expect(mockFetch.mock.calls[0][0]).toBe("http://localhost:8080/api/v1/admin/mcp-servers/srv-1/auto-apply/all");
+    await client.adminMcpServers.deleteAutoApply("srv-1", "user", "u-1");
+    expect(mockFetch.mock.calls[1][0]).toBe("http://localhost:8080/api/v1/admin/mcp-servers/srv-1/auto-apply/user/u-1");
+
+    mockFetch.mockResolvedValueOnce(jsonResponse({ servers: [] }));
+    await client.orgMcpServers.list("org-9");
+    expect(mockFetch.mock.calls[2][0]).toBe("http://localhost:8080/api/v1/orgs/org-9/mcp-servers");
+  });
+});

@@ -408,4 +408,90 @@ class LLMSafeSpacesClientTest {
             server.stop(0);
         }
     }
+
+    @org.junit.jupiter.api.Test
+    void mcpServers_userScopeCrud() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        final String[] gotPath = {null};
+        final String[] gotMethod = {null};
+        server.createContext("/api/v1/", exchange -> {
+            gotPath[0] = exchange.getRequestURI().getPath();
+            gotMethod[0] = exchange.getRequestMethod();
+            byte[] body;
+            int status = 200;
+            if ("POST".equals(gotMethod[0]) && gotPath[0].equals("/api/v1/me/mcp-servers")) {
+                body = "{"id":"srv-1","name":"n","transport":"http"}".getBytes();
+                status = 201;
+            } else if ("GET".equals(gotMethod[0]) && gotPath[0].equals("/api/v1/me/mcp-servers")) {
+                body = "{"servers":[{"id":"srv-1","name":"n","transport":"stdio"}]}".getBytes();
+            } else if ("PUT".equals(gotMethod[0]) && gotPath[0].equals("/api/v1/me/mcp-servers/srv-1")) {
+                body = "{"id":"srv-1","name":"renamed","transport":"http"}".getBytes();
+            } else if ("DELETE".equals(gotMethod[0])) {
+                body = new byte[0];
+                status = 204;
+            } else {
+                body = "{"id":"srv-1","name":"n"}".getBytes();
+            }
+            if (body.length == 0) {
+                exchange.sendResponseHeaders(status, -1);
+            } else {
+                exchange.sendResponseHeaders(status, body.length);
+                exchange.getResponseBody().write(body);
+            }
+            exchange.close();
+        });
+        server.start();
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            var created = client.mcpServers.create(java.util.Map.of("name", "n", "transport", "http"));
+            org.junit.jupiter.api.Assertions.assertEquals("srv-1", created.get("id"));
+            var listed = client.mcpServers.list();
+            org.junit.jupiter.api.Assertions.assertEquals(1, listed.size());
+            var updated = client.mcpServers.update("srv-1", java.util.Map.of("name", "renamed"));
+            org.junit.jupiter.api.Assertions.assertEquals("renamed", updated.get("name"));
+            client.mcpServers.delete("srv-1");
+            org.junit.jupiter.api.Assertions.assertEquals("/api/v1/me/mcp-servers/srv-1", gotPath[0]);
+            org.junit.jupiter.api.Assertions.assertEquals("DELETE", gotMethod[0]);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @org.junit.jupiter.api.Test
+    void mcpServers_bindAutoApplyAndScopes() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        final java.util.List<String> paths = new java.util.ArrayList<>();
+        server.createContext("/api/v1/", exchange -> {
+            paths.add(exchange.getRequestMethod() + " " + exchange.getRequestURI().getPath());
+            byte[] body = exchange.getRequestURI().getPath().endsWith("auto-apply")
+                    && "GET".equals(exchange.getRequestMethod())
+                    ? "{"rules":[{"targetType":"all"}]}".getBytes()
+                    : "{}".getBytes();
+            exchange.sendResponseHeaders(200, body.length);
+            exchange.getResponseBody().write(body);
+            exchange.close();
+        });
+        server.start();
+        try {
+            var client = LLMSafeSpacesClient.builder("http://localhost:" + server.getAddress().getPort())
+                    .apiKey("lsp_test").build();
+            client.mcpServers.bind("srv-1", "ws-1");
+            client.mcpServers.createAutoApply("srv-1", "user", "u-1");
+            var rules = client.mcpServers.listAutoApply("srv-1");
+            org.junit.jupiter.api.Assertions.assertEquals(1, rules.size());
+            client.adminMcpServers.deleteAutoApply("srv-1", "user", null);
+            client.orgMcpServers.list("org-9");
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    paths.contains("POST /api/v1/me/mcp-servers/srv-1/bindings"));
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    paths.contains("POST /api/v1/me/mcp-servers/srv-1/auto-apply"));
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    paths.contains("DELETE /api/v1/admin/mcp-servers/srv-1/auto-apply/user"));
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    paths.contains("GET /api/v1/orgs/org-9/mcp-servers"));
+        } finally {
+            server.stop(0);
+        }
+    }
 }

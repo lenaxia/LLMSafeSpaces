@@ -10,7 +10,6 @@ LLMSafeSpaces ships typed client SDKs in four languages, plus a VS Code extensio
 | **TypeScript** | `sdks/typescript/` | `@llmsafespaces/sdk` | Node.js 18+ / browser | API key or email/password |
 | **Python** | `sdks/python/` | `llmsafespaces` | Python 3.10+ | API key or email/password |
 | **Java** | `sdks/java/` | `com.llmsafespaces:sdk` | Java 17+ | API key |
-| **VS Code** | `sdks/vscode-llmsafespaces/` | extension | VS Code 1.95+ | API key (stored in OS keychain) |
 
 ## How they're generated
 
@@ -310,28 +309,6 @@ client.post("/workspaces/" + workspaceId + "/activate", null);
 ```
 
 The Java SDK exposes generic `get`, `post`, and `delete` methods plus a static `extractTextContent(JsonObject)` helper for pulling text out of opencode response parts. Errors throw `LLMSafeSpacesException` with a status code and message.
-
----
-
-## VS Code extension
-
-The VS Code extension (`sdks/vscode-llmsafespaces/`) wraps the API into the editor: a workspace sidebar, a WebSocket terminal, and a Copilot Chat participant.
-
-### Features
-
-- **Workspace sidebar** — browse and manage sandboxes from the activity bar, with color-coded status (active / suspended / terminated).
-- **Terminal access** — open a secure terminal connected to any active workspace. Traffic flows through the API's WebSocket proxy — no SSH keys or port-forwarding needed.
-- **Chat participant** — type `@llmsafespaces` in Copilot Chat to route prompts directly to your sandbox agent. The agent has full access to the workspace filesystem and tools.
-- **Commands** — Create Workspace, Suspend/Resume, Activate, Open Terminal, Configure.
-
-### Getting started
-
-1. Install the extension.
-2. Open the Command Palette and run `LLMSafeSpaces: Configure`.
-3. Enter your API URL and API key (`lsp_...`).
-4. Your workspaces appear in the sidebar.
-
-API keys are stored in VS Code's `SecretStorage` (the OS keychain). The extension communicates only with the LLMSafeSpaces instance you configure — no telemetry, no third-party data.
 
 ---
 
