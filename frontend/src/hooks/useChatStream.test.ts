@@ -10,7 +10,14 @@ vi.mock("../api/messages", () => ({
   },
 }));
 
+vi.mock("../api/workspaces", () => ({
+  workspacesApi: {
+    getSession: vi.fn().mockResolvedValue({ status: "idle" }),
+  },
+}));
+
 import { messagesApi } from "../api/messages";
+import { workspacesApi } from "../api/workspaces";
 
 // Helper: sends a message and signals idle after sendAsync resolves
 async function sendAndIdle(
@@ -593,6 +600,140 @@ describe("useChatStream", () => {
 
     // Navigate to a different session
     rerender({ sid: "sess-2" });
+    expect(result.current.streamTimedOut).toBe(false);
+
+    vi.useRealTimers();
+  });
+
+  // ── Timeout recheck (session-status fetch before declaring interrupted) ──
+  // Production incident 2026-08-26 21:41 (workspace fe8348c8): the first
+  // message raced pod startup; the SSE subscription flapped ("no pod IP",
+  // 16s backoff), serverBusy never went true locally, the 60s idle-wait
+  // timed out, and the user saw "Response interrupted" while the agent
+  // was mid-clone and healthy. serverBusy is only as live as the SSE
+  // subscription — exactly the moment first messages are sent. Before
+  // declaring interruption, recheck the session status over plain HTTP.
+
+  it("does NOT set streamTimedOut when the post-timeout status recheck says busy", async () => {
+    vi.useFakeTimers();
+    (messagesApi.sendAsync as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    // serverBusy prop is STALE-false (SSE down); the direct fetch sees busy.
+    (workspacesApi.getSession as ReturnType<typeof vi.fn>).mockResolvedValue({ status: "busy" });
+
+    const { result } = renderHook(() => useChatStream("sb-1", "sess-1", false));
+    let sendPromise!: Promise<void>;
+    act(() => { sendPromise = result.current.send("hi", vi.fn()); });
+    await vi.waitFor(() => expect(messagesApi.sendAsync).toHaveBeenCalled());
+
+    await act(async () => { vi.advanceTimersByTime(61_000); });
+    await act(async () => { await sendPromise; });
+
+    expect(workspacesApi.getSession).toHaveBeenCalledWith("sb-1", "sess-1", expect.anything());
+    expect(result.current.streamTimedOut).toBe(false);
+
+    vi.useRealTimers();
+  });
+
+  it("sets streamTimedOut=true when the recheck confirms idle (real interruption)", async () => {
+    vi.useFakeTimers();
+    (messagesApi.sendAsync as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (workspacesApi.getSession as ReturnType<typeof vi.fn>).mockResolvedValue({ status: "idle" });
+
+    const { result } = renderHook(() => useChatStream("sb-1", "sess-1", false));
+    let sendPromise!: Promise<void>;
+    act(() => { sendPromise = result.current.send("hi", vi.fn()); });
+    await vi.waitFor(() => expect(messagesApi.sendAsync).toHaveBeenCalled());
+
+    await act(async () => { vi.advanceTimersByTime(61_000); });
+    await act(async () => { await sendPromise; });
+
+    expect(result.current.streamTimedOut).toBe(true);
+
+    vi.useRealTimers();
+  });
+
+  it("fails open (sets streamTimedOut) when the recheck itself errors", async () => {
+    vi.useFakeTimers();
+    (messagesApi.sendAsync as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (workspacesApi.getSession as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("pod gone"));
+
+    const { result } = renderHook(() => useChatStream("sb-1", "sess-1", false));
+    let sendPromise!: Promise<void>;
+    act(() => { sendPromise = result.current.send("hi", vi.fn()); });
+    await vi.waitFor(() => expect(messagesApi.sendAsync).toHaveBeenCalled());
+
+    await act(async () => { vi.advanceTimersByTime(61_000); });
+    await act(async () => { await sendPromise; });
+
+    // Recheck unreachable → old behavior (banner) — better to warn on a
+    // live agent than to hang silently on a dead one.
+    expect(result.current.streamTimedOut).toBe(true);
+
+    vi.useRealTimers();
+  });
+
+  // Review #1051: the recheck fetch must be BOUNDED — an unbounded fetch
+  // during a partition would hold the banner hostage. The AbortController
+  // aborts at RECHECK_TIMEOUT_MS (10s); the abort surfaces as a fetch
+  // rejection → fail-open banner.
+  it("fails open when the recheck hangs past its timeout", async () => {
+    vi.useFakeTimers();
+    (messagesApi.sendAsync as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (workspacesApi.getSession as ReturnType<typeof vi.fn>).mockImplementation(
+      (_ws: string, _sid: string, opts?: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          opts?.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+          // never resolves on its own — only the abort can end it
+        }),
+    );
+
+    const { result } = renderHook(() => useChatStream("sb-1", "sess-1", false));
+    let sendPromise!: Promise<void>;
+    act(() => { sendPromise = result.current.send("hi", vi.fn()); });
+    await vi.waitFor(() => expect(messagesApi.sendAsync).toHaveBeenCalled());
+
+    await act(async () => { vi.advanceTimersByTime(61_000); });
+    await act(async () => { vi.advanceTimersByTime(11_000); });
+    await act(async () => { await sendPromise; });
+
+    expect(result.current.streamTimedOut).toBe(true);
+
+    vi.useRealTimers();
+  });
+
+  // Review #1051: session-switch during the async recheck must not paint
+  // a stale-session banner. The recheck resolves busy=false for sess-1
+  // AFTER the user navigated to sess-2 — the banner must stay clear (the
+  // stale run's state must not leak into the new session's UI).
+  it("does NOT set streamTimedOut when the user switches sessions during the recheck", async () => {
+    vi.useFakeTimers();
+    (messagesApi.sendAsync as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
+    (messagesApi.getHistory as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    let releaseRecheck!: (v: { status: string }) => void;
+    (workspacesApi.getSession as ReturnType<typeof vi.fn>).mockImplementation(
+      () => new Promise<{ status: string }>((resolve) => { releaseRecheck = resolve; }),
+    );
+
+    const { result, rerender } = renderHook(
+      ({ sid }: { sid: string }) => useChatStream("sb-1", sid, false),
+      { initialProps: { sid: "sess-1" } },
+    );
+    let sendPromise!: Promise<void>;
+    act(() => { sendPromise = result.current.send("hi", vi.fn()); });
+    await vi.waitFor(() => expect(messagesApi.sendAsync).toHaveBeenCalled());
+
+    await act(async () => { vi.advanceTimersByTime(61_000); });
+
+    // User navigates to sess-2 while the recheck is still in flight...
+    rerender({ sid: "sess-2" });
+    // ...then the recheck resolves idle (would have bannered sess-1).
+    await act(async () => { releaseRecheck({ status: "idle" }); });
+    await act(async () => { await sendPromise; });
+
     expect(result.current.streamTimedOut).toBe(false);
 
     vi.useRealTimers();

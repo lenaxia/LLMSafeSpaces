@@ -67,8 +67,8 @@ export const workspacesApi = {
   // D6 (#998): persisted hung-session alerts (24h retention server-side).
   getAlerts: (id: string) =>
     api.get<{ alerts: SessionAlert[] }>(`/workspaces/${id}/alerts`).then((r) => r.alerts ?? []),
-  getSession: (workspaceId: string, sessionId: string) =>
-    api.get<AgentSession>(`/workspaces/${workspaceId}/sessions/${sessionId}`),
+  getSession: (workspaceId: string, sessionId: string, opts?: { signal?: AbortSignal }) =>
+    api.get<AgentSession>(`/workspaces/${workspaceId}/sessions/${sessionId}`, { signal: opts?.signal }),
   renameSession: (workspaceId: string, sessionId: string, title: string) =>
     api.put<void>(`/workspaces/${workspaceId}/sessions/${sessionId}/title`, { title }),
   markSessionSeen: (workspaceId: string, sessionId: string) =>
