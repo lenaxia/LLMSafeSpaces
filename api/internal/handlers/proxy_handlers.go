@@ -22,6 +22,7 @@ import (
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
 	apitypes "github.com/lenaxia/llmsafespaces/api/internal/types"
+	"github.com/lenaxia/llmsafespaces/pkg/agent/systemnotices"
 	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 	v1 "github.com/lenaxia/llmsafespaces/pkg/apis/llmsafespaces/v1"
 	"github.com/lenaxia/llmsafespaces/pkg/session"
@@ -355,6 +356,25 @@ func (h *ProxyHandler) SendPromptAsync(c *gin.Context) {
 			if sid != "" {
 				h.removeActiveSession(c.Request.Context(), wid, sid)
 			}
+
+			// #944: typed disk-full classification. ENOSPC cannot be
+			// detected from the upstream 500 body (the cause lives only
+			// in opencode's in-pod log), so classification uses the CRD
+			// disk status already in scope. At/above critical the client
+			// gets 507 {"code":"disk_full"} with the usage numbers —
+			// the incident's generic 502 rendered as a bare "Failed to
+			// fetch" with no cause. Below critical, unrelated
+			// provider/pod errors keep the generic 502.
+			if systemnotices.LevelForRatio(diskPressureRatio(workspace.Status.DiskUsedBytes, workspace.Status.DiskTotalBytes)) == systemnotices.LevelCritical {
+				c.JSON(http.StatusInsufficientStorage, gin.H{
+					"code":           "disk_full",
+					"message":        "The workspace disk is full; the message could not be processed. Free up space and try again.",
+					"diskUsedBytes":  workspace.Status.DiskUsedBytes,
+					"diskTotalBytes": workspace.Status.DiskTotalBytes,
+				})
+				return
+			}
+
 			errBody := []byte(`{"error":"failed to send message"}`)
 			if h.agentStateChecker != nil {
 				changedAt, checkerErr := h.agentStateChecker.GetLastCredentialChangedAt(c.Request.Context(), wid)

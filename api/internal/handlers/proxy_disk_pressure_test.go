@@ -278,75 +278,9 @@ func TestDiskPressureNotice_Critical_AtExactBoundary_Displays95(t *testing.T) {
 	assert.Contains(t, notice, "95%")
 }
 
-// --- normalizeDiskThresholds cross-validation ---
-
-func TestNormalizeDiskThresholds_Inverted_FallsBackToDefaults(t *testing.T) {
-	// warning >= critical makes the warning tier unreachable (critical is
-	// checked first). Fall back to defaults so the feature degrades to the
-	// documented 90%/95% behavior.
-	w, c := normalizeDiskThresholds(0.98, 0.50, 0.90, 0.95)
-	assert.Equal(t, 0.90, w)
-	assert.Equal(t, 0.95, c)
-}
-
-func TestNormalizeDiskThresholds_Equal_FallsBackToDefaults(t *testing.T) {
-	w, c := normalizeDiskThresholds(0.92, 0.92, 0.90, 0.95)
-	assert.Equal(t, 0.90, w)
-	assert.Equal(t, 0.95, c)
-}
-
-func TestNormalizeDiskThresholds_Valid_Unchanged(t *testing.T) {
-	w, c := normalizeDiskThresholds(0.85, 0.93, 0.90, 0.95)
-	assert.Equal(t, 0.85, w)
-	assert.Equal(t, 0.93, c)
-}
-
-// --- envFloatOr: the env-override parsing path ---
-//
-// Package vars (diskWarningThreshold/diskCriticalThreshold) initialize at
-// load time, so the full override path can't be tested from inside the
-// package without process restart. We test the parsing primitive
-// directly instead — it's the only logic in the override path; the var
-// wiring is a one-line assignment.
-
-func TestEnvFloatOr_ValidValue(t *testing.T) {
-	t.Setenv("LSS_TEST_FLOAT", "0.77")
-	assert.InDelta(t, 0.77, envFloatOr("LSS_TEST_FLOAT", 0.90), 1e-9)
-}
-
-func TestEnvFloatOr_Unset_ReturnsDefault(t *testing.T) {
-	assert.InDelta(t, 0.90, envFloatOr("LSS_TEST_FLOAT_UNSET", 0.90), 1e-9)
-}
-
-func TestEnvFloatOr_EmptyString_ReturnsDefault(t *testing.T) {
-	t.Setenv("LSS_TEST_FLOAT", "")
-	assert.InDelta(t, 0.90, envFloatOr("LSS_TEST_FLOAT", 0.90), 1e-9)
-}
-
-func TestEnvFloatOr_Malformed_ReturnsDefault(t *testing.T) {
-	t.Setenv("LSS_TEST_FLOAT", "not-a-number")
-	assert.InDelta(t, 0.90, envFloatOr("LSS_TEST_FLOAT", 0.90), 1e-9)
-}
-
-func TestEnvFloatOr_OutOfRange_Rejected(t *testing.T) {
-	// Values outside (0,1) must be ignored so a bad value cannot disable
-	// or invert the feature. Zero, one, negatives, and >1 all fall back.
-	for _, bad := range []string{"0", "1", "-0.5", "1.5", "2"} {
-		t.Run(bad, func(t *testing.T) {
-			t.Setenv("LSS_TEST_FLOAT", bad)
-			assert.InDelta(t, 0.90, envFloatOr("LSS_TEST_FLOAT", 0.90), 1e-9,
-				"value %s must be rejected", bad)
-		})
-	}
-}
-
-func TestEnvFloatOr_BoundaryInsideRange_Accepted(t *testing.T) {
-	// Values just inside (0,1) are valid.
-	t.Setenv("LSS_TEST_FLOAT", "0.001")
-	assert.InDelta(t, 0.001, envFloatOr("LSS_TEST_FLOAT", 0.90), 1e-9)
-	t.Setenv("LSS_TEST_FLOAT", "0.999")
-	assert.InDelta(t, 0.999, envFloatOr("LSS_TEST_FLOAT", 0.90), 1e-9)
-}
+// NOTE: the threshold-normalization and env-override parsing tests moved
+// with their logic to pkg/agent/systemnotices (the single source since
+// #944); see systemnotices_test.go.
 
 // --- proxy integration: the injection must reach the upstream request ---
 
