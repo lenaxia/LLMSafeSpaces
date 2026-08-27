@@ -1529,6 +1529,9 @@ func registerProxyRoutes(idGroup *gin.RouterGroup, proxyHandler *handlers.ProxyH
 	idGroup.DELETE("/sessions/:sessionId", proxyHandler.DeleteSession)
 	idGroup.GET("/session-events", proxyHandler.StreamEvents)
 
+	// D6 (#998): persisted hung-session alerts (reconnect/workflow surface).
+	idGroup.GET("/alerts", proxyHandler.GetWorkspaceAlerts)
+
 	// Question/Permission input request routes (Epic 16)
 	idGroup.GET("/question", proxyHandler.ListQuestions)
 	idGroup.POST("/question/:requestID/reply", proxyHandler.QuestionReply)

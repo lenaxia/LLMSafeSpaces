@@ -8,7 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
 	"time"
+
+	"github.com/lenaxia/llmsafespaces/pkg/agentd"
 
 	"github.com/lenaxia/llmsafespaces/api/internal/services/outbox"
 	"github.com/lenaxia/llmsafespaces/pkg/agent"
@@ -134,6 +139,20 @@ func (h *ProxyHandler) sseWatchReconciler(interval time.Duration) {
 					watched = append(watched, id)
 				}
 			}
+			// D6 (#998): unattended-escalation sweep on the same tick —
+			// notify, never execute. Failure-isolated: an escalation
+			// panic must never take down the reconciler (which also
+			// arms SSE watches — losing it re-creates the #902 incident
+			// class).
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						h.logger.Error("D6 escalation sweep panicked (isolated; reconciler continues)",
+							fmt.Errorf("%v", r), "component", "d6")
+					}
+				}()
+				h.escalateHungs(watched)
+			}()
 			// #901 G3: refresh upstream-liveness gauges while we're here
 			// (no second loop/ticker for the same data).
 			sse.RefreshLastEventGauges(watched)
@@ -414,4 +433,114 @@ func (h *ProxyHandler) postOutboxDeliverSuccess(workspaceID, sessionID string, e
 			})
 		}
 	}
+}
+
+// D6 (#998) tunables. BusyOlderThan: a session busy this long is
+// escalated (design sketch said 900s; 15 min of continuous busy with no
+// idle is the hung-and-alive signature post-watchdog-demotion).
+// AlertCooldown: minimum spacing between alerts for the same workspace —
+// unattended sessions stay busy until a human acts, so an alert per tick
+// would be noise. Vars for tests.
+var (
+	busyAlertOlderThan = 15 * time.Minute
+	busyAlertCooldown  = 30 * time.Minute
+)
+
+// escalateHungs publishes workspace.alert for every watched Active
+// workspace whose statusz reports oldest_busy_seconds past the threshold
+// (D6/#998: hung-and-alive sessions — suppressed-forever by design D1 —
+// are surfaced to the owner instead of executed). Statusz fetch failure
+// is silent-to-log: the alert path must not add load when the pod is
+// merely slow (the tracker/alerting stack covers hard failures).
+func (h *ProxyHandler) escalateHungs(workspaceIDs []string) {
+	for _, wid := range workspaceIDs {
+		if h.busyAlertCooling(wid) {
+			continue
+		}
+		podIP := h.getPodIPForSSE(wid)
+		if podIP == "" {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		sz, err := h.fetchStatusz(ctx, wid, podIP)
+		cancel()
+		if err != nil {
+			continue
+		}
+		if sz.OldestBusySeconds < int(busyAlertOlderThan.Seconds()) {
+			continue
+		}
+		h.publishWorkspaceAndUserEvent(wid, apitypes.WorkspaceSSEEvent{
+			Type:      "workspace.alert",
+			SessionID: oldestSession(sz.BusyAges),
+			Status:    "session_hung",
+			Data: map[string]any{
+				"alert":               "session_hung",
+				"oldest_busy_seconds": sz.OldestBusySeconds,
+				"busy_ages":           sz.BusyAges,
+				"policy":              "notify_only",
+				"guidance":            "session busy beyond threshold with no progress — likely hung-and-alive; stop or resume manually",
+			},
+		})
+		h.markBusyAlerted(wid)
+		// #998 finding 4: persist the alert so it lands in session
+		// history for workflow surfaces and survives SSE disconnects.
+		// Non-blocking (bounded queue + drainer); nil = SSE-only.
+		if h.sessionAlerts != nil {
+			h.sessionAlerts.RecordAlert(wid, oldestSession(sz.BusyAges), "session_hung", sz.OldestBusySeconds)
+		}
+		h.logger.Warn("D6 escalation: session hung (notify-only)",
+			"workspaceID", wid, "oldestBusySeconds", sz.OldestBusySeconds)
+	}
+}
+
+// fetchStatusz GETs /v1/statusz from the agentd admin port using the
+// shared bearer-candidate machinery (workspace secret admin-token, the
+// same path reconcileSessionState uses).
+func (h *ProxyHandler) fetchStatusz(ctx context.Context, workspaceID, podIP string) (*agentd.StatuszResponse, error) {
+	// Production PodIPs carry no port; test fakes listen on ephemeral
+	// ports and pass host:port. Append the admin port only for bare hosts.
+	host := podIP
+	if !strings.Contains(host, ":") {
+		host = fmt.Sprintf("%s:%d", host, agentd.AgentdAdminPort)
+	}
+	url := fmt.Sprintf("http://%s/v1/statusz", host) //nolint:gosec // G107: internal pod
+	resp, err := GetWithBearers(ctx, h.httpClient, url, h.adminBearerCandidates(ctx, workspaceID, ""))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close() //nolint:errcheck // best-effort
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("statusz %d", resp.StatusCode)
+	}
+	var sz agentd.StatuszResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&sz); err != nil {
+		return nil, err
+	}
+	return &sz, nil
+}
+
+// busyAlerts records last-alert time per workspace for the D6 cooldown.
+// Guarded by busyAlertsMu; empty map = no cooldowns (fresh boot re-alerts).
+func (h *ProxyHandler) busyAlertCooling(workspaceID string) bool {
+	h.busyAlertsMu.Lock()
+	defer h.busyAlertsMu.Unlock()
+	last, ok := h.busyAlerts[workspaceID]
+	return ok && time.Since(last) < busyAlertCooldown
+}
+
+func (h *ProxyHandler) markBusyAlerted(workspaceID string) {
+	h.busyAlertsMu.Lock()
+	h.busyAlerts[workspaceID] = time.Now()
+	h.busyAlertsMu.Unlock()
+}
+
+func oldestSession(ages map[string]int) string {
+	best, bestAge := "", -1
+	for id, age := range ages {
+		if age > bestAge {
+			best, bestAge = id, age
+		}
+	}
+	return best
 }

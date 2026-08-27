@@ -161,6 +161,7 @@ func newTestEnvWithBackendAndLogger(t *testing.T, backendHandler http.HandlerFun
 		proxy.POST("/sessions/:sessionId/abort", handler.AbortSession)
 		proxy.DELETE("/sessions/:sessionId", handler.DeleteSession)
 		proxy.GET("/events", handler.StreamEvents)
+		proxy.GET("/alerts", handler.GetWorkspaceAlerts)
 	}
 
 	return &testEnv{

@@ -28,7 +28,7 @@ import { Spinner } from "../components/ui/Spinner";
 import { KebabMenu } from "../components/ui/KebabMenu";
 import type { KebabMenuItem } from "../components/ui/KebabMenu";
 import { sessionsApi } from "../api/sessions";
-import type { Message, SessionListItem, WorkspaceStreamEvent, SessionContractEvent, SessionStatusEvent, ContractEvent, QuestionRequest, PermissionRequest } from "../api/types";
+import type { Message, SessionListItem, WorkspaceStreamEvent, SessionContractEvent, SessionStatusEvent, ContractEvent, QuestionRequest, PermissionRequest, WorkspaceAlertEvent } from "../api/types";
 import { QuestionPrompt } from "../components/chat/QuestionPrompt";
 import { PermissionPrompt } from "../components/chat/PermissionPrompt";
 import { useClearPendingUnread, useAddPendingQuestion, useAddPendingPermission, useRemovePendingAction, usePendingQuestionsForSession, usePendingPermissionsForSession, useClearSessionPendingPrompts, useIsSessionBusy, useWorkspaceInputSnapshot } from "../providers/SessionActivityProvider";
@@ -290,6 +290,8 @@ export function ChatPage() {
   // prevContextUsedRef is always up-to-date before the next render's comparison.
   const prevContextUsedRef = useRef<number | undefined>(undefined);
   const [compactionDetected, setCompactionDetected] = useState(false);
+  // D6 (#998): active hung-session alert (workspace.alert/session_hung).
+  const [hungAlert, setHungAlert] = useState<WorkspaceAlertEvent | null>(null);
   useLayoutEffect(() => {
     const cur = contextUsedForDisplay;
     const prev = prevContextUsedRef.current;
@@ -747,6 +749,13 @@ export function ChatPage() {
       queue.onPhaseChange(event.phase);
     }
 
+    // D6 (#998): notify-only hung-session escalation. Banner until
+    // dismissed; a later session.status=idle for the same session
+    // auto-clears it (the hang resolved).
+    if (event.type === "workspace.alert" && event.data?.alert === "session_hung") {
+      setHungAlert(event);
+    }
+
     if (event.type === "session.status" && workspaceId) {
       queryClient.invalidateQueries({ queryKey: ["sessions", workspaceId] });
       if (event.session_id === sessionId) {
@@ -754,6 +763,7 @@ export function ChatPage() {
           notifySessionIdle(event.session_id);
           setRetryStatus(null);
           clearStreamTimedOut();
+          setHungAlert((prev) => (prev && prev.session_id === event.session_id ? null : prev));
           reconcileOnIdle();
           queue.refreshQueue();
           // US-16.12: Clear stale prompts on session idle (global, scoped to
@@ -1152,6 +1162,16 @@ export function ChatPage() {
 
       {retryStatus && (
         <SessionRetryBanner status={retryStatus} />
+      )}
+
+      {hungAlert && (
+        <div className="flex items-center justify-between gap-2 border-b border-amber-500/50 bg-amber-500/10 px-4 py-3 text-sm text-amber-600 dark:text-amber-400">
+          <span>
+            This session has been busy for {Math.round(hungAlert.data.oldest_busy_seconds / 60)} min without
+            completing — it may be hung. Nothing was stopped automatically; abort or resume manually.
+          </span>
+          <button onClick={() => setHungAlert(null)} className="underline hover:no-underline shrink-0">Dismiss</button>
+        </div>
       )}
 
       {streamTimedOut && (
