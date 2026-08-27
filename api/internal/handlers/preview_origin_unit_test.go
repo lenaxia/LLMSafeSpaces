@@ -45,8 +45,8 @@ func TestEpic67LegacyHostBackwardCompatibility(t *testing.T) {
 	t.Parallel()
 
 	cfg := PreviewOriginConfig{
-		Enabled:    true,
-		BaseDomain: epic67TestDomain,
+		Enabled:     true,
+		BaseDomain:  epic67TestDomain,
 		TokenSecret: []byte("epic67-test-secret-key"),
 	}
 	h := NewPreviewOriginHandler(nil, cfg, &fakePVCache{}, nil)
@@ -74,8 +74,8 @@ func TestEpic67PortHostParsing(t *testing.T) {
 	t.Parallel()
 
 	cfg := PreviewOriginConfig{
-		Enabled:    true,
-		BaseDomain: epic67TestDomain,
+		Enabled:     true,
+		BaseDomain:  epic67TestDomain,
 		TokenSecret: []byte("epic67-test-secret-key"),
 	}
 	h := NewPreviewOriginHandler(nil, cfg, &fakePVCache{}, nil)
@@ -93,7 +93,7 @@ func TestEpic67PortHostParsing(t *testing.T) {
 		{"Max valid port", "65535-" + epic67TestWS + "-preview." + epic67TestDomain, epic67TestWS, 65535, true, true},
 		{"Single digit port", "1-" + epic67TestWS + "-preview." + epic67TestDomain, epic67TestWS, 1, true, true},
 		{"F1 digit-leading UUID", "1044-1044f4f2-1234-5678-9abc-def000000000-preview." + epic67TestDomain, "1044f4f2-1234-5678-9abc-def000000000", 1044, true, true},
-		{"F1 all-digit first segment", "99999-99999999-1234-5678-9abc-def000000000-preview." + epic67TestDomain, "99999999-1234-5678-9abc-def000000000", 99999, true, true},
+		{"F1 all-digit first segment", "65535-99999999-1234-5678-9abc-def000000000-preview." + epic67TestDomain, "99999999-1234-5678-9abc-def000000000", 65535, true, true},
 		{"Wrong domain", "5173-" + epic67TestWS + "-preview.wrong-domain.com", "", 0, false, false},
 		{"Port too large (6 digits)", "65536-" + epic67TestWS + "-preview." + epic67TestDomain, "", 0, false, false},
 		{"Non-numeric port", "abc-" + epic67TestWS + "-preview." + epic67TestDomain, "", 0, false, false},
@@ -153,7 +153,9 @@ func TestEpic67LandingPageBehavior(t *testing.T) {
 		// Stand-in for agentd: receives /v1/dev-preview/<port><subPath>.
 		io.WriteString(w, "AGENTD:"+r.URL.Path)
 	}))
-	defer backend.Close()
+	// t.Cleanup (not defer): parallel subtests outlive the parent function,
+	// and a deferred Close would tear the backend down mid-subtest.
+	t.Cleanup(backend.Close)
 	_, r, _ := newPreviewOriginFixture(t, backend)
 
 	t.Run("legacy_host_root_gets_landing_page", func(t *testing.T) {
@@ -341,11 +343,17 @@ func TestEpic67RootAbsoluteRedirectWorkflow(t *testing.T) {
 	ts := httptest.NewServer(r)
 	defer ts.Close()
 
+	// A client that does NOT auto-follow: the 303's Location is the object
+	// under test — following it would hide exactly what we must assert.
+	noRedirect := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+
 	// 2. GET / on the port-host → app's 303 must surface VERBATIM.
 	reqRoot, _ := http.NewRequest(http.MethodGet, ts.URL+"/", nil)
 	reqRoot.Host = portHost
 	reqRoot.Header.Set("Cookie", "__Host-pv="+cookieVal)
-	respRoot, err := http.DefaultClient.Do(reqRoot)
+	respRoot, err := noRedirect.Do(reqRoot)
 	if err != nil {
 		t.Fatalf("root request: %v", err)
 	}
@@ -364,7 +372,7 @@ func TestEpic67RootAbsoluteRedirectWorkflow(t *testing.T) {
 	reqLogin, _ := http.NewRequest(http.MethodGet, ts.URL+"/login", nil)
 	reqLogin.Host = portHost
 	reqLogin.Header.Set("Cookie", "__Host-pv="+cookieVal)
-	respLogin, err := http.DefaultClient.Do(reqLogin)
+	respLogin, err := noRedirect.Do(reqLogin)
 	if err != nil {
 		t.Fatalf("login request: %v", err)
 	}
@@ -380,7 +388,7 @@ func TestEpic67RootAbsoluteRedirectWorkflow(t *testing.T) {
 	reqLegacy, _ := http.NewRequest(http.MethodGet, ts.URL+"/login", nil)
 	reqLegacy.Host = pvHost // legacy shape, no port prefix in path
 	reqLegacy.Header.Set("Cookie", "__Host-pv="+cookieVal)
-	respLegacy, err := http.DefaultClient.Do(reqLegacy)
+	respLegacy, err := noRedirect.Do(reqLegacy)
 	if err != nil {
 		t.Fatalf("legacy contrast request: %v", err)
 	}
@@ -401,10 +409,11 @@ func TestEpic67RootAbsoluteRedirectWorkflow(t *testing.T) {
 func TestEpic67UnhappyPathScenarios(t *testing.T) {
 	t.Parallel()
 
+	// t.Cleanup: parallel subtests outlive the parent function.
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "APP")
 	}))
-	defer backend.Close()
+	t.Cleanup(backend.Close)
 	pv, r, _ := newPreviewOriginFixture(t, backend)
 
 	cookieVal := func() string {
@@ -645,8 +654,8 @@ func TestEpic67F1DigitLeadingUUIDWorkaround(t *testing.T) {
 	t.Parallel()
 
 	cfg := PreviewOriginConfig{
-		Enabled:    true,
-		BaseDomain: epic67TestDomain,
+		Enabled:     true,
+		BaseDomain:  epic67TestDomain,
 		TokenSecret: []byte("epic67-test-secret-key"),
 	}
 	h := NewPreviewOriginHandler(nil, cfg, &fakePVCache{}, nil)
@@ -658,7 +667,7 @@ func TestEpic67F1DigitLeadingUUIDWorkaround(t *testing.T) {
 		{"1044f4f2-1234-5678-9abc-def000000000", "1044"},  // port == UUID prefix
 		{"1044f4f2-1234-5678-9abc-def000000000", "104"},   // partial prefix
 		{"1044f4f2-1234-5678-9abc-def000000000", "1044"},  // duplicate-prefix stress
-		{"99999999-1234-5678-9abc-def000000000", "99999"}, // all-digit segment, max port
+		{"99999999-1234-5678-9abc-def000000000", "65535"}, // all-digit segment, max port
 		{"00000001-1234-5678-9abc-def000000000", "1"},     // near-zero digit segment
 	}
 
